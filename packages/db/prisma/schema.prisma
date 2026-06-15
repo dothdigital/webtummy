@@ -379,30 +379,36 @@ model KeywordAuditPage {
 // ─── Keyword & Competitor Intelligence ───────────────────────────────────────
 
 model KeywordResearchRun {
-  id              String    @id @default(cuid())
-  clientId        String
-  client          Client    @relation(fields: [clientId], references: [id], onDelete: Cascade)
-  websiteId       String?
-  website         Website?  @relation(fields: [websiteId], references: [id], onDelete: SetNull)
-  seedKeyword     String    @db.VarChar(255)
-  targetUrl       String?   @db.VarChar(512)
-  targetDomain    String?   @db.VarChar(255)
-  targetRank      Int?
-  rankingUrl      String?   @db.Text
-  rankFoundDepth  Int?
-  locationName    String    @default("United States") @db.VarChar(120)
-  languageCode    String    @default("en") @db.VarChar(16)
-  device          String    @default("desktop") @db.VarChar(32)
-  serpDepth       Int       @default(10)
-  status          String    @default("completed")
-  source          String    @default("dataforseo")
-  keywordCount    Int       @default(0)
-  competitorCount Int       @default(0)
-  averageVolume   Int?
-  competitorsAboveJson Json     @default("[]")
-  error           String?   @db.Text
-  createdAt       DateTime  @default(now())
-  completedAt     DateTime?
+  id                   String    @id @default(cuid())
+  clientId             String
+  client               Client    @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  websiteId            String?
+  website              Website?  @relation(fields: [websiteId], references: [id], onDelete: SetNull)
+  seedKeyword          String    @db.VarChar(255)
+  targetUrl            String?   @db.VarChar(512)
+  targetDomain         String?   @db.VarChar(255)
+  targetRank           Int?
+  rankingUrl           String?   @db.Text
+  rankFoundDepth       Int?
+  manualRank           Int?
+  manualPage           Int?
+  manualPosition       Int?
+  manualUrl            String?   @db.Text
+  manualNote           String?   @db.Text
+  manualObservedAt     DateTime?
+  locationName         String    @default("United States") @db.VarChar(120)
+  languageCode         String    @default("en") @db.VarChar(16)
+  device               String    @default("desktop") @db.VarChar(32)
+  serpDepth            Int       @default(10)
+  status               String    @default("completed")
+  source               String    @default("dataforseo")
+  keywordCount         Int       @default(0)
+  competitorCount      Int       @default(0)
+  averageVolume        Int?
+  competitorsAboveJson Json      @default("[]")
+  error                String?   @db.Text
+  createdAt            DateTime  @default(now())
+  completedAt          DateTime?
 
   ideas       KeywordIdea[]
   competitors KeywordSerpCompetitor[]

@@ -16,11 +16,11 @@ app.use(express.json({ limit: "1mb" }));
 
 app.get("/health", (_req, res) => res.json({ ok: true, service: "webtummy-api" }));
 
-// Root: this is a JSON API, not a website. The dashboard (apps/web) is Phase 3.
+// Root: this is a JSON API, not the web dashboard.
 app.get("/", (_req, res) =>
   res.json({
     service: "webtummy-api",
-    note: "This is the JSON API. The web dashboard (apps/web) is not built yet (Phase 3).",
+    note: "This is the JSON API. Open the web dashboard on the Vite app, usually http://localhost:5173.",
     endpoints: {
       health: "GET /health",
       login: "POST /api/auth/login",
@@ -28,10 +28,15 @@ app.get("/", (_req, res) =>
       clients: "GET|POST /api/clients (super_admin)",
       websites: "GET|POST /api/websites",
       startCrawl: "POST /api/websites/:websiteId/crawls",
+      overview: "GET /api/overview",
       crawlStatus: "GET /api/crawls/:id/status",
       crawlSummary: "GET /api/crawls/:id/summary",
       crawlPages: "GET /api/crawls/:id/pages",
       crawlIssues: "GET /api/crawls/:id/issues",
+      crawlBrokenLinks: "GET /api/crawls/:id/broken-links",
+      geoKeyword: "GET|POST /api/geo-keyword",
+      keywordResearch: "GET|POST /api/keyword-research",
+      keywordResearchDetail: "GET /api/keyword-research/:id",
     },
   }),
 );

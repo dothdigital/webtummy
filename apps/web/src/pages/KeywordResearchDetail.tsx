@@ -129,6 +129,11 @@ export default function KeywordResearchDetail() {
   const [run, setRun] = useState<KeywordResearchRun | null>(null);
   const [selected, setSelected] = useState<KeywordSerpCompetitor | null>(null);
   const [tab, setTab] = useState<DetailTab>("keywords");
+  const [manualPage, setManualPage] = useState("");
+  const [manualPosition, setManualPosition] = useState("");
+  const [manualUrl, setManualUrl] = useState("");
+  const [manualNote, setManualNote] = useState("");
+  const [savingManual, setSavingManual] = useState(false);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
@@ -138,6 +143,10 @@ export default function KeywordResearchDetail() {
       try {
         const result = await api.get<{ run: KeywordResearchRun }>(`/api/keyword-research/${id}`);
         setRun(result.run);
+        setManualPage(result.run.manualPage ? String(result.run.manualPage) : "");
+        setManualPosition(result.run.manualPosition ? String(result.run.manualPosition) : "");
+        setManualUrl(result.run.manualUrl ?? "");
+        setManualNote(result.run.manualNote ?? "");
       } finally {
         setLoading(false);
       }
@@ -152,7 +161,30 @@ export default function KeywordResearchDetail() {
   const competitors = run.competitors ?? [];
   const topIdea = ideas[0] as KeywordIdea | undefined;
   const competitorsAbove = run.competitorsAboveJson ?? [];
+  const rankingRows = run.targetRank ? competitorsAbove : competitors.map((competitor) => ({
+    rank: competitor.rank,
+    domain: competitor.domain,
+    url: competitor.url,
+    title: competitor.title,
+  }));
   const targetDomain = run.targetDomain ?? run.website?.domain ?? "-";
+  const calculatedManualRank = Number(manualPage) > 0 && Number(manualPosition) > 0 ? (Number(manualPage) - 1) * 10 + Number(manualPosition) : null;
+
+  const saveManualRank = async (event: React.FormEvent) => {
+    event.preventDefault();
+    setSavingManual(true);
+    try {
+      const result = await api.patch<{ run: KeywordResearchRun }>(`/api/keyword-research/${run.id}/manual-rank`, {
+        manualPage: Number(manualPage) || null,
+        manualPosition: Number(manualPosition) || null,
+        manualUrl: manualUrl || null,
+        manualNote: manualNote || null,
+      });
+      setRun(result.run);
+    } finally {
+      setSavingManual(false);
+    }
+  };
 
   return (
     <div className="space-y-6">
@@ -174,10 +206,21 @@ export default function KeywordResearchDetail() {
         <StatCard label="Avg volume" value={formatNumber(run.averageVolume)} />
         <StatCard label="Top volume" value={formatNumber(topIdea?.avgMonthlySearches)} detail={topIdea?.keyword} />
         <StatCard label="Competitors" value={run.competitorCount} />
-        <StatCard label="Target URL" value={run.targetUrl ? "Set" : "None"} detail={run.targetUrl ?? undefined} />
+        <StatCard
+          label="Domain rank"
+          value={run.targetRank ? `#${run.targetRank}` : "Not found"}
+          detail={targetDomain}
+          tone={run.targetRank ? (run.targetRank <= 3 ? "text-green-600" : run.targetRank <= 10 ? "text-amber-600" : "text-red-600") : "text-red-600"}
+        />
       </div>
 
-      <Card className="overflow-hidden">
+      <div className="flex flex-wrap gap-2">
+        <TabButton active={tab === "keywords"} onClick={() => setTab("keywords")}>Keyword Research</TabButton>
+        <TabButton active={tab === "competitors"} onClick={() => setTab("competitors")}>Competitor Analysis</TabButton>
+        <TabButton active={tab === "ranking"} onClick={() => setTab("ranking")}>Domain Ranking</TabButton>
+      </div>
+
+      {tab === "keywords" && <Card className="overflow-hidden">
         <div className="border-b border-charcoal-100 px-5 py-3">
           <div className="font-semibold text-charcoal-700">Keyword research analytics</div>
           <div className="mt-0.5 text-xs text-charcoal-400">Demand, CPC, competition, and bid range from DataForSEO.</div>
@@ -208,9 +251,9 @@ export default function KeywordResearchDetail() {
             </tbody>
           </table>
         </div>
-      </Card>
+      </Card>}
 
-      <Card className="overflow-hidden">
+      {tab === "competitors" && <Card className="overflow-hidden">
         <div className="border-b border-charcoal-100 px-5 py-3">
           <div className="font-semibold text-charcoal-700">Competitor analysis and content comparison</div>
           <div className="mt-0.5 text-xs text-charcoal-400">Organic SERP competitors, content depth, schema, FAQ signals, headings, and topic gaps.</div>
@@ -250,7 +293,165 @@ export default function KeywordResearchDetail() {
             </tbody>
           </table>
         </div>
-      </Card>
+      </Card>}
+
+      {tab === "ranking" && (
+        <div className="space-y-4">
+          <Card className="p-5">
+            <div className="grid gap-4 lg:grid-cols-[1.1fr_1fr]">
+              <div>
+                <div className="text-xs font-semibold uppercase tracking-wide text-brand-600">Google organic position</div>
+                <h2 className="mt-2 text-3xl font-bold text-charcoal-800">
+                  {run.targetRank ? `${targetDomain} ranks #${run.targetRank}` : `${targetDomain} was not found`}
+                </h2>
+                <p className="mt-2 text-sm text-charcoal-500">
+                  Checked the top {run.rankFoundDepth ?? run.serpDepth} organic results for "{run.seedKeyword}" in {run.locationName} on {run.device}.
+                </p>
+                {run.rankingUrl && (
+                  <a href={run.rankingUrl} target="_blank" rel="noreferrer" className="mt-3 block break-all text-sm font-medium text-brand-600 hover:underline">
+                    {run.rankingUrl}
+                  </a>
+                )}
+              </div>
+              <div className="grid gap-3 sm:grid-cols-3 lg:grid-cols-1">
+                <StatCard label="Target domain" value={targetDomain} />
+                <StatCard label="Ranking URL" value={run.rankingUrl ? "Found" : "Not found"} detail={run.targetUrl ?? undefined} tone={run.rankingUrl ? "text-green-600" : "text-red-600"} />
+                <StatCard label={run.targetRank ? "Competitors above" : "Results checked"} value={rankingRows.length} detail={run.targetRank ? "Higher ranking domains" : "Organic rows returned"} />
+                <StatCard label="Manual observed rank" value={run.manualRank ? `#${run.manualRank}` : "-"} detail={run.manualObservedAt ? "Browser evidence saved" : "Optional"} tone={run.manualRank ? "text-brand-600" : "text-charcoal-400"} />
+              </div>
+            </div>
+          </Card>
+
+          <Card className="p-5">
+            <div className="flex flex-col gap-1">
+              <h3 className="font-semibold text-charcoal-700">Manual browser observation</h3>
+              <p className="text-sm text-charcoal-400">Use this when your live Google browser result differs from the DataForSEO snapshot.</p>
+            </div>
+            <form onSubmit={saveManualRank} className="mt-4 space-y-4">
+              <div className="grid gap-4 lg:grid-cols-4">
+                <label className="block">
+                  <span className="mb-1 block text-sm font-medium text-slate-600">Google page</span>
+                  <input
+                    value={manualPage}
+                    onChange={(event) => setManualPage(event.target.value)}
+                    type="number"
+                    min="1"
+                    max="50"
+                    placeholder="4"
+                    className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-100"
+                  />
+                </label>
+                <label className="block">
+                  <span className="mb-1 block text-sm font-medium text-slate-600">Position on page</span>
+                  <input
+                    value={manualPosition}
+                    onChange={(event) => setManualPosition(event.target.value)}
+                    type="number"
+                    min="1"
+                    max="20"
+                    placeholder="3"
+                    className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-100"
+                  />
+                </label>
+                <div className="rounded-lg border border-brand-100 bg-brand-50 px-4 py-3">
+                  <div className="text-[11px] font-medium uppercase tracking-wide text-brand-600">Calculated rank</div>
+                  <div className="mt-1 text-2xl font-bold text-brand-700">{calculatedManualRank ? `#${calculatedManualRank}` : "-"}</div>
+                </div>
+                <div className="flex items-end">
+                  <button
+                    type="submit"
+                    disabled={savingManual}
+                    className="w-full rounded-lg bg-brand-600 px-4 py-2 text-sm font-semibold text-white shadow-sm hover:bg-brand-700 disabled:cursor-not-allowed disabled:opacity-60"
+                  >
+                    {savingManual ? "Saving..." : "Save observed rank"}
+                  </button>
+                </div>
+              </div>
+              <label className="block">
+                <span className="mb-1 block text-sm font-medium text-slate-600">Google result URL</span>
+                <input
+                  value={manualUrl}
+                  onChange={(event) => setManualUrl(event.target.value)}
+                  type="url"
+                  placeholder="https://www.google.com/search?..."
+                  className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-100"
+                />
+              </label>
+              <label className="block">
+                <span className="mb-1 block text-sm font-medium text-slate-600">Note</span>
+                <textarea
+                  value={manualNote}
+                  onChange={(event) => setManualNote(event.target.value)}
+                  rows={2}
+                  placeholder="Example: Browser page 4, position 3, observed from local Google session."
+                  className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-100"
+                />
+              </label>
+              {run.manualUrl && (
+                <a href={run.manualUrl} target="_blank" rel="noreferrer" className="block break-all text-sm font-medium text-brand-600 hover:underline">
+                  Saved evidence: {run.manualUrl}
+                </a>
+              )}
+            </form>
+          </Card>
+
+          <Card className="p-5">
+            <h3 className="font-semibold text-charcoal-700">What this means</h3>
+            <div className="mt-3 grid gap-3 lg:grid-cols-3">
+              <div className="rounded-lg border border-charcoal-100 bg-charcoal-50 p-4 text-sm text-charcoal-600">
+                <div className="font-semibold text-charcoal-800">Rank status</div>
+                <p className="mt-1">{run.targetRank ? `Your domain is visible at position #${run.targetRank}.` : "Your domain was not visible within the checked result depth."}</p>
+              </div>
+              <div className="rounded-lg border border-charcoal-100 bg-charcoal-50 p-4 text-sm text-charcoal-600">
+                <div className="font-semibold text-charcoal-800">Priority</div>
+                <p className="mt-1">{run.targetRank && run.targetRank <= 10 ? "Improve the current ranking page against the competitors above it." : "Build or improve a focused page for this keyword and compare against the visible competitors."}</p>
+              </div>
+              <div className="rounded-lg border border-charcoal-100 bg-charcoal-50 p-4 text-sm text-charcoal-600">
+                <div className="font-semibold text-charcoal-800">Next action</div>
+                <p className="mt-1">Use the Competitor Analysis tab to review content depth, schema, FAQs, headings, and topic gaps.</p>
+              </div>
+            </div>
+          </Card>
+
+          <Card className="overflow-hidden">
+            <div className="border-b border-charcoal-100 px-5 py-3">
+              <div className="font-semibold text-charcoal-700">{run.targetRank ? "Competitors ranking above you" : "SERP results checked"}</div>
+              <div className="mt-0.5 text-xs text-charcoal-400">
+                {run.targetRank ? "These are the domains to compare against for content, authority signals, and search intent." : `These are the organic results returned by DataForSEO for this location/device. ${targetDomain} was not present in this set.`}
+              </div>
+            </div>
+            <div className="overflow-x-auto">
+              <table className="w-full min-w-[760px] text-sm">
+                <thead className="bg-charcoal-50 text-left text-xs uppercase text-charcoal-400">
+                  <tr>
+                    <th className="px-5 py-2">Rank</th>
+                    <th className="px-5 py-2">Domain</th>
+                    <th className="px-5 py-2">Title</th>
+                    <th className="px-5 py-2">URL</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {rankingRows.map((competitor) => (
+                    <tr key={`${competitor.rank}-${competitor.url}`} className="border-t border-charcoal-50">
+                      <td className="px-5 py-3 font-semibold text-charcoal-800">{competitor.rank}</td>
+                      <td className="px-5 py-3 text-charcoal-700">{competitor.domain}</td>
+                      <td className="max-w-[320px] px-5 py-3 text-charcoal-600">{competitor.title || "-"}</td>
+                      <td className="max-w-[360px] px-5 py-3">
+                        <a href={competitor.url} target="_blank" rel="noreferrer" className="block truncate text-brand-600 hover:underline">{competitor.url}</a>
+                      </td>
+                    </tr>
+                  ))}
+                  {rankingRows.length === 0 && (
+                    <tr>
+                      <td colSpan={4} className="px-5 py-6 text-center text-charcoal-400">No competitor ranking data was stored for this report.</td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </Card>
+        </div>
+      )}
 
       <CompetitorDrawer competitor={selected} onClose={() => setSelected(null)} />
     </div>

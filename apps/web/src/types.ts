@@ -311,6 +311,12 @@ export interface KeywordResearchRun {
   targetRank: number | null;
   rankingUrl: string | null;
   rankFoundDepth: number | null;
+  manualRank: number | null;
+  manualPage: number | null;
+  manualPosition: number | null;
+  manualUrl: string | null;
+  manualNote: string | null;
+  manualObservedAt: string | null;
   locationName: string;
   languageCode: string;
   device: string;

@@ -24,7 +24,7 @@ export default function KeywordResearch() {
   const [locationName, setLocationName] = useState("Canada");
   const [languageCode, setLanguageCode] = useState("en");
   const [device, setDevice] = useState<"desktop" | "mobile">("desktop");
-  const [serpDepth, setSerpDepth] = useState("10");
+  const [serpDepth, setSerpDepth] = useState("20");
   const [keywordLimit, setKeywordLimit] = useState("50");
   const [loading, setLoading] = useState(true);
   const [creating, setCreating] = useState(false);
@@ -119,7 +119,7 @@ export default function KeywordResearch() {
             <Input label="Target domain" value={targetDomain} onChange={setTargetDomain} placeholder="dothdigital.com" />
           </div>
           <div className="grid gap-4 lg:grid-cols-5">
-            <Input label="Location" value={locationName} onChange={setLocationName} placeholder="Canada" />
+            <Input label="Search location" value={locationName} onChange={setLocationName} placeholder="Mississauga or Canada" />
             <Input label="Language" value={languageCode} onChange={setLanguageCode} placeholder="en" />
             <label className="block">
               <span className="mb-1 block text-sm font-medium text-slate-600">Device</span>
@@ -132,7 +132,19 @@ export default function KeywordResearch() {
                 <option value="mobile">Mobile</option>
               </select>
             </label>
-            <Input label="SERP depth" value={serpDepth} onChange={setSerpDepth} type="number" />
+            <label className="block">
+              <span className="mb-1 block text-sm font-medium text-slate-600">SERP ranking depth</span>
+              <select
+                value={serpDepth}
+                onChange={(e) => setSerpDepth(e.target.value)}
+                className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-100"
+              >
+                <option value="10">Top 10</option>
+                <option value="20">Top 20</option>
+                <option value="50">Top 50</option>
+                <option value="100">Top 100</option>
+              </select>
+            </label>
             <Input label="Keyword limit" value={keywordLimit} onChange={setKeywordLimit} type="number" />
           </div>
           <div className="flex justify-end">

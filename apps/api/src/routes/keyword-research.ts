@@ -18,8 +18,16 @@ const createSchema = z.object({
   locationName: z.string().min(2).default("United States"),
   languageCode: z.string().min(2).max(8).default("en"),
   device: z.enum(["desktop", "mobile"]).default("desktop"),
-  serpDepth: z.number().int().min(1).max(20).default(10),
+  serpDepth: z.number().int().min(1).max(100).default(20),
   keywordLimit: z.number().int().min(1).max(100).default(50),
+});
+
+const manualRankSchema = z.object({
+  manualRank: z.number().int().min(1).max(500).optional().nullable(),
+  manualPage: z.number().int().min(1).max(50).optional().nullable(),
+  manualPosition: z.number().int().min(1).max(20).optional().nullable(),
+  manualUrl: z.string().url().optional().nullable(),
+  manualNote: z.string().max(1000).optional().nullable(),
 });
 
 type DataForSeoPayload = {
@@ -60,6 +68,12 @@ type CompetitorAbove = {
   title: string | null;
 };
 
+type DataForSeoLocation = {
+  displayName: string;
+  labs: { location_code: number } | { location_name: string };
+  serp: { location_code: number } | { location_name: string } | { location_coordinate: string };
+};
+
 type ParsedCompetitor = {
   fetchStatus: number | null;
   contentTitle: string | null;
@@ -81,7 +95,7 @@ async function scopedRun(req: Request, id: string) {
     include: {
       website: { select: { id: true, domain: true, rootUrl: true } },
       ideas: { orderBy: [{ avgMonthlySearches: "desc" }, { keyword: "asc" }], take: 100 },
-      competitors: { orderBy: { rank: "asc" }, take: 50 },
+      competitors: { orderBy: { rank: "asc" }, take: 120 },
     },
   });
 }
@@ -104,6 +118,7 @@ keywordResearchRouter.post("/keyword-research", async (req, res) => {
   }
   if (!clientId) return res.status(400).json({ error: "clientId required" });
   const targetDomain = normalizeDomain(input.targetDomain) || domainFromUrl(input.targetUrl) || normalizeDomain(website?.domain) || domainFromUrl(website?.rootUrl);
+  const location = resolveDataForSeoLocation(input.locationName, input.seedKeyword);
 
   const run = await prisma.keywordResearchRun.create({
     data: {
@@ -112,7 +127,7 @@ keywordResearchRouter.post("/keyword-research", async (req, res) => {
       seedKeyword: input.seedKeyword,
       targetUrl: input.targetUrl || null,
       targetDomain,
-      locationName: input.locationName,
+      locationName: location.displayName,
       languageCode: input.languageCode,
       device: input.device,
       serpDepth: input.serpDepth,
@@ -122,8 +137,8 @@ keywordResearchRouter.post("/keyword-research", async (req, res) => {
 
   try {
     const [ideas, serpResults] = await Promise.all([
-      fetchKeywordIdeas(input.seedKeyword, input.locationName, input.languageCode, input.keywordLimit),
-      fetchSerpResults(input.seedKeyword, input.locationName, input.languageCode, input.device, input.serpDepth),
+      fetchKeywordIdeas(input.seedKeyword, location, input.languageCode, input.keywordLimit),
+      fetchSerpResults(input.seedKeyword, location, input.languageCode, input.device, input.serpDepth),
     ]);
     const ranking = targetDomain ? findDomainRank(serpResults, targetDomain) : null;
     const competitorsAbove = buildCompetitorsAbove(serpResults, ranking?.rank ?? null);
@@ -229,6 +244,32 @@ keywordResearchRouter.get("/keyword-research/:id", async (req, res) => {
   res.json({ run });
 });
 
+keywordResearchRouter.patch("/keyword-research/:id/manual-rank", async (req, res) => {
+  const parsed = manualRankSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() });
+  const existing = await scopedRun(req, req.params.id);
+  if (!existing) return res.status(404).json({ error: "keyword research run not found" });
+  const input = parsed.data;
+  const manualRank = input.manualRank ?? (input.manualPage && input.manualPosition ? (input.manualPage - 1) * 10 + input.manualPosition : null);
+  const run = await prisma.keywordResearchRun.update({
+    where: { id: existing.id },
+    data: {
+      manualRank,
+      manualPage: input.manualPage ?? null,
+      manualPosition: input.manualPosition ?? null,
+      manualUrl: input.manualUrl ?? null,
+      manualNote: input.manualNote ?? null,
+      manualObservedAt: manualRank ? new Date() : null,
+    },
+    include: {
+      website: { select: { id: true, domain: true, rootUrl: true } },
+      ideas: { orderBy: [{ avgMonthlySearches: "desc" }, { keyword: "asc" }], take: 100 },
+      competitors: { orderBy: { rank: "asc" }, take: 120 },
+    },
+  });
+  res.json({ run });
+});
+
 async function dataForSeoRequest(path: string, body: unknown): Promise<DataForSeoPayload> {
   const login = process.env.DATAFORSEO_LOGIN;
   const password = process.env.DATAFORSEO_PASSWORD;
@@ -245,17 +286,17 @@ async function dataForSeoRequest(path: string, body: unknown): Promise<DataForSe
   });
   const payload = await response.json() as DataForSeoPayload;
   if (!response.ok || (payload.status_code && payload.status_code >= 40000)) {
-    throw new Error(payload.status_message || `DataForSEO returned ${response.status}`);
+    throw new Error(`DataForSEO ${path}: ${payload.status_message || `returned ${response.status}`}`);
   }
   const taskError = payload.tasks?.find((task) => task.status_code && task.status_code >= 40000);
-  if (taskError) throw new Error(taskError.status_message || "DataForSEO task failed.");
+  if (taskError) throw new Error(`DataForSEO ${path}: ${taskError.status_message || "task failed."}`);
   return payload;
 }
 
-async function fetchKeywordIdeas(keyword: string, locationName: string, languageCode: string, limit: number): Promise<KeywordIdeaInput[]> {
+async function fetchKeywordIdeas(keyword: string, location: DataForSeoLocation, languageCode: string, limit: number): Promise<KeywordIdeaInput[]> {
   const payload = await dataForSeoRequest("/v3/dataforseo_labs/google/keyword_ideas/live", [{
     keywords: [keyword],
-    location_name: locationName,
+    ...location.labs,
     language_code: languageCode,
     include_seed_keyword: true,
     limit,
@@ -265,10 +306,10 @@ async function fetchKeywordIdeas(keyword: string, locationName: string, language
   return ideas.length ? ideas.slice(0, limit) : [{ keyword, avgMonthlySearches: null, competition: null, competitionIndex: null, cpc: null, lowTopOfPageBid: null, highTopOfPageBid: null, currency: null, rawJson: {} }];
 }
 
-async function fetchSerpResults(keyword: string, locationName: string, languageCode: string, device: "desktop" | "mobile", depth: number): Promise<SerpResultInput[]> {
+async function fetchSerpResults(keyword: string, location: DataForSeoLocation, languageCode: string, device: "desktop" | "mobile", depth: number): Promise<SerpResultInput[]> {
   const payload = await dataForSeoRequest("/v3/serp/google/organic/live/advanced", [{
     keyword,
-    location_name: locationName,
+    ...location.serp,
     language_code: languageCode,
     device,
     os: device === "mobile" ? "android" : "windows",
@@ -326,6 +367,73 @@ function parseSerpResult(item: any): SerpResultInput | null {
     title: stringOrNull(item?.title),
     description: stringOrNull(item?.description),
     rawJson: item,
+  };
+}
+
+function resolveDataForSeoLocation(value: string, keyword = ""): DataForSeoLocation {
+  const trimmed = value.trim();
+  const normalized = normalizeText(trimmed);
+  const normalizedKeyword = normalizeText(keyword);
+  const aliases: Record<string, DataForSeoLocation> = {
+    canada: countryLocation("Canada", 2124),
+    "united states": countryLocation("United States", 2840),
+    usa: countryLocation("United States", 2840),
+    us: countryLocation("United States", 2840),
+    toronto: canadianCityLocation("Toronto,Ontario,Canada", "43.653226,-79.383184,20000"),
+    "toronto canada": canadianCityLocation("Toronto,Ontario,Canada", "43.653226,-79.383184,20000"),
+    "toronto ontario canada": canadianCityLocation("Toronto,Ontario,Canada", "43.653226,-79.383184,20000"),
+    mississauga: canadianCityLocation("Mississauga,Ontario,Canada", "43.589045,-79.644120,20000"),
+    mississagua: canadianCityLocation("Mississauga,Ontario,Canada", "43.589045,-79.644120,20000"),
+    "mississauga canada": canadianCityLocation("Mississauga,Ontario,Canada", "43.589045,-79.644120,20000"),
+    "mississagua canada": canadianCityLocation("Mississauga,Ontario,Canada", "43.589045,-79.644120,20000"),
+    "mississauga ontario canada": canadianCityLocation("Mississauga,Ontario,Canada", "43.589045,-79.644120,20000"),
+    brampton: canadianCityLocation("Brampton,Ontario,Canada", "43.731548,-79.762418,20000"),
+    "brampton canada": canadianCityLocation("Brampton,Ontario,Canada", "43.731548,-79.762418,20000"),
+    "brampton ontario canada": canadianCityLocation("Brampton,Ontario,Canada", "43.731548,-79.762418,20000"),
+    vancouver: canadianCityLocation("Vancouver,British Columbia,Canada", "49.282729,-123.120738,20000"),
+    "vancouver canada": canadianCityLocation("Vancouver,British Columbia,Canada", "49.282729,-123.120738,20000"),
+    "vancouver british columbia canada": canadianCityLocation("Vancouver,British Columbia,Canada", "49.282729,-123.120738,20000"),
+    montreal: canadianCityLocation("Montreal,Quebec,Canada", "45.501887,-73.567392,20000"),
+    "montreal canada": canadianCityLocation("Montreal,Quebec,Canada", "45.501887,-73.567392,20000"),
+    "montreal quebec canada": canadianCityLocation("Montreal,Quebec,Canada", "45.501887,-73.567392,20000"),
+    "new york": usCityLocation("New York,New York,United States", "40.712776,-74.005974,20000"),
+    "new york united states": usCityLocation("New York,New York,United States", "40.712776,-74.005974,20000"),
+    "new york new york united states": usCityLocation("New York,New York,United States", "40.712776,-74.005974,20000"),
+  };
+  if (normalized === "canada" || normalized === "ca") {
+    if (normalizedKeyword.includes("mississauga") || normalizedKeyword.includes("mississagua")) return aliases.mississauga;
+    if (normalizedKeyword.includes("brampton")) return aliases.brampton;
+    if (normalizedKeyword.includes("toronto")) return aliases.toronto;
+    if (normalizedKeyword.includes("vancouver")) return aliases.vancouver;
+    if (normalizedKeyword.includes("montreal")) return aliases.montreal;
+  }
+  if (normalized === "united states" || normalized === "usa" || normalized === "us") {
+    if (normalizedKeyword.includes("new york")) return aliases["new york"];
+  }
+  return aliases[normalized] ?? { displayName: trimmed, labs: { location_name: trimmed }, serp: { location_name: trimmed } };
+}
+
+function countryLocation(displayName: string, locationCode: number): DataForSeoLocation {
+  return {
+    displayName,
+    labs: { location_code: locationCode },
+    serp: { location_code: locationCode },
+  };
+}
+
+function canadianCityLocation(displayName: string, locationCoordinate: string): DataForSeoLocation {
+  return {
+    displayName,
+    labs: { location_code: 2124 },
+    serp: { location_coordinate: locationCoordinate },
+  };
+}
+
+function usCityLocation(displayName: string, locationCoordinate: string): DataForSeoLocation {
+  return {
+    displayName,
+    labs: { location_code: 2840 },
+    serp: { location_coordinate: locationCoordinate },
   };
 }
 
