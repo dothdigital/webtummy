@@ -1,0 +1,461 @@
+// SEO + AI Search crawler — data model.
+// See docs/ARCHITECTURE.md §9. MySQL 8+ / Prisma.
+//
+// MySQL notes vs the Postgres draft:
+//  - No native array columns -> string lists are stored as JSON.
+//  - Indexed URL columns are VARCHAR(512) (InnoDB index key-length limit with
+//    utf8mb4 is ~3072 bytes; cuid + 512-char url fits). Non-indexed long text
+//    uses @db.Text. URLs > 512 chars are rare; dedup key truncates -> acceptable MVP.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "mysql"
+  url      = env("DATABASE_URL")
+}
+
+// ─── Auth + tenancy (RBAC) ────────────────────────────────────────────────────
+//
+// Roles:
+//  - super_admin : Webtummy staff. No clientId. Creates clients + client users,
+//                  sees everything across all tenants.
+//  - client_admin: belongs to one Client. Manages that client's websites, crawls,
+//                  reports, and can invite client_users in the same client.
+//  - client_user : belongs to one Client. Can run crawls + view reports, no user mgmt.
+//
+// Tenant isolation: every Website (and everything under it) is reached via clientId.
+// Non-super_admin queries MUST be scoped to the user's clientId in the API layer.
+
+enum Role {
+  super_admin
+  client_admin
+  client_user
+}
+
+model User {
+  id           String    @id @default(cuid())
+  email        String    @unique
+  passwordHash String
+  name         String?
+  role         Role      @default(client_user)
+  // null for super_admin; required for client_* roles.
+  clientId     String?
+  client       Client?   @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  isActive     Boolean   @default(true)
+  lastLoginAt  DateTime?
+  createdAt    DateTime  @default(now())
+
+  @@index([clientId])
+}
+
+model Client {
+  id                  String               @id @default(cuid())
+  name                String
+  contactEmail        String?
+  plan                String               @default("standard")
+  isActive            Boolean              @default(true)
+  createdAt           DateTime             @default(now())
+  websites            Website[]
+  users               User[]
+  keywordResearchRuns KeywordResearchRun[]
+}
+
+model Website {
+  id                  String                 @id @default(cuid())
+  clientId            String
+  client              Client                 @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  domain              String                 @db.VarChar(255)
+  rootUrl             String                 @db.VarChar(512)
+  targetCountry       String?
+  targetCities        Json                   @default("[]")
+  // Owned-site override allows ignoring robots.txt (Phase 2: requires verification).
+  verifiedOwned       Boolean                @default(false)
+  createdAt           DateTime               @default(now())
+  crawlJobs           CrawlJob[]
+  keywordAudits       KeywordAuditCampaign[]
+  keywordResearchRuns KeywordResearchRun[]
+
+  @@index([clientId])
+}
+
+// ─── Crawl run ───────────────────────────────────────────────────────────────
+
+enum CrawlStatus {
+  queued
+  running
+  completed
+  failed
+}
+
+model CrawlJob {
+  id           String      @id @default(cuid())
+  websiteId    String
+  website      Website     @relation(fields: [websiteId], references: [id], onDelete: Cascade)
+  status       CrawlStatus @default(queued)
+  // Snapshot of the options used for this run.
+  options      Json        @default("{}")
+  pageLimit    Int         @default(500)
+  maxDepth     Int         @default(10)
+  pagesCrawled Int         @default(0)
+  errorCount   Int         @default(0)
+  siteScore    Int? // 0-100, set on completion
+  startedAt    DateTime?
+  completedAt  DateTime?
+  error        String?     @db.Text
+  createdAt    DateTime    @default(now())
+
+  pages       Page[]
+  sitemaps    Sitemap[]
+  robotsFiles RobotsFile[]
+  llmsFiles   LlmsFile[]
+  issues      Issue[]
+  reports     Report[]
+
+  @@index([websiteId])
+  @@index([status])
+}
+
+// ─── Page-level results ──────────────────────────────────────────────────────
+
+model Page {
+  id                        String   @id @default(cuid())
+  crawlJobId                String
+  crawlJob                  CrawlJob @relation(fields: [crawlJobId], references: [id], onDelete: Cascade)
+  url                       String   @db.Text // as discovered (fetch url)
+  normalizedUrl             String   @db.VarChar(512) // dedup key
+  finalUrl                  String?  @db.Text // after redirects
+  statusCode                Int?
+  contentType               String?
+  wordCount                 Int?
+  depth                     Int      @default(0)
+  responseTimeMs            Int?
+  redirectChain             Json     @default("[]")
+  // populated in the post-crawl graph pass
+  inlinkCount               Int      @default(0)
+  outlinkCount              Int      @default(0)
+  internalLinkScore         Int?
+  internalLinkGrade         String?
+  outgoingInternalLinkCount Int      @default(0)
+  brokenInternalLinkCount   Int      @default(0)
+  weakAnchorCount           Int      @default(0)
+  isOrphan                  Boolean  @default(false)
+  score                     Int? // 0-100 page score, computed in the post-crawl pass
+  fetchError                String?  @db.Text
+  createdAt                 DateTime @default(now())
+
+  seo     PageSeo?
+  links   Link[]
+  images  Image[]
+  assets  PageAsset[]
+  schemas Schema[]
+  issues  Issue[]
+
+  @@unique([crawlJobId, normalizedUrl])
+  @@index([crawlJobId, statusCode])
+}
+
+model PageSeo {
+  id               String  @id @default(cuid())
+  pageId           String  @unique
+  page             Page    @relation(fields: [pageId], references: [id], onDelete: Cascade)
+  title            String? @db.VarChar(512)
+  titleLength      Int?
+  metaDescription  String? @db.Text
+  metaDescLength   Int?
+  h1Count          Int     @default(0)
+  h1Text           Json    @default("[]")
+  h2Json           Json    @default("[]")
+  canonicalUrl     String? @db.VarChar(512)
+  robotsMeta       String?
+  xRobotsTag       String?
+  hreflangJson     Json    @default("[]")
+  ampUrl           String? @db.VarChar(512)
+  looksJsDependent Boolean @default(false)
+  ogTags           Json    @default("{}")
+  twitterTags      Json    @default("{}")
+  // Phase 2: simhash fingerprint of visible content for near-dup detection.
+  contentSimhash   BigInt?
+}
+
+model Link {
+  id                  String  @id @default(cuid())
+  sourcePageId        String
+  sourcePage          Page    @relation(fields: [sourcePageId], references: [id], onDelete: Cascade)
+  targetUrl           String  @db.Text
+  targetUrlNormalized String  @db.VarChar(512)
+  anchorText          String? @db.Text
+  isInternal          Boolean @default(true)
+  placement           String  @default("body") // header | footer | body | navigation
+  targetStatus        Int?
+  isBroken            Boolean @default(false)
+  rel                 String? // nofollow etc.
+
+  @@index([sourcePageId])
+  @@index([targetUrlNormalized])
+}
+
+model Image {
+  id         String  @id @default(cuid())
+  pageId     String
+  page       Page    @relation(fields: [pageId], references: [id], onDelete: Cascade)
+  src        String  @db.Text
+  alt        String? @db.Text
+  width      Int?
+  height     Int?
+  statusCode Int?
+  issueType  String? // missing_alt | empty_alt | broken | oversized
+
+  @@index([pageId])
+}
+
+model PageAsset {
+  id             String  @id @default(cuid())
+  pageId         String
+  page           Page    @relation(fields: [pageId], references: [id], onDelete: Cascade)
+  url            String  @db.Text
+  type           String // css | javascript | image
+  renderBlocking Boolean @default(false)
+  statusCode     Int?
+  sizeBytes      Int?
+  responseTimeMs Int?
+  issueType      String?
+
+  @@index([pageId])
+  @@index([type])
+}
+
+model Schema {
+  id         String  @id @default(cuid())
+  pageId     String
+  page       Page    @relation(fields: [pageId], references: [id], onDelete: Cascade)
+  format     String // json-ld | microdata | rdfa
+  schemaType String?
+  rawJson    Json?
+  validJson  Boolean @default(true)
+  issueType  String? // missing_required_field etc. (Phase 2 validation)
+
+  @@index([pageId])
+}
+
+// ─── Site-level snapshots ─────────────────────────────────────────────────────
+
+model Sitemap {
+  id         String       @id @default(cuid())
+  crawlJobId String
+  crawlJob   CrawlJob     @relation(fields: [crawlJobId], references: [id], onDelete: Cascade)
+  sitemapUrl String       @db.VarChar(512)
+  statusCode Int?
+  urlCount   Int          @default(0)
+  lastRead   DateTime     @default(now())
+  urls       SitemapUrl[]
+
+  @@index([crawlJobId])
+}
+
+model SitemapUrl {
+  id         String  @id @default(cuid())
+  sitemapId  String
+  sitemap    Sitemap @relation(fields: [sitemapId], references: [id], onDelete: Cascade)
+  url        String  @db.VarChar(512)
+  lastmod    String?
+  statusCode Int?
+  inCrawl    Boolean @default(false) // set in post-crawl diff
+
+  @@index([sitemapId])
+}
+
+model RobotsFile {
+  id          String   @id @default(cuid())
+  crawlJobId  String
+  crawlJob    CrawlJob @relation(fields: [crawlJobId], references: [id], onDelete: Cascade)
+  content     String?  @db.Text
+  statusCode  Int?
+  parsedRules Json     @default("{}")
+  sitemapRefs Json     @default("[]")
+
+  @@index([crawlJobId])
+}
+
+model LlmsFile {
+  id           String   @id @default(cuid())
+  crawlJobId   String
+  crawlJob     CrawlJob @relation(fields: [crawlJobId], references: [id], onDelete: Cascade)
+  content      String?  @db.Text
+  statusCode   Int?
+  sectionScore Int?
+
+  @@index([crawlJobId])
+}
+
+// ─── Issues + reports ─────────────────────────────────────────────────────────
+
+enum Severity {
+  high
+  medium
+  low
+}
+
+model Issue {
+  id             String   @id @default(cuid())
+  crawlJobId     String
+  crawlJob       CrawlJob @relation(fields: [crawlJobId], references: [id], onDelete: Cascade)
+  pageId         String?
+  page           Page?    @relation(fields: [pageId], references: [id], onDelete: Cascade)
+  issueType      String // e.g. missing_title, duplicate_title, broken_internal_link
+  category       String // indexability | onpage | links | media | schema | social | ai_readiness | performance
+  severity       Severity
+  weightImpact   Float    @default(0) // points deducted from score
+  message        String   @db.Text
+  recommendation String?  @db.Text
+  status         String   @default("open") // open | fixed | ignored
+
+  @@index([crawlJobId, severity])
+  @@index([pageId, issueType])
+}
+
+model Report {
+  id         String   @id @default(cuid())
+  crawlJobId String
+  crawlJob   CrawlJob @relation(fields: [crawlJobId], references: [id], onDelete: Cascade)
+  format     String // pdf | docx
+  fileUrl    String?  @db.Text
+  createdAt  DateTime @default(now())
+
+  @@index([crawlJobId])
+}
+
+// ─── Geo Keyword Intelligence ────────────────────────────────────────────────
+
+model KeywordAuditCampaign {
+  id                String    @id @default(cuid())
+  websiteId         String
+  website           Website   @relation(fields: [websiteId], references: [id], onDelete: Cascade)
+  crawlJobId        String?
+  targetKeyword     String    @db.VarChar(255)
+  targetCity        String?   @db.VarChar(120)
+  secondaryKeywords Json      @default("[]")
+  targetUrl         String?   @db.VarChar(512)
+  crawlMode         String    @default("latest_completed_crawl")
+  maxPages          Int       @default(500)
+  useAi             Boolean   @default(false)
+  status            String    @default("completed")
+  averageScore      Int?
+  bestPageId        String?
+  weakPageCount     Int       @default(0)
+  cannibalRiskCount Int       @default(0)
+  createdAt         DateTime  @default(now())
+  completedAt       DateTime?
+
+  pages KeywordAuditPage[]
+
+  @@index([websiteId])
+  @@index([crawlJobId])
+}
+
+model KeywordAuditPage {
+  id                  String               @id @default(cuid())
+  campaignId          String
+  campaign            KeywordAuditCampaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  pageId              String?
+  url                 String               @db.Text
+  normalizedUrl       String               @db.VarChar(512)
+  title               String?              @db.VarChar(512)
+  totalScore          Int
+  intentMatch         String               @default("weak")
+  isBestCandidate     Boolean              @default(false)
+  isTargetUrl         Boolean              @default(false)
+  cannibalRisk        String?
+  breakdownJson       Json                 @default("[]")
+  missingJson         Json                 @default("[]")
+  recommendationsJson Json                 @default("[]")
+  createdAt           DateTime             @default(now())
+
+  @@unique([campaignId, normalizedUrl])
+  @@index([campaignId, totalScore])
+}
+
+// ─── Keyword & Competitor Intelligence ───────────────────────────────────────
+
+model KeywordResearchRun {
+  id              String    @id @default(cuid())
+  clientId        String
+  client          Client    @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  websiteId       String?
+  website         Website?  @relation(fields: [websiteId], references: [id], onDelete: SetNull)
+  seedKeyword     String    @db.VarChar(255)
+  targetUrl       String?   @db.VarChar(512)
+  targetDomain    String?   @db.VarChar(255)
+  targetRank      Int?
+  rankingUrl      String?   @db.Text
+  rankFoundDepth  Int?
+  locationName    String    @default("United States") @db.VarChar(120)
+  languageCode    String    @default("en") @db.VarChar(16)
+  device          String    @default("desktop") @db.VarChar(32)
+  serpDepth       Int       @default(10)
+  status          String    @default("completed")
+  source          String    @default("dataforseo")
+  keywordCount    Int       @default(0)
+  competitorCount Int       @default(0)
+  averageVolume   Int?
+  competitorsAboveJson Json     @default("[]")
+  error           String?   @db.Text
+  createdAt       DateTime  @default(now())
+  completedAt     DateTime?
+
+  ideas       KeywordIdea[]
+  competitors KeywordSerpCompetitor[]
+
+  @@index([clientId])
+  @@index([websiteId])
+  @@index([createdAt])
+}
+
+model KeywordIdea {
+  id                 String             @id @default(cuid())
+  runId              String
+  run                KeywordResearchRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+  keyword            String             @db.VarChar(512)
+  avgMonthlySearches Int?
+  competition        String?
+  competitionIndex   Int?
+  cpc                Float?
+  lowTopOfPageBid    Float?
+  highTopOfPageBid   Float?
+  currency           String?
+  source             String             @default("dataforseo")
+  rawJson            Json               @default("{}")
+  createdAt          DateTime           @default(now())
+
+  @@index([runId])
+  @@index([keyword])
+}
+
+model KeywordSerpCompetitor {
+  id                  String             @id @default(cuid())
+  runId               String
+  run                 KeywordResearchRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+  rank                Int
+  url                 String             @db.Text
+  domain              String             @db.VarChar(255)
+  title               String?            @db.Text
+  description         String?            @db.Text
+  fetchStatus         Int?
+  contentTitle        String?            @db.Text
+  metaDescription     String?            @db.Text
+  h1Json              Json               @default("[]")
+  h2Json              Json               @default("[]")
+  schemaTypesJson     Json               @default("[]")
+  wordCount           Int?
+  faqCount            Int                @default(0)
+  contentScore        Int?
+  missingTopicsJson   Json               @default("[]")
+  recommendationsJson Json               @default("[]")
+  rawSerpJson         Json               @default("{}")
+  createdAt           DateTime           @default(now())
+  contentFetchedAt    DateTime?
+
+  @@index([runId])
+  @@index([domain])
+}

@@ -1,0 +1,18 @@
+{
+  "name": "@webtummy/worker",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "start": "tsx src/index.ts"
+  },
+  "dependencies": {
+    "@webtummy/core": "*",
+    "@webtummy/db": "*",
+    "bullmq": "^5.34.0",
+    "dotenv": "^16.4.7",
+    "ioredis": "^5.4.2",
+    "undici": "^7.2.0"
+  }
+}

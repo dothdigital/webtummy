@@ -1,0 +1,30 @@
+{
+  "name": "webtummy",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Webtummy — SEO + AI Search website crawler & audit platform (Dot H Digital)",
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
+  "scripts": {
+    "db:generate": "npm run -w @webtummy/db generate",
+    "db:migrate": "npm run -w @webtummy/db migrate",
+    "db:push": "npm run -w @webtummy/db push",
+    "dev:api": "npm run -w @webtummy/api dev",
+    "dev:worker": "npm run -w @webtummy/worker dev",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc -b --noEmit"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2",
+    "vitest": "^2.1.8"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}
