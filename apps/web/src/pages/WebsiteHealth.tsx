@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { api } from "../api.js";
 import type { HealthReport, Website } from "../types.js";
-import { Button, Card, StatusPill } from "../components/ui.js";
+import { ActionIconLink, Button, Card, StatusPill } from "../components/ui.js";
 
 function formatDate(value: string | null | undefined): string {
   if (!value) return "—";
@@ -52,6 +52,7 @@ export default function WebsiteHealth() {
 
   const latest = website?.crawlJobs?.[0] ?? null;
   const latestCompleted = website?.crawlJobs?.find((crawl) => crawl.status === "completed") ?? null;
+  const activeCrawl = website?.crawlJobs?.find((crawl) => crawl.status === "queued" || crawl.status === "running") ?? null;
 
   const load = async () => {
     if (!id) return;
@@ -71,7 +72,7 @@ export default function WebsiteHealth() {
       setHealth(null);
       const message = e instanceof Error ? e.message : String(e);
       if (message.includes("website belongs to another client")) {
-        setError("This website exists, but your current login is not assigned to the client that owns it.");
+        setError("This project exists, but your current login is not assigned to the client that owns it.");
       } else if (message.includes("404")) {
         setError("This website ID was not found in the local database.");
       } else {
@@ -87,6 +88,15 @@ export default function WebsiteHealth() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id]);
 
+  useEffect(() => {
+    if (!activeCrawl) return;
+    const timer = window.setInterval(() => {
+      void load();
+    }, 5000);
+    return () => window.clearInterval(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeCrawl?.id]);
+
   const runCrawl = async () => {
     if (!id) return;
     setStarting(true);
@@ -94,26 +104,32 @@ export default function WebsiteHealth() {
       await api.post(`/api/websites/${id}/crawls`, { pageLimit: 150 });
       await load();
     } catch (e) {
-      alert(String(e));
+      const message = e instanceof Error ? e.message : String(e);
+      if (message.includes("409")) {
+        alert("A crawl is already queued or running for this project. Wait for it to finish before starting another run.");
+        await load();
+      } else {
+        alert(String(e));
+      }
     } finally {
       setStarting(false);
     }
   };
 
-  if (loading) return <div className="text-charcoal-400">Loading website health…</div>;
+  if (loading) return <div className="text-charcoal-400">Loading project health...</div>;
   if (!website) {
     return (
       <Card className="max-w-2xl p-6">
-        <div className="text-sm font-semibold uppercase tracking-wide text-red-600">Website unavailable</div>
-        <h1 className="mt-2 text-xl font-bold text-charcoal-800">Cannot open this website health report</h1>
+        <div className="text-sm font-semibold uppercase tracking-wide text-red-600">Project unavailable</div>
+        <h1 className="mt-2 text-xl font-bold text-charcoal-800">Cannot open this project health report</h1>
         <p className="mt-2 text-sm leading-6 text-charcoal-500">
-          {error || "Website not found."}
+          {error || "Project not found."}
         </p>
         <div className="mt-4 rounded-lg border border-charcoal-100 bg-charcoal-50 p-3 text-sm text-charcoal-600">
-          Requested website ID: <span className="font-mono text-charcoal-800">{id}</span>
+          Requested project ID: <span className="font-mono text-charcoal-800">{id}</span>
         </div>
         <div className="mt-5 flex flex-wrap gap-2">
-          <Button onClick={() => navigate("/websites")}>Back to websites</Button>
+          <Button onClick={() => navigate("/projects")}>Back to projects</Button>
           <Button variant="ghost" onClick={load}>Try again</Button>
         </div>
       </Card>
@@ -124,12 +140,14 @@ export default function WebsiteHealth() {
     <div className="space-y-6">
       <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
         <div>
-          <Link to="/websites" className="text-sm font-medium text-brand-600 hover:underline">Back to websites</Link>
+          <Link to="/projects" className="text-sm font-medium text-brand-600 hover:underline">Back to projects</Link>
           <h1 className="mt-2 text-2xl font-bold text-charcoal-800">{website.domain}</h1>
           <p className="text-sm text-charcoal-400">{website.rootUrl}</p>
         </div>
         <div className="flex flex-wrap gap-2">
-          <Button onClick={runCrawl} disabled={starting}>{starting ? "Starting…" : "Run new crawl"}</Button>
+          <Button onClick={runCrawl} disabled={starting || Boolean(activeCrawl)}>
+            {activeCrawl ? "Crawl running" : starting ? "Starting..." : "Run new crawl"}
+          </Button>
           {latest && (
             <Button variant="ghost" onClick={() => navigate(`/crawls/${latest.id}`)}>
               View crawl status
@@ -138,10 +156,27 @@ export default function WebsiteHealth() {
         </div>
       </div>
 
+      {activeCrawl && (
+        <Card className="border-blue-200 bg-blue-50 p-5">
+          <div className="text-sm font-semibold uppercase tracking-wide text-blue-700">Crawl in progress</div>
+          <div className="mt-1 text-lg font-bold text-blue-950">
+            Another crawl cannot be started until this {activeCrawl.status} run finishes.
+          </div>
+          <p className="mt-1 text-sm text-blue-800">
+            {activeCrawl.pagesCrawled} pages processed so far. Open crawl status to follow progress.
+          </p>
+          <div className="mt-4">
+            <Button variant="ghost" onClick={() => navigate(`/crawls/${activeCrawl.id}`)}>
+              View active crawl
+            </Button>
+          </div>
+        </Card>
+      )}
+
       <Card className="p-5">
         <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
           <div>
-            <h2 className="text-lg font-semibold text-charcoal-800">Website health</h2>
+            <h2 className="text-lg font-semibold text-charcoal-800">Project health</h2>
             <p className="text-sm text-charcoal-400">
               {latestCompleted ? `Based on crawl from ${formatDate(latestCompleted.completedAt ?? latestCompleted.createdAt)}` : "No completed crawl yet."}
             </p>
@@ -173,7 +208,7 @@ export default function WebsiteHealth() {
           Crawl history
         </div>
         {!website.crawlJobs || website.crawlJobs.length === 0 ? (
-          <div className="p-6 text-sm text-charcoal-400">No crawls yet. Run a crawl to build the website health report.</div>
+          <div className="p-6 text-sm text-charcoal-400">No crawls yet. Run a crawl to build the project health report.</div>
         ) : (
           <div className="overflow-x-auto">
             <table className="w-full min-w-[760px] text-sm">
@@ -193,18 +228,10 @@ export default function WebsiteHealth() {
                     <td className={`px-5 py-3 font-semibold ${scoreClass(crawl.siteScore)}`}>{crawl.siteScore ?? "—"}</td>
                     <td className="px-5 py-3 text-charcoal-600">{crawl.pagesCrawled}</td>
                     <td className="px-5 py-3 text-charcoal-500">{formatDate(crawl.completedAt ?? crawl.createdAt)}</td>
-                    <td className="px-5 py-3 text-right">
-                      <Link
-                        to={`/crawls/${crawl.id}`}
-                        className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-charcoal-200 bg-white text-charcoal-500 shadow-sm transition hover:border-brand-400 hover:text-brand-600"
-                        aria-label="Open crawl"
-                        title="Open crawl"
-                      >
-                        <svg viewBox="0 0 24 24" aria-hidden="true" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                          <path d="M2 12s3.5-6 10-6 10 6 10 6-3.5 6-10 6-10-6-10-6Z" />
-                          <circle cx="12" cy="12" r="3" />
-                        </svg>
-                      </Link>
+                    <td className="px-5 py-3">
+                      <div className="flex justify-end">
+                        <ActionIconLink icon="view" label="Open crawl" to={`/crawls/${crawl.id}`} />
+                      </div>
                     </td>
                   </tr>
                 ))}

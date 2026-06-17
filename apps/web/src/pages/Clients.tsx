@@ -22,7 +22,7 @@ export default function Clients() {
     try {
       await api.post("/api/clients", { name, domain });
       setName(""); setDomain("");
-      setMsg("Client + website created. Go to Websites to run a crawl.");
+      setMsg("Client + project created. Go to Projects to run a crawl.");
       await load();
     } catch (e) {
       setMsg(String(e));
@@ -35,7 +35,7 @@ export default function Clients() {
     <div className="space-y-6">
       <div>
         <h1 className="text-2xl font-bold text-charcoal-800">Clients</h1>
-        <p className="text-sm text-charcoal-400">Add a client and the website you want to scan.</p>
+        <p className="text-sm text-charcoal-400">Add a client and the first project domain you want to scan.</p>
       </div>
 
       <Card className="p-5">
@@ -60,7 +60,7 @@ export default function Clients() {
               <tr>
                 <th className="px-5 py-2">Name</th>
                 <th className="px-5 py-2">Plan</th>
-                <th className="px-5 py-2">Websites</th>
+                <th className="px-5 py-2">Projects</th>
                 <th className="px-5 py-2">Created</th>
               </tr>
             </thead>

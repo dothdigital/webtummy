@@ -1,8 +1,8 @@
 import { useEffect, useState } from "react";
-import { Link, useNavigate } from "react-router-dom";
+import { useNavigate } from "react-router-dom";
 import { api } from "../api.js";
 import type { GeoKeywordAudit, Website } from "../types.js";
-import { Button, Card, Input, StatusPill } from "../components/ui.js";
+import { ActionIconLink, Button, Card, Input, StatusPill } from "../components/ui.js";
 
 function scoreTone(score: number | null | undefined): string {
   if (score == null) return "text-charcoal-400";
@@ -81,7 +81,7 @@ export default function GeoKeywordIntelligence() {
         <form onSubmit={createAudit} className="space-y-4">
           <div className="grid gap-4 lg:grid-cols-3">
             <label className="block">
-              <span className="mb-1 block text-sm font-medium text-slate-600">Website</span>
+              <span className="mb-1 block text-sm font-medium text-slate-600">Project</span>
               <select
                 value={websiteId}
                 onChange={(e) => setWebsiteId(e.target.value)}
@@ -116,14 +116,14 @@ export default function GeoKeywordIntelligence() {
         {loading ? (
           <div className="p-6 text-sm text-charcoal-400">Loading audits...</div>
         ) : audits.length === 0 ? (
-          <div className="p-6 text-sm text-charcoal-400">No Geo Keyword audits yet. Create one from a website with a completed crawl.</div>
+          <div className="p-6 text-sm text-charcoal-400">No Geo Keyword audits yet. Create one from a project with a completed crawl.</div>
         ) : (
           <div className="overflow-x-auto">
             <table className="w-full min-w-[900px] text-sm">
               <thead className="bg-charcoal-50 text-left text-xs uppercase text-charcoal-400">
                 <tr>
                   <th className="px-5 py-2">Keyword</th>
-                  <th className="px-5 py-2">Website</th>
+                  <th className="px-5 py-2">Project</th>
                   <th className="px-5 py-2">Average</th>
                   <th className="px-5 py-2">Weak</th>
                   <th className="px-5 py-2">Cannibal</th>
@@ -145,8 +145,10 @@ export default function GeoKeywordIntelligence() {
                     <td className="px-5 py-3 text-charcoal-600">{audit.cannibalRiskCount}</td>
                     <td className="px-5 py-3"><StatusPill status={audit.status} /></td>
                     <td className="px-5 py-3 text-charcoal-500">{formatDate(audit.createdAt)}</td>
-                    <td className="px-5 py-3 text-right">
-                      <Link to={`/geo-keyword-intelligence/${audit.id}`} className="text-brand-600 hover:underline">View</Link>
+                    <td className="px-5 py-3">
+                      <div className="flex justify-end">
+                        <ActionIconLink icon="view" label="View audit" to={`/geo-keyword-intelligence/${audit.id}`} />
+                      </div>
                     </td>
                   </tr>
                 ))}

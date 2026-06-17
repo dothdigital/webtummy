@@ -9,6 +9,19 @@ export interface Client {
   _count?: { websites: number; users: number };
 }
 
+export interface AdminUser {
+  id: string;
+  email: string;
+  name: string | null;
+  role: "super_admin" | "client_admin" | "client_user";
+  clientId: string | null;
+  isActive: boolean;
+  emailVerifiedAt: string | null;
+  lastLoginAt: string | null;
+  createdAt: string;
+  client: { id: string; name: string } | null;
+}
+
 export interface Website {
   id: string;
   clientId: string;
@@ -330,6 +343,9 @@ export interface KeywordResearchRun {
   error: string | null;
   createdAt: string;
   completedAt: string | null;
+  canRefresh?: boolean;
+  lastRefreshAt?: string;
+  refreshBlockedUntil?: string | null;
   website?: { id: string; domain: string; rootUrl: string } | null;
   ideas?: KeywordIdea[];
   competitors?: KeywordSerpCompetitor[];

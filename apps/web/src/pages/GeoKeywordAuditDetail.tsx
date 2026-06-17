@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { api } from "../api.js";
 import type { GeoKeywordAudit, GeoKeywordAuditPage } from "../types.js";
-import { Card } from "../components/ui.js";
+import { ActionIconButton, Card } from "../components/ui.js";
 
 function scoreTone(score: number | null | undefined): string {
   if (score == null) return "text-charcoal-400";
@@ -150,9 +150,7 @@ export default function GeoKeywordAuditDetail() {
               </p>
               <a href={bestPage.url} target="_blank" rel="noreferrer" className="mt-2 block break-all text-sm text-brand-600 hover:underline">{bestPage.url}</a>
             </div>
-            <button type="button" onClick={() => setSelectedPage(bestPage)} className="rounded-lg border border-charcoal-200 px-3 py-2 text-sm font-medium text-charcoal-600 hover:border-brand-300 hover:text-brand-700">
-              View details
-            </button>
+            <ActionIconButton icon="details" label="View details" onClick={() => setSelectedPage(bestPage)} />
           </div>
         </Card>
       )}
@@ -197,8 +195,10 @@ export default function GeoKeywordAuditDetail() {
                       {page.cannibalRisk && <span className="rounded-full bg-red-100 px-2 py-0.5 text-xs font-medium text-red-700">cannibal</span>}
                     </div>
                   </td>
-                  <td className="px-5 py-3 text-right">
-                    <button type="button" onClick={() => setSelectedPage(page)} className="text-brand-600 hover:underline">Details</button>
+                  <td className="px-5 py-3">
+                    <div className="flex justify-end">
+                      <ActionIconButton icon="details" label="View page details" onClick={() => setSelectedPage(page)} />
+                    </div>
                   </td>
                 </tr>
               ))}

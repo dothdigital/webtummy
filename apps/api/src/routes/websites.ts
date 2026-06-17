@@ -9,12 +9,26 @@ websitesRouter.use(requireAuth);
 
 const createSchema = z.object({
   domain: z.string().min(1),
-  rootUrl: z.string().url(),
+  rootUrl: z.string().optional(),
   targetCountry: z.string().optional(),
   targetCities: z.array(z.string()).default([]),
   // super_admin must pass clientId; client_* ignore it (forced from token).
   clientId: z.string().optional(),
 });
+
+function normalizeProjectUrl(input: string): { domain: string; rootUrl: string } | null {
+  const trimmed = input.trim();
+  if (!trimmed) return null;
+  const withScheme = /^https?:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`;
+  try {
+    const url = new URL(withScheme);
+    const domain = url.hostname.toLowerCase();
+    if (!domain) return null;
+    return { domain, rootUrl: `${url.protocol}//${domain}` };
+  } catch {
+    return null;
+  }
+}
 
 websitesRouter.post("/", async (req, res) => {
   const parsed = createSchema.safeParse(req.body);
@@ -24,12 +38,14 @@ websitesRouter.post("/", async (req, res) => {
   const user = req.user!;
   const clientId = user.role === "super_admin" ? d.clientId : user.clientId;
   if (!clientId) return res.status(400).json({ error: "clientId required" });
+  const normalized = normalizeProjectUrl(d.rootUrl || d.domain);
+  if (!normalized) return res.status(400).json({ error: "Enter a valid project domain or URL" });
 
   const website = await prisma.website.create({
     data: {
       clientId,
-      domain: d.domain,
-      rootUrl: d.rootUrl,
+      domain: normalized.domain,
+      rootUrl: normalized.rootUrl,
       targetCountry: d.targetCountry,
       targetCities: d.targetCities,
     },

@@ -1,10 +1,10 @@
-// Websites list. Each row has a "Run crawl" button (manual, not automated).
+// Projects list. Each project is a domain/website container with crawls and keyword insights.
 import { useEffect, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { api } from "../api.js";
 import { useAuth } from "../auth.js";
 import type { Website, Client } from "../types.js";
-import { Button, Card, Input } from "../components/ui.js";
+import { ActionIconButton, ActionIconLink, Button, Card, Input } from "../components/ui.js";
 
 function formatDate(value: string | null): string {
   if (!value) return "—";
@@ -21,6 +21,10 @@ function crawlStatusClass(status: string): string {
   if (status === "failed") return "bg-red-100 text-red-700";
   if (status === "running") return "bg-blue-100 text-blue-700";
   return "bg-amber-100 text-amber-700";
+}
+
+function activeCrawl(website: Website) {
+  return website.crawlJobs?.find((crawl) => crawl.status === "queued" || crawl.status === "running") ?? null;
 }
 
 export default function Websites() {
@@ -51,9 +55,7 @@ export default function Websites() {
     if (!domain) return;
     setBusy(true);
     try {
-      const rootUrl = /^https?:\/\//i.test(domain) ? domain : `https://${domain}`;
-      const host = new URL(rootUrl).hostname;
-      await api.post("/api/websites", { domain: host, rootUrl: `https://${host}`, ...(isSuper ? { clientId } : {}) });
+      await api.post("/api/websites", { domain: domain.trim(), ...(isSuper ? { clientId } : {}) });
       setDomain("");
       await load();
     } catch (e) {
@@ -69,7 +71,7 @@ export default function Websites() {
       await api.post<{ crawlJob: { id: string } }>(`/api/websites/${websiteId}/crawls`, {
         pageLimit: 150,
       });
-      navigate(`/websites/${websiteId}`);
+      navigate(`/projects/${websiteId}`);
     } catch (e) {
       alert(String(e));
       setCrawling(null);
@@ -79,12 +81,12 @@ export default function Websites() {
   return (
     <div className="space-y-6">
       <div>
-        <h1 className="text-2xl font-bold text-charcoal-800">Websites</h1>
-        <p className="text-sm text-charcoal-400">Add a site, then click <b>Run crawl</b> to audit it.</p>
+        <h1 className="text-2xl font-bold text-charcoal-800">Projects</h1>
+        <p className="text-sm text-charcoal-400">Create a project under a client, then run crawls, Domain Insight, and Keyword Insight for that domain.</p>
       </div>
 
       <Card className="p-5">
-        <h3 className="mb-4 font-semibold text-charcoal-700">Add website</h3>
+        <h3 className="mb-4 font-semibold text-charcoal-700">Add project</h3>
         <form onSubmit={addWebsite} className="grid grid-cols-1 gap-4 md:grid-cols-[1fr_auto] md:items-end">
           {isSuper && (
             <div className="md:col-span-2">
@@ -102,78 +104,81 @@ export default function Websites() {
               </label>
             </div>
           )}
-          <Input label="Domain" value={domain} onChange={setDomain} placeholder="example.com" />
-          <Button type="submit" disabled={busy}>{busy ? "Adding…" : "Add website"}</Button>
+          <Input label="Project domain" value={domain} onChange={setDomain} placeholder="example.com" />
+          <Button type="submit" disabled={busy}>{busy ? "Adding…" : "Add project"}</Button>
         </form>
       </Card>
 
       <Card className="overflow-hidden">
         <div className="border-b border-charcoal-100 px-5 py-3 font-semibold text-charcoal-700">
-          Websites ({websites.length})
+          Projects ({websites.length})
         </div>
         {websites.length === 0 ? (
-          <div className="p-6 text-sm text-charcoal-400">No websites yet.</div>
+          <div className="p-6 text-sm text-charcoal-400">No projects yet.</div>
         ) : (
           <div className="overflow-x-auto"><table className="w-full min-w-[960px] text-sm">
             <thead className="bg-charcoal-50 text-left text-xs uppercase text-charcoal-400">
               <tr>
-                <th className="px-5 py-2">Domain</th>
+                <th className="px-5 py-2">Project</th>
                 <th className="px-5 py-2">Root URL</th>
                 <th className="px-5 py-2">Crawls</th>
                 <th className="px-5 py-2">Previous crawl results</th>
-                <th className="px-5 py-2 text-right">Action</th>
+                <th className="px-5 py-2 text-right">Workflow</th>
               </tr>
             </thead>
             <tbody>
               {websites.map((w) => (
-                <tr key={w.id} className="border-t border-charcoal-50">
-                  <td className="px-5 py-3 font-medium">
-                    <Link to={`/websites/${w.id}`} className="text-charcoal-700 hover:text-brand-700 hover:underline">
-                      {w.domain}
-                    </Link>
-                  </td>
-                  <td className="px-5 py-3 text-charcoal-400">{w.rootUrl}</td>
-                  <td className="px-5 py-3">{w._count?.crawlJobs ?? 0}</td>
-                  <td className="px-5 py-3">
-                    {!w.crawlJobs || w.crawlJobs.length === 0 ? (
-                      <span className="text-charcoal-400">No crawl results yet.</span>
-                    ) : (
-                      <div className="space-y-2">
-                        {w.crawlJobs.map((crawl) => (
-                          <div key={crawl.id} className="flex flex-wrap items-center gap-2">
-                            <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${crawlStatusClass(crawl.status)}`}>
-                              {crawl.status}
-                            </span>
-                            <span className="text-xs text-charcoal-500">
-                              Score {crawl.siteScore ?? "—"} · {crawl.pagesCrawled} pages · {formatDate(crawl.completedAt ?? crawl.createdAt)}
-                            </span>
-                            <Link
-                              to={`/crawls/${crawl.id}`}
-                              aria-label="View crawl result"
-                              title="View crawl result"
-                              className="inline-flex h-7 w-7 items-center justify-center rounded-lg border border-charcoal-200 bg-white text-charcoal-500 shadow-sm transition hover:border-brand-400 hover:text-brand-600"
-                            >
-                              <svg viewBox="0 0 24 24" aria-hidden="true" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                                <path d="M2 12s3.5-6 10-6 10 6 10 6-3.5 6-10 6-10-6-10-6Z" />
-                                <circle cx="12" cy="12" r="3" />
-                              </svg>
-                            </Link>
+                (() => {
+                  const active = activeCrawl(w);
+                  return (
+                    <tr key={w.id} className="border-t border-charcoal-50">
+                      <td className="px-5 py-3 font-medium">
+                        <Link to={`/projects/${w.id}`} className="text-charcoal-700 hover:text-brand-700 hover:underline">
+                          {w.domain}
+                        </Link>
+                        {active && (
+                          <div className="mt-2 rounded-lg border border-blue-100 bg-blue-50 px-3 py-2 text-xs font-medium text-blue-800">
+                            Crawl {active.status}: {active.pagesCrawled} pages processed. Open project to follow progress.
                           </div>
-                        ))}
-                      </div>
-                    )}
-                  </td>
-                  <td className="px-5 py-3 text-right">
-                    <div className="flex justify-end gap-2">
-                      <Button variant="ghost" onClick={() => navigate(`/websites/${w.id}`)}>
-                        Health
-                      </Button>
-                      <Button onClick={() => runCrawl(w.id)} disabled={crawling === w.id}>
-                        {crawling === w.id ? "Starting…" : "Run crawl"}
-                      </Button>
-                    </div>
-                  </td>
-                </tr>
+                        )}
+                      </td>
+                      <td className="px-5 py-3 text-charcoal-400">{w.rootUrl}</td>
+                      <td className="px-5 py-3">{w._count?.crawlJobs ?? 0}</td>
+                      <td className="px-5 py-3">
+                        {!w.crawlJobs || w.crawlJobs.length === 0 ? (
+                          <span className="text-charcoal-400">No crawl results yet.</span>
+                        ) : (
+                          <div className="space-y-2">
+                            {w.crawlJobs.map((crawl) => (
+                              <div key={crawl.id} className="flex flex-wrap items-center gap-2">
+                                <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${crawlStatusClass(crawl.status)}`}>
+                                  {crawl.status}
+                                </span>
+                                <span className="text-xs text-charcoal-500">
+                                  Score {crawl.siteScore ?? "—"} · {crawl.pagesCrawled} pages · {formatDate(crawl.completedAt ?? crawl.createdAt)}
+                                </span>
+                                <ActionIconLink icon="view" label="View crawl result" to={`/crawls/${crawl.id}`} />
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </td>
+                      <td className="px-5 py-3">
+                        <div className="flex justify-end gap-2">
+                          <ActionIconButton icon="view" label="Open project" onClick={() => navigate(`/projects/${w.id}`)} />
+                          <ActionIconButton icon="open" label="Open Domain Insight" onClick={() => navigate(`/keyword-analytics?project=${w.id}`)} />
+                          <ActionIconButton icon="details" label="Open Keyword Insight" onClick={() => navigate(`/keyword-insights?project=${w.id}`)} />
+                          <ActionIconButton
+                            icon="run"
+                            label={active ? "Crawl running" : crawling === w.id ? "Starting crawl" : "Run crawl"}
+                            onClick={() => runCrawl(w.id)}
+                            disabled={Boolean(active) || crawling === w.id}
+                          />
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })()
               ))}
             </tbody>
           </table></div>

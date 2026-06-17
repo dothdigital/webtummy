@@ -54,8 +54,8 @@ export function scoreGeoKeywordPage(
   page: GeoKeywordPageInput,
   audit: GeoKeywordAuditInput,
 ): GeoKeywordScoreResult {
-  const keyword = normalizeText(audit.targetKeyword);
   const city = normalizeText(audit.targetCity || "");
+  const keyword = normalizeKeywordForMatching(audit.targetKeyword, city);
   const secondary = (audit.secondaryKeywords || []).map(normalizeText).filter(Boolean);
   const title = normalizeText(page.title || "");
   const meta = normalizeText(page.metaDescription || "");
@@ -73,9 +73,10 @@ export function scoreGeoKeywordPage(
   add(scoreTextMatch("meta", "Meta description match", 8, meta, keyword, city, "Meta description should mention the service, city, and business outcome."));
   add(scoreTextMatch("h1", "H1 match", 10, h1, keyword, city, "H1 should closely match the keyword and city intent."));
 
+  const primaryHeadingHits = keywordMatches(combinedHeadings, keyword) ? 3 : 0;
   const supportingHits = SUPPORTING_INTENTS.filter((term) => combinedHeadings.includes(term)).length;
   const secondaryHits = secondary.filter((term) => combinedHeadings.includes(term)).length;
-  const h2Score = Math.min(10, Math.round((supportingHits / 5) * 7 + Math.min(secondaryHits, 3)));
+  const h2Score = Math.min(10, Math.round(primaryHeadingHits + (supportingHits / 5) * 6 + Math.min(secondaryHits, 3)));
   add({
     key: "h2",
     label: "H2/supporting headings",
@@ -192,9 +193,9 @@ function buildRecommendations(
   audit: GeoKeywordAuditInput,
   page: GeoKeywordPageInput,
 ): string[] {
-  const target = [audit.targetKeyword, audit.targetCity].filter(Boolean).join(" ");
   const city = audit.targetCity?.trim();
-  const keyword = audit.targetKeyword.trim();
+  const keyword = normalizeKeywordForMatching(audit.targetKeyword, normalizeText(city || ""));
+  const target = [keyword, city].filter(Boolean).join(" ");
   const recommendations: string[] = [];
   const weak = new Map(items.filter((item) => item.status !== "good").map((item) => [item.key, item]));
 
@@ -274,7 +275,22 @@ function slugSuggestion(keyword: string, city?: string): string {
 }
 
 function normalizeText(value: string): string {
-  return value.toLowerCase().replace(/[^a-z0-9]+/g, " ").replace(/\s+/g, " ").trim();
+  return value
+    .toLowerCase()
+    .replace(/\bsupervisa\b/g, "super visa")
+    .replace(/[^a-z0-9]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function normalizeKeywordForMatching(value: string, city: string): string {
+  const words = normalizeText(value).split(" ").filter(Boolean);
+  const cityWords = new Set(city.split(" ").filter(Boolean));
+  const filtered = words.filter((word) => {
+    if (cityWords.has(word)) return false;
+    return ![...cityWords].some((cityWord) => cityWord.length > 4 && editDistance(word, cityWord) <= 2);
+  });
+  return filtered.join(" ").trim() || normalizeText(value);
 }
 
 function pathSlug(url: string): string {
@@ -288,8 +304,28 @@ function pathSlug(url: string): string {
 function keywordMatches(value: string, keyword: string): boolean {
   if (!keyword) return true;
   if (value.includes(keyword)) return true;
+  if (compact(value).includes(compact(keyword))) return true;
   const words = keyword.split(" ").filter((word) => word.length > 2);
   return words.length > 0 && words.every((word) => value.includes(word));
+}
+
+function compact(value: string): string {
+  return value.replace(/\s+/g, "");
+}
+
+function editDistance(a: string, b: string): number {
+  const dp = Array.from({ length: a.length + 1 }, (_, i) => [i, ...Array(b.length).fill(0)]);
+  for (let j = 0; j <= b.length; j++) dp[0][j] = j;
+  for (let i = 1; i <= a.length; i++) {
+    for (let j = 1; j <= b.length; j++) {
+      dp[i][j] = Math.min(
+        dp[i - 1][j] + 1,
+        dp[i][j - 1] + 1,
+        dp[i - 1][j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1),
+      );
+    }
+  }
+  return dp[a.length][b.length];
 }
 
 function hasSchema(types: string[], expected: string): boolean {

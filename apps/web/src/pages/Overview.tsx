@@ -1,12 +1,11 @@
 // Overview dashboard: stat cards + charts (severity pie, category bar, score trend).
 import { useEffect, useState } from "react";
-import { Link } from "react-router-dom";
 import {
   PieChart, Pie, Cell, BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer,
   LineChart, Line, CartesianGrid,
 } from "recharts";
 import { api } from "../api.js";
-import { Card, Stat, StatusPill } from "../components/ui.js";
+import { ActionIconLink, Card, Stat, StatusPill } from "../components/ui.js";
 
 interface Overview {
   role: string;
@@ -36,13 +35,13 @@ export default function Overview() {
     <div className="space-y-6">
       <div>
         <h1 className="text-2xl font-bold text-charcoal-800">Overview</h1>
-        <p className="text-sm text-charcoal-400">Audit health across your {isSuper ? "clients" : "websites"}.</p>
+        <p className="text-sm text-charcoal-400">Audit health across your {isSuper ? "clients and projects" : "projects"}.</p>
       </div>
 
       {/* Stat cards */}
       <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
         {isSuper && <Stat label="Clients" value={data.counts.clients} />}
-        <Stat label="Websites" value={data.counts.websites} />
+        <Stat label="Projects" value={data.counts.websites} />
         <Stat label="Crawls run" value={data.counts.crawls} />
         <Stat label="Avg site score" value={data.counts.avgScore ?? "—"} />
       </div>
@@ -141,8 +140,10 @@ export default function Overview() {
                   <td className="px-5 py-3"><StatusPill status={c.status} /></td>
                   <td className="px-5 py-3">{c.pagesCrawled}</td>
                   <td className="px-5 py-3 font-semibold">{c.siteScore ?? "—"}</td>
-                  <td className="px-5 py-3 text-right">
-                    <Link to={`/crawls/${c.id}`} className="text-brand-600 hover:underline">View</Link>
+                  <td className="px-5 py-3">
+                    <div className="flex justify-end">
+                      <ActionIconLink icon="view" label="View crawl" to={`/crawls/${c.id}`} />
+                    </div>
                   </td>
                 </tr>
               ))}

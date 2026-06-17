@@ -1,12 +1,22 @@
 // Auth context: holds the current user, exposes login/logout.
 import { createContext, useContext, useEffect, useState, type ReactNode } from "react";
-import { login as apiLogin, logout as apiLogout, register as apiRegister, fetchMe, type AppUser } from "./api.js";
+import {
+  login as apiLogin,
+  logout as apiLogout,
+  register as apiRegister,
+  verifyEmail as apiVerifyEmail,
+  resetPassword as apiResetPassword,
+  fetchMe,
+  type AppUser,
+} from "./api.js";
 
 interface AuthCtx {
   user: AppUser | null;
   loading: boolean;
   login: (email: string, password: string) => Promise<void>;
-  register: (input: { name: string; companyName: string; email: string; password: string }) => Promise<void>;
+  register: (input: { name: string; companyName: string; email: string; password: string }) => Promise<string>;
+  verifyEmail: (token: string) => Promise<void>;
+  resetPassword: (token: string, password: string) => Promise<void>;
   logout: () => void;
 }
 
@@ -27,12 +37,18 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setUser(await apiLogin(email, password));
   };
   const register = async (input: { name: string; companyName: string; email: string; password: string }) => {
-    setUser(await apiRegister(input));
+    return apiRegister(input);
+  };
+  const verifyEmail = async (token: string) => {
+    setUser(await apiVerifyEmail(token));
+  };
+  const resetPassword = async (token: string, password: string) => {
+    setUser(await apiResetPassword(token, password));
   };
   const logout = () => {
     apiLogout();
     setUser(null);
   };
 
-  return <Ctx.Provider value={{ user, loading, login, register, logout }}>{children}</Ctx.Provider>;
+  return <Ctx.Provider value={{ user, loading, login, register, verifyEmail, resetPassword, logout }}>{children}</Ctx.Provider>;
 }

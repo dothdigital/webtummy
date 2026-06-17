@@ -13,7 +13,7 @@ import type {
   PageSpeedResponse,
   PageSpeedStrategyResult,
 } from "../types.js";
-import { Card, StatusPill, Badge, Button } from "../components/ui.js";
+import { ActionIconAnchor, ActionIconButton, Card, StatusPill, Badge, Button } from "../components/ui.js";
 
 function SeverityChip({
   label, sev, count, active, onClick,
@@ -1490,24 +1490,16 @@ export default function CrawlDetail() {
                         <td className="px-5 py-3">{p.wordCount ?? "—"}</td>
                         <td className="px-5 py-3 text-right">
                           <div className="flex flex-wrap justify-end gap-2">
-                            <button
-                              type="button"
-                              onClick={() => setPerformancePageId(p.id)}
-                              className="rounded-lg border border-charcoal-200 px-3 py-1.5 text-xs font-medium text-charcoal-600 transition hover:border-brand-300 hover:text-brand-700"
-                            >
-                              View stats
-                            </button>
-                            <button
-                              type="button"
+                            <ActionIconButton icon="details" label="View page stats" onClick={() => setPerformancePageId(p.id)} />
+                            <ActionIconButton
+                              icon="run"
+                              label={checkingPageSpeedId === p.id ? "Checking page speed" : pageSpeedResults[p.id] ? "Run Google lab again" : "Run Google lab"}
                               disabled={checkingPageSpeedId === p.id}
                               onClick={() => {
                                 setPerformancePageId(p.id);
                                 runPageSpeedCheck(p.id);
                               }}
-                              className="rounded-lg border border-charcoal-200 px-3 py-1.5 text-xs font-medium text-charcoal-600 transition hover:border-brand-300 hover:text-brand-700 disabled:cursor-wait disabled:opacity-50"
-                            >
-                              {checkingPageSpeedId === p.id ? "Checking..." : pageSpeedResults[p.id] ? "Google lab again" : "Google lab"}
-                            </button>
+                            />
                           </div>
                         </td>
                       </tr>
@@ -1588,38 +1580,8 @@ export default function CrawlDetail() {
                         <td className="px-5 py-3 text-charcoal-500">{i.recommendation ?? "—"}</td>
                         <td className="px-5 py-3 text-right">
                           <div className="flex justify-end gap-2">
-                            <button
-                              type="button"
-                              aria-label="View issue details"
-                              title="View details"
-                              onClick={() => setOpenIssueId(i.id)}
-                              className={`inline-flex h-8 w-8 items-center justify-center rounded-lg border text-sm shadow-sm transition ${
-                                openIssueId === i.id
-                                  ? "border-brand-500 bg-brand-50 text-brand-700"
-                                  : "border-charcoal-200 bg-white text-charcoal-500 hover:border-brand-400 hover:text-brand-600"
-                              }`}
-                            >
-                              <svg viewBox="0 0 24 24" aria-hidden="true" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                                <path d="M2 12s3.5-6 10-6 10 6 10 6-3.5 6-10 6-10-6-10-6Z" />
-                                <circle cx="12" cy="12" r="3" />
-                              </svg>
-                            </button>
-                            {i.page?.url && (
-                              <a
-                                href={i.page.url}
-                                target="_blank"
-                                rel="noreferrer"
-                                aria-label="Open page"
-                                title="Open page"
-                                className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-charcoal-200 bg-white text-charcoal-500 shadow-sm transition hover:border-brand-400 hover:text-brand-600"
-                              >
-                                <svg viewBox="0 0 24 24" aria-hidden="true" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                                  <path d="M15 3h6v6" />
-                                  <path d="M10 14 21 3" />
-                                  <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
-                                </svg>
-                              </a>
-                            )}
+                            <ActionIconButton icon={openIssueId === i.id ? "close" : "details"} label={openIssueId === i.id ? "Close issue details" : "View issue details"} onClick={() => setOpenIssueId(openIssueId === i.id ? null : i.id)} />
+                            {i.page?.url && <ActionIconAnchor icon="open" label="Open page" href={i.page.url} />}
                           </div>
                         </td>
                       </tr>
@@ -1710,14 +1672,14 @@ export default function CrawlDetail() {
                       </td>
                       <td className="max-w-[320px] px-5 py-3">
                         <div className="break-words text-charcoal-700">{link.targetUrl}</div>
-                        <button
-                          type="button"
-                          disabled={recheckingLinkId === link.id}
-                          onClick={() => recheckBrokenLink(link.id)}
-                          className="mt-2 rounded-lg border border-charcoal-200 px-2.5 py-1.5 text-xs font-medium text-charcoal-600 transition hover:border-brand-300 hover:text-brand-700 disabled:cursor-wait disabled:opacity-50"
-                        >
-                          {recheckingLinkId === link.id ? "Checking..." : "Recheck now"}
-                        </button>
+                        <div className="mt-2">
+                          <ActionIconButton
+                            icon="refresh"
+                            label={recheckingLinkId === link.id ? "Checking broken link" : "Recheck broken link"}
+                            disabled={recheckingLinkId === link.id}
+                            onClick={() => recheckBrokenLink(link.id)}
+                          />
+                        </div>
                       </td>
                       <td className="max-w-[320px] px-5 py-3">
                         <div className="font-medium text-charcoal-700">{link.sourcePage.seo?.title || "Untitled page"}</div>

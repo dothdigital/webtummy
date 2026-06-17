@@ -23,6 +23,9 @@ export const config = {
   redisUrl: process.env.REDIS_URL ?? "redis://localhost:6379",
   jwtSecret: process.env.JWT_SECRET ?? "dev-only-change-me",
   jwtExpiresIn: "1h",
+  webAppUrl: process.env.WEB_APP_URL ?? "http://localhost:5173",
+  emailFrom: process.env.EMAIL_FROM ?? "Webtummy <no-reply@webtummy.local>",
+  resendApiKey: process.env.RESEND_API_KEY ?? "",
   defaultPageLimit: process.env.CRAWL_DEFAULT_MAX_PAGES
     ? parseInt(process.env.CRAWL_DEFAULT_MAX_PAGES, 10)
     : 500,

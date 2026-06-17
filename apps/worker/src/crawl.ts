@@ -5,7 +5,7 @@
 // Phase 1 simplification: one worker owns one crawl; the frontier + visited set live
 // in-process (not a shared Redis set). Distributing a single crawl across workers via
 // a Redis frontier is a Phase 1.5 enhancement (see ARCHITECTURE.md §2).
-import { prisma, CrawlStatus, Severity } from "@webtummy/db";
+import { prisma, CrawlStatus, Prisma, Severity } from "@webtummy/db";
 import {
   parseHtml,
   parseRobots,
@@ -336,6 +336,26 @@ interface PageResult {
   issues: DetectedIssue[];
 }
 
+function jsonArray(value: unknown): Prisma.InputJsonValue {
+  return Array.isArray(value) ? (value as Prisma.InputJsonArray) : [];
+}
+
+function jsonObject(value: unknown): Prisma.InputJsonValue {
+  return value && typeof value === "object" && !Array.isArray(value) ? (value as Prisma.InputJsonObject) : {};
+}
+
+function hreflangJson(value: unknown): Prisma.InputJsonValue {
+  if (!Array.isArray(value)) return [];
+  return value.map((item) => {
+    if (!item || typeof item !== "object") return {};
+    const entry = item as { lang?: unknown; href?: unknown };
+    return {
+      lang: typeof entry.lang === "string" ? entry.lang : "",
+      href: typeof entry.href === "string" ? entry.href : "",
+    };
+  });
+}
+
 async function crawlOnePage(
   crawlJobId: string,
   item: FrontierItem,
@@ -367,6 +387,12 @@ async function crawlOnePage(
   });
 
   if (parsed) {
+    const h1Text = jsonArray(parsed.h1);
+    const h2Json = jsonArray(parsed.h2);
+    const safeHreflangs = hreflangJson(parsed.hreflangs);
+    const ogTags = jsonObject(parsed.ogTags);
+    const twitterTags = jsonObject(parsed.twitterTags);
+
     await prisma.pageSeo.upsert({
       where: { pageId: page.id },
       create: {
@@ -376,21 +402,33 @@ async function crawlOnePage(
         metaDescription: parsed.metaDescription,
         metaDescLength: parsed.metaDescription?.length,
         h1Count: parsed.h1.length,
-        h1Text: parsed.h1,
-        h2Json: parsed.h2,
+        h1Text,
+        h2Json,
         canonicalUrl: parsed.canonicalUrl?.slice(0, 512),
         robotsMeta: parsed.robotsMeta,
-        hreflangJson: parsed.hreflangs ?? [],
+        hreflangJson: safeHreflangs,
         ampUrl: parsed.ampUrl ? parsed.ampUrl.slice(0, 512) : null,
         looksJsDependent: parsed.looksJsDependent ?? false,
-        ogTags: parsed.ogTags ?? {},
-        twitterTags: parsed.twitterTags ?? {},
+        ogTags,
+        twitterTags,
         contentSimhash: parsed.visibleTextHash,
       },
       update: {
-        hreflangJson: parsed.hreflangs ?? [],
+        title: parsed.title?.slice(0, 512),
+        titleLength: parsed.title?.length,
+        metaDescription: parsed.metaDescription,
+        metaDescLength: parsed.metaDescription?.length,
+        h1Count: parsed.h1.length,
+        h1Text,
+        h2Json,
+        canonicalUrl: parsed.canonicalUrl?.slice(0, 512),
+        robotsMeta: parsed.robotsMeta,
+        hreflangJson: safeHreflangs,
         ampUrl: parsed.ampUrl ? parsed.ampUrl.slice(0, 512) : null,
         looksJsDependent: parsed.looksJsDependent ?? false,
+        ogTags,
+        twitterTags,
+        contentSimhash: parsed.visibleTextHash,
       },
     });
 

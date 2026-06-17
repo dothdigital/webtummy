@@ -7,9 +7,10 @@ import { LogoMark } from "./Logo.js";
 const nav = [
   { to: "/", label: "Overview", icon: "📊", end: true },
   { to: "/clients", label: "Clients", icon: "🏢", superOnly: true },
-  { to: "/websites", label: "Websites", icon: "🌐" },
-  { to: "/keyword-analytics", label: "Keyword Analytics", icon: "🔎" },
-  { to: "/geo-keyword-intelligence", label: "Geo Keyword", icon: "📍" },
+  { to: "/users", label: "Users", icon: "👤", superOnly: true },
+  { to: "/projects", label: "Projects", icon: "🌐" },
+  { to: "/keyword-analytics", label: "Domain Insight", icon: "🌐", end: true },
+  { to: "/keyword-insights", label: "Keyword Insight", icon: "🔎" },
 ];
 
 export default function Layout({ children }: { children: ReactNode }) {
@@ -23,7 +24,7 @@ export default function Layout({ children }: { children: ReactNode }) {
     <div className="flex min-h-screen">
       {/* Sidebar */}
       <aside
-        className={`fixed inset-y-0 left-0 z-30 w-64 transform bg-charcoal-800 text-charcoal-100 transition-transform lg:static lg:translate-x-0 ${
+        className={`fixed inset-y-0 left-0 z-30 w-64 transform overflow-y-auto bg-charcoal-800 text-charcoal-100 transition-transform lg:translate-x-0 ${
           open ? "translate-x-0" : "-translate-x-full"
         }`}
       >
@@ -56,7 +57,7 @@ export default function Layout({ children }: { children: ReactNode }) {
       {open && <div className="fixed inset-0 z-20 bg-black/30 lg:hidden" onClick={() => setOpen(false)} />}
 
       {/* Main */}
-      <div className="flex flex-1 flex-col">
+      <div className="flex min-w-0 flex-1 flex-col lg:ml-64">
         <header className="flex h-16 items-center justify-between border-b border-charcoal-100 bg-white px-4 lg:px-8">
           <button type="button" className="rounded-lg p-2 hover:bg-charcoal-50 lg:hidden" onClick={() => setOpen(true)}>
             ☰

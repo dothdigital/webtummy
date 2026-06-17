@@ -4,6 +4,7 @@ import cors from "cors";
 import { config } from "./config.js";
 import { authRouter } from "./routes/auth.js";
 import { clientsRouter } from "./routes/clients.js";
+import { usersRouter } from "./routes/users.js";
 import { websitesRouter } from "./routes/websites.js";
 import { crawlsRouter } from "./routes/crawls.js";
 import { overviewRouter } from "./routes/overview.js";
@@ -43,6 +44,7 @@ app.get("/", (_req, res) =>
 
 app.use("/api/auth", authRouter);
 app.use("/api/clients", clientsRouter);
+app.use("/api/users", usersRouter);
 app.use("/api/websites", websitesRouter);
 app.use("/api", crawlsRouter); // crawls routes carry their own full paths
 app.use("/api", overviewRouter);

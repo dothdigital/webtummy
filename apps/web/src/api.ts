@@ -19,7 +19,10 @@ export async function login(email: string, password: string): Promise<AppUser> {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ email, password }),
   });
-  if (!res.ok) throw new Error("Invalid email or password");
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}));
+    throw new Error(data.error === "email_not_verified" ? "email_not_verified" : "Invalid email or password");
+  }
   const data = await res.json();
   token = data.token;
   localStorage.setItem("wt_token", token!);
@@ -31,7 +34,7 @@ export async function register(input: {
   companyName: string;
   email: string;
   password: string;
-}): Promise<AppUser> {
+}): Promise<string> {
   const res = await fetch("/api/auth/register", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -44,9 +47,31 @@ export async function register(input: {
     const first = Object.values(fe).flat()[0] as string | undefined;
     throw new Error(first ?? "Registration failed");
   }
+  return data.message as string;
+}
+
+export async function verifyEmail(verificationToken: string): Promise<AppUser> {
+  const res = await fetch("/api/auth/verify-email", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ token: verificationToken }),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error ?? "Verification link is invalid or expired");
   token = data.token;
   localStorage.setItem("wt_token", token!);
   return data.user as AppUser;
+}
+
+export async function resendVerification(email: string): Promise<string> {
+  const res = await fetch("/api/auth/resend-verification", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ email }),
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error("Could not process request");
+  return data.message as string;
 }
 
 export async function forgotPassword(email: string): Promise<string> {
@@ -58,6 +83,23 @@ export async function forgotPassword(email: string): Promise<string> {
   const data = await res.json();
   if (!res.ok) throw new Error("Could not process request");
   return data.message as string;
+}
+
+export async function resetPassword(resetToken: string, password: string): Promise<AppUser> {
+  const res = await fetch("/api/auth/reset-password", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ token: resetToken, password }),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    const fe = data.error ?? {};
+    const first = typeof fe === "string" ? fe : (Object.values(fe).flat()[0] as string | undefined);
+    throw new Error(first ?? "Could not reset password");
+  }
+  token = data.token;
+  localStorage.setItem("wt_token", token!);
+  return data.user as AppUser;
 }
 
 export function logout() {

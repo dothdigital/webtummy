@@ -49,6 +49,18 @@ crawlsRouter.post("/websites/:websiteId/crawls", async (req, res) => {
   const parsed = startSchema.safeParse(req.body ?? {});
   if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() });
   const o = parsed.data;
+  const active = await prisma.crawlJob.findFirst({
+    where: { websiteId: website.id, status: { in: ["queued", "running"] } },
+    orderBy: { createdAt: "desc" },
+    select: { id: true, status: true, pagesCrawled: true, createdAt: true, startedAt: true },
+  });
+  if (active) {
+    return res.status(409).json({
+      error: "crawl already running",
+      message: "A crawl is already queued or running for this project. Wait for it to finish before starting another run.",
+      crawlJob: active,
+    });
+  }
 
   const job = await prisma.crawlJob.create({
     data: {
