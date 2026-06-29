@@ -211,12 +211,14 @@ export function Input({
   onChange,
   type = "text",
   placeholder,
+  autoComplete,
 }: {
   label: string;
   value: string;
   onChange: (v: string) => void;
   type?: string;
   placeholder?: string;
+  autoComplete?: string;
 }) {
   return (
     <label className="block">
@@ -225,6 +227,7 @@ export function Input({
         type={type}
         value={value}
         placeholder={placeholder}
+        autoComplete={autoComplete}
         onChange={(e) => onChange(e.target.value)}
         className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-100"
       />

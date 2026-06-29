@@ -19,6 +19,8 @@ const app = express();
 
 const allowedOrigins = new Set([
   new URL(config.webAppUrl).origin,
+  "http://localhost:5173",
+  "http://127.0.0.1:5173",
   "https://app.webtummy.com",
 ]);
 

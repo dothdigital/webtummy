@@ -223,11 +223,11 @@ function SignInForm({
       <p className="mt-1 text-sm text-charcoal-400">Sign in to your dashboard.</p>
       <div className="mt-6 space-y-4">
         <div>
-          <Input label="Email" type="email" value={email} onChange={setEmail} />
+          <Input label="Email" type="email" value={email} onChange={setEmail} autoComplete="username" />
           <FieldError msg={err.email} />
         </div>
         <div>
-          <Input label="Password" type="password" value={password} onChange={setPassword} />
+          <Input label="Password" type="password" value={password} onChange={setPassword} autoComplete="current-password" />
           <FieldError msg={err.password} />
           <div className="mt-1 text-right">
             <button type="button" onClick={onForgot} className="text-xs font-medium text-brand-600 hover:underline">
@@ -324,15 +324,15 @@ function SignUpForm({
       <h2 className="text-2xl font-bold text-charcoal-800">Create your account</h2>
       <p className="mt-1 text-sm text-charcoal-400">Create your account, then verify your email to sign in.</p>
       <div className="mt-6 space-y-3">
-        <div><Input label="Your name" value={name} onChange={setName} /><FieldError msg={err.name} /></div>
-        <div><Input label="Company name" value={companyName} onChange={setCompany} /><FieldError msg={err.companyName} /></div>
-        <div><Input label="Email" type="email" value={email} onChange={setEmail} /><FieldError msg={err.email} /></div>
+        <div><Input label="Your name" value={name} onChange={setName} autoComplete="name" /><FieldError msg={err.name} /></div>
+        <div><Input label="Company name" value={companyName} onChange={setCompany} autoComplete="organization" /><FieldError msg={err.companyName} /></div>
+        <div><Input label="Email" type="email" value={email} onChange={setEmail} autoComplete="email" /><FieldError msg={err.email} /></div>
         <div>
-          <Input label="Password" type="password" value={password} onChange={setPassword} />
+          <Input label="Password" type="password" value={password} onChange={setPassword} autoComplete="new-password" />
           <PasswordChecklist password={password} confirm={confirm} />
           <FieldError msg={err.password} />
         </div>
-        <div><Input label="Confirm password" type="password" value={confirm} onChange={setConfirm} /><FieldError msg={err.confirm} /></div>
+        <div><Input label="Confirm password" type="password" value={confirm} onChange={setConfirm} autoComplete="new-password" /><FieldError msg={err.confirm} /></div>
       </div>
       {err.form && <div className="mt-4 rounded-lg bg-red-50 px-3 py-2 text-sm text-red-700">{err.form}</div>}
       {canSubmit && (
@@ -518,12 +518,12 @@ function ResetPasswordForm({
       <p className="mt-1 text-sm text-charcoal-400">Choose a new password for your account.</p>
       <div className="mt-6 space-y-4">
         <div>
-          <Input label="New password" type="password" value={password} onChange={setPassword} />
+          <Input label="New password" type="password" value={password} onChange={setPassword} autoComplete="new-password" />
           <PasswordChecklist password={password} confirm={confirm} />
           <FieldError msg={err.password} />
         </div>
         <div>
-          <Input label="Confirm new password" type="password" value={confirm} onChange={setConfirm} />
+          <Input label="Confirm new password" type="password" value={confirm} onChange={setConfirm} autoComplete="new-password" />
           <FieldError msg={err.confirm} />
         </div>
       </div>
