@@ -1,7 +1,7 @@
 import { createHmac, createHash } from "node:crypto";
 import { config } from "./config.js";
 
-interface MailInput {
+export interface MailInput {
   to: string;
   subject: string;
   html: string;
@@ -78,45 +78,21 @@ async function sendWithSes(input: MailInput) {
     body,
   });
 
-  if (!response.ok) {
-    const responseBody = await response.text();
-    throw new Error(`SES email provider failed: ${response.status} ${responseBody}`);
-  }
+  if (!response.ok) throw new Error(`SES email provider failed: ${response.status} ${await response.text()}`);
 }
 
 async function sendWithResend(input: MailInput) {
   const response = await fetch("https://api.resend.com/emails", {
     method: "POST",
-    headers: {
-      Authorization: `Bearer ${config.resendApiKey}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      from: config.emailFrom,
-      to: input.to,
-      subject: input.subject,
-      html: input.html,
-      text: input.text,
-    }),
+    headers: { Authorization: `Bearer ${config.resendApiKey}`, "Content-Type": "application/json" },
+    body: JSON.stringify({ from: config.emailFrom, to: input.to, subject: input.subject, html: input.html, text: input.text }),
   });
-
-  if (!response.ok) {
-    const body = await response.text();
-    throw new Error(`Resend email provider failed: ${response.status} ${body}`);
-  }
+  if (!response.ok) throw new Error(`Resend email provider failed: ${response.status} ${await response.text()}`);
 }
 
 export async function sendMail(input: MailInput) {
-  if (config.emailProvider === "ses" || (!config.emailProvider && config.awsAccessKeyId)) {
-    await sendWithSes(input);
-    return;
-  }
-
-  if (config.emailProvider === "resend" || config.resendApiKey) {
-    await sendWithResend(input);
-    return;
-  }
-
+  if (config.emailProvider === "ses" || (!config.emailProvider && config.awsAccessKeyId)) return sendWithSes(input);
+  if (config.emailProvider === "resend" || config.resendApiKey) return sendWithResend(input);
   console.info(`[mail:dev] To: ${input.to}`);
   console.info(`[mail:dev] Subject: ${input.subject}`);
   console.info(`[mail:dev] ${input.text}`);

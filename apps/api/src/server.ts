@@ -1,6 +1,5 @@
 // Webtummy API server.
 import express from "express";
-import cors from "cors";
 import { config } from "./config.js";
 import { authRouter } from "./routes/auth.js";
 import { clientsRouter } from "./routes/clients.js";
@@ -10,10 +9,40 @@ import { crawlsRouter } from "./routes/crawls.js";
 import { overviewRouter } from "./routes/overview.js";
 import { geoKeywordRouter } from "./routes/geo-keyword.js";
 import { keywordResearchRouter } from "./routes/keyword-research.js";
+import { aiContentRouter } from "./routes/ai-content.js";
+import { socialStrategyRouter } from "./routes/social-strategy.js";
+import { localSeoRouter } from "./routes/local-seo.js";
+import { billingRouter } from "./routes/billing.js";
+import { rawBodySaver } from "./billing.js";
 
 const app = express();
-app.use(cors());
-app.use(express.json({ limit: "1mb" }));
+
+const allowedOrigins = new Set([
+  new URL(config.webAppUrl).origin,
+  "https://app.webtummy.com",
+]);
+
+app.use((req, res, next) => {
+  const origin = req.headers.origin;
+  if (origin && allowedOrigins.has(origin)) {
+    res.setHeader("Access-Control-Allow-Origin", origin);
+    res.setHeader("Vary", "Origin");
+    res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
+    res.setHeader("Access-Control-Allow-Methods", "GET,POST,PATCH,DELETE,OPTIONS");
+  }
+
+  if (req.method === "OPTIONS") {
+    return origin && allowedOrigins.has(origin) ? res.sendStatus(204) : res.sendStatus(403);
+  }
+
+  const fetchSite = req.headers["sec-fetch-site"];
+  if (fetchSite === "cross-site" || (origin && !allowedOrigins.has(origin))) {
+    return res.status(403).json({ error: "forbidden origin" });
+  }
+
+  next();
+});
+app.use(express.json({ limit: "1mb", verify: rawBodySaver }));
 
 app.get("/health", (_req, res) => res.json({ ok: true, service: "webtummy-api" }));
 
@@ -38,10 +67,15 @@ app.get("/", (_req, res) =>
       geoKeyword: "GET|POST /api/geo-keyword",
       keywordResearch: "GET|POST /api/keyword-research",
       keywordResearchDetail: "GET /api/keyword-research/:id",
+      aiContent: "GET|POST /api/ai-content",
+      billing: "GET|POST /api/billing",
+      socialStrategy: "GET|POST /api/social-strategy",
+      localSeo: "GET|POST /api/local/business",
     },
   }),
 );
 
+app.use("/api/billing", billingRouter);
 app.use("/api/auth", authRouter);
 app.use("/api/clients", clientsRouter);
 app.use("/api/users", usersRouter);
@@ -50,6 +84,9 @@ app.use("/api", crawlsRouter); // crawls routes carry their own full paths
 app.use("/api", overviewRouter);
 app.use("/api", geoKeywordRouter);
 app.use("/api", keywordResearchRouter);
+app.use("/api", aiContentRouter);
+app.use("/api", socialStrategyRouter);
+app.use("/api", localSeoRouter);
 
 // Centralized error handler.
 app.use((err: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => {

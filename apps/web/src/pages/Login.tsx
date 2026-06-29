@@ -1,8 +1,9 @@
 // Half-and-half auth screen. Left: brand + blurb. Right: tabbed Sign in / Create
 // account + Forgot password, with email + password validation.
 import { useEffect, useState } from "react";
+import { Link } from "react-router-dom";
 import { useAuth } from "../auth.js";
-import { forgotPassword, resendVerification } from "../api.js";
+import { fetchPublicConfig, forgotPassword, resendVerification } from "../api.js";
 import { Button, Input } from "../components/ui.js";
 import { LogoMark } from "../components/Logo.js";
 
@@ -35,72 +36,84 @@ export default function Login() {
   }, []);
 
   return (
-    <div className="flex min-h-screen">
-      {/* Left: brand */}
-      <div className="relative hidden w-1/2 flex-col justify-between overflow-hidden bg-charcoal-800 p-12 text-white lg:flex">
-        <div className="absolute -right-24 -top-24 h-96 w-96 rounded-full bg-brand-500/20 blur-3xl" />
-        <div className="absolute -bottom-32 -left-16 h-96 w-96 rounded-full bg-brand-500/10 blur-3xl" />
-        <div className="relative flex items-center gap-3">
-          <LogoMark size={40} />
-          <span className="text-xl font-bold tracking-tight">
-            Web<span className="text-brand-400">tummy</span>
-          </span>
-        </div>
-        <div className="relative max-w-md">
-          <h1 className="text-4xl font-bold leading-tight">
-            SEO &amp; AI Search audits, <span className="text-brand-400">on autopilot</span>.
-          </h1>
-          <p className="mt-4 text-charcoal-200">
-            Crawl client sites, surface technical &amp; content issues, score AI-search
-            readiness, and ship client-ready reports — all in one place.
-          </p>
-          <div className="mt-8 grid grid-cols-3 gap-4 text-center">
-            {[
-              ["100+", "client sites"],
-              ["30+", "audit checks"],
-              ["AI", "search ready"],
-            ].map(([a, b]) => (
-              <div key={b} className="rounded-xl bg-white/5 p-4">
-                <div className="text-2xl font-bold text-brand-400">{a}</div>
-                <div className="text-xs text-charcoal-200">{b}</div>
-              </div>
-            ))}
-          </div>
-        </div>
-        <div className="relative text-xs text-charcoal-300">Created by Dot H Digital · © {new Date().getFullYear()}</div>
-      </div>
-
-      {/* Right: forms */}
-      <div className="flex w-full items-center justify-center px-6 py-10 lg:w-1/2">
-        <div className="w-full max-w-sm">
-          <div className="mb-8 flex items-center gap-2.5 lg:hidden">
-            <LogoMark size={34} />
-            <span className="text-lg font-bold text-charcoal-800">
-              Web<span className="text-brand-500">tummy</span>
+    <div className="min-h-screen bg-slate-50">
+      <div className="grid min-h-screen lg:grid-cols-[1.08fr_0.92fr]">
+        <section className="flex flex-col justify-between bg-charcoal-900 px-6 py-8 text-white sm:px-10 lg:px-12">
+          <div className="flex items-center gap-3">
+            <LogoMark size={42} />
+            <span className="text-xl font-bold tracking-tight text-white">
+              Web<span className="text-brand-400">tummy</span>
             </span>
           </div>
 
-          {mode === "verify" ? (
-            <VerifyEmailForm token={routeToken} onVerify={verifyEmail} onBack={() => setMode("signin")} />
-          ) : mode === "reset" ? (
-            <ResetPasswordForm token={routeToken} onReset={resetPassword} onBack={() => setMode("signin")} />
-          ) : mode === "forgot" ? (
-            <ForgotForm onBack={() => setMode("signin")} />
-          ) : (
-            <>
-              {/* Tabs */}
-              <div className="mb-6 flex rounded-lg bg-charcoal-100 p-1">
-                <TabBtn active={mode === "signin"} onClick={() => setMode("signin")}>Sign in</TabBtn>
-                <TabBtn active={mode === "signup"} onClick={() => setMode("signup")}>Create account</TabBtn>
+          <div className="py-12 lg:py-0">
+            <div className="max-w-2xl">
+              <div className="mb-5 inline-flex rounded-full border border-brand-400/30 bg-white/10 px-3 py-1 text-xs font-semibold uppercase tracking-wide text-brand-200">
+                SEO audit command center
               </div>
-              {mode === "signin" ? (
-                <SignInForm onLogin={login} onForgot={() => setMode("forgot")} />
-              ) : (
-                <SignUpForm onRegister={register} onSignIn={() => setMode("signin")} />
-              )}
-            </>
-          )}
-        </div>
+              <h1 className="text-4xl font-bold leading-tight text-white sm:text-5xl">
+                SEO &amp; AI Search audits, on autopilot.
+              </h1>
+              <p className="mt-5 max-w-xl text-lg leading-8 text-charcoal-200">
+                Crawl client sites, surface technical &amp; content issues, score AI-search readiness, and ship client-ready reports - all in one place.
+              </p>
+
+              <div className="mt-8 grid gap-3 sm:grid-cols-3">
+                {[
+                  ["100+", "client sites"],
+                  ["30+", "audit checks"],
+                  ["AI", "search ready"],
+                ].map(([value, label]) => (
+                  <div key={label} className="rounded-lg border border-white/10 bg-white/5 p-4">
+                    <div className="text-3xl font-bold text-brand-300">{value}</div>
+                    <div className="mt-1 text-sm font-medium text-charcoal-200">{label}</div>
+                  </div>
+                ))}
+              </div>
+
+              <div className="mt-8 grid gap-3 text-sm text-charcoal-100 sm:grid-cols-3">
+                <div className="rounded-lg border border-cyan-300/20 bg-cyan-300/10 px-4 py-3">Technical crawl issues</div>
+                <div className="rounded-lg border border-emerald-300/20 bg-emerald-300/10 px-4 py-3">Content gap scoring</div>
+                <div className="rounded-lg border border-amber-300/20 bg-amber-300/10 px-4 py-3">AI search readiness</div>
+              </div>
+            </div>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-xs text-charcoal-300">
+            <span>Created by Dot H Digital · © {new Date().getFullYear()}</span>
+            <Link to="/terms" className="text-charcoal-200 hover:text-white">Terms</Link>
+            <Link to="/privacy" className="text-charcoal-200 hover:text-white">Privacy</Link>
+          </div>
+        </section>
+
+        <section className="flex items-center justify-center border-t border-slate-200 bg-white px-6 py-10 shadow-[0_-16px_40px_rgba(15,23,42,0.04)] sm:px-10 lg:border-l lg:border-t-0 lg:shadow-[-16px_0_40px_rgba(15,23,42,0.04)]">
+          <div className="w-full max-w-md">
+            <div className="mb-6 text-right text-xs text-charcoal-400 lg:hidden">
+              <Link to="/terms" className="font-medium text-brand-700 hover:underline">Terms</Link>
+              <span className="mx-2">·</span>
+              <Link to="/privacy" className="font-medium text-brand-700 hover:underline">Privacy</Link>
+            </div>
+            {mode === "verify" ? (
+              <VerifyEmailForm token={routeToken} onVerify={verifyEmail} onBack={() => setMode("signin")} />
+            ) : mode === "reset" ? (
+              <ResetPasswordForm token={routeToken} onReset={resetPassword} onBack={() => setMode("signin")} />
+            ) : mode === "forgot" ? (
+              <ForgotForm onBack={() => setMode("signin")} />
+            ) : (
+              <>
+                <div className="mb-6 flex rounded-lg bg-charcoal-100 p-1">
+                  <TabBtn active={mode === "signin"} onClick={() => setMode("signin")}>Sign in</TabBtn>
+                  <TabBtn active={mode === "signup"} onClick={() => setMode("signup")}>Create account</TabBtn>
+                </div>
+                {mode === "signin" ? (
+                  <SignInForm onLogin={login} onForgot={() => setMode("forgot")} />
+                ) : (
+                  <SignUpForm onRegister={register} onSignIn={() => setMode("signin")} />
+                )}
+              </>
+            )}
+          </div>
+        </section>
       </div>
     </div>
   );
@@ -160,8 +173,8 @@ function SignInForm({
   onLogin: (e: string, p: string) => Promise<void>;
   onForgot: () => void;
 }) {
-  const [email, setEmail] = useState("admin@webtummy.com");
-  const [password, setPassword] = useState("ChangeMe!2026");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
   const [err, setErr] = useState<{ email?: string; password?: string; form?: string }>({});
   const [verificationMessage, setVerificationMessage] = useState("");
   const [busy, setBusy] = useState(false);
@@ -245,7 +258,7 @@ function SignUpForm({
   onRegister,
   onSignIn,
 }: {
-  onRegister: (i: { name: string; companyName: string; email: string; password: string }) => Promise<string>;
+  onRegister: (i: { name: string; companyName: string; email: string; password: string; captchaToken?: string }) => Promise<string>;
   onSignIn: () => void;
 }) {
   const [name, setName] = useState("");
@@ -256,7 +269,20 @@ function SignUpForm({
   const [err, setErr] = useState<Record<string, string>>({});
   const [success, setSuccess] = useState("");
   const [busy, setBusy] = useState(false);
+  const [captchaSiteKey, setCaptchaSiteKey] = useState("");
   const canSubmit = Boolean(name && companyName && emailOk(email) && passwordValid(password) && confirm === password);
+
+  useEffect(() => {
+    let cancelled = false;
+    fetchPublicConfig()
+      .then((config) => {
+        if (!cancelled) setCaptchaSiteKey(config.recaptchaSiteKey || "");
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -270,7 +296,8 @@ function SignUpForm({
     if (Object.keys(next).length) return;
     setBusy(true);
     try {
-      setSuccess(await onRegister({ name, companyName, email, password }));
+      const captchaToken = captchaSiteKey ? await executeRecaptcha(captchaSiteKey, "register") : undefined;
+      setSuccess(await onRegister({ name, companyName, email, password, captchaToken }));
       setPassword("");
       setConfirm("");
     } catch (e) {
@@ -315,6 +342,42 @@ function SignUpForm({
       )}
     </form>
   );
+}
+
+function executeRecaptcha(siteKey: string, action: string): Promise<string> {
+  const grecaptchaWindow = window as unknown as {
+    grecaptcha?: {
+      ready: (cb: () => void) => void;
+      execute: (key: string, options: { action: string }) => Promise<string>;
+    };
+  };
+
+  function loadScript() {
+    if (document.querySelector('script[src^="https://www.google.com/recaptcha/api.js"]')) return;
+    const script = document.createElement("script");
+    script.src = `https://www.google.com/recaptcha/api.js?render=${encodeURIComponent(siteKey)}`;
+    script.async = true;
+    script.defer = true;
+    document.head.appendChild(script);
+  }
+
+  loadScript();
+
+  return new Promise((resolve, reject) => {
+    const started = Date.now();
+    const timer = window.setInterval(() => {
+      const grecaptcha = grecaptchaWindow.grecaptcha;
+      if (grecaptcha) {
+        window.clearInterval(timer);
+        grecaptcha.ready(() => {
+          grecaptcha.execute(siteKey, { action }).then(resolve).catch(reject);
+        });
+      } else if (Date.now() - started > 10000) {
+        window.clearInterval(timer);
+        reject(new Error("Captcha could not load"));
+      }
+    }, 100);
+  });
 }
 
 function ForgotForm({ onBack }: { onBack: () => void }) {
@@ -382,6 +445,8 @@ function VerifyEmailForm({
       }
       try {
         await onVerify(token);
+        window.history.replaceState(null, "", "/");
+        onBack();
       } catch (e) {
         if (!cancelled) setErr(String(e).replace(/^Error:\s*/, ""));
       } finally {
@@ -398,7 +463,7 @@ function VerifyEmailForm({
     <div>
       <h2 className="text-2xl font-bold text-charcoal-800">Verify email</h2>
       <p className="mt-1 text-sm text-charcoal-400">
-        {busy ? "Checking your verification link..." : err ? "This verification link could not be used." : "Email verified. Signing you in..."}
+        {busy ? "Checking your verification link..." : err ? "This verification link could not be used." : "Email verified. You can now sign in."}
       </p>
       {err && <div className="mt-6 rounded-lg bg-red-50 px-3 py-3 text-sm text-red-700">{err}</div>}
       {err && (
@@ -436,6 +501,10 @@ function ResetPasswordForm({
     setBusy(true);
     try {
       await onReset(token, password);
+      setPassword("");
+      setConfirm("");
+      window.history.replaceState(null, "", "/");
+      onBack();
     } catch (e) {
       setErr({ form: String(e).replace(/^Error:\s*/, "") });
     } finally {

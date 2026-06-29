@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { api } from "../api.js";
-import type { GeoKeywordAudit, GeoKeywordAuditPage, KeywordIdea, KeywordResearchRun, KeywordSerpCompetitor } from "../types.js";
+import type { AiContentGeneration, AiContentStatus, AiGenerationType, GeoKeywordAudit, GeoKeywordAuditPage, KeywordIdea, KeywordResearchRun, KeywordSerpCompetitor, OrganicGrowthPlan, OrganicGrowthTask } from "../types.js";
 import { ActionIconButton, Button, Card, StatusPill } from "../components/ui.js";
 
 function formatNumber(value: number | null | undefined): string {
@@ -36,7 +36,42 @@ function scoreTone(score: number | null | undefined): string {
   return "text-red-600";
 }
 
-type DetailTab = "workflow" | "keywords" | "competitors" | "ranking" | "page-map";
+type DetailTab = "growth" | "keywords" | "competitors" | "ranking" | "page-map";
+type ContentFixType = "h1" | "title" | "faq" | "page_schema";
+
+const CONTENT_FIX_OPTIONS: { value: ContentFixType; label: string; detail: string; apiType: AiGenerationType }[] = [
+  { value: "h1", label: "H1", detail: "Generate focused H1 options for the target page.", apiType: "h1" },
+  { value: "title", label: "SEO title", detail: "Generate search title options aligned to the keyword.", apiType: "title" },
+  { value: "faq", label: "FAQ", detail: "Generate page FAQ questions and answers.", apiType: "faq" },
+  { value: "page_schema", label: "Page schema", detail: "Generate page-level JSON-LD for the selected URL.", apiType: "page_schema" },
+];
+
+function resultText(value: unknown) {
+  if (value == null) return "";
+  return typeof value === "string" ? value : JSON.stringify(value, null, 2);
+}
+
+function SimpleResultViewer({ value }: { value: unknown }) {
+  if (!value) return <div className="text-sm text-charcoal-400">No generated output yet.</div>;
+  if (typeof value === "object" && value !== null) {
+    const entries = Object.entries(value as Record<string, unknown>);
+    return (
+      <div className="space-y-3">
+        {entries.map(([key, entry]) => (
+          <div key={key} className="rounded-lg border border-charcoal-100 bg-charcoal-50 p-3">
+            <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-charcoal-400">{key.replace(/([A-Z])/g, " $1")}</div>
+            <div className="whitespace-pre-wrap text-sm leading-6 text-charcoal-700">{typeof entry === "string" ? entry : JSON.stringify(entry, null, 2)}</div>
+          </div>
+        ))}
+      </div>
+    );
+  }
+  return <div className="whitespace-pre-wrap text-sm leading-6 text-charcoal-700">{String(value)}</div>;
+}
+
+function contentFixLabel(type: string) {
+  return CONTENT_FIX_OPTIONS.find((option) => option.apiType === type || option.value === type)?.label ?? type;
+}
 
 type PageComparison = {
   target: {
@@ -99,6 +134,51 @@ function TabButton({ active, children, onClick }: { active: boolean; children: R
     >
       {children}
     </button>
+  );
+}
+
+
+function priorityClass(priority: OrganicGrowthTask["priority"]): string {
+  if (priority === "high") return "border-red-100 bg-red-50 text-red-800";
+  if (priority === "medium") return "border-amber-100 bg-amber-50 text-amber-800";
+  return "border-green-100 bg-green-50 text-green-800";
+}
+
+function taskGroupLabel(group: OrganicGrowthTask["group"]): string {
+  const labels: Record<OrganicGrowthTask["group"], string> = {
+    create: "Create",
+    improve: "Improve",
+    fix: "Fix",
+    support: "Support",
+    track: "Track",
+  };
+  return labels[group];
+}
+
+function actionLabel(action: string): string {
+  const labels: Record<string, string> = {
+    map_pages: "Map pages first",
+    fix_blockers: "Fix blockers first",
+    create_page: "Create a page",
+    improve_page: "Improve existing page",
+    support_and_track: "Support and track",
+  };
+  return labels[action] ?? action.replace(/_/g, " ");
+}
+
+function pageTypeLabel(value: string): string {
+  return value.replace(/_/g, " ").replace(/\b\w/g, (letter) => letter.toUpperCase());
+}
+
+function GrowthStep({ index, title, active, done }: { index: number; title: string; active?: boolean; done?: boolean }) {
+  return (
+    <div className="flex min-w-0 items-center gap-3">
+      <div className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-sm font-bold ${active ? "bg-brand-600 text-white" : done ? "bg-green-100 text-green-700" : "bg-charcoal-100 text-charcoal-500"}`}>{index}</div>
+      <div className="min-w-0 flex-1">
+        <div className={`truncate text-sm font-semibold ${active ? "text-charcoal-900" : "text-charcoal-500"}`}>{title}</div>
+        <div className={`mt-1 h-1.5 rounded-full ${active ? "bg-brand-500" : done ? "bg-green-400" : "bg-charcoal-100"}`} />
+      </div>
+    </div>
   );
 }
 
@@ -205,6 +285,8 @@ function CompareDrawer({
   comparison,
   loading,
   error,
+  aiGenerating,
+  onGenerateBestSuggestions,
   onTargetUrlChange,
   onCompare,
   onClose,
@@ -214,6 +296,8 @@ function CompareDrawer({
   comparison: PageComparison | null;
   loading: boolean;
   error: string | null;
+  aiGenerating: boolean;
+  onGenerateBestSuggestions: () => void;
   onTargetUrlChange: (value: string) => void;
   onCompare: () => void;
   onClose: () => void;
@@ -309,7 +393,20 @@ function CompareDrawer({
               </div>
 
               <Card className="p-5">
-                <h3 className="font-semibold text-charcoal-700">Comparison recommendations for your page</h3>
+                <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                  <div>
+                    <h3 className="font-semibold text-charcoal-700">Comparison recommendations for your page</h3>
+                    <p className="mt-1 text-sm text-charcoal-400">Generate matched AI suggestions from this competitor comparison on demand.</p>
+                  </div>
+                  <Button onClick={onGenerateBestSuggestions} disabled={aiGenerating || !comparison}>
+                    {aiGenerating ? "Generating..." : "Generate best matched suggestions"}
+                  </Button>
+                </div>
+                {aiGenerating && (
+                  <div className="mt-3 rounded-lg border border-brand-100 bg-brand-50 px-4 py-3 text-sm text-brand-900">
+                    Creating matched H1, title, FAQ, and schema suggestions from this competitor data...
+                  </div>
+                )}
                 <div className="mt-3 grid gap-2 lg:grid-cols-2">
                   {comparison.recommendations.map((item, index) => (
                     <div key={`${item}-${index}`} className="rounded-md border border-charcoal-100 bg-white p-3 text-sm text-charcoal-600 shadow-sm">{item}</div>
@@ -351,6 +448,8 @@ export default function KeywordResearchDetail() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const [run, setRun] = useState<KeywordResearchRun | null>(null);
+  const [growthPlan, setGrowthPlan] = useState<OrganicGrowthPlan | null>(null);
+  const [growthPlanLoading, setGrowthPlanLoading] = useState(false);
   const [pageAudit, setPageAudit] = useState<GeoKeywordAudit | null>(null);
   const [pageAuditPages, setPageAuditPages] = useState<GeoKeywordAuditPage[]>([]);
   const [selected, setSelected] = useState<KeywordSerpCompetitor | null>(null);
@@ -360,7 +459,7 @@ export default function KeywordResearchDetail() {
   const [comparisonError, setComparisonError] = useState<string | null>(null);
   const [comparing, setComparing] = useState(false);
   const [pageCompareCompetitorIds, setPageCompareCompetitorIds] = useState<Record<string, string>>({});
-  const [tab, setTab] = useState<DetailTab>("workflow");
+  const [tab, setTab] = useState<DetailTab>("growth");
   const [manualPage, setManualPage] = useState("");
   const [manualPosition, setManualPosition] = useState("");
   const [manualUrl, setManualUrl] = useState("");
@@ -368,6 +467,16 @@ export default function KeywordResearchDetail() {
   const [savingManual, setSavingManual] = useState(false);
   const [creatingPageAudit, setCreatingPageAudit] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
+  const [aiStatus, setAiStatus] = useState<AiContentStatus | null>(null);
+  const [contentWizardOpen, setContentWizardOpen] = useState(false);
+  const [contentWizardStep, setContentWizardStep] = useState(1);
+  const [selectedContentFixes, setSelectedContentFixes] = useState<ContentFixType[]>(["h1", "title"]);
+  const [contentFixResults, setContentFixResults] = useState<AiContentGeneration[]>([]);
+  const [contentFixCurrent, setContentFixCurrent] = useState<ContentFixType | null>(null);
+  const [contentFixResultTab, setContentFixResultTab] = useState<ContentFixType | null>(null);
+  const [contentFixCopied, setContentFixCopied] = useState(false);
+  const [generatingContentFixes, setGeneratingContentFixes] = useState(false);
+  const [generatingComparisonFixes, setGeneratingComparisonFixes] = useState(false);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
@@ -382,6 +491,11 @@ export default function KeywordResearchDetail() {
         setManualUrl(result.run.manualUrl ?? "");
         setManualNote(result.run.manualNote ?? "");
         await loadPageAudit(result.run);
+        await loadGrowthPlan(result.run.id);
+        const storedTargetUrl = result.run.targetUrl || result.run.rankingUrl || result.run.manualUrl || "";
+        await loadStoredContentFixes(result.run, storedTargetUrl);
+        const statusResult = await api.get<AiContentStatus>("/api/ai-content/status").catch(() => null);
+        if (statusResult) setAiStatus(statusResult);
       } finally {
         setLoading(false);
       }
@@ -406,6 +520,29 @@ export default function KeywordResearchDetail() {
   const calculatedManualRank = Number(manualPage) > 0 && Number(manualPosition) > 0 ? (Number(manualPage) - 1) * 10 + Number(manualPosition) : null;
   const targetCity = cityFromLocation(run.locationName);
   const bestPage = pageAuditPages.find((page) => page.isBestCandidate) ?? pageAudit?.topPages?.[0] ?? null;
+  const contentTargetUrl = bestPage?.url || run.targetUrl || run.rankingUrl || manualUrl || "";
+  const helperRemaining = aiStatus ? Math.max(0, aiStatus.usage.helperDailyLimit - aiStatus.usage.helpersUsed) : 0;
+  const selectedContentOptions = CONTENT_FIX_OPTIONS.filter((option) => selectedContentFixes.includes(option.value));
+  const contentFixProgress = selectedContentOptions.length > 0 ? Math.round((contentFixResults.length / selectedContentOptions.length) * 100) : 0;
+  const activeContentFixResult = contentFixResults.find((item) => CONTENT_FIX_OPTIONS.find((option) => option.value === contentFixResultTab)?.apiType === item.type) ?? contentFixResults[0] ?? null;
+  const copyActiveContentFix = async () => {
+    if (!activeContentFixResult) return;
+    await navigator.clipboard.writeText(resultText(activeContentFixResult.resultJson));
+    setContentFixCopied(true);
+    window.setTimeout(() => setContentFixCopied(false), 1800);
+  };
+
+  async function loadGrowthPlan(runId: string) {
+    setGrowthPlanLoading(true);
+    try {
+      const result = await api.get<{ growthPlan: OrganicGrowthPlan }>(`/api/keyword-research/${runId}/growth-plan`);
+      setGrowthPlan(result.growthPlan);
+    } catch {
+      setGrowthPlan(null);
+    } finally {
+      setGrowthPlanLoading(false);
+    }
+  }
 
   async function loadPageAudit(sourceRun: KeywordResearchRun) {
     if (!sourceRun.websiteId) return;
@@ -426,6 +563,26 @@ export default function KeywordResearchDetail() {
     ]);
     setPageAudit(auditResult.audit);
     setPageAuditPages(pagesResult.pages);
+  }
+
+
+  async function loadStoredContentFixes(sourceRun: KeywordResearchRun, targetUrl: string) {
+    const result = await api.get<{ generations: AiContentGeneration[] }>("/api/ai-content/history").catch(() => ({ generations: [] }));
+    const allowed = new Set(CONTENT_FIX_OPTIONS.map((option) => option.apiType));
+    const matching = result.generations.filter((item) => (
+      allowed.has(item.type)
+      && (item.targetKeyword ?? "").toLowerCase() === sourceRun.seedKeyword.toLowerCase()
+    ));
+    const latestByType = new Map<string, AiContentGeneration>();
+    for (const item of matching) {
+      const existing = latestByType.get(item.type);
+      if (!existing || new Date(item.createdAt).getTime() > new Date(existing.createdAt).getTime()) latestByType.set(item.type, item);
+    }
+    const ordered = CONTENT_FIX_OPTIONS
+      .map((option) => latestByType.get(option.apiType))
+      .filter((item): item is AiContentGeneration => Boolean(item));
+    setContentFixResults(ordered);
+    setContentFixResultTab((current) => current ?? CONTENT_FIX_OPTIONS.find((option) => option.apiType === ordered[0]?.type)?.value ?? null);
   }
 
   const saveManualRank = async (event: React.FormEvent) => {
@@ -460,6 +617,8 @@ export default function KeywordResearchDetail() {
       const pagesResult = await api.get<{ pages: GeoKeywordAuditPage[] }>(`/api/geo-keyword-audits/${result.audit.id}/pages`);
       setPageAudit(result.audit);
       setPageAuditPages(pagesResult.pages);
+      await loadStoredContentFixes(run, pagesResult.pages.find((page) => page.isBestCandidate)?.url || run.targetUrl || run.rankingUrl || manualUrl || "");
+      await loadGrowthPlan(run.id);
       setTab("page-map");
     } catch (e) {
       alert(String(e));
@@ -480,6 +639,8 @@ export default function KeywordResearchDetail() {
       setManualUrl(result.run.manualUrl ?? "");
       setManualNote(result.run.manualNote ?? "");
       await loadPageAudit(result.run);
+      await loadGrowthPlan(result.run.id);
+      await loadStoredContentFixes(result.run, result.run.targetUrl || result.run.rankingUrl || result.run.manualUrl || "");
       navigate(`/keyword-insights/${result.run.id}`, { replace: true });
     } catch (e) {
       alert(String(e));
@@ -521,6 +682,109 @@ export default function KeywordResearchDetail() {
     }
   };
 
+  const toggleContentFix = (value: ContentFixType) => {
+    setSelectedContentFixes((current) => current.includes(value) ? current.filter((item) => item !== value) : [...current, value]);
+  };
+
+  const openContentWizard = () => {
+    setContentWizardStep(1);
+    setContentWizardOpen(true);
+  };
+
+  const generateContentFixes = async () => {
+    if (!run || selectedContentOptions.length === 0) return;
+    setGeneratingContentFixes(true);
+    setContentWizardStep(3);
+    setContentFixResults([]);
+    setContentFixResultTab(selectedContentOptions[0]?.value ?? null);
+    setContentFixCurrent(selectedContentOptions[0]?.value ?? null);
+    try {
+      const generated: AiContentGeneration[] = [];
+      for (const option of selectedContentOptions) {
+        setContentFixCurrent(option.value);
+        const result = await api.post<{ generation: AiContentGeneration }>("/api/ai-content/generate", {
+          websiteId: run.websiteId || null,
+          type: option.apiType,
+          topic: `${run.seedKeyword} - ${option.label} improvements`,
+          targetKeyword: run.seedKeyword,
+          targetUrl: contentTargetUrl || null,
+          languageCode: run.languageCode || "en",
+          tone: "professional",
+          notes: [
+            `Generate ${option.label} content changes for a keyword insight report.`,
+            `Target domain: ${targetDomain}.`,
+            `Search location: ${run.locationName}.`,
+            bestPage?.title ? `Current page title: ${bestPage.title}.` : "",
+            bestPage?.recommendationsJson?.length ? `Apply these recommendations: ${bestPage.recommendationsJson.slice(0, 5).join(" | ")}` : "",
+            competitors.slice(0, 5).length ? `Competitors above or relevant: ${competitors.slice(0, 5).map((competitor) => `${competitor.domain}: ${competitor.title || competitor.url}`).join(" | ")}` : "",
+          ].filter(Boolean).join("\n"),
+        });
+        generated.push(result.generation);
+        setContentFixResults([...generated]);
+        setContentFixResultTab((current) => current ?? option.value);
+      }
+      const statusResult = await api.get<AiContentStatus>("/api/ai-content/status").catch(() => null);
+      if (statusResult) setAiStatus(statusResult);
+    } catch (e) {
+      alert(String(e));
+    } finally {
+      setContentFixCurrent(null);
+      setGeneratingContentFixes(false);
+    }
+  };
+
+  const generateComparisonContentFixes = async () => {
+    if (!run || !comparison || !compareCompetitor) return;
+    const options = CONTENT_FIX_OPTIONS;
+    setSelectedContentFixes(options.map((option) => option.value));
+    setCompareCompetitor(null);
+    setContentWizardOpen(true);
+    setGeneratingComparisonFixes(true);
+    setGeneratingContentFixes(true);
+    setContentWizardStep(3);
+    setContentFixResults([]);
+    setContentFixResultTab(options[0]?.value ?? null);
+    setContentFixCurrent(options[0]?.value ?? null);
+    try {
+      const generated: AiContentGeneration[] = [];
+      for (const option of options) {
+        setContentFixCurrent(option.value);
+        const result = await api.post<{ generation: AiContentGeneration }>("/api/ai-content/generate", {
+          websiteId: run.websiteId || null,
+          type: option.apiType,
+          topic: `${run.seedKeyword} - ${option.label} competitor matched improvements`,
+          targetKeyword: run.seedKeyword,
+          targetUrl: comparison.target.url || compareTargetUrl || null,
+          languageCode: run.languageCode || "en",
+          tone: "professional",
+          notes: [
+            `Generate the best matched ${option.label} suggestion using apple-to-apple competitor comparison data.`,
+            `Target domain: ${targetDomain}. Search location: ${run.locationName}.`,
+            `Your page URL: ${comparison.target.url}. Competitor URL: ${comparison.competitor.url}.`,
+            `Your title: ${comparison.target.title || "missing"}. Competitor title: ${comparison.competitor.title || comparison.competitor.serpTitle || "missing"}.`,
+            `Your meta: ${comparison.target.metaDescription || "missing"}. Competitor meta: ${comparison.competitor.metaDescription || comparison.competitor.serpDescription || "missing"}.`,
+            `Your H1: ${comparison.target.h1.join(" | ") || "missing"}. Competitor H1: ${comparison.competitor.h1.join(" | ") || "missing"}.`,
+            `Missing headings: ${comparison.gaps.missingHeadings.slice(0, 12).join(" | ") || "none"}.`,
+            `Missing schema: ${comparison.gaps.missingSchema.join(" | ") || "none"}.`,
+            `Score gap: ${comparison.gaps.scoreGap}. Word gap: ${comparison.gaps.wordGap}. FAQ gap: ${comparison.gaps.faqGap}.`,
+            `Recommendations: ${comparison.recommendations.join(" | ")}`,
+          ].filter(Boolean).join("\n"),
+        });
+        generated.push(result.generation);
+        setContentFixResults([...generated]);
+        setContentFixResultTab((current) => current ?? option.value);
+      }
+      const statusResult = await api.get<AiContentStatus>("/api/ai-content/status").catch(() => null);
+      if (statusResult) setAiStatus(statusResult);
+    } catch (e) {
+      alert(String(e));
+    } finally {
+      setContentFixCurrent(null);
+      setGeneratingContentFixes(false);
+      setGeneratingComparisonFixes(false);
+    }
+  };
+
   return (
     <div className="space-y-6">
       <div>
@@ -555,68 +819,179 @@ export default function KeywordResearchDetail() {
       </div>
 
       <div className="flex flex-wrap gap-2">
-        <TabButton active={tab === "workflow"} onClick={() => setTab("workflow")}>Workflow</TabButton>
+        <TabButton active={tab === "growth"} onClick={() => setTab("growth")}>Growth Plan</TabButton>
         <TabButton active={tab === "keywords"} onClick={() => setTab("keywords")}>Keyword Research</TabButton>
         <TabButton active={tab === "competitors"} onClick={() => setTab("competitors")}>Competitor Analysis</TabButton>
         <TabButton active={tab === "ranking"} onClick={() => setTab("ranking")}>Domain Ranking</TabButton>
         <TabButton active={tab === "page-map"} onClick={() => setTab("page-map")}>Page Map &amp; Recommendations</TabButton>
       </div>
 
-      {tab === "workflow" && (
-        <div className="space-y-4">
-          <Card className="p-5">
-            <div className="grid gap-4 lg:grid-cols-[1.2fr_0.8fr]">
-              <div>
-                <div className="text-xs font-semibold uppercase tracking-wide text-brand-600">Guided workflow</div>
-                <h2 className="mt-2 text-xl font-bold text-charcoal-800">Turn the keyword into an execution plan</h2>
-                <p className="mt-2 text-sm text-charcoal-500">
-                  This report starts with keyword demand and SERP data, then uses your latest crawl to decide which page should target the keyword and what to fix.
-                </p>
+      {tab === "growth" && (
+        <div className="space-y-5">
+          {growthPlanLoading && <Card className="p-5 text-sm text-charcoal-400">Building organic growth plan...</Card>}
+          {!growthPlanLoading && !growthPlan && (
+            <Card className="p-6">
+              <div className="grid gap-4 lg:grid-cols-[1fr_auto] lg:items-center">
+                <div>
+                  <div className="text-xs font-semibold uppercase tracking-wide text-brand-600">Organic growth plan</div>
+                  <h2 className="mt-2 text-xl font-bold text-charcoal-900">Connect this keyword to real actions</h2>
+                  <p className="mt-2 text-sm leading-6 text-charcoal-500">Run page mapping first so Webtummy can choose whether to create a new page, improve an existing one, fix blockers, or track the result.</p>
+                </div>
+                <Button onClick={createPageAudit} disabled={creatingPageAudit || !run.websiteId}>{creatingPageAudit ? "Scoring pages..." : "Run page mapping"}</Button>
               </div>
-              <div className="flex items-start justify-end">
-                {pageAudit ? (
-                  <Button onClick={() => setTab("page-map")}>Open page recommendations</Button>
-                ) : (
-                  <Button onClick={createPageAudit} disabled={creatingPageAudit || !run.websiteId}>
-                    {creatingPageAudit ? "Scoring pages..." : "Run page mapping"}
-                  </Button>
-                )}
-              </div>
-            </div>
-          </Card>
+            </Card>
+          )}
 
-          <div className="grid gap-3 lg:grid-cols-4">
-            <Card className="p-4">
-              <div className="text-xs font-semibold uppercase tracking-wide text-brand-600">1. Demand</div>
-              <div className="mt-2 text-2xl font-bold text-charcoal-800">{formatNumber(topIdea?.avgMonthlySearches)}</div>
-              <div className="mt-1 text-sm text-charcoal-500">Top monthly search volume from keyword data.</div>
-              <button type="button" onClick={() => setTab("keywords")} className="mt-3 text-sm font-medium text-brand-600 hover:underline">Review keyword ideas</button>
-            </Card>
-            <Card className="p-4">
-              <div className="text-xs font-semibold uppercase tracking-wide text-brand-600">2. SERP</div>
-              <div className="mt-2 text-2xl font-bold text-charcoal-800">{run.competitorCount}</div>
-              <div className="mt-1 text-sm text-charcoal-500">Organic competitors captured and analyzed.</div>
-              <button type="button" onClick={() => setTab("competitors")} className="mt-3 text-sm font-medium text-brand-600 hover:underline">Review competitors</button>
-            </Card>
-            <Card className="p-4">
-              <div className="text-xs font-semibold uppercase tracking-wide text-brand-600">3. Visibility</div>
-              <div className={`mt-2 text-2xl font-bold ${run.targetRank ? "text-charcoal-800" : "text-red-600"}`}>{run.targetRank ? `#${run.targetRank}` : "Not found"}</div>
-              <div className="mt-1 text-sm text-charcoal-500">Current domain rank within the checked depth.</div>
-              <button type="button" onClick={() => setTab("ranking")} className="mt-3 text-sm font-medium text-brand-600 hover:underline">Review ranking</button>
-            </Card>
-            <Card className="p-4">
-              <div className="text-xs font-semibold uppercase tracking-wide text-brand-600">4. Execution</div>
-              <div className={`mt-2 text-2xl font-bold ${pageAudit?.averageScore ? scoreTone(pageAudit.averageScore) : "text-charcoal-400"}`}>{pageAudit?.averageScore ?? "-"}</div>
-              <div className="mt-1 text-sm text-charcoal-500">{bestPage ? `Best page: ${bestPage.title || bestPage.url}` : "Run page mapping to get the target page and fixes."}</div>
-              {pageAudit ? (
-                <button type="button" onClick={() => setTab("page-map")} className="mt-3 text-sm font-medium text-brand-600 hover:underline">Open recommendations</button>
-              ) : (
-                <button type="button" onClick={createPageAudit} disabled={creatingPageAudit || !run.websiteId} className="mt-3 text-sm font-medium text-brand-600 hover:underline disabled:text-charcoal-300">
-                  {creatingPageAudit ? "Scoring pages..." : "Run page mapping"}
-                </button>
-              )}
-            </Card>
-          </div>
+          {growthPlan && (
+            <>
+              <Card className="overflow-hidden">
+                <div className="border-b border-charcoal-100 bg-[linear-gradient(135deg,#ecfeff_0%,#f8fafc_54%,#fff7ed_100%)] p-5">
+                  <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_360px] xl:items-start">
+                    <div>
+                      <div className="text-xs font-semibold uppercase tracking-wide text-brand-700">Organic growth plan</div>
+                      <h2 className="mt-2 text-2xl font-bold text-charcoal-950">{growthPlan.summary.headline}: {actionLabel(growthPlan.opportunity.action)}</h2>
+                      <p className="mt-2 max-w-4xl text-sm leading-6 text-charcoal-600">{growthPlan.opportunity.nextAction}</p>
+                      <div className="mt-4 flex flex-wrap gap-2">
+                        {growthPlan.summary.why.map((item) => <span key={item} className="rounded-full border border-white/70 bg-white/80 px-3 py-1 text-xs font-semibold text-charcoal-700 shadow-sm">{item}</span>)}
+                      </div>
+                    </div>
+                    <div className="rounded-lg border border-white/80 bg-white/85 p-4 shadow-sm">
+                      <div className="flex items-end justify-between gap-3">
+                        <div>
+                          <div className="text-xs font-semibold uppercase tracking-wide text-charcoal-400">Opportunity</div>
+                          <div className={`mt-1 text-4xl font-bold ${scoreTone(growthPlan.opportunity.score)}`}>{growthPlan.opportunity.score}</div>
+                        </div>
+                        <div className="rounded-full bg-brand-600 px-3 py-1 text-xs font-bold text-white">{growthPlan.opportunity.label}</div>
+                      </div>
+                      <div className="mt-4 grid grid-cols-2 gap-2 text-xs text-charcoal-600">
+                        <div className="rounded-md bg-charcoal-50 p-2"><span className="block font-semibold text-charcoal-900">{formatNumber(growthPlan.opportunity.signals.volume)}</span>Volume</div>
+                        <div className="rounded-md bg-charcoal-50 p-2"><span className="block font-semibold text-charcoal-900">{growthPlan.opportunity.signals.currentRank ? `#${growthPlan.opportunity.signals.currentRank}` : "Not found"}</span>Rank</div>
+                        <div className="rounded-md bg-charcoal-50 p-2"><span className="block font-semibold text-charcoal-900">{growthPlan.opportunity.signals.bestPageScore ?? "-"}</span>Page score</div>
+                        <div className="rounded-md bg-charcoal-50 p-2"><span className="block font-semibold text-charcoal-900">{growthPlan.opportunity.signals.blockerCount}</span>Blockers</div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+                <div className="grid gap-3 p-5 md:grid-cols-5">
+                  <GrowthStep index={1} title="Demand" done={growthPlan.opportunity.signals.volume > 0} />
+                  <GrowthStep index={2} title="Page fit" active={growthPlan.opportunity.action === "map_pages" || growthPlan.opportunity.action === "create_page"} done={Boolean(growthPlan.bestPage)} />
+                  <GrowthStep index={3} title="Competitor gap" active={growthPlan.opportunity.action === "improve_page"} done={Boolean(growthPlan.topCompetitor)} />
+                  <GrowthStep index={4} title="Fix and support" active={growthPlan.opportunity.action === "fix_blockers"} done={growthPlan.opportunity.signals.blockerCount === 0} />
+                  <GrowthStep index={5} title="Track" active={growthPlan.opportunity.action === "support_and_track"} done={Boolean(run.previousRank || run.rankChange)} />
+                </div>
+              </Card>
+
+              <div className="grid gap-4 xl:grid-cols-[minmax(0,1.35fr)_minmax(320px,0.75fr)]">
+                <div className="space-y-4">
+                  <Card className="overflow-hidden">
+                    <div className="border-b border-charcoal-100 px-5 py-4">
+                      <h3 className="font-semibold text-charcoal-800">Do these next</h3>
+                      <p className="mt-1 text-sm text-charcoal-500">Short action list ordered around fastest organic growth, not more keyword browsing.</p>
+                    </div>
+                    <div className="divide-y divide-charcoal-100">
+                      {growthPlan.tasks.map((task) => (
+                        <div key={task.id} className="grid gap-3 p-5 lg:grid-cols-[120px_minmax(0,1fr)_auto] lg:items-start">
+                          <div className="flex flex-wrap gap-2 lg:block lg:space-y-2">
+                            <span className="inline-flex rounded-full border border-brand-100 bg-brand-50 px-2.5 py-1 text-xs font-bold text-brand-700">{taskGroupLabel(task.group)}</span>
+                            <span className={`inline-flex rounded-full border px-2.5 py-1 text-xs font-bold ${priorityClass(task.priority)}`}>{task.priority}</span>
+                          </div>
+                          <div className="min-w-0">
+                            <div className="font-semibold text-charcoal-900">{task.title}</div>
+                            <p className="mt-1 text-sm leading-6 text-charcoal-600">{task.detail}</p>
+                            <div className="mt-2 text-xs font-medium text-charcoal-400">Impact: {task.impact}</div>
+                            {task.url && <a href={task.url} target="_blank" rel="noreferrer" className="mt-2 block truncate text-sm font-medium text-brand-600 hover:underline">{task.url}</a>}
+                          </div>
+                          <div className="flex gap-2 lg:justify-end">
+                            {task.group === "create" || task.group === "improve" || task.group === "support" ? <Button variant="ghost" onClick={openContentWizard}>Generate fixes</Button> : null}
+                            {task.group === "fix" ? <Button variant="ghost" onClick={() => setTab("page-map")}>Open map</Button> : null}
+                            {task.group === "track" ? <Button variant="ghost" onClick={refreshRun} disabled={refreshing || !canRefreshKeyword(run)}>{refreshing ? "Refreshing..." : "Refresh"}</Button> : null}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </Card>
+
+                  <Card className="overflow-hidden">
+                    <div className="border-b border-charcoal-100 px-5 py-4">
+                      <h3 className="font-semibold text-charcoal-800">Keyword clusters to build around</h3>
+                      <p className="mt-1 text-sm text-charcoal-500">The app groups ideas into page types so users know what to publish or improve.</p>
+                    </div>
+                    <div className="grid gap-3 p-5 lg:grid-cols-2">
+                      {growthPlan.clusters.map((cluster) => (
+                        <div key={cluster.name} className="rounded-lg border border-charcoal-100 bg-charcoal-50 p-4">
+                          <div className="flex items-start justify-between gap-3">
+                            <div>
+                              <div className="font-semibold text-charcoal-900">{cluster.name}</div>
+                              <div className="mt-1 text-xs font-semibold uppercase tracking-wide text-brand-600">{pageTypeLabel(cluster.pageType)}</div>
+                            </div>
+                            <span className="rounded-full bg-white px-2.5 py-1 text-xs font-semibold text-charcoal-500 shadow-sm">{cluster.intent.replace(/_/g, " ")}</span>
+                          </div>
+                          <div className="mt-3 flex flex-wrap gap-2">
+                            {cluster.keywords.map((keyword) => <span key={keyword} className="rounded-full bg-white px-2.5 py-1 text-xs font-medium text-charcoal-700 shadow-sm">{keyword}</span>)}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </Card>
+                </div>
+
+                <div className="space-y-4">
+                  <Card className="p-5">
+                    <div className="text-xs font-semibold uppercase tracking-wide text-brand-600">Best target page</div>
+                    {growthPlan.bestPage ? (
+                      <>
+                        <h3 className="mt-2 text-lg font-bold text-charcoal-900">{growthPlan.bestPage.title || growthPlan.bestPage.url}</h3>
+                        <a href={growthPlan.bestPage.url} target="_blank" rel="noreferrer" className="mt-1 block break-all text-sm text-brand-600 hover:underline">{growthPlan.bestPage.url}</a>
+                        <div className="mt-4 grid grid-cols-3 gap-2">
+                          <StatCard label="Score" value={growthPlan.bestPage.score} tone={scoreTone(growthPlan.bestPage.score)} />
+                          <StatCard label="Intent" value={growthPlan.bestPage.intentMatch} />
+                          <StatCard label="Fixes" value={growthPlan.bestPage.recommendations.length} />
+                        </div>
+                        <div className="mt-4 space-y-2">
+                          {growthPlan.bestPage.recommendations.slice(0, 3).map((item) => <div key={item} className="rounded-md bg-charcoal-50 p-3 text-sm text-charcoal-600">{item}</div>)}
+                        </div>
+                      </>
+                    ) : (
+                      <div className="mt-3 rounded-lg border border-dashed border-brand-200 bg-brand-50 p-4 text-sm text-brand-900">
+                        No target page selected yet. Run page mapping to find whether an existing page can rank faster than creating a new one.
+                      </div>
+                    )}
+                  </Card>
+
+                  <Card className="p-5">
+                    <div className="flex items-start justify-between gap-3">
+                      <div>
+                        <div className="text-xs font-semibold uppercase tracking-wide text-cyan-700">AI search readiness</div>
+                        <div className={`mt-1 text-3xl font-bold ${scoreTone(growthPlan.aiSearch.score)}`}>{growthPlan.aiSearch.score}</div>
+                      </div>
+                      <span className="rounded-full bg-cyan-50 px-3 py-1 text-xs font-bold text-cyan-800">GEO</span>
+                    </div>
+                    <div className="mt-4 space-y-2">
+                      {growthPlan.aiSearch.checks.map((check) => (
+                        <div key={check.label} className={`rounded-lg border p-3 text-sm ${check.status === "good" ? "border-green-100 bg-green-50 text-green-800" : "border-amber-100 bg-amber-50 text-amber-900"}`}>
+                          <div className="font-semibold">{check.label}</div>
+                          {check.status !== "good" && <div className="mt-1 leading-5">{check.recommendation}</div>}
+                        </div>
+                      ))}
+                    </div>
+                  </Card>
+
+                  {growthPlan.topCompetitor && (
+                    <Card className="p-5">
+                      <div className="text-xs font-semibold uppercase tracking-wide text-violet-700">Top benchmark</div>
+                      <h3 className="mt-2 font-bold text-charcoal-900">#{growthPlan.topCompetitor.rank} {growthPlan.topCompetitor.domain}</h3>
+                      <a href={growthPlan.topCompetitor.url} target="_blank" rel="noreferrer" className="mt-1 block truncate text-sm text-brand-600 hover:underline">{growthPlan.topCompetitor.url}</a>
+                      <div className="mt-4 grid grid-cols-3 gap-2">
+                        <StatCard label="Score" value={growthPlan.topCompetitor.contentScore ?? "-"} tone={scoreTone(growthPlan.topCompetitor.contentScore)} />
+                        <StatCard label="Words" value={formatNumber(growthPlan.topCompetitor.wordCount)} />
+                        <StatCard label="FAQ" value={growthPlan.topCompetitor.faqCount} />
+                      </div>
+                    </Card>
+                  )}
+                </div>
+              </div>
+            </>
+          )}
         </div>
       )}
 
@@ -980,15 +1355,61 @@ export default function KeywordResearchDetail() {
                     </Card>
                   )}
 
-                  <Card className="p-5">
-                    <h3 className="font-semibold text-charcoal-700">Apply these first</h3>
-                    <div className="mt-3 space-y-2">
-                      {(bestPage?.recommendationsJson ?? []).slice(0, 5).map((item, index) => (
-                        <div key={`${item}-${index}`} className="rounded-md border border-charcoal-100 bg-charcoal-50 p-3 text-sm text-charcoal-600">{item}</div>
-                      ))}
-                      {(!bestPage || bestPage.recommendationsJson.length === 0) && (
-                        <div className="text-sm text-charcoal-400">No recommendations were generated for the best page.</div>
+                  <Card className="overflow-hidden">
+                    <div className="border-b border-charcoal-100 bg-[linear-gradient(135deg,#fff7ed_0%,#f8fafc_100%)] p-5">
+                      <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                        <div>
+                          <h3 className="font-semibold text-charcoal-700">Apply these first</h3>
+                          <p className="mt-1 text-sm text-charcoal-500">Turn the priority fixes into ready-to-use H1, title, FAQ, and schema changes on demand.</p>
+                        </div>
+                        <Button onClick={openContentWizard} disabled={!bestPage && !contentTargetUrl}>Generate content fixes</Button>
+                      </div>
+                    </div>
+                    <div className="p-5">
+                      {contentFixResults.length === 0 && (
+                        <div className="rounded-xl border border-dashed border-amber-200 bg-amber-50/60 p-4 text-sm text-amber-900">
+                          <div className="font-semibold">No generated content fixes yet.</div>
+                          <div className="mt-1 text-amber-800">Generate on demand to create H1, title, FAQ, and schema suggestions for this page.</div>
+                        </div>
                       )}
+                      {contentFixResults.length > 0 && (
+                        <div className="overflow-hidden rounded-xl border border-amber-100 bg-white">
+                          <div className="flex flex-col gap-3 border-b border-amber-100 bg-amber-50 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
+                            <div>
+                              <div className="text-sm font-semibold text-amber-950">Generated content fixes</div>
+                              <div className="mt-0.5 text-xs text-amber-800">Best suggested options are ready. Use tabs to review each output.</div>
+                            </div>
+                            <div className="flex gap-2">
+                              <Button variant="ghost" onClick={copyActiveContentFix}>{contentFixCopied ? "Copied" : "Copy"}</Button>
+                              <Button variant="ghost" onClick={() => { setContentWizardStep(3); setContentWizardOpen(true); }}>View generated</Button>
+                            </div>
+                          </div>
+                          <div className="border-b border-charcoal-100 px-4 pt-3">
+                            <div className="flex flex-wrap gap-2">
+                              {contentFixResults.map((item) => {
+                                const option = CONTENT_FIX_OPTIONS.find((entry) => entry.apiType === item.type);
+                                const active = activeContentFixResult?.id === item.id;
+                                return (
+                                  <button
+                                    key={item.id}
+                                    type="button"
+                                    onClick={() => { setContentFixResultTab(option?.value ?? null); setContentFixCopied(false); }}
+                                    className={`rounded-t-lg border border-b-0 px-3 py-2 text-xs font-semibold ${active ? "border-amber-200 bg-amber-50 text-amber-900" : "border-charcoal-100 bg-charcoal-50 text-charcoal-500 hover:text-charcoal-800"}`}
+                                  >
+                                    {contentFixLabel(item.type)}
+                                  </button>
+                                );
+                              })}
+                            </div>
+                          </div>
+                          <div className="p-4">
+                            {activeContentFixResult && <SimpleResultViewer value={activeContentFixResult.resultJson} />}
+                          </div>
+                        </div>
+                      )}
+                      <div className="mt-4 rounded-lg border border-amber-100 bg-amber-50 px-3 py-2 text-xs text-amber-900">
+                        Monthly helper usage: {aiStatus ? `${aiStatus.usage.helpersUsed}/${aiStatus.usage.helperDailyLimit} used · ${helperRemaining} remaining` : "loading"}. Selected fixes are generated only when the user confirms.
+                      </div>
                     </div>
                   </Card>
 
@@ -1013,6 +1434,189 @@ export default function KeywordResearchDetail() {
         </div>
       )}
 
+
+      {contentWizardOpen && (
+        <div className="fixed inset-0 z-50" role="dialog" aria-modal="true" aria-label="Generate content fixes">
+          <div className="absolute inset-0 bg-charcoal-900/55" onClick={() => !generatingContentFixes && setContentWizardOpen(false)} />
+          <div className="absolute inset-x-3 top-4 mx-auto flex max-h-[calc(100vh-2rem)] max-w-5xl flex-col overflow-hidden rounded-2xl bg-white shadow-2xl sm:top-8 sm:max-h-[calc(100vh-4rem)]">
+            <div className="border-b border-charcoal-100 bg-[linear-gradient(135deg,#fff7ed_0%,#ecfeff_100%)] px-5 py-4">
+              <div className="flex items-start justify-between gap-4">
+                <div>
+                  <div className="text-xs font-semibold uppercase tracking-wide text-amber-700">On-demand content fixes</div>
+                  <div className="mt-1 text-xl font-bold text-charcoal-900">Generate changes for this keyword page</div>
+                  <div className="mt-1 text-sm text-charcoal-500">{run.seedKeyword} · {contentTargetUrl || targetDomain}</div>
+                </div>
+                <button type="button" disabled={generatingContentFixes} onClick={() => setContentWizardOpen(false)} className="rounded-lg border border-charcoal-200 bg-white px-3 py-1.5 text-sm font-medium text-charcoal-600 hover:bg-charcoal-50 disabled:opacity-50">Close</button>
+              </div>
+              <div className="mt-4 grid gap-3 sm:grid-cols-3">
+                {["Select", "Review", "Generated"].map((label, index) => {
+                  const step = index + 1;
+                  return (
+                    <div key={label} className="flex min-w-0 items-center gap-3">
+                      <div className={`flex h-8 w-8 items-center justify-center rounded-full text-sm font-bold ${contentWizardStep === step ? "bg-amber-600 text-white" : contentWizardStep > step ? "bg-emerald-100 text-emerald-700" : "bg-charcoal-100 text-charcoal-500"}`}>{step}</div>
+                      <div className="min-w-0 flex-1">
+                        <div className={`truncate text-sm font-semibold ${contentWizardStep === step ? "text-charcoal-900" : "text-charcoal-500"}`}>{label}</div>
+                        <div className={`mt-1 h-1.5 rounded-full ${contentWizardStep === step ? "bg-amber-500" : contentWizardStep > step ? "bg-emerald-400" : "bg-charcoal-100"}`} />
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+
+            <div className="min-h-0 flex-1 overflow-y-auto p-5">
+              {contentWizardStep === 1 && (
+                <div className="space-y-5">
+                  <div>
+                    <h2 className="text-lg font-bold text-charcoal-900">Choose changes to generate</h2>
+                    <p className="mt-1 text-sm text-charcoal-500">Users opt in to each content change. Only selected items are generated and counted.</p>
+                  </div>
+                  <div className="grid gap-3 md:grid-cols-2">
+                    {CONTENT_FIX_OPTIONS.map((option) => (
+                      <button
+                        key={option.value}
+                        type="button"
+                        onClick={() => toggleContentFix(option.value)}
+                        className={`rounded-xl border p-4 text-left transition ${selectedContentFixes.includes(option.value) ? "border-amber-300 bg-amber-50 shadow-sm" : "border-charcoal-100 bg-white hover:border-amber-200 hover:bg-amber-50/40"}`}
+                      >
+                        <div className="flex items-start justify-between gap-3">
+                          <div>
+                            <div className="font-semibold text-charcoal-900">{option.label}</div>
+                            <div className="mt-2 text-sm leading-5 text-charcoal-500">{option.detail}</div>
+                          </div>
+                          <div className={`mt-1 h-5 w-5 rounded border ${selectedContentFixes.includes(option.value) ? "border-amber-500 bg-amber-500" : "border-charcoal-200 bg-white"}`} />
+                        </div>
+                      </button>
+                    ))}
+                  </div>
+                  <div className="rounded-lg border border-charcoal-100 bg-charcoal-50 p-4 text-sm text-charcoal-600">
+                    Monthly helper usage: {aiStatus ? `${aiStatus.usage.helpersUsed}/${aiStatus.usage.helperDailyLimit} used · ${helperRemaining} remaining` : "loading"}. This request will use {selectedContentFixes.length} helper generation{selectedContentFixes.length === 1 ? "" : "s"}.
+                  </div>
+                </div>
+              )}
+
+              {contentWizardStep === 2 && (
+                <div className="space-y-5">
+                  <div>
+                    <h2 className="text-lg font-bold text-charcoal-900">Review setup</h2>
+                    <p className="mt-1 text-sm text-charcoal-500">The generated changes will be stored in AI Content history for this account.</p>
+                  </div>
+                  <div className="grid gap-4 lg:grid-cols-2">
+                    <div className="rounded-xl border border-charcoal-100 bg-charcoal-50 p-4">
+                      <div className="text-xs font-semibold uppercase tracking-wide text-charcoal-500">Target page</div>
+                      <div className="mt-2 break-all text-sm font-semibold text-charcoal-900">{contentTargetUrl || "No target URL detected"}</div>
+                      <div className="mt-2 text-sm text-charcoal-500">Keyword: {run.seedKeyword}</div>
+                    </div>
+                    <div className="rounded-xl border border-amber-100 bg-amber-50 p-4">
+                      <div className="text-xs font-semibold uppercase tracking-wide text-amber-700">Selected outputs</div>
+                      <div className="mt-2 flex flex-wrap gap-2">
+                        {selectedContentOptions.map((option) => <span key={option.value} className="rounded-full bg-white px-2.5 py-1 text-xs font-semibold text-amber-800 shadow-sm">{option.label}</span>)}
+                      </div>
+                      <div className="mt-3 text-sm text-amber-900">{selectedContentFixes.length} monthly helper generation{selectedContentFixes.length === 1 ? "" : "s"} will be used.</div>
+                    </div>
+                    <div className="rounded-xl border border-cyan-100 bg-cyan-50 p-4 lg:col-span-2">
+                      <div className="text-xs font-semibold uppercase tracking-wide text-cyan-700">Recommendation context</div>
+                      <div className="mt-2 space-y-1 text-sm text-charcoal-600">
+                        {(bestPage?.recommendationsJson ?? []).slice(0, 4).map((item, index) => <div key={`${item}-${index}`}>{item}</div>)}
+                        {(!bestPage || bestPage.recommendationsJson.length === 0) && <div>No page recommendations available.</div>}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {contentWizardStep === 3 && (
+                <div className="space-y-5">
+                  <div>
+                    <h2 className="text-lg font-bold text-charcoal-900">Generated and stored</h2>
+                    <p className="mt-1 text-sm text-charcoal-500">Each result below is saved to the account AI generation history and counted in monthly helper usage.</p>
+                  </div>
+                  <div className="space-y-4">
+                    {(generatingContentFixes || contentFixResults.length > 0) && (
+                      <div className="rounded-xl border border-amber-100 bg-amber-50 p-4">
+                        <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                          <div>
+                            <div className="text-sm font-semibold text-amber-950">{generatingContentFixes ? "Generating selected content fixes" : "Generation complete"}</div>
+                            <div className="mt-1 text-xs text-amber-800">
+                              {generatingContentFixes && contentFixCurrent
+                                ? `Working on ${CONTENT_FIX_OPTIONS.find((option) => option.value === contentFixCurrent)?.label ?? "selected item"}`
+                                : `${contentFixResults.length}/${selectedContentOptions.length} items completed`}
+                            </div>
+                          </div>
+                          <div className="text-sm font-bold text-amber-900">{contentFixProgress}%</div>
+                        </div>
+                        <div className="mt-3 h-2 rounded-full bg-white">
+                          <div className="h-2 rounded-full bg-amber-500 transition-all" style={{ width: `${contentFixProgress}%` }} />
+                        </div>
+                        <div className="mt-4 grid gap-2 sm:grid-cols-2">
+                          {selectedContentOptions.map((option) => {
+                            const done = contentFixResults.some((item) => item.type === option.apiType);
+                            const active = generatingContentFixes && contentFixCurrent === option.value && !done;
+                            return (
+                              <div key={option.value} className={`flex items-center justify-between rounded-lg border px-3 py-2 text-sm ${done ? "border-emerald-100 bg-emerald-50 text-emerald-800" : active ? "border-amber-200 bg-white text-amber-900" : "border-charcoal-100 bg-white text-charcoal-500"}`}>
+                                <span className="font-medium">{option.label}</span>
+                                <span className="text-xs font-semibold">{done ? "Done" : active ? "Generating" : "Pending"}</span>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    )}
+                    {contentFixResults.length > 0 && (
+                      <div className="overflow-hidden rounded-xl border border-charcoal-100 bg-white">
+                        <div className="border-b border-charcoal-100 bg-charcoal-50 px-4 py-3">
+                          <div className="font-semibold text-charcoal-800">Suggested content</div>
+                          <div className="mt-0.5 text-xs text-charcoal-400">Review each generated change in its own tab.</div>
+                        </div>
+                        <div className="border-b border-charcoal-100 bg-white px-4 pt-3">
+                          <div className="flex flex-wrap gap-2">
+                            {contentFixResults.map((item) => {
+                              const option = CONTENT_FIX_OPTIONS.find((entry) => entry.apiType === item.type);
+                              const active = option?.value === contentFixResultTab || (!contentFixResultTab && item.id === contentFixResults[0]?.id);
+                              return (
+                                <button
+                                  key={item.id}
+                                  type="button"
+                                  onClick={() => setContentFixResultTab(option?.value ?? null)}
+                                  className={`rounded-t-lg border border-b-0 px-3 py-2 text-sm font-semibold ${active ? "border-amber-200 bg-amber-50 text-amber-900" : "border-charcoal-100 bg-charcoal-50 text-charcoal-500 hover:text-charcoal-800"}`}
+                                >
+                                  {contentFixLabel(item.type)}
+                                </button>
+                              );
+                            })}
+                          </div>
+                        </div>
+                        <div className="p-4">
+                          {activeContentFixResult && (
+                            <div className="space-y-3">
+                              <div>
+                                <div className="text-sm font-semibold text-charcoal-800">{contentFixLabel(activeContentFixResult.type)}</div>
+                                <div className="mt-0.5 text-xs text-charcoal-400">{activeContentFixResult.topic}</div>
+                              </div>
+                              <SimpleResultViewer value={activeContentFixResult.resultJson} />
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    )}
+                    {!generatingContentFixes && contentFixResults.length === 0 && <div className="text-sm text-charcoal-400">No generated output yet.</div>}
+                  </div>
+                </div>
+              )}
+            </div>
+
+            <div className="flex flex-col-reverse gap-3 border-t border-charcoal-100 bg-white px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
+              <Button type="button" variant="ghost" disabled={contentWizardStep === 1 || generatingContentFixes} onClick={() => setContentWizardStep((step) => Math.max(1, step - 1))}>Back</Button>
+              <div className="flex gap-3 sm:justify-end">
+                {contentWizardStep === 1 && <Button type="button" disabled={selectedContentFixes.length === 0} onClick={() => setContentWizardStep(2)}>Next</Button>}
+                {contentWizardStep === 2 && <Button type="button" disabled={selectedContentFixes.length === 0 || generatingContentFixes} onClick={generateContentFixes}>{generatingContentFixes ? "Generating..." : "Generate selected"}</Button>}
+                {contentWizardStep === 3 && <Button type="button" onClick={() => setContentWizardOpen(false)} disabled={generatingContentFixes}>Done</Button>}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
       <CompetitorDrawer competitor={selected} onClose={() => setSelected(null)} />
       <CompareDrawer
         competitor={compareCompetitor}
@@ -1020,6 +1624,8 @@ export default function KeywordResearchDetail() {
         comparison={comparison}
         loading={comparing}
         error={comparisonError}
+        aiGenerating={generatingComparisonFixes}
+        onGenerateBestSuggestions={generateComparisonContentFixes}
         onTargetUrlChange={setCompareTargetUrl}
         onCompare={runComparison}
         onClose={() => setCompareCompetitor(null)}

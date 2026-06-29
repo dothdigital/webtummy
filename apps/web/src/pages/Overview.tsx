@@ -1,5 +1,6 @@
 // Overview dashboard: stat cards + charts (severity pie, category bar, score trend).
 import { useEffect, useState } from "react";
+import { Link } from "react-router-dom";
 import {
   PieChart, Pie, Cell, BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer,
   LineChart, Line, CartesianGrid,
@@ -29,18 +30,42 @@ export default function Overview() {
   if (err) return <div className="rounded-lg bg-red-50 p-4 text-red-700">{err}</div>;
   if (!data) return <div className="text-charcoal-400">Loading dashboard…</div>;
 
-  const isSuper = data.role === "super_admin";
 
   return (
     <div className="space-y-6">
       <div>
         <h1 className="text-2xl font-bold text-charcoal-800">Overview</h1>
-        <p className="text-sm text-charcoal-400">Audit health across your {isSuper ? "clients and projects" : "projects"}.</p>
+        <p className="text-sm text-charcoal-400">Audit health across your projects.</p>
       </div>
 
+      {data.role !== "super_admin" && data.counts.websites === 0 && (
+        <Card className="overflow-hidden border-brand-100 bg-white">
+          <div className="grid gap-0 lg:grid-cols-[1.35fr_0.65fr]">
+            <div className="p-6">
+              <div className="text-xs font-bold uppercase tracking-wide text-brand-700">Free trial setup</div>
+              <h2 className="mt-2 text-xl font-bold text-charcoal-900">Create your first project to start the audit</h2>
+              <p className="mt-2 max-w-3xl text-sm leading-6 text-charcoal-500">
+                Your trial starts with one active website project. Add a domain, run the first crawl, then review technical SEO, content issues, AI-search readiness, keyword insights, and client-ready reports from the dashboard. Upgrade before the trial ends to keep access and continue monitoring.
+              </p>
+              <div className="mt-5 flex flex-wrap gap-3">
+                <Link to="/projects" className="inline-flex items-center justify-center rounded-lg bg-brand-600 px-4 py-2 text-sm font-bold text-white shadow-sm hover:bg-brand-700">Create new project</Link>
+                <Link to="/pricing" className="inline-flex items-center justify-center rounded-lg border border-charcoal-200 bg-white px-4 py-2 text-sm font-semibold text-charcoal-700 hover:bg-charcoal-50">View plans</Link>
+              </div>
+            </div>
+            <div className="border-t border-brand-100 bg-brand-50 p-6 lg:border-l lg:border-t-0">
+              <div className="text-sm font-bold text-charcoal-800">How the trial works</div>
+              <ul className="mt-3 space-y-2 text-sm leading-5 text-charcoal-600">
+                <li><span className="font-semibold text-charcoal-800">1.</span> Create one project with your website domain.</li>
+                <li><span className="font-semibold text-charcoal-800">2.</span> Run the crawl to collect SEO and AI-search audit data.</li>
+                <li><span className="font-semibold text-charcoal-800">3.</span> Use the reports during the trial, then upgrade to keep access active.</li>
+              </ul>
+            </div>
+          </div>
+        </Card>
+      )}
+
       {/* Stat cards */}
-      <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
-        {isSuper && <Stat label="Clients" value={data.counts.clients} />}
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
         <Stat label="Projects" value={data.counts.websites} />
         <Stat label="Crawls run" value={data.counts.crawls} />
         <Stat label="Avg site score" value={data.counts.avgScore ?? "—"} />
@@ -121,7 +146,7 @@ export default function Overview() {
           Recent crawls
         </div>
         {data.recentCrawls.length === 0 ? (
-          <div className="p-6 text-sm text-charcoal-400">No crawls yet. Add a client and run one.</div>
+          <div className="flex flex-col gap-3 p-6 text-sm text-charcoal-500 sm:flex-row sm:items-center sm:justify-between"><span>No crawls yet. Create a project and run your first audit.</span><Link to="/projects" className="inline-flex items-center justify-center rounded-lg bg-brand-600 px-3 py-2 text-sm font-semibold text-white hover:bg-brand-700">Create new project</Link></div>
         ) : (
           <div className="overflow-x-auto"><table className="w-full min-w-[600px] text-sm">
             <thead className="bg-charcoal-50 text-left text-xs uppercase text-charcoal-400">

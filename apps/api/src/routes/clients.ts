@@ -4,6 +4,8 @@ import { z } from "zod";
 import { prisma } from "@webtummy/db";
 import { hashPassword } from "../auth.js";
 import { requireAuth, requireRole } from "../middleware.js";
+import { projectClientIdForRequest } from "../project-scope.js";
+import { trialEndsFrom } from "../billing.js";
 
 export const clientsRouter = Router();
 clientsRouter.use(requireAuth, requireRole("super_admin"));
@@ -47,8 +49,16 @@ clientsRouter.post("/", async (req, res) => {
   }
 
   const result = await prisma.$transaction(async (tx) => {
+    const trialStartedAt = new Date();
     const client = await tx.client.create({
-      data: { name: d.name, contactEmail: d.contactEmail, plan: d.plan },
+      data: {
+        name: d.name,
+        contactEmail: d.contactEmail,
+        plan: d.plan === "standard" ? "basic" : d.plan,
+        aiSubscriptionStatus: "trialing",
+        trialStartedAt,
+        trialEndsAt: trialEndsFrom(trialStartedAt),
+      },
     });
     const website = await tx.website.create({
       data: { clientId: client.id, domain: site.domain, rootUrl: site.rootUrl },
@@ -83,6 +93,14 @@ clientsRouter.get("/", async (_req, res) => {
     include: { _count: { select: { websites: true, users: true } } },
   });
   res.json({ clients });
+});
+
+clientsRouter.post("/internal-projects", async (req, res) => {
+  const clientId = await projectClientIdForRequest(req);
+  if (!clientId) return res.status(400).json({ error: "project context required" });
+  const client = await prisma.client.findUnique({ where: { id: clientId } });
+  if (!client) return res.status(404).json({ error: "project context not found" });
+  res.json({ client });
 });
 
 clientsRouter.patch("/:id/active", async (req, res) => {

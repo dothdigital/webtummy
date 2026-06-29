@@ -80,15 +80,120 @@ model PasswordResetToken {
 }
 
 model Client {
-  id                  String               @id @default(cuid())
-  name                String
-  contactEmail        String?
-  plan                String               @default("standard")
-  isActive            Boolean              @default(true)
-  createdAt           DateTime             @default(now())
-  websites            Website[]
-  users               User[]
-  keywordResearchRuns KeywordResearchRun[]
+  id                    String                @id @default(cuid())
+  name                  String
+  contactEmail          String?
+  plan                  String                @default("mini")
+  aiSubscriptionStatus  String                @default("active")
+  stripeCustomerId      String?
+  stripeSubscriptionId  String?
+  trialStartedAt        DateTime?
+  trialEndsAt           DateTime?
+  manualAccessEndsAt    DateTime?
+  graceEndsAt           DateTime?
+  subscriptionSource    String                @default("trial") @db.VarChar(40)
+  offlineAutoRenew      Boolean               @default(false)
+  offlineNextRenewalAt  DateTime?
+  subscriptionCurrentPeriodEnd DateTime?
+  trialEndingSoonNotifiedAt DateTime?
+  trialExpiredNotifiedAt DateTime?
+  paymentFailedNotifiedAt DateTime?
+  manualAccessEndingSoonNotifiedAt DateTime?
+  manualAccessExpiredNotifiedAt DateTime?
+  subscriptionExpiringSoonNotifiedAt DateTime?
+  reportEmailEnabled Boolean               @default(true)
+  weeklyReportEmailEnabled Boolean         @default(true)
+  monthlyReportEmailEnabled Boolean        @default(true)
+  rankingChangeEmailEnabled Boolean        @default(true)
+  lastWeeklyReportAt DateTime?
+  lastMonthlyUsageResetAt DateTime?
+  lastMonthlyAuditAt DateTime?
+  lastMonthlyReportAt DateTime?
+  activeWebsiteLimit    Int                   @default(1)
+  extraWebsiteSlots     Int                   @default(0)
+  lastWebsiteReplacementAt DateTime?
+  isActive              Boolean               @default(true)
+  createdAt             DateTime              @default(now())
+  websites              Website[]
+  users                 User[]
+  keywordResearchRuns   KeywordResearchRun[]
+  aiContentGenerations  AiContentGeneration[]
+  aiUsageCounters       AiUsageCounter[]
+  localBusinessProfiles LocalBusinessProfile[]
+  offlinePayments       OfflinePayment[]
+  monthlyReports        MonthlyClientReport[]
+
+  @@index([plan])
+  @@index([aiSubscriptionStatus, manualAccessEndsAt])
+  @@index([stripeCustomerId])
+}
+
+model OfflinePayment {
+  id                 String   @id @default(cuid())
+  clientId           String
+  client             Client   @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  amountCents        Int
+  method             String   @db.VarChar(80)
+  duration           String   @db.VarChar(20)
+  reference          String?  @db.VarChar(255)
+  notes              String?  @db.Text
+  autoRenew          Boolean  @default(false)
+  subscriptionEndsAt DateTime
+  nextRenewalAt      DateTime?
+  status             String   @default("recorded") @db.VarChar(40)
+  createdAt          DateTime @default(now())
+
+  @@index([clientId, createdAt])
+  @@index([subscriptionEndsAt])
+}
+
+model MonthlyClientReport {
+  id          String   @id @default(cuid())
+  clientId    String
+  client      Client   @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  periodStart DateTime
+  status      String   @default("ready") @db.VarChar(40)
+  summaryJson Json     @default("{}")
+  emailSentAt DateTime?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@unique([clientId, periodStart])
+  @@index([periodStart])
+}
+
+model MaintenanceRun {
+  id          String   @id @default(cuid())
+  jobKey      String   @db.VarChar(120)
+  status      String   @db.VarChar(40)
+  startedAt   DateTime @default(now())
+  finishedAt  DateTime?
+  detailsJson Json     @default("{}")
+  error       String?  @db.Text
+
+  @@index([jobKey, startedAt])
+  @@index([status])
+}
+
+model BillingPlan {
+  id                 String   @id @default(cuid())
+  code               String   @unique @db.VarChar(40)
+  name               String   @db.VarChar(80)
+  description        String   @db.Text
+  priceMonthlyCents  Int
+  articleLimit       Int
+  helperMonthlyLimit Int      @default(1000)
+  features           Json     @default("[]")
+  stripeProductId    String?  @db.VarChar(255)
+  stripePriceId      String?  @db.VarChar(255)
+  isActive           Boolean  @default(true)
+  sortOrder          Int      @default(0)
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  @@index([isActive, sortOrder])
+  @@index([stripeProductId])
+  @@index([stripePriceId])
 }
 
 model Website {
@@ -97,6 +202,8 @@ model Website {
   client              Client                 @relation(fields: [clientId], references: [id], onDelete: Cascade)
   domain              String                 @db.VarChar(255)
   rootUrl             String                 @db.VarChar(512)
+  status              String                 @default("active") @db.VarChar(40)
+  archivedAt          DateTime?
   targetCountry       String?
   targetCities        Json                   @default("[]")
   // Owned-site override allows ignoring robots.txt (Phase 2: requires verification).
@@ -105,8 +212,13 @@ model Website {
   crawlJobs           CrawlJob[]
   keywordAudits       KeywordAuditCampaign[]
   keywordResearchRuns KeywordResearchRun[]
+  socialProfiles      SocialProfile[]
+  socialCompetitors   SocialCompetitorProfile[]
+  socialStrategies    SocialStrategy[]
+  localBusinessProfiles LocalBusinessProfile[]
 
   @@index([clientId])
+  @@index([clientId, status])
 }
 
 // ─── Crawl run ───────────────────────────────────────────────────────────────
@@ -405,6 +517,199 @@ model KeywordAuditPage {
   @@index([campaignId, totalScore])
 }
 
+// ─── Local SEO Presence ─────────────────────────────────────────────────────
+
+model LocalBusinessProfile {
+  id                       String   @id @default(cuid())
+  clientId                 String
+  client                   Client   @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  websiteId                String?
+  website                  Website? @relation(fields: [websiteId], references: [id], onDelete: SetNull)
+  businessName             String   @db.VarChar(180)
+  domain                   String   @db.VarChar(255)
+  phone                    String   @db.VarChar(80)
+  address                  String   @db.VarChar(255)
+  city                     String   @db.VarChar(120)
+  region                   String?  @db.VarChar(120)
+  country                  String   @db.VarChar(120)
+  postalCode               String?  @db.VarChar(40)
+  mainCategory             String   @db.VarChar(160)
+  services                 Json     @default("[]")
+  targetLocations          Json     @default("[]")
+  googleBusinessProfileUrl String?  @db.VarChar(512)
+  googleAverageRating      Float?
+  googleReviewCount        Int?
+  latitude                 Float?
+  longitude                Float?
+  createdAt                DateTime @default(now())
+  updatedAt                DateTime @updatedAt
+
+  keywords        LocalKeyword[]
+  competitors     LocalCompetitor[]
+  reviews         LocalReview[]
+  citations       LocalCitation[]
+  scores          LocalScore[]
+  recommendations LocalRecommendation[]
+
+  @@index([clientId])
+  @@index([websiteId])
+  @@index([domain])
+}
+
+model LocalKeyword {
+  id         String   @id @default(cuid())
+  businessId String
+  business   LocalBusinessProfile @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  keyword    String   @db.VarChar(255)
+  city       String   @db.VarChar(120)
+  country    String   @default("United States") @db.VarChar(120)
+  device     String   @default("desktop") @db.VarChar(32)
+  language   String   @default("en") @db.VarChar(16)
+  active     Boolean  @default(true)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  snapshots   LocalRankSnapshot[]
+  scores      LocalScore[]
+  competitors LocalCompetitor[]
+
+  @@index([businessId])
+  @@index([keyword, city])
+}
+
+model LocalRankSnapshot {
+  id                  String   @id @default(cuid())
+  keywordId           String
+  keyword             LocalKeyword @relation(fields: [keywordId], references: [id], onDelete: Cascade)
+  scanDate            DateTime @default(now())
+  organicPosition     Int?
+  mapsPosition        Int?
+  localPackPosition   Int?
+  foundDomain         Boolean  @default(false)
+  matchedBusinessName String?  @db.VarChar(180)
+  confidenceScore     Int      @default(0)
+  matchStatus         String   @default("no_reliable_match") @db.VarChar(40)
+  rawResponseRef      String?  @db.VarChar(255)
+  evidenceJson        Json     @default("{}")
+
+  @@index([keywordId, scanDate])
+}
+
+model LocalCompetitor {
+  id              String   @id @default(cuid())
+  businessId      String
+  business        LocalBusinessProfile @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  keywordId       String?
+  keyword         LocalKeyword? @relation(fields: [keywordId], references: [id], onDelete: SetNull)
+  competitorName  String   @db.VarChar(180)
+  domain          String?  @db.VarChar(255)
+  phone           String?  @db.VarChar(80)
+  address         String?  @db.VarChar(255)
+  rating          Float?
+  reviewCount     Int?
+  mapsPosition    Int?
+  organicPosition Int?
+  categoriesJson  Json     @default("[]")
+  evidenceJson    Json     @default("{}")
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@index([businessId])
+  @@index([keywordId])
+  @@index([domain])
+}
+
+model LocalReview {
+  id          String   @id @default(cuid())
+  businessId  String
+  business    LocalBusinessProfile @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  source      String   @db.VarChar(80)
+  reviewer    String?  @db.VarChar(180)
+  rating      Float?
+  reviewText  String?  @db.Text
+  reviewDate  DateTime?
+  sentiment   String?  @db.VarChar(40)
+  replyStatus String   @default("not_replied") @db.VarChar(40)
+  createdAt   DateTime @default(now())
+
+  @@index([businessId])
+  @@index([source])
+  @@index([reviewDate])
+}
+
+model LocalCitation {
+  id           String   @id @default(cuid())
+  businessId   String
+  business     LocalBusinessProfile @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  source       String   @db.VarChar(120)
+  found        Boolean  @default(false)
+  nameMatch    Boolean  @default(false)
+  phoneMatch   Boolean  @default(false)
+  addressMatch Boolean  @default(false)
+  websiteMatch Boolean  @default(false)
+  status       String   @default("missing") @db.VarChar(40)
+  fixUrl       String?  @db.VarChar(512)
+  notes        String?  @db.Text
+  checkedAt    DateTime @default(now())
+
+  @@unique([businessId, source])
+  @@index([businessId])
+}
+
+model LocalScore {
+  id            String   @id @default(cuid())
+  businessId    String
+  business      LocalBusinessProfile @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  keywordId     String?
+  keyword       LocalKeyword? @relation(fields: [keywordId], references: [id], onDelete: SetNull)
+  scoreDate     DateTime @default(now())
+  totalScore    Int
+  organicScore  Int      @default(0)
+  mapsScore     Int      @default(0)
+  packScore     Int      @default(0)
+  reviewScore   Int      @default(0)
+  napScore      Int      @default(0)
+  websiteScore  Int      @default(0)
+  contentScore  Int      @default(0)
+  statusLabel   String   @db.VarChar(40)
+  evidenceJson  Json     @default("{}")
+
+  @@index([businessId, scoreDate])
+  @@index([keywordId, scoreDate])
+}
+
+model LocalRecommendation {
+  id             String   @id @default(cuid())
+  businessId     String
+  business       LocalBusinessProfile @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  priority       String   @db.VarChar(20)
+  category       String   @db.VarChar(80)
+  recommendation String   @db.Text
+  expectedImpact String?  @db.Text
+  status         String   @default("open") @db.VarChar(40)
+  evidenceJson   Json     @default("{}")
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  @@index([businessId, status])
+  @@index([priority])
+}
+
+model ExternalApiCache {
+  id           String   @id @default(cuid())
+  provider     String   @db.VarChar(80)
+  endpoint     String   @db.VarChar(180)
+  cacheKey     String   @unique @db.VarChar(255)
+  requestJson  Json     @default("{}")
+  responseJson Json     @default("{}")
+  status       String   @default("ok") @db.VarChar(40)
+  fetchedAt    DateTime @default(now())
+  expiresAt    DateTime
+
+  @@index([provider, endpoint])
+  @@index([expiresAt])
+}
+
 // ─── Keyword & Competitor Intelligence ───────────────────────────────────────
 
 model KeywordResearchRun {
@@ -430,7 +735,7 @@ model KeywordResearchRun {
   device               String    @default("desktop") @db.VarChar(32)
   serpDepth            Int       @default(10)
   status               String    @default("completed")
-  source               String    @default("dataforseo")
+  source               String    @default("search_data")
   keywordCount         Int       @default(0)
   competitorCount      Int       @default(0)
   averageVolume        Int?
@@ -459,7 +764,7 @@ model KeywordIdea {
   lowTopOfPageBid    Float?
   highTopOfPageBid   Float?
   currency           String?
-  source             String             @default("dataforseo")
+  source             String             @default("search_data")
   rawJson            Json               @default("{}")
   createdAt          DateTime           @default(now())
 
@@ -493,4 +798,152 @@ model KeywordSerpCompetitor {
 
   @@index([runId])
   @@index([domain])
+}
+
+// ─── AI Content Studio ───────────────────────────────────────────────────────
+
+model AiContentGeneration {
+  id               String   @id @default(cuid())
+  clientId         String
+  client           Client   @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  userId           String?
+  websiteId        String?
+  type             String   @db.VarChar(64) // article | title | meta_description | faq | schema | ai_search
+  status           String   @default("completed") @db.VarChar(32)
+  topic            String   @db.VarChar(512)
+  targetKeyword    String?  @db.VarChar(255)
+  targetUrl        String?  @db.VarChar(512)
+  languageCode     String   @default("en") @db.VarChar(16)
+  tone             String?  @db.VarChar(80)
+  prompt           String   @db.Text
+  resultJson       Json     @default("{}")
+  model            String?  @db.VarChar(120)
+  inputTokens      Int      @default(0)
+  outputTokens     Int      @default(0)
+  estimatedCostUsd Float?
+  error            String?  @db.Text
+  createdAt        DateTime @default(now())
+
+  @@index([clientId, createdAt])
+  @@index([websiteId])
+  @@index([type])
+}
+
+model AiUsageCounter {
+  id          String   @id @default(cuid())
+  clientId    String
+  client      Client   @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  periodStart DateTime
+  type        String   @db.VarChar(64) // article | helper
+  count       Int      @default(0)
+  tokens      Int      @default(0)
+  updatedAt   DateTime @updatedAt
+
+  @@unique([clientId, periodStart, type])
+  @@index([clientId, periodStart])
+}
+
+// ─── Social Strategy & Brand Visibility ──────────────────────────────────────
+
+model SocialProfile {
+  id               String   @id @default(cuid())
+  websiteId        String
+  website          Website  @relation(fields: [websiteId], references: [id], onDelete: Cascade)
+  platform         String   @db.VarChar(40)
+  profileUrl       String   @db.VarChar(512)
+  handle           String?  @db.VarChar(120)
+  displayName      String?  @db.VarChar(180)
+  bio              String?  @db.Text
+  followerCount    Int?
+  postingFrequency String?  @db.VarChar(80)
+  lastPostAt       DateTime?
+  websiteLinked    Boolean  @default(false)
+  profileComplete  Boolean  @default(false)
+  brandConsistent  Boolean  @default(false)
+  notes            String?  @db.Text
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  @@unique([websiteId, platform])
+  @@index([websiteId])
+}
+
+model SocialCompetitorProfile {
+  id               String   @id @default(cuid())
+  websiteId        String
+  website          Website  @relation(fields: [websiteId], references: [id], onDelete: Cascade)
+  competitorName   String   @db.VarChar(180)
+  competitorDomain String?  @db.VarChar(255)
+  platform         String   @db.VarChar(40)
+  profileUrl       String?  @db.VarChar(512)
+  followerCount    Int?
+  postingFrequency String?  @db.VarChar(80)
+  engagementLevel  String?  @db.VarChar(80)
+  contentThemes    Json     @default("[]")
+  notes            String?  @db.Text
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  @@index([websiteId])
+  @@index([competitorDomain])
+}
+
+model SocialStrategy {
+  id                  String   @id @default(cuid())
+  websiteId           String
+  website             Website  @relation(fields: [websiteId], references: [id], onDelete: Cascade)
+  goal                String   @db.VarChar(160)
+  audience            String?  @db.VarChar(255)
+  platforms           Json     @default("[]")
+  postingFrequency    String?  @db.VarChar(120)
+  tone                String?  @db.VarChar(80)
+  monthlyTheme        String?  @db.VarChar(255)
+  socialScore         Int      @default(0)
+  profileScore        Int      @default(0)
+  consistencyScore    Int      @default(0)
+  activityScore       Int      @default(0)
+  competitorScore     Int      @default(0)
+  seoAlignmentScore   Int      @default(0)
+  recommendationsJson Json     @default("[]")
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+
+  pillars SocialContentPillar[]
+  posts   SocialCalendarPost[]
+
+  @@index([websiteId])
+  @@index([createdAt])
+}
+
+model SocialContentPillar {
+  id          String         @id @default(cuid())
+  strategyId  String
+  strategy    SocialStrategy @relation(fields: [strategyId], references: [id], onDelete: Cascade)
+  title       String         @db.VarChar(160)
+  description String         @db.Text
+  formatsJson Json           @default("[]")
+  createdAt   DateTime       @default(now())
+
+  @@index([strategyId])
+}
+
+model SocialCalendarPost {
+  id                String         @id @default(cuid())
+  strategyId        String
+  strategy          SocialStrategy @relation(fields: [strategyId], references: [id], onDelete: Cascade)
+  platform          String         @db.VarChar(40)
+  publishDate       DateTime
+  topic             String         @db.VarChar(255)
+  caption           String         @db.Text
+  creativeDirection String?        @db.Text
+  cta               String?        @db.VarChar(180)
+  targetKeyword     String?        @db.VarChar(255)
+  targetUrl         String?        @db.VarChar(512)
+  funnelStage       String         @default("awareness") @db.VarChar(60)
+  status            String         @default("planned") @db.VarChar(40)
+  createdAt         DateTime       @default(now())
+  updatedAt         DateTime       @updatedAt
+
+  @@index([strategyId])
+  @@index([publishDate])
 }

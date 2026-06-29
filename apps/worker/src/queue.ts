@@ -1,13 +1,24 @@
 // BullMQ queue + shared Redis connection. The API enqueues `crawl:start` jobs here;
 // this worker process consumes them.
 import { Queue } from "bullmq";
-import IORedis from "ioredis";
 import { config, CRAWL_QUEUE } from "./config.js";
 
-export const connection = new IORedis(config.redisUrl, { maxRetriesPerRequest: null });
+function redisConnectionOptions() {
+  const url = new URL(config.redisUrl);
+  return {
+    host: url.hostname,
+    port: Number(url.port || 6379),
+    username: url.username ? decodeURIComponent(url.username) : undefined,
+    password: url.password ? decodeURIComponent(url.password) : undefined,
+    db: url.pathname && url.pathname !== "/" ? Number(url.pathname.slice(1)) || 0 : 0,
+    maxRetriesPerRequest: null,
+  };
+}
+
+export const connection = redisConnectionOptions();
 
 export interface CrawlJobData {
   crawlJobId: string;
 }
 
-export const crawlQueue = new Queue<CrawlJobData>(CRAWL_QUEUE, { connection });
+export const crawlQueue = new Queue<CrawlJobData, unknown, "crawl:start">(CRAWL_QUEUE, { connection });

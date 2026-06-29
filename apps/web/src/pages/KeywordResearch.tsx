@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { api } from "../api.js";
-import type { CrawlSummary, GeoKeywordAudit, GeoKeywordAuditPage, HealthReport, KeywordResearchRun, PageRow, Website } from "../types.js";
+import type { AiContentGeneration, AiGenerationType, CrawlSummary, DomainBacklinkLinks, DomainBacklinkSummary, GeoKeywordAudit, GeoKeywordAuditPage, HealthReport, KeywordResearchRun, PageRow, Website } from "../types.js";
 import { ActionIconButton, ActionIconLink, Card } from "../components/ui.js";
 
 function formatUpdatedDate(value: string | null | undefined): string {
@@ -49,12 +49,183 @@ function assetStatusClass(status: number | null): string {
   return "bg-green-100 text-green-700";
 }
 
+function formatCompactNumber(value: number | null | undefined): string {
+  if (value == null) return "-";
+  return new Intl.NumberFormat(undefined, { notation: value >= 10000 ? "compact" : "standard", maximumFractionDigits: 1 }).format(value);
+}
+
+function displayUrl(value: string | null | undefined): string {
+  if (!value) return "-";
+  try {
+    const url = new URL(value);
+    const path = url.pathname === "/" ? "" : url.pathname;
+    return (url.hostname + path).slice(0, 80);
+  } catch {
+    return value.slice(0, 80);
+  }
+}
+
 function formatBytes(bytes: number | null | undefined): string {
   if (!bytes) return "-";
   if (bytes >= 1_000_000) return `${(bytes / 1_000_000).toFixed(1)} MB`;
   if (bytes >= 1_000) return `${Math.round(bytes / 1_000)} KB`;
   return `${bytes} B`;
 }
+
+type ReadinessGenerateKey = "llms" | "organization" | "sitemap" | "robots" | "websiteSchema" | "faqSchema" | "breadcrumbSchema";
+
+const READINESS_GENERATORS: Record<ReadinessGenerateKey, { label: string; type: AiGenerationType; topic: string }> = {
+  llms: { label: "llms.txt", type: "domain_llms_txt", topic: "Generate domain llms.txt" },
+  organization: { label: "Organization schema", type: "domain_schema", topic: "Generate Organization schema" },
+  sitemap: { label: "Sitemap URLs", type: "sitemap", topic: "Generate XML sitemap from crawled pages" },
+  robots: { label: "Robots status", type: "ai_search", topic: "Generate robots.txt implementation recommendations" },
+  websiteSchema: { label: "WebSite schema", type: "domain_schema", topic: "Generate WebSite schema" },
+  faqSchema: { label: "FAQPage schema", type: "page_schema", topic: "Generate FAQPage schema" },
+  breadcrumbSchema: { label: "BreadcrumbList schema", type: "page_schema", topic: "Generate BreadcrumbList schema" },
+};
+
+function generatedText(value: unknown) {
+  if (value == null) return "";
+  return typeof value === "string" ? value : JSON.stringify(value, null, 2);
+}
+
+
+type OrganizationDetails = {
+  name: string;
+  legalName: string;
+  phone: string;
+  email: string;
+  logoUrl: string;
+  address: string;
+  sameAs: string;
+  notes: string;
+};
+
+function defaultOrganizationDetails(domain?: string | null): OrganizationDetails {
+  return { name: domain ?? "", legalName: "", phone: "", email: "", logoUrl: "", address: "", sameAs: "", notes: "" };
+}
+
+function organizationNotes(details: OrganizationDetails) {
+  return [
+    details.name ? `Organization name: ${details.name}` : "",
+    details.legalName ? `Legal name: ${details.legalName}` : "",
+    details.phone ? `Phone: ${details.phone}` : "",
+    details.email ? `Email: ${details.email}` : "",
+    details.logoUrl ? `Logo URL: ${details.logoUrl}` : "",
+    details.address ? `Address: ${details.address}` : "",
+    details.sameAs ? `Social/profile URLs: ${details.sameAs}` : "",
+    details.notes ? `Additional organization notes: ${details.notes}` : "",
+  ].filter(Boolean).join("\n");
+}
+
+function ReadinessGenerateModal({
+  activeKey,
+  organizationDetails,
+  setOrganizationDetails,
+  generated,
+  copied,
+  generating,
+  availableContext,
+  missingContext,
+  canGenerate,
+  onGenerate,
+  onCopy,
+  onClose,
+}: {
+  activeKey: ReadinessGenerateKey | null;
+  organizationDetails: OrganizationDetails;
+  setOrganizationDetails: (details: OrganizationDetails) => void;
+  generated: AiContentGeneration | null;
+  copied: boolean;
+  generating: boolean;
+  availableContext: string[];
+  missingContext: string[];
+  canGenerate: boolean;
+  onGenerate: () => void;
+  onCopy: () => void;
+  onClose: () => void;
+}) {
+  if (!activeKey) return null;
+  const config = READINESS_GENERATORS[activeKey];
+  const asksOrganization = activeKey === "organization";
+  const updateOrg = (key: keyof OrganizationDetails, value: string) => setOrganizationDetails({ ...organizationDetails, [key]: value });
+  return (
+    <div className="fixed inset-0 z-50" role="dialog" aria-modal="true" aria-label="Generate missing readiness content">
+      <div className="absolute inset-0 bg-charcoal-900/55" onClick={() => !generating && onClose()} />
+      <div className="absolute inset-x-3 top-4 mx-auto flex max-h-[calc(100vh-2rem)] max-w-4xl flex-col overflow-hidden rounded-2xl bg-white shadow-2xl sm:top-8 sm:max-h-[calc(100vh-4rem)]">
+        <div className="border-b border-charcoal-100 bg-[linear-gradient(135deg,#ecfeff_0%,#fff7ed_100%)] px-5 py-4">
+          <div className="flex items-start justify-between gap-4">
+            <div>
+              <div className="text-xs font-semibold uppercase tracking-wide text-brand-700">Missing readiness item</div>
+              <div className="mt-1 text-xl font-bold text-charcoal-900">Generate {config.label}</div>
+              <div className="mt-1 text-sm text-charcoal-600">Saved outputs can be retrieved later from <a href="/ai-content" className="font-semibold text-brand-700 hover:underline">AI Content</a> under Recent generations.</div>
+            </div>
+            <button type="button" disabled={generating} onClick={onClose} className="rounded-lg border border-charcoal-200 bg-white px-3 py-1.5 text-sm font-medium text-charcoal-600 hover:bg-charcoal-50 disabled:opacity-50">Close</button>
+          </div>
+        </div>
+        <div className="min-h-0 flex-1 space-y-4 overflow-y-auto p-5">
+          {asksOrganization && (
+            <div className="rounded-xl border border-brand-100 bg-brand-50/50 p-4">
+              <div className="font-semibold text-charcoal-900">Organization details</div>
+              <div className="mt-1 text-sm text-charcoal-500">These details help generate accurate Organization, LocalBusiness, and WebSite JSON-LD.</div>
+              <div className="mt-4 grid gap-3 md:grid-cols-2">
+                <label className="text-sm font-medium text-charcoal-700">Organization name<input value={organizationDetails.name} onChange={(e) => updateOrg("name", e.target.value)} className="mt-1 w-full rounded-lg border border-charcoal-200 px-3 py-2 text-sm outline-none focus:border-brand-400" /></label>
+                <label className="text-sm font-medium text-charcoal-700">Legal name<input value={organizationDetails.legalName} onChange={(e) => updateOrg("legalName", e.target.value)} className="mt-1 w-full rounded-lg border border-charcoal-200 px-3 py-2 text-sm outline-none focus:border-brand-400" /></label>
+                <label className="text-sm font-medium text-charcoal-700">Phone<input value={organizationDetails.phone} onChange={(e) => updateOrg("phone", e.target.value)} className="mt-1 w-full rounded-lg border border-charcoal-200 px-3 py-2 text-sm outline-none focus:border-brand-400" /></label>
+                <label className="text-sm font-medium text-charcoal-700">Email<input value={organizationDetails.email} onChange={(e) => updateOrg("email", e.target.value)} className="mt-1 w-full rounded-lg border border-charcoal-200 px-3 py-2 text-sm outline-none focus:border-brand-400" /></label>
+                <label className="text-sm font-medium text-charcoal-700 md:col-span-2">Logo URL<input value={organizationDetails.logoUrl} onChange={(e) => updateOrg("logoUrl", e.target.value)} className="mt-1 w-full rounded-lg border border-charcoal-200 px-3 py-2 text-sm outline-none focus:border-brand-400" /></label>
+                <label className="text-sm font-medium text-charcoal-700 md:col-span-2">Address<textarea value={organizationDetails.address} onChange={(e) => updateOrg("address", e.target.value)} rows={2} className="mt-1 w-full rounded-lg border border-charcoal-200 px-3 py-2 text-sm outline-none focus:border-brand-400" /></label>
+                <label className="text-sm font-medium text-charcoal-700 md:col-span-2">SameAs / social URLs<textarea value={organizationDetails.sameAs} onChange={(e) => updateOrg("sameAs", e.target.value)} rows={2} placeholder="One URL per line" className="mt-1 w-full rounded-lg border border-charcoal-200 px-3 py-2 text-sm outline-none focus:border-brand-400" /></label>
+                <label className="text-sm font-medium text-charcoal-700 md:col-span-2">Extra notes<textarea value={organizationDetails.notes} onChange={(e) => updateOrg("notes", e.target.value)} rows={2} className="mt-1 w-full rounded-lg border border-charcoal-200 px-3 py-2 text-sm outline-none focus:border-brand-400" /></label>
+              </div>
+            </div>
+          )}
+          {!asksOrganization && (
+            <div className="rounded-xl border border-charcoal-100 bg-charcoal-50 p-4 text-sm text-charcoal-600">
+              This will create implementation-ready content for the missing item only. It does not automatically publish files or schema to the website.
+            </div>
+          )}
+          <div className="grid gap-3 md:grid-cols-2">
+            <div className="rounded-xl border border-emerald-100 bg-emerald-50/70 p-4">
+              <div className="text-sm font-semibold text-emerald-950">Available context</div>
+              <div className="mt-2 space-y-1 text-sm text-emerald-900">
+                {availableContext.length > 0 ? availableContext.map((item) => <div key={item}>{item}</div>) : <div>No usable context detected yet.</div>}
+              </div>
+            </div>
+            <div className="rounded-xl border border-amber-100 bg-amber-50/80 p-4">
+              <div className="text-sm font-semibold text-amber-950">Missing context</div>
+              <div className="mt-2 space-y-1 text-sm text-amber-900">
+                {missingContext.length > 0 ? missingContext.map((item) => <div key={item}>{item}</div>) : <div>No major missing context for this output.</div>}
+              </div>
+            </div>
+          </div>
+          {!canGenerate && (
+            <div className="rounded-xl border border-red-100 bg-red-50 p-4 text-sm text-red-800">
+              Add the missing required context above before generating. This prevents empty outputs such as blank sections, priority pages, or sitemap URLs.
+            </div>
+          )}
+          {generated && (
+            <div className="rounded-xl border border-emerald-100 bg-emerald-50/70 p-4">
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                <div>
+                  <div className="text-sm font-semibold text-emerald-950">Generated AI content</div>
+                  <div className="mt-0.5 text-xs text-emerald-800">Stored in AI Content history as: {generated.topic}</div>
+                </div>
+                <button type="button" onClick={onCopy} className="rounded-full border border-emerald-200 bg-white px-3 py-1 text-xs font-semibold text-emerald-700 hover:bg-emerald-50">{copied ? "Copied" : "Copy"}</button>
+              </div>
+              <pre className="mt-3 max-h-72 overflow-auto whitespace-pre-wrap rounded-lg border border-emerald-100 bg-white p-3 text-xs leading-5 text-charcoal-700">{generatedText(generated.resultJson)}</pre>
+            </div>
+          )}
+        </div>
+        <div className="flex flex-col-reverse gap-3 border-t border-charcoal-100 bg-white px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
+          <div className="text-xs text-charcoal-500">Future access: AI Content → Recent generations → search by this project/topic.</div>
+          <button type="button" onClick={onGenerate} disabled={generating || !canGenerate} className="rounded-lg bg-brand-600 px-4 py-2 text-sm font-semibold text-white hover:bg-brand-700 disabled:opacity-60">{generating ? "Generating..." : generated ? "Generate again" : "Generate content"}</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 
 function StatBox({ label, value, tone = "text-charcoal-800" }: { label: string; value: React.ReactNode; tone?: string }) {
   return (
@@ -86,10 +257,60 @@ function latestKeywordRuns(runs: KeywordResearchRun[]): KeywordResearchRun[] {
   return [...latest.values()];
 }
 
+
+function RankMovement({ change }: { change: number | null | undefined }) {
+  if (change == null || change === 0) return <span className="text-xs font-semibold text-charcoal-400">-</span>;
+  const improved = change < 0;
+  return (
+    <span className={`inline-flex items-center gap-1 rounded-full px-2 py-1 text-xs font-bold ${improved ? "bg-green-50 text-green-700" : "bg-red-50 text-red-700"}`}>
+      <span>{improved ? "▲" : "▼"}</span>
+      <span>{Math.abs(change)}</span>
+    </span>
+  );
+}
+
 function visibilityFor(rank: number | null): string {
   if (!rank) return "0%";
   const value = Math.max(0.01, ((101 - Math.min(rank, 100)) / 100) * 0.2);
   return `${value.toFixed(2)}%`;
+}
+
+function visibilityPoints(rank: number | null): number {
+  if (!rank || rank > 100) return 0;
+  if (rank <= 3) return 1;
+  if (rank <= 10) return 0.35;
+  if (rank <= 20) return 0.12;
+  return 0.02;
+}
+
+function previousRankFor(run: KeywordResearchRun): number | null {
+  const rank = rankFor(run);
+  if (!rank || run.rankChange == null) return rank;
+  return Math.max(1, rank - run.rankChange);
+}
+
+function visibilityPercent(runs: KeywordResearchRun[], previous = false): number {
+  const completed = runs.filter((run) => run.status === "completed");
+  if (!completed.length) return 0;
+  const total = completed.reduce((sum, run) => sum + visibilityPoints(previous ? previousRankFor(run) : rankFor(run)), 0);
+  return (total / completed.length) * 100;
+}
+
+function rankBucketStats(runs: KeywordResearchRun[], maxRank: number) {
+  const completed = runs.filter((run) => run.status === "completed");
+  let count = 0;
+  let gained = 0;
+  let lost = 0;
+  for (const run of completed) {
+    const current = rankFor(run);
+    const previous = previousRankFor(run);
+    const nowIn = Boolean(current && current <= maxRank);
+    const wasIn = Boolean(previous && previous <= maxRank);
+    if (nowIn) count += 1;
+    if (nowIn && !wasIn) gained += 1;
+    if (!nowIn && wasIn) lost += 1;
+  }
+  return { count, gained, lost };
 }
 
 function latestCrawl(website: Website | undefined) {
@@ -139,6 +360,65 @@ function Metric({
       <div className="text-[11px] font-semibold uppercase tracking-wide text-charcoal-400">{label}</div>
       <div className={`mt-1 text-2xl font-bold leading-none ${tone}`}>{value}</div>
       {detail && <div className="mt-1 text-xs text-charcoal-500">{detail}</div>}
+    </div>
+  );
+}
+
+function BacklinkKpiBlock({ label, value, gained, broken, lost }: { label: string; value: React.ReactNode; gained: React.ReactNode; broken: React.ReactNode; lost: React.ReactNode }) {
+  return (
+    <div className="rounded-lg border border-charcoal-100 bg-white p-4 shadow-sm">
+      <div className="text-xs font-semibold uppercase tracking-wide text-charcoal-400">{label}</div>
+      <div className="mt-1 text-3xl font-bold leading-none text-charcoal-900">{value}</div>
+      <div className="mt-4 grid grid-cols-3 gap-2 text-center">
+        <MiniBacklinkStat label="New" value={gained} tone="text-green-700" />
+        <MiniBacklinkStat label="Broken" value={broken} tone="text-red-700" />
+        <MiniBacklinkStat label="Lost" value={lost} tone="text-amber-700" />
+      </div>
+    </div>
+  );
+}
+
+function MiniBacklinkStat({ label, value, tone }: { label: string; value: React.ReactNode; tone: string }) {
+  return (
+    <div className="rounded-md bg-charcoal-50 px-2 py-2">
+      <div className={`text-lg font-bold leading-none ${tone}`}>{value}</div>
+      <div className="mt-1 text-[10px] font-semibold uppercase tracking-wide text-charcoal-400">{label}</div>
+    </div>
+  );
+}
+
+function ToxicityPill({ score }: { score: number | null }) {
+  const tone = score == null ? "bg-charcoal-100 text-charcoal-500" : score >= 50 ? "bg-red-50 text-red-700" : score >= 35 ? "bg-amber-50 text-amber-700" : "bg-green-50 text-green-700";
+  return <span className={`inline-flex min-w-10 justify-center rounded-full px-2 py-1 text-xs font-bold ${tone}`}>{score ?? "-"}</span>;
+}
+
+function VisibilityBucket({ label, stats }: { label: string; stats: { count: number; gained: number; lost: number } }) {
+  return (
+    <div className="rounded-lg border border-charcoal-100 bg-white p-3 shadow-sm">
+      <div className="text-xs font-semibold uppercase tracking-wide text-charcoal-400">{label}</div>
+      <div className="mt-1 text-2xl font-bold leading-none text-charcoal-900">{stats.count}</div>
+      <div className="mt-3 flex items-center gap-3 text-xs">
+        <span><span className="font-bold text-green-700">{stats.gained}</span> <span className="text-charcoal-400">new</span></span>
+        <span><span className="font-bold text-red-700">{stats.lost}</span> <span className="text-charcoal-400">lost</span></span>
+      </div>
+    </div>
+  );
+}
+
+function OnPageIdeaBar({ icon, label, value, max }: { icon: IdeaIcon; label: string; value: number; max: number }) {
+  const width = max > 0 ? Math.max(4, Math.round((value / max) * 100)) : 0;
+  return (
+    <div className="rounded-md border border-charcoal-100 bg-white p-2.5">
+      <div className="flex items-center justify-between gap-3">
+        <div className="flex min-w-0 items-center gap-2">
+          <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-brand-50 text-brand-700"><IdeaIconMark icon={icon} /></span>
+          <span className="truncate text-xs font-semibold text-charcoal-700">{label}</span>
+        </div>
+        <span className="text-sm font-bold text-charcoal-900">{value}</span>
+      </div>
+      <div className="mt-2 h-2 overflow-hidden rounded-full bg-charcoal-100">
+        <div className="h-full rounded-full bg-brand-500" style={{ width: `${width}%` }} />
+      </div>
     </div>
   );
 }
@@ -222,12 +502,12 @@ function AuditInsightDrawer({ panel, onClose }: { panel: AuditDrawerPanel | null
 
   return (
     <div className="fixed inset-0 z-50">
-      <button type="button" aria-label="Close audit details" className="absolute inset-0 bg-charcoal-900/35" onClick={onClose} />
-      <aside className="absolute right-0 top-0 flex h-full w-full max-w-xl flex-col bg-white shadow-2xl">
+      <button type="button" aria-label="Close details" className="absolute inset-0 bg-charcoal-900/35" onClick={onClose} />
+      <aside className="absolute right-0 top-0 flex h-full w-full max-w-2xl flex-col bg-white shadow-2xl">
         <div className="border-b border-charcoal-100 px-6 py-5">
           <div className="flex items-start justify-between gap-4">
             <div>
-              <div className="text-xs font-semibold uppercase tracking-wide text-brand-600">Audit detail</div>
+              <div className="text-xs font-semibold uppercase tracking-wide text-brand-600">Health detail</div>
               <h2 className="mt-1 text-xl font-bold text-charcoal-800">{panel.title}</h2>
               <p className="mt-1 text-sm leading-5 text-charcoal-500">{panel.subtitle}</p>
             </div>
@@ -240,29 +520,41 @@ function AuditInsightDrawer({ panel, onClose }: { panel: AuditDrawerPanel | null
             </button>
           </div>
         </div>
+
         <div className="flex-1 space-y-4 overflow-y-auto bg-charcoal-50/70 p-6">
-          <div className="rounded-lg bg-white p-5 shadow-sm">
-            <div className={`text-4xl font-bold leading-none ${panel.tone ?? "text-charcoal-800"}`}>{panel.value}</div>
-            <div className="mt-2 text-sm font-medium text-charcoal-500">{panel.title}</div>
-          </div>
-          {panel.rows && panel.rows.length > 0 && (
+          <div className="grid gap-3 sm:grid-cols-2">
             <div className="rounded-lg bg-white p-4 shadow-sm">
-              <div className="mb-3 text-sm font-semibold text-charcoal-800">Breakdown</div>
-              <div className="divide-y divide-charcoal-100">
-                {panel.rows.map((row) => (
-                  <div key={row.label} className="flex items-center justify-between gap-4 py-2 text-sm">
-                    <span className="text-charcoal-500">{row.label}</span>
-                    <span className="font-semibold text-charcoal-800">{row.value}</span>
-                  </div>
-                ))}
-              </div>
+              <div className={`text-3xl font-bold leading-none ${panel.tone ?? "text-charcoal-800"}`}>{panel.value}</div>
+              <div className="mt-1 text-xs font-medium text-charcoal-400">{panel.title}</div>
             </div>
-          )}
-          {panel.actions && panel.actions.length > 0 && (
             <div className="rounded-lg bg-white p-4 shadow-sm">
+              <div className="text-3xl font-bold leading-none text-charcoal-800">{panel.rows?.length ?? 0}</div>
+              <div className="mt-1 text-xs font-medium text-charcoal-400">Detail rows</div>
+            </div>
+          </div>
+
+          {panel.rows && panel.rows.length > 0 ? panel.rows.map((row, index) => (
+            <div key={`${row.label}-${index}`} className="rounded-lg border border-charcoal-200 bg-white p-4 shadow-sm">
+              <div className="flex flex-wrap items-center gap-2">
+                <span className={`rounded-full px-2 py-0.5 text-xs font-semibold ${panel.tone?.includes("red") || panel.tone?.includes("rose") ? "bg-red-100 text-red-700" : panel.tone?.includes("orange") || panel.tone?.includes("amber") ? "bg-amber-100 text-amber-700" : "bg-charcoal-100 text-charcoal-600"}`}>
+                  {panel.title}
+                </span>
+                <span className="text-xs font-medium text-charcoal-400">Row {index + 1}</span>
+              </div>
+              <div className="mt-2 break-words font-medium text-charcoal-800">{row.label}</div>
+              <div className="mt-1 break-words text-xs text-brand-600">{row.value}</div>
+            </div>
+          )) : (
+            <div className="rounded-lg bg-white p-5 text-sm text-charcoal-400 shadow-sm">No details found for this section.</div>
+          )}
+
+          {panel.actions && panel.actions.length > 0 && (
+            <div className="rounded-lg border border-brand-100 bg-white p-4 shadow-sm">
               <div className="mb-3 text-sm font-semibold text-charcoal-800">Recommended next steps</div>
               <div className="space-y-2 text-sm leading-5 text-charcoal-600">
-                {panel.actions.map((action) => <div key={action}>{action}</div>)}
+                {panel.actions.map((action, index) => (
+                  <div key={`${action}-${index}`} className="rounded-md bg-brand-50 px-3 py-2 text-brand-900">{action}</div>
+                ))}
               </div>
             </div>
           )}
@@ -271,6 +563,7 @@ function AuditInsightDrawer({ panel, onClose }: { panel: AuditDrawerPanel | null
     </div>
   );
 }
+
 
 function PagePerformanceDrawer({ page, onClose }: { page: PageRow | null; onClose: () => void }) {
   if (!page) return null;
@@ -394,6 +687,103 @@ function PagePerformanceDrawer({ page, onClose }: { page: PageRow | null; onClos
               </div>
             )}
           </section>
+        </div>
+      </aside>
+    </div>
+  );
+}
+
+function BacklinkLinksDrawer({
+  backlinks,
+  loading,
+  error,
+  onClose,
+}: {
+  backlinks: DomainBacklinkLinks | null;
+  loading: boolean;
+  error: string | null;
+  onClose: () => void;
+}) {
+  return (
+    <div className="fixed inset-0 z-50">
+      <button type="button" aria-label="Close backlink list" className="absolute inset-0 bg-charcoal-900/35" onClick={onClose} />
+      <aside className="absolute right-0 top-0 flex h-full w-full max-w-5xl flex-col bg-white shadow-2xl">
+        <div className="border-b border-charcoal-100 px-6 py-5">
+          <div className="flex items-start justify-between gap-4">
+            <div>
+              <div className="text-xs font-semibold uppercase tracking-wide text-brand-600">Backlink links</div>
+              <h2 className="mt-1 text-xl font-bold text-charcoal-800">Stored source pages</h2>
+              <p className="mt-1 text-sm text-charcoal-500">
+                {backlinks?.cached ? "Cached backlink URLs" : backlinks ? "Fresh stored backlink URLs" : "Backlink URLs for the selected project"}
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={onClose}
+              className="rounded-lg border border-charcoal-200 px-3 py-1.5 text-sm font-medium text-charcoal-500 transition hover:border-charcoal-300 hover:text-charcoal-800"
+            >
+              Close
+            </button>
+          </div>
+        </div>
+
+        <div className="min-h-0 flex-1 overflow-y-auto bg-charcoal-50/70 p-6">
+          {error ? (
+            <div className="rounded-lg border border-amber-100 bg-amber-50 p-4 text-sm text-amber-800">{error}</div>
+          ) : loading ? (
+            <div className="rounded-lg bg-white p-5 text-sm text-charcoal-400 shadow-sm">Loading backlink links...</div>
+          ) : backlinks?.links.length ? (
+            <div className="overflow-hidden rounded-lg border border-charcoal-100 bg-white shadow-sm">
+              <div className="overflow-x-auto">
+                <table className="min-w-full divide-y divide-charcoal-100 text-sm">
+                  <thead className="bg-charcoal-50 text-left text-xs uppercase tracking-wide text-charcoal-400">
+                    <tr>
+                      <th className="px-4 py-3 font-semibold">Source page</th>
+                      <th className="px-4 py-3 font-semibold">Target page</th>
+                      <th className="px-4 py-3 font-semibold">Anchor</th>
+                      <th className="px-4 py-3 font-semibold">Type</th>
+                      <th className="px-4 py-3 font-semibold">Toxicity</th>
+                      <th className="px-4 py-3 font-semibold">Seen</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-charcoal-100">
+                    {backlinks.links.map((link, index) => (
+                      <tr key={(link.sourceUrl ?? "source") + "-" + index} className="align-top">
+                        <td className="max-w-[340px] px-4 py-3">
+                          {link.sourceUrl ? (
+                            <a href={link.sourceUrl} target="_blank" rel="noreferrer" className="font-medium text-brand-600 hover:underline">{displayUrl(link.sourceUrl)}</a>
+                          ) : (
+                            <span className="text-charcoal-400">-</span>
+                          )}
+                          <div className="mt-1 text-xs text-charcoal-400">{link.sourceDomain ?? "Unknown domain"}</div>
+                        </td>
+                        <td className="max-w-[300px] px-4 py-3">
+                          {link.targetUrl ? (
+                            <a href={link.targetUrl} target="_blank" rel="noreferrer" className="text-brand-600 hover:underline">{displayUrl(link.targetUrl)}</a>
+                          ) : (
+                            <span className="text-charcoal-400">-</span>
+                          )}
+                        </td>
+                        <td className="max-w-[260px] px-4 py-3 text-charcoal-600">{link.anchor || <span className="text-charcoal-400">No anchor</span>}</td>
+                        <td className="px-4 py-3">
+                          <span className={link.dofollow === false ? "rounded-full bg-charcoal-100 px-2 py-1 text-xs font-semibold text-charcoal-500" : "rounded-full bg-green-50 px-2 py-1 text-xs font-semibold text-green-700"}>
+                            {link.dofollow === false ? "Nofollow" : link.dofollow === true ? "Dofollow" : "Unknown"}
+                          </span>
+                        </td>
+                        <td className="px-4 py-3"><ToxicityPill score={link.toxicityScore} /></td>
+                        <td className="whitespace-nowrap px-4 py-3 text-charcoal-500">
+                          <div>{formatShortDate(link.firstSeen)}</div>
+                          <div className="text-xs text-charcoal-400">Last {formatShortDate(link.lastSeen)}</div>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          ) : (
+            <div className="rounded-lg bg-white p-5 text-sm text-charcoal-400 shadow-sm">No stored backlink URLs for this domain yet.</div>
+          )}
         </div>
       </aside>
     </div>
@@ -596,11 +986,41 @@ export default function KeywordResearch() {
   const [healthReport, setHealthReport] = useState<HealthReport | null>(null);
   const [crawlPages, setCrawlPages] = useState<PageRow[]>([]);
   const [crawlPageTotal, setCrawlPageTotal] = useState(0);
+  const [backlinkSummary, setBacklinkSummary] = useState<DomainBacklinkSummary | null>(null);
+  const [backlinkLinks, setBacklinkLinks] = useState<DomainBacklinkLinks | null>(null);
+  const [loadingBacklinks, setLoadingBacklinks] = useState(false);
+  const [backlinkError, setBacklinkError] = useState<string | null>(null);
+  const [showBacklinkDrawer, setShowBacklinkDrawer] = useState(false);
   const [loadingCrawlIntel, setLoadingCrawlIntel] = useState(false);
   const [auditDrawer, setAuditDrawer] = useState<AuditDrawerPanel | null>(null);
   const [performancePage, setPerformancePage] = useState<PageRow | null>(null);
+  const [activeGenerateKey, setActiveGenerateKey] = useState<ReadinessGenerateKey | null>(null);
+  const [generatingReadiness, setGeneratingReadiness] = useState<ReadinessGenerateKey | null>(null);
+  const [generatedReadiness, setGeneratedReadiness] = useState<AiContentGeneration | null>(null);
+  const [readinessCopied, setReadinessCopied] = useState(false);
+  const [organizationDetails, setOrganizationDetails] = useState<OrganizationDetails>(() => defaultOrganizationDetails());
   const [websiteId, setWebsiteId] = useState("");
   const [loading, setLoading] = useState(true);
+
+  const loadBacklinks = async (projectId: string, refresh = false) => {
+    setLoadingBacklinks(true);
+    setBacklinkError(null);
+    try {
+      const query = `websiteId=${encodeURIComponent(projectId)}&cacheOnly=true`;
+      const [summaryResult, linksResult] = await Promise.all([
+        api.get<{ summary: DomainBacklinkSummary | null }>(`/api/keyword-research/domain-backlinks?${query}`),
+        api.get<{ backlinks: DomainBacklinkLinks | null }>(`/api/keyword-research/domain-backlink-links?${query}&limit=100`),
+      ]);
+      setBacklinkSummary(summaryResult.summary);
+      setBacklinkLinks(linksResult.backlinks);
+    } catch (error) {
+      setBacklinkSummary(null);
+      setBacklinkLinks(null);
+      setBacklinkError(error instanceof Error ? error.message : "Backlink summary failed");
+    } finally {
+      setLoadingBacklinks(false);
+    }
+  };
 
   const load = async () => {
     setLoading(true);
@@ -626,6 +1046,17 @@ export default function KeywordResearch() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  useEffect(() => {
+    if (!websiteId) {
+      setBacklinkSummary(null);
+      setBacklinkLinks(null);
+      setBacklinkError(null);
+      return;
+    }
+    void loadBacklinks(websiteId);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [websiteId]);
+
   const selectedWebsite = websites.find((website) => website.id === websiteId) ?? websites[0];
   const projectRuns = selectedWebsite ? runs.filter((run) => run.websiteId === selectedWebsite.id) : runs;
   const latestProjectRuns = latestKeywordRuns(projectRuns);
@@ -645,6 +1076,30 @@ export default function KeywordResearch() {
     .sort((a, b) => a.page.totalScore - b.page.totalScore)
     .slice(0, 5);
   const onPageUpdatedAt = projectAudits[0]?.completedAt ?? projectAudits[0]?.createdAt ?? crawl?.completedAt ?? crawl?.createdAt ?? null;
+  const toxicBacklinks = (backlinkLinks?.links ?? [])
+    .filter((link) => link.toxicityScore != null)
+    .slice()
+    .sort((a, b) => (b.toxicityScore ?? -1) - (a.toxicityScore ?? -1))
+    .slice(0, 7);
+  const visibilityCurrent = visibilityPercent(latestProjectRuns);
+  const visibilityPrevious = visibilityPercent(latestProjectRuns, true);
+  const visibilityDelta = visibilityCurrent - visibilityPrevious;
+  const visibilityBuckets = [
+    { label: "Top 3", stats: rankBucketStats(latestProjectRuns, 3) },
+    { label: "Top 10", stats: rankBucketStats(latestProjectRuns, 10) },
+    { label: "Top 20", stats: rankBucketStats(latestProjectRuns, 20) },
+    { label: "Top 100", stats: rankBucketStats(latestProjectRuns, 100) },
+  ];
+  const ideaRows = [
+    { label: "Strategy", icon: "strategy" as const, value: ideas.strategy },
+    { label: "Backlinks", icon: "backlinks" as const, value: ideas.backlinks },
+    { label: "User Experience", icon: "ux" as const, value: ideas.userExperience },
+    { label: "Technical SEO", icon: "technical" as const, value: ideas.technical },
+    { label: "SERP Features", icon: "serp" as const, value: ideas.serpFeatures },
+    { label: "Semantic", icon: "semantic" as const, value: ideas.semantic },
+    { label: "Content", icon: "content" as const, value: ideas.content },
+  ];
+  const maxIdeaCount = Math.max(...ideaRows.map((row) => row.value), 0);
   const crawlIssueCount = crawlSummary?.issuesBySeverity.reduce((sum, item) => sum + item._count, 0) ?? 0;
   const nextCrawlActions = [
     (crawlSummary?.breakdown.brokenLinks ?? 0) > 0 ? "Fix broken internal links before expanding keyword coverage." : null,
@@ -653,7 +1108,97 @@ export default function KeywordResearch() {
     healthReport && !healthReport.aiSearch.llmsTxtPresent ? "Add or validate llms.txt for AI-search readiness." : null,
     healthReport?.schema.hasFAQ === false ? "Add FAQ schema to pages with question-answer content." : null,
   ].filter((action): action is string => Boolean(action));
+  const highIssues = healthReport?.details?.technicalIssues.filter((issue) => issue.severity === "high") ?? [];
+  const brokenInternalLinks = healthReport?.details?.brokenInternalLinks ?? [];
+  const orphanPages = healthReport?.details?.orphanPages ?? [];
+  const weakAnchorLinks = healthReport?.details?.weakAnchorLinks ?? [];
+  const schemaCount = (type: string) => healthReport?.schema.types[type] ?? 0;
+  const sitemapEntries = healthReport?.details?.siteFiles.sitemaps ?? [];
+  const priorityPageUrls = crawlPages.map((page) => page.url).filter(Boolean).slice(0, 25);
+  const activeContext = (() => {
+    const available = [
+      selectedWebsite?.domain ? `Domain: ${selectedWebsite.domain}` : "",
+      selectedWebsite?.rootUrl ? `Root URL: ${selectedWebsite.rootUrl}` : "",
+      healthReport?.pageCount ? `Crawled pages: ${healthReport.pageCount}` : "",
+      sitemapEntries.length > 0 ? `Sitemap files: ${sitemapEntries.map((item) => item.url).slice(0, 3).join(", ")}` : "",
+      priorityPageUrls.length > 0 ? `Priority page URLs available: ${priorityPageUrls.length}` : "",
+    ].filter(Boolean);
+    const missing: string[] = [];
+    if (!selectedWebsite?.domain) missing.push("Domain name");
+    if (!selectedWebsite?.rootUrl) missing.push("Root URL");
+    if (activeGenerateKey === "organization") {
+      if (!organizationDetails.name.trim()) missing.push("Organization name is required");
+      if (!organizationDetails.phone.trim()) missing.push("Phone number helps ContactPoint schema");
+      if (!organizationDetails.email.trim()) missing.push("Email helps ContactPoint schema");
+      if (!organizationDetails.logoUrl.trim()) missing.push("Logo URL helps Organization schema");
+      if (!organizationDetails.address.trim()) missing.push("Address helps LocalBusiness/ProfessionalService schema");
+    }
+    if (activeGenerateKey === "llms") {
+      if (sitemapEntries.length === 0) missing.push("Sitemap file URLs");
+      if (priorityPageUrls.length === 0) missing.push("Crawled priority page URLs");
+    }
+    if (activeGenerateKey === "sitemap" && priorityPageUrls.length === 0) missing.push("Crawled page URLs are required to create a sitemap");
+    if (["faqSchema", "breadcrumbSchema"].includes(activeGenerateKey ?? "") && priorityPageUrls.length === 0) missing.push("Target page URLs for page-level schema");
+    return { available, missing };
+  })();
+  const canGenerateReadiness = Boolean(activeGenerateKey) && !activeContext.missing.some((item) => item.includes("required") || item.includes("Crawled priority") || item.includes("Target page") || item.includes("Crawled page URLs"));
+  const readinessRows: { group: string; label: string; ok: boolean; detail: string; generateKey: ReadinessGenerateKey }[] = [
+    { group: "AI Search", label: "llms.txt", ok: Boolean(healthReport?.aiSearch.llmsTxtPresent), detail: healthReport?.aiSearch.llmsTxtScore == null ? "No section score" : `Section score ${healthReport.aiSearch.llmsTxtScore}`, generateKey: "llms" },
+    { group: "AI Search", label: "Organization schema", ok: Boolean(healthReport?.aiSearch.organizationSchema), detail: schemaCount("Organization") > 0 ? `${schemaCount("Organization")} detected` : "Not detected", generateKey: "organization" },
+    { group: "Technical SEO", label: "Sitemap URLs", ok: (healthReport?.aiSearch.sitemapUrls ?? 0) > 0, detail: `${healthReport?.aiSearch.sitemapUrls ?? 0} URLs found`, generateKey: "sitemap" },
+    { group: "Technical SEO", label: "Robots status", ok: healthReport?.siteFiles.robotsStatus === 200, detail: healthReport?.siteFiles.robotsStatus ? `Status ${healthReport.siteFiles.robotsStatus}` : "Not found", generateKey: "robots" },
+    { group: "Schema", label: "WebSite schema", ok: Boolean(healthReport?.schema.hasWebsite), detail: schemaCount("WebSite") > 0 ? `${schemaCount("WebSite")} detected` : "Not detected", generateKey: "websiteSchema" },
+    { group: "Schema", label: "FAQPage schema", ok: Boolean(healthReport?.faq.hasFAQSchema), detail: schemaCount("FAQPage") > 0 ? `${schemaCount("FAQPage")} detected` : healthReport?.faq.issue ?? "Not detected", generateKey: "faqSchema" },
+    { group: "Schema", label: "BreadcrumbList schema", ok: Boolean(healthReport?.breadcrumb.hasBreadcrumbSchema), detail: schemaCount("BreadcrumbList") > 0 ? `${schemaCount("BreadcrumbList")} detected` : healthReport?.breadcrumb.issue ?? "Not detected", generateKey: "breadcrumbSchema" },
+  ];
   const openAuditDrawer = (panel: AuditDrawerPanel) => setAuditDrawer(panel);
+  const openReadinessGenerator = (key: ReadinessGenerateKey) => {
+    setActiveGenerateKey(key);
+    setGeneratedReadiness(null);
+    setReadinessCopied(false);
+    if (key === "organization") setOrganizationDetails(defaultOrganizationDetails(selectedWebsite?.domain));
+  };
+  const generateReadinessContent = async () => {
+    if (!healthReport || !activeGenerateKey) return;
+    const key = activeGenerateKey;
+    const config = READINESS_GENERATORS[key];
+    setGeneratingReadiness(key);
+    setReadinessCopied(false);
+    try {
+      const result = await api.post<{ generation: AiContentGeneration }>("/api/ai-content/generate", {
+        websiteId: selectedWebsite?.id ?? null,
+        type: config.type,
+        topic: `${selectedWebsite?.domain ?? "Domain"} - ${config.topic}`,
+        targetKeyword: null,
+        targetUrl: selectedWebsite?.rootUrl ?? null,
+        languageCode: "en",
+        tone: "professional",
+        notes: [
+          `Missing readiness item: ${config.label}.`,
+          `Domain: ${selectedWebsite?.domain ?? "unknown"}.`,
+          `Page count: ${healthReport.pageCount}.`,
+          `Sitemap URLs: ${healthReport.aiSearch.sitemapUrls}. Robots status: ${healthReport.siteFiles.robotsStatus ?? "not found"}.`,
+          `Schema counts: Organization ${schemaCount("Organization")}, WebSite ${schemaCount("WebSite")}, FAQPage ${schemaCount("FAQPage")}, BreadcrumbList ${schemaCount("BreadcrumbList")}.`,
+          sitemapEntries.length ? `Sitemap files: ${sitemapEntries.map((item) => `${item.url} (${item.urlCount} URLs)`).join(" | ")}` : "",
+          priorityPageUrls.length ? `Priority page URLs: ${priorityPageUrls.join(" | ")}` : "",
+          key === "organization" ? organizationNotes(organizationDetails) : "",
+          key === "sitemap" ? "Create the sitemap XML from the provided priority page URLs only. Do not leave urls, urlCount, or sitemapXml blank." : "",
+          "Generate implementation-ready content or instructions for the missing item only.",
+        ].filter(Boolean).join("\n"),
+      });
+      setGeneratedReadiness(result.generation);
+    } catch (error) {
+      alert(String(error));
+    } finally {
+      setGeneratingReadiness(null);
+    }
+  };
+  const copyGeneratedReadiness = async () => {
+    if (!generatedReadiness) return;
+    await navigator.clipboard.writeText(generatedText(generatedReadiness.resultJson));
+    setReadinessCopied(true);
+    window.setTimeout(() => setReadinessCopied(false), 1800);
+  };
 
   useEffect(() => {
     const loadCrawlIntel = async () => {
@@ -669,7 +1214,7 @@ export default function KeywordResearch() {
         const [summary, health, pageResult] = await Promise.all([
           api.get<CrawlSummary>(`/api/crawls/${crawlForInsight.id}/summary`),
           api.get<HealthReport>(`/api/crawls/${crawlForInsight.id}/health-report`),
-          api.get<{ total: number; pages: PageRow[] }>(`/api/crawls/${crawlForInsight.id}/pages?take=8`),
+          api.get<{ total: number; pages: PageRow[] }>(`/api/crawls/${crawlForInsight.id}/pages?take=25`),
         ]);
         setCrawlSummary(summary);
         setHealthReport(health);
@@ -684,7 +1229,7 @@ export default function KeywordResearch() {
 
   return (
     <div className="space-y-6">
-      <div className="rounded-xl border border-charcoal-100 bg-white p-6 shadow-sm">
+      <div className="overflow-hidden rounded-2xl border border-cyan-100 bg-[linear-gradient(135deg,#ecfeff_0%,#fff7ed_48%,#fdf2f8_100%)] p-6 shadow-sm">
         <div className="flex flex-col gap-5 lg:flex-row lg:items-end lg:justify-between">
           <div>
             <div className="text-xs font-semibold uppercase tracking-wide text-brand-600">Domain Insight</div>
@@ -715,14 +1260,14 @@ export default function KeywordResearch() {
         <WorkflowStep step="1" title="Keyword demand" detail="Volume, CPC, competition, and bid ranges by project keyword." />
         <WorkflowStep step="2" title="SERP competitors" detail="Organic competitors by keyword, location, language, and device." />
         <WorkflowStep step="3" title="Domain visibility" detail="Where this domain appears in the checked result set." />
-        <WorkflowStep step="4" title="Page map & fixes" detail="Best target pages and practical recommendations from crawl data." />
+        <WorkflowStep step="4" title="Audit + page fixes" detail="Technical audit detail, page performance, internal links, and optimization actions." />
       </div>
 
-      <Card className="p-5">
+      <Card className="border-cyan-100 bg-cyan-50/40 p-5">
         <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4 xl:grid-cols-5">
           <Metric label="Tracked keywords" value={latestProjectRuns.length} />
           <Metric label="Avg position" value={rankedRuns.length ? Math.round(rankedRuns.reduce((sum, run) => sum + (rankFor(run) ?? 100), 0) / rankedRuns.length) : "-"} />
-          <Metric label="Not ranking" value={gapRuns.filter((run) => !rankFor(run)).length} tone="text-red-600" />
+          <Metric label="Ref. domains" value={loadingBacklinks ? "..." : formatCompactNumber(backlinkSummary?.referringDomains)} detail={backlinkSummary ? formatCompactNumber(backlinkSummary.backlinks) + " backlinks" : backlinkError ? "Backlink snapshot unavailable" : "Stored backlink data"} tone={backlinkError ? "text-amber-600" : "text-charcoal-800"} />
           <Metric label="On-page ideas" value={totalIdeas} tone={totalIdeas > 0 ? "text-amber-600" : "text-green-600"} />
           <Link to={crawl ? `/crawls/${crawl.id}` : "#"} className="rounded-lg border border-charcoal-100 bg-white px-4 py-3 shadow-sm transition hover:border-brand-200 hover:bg-brand-50">
             <div className="text-[11px] font-semibold uppercase tracking-wide text-charcoal-400">Site audit</div>
@@ -734,6 +1279,77 @@ export default function KeywordResearch() {
           <span className="text-charcoal-400">Last crawled: {formatShortDate(crawl?.completedAt ?? crawl?.createdAt)}</span>
           {crawl && <Link to={`/crawls/${crawl.id}`} className="font-medium text-brand-600 hover:underline">Open latest audit</Link>}
           {selectedWebsite && <Link to={`/projects/${selectedWebsite.id}`} className="font-medium text-brand-600 hover:underline">View previous crawls</Link>}
+        </div>
+      </Card>
+
+      <Card className="overflow-hidden">
+        <div className="flex flex-col gap-3 border-b border-charcoal-100 px-5 py-4 sm:flex-row sm:items-start sm:justify-between">
+          <div>
+            <div className="font-semibold text-charcoal-800">Backlink Authority</div>
+            <div className="mt-0.5 text-xs text-charcoal-400">Stored backlink snapshot for the selected project. Project changes only read saved data.</div>
+          </div>
+        </div>
+        <div className="p-5">
+          {backlinkError ? (
+            <div className="rounded-lg border border-amber-100 bg-amber-50 p-4 text-sm text-amber-800">{backlinkError}</div>
+          ) : (
+            <div className="space-y-5">
+              <div className="grid gap-3 md:grid-cols-2">
+                <BacklinkKpiBlock
+                  label="Referring Domains"
+                  value={loadingBacklinks ? "..." : formatCompactNumber(backlinkSummary?.referringDomains)}
+                  gained={loadingBacklinks ? "..." : formatCompactNumber(backlinkSummary?.referringDomainsNew)}
+                  broken={loadingBacklinks ? "..." : formatCompactNumber(backlinkSummary?.referringDomainsBroken ?? backlinkSummary?.brokenPages)}
+                  lost={loadingBacklinks ? "..." : formatCompactNumber(backlinkSummary?.referringDomainsLost)}
+                />
+                <BacklinkKpiBlock
+                  label="Analyzed Backlinks"
+                  value={loadingBacklinks ? "..." : formatCompactNumber(backlinkSummary?.backlinks)}
+                  gained={loadingBacklinks ? "..." : formatCompactNumber(backlinkSummary?.backlinksNew)}
+                  broken={loadingBacklinks ? "..." : formatCompactNumber(backlinkSummary?.brokenBacklinks)}
+                  lost={loadingBacklinks ? "..." : formatCompactNumber(backlinkSummary?.backlinksLost)}
+                />
+              </div>
+
+              <div className="overflow-hidden rounded-lg border border-charcoal-100 bg-white shadow-sm">
+                <div className="flex flex-col gap-3 border-b border-charcoal-100 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
+                  <div>
+                    <div className="text-sm font-semibold text-charcoal-800">Most Toxic Backlinks</div>
+                    <div className="text-xs text-charcoal-400">Sorted by parsed spam/toxicity score from stored backlink rows.</div>
+                  </div>
+                  <div className="flex items-center gap-3">
+                    <span className="text-xs text-charcoal-400">{backlinkLinks?.cached ? "Cached" : backlinkLinks ? "Fresh" : ""}</span>
+                    <ActionIconButton icon="details" label="View backlink links" onClick={() => setShowBacklinkDrawer(true)} disabled={loadingBacklinks || !backlinkLinks?.links.length} />
+                  </div>
+                </div>
+                <div className="overflow-x-auto">
+                  <table className="w-full min-w-[640px] text-sm">
+                    <thead className="bg-charcoal-50 text-left text-xs uppercase text-charcoal-400">
+                      <tr>
+                        <th className="px-4 py-2">Source URL</th>
+                        <th className="px-4 py-2 text-right">Toxicity Score</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {loadingBacklinks ? (
+                        <tr><td colSpan={2} className="px-4 py-5 text-center text-charcoal-400">Loading stored backlink rows...</td></tr>
+                      ) : toxicBacklinks.length ? toxicBacklinks.map((link, index) => (
+                        <tr key={(link.sourceUrl ?? "toxic") + index} className="border-t border-charcoal-50">
+                          <td className="max-w-[520px] px-4 py-3">
+                            {link.sourceUrl ? <a href={link.sourceUrl} target="_blank" rel="noreferrer" className="block truncate font-medium text-brand-600 hover:underline">{displayUrl(link.sourceUrl)}</a> : <span className="text-charcoal-400">Unknown source</span>}
+                            <div className="mt-1 text-xs text-charcoal-400">{link.sourceDomain ?? "Unknown domain"}</div>
+                          </td>
+                          <td className="px-4 py-3 text-right"><ToxicityPill score={link.toxicityScore} /></td>
+                        </tr>
+                      )) : (
+                        <tr><td colSpan={2} className="px-4 py-5 text-center text-charcoal-400">No toxicity scores are stored for this domain yet.</td></tr>
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
+          )}
         </div>
       </Card>
 
@@ -873,6 +1489,127 @@ export default function KeywordResearch() {
               />
             </div>
 
+            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+              {[
+                {
+                  label: "High issues",
+                  value: healthReport?.severityCounts.high ?? 0,
+                  tone: "text-red-700",
+                  bg: "bg-red-50",
+                  border: "border-red-100",
+                  detail: `${highIssues.length} detailed rows`,
+                  subtitle: "High-severity crawl issues that should be handled first.",
+                  rows: highIssues.slice(0, 20).map((issue) => ({ label: issue.message, value: issue.pageUrl ?? "Site-wide" })),
+                  actions: highIssues.slice(0, 8).map((issue) => issue.recommendation || issue.message),
+                },
+                {
+                  label: "Broken links",
+                  value: brokenInternalLinks.length || healthReport?.technical.brokenLinks || 0,
+                  tone: "text-rose-700",
+                  bg: "bg-rose-50",
+                  border: "border-rose-100",
+                  detail: "Internal targets to repair",
+                  subtitle: "Broken internal links found in the latest crawl.",
+                  rows: brokenInternalLinks.slice(0, 20).map((link) => ({ label: link.targetUrl, value: link.sourceUrl })),
+                  actions: brokenInternalLinks.length > 0 ? ["Update or remove broken targets from the source pages, then rerun the crawl."] : ["No broken internal links were found in the latest crawl."],
+                },
+                {
+                  label: "Orphan pages",
+                  value: orphanPages.length || healthReport?.internalLinking.orphanPages || 0,
+                  tone: "text-orange-700",
+                  bg: "bg-orange-50",
+                  border: "border-orange-100",
+                  detail: "Pages needing internal links",
+                  subtitle: "Pages discovered by the crawl that do not have enough internal link support.",
+                  rows: orphanPages.slice(0, 20).map((page) => ({ label: page.title || page.url, value: `Depth ${page.depth} · Score ${page.internalLinkScore ?? "-"}` })),
+                  actions: orphanPages.length > 0 ? ["Add contextual internal links from service, blog, or hub pages to these orphan URLs."] : ["No orphan pages were found in the latest crawl."],
+                },
+                {
+                  label: "Weak anchors",
+                  value: weakAnchorLinks.length || healthReport?.internalLinking.weakAnchorText || 0,
+                  tone: "text-amber-700",
+                  bg: "bg-amber-50",
+                  border: "border-amber-100",
+                  detail: "Anchor text to improve",
+                  subtitle: "Internal links using vague anchors such as click here, read more, or missing text.",
+                  rows: weakAnchorLinks.slice(0, 20).map((link) => ({ label: link.anchorText || "No anchor text", value: link.targetUrl })),
+                  actions: weakAnchorLinks.length > 0 ? ["Rewrite weak anchors so they describe the destination page clearly."] : ["No weak anchor text was found in the latest crawl."],
+                },
+              ].map((item) => (
+                <button
+                  key={item.label}
+                  type="button"
+                  onClick={() => openAuditDrawer({
+                    title: item.label,
+                    subtitle: item.subtitle,
+                    value: item.value,
+                    tone: item.tone,
+                    rows: item.rows.length > 0 ? item.rows : [{ label: item.label, value: "No matching details found" }],
+                    actions: item.actions,
+                  })}
+                  className={`rounded-xl border ${item.border} ${item.bg} p-4 text-left shadow-sm transition hover:-translate-y-0.5 hover:shadow-md focus:outline-none focus:ring-2 focus:ring-brand-200`}
+                >
+                  <div className="text-xs font-semibold uppercase tracking-wide text-charcoal-500">{item.label}</div>
+                  <div className={`mt-2 text-3xl font-bold leading-none ${item.tone}`}>{item.value}</div>
+                  <div className="mt-1 text-xs text-charcoal-500">{item.detail}</div>
+                </button>
+              ))}
+            </div>
+
+            {healthReport && (
+              <div className="grid gap-4 xl:grid-cols-3">
+                {[
+                  { title: "AI Search readiness", rows: readinessRows.filter((row) => row.group === "AI Search"), accent: "border-cyan-100 bg-cyan-50/70" },
+                  { title: "Technical SEO readiness", rows: readinessRows.filter((row) => row.group === "Technical SEO"), accent: "border-emerald-100 bg-emerald-50/70" },
+                  { title: "Schema, FAQ, breadcrumb", rows: readinessRows.filter((row) => row.group === "Schema"), accent: "border-fuchsia-100 bg-fuchsia-50/70" },
+                ].map((group) => (
+                  <div key={group.title} className={`rounded-xl border ${group.accent} p-4 shadow-sm`}>
+                    <div className="font-semibold text-charcoal-800">{group.title}</div>
+                    <div className="mt-3 space-y-2">
+                      {group.rows.map((row) => (
+                        <div key={row.label} className="flex items-start justify-between gap-3 rounded-lg bg-white px-3 py-2 shadow-sm">
+                          <div className="min-w-0">
+                            <div className="font-medium text-charcoal-700">{row.label}</div>
+                            <div className="mt-0.5 text-xs text-charcoal-400">{row.detail}</div>
+                          </div>
+                          <div className="flex shrink-0 items-center gap-2">
+                            <span className={`rounded-full px-2 py-0.5 text-xs font-semibold ${row.ok ? "bg-green-100 text-green-700" : "bg-red-100 text-red-700"}`}>
+                              {row.ok ? "Found" : "Not found"}
+                            </span>
+                            {!row.ok && (
+                              <button
+                                type="button"
+                                onClick={() => openReadinessGenerator(row.generateKey)}
+                                disabled={generatingReadiness === row.generateKey}
+                                className="rounded-full border border-brand-200 bg-brand-50 px-2 py-0.5 text-xs font-semibold text-brand-700 hover:bg-brand-100 disabled:opacity-60"
+                              >
+                                {generatingReadiness === row.generateKey ? "Generating" : "Generate"}
+                              </button>
+                            )}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            <ReadinessGenerateModal
+              activeKey={activeGenerateKey}
+              organizationDetails={organizationDetails}
+              setOrganizationDetails={setOrganizationDetails}
+              generated={generatedReadiness}
+              copied={readinessCopied}
+              generating={Boolean(generatingReadiness)}
+              availableContext={activeContext.available}
+              missingContext={activeContext.missing}
+              canGenerate={canGenerateReadiness}
+              onGenerate={generateReadinessContent}
+              onCopy={copyGeneratedReadiness}
+              onClose={() => setActiveGenerateKey(null)}
+            />
+
             <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(280px,0.55fr)]">
               <div className="rounded-lg border border-charcoal-100 bg-charcoal-50 p-4">
                 <div className="font-semibold text-charcoal-800">Crawl issue breakdown</div>
@@ -947,11 +1684,12 @@ export default function KeywordResearch() {
             <div className="rounded-full bg-charcoal-50 px-3 py-1 text-xs font-semibold text-charcoal-500">{rankedRuns.length} keywords</div>
           </div>
           <div className="overflow-x-auto">
-            <table className="w-full min-w-[620px] text-sm">
+            <table className="w-full min-w-[700px] text-sm">
               <thead className="bg-charcoal-50 text-left text-xs uppercase text-charcoal-400">
                 <tr>
                   <th className="px-5 py-2">Keyword</th>
                   <th className="px-5 py-2">Position</th>
+                  <th className="px-5 py-2">Change</th>
                   <th className="px-5 py-2">Visibility</th>
                   <th className="px-5 py-2 text-right">Action</th>
                 </tr>
@@ -974,6 +1712,7 @@ export default function KeywordResearch() {
                           {rank ? `#${rank}` : "Not found"}
                         </span>
                       </td>
+                      <td className="px-5 py-3"><RankMovement change={run.rankChange} /></td>
                       <td className="px-5 py-3 text-charcoal-600">{visibilityFor(rank)}</td>
                       <td className="px-5 py-3">
                         <div className="flex justify-end">
@@ -984,7 +1723,7 @@ export default function KeywordResearch() {
                   );
                 })}
                 {rankedRuns.length === 0 && (
-                  <tr><td colSpan={4} className="px-5 py-6 text-center text-charcoal-400">No ranking checks yet. Run keyword intelligence below.</td></tr>
+                  <tr><td colSpan={5} className="px-5 py-6 text-center text-charcoal-400">No ranking checks yet. Run keyword intelligence below.</td></tr>
                 )}
               </tbody>
             </table>
@@ -992,6 +1731,22 @@ export default function KeywordResearch() {
         </Card>
 
         <div className="space-y-6">
+          <Card className="p-4">
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <div className="font-semibold text-charcoal-700">Visibility</div>
+                <div className="text-xs text-charcoal-400">Organic visibility from tracked keyword positions.</div>
+              </div>
+              <div className="text-right">
+                <div className="text-2xl font-bold leading-none text-charcoal-900">{visibilityCurrent.toFixed(2)}%</div>
+                <div className={`mt-1 text-xs font-semibold ${visibilityDelta >= 0 ? "text-green-700" : "text-red-700"}`}>{visibilityDelta >= 0 ? "+" : ""}{visibilityDelta.toFixed(2)}%</div>
+              </div>
+            </div>
+            <div className="mt-4 grid grid-cols-2 gap-2">
+              {visibilityBuckets.map((bucket) => <VisibilityBucket key={bucket.label} label={bucket.label} stats={bucket.stats} />)}
+            </div>
+          </Card>
+
           <Card className="p-4">
             <div className="flex items-center justify-between gap-3">
               <div>
@@ -1006,14 +1761,8 @@ export default function KeywordResearch() {
             <div className="mt-3 rounded-md border border-brand-100 bg-brand-50 px-2.5 py-2 text-xs font-medium text-brand-900">
               {totalIdeas} ideas for {projectAudits.length} pages
             </div>
-            <div className="mt-3 grid grid-cols-2 gap-2">
-              <Idea label="Strategy" icon="strategy" value={ideas.strategy} />
-              <Idea label="Backlinks" icon="backlinks" value={ideas.backlinks} />
-              <Idea label="User Experience" icon="ux" value={ideas.userExperience} />
-              <Idea label="Technical SEO" icon="technical" value={ideas.technical} />
-              <Idea label="SERP Features" icon="serp" value={ideas.serpFeatures} />
-              <Idea label="Semantic" icon="semantic" value={ideas.semantic} />
-              <Idea label="Content" icon="content" value={ideas.content} />
+            <div className="mt-3 space-y-2">
+              {ideaRows.map((row) => <OnPageIdeaBar key={row.label} label={row.label} icon={row.icon} value={row.value} max={maxIdeaCount} />)}
             </div>
           </Card>
         </div>
@@ -1112,6 +1861,7 @@ export default function KeywordResearch() {
       </div>
       <AuditInsightDrawer panel={auditDrawer} onClose={() => setAuditDrawer(null)} />
       <PagePerformanceDrawer page={performancePage} onClose={() => setPerformancePage(null)} />
+      {showBacklinkDrawer && <BacklinkLinksDrawer backlinks={backlinkLinks} loading={loadingBacklinks} error={backlinkError} onClose={() => setShowBacklinkDrawer(false)} />}
     </div>
   );
 }

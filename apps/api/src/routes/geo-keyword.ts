@@ -3,7 +3,8 @@ import type { Request } from "express";
 import { z } from "zod";
 import { Prisma, prisma } from "@webtummy/db";
 import { normalizeForDedup, scoreGeoKeywordPage } from "@webtummy/core";
-import { requireAuth, tenantScope } from "../middleware.js";
+import { requireAuth } from "../middleware.js";
+import { projectClientIdForRequest } from "../project-scope.js";
 
 export const geoKeywordRouter = Router();
 geoKeywordRouter.use(requireAuth);
@@ -22,12 +23,24 @@ function firstString(value: unknown): string[] {
   return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
 }
 
+async function scopedWebsite(req: Request, websiteId: string, clientId: string | null) {
+  const website = await prisma.website.findFirst({
+    where: { id: websiteId, ...(clientId ? { clientId } : {}) },
+  });
+  if (website) return { website, mismatch: null };
+  const exists = await prisma.website.findUnique({
+    where: { id: websiteId },
+    select: { id: true, domain: true, clientId: true },
+  });
+  return { website: null, mismatch: exists };
+}
+
 async function scopedCampaign(req: Request, id: string) {
-  const scope = tenantScope(req);
+  const clientId = await projectClientIdForRequest(req);
   return prisma.keywordAuditCampaign.findFirst({
     where: {
       id,
-      website: scope.clientId ? { clientId: scope.clientId } : undefined,
+      website: clientId ? { clientId } : undefined,
     },
     include: {
       website: { select: { id: true, domain: true, rootUrl: true } },
@@ -40,12 +53,14 @@ geoKeywordRouter.post("/geo-keyword-audits", async (req, res) => {
   const parsed = createSchema.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() });
   const input = parsed.data;
-  const scope = tenantScope(req);
+  const clientId = await projectClientIdForRequest(req);
 
-  const website = await prisma.website.findFirst({
-    where: { id: input.websiteId, ...(scope.clientId ? { clientId: scope.clientId } : {}) },
-  });
-  if (!website) return res.status(404).json({ error: "website not found" });
+  const scoped = await scopedWebsite(req, input.websiteId, clientId);
+  const website = scoped.website;
+  if (!website) {
+    if (scoped.mismatch) return res.status(403).json({ error: "website belongs to another client context", domain: scoped.mismatch.domain, websiteId: scoped.mismatch.id });
+    return res.status(404).json({ error: "website not found" });
+  }
 
   const crawl = await prisma.crawlJob.findFirst({
     where: { websiteId: website.id, status: "completed" },
@@ -153,9 +168,9 @@ geoKeywordRouter.post("/geo-keyword-audits", async (req, res) => {
 });
 
 geoKeywordRouter.get("/geo-keyword-audits", async (req, res) => {
-  const scope = tenantScope(req);
+  const clientId = await projectClientIdForRequest(req);
   const audits = await prisma.keywordAuditCampaign.findMany({
-    where: { website: scope.clientId ? { clientId: scope.clientId } : undefined },
+    where: { website: clientId ? { clientId } : undefined },
     orderBy: { createdAt: "desc" },
     include: {
       website: { select: { id: true, domain: true, rootUrl: true } },

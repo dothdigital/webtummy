@@ -7,6 +7,7 @@ import {
   verifyEmail as apiVerifyEmail,
   resetPassword as apiResetPassword,
   fetchMe,
+  SESSION_EXPIRED_EVENT,
   type AppUser,
 } from "./api.js";
 
@@ -14,7 +15,7 @@ interface AuthCtx {
   user: AppUser | null;
   loading: boolean;
   login: (email: string, password: string) => Promise<void>;
-  register: (input: { name: string; companyName: string; email: string; password: string }) => Promise<string>;
+  register: (input: { name: string; companyName: string; email: string; password: string; captchaToken?: string }) => Promise<string>;
   verifyEmail: (token: string) => Promise<void>;
   resetPassword: (token: string, password: string) => Promise<void>;
   logout: () => void;
@@ -28,22 +29,29 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
+    const onSessionExpired = () => setUser(null);
+    window.addEventListener(SESSION_EXPIRED_EVENT, onSessionExpired);
     fetchMe()
       .then(setUser)
       .finally(() => setLoading(false));
+    return () => window.removeEventListener(SESSION_EXPIRED_EVENT, onSessionExpired);
   }, []);
 
   const login = async (email: string, password: string) => {
     setUser(await apiLogin(email, password));
   };
-  const register = async (input: { name: string; companyName: string; email: string; password: string }) => {
+  const register = async (input: { name: string; companyName: string; email: string; password: string; captchaToken?: string }) => {
     return apiRegister(input);
   };
   const verifyEmail = async (token: string) => {
-    setUser(await apiVerifyEmail(token));
+    await apiVerifyEmail(token);
+    apiLogout();
+    setUser(null);
   };
   const resetPassword = async (token: string, password: string) => {
-    setUser(await apiResetPassword(token, password));
+    await apiResetPassword(token, password);
+    apiLogout();
+    setUser(null);
   };
   const logout = () => {
     apiLogout();

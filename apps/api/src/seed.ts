@@ -2,11 +2,13 @@
 // Override via env: SEED_ADMIN_EMAIL / SEED_ADMIN_PASSWORD.
 import { prisma } from "@webtummy/db";
 import { hashPassword } from "./auth.js";
+import { ensureDefaultBillingPlans } from "./billing.js";
 
 const email = process.env.SEED_ADMIN_EMAIL ?? "admin@webtummy.com";
 const password = process.env.SEED_ADMIN_PASSWORD ?? "ChangeMe!2026";
 
 async function main() {
+  await ensureDefaultBillingPlans();
   const existing = await prisma.user.findUnique({ where: { email } });
   if (existing) {
     console.log(`super_admin ${email} already exists — nothing to do.`);

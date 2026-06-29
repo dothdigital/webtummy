@@ -1,5 +1,24 @@
 // Thin API client. Real login (token in localStorage). The backend enforces JWT + RBAC.
 let token: string | null = localStorage.getItem("wt_token");
+let activeClientId: string | null = localStorage.getItem("wt_active_client_id");
+let currentRole: AppUser["role"] | null = localStorage.getItem("wt_role") as AppUser["role"] | null;
+let impersonationLabel: string | null = localStorage.getItem("wt_impersonation_label");
+export const SESSION_EXPIRED_EVENT = "webtummy:session-expired";
+export const ACTIVE_CLIENT_EVENT = "webtummy:active-client-changed";
+
+async function readJson(res: Response) {
+  const text = await res.text();
+  if (!text) return {};
+  try {
+    return JSON.parse(text);
+  } catch {
+    throw new Error(res.ok ? "Invalid server response" : "Server returned an HTML error page. Please try again.");
+  }
+}
+
+function notifySessionExpired() {
+  window.dispatchEvent(new Event(SESSION_EXPIRED_EVENT));
+}
 
 export interface AppUser {
   id: string;
@@ -11,6 +30,46 @@ export interface AppUser {
 
 export function getToken() {
   return token;
+}
+
+export function getActiveClientId() {
+  return activeClientId;
+}
+
+export function setActiveClientId(clientId: string | null) {
+  activeClientId = clientId;
+  if (clientId) localStorage.setItem("wt_active_client_id", clientId);
+  else localStorage.removeItem("wt_active_client_id");
+  window.dispatchEvent(new Event(ACTIVE_CLIENT_EVENT));
+}
+
+export function getImpersonationLabel() {
+  return impersonationLabel;
+}
+
+export function startImpersonation(clientId: string, label: string) {
+  impersonationLabel = label;
+  localStorage.setItem("wt_impersonation_label", label);
+  setActiveClientId(clientId);
+}
+
+export function endImpersonation() {
+  impersonationLabel = null;
+  localStorage.removeItem("wt_impersonation_label");
+  setActiveClientId(null);
+}
+
+function rememberUser(user: AppUser) {
+  currentRole = user.role;
+  localStorage.setItem("wt_role", user.role);
+  if (user.role === "super_admin" && activeClientId && !impersonationLabel) {
+    setActiveClientId(null);
+  }
+}
+
+function clearRememberedUser() {
+  currentRole = null;
+  localStorage.removeItem("wt_role");
 }
 
 export async function login(email: string, password: string): Promise<AppUser> {
@@ -26,7 +85,15 @@ export async function login(email: string, password: string): Promise<AppUser> {
   const data = await res.json();
   token = data.token;
   localStorage.setItem("wt_token", token!);
+  if ((data.user as AppUser).role === "super_admin") endImpersonation();
+  rememberUser(data.user as AppUser);
   return data.user as AppUser;
+}
+
+export async function fetchPublicConfig(): Promise<{ recaptchaSiteKey: string }> {
+  const res = await fetch("/api/auth/config");
+  if (!res.ok) return { recaptchaSiteKey: "" };
+  return res.json() as Promise<{ recaptchaSiteKey: string }>;
 }
 
 export async function register(input: {
@@ -34,13 +101,14 @@ export async function register(input: {
   companyName: string;
   email: string;
   password: string;
+  captchaToken?: string;
 }): Promise<string> {
   const res = await fetch("/api/auth/register", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(input),
   });
-  const data = await res.json();
+  const data = await readJson(res);
   if (!res.ok) {
     // surface field errors from zod
     const fe = data.error ?? {};
@@ -60,6 +128,7 @@ export async function verifyEmail(verificationToken: string): Promise<AppUser> {
   if (!res.ok) throw new Error(data.error ?? "Verification link is invalid or expired");
   token = data.token;
   localStorage.setItem("wt_token", token!);
+  rememberUser(data.user as AppUser);
   return data.user as AppUser;
 }
 
@@ -104,21 +173,38 @@ export async function resetPassword(resetToken: string, password: string): Promi
 
 export function logout() {
   token = null;
+  activeClientId = null;
   localStorage.removeItem("wt_token");
+  localStorage.removeItem("wt_active_client_id");
+  localStorage.removeItem("wt_impersonation_label");
+  impersonationLabel = null;
+  clearRememberedUser();
+}
+
+function expireSession() {
+  if (token || localStorage.getItem("wt_token")) {
+    logout();
+    notifySessionExpired();
+  }
 }
 
 export async function fetchMe(): Promise<AppUser | null> {
   if (!token) return null;
   const res = await fetch("/api/auth/me", { headers: authHeaders() });
   if (!res.ok) {
-    logout();
+    expireSession();
     return null;
   }
-  return (await res.json()).user as AppUser;
+  const user = (await res.json()).user as AppUser;
+  rememberUser(user);
+  return user;
 }
 
 function authHeaders(): Record<string, string> {
-  return token ? { Authorization: `Bearer ${token}` } : {};
+  return {
+    ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    ...(activeClientId && impersonationLabel ? { "X-Webtummy-Client-Id": activeClientId } : {}),
+  };
 }
 
 async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
@@ -127,8 +213,12 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
     headers: { "Content-Type": "application/json", ...authHeaders(), ...(init.headers ?? {}) },
   });
   if (!res.ok) {
-    const body = await res.text();
-    throw new Error(`${res.status}: ${body}`);
+    const data = await readJson(res).catch(() => ({}));
+    if (res.status === 401) expireSession();
+    const error = (data as { error?: unknown }).error;
+    if (typeof error === "string") throw new Error(error);
+    const firstFieldError = error && typeof error === "object" ? Object.values(error).flat().find((item): item is string => typeof item === "string") : null;
+    throw new Error(firstFieldError ?? "Request failed. Please try again.");
   }
   return res.json() as Promise<T>;
 }
@@ -137,4 +227,5 @@ export const api = {
   get: <T>(p: string) => request<T>(p),
   post: <T>(p: string, body: unknown) => request<T>(p, { method: "POST", body: JSON.stringify(body) }),
   patch: <T>(p: string, body: unknown) => request<T>(p, { method: "PATCH", body: JSON.stringify(body) }),
+  delete: <T>(p: string) => request<T>(p, { method: "DELETE" }),
 };

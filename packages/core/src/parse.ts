@@ -3,6 +3,29 @@ import * as cheerio from "cheerio";
 import { resolveUrl, normalizeForDedup, isSameHost } from "./url.js";
 import type { ParsedPage, ExtractedLink, ExtractedImage, ExtractedSchema, ExtractedAsset } from "./types.js";
 
+function schemaTypeValues(value: unknown): string[] {
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    return trimmed ? [trimmed] : [];
+  }
+  if (Array.isArray(value)) {
+    return value.filter((item): item is string => typeof item === "string").map((item) => item.trim()).filter(Boolean);
+  }
+  return [];
+}
+
+function jsonLdNodes(value: unknown): Record<string, unknown>[] {
+  if (Array.isArray(value)) return value.flatMap(jsonLdNodes);
+  if (!value || typeof value !== "object") return [];
+
+  const node = value as Record<string, unknown>;
+  const graphValue = node["@graph"];
+  const graph = Array.isArray(graphValue) ? graphValue.flatMap(jsonLdNodes) : [];
+  const hasType = schemaTypeValues(node["@type"]).length > 0;
+
+  return hasType || graph.length === 0 ? [node, ...graph] : graph;
+}
+
 export function parseHtml(html: string, pageUrl: string): ParsedPage {
   const $ = cheerio.load(html);
 
@@ -116,14 +139,16 @@ export function parseHtml(html: string, pageUrl: string): ParsedPage {
     const raw = $(el).contents().text();
     try {
       const json = JSON.parse(raw);
-      const nodes = Array.isArray(json) ? json : [json];
+      const nodes = jsonLdNodes(json);
       for (const node of nodes) {
-        schemas.push({
-          format: "json-ld",
-          schemaType: typeof node?.["@type"] === "string" ? node["@type"] : null,
-          rawJson: node,
-          validJson: true,
-        });
+        const types = schemaTypeValues(node["@type"]);
+        if (types.length === 0) {
+          schemas.push({ format: "json-ld", schemaType: null, rawJson: node, validJson: true });
+          continue;
+        }
+        for (const type of types) {
+          schemas.push({ format: "json-ld", schemaType: type, rawJson: node, validJson: true });
+        }
       }
     } catch {
       schemas.push({ format: "json-ld", schemaType: null, rawJson: raw.slice(0, 2000), validJson: false });

@@ -2,11 +2,11 @@
 import type { ReactNode } from "react";
 import { Link } from "react-router-dom";
 
-export type ActionIconName = "view" | "open" | "refresh" | "verify" | "details" | "compare" | "run" | "save" | "close";
+export type ActionIconName = "view" | "open" | "refresh" | "verify" | "details" | "compare" | "run" | "save" | "close" | "project" | "enable" | "disable" | "key" | "edit" | "trash";
 
-export function Card({ children, className = "" }: { children: ReactNode; className?: string }) {
+export function Card({ children, className = "", id }: { children: ReactNode; className?: string; id?: string }) {
   return (
-    <div className={`rounded-xl border border-slate-200 bg-white shadow-sm ${className}`}>
+    <div id={id} className={`rounded-xl border border-slate-200 bg-white shadow-sm ${className}`}>
       {children}
     </div>
   );
@@ -102,11 +102,74 @@ function ActionGlyph({ name }: { name: ActionIconName }) {
           <path {...common} d="M18 6 6 18" />
         </>
       )}
+      {name === "project" && (
+        <>
+          <path {...common} d="M4 7h16" />
+          <path {...common} d="M6 7V5h5l2 2" />
+          <path {...common} d="M5 7h14l-1 12H6L5 7Z" />
+        </>
+      )}
+      {name === "enable" && (
+        <>
+          <circle {...common} cx="12" cy="12" r="9" />
+          <path {...common} d="m8 12 3 3 5-6" />
+        </>
+      )}
+      {name === "disable" && (
+        <>
+          <circle {...common} cx="12" cy="12" r="9" />
+          <path {...common} d="M8 8l8 8" />
+        </>
+      )}
+      {name === "key" && (
+        <>
+          <circle {...common} cx="8" cy="15" r="3" />
+          <path {...common} d="m10.2 12.8 7-7" />
+          <path {...common} d="M15 7h4v4" />
+          <path {...common} d="M17 5l2 2" />
+        </>
+      )}
+      {name === "edit" && (
+        <>
+          <path {...common} d="M12 20h9" />
+          <path {...common} d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4 12.5-12.5Z" />
+        </>
+      )}
+      {name === "trash" && (
+        <>
+          <path {...common} d="M3 6h18" />
+          <path {...common} d="M8 6V4h8v2" />
+          <path {...common} d="M6 6l1 14h10l1-14" />
+          <path {...common} d="M10 11v5" />
+          <path {...common} d="M14 11v5" />
+        </>
+      )}
     </svg>
   );
 }
 
-const actionIconClass = "inline-flex h-8 w-8 items-center justify-center rounded-md border border-charcoal-200 bg-white text-charcoal-600 transition hover:border-brand-300 hover:bg-brand-50 hover:text-brand-700 disabled:cursor-not-allowed disabled:border-charcoal-100 disabled:bg-charcoal-50 disabled:text-charcoal-300";
+const actionIconBaseClass = "inline-flex h-8 w-8 items-center justify-center rounded-md border transition disabled:cursor-not-allowed disabled:border-charcoal-100 disabled:bg-charcoal-50 disabled:text-charcoal-300";
+
+function actionIconTone(icon: ActionIconName) {
+  const tones: Partial<Record<ActionIconName, string>> = {
+    view: "border-blue-200 bg-blue-50 text-blue-700 hover:border-blue-300 hover:bg-blue-100",
+    open: "border-cyan-200 bg-cyan-50 text-cyan-700 hover:border-cyan-300 hover:bg-cyan-100",
+    refresh: "border-indigo-200 bg-indigo-50 text-indigo-700 hover:border-indigo-300 hover:bg-indigo-100",
+    verify: "border-green-200 bg-green-50 text-green-700 hover:border-green-300 hover:bg-green-100",
+    details: "border-sky-200 bg-sky-50 text-sky-700 hover:border-sky-300 hover:bg-sky-100",
+    compare: "border-violet-200 bg-violet-50 text-violet-700 hover:border-violet-300 hover:bg-violet-100",
+    run: "border-emerald-200 bg-emerald-50 text-emerald-700 hover:border-emerald-300 hover:bg-emerald-100",
+    save: "border-brand-200 bg-brand-50 text-brand-700 hover:border-brand-300 hover:bg-brand-100",
+    close: "border-slate-200 bg-slate-50 text-slate-600 hover:border-slate-300 hover:bg-slate-100",
+    project: "border-amber-200 bg-amber-50 text-amber-700 hover:border-amber-300 hover:bg-amber-100",
+    enable: "border-green-200 bg-green-50 text-green-700 hover:border-green-300 hover:bg-green-100",
+    disable: "border-red-200 bg-red-50 text-red-700 hover:border-red-300 hover:bg-red-100",
+    key: "border-fuchsia-200 bg-fuchsia-50 text-fuchsia-700 hover:border-fuchsia-300 hover:bg-fuchsia-100",
+    edit: "border-orange-200 bg-orange-50 text-orange-700 hover:border-orange-300 hover:bg-orange-100",
+    trash: "border-red-200 bg-red-50 text-red-700 hover:border-red-300 hover:bg-red-100",
+  };
+  return tones[icon] ?? "border-charcoal-200 bg-white text-charcoal-600 hover:border-brand-300 hover:bg-brand-50 hover:text-brand-700";
+}
 
 export function ActionIconButton({
   icon,
@@ -120,7 +183,7 @@ export function ActionIconButton({
   disabled?: boolean;
 }) {
   return (
-    <button type="button" aria-label={label} title={label} onClick={onClick} disabled={disabled} className={actionIconClass}>
+    <button type="button" aria-label={label} title={label} onClick={onClick} disabled={disabled} className={`${actionIconBaseClass} ${actionIconTone(icon)}`}>
       <ActionGlyph name={icon} />
     </button>
   );
@@ -128,7 +191,7 @@ export function ActionIconButton({
 
 export function ActionIconLink({ icon, label, to }: { icon: ActionIconName; label: string; to: string }) {
   return (
-    <Link to={to} aria-label={label} title={label} className={actionIconClass}>
+    <Link to={to} aria-label={label} title={label} className={`${actionIconBaseClass} ${actionIconTone(icon)}`}>
       <ActionGlyph name={icon} />
     </Link>
   );
@@ -136,7 +199,7 @@ export function ActionIconLink({ icon, label, to }: { icon: ActionIconName; labe
 
 export function ActionIconAnchor({ icon, label, href }: { icon: ActionIconName; label: string; href: string }) {
   return (
-    <a href={href} target="_blank" rel="noreferrer" aria-label={label} title={label} className={actionIconClass}>
+    <a href={href} target="_blank" rel="noreferrer" aria-label={label} title={label} className={`${actionIconBaseClass} ${actionIconTone(icon)}`}>
       <ActionGlyph name={icon} />
     </a>
   );

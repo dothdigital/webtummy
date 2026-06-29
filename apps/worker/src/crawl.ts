@@ -576,9 +576,7 @@ async function postCrawl(crawlJobId: string, opts: CrawlOptions): Promise<number
   for (const p of pages) if (p.statusCode != null) knownStatus.set(p.normalizedUrl, p.statusCode);
   const unresolved = internalLinks.filter((l) => !knownStatus.has(l.targetUrlNormalized));
   const distinctTargets = [...new Set(unresolved.map((l) => l.targetUrlNormalized))].slice(0, 300);
-  for (const target of distinctTargets) {
-    knownStatus.set(target, await checkStatus(target, opts));
-  }
+  await fillKnownStatuses(distinctTargets, knownStatus, opts);
 
   const brokenIssues: {
     crawlJobId: string; pageId: string; issueType: string; category: string;
@@ -641,6 +639,14 @@ async function postCrawl(crawlJobId: string, opts: CrawlOptions): Promise<number
   return pages.length > 0 ? Math.round(scoreSum / pages.length) : 0;
 }
 
+async function fillKnownStatuses(targets: string[], knownStatus: Map<string, number>, opts: CrawlOptions, concurrency = 20): Promise<void> {
+  for (let i = 0; i < targets.length; i += concurrency) {
+    const batch = targets.slice(i, i + concurrency);
+    const statuses = await Promise.all(batch.map(async (target) => ({ target, status: await checkStatus(target, opts) })));
+    for (const result of statuses) knownStatus.set(result.target, result.status);
+  }
+}
+
 async function auditSitemapUrls(
   crawlJobId: string,
   knownStatus: Map<string, number>,
@@ -664,9 +670,7 @@ async function auditSitemapUrls(
       .map((u) => dedupKey(u.url))
       .filter((key) => !knownStatus.has(key))
   )].slice(0, 300);
-  for (const key of distinctMissing) {
-    knownStatus.set(key, await checkStatus(key, opts));
-  }
+  await fillKnownStatuses(distinctMissing, knownStatus, opts);
 
   for (const entry of sitemapUrls) {
     const key = dedupKey(entry.url);

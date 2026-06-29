@@ -38,12 +38,15 @@ export function requireRole(...roles: Role[]) {
 }
 
 /**
- * Tenant isolation. Returns a Prisma `where` fragment that scopes a query to the
- * caller's client. super_admin gets {} (sees everything); client_* are forced to
- * their own clientId — NEVER trust a clientId from request input.
+ * Tenant isolation. Project-scoped routes must operate inside one client.
+ * Client users are forced to their own clientId. Super admins must explicitly
+ * enter a client context; without one, project-scoped lists return no rows.
  */
-export function tenantScope(req: Request): { clientId?: string } {
+export function tenantScope(req: Request): { clientId: string } {
   if (!req.user) throw new Error("tenantScope called without auth");
-  if (req.user.role === "super_admin") return {};
+  if (req.user.role === "super_admin") {
+    const activeClientId = req.header("x-webtummy-client-id")?.trim();
+    return { clientId: activeClientId || "__none__" };
+  }
   return { clientId: req.user.clientId ?? "__none__" };
 }

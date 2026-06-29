@@ -8,6 +8,8 @@ import type {
   CrawlStatus,
   CrawlSummary,
   HealthReport,
+  AiContentGeneration,
+  AiGenerationType,
   IssueRow,
   PageRow,
   PageSpeedResponse,
@@ -80,6 +82,161 @@ const ISSUE_TYPE_FILTERS = [
   { key: "ai_search", label: "AI Search" },
   { key: "performance", label: "Performance" },
 ] as const;
+
+type ReadinessGenerateKey = "llms" | "organization" | "sitemap" | "robots" | "websiteSchema" | "faqSchema" | "breadcrumbSchema";
+
+const READINESS_GENERATORS: Record<ReadinessGenerateKey, { label: string; type: AiGenerationType; topic: string }> = {
+  llms: { label: "llms.txt", type: "domain_llms_txt", topic: "Generate domain llms.txt" },
+  organization: { label: "Organization schema", type: "domain_schema", topic: "Generate Organization schema" },
+  sitemap: { label: "Sitemap URLs", type: "sitemap", topic: "Generate XML sitemap from crawled pages" },
+  robots: { label: "Robots status", type: "ai_search", topic: "Generate robots.txt implementation recommendations" },
+  websiteSchema: { label: "WebSite schema", type: "domain_schema", topic: "Generate WebSite schema" },
+  faqSchema: { label: "FAQPage schema", type: "page_schema", topic: "Generate FAQPage schema" },
+  breadcrumbSchema: { label: "BreadcrumbList schema", type: "page_schema", topic: "Generate BreadcrumbList schema" },
+};
+
+function generatedText(value: unknown) {
+  if (value == null) return "";
+  return typeof value === "string" ? value : JSON.stringify(value, null, 2);
+}
+
+
+type OrganizationDetails = {
+  name: string;
+  legalName: string;
+  phone: string;
+  email: string;
+  logoUrl: string;
+  address: string;
+  sameAs: string;
+  notes: string;
+};
+
+function defaultOrganizationDetails(domain?: string | null): OrganizationDetails {
+  return { name: domain ?? "", legalName: "", phone: "", email: "", logoUrl: "", address: "", sameAs: "", notes: "" };
+}
+
+function organizationNotes(details: OrganizationDetails) {
+  return [
+    details.name ? `Organization name: ${details.name}` : "",
+    details.legalName ? `Legal name: ${details.legalName}` : "",
+    details.phone ? `Phone: ${details.phone}` : "",
+    details.email ? `Email: ${details.email}` : "",
+    details.logoUrl ? `Logo URL: ${details.logoUrl}` : "",
+    details.address ? `Address: ${details.address}` : "",
+    details.sameAs ? `Social/profile URLs: ${details.sameAs}` : "",
+    details.notes ? `Additional organization notes: ${details.notes}` : "",
+  ].filter(Boolean).join("\n");
+}
+
+function ReadinessGenerateModal({
+  activeKey,
+  organizationDetails,
+  setOrganizationDetails,
+  generated,
+  copied,
+  generating,
+  availableContext,
+  missingContext,
+  canGenerate,
+  onGenerate,
+  onCopy,
+  onClose,
+}: {
+  activeKey: ReadinessGenerateKey | null;
+  organizationDetails: OrganizationDetails;
+  setOrganizationDetails: (details: OrganizationDetails) => void;
+  generated: AiContentGeneration | null;
+  copied: boolean;
+  generating: boolean;
+  availableContext: string[];
+  missingContext: string[];
+  canGenerate: boolean;
+  onGenerate: () => void;
+  onCopy: () => void;
+  onClose: () => void;
+}) {
+  if (!activeKey) return null;
+  const config = READINESS_GENERATORS[activeKey];
+  const asksOrganization = activeKey === "organization";
+  const updateOrg = (key: keyof OrganizationDetails, value: string) => setOrganizationDetails({ ...organizationDetails, [key]: value });
+  return (
+    <div className="fixed inset-0 z-50" role="dialog" aria-modal="true" aria-label="Generate missing readiness content">
+      <div className="absolute inset-0 bg-charcoal-900/55" onClick={() => !generating && onClose()} />
+      <div className="absolute inset-x-3 top-4 mx-auto flex max-h-[calc(100vh-2rem)] max-w-4xl flex-col overflow-hidden rounded-2xl bg-white shadow-2xl sm:top-8 sm:max-h-[calc(100vh-4rem)]">
+        <div className="border-b border-charcoal-100 bg-[linear-gradient(135deg,#ecfeff_0%,#fff7ed_100%)] px-5 py-4">
+          <div className="flex items-start justify-between gap-4">
+            <div>
+              <div className="text-xs font-semibold uppercase tracking-wide text-brand-700">Missing readiness item</div>
+              <div className="mt-1 text-xl font-bold text-charcoal-900">Generate {config.label}</div>
+              <div className="mt-1 text-sm text-charcoal-600">Saved outputs can be retrieved later from <a href="/ai-content" className="font-semibold text-brand-700 hover:underline">AI Content</a> under Recent generations.</div>
+            </div>
+            <button type="button" disabled={generating} onClick={onClose} className="rounded-lg border border-charcoal-200 bg-white px-3 py-1.5 text-sm font-medium text-charcoal-600 hover:bg-charcoal-50 disabled:opacity-50">Close</button>
+          </div>
+        </div>
+        <div className="min-h-0 flex-1 space-y-4 overflow-y-auto p-5">
+          {asksOrganization && (
+            <div className="rounded-xl border border-brand-100 bg-brand-50/50 p-4">
+              <div className="font-semibold text-charcoal-900">Organization details</div>
+              <div className="mt-1 text-sm text-charcoal-500">These details help generate accurate Organization, LocalBusiness, and WebSite JSON-LD.</div>
+              <div className="mt-4 grid gap-3 md:grid-cols-2">
+                <label className="text-sm font-medium text-charcoal-700">Organization name<input value={organizationDetails.name} onChange={(e) => updateOrg("name", e.target.value)} className="mt-1 w-full rounded-lg border border-charcoal-200 px-3 py-2 text-sm outline-none focus:border-brand-400" /></label>
+                <label className="text-sm font-medium text-charcoal-700">Legal name<input value={organizationDetails.legalName} onChange={(e) => updateOrg("legalName", e.target.value)} className="mt-1 w-full rounded-lg border border-charcoal-200 px-3 py-2 text-sm outline-none focus:border-brand-400" /></label>
+                <label className="text-sm font-medium text-charcoal-700">Phone<input value={organizationDetails.phone} onChange={(e) => updateOrg("phone", e.target.value)} className="mt-1 w-full rounded-lg border border-charcoal-200 px-3 py-2 text-sm outline-none focus:border-brand-400" /></label>
+                <label className="text-sm font-medium text-charcoal-700">Email<input value={organizationDetails.email} onChange={(e) => updateOrg("email", e.target.value)} className="mt-1 w-full rounded-lg border border-charcoal-200 px-3 py-2 text-sm outline-none focus:border-brand-400" /></label>
+                <label className="text-sm font-medium text-charcoal-700 md:col-span-2">Logo URL<input value={organizationDetails.logoUrl} onChange={(e) => updateOrg("logoUrl", e.target.value)} className="mt-1 w-full rounded-lg border border-charcoal-200 px-3 py-2 text-sm outline-none focus:border-brand-400" /></label>
+                <label className="text-sm font-medium text-charcoal-700 md:col-span-2">Address<textarea value={organizationDetails.address} onChange={(e) => updateOrg("address", e.target.value)} rows={2} className="mt-1 w-full rounded-lg border border-charcoal-200 px-3 py-2 text-sm outline-none focus:border-brand-400" /></label>
+                <label className="text-sm font-medium text-charcoal-700 md:col-span-2">SameAs / social URLs<textarea value={organizationDetails.sameAs} onChange={(e) => updateOrg("sameAs", e.target.value)} rows={2} placeholder="One URL per line" className="mt-1 w-full rounded-lg border border-charcoal-200 px-3 py-2 text-sm outline-none focus:border-brand-400" /></label>
+                <label className="text-sm font-medium text-charcoal-700 md:col-span-2">Extra notes<textarea value={organizationDetails.notes} onChange={(e) => updateOrg("notes", e.target.value)} rows={2} className="mt-1 w-full rounded-lg border border-charcoal-200 px-3 py-2 text-sm outline-none focus:border-brand-400" /></label>
+              </div>
+            </div>
+          )}
+          {!asksOrganization && (
+            <div className="rounded-xl border border-charcoal-100 bg-charcoal-50 p-4 text-sm text-charcoal-600">
+              This will create implementation-ready content for the missing item only. It does not automatically publish files or schema to the website.
+            </div>
+          )}
+          <div className="grid gap-3 md:grid-cols-2">
+            <div className="rounded-xl border border-emerald-100 bg-emerald-50/70 p-4">
+              <div className="text-sm font-semibold text-emerald-950">Available context</div>
+              <div className="mt-2 space-y-1 text-sm text-emerald-900">
+                {availableContext.length > 0 ? availableContext.map((item) => <div key={item}>{item}</div>) : <div>No usable context detected yet.</div>}
+              </div>
+            </div>
+            <div className="rounded-xl border border-amber-100 bg-amber-50/80 p-4">
+              <div className="text-sm font-semibold text-amber-950">Missing context</div>
+              <div className="mt-2 space-y-1 text-sm text-amber-900">
+                {missingContext.length > 0 ? missingContext.map((item) => <div key={item}>{item}</div>) : <div>No major missing context for this output.</div>}
+              </div>
+            </div>
+          </div>
+          {!canGenerate && (
+            <div className="rounded-xl border border-red-100 bg-red-50 p-4 text-sm text-red-800">
+              Add the missing required context above before generating. This prevents empty outputs such as blank sections or priority pages.
+            </div>
+          )}
+          {generated && (
+            <div className="rounded-xl border border-emerald-100 bg-emerald-50/70 p-4">
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                <div>
+                  <div className="text-sm font-semibold text-emerald-950">Generated AI content</div>
+                  <div className="mt-0.5 text-xs text-emerald-800">Stored in AI Content history as: {generated.topic}</div>
+                </div>
+                <Button type="button" variant="ghost" onClick={onCopy}>{copied ? "Copied" : "Copy"}</Button>
+              </div>
+              <pre className="mt-3 max-h-72 overflow-auto whitespace-pre-wrap rounded-lg border border-emerald-100 bg-white p-3 text-xs leading-5 text-charcoal-700">{generatedText(generated.resultJson)}</pre>
+            </div>
+          )}
+        </div>
+        <div className="flex flex-col-reverse gap-3 border-t border-charcoal-100 bg-white px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
+          <div className="text-xs text-charcoal-500">Future access: AI Content → Recent generations → search by this project/topic.</div>
+          <Button type="button" onClick={onGenerate} disabled={generating || !canGenerate}>{generating ? "Generating..." : generated ? "Generate again" : "Generate content"}</Button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 
 function paginate<T>(items: T[], page: number): T[] {
   const start = (page - 1) * PAGE_SIZE;
@@ -425,12 +582,191 @@ function assetStatusClass(status: number | null): string {
   return "bg-green-100 text-green-700";
 }
 
-function statBox(label: string, value: ReactNode, tone = "text-charcoal-800") {
+function StatBox({ label, value, tone = "text-charcoal-800" }: { label: string; value: ReactNode; tone?: string }) {
   return (
     <div className="rounded-lg border border-charcoal-100 bg-white p-3 shadow-sm">
       <div className="text-[11px] font-medium uppercase tracking-wide text-charcoal-400">{label}</div>
       <div className={`mt-1 text-lg font-bold ${tone}`}>{value}</div>
     </div>
+  );
+}
+
+function statBox(label: string, value: ReactNode, tone = "text-charcoal-800") {
+  return <StatBox label={label} value={value} tone={tone} />;
+}
+
+type TechnicalTestStatus = "pass" | "review" | "not_tested";
+
+type TechnicalTestCard = {
+  label: string;
+  status: TechnicalTestStatus;
+  value: string;
+  detail: string;
+  actionLabel?: string;
+  onAction?: () => void;
+};
+
+function jsonObject(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
+}
+
+function jsonArray(value: unknown): unknown[] {
+  return Array.isArray(value) ? value : [];
+}
+
+function hasTag(tags: Record<string, unknown>, names: string[]): boolean {
+  return names.some((name) => {
+    const value = tags[name] ?? tags[name.toLowerCase()];
+    return typeof value === "string" ? value.trim().length > 0 : Boolean(value);
+  });
+}
+
+function percent(numerator: number, denominator: number): number {
+  return denominator > 0 ? Math.round((numerator / denominator) * 100) : 0;
+}
+
+function plural(value: number, singular: string, pluralLabel = singular + "s"): string {
+  return value === 1 ? singular : pluralLabel;
+}
+
+function technicalStatusClass(status: TechnicalTestStatus): string {
+  if (status === "pass") return "bg-green-100 text-green-700";
+  if (status === "review") return "bg-amber-100 text-amber-700";
+  return "bg-charcoal-100 text-charcoal-500";
+}
+
+function technicalStatusLabel(status: TechnicalTestStatus): string {
+  if (status === "pass") return "Pass";
+  if (status === "review") return "Needs review";
+  return "Not tested";
+}
+
+function TechnicalTestsPanel({
+  pages,
+  summary,
+  pageSpeedResults,
+  onOpenPage,
+}: {
+  pages: PageRow[];
+  summary: CrawlSummary | null;
+  pageSpeedResults: Record<string, PageSpeedResponse>;
+  onOpenPage: (pageId: string) => void;
+}) {
+  const testedPages = pages.filter((page) => page.crawlerPerformance);
+  const pageCount = pages.length || summary?.pageCount || 0;
+  const avgSpeed = testedPages.length
+    ? Math.round(testedPages.reduce((sum, page) => sum + (page.crawlerPerformance?.score ?? 0), 0) / testedPages.length)
+    : null;
+  const slowestPage = [...testedPages].sort((a, b) => (a.crawlerPerformance?.score ?? 100) - (b.crawlerPerformance?.score ?? 100))[0];
+  const heaviestPage = [...testedPages].sort((a, b) => (b.crawlerPerformance?.totalAssetBytes ?? 0) - (a.crawlerPerformance?.totalAssetBytes ?? 0))[0];
+  const totalRequests = testedPages.reduce((sum, page) => sum + (page.crawlerPerformance?.assetCount ?? page.assets?.length ?? 0), 0);
+  const totalBytes = testedPages.reduce((sum, page) => sum + (page.crawlerPerformance?.totalAssetBytes ?? 0), 0);
+  const avgBytes = testedPages.length ? Math.round(totalBytes / testedPages.length) : 0;
+  const imageIssues = testedPages.reduce((sum, page) => sum + (page.crawlerPerformance?.imageIssues ?? 0), 0);
+  const imageAssetCount = testedPages.reduce((sum, page) => sum + (page.crawlerPerformance?.imageAssetCount ?? 0), 0);
+  const largeImageAssets = testedPages.reduce((sum, page) => {
+    return sum + (page.assets ?? []).filter((asset) => asset.type === "image" && (/large_/.test(asset.issueType ?? "") || (asset.sizeBytes ?? 0) > 300_000)).length;
+  }, 0);
+  const httpsPages = pages.filter((page) => (page.finalUrl || page.url).toLowerCase().startsWith("https://")).length;
+  const httpPages = Math.max(0, pageCount - httpsPages);
+  const canonicalPages = pages.filter((page) => Boolean(page.seo?.canonicalUrl)).length;
+  const hreflangPages = pages.filter((page) => jsonArray(page.seo?.hreflangJson).length > 0).length;
+  const brokenInternalLinks = pages.reduce((sum, page) => sum + (page.brokenInternalLinkCount ?? 0), 0);
+  const weakAnchors = pages.reduce((sum, page) => sum + (page.weakAnchorCount ?? 0), 0);
+  const ogComplete = pages.filter((page) => {
+    const tags = jsonObject(page.seo?.ogTags);
+    return hasTag(tags, ["og:title"]) && hasTag(tags, ["og:description"]) && hasTag(tags, ["og:image"]);
+  }).length;
+  const twitterComplete = pages.filter((page) => {
+    const tags = jsonObject(page.seo?.twitterTags);
+    return hasTag(tags, ["twitter:card"]) && (hasTag(tags, ["twitter:title"]) || hasTag(tags, ["twitter:description"]) || hasTag(tags, ["twitter:image"]));
+  }).length;
+  const pageSpeedLabRuns = Object.keys(pageSpeedResults).length;
+
+  const cards: TechnicalTestCard[] = [
+    {
+      label: "Page speed",
+      status: avgSpeed == null ? "not_tested" : avgSpeed >= 85 ? "pass" : "review",
+      value: avgSpeed == null ? "Not tested" : String(avgSpeed) + "/100",
+      detail: pageSpeedLabRuns > 0
+        ? String(pageSpeedLabRuns) + " Google lab " + plural(pageSpeedLabRuns, "check") + " run. Crawl score covers response, redirects, JS/CSS, assets, and render blocking."
+        : "Crawler speed is available. Google Lighthouse lab checks can be run from any page row.",
+      actionLabel: slowestPage ? "Open slowest page" : undefined,
+      onAction: slowestPage ? () => onOpenPage(slowestPage.id) : undefined,
+    },
+    {
+      label: "Image optimization",
+      status: testedPages.length === 0 ? "not_tested" : imageIssues === 0 && largeImageAssets === 0 ? "pass" : "review",
+      value: String(imageIssues + largeImageAssets) + " " + plural(imageIssues + largeImageAssets, "issue"),
+      detail: String(imageAssetCount) + " image " + plural(imageAssetCount, "request") + " checked. " + String(largeImageAssets) + " large image " + plural(largeImageAssets, "asset") + " flagged.",
+      actionLabel: heaviestPage ? "Open heaviest page" : undefined,
+      onAction: heaviestPage ? () => onOpenPage(heaviestPage.id) : undefined,
+    },
+    {
+      label: "Page size & requests",
+      status: testedPages.length === 0 ? "not_tested" : avgBytes <= 1_500_000 && totalRequests / Math.max(testedPages.length, 1) <= 80 ? "pass" : "review",
+      value: formatBytes(avgBytes) + " avg",
+      detail: String(totalRequests) + " total URL " + plural(totalRequests, "request") + " across " + String(testedPages.length) + " checked " + plural(testedPages.length, "page") + ".",
+      actionLabel: heaviestPage ? "View assets" : undefined,
+      onAction: heaviestPage ? () => onOpenPage(heaviestPage.id) : undefined,
+    },
+    {
+      label: "SSL & HTTPS",
+      status: pageCount === 0 ? "not_tested" : httpPages === 0 ? "pass" : "review",
+      value: String(httpsPages) + "/" + String(pageCount) + " HTTPS",
+      detail: httpPages === 0 ? "All crawled URLs are using HTTPS." : String(httpPages) + " crawled " + plural(httpPages, "URL") + " did not resolve as HTTPS.",
+    },
+    {
+      label: "Link relations",
+      status: pageCount === 0 ? "not_tested" : brokenInternalLinks === 0 && weakAnchors === 0 && canonicalPages > 0 ? "pass" : "review",
+      value: String(percent(canonicalPages, pageCount)) + "% canonical",
+      detail: String(hreflangPages) + " " + plural(hreflangPages, "page") + " with hreflang. " + String(brokenInternalLinks) + " broken internal " + plural(brokenInternalLinks, "link") + ", " + String(weakAnchors) + " weak " + plural(weakAnchors, "anchor") + ".",
+    },
+    {
+      label: "Open Graph & Twitter",
+      status: pageCount === 0 ? "not_tested" : ogComplete === pageCount && twitterComplete === pageCount ? "pass" : "review",
+      value: String(ogComplete) + "/" + String(pageCount) + " OG",
+      detail: String(twitterComplete) + "/" + String(pageCount) + " " + plural(pageCount, "page") + " have Twitter card tags. Checks title, description, image/card coverage.",
+    },
+  ];
+
+  return (
+    <Card className="overflow-hidden border-brand-100">
+      <div className="border-b border-brand-100 bg-brand-50/60 px-5 py-4">
+        <div className="flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between">
+          <div>
+            <h2 className="text-lg font-semibold text-charcoal-800">Technical Tests</h2>
+            <p className="text-sm text-charcoal-500">Prominent crawl checks for speed, assets, HTTPS, links, and social metadata.</p>
+          </div>
+          <div className="text-xs font-medium uppercase tracking-wide text-brand-700">{pageCount} page{pageCount === 1 ? "" : "s"} scanned</div>
+        </div>
+      </div>
+      <div className="grid gap-3 p-5 sm:grid-cols-2 xl:grid-cols-3">
+        {cards.map((card) => (
+          <div key={card.label} className="rounded-lg border border-charcoal-200 bg-white p-4 shadow-sm">
+            <div className="flex items-start justify-between gap-3">
+              <div className="min-w-0">
+                <div className="text-xs font-semibold uppercase tracking-wide text-charcoal-400">{card.label}</div>
+                <div className="mt-1 text-2xl font-bold text-charcoal-800">{card.value}</div>
+              </div>
+              <span className={"shrink-0 rounded-full px-2.5 py-1 text-xs font-semibold " + technicalStatusClass(card.status)}>
+                {technicalStatusLabel(card.status)}
+              </span>
+            </div>
+            <p className="mt-3 min-h-[48px] text-sm leading-6 text-charcoal-500">{card.detail}</p>
+            {card.actionLabel && card.onAction && (
+              <button
+                type="button"
+                onClick={card.onAction}
+                className="mt-3 rounded-lg border border-charcoal-200 px-3 py-1.5 text-sm font-medium text-charcoal-600 transition hover:border-brand-300 hover:text-brand-700"
+              >
+                {card.actionLabel}
+              </button>
+            )}
+          </div>
+        ))}
+      </div>
+    </Card>
   );
 }
 
@@ -467,6 +803,8 @@ type HealthDetailKey =
   | "faq"
   | "breadcrumb"
   | "siteFiles"
+  | "highIssues"
+  | "orphanPages"
   | "brokenLinks"
   | "weakAnchors";
 
@@ -506,32 +844,33 @@ function ScoreCard({
   );
 }
 
-function CheckRow({ label, ok, detail, onClick }: { label: string; ok: boolean; detail?: string; onClick?: () => void }) {
-  const content = (
-    <>
-      <div>
-        <div className="font-medium text-charcoal-700">{label}</div>
-        {detail && <div className="mt-0.5 text-xs text-charcoal-400">{detail}</div>}
-      </div>
-      <span className={`shrink-0 rounded-full px-2 py-0.5 text-xs font-medium ${ok ? "bg-green-100 text-green-700" : "bg-red-100 text-red-700"}`}>
-        {ok ? "Found" : "Missing"}
-      </span>
-    </>
-  );
-  if (onClick) {
-    return (
+function CheckRow({ label, ok, detail, onClick, onGenerate, generating }: { label: string; ok: boolean; detail?: string; onClick?: () => void; onGenerate?: () => void; generating?: boolean }) {
+  return (
+    <div className="flex items-start justify-between gap-3 rounded-md border border-charcoal-100 bg-white px-3 py-2">
       <button
         type="button"
         onClick={onClick}
-        className="flex w-full items-start justify-between gap-3 rounded-md border border-charcoal-100 bg-white px-3 py-2 text-left transition hover:border-brand-200 hover:bg-brand-50/40"
+        disabled={!onClick}
+        className="min-w-0 flex-1 text-left disabled:cursor-default"
       >
-        {content}
+        <div className="font-medium text-charcoal-700">{label}</div>
+        {detail && <div className="mt-0.5 text-xs text-charcoal-400">{detail}</div>}
       </button>
-    );
-  }
-  return (
-    <div className="flex items-start justify-between gap-3 rounded-md border border-charcoal-100 bg-white px-3 py-2">
-      {content}
+      <div className="flex shrink-0 items-center gap-2">
+        <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${ok ? "bg-green-100 text-green-700" : "bg-red-100 text-red-700"}`}>
+          {ok ? "Found" : "Not found"}
+        </span>
+        {!ok && onGenerate && (
+          <button
+            type="button"
+            onClick={onGenerate}
+            disabled={generating}
+            className="rounded-full border border-brand-200 bg-brand-50 px-2 py-0.5 text-xs font-semibold text-brand-700 transition hover:bg-brand-100 disabled:opacity-60"
+          >
+            {generating ? "Generating" : "Generate"}
+          </button>
+        )}
+      </div>
     </div>
   );
 }
@@ -888,6 +1227,8 @@ function HealthDetailDrawer({
     faq: "FAQ pages",
     breadcrumb: "Breadcrumb pages",
     siteFiles: "Site files",
+    highIssues: "High priority issues",
+    orphanPages: "Orphan pages",
     brokenLinks: "Broken internal links",
     weakAnchors: "Weak anchor text",
   }[active];
@@ -946,6 +1287,26 @@ function HealthDetailDrawer({
                 {issue.recommendation && <div className="mt-3 rounded-md bg-charcoal-50 p-3 text-sm text-charcoal-600">{issue.recommendation}</div>}
               </div>
             )) : <DetailEmpty message="No technical issues found." />
+          )}
+
+          {active === "highIssues" && (
+            (details?.technicalIssues.filter((issue) => issue.severity === "high").length ?? 0) > 0 ? details!.technicalIssues.filter((issue) => issue.severity === "high").map((issue, index) => (
+              <div key={issue.issueType + "-" + index} className="rounded-lg border border-red-100 bg-white p-4 shadow-sm">
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="rounded-full bg-red-100 px-2 py-0.5 text-xs font-semibold text-red-700">high</span>
+                  <span className="text-xs font-medium text-charcoal-400">{issue.category} · {issue.issueType}</span>
+                </div>
+                <div className="mt-2 font-medium text-charcoal-800">{issue.message}</div>
+                {issue.pageUrl && <a href={issue.pageUrl} target="_blank" rel="noreferrer" className="mt-1 block break-all text-xs text-brand-600 hover:underline">{issue.pageUrl}</a>}
+                {issue.recommendation && <div className="mt-3 rounded-md bg-red-50 p-3 text-sm text-red-800">{issue.recommendation}</div>}
+              </div>
+            )) : <DetailEmpty message="No high priority issues found." />
+          )}
+
+          {active === "orphanPages" && (
+            (details?.orphanPages.length ?? 0) > 0 ? details!.orphanPages.map((page) => (
+              <PageDetailItem key={page.url} title={page.title} url={page.url} meta={"Depth " + page.depth + " · Score " + (page.internalLinkScore ?? "—") + " · " + page.weakAnchorCount + " weak anchors"} tone="text-red-600" />
+            )) : <DetailEmpty message="No orphan pages found." />
           )}
 
           {active === "internal" && (
@@ -1011,13 +1372,94 @@ function HealthDetailDrawer({
   );
 }
 
-function HealthReportView({ report }: { report: HealthReport | null }) {
+function HealthReportView({ report, crawl, pages }: { report: HealthReport | null; crawl: CrawlStatus | null; pages: PageRow[] }) {
   const [activeDetail, setActiveDetail] = useState<HealthDetailKey | null>(null);
+  const [activeGenerateKey, setActiveGenerateKey] = useState<ReadinessGenerateKey | null>(null);
+  const [generating, setGenerating] = useState<ReadinessGenerateKey | null>(null);
+  const [generated, setGenerated] = useState<AiContentGeneration | null>(null);
+  const [copied, setCopied] = useState(false);
+  const [organizationDetails, setOrganizationDetails] = useState<OrganizationDetails>(() => defaultOrganizationDetails(crawl?.website?.domain));
   if (!report) return <Card className="p-6 text-charcoal-400">Loading health report…</Card>;
   const schemaCount = (type: string) => report.schema.types[type] ?? 0;
   const countDetail = (count: number, fallback?: string | null) => (
     count > 0 ? `${count} detected` : fallback ?? undefined
   );
+  const sitemapEntries = report.details?.siteFiles.sitemaps ?? [];
+  const priorityPageUrls = pages.map((page) => page.url).filter(Boolean).slice(0, 25);
+  const activeContext = (() => {
+    const available = [
+      crawl?.website?.domain ? `Domain: ${crawl.website.domain}` : "",
+      crawl?.website?.rootUrl ? `Root URL: ${crawl.website.rootUrl}` : "",
+      report.pageCount ? `Crawled pages: ${report.pageCount}` : "",
+      sitemapEntries.length > 0 ? `Sitemap files: ${sitemapEntries.map((item) => item.url).slice(0, 3).join(", ")}` : "",
+      priorityPageUrls.length > 0 ? `Priority page URLs available: ${priorityPageUrls.length}` : "",
+    ].filter(Boolean);
+    const missing: string[] = [];
+    if (!crawl?.website?.domain) missing.push("Domain name");
+    if (!crawl?.website?.rootUrl) missing.push("Root URL");
+    if (activeGenerateKey === "organization") {
+      if (!organizationDetails.name.trim()) missing.push("Organization name is required");
+      if (!organizationDetails.phone.trim()) missing.push("Phone number helps ContactPoint schema");
+      if (!organizationDetails.email.trim()) missing.push("Email helps ContactPoint schema");
+      if (!organizationDetails.logoUrl.trim()) missing.push("Logo URL helps Organization schema");
+      if (!organizationDetails.address.trim()) missing.push("Address helps LocalBusiness/ProfessionalService schema");
+    }
+    if (activeGenerateKey === "llms") {
+      if (sitemapEntries.length === 0) missing.push("Sitemap file URLs");
+      if (priorityPageUrls.length === 0) missing.push("Crawled priority page URLs");
+    }
+    if (activeGenerateKey === "sitemap" && priorityPageUrls.length === 0) missing.push("Crawled page URLs are required to create a sitemap");
+    if (["faqSchema", "breadcrumbSchema"].includes(activeGenerateKey ?? "") && priorityPageUrls.length === 0) missing.push("Target page URLs for page-level schema");
+    return { available, missing };
+  })();
+  const canGenerateReadiness = Boolean(activeGenerateKey) && !activeContext.missing.some((item) => item.includes("required") || item.includes("Crawled priority") || item.includes("Target page") || item.includes("Crawled page URLs"));
+  const openReadinessGenerator = (key: ReadinessGenerateKey) => {
+    setActiveGenerateKey(key);
+    setGenerated(null);
+    setCopied(false);
+    if (key === "organization") setOrganizationDetails(defaultOrganizationDetails(crawl?.website?.domain));
+  };
+  const generateReadinessContent = async () => {
+    if (!report || !activeGenerateKey) return;
+    const key = activeGenerateKey;
+    const config = READINESS_GENERATORS[key];
+    setGenerating(key);
+    setCopied(false);
+    try {
+      const result = await api.post<{ generation: AiContentGeneration }>("/api/ai-content/generate", {
+        websiteId: crawl?.website?.id ?? null,
+        type: config.type,
+        topic: `${crawl?.website?.domain ?? "Domain"} - ${config.topic}`,
+        targetKeyword: null,
+        targetUrl: crawl?.website?.rootUrl ?? null,
+        languageCode: "en",
+        tone: "professional",
+        notes: [
+          `Missing readiness item: ${config.label}.`,
+          `Domain: ${crawl?.website?.domain ?? "unknown"}.`,
+          `Page count: ${report.pageCount}.`,
+          `Sitemap URLs: ${report.aiSearch.sitemapUrls}. Robots status: ${report.siteFiles.robotsStatus ?? "not found"}.`,
+          `Schema counts: Organization ${schemaCount("Organization")}, WebSite ${schemaCount("WebSite")}, FAQPage ${schemaCount("FAQPage")}, BreadcrumbList ${schemaCount("BreadcrumbList")}.`,
+          sitemapEntries.length ? `Sitemap files: ${sitemapEntries.map((item) => `${item.url} (${item.urlCount} URLs)`).join(" | ")}` : "",
+          priorityPageUrls.length ? `Priority page URLs: ${priorityPageUrls.join(" | ")}` : "",
+          key === "organization" ? organizationNotes(organizationDetails) : "",
+          key === "sitemap" ? "Create the sitemap XML from the provided priority page URLs only. Do not leave urls, urlCount, or sitemapXml blank." : "",
+          "Generate implementation-ready content or instructions for the missing item only.",
+        ].filter(Boolean).join("\n"),
+      });
+      setGenerated(result.generation);
+    } catch (error) {
+      alert(String(error));
+    } finally {
+      setGenerating(null);
+    }
+  };
+  const copyGenerated = async () => {
+    if (!generated) return;
+    await navigator.clipboard.writeText(generatedText(generated.resultJson));
+    setCopied(true);
+    window.setTimeout(() => setCopied(false), 1800);
+  };
   return (
     <div className="space-y-4">
       <Card className="p-5">
@@ -1029,39 +1471,58 @@ function HealthReportView({ report }: { report: HealthReport | null }) {
           <ScoreCard label="Schema" score={report.schema.score} detail={`${report.schema.total} schema items`} onClick={() => setActiveDetail("schema")} />
         </div>
       </Card>
+      <Card className="p-5">
+        <h3 className="font-semibold text-charcoal-700">Health report summary</h3>
+        <div className="mt-3 grid gap-3 text-sm sm:grid-cols-2 lg:grid-cols-4">
+          <button type="button" onClick={() => setActiveDetail("highIssues")} className="rounded-md bg-charcoal-50 p-3 text-left transition hover:bg-brand-50 focus:outline-none focus:ring-2 focus:ring-brand-200"><div className="text-charcoal-400">High issues</div><div className="text-xl font-semibold text-red-600">{report.severityCounts.high}</div></button>
+          <button type="button" onClick={() => setActiveDetail("brokenLinks")} className="rounded-md bg-charcoal-50 p-3 text-left transition hover:bg-brand-50 focus:outline-none focus:ring-2 focus:ring-brand-200"><div className="text-charcoal-400">Broken links</div><div className="text-xl font-semibold text-red-600">{report.technical.brokenLinks}</div></button>
+          <button type="button" onClick={() => setActiveDetail("orphanPages")} className="rounded-md bg-charcoal-50 p-3 text-left transition hover:bg-brand-50 focus:outline-none focus:ring-2 focus:ring-brand-200"><div className="text-charcoal-400">Orphan pages</div><div className="text-xl font-semibold text-red-600">{report.internalLinking.orphanPages}</div></button>
+          <button type="button" onClick={() => setActiveDetail("weakAnchors")} className="rounded-md bg-charcoal-50 p-3 text-left transition hover:bg-brand-50 focus:outline-none focus:ring-2 focus:ring-brand-200"><div className="text-charcoal-400">Weak anchors</div><div className="text-xl font-semibold text-amber-600">{report.internalLinking.weakAnchorText}</div></button>
+        </div>
+      </Card>
 
-      <div className="grid gap-4 lg:grid-cols-2">
+      <div className="grid gap-4 lg:grid-cols-3">
         <Card className="p-5">
           <h3 className="font-semibold text-charcoal-700">AI Search readiness</h3>
           <div className="mt-3 space-y-2 text-sm">
-            <CheckRow label="llms.txt" ok={report.aiSearch.llmsTxtPresent} detail={report.aiSearch.llmsTxtScore == null ? undefined : `Section score ${report.aiSearch.llmsTxtScore}`} onClick={() => setActiveDetail("siteFiles")} />
-            <CheckRow label="Organization schema" ok={report.aiSearch.organizationSchema} onClick={() => setActiveDetail("organization")} />
-            <CheckRow label="Sitemap URLs" ok={report.aiSearch.sitemapUrls > 0} detail={`${report.aiSearch.sitemapUrls} URLs found`} onClick={() => setActiveDetail("siteFiles")} />
+            <CheckRow label="llms.txt" ok={report.aiSearch.llmsTxtPresent} detail={report.aiSearch.llmsTxtScore == null ? undefined : "Section score " + report.aiSearch.llmsTxtScore} onClick={() => setActiveDetail("siteFiles")} onGenerate={() => openReadinessGenerator("llms")} generating={generating === "llms"} />
+            <CheckRow label="Organization schema" ok={report.aiSearch.organizationSchema} onClick={() => setActiveDetail("organization")} onGenerate={() => openReadinessGenerator("organization")} generating={generating === "organization"} />
+          </div>
+        </Card>
+
+        <Card className="p-5">
+          <h3 className="font-semibold text-charcoal-700">Technical SEO readiness</h3>
+          <div className="mt-3 space-y-2 text-sm">
+            <CheckRow label="Sitemap URLs" ok={report.aiSearch.sitemapUrls > 0} detail={report.aiSearch.sitemapUrls > 0 ? report.aiSearch.sitemapUrls + " URLs found" : "No sitemap URLs found"} onClick={() => setActiveDetail("siteFiles")} onGenerate={() => openReadinessGenerator("sitemap")} generating={generating === "sitemap"} />
+            <CheckRow label="Robots status" ok={report.siteFiles.robotsStatus === 200} detail={report.siteFiles.robotsStatus ? "Status " + report.siteFiles.robotsStatus : "Not found"} onClick={() => setActiveDetail("siteFiles")} onGenerate={() => openReadinessGenerator("robots")} generating={generating === "robots"} />
           </div>
         </Card>
 
         <Card className="p-5">
           <h3 className="font-semibold text-charcoal-700">Schema, FAQ, breadcrumb</h3>
           <div className="mt-3 space-y-2 text-sm">
-            <CheckRow label="Organization schema" ok={report.schema.hasOrganization} detail={countDetail(schemaCount("Organization"))} onClick={() => setActiveDetail("organization")} />
-            <CheckRow label="WebSite schema" ok={report.schema.hasWebsite} detail={countDetail(schemaCount("WebSite"))} onClick={() => setActiveDetail("website")} />
-            <CheckRow label="FAQPage schema" ok={report.faq.hasFAQSchema} detail={countDetail(schemaCount("FAQPage"), report.faq.issue)} onClick={() => setActiveDetail("faq")} />
-            <CheckRow label="BreadcrumbList schema" ok={report.breadcrumb.hasBreadcrumbSchema} detail={countDetail(schemaCount("BreadcrumbList"), report.breadcrumb.issue)} onClick={() => setActiveDetail("breadcrumb")} />
+            <CheckRow label="Organization schema" ok={report.schema.hasOrganization} detail={countDetail(schemaCount("Organization"))} onClick={() => setActiveDetail("organization")} onGenerate={() => openReadinessGenerator("organization")} generating={generating === "organization"} />
+            <CheckRow label="WebSite schema" ok={report.schema.hasWebsite} detail={countDetail(schemaCount("WebSite"))} onClick={() => setActiveDetail("website")} onGenerate={() => openReadinessGenerator("websiteSchema")} generating={generating === "websiteSchema"} />
+            <CheckRow label="FAQPage schema" ok={report.faq.hasFAQSchema} detail={countDetail(schemaCount("FAQPage"), report.faq.issue)} onClick={() => setActiveDetail("faq")} onGenerate={() => openReadinessGenerator("faqSchema")} generating={generating === "faqSchema"} />
+            <CheckRow label="BreadcrumbList schema" ok={report.breadcrumb.hasBreadcrumbSchema} detail={countDetail(schemaCount("BreadcrumbList"), report.breadcrumb.issue)} onClick={() => setActiveDetail("breadcrumb")} onGenerate={() => openReadinessGenerator("breadcrumbSchema")} generating={generating === "breadcrumbSchema"} />
           </div>
         </Card>
       </div>
 
-      <Card className="p-5">
-        <h3 className="font-semibold text-charcoal-700">Health report summary</h3>
-        <div className="mt-3 grid gap-3 text-sm sm:grid-cols-2 lg:grid-cols-6">
-          <div className="rounded-md bg-charcoal-50 p-3"><div className="text-charcoal-400">High issues</div><div className="text-xl font-semibold text-red-600">{report.severityCounts.high}</div></div>
-          <button type="button" onClick={() => setActiveDetail("brokenLinks")} className="rounded-md bg-charcoal-50 p-3 text-left transition hover:bg-brand-50"><div className="text-charcoal-400">Broken links</div><div className="text-xl font-semibold text-red-600">{report.technical.brokenLinks}</div></button>
-          <button type="button" onClick={() => setActiveDetail("internal")} className="rounded-md bg-charcoal-50 p-3 text-left transition hover:bg-brand-50"><div className="text-charcoal-400">Orphan pages</div><div className="text-xl font-semibold text-red-600">{report.internalLinking.orphanPages}</div></button>
-          <button type="button" onClick={() => setActiveDetail("weakAnchors")} className="rounded-md bg-charcoal-50 p-3 text-left transition hover:bg-brand-50"><div className="text-charcoal-400">Weak anchors</div><div className="text-xl font-semibold text-amber-600">{report.internalLinking.weakAnchorText}</div></button>
-          <button type="button" onClick={() => setActiveDetail("siteFiles")} className="rounded-md bg-charcoal-50 p-3 text-left transition hover:bg-brand-50"><div className="text-charcoal-400">Robots status</div><div className="text-xl font-semibold text-charcoal-700">{report.siteFiles.robotsStatus ?? "—"}</div></button>
-          <button type="button" onClick={() => setActiveDetail("siteFiles")} className="rounded-md bg-charcoal-50 p-3 text-left transition hover:bg-brand-50"><div className="text-charcoal-400">Sitemaps</div><div className="text-xl font-semibold text-charcoal-700">{report.siteFiles.healthySitemaps}/{report.siteFiles.sitemapCount}</div></button>
-        </div>
-      </Card>
+      <ReadinessGenerateModal
+        activeKey={activeGenerateKey}
+        organizationDetails={organizationDetails}
+        setOrganizationDetails={setOrganizationDetails}
+        generated={generated}
+        copied={copied}
+        generating={Boolean(generating)}
+        availableContext={activeContext.available}
+        missingContext={activeContext.missing}
+        canGenerate={canGenerateReadiness}
+        onGenerate={generateReadinessContent}
+        onCopy={copyGenerated}
+        onClose={() => setActiveGenerateKey(null)}
+      />
 
       <HealthDetailDrawer report={report} active={activeDetail} onClose={() => setActiveDetail(null)} />
     </div>
@@ -1214,7 +1675,6 @@ export default function CrawlDetail() {
   const [checkingPageSpeedId, setCheckingPageSpeedId] = useState<string | null>(null);
   const [performancePageId, setPerformancePageId] = useState<string | null>(null);
   const [openIssueId, setOpenIssueId] = useState<string | null>(null);
-  const [view, setView] = useState<"health" | "stats">("health");
   const [tab, setTab] = useState<"pages" | "issues" | "broken">("pages");
   const [issuesPage, setIssuesPage] = useState(1);
   const [brokenPage, setBrokenPage] = useState(1);
@@ -1374,19 +1834,29 @@ export default function CrawlDetail() {
         <Card className="p-6 text-red-700">Crawl failed: {status.error}</Card>
       ) : (
         <>
-          <div className="flex flex-wrap gap-2">
-            <Button variant={view === "health" ? "primary" : "ghost"} onClick={() => { setView("health"); setOpenIssueId(null); }}>
-              Domain health report
-            </Button>
-            <Button variant={view === "stats" ? "primary" : "ghost"} onClick={() => { setView("stats"); setOpenIssueId(null); }}>
-              Crawl stats
-            </Button>
-          </div>
+          <div className="space-y-6">
+            {summary && (
+              <Card className="p-5">
+                <div className="flex flex-col gap-2 border-b border-charcoal-100 pb-4 sm:flex-row sm:items-end sm:justify-between">
+                  <div>
+                    <h2 className="text-lg font-semibold text-charcoal-800">Crawl stats</h2>
+                    <p className="text-sm text-charcoal-400">Review crawled pages, issue details, broken links, and page performance from this crawl.</p>
+                  </div>
+                  <div className="text-sm font-medium text-charcoal-500">
+                    Score <span className={scoreTone(summary.siteScore)}>{summary.siteScore ?? "-"}</span>
+                  </div>
+                </div>
+                <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
+                  <StatBox label="Pages crawled" value={summary.pageCount} />
+                  <StatBox label="Indexable pages" value={summary.indexable} tone="text-green-700" />
+                  <StatBox label="Issues" value={issues.length} tone={issues.length > 0 ? "text-amber-700" : "text-green-700"} />
+                  <StatBox label="Broken links" value={brokenLinks.length} tone={brokenLinks.length > 0 ? "text-red-600" : "text-green-700"} />
+                  <StatBox label="Status" value={summary.status} />
+                </div>
+              </Card>
+            )}
+            <HealthReportView report={healthReport} crawl={status} pages={pages} />
 
-          {view === "health" ? (
-            <HealthReportView report={healthReport} />
-          ) : (
-          <>
           {/* Issue breakdown grid — click a card to filter the issues table */}
           {summary && (
             <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-7">
@@ -1694,8 +2164,7 @@ export default function CrawlDetail() {
               <Pagination page={brokenPage} total={shownBrokenLinks.length} onPage={setBrokenPage} />
             </Card>
           ) : null}
-          </>
-          )}
+          </div>
         </>
       )}
 

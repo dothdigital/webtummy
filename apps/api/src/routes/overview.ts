@@ -1,20 +1,20 @@
 // Aggregate dashboard data for the web overview page. Tenant-scoped.
 import { Router } from "express";
 import { prisma } from "@webtummy/db";
-import { requireAuth, tenantScope } from "../middleware.js";
+import { requireAuth } from "../middleware.js";
+import { projectClientIdForRequest } from "../project-scope.js";
 
 export const overviewRouter = Router();
 overviewRouter.use(requireAuth);
 
 overviewRouter.get("/overview", async (req, res) => {
-  const scope = tenantScope(req);
-  const isSuper = req.user!.role === "super_admin";
-  const websiteWhere = scope.clientId ? { clientId: scope.clientId } : {};
-  const crawlWhere = scope.clientId ? { website: { clientId: scope.clientId } } : {};
+  const clientId = await projectClientIdForRequest(req);
+  const websiteWhere = clientId ? { clientId } : {};
+  const crawlWhere = clientId ? { website: { clientId } } : {};
 
   const [clientCount, websiteCount, crawlCount, completedCrawls, recent, issuesBySeverity, issuesByCategory] =
     await Promise.all([
-      isSuper ? prisma.client.count() : Promise.resolve(0),
+      Promise.resolve(0),
       prisma.website.count({ where: websiteWhere }),
       prisma.crawlJob.count({ where: crawlWhere }),
       prisma.crawlJob.findMany({

@@ -25,6 +25,19 @@ export const config = {
   redisUrl: process.env.REDIS_URL ?? "redis://localhost:6379",
   userAgent:
     process.env.CRAWL_USER_AGENT ?? "Webtummy-Crawler/0.1 (+https://webtummy.com/bot)",
+  webAppUrl: process.env.WEB_APP_URL ?? "http://localhost:5173",
+  emailProvider: (process.env.EMAIL_PROVIDER ?? "").toLowerCase(),
+  emailFrom: process.env.EMAIL_FROM ?? "Webtummy <no-reply@webtummy.local>",
+  resendApiKey: process.env.RESEND_API_KEY ?? "",
+  awsRegion: process.env.SES_MAILER_AWS_REGION ?? process.env.AWS_REGION ?? process.env.AWS_DEFAULT_REGION ?? "",
+  awsAccessKeyId: process.env.SES_MAILER_ACCESS_KEY ?? process.env.AWS_ACCESS_KEY_ID ?? "",
+  awsSecretAccessKey: process.env.SES_MAILER_SECRET_KEY ?? process.env.AWS_SECRET_ACCESS_KEY ?? "",
+  awsSessionToken: process.env.AWS_SESSION_TOKEN ?? "",
+  maintenanceInitialDelayMs: num(process.env.MAINTENANCE_INITIAL_DELAY_MS, 30_000),
+  maintenanceIntervalMs: num(process.env.MAINTENANCE_INTERVAL_MS, 6 * 60 * 60 * 1000),
+  crawlJobTimeoutMs: num(process.env.CRAWL_JOB_TIMEOUT_MS, 45 * 60 * 1000),
+  monthlyAuditPageLimit: num(process.env.MONTHLY_AUDIT_PAGE_LIMIT, 150),
+  monthlyAuditMaxDepth: num(process.env.MONTHLY_AUDIT_MAX_DEPTH, 8),
 };
 
 /** Crawl defaults from env; per-crawl options override these. */

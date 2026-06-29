@@ -2,7 +2,8 @@
 import { Router } from "express";
 import { z } from "zod";
 import { prisma } from "@webtummy/db";
-import { requireAuth, tenantScope } from "../middleware.js";
+import { requireAuth } from "../middleware.js";
+import { projectClientIdForRequest } from "../project-scope.js";
 import { config } from "../config.js";
 import { crawlQueue } from "../queue.js";
 
@@ -11,21 +12,21 @@ crawlsRouter.use(requireAuth);
 
 /** Ensure the given website is visible to the caller's tenant; returns it or null. */
 async function getScopedWebsite(req: import("express").Request, websiteId: string) {
-  const scope = tenantScope(req);
+  const clientId = await projectClientIdForRequest(req);
   return prisma.website.findFirst({
-    where: { id: websiteId, ...(scope.clientId ? { clientId: scope.clientId } : {}) },
+    where: { id: websiteId, ...(clientId ? { clientId } : {}) },
   });
 }
 
 /** Ensure a crawl job is visible to the caller's tenant. */
 async function getScopedCrawl(req: import("express").Request, crawlId: string) {
-  const scope = tenantScope(req);
+  const clientId = await projectClientIdForRequest(req);
   return prisma.crawlJob.findFirst({
     where: {
       id: crawlId,
-      ...(scope.clientId ? { website: { clientId: scope.clientId } } : {}),
+      ...(clientId ? { website: { clientId } } : {}),
     },
-    include: { website: { select: { id: true, domain: true, rootUrl: true } } },
+    include: { website: { select: { id: true, domain: true, rootUrl: true, status: true } } },
   });
 }
 
@@ -45,6 +46,7 @@ const pageSpeedSchema = z.object({
 crawlsRouter.post("/websites/:websiteId/crawls", async (req, res) => {
   const website = await getScopedWebsite(req, req.params.websiteId);
   if (!website) return res.status(404).json({ error: "website not found" });
+  if (website.status === "archived") return res.status(409).json({ error: "website is archived", message: "Archived website reports are view-only. Replace or reactivate the website before starting new tracking." });
 
   const parsed = startSchema.safeParse(req.body ?? {});
   if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() });
@@ -59,6 +61,24 @@ crawlsRouter.post("/websites/:websiteId/crawls", async (req, res) => {
       error: "crawl already running",
       message: "A crawl is already queued or running for this project. Wait for it to finish before starting another run.",
       crawlJob: active,
+    });
+  }
+
+  const recentCompletedCutoff = new Date(Date.now() - 24 * 60 * 60 * 1000);
+  const recentCompleted = await prisma.crawlJob.findFirst({
+    where: {
+      websiteId: website.id,
+      status: "completed",
+      completedAt: { gte: recentCompletedCutoff },
+    },
+    orderBy: { completedAt: "desc" },
+    select: { id: true, status: true, pagesCrawled: true, siteScore: true, completedAt: true, createdAt: true },
+  });
+  if (recentCompleted) {
+    return res.status(409).json({
+      error: "recent crawl already completed",
+      message: "This project already has a completed crawl from the last 24 hours. Open the latest report instead of running the same 150-page check again.",
+      crawlJob: recentCompleted,
     });
   }
 
@@ -94,6 +114,7 @@ crawlsRouter.get("/crawls/:id/status", async (req, res) => {
       id: website.id,
       domain: website.domain,
       rootUrl: website.rootUrl,
+      status: website.status,
     } : null,
     startedAt: job.startedAt,
     completedAt: job.completedAt,
@@ -169,6 +190,10 @@ crawlsRouter.get("/crawls/:id/pages", async (req, res) => {
             metaDescLength: true,
             h1Text: true,
             h1Count: true,
+            canonicalUrl: true,
+            hreflangJson: true,
+            ogTags: true,
+            twitterTags: true,
             looksJsDependent: true,
           },
         },
@@ -231,8 +256,9 @@ crawlsRouter.get("/crawls/:id/generated-sitemap.xml", async (req, res) => {
 
 // GET /api/crawls/:id/compare-previous — compare this crawl to the previous crawl for the same website
 crawlsRouter.get("/crawls/:id/compare-previous", async (req, res) => {
+  const clientId = await projectClientIdForRequest(req);
   const job = await prisma.crawlJob.findFirst({
-    where: { id: req.params.id, ...(tenantScope(req).clientId ? { website: { clientId: tenantScope(req).clientId } } : {}) },
+    where: { id: req.params.id, ...(clientId ? { website: { clientId } } : {}) },
     include: { website: true },
   });
   if (!job) return res.status(404).json({ error: "crawl not found" });
@@ -293,6 +319,7 @@ crawlsRouter.get("/crawls/:id/compare-previous", async (req, res) => {
 crawlsRouter.post("/crawls/:id/pages/:pageId/pagespeed", async (req, res) => {
   const job = await getScopedCrawl(req, req.params.id);
   if (!job) return res.status(404).json({ error: "crawl not found" });
+  if (job.website?.status === "archived") return res.status(409).json({ error: "website is archived" });
 
   const page = await prisma.page.findFirst({
     where: { id: req.params.pageId, crawlJobId: job.id },
@@ -579,6 +606,7 @@ crawlsRouter.get("/crawls/:id/broken-links", async (req, res) => {
 crawlsRouter.post("/crawls/:id/broken-links/:linkId/recheck", async (req, res) => {
   const job = await getScopedCrawl(req, req.params.id);
   if (!job) return res.status(404).json({ error: "crawl not found" });
+  if (job.website?.status === "archived") return res.status(409).json({ error: "website is archived" });
 
   const link = await prisma.link.findFirst({
     where: { id: req.params.linkId, sourcePage: { crawlJobId: job.id } },

@@ -7,3 +7,4 @@ export * from "./parse.js";
 export * from "./issues.js";
 export * from "./scoring.js";
 export * from "./geoKeywordScoring.js";
+export * from "./localSeo.js";

@@ -7,6 +7,7 @@ import { verifyPassword, signToken, hashPassword } from "../auth.js";
 import { requireAuth } from "../middleware.js";
 import { config } from "../config.js";
 import { sendMail } from "../email.js";
+import { trialEndsFrom } from "../billing.js";
 
 export const authRouter = Router();
 
@@ -28,6 +29,40 @@ function authUser(user: { id: string; email: string; name: string | null; role: 
 function issueLogin(user: { id: string; role: "super_admin" | "client_admin" | "client_user"; clientId: string | null }) {
   return signToken({ userId: user.id, role: user.role, clientId: user.clientId });
 }
+
+function escapeHtml(value: string) {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(new RegExp(String.fromCharCode(39), "g"), "&#39;");
+}
+
+async function verifyCaptcha(token: string | undefined, expectedAction: string, remoteIp?: string) {
+  if (!config.recaptchaSecretKey) return;
+  if (!token) throw new Error("captcha_required");
+
+  const body = new URLSearchParams({
+    secret: config.recaptchaSecretKey,
+    response: token,
+  });
+  if (remoteIp) body.set("remoteip", remoteIp);
+
+  const response = await fetch("https://www.google.com/recaptcha/api/siteverify", {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body,
+  });
+  const result = (await response.json().catch(() => ({}))) as { success?: boolean; score?: number; action?: string };
+  if (!response.ok || !result.success || result.action !== expectedAction || (result.score ?? 0) < config.recaptchaMinScore) {
+    throw new Error("captcha_failed");
+  }
+}
+
+authRouter.get("/config", (_req, res) => {
+  res.json({ recaptchaSiteKey: config.recaptchaSiteKey });
+});
 
 async function sendVerificationEmail(user: { id: string; email: string; name: string | null }) {
   const token = randomToken();
@@ -62,6 +97,26 @@ async function sendPasswordResetEmail(user: { id: string; email: string; name: s
     subject: "Reset your Webtummy password",
     text: `Hi ${user.name ?? "there"}, reset your password by opening this link: ${link}. This link expires in 1 hour.`,
     html: `<p>Hi ${user.name ?? "there"},</p><p>Reset your Webtummy password by opening this secure link:</p><p><a href="${link}">Reset password</a></p><p>This link expires in 1 hour.</p>`,
+  });
+}
+
+async function sendSignupNotification(input: { name: string; companyName: string; email: string }) {
+  if (!config.signupNotifyEmail) return;
+
+  const subject = "New Webtummy signup";
+  const text = [
+    "A new user registered for Webtummy.",
+    "",
+    "Name: " + input.name,
+    "Company: " + input.companyName,
+    "Email: " + input.email,
+  ].join("\n");
+
+  await sendMail({
+    to: config.signupNotifyEmail,
+    subject,
+    text,
+    html: "<p>A new user registered for Webtummy.</p><ul><li><strong>Name:</strong> " + escapeHtml(input.name) + "</li><li><strong>Company:</strong> " + escapeHtml(input.companyName) + "</li><li><strong>Email:</strong> " + escapeHtml(input.email) + "</li></ul>",
   });
 }
 
@@ -102,6 +157,7 @@ const registerSchema = z.object({
     .regex(/[A-Za-z]/, "Include a letter")
     .regex(/[0-9]/, "Include a number")
     .regex(/[^A-Za-z0-9]/, "Include a special character"),
+  captchaToken: z.string().optional(),
 });
 
 authRouter.post("/register", async (req, res) => {
@@ -111,11 +167,27 @@ authRouter.post("/register", async (req, res) => {
   }
   const d = parsed.data;
 
+  try {
+    await verifyCaptcha(d.captchaToken, "register", req.ip);
+  } catch {
+    return res.status(400).json({ error: { captchaToken: ["Complete the captcha check"] } });
+  }
+
   const existing = await prisma.user.findUnique({ where: { email: d.email } });
   if (existing) return res.status(409).json({ error: { email: ["Email already registered"] } });
 
   const { user } = await prisma.$transaction(async (tx) => {
-    const client = await tx.client.create({ data: { name: d.companyName } });
+    const trialStartedAt = new Date();
+    const client = await tx.client.create({
+      data: {
+        name: d.companyName,
+        contactEmail: d.email,
+        plan: "mini",
+        aiSubscriptionStatus: "trialing",
+        trialStartedAt,
+        trialEndsAt: trialEndsFrom(trialStartedAt),
+      },
+    });
     const user = await tx.user.create({
       data: {
         email: d.email,
@@ -129,7 +201,16 @@ authRouter.post("/register", async (req, res) => {
     return { client, user };
   });
 
-  await sendVerificationEmail(user);
+  try {
+    await sendVerificationEmail(user);
+  } catch (error) {
+    console.error("Failed to send verification email", error);
+    return res.status(502).json({ error: { email: ["Account was created, but the verification email could not be sent. Contact support to verify the account."] } });
+  }
+
+  sendSignupNotification({ name: d.name, companyName: d.companyName, email: d.email }).catch((error) => {
+    console.error("Failed to send signup notification", error);
+  });
 
   res.status(201).json({
     ok: true,
