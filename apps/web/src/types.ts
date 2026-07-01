@@ -45,11 +45,219 @@ export interface Website {
     siteScore: number | null;
     pagesCrawled: number;
     errorCount?: number;
+    options?: unknown;
     createdAt: string;
     startedAt?: string | null;
     completedAt: string | null;
     error?: string | null;
   }[];
+}
+
+export interface GuidedExecutionTask {
+  id: string;
+  moduleName: string;
+  title: string;
+  description: string;
+  priority: "high" | "medium" | "low" | string;
+  automationLevel: string;
+  status: string;
+  requiresApproval: boolean;
+  requiresIntegration: boolean;
+  manualRequired: boolean;
+  safetyCategory?: string;
+  relatedModule?: string | null;
+  approvedAt?: string | null;
+  blockedReason?: string | null;
+  actionButtonLabel: string | null;
+  relatedUrl: string | null;
+  manualInstructions: string | null;
+  createdAt: string;
+}
+
+export interface ProjectWorkflowStep {
+  id: string;
+  projectId: string;
+  stepKey: string;
+  title: string;
+  description: string;
+  status: string;
+  priority: string;
+  actionLabel: string | null;
+  actionUrl: string | null;
+  sortOrder: number;
+  sourceType: string | null;
+  sourceId: string | null;
+  completionReason: string | null;
+  readyReason: string | null;
+  blockedReason: string | null;
+  completedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface Opportunity {
+  id: string;
+  projectId: string;
+  name: string;
+  targetAudience: string | null;
+  problemSolved: string | null;
+  recommendedOffer: string | null;
+  businessModel: string | null;
+  opportunityScore: number | null;
+  seoScore: number | null;
+  competitionScore: number | null;
+  monetizationScore: number | null;
+  executionScore: number | null;
+  userFitScore: number | null;
+  summary: string | null;
+  status: string;
+  createdAt: string;
+}
+
+export interface GuidedProject {
+  id: string;
+  clientId: string;
+  websiteId: string | null;
+  name: string;
+  projectType: "new_business" | "existing_website" | "agency_client" | "ecommerce" | string;
+  status: string;
+  currentStep: string;
+  businessName: string | null;
+  websiteUrl: string | null;
+  niche: string | null;
+  targetLocation: string | null;
+  primaryGoal: string | null;
+  targetLaunchTimeline: string | null;
+  preferredOutputs: unknown;
+  preferredPublishingMethod: string | null;
+  createdAt: string;
+  updatedAt: string;
+  website?: { id: string; domain: string; rootUrl: string; status: string } | null;
+  businessProfile?: {
+    id: string;
+    businessSummary: string | null;
+    targetAudience: string | null;
+    offerSummary: string | null;
+    businessModel: string | null;
+    strengths: unknown;
+    constraints: unknown;
+    budgetLevel: string | null;
+    skillLevel: string | null;
+    tonePreference: string | null;
+  } | null;
+  intakeAnswers?: {
+    id: string;
+    questionKey: string;
+    questionText: string;
+    answerValue: unknown;
+    answerType: string;
+  }[];
+  executionPlans?: {
+    id: string;
+    title: string;
+    summary: string | null;
+    status: string;
+    tasks: GuidedExecutionTask[];
+  }[];
+  workflowSteps?: ProjectWorkflowStep[];
+  opportunities?: Opportunity[];
+  strategyPlans?: unknown[];
+  _count?: { intakeAnswers: number; strategyPlans: number; opportunities: number };
+}
+
+export interface AutomationPolicy {
+  key: string;
+  label: string;
+  coverage: string;
+  levels: string[];
+  approvalRequirement: string;
+  safetyCategory: string;
+  examples: string[];
+}
+
+export interface GrowthDiagnosis {
+  id: string;
+  projectId: string;
+  bottleneckType: string;
+  scoreJson: Record<string, number>;
+  summary: string;
+  dataSnapshot: unknown;
+  createdAt: string;
+}
+
+export interface GrowthFunnelStage {
+  id: string;
+  projectId: string;
+  stageKey: string;
+  title: string;
+  status: string;
+  conversionMetric: string | null;
+  issueSummary: string | null;
+  automationStatus: string;
+  sortOrder: number;
+}
+
+export interface GrowthExperiment {
+  id: string;
+  projectId: string;
+  title: string;
+  hypothesis: string;
+  metric: string;
+  successThreshold: string;
+  status: string;
+  iceScore: number;
+  pieScore: number;
+  impactScore: number;
+  confidenceScore: number;
+  easeScore: number;
+  potentialScore: number;
+  importanceScore: number;
+  requiredAssets: unknown;
+  automationLevel: string;
+  requiresApproval: boolean;
+  safetyCategory: string;
+  startedAt: string | null;
+  completedAt: string | null;
+  assets?: { id: string; title: string; assetType: string; approvalStatus: string; contentJson: unknown }[];
+  results?: { id: string; baselineValue: number | null; currentValue: number | null; resultStatus: string; notes: string | null; recordedAt: string }[];
+}
+
+export interface GrowthOverviewResponse {
+  project: GuidedProject;
+  signals: {
+    scoreJson: Record<string, number>;
+    bottleneckType: string;
+    growthScore: number;
+    keywordRuns: number;
+    socialPosts: number;
+    hasLeadMagnetTask: boolean;
+    strategyApproved: boolean;
+    openTasks: GuidedExecutionTask[];
+  };
+  readiness: {
+    canRun: boolean;
+    status: "ready" | "blocked" | string;
+    message: string;
+    items: GrowthReadinessItem[];
+    missing: GrowthReadinessItem[];
+  };
+  growth: {
+    diagnosis: GrowthDiagnosis | null;
+    funnelStages: GrowthFunnelStage[];
+    experiments: GrowthExperiment[];
+    channelTests: { id: string; channel: string; cadence: string; metric: string; durationDays: number; status: string; assetsNeeded: unknown }[];
+    reports: { id: string; reportType: string; status: string; htmlContent: string | null; pdfUrl: string | null; createdAt: string }[];
+  };
+  automationPolicy: AutomationPolicy;
+}
+
+export interface GrowthReadinessItem {
+  key: string;
+  title: string;
+  description: string;
+  status: "complete" | "missing";
+  required: boolean;
+  actions: { label: string; url: string }[];
 }
 
 export interface DomainBacklinkLink {
@@ -467,9 +675,54 @@ export interface KeywordResearchRun {
   refreshBlockedUntil?: string | null;
   previousRank?: number | null;
   rankChange?: number | null;
+  avgDifficulty?: number | null;
+  avgCpc?: number | null;
+  avgSearchVolume?: number | null;
+  opportunityScore?: number | null;
+  intent?: string | null;
   website?: { id: string; domain: string; rootUrl: string } | null;
   ideas?: KeywordIdea[];
   competitors?: KeywordSerpCompetitor[];
+}
+
+export type WorkspaceMilestoneStatus = "Completed" | "In Progress" | "Ready" | "Pending";
+
+export interface WorkspaceMilestone {
+  title: string;
+  moduleName: string;
+  status: WorkspaceMilestoneStatus;
+  reason: string;
+  relatedUrl: string;
+}
+
+export interface WorkspaceIntelligence {
+  activeProjectId: string | null;
+  activeWebsiteId: string | null;
+  signals: {
+    intakeComplete?: boolean;
+    strategyApproved?: boolean;
+    hasWebsite?: boolean;
+    hasCompletedCrawl?: boolean;
+    activeCrawlStatus?: string | null;
+    pagesCrawled?: number;
+    siteScore?: number | null;
+    keywordRunCount?: number;
+    openTaskCount?: number;
+    completedTaskCount?: number;
+  };
+  projectWorkflowSteps?: ProjectWorkflowStep[];
+  modules: Record<string, { status: WorkspaceMilestoneStatus; reason: string; relatedUrl: string }>;
+  roadmap: WorkspaceMilestone[];
+}
+
+export interface WorkspaceIntelligenceResponse {
+  projects: GuidedProject[];
+  websites: Website[];
+  keywordRuns: KeywordResearchRun[];
+  tasks: GuidedExecutionTask[];
+  backlinkSummary: DomainBacklinkSummary | null;
+  backlinkLinks: DomainBacklinkLinks | null;
+  intelligence: WorkspaceIntelligence;
 }
 
 export interface GeoKeywordAuditPage {
@@ -860,4 +1113,31 @@ export interface LocalCompetitor {
 export interface LocalSeoDashboardResponse {
   business: LocalBusinessProfile;
   latestSnapshots: LocalRankSnapshot[];
+}
+
+export interface ExecutionTask {
+  id: string;
+  clientId: string;
+  websiteId: string | null;
+  moduleName: string;
+  sourceType: string;
+  sourceId: string | null;
+  dedupeKey: string;
+  title: string;
+  description: string;
+  priority: "high" | "medium" | "low" | string;
+  automationLevel: string;
+  status: string;
+  requiresApproval: boolean;
+  requiresIntegration: boolean;
+  manualRequired: boolean;
+  actionButtonLabel: string | null;
+  relatedUrl: string | null;
+  relatedAssetId: string | null;
+  manualInstructions: string | null;
+  impact: string | null;
+  completedAt: string | null;
+  skippedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
 }

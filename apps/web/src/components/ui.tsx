@@ -212,6 +212,7 @@ export function Input({
   type = "text",
   placeholder,
   autoComplete,
+  ariaLabel,
 }: {
   label: string;
   value: string;
@@ -219,13 +220,15 @@ export function Input({
   type?: string;
   placeholder?: string;
   autoComplete?: string;
+  ariaLabel?: string;
 }) {
   return (
     <label className="block">
-      <span className="mb-1 block text-sm font-medium text-slate-600">{label}</span>
+      {label && <span className="mb-1 block text-sm font-medium text-slate-600">{label}</span>}
       <input
         type={type}
         value={value}
+        aria-label={ariaLabel ?? (label || undefined)}
         placeholder={placeholder}
         autoComplete={autoComplete}
         onChange={(e) => onChange(e.target.value)}

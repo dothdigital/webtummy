@@ -52,6 +52,8 @@ const backlinkLinksQuerySchema = backlinkQuerySchema.extend({
   limit: z.coerce.number().int().min(1).max(100).default(25),
 });
 
+const BACKLINK_REFRESH_COOLDOWN_MS = 7 * 24 * 60 * 60 * 1000;
+
 const keywordSuggestionSchema = z.object({
   websiteId: z.string().min(1),
   limit: z.number().int().min(3).max(20).default(10),
@@ -253,6 +255,152 @@ function parseKeywordSuggestions(value: unknown, existingKeywords: Set<string>, 
   return suggestions;
 }
 
+function fallbackKeywordSuggestions(input: {
+  domain: string;
+  rootUrl: string;
+  country?: string | null;
+  cities?: unknown;
+  selectedCities?: string;
+  project?: {
+    businessName?: string | null;
+    niche?: string | null;
+    primaryGoal?: string | null;
+    targetLocation?: string | null;
+    businessProfile?: {
+      businessSummary?: string | null;
+      targetAudience?: string | null;
+      offerSummary?: string | null;
+      businessModel?: string | null;
+      strengths?: unknown;
+      constraints?: unknown;
+    } | null;
+  } | null;
+  pages: Array<{ url: string; seo?: { title?: string | null; metaDescription?: string | null; h1Text?: unknown; h2Json?: unknown } | null }>;
+  existingKeywords: Set<string>;
+  limit: number;
+}): KeywordSuggestion[] {
+  const seen = new Set(input.existingKeywords);
+  const suggestions: KeywordSuggestion[] = [];
+  const city = cleanSuggestionText((input.selectedCities || jsonStringList(input.cities)[0] || "").split(",")[0] ?? "");
+  const domainBase = cleanSuggestionText(input.domain.replace(/^www\./, "").split(".")[0]?.replace(/[-_]+/g, " ") ?? "");
+  const profile = input.project?.businessProfile;
+  const offerTerms = splitBusinessTerms(profile?.offerSummary ?? "");
+  const audienceTerms = splitBusinessTerms(profile?.targetAudience ?? "");
+  const nicheTerms = splitBusinessTerms(input.project?.niche ?? profile?.businessSummary ?? "");
+  const projectTerms = [...offerTerms, ...nicheTerms, ...audienceTerms];
+  const pageTerms = input.pages.flatMap((page) => [
+    page.seo?.title ?? "",
+    page.seo?.metaDescription ?? "",
+    ...jsonStringList(page.seo?.h1Text),
+    ...jsonStringList(page.seo?.h2Json),
+  ]);
+  const phraseCandidates = pageTerms
+    .flatMap((text) => extractSearchPhrases(text))
+    .filter((phrase) => !/\b(home|privacy|terms|contact|login|sign in)\b/i.test(phrase));
+  const baseTerms = [...offerTerms, ...nicheTerms, ...phraseCandidates, domainBase].filter((term) => term.length >= 3);
+  const add = (keyword: string, reason: string) => {
+    const cleaned = cleanSuggestionText(keyword);
+    const key = normalizeSuggestionKeyword(cleaned);
+    if (!cleaned || cleaned.length < 3 || seen.has(key) || suggestions.length >= input.limit) return;
+    seen.add(key);
+    suggestions.push({ keyword: cleaned, reason });
+  };
+
+  for (const offer of offerTerms) {
+    add(offer, "Suggested from project services/offers.");
+    if (city) add(`${offer} ${city}`, "Suggested from project offer and selected location.");
+    for (const audience of audienceTerms.slice(0, 3)) {
+      add(`${offer} for ${audience}`, "Suggested from project offer and target audience.");
+      add(`${offer} software for ${audience}`, "Software-intent keyword based on offer and audience.");
+      add(`${offer} solution for ${audience}`, "Solution-intent keyword based on offer and audience.");
+    }
+    add(`best ${offer}`, "Commercial comparison keyword based on the project offer.");
+    add(`${offer} software`, "Software-intent keyword based on the project offer.");
+    add(`${offer} platform`, "Platform-intent keyword based on the project offer.");
+    add(`${offer} pricing`, "Commercial pricing keyword based on the project offer.");
+    add(`${offer} implementation`, "Implementation keyword based on the project offer.");
+    add(`${offer} automation`, "Automation keyword based on the project offer.");
+    add(`${offer} management`, "Management keyword based on the project offer.");
+    if (nicheTerms[0]) {
+      add(`${nicheTerms[0]} ${offer}`, "Suggested from project industry and offer.");
+      add(`${offer} for ${nicheTerms[0]}`, "Suggested from project offer and industry.");
+    }
+  }
+  for (const niche of nicheTerms) {
+    add(`${niche} services`, "Suggested from project industry/niche.");
+    add(`${niche} software`, "Software-intent keyword based on project industry.");
+    add(`${niche} automation`, "Automation keyword based on project industry.");
+    add(`${niche} crm`, "CRM-intent keyword based on project industry.");
+    add(`${niche} management software`, "Management-software keyword based on project industry.");
+    if (city) add(`${niche} services ${city}`, "Suggested from project industry and selected location.");
+  }
+  for (const audience of audienceTerms.slice(0, 4)) {
+    add(`software for ${audience}`, "Suggested from target audience.");
+    add(`crm for ${audience}`, "CRM-intent keyword based on target audience.");
+    add(`automation for ${audience}`, "Automation keyword based on target audience.");
+    if (city) add(`${audience} software ${city}`, "Local keyword based on target audience and selected city.");
+  }
+  for (const term of baseTerms) {
+    if (projectTerms.length && !hasContextOverlap(term, [...projectTerms, city])) continue;
+    add(term, "Suggested from crawled page titles and headings.");
+    if (city) add(`${term} ${city}`, "Suggested from page context and selected city.");
+    add(`best ${term}`, "Commercial comparison keyword based on page context.");
+    add(`${term} services`, "Service-intent keyword based on page context.");
+  }
+  if (city && domainBase) {
+    add(`${domainBase} ${city}`, "Local keyword based on domain and selected city.");
+    add(`${domainBase} services ${city}`, "Local service keyword based on project location.");
+  }
+  if (input.country && domainBase) add(`${domainBase} ${input.country}`, "Country-level keyword based on project market.");
+  return suggestions.slice(0, input.limit);
+}
+
+function hasContextOverlap(value: string, contextTerms: string[]) {
+  const normalized = normalizeText(value);
+  if (!normalized) return false;
+  return contextTerms.some((term) => {
+    const context = normalizeText(term);
+    if (!context) return false;
+    return normalized.includes(context) || context.includes(normalized) || context.split(" ").some((word) => word.length > 3 && normalized.includes(word));
+  });
+}
+
+function splitBusinessTerms(value: string): string[] {
+  const generic = new Set(["business", "businesses", "company", "companies", "service", "services", "solution", "solutions", "platform"]);
+  const seen = new Set<string>();
+  return value
+    .split(/[,\n|;]+/)
+    .map((part) => cleanSuggestionText(part.replace(/\s+/g, " ")))
+    .filter((part) => {
+      const normalized = normalizeText(part);
+      if (!normalized || normalized.length < 3 || normalized.length > 80 || generic.has(normalized)) return false;
+      if (seen.has(normalized)) return false;
+      seen.add(normalized);
+      return true;
+    })
+    .slice(0, 8);
+}
+
+function extractSearchPhrases(text: string): string[] {
+  const cleaned = cleanSuggestionText(text)
+    .replace(/[|•·]/g, ",")
+    .replace(/\b(home|official site|welcome)\b/gi, "")
+    .replace(/\s+/g, " ");
+  return cleaned
+    .split(/[,;:–—-]/)
+    .map((part) => cleanSuggestionText(part))
+    .filter((part) => {
+      const words = part.split(" ").filter(Boolean);
+      return words.length >= 2 && words.length <= 6 && part.length <= 80;
+    })
+    .slice(0, 12);
+}
+
+function filterRelevantKeywordSuggestions(suggestions: KeywordSuggestion[], contextTerms: string[], limit: number) {
+  if (!contextTerms.length) return suggestions.slice(0, limit);
+  return suggestions.filter((suggestion) => hasContextOverlap(suggestion.keyword, contextTerms)).slice(0, limit);
+}
+
 async function suggestKeywordsForWebsite(
   website: ScopedKeywordWebsite,
   limit: number,
@@ -299,6 +447,38 @@ async function suggestKeywordsForWebsite(
     },
   });
   if (!profile) return [];
+  const project = await prisma.project.findFirst({
+    where: { websiteId: website.id, clientId: website.clientId, status: { not: "deleted" } },
+    orderBy: { updatedAt: "desc" },
+    select: {
+      businessName: true,
+      niche: true,
+      primaryGoal: true,
+      targetLocation: true,
+      preferredOutputs: true,
+      businessProfile: {
+        select: {
+          businessSummary: true,
+          targetAudience: true,
+          offerSummary: true,
+          businessModel: true,
+          strengths: true,
+          constraints: true,
+        },
+      },
+      opportunities: {
+        where: { status: "selected" },
+        take: 1,
+        select: { name: true, targetAudience: true, recommendedOffer: true, summary: true },
+      },
+      strategyPlans: {
+        where: { status: "approved" },
+        orderBy: { updatedAt: "desc" },
+        take: 1,
+        select: { strategySummary: true, audienceProfile: true, offerRecommendation: true, seoStrategy: true },
+      },
+    },
+  });
 
   const existingKeywords = new Set<string>();
   for (const run of profile.keywordResearchRuns) {
@@ -321,12 +501,26 @@ async function suggestKeywordsForWebsite(
     ].filter(Boolean).join(" | ");
   });
   const previousLocations = [...new Set(profile.keywordResearchRuns.map((run) => run.locationName).filter(Boolean))].slice(0, 6);
+  const contextTerms = [
+    project?.businessName ?? "",
+    project?.niche ?? "",
+    project?.primaryGoal ?? "",
+    project?.targetLocation ?? "",
+    project?.businessProfile?.businessSummary ?? "",
+    project?.businessProfile?.targetAudience ?? "",
+    project?.businessProfile?.offerSummary ?? "",
+    selectedLocation.cities ?? "",
+    selectedLocation.region ?? "",
+    selectedLocation.country ?? "",
+  ].flatMap(splitBusinessTerms);
 
   const prompt = [
     "Suggest organic SEO keyword research seed keywords for this website.",
     "Return JSON with key suggestions: an array of objects with keyword and reason.",
     "Keywords should be concise search phrases a customer would type, not full sentences.",
     "Mix commercial, service/category, problem-aware, comparison, and local-intent terms when relevant.",
+    "Every keyword must clearly relate to the project industry, products/services, target audience, or selected location.",
+    "Prioritize offer + audience, offer + location, industry + software, industry + automation, and commercial comparison phrases.",
     "Do not include duplicate ideas or competitor brand names.",
     `Return at most ${limit} suggestions.`,
     `Language: ${language}`,
@@ -334,6 +528,18 @@ async function suggestKeywordsForWebsite(
     `Root URL: ${profile.rootUrl}`,
     `Target country: ${profile.targetCountry ?? "not provided"}`,
     `Project target cities: ${jsonStringList(profile.targetCities).join(", ") || "not provided"}`,
+    `Project business name: ${project?.businessName ?? "not provided"}`,
+    `Project niche/industry: ${project?.niche ?? "not provided"}`,
+    `Project primary goal: ${project?.primaryGoal ?? "not provided"}`,
+    `Project target location: ${project?.targetLocation ?? "not provided"}`,
+    `Business summary: ${project?.businessProfile?.businessSummary ?? "not provided"}`,
+    `Target audience: ${project?.businessProfile?.targetAudience ?? project?.strategyPlans[0]?.audienceProfile ?? project?.opportunities[0]?.targetAudience ?? "not provided"}`,
+    `Products/services/offers: ${project?.businessProfile?.offerSummary ?? project?.strategyPlans[0]?.offerRecommendation ?? project?.opportunities[0]?.recommendedOffer ?? "not provided"}`,
+    `Business model: ${project?.businessProfile?.businessModel ?? "not provided"}`,
+    `Strengths: ${jsonStringList(project?.businessProfile?.strengths).join(", ") || "not provided"}`,
+    `Constraints/niches to avoid: ${jsonStringList(project?.businessProfile?.constraints).join(", ") || "not provided"}`,
+    `Selected opportunity: ${project?.opportunities[0]?.name ?? "not selected"}`,
+    `Approved SEO strategy: ${project?.strategyPlans[0]?.seoStrategy ?? "not approved"}`,
     `Selected suggestion country: ${selectedLocation.country || "not provided"}`,
     `Selected suggestion region/state: ${selectedLocation.region || "not provided"}`,
     `Selected suggestion cities: ${selectedLocation.cities || "not provided"}`,
@@ -343,8 +549,26 @@ async function suggestKeywordsForWebsite(
     `Top crawled pages:\n${pageContext.length ? pageContext.join("\n") : "No completed crawl page data available."}`,
   ].join("\n");
 
-  const generated = await openaiKeywordSuggestions(prompt);
-  return parseKeywordSuggestions(generated, existingKeywords, limit);
+  const fallback = () => fallbackKeywordSuggestions({
+    domain: profile.domain,
+    rootUrl: profile.rootUrl,
+    country: selectedLocation.country || profile.targetCountry,
+    cities: profile.targetCities,
+    selectedCities: selectedLocation.cities,
+    project,
+    pages: topPages,
+    existingKeywords,
+    limit,
+  });
+
+  try {
+    const generated = await openaiKeywordSuggestions(prompt);
+    const suggestions = filterRelevantKeywordSuggestions(parseKeywordSuggestions(generated, existingKeywords, limit * 2), contextTerms, limit);
+    if (suggestions.length) return suggestions;
+    return fallback();
+  } catch {
+    return fallback();
+  }
 }
 
 async function keywordWebsiteForRequest(req: Request, websiteId: string, clientId: string | null) {
@@ -923,7 +1147,7 @@ function buildGrowthSummary(input: OrganicGrowthInput) {
   const blockers = input.latestCrawl?.issues?.length ?? 0;
   const nextStep = input.pageAudit
     ? opportunity.nextAction
-    : "Run page mapping so Webtummy can connect this keyword to the best crawled page before generating changes.";
+    : "Run page mapping so SEnuke AI can connect this keyword to the best crawled page before generating changes.";
   return {
     headline: opportunity.label,
     nextStep,
@@ -980,7 +1204,7 @@ function recommendedGrowthAction(input: { rank: number | null; bestPageScore: nu
 function actionText(action: string, input: OrganicGrowthInput): string {
   const pageTitle = input.bestPage?.title || input.bestPage?.url || "the best target page";
   const competitor = input.competitors[0]?.domain;
-  if (action === "map_pages") return "Run page mapping, then let Webtummy choose the page to improve or confirm that a new page is needed.";
+  if (action === "map_pages") return "Run page mapping, then let SEnuke AI choose the page to improve or confirm that a new page is needed.";
   if (action === "fix_blockers") return `Fix the latest crawl blockers first, then improve ${pageTitle}.`;
   if (action === "create_page") return `Create a focused page for this keyword because no existing crawled page is strong enough yet.`;
   if (action === "improve_page") return `Improve ${pageTitle}${competitor ? ` against ${competitor}` : ""} with stronger title/H1, FAQ, schema, content depth, and internal links.`;
@@ -1129,8 +1353,9 @@ async function fetchBacklinkSummary(target: string, refresh = false, cacheOnly =
   const endpoint = "backlinks_summary";
   const cacheKey = createHash("sha256").update(JSON.stringify({ endpoint, request })).digest("hex");
   const now = new Date();
-  const cached = refresh ? null : await prisma.externalApiCache.findUnique({ where: { cacheKey } });
-  if (cached && (cacheOnly || cached.expiresAt > now)) {
+  const cached = await prisma.externalApiCache.findUnique({ where: { cacheKey } });
+  const refreshBlocked = refresh && cached && now.getTime() - cached.fetchedAt.getTime() < BACKLINK_REFRESH_COOLDOWN_MS;
+  if (cached && (cacheOnly || cached.expiresAt > now || refreshBlocked)) {
     return { ...parseBacklinkSummary(target, cached.responseJson), fetchedAt: cached.fetchedAt, cached: true };
   }
   if (cacheOnly) return null;
@@ -1159,8 +1384,9 @@ async function fetchBacklinkLinks(target: string, limit: number, refresh = false
   const endpoint = "backlinks_links";
   const cacheKey = createHash("sha256").update(JSON.stringify({ endpoint, request })).digest("hex");
   const now = new Date();
-  const cached = refresh ? null : await prisma.externalApiCache.findUnique({ where: { cacheKey } });
-  if (cached && (cacheOnly || cached.expiresAt > now)) {
+  const cached = await prisma.externalApiCache.findUnique({ where: { cacheKey } });
+  const refreshBlocked = refresh && cached && now.getTime() - cached.fetchedAt.getTime() < BACKLINK_REFRESH_COOLDOWN_MS;
+  if (cached && (cacheOnly || cached.expiresAt > now || refreshBlocked)) {
     return { ...parseBacklinkLinks(target, cached.responseJson), fetchedAt: cached.fetchedAt, cached: true };
   }
   if (cacheOnly) return null;
@@ -1715,7 +1941,7 @@ async function fetchCompetitorProfile(url: string, target: ParsedCompetitor | nu
   try {
     const response = await fetch(url, {
       headers: {
-        "user-agent": "Mozilla/5.0 (compatible; WebtummyBot/0.1; +https://webtummy.local)",
+        "user-agent": "Mozilla/5.0 (compatible; SEnukeAIBot/0.1; +https://senuke-ai.local)",
         accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
       },
       signal: controller.signal,

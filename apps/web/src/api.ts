@@ -3,8 +3,8 @@ let token: string | null = localStorage.getItem("wt_token");
 let activeClientId: string | null = localStorage.getItem("wt_active_client_id");
 let currentRole: AppUser["role"] | null = localStorage.getItem("wt_role") as AppUser["role"] | null;
 let impersonationLabel: string | null = localStorage.getItem("wt_impersonation_label");
-export const SESSION_EXPIRED_EVENT = "webtummy:session-expired";
-export const ACTIVE_CLIENT_EVENT = "webtummy:active-client-changed";
+export const SESSION_EXPIRED_EVENT = "senuke-ai:session-expired";
+export const ACTIVE_CLIENT_EVENT = "senuke-ai:active-client-changed";
 
 async function readJson(res: Response) {
   const text = await res.text();
@@ -203,7 +203,7 @@ export async function fetchMe(): Promise<AppUser | null> {
 function authHeaders(): Record<string, string> {
   return {
     ...(token ? { Authorization: `Bearer ${token}` } : {}),
-    ...(activeClientId && impersonationLabel ? { "X-Webtummy-Client-Id": activeClientId } : {}),
+    ...(activeClientId && impersonationLabel ? { "X-SEnuke-AI-Client-Id": activeClientId } : {}),
   };
 }
 

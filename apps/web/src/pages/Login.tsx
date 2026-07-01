@@ -1,11 +1,10 @@
-// Half-and-half auth screen. Left: brand + blurb. Right: tabbed Sign in / Create
-// account + Forgot password, with email + password validation.
+// Auth screens aligned to the SEnuke AI mockups.
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { useAuth } from "../auth.js";
 import { fetchPublicConfig, forgotPassword, resendVerification } from "../api.js";
 import { Button, Input } from "../components/ui.js";
-import { LogoMark } from "../components/Logo.js";
+import { Logo } from "../components/Logo.js";
 
 type Mode = "signin" | "signup" | "forgot" | "verify" | "reset";
 
@@ -36,82 +35,74 @@ export default function Login() {
   }, []);
 
   return (
-    <div className="min-h-screen bg-slate-50">
-      <div className="grid min-h-screen lg:grid-cols-[1.08fr_0.92fr]">
-        <section className="flex flex-col justify-between bg-charcoal-900 px-6 py-8 text-white sm:px-10 lg:px-12">
-          <div className="flex items-center gap-3">
-            <LogoMark size={42} />
-            <span className="text-xl font-bold tracking-tight text-white">
-              Web<span className="text-brand-400">tummy</span>
-            </span>
+    <div className="min-h-screen bg-white text-slate-800 lg:h-screen lg:overflow-hidden">
+      <div className="grid min-h-screen lg:h-screen lg:min-h-0 lg:grid-cols-[0.56fr_1fr]">
+        <section className="relative overflow-hidden bg-gradient-to-br from-brand-50 via-white to-slate-50 px-7 py-8 sm:px-10 lg:px-12 lg:py-7">
+          <div className="pointer-events-none absolute inset-x-0 bottom-0 h-44 bg-[radial-gradient(ellipse_at_bottom_left,rgba(37,99,235,0.14),transparent_60%)]" />
+          <div className="pointer-events-none absolute -bottom-24 -left-24 h-80 w-80 rounded-full border border-brand-100" />
+          <div className="pointer-events-none absolute -bottom-16 -left-10 h-72 w-72 rounded-full border border-brand-100" />
+
+          <div className="relative flex items-center gap-3">
+            <Logo size={44} />
           </div>
 
-          <div className="py-12 lg:py-0">
-            <div className="max-w-2xl">
-              <div className="mb-5 inline-flex rounded-full border border-brand-400/30 bg-white/10 px-3 py-1 text-xs font-semibold uppercase tracking-wide text-brand-200">
-                SEO audit command center
-              </div>
-              <h1 className="text-4xl font-bold leading-tight text-white sm:text-5xl">
-                SEO &amp; AI Search audits, on autopilot.
-              </h1>
-              <p className="mt-5 max-w-xl text-lg leading-8 text-charcoal-200">
-                Crawl client sites, surface technical &amp; content issues, score AI-search readiness, and ship client-ready reports - all in one place.
-              </p>
+          <div className="relative mt-10 max-w-lg lg:mt-12">
+            <h1 className="text-4xl font-bold leading-tight text-slate-950 xl:text-[42px]">{mode === "signup" ? "AI-Powered SEO. Smarter. Faster. Better." : "Welcome back"}</h1>
+            <p className="mt-4 max-w-md text-base leading-7 text-slate-500 xl:text-lg">
+              {mode === "signup" ? "Create your account and unlock the full power of SEnuke AI to grow your organic presence." : "Sign in to your account to continue managing your projects and AI campaigns."}
+            </p>
 
-              <div className="mt-8 grid gap-3 sm:grid-cols-3">
-                {[
-                  ["100+", "client sites"],
-                  ["30+", "audit checks"],
-                  ["AI", "search ready"],
-                ].map(([value, label]) => (
-                  <div key={label} className="rounded-lg border border-white/10 bg-white/5 p-4">
-                    <div className="text-3xl font-bold text-brand-300">{value}</div>
-                    <div className="mt-1 text-sm font-medium text-charcoal-200">{label}</div>
-                  </div>
-                ))}
-              </div>
-
-              <div className="mt-8 grid gap-3 text-sm text-charcoal-100 sm:grid-cols-3">
-                <div className="rounded-lg border border-cyan-300/20 bg-cyan-300/10 px-4 py-3">Technical crawl issues</div>
-                <div className="rounded-lg border border-emerald-300/20 bg-emerald-300/10 px-4 py-3">Content gap scoring</div>
-                <div className="rounded-lg border border-amber-300/20 bg-amber-300/10 px-4 py-3">AI search readiness</div>
-              </div>
+            <div className="mt-8 space-y-5 xl:mt-10 xl:space-y-6">
+              {mode === "signup" ? (
+                <>
+                  <AuthBenefit tone="blue" icon="▥" title="AI-Driven Insights">Leverage AI to discover high-impact opportunities and content gaps.</AuthBenefit>
+                  <AuthBenefit tone="green" icon="⌁" title="Automate & Scale">Build backlinks, optimize content, and automate SEO workflows.</AuthBenefit>
+                  <AuthBenefit tone="violet" icon="◈" title="Track What Matters">Monitor rankings, traffic, and conversions in one powerful dashboard.</AuthBenefit>
+                  <AuthBenefit tone="orange" icon="♙" title="Built for Teams">Collaborate with your team and manage projects across workspaces.</AuthBenefit>
+                </>
+              ) : (
+                <>
+                  <AuthBenefit tone="blue" icon="▥" title="Smarter AI Marketing">Optimize content, keywords, and backlinks with AI-powered insights.</AuthBenefit>
+                  <AuthBenefit tone="green" icon="◈" title="Secure & Reliable">Your data is encrypted and protected with enterprise-grade security.</AuthBenefit>
+                  <AuthBenefit tone="violet" icon="♙" title="Built for Agencies">Manage multiple projects, clients, and campaigns with ease.</AuthBenefit>
+                </>
+              )}
             </div>
-          </div>
-
-          <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-xs text-charcoal-300">
-            <span>Created by Dot H Digital · © {new Date().getFullYear()}</span>
-            <Link to="/terms" className="text-charcoal-200 hover:text-white">Terms</Link>
-            <Link to="/privacy" className="text-charcoal-200 hover:text-white">Privacy</Link>
           </div>
         </section>
 
-        <section className="flex items-center justify-center border-t border-slate-200 bg-white px-6 py-10 shadow-[0_-16px_40px_rgba(15,23,42,0.04)] sm:px-10 lg:border-l lg:border-t-0 lg:shadow-[-16px_0_40px_rgba(15,23,42,0.04)]">
-          <div className="w-full max-w-md">
-            <div className="mb-6 text-right text-xs text-charcoal-400 lg:hidden">
-              <Link to="/terms" className="font-medium text-brand-700 hover:underline">Terms</Link>
-              <span className="mx-2">·</span>
-              <Link to="/privacy" className="font-medium text-brand-700 hover:underline">Privacy</Link>
-            </div>
+        <section className="flex items-center justify-center px-6 py-5 sm:px-10 lg:py-4">
+          <div className="w-full max-w-[620px]">
             {mode === "verify" ? (
-              <VerifyEmailForm token={routeToken} onVerify={verifyEmail} onBack={() => setMode("signin")} />
+              <AuthCard>
+                <VerifyEmailForm token={routeToken} onVerify={verifyEmail} onBack={() => setMode("signin")} />
+              </AuthCard>
             ) : mode === "reset" ? (
-              <ResetPasswordForm token={routeToken} onReset={resetPassword} onBack={() => setMode("signin")} />
+              <AuthCard>
+                <ResetPasswordForm token={routeToken} onReset={resetPassword} onBack={() => setMode("signin")} />
+              </AuthCard>
             ) : mode === "forgot" ? (
-              <ForgotForm onBack={() => setMode("signin")} />
+              <AuthCard>
+                <ForgotForm onBack={() => setMode("signin")} />
+              </AuthCard>
+            ) : mode === "signup" ? (
+              <AuthCard>
+                <SignUpForm onRegister={register} onSignIn={() => setMode("signin")} />
+              </AuthCard>
             ) : (
-              <>
-                <div className="mb-6 flex rounded-lg bg-charcoal-100 p-1">
-                  <TabBtn active={mode === "signin"} onClick={() => setMode("signin")}>Sign in</TabBtn>
-                  <TabBtn active={mode === "signup"} onClick={() => setMode("signup")}>Create account</TabBtn>
-                </div>
-                {mode === "signin" ? (
-                  <SignInForm onLogin={login} onForgot={() => setMode("forgot")} />
-                ) : (
-                  <SignUpForm onRegister={register} onSignIn={() => setMode("signin")} />
-                )}
-              </>
+              <AuthCard>
+                <SignInForm onLogin={login} onForgot={() => setMode("forgot")} onSignup={() => setMode("signup")} />
+              </AuthCard>
             )}
+
+            <div className="mt-4 text-center text-xs text-slate-500 xl:mt-5 xl:text-sm">
+              <span className="font-medium">Secure login</span>
+              <span className="mx-2">•</span>
+              <span>Your data is protected with 256-bit encryption</span>
+            </div>
+            <div className="mt-4 text-center text-xs text-slate-500 xl:mt-5 xl:text-sm">
+              Need help? <Link to="/privacy" className="font-semibold text-brand-600 hover:underline">Contact Support ↗</Link>
+            </div>
           </div>
         </section>
       </div>
@@ -119,6 +110,126 @@ export default function Login() {
   );
 }
 
+function AuthBenefit({ tone, icon, title, children }: { tone: "blue" | "green" | "violet" | "orange"; icon: string; title: string; children: React.ReactNode }) {
+  const styles = {
+    blue: "bg-brand-50 text-brand-700 border-brand-100",
+    green: "bg-green-50 text-green-700 border-green-100",
+    violet: "bg-violet-50 text-violet-700 border-violet-100",
+    orange: "bg-orange-50 text-orange-700 border-orange-100",
+  }[tone];
+  return (
+    <div className="flex items-start gap-4">
+      <div className={`flex h-11 w-11 shrink-0 items-center justify-center rounded-lg border text-lg font-bold ${styles}`}>{icon}</div>
+      <div>
+        <div className="text-base font-bold text-slate-950 xl:text-lg">{title}</div>
+        <p className="mt-0.5 max-w-sm text-sm leading-6 text-slate-500 xl:text-base">{children}</p>
+      </div>
+    </div>
+  );
+}
+
+function AuthCard({ children }: { children: React.ReactNode }) {
+  return (
+    <div className="rounded-2xl border border-slate-200 bg-white px-6 py-6 shadow-[0_18px_55px_rgba(15,23,42,0.08)] sm:px-8 xl:px-10 xl:py-7">
+      {children}
+    </div>
+  );
+}
+
+function AuthInput({
+  label,
+  icon,
+  type = "text",
+  value,
+  onChange,
+  placeholder,
+  autoComplete,
+}: {
+  label: string;
+  icon: string;
+  type?: string;
+  value: string;
+  onChange: (value: string) => void;
+  placeholder?: string;
+  autoComplete?: string;
+}) {
+  return (
+    <label className="block">
+      <span className="mb-1.5 block text-sm font-bold text-slate-900">{label}</span>
+      <span className="relative block">
+        <span className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400">
+          <AuthIcon name={icon} />
+        </span>
+        <input
+          type={type}
+          value={value}
+          onChange={(event) => onChange(event.target.value)}
+          placeholder={placeholder}
+          autoComplete={autoComplete}
+          className="h-11 w-full rounded-lg border border-slate-200 bg-white pl-11 pr-4 text-sm text-slate-800 outline-none transition placeholder:text-slate-400 focus:border-brand-400 focus:ring-2 focus:ring-brand-100 xl:h-12 xl:text-base"
+        />
+      </span>
+    </label>
+  );
+}
+
+function AuthIcon({ name }: { name: string }) {
+  const common = { fill: "none", stroke: "currentColor", strokeWidth: 2, strokeLinecap: "round" as const, strokeLinejoin: "round" as const };
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true" className="h-5 w-5">
+      {(name === "email" || name === "✉") && (
+        <>
+          <rect {...common} x="3" y="5" width="18" height="14" rx="2" />
+          <path {...common} d="m3 7 9 6 9-6" />
+        </>
+      )}
+      {(name === "password" || name === "▣") && (
+        <>
+          <rect {...common} x="5" y="11" width="14" height="9" rx="2" />
+          <path {...common} d="M8 11V8a4 4 0 0 1 8 0v3" />
+          <path {...common} d="M12 15v2" />
+        </>
+      )}
+      {(name === "user" || name === "♙") && (
+        <>
+          <circle {...common} cx="12" cy="8" r="4" />
+          <path {...common} d="M4 21a8 8 0 0 1 16 0" />
+        </>
+      )}
+      {(name === "workspace" || name === "▦") && (
+        <>
+          <path {...common} d="M4 20V6a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v14" />
+          <path {...common} d="M16 8h2a2 2 0 0 1 2 2v10" />
+          <path {...common} d="M8 8h4" />
+          <path {...common} d="M8 12h4" />
+          <path {...common} d="M8 16h4" />
+        </>
+      )}
+      {name === "chevron" && <path {...common} d="m6 9 6 6 6-6" />}
+    </svg>
+  );
+}
+
+function MockupSelectButton({
+  active,
+  onClick,
+  children,
+}: {
+  active: boolean;
+  onClick: () => void;
+  children: React.ReactNode;
+}) {
+  return (
+    <button type="button" onClick={onClick} className={`font-semibold ${active ? "text-brand-600" : "text-slate-500 hover:text-brand-600"}`}>
+      {children}
+    </button>
+  );
+}
+
+/*
+  Legacy tab button is kept for reset/signup sections that do not use the
+  screenshot's single-card sign-in layout.
+*/
 function TabBtn({ active, onClick, children }: { active: boolean; onClick: () => void; children: React.ReactNode }) {
   return (
     <button
@@ -149,8 +260,8 @@ function PasswordChecklist({ password, confirm }: { password: string; confirm?: 
   const showMatch = confirm !== undefined && (password.length > 0 || confirm.length > 0);
 
   return (
-    <div className="mt-2 rounded-lg border border-charcoal-100 bg-charcoal-50 px-3 py-2">
-      <div className="grid gap-1 text-xs sm:grid-cols-2">
+    <div className="mt-1 rounded-lg border border-charcoal-100 bg-charcoal-50 px-2.5 py-1">
+      <div className="grid gap-x-2 gap-y-0 text-[10px] leading-4 sm:grid-cols-2">
         {items.map(([label, ok]) => (
           <div key={label} className={ok ? "font-medium text-green-700" : "text-charcoal-400"}>
             {ok ? "[x]" : "[ ]"} {label}
@@ -169,9 +280,11 @@ function PasswordChecklist({ password, confirm }: { password: string; confirm?: 
 function SignInForm({
   onLogin,
   onForgot,
+  onSignup,
 }: {
   onLogin: (e: string, p: string) => Promise<void>;
   onForgot: () => void;
+  onSignup: () => void;
 }) {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -219,22 +332,28 @@ function SignInForm({
 
   return (
     <form onSubmit={submit}>
-      <h2 className="text-2xl font-bold text-charcoal-800">Welcome back</h2>
-      <p className="mt-1 text-sm text-charcoal-400">Sign in to your dashboard.</p>
+      <div className="text-center">
+        <h2 className="text-2xl font-bold text-slate-950 xl:text-3xl">Sign in to SEnuke AI</h2>
+        <p className="mt-2 text-base text-slate-500">Enter your credentials to access your account.</p>
+      </div>
       <div className="mt-6 space-y-4">
         <div>
-          <Input label="Email" type="email" value={email} onChange={setEmail} autoComplete="username" />
+          <AuthInput label="Email address" icon="email" type="email" value={email} onChange={setEmail} autoComplete="username" placeholder="you@company.com" />
           <FieldError msg={err.email} />
         </div>
         <div>
-          <Input label="Password" type="password" value={password} onChange={setPassword} autoComplete="current-password" />
+          <AuthInput label="Password" icon="password" type="password" value={password} onChange={setPassword} autoComplete="current-password" placeholder="Enter your password" />
           <FieldError msg={err.password} />
-          <div className="mt-1 text-right">
-            <button type="button" onClick={onForgot} className="text-xs font-medium text-brand-600 hover:underline">
-              Forgot password?
-            </button>
-          </div>
         </div>
+      </div>
+      <div className="mt-4 flex items-center justify-between gap-4">
+        <label className="inline-flex items-center gap-2.5 text-sm font-medium text-slate-600">
+          <input type="checkbox" defaultChecked className="h-4 w-4 rounded border-slate-300 text-brand-600 focus:ring-brand-500" />
+          Remember me
+        </label>
+        <button type="button" onClick={onForgot} className="text-sm font-semibold text-brand-600 hover:underline">
+          Forgot password?
+        </button>
       </div>
       {err.form && (
         <div className="mt-4 rounded-lg bg-red-50 px-3 py-2 text-sm text-red-700">
@@ -247,9 +366,17 @@ function SignInForm({
         </div>
       )}
       {verificationMessage && <div className="mt-4 rounded-lg bg-brand-50 px-3 py-2 text-sm text-brand-700">{verificationMessage}</div>}
-      <Button type="submit" disabled={busy} className="mt-6 w-full">
-        {busy ? "Signing in…" : "Sign in"}
+      <Button type="submit" disabled={busy} className="mt-5 h-11 w-full text-base xl:h-12">
+        {busy ? "Signing in…" : "Sign In"}
       </Button>
+      <div className="my-5 flex items-center gap-5 text-sm text-slate-400">
+        <div className="h-px flex-1 bg-slate-200" />
+        <span className="font-semibold">or</span>
+        <div className="h-px flex-1 bg-slate-200" />
+      </div>
+      <div className="text-center text-sm text-slate-500">
+        Don’t have an account? <button type="button" onClick={onSignup} className="font-semibold text-brand-600 hover:underline">Create an account</button>
+      </div>
     </form>
   );
 }
@@ -266,11 +393,13 @@ function SignUpForm({
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [confirm, setConfirm] = useState("");
+  const [workspaceType, setWorkspaceType] = useState("");
+  const [acceptedTerms, setAcceptedTerms] = useState(false);
   const [err, setErr] = useState<Record<string, string>>({});
   const [success, setSuccess] = useState("");
   const [busy, setBusy] = useState(false);
   const [captchaSiteKey, setCaptchaSiteKey] = useState("");
-  const canSubmit = Boolean(name && companyName && emailOk(email) && passwordValid(password) && confirm === password);
+  const canSubmit = Boolean(name && companyName && emailOk(email) && passwordValid(password) && confirm === password && workspaceType && acceptedTerms);
 
   useEffect(() => {
     let cancelled = false;
@@ -292,12 +421,14 @@ function SignUpForm({
     if (!emailOk(email)) next.email = "Enter a valid email";
     if (!passwordValid(password)) next.password = "Complete all password requirements";
     if (confirm !== password) next.confirm = "Passwords do not match";
+    if (!workspaceType) next.workspaceType = "Select workspace type";
+    if (!acceptedTerms) next.terms = "Accept the terms to continue";
     setErr(next);
     if (Object.keys(next).length) return;
     setBusy(true);
     try {
       const captchaToken = captchaSiteKey ? await executeRecaptcha(captchaSiteKey, "register") : undefined;
-      setSuccess(await onRegister({ name, companyName, email, password, captchaToken }));
+      setSuccess(await onRegister({ name, companyName: companyName || workspaceType, email, password, captchaToken }));
       setPassword("");
       setConfirm("");
     } catch (e) {
@@ -321,25 +452,60 @@ function SignUpForm({
 
   return (
     <form onSubmit={submit}>
-      <h2 className="text-2xl font-bold text-charcoal-800">Create your account</h2>
-      <p className="mt-1 text-sm text-charcoal-400">Create your account, then verify your email to sign in.</p>
-      <div className="mt-6 space-y-3">
-        <div><Input label="Your name" value={name} onChange={setName} autoComplete="name" /><FieldError msg={err.name} /></div>
-        <div><Input label="Company name" value={companyName} onChange={setCompany} autoComplete="organization" /><FieldError msg={err.companyName} /></div>
-        <div><Input label="Email" type="email" value={email} onChange={setEmail} autoComplete="email" /><FieldError msg={err.email} /></div>
-        <div>
-          <Input label="Password" type="password" value={password} onChange={setPassword} autoComplete="new-password" />
-          <PasswordChecklist password={password} confirm={confirm} />
-          <FieldError msg={err.password} />
+      <div className="text-center">
+        <h2 className="text-2xl font-bold text-slate-950 xl:text-3xl">Create Your Account</h2>
+        <p className="mt-1.5 text-base text-slate-500">Get started in less than a minute.</p>
+      </div>
+      <div className="mt-4 space-y-2.5">
+        <div className="grid gap-2.5 sm:grid-cols-2">
+          <div><AuthInput label="Full Name" icon="user" value={name} onChange={setName} autoComplete="name" placeholder="Full name" /><FieldError msg={err.name} /></div>
+          <div><AuthInput label="Email Address" icon="email" type="email" value={email} onChange={setEmail} autoComplete="email" placeholder="Email address" /><FieldError msg={err.email} /></div>
         </div>
-        <div><Input label="Confirm password" type="password" value={confirm} onChange={setConfirm} autoComplete="new-password" /><FieldError msg={err.confirm} /></div>
+        <div className="grid gap-2.5 sm:grid-cols-2">
+          <div>
+            <AuthInput label="Password" icon="password" type="password" value={password} onChange={setPassword} autoComplete="new-password" placeholder="Password" />
+            <FieldError msg={err.password} />
+          </div>
+          <div><AuthInput label="Confirm Password" icon="password" type="password" value={confirm} onChange={setConfirm} autoComplete="new-password" placeholder="Confirm password" /><FieldError msg={err.confirm} /></div>
+        </div>
+        <PasswordChecklist password={password} confirm={confirm} />
+        <label className="block">
+          <span className="mb-1.5 block text-sm font-bold text-slate-900">Account Type / Workspace Type</span>
+          <span className="relative block">
+            <span className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400"><AuthIcon name="workspace" /></span>
+            <select value={workspaceType} onChange={(event) => { setWorkspaceType(event.target.value); setCompany(event.target.value || companyName); }} className="h-11 w-full appearance-none rounded-lg border border-slate-200 bg-white pl-11 pr-10 text-sm text-slate-600 outline-none transition focus:border-brand-400 focus:ring-2 focus:ring-brand-100 xl:h-12 xl:text-base">
+              <option value="">Select workspace type</option>
+              <option value="Agency Workspace">Agency Workspace</option>
+              <option value="Business Workspace">Business Workspace</option>
+              <option value="Freelancer Workspace">Freelancer Workspace</option>
+              <option value="Team Workspace">Team Workspace</option>
+            </select>
+            <span className="pointer-events-none absolute right-4 top-1/2 -translate-y-1/2 text-slate-400"><AuthIcon name="chevron" /></span>
+          </span>
+          <FieldError msg={err.workspaceType} />
+        </label>
+        <label className="flex items-start gap-2.5 text-xs leading-5 text-slate-500 xl:text-sm">
+          <input type="checkbox" checked={acceptedTerms} onChange={(event) => setAcceptedTerms(event.target.checked)} className="mt-0.5 h-4 w-4 rounded border-slate-300 text-brand-600 focus:ring-brand-500" />
+          <span>I agree to the <Link to="/terms" className="font-semibold text-brand-600 hover:underline">Terms of Service</Link> and <Link to="/privacy" className="font-semibold text-brand-600 hover:underline">Privacy Policy</Link>.</span>
+        </label>
+        <FieldError msg={err.terms} />
       </div>
       {err.form && <div className="mt-4 rounded-lg bg-red-50 px-3 py-2 text-sm text-red-700">{err.form}</div>}
-      {canSubmit && (
-        <Button type="submit" disabled={busy} className="mt-6 w-full">
-          {busy ? "Creating…" : "Create account"}
-        </Button>
-      )}
+      <Button type="submit" disabled={busy || !canSubmit} className="mt-4 h-11 w-full text-base xl:h-12">
+        {busy ? "Creating…" : "♙  Create Account"}
+      </Button>
+      <div className="mt-4 text-center text-sm text-slate-500">
+        Already have an account? <button type="button" onClick={onSignIn} className="font-semibold text-brand-600 hover:underline">Sign in</button>
+      </div>
+      <div className="mt-3 rounded-lg border border-slate-200 bg-slate-50 p-2.5">
+        <div className="flex gap-3">
+          <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-brand-50 text-sm font-bold text-brand-700">↗</div>
+          <div>
+            <div className="text-sm font-bold text-slate-950">Start your first project in seconds!</div>
+            <p className="text-xs leading-4 text-slate-500">After signup, create your first project and start optimizing right away.</p>
+          </div>
+        </div>
+      </div>
     </form>
   );
 }

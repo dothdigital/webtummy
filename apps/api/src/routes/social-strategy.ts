@@ -109,7 +109,7 @@ function buildRecommendations(input: GenerateInput, profiles: SocialProfileInput
   const competitorThemes = uniqueStrings(competitors.flatMap((competitor) => competitor.contentThemes));
   const recommendations: string[] = [];
 
-  if (!profiles.length) recommendations.push("Add the brand's primary social profile URLs so Webtummy can score social presence and website connection.");
+  if (!profiles.length) recommendations.push("Add the brand's primary social profile URLs so SEnuke AI can score social presence and website connection.");
   if (missingSelected.length) recommendations.push(`Create or connect profiles for selected platforms not yet tracked: ${missingSelected.join(", ")}.`);
   if (incomplete.length) recommendations.push(`Complete profile bios, logos, website links, and service descriptions on: ${incomplete.join(", ")}.`);
   if (unlinked.length) recommendations.push(`Add the website URL to these profiles and add those profile links back to the website footer: ${unlinked.join(", ")}.`);

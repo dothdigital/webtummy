@@ -8,6 +8,11 @@ import Login from "./pages/Login.js";
 import Overview from "./pages/Overview.js";
 import Users from "./pages/Users.js";
 import Websites from "./pages/Websites.js";
+import GuidedProjects from "./pages/GuidedProjects.js";
+import GuidedProjectDetail from "./pages/GuidedProjectDetail.js";
+import GuidedProjectIntake from "./pages/GuidedProjectIntake.js";
+import GuidedProjectNew from "./pages/GuidedProjectNew.js";
+import ExecutionModule from "./pages/ExecutionModule.js";
 import WebsiteHealth from "./pages/WebsiteHealth.js";
 import CrawlDetail from "./pages/CrawlDetail.js";
 import GeoKeywordIntelligence from "./pages/GeoKeywordIntelligence.js";
@@ -18,9 +23,13 @@ import KeywordReports from "./pages/KeywordReports.js";
 import AiContentStudio from "./pages/AiContentStudio.js";
 import SocialStrategy from "./pages/SocialStrategy.js";
 import LocalSeo from "./pages/LocalSeo.js";
+import GrowthEngine from "./pages/GrowthEngine.js";
+import AutomationCenter from "./pages/AutomationCenter.js";
 import Pricing from "./pages/Pricing.js";
 import Billing from "./pages/Billing.js";
+import AdminManagement from "./pages/AdminManagement.js";
 import AdminPlans from "./pages/AdminPlans.js";
+import AdminTasks from "./pages/AdminTasks.js";
 import Legal from "./pages/Legal.js";
 
 function KeywordAnalyticsDetailRedirect() {
@@ -30,7 +39,12 @@ function KeywordAnalyticsDetailRedirect() {
 
 function WebsiteRedirect() {
   const { id } = useParams();
-  return <Navigate to={id ? `/projects/${id}` : "/projects"} replace />;
+  return <Navigate to={id ? `/website-projects/${id}` : "/website-projects"} replace />;
+}
+
+function GuidedProjectReadyRedirect() {
+  const { id } = useParams();
+  return <Navigate to={id ? `/guided-projects/${id}` : "/projects"} replace />;
 }
 
 function Shell() {
@@ -70,8 +84,22 @@ function Shell() {
         <Route path="/" element={<Overview />} />
         <Route path="/login" element={<Navigate to="/" replace />} />
         {user.role === "super_admin" && <Route path="/users" element={<Users />} />}
-        <Route path="/projects" element={<Websites />} />
-        <Route path="/projects/:id" element={<WebsiteHealth />} />
+        <Route path="/projects" element={<GuidedProjects />} />
+        <Route path="/projects/new" element={<GuidedProjectNew />} />
+        <Route path="/guided-projects" element={<GuidedProjects />} />
+        <Route path="/guided-projects/:id" element={<GuidedProjectDetail />} />
+        <Route path="/guided-projects/:id/intake" element={<GuidedProjectIntake />} />
+        <Route path="/guided-projects/:id/ready" element={<GuidedProjectReadyRedirect />} />
+        <Route path="/opportunities" element={<ExecutionModule kind="opportunities" />} />
+        <Route path="/strategy" element={<ExecutionModule kind="strategy" />} />
+        <Route path="/keywords" element={<ExecutionModule kind="keywords" />} />
+        <Route path="/site-analysis" element={<ExecutionModule kind="site-analysis" />} />
+        <Route path="/backlinks" element={<ExecutionModule kind="backlinks" />} />
+        <Route path="/ai-citations" element={<ExecutionModule kind="ai-citations" />} />
+        <Route path="/site-architect" element={<ExecutionModule kind="site-architect" />} />
+        <Route path="/lead-magnets" element={<ExecutionModule kind="lead-magnets" />} />
+        <Route path="/website-projects" element={<Websites />} />
+        <Route path="/website-projects/:id" element={<WebsiteHealth />} />
         <Route path="/websites" element={<WebsiteRedirect />} />
         <Route path="/websites/:id" element={<WebsiteRedirect />} />
         <Route path="/crawls/:id" element={<CrawlDetail />} />
@@ -81,12 +109,18 @@ function Shell() {
         <Route path="/keyword-analytics/:id" element={<KeywordAnalyticsDetailRedirect />} />
         <Route path="/keyword-insights" element={<KeywordReports />} />
         <Route path="/social-strategy" element={<SocialStrategy />} />
+        <Route path="/growth" element={<GrowthEngine />} />
         <Route path="/local-seo" element={<LocalSeo />} />
         <Route path="/ai-content" element={<AiContentStudio />} />
         <Route path="/billing" element={<Billing />} />
         <Route path="/pricing" element={<Pricing />} />
         <Route path="/terms" element={<Legal kind="terms" />} />
         <Route path="/privacy" element={<Legal kind="privacy" />} />
+        {user.role === "super_admin" && <Route path="/admin" element={<AdminManagement />} />}
+        {user.role === "super_admin" && <Route path="/admin/automation" element={<AutomationCenter />} />}
+        {user.role === "super_admin" && <Route path="/admin/tasks" element={<AdminTasks mode="index" />} />}
+        {user.role === "super_admin" && <Route path="/admin/tasks/project" element={<AdminTasks mode="project" />} />}
+        {user.role === "super_admin" && <Route path="/admin/tasks/module" element={<AdminTasks mode="module" />} />}
         {user.role === "super_admin" && <Route path="/admin/plans" element={<AdminPlans />} />}
         <Route path="/keyword-insights/:id" element={<KeywordResearchDetail />} />
         <Route path="/keyword-reports" element={<Navigate to="/keyword-insights" replace />} />

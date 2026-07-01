@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "Webtummy — SEO + AI Search website crawler & audit platform (Dot H Digital)",
+  "description": "SEnuke AI — SEO + AI Search website crawler & audit platform (Dot H Digital)",
   "workspaces": [
     "packages/*",
     "apps/*"

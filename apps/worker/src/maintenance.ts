@@ -61,6 +61,21 @@ async function notifyClient(input: { clientId: string; fallbackEmail: string | n
   return true;
 }
 
+export async function recoverQueuedCrawlJobs() {
+  return runLogged("recover_queued_crawl_jobs", async () => {
+    const crawls = await prisma.crawlJob.findMany({
+      where: { status: "queued" },
+      orderBy: { createdAt: "asc" },
+      take: 100,
+      select: { id: true },
+    });
+    for (const crawl of crawls) {
+      await crawlQueue.add("crawl:start", { crawlJobId: crawl.id }, { jobId: crawl.id });
+    }
+    return { requeued: crawls.length };
+  });
+}
+
 export async function dailyBillingAccessSync() {
   return runLogged("daily_billing_access_sync", async () => {
     const now = new Date();
@@ -79,9 +94,9 @@ export async function dailyBillingAccessSync() {
           const sent = await notifyClient({
             clientId: client.id,
             fallbackEmail: client.contactEmail,
-            subject: `Your Webtummy trial ends in ${days} day${days === 1 ? "" : "s"}`,
-            text: `Your Webtummy trial ends in ${days} day${days === 1 ? "" : "s"}. Upgrade here: ${appLink("/pricing")}`,
-            html: `<p>Your Webtummy trial ends in <strong>${days} day${days === 1 ? "" : "s"}</strong>.</p><p><a href="${appLink("/pricing")}">Choose a plan</a> to keep access active.</p>`,
+            subject: `Your SEnuke AI trial ends in ${days} day${days === 1 ? "" : "s"}`,
+            text: `Your SEnuke AI trial ends in ${days} day${days === 1 ? "" : "s"}. Upgrade here: ${appLink("/pricing")}`,
+            html: `<p>Your SEnuke AI trial ends in <strong>${days} day${days === 1 ? "" : "s"}</strong>.</p><p><a href="${appLink("/pricing")}">Choose a plan</a> to keep access active.</p>`,
           });
           if (sent) {
             await prisma.client.update({ where: { id: client.id }, data: { trialEndingSoonNotifiedAt: now } });
@@ -92,9 +107,9 @@ export async function dailyBillingAccessSync() {
           const sent = await notifyClient({
             clientId: client.id,
             fallbackEmail: client.contactEmail,
-            subject: "Your Webtummy trial has expired",
-            text: `Your Webtummy trial has expired. Choose a plan to continue: ${appLink("/pricing")}`,
-            html: `<p>Your Webtummy trial has expired.</p><p><a href="${appLink("/pricing")}">Choose a plan</a> to continue using Webtummy.</p>`,
+            subject: "Your SEnuke AI trial has expired",
+            text: `Your SEnuke AI trial has expired. Choose a plan to continue: ${appLink("/pricing")}`,
+            html: `<p>Your SEnuke AI trial has expired.</p><p><a href="${appLink("/pricing")}">Choose a plan</a> to continue using SEnuke AI.</p>`,
           });
           if (sent) {
             await prisma.client.update({ where: { id: client.id }, data: { trialExpiredNotifiedAt: now } });
@@ -107,9 +122,9 @@ export async function dailyBillingAccessSync() {
         const sent = await notifyClient({
           clientId: client.id,
           fallbackEmail: client.contactEmail,
-          subject: "Webtummy payment was unsuccessful",
-          text: `Your Webtummy payment was unsuccessful. Update or choose a plan here: ${appLink("/pricing?payment=unsuccessful")}`,
-          html: `<p>Your Webtummy payment was unsuccessful.</p><p><a href="${appLink("/pricing?payment=unsuccessful")}">Choose a plan or retry payment</a> to restore access.</p>`,
+          subject: "SEnuke AI payment was unsuccessful",
+          text: `Your SEnuke AI payment was unsuccessful. Update or choose a plan here: ${appLink("/pricing?payment=unsuccessful")}`,
+          html: `<p>Your SEnuke AI payment was unsuccessful.</p><p><a href="${appLink("/pricing?payment=unsuccessful")}">Choose a plan or retry payment</a> to restore access.</p>`,
         });
         if (sent) {
           await prisma.client.update({ where: { id: client.id }, data: { paymentFailedNotifiedAt: now } });
@@ -123,9 +138,9 @@ export async function dailyBillingAccessSync() {
           const sent = await notifyClient({
             clientId: client.id,
             fallbackEmail: client.contactEmail,
-            subject: `Your Webtummy manual access ends in ${days} day${days === 1 ? "" : "s"}`,
-            text: `Manual/offline Webtummy access ends in ${days} day${days === 1 ? "" : "s"}. Upgrade here: ${appLink("/pricing")}`,
-            html: `<p>Manual/offline Webtummy access ends in <strong>${days} day${days === 1 ? "" : "s"}</strong>.</p><p><a href="${appLink("/pricing")}">Upgrade</a> to keep access active.</p>`,
+            subject: `Your SEnuke AI manual access ends in ${days} day${days === 1 ? "" : "s"}`,
+            text: `Manual/offline SEnuke AI access ends in ${days} day${days === 1 ? "" : "s"}. Upgrade here: ${appLink("/pricing")}`,
+            html: `<p>Manual/offline SEnuke AI access ends in <strong>${days} day${days === 1 ? "" : "s"}</strong>.</p><p><a href="${appLink("/pricing")}">Upgrade</a> to keep access active.</p>`,
           });
           if (sent) {
             await prisma.client.update({ where: { id: client.id }, data: { manualAccessEndingSoonNotifiedAt: now } });
@@ -136,9 +151,9 @@ export async function dailyBillingAccessSync() {
           const sent = await notifyClient({
             clientId: client.id,
             fallbackEmail: client.contactEmail,
-            subject: "Your Webtummy manual access has expired",
-            text: `Manual/offline Webtummy access has expired. Choose a plan here: ${appLink("/pricing")}`,
-            html: `<p>Manual/offline Webtummy access has expired.</p><p><a href="${appLink("/pricing")}">Choose a plan</a> to restore access.</p>`,
+            subject: "Your SEnuke AI manual access has expired",
+            text: `Manual/offline SEnuke AI access has expired. Choose a plan here: ${appLink("/pricing")}`,
+            html: `<p>Manual/offline SEnuke AI access has expired.</p><p><a href="${appLink("/pricing")}">Choose a plan</a> to restore access.</p>`,
           });
           if (sent) {
             await prisma.client.update({ where: { id: client.id }, data: { manualAccessExpiredNotifiedAt: now } });
@@ -153,9 +168,9 @@ export async function dailyBillingAccessSync() {
           const sent = await notifyClient({
             clientId: client.id,
             fallbackEmail: client.contactEmail,
-            subject: `Your Webtummy subscription renews in ${days} day${days === 1 ? "" : "s"}`,
-            text: `Your Webtummy subscription period renews in ${days} day${days === 1 ? "" : "s"}. Manage billing: ${appLink("/billing")}`,
-            html: `<p>Your Webtummy subscription period renews in <strong>${days} day${days === 1 ? "" : "s"}</strong>.</p><p><a href="${appLink("/billing")}">Manage billing</a>.</p>`,
+            subject: `Your SEnuke AI subscription renews in ${days} day${days === 1 ? "" : "s"}`,
+            text: `Your SEnuke AI subscription period renews in ${days} day${days === 1 ? "" : "s"}. Manage billing: ${appLink("/billing")}`,
+            html: `<p>Your SEnuke AI subscription period renews in <strong>${days} day${days === 1 ? "" : "s"}</strong>.</p><p><a href="${appLink("/billing")}">Manage billing</a>.</p>`,
           });
           if (sent) {
             await prisma.client.update({ where: { id: client.id }, data: { subscriptionExpiringSoonNotifiedAt: now } });
@@ -267,7 +282,7 @@ export async function weeklyRankingReportGeneration() {
       const sent = await notifyClient({
         clientId: client.id,
         fallbackEmail: client.contactEmail,
-        subject: "Your weekly Webtummy ranking changes",
+        subject: "Your weekly SEnuke AI ranking changes",
         text: [`Weekly ranking changes for ${client.name}:`, "", ...lines, "", `Open dashboard: ${appLink("/keyword-insights")}`].join("\n"),
         html: `<p>Weekly ranking changes for <strong>${client.name}</strong>:</p><ul>${topMovements.map((item) => `<li><strong>${item.change < 0 ? "Up" : "Down"} ${Math.abs(item.change)}</strong>: ${item.keyword} is now #${item.currentRank} (was #${item.previousRank})</li>`).join("")}</ul><p><a href="${appLink("/keyword-insights")}">Open keyword dashboard</a></p>`,
       });
@@ -323,9 +338,9 @@ export async function monthlyClientReportGeneration() {
       const sent = await notifyClient({
         clientId: client.id,
         fallbackEmail: client.contactEmail,
-        subject: `Your Webtummy monthly report is ready`,
-        text: `Your monthly report for ${latest.website.domain} is ready. Score: ${latest.siteScore ?? "not scored"}. Open Webtummy: ${appLink("/")}`,
-        html: `<p>Your monthly report for <strong>${latest.website.domain}</strong> is ready.</p><p>Score: <strong>${latest.siteScore ?? "not scored"}</strong></p><p><a href="${appLink("/")}">Open Webtummy</a></p>`,
+        subject: `Your SEnuke AI monthly report is ready`,
+        text: `Your monthly report for ${latest.website.domain} is ready. Score: ${latest.siteScore ?? "not scored"}. Open SEnuke AI: ${appLink("/")}`,
+        html: `<p>Your monthly report for <strong>${latest.website.domain}</strong> is ready.</p><p>Score: <strong>${latest.siteScore ?? "not scored"}</strong></p><p><a href="${appLink("/")}">Open SEnuke AI</a></p>`,
       });
       if (sent) {
         await prisma.monthlyClientReport.update({ where: { id: report.id }, data: { emailSentAt: now } });
@@ -343,6 +358,7 @@ export async function runMaintenanceSuite() {
   if (running) return;
   running = true;
   try {
+    await recoverQueuedCrawlJobs();
     await dailyBillingAccessSync();
     await monthlyUsageReset();
     await monthlyScheduledAudit();

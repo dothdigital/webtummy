@@ -76,9 +76,9 @@ async function sendVerificationEmail(user: { id: string; email: string; name: st
   const link = `${config.webAppUrl.replace(/\/$/, "")}/verify-email?token=${encodeURIComponent(token)}`;
   await sendMail({
     to: user.email,
-    subject: "Verify your Webtummy account",
+    subject: "Verify your SEnuke AI account",
     text: `Hi ${user.name ?? "there"}, verify your account by opening this link: ${link}. This link expires in 24 hours.`,
-    html: `<p>Hi ${user.name ?? "there"},</p><p>Verify your Webtummy account by opening this secure link:</p><p><a href="${link}">Verify email address</a></p><p>This link expires in 24 hours.</p>`,
+    html: `<p>Hi ${user.name ?? "there"},</p><p>Verify your SEnuke AI account by opening this secure link:</p><p><a href="${link}">Verify email address</a></p><p>This link expires in 24 hours.</p>`,
   });
 }
 
@@ -94,18 +94,18 @@ async function sendPasswordResetEmail(user: { id: string; email: string; name: s
   const link = `${config.webAppUrl.replace(/\/$/, "")}/reset-password?token=${encodeURIComponent(token)}`;
   await sendMail({
     to: user.email,
-    subject: "Reset your Webtummy password",
+    subject: "Reset your SEnuke AI password",
     text: `Hi ${user.name ?? "there"}, reset your password by opening this link: ${link}. This link expires in 1 hour.`,
-    html: `<p>Hi ${user.name ?? "there"},</p><p>Reset your Webtummy password by opening this secure link:</p><p><a href="${link}">Reset password</a></p><p>This link expires in 1 hour.</p>`,
+    html: `<p>Hi ${user.name ?? "there"},</p><p>Reset your SEnuke AI password by opening this secure link:</p><p><a href="${link}">Reset password</a></p><p>This link expires in 1 hour.</p>`,
   });
 }
 
 async function sendSignupNotification(input: { name: string; companyName: string; email: string }) {
   if (!config.signupNotifyEmail) return;
 
-  const subject = "New Webtummy signup";
+  const subject = "New SEnuke AI signup";
   const text = [
-    "A new user registered for Webtummy.",
+    "A new user registered for SEnuke AI.",
     "",
     "Name: " + input.name,
     "Company: " + input.companyName,
@@ -116,7 +116,7 @@ async function sendSignupNotification(input: { name: string; companyName: string
     to: config.signupNotifyEmail,
     subject,
     text,
-    html: "<p>A new user registered for Webtummy.</p><ul><li><strong>Name:</strong> " + escapeHtml(input.name) + "</li><li><strong>Company:</strong> " + escapeHtml(input.companyName) + "</li><li><strong>Email:</strong> " + escapeHtml(input.email) + "</li></ul>",
+    html: "<p>A new user registered for SEnuke AI.</p><ul><li><strong>Name:</strong> " + escapeHtml(input.name) + "</li><li><strong>Company:</strong> " + escapeHtml(input.companyName) + "</li><li><strong>Email:</strong> " + escapeHtml(input.email) + "</li></ul>",
   });
 }
 

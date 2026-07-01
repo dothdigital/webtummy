@@ -2,7 +2,7 @@ import type { Request } from "express";
 import { prisma } from "@webtummy/db";
 
 function activeProjectClientId(req: Request) {
-  return req.header("x-webtummy-client-id")?.trim() || null;
+  return req.header("x-senuke-ai-client-id")?.trim() || req.header("x-webtummy-client-id")?.trim() || null;
 }
 
 async function ensureSuperAdminOwnProjectClientId(req: Request) {
@@ -12,7 +12,7 @@ async function ensureSuperAdminOwnProjectClientId(req: Request) {
   });
   if (!user) return null;
 
-  const contactEmail = `internal+${user.id}@webtummy.local`;
+  const contactEmail = `internal+${user.id}@senuke-ai.local`;
   const existing = await prisma.client.findFirst({ where: { contactEmail, plan: "internal" } });
   if (existing) return existing.id;
 

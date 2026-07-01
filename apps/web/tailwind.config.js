@@ -4,18 +4,18 @@ export default {
   theme: {
     extend: {
       colors: {
-        // Brand green (#00A221) + tints/shades.
+        // Mockup-aligned SEnuke blue.
         brand: {
-          50: "#e6f7ea",
-          100: "#c2ebcd",
-          200: "#8fdca5",
-          300: "#54c878",
-          400: "#22b450",
-          500: "#00A221",
-          600: "#00911d",
-          700: "#007a18",
-          800: "#005f12",
-          900: "#00440d",
+          50: "#eff6ff",
+          100: "#dbeafe",
+          200: "#bfdbfe",
+          300: "#93c5fd",
+          400: "#60a5fa",
+          500: "#3b82f6",
+          600: "#2563eb",
+          700: "#1d4ed8",
+          800: "#1e40af",
+          900: "#1e3a8a",
         },
         // Charcoal grey for surfaces + text.
         charcoal: {

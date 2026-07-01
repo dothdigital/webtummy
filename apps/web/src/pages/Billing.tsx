@@ -164,7 +164,7 @@ export default function Billing() {
             <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
               <div>
                 <div className="text-lg font-bold text-charcoal-900">Report emails</div>
-                <p className="mt-1 max-w-2xl text-sm leading-6 text-charcoal-500">Receive lightweight weekly and monthly report emails built from saved Webtummy data. These emails do not trigger extra external search-data requests.</p>
+                <p className="mt-1 max-w-2xl text-sm leading-6 text-charcoal-500">Receive lightweight weekly and monthly report emails built from saved SEnuke AI data. These emails do not trigger extra external search-data requests.</p>
                 {savingReports && <div className="mt-2 text-xs font-semibold text-brand-700">Saving preferences...</div>}
               </div>
               <div className="grid gap-3 sm:grid-cols-2 lg:min-w-[520px]">

@@ -90,7 +90,7 @@ function schemaInstruction(type: GenerationType) {
 
 function buildPrompt(input: z.infer<typeof generationSchema>, domain?: string) {
   return [
-    "You are Webtummy AI Content Studio for SEO and AI-search optimization.",
+    "You are SEnuke AI Content Studio for SEO and AI-search optimization.",
     schemaInstruction(input.type),
     "Use practical, implementation-ready recommendations. Avoid unsupported claims.",
     `Content type: ${input.type}`,

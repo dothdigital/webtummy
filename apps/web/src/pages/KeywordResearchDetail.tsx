@@ -835,7 +835,7 @@ export default function KeywordResearchDetail() {
                 <div>
                   <div className="text-xs font-semibold uppercase tracking-wide text-brand-600">Organic growth plan</div>
                   <h2 className="mt-2 text-xl font-bold text-charcoal-900">Connect this keyword to real actions</h2>
-                  <p className="mt-2 text-sm leading-6 text-charcoal-500">Run page mapping first so Webtummy can choose whether to create a new page, improve an existing one, fix blockers, or track the result.</p>
+                  <p className="mt-2 text-sm leading-6 text-charcoal-500">Run page mapping first so SEnuke AI can choose whether to create a new page, improve an existing one, fix blockers, or track the result.</p>
                 </div>
                 <Button onClick={createPageAudit} disabled={creatingPageAudit || !run.websiteId}>{creatingPageAudit ? "Scoring pages..." : "Run page mapping"}</Button>
               </div>

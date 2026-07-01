@@ -1,5 +1,5 @@
 import { Link } from "react-router-dom";
-import { LogoMark } from "../components/Logo.js";
+import { Logo } from "../components/Logo.js";
 
 type LegalKind = "terms" | "privacy";
 
@@ -11,8 +11,7 @@ function Shell({ title, children }: { title: string; children: React.ReactNode }
       <header className="border-b border-slate-200 bg-white">
         <div className="mx-auto flex max-w-5xl items-center justify-between px-6 py-4">
           <Link to="/" className="flex items-center gap-3">
-            <LogoMark size={36} />
-            <span className="text-lg font-bold tracking-tight text-charcoal-900">Web<span className="text-brand-600">tummy</span></span>
+            <Logo size={34} />
           </Link>
           <Link to="/login" className="text-sm font-medium text-brand-700 hover:underline">Sign in</Link>
         </div>
@@ -44,7 +43,7 @@ export default function Legal({ kind }: { kind: LegalKind }) {
     return (
       <Shell title="Privacy Policy">
         <Section title="1. Who We Are">
-          <p>Webtummy is an SEO and AI-search audit platform operated by Dot H Digital. This Privacy Policy explains how we collect, use, disclose, and protect information when you use the Webtummy website, dashboard, crawler, reports, billing flows, and related services.</p>
+          <p>SEnuke AI is an SEO and AI-search audit platform operated by Dot H Digital. This Privacy Policy explains how we collect, use, disclose, and protect information when you use the SEnuke AI website, dashboard, crawler, reports, billing flows, and related services.</p>
           <p>Contact: info@dothdigital.com.</p>
         </Section>
 
@@ -60,22 +59,22 @@ export default function Legal({ kind }: { kind: LegalKind }) {
         </Section>
 
         <Section title="4. Website Crawling and Client Data">
-          <p>When you submit a website or URL, Webtummy may crawl publicly accessible pages and assets to identify SEO, performance, content, schema, link, and AI-search readiness issues. You are responsible for ensuring you have the authority to crawl and analyze submitted websites.</p>
+          <p>When you submit a website or URL, SEnuke AI may crawl publicly accessible pages and assets to identify SEO, performance, content, schema, link, and AI-search readiness issues. You are responsible for ensuring you have the authority to crawl and analyze submitted websites.</p>
           <p>Audit results may include page titles, metadata, headings, page text excerpts, URLs, links, structured data, response data, and recommendations derived from those pages.</p>
         </Section>
 
         <Section title="5. Third-Party Services">
-          <p>We use selected service providers to operate Webtummy, including hosting and infrastructure providers, email delivery providers, Stripe for billing and invoices, Google reCAPTCHA v3 for abuse prevention, Google or other performance APIs where configured, keyword and SERP data providers where configured, and OpenAI for AI-assisted content or analysis features.</p>
+          <p>We use selected service providers to operate SEnuke AI, including hosting and infrastructure providers, email delivery providers, Stripe for billing and invoices, Google reCAPTCHA v3 for abuse prevention, Google or other performance APIs where configured, keyword and SERP data providers where configured, and OpenAI for AI-assisted content or analysis features.</p>
           <p>These providers process information according to their own terms and privacy policies. We share only the information needed for the relevant feature or operational purpose.</p>
         </Section>
 
         <Section title="6. Cookies, Local Storage, and reCAPTCHA">
-          <p>Webtummy uses browser storage for authentication tokens, active client context, and dashboard state. Google reCAPTCHA v3 may analyze browser and interaction signals to determine whether registration activity appears legitimate.</p>
+          <p>SEnuke AI uses browser storage for authentication tokens, active client context, and dashboard state. Google reCAPTCHA v3 may analyze browser and interaction signals to determine whether registration activity appears legitimate.</p>
           <p>Use of reCAPTCHA is subject to Google&apos;s Privacy Policy and Terms of Service.</p>
         </Section>
 
         <Section title="7. Billing and Invoices">
-          <p>Payments, subscriptions, customer portals, and invoices are handled through Stripe. We store billing-related identifiers, subscription status, plan information, and invoice links or metadata, but we do not store full payment card numbers on Webtummy servers.</p>
+          <p>Payments, subscriptions, customer portals, and invoices are handled through Stripe. We store billing-related identifiers, subscription status, plan information, and invoice links or metadata, but we do not store full payment card numbers on SEnuke AI servers.</p>
         </Section>
 
         <Section title="8. Security and Retention">
@@ -88,7 +87,7 @@ export default function Legal({ kind }: { kind: LegalKind }) {
         </Section>
 
         <Section title="10. Changes">
-          <p>We may update this Privacy Policy as Webtummy changes. The updated version will be posted with a new effective date. Continued use of the service after changes means you accept the updated policy.</p>
+          <p>We may update this Privacy Policy as SEnuke AI changes. The updated version will be posted with a new effective date. Continued use of the service after changes means you accept the updated policy.</p>
         </Section>
       </Shell>
     );
@@ -97,12 +96,12 @@ export default function Legal({ kind }: { kind: LegalKind }) {
   return (
     <Shell title="Terms and Conditions">
       <Section title="1. Agreement">
-        <p>These Terms and Conditions govern access to and use of Webtummy, an SEO and AI-search audit platform operated by Dot H Digital. By creating an account, signing in, or using the service, you agree to these Terms.</p>
-        <p>If you use Webtummy for a company or client, you confirm that you have authority to bind that organization and to submit websites, data, and content for analysis.</p>
+        <p>These Terms and Conditions govern access to and use of SEnuke AI, an SEO and AI-search audit platform operated by Dot H Digital. By creating an account, signing in, or using the service, you agree to these Terms.</p>
+        <p>If you use SEnuke AI for a company or client, you confirm that you have authority to bind that organization and to submit websites, data, and content for analysis.</p>
       </Section>
 
       <Section title="2. Service Overview">
-        <p>Webtummy helps crawl websites, identify technical and content issues, generate keyword and SEO insights, score AI-search readiness, and prepare reports. Results are informational and decision-support tools, not guarantees of search ranking, indexing, traffic, revenue, or legal compliance.</p>
+        <p>SEnuke AI helps crawl websites, identify technical and content issues, generate keyword and SEO insights, score AI-search readiness, and prepare reports. Results are informational and decision-support tools, not guarantees of search ranking, indexing, traffic, revenue, or legal compliance.</p>
       </Section>
 
       <Section title="3. Accounts and Access">
@@ -111,12 +110,12 @@ export default function Legal({ kind }: { kind: LegalKind }) {
       </Section>
 
       <Section title="4. Acceptable Use">
-        <p>You may only crawl, audit, or analyze websites and content that you own, manage, or are authorized to assess. You must not use Webtummy to attack, overload, scrape unlawfully, bypass access controls, collect sensitive personal data without authority, or violate third-party rights.</p>
+        <p>You may only crawl, audit, or analyze websites and content that you own, manage, or are authorized to assess. You must not use SEnuke AI to attack, overload, scrape unlawfully, bypass access controls, collect sensitive personal data without authority, or violate third-party rights.</p>
         <p>We may suspend or limit access if we believe use is abusive, unlawful, risky to infrastructure, or inconsistent with these Terms.</p>
       </Section>
 
       <Section title="5. Client Content and Reports">
-        <p>You retain ownership of websites, inputs, uploaded or entered content, and client materials you provide. You grant Webtummy permission to process that information to provide audits, reports, AI-assisted outputs, billing, support, security, and service improvements.</p>
+        <p>You retain ownership of websites, inputs, uploaded or entered content, and client materials you provide. You grant SEnuke AI permission to process that information to provide audits, reports, AI-assisted outputs, billing, support, security, and service improvements.</p>
         <p>You are responsible for reviewing generated recommendations, AI-assisted content, metadata, schema, reports, and exports before publishing or relying on them.</p>
       </Section>
 
@@ -126,27 +125,27 @@ export default function Legal({ kind }: { kind: LegalKind }) {
       </Section>
 
       <Section title="7. Plans, Billing, and Invoices">
-        <p>Paid plan access, subscription status, quotas, and invoice downloads may be managed through Webtummy and Stripe. Fees are billed according to the selected plan and Stripe checkout or portal terms shown at purchase.</p>
+        <p>Paid plan access, subscription status, quotas, and invoice downloads may be managed through SEnuke AI and Stripe. Fees are billed according to the selected plan and Stripe checkout or portal terms shown at purchase.</p>
         <p>Unless otherwise stated, fees are non-refundable except where required by law or expressly agreed in writing. We may change plans, quotas, or pricing with notice where required.</p>
       </Section>
 
       <Section title="8. Availability and Changes">
-        <p>We aim to keep Webtummy reliable, but the service may be unavailable because of maintenance, updates, incidents, third-party outages, crawler limitations, website blocking, API limits, or events outside our control.</p>
+        <p>We aim to keep SEnuke AI reliable, but the service may be unavailable because of maintenance, updates, incidents, third-party outages, crawler limitations, website blocking, API limits, or events outside our control.</p>
         <p>We may add, change, suspend, or discontinue features as the product evolves.</p>
       </Section>
 
       <Section title="9. Intellectual Property">
-        <p>Webtummy, its software, user interface, workflows, branding, and platform technology are owned by Dot H Digital or its licensors. These Terms do not transfer ownership of the platform to you.</p>
+        <p>SEnuke AI, its software, user interface, workflows, branding, and platform technology are owned by Dot H Digital or its licensors. These Terms do not transfer ownership of the platform to you.</p>
         <p>You may use reports and outputs generated for your authorized client work, subject to these Terms and your responsibility to review them.</p>
       </Section>
 
       <Section title="10. Disclaimers and Limitation of Liability">
-        <p>Webtummy is provided on an “as is” and “as available” basis. To the maximum extent permitted by law, we disclaim warranties of merchantability, fitness for a particular purpose, non-infringement, and uninterrupted or error-free operation.</p>
+        <p>SEnuke AI is provided on an “as is” and “as available” basis. To the maximum extent permitted by law, we disclaim warranties of merchantability, fitness for a particular purpose, non-infringement, and uninterrupted or error-free operation.</p>
         <p>To the maximum extent permitted by law, Dot H Digital will not be liable for indirect, incidental, special, consequential, exemplary, or punitive damages, or for lost profits, lost rankings, lost traffic, lost data, or business interruption.</p>
       </Section>
 
       <Section title="11. Termination">
-        <p>You may stop using Webtummy at any time. We may suspend or terminate access for non-payment, security risk, abuse, legal risk, or breach of these Terms. Some obligations, including payment, confidentiality, intellectual property, disclaimers, and limitations of liability, survive termination.</p>
+        <p>You may stop using SEnuke AI at any time. We may suspend or terminate access for non-payment, security risk, abuse, legal risk, or breach of these Terms. Some obligations, including payment, confidentiality, intellectual property, disclaimers, and limitations of liability, survive termination.</p>
       </Section>
 
       <Section title="12. Contact">

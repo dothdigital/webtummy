@@ -674,7 +674,7 @@ export default function LocalSeo() {
             <div className="mt-0.5 h-5 w-5 shrink-0 animate-spin rounded-full border-2 border-blue-200 border-t-blue-700" aria-hidden="true" />
             <div>
               <div className="text-sm font-bold text-blue-950">Data pull in progress</div>
-              <p className="mt-1 text-sm leading-6 text-blue-900">Webtummy is pulling Google organic, Maps, local pack, rating, review-count, and competitor signals for the saved keywords and locations. This can take up to a minute depending on the number of targets.</p>
+              <p className="mt-1 text-sm leading-6 text-blue-900">SEnuke AI is pulling Google organic, Maps, local pack, rating, review-count, and competitor signals for the saved keywords and locations. This can take up to a minute depending on the number of targets.</p>
               <p className="mt-1 text-xs leading-5 text-blue-800">Keep this page open. Results will refresh automatically when the audit finishes.</p>
             </div>
           </div>

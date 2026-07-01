@@ -1,12 +1,13 @@
 // Crawl detail: live status (polls while running), score gauge, summary stats,
 // pages table, and issues table with severity badges.
 import { useEffect, useState, type ReactNode } from "react";
-import { useParams } from "react-router-dom";
+import { useNavigate, useParams } from "react-router-dom";
 import { api } from "../api.js";
 import type {
   BrokenLinkRow,
   CrawlStatus,
   CrawlSummary,
+  ExecutionTask,
   HealthReport,
   AiContentGeneration,
   AiGenerationType,
@@ -68,7 +69,35 @@ function IssueCard({
   );
 }
 
+function taskPriorityClass(priority: string): string {
+  if (priority === "high") return "bg-red-50 text-red-700 border-red-100";
+  if (priority === "low") return "bg-slate-50 text-slate-600 border-slate-100";
+  return "bg-amber-50 text-amber-700 border-amber-100";
+}
+
+function taskStatusClass(status: string): string {
+  if (status === "completed") return "bg-green-50 text-green-700 border-green-100";
+  if (status === "skipped") return "bg-slate-50 text-slate-500 border-slate-100";
+  if (status === "needs_review") return "bg-blue-50 text-blue-700 border-blue-100";
+  if (status === "failed") return "bg-red-50 text-red-700 border-red-100";
+  return "bg-brand-50 text-brand-700 border-brand-100";
+}
+
+function taskLabel(value: string): string {
+  return value.replace(/_/g, " ").replace(/\b\w/g, (char) => char.toUpperCase());
+}
+
+function taskModuleClass(moduleName: string): string {
+  if (moduleName === "keyword_research") return "bg-indigo-50 text-indigo-700 border-indigo-100";
+  if (moduleName === "local_seo") return "bg-emerald-50 text-emerald-700 border-emerald-100";
+  if (moduleName === "ai_content") return "bg-purple-50 text-purple-700 border-purple-100";
+  if (moduleName === "social_strategy") return "bg-pink-50 text-pink-700 border-pink-100";
+  return "bg-cyan-50 text-cyan-700 border-cyan-100";
+}
+
 const PAGE_SIZE = 25;
+
+type ReportSection = "overview" | "execution" | "health" | "pages" | "issues" | "broken";
 
 const ISSUE_TYPE_FILTERS = [
   { key: "title", label: "Titles" },
@@ -1660,14 +1689,189 @@ function IssueDetailPanel({ issue, onClose }: { issue: IssueRow; onClose: () => 
   );
 }
 
+function issueIdFromTask(task: ExecutionTask): string | null {
+  return task.dedupeKey.startsWith("crawl:") ? task.dedupeKey.slice("crawl:".length) : null;
+}
+
+function taskCompletionSteps(task: ExecutionTask, issue: IssueRow | null): string[] {
+  if (task.moduleName === "keyword_research") {
+    return [
+      "Open the keyword report from this task or the Keyword Research area.",
+      "Review the target keyword, ranking position, search intent, and suggested ideas.",
+      "Decide whether to improve an existing page or create a new page.",
+      "Apply the content or on-page updates manually, then rerun keyword research or track the next ranking check.",
+    ];
+  }
+  if (task.moduleName === "local_seo") {
+    return [
+      "Open the Local SEO area for this project.",
+      "Review the business profile, location, services, and recommendation evidence.",
+      "Update the website, Google Business Profile, citations, or local content manually where needed.",
+      "Mark complete after the local profile or listing change is done and ready for the next review.",
+    ];
+  }
+  if (task.moduleName === "ai_content") {
+    return [
+      "Open AI Content and review the generated draft or recommendation.",
+      "Edit the content for accuracy, brand voice, location/service fit, and compliance.",
+      "Apply it manually to the target page or content plan only after approval.",
+      "Mark complete after the content is reviewed and placed into the project workflow.",
+    ];
+  }
+  if (task.moduleName === "social_strategy") {
+    return [
+      "Open the Social Strategy area and review the planned post.",
+      "Check the caption, platform, topic, date, and creative direction.",
+      "Approve or edit the post, then schedule or publish it manually in the social platform.",
+      "Mark complete after the post has been approved, scheduled, or handled outside the app.",
+    ];
+  }
+  const type = issue?.issueType ?? task.sourceType;
+  if (type.includes("sitemap")) {
+    return [
+      "Open the sitemap or sitemap plugin/CMS area.",
+      "Remove dead URLs or replace them with the correct live canonical URLs.",
+      "Confirm the affected URLs return a valid status or redirect cleanly.",
+      "Rerun the crawl after the website change is live.",
+    ];
+  }
+  if (type.includes("internal") || type.includes("orphan") || type.includes("link")) {
+    return [
+      "Open the affected page and one or more related parent/service pages.",
+      "Add useful contextual internal links in the body content, not only header or footer navigation.",
+      "Use clear anchor text that describes the destination page.",
+      "Rerun the crawl and confirm the page has healthier incoming/outgoing links.",
+    ];
+  }
+  if (type.includes("title") || type.includes("meta_description") || type.includes("h1")) {
+    return [
+      "Open the affected page in the CMS or website editor.",
+      "Update the title, meta description, or H1 using the recommendation.",
+      "Keep the copy unique, readable, and aligned with the target keyword or page purpose.",
+      "Rerun the crawl to confirm the issue is gone.",
+    ];
+  }
+  if (type.includes("schema") || type.includes("llms") || issue?.category === "ai_readiness") {
+    return [
+      "Review the missing AI/search readiness item in the crawl health report.",
+      "Generate or prepare the required schema, llms.txt, robots, or structured content.",
+      "Apply it manually to the website only after review.",
+      "Rerun the crawl to confirm the readiness check passes.",
+    ];
+  }
+  return [
+    "Open the source page or related report section.",
+    "Apply the recommended fix manually in the website, CMS, or project workflow.",
+    "Check the page after publishing to make sure the change is visible.",
+    "Rerun the crawl or related report before marking the task fully complete.",
+  ];
+}
+
+function ExecutionTaskDrawer({
+  task,
+  issue,
+  onClose,
+  onOpenIssue,
+  onApprove,
+  onComplete,
+  onSkip,
+}: {
+  task: ExecutionTask;
+  issue: IssueRow | null;
+  onClose: () => void;
+  onOpenIssue: () => void;
+  onApprove: () => void;
+  onComplete: () => void;
+  onSkip: () => void;
+}) {
+  const steps = taskCompletionSteps(task, issue);
+  return (
+    <div className="fixed inset-0 z-50" role="dialog" aria-modal="true" aria-label="Execution task details">
+      <button type="button" aria-label="Close task details" className="absolute inset-0 bg-charcoal-900/35" onClick={onClose} />
+      <aside className="absolute right-0 top-0 flex h-full w-full max-w-3xl flex-col bg-white shadow-2xl">
+        <div className="border-b border-charcoal-100 px-5 py-4">
+          <div className="flex items-start justify-between gap-4">
+            <div>
+              <div className="text-xs font-semibold uppercase tracking-wide text-brand-600">Execution task</div>
+              <h2 className="mt-1 text-xl font-bold text-charcoal-900">{task.title}</h2>
+              <div className="mt-2 flex flex-wrap gap-2">
+                <span className={`rounded-full border px-2 py-0.5 text-xs font-semibold ${taskPriorityClass(task.priority)}`}>{taskLabel(task.priority)} priority</span>
+                <span className={`rounded-full border px-2 py-0.5 text-xs font-semibold ${taskStatusClass(task.status)}`}>{taskLabel(task.status)}</span>
+                <span className="rounded-full border border-charcoal-100 bg-charcoal-50 px-2 py-0.5 text-xs font-semibold text-charcoal-600">{taskLabel(task.automationLevel)}</span>
+              </div>
+            </div>
+            <Button variant="ghost" onClick={onClose}>Close</Button>
+          </div>
+        </div>
+        <div className="min-h-0 flex-1 space-y-5 overflow-y-auto p-5">
+          <section className="rounded-lg border border-charcoal-100 bg-charcoal-50 p-4">
+            <div className="text-sm font-semibold text-charcoal-800">Scope</div>
+            <p className="mt-2 text-sm leading-6 text-charcoal-600">{task.description}</p>
+            {task.impact && <p className="mt-2 text-sm leading-6 text-charcoal-600"><span className="font-semibold">Expected impact:</span> {task.impact}</p>}
+          </section>
+
+          <section className="rounded-lg border border-charcoal-100 p-4">
+            <div className="text-sm font-semibold text-charcoal-800">Source</div>
+            <div className="mt-2 grid gap-2 text-sm text-charcoal-600 sm:grid-cols-2">
+              <div><span className="font-medium text-charcoal-800">Module:</span> {taskLabel(task.moduleName)}</div>
+              <div><span className="font-medium text-charcoal-800">Source type:</span> {taskLabel(task.sourceType)}</div>
+              <div><span className="font-medium text-charcoal-800">Approval:</span> {task.requiresApproval ? "Required before external action" : "Not required"}</div>
+              <div><span className="font-medium text-charcoal-800">Execution:</span> {task.manualRequired ? "Manual confirmation required" : "System prepared"}</div>
+              {issue?.page?.url && <div className="break-words sm:col-span-2"><span className="font-medium text-charcoal-800">Affected page:</span> {issue.page.url}</div>}
+              {issue && <div><span className="font-medium text-charcoal-800">Issue:</span> {taskLabel(issue.issueType)}</div>}
+              {issue && <div><span className="font-medium text-charcoal-800">Category:</span> {taskLabel(issue.category)}</div>}
+            </div>
+          </section>
+
+          <section className="rounded-lg border border-brand-100 bg-brand-50/60 p-4">
+            <div className="text-sm font-semibold text-charcoal-800">How to complete this task</div>
+            <ol className="mt-3 space-y-2 text-sm leading-6 text-charcoal-700">
+              {steps.map((step, index) => (
+                <li key={step} className="flex gap-3">
+                  <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-white text-xs font-bold text-brand-700">{index + 1}</span>
+                  <span>{step}</span>
+                </li>
+              ))}
+            </ol>
+          </section>
+
+          {task.manualInstructions && (
+            <section className="rounded-lg border border-amber-100 bg-amber-50 p-4">
+              <div className="text-sm font-semibold text-amber-900">Manual instruction</div>
+              <p className="mt-2 text-sm leading-6 text-amber-900">{task.manualInstructions}</p>
+            </section>
+          )}
+
+          <section className="rounded-lg border border-green-100 bg-green-50 p-4">
+            <div className="text-sm font-semibold text-green-900">Completion rule</div>
+            <p className="mt-2 text-sm leading-6 text-green-900">
+              Mark this task completed only after the manual work has been handled or the source item has been reviewed and approved. Use Skip when the recommendation is not relevant for this project. External actions such as publishing or social posting still happen manually outside this first version.
+            </p>
+          </section>
+        </div>
+        <div className="flex flex-wrap justify-end gap-2 border-t border-charcoal-100 px-5 py-4">
+          {issue && <Button variant="ghost" onClick={onOpenIssue}>View source issue</Button>}
+          {task.requiresApproval && task.status !== "approved" && task.status !== "completed" && <Button variant="ghost" onClick={onApprove}>Approve</Button>}
+          {task.status !== "skipped" && <Button variant="ghost" onClick={onSkip}>Skip</Button>}
+          {task.status !== "completed" && <Button onClick={onComplete}>Mark complete</Button>}
+        </div>
+      </aside>
+    </div>
+  );
+}
+
 export default function CrawlDetail() {
   const { id } = useParams<{ id: string }>();
+  const navigate = useNavigate();
   const [status, setStatus] = useState<CrawlStatus | null>(null);
   const [summary, setSummary] = useState<CrawlSummary | null>(null);
   const [pages, setPages] = useState<PageRow[]>([]);
   const [pageTotal, setPageTotal] = useState(0);
   const [issues, setIssues] = useState<IssueRow[]>([]);
   const [brokenLinks, setBrokenLinks] = useState<BrokenLinkRow[]>([]);
+  const [executionTasks, setExecutionTasks] = useState<ExecutionTask[]>([]);
+  const [taskModuleFilter, setTaskModuleFilter] = useState("all");
+  const [syncingTasks, setSyncingTasks] = useState(false);
   const [healthReport, setHealthReport] = useState<HealthReport | null>(null);
   const [comparison, setComparison] = useState<CrawlComparison | null>(null);
   const [loadingComparison, setLoadingComparison] = useState(false);
@@ -1675,6 +1879,8 @@ export default function CrawlDetail() {
   const [checkingPageSpeedId, setCheckingPageSpeedId] = useState<string | null>(null);
   const [performancePageId, setPerformancePageId] = useState<string | null>(null);
   const [openIssueId, setOpenIssueId] = useState<string | null>(null);
+  const [openTaskId, setOpenTaskId] = useState<string | null>(null);
+  const [section, setSection] = useState<ReportSection>("execution");
   const [tab, setTab] = useState<"pages" | "issues" | "broken">("pages");
   const [issuesPage, setIssuesPage] = useState(1);
   const [brokenPage, setBrokenPage] = useState(1);
@@ -1738,6 +1944,25 @@ export default function CrawlDetail() {
     }
   };
 
+  const syncExecutionTasks = async (websiteId?: string | null) => {
+    if (!id || !websiteId) return;
+    setSyncingTasks(true);
+    try {
+      const result = await api.post<{ tasks: ExecutionTask[] }>(`/api/websites/${websiteId}/execution-tasks/sync`, {});
+      setExecutionTasks(result.tasks);
+    } finally {
+      setSyncingTasks(false);
+    }
+  };
+
+  const updateTaskStatus = async (taskId: string, nextStatus: "completed" | "skipped" | "approved" | "ready") => {
+    const endpoint = nextStatus === "completed" ? "complete" : nextStatus === "skipped" ? "skip" : null;
+    const result = endpoint
+      ? await api.post<{ task: ExecutionTask }>(`/api/execution-tasks/${taskId}/${endpoint}`, {})
+      : await api.patch<{ task: ExecutionTask }>(`/api/execution-tasks/${taskId}`, { status: nextStatus });
+    setExecutionTasks((tasks) => tasks.map((task) => task.id === result.task.id ? result.task : task));
+  };
+
   // Poll status while queued/running.
   useEffect(() => {
     if (!id) return;
@@ -1756,6 +1981,7 @@ export default function CrawlDetail() {
         setIssues((await api.get<{ issues: IssueRow[] }>(`/api/crawls/${id}/issues`)).issues);
         setBrokenLinks((await api.get<{ links: BrokenLinkRow[] }>(`/api/crawls/${id}/broken-links`)).links);
         setHealthReport(await api.get<HealthReport>(`/api/crawls/${id}/health-report`));
+        await syncExecutionTasks(s.website?.id);
       }
     };
     tick();
@@ -1803,11 +2029,38 @@ export default function CrawlDetail() {
   const pageRows = paginate(pages, pagesPage);
   const performancePage = performancePageId ? pages.find((page) => page.id === performancePageId) ?? null : null;
   const openIssue = openIssueId ? issues.find((issue) => issue.id === openIssueId) ?? null : null;
+  const openTask = openTaskId ? executionTasks.find((task) => task.id === openTaskId) ?? null : null;
+  const openTaskIssueId = openTask ? issueIdFromTask(openTask) : null;
+  const openTaskIssue = openTaskIssueId ? issues.find((issue) => issue.id === openTaskIssueId) ?? null : null;
   const sevCounts = {
     high: issues.filter((i) => i.severity === "high").length,
     medium: issues.filter((i) => i.severity === "medium").length,
     low: issues.filter((i) => i.severity === "low").length,
   };
+  const openTaskCount = executionTasks.filter((task) => task.status !== "completed" && task.status !== "skipped").length;
+  const taskFilters = [
+    { key: "all", label: "All", count: executionTasks.length },
+    { key: "crawl", label: "Crawl", count: executionTasks.filter((task) => task.moduleName === "crawl").length },
+    { key: "keyword_research", label: "Keywords", count: executionTasks.filter((task) => task.moduleName === "keyword_research").length },
+    { key: "local_seo", label: "Local SEO", count: executionTasks.filter((task) => task.moduleName === "local_seo").length },
+    { key: "ai_content", label: "AI Content", count: executionTasks.filter((task) => task.moduleName === "ai_content").length },
+    { key: "social_strategy", label: "Social", count: executionTasks.filter((task) => task.moduleName === "social_strategy").length },
+    { key: "needs_review", label: "Needs Review", count: executionTasks.filter((task) => task.status === "needs_review").length },
+    { key: "approved", label: "Approved", count: executionTasks.filter((task) => task.status === "approved").length },
+  ].filter((item) => item.key === "all" || item.count > 0);
+  const visibleExecutionTasks = executionTasks.filter((task) => (
+    taskModuleFilter === "all" ||
+    task.moduleName === taskModuleFilter ||
+    task.status === taskModuleFilter
+  ));
+  const navItems: { key: ReportSection; label: string; count?: ReactNode; detail: string; tone: string; active: string; countClass: string }[] = [
+    { key: "execution", label: "Execution", count: openTaskCount, detail: "Open tasks", tone: "border-brand-200 bg-brand-50 text-brand-800 hover:border-brand-400", active: "border-brand-600 bg-brand-600 text-white shadow-md", countClass: "bg-white text-brand-700" },
+    { key: "overview", label: "Overview", count: summary?.siteScore ?? "—", detail: "Site score", tone: "border-green-200 bg-green-50 text-green-800 hover:border-green-400", active: "border-green-600 bg-green-600 text-white shadow-md", countClass: "bg-white text-green-700" },
+    { key: "health", label: "Health", detail: "Readiness", tone: "border-blue-200 bg-blue-50 text-blue-800 hover:border-blue-400", active: "border-blue-600 bg-blue-600 text-white shadow-md", countClass: "bg-white text-blue-700" },
+    { key: "issues", label: "Issues", count: issues.length, detail: "Findings", tone: "border-amber-200 bg-amber-50 text-amber-900 hover:border-amber-400", active: "border-amber-500 bg-amber-500 text-white shadow-md", countClass: "bg-white text-amber-700" },
+    { key: "pages", label: "Pages", count: pageTotal || pages.length, detail: "Crawled", tone: "border-slate-200 bg-slate-50 text-slate-800 hover:border-slate-400", active: "border-slate-700 bg-slate-700 text-white shadow-md", countClass: "bg-white text-slate-700" },
+    { key: "broken", label: "Broken", count: brokenLinks.length, detail: "Links", tone: "border-red-200 bg-red-50 text-red-800 hover:border-red-400", active: "border-red-600 bg-red-600 text-white shadow-md", countClass: "bg-white text-red-700" },
+  ];
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between">
@@ -1855,45 +2108,139 @@ export default function CrawlDetail() {
                 </div>
               </Card>
             )}
-            <HealthReportView report={healthReport} crawl={status} pages={pages} />
+
+            <Card className="sticky top-0 z-20 bg-white/95 p-3 backdrop-blur">
+              <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-6">
+                {navItems.map((item) => (
+                  <button
+                    key={item.key}
+                    type="button"
+                    onClick={() => {
+                      setSection(item.key);
+                      if (item.key === "pages" || item.key === "issues" || item.key === "broken") setTab(item.key);
+                      setOpenIssueId(null);
+                    }}
+                    className={`min-h-[74px] rounded-lg border px-3 py-3 text-left transition ${section === item.key ? item.active : item.tone}`}
+                  >
+                    <div className="flex items-start justify-between gap-2">
+                      <div>
+                        <div className="text-sm font-bold">{item.label}</div>
+                        <div className={`mt-1 text-xs font-medium ${section === item.key ? "text-white/80" : "opacity-70"}`}>{item.detail}</div>
+                      </div>
+                      {item.count !== undefined && (
+                        <span className={`rounded-full px-2.5 py-1 text-sm font-bold ${section === item.key ? item.countClass : "bg-white/90"}`}>{item.count}</span>
+                      )}
+                    </div>
+                  </button>
+                ))}
+              </div>
+            </Card>
+
+            {section === "health" && <HealthReportView report={healthReport} crawl={status} pages={pages} />}
+
+            {section === "execution" && <Card className="overflow-hidden">
+              <div className="flex flex-col gap-3 border-b border-charcoal-100 bg-white px-5 py-4 md:flex-row md:items-center md:justify-between">
+                <div>
+                  <div className="text-xs font-semibold uppercase tracking-wide text-brand-600">Execution Plan</div>
+                  <h2 className="mt-1 text-lg font-bold text-charcoal-800">Project tasks from all modules</h2>
+                  <p className="mt-1 text-sm text-charcoal-500">Action items from crawl, keyword research, local SEO, AI content, and social strategy. External publishing and posting remain manual/approval-required.</p>
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  {status.website?.id && (
+                    <Button variant="ghost" disabled={syncingTasks} onClick={() => void syncExecutionTasks(status.website?.id)}>
+                      {syncingTasks ? "Syncing..." : "Sync tasks"}
+                    </Button>
+                  )}
+                  <Button variant="ghost" onClick={() => status.website?.id && navigate(`/website-projects/${status.website.id}`)}>
+                    Open project
+                  </Button>
+                </div>
+              </div>
+              <div className="grid gap-3 border-b border-charcoal-100 bg-charcoal-50 px-5 py-4 sm:grid-cols-4">
+                <StatBox label="Open tasks" value={executionTasks.filter((task) => task.status !== "completed" && task.status !== "skipped").length} />
+                <StatBox label="High priority" value={executionTasks.filter((task) => task.priority === "high" && task.status !== "completed" && task.status !== "skipped").length} tone="text-red-600" />
+                <StatBox label="Needs review" value={executionTasks.filter((task) => task.status === "needs_review").length} tone="text-blue-700" />
+                <StatBox label="Completed" value={executionTasks.filter((task) => task.status === "completed").length} tone="text-green-700" />
+              </div>
+              <div className="flex flex-wrap gap-2 border-b border-charcoal-100 px-5 py-3">
+                {taskFilters.map((item) => (
+                  <button
+                    key={item.key}
+                    type="button"
+                    onClick={() => setTaskModuleFilter(item.key)}
+                    className={`inline-flex items-center gap-2 rounded-full border px-3 py-1.5 text-xs font-semibold transition ${
+                      taskModuleFilter === item.key
+                        ? "border-brand-500 bg-brand-50 text-brand-700"
+                        : "border-charcoal-200 bg-white text-charcoal-500 hover:border-brand-300 hover:text-brand-700"
+                    }`}
+                  >
+                    {item.label}
+                    <span className="rounded-full bg-white px-1.5 text-[11px]">{item.count}</span>
+                  </button>
+                ))}
+              </div>
+              <div className="divide-y divide-charcoal-100">
+                {visibleExecutionTasks.length === 0 ? (
+                  <div className="px-5 py-8 text-sm text-charcoal-500">
+                    No execution tasks match this filter yet. Click Sync tasks after crawl, keyword research, local SEO, AI content, or social strategy data exists.
+                  </div>
+                ) : (
+                  visibleExecutionTasks.slice(0, 40).map((task) => (
+                    <div key={task.id} className="px-5 py-4">
+                      <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+                        <div className="min-w-0">
+                          <div className="flex flex-wrap gap-2">
+                            <span className={`rounded-full border px-2 py-0.5 text-xs font-semibold ${taskModuleClass(task.moduleName)}`}>{taskLabel(task.moduleName)}</span>
+                            <span className={`rounded-full border px-2 py-0.5 text-xs font-semibold ${taskPriorityClass(task.priority)}`}>{taskLabel(task.priority)}</span>
+                            <span className={`rounded-full border px-2 py-0.5 text-xs font-semibold ${taskStatusClass(task.status)}`}>{taskLabel(task.status)}</span>
+                            <span className="rounded-full border border-charcoal-100 bg-charcoal-50 px-2 py-0.5 text-xs font-semibold text-charcoal-600">{taskLabel(task.sourceType)}</span>
+                            {task.requiresApproval && <span className="rounded-full border border-blue-100 bg-blue-50 px-2 py-0.5 text-xs font-semibold text-blue-700">Approval required</span>}
+                          </div>
+                          <div className="mt-2 font-semibold text-charcoal-800">{task.title}</div>
+                          <p className="mt-1 text-sm leading-6 text-charcoal-500">{task.description}</p>
+                          {task.impact && <p className="mt-2 text-xs font-medium text-charcoal-500">{task.impact}</p>}
+                          {task.manualInstructions && <p className="mt-1 text-xs text-charcoal-400">{task.manualInstructions}</p>}
+                        </div>
+                        <div className="flex shrink-0 flex-wrap gap-2">
+                          <Button variant="ghost" onClick={() => setOpenTaskId(task.id)}>Open</Button>
+                          {task.requiresApproval && task.status !== "approved" && task.status !== "completed" && <Button variant="ghost" onClick={() => void updateTaskStatus(task.id, "approved")}>Approve</Button>}
+                          {task.status !== "completed" && <Button onClick={() => void updateTaskStatus(task.id, "completed")}>Complete</Button>}
+                          {task.status !== "skipped" && <Button variant="ghost" onClick={() => void updateTaskStatus(task.id, "skipped")}>Skip</Button>}
+                        </div>
+                      </div>
+                    </div>
+                  ))
+                )}
+              </div>
+            </Card>}
 
           {/* Issue breakdown grid — click a card to filter the issues table */}
-          {summary && (
+          {section === "overview" && summary && (
             <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-7">
               <IssueCard label="Broken links" value={summary.breakdown.brokenLinks} color="red"
-                active={tab === "broken"} onClick={() => { setTab("broken"); setFilter(null); setBrokenPage(1); setOpenIssueId(null); }} />
+                active={tab === "broken"} onClick={() => { setSection("broken"); setTab("broken"); setFilter(null); setBrokenPage(1); setOpenIssueId(null); }} />
               <IssueCard label="Title issues" value={summary.breakdown.titleIssues} color="amber"
-                active={filter === "title"} onClick={() => { setTab("issues"); setFilter(filter === "title" ? null : "title"); setIssuesPage(1); setOpenIssueId(null); }} />
+                active={filter === "title"} onClick={() => { setSection("issues"); setTab("issues"); setFilter(filter === "title" ? null : "title"); setIssuesPage(1); setOpenIssueId(null); }} />
               <IssueCard label="Description" value={summary.breakdown.descriptionIssues} color="amber"
-                active={filter === "meta_desc"} onClick={() => { setTab("issues"); setFilter(filter === "meta_desc" ? null : "meta_desc"); setIssuesPage(1); setOpenIssueId(null); }} />
+                active={filter === "meta_desc"} onClick={() => { setSection("issues"); setTab("issues"); setFilter(filter === "meta_desc" ? null : "meta_desc"); setIssuesPage(1); setOpenIssueId(null); }} />
               <IssueCard label="H1 issues" value={summary.breakdown.h1Issues} color="amber"
-                active={filter === "h1"} onClick={() => { setTab("issues"); setFilter(filter === "h1" ? null : "h1"); setIssuesPage(1); setOpenIssueId(null); }} />
+                active={filter === "h1"} onClick={() => { setSection("issues"); setTab("issues"); setFilter(filter === "h1" ? null : "h1"); setIssuesPage(1); setOpenIssueId(null); }} />
               <IssueCard label="Content" value={summary.breakdown.contentIssues} color="slate"
-                active={filter === "word_count"} onClick={() => { setTab("issues"); setFilter(filter === "word_count" ? null : "word_count"); setIssuesPage(1); setOpenIssueId(null); }} />
+                active={filter === "word_count"} onClick={() => { setSection("issues"); setTab("issues"); setFilter(filter === "word_count" ? null : "word_count"); setIssuesPage(1); setOpenIssueId(null); }} />
               <IssueCard label="Indexability" value={summary.breakdown.indexabilityIssues} color="red"
-                active={filter === "index"} onClick={() => { setTab("issues"); setFilter(filter === "index" ? null : "index"); setIssuesPage(1); setOpenIssueId(null); }} />
+                active={filter === "index"} onClick={() => { setSection("issues"); setTab("issues"); setFilter(filter === "index" ? null : "index"); setIssuesPage(1); setOpenIssueId(null); }} />
               <IssueCard label="Site files" value={summary.breakdown.siteFileIssues} color="slate"
-                active={filter === "site_files"} onClick={() => { setTab("issues"); setFilter(filter === "site_files" ? null : "site_files"); setIssuesPage(1); setOpenIssueId(null); }} />
+                active={filter === "site_files"} onClick={() => { setSection("issues"); setTab("issues"); setFilter(filter === "site_files" ? null : "site_files"); setIssuesPage(1); setOpenIssueId(null); }} />
             </div>
           )}
 
-          {/* Tabs */}
-          <div className="flex gap-2">
-            <Button variant={tab === "pages" ? "primary" : "ghost"} onClick={() => { setTab("pages"); setOpenIssueId(null); }}>
-              Pages ({pageTotal > pages.length ? `${pages.length}/${pageTotal}` : pageTotal || pages.length})
-            </Button>
-            <Button variant={tab === "issues" ? "primary" : "ghost"} onClick={() => { setTab("issues"); setOpenIssueId(null); }}>
-              Issues ({shownIssues.length !== issues.length ? `${shownIssues.length}/` : ""}{issues.length})
-            </Button>
-            {filter && (
-              <Button variant="ghost" onClick={() => { setFilter(null); setIssuesPage(1); setOpenIssueId(null); }}>✕ Clear "{filter}" filter</Button>
-            )}
-            <Button variant={tab === "broken" ? "primary" : "ghost"} onClick={() => { setTab("broken"); setOpenIssueId(null); }}>
-              Broken links ({shownBrokenLinks.length !== brokenLinks.length ? `${shownBrokenLinks.length}/` : ""}{brokenLinks.length})
-            </Button>
-          </div>
+          {section === "issues" && filter && (
+            <div>
+              <Button variant="ghost" onClick={() => { setFilter(null); setIssuesPage(1); setOpenIssueId(null); }}>Clear "{filter}" filter</Button>
+            </div>
+          )}
 
-          {tab === "pages" ? (
+          {section === "pages" ? (
             <Card className="overflow-hidden">
               <div className="overflow-x-auto"><table className="w-full min-w-[820px] text-sm">
                 <thead className="bg-charcoal-50 text-left text-xs uppercase text-charcoal-400">
@@ -1978,7 +2325,7 @@ export default function CrawlDetail() {
               </table></div>
               <Pagination page={pagesPage} total={pages.length} onPage={setPagesPage} />
             </Card>
-          ) : tab === "issues" ? (
+          ) : section === "issues" ? (
             <Card className="overflow-hidden">
               <div className="flex flex-col gap-3 border-b border-charcoal-100 px-5 py-3 lg:flex-row lg:items-center lg:justify-between">
                 <div className="flex flex-wrap items-center gap-2">
@@ -2060,7 +2407,7 @@ export default function CrawlDetail() {
               </table></div>
               <Pagination page={issuesPage} total={shownIssues.length} onPage={(p) => { setIssuesPage(p); setOpenIssueId(null); }} />
             </Card>
-          ) : tab === "broken" ? (
+          ) : section === "broken" ? (
             <Card className="overflow-hidden">
               <div className="space-y-3 border-b border-charcoal-100 px-5 py-3">
                 <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
@@ -2175,6 +2522,33 @@ export default function CrawlDetail() {
           checking={checkingPageSpeedId === performancePage.id}
           onRunLab={() => runPageSpeedCheck(performancePage.id)}
           onClose={() => setPerformancePageId(null)}
+        />
+      )}
+
+      {openTask && (
+        <ExecutionTaskDrawer
+          task={openTask}
+          issue={openTaskIssue}
+          onClose={() => setOpenTaskId(null)}
+          onOpenIssue={() => {
+            if (!openTaskIssue) return;
+            setSection("issues");
+            setTab("issues");
+            setOpenIssueId(openTaskIssue.id);
+            setOpenTaskId(null);
+          }}
+          onApprove={() => {
+            void updateTaskStatus(openTask.id, "approved");
+            setOpenTaskId(null);
+          }}
+          onComplete={() => {
+            void updateTaskStatus(openTask.id, "completed");
+            setOpenTaskId(null);
+          }}
+          onSkip={() => {
+            void updateTaskStatus(openTask.id, "skipped");
+            setOpenTaskId(null);
+          }}
         />
       )}
 

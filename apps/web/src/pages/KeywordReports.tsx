@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Link, useNavigate, useSearchParams } from "react-router-dom";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import { api } from "../api.js";
 import type { KeywordResearchRun, Website } from "../types.js";
 import { ActionIconButton, ActionIconLink, Button, Card, Input, StatusPill } from "../components/ui.js";
@@ -14,6 +14,21 @@ type FormError = {
   title: string;
   detail: string;
   action: string;
+};
+
+type QueuedKeywordRun = {
+  id: string;
+  keyword: string;
+  targetUrl: string;
+  targetDomain: string;
+  locationCountry: string;
+  locationRegion: string;
+  locationCity: string;
+  locationNames: string[];
+  languageCode: string;
+  device: "desktop" | "mobile";
+  serpDepth: string;
+  keywordLimit: string;
 };
 
 function formatDate(value: string | null | undefined): string {
@@ -104,16 +119,20 @@ const LANGUAGE_OPTIONS = [
   { code: "zh_TW", label: "Chinese (Traditional)" },
 ];
 
-function scoreTone(score: number | null | undefined): string {
-  if (score == null) return "text-charcoal-400";
-  if (score >= 80) return "text-green-600";
-  if (score >= 60) return "text-amber-600";
-  return "text-red-600";
-}
-
-
 function targetCitiesText(value: unknown): string {
-  return Array.isArray(value) ? value.filter((city): city is string => typeof city === "string" && city.trim().length > 0).join(", ") : "";
+  if (!Array.isArray(value)) return "";
+  const seen = new Set<string>();
+  return value
+    .filter((city): city is string => typeof city === "string" && city.trim().length > 0)
+    .map((city) => city.split(",")[0]?.trim() ?? "")
+    .filter(Boolean)
+    .filter((city) => {
+      const key = city.toLowerCase();
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    })
+    .join(", ");
 }
 
 function latestSuccessfulKeywordRuns(runs: KeywordResearchRun[]): KeywordResearchRun[] {
@@ -153,11 +172,11 @@ export default function KeywordReports() {
   const [loading, setLoading] = useState(true);
   const [creating, setCreating] = useState(false);
   const [refreshingId, setRefreshingId] = useState<string | null>(null);
-  const [showAddKeyword, setShowAddKeyword] = useState(false);
+  const [showAddKeyword, setShowAddKeyword] = useState(searchParams.get("add") === "1");
   const [suggestingKeywords, setSuggestingKeywords] = useState(false);
   const [keywordSuggestions, setKeywordSuggestions] = useState<KeywordSuggestion[]>([]);
   const [selectedKeywordSuggestions, setSelectedKeywordSuggestions] = useState<string[]>([]);
-  const [selectedKeywords, setSelectedKeywords] = useState<string[]>([]);
+  const [queuedKeywords, setQueuedKeywords] = useState<QueuedKeywordRun[]>([]);
   const [formError, setFormError] = useState<FormError | null>(null);
   const [message, setMessage] = useState("");
 
@@ -171,6 +190,7 @@ export default function KeywordReports() {
       setRuns(runResult.runs);
       setWebsites(websiteResult.websites);
       const requestedProject = searchParams.get("project");
+      if (searchParams.get("add") === "1") setShowAddKeyword(true);
       const selectedProject = websiteResult.websites.find((website) => website.id === requestedProject) ?? websiteResult.websites[0];
       if (!websiteId && selectedProject) {
         setWebsiteId(selectedProject.id);
@@ -195,23 +215,21 @@ export default function KeywordReports() {
     let activeKeyword = "";
     let activeLocation = "";
     try {
-      const locationNames = buildLocationNames(locationCity, locationRegion, locationCountry);
-      const keywordsToRun = selectedKeywords.length ? selectedKeywords : seedKeyword.trim() ? [seedKeyword.trim()] : [];
       let firstRun: KeywordResearchRun | null = null;
-      for (const keyword of keywordsToRun) {
-        activeKeyword = keyword;
-        for (const locationName of locationNames) {
+      for (const queued of queuedKeywords) {
+        activeKeyword = queued.keyword;
+        for (const locationName of queued.locationNames) {
           activeLocation = locationName;
           const result = await api.post<{ run: KeywordResearchRun }>("/api/keyword-research", {
             websiteId,
-            seedKeyword: keyword,
-            targetUrl: targetUrl || null,
-            targetDomain: targetDomain || null,
+            seedKeyword: queued.keyword,
+            targetUrl: queued.targetUrl || null,
+            targetDomain: queued.targetDomain || null,
             locationName,
-            languageCode,
-            device,
-            serpDepth: Number(serpDepth) || 10,
-            keywordLimit: Number(keywordLimit) || 25,
+            languageCode: queued.languageCode,
+            device: queued.device,
+            serpDepth: Number(queued.serpDepth) || 10,
+            keywordLimit: Number(queued.keywordLimit) || 25,
           });
           firstRun = firstRun ?? result.run;
         }
@@ -228,6 +246,37 @@ export default function KeywordReports() {
     } finally {
       setCreating(false);
     }
+  };
+
+  const queueKeywordWithSettings = (keywordValue = seedKeyword, clearInput = true) => {
+    const keyword = keywordValue.trim();
+    if (!keyword) return;
+    const locationNames = buildLocationNames(locationCity, locationRegion, locationCountry);
+    const locationKey = locationNames.join("|").toLowerCase();
+    setQueuedKeywords((current) => {
+      const exists = current.some((item) => item.keyword.toLowerCase() === keyword.toLowerCase() && item.locationNames.join("|").toLowerCase() === locationKey);
+      if (exists) return current;
+      return [
+        ...current,
+        {
+          id: `${Date.now()}-${keyword}-${current.length}`,
+          keyword,
+          targetUrl,
+          targetDomain,
+          locationCountry,
+          locationRegion,
+          locationCity,
+          locationNames,
+          languageCode,
+          device,
+          serpDepth,
+          keywordLimit,
+        },
+      ];
+    });
+    if (clearInput) setSeedKeyword("");
+    setMessage("");
+    setFormError(null);
   };
 
   const refreshRun = async (run: KeywordResearchRun) => {
@@ -250,8 +299,8 @@ export default function KeywordReports() {
     setMessage("");
     try {
       const excludeKeywords = mode === "more"
-        ? [...keywordSuggestions.map((suggestion) => suggestion.keyword), ...selectedKeywords]
-        : selectedKeywords;
+        ? [...keywordSuggestions.map((suggestion) => suggestion.keyword), ...queuedKeywords.map((item) => item.keyword)]
+        : queuedKeywords.map((item) => item.keyword);
       const result = await api.post<{ suggestions: KeywordSuggestion[] }>("/api/keyword-research/suggestions", {
         websiteId,
         limit: 10,
@@ -282,55 +331,45 @@ export default function KeywordReports() {
 
   const useSelectedSuggestions = () => {
     if (!selectedKeywordSuggestions.length) return;
-    setSelectedKeywords((current) => {
-      const next = [...current];
-      for (const keyword of selectedKeywordSuggestions) {
-        if (!next.includes(keyword)) next.push(keyword);
-      }
-      return next;
-    });
-    setSeedKeyword(selectedKeywordSuggestions[0]);
+    for (const keyword of selectedKeywordSuggestions) queueKeywordWithSettings(keyword, false);
+    setSelectedKeywordSuggestions([]);
     setMessage("");
   };
 
-  const removeSelectedKeyword = (keyword: string) => {
-    setSelectedKeywords((current) => current.filter((item) => item !== keyword));
+  const removeQueuedKeyword = (id: string) => {
+    setQueuedKeywords((current) => current.filter((item) => item.id !== id));
   };
 
   const selectedWebsite = websites.find((website) => website.id === websiteId) ?? websites[0];
-  const crawl = selectedWebsite?.crawlJobs?.[0] ?? null;
   const visibleRuns = latestSuccessfulKeywordRuns(
     selectedWebsite ? runs.filter((run) => run.websiteId === selectedWebsite.id) : runs,
   );
+  const focusedAddMode = showAddKeyword && searchParams.get("add") === "1";
+  const locationPreview = buildLocationNames(locationCity, locationRegion, locationCountry).join(" | ");
 
   return (
     <div className="space-y-6">
       <div>
-        <h1 className="text-2xl font-bold text-charcoal-800">Keyword Insight</h1>
-        <p className="mt-1 text-sm text-charcoal-400">Create, manage, and open keyword-level intelligence reports for each project domain.</p>
+        <h1 className="text-2xl font-bold text-charcoal-800">{focusedAddMode ? "Add Keyword" : "Keyword Insight"}</h1>
+        <p className="mt-1 text-sm text-charcoal-400">
+          {focusedAddMode ? "Add seed keywords and run location-specific keyword intelligence for the selected project." : "Create, manage, and open keyword-level intelligence reports for each project domain."}
+        </p>
       </div>
 
       <Card className="overflow-hidden">
-        <div className="flex items-center justify-between gap-4 border-b border-charcoal-100 px-5 py-3">
+        {!focusedAddMode && <div className="flex flex-col gap-4 border-b border-charcoal-100 px-5 py-4 lg:flex-row lg:items-center lg:justify-between">
           <div>
-            <div className="font-semibold text-charcoal-700">Recent keyword intelligence reports</div>
-            <div className="mt-0.5 text-xs text-charcoal-400">Historical reports are kept here. The project dashboard only shows the latest keyword snapshot.</div>
+            <div className="font-semibold text-charcoal-700">Keyword intelligence reports</div>
+            <div className="mt-0.5 text-xs text-charcoal-400">Open completed keyword reports for the selected project.</div>
           </div>
-          <Button onClick={() => setShowAddKeyword((value) => !value)} variant={showAddKeyword ? "ghost" : "primary"}>
-            {showAddKeyword ? "Close" : "Add keyword"}
-          </Button>
-        </div>
-
-        <div className="border-b border-charcoal-100 bg-white px-5 py-4">
-          <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
-            <label className="block min-w-[260px]">
-              <span className="mb-1 block text-sm font-medium text-slate-600">Project</span>
+          <label className="block min-w-[260px]">
+              <span className="mb-1 block text-xs font-bold uppercase tracking-wide text-slate-500">Project</span>
               <select
                 value={websiteId}
                 onChange={(event) => {
                   const nextProject = websites.find((website) => website.id === event.target.value);
                   setWebsiteId(event.target.value);
-                  setSearchParams({ project: event.target.value });
+                  setSearchParams(focusedAddMode ? { project: event.target.value, add: "1" } : { project: event.target.value });
                   setKeywordSuggestions([]);
                   setSelectedKeywordSuggestions([]);
                   setMessage("");
@@ -344,39 +383,25 @@ export default function KeywordReports() {
                   <option key={website.id} value={website.id}>{website.domain}</option>
                 ))}
               </select>
-            </label>
-            <div className="grid flex-1 gap-3 sm:grid-cols-3 lg:max-w-2xl">
-              <Link to={crawl ? `/crawls/${crawl.id}` : "#"} className="rounded-lg border border-charcoal-100 bg-charcoal-50 px-3 py-2 hover:border-brand-200 hover:bg-brand-50">
-                <div className={`text-xl font-bold ${scoreTone(crawl?.siteScore)}`}>{crawl?.siteScore ?? "-"}</div>
-                <div className="mt-0.5 text-xs text-charcoal-400">Latest site audit</div>
-              </Link>
-              <div className="rounded-lg border border-charcoal-100 bg-charcoal-50 px-3 py-2">
-                <div className={(crawl?.errorCount ?? 0) > 0 ? "text-xl font-bold text-red-600" : "text-xl font-bold text-green-600"}>{crawl?.errorCount ?? 0}</div>
-                <div className="mt-0.5 text-xs text-charcoal-400">Errors</div>
-              </div>
-              <div className="rounded-lg border border-charcoal-100 bg-charcoal-50 px-3 py-2">
-                <div className="text-xl font-bold text-charcoal-800">{crawl?.pagesCrawled ?? "-"}</div>
-                <div className="mt-0.5 text-xs text-charcoal-400">Crawled pages</div>
-              </div>
-            </div>
-          </div>
-          <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-2 text-sm">
-            <span className="text-charcoal-400">Last crawled: {formatShortDate(crawl?.completedAt ?? crawl?.createdAt)}</span>
-            {crawl && <Link to={`/crawls/${crawl.id}`} className="font-medium text-brand-600 hover:underline">Open latest audit</Link>}
-            {selectedWebsite && <Link to={`/projects/${selectedWebsite.id}`} className="font-medium text-brand-600 hover:underline">View previous crawls</Link>}
-          </div>
-        </div>
+          </label>
+        </div>}
 
         {message && <div className="border-b border-charcoal-100 bg-amber-50 px-5 py-3 text-sm text-amber-900">{message}</div>}
 
         {showAddKeyword && (
-          <div className="border-b border-charcoal-100 bg-charcoal-50/60 p-5">
-            <div className="mb-4">
-              <h2 className="font-semibold text-charcoal-800">Add keyword</h2>
-              <p className="mt-1 text-sm text-charcoal-400">Add a keyword to this project. The system will fetch search demand, SERP competitors, and ranking visibility.</p>
-            </div>
-            <form onSubmit={createRun} className="space-y-4">
-              <div className="grid gap-4 lg:grid-cols-4">
+          <div className="border-b border-charcoal-100 bg-white">
+            <form onSubmit={createRun} className="space-y-4 p-5">
+              <div className="rounded-xl border border-slate-200 bg-slate-50/60 p-4">
+                <div className="mb-3 flex flex-col gap-1 sm:flex-row sm:items-end sm:justify-between">
+                  <div>
+                    <div className="text-sm font-bold text-charcoal-900">Keyword setup</div>
+                    <div className="text-xs text-charcoal-500">Define the keyword and search context before adding it to the run list.</div>
+                  </div>
+                  <Button type="button" onClick={() => queueKeywordWithSettings()} disabled={!seedKeyword.trim()}>
+                    Add Keyword With Settings
+                  </Button>
+                </div>
+                <div className="grid gap-4 lg:grid-cols-4">
                 <label className="block">
                   <span className="mb-1 block text-sm font-medium text-slate-600">Project</span>
                   <select
@@ -384,10 +409,10 @@ export default function KeywordReports() {
                     onChange={(e) => {
                       const nextProject = websites.find((website) => website.id === e.target.value);
                       setWebsiteId(e.target.value);
-                      setSearchParams({ project: e.target.value });
+                      setSearchParams(focusedAddMode ? { project: e.target.value, add: "1" } : { project: e.target.value });
                       setKeywordSuggestions([]);
                       setSelectedKeywordSuggestions([]);
-                      setSelectedKeywords([]);
+                      setQueuedKeywords([]);
                       setMessage("");
                       setFormError(null);
                       if (nextProject?.targetCountry) setLocationCountry(nextProject.targetCountry);
@@ -402,11 +427,13 @@ export default function KeywordReports() {
                     ))}
                   </select>
                 </label>
-                <Input label="Primary keyword" value={seedKeyword} onChange={setSeedKeyword} placeholder="website design company" />
+                <div className="lg:col-span-2">
+                  <Input label="Primary keyword" value={seedKeyword} onChange={setSeedKeyword} placeholder="website design company" />
+                </div>
                 <Input label="Target URL" value={targetUrl} onChange={setTargetUrl} placeholder="https://example.com/service-page" />
                 <Input label="Target domain" value={targetDomain} onChange={setTargetDomain} placeholder="example.com" />
-              </div>
-              <div className="grid gap-4 lg:grid-cols-6">
+                </div>
+                <div className="mt-4 grid gap-4 lg:grid-cols-6">
                 <label className="block">
                   <span className="mb-1 block text-sm font-medium text-slate-600">Country</span>
                   <select
@@ -465,12 +492,17 @@ export default function KeywordReports() {
                   </select>
                 </label>
                 <Input label="Keyword limit" value={keywordLimit} onChange={setKeywordLimit} type="number" />
+                </div>
+                <div className="mt-3 rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-medium leading-5 text-charcoal-500">
+                  {locationPreview || "No location selected"} · {languageCode} · {device} · top {serpDepth} · {keywordLimit} ideas
+                </div>
               </div>
-              <div className="rounded-lg border border-emerald-200 bg-white p-4 shadow-sm">
+
+              <div className="rounded-xl border border-emerald-100 bg-emerald-50/40 p-4">
                 <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                   <div>
                     <div className="text-sm font-bold text-emerald-950">Get location-aware keyword suggestions</div>
-                    <p className="mt-1 text-xs leading-5 text-emerald-800">Suggestions will use {locationCity || "your selected cities"}, {locationRegion || "state/province"}, {locationCountry || "country"}.</p>
+                    <p className="mt-1 text-xs leading-5 text-emerald-800">{locationPreview || "Select a location first"}.</p>
                   </div>
                   <Button
                     type="button"
@@ -485,22 +517,20 @@ export default function KeywordReports() {
                     {suggestingKeywords ? "Suggesting..." : "Suggest keywords"}
                   </Button>
                 </div>
-              </div>
-              {keywordSuggestions.length > 0 && (
-                <div className="rounded-lg border border-blue-100 bg-blue-50/70 p-4">
-                  <div className="mb-3 rounded-lg border border-emerald-100 bg-emerald-50 px-3 py-2 text-sm font-semibold text-emerald-900">Keyword suggestions are ready to use for {locationCity || "selected cities"}, {locationRegion || "state/province"}, {locationCountry || "country"}.</div>
-                  <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                {keywordSuggestions.length > 0 && (
+                  <div className="mt-4 rounded-lg border border-blue-100 bg-white p-3">
+                    <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                     <div>
                       <div className="text-sm font-semibold text-blue-950">Top 10 AI keyword suggestions</div>
-                      <p className="mt-1 text-xs leading-5 text-blue-800">Select one or more suggestions. Use selected adds them to the keyword list below. More suggestions replaces this set with a fresh batch.</p>
+                      <p className="mt-1 text-xs leading-5 text-blue-800">Select suggestions, then add them with the current settings.</p>
                     </div>
                     <div className="flex flex-wrap gap-2">
                       <Button type="button" variant="ghost" onClick={() => void suggestKeywords("more")} disabled={suggestingKeywords}>{suggestingKeywords ? "Loading..." : "More suggestions"}</Button>
                       <Button type="button" variant="ghost" onClick={toggleAllKeywordSuggestions}>{selectedKeywordSuggestions.length === keywordSuggestions.length ? "Clear all" : "Select all"}</Button>
                       <Button type="button" onClick={useSelectedSuggestions} disabled={selectedKeywordSuggestions.length === 0}>Use selected</Button>
                     </div>
-                  </div>
-                  <div className="mt-3 grid gap-2 md:grid-cols-2">
+                    </div>
+                    <div className="mt-3 grid gap-2 md:grid-cols-2">
                     {keywordSuggestions.map((suggestion) => {
                       const active = selectedKeywordSuggestions.includes(suggestion.keyword);
                       return (
@@ -518,24 +548,41 @@ export default function KeywordReports() {
                         </label>
                       );
                     })}
-                  </div>
-                  {selectedKeywords.length > 0 && (
-                    <div className="mt-4 rounded-lg border border-emerald-100 bg-white p-3">
-                      <div className="text-xs font-bold uppercase text-emerald-700">Keywords added to this run</div>
-                      <div className="mt-2 flex flex-wrap gap-2">
-                        {selectedKeywords.map((keyword) => (
-                          <button key={keyword} type="button" onClick={() => removeSelectedKeyword(keyword)} className="inline-flex items-center gap-2 rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1 text-sm font-semibold text-emerald-800 hover:bg-emerald-100">
-                            <span>{keyword}</span>
-                            <span aria-hidden="true" className="text-emerald-600">x</span>
-                          </button>
-                        ))}
-                      </div>
-                      <p className="mt-2 text-xs leading-5 text-emerald-700">Run keyword intelligence will create reports for every keyword in this list.</p>
                     </div>
-                  )}
+                  </div>
+                )}
+              </div>
+
+              <div className="rounded-xl border border-slate-200 bg-white p-4">
+                <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                  <div>
+                    <div className="text-sm font-bold text-charcoal-900">Queued keyword runs</div>
+                    <p className="mt-1 text-xs leading-5 text-charcoal-500">Each row keeps its own keyword, target, location, language, device, depth, and limit.</p>
+                  </div>
+                  <div className="rounded-full bg-slate-100 px-3 py-1 text-xs font-bold text-charcoal-600">{queuedKeywords.length} queued</div>
                 </div>
-              )}
-              <p className="text-xs leading-5 text-charcoal-400">Search locations: {buildLocationNames(locationCity, locationRegion, locationCountry).join(" | ")}. Each city creates its own location-specific SERP check; keyword-volume ideas may still use broader market data when city-level volume is unavailable.</p>
+                {queuedKeywords.length > 0 ? (
+                  <div className="mt-3 space-y-2">
+                    {queuedKeywords.map((item) => (
+                      <button key={item.id} type="button" onClick={() => removeQueuedKeyword(item.id)} className="flex w-full items-start justify-between gap-3 rounded-lg border border-emerald-100 bg-emerald-50 px-3 py-2 text-left hover:bg-emerald-100">
+                        <span className="min-w-0">
+                          <span className="block text-sm font-bold text-emerald-900">{item.keyword}</span>
+                          <span className="mt-0.5 block text-xs leading-5 text-emerald-700">
+                            {item.locationNames.join(" | ")} · {item.languageCode} · {item.device} · top {item.serpDepth}
+                            {item.targetUrl ? ` · URL: ${item.targetUrl}` : ""}
+                            {item.targetDomain ? ` · Domain: ${item.targetDomain}` : ""}
+                          </span>
+                        </span>
+                        <span aria-hidden="true" className="shrink-0 text-sm font-bold text-emerald-700">x</span>
+                      </button>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="mt-3 rounded-lg border border-dashed border-slate-200 bg-slate-50 px-3 py-3 text-sm text-charcoal-400">
+                    No keywords queued yet.
+                  </div>
+                )}
+              </div>
               {formError && (
                 <div className="rounded-lg border border-amber-200 bg-amber-50 p-4 text-sm text-amber-950">
                   <div className="font-bold">{formError.title}</div>
@@ -558,15 +605,15 @@ export default function KeywordReports() {
                     </div>
                   </div>
                 ) : <div />}
-                <Button type="submit" disabled={creating || !websiteId || (!seedKeyword.trim() && selectedKeywords.length === 0)}>
-                  {creating ? "Running..." : selectedKeywords.length ? `Run keyword intelligence (${selectedKeywords.length})` : "Run keyword intelligence"}
+                <Button type="submit" disabled={creating || !websiteId || queuedKeywords.length === 0}>
+                  {creating ? "Running..." : queuedKeywords.length ? `Run keyword intelligence (${queuedKeywords.length})` : "Run keyword intelligence"}
                 </Button>
               </div>
             </form>
           </div>
         )}
 
-        {loading ? (
+        {!focusedAddMode && (loading ? (
           <div className="p-6 text-sm text-charcoal-400">Loading reports...</div>
         ) : visibleRuns.length === 0 ? (
           <div className="p-6 text-sm text-charcoal-400">No completed keyword reports for this selected domain yet.</div>
@@ -617,7 +664,7 @@ export default function KeywordReports() {
               </tbody>
             </table>
           </div>
-        )}
+        ))}
       </Card>
     </div>
   );

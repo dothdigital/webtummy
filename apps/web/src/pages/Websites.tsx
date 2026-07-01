@@ -166,7 +166,7 @@ export default function Websites() {
       await api.post<{ crawlJob: { id: string } }>(`/api/websites/${websiteId}/crawls`, {
         pageLimit: 150,
       });
-      navigate(`/projects/${websiteId}`);
+      navigate(`/website-projects/${websiteId}`);
     } catch (e) {
       const message = e instanceof Error ? e.message : String(e);
       alert(message.includes("recent crawl already completed") ? "This project already has a completed crawl from the last 24 hours. Open the latest report instead of running the same 150-page check again." : message);
@@ -186,7 +186,7 @@ export default function Websites() {
       {impersonation && (
         <Card className="flex flex-col gap-3 border-amber-200 bg-amber-50 p-4 text-sm text-amber-900 sm:flex-row sm:items-center sm:justify-between">
           <span>Admin view session active for <span className="font-medium">{impersonation}</span>.</span>
-          <Button type="button" variant="ghost" onClick={() => { endImpersonation(); window.location.assign("/projects"); }}>End session</Button>
+          <Button type="button" variant="ghost" onClick={() => { endImpersonation(); window.location.assign("/website-projects"); }}>End session</Button>
         </Card>
       )}
 
@@ -271,7 +271,7 @@ export default function Websites() {
                   return (
                     <tr key={w.id} className="border-t border-charcoal-50">
                       <td className="px-5 py-3 font-medium">
-                        <Link to={`/projects/${w.id}`} className="text-charcoal-700 hover:text-brand-700 hover:underline">
+                        <Link to={`/website-projects/${w.id}`} className="text-charcoal-700 hover:text-brand-700 hover:underline">
                           {w.domain}
                         </Link>
                         <span className="ml-2 align-middle"><StatusPill status={w.status === "archived" ? "archived" : "active"} /></span>
@@ -319,7 +319,7 @@ export default function Websites() {
                             <div className="mt-2 w-56 overflow-hidden rounded-lg border border-charcoal-100 bg-white py-1 text-left shadow-lg" role="menu">
                               {hasCompletedCrawl && (
                                 <>
-                                  <button type="button" role="menuitem" className="block w-full px-4 py-2 text-left text-sm text-charcoal-700 hover:bg-charcoal-50" onClick={() => { setOpenActions(null); navigate("/projects/" + w.id); }}>
+                                  <button type="button" role="menuitem" className="block w-full px-4 py-2 text-left text-sm text-charcoal-700 hover:bg-charcoal-50" onClick={() => { setOpenActions(null); navigate("/website-projects/" + w.id); }}>
                                     Open project
                                   </button>
                                   <button type="button" role="menuitem" className="block w-full px-4 py-2 text-left text-sm text-charcoal-700 hover:bg-charcoal-50" onClick={() => { setOpenActions(null); navigate("/keyword-analytics?project=" + w.id); }}>

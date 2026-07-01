@@ -1,4 +1,4 @@
-# Webtummy
+# SEnuke AI
 
 SEO + AI Search website crawler & audit platform for **Dot H Digital**. Crawls client
 websites, audits page-level SEO + AI-search signals, scores them, and (later) produces

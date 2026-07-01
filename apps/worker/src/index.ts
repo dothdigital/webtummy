@@ -4,7 +4,7 @@ import { prisma } from "@webtummy/db";
 import { config, CRAWL_QUEUE, defaultCrawlOptions } from "./config.js";
 import { connection, type CrawlJobData } from "./queue.js";
 import { runCrawl } from "./crawl.js";
-import { startMaintenanceScheduler } from "./maintenance.js";
+import { recoverQueuedCrawlJobs, startMaintenanceScheduler } from "./maintenance.js";
 import type { CrawlOptions } from "@webtummy/core";
 
 async function runWithTimeout(crawlJobId: string, task: Promise<void>) {
@@ -26,6 +26,8 @@ async function runWithTimeout(crawlJobId: string, task: Promise<void>) {
     if (timeout) clearTimeout(timeout);
   }
 }
+
+await recoverQueuedCrawlJobs();
 
 const worker = new Worker<CrawlJobData>(
   CRAWL_QUEUE,
@@ -64,7 +66,7 @@ worker.on("failed", (job, err) => {
 
 const maintenanceTimer = startMaintenanceScheduler();
 
-console.log(`[worker] Webtummy crawler up. UA="${config.userAgent}". Listening on "${CRAWL_QUEUE}".`);
+console.log(`[worker] SEnuke AI crawler up. UA="${config.userAgent}". Listening on "${CRAWL_QUEUE}".`);
 console.log(`[worker] Maintenance scheduler active every ${config.maintenanceIntervalMs}ms.`);
 
 const shutdown = async () => {

@@ -19,7 +19,7 @@ datasource db {
 // ─── Auth + tenancy (RBAC) ────────────────────────────────────────────────────
 //
 // Roles:
-//  - super_admin : Webtummy staff. No clientId. Creates clients + client users,
+//  - super_admin : SEnuke AI staff. No clientId. Creates clients + client users,
 //                  sees everything across all tenants.
 //  - client_admin: belongs to one Client. Manages that client's websites, crawls,
 //                  reports, and can invite client_users in the same client.
@@ -122,6 +122,8 @@ model Client {
   localBusinessProfiles LocalBusinessProfile[]
   offlinePayments       OfflinePayment[]
   monthlyReports        MonthlyClientReport[]
+  executionTasks        ExecutionTask[]
+  projects              Project[]
 
   @@index([plan])
   @@index([aiSubscriptionStatus, manualAccessEndsAt])
@@ -216,9 +218,199 @@ model Website {
   socialCompetitors   SocialCompetitorProfile[]
   socialStrategies    SocialStrategy[]
   localBusinessProfiles LocalBusinessProfile[]
+  executionTasks        ExecutionTask[]
+  projects              Project[]
 
   @@index([clientId])
   @@index([clientId, status])
+}
+
+// ─── Guided Project Foundation ──────────────────────────────────────────────
+
+model Project {
+  id                        String                @id @default(cuid())
+  clientId                  String
+  client                    Client                @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  websiteId                 String?
+  website                   Website?              @relation(fields: [websiteId], references: [id], onDelete: SetNull)
+  name                      String                @db.VarChar(180)
+  projectType               String                @default("existing_website") @db.VarChar(60)
+  status                    String                @default("active") @db.VarChar(40)
+  currentStep               String                @default("intake") @db.VarChar(80)
+  businessName              String?               @db.VarChar(180)
+  websiteUrl                String?               @db.VarChar(512)
+  niche                     String?               @db.VarChar(180)
+  targetLocation            String?               @db.VarChar(180)
+  primaryGoal               String?               @db.VarChar(255)
+  targetLaunchTimeline      String?               @db.VarChar(80)
+  preferredOutputs          Json                  @default("[]")
+  preferredPublishingMethod String?               @db.VarChar(80)
+  createdAt                 DateTime              @default(now())
+  updatedAt                 DateTime              @updatedAt
+
+  intakeAnswers   ProjectIntakeAnswer[]
+  businessProfile BusinessProfile?
+  aiRuns          AiRun[]
+  executionPlans  ExecutionPlan[]
+  opportunities   Opportunity[]
+  strategyPlans   StrategyPlan[]
+  executionTasks  ExecutionTask[]
+  workflowSteps   ProjectWorkflowStep[]
+  growthDiagnoses GrowthDiagnosis[]
+  growthFunnelStages GrowthFunnelStage[]
+  growthExperiments GrowthExperiment[]
+  growthChannelTests GrowthChannelTest[]
+  growthReports GrowthReport[]
+
+  @@index([clientId, status])
+  @@index([websiteId])
+  @@index([currentStep])
+}
+
+model ProjectWorkflowStep {
+  id                String    @id @default(cuid())
+  projectId         String
+  project           Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  stepKey           String    @db.VarChar(80)
+  title             String    @db.VarChar(180)
+  description       String    @db.Text
+  status            String    @default("pending") @db.VarChar(60)
+  priority          String    @default("medium") @db.VarChar(20)
+  actionLabel       String?   @db.VarChar(120)
+  actionUrl         String?   @db.VarChar(512)
+  sortOrder         Int       @default(0)
+  sourceType        String?   @db.VarChar(80)
+  sourceId          String?   @db.VarChar(191)
+  completionReason  String?   @db.Text
+  readyReason       String?   @db.Text
+  blockedReason     String?   @db.Text
+  completedAt       DateTime?
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  @@unique([projectId, stepKey])
+  @@index([projectId, status])
+  @@index([stepKey])
+  @@index([sortOrder])
+}
+
+model ProjectIntakeAnswer {
+  id            String   @id @default(cuid())
+  projectId     String
+  project       Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  questionKey   String   @db.VarChar(120)
+  questionText  String   @db.Text
+  answerValue   Json     @default("{}")
+  answerType    String   @default("text") @db.VarChar(40)
+  moduleContext String   @default("core_intake") @db.VarChar(80)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@unique([projectId, questionKey])
+  @@index([projectId])
+}
+
+model BusinessProfile {
+  id              String   @id @default(cuid())
+  projectId       String   @unique
+  project         Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  businessSummary String?  @db.Text
+  targetAudience  String?  @db.Text
+  offerSummary    String?  @db.Text
+  businessModel   String?  @db.VarChar(120)
+  strengths       Json     @default("[]")
+  constraints     Json     @default("[]")
+  budgetLevel     String?  @db.VarChar(80)
+  skillLevel      String?  @db.VarChar(80)
+  tonePreference  String?  @db.VarChar(80)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+}
+
+model AiRun {
+  id                String   @id @default(cuid())
+  projectId         String?
+  project           Project? @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  clientId          String?
+  moduleName        String   @db.VarChar(80)
+  promptVersion     String   @db.VarChar(80)
+  inputSnapshotJson Json     @default("{}")
+  outputJson        Json     @default("{}")
+  outputText        String?  @db.Text
+  status            String   @default("completed") @db.VarChar(40)
+  tokenUsage        Json     @default("{}")
+  costEstimateUsd   Float?
+  errorMessage      String?  @db.Text
+  createdAt         DateTime @default(now())
+
+  @@index([projectId, createdAt])
+  @@index([clientId, createdAt])
+  @@index([moduleName, status])
+}
+
+model ExecutionPlan {
+  id        String          @id @default(cuid())
+  projectId String
+  project   Project         @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  title     String          @db.VarChar(180)
+  summary   String?         @db.Text
+  status    String          @default("active") @db.VarChar(40)
+  createdAt DateTime        @default(now())
+  updatedAt DateTime        @updatedAt
+
+  tasks ExecutionTask[]
+
+  @@index([projectId, status])
+}
+
+model Opportunity {
+  id                  String   @id @default(cuid())
+  projectId           String
+  project             Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  name                String   @db.VarChar(180)
+  targetAudience      String?  @db.Text
+  problemSolved       String?  @db.Text
+  recommendedOffer    String?  @db.Text
+  businessModel       String?  @db.VarChar(120)
+  opportunityScore    Int?
+  seoScore            Int?
+  competitionScore    Int?
+  monetizationScore   Int?
+  executionScore      Int?
+  userFitScore        Int?
+  summary             String?  @db.Text
+  status              String   @default("suggested") @db.VarChar(40)
+  createdAt           DateTime @default(now())
+
+  strategyPlans StrategyPlan[]
+
+  @@index([projectId, status])
+}
+
+model StrategyPlan {
+  id                   String       @id @default(cuid())
+  projectId            String
+  project              Project      @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  opportunityId        String?
+  opportunity          Opportunity? @relation(fields: [opportunityId], references: [id], onDelete: SetNull)
+  strategySummary      String?      @db.Text
+  positioningStatement String?      @db.Text
+  audienceProfile      String?      @db.Text
+  offerRecommendation  String?      @db.Text
+  businessModel        String?      @db.VarChar(120)
+  seoStrategy          String?      @db.Text
+  aiCitationStrategy   String?      @db.Text
+  contentStrategy      String?      @db.Text
+  authorityStrategy    String?      @db.Text
+  socialStrategy       String?      @db.Text
+  publishingStrategy   String?      @db.Text
+  status               String       @default("draft") @db.VarChar(40)
+  approvedAt           DateTime?
+  createdAt            DateTime     @default(now())
+  updatedAt            DateTime     @updatedAt
+
+  @@index([projectId, status])
+  @@index([opportunityId])
 }
 
 // ─── Crawl run ───────────────────────────────────────────────────────────────
@@ -465,6 +657,186 @@ model Report {
   createdAt  DateTime @default(now())
 
   @@index([crawlJobId])
+}
+
+// ─── Project Execution Builder ──────────────────────────────────────────────
+
+model ExecutionTask {
+  id                   String    @id @default(cuid())
+  clientId             String
+  client               Client    @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  websiteId            String?
+  website              Website?  @relation(fields: [websiteId], references: [id], onDelete: Cascade)
+  projectId            String?
+  project              Project?  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  executionPlanId      String?
+  executionPlan        ExecutionPlan? @relation(fields: [executionPlanId], references: [id], onDelete: SetNull)
+  moduleName           String    @db.VarChar(80)
+  sourceType           String    @db.VarChar(80)
+  sourceId             String?   @db.VarChar(191)
+  dedupeKey            String    @unique @db.VarChar(255)
+  title                String    @db.VarChar(255)
+  description          String    @db.Text
+  priority             String    @default("medium") @db.VarChar(20)
+  automationLevel      String    @default("manual_guided") @db.VarChar(60)
+  status               String    @default("ready") @db.VarChar(60)
+  requiresApproval     Boolean   @default(false)
+  requiresIntegration  Boolean   @default(false)
+  manualRequired       Boolean   @default(true)
+  safetyCategory       String    @default("safe") @db.VarChar(60)
+  relatedModule        String?   @db.VarChar(80)
+  approvalSnapshotJson Json      @default("{}")
+  approvedAt           DateTime?
+  blockedReason        String?   @db.Text
+  actionButtonLabel    String?   @db.VarChar(120)
+  relatedUrl           String?   @db.VarChar(512)
+  relatedAssetId       String?   @db.VarChar(191)
+  manualInstructions   String?   @db.Text
+  impact               String?   @db.Text
+  completedAt          DateTime?
+  skippedAt            DateTime?
+  createdAt            DateTime  @default(now())
+  updatedAt            DateTime  @updatedAt
+
+  @@index([clientId, status])
+  @@index([projectId, status])
+  @@index([executionPlanId])
+  @@index([websiteId, status])
+  @@index([moduleName])
+  @@index([safetyCategory])
+  @@index([priority])
+  @@index([createdAt])
+}
+
+// ─── Growth Marketing Engine ────────────────────────────────────────────────
+
+model GrowthDiagnosis {
+  id             String   @id @default(cuid())
+  projectId      String
+  project        Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  bottleneckType String   @db.VarChar(80)
+  scoreJson      Json     @default("{}")
+  summary        String   @db.Text
+  dataSnapshot   Json     @default("{}")
+  createdAt      DateTime @default(now())
+
+  @@index([projectId, createdAt])
+  @@index([bottleneckType])
+}
+
+model GrowthFunnelStage {
+  id               String   @id @default(cuid())
+  projectId        String
+  project          Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  stageKey         String   @db.VarChar(80)
+  title            String   @db.VarChar(180)
+  status           String   @default("needs_attention") @db.VarChar(60)
+  conversionMetric String?  @db.VarChar(120)
+  issueSummary     String?  @db.Text
+  automationStatus String   @default("manual_guided") @db.VarChar(60)
+  sortOrder        Int      @default(0)
+  updatedAt        DateTime @updatedAt
+  createdAt        DateTime @default(now())
+
+  @@unique([projectId, stageKey])
+  @@index([projectId, status])
+  @@index([sortOrder])
+}
+
+model GrowthExperiment {
+  id                String   @id @default(cuid())
+  projectId         String
+  project           Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  title             String   @db.VarChar(220)
+  hypothesis        String   @db.Text
+  metric            String   @db.VarChar(160)
+  successThreshold  String   @db.VarChar(220)
+  status            String   @default("planned") @db.VarChar(60)
+  iceScore          Int      @default(0)
+  pieScore          Int      @default(0)
+  impactScore       Int      @default(0)
+  confidenceScore   Int      @default(0)
+  easeScore         Int      @default(0)
+  potentialScore    Int      @default(0)
+  importanceScore   Int      @default(0)
+  requiredAssets    Json     @default("[]")
+  automationLevel   String   @default("prepare") @db.VarChar(60)
+  requiresApproval  Boolean  @default(true)
+  safetyCategory    String   @default("review_required") @db.VarChar(60)
+  startedAt         DateTime?
+  completedAt       DateTime?
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  assets  GrowthExperimentAsset[]
+  results GrowthExperimentResult[]
+
+  @@index([projectId, status])
+  @@index([iceScore])
+  @@index([pieScore])
+}
+
+model GrowthExperimentAsset {
+  id             String           @id @default(cuid())
+  experimentId   String
+  experiment     GrowthExperiment @relation(fields: [experimentId], references: [id], onDelete: Cascade)
+  assetId        String?          @db.VarChar(191)
+  assetType      String           @db.VarChar(80)
+  title          String           @db.VarChar(220)
+  approvalStatus String           @default("needs_review") @db.VarChar(60)
+  contentJson    Json             @default("{}")
+  createdAt      DateTime         @default(now())
+  updatedAt      DateTime         @updatedAt
+
+  @@index([experimentId, approvalStatus])
+  @@index([assetType])
+}
+
+model GrowthExperimentResult {
+  id             String           @id @default(cuid())
+  experimentId   String
+  experiment     GrowthExperiment @relation(fields: [experimentId], references: [id], onDelete: Cascade)
+  baselineValue  Float?
+  currentValue   Float?
+  resultStatus   String           @default("tracking") @db.VarChar(60)
+  notes          String?          @db.Text
+  recordedAt     DateTime         @default(now())
+
+  @@index([experimentId, recordedAt])
+  @@index([resultStatus])
+}
+
+model GrowthChannelTest {
+  id           String   @id @default(cuid())
+  projectId    String
+  project      Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  channel      String   @db.VarChar(80)
+  cadence      String   @db.VarChar(120)
+  metric       String   @db.VarChar(160)
+  durationDays Int      @default(30)
+  status       String   @default("planned") @db.VarChar(60)
+  assetsNeeded Json     @default("[]")
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@index([projectId, status])
+  @@index([channel])
+}
+
+model GrowthReport {
+  id          String   @id @default(cuid())
+  projectId   String
+  project     Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  clientId    String?
+  reportType  String   @db.VarChar(80)
+  htmlContent String?  @db.Text
+  pdfUrl      String?  @db.VarChar(512)
+  status      String   @default("draft") @db.VarChar(60)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([projectId, status])
+  @@index([clientId])
 }
 
 // ─── Geo Keyword Intelligence ────────────────────────────────────────────────

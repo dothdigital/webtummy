@@ -7,3 +7,4 @@ packages/db/prisma/generated/
 coverage/
 .DS_Store
 *.log
+dump.rdb

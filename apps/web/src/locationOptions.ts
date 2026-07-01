@@ -102,11 +102,24 @@ export function citiesFromText(value: string): string[] {
 }
 
 export function buildLocationName(city: string, region: string, country: string): string {
-  return [city.trim(), region.trim(), country.trim()].filter(Boolean).join(",");
+  return [city.trim(), region.trim(), country.trim()].filter(Boolean).join(", ");
 }
 
 export function buildLocationNames(cities: string, region: string, country: string): string[] {
-  const parsed = citiesFromText(cities);
+  const regionLower = region.trim().toLowerCase();
+  const countryLower = country.trim().toLowerCase();
+  const seen = new Set<string>();
+  const parsed = citiesFromText(cities)
+    .filter((part) => {
+      const value = part.toLowerCase();
+      return value !== regionLower && value !== countryLower;
+    })
+    .filter((city) => {
+      const key = city.toLowerCase();
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
   return (parsed.length ? parsed : [cities.trim()].filter(Boolean)).map((city) => buildLocationName(city, region, country));
 }
 

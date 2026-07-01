@@ -45,7 +45,7 @@ export function requireRole(...roles: Role[]) {
 export function tenantScope(req: Request): { clientId: string } {
   if (!req.user) throw new Error("tenantScope called without auth");
   if (req.user.role === "super_admin") {
-    const activeClientId = req.header("x-webtummy-client-id")?.trim();
+    const activeClientId = req.header("x-senuke-ai-client-id")?.trim() ?? req.header("x-webtummy-client-id")?.trim();
     return { clientId: activeClientId || "__none__" };
   }
   return { clientId: req.user.clientId ?? "__none__" };

@@ -24,10 +24,10 @@ const num = (v: string | undefined, d: number) => (v ? parseInt(v, 10) : d);
 export const config = {
   redisUrl: process.env.REDIS_URL ?? "redis://localhost:6379",
   userAgent:
-    process.env.CRAWL_USER_AGENT ?? "Webtummy-Crawler/0.1 (+https://webtummy.com/bot)",
+    process.env.CRAWL_USER_AGENT ?? "SEnukeAI-Crawler/0.1 (+https://senuke-ai.local/bot)",
   webAppUrl: process.env.WEB_APP_URL ?? "http://localhost:5173",
   emailProvider: (process.env.EMAIL_PROVIDER ?? "").toLowerCase(),
-  emailFrom: process.env.EMAIL_FROM ?? "Webtummy <no-reply@webtummy.local>",
+  emailFrom: process.env.EMAIL_FROM ?? "SEnuke AI <no-reply@senuke-ai.local>",
   resendApiKey: process.env.RESEND_API_KEY ?? "",
   awsRegion: process.env.SES_MAILER_AWS_REGION ?? process.env.AWS_REGION ?? process.env.AWS_DEFAULT_REGION ?? "",
   awsAccessKeyId: process.env.SES_MAILER_ACCESS_KEY ?? process.env.AWS_ACCESS_KEY_ID ?? "",

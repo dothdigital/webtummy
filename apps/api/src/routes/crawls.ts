@@ -42,6 +42,8 @@ const pageSpeedSchema = z.object({
   strategy: z.enum(["mobile", "desktop", "both"]).default("both"),
 });
 
+const CRAWL_REFRESH_COOLDOWN_MS = 72 * 60 * 60 * 1000;
+
 // POST /api/websites/:websiteId/crawls — start a crawl
 crawlsRouter.post("/websites/:websiteId/crawls", async (req, res) => {
   const website = await getScopedWebsite(req, req.params.websiteId);
@@ -64,21 +66,28 @@ crawlsRouter.post("/websites/:websiteId/crawls", async (req, res) => {
     });
   }
 
-  const recentCompletedCutoff = new Date(Date.now() - 24 * 60 * 60 * 1000);
+  const recentCompletedCutoff = new Date(Date.now() - CRAWL_REFRESH_COOLDOWN_MS);
   const recentCompleted = await prisma.crawlJob.findFirst({
     where: {
       websiteId: website.id,
       status: "completed",
       completedAt: { gte: recentCompletedCutoff },
+      OR: [
+        { pagesCrawled: { gt: 0 } },
+        { siteScore: { not: null } },
+        { pages: { some: {} } },
+      ],
     },
     orderBy: { completedAt: "desc" },
     select: { id: true, status: true, pagesCrawled: true, siteScore: true, completedAt: true, createdAt: true },
   });
   if (recentCompleted) {
+    const availableAt = new Date((recentCompleted.completedAt ?? recentCompleted.createdAt).getTime() + CRAWL_REFRESH_COOLDOWN_MS);
     return res.status(409).json({
       error: "recent crawl already completed",
-      message: "This project already has a completed crawl from the last 24 hours. Open the latest report instead of running the same 150-page check again.",
+      message: `This project already has a completed crawl. You can run the next manual scan after ${availableAt.toLocaleString()}.`,
       crawlJob: recentCompleted,
+      availableAt,
     });
   }
 
@@ -721,7 +730,7 @@ async function liveCheckStatus(url: string): Promise<number> {
       redirect: "follow",
       signal: controller.signal,
       headers: {
-        "user-agent": "Mozilla/5.0 (compatible; WebtummyBot/0.1; +https://webtummy.local)",
+        "user-agent": "Mozilla/5.0 (compatible; SEnukeAIBot/0.1; +https://senuke-ai.local)",
         accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
         "accept-language": "en-US,en;q=0.9",
         "cache-control": "no-cache",
