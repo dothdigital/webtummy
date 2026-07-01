@@ -138,6 +138,30 @@ export default function Overview() {
   const queueRows = dashboardQueue(openTasks, primaryProject.name, websites[0]?.id);
   const socialRows = dashboardSocial(tasks);
 
+  if (!projects.length) {
+    return (
+      <div className="space-y-5">
+        <div>
+          <h1 className="text-[28px] font-bold leading-tight text-charcoal-950">Dashboard</h1>
+          <p className="text-sm text-charcoal-500">Create a project to start the SEnuke AI workflow.</p>
+        </div>
+        <Card className="border-brand-100 bg-brand-50/40 p-6">
+          <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
+            <div>
+              <div className="text-base font-bold text-charcoal-950">No project available</div>
+              <p className="mt-1 max-w-2xl text-sm leading-6 text-charcoal-500">
+                Create your first project to unlock intake, opportunity finding, strategy, site analysis, keywords, backlinks, AI citations, publishing, and growth actions.
+              </p>
+            </div>
+            <Link to="/projects/new" className="inline-flex items-center justify-center rounded-lg bg-brand-600 px-4 py-2.5 text-sm font-bold text-white shadow-sm hover:bg-brand-700">
+              Create Project
+            </Link>
+          </div>
+        </Card>
+      </div>
+    );
+  }
+
   return (
     <div className="space-y-5">
       <div>
