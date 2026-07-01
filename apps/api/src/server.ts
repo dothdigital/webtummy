@@ -33,6 +33,8 @@ const allowedOrigins = new Set([
 ]);
 
 app.use((req, res, next) => {
+  res.setHeader("X-Robots-Tag", "noindex, nofollow, noarchive, nosnippet, noimageindex");
+
   const origin = req.headers.origin;
   if (origin && allowedOrigins.has(origin)) {
     res.setHeader("Access-Control-Allow-Origin", origin);
