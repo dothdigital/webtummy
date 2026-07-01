@@ -25,7 +25,7 @@ export const config = {
   jwtExpiresIn: "1h",
   webAppUrl: process.env.WEB_APP_URL ?? "http://localhost:5173",
   emailProvider: (process.env.EMAIL_PROVIDER ?? "").toLowerCase(),
-  emailFrom: process.env.EMAIL_FROM ?? "SEnuke AI <no-reply@senuke-ai.local>",
+  emailFrom: process.env.EMAIL_FROM ?? "SEnuke AI <no-reply@senuke.com>",
   signupNotifyEmail: process.env.SIGNUP_NOTIFY_EMAIL ?? "inf@dothdigital.com",
   resendApiKey: process.env.RESEND_API_KEY ?? "",
   awsRegion: process.env.SES_MAILER_AWS_REGION ?? process.env.AWS_REGION ?? process.env.AWS_DEFAULT_REGION ?? "",
