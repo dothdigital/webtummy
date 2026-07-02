@@ -1615,17 +1615,15 @@ function CitationScreen({ data }: { data: ModuleData }) {
           />
         </div>
         <div className="space-y-5">
-          <InsightPanel
+          <CitationStatusPanel
             score={healthReport?.aiSearch.score ?? latestCrawl?.siteScore ?? 0}
-            title="AI Citation Dashboard"
-            lines={[
-              `Website: ${website?.domain ?? project?.websiteUrl ?? "Not connected"}`,
-              `Strategy context: ${strategyStatus}`,
-              `Entity schema: ${healthReport?.schema.hasOrganization ? "found" : "missing"}`,
-              `NAP profile: ${localProfile ? "configured" : "missing"}`,
-              `Open citation tasks: ${openTasks.length}`,
+            rows={[
+              { label: "Website", value: website?.domain ?? project?.websiteUrl ?? "Not connected", ok: Boolean(website?.domain || project?.websiteUrl) },
+              { label: "Strategy context", value: strategyStatus, ok: latestStrategy?.status === "approved" },
+              { label: "Entity schema", value: healthReport?.schema.hasOrganization ? "Found" : "Missing", ok: Boolean(healthReport?.schema.hasOrganization) },
+              { label: "NAP profile", value: localProfile ? "Configured" : "Missing", ok: Boolean(localProfile) },
+              { label: "Open citation tasks", value: formatNumber(openTasks.length), ok: openTasks.length === 0 },
             ]}
-            action="Run Check"
           />
           <DataTable
             title="Citation Tasks"
@@ -1636,6 +1634,37 @@ function CitationScreen({ data }: { data: ModuleData }) {
         </div>
       </div>
     </>
+  );
+}
+
+function CitationStatusPanel({ score, rows }: { score: number; rows: { label: string; value: string; ok: boolean }[] }) {
+  const safeScore = Math.max(0, Math.min(100, score));
+  const chart = [{ name: "score", value: safeScore, color: "#0f9f87" }, { name: "rest", value: 100 - safeScore, color: "#e8eef8" }];
+  return (
+    <Card className="p-5">
+      <h2 className="font-bold text-charcoal-950">AI Citation Dashboard</h2>
+      <div className="my-5 flex justify-center">
+        <div className="relative h-36 w-36">
+          <ResponsiveContainer width="100%" height="100%">
+            <PieChart><Pie data={chart} dataKey="value" innerRadius={48} outerRadius={64} startAngle={90} endAngle={-270}>{chart.map((item) => <Cell key={item.name} fill={item.color} />)}</Pie></PieChart>
+          </ResponsiveContainer>
+          <div className="absolute inset-0 grid place-items-center text-center"><div><div className="text-3xl font-bold text-charcoal-950">{safeScore}</div><div className="text-xs text-charcoal-500">Readiness Score</div></div></div>
+        </div>
+      </div>
+      <div className="space-y-3">
+        {rows.map((row) => (
+          <div key={row.label} className="flex items-center justify-between gap-3 rounded-lg border border-slate-100 bg-slate-50/60 px-3 py-2 text-sm">
+            <div className="min-w-0">
+              <div className="font-bold text-charcoal-800">{row.label}</div>
+              <div className="truncate text-xs text-charcoal-500">{row.value}</div>
+            </div>
+            <span className={`shrink-0 rounded-full px-2.5 py-1 text-xs font-bold ${row.ok ? "bg-emerald-50 text-emerald-700" : "bg-amber-50 text-amber-700"}`}>
+              {row.ok ? "Ready" : "Needs work"}
+            </span>
+          </div>
+        ))}
+      </div>
+    </Card>
   );
 }
 
