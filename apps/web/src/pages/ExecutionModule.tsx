@@ -208,6 +208,8 @@ export default function ExecutionModule({ kind }: { kind: ModuleKind }) {
   const [siteAnalysisMessage, setSiteAnalysisMessage] = useState("");
   const [strategyBusy, setStrategyBusy] = useState<"generate" | "approve" | "execution" | null>(null);
   const [strategyMessage, setStrategyMessage] = useState("");
+  const [leadMagnetBusy, setLeadMagnetBusy] = useState(false);
+  const [leadMagnetMessage, setLeadMagnetMessage] = useState("");
   const [opportunityBusy, setOpportunityBusy] = useState<"generate" | string | null>(null);
   const [opportunityMessage, setOpportunityMessage] = useState("");
   const [selectedProjectId, setSelectedProjectId] = useState(searchParams.get("projectId") ?? "");
@@ -350,6 +352,7 @@ export default function ExecutionModule({ kind }: { kind: ModuleKind }) {
     setOpportunityMessage("");
     setStrategyMessage("");
     setSiteAnalysisMessage("");
+    setLeadMagnetMessage("");
   };
 
   const runStrategyAction = async (action: "generate" | "approve" | "execution") => {
@@ -426,6 +429,28 @@ export default function ExecutionModule({ kind }: { kind: ModuleKind }) {
     else navigate("/keyword-insights?add=1");
   };
 
+  const generateLeadMagnet = async () => {
+    if (!activeProject || leadMagnetBusy || !canRunModule) return;
+    const leadTask = scopedData.tasks.find((task) => task.moduleName.includes("lead") || task.title.toLowerCase().includes("lead magnet"));
+    if (leadTask) {
+      setLeadMagnetMessage("Lead magnet task is ready. Review the task details and generated asset plan below.");
+      window.setTimeout(() => document.getElementById("lead-magnet-tasks")?.scrollIntoView({ behavior: "smooth", block: "start" }), 0);
+      return;
+    }
+    setLeadMagnetBusy(true);
+    setLeadMagnetMessage("");
+    try {
+      const result = await api.post<{ project: GuidedProject }>(`/api/projects-v2/${activeProject.id}/execution-plan/create`, {});
+      updateActiveProject(result.project);
+      setLeadMagnetMessage("Lead magnet task created from the approved strategy. Review the generated asset plan below.");
+      window.setTimeout(() => document.getElementById("lead-magnet-tasks")?.scrollIntoView({ behavior: "smooth", block: "start" }), 0);
+    } catch (error) {
+      setLeadMagnetMessage(error instanceof Error ? error.message : "Could not create the lead magnet task.");
+    } finally {
+      setLeadMagnetBusy(false);
+    }
+  };
+
   const primaryDisabled = kind === "backlinks"
     ? (!activeWebsite || refreshingBacklinks || backlinkCooldown.blocked || !canRunModule)
     : kind === "site-analysis"
@@ -436,6 +461,8 @@ export default function ExecutionModule({ kind }: { kind: ModuleKind }) {
       ? (!activeProject || strategyBusy === "generate" || !canRunModule)
       : kind === "opportunities"
         ? (!activeProject || Boolean(opportunityBusy) || !canRunModule)
+      : kind === "lead-magnets"
+        ? (!activeProject || leadMagnetBusy || !canRunModule)
       : !canRunModule;
   const primaryLabel = kind === "backlinks"
     ? refreshingBacklinks
@@ -453,6 +480,8 @@ export default function ExecutionModule({ kind }: { kind: ModuleKind }) {
       ? "Refreshing..."
     : kind === "opportunities" && opportunityBusy === "generate"
       ? "Refreshing..."
+    : kind === "lead-magnets" && leadMagnetBusy
+      ? "Preparing..."
     : copy.primary;
 
   return (
@@ -493,7 +522,7 @@ export default function ExecutionModule({ kind }: { kind: ModuleKind }) {
             ) : (
               <button
                 type="button"
-                onClick={kind === "backlinks" ? refreshBacklinks : kind === "site-analysis" ? () => { void analyzeSite(); } : kind === "strategy" ? () => { void runStrategyAction("generate"); } : kind === "opportunities" ? () => { void generateOpportunities(); } : kind === "keywords" ? openKeywordResearch : undefined}
+                onClick={kind === "backlinks" ? refreshBacklinks : kind === "site-analysis" ? () => { void analyzeSite(); } : kind === "strategy" ? () => { void runStrategyAction("generate"); } : kind === "opportunities" ? () => { void generateOpportunities(); } : kind === "keywords" ? openKeywordResearch : kind === "lead-magnets" ? () => { void generateLeadMagnet(); } : undefined}
                 disabled={primaryDisabled}
                 className="rounded-lg bg-brand-600 px-5 py-2.5 text-sm font-bold text-white shadow-sm hover:bg-brand-700 disabled:cursor-not-allowed disabled:bg-slate-300 disabled:text-slate-600 disabled:hover:bg-slate-300"
               >
@@ -527,6 +556,11 @@ export default function ExecutionModule({ kind }: { kind: ModuleKind }) {
       {hasActiveProject && kind === "opportunities" && opportunityMessage && (
         <div className="rounded-lg border border-brand-100 bg-brand-50 px-4 py-2 text-sm font-semibold text-brand-700">
           {opportunityMessage}
+        </div>
+      )}
+      {hasActiveProject && kind === "lead-magnets" && (
+        <div className={`rounded-lg border px-4 py-3 text-sm ${leadMagnetMessage ? "border-brand-100 bg-brand-50 text-brand-700" : "border-slate-200 bg-white text-charcoal-500"}`}>
+          {leadMagnetMessage || "Lead magnets are generated from the approved strategy, audience, offer, and project goal. They create a downloadable asset plus landing page, thank-you copy, delivery email, and CTA flow tasks."}
         </div>
       )}
 
@@ -1875,25 +1909,123 @@ function ArchitectureReadinessPanel({ score, rows }: { score: number; rows: { la
 function LeadMagnetScreen({ data }: { data: ModuleData }) {
   const project = data.projects[0];
   const leadTasks = data.tasks.filter((task) => task.moduleName.includes("lead") || task.title.toLowerCase().includes("lead"));
+  const approvedStrategy = project?.strategyPlans?.find((strategy) => typeof strategy === "object" && strategy !== null && "status" in strategy && strategy.status === "approved") as {
+    status?: string;
+    strategySummary?: string | null;
+    offerRecommendation?: string | null;
+    contentStrategy?: string | null;
+    seoStrategy?: string | null;
+  } | undefined;
   const ideas = leadMagnetIdeas(data);
+  const selectedIdea = ideas[0];
+  const audience = project?.businessProfile?.targetAudience || "Target audience not provided";
+  const offer = approvedStrategy?.offerRecommendation || project?.businessProfile?.offerSummary || project?.primaryGoal || "Offer not provided";
+  const readiness = leadMagnetReadiness(data, approvedStrategy);
   if (!project && !ideas.length && !leadTasks.length) {
     return <EmptyModuleState title="No lead magnet data yet" detail="Create a project and strategy before generating lead magnet ideas." />;
   }
   return (
     <>
-      <ContextBar items={[`Asset Type: ${leadTasks[0]?.title || "Ebook / Guide"}`, `Target Audience: ${project?.businessProfile?.targetAudience || "Not provided"}`, `Offer Angle: ${project?.businessProfile?.offerSummary || project?.primaryGoal || "Not provided"}`, `Tone: ${project?.businessProfile?.tonePreference || "Not provided"}`]} />
-      <div className="grid gap-5 xl:grid-cols-[320px_1fr_340px]">
-        <Card className="p-4">
-          <h2 className="font-bold text-charcoal-950">Lead Magnet Ideas</h2>
-          {ideas.length ? ideas.map((item, index) => (
-            <div key={item} className={`mt-3 rounded-lg border p-3 ${index === 0 ? "border-brand-500 bg-brand-50" : "border-slate-200 bg-white"}`}>
-              <div className="text-sm font-bold text-charcoal-950">{item}</div>
-              <div className="mt-1 text-xs text-charcoal-500">Score {92 - index * 5}</div>
-            </div>
-          )) : <EmptyModuleState title="No ideas yet" detail="Lead magnet ideas will appear after strategy or lead tasks exist." compact />}
+      <ContextBar
+        items={[
+          `Project: ${project?.businessName || project?.name || "Not selected"}`,
+          `Audience: ${audience}`,
+          `Offer: ${offer}`,
+          `Strategy: ${approvedStrategy ? "Approved" : "Missing"}`,
+          `Lead tasks: ${formatNumber(leadTasks.length)}`,
+        ]}
+      />
+      <MetricGrid
+        items={[
+          ["Asset Ideas", formatNumber(ideas.length), ideas.length ? "from project data" : "needs strategy"],
+          ["Keyword Inputs", formatNumber(keywordIdeaCount(data)), data.keywordRuns.length ? "available" : "optional"],
+          ["Lead Tasks", formatNumber(leadTasks.length), leadTasks.length ? "ready to review" : "not created"],
+          ["Approval Needed", "Yes", "before publish or send"],
+          ["Delivery Flow", "4 steps", "landing, form, email, thank-you"],
+          ["Automation Level", leadTasks[0]?.automationLevel ? label(leadTasks[0].automationLevel) : "Generate", "safe draft first"],
+        ]}
+      />
+      <div className="grid gap-5 xl:grid-cols-[340px_minmax(0,1fr)_340px]">
+        <Card className="p-5">
+          <h2 className="font-bold text-charcoal-950">Recommended Lead Magnets</h2>
+          <p className="mt-1 text-sm leading-6 text-charcoal-500">A lead magnet is a useful gated asset that gives visitors a reason to share contact details before booking or buying.</p>
+          <div className="mt-4 space-y-3">
+            {ideas.length ? ideas.map((item, index) => (
+              <div key={`${item}-${index}`} className={`rounded-lg border p-3 ${index === 0 ? "border-brand-500 bg-brand-50" : "border-slate-200 bg-white"}`}>
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <div className="text-sm font-bold text-charcoal-950">{item}</div>
+                    <div className="mt-1 text-xs leading-5 text-charcoal-500">{leadMagnetIdeaReason(project, item, index)}</div>
+                  </div>
+                  <span className="rounded-full bg-white px-2 py-1 text-xs font-bold text-brand-700">{leadMagnetScore(data, index)}</span>
+                </div>
+              </div>
+            )) : <EmptyModuleState title="No ideas yet" detail="Approve strategy first. SEnuke AI will use the offer, audience, and goal to create lead magnet ideas." compact />}
+          </div>
         </Card>
-        <TextPanel title={ideas[0] || "Lead magnet details"} items={[project?.businessProfile?.businessSummary || "No project profile yet.", `Type: ${leadTasks[0]?.automationLevel || "Not set"}`, `Related tasks: ${leadTasks.length}`, `Keyword ideas: ${keywordIdeaCount(data)}`, `Audience: ${project?.businessProfile?.targetAudience || "Not provided"}`]} />
-        <InsightPanel score={averageOpportunityScore(data)} title="Conversion Potential" lines={[`Relevance from niche: ${project?.niche || "Not provided"}`, `Value from offers: ${project?.businessProfile?.offerSummary || "Not provided"}`, `Audience fit: ${project?.businessProfile?.targetAudience || "Not provided"}`, `Open lead tasks ${leadTasks.length}`]} action="Publish Landing Page" />
+
+        <div className="space-y-5">
+          <Card className="p-5">
+            <div className="flex flex-col gap-4 border-b border-slate-100 pb-4 lg:flex-row lg:items-start lg:justify-between">
+              <div>
+                <div className="text-xs font-bold uppercase tracking-wide text-brand-600">Selected Lead Magnet</div>
+                <h2 className="mt-1 text-xl font-bold text-charcoal-950">{selectedIdea || "Lead magnet pending"}</h2>
+                <p className="mt-2 text-sm leading-6 text-charcoal-500">{leadMagnetSummary(project, approvedStrategy)}</p>
+              </div>
+              <StatusPill status={leadTasks.length ? "ready" : "pending"} />
+            </div>
+            <div className="mt-5 grid gap-4 md:grid-cols-2">
+              <ArchitectureDetail title="Audience Promise" value={leadMagnetPromise(project, approvedStrategy)} />
+              <ArchitectureDetail title="Primary CTA" value={project?.primaryGoal?.toLowerCase().includes("lead") ? "Get the resource, then book a consultation" : "Download the resource and continue to the next best action"} />
+              <ArchitectureDetail title="Data Source" value="Approved strategy, intake profile, project goal, offer, keyword runs, and lead-magnet tasks." />
+              <ArchitectureDetail title="Safety Rule" value="SEnuke AI can generate drafts, but publishing pages or sending emails requires approval." />
+            </div>
+          </Card>
+
+          <Card className="p-5">
+            <div className="mb-4 flex items-center gap-2 border-b border-slate-100 pb-3">
+              <IconBadge icon="▣" />
+              <h2 className="font-bold text-brand-700">What SEnuke AI Will Generate</h2>
+            </div>
+            <div className="grid gap-5 lg:grid-cols-4">
+              <PlanList title="Lead Asset" items={leadMagnetAssetPlan(project, selectedIdea)} />
+              <PlanList title="Landing Page" items={["Headline and promise", "Benefits and proof", "Form CTA copy", "FAQ / objection blocks"]} />
+              <PlanList title="Delivery Flow" items={["Thank-you page copy", "Delivery email", "Follow-up email outline", "Next-step CTA"]} />
+              <PlanList title="Tracking Tasks" items={["Capture form check", "Conversion event", "Traffic source note", "Review after launch"]} />
+            </div>
+          </Card>
+
+          <div id="lead-magnet-tasks" className="scroll-mt-24">
+            <DataTable
+              title="Lead Magnet Tasks"
+              columns={["Task", "Priority", "Status", "Approval", "Action"]}
+              rows={leadTasks.length ? leadTasks.slice(0, 8).map((task) => [
+                task.title,
+                label(task.priority),
+                label(task.status),
+                task.requiresApproval ? "Required" : "Draft only",
+                task.actionButtonLabel || "Review",
+              ]) : [["Create lead magnet task", "Medium", "Not created", "Required before publish/send", "Generate Lead Magnet"]]}
+              footerAction={<span className="text-sm font-semibold text-charcoal-500">Tasks are created from the approved strategy execution plan. They should not publish, send, or schedule anything without approval.</span>}
+            />
+          </div>
+        </div>
+
+        <div className="space-y-5">
+          <ArchitectureReadinessPanel score={readiness.score} rows={readiness.rows} />
+          <Card className="p-5">
+            <h2 className="font-bold text-charcoal-950">How It Works</h2>
+            <div className="mt-4 space-y-3 text-sm leading-6 text-charcoal-600">
+              <p>1. SEnuke AI reads the approved strategy, audience, offer, and goal.</p>
+              <p>2. It recommends the best gated asset for the current funnel stage.</p>
+              <p>3. It prepares the asset outline, landing-page copy, delivery email, thank-you copy, and follow-up flow.</p>
+              <p>4. You review and approve before anything is published or sent.</p>
+            </div>
+            <Link to="/strategy" className="mt-5 inline-flex w-full justify-center rounded-lg border border-brand-200 bg-white px-4 py-2.5 text-sm font-bold text-brand-700 hover:bg-brand-50">
+              Review Strategy
+            </Link>
+          </Card>
+        </div>
       </div>
     </>
   );
@@ -3060,6 +3192,59 @@ function leadMagnetIdeas(data: ModuleData) {
   const fromProject = data.projects[0]?.niche ? [`${data.projects[0].niche} Checklist`] : [];
   const merged = [...fromTasks, ...fromKeywords, ...fromProject];
   return merged.slice(0, 5);
+}
+
+function leadMagnetScore(data: ModuleData, index: number) {
+  const base = averageOpportunityScore(data) || 76;
+  return Math.max(55, Math.min(96, Math.round(base - index * 5)));
+}
+
+function leadMagnetIdeaReason(project: GuidedProject | undefined, idea: string, index: number) {
+  const audience = project?.businessProfile?.targetAudience || "the selected audience";
+  const goal = project?.primaryGoal || "the primary conversion goal";
+  if (index === 0) return `Best first option because it can connect ${audience} to ${goal}.`;
+  if (/checklist/i.test(idea)) return "Useful for quick lead capture because it promises a practical, low-friction takeaway.";
+  if (/guide|report/i.test(idea)) return "Useful for higher-intent visitors who need education before they convert.";
+  return "Recommended from current project context and available task signals.";
+}
+
+function leadMagnetSummary(project: GuidedProject | undefined, strategy: { strategySummary?: string | null; offerRecommendation?: string | null } | undefined) {
+  if (strategy?.strategySummary) return strategy.strategySummary;
+  const business = project?.businessName || project?.name || "this project";
+  const audience = project?.businessProfile?.targetAudience || "the target audience";
+  const offer = strategy?.offerRecommendation || project?.businessProfile?.offerSummary || project?.primaryGoal || "the primary offer";
+  return `Create a focused conversion asset for ${business} that helps ${audience} understand ${offer} and move to the next step.`;
+}
+
+function leadMagnetPromise(project: GuidedProject | undefined, strategy: { offerRecommendation?: string | null } | undefined) {
+  const audience = project?.businessProfile?.targetAudience || "your audience";
+  const offer = strategy?.offerRecommendation || project?.businessProfile?.offerSummary || project?.primaryGoal || "your offer";
+  return `Help ${audience} make progress toward ${offer} with a useful resource before asking for a consultation or conversion.`;
+}
+
+function leadMagnetAssetPlan(project: GuidedProject | undefined, selectedIdea: string | undefined) {
+  const niche = project?.niche || "the core topic";
+  return [
+    selectedIdea || `${label(niche)} Checklist`,
+    "Clear problem and promise",
+    "Actionable steps or scorecard",
+    "Next-step consultation CTA",
+  ];
+}
+
+function leadMagnetReadiness(data: ModuleData, strategy: { status?: string | null } | undefined) {
+  const project = data.projects[0];
+  const rows = [
+    { label: "Project profile", ok: Boolean(project?.businessProfile || project?.intakeAnswers?.length), value: project?.businessProfile ? "Complete" : "Needs intake" },
+    { label: "Approved strategy", ok: strategy?.status === "approved", value: strategy?.status === "approved" ? "Approved" : "Missing" },
+    { label: "Audience", ok: Boolean(project?.businessProfile?.targetAudience), value: project?.businessProfile?.targetAudience || "Missing" },
+    { label: "Offer", ok: Boolean(project?.businessProfile?.offerSummary || project?.primaryGoal), value: project?.businessProfile?.offerSummary || project?.primaryGoal || "Missing" },
+    { label: "Lead task", ok: data.tasks.some((task) => task.moduleName.includes("lead") || task.title.toLowerCase().includes("lead magnet")), value: data.tasks.some((task) => task.moduleName.includes("lead") || task.title.toLowerCase().includes("lead magnet")) ? "Created" : "Not created" },
+  ];
+  return {
+    score: Math.round((rows.filter((row) => row.ok).length / rows.length) * 100),
+    rows,
+  };
 }
 
 function backlinkRefreshState(fetchedAt: string | null | undefined) {
