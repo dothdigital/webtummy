@@ -3,7 +3,7 @@ import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { Cell, Pie, PieChart, ResponsiveContainer } from "recharts";
 import { api } from "../api.js";
 import { Card } from "../components/ui.js";
-import type { DomainBacklinkLinks, DomainBacklinkSummary, GuidedExecutionTask, GuidedProject, HealthReport, KeywordResearchRun, Opportunity, Website, WorkspaceIntelligence, WorkspaceIntelligenceResponse } from "../types.js";
+import type { AiContentGeneration, DomainBacklinkLinks, DomainBacklinkSummary, GuidedExecutionTask, GuidedProject, HealthReport, KeywordResearchRun, Opportunity, Website, WorkspaceIntelligence, WorkspaceIntelligenceResponse } from "../types.js";
 
 type ModuleKind = "opportunities" | "strategy" | "keywords" | "site-analysis" | "backlinks" | "ai-citations" | "site-architect" | "lead-magnets";
 type CrawlSummary = NonNullable<Website["crawlJobs"]>[number];
@@ -94,6 +94,7 @@ interface ModuleData {
   backlinkSummary: DomainBacklinkSummary | null;
   backlinkLinks: DomainBacklinkLinks | null;
   intelligence: WorkspaceIntelligence | null;
+  leadMagnetGenerations: AiContentGeneration[];
 }
 
 const BACKLINK_REFRESH_COOLDOWN_MS = 7 * 24 * 60 * 60 * 1000;
@@ -200,6 +201,7 @@ export default function ExecutionModule({ kind }: { kind: ModuleKind }) {
     backlinkSummary: null,
     backlinkLinks: null,
     intelligence: null,
+    leadMagnetGenerations: [],
   });
   const [loading, setLoading] = useState(true);
   const [refreshingBacklinks, setRefreshingBacklinks] = useState(false);
@@ -243,6 +245,7 @@ export default function ExecutionModule({ kind }: { kind: ModuleKind }) {
           backlinkSummary: backlinkSummaryResult.summary,
           backlinkLinks: backlinkLinksResult.backlinks,
           intelligence: workspace.intelligence,
+          leadMagnetGenerations: workspace.leadMagnetGenerations ?? [],
         });
         setSelectedProjectId(defaultProjectId);
         setLoading(false);
@@ -431,18 +434,16 @@ export default function ExecutionModule({ kind }: { kind: ModuleKind }) {
 
   const generateLeadMagnet = async () => {
     if (!activeProject || leadMagnetBusy || !canRunModule) return;
-    const leadTask = scopedData.tasks.find((task) => task.moduleName.includes("lead") || task.title.toLowerCase().includes("lead magnet"));
-    if (leadTask) {
-      setLeadMagnetMessage("Lead magnet task is ready. Review the task details and generated asset plan below.");
-      window.setTimeout(() => document.getElementById("lead-magnet-tasks")?.scrollIntoView({ behavior: "smooth", block: "start" }), 0);
-      return;
-    }
     setLeadMagnetBusy(true);
     setLeadMagnetMessage("");
     try {
-      const result = await api.post<{ project: GuidedProject }>(`/api/projects-v2/${activeProject.id}/execution-plan/create`, {});
+      const result = await api.post<{ project: GuidedProject; generation: AiContentGeneration }>(`/api/projects-v2/${activeProject.id}/lead-magnet/generate`, {});
       updateActiveProject(result.project);
-      setLeadMagnetMessage("Lead magnet task created from the approved strategy. Review the generated asset plan below.");
+      setData((current) => ({
+        ...current,
+        leadMagnetGenerations: [result.generation, ...current.leadMagnetGenerations.filter((item) => item.id !== result.generation.id)],
+      }));
+      setLeadMagnetMessage("AI lead magnet package generated from the approved strategy. Review the asset, landing page, email, thank-you page, and CTA flow below.");
       window.setTimeout(() => document.getElementById("lead-magnet-tasks")?.scrollIntoView({ behavior: "smooth", block: "start" }), 0);
     } catch (error) {
       setLeadMagnetMessage(error instanceof Error ? error.message : "Could not create the lead magnet task.");
@@ -1906,6 +1907,21 @@ function ArchitectureReadinessPanel({ score, rows }: { score: number; rows: { la
   );
 }
 
+function GeneratedBlock({ title, items }: { title: string; items: string[] }) {
+  return (
+    <div className="rounded-lg border border-slate-100 bg-slate-50/70 p-4">
+      <div className="text-sm font-bold text-charcoal-950">{title}</div>
+      <div className="mt-3 space-y-2">
+        {items.filter(Boolean).slice(0, 5).map((item, index) => (
+          <div key={`${title}-${index}`} className="text-sm leading-6 text-charcoal-600">
+            {item}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function LeadMagnetScreen({ data }: { data: ModuleData }) {
   const project = data.projects[0];
   const leadTasks = data.tasks.filter((task) => task.moduleName.includes("lead") || task.title.toLowerCase().includes("lead"));
@@ -1917,7 +1933,9 @@ function LeadMagnetScreen({ data }: { data: ModuleData }) {
     seoStrategy?: string | null;
   } | undefined;
   const ideas = leadMagnetIdeas(data);
-  const selectedIdea = ideas[0];
+  const latestGeneration = data.leadMagnetGenerations[0] ?? null;
+  const generatedPackage = latestGeneration ? normalizeLeadMagnetPackage(latestGeneration.resultJson) : null;
+  const selectedIdea = generatedPackage?.leadMagnet.title || ideas[0];
   const audience = project?.businessProfile?.targetAudience || "Target audience not provided";
   const offer = approvedStrategy?.offerRecommendation || project?.businessProfile?.offerSummary || project?.primaryGoal || "Offer not provided";
   const readiness = leadMagnetReadiness(data, approvedStrategy);
@@ -1971,16 +1989,35 @@ function LeadMagnetScreen({ data }: { data: ModuleData }) {
                 <div className="text-xs font-bold uppercase tracking-wide text-brand-600">Selected Lead Magnet</div>
                 <h2 className="mt-1 text-xl font-bold text-charcoal-950">{selectedIdea || "Lead magnet pending"}</h2>
                 <p className="mt-2 text-sm leading-6 text-charcoal-500">{leadMagnetSummary(project, approvedStrategy)}</p>
+                {latestGeneration ? <p className="mt-2 text-xs font-semibold text-charcoal-400">Generated {formatDateTime(latestGeneration.createdAt)} with {latestGeneration.model || "AI model"}</p> : null}
               </div>
-              <StatusPill status={leadTasks.length ? "ready" : "pending"} />
+              <StatusPill status={generatedPackage ? "needs_review" : leadTasks.length ? "ready" : "pending"} />
             </div>
             <div className="mt-5 grid gap-4 md:grid-cols-2">
-              <ArchitectureDetail title="Audience Promise" value={leadMagnetPromise(project, approvedStrategy)} />
-              <ArchitectureDetail title="Primary CTA" value={project?.primaryGoal?.toLowerCase().includes("lead") ? "Get the resource, then book a consultation" : "Download the resource and continue to the next best action"} />
+              <ArchitectureDetail title="Audience Promise" value={generatedPackage?.leadMagnet.promise || leadMagnetPromise(project, approvedStrategy)} />
+              <ArchitectureDetail title="Primary CTA" value={generatedPackage?.landingPage.ctaText || (project?.primaryGoal?.toLowerCase().includes("lead") ? "Get the resource, then book a consultation" : "Download the resource and continue to the next best action")} />
               <ArchitectureDetail title="Data Source" value="Approved strategy, intake profile, project goal, offer, keyword runs, and lead-magnet tasks." />
               <ArchitectureDetail title="Safety Rule" value="SEnuke AI can generate drafts, but publishing pages or sending emails requires approval." />
             </div>
           </Card>
+
+          {generatedPackage ? (
+            <Card className="p-5">
+              <div className="mb-4 flex items-center justify-between gap-3 border-b border-slate-100 pb-3">
+                <div className="flex items-center gap-2">
+                  <IconBadge icon="✦" />
+                  <h2 className="font-bold text-brand-700">AI Generated Package</h2>
+                </div>
+                <span className="rounded-full bg-amber-50 px-3 py-1 text-xs font-bold text-amber-700">Needs review</span>
+              </div>
+              <div className="grid gap-4 lg:grid-cols-2">
+                <GeneratedBlock title="Lead Asset" items={[generatedPackage.leadMagnet.assetType, generatedPackage.leadMagnet.problemSolved, ...generatedPackage.leadMagnet.outline.slice(0, 4)]} />
+                <GeneratedBlock title="Landing Page" items={[generatedPackage.landingPage.headline, generatedPackage.landingPage.subheadline, ...generatedPackage.landingPage.benefitBullets.slice(0, 3)]} />
+                <GeneratedBlock title="Delivery Email" items={[generatedPackage.deliveryEmail.subject, generatedPackage.deliveryEmail.previewText]} />
+                <GeneratedBlock title="Follow-up Flow" items={generatedPackage.followUpSequence.slice(0, 4).map((item) => `${item.day}: ${item.subject}`)} />
+              </div>
+            </Card>
+          ) : null}
 
           <Card className="p-5">
             <div className="mb-4 flex items-center gap-2 border-b border-slate-100 pb-3">
@@ -3192,6 +3229,72 @@ function leadMagnetIdeas(data: ModuleData) {
   const fromProject = data.projects[0]?.niche ? [`${data.projects[0].niche} Checklist`] : [];
   const merged = [...fromTasks, ...fromKeywords, ...fromProject];
   return merged.slice(0, 5);
+}
+
+type LeadMagnetPackage = {
+  leadMagnet: {
+    title: string;
+    assetType: string;
+    promise: string;
+    problemSolved: string;
+    outline: string[];
+  };
+  landingPage: {
+    headline: string;
+    subheadline: string;
+    benefitBullets: string[];
+    ctaText: string;
+  };
+  deliveryEmail: {
+    subject: string;
+    previewText: string;
+  };
+  followUpSequence: Array<{ day: string; subject: string }>;
+};
+
+function normalizeLeadMagnetPackage(value: unknown): LeadMagnetPackage | null {
+  if (!value || typeof value !== "object") return null;
+  const root = value as Record<string, unknown>;
+  const leadMagnet = objectValue(root.leadMagnet);
+  const landingPage = objectValue(root.landingPage);
+  const deliveryEmail = objectValue(root.deliveryEmail);
+  const followUp = Array.isArray(root.followUpSequence) ? root.followUpSequence : [];
+  if (!leadMagnet && !landingPage) return null;
+  return {
+    leadMagnet: {
+      title: stringValue(leadMagnet?.title, "Generated lead magnet"),
+      assetType: stringValue(leadMagnet?.assetType, "Lead magnet"),
+      promise: stringValue(leadMagnet?.promise, "Help the audience make progress before the next conversion step."),
+      problemSolved: stringValue(leadMagnet?.problemSolved, "Clarifies the main problem and next action."),
+      outline: stringArray(leadMagnet?.outline),
+    },
+    landingPage: {
+      headline: stringValue(landingPage?.headline, "Landing page headline pending review"),
+      subheadline: stringValue(landingPage?.subheadline, "Landing page subheadline pending review"),
+      benefitBullets: stringArray(landingPage?.benefitBullets),
+      ctaText: stringValue(landingPage?.ctaText, "Get the resource"),
+    },
+    deliveryEmail: {
+      subject: stringValue(deliveryEmail?.subject, "Your resource is ready"),
+      previewText: stringValue(deliveryEmail?.previewText, "Open this email to access the resource."),
+    },
+    followUpSequence: followUp.map((item, index) => {
+      const row = objectValue(item);
+      return { day: stringValue(row?.day, `Day ${index + 1}`), subject: stringValue(row?.subject, "Follow-up message") };
+    }),
+  };
+}
+
+function objectValue(value: unknown) {
+  return value && typeof value === "object" ? value as Record<string, unknown> : null;
+}
+
+function stringValue(value: unknown, fallback: string) {
+  return typeof value === "string" && value.trim() ? value.trim() : fallback;
+}
+
+function stringArray(value: unknown) {
+  return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string" && item.trim()).map((item) => item.trim()) : [];
 }
 
 function leadMagnetScore(data: ModuleData, index: number) {

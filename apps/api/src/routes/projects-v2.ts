@@ -3,6 +3,7 @@ import { z } from "zod";
 import { prisma, type Prisma } from "@webtummy/db";
 import { requireAuth, requireRole } from "../middleware.js";
 import { projectClientIdForRequest } from "../project-scope.js";
+import { config } from "../config.js";
 
 export const guidedProjectsRouter = Router();
 guidedProjectsRouter.use(requireAuth);
@@ -79,6 +80,36 @@ const moduleTaskCreateSchema = z.object({
   requiresIntegration: z.boolean().default(false),
   manualRequired: z.boolean().default(true),
 });
+
+async function openaiJson(prompt: string) {
+  if (!config.openaiApiKey) throw new Error("openai_not_configured");
+  const response = await fetch("https://api.openai.com/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${config.openaiApiKey}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      model: config.openaiModel,
+      temperature: 0.35,
+      response_format: { type: "json_object" },
+      messages: [
+        { role: "system", content: "You are SEnuke AI. Return valid JSON only. No markdown fences. Do not invent unavailable metrics or claim live publication." },
+        { role: "user", content: prompt },
+      ],
+    }),
+  });
+  const data = await response.json().catch(() => ({})) as any;
+  if (!response.ok) throw new Error(typeof data?.error?.message === "string" ? data.error.message : "OpenAI request failed");
+  const content = data?.choices?.[0]?.message?.content;
+  if (typeof content !== "string") throw new Error("OpenAI returned no content");
+  return {
+    result: JSON.parse(content) as unknown,
+    model: data?.model ?? config.openaiModel,
+    inputTokens: Number(data?.usage?.prompt_tokens ?? 0),
+    outputTokens: Number(data?.usage?.completion_tokens ?? 0),
+  };
+}
 
 const projectWorkflowDefinitions = [
   {
@@ -714,6 +745,97 @@ function projectContext(project: NonNullable<Awaited<ReturnType<typeof scopedPro
   };
 }
 
+function buildLeadMagnetPrompt(input: {
+  project: NonNullable<Awaited<ReturnType<typeof scopedProject>>>;
+  strategy: NonNullable<NonNullable<Awaited<ReturnType<typeof scopedProject>>>["strategyPlans"][number]>;
+  keywordRuns: Array<{ seedKeyword: string; intent: string | null; avgSearchVolume: number | null; opportunityScore: number | null; ideas: Array<{ keyword: string; avgMonthlySearches: number | null }> }>;
+}) {
+  const { project, strategy, keywordRuns } = input;
+  const ctx = projectContext(project);
+  const selectedOpportunity = project.opportunities.find((opportunity) => opportunity.status === "selected") ?? project.opportunities[0] ?? null;
+  const keywords = keywordRuns.slice(0, 8).map((run) => ({
+    seedKeyword: run.seedKeyword,
+    intent: run.intent,
+    avgSearchVolume: run.avgSearchVolume,
+    opportunityScore: run.opportunityScore,
+    relatedIdeas: run.ideas.slice(0, 5).map((idea) => ({ keyword: idea.keyword, volume: idea.avgMonthlySearches })),
+  }));
+  return [
+    "Create a project-specific lead magnet package for SEnuke AI.",
+    "The output must be practical, specific to the provided business, and suitable for review before publishing or sending.",
+    "Do not use generic placeholder advice. If data is missing, use the best available project context and mark assumptions clearly.",
+    "Return JSON with this exact top-level shape:",
+    JSON.stringify({
+      leadMagnet: {
+        title: "string",
+        assetType: "checklist | guide | scorecard | template | report | calculator",
+        promise: "string",
+        targetAudience: "string",
+        problemSolved: "string",
+        whyThisFits: ["string"],
+        outline: ["string"],
+        sections: [{ title: "string", bullets: ["string"] }],
+      },
+      landingPage: {
+        headline: "string",
+        subheadline: "string",
+        benefitBullets: ["string"],
+        formFields: ["string"],
+        ctaText: "string",
+        proofBlocks: ["string"],
+        faqs: [{ question: "string", answer: "string" }],
+      },
+      deliveryEmail: {
+        subject: "string",
+        previewText: "string",
+        body: "string",
+      },
+      thankYouPage: {
+        headline: "string",
+        body: "string",
+        nextStepCta: "string",
+      },
+      followUpSequence: [{ day: "string", subject: "string", goal: "string", body: "string" }],
+      ctaFlow: ["string"],
+      trackingPlan: ["string"],
+      approvalChecklist: ["string"],
+    }),
+    "",
+    "Project context:",
+    `Business/project name: ${ctx.name}`,
+    `Website: ${project.website?.domain ?? project.websiteUrl ?? "not connected"}`,
+    `Project type: ${project.projectType}`,
+    `Niche/industry: ${ctx.niche}`,
+    `Location/market: ${ctx.location}`,
+    `Primary goal: ${ctx.goal}`,
+    `Target audience: ${ctx.audience}`,
+    `Offer/services: ${ctx.offer}`,
+    `Preferred outputs: ${ctx.outputs.join(", ") || "not provided"}`,
+    `Publishing method: ${project.preferredPublishingMethod ?? "not provided"}`,
+    "",
+    "Approved strategy:",
+    `Summary: ${strategy.strategySummary ?? "not provided"}`,
+    `Positioning: ${strategy.positioningStatement ?? "not provided"}`,
+    `Offer recommendation: ${strategy.offerRecommendation ?? "not provided"}`,
+    `Content strategy: ${strategy.contentStrategy ?? "not provided"}`,
+    `SEO strategy: ${strategy.seoStrategy ?? "not provided"}`,
+    `Social strategy: ${strategy.socialStrategy ?? "not provided"}`,
+    "",
+    "Selected opportunity:",
+    selectedOpportunity ? JSON.stringify({
+      name: selectedOpportunity.name,
+      summary: selectedOpportunity.summary,
+      targetAudience: selectedOpportunity.targetAudience,
+      recommendedOffer: selectedOpportunity.recommendedOffer,
+      businessModel: selectedOpportunity.businessModel,
+      score: selectedOpportunity.opportunityScore,
+    }) : "none selected",
+    "",
+    "Keyword intelligence:",
+    keywords.length ? JSON.stringify(keywords) : "No keyword runs yet. Avoid pretending keyword data exists.",
+  ].join("\n");
+}
+
 async function activePlanId(tx: Prisma.TransactionClient, projectId: string) {
   const existing = await tx.executionPlan.findFirst({ where: { projectId, status: "active" }, orderBy: { createdAt: "asc" } });
   if (existing) return existing.id;
@@ -1087,7 +1209,7 @@ guidedProjectsRouter.get("/workspace/intelligence", async (req, res) => {
     ...(websiteIds.length ? [{ websiteId: { in: websiteIds } }] : []),
   ];
 
-  const [tasks, keywordRuns] = await Promise.all([
+  const [tasks, keywordRuns, leadMagnetGenerations] = await Promise.all([
     prisma.executionTask.findMany({
       where: {
         clientId,
@@ -1105,6 +1227,15 @@ guidedProjectsRouter.get("/workspace/intelligence", async (req, res) => {
         competitors: { orderBy: { rank: "asc" }, take: 3 },
       },
       take: 100,
+    }),
+    prisma.aiContentGeneration.findMany({
+      where: {
+        clientId,
+        type: "lead_magnet",
+        ...(activeWebsite?.id || activeProject?.websiteId ? { websiteId: activeWebsite?.id ?? activeProject?.websiteId } : {}),
+      },
+      orderBy: { createdAt: "desc" },
+      take: 10,
     }),
   ]);
 
@@ -1131,6 +1262,7 @@ guidedProjectsRouter.get("/workspace/intelligence", async (req, res) => {
     projects,
     websites: websites.map((website) => ({ ...website, hasCompletedCrawl: website.crawlJobs?.some((crawl) => crawl.status === "completed") ?? false })),
     keywordRuns: keywordViews,
+    leadMagnetGenerations,
     tasks,
     backlinkSummary: null,
     backlinkLinks: null,
@@ -1656,4 +1788,99 @@ guidedProjectsRouter.post("/projects-v2/:projectId/execution-plan/create", async
 
   const updated = await scopedProject(req, project.id);
   res.json({ project: updated });
+});
+
+guidedProjectsRouter.post("/projects-v2/:projectId/lead-magnet/generate", async (req, res) => {
+  const project = await scopedProject(req, req.params.projectId);
+  if (!project) return res.status(404).json({ error: "project not found" });
+  if (!project.businessProfile) return res.status(409).json({ error: "complete intake before generating a lead magnet" });
+  const approvedStrategy = project.strategyPlans.find((strategy) => strategy.status === "approved");
+  if (!approvedStrategy) return res.status(409).json({ error: "approve strategy before generating a lead magnet" });
+
+  try {
+    const keywordRuns = project.websiteId
+      ? await prisma.keywordResearchRun.findMany({
+          where: { clientId: project.clientId, websiteId: project.websiteId },
+          orderBy: { createdAt: "desc" },
+          include: { ideas: { orderBy: [{ avgMonthlySearches: "desc" }, { keyword: "asc" }], take: 10 } },
+          take: 10,
+        })
+      : [];
+    const prompt = buildLeadMagnetPrompt({ project, strategy: approvedStrategy, keywordRuns });
+    const generated = await openaiJson(prompt);
+    const result = generated.result as { leadMagnet?: { title?: unknown; assetType?: unknown } };
+    const title = typeof result.leadMagnet?.title === "string" && result.leadMagnet.title.trim()
+      ? result.leadMagnet.title.trim()
+      : `${project.businessName ?? project.name} Lead Magnet`;
+    const assetType = typeof result.leadMagnet?.assetType === "string" ? result.leadMagnet.assetType : "lead magnet";
+
+    const generation = await prisma.$transaction(async (tx) => {
+      const planId = await activePlanId(tx, project.id);
+      const record = await tx.aiContentGeneration.create({
+        data: {
+          clientId: project.clientId,
+          userId: req.user?.userId,
+          websiteId: project.websiteId,
+          type: "lead_magnet",
+          topic: title,
+          targetKeyword: keywordRuns[0]?.seedKeyword ?? null,
+          targetUrl: project.website?.rootUrl ?? project.websiteUrl ?? null,
+          languageCode: "en",
+          tone: project.businessProfile?.tonePreference ?? null,
+          prompt,
+          resultJson: generated.result as object,
+          model: generated.model,
+          inputTokens: generated.inputTokens,
+          outputTokens: generated.outputTokens,
+        },
+      });
+      await ensureNextTask(tx, {
+        clientId: project.clientId,
+        websiteId: project.websiteId,
+        projectId: project.id,
+        executionPlanId: planId,
+        key: `project:${project.id}:execution:build-lead-magnet`,
+        moduleName: "lead_magnet",
+        title: `Review lead magnet: ${title}`,
+        description: `Review the AI-generated ${assetType} package, landing page, delivery email, thank-you copy, CTA flow, and tracking plan before publishing or sending.`,
+        actionButtonLabel: "Review Lead Magnet",
+        relatedUrl: "/lead-magnets",
+        automationLevel: "generate",
+        priority: "medium",
+        requiresApproval: true,
+      });
+      await tx.executionTask.updateMany({
+        where: { projectId: project.id, moduleName: "lead_magnet", status: { notIn: ["completed", "skipped", "cancelled", "canceled"] } },
+        data: {
+          relatedAssetId: record.id,
+          status: "needs_review",
+          automationLevel: "generate",
+          requiresApproval: true,
+          manualRequired: true,
+          actionButtonLabel: "Review Lead Magnet",
+          manualInstructions: "Review the generated lead magnet package. Approve the asset, landing page, delivery email, and CTA flow before publishing or sending anything.",
+        },
+      });
+      await tx.aiRun.create({
+        data: {
+          projectId: project.id,
+          clientId: project.clientId,
+          moduleName: "lead_magnet",
+          promptVersion: "lead-magnet-openai-v1",
+          inputSnapshotJson: { projectId: project.id, strategyId: approvedStrategy.id, keywordRunCount: keywordRuns.length },
+          outputJson: { generationId: record.id, title },
+          outputText: title,
+          status: "completed",
+        },
+      });
+      await syncProjectWorkflow(tx, project.id);
+      return record;
+    });
+
+    const updated = await scopedProject(req, project.id);
+    res.status(201).json({ project: updated, generation });
+  } catch (error) {
+    if (error instanceof Error && error.message === "openai_not_configured") return res.status(503).json({ error: "OpenAI is not configured" });
+    res.status(500).json({ error: error instanceof Error ? error.message : "Lead magnet generation failed" });
+  }
 });

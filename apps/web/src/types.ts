@@ -719,6 +719,7 @@ export interface WorkspaceIntelligenceResponse {
   projects: GuidedProject[];
   websites: Website[];
   keywordRuns: KeywordResearchRun[];
+  leadMagnetGenerations?: AiContentGeneration[];
   tasks: GuidedExecutionTask[];
   backlinkSummary: DomainBacklinkSummary | null;
   backlinkLinks: DomainBacklinkLinks | null;
@@ -827,7 +828,7 @@ export interface BillingStatus {
   rankingChangeEmailEnabled: boolean;
 }
 
-export type AiGenerationType = "article" | "h1" | "title" | "meta_description" | "faq" | "page_schema" | "domain_schema" | "page_llms_txt" | "domain_llms_txt" | "sitemap" | "ai_search";
+export type AiGenerationType = "article" | "h1" | "title" | "meta_description" | "faq" | "page_schema" | "domain_schema" | "page_llms_txt" | "domain_llms_txt" | "sitemap" | "ai_search" | "lead_magnet";
 
 export interface AiContentGeneration {
   id: string;
