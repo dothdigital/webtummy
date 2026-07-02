@@ -1570,9 +1570,9 @@ function CitationScreen({ data }: { data: ModuleData }) {
 
       {!citationTasks.length && (
         <Card className="border-amber-100 bg-amber-50 p-4">
-          <div className="text-sm font-bold text-amber-950">No AI citation task run yet.</div>
+          <div className="text-sm font-bold text-amber-950">No saved AI citation tasks yet.</div>
           <p className="mt-1 text-sm leading-6 text-amber-900">
-            This dashboard is using the latest crawl, local profile, and project context to show what is ready and what should become citation tasks.
+            This dashboard is using the latest crawl, local profile, and project context to show recommended citation tasks until saved execution tasks are created.
           </p>
         </Card>
       )}
@@ -1628,8 +1628,8 @@ function CitationScreen({ data }: { data: ModuleData }) {
           <DataTable
             title="Citation Tasks"
             columns={["Task", "Impact", "Current Status", "Priority", "Action"]}
-            rows={taskRows(citationTasks)}
-            footerAction={<span className="text-sm font-semibold text-charcoal-500">Tasks are created from citation, schema, structured-data, FAQ, keyword, and site-analysis workflows.</span>}
+            rows={citationTableRows(citationTasks, healthReport, localProfile)}
+            footerAction={<span className="text-sm font-semibold text-charcoal-500">Saved tasks appear first. If none exist, this table shows recommended tasks from the latest crawl and profile data.</span>}
           />
         </div>
       </div>
@@ -2495,6 +2495,40 @@ function smartCitationNextRows(data: ModuleData, report: HealthReport | null, lo
     rows.push({ label: "Citation foundation", value: "Core AI citation signals are present from the latest crawl.", ok: true, action: "Monitor" });
   }
   return rows.slice(0, 5);
+}
+
+function citationTableRows(tasks: GuidedExecutionTask[], report: HealthReport | null, localProfile: NonNullable<Website["localBusinessProfiles"]>[number] | null) {
+  if (tasks.length) return taskRows(tasks);
+  const rows: string[][] = [];
+  if (!localProfile) {
+    rows.push(["Set up NAP profile", "High", "Recommended from profile", "High", "Create profile"]);
+  }
+  if (!report) {
+    rows.push(["Run site analysis for AI citation data", "High", "Missing crawl data", "High", "Analyze Site"]);
+    return rows;
+  }
+  if (!report.schema.hasOrganization) {
+    rows.push(["Add Organization schema", "High", "Missing from latest scan", "High", "Generate"]);
+  }
+  if (!report.aiSearch.llmsTxtPresent) {
+    rows.push(["Create llms.txt", "Medium", "Missing from latest scan", "Medium", "Generate"]);
+  }
+  if (!report.faq.hasFAQSchema) {
+    rows.push(["Add FAQPage schema", "Medium", "Missing from latest scan", "Medium", "Generate"]);
+  }
+  if (!report.breadcrumb.hasBreadcrumbSchema) {
+    rows.push(["Add BreadcrumbList schema", "Medium", "Missing from latest scan", "Medium", "Generate"]);
+  }
+  if ((report.schema.invalid ?? 0) > 0) {
+    rows.push(["Fix invalid structured data", "High", `${formatNumber(report.schema.invalid)} issue(s) found`, "High", "Fix"]);
+  }
+  if ((report.siteFiles.sitemapUrls ?? 0) === 0) {
+    rows.push(["Review sitemap availability", "Medium", "No sitemap URLs found", "Medium", "Review"]);
+  }
+  if (report.siteFiles.robotsStatus !== 200) {
+    rows.push(["Review robots.txt access", "Medium", report.siteFiles.robotsStatus ? `Status ${report.siteFiles.robotsStatus}` : "Not checked", "Medium", "Review"]);
+  }
+  return rows.length ? rows.slice(0, 8) : [["Monitor AI citation readiness", "Low", "Core scan signals look ready", "Low", "Monitor"]];
 }
 
 function citationReadinessRows(data: ModuleData) {
