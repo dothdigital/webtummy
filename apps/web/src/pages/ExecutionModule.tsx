@@ -1706,18 +1706,169 @@ function CitationPanel({
 function ArchitectScreen({ data }: { data: ModuleData }) {
   const project = data.projects[0];
   const website = data.websites[0];
+  const latestCrawl = website?.crawlJobs?.find((crawl) => crawl.status === "completed");
+  const latestStrategy = (project?.strategyPlans?.[0] ?? null) as {
+    status?: string;
+    strategySummary?: string | null;
+    seoStrategy?: string | null;
+    contentStrategy?: string | null;
+    publishingStrategy?: string | null;
+    aiCitationStrategy?: string | null;
+  } | null;
+  const strategyApproved = latestStrategy?.status === "approved";
+  const architectureTasks = data.tasks.filter((task) => /site|architect|sitemap|page|homepage|internal link|publish/i.test(`${task.moduleName} ${task.title} ${task.description}`));
+  const pages = architecturePageBlueprint(data);
+  const selectedPage = pages[0];
+  const readinessSignals = [
+    Boolean(project?.businessProfile || project?.intakeAnswers?.length),
+    strategyApproved,
+    Boolean(website || project?.websiteUrl),
+    Boolean(latestCrawl),
+    data.keywordRuns.length > 0,
+  ];
+  const readinessScore = Math.round((readinessSignals.filter(Boolean).length / readinessSignals.length) * 100);
   if (!project && !website && !data.tasks.length) {
     return <EmptyModuleState title="No site architecture yet" detail="Create a project before generating site structure." />;
   }
   return (
     <>
-      <ContextBar items={[`Site Type: ${label(project?.projectType)}`, `Brand Style: ${project?.businessProfile?.tonePreference || "Not provided"}`, `Publishing Target: ${project?.targetLocation || website?.targetCountry || "Not provided"}`]} />
-      <div className="grid gap-5 xl:grid-cols-[320px_1fr_340px]">
-        <TreePanel data={data} />
-        <TextPanel title="Page Details" items={[`Project: ${project?.name || "No project"}`, `Website: ${website?.domain || project?.websiteUrl || "No website"}`, `Niche: ${project?.niche || "Not provided"}`, `Primary Goal: ${project?.primaryGoal || "Not provided"}`, `Pages crawled: ${website?.crawlJobs?.[0]?.pagesCrawled ?? 0}`]} />
-        <InsightPanel score={latestSiteScore(data) ?? 0} title="Architecture Insights" lines={[`Total projects ${data.projects.length}`, `Total websites ${data.websites.length}`, `Execution tasks ${data.tasks.length}`, `Keyword clusters ${data.keywordRuns.length}`]} action="Generate" />
+      <ContextBar
+        items={[
+          `Project: ${project?.businessName || project?.name || "Not selected"}`,
+          `Website: ${website?.domain || project?.websiteUrl || "Not connected"}`,
+          `Strategy: ${strategyApproved ? "Approved" : latestStrategy ? "Draft" : "Missing"}`,
+          `Latest crawl: ${latestCrawl ? `${formatNumber(latestCrawl.pagesCrawled)} pages` : "Not run"}`,
+          `Keywords: ${formatNumber(data.keywordRuns.length)} runs`,
+        ]}
+      />
+
+      <MetricGrid
+        items={[
+          ["Architecture Readiness", `${readinessScore} /100`, strategyApproved ? "strategy approved" : "strategy needed"],
+          ["Recommended Pages", formatNumber(pages.length), pages.length ? "from project context" : "no blueprint yet"],
+          ["Crawled Pages", formatNumber(latestCrawl?.pagesCrawled), latestCrawl ? "latest scan" : "run site analysis"],
+          ["Keyword Inputs", formatNumber(data.keywordRuns.length), data.keywordRuns.length ? "available for mapping" : "add keywords"],
+          ["Architecture Tasks", formatNumber(architectureTasks.length), "saved task records"],
+          ["Publishing Target", project?.preferredPublishingMethod || "Not selected", "from intake"],
+        ]}
+      />
+
+      <div className="grid gap-5 xl:grid-cols-[360px_minmax(0,1fr)_340px]">
+        <Card className="overflow-hidden">
+          <div className="border-b border-slate-100 p-4">
+            <h2 className="font-bold text-charcoal-950">Site Structure Blueprint</h2>
+            <p className="mt-1 text-sm text-charcoal-500">Recommended pages from intake, strategy, crawl, and keyword signals.</p>
+          </div>
+          <div className="divide-y divide-slate-100">
+            {pages.length ? pages.map((page, index) => (
+              <div key={`${page.title}-${index}`} className={`p-4 ${index === 0 ? "bg-brand-50/60" : "bg-white"}`}>
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <div className="text-sm font-bold text-charcoal-950">{page.title}</div>
+                    <div className="mt-1 text-xs leading-5 text-charcoal-500">{page.purpose}</div>
+                  </div>
+                  <span className={`shrink-0 rounded-full px-2 py-1 text-xs font-bold ${page.status === "Existing" ? "bg-emerald-50 text-emerald-700" : page.status === "Ready" ? "bg-blue-50 text-brand-700" : "bg-slate-100 text-charcoal-600"}`}>
+                    {page.status}
+                  </span>
+                </div>
+                <div className="mt-2 text-xs font-semibold text-charcoal-400">{page.source}</div>
+              </div>
+            )) : <EmptyModuleState title="No blueprint yet" detail="Complete intake and approve a strategy to generate page recommendations." compact />}
+          </div>
+        </Card>
+
+        <div className="space-y-5">
+          <Card className="p-5">
+            <div className="flex items-start justify-between gap-4 border-b border-slate-100 pb-4">
+              <div>
+                <div className="text-xs font-bold uppercase tracking-wide text-brand-600">Selected Page Blueprint</div>
+                <h2 className="mt-1 text-xl font-bold text-charcoal-950">{selectedPage?.title || "Page blueprint pending"}</h2>
+                <p className="mt-1 text-sm leading-6 text-charcoal-500">{selectedPage?.purpose || "SEnuke AI needs approved strategy and project context before it can recommend page details."}</p>
+              </div>
+              <span className="rounded-full bg-brand-50 px-3 py-1 text-xs font-bold text-brand-700">{selectedPage?.status || "Pending"}</span>
+            </div>
+            <div className="mt-5 grid gap-4 md:grid-cols-2">
+              <ArchitectureDetail title="Suggested URL" value={selectedPage?.slug || "/"} />
+              <ArchitectureDetail title="Primary CTA" value={architecturePrimaryCta(project, latestStrategy)} />
+              <ArchitectureDetail title="SEO Focus" value={architectureSeoFocus(project, data)} />
+              <ArchitectureDetail title="Internal Links" value={latestCrawl ? "Use crawl data to connect service, blog, and conversion pages." : "Run site analysis to calculate internal link opportunities."} />
+            </div>
+          </Card>
+
+          <Card className="p-5">
+            <div className="mb-4 flex items-center gap-2 border-b border-slate-100 pb-3">
+              <IconBadge icon="▤" />
+              <h2 className="font-bold text-brand-700">Website & Funnel Sections</h2>
+            </div>
+            <div className="grid gap-5 lg:grid-cols-4">
+              <PlanList title="Core Pages" items={pages.slice(0, 5).map((page) => page.title)} />
+              <PlanList title="SEO Inputs" items={architectureSeoInputs(project, data)} />
+              <PlanList title="Conversion Flow" items={architectureConversionFlow(project, latestStrategy)} />
+              <PlanList title="Publishing Checks" items={architecturePublishingChecks(project, latestCrawl)} />
+            </div>
+          </Card>
+        </div>
+
+        <div className="space-y-5">
+          <ArchitectureReadinessPanel
+            score={readinessScore}
+            rows={[
+              { label: "Project profile", ok: Boolean(project?.businessProfile || project?.intakeAnswers?.length), value: project?.businessProfile ? "Complete" : "Needs intake" },
+              { label: "Approved strategy", ok: strategyApproved, value: strategyApproved ? "Approved" : latestStrategy ? "Draft" : "Missing" },
+              { label: "Connected website", ok: Boolean(website || project?.websiteUrl), value: website?.domain || project?.websiteUrl || "Missing" },
+              { label: "Site crawl", ok: Boolean(latestCrawl), value: latestCrawl ? `${formatNumber(latestCrawl.pagesCrawled)} pages` : "Not run" },
+              { label: "Keyword data", ok: data.keywordRuns.length > 0, value: `${formatNumber(data.keywordRuns.length)} runs` },
+            ]}
+          />
+          <DataTable
+            title="Next Architecture Actions"
+            columns={["Task", "Impact", "Current Status", "Priority", "Action"]}
+            rows={architectureActionRows(project, latestStrategy, latestCrawl, data, architectureTasks)}
+            footerAction={<span className="text-sm font-semibold text-charcoal-500">Actions are derived from project profile, strategy, crawl, keyword runs, and saved architecture tasks.</span>}
+          />
+        </div>
       </div>
     </>
+  );
+}
+
+function ArchitectureDetail({ title, value }: { title: string; value: string }) {
+  return (
+    <div className="rounded-lg border border-slate-100 bg-slate-50/70 p-4">
+      <div className="text-xs font-bold uppercase tracking-wide text-charcoal-400">{title}</div>
+      <div className="mt-2 text-sm font-semibold leading-6 text-charcoal-800">{value}</div>
+    </div>
+  );
+}
+
+function ArchitectureReadinessPanel({ score, rows }: { score: number; rows: { label: string; value: string; ok: boolean }[] }) {
+  const safe = Math.max(0, Math.min(100, score));
+  const chart = [{ name: "score", value: safe, color: "#0f9f87" }, { name: "rest", value: 100 - safe, color: "#e8eef8" }];
+  return (
+    <Card className="p-5">
+      <h2 className="font-bold text-charcoal-950">Architecture Readiness</h2>
+      <div className="my-5 flex justify-center">
+        <div className="relative h-32 w-32">
+          <ResponsiveContainer width="100%" height="100%">
+            <PieChart><Pie data={chart} dataKey="value" innerRadius={44} outerRadius={58} startAngle={90} endAngle={-270}>{chart.map((item) => <Cell key={item.name} fill={item.color} />)}</Pie></PieChart>
+          </ResponsiveContainer>
+          <div className="absolute inset-0 grid place-items-center text-center"><div><div className="text-3xl font-bold text-charcoal-950">{safe}</div><div className="text-xs text-charcoal-500">Score</div></div></div>
+        </div>
+      </div>
+      <div className="space-y-2">
+        {rows.map((row) => (
+          <div key={row.label} className="flex items-center justify-between gap-3 rounded-lg bg-slate-50 px-3 py-2">
+            <div className="min-w-0">
+              <div className="text-sm font-bold text-charcoal-800">{row.label}</div>
+              <div className="truncate text-xs text-charcoal-500">{row.value}</div>
+            </div>
+            <span className={`shrink-0 rounded-full px-2 py-1 text-xs font-bold ${row.ok ? "bg-emerald-50 text-emerald-700" : "bg-amber-50 text-amber-700"}`}>
+              {row.ok ? "Ready" : "Needed"}
+            </span>
+          </div>
+        ))}
+      </div>
+    </Card>
   );
 }
 
@@ -2610,6 +2761,144 @@ function websitePlanItems(data: ModuleData) {
     ...ideas,
     ...(website?.domain ? [`Contact ${website.domain}`] : []),
   ].slice(0, 10);
+}
+
+type ArchitecturePage = { title: string; purpose: string; source: string; status: "Existing" | "Ready" | "Recommended"; slug: string };
+
+function architecturePageBlueprint(data: ModuleData): ArchitecturePage[] {
+  const project = data.projects[0];
+  const website = data.websites[0];
+  const latestCrawl = website?.crawlJobs?.find((crawl) => crawl.status === "completed");
+  const keywordIdeas = data.keywordRuns.flatMap((run) => run.ideas?.map((idea) => idea.keyword) ?? [run.seedKeyword]).filter(Boolean).slice(0, 4);
+  const businessName = project?.businessName || project?.name || website?.domain || "Project";
+  const niche = project?.niche || "core offer";
+  const offer = project?.businessProfile?.offerSummary || project?.primaryGoal || niche;
+  const rows: ArchitecturePage[] = [
+    {
+      title: "Home",
+      purpose: `Introduce ${businessName}, clarify the offer, and route visitors to the primary conversion path.`,
+      source: latestCrawl ? "Existing website scanned" : "Core website requirement",
+      status: latestCrawl ? "Existing" : "Ready",
+      slug: "/",
+    },
+    {
+      title: "Services / Solutions",
+      purpose: `Explain ${offer} and connect each service to proof, FAQs, and conversion CTAs.`,
+      source: "Project intake and strategy",
+      status: "Recommended",
+      slug: "/services",
+    },
+    {
+      title: "About",
+      purpose: "Build trust with company context, expertise, process, proof, and entity clarity.",
+      source: "Entity and conversion requirement",
+      status: "Recommended",
+      slug: "/about",
+    },
+    {
+      title: "Resources / Blog",
+      purpose: `Support ${niche} search demand with educational pages, comparisons, FAQs, and internal links.`,
+      source: data.keywordRuns.length ? "Keyword research" : "SEO content requirement",
+      status: "Recommended",
+      slug: "/resources",
+    },
+    {
+      title: "Contact / Consultation",
+      purpose: "Give high-intent visitors a clear path to request help, book a call, or submit details.",
+      source: "Primary conversion goal",
+      status: "Recommended",
+      slug: "/contact",
+    },
+    ...keywordIdeas.map((keyword) => ({
+      title: label(keyword),
+      purpose: `Create or optimize a page around "${keyword}" and map it to the correct funnel stage.`,
+      source: "Keyword research",
+      status: "Recommended" as const,
+      slug: `/${slugify(keyword)}`,
+    })),
+  ];
+  const seen = new Set<string>();
+  return rows.filter((row) => {
+    const key = row.title.toLowerCase();
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  }).slice(0, 10);
+}
+
+function architecturePrimaryCta(
+  project: GuidedProject | undefined,
+  strategy: { offerRecommendation?: string | null } | null,
+) {
+  if (project?.primaryGoal?.toLowerCase().includes("lead")) return "Book a consultation / Request a quote";
+  if (strategy?.offerRecommendation) return `Convert through: ${strategy.offerRecommendation}`;
+  return project?.businessProfile?.offerSummary ? "Request a consultation for the primary offer" : "Primary CTA pending from strategy";
+}
+
+function architectureSeoFocus(project: GuidedProject | undefined, data: ModuleData) {
+  const firstKeyword = data.keywordRuns[0]?.seedKeyword;
+  if (firstKeyword) return `Map ${firstKeyword} and related keywords to the strongest matching page.`;
+  if (project?.niche) return `Build topical coverage around ${project.niche}.`;
+  return "Add keyword research to define page targets.";
+}
+
+function architectureSeoInputs(project: GuidedProject | undefined, data: ModuleData) {
+  const inputs = [
+    project?.niche ? `Niche: ${project.niche}` : "Niche pending",
+    project?.targetLocation ? `Location: ${project.targetLocation}` : "Location pending",
+    data.keywordRuns.length ? `${formatNumber(data.keywordRuns.length)} keyword run(s)` : "Keyword research needed",
+    data.keywordRuns[0]?.intent ? `Primary intent: ${label(data.keywordRuns[0].intent)}` : "Intent mapping pending",
+  ];
+  return inputs;
+}
+
+function architectureConversionFlow(project: GuidedProject | undefined, strategy: { offerRecommendation?: string | null } | null) {
+  return [
+    "Home page clarifies offer and routes by intent",
+    "Service pages answer buyer questions and objections",
+    strategy?.offerRecommendation || project?.businessProfile?.offerSummary || "Primary offer pending",
+    project?.primaryGoal || "Primary goal pending",
+  ];
+}
+
+function architecturePublishingChecks(project: GuidedProject | undefined, latestCrawl: NonNullable<Website["crawlJobs"]>[number] | undefined) {
+  return [
+    project?.preferredPublishingMethod ? `Target: ${project.preferredPublishingMethod}` : "Publishing target pending",
+    latestCrawl ? "Use latest crawl to avoid duplicate pages" : "Run site analysis before final sitemap",
+    "Review URLs, titles, meta, CTAs, schema, and internal links",
+    "Publish only after approval",
+  ];
+}
+
+function architectureActionRows(
+  project: GuidedProject | undefined,
+  strategy: { status?: string | null } | null,
+  latestCrawl: NonNullable<Website["crawlJobs"]>[number] | undefined,
+  data: ModuleData,
+  tasks: GuidedExecutionTask[],
+) {
+  if (tasks.length) return taskRows(tasks);
+  const rows: string[][] = [];
+  if (!project?.businessProfile && !(project?.intakeAnswers?.length)) {
+    rows.push(["Complete project profile", "High", "Missing intake context", "High", "Complete Intake"]);
+  }
+  if (strategy?.status !== "approved") {
+    rows.push(["Approve strategy", "High", strategy ? "Draft exists" : "Missing strategy", "High", strategy ? "Approve" : "Generate"]);
+  }
+  if (!latestCrawl) {
+    rows.push(["Analyze existing website", "High", "No crawl data", "High", "Analyze Site"]);
+  }
+  if (!data.keywordRuns.length) {
+    rows.push(["Add keyword targets", "Medium", "No keyword runs", "Medium", "Add Keywords"]);
+  }
+  rows.push(["Generate sitemap blueprint", "Medium", "Ready after required inputs", "Medium", "Generate"]);
+  rows.push(["Map internal links", "Medium", latestCrawl ? "Crawl data available" : "Needs crawl", "Medium", "Prepare"]);
+  rows.push(["Prepare page metadata", "Medium", data.keywordRuns.length ? "Keyword data available" : "Needs keywords", "Medium", "Generate"]);
+  return rows.slice(0, 8);
+}
+
+function slugify(value: string) {
+  return value.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 80) || "page";
 }
 
 function keywordRows(runs: KeywordRun[]) {
