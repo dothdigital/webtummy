@@ -52,12 +52,13 @@ const moduleCopy: Record<ModuleKind, { title: string; subtitle: string; primary:
     title: "Keyword Research",
     subtitle: "Review saved keyword research, search demand, difficulty, intent, CPC, opportunities, and page targets.",
     primary: "Add Keywords",
-    secondary: "Import Keywords",
+    secondary: "How it works",
   },
   "site-analysis": {
     title: "Site Analysis",
     subtitle: "Analyze and improve your website's performance, health, and search visibility.",
     primary: "Analyze Site",
+    secondary: "How it works",
   },
   backlinks: {
     title: "Backlink Intelligence",
@@ -75,13 +76,13 @@ const moduleCopy: Record<ModuleKind, { title: string; subtitle: string; primary:
     title: "AI Site Architect",
     subtitle: "Generate intelligent site structure and pages that rank and convert.",
     primary: "Generate Pages",
-    secondary: "Save Blueprint",
+    secondary: "How it works",
   },
   "lead-magnets": {
     title: "Lead Magnet Builder",
     subtitle: "Create high-converting lead capture assets that grow your audience and fuel your funnel.",
     primary: "Generate Lead Magnet",
-    secondary: "Templates",
+    secondary: "How it works",
   },
 };
 
@@ -546,56 +547,240 @@ export default function ExecutionModule({ kind }: { kind: ModuleKind }) {
   );
 }
 
+type HelpSection = { title: string; body?: string; bullets?: string[] };
+
+function moduleHelpSections(kind: ModuleKind, projectName: string): HelpSection[] {
+  const sharedSafety = {
+    title: "Approval and safety",
+    bullets: [
+      "SEnuke AI can recommend, generate, and prepare assets automatically.",
+      "Anything that publishes, sends, schedules, changes a live page, or affects an external system requires user approval.",
+      "If required data is missing, the module shows a readiness checklist with direct buttons instead of a dead-end error.",
+    ],
+  };
+  const sections: Record<ModuleKind, HelpSection[]> = {
+    opportunities: [
+      {
+        title: "What this module is",
+        body: `Opportunity Finder turns the intake profile for ${projectName} into scored growth directions. It helps choose the best focus before strategy, keywords, site architecture, content, backlinks, and publishing tasks are generated.`,
+      },
+      {
+        title: "Data used",
+        bullets: [
+          "Project type, niche, country, and target market.",
+          "Audience, offer, budget, timeline, publishing method, and business constraints from intake.",
+          "Connected website and crawl data when available.",
+          "Existing keyword, backlink, site analysis, and execution task signals when available.",
+        ],
+      },
+      {
+        title: "How to use it",
+        bullets: [
+          "Complete intake first so the project has enough business context.",
+          "Use Refresh Opportunities only after the project profile changes or new analysis data is available.",
+          "Review the score, fit rationale, execution preview, and insights panel.",
+          "Select one opportunity to make it the strategy context.",
+        ],
+      },
+      {
+        title: "What happens next",
+        bullets: [
+          "The selected opportunity becomes the input for AI Strategy Engine.",
+          "Downstream tasks are mapped to strategy, site architecture, keyword research, content, backlinks, and publishing.",
+        ],
+      },
+      sharedSafety,
+    ],
+    strategy: [
+      {
+        title: "What this module is",
+        body: "AI Strategy Engine converts the selected opportunity and completed intake into a structured execution strategy. It defines positioning, audience, offer, SEO priorities, channel plan, funnel plan, and execution roadmap.",
+      },
+      {
+        title: "Data used",
+        bullets: [
+          "Selected opportunity and project intake answers.",
+          "Business profile, audience, offer, goal, budget, and publishing method.",
+          "Website crawl, keyword, backlink, citation, and task data when available.",
+        ],
+      },
+      {
+        title: "How to use it",
+        bullets: [
+          "Review the strategy summary cards and score panel.",
+          "Regenerate only when project direction, opportunity, or intake context changes.",
+          "Approve the strategy when it is correct.",
+          "Create the execution plan after approval so tasks are generated from the approved version.",
+        ],
+      },
+      {
+        title: "What happens next",
+        bullets: [
+          "Approval locks the strategy version used by downstream modules.",
+          "Execution tasks can then be created for sitemap, homepage, lead magnet, SEO plan, domain, publishing, and related modules.",
+        ],
+      },
+      sharedSafety,
+    ],
+    keywords: [
+      {
+        title: "What this module is",
+        body: "Keyword Research stores and reviews keyword intelligence for the selected project. It helps identify search demand, intent, difficulty, CPC, clusters, and page targets.",
+      },
+      {
+        title: "Data used",
+        bullets: [
+          "Project industry, audience, services, locations, and selected strategy context.",
+          "Connected website pages and latest crawl data.",
+          "Manual keywords added by the user and AI-suggested keyword ideas.",
+          "Search provider results when credentials are configured.",
+        ],
+      },
+      {
+        title: "How to use it",
+        bullets: [
+          "Click Add Keywords to add one or more seed keywords with location and target URL context.",
+          "Use AI suggestions when you need industry, offer, audience, or location-aware ideas.",
+          "Run keyword intelligence to fetch demand, difficulty, intent, CPC, and opportunities.",
+          "Use results to map keywords to pages and create content or optimization tasks.",
+        ],
+      },
+      sharedSafety,
+    ],
+    "site-analysis": [
+      {
+        title: "What this module is",
+        body: "Site Analysis crawls the connected website and turns technical, SEO, page, internal-linking, and readiness issues into actionable project data.",
+      },
+      {
+        title: "Data used",
+        bullets: [
+          "Connected website URL.",
+          "Latest completed crawl and crawl issues.",
+          "Pages, status codes, titles, descriptions, headings, internal links, broken links, orphan pages, and performance signals.",
+          "Project strategy and keyword context when available.",
+        ],
+      },
+      {
+        title: "How to use it",
+        bullets: [
+          "Run Analyze Site to start a crawl when scanning is available.",
+          "The scan button is disabled for 72 hours after a completed scan to avoid repeated crawl load.",
+          "Review health cards, issue rows, and page details.",
+          "Open or create tasks from issues that need work.",
+        ],
+      },
+      sharedSafety,
+    ],
+    backlinks: [
+      {
+        title: "What this module is",
+        body: "Backlink Intelligence shows link authority, referring domains, new/lost links, competitor gaps, and outreach opportunities for the selected website.",
+      },
+      {
+        title: "Data used",
+        bullets: [
+          "Connected website domain.",
+          "Cached backlink summary and backlink link records.",
+          "Project strategy, authority goals, and execution tasks.",
+          "External backlink provider data when configured.",
+        ],
+      },
+      {
+        title: "How to use it",
+        bullets: [
+          "Refresh Backlinks only when the cooldown allows it.",
+          "The refresh button is locked for 7 days after a successful refresh to prevent repeated provider calls.",
+          "Review link quality, authority score, status, and opportunities.",
+          "Create outreach or authority tasks from actionable gaps.",
+        ],
+      },
+      sharedSafety,
+    ],
+    "ai-citations": [
+      {
+        title: "What this module is",
+        body: "AI Citation Optimization is a smart dashboard for AI search readiness. It shows whether the brand has enough entity, NAP, schema, sitemap, robots, FAQ, breadcrumb, and llms.txt signals to be understood and cited by AI answer engines.",
+      },
+      {
+        title: "Data used",
+        bullets: [
+          "Latest site crawl and health report.",
+          "Local/NAP business profile when configured.",
+          "Organization, WebSite, FAQPage, BreadcrumbList, and invalid schema counts.",
+          "Sitemap, robots, llms.txt, and citation-related execution tasks.",
+        ],
+      },
+      {
+        title: "How to use it",
+        bullets: [
+          "This screen is a live snapshot from the latest crawl, not a separate refresh action.",
+          "Run Site Analysis first when citation data is missing or stale.",
+          "Review missing entity, NAP, schema, and AI-discoverability signals.",
+          "Create or complete citation tasks for missing items.",
+        ],
+      },
+      sharedSafety,
+    ],
+    "site-architect": [
+      {
+        title: "What this module is",
+        body: "AI Site Architect turns approved strategy and keyword/site data into a site structure, page hierarchy, page metadata, internal linking plan, CTA plan, and sitemap-ready blueprint.",
+      },
+      {
+        title: "Data used",
+        bullets: [
+          "Approved strategy and selected opportunity.",
+          "Project niche, audience, offer, goal, location, and publishing target.",
+          "Keyword clusters and crawl/page data when available.",
+          "Existing execution tasks for sitemap, pages, and publishing.",
+        ],
+      },
+      {
+        title: "How to use it",
+        bullets: [
+          "Review the proposed page hierarchy and selected page details.",
+          "Check metadata, slug, CTA, section list, and internal linking recommendations.",
+          "Generate or update pages only after the strategy direction is approved.",
+          "Use existing crawl data to mark already-present pages as complete where possible.",
+        ],
+      },
+      sharedSafety,
+    ],
+    "lead-magnets": [
+      {
+        title: "What this module is",
+        body: "Lead Magnet Builder creates conversion assets such as guides, checklists, landing page copy, thank-you page copy, delivery emails, and CTA flows from the project strategy.",
+      },
+      {
+        title: "Data used",
+        bullets: [
+          "Approved strategy, audience, pain points, offer, and conversion goal.",
+          "Project industry, location, tone, and publishing method.",
+          "Existing content, keyword, and site data when available.",
+          "Execution tasks related to lead capture and follow-up.",
+        ],
+      },
+      {
+        title: "How to use it",
+        bullets: [
+          "Review recommended lead magnet ideas and choose the best fit.",
+          "Check the landing page summary, email copy, thank-you page, and CTA flow.",
+          "Publish or export only after reviewing the generated asset.",
+          "Connect forms or email tools before sending or automating follow-up.",
+        ],
+      },
+      sharedSafety,
+    ],
+  };
+  return sections[kind];
+}
+
 function ModuleHelpDrawer({ kind, project, open, onClose }: { kind: ModuleKind; project?: GuidedProject; open: boolean; onClose: () => void }) {
   if (!open) return null;
-  const isOpportunity = kind === "opportunities";
-  const title = isOpportunity ? "How Opportunity Finder Works" : `How ${moduleCopy[kind].title} Works`;
+  const title = `How ${moduleCopy[kind].title} Works`;
   const projectName = project?.businessName || project?.name || "the selected project";
-  const sections = isOpportunity
-    ? [
-        {
-          title: "What this screen does",
-          body: `Opportunity Finder turns the intake profile for ${projectName} into scored growth options. It helps choose the best direction before strategy, keywords, site architecture, content, backlinks, and publishing tasks are generated.`,
-        },
-        {
-          title: "Data used",
-          bullets: [
-            "Project type, niche, country or target market.",
-            "Audience, offer, budget, timeline, publishing method, and business constraints from intake.",
-            "Connected website and crawl data when available.",
-            "Existing keyword, backlink, site analysis, and execution task signals when available.",
-          ],
-        },
-        {
-          title: "Workflow",
-          bullets: [
-            "Complete intake so the project has enough context.",
-            "Refresh opportunities to generate or update scored recommendations.",
-            "Review each card and its score breakdown.",
-            "Select one opportunity to make it the strategy context.",
-            "Generate or review the AI strategy using that selected opportunity.",
-          ],
-        },
-        {
-          title: "What the buttons mean",
-          bullets: [
-            "Refresh Opportunities: regenerates recommendations from the current project data.",
-            "View Details: changes the focused card and updates the rationale and insights panel.",
-            "Select Opportunity: stores the selected option for downstream strategy generation.",
-            "Compare: expands the list so you can compare all generated options.",
-          ],
-        },
-      ]
-    : [
-        {
-          title: "What this screen does",
-          body: `${moduleCopy[kind].title} uses the selected project context and related module records to show current status, next actions, and available workflow controls.`,
-        },
-        {
-          title: "Data used",
-          bullets: ["Selected project profile.", "Connected website data when available.", "Generated tasks and module-specific records."],
-        },
-      ];
+  const sections = moduleHelpSections(kind, projectName);
 
   return (
     <div className="fixed inset-0 z-50" role="dialog" aria-modal="true" aria-label={title}>
