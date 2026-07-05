@@ -1,0 +1,84 @@
+name: webtummy-dev
+
+services:
+  mysql:
+    image: mysql:8.4
+    restart: unless-stopped
+    command:
+      - --innodb-buffer-pool-size=128M
+      - --max-connections=30
+      - --performance-schema=OFF
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+      MYSQL_DATABASE: webtummy_dev
+      MYSQL_USER: webtummy
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD}
+    volumes:
+      - mysql_dev_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -u root -p$${MYSQL_ROOT_PASSWORD} --silent"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    volumes:
+      - redis_dev_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    restart: unless-stopped
+    env_file: .env.dev
+    environment:
+      DATABASE_URL: mysql://webtummy:${MYSQL_PASSWORD}@mysql:3306/webtummy_dev
+      REDIS_URL: redis://redis:6379
+      API_PORT: 4000
+      WEB_APP_URL: https://doth-dev.webtummy.com
+    command: sh -c "npm run db:push && npm run -w @webtummy/api seed && npm run -w @webtummy/api start"
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.worker
+    restart: unless-stopped
+    env_file: .env.dev
+    environment:
+      DATABASE_URL: mysql://webtummy:${MYSQL_PASSWORD}@mysql:3306/webtummy_dev
+      REDIS_URL: redis://redis:6379
+      WEB_APP_URL: https://doth-dev.webtummy.com
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      api:
+        condition: service_started
+
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile.web
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8081:80"
+    depends_on:
+      api:
+        condition: service_started
+
+volumes:
+  mysql_dev_data:
+  redis_dev_data:
