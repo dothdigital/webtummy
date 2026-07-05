@@ -17,6 +17,8 @@ import { billingRouter } from "./routes/billing.js";
 import { guidedProjectsRouter } from "./routes/projects-v2.js";
 import { growthRouter } from "./routes/growth.js";
 import { automationRouter } from "./routes/automation.js";
+import { usageRouter } from "./routes/usage.js";
+import { competitiveIntelligenceRouter } from "./routes/competitive-intelligence.js";
 import { rawBodySaver } from "./billing.js";
 
 const app = express();
@@ -87,6 +89,8 @@ app.get("/", (_req, res) =>
       executionTasks: "GET|POST /api/execution-tasks",
       growth: "GET|POST /api/projects-v2/:projectId/growth",
       automation: "GET /api/automation/overview",
+      usage: "GET|POST /api/usage",
+      competitiveIntelligence: "GET|POST /api/projects/:projectId/intelligence",
     },
   }),
 );
@@ -98,6 +102,8 @@ app.use("/api/users", usersRouter);
 app.use("/api", guidedProjectsRouter);
 app.use("/api", growthRouter);
 app.use("/api", automationRouter);
+app.use("/api", usageRouter);
+app.use("/api", competitiveIntelligenceRouter);
 app.use("/api/websites", websitesRouter);
 app.use("/api", crawlsRouter); // crawls routes carry their own full paths
 app.use("/api", overviewRouter);

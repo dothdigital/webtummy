@@ -119,6 +119,13 @@ model Client {
   keywordResearchRuns   KeywordResearchRun[]
   aiContentGenerations  AiContentGeneration[]
   aiUsageCounters       AiUsageCounter[]
+  creditAccounts        CreditAccount[]
+  creditTransactions    CreditTransaction[]
+  usageEvents           UsageEvent[]
+  providerCostEvents    ProviderCostEvent[]
+  cacheRecords          CacheRecord[]
+  budgetCaps            BudgetCap[]
+  usageAlerts           UsageAlert[]
   localBusinessProfiles LocalBusinessProfile[]
   offlinePayments       OfflinePayment[]
   monthlyReports        MonthlyClientReport[]
@@ -198,6 +205,243 @@ model BillingPlan {
   @@index([stripePriceId])
 }
 
+// ─── Usage, Limits, Credits & Cost Control ──────────────────────────────────
+
+model FeatureCostCatalog {
+  id                    String   @id @default(cuid())
+  featureKey            String   @unique @db.VarChar(120)
+  moduleName            String   @db.VarChar(80)
+  label                 String   @db.VarChar(180)
+  description           String   @db.Text
+  defaultCreditCost     Int      @default(0)
+  estimatedProviderCost Float    @default(0)
+  unitLabel             String   @default("run") @db.VarChar(40)
+  requiresApproval      Boolean  @default(false)
+  requiresIntegration   Boolean  @default(false)
+  cacheTtlMinutes       Int      @default(0)
+  isActive              Boolean  @default(true)
+  configJson            Json     @default("{}")
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+
+  planLimits PlanFeatureLimit[]
+  usageEvents UsageEvent[]
+  providerCostEvents ProviderCostEvent[]
+  cacheRecords CacheRecord[]
+  jobQueueRecords JobQueueRecord[]
+  modelRoutingRules ModelRoutingRule[]
+
+  @@index([moduleName])
+  @@index([isActive])
+}
+
+model PlanFeatureLimit {
+  id              String             @id @default(cuid())
+  planCode        String             @db.VarChar(40)
+  featureKey      String             @db.VarChar(120)
+  feature         FeatureCostCatalog @relation(fields: [featureKey], references: [featureKey], onDelete: Cascade)
+  monthlyLimit    Int?
+  dailyLimit      Int?
+  creditCost      Int?
+  hardBlocked     Boolean            @default(false)
+  overageAllowed  Boolean            @default(false)
+  configJson      Json               @default("{}")
+  createdAt       DateTime           @default(now())
+  updatedAt       DateTime           @updatedAt
+
+  @@unique([planCode, featureKey])
+  @@index([planCode])
+  @@index([featureKey])
+}
+
+model CreditAccount {
+  id              String   @id @default(cuid())
+  clientId        String
+  client          Client   @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  balance         Int      @default(0)
+  monthlyAllowance Int     @default(0)
+  monthlyUsed     Int      @default(0)
+  periodStart     DateTime
+  periodEnd       DateTime
+  status          String   @default("active") @db.VarChar(40)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@unique([clientId, periodStart])
+  @@index([clientId, status])
+  @@index([periodEnd])
+}
+
+model CreditTransaction {
+  id             String   @id @default(cuid())
+  clientId       String
+  client         Client   @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  usageEventId   String?
+  usageEvent     UsageEvent? @relation(fields: [usageEventId], references: [id], onDelete: SetNull)
+  type           String   @db.VarChar(40) // grant | debit | refund | adjustment | expiry
+  amount         Int
+  balanceAfter   Int
+  reason         String   @db.VarChar(255)
+  metadataJson   Json     @default("{}")
+  createdAt      DateTime @default(now())
+
+  @@index([clientId, createdAt])
+  @@index([usageEventId])
+  @@index([type])
+}
+
+model UsageEvent {
+  id                   String   @id @default(cuid())
+  clientId             String
+  client               Client   @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  userId               String?
+  projectId            String?
+  websiteId            String?
+  featureKey           String   @db.VarChar(120)
+  feature              FeatureCostCatalog @relation(fields: [featureKey], references: [featureKey], onDelete: Restrict)
+  actionKey            String   @db.VarChar(160)
+  idempotencyKey       String?  @db.VarChar(255)
+  status               String   @default("reserved") @db.VarChar(40)
+  creditsReserved      Int      @default(0)
+  creditsCommitted     Int      @default(0)
+  providerCostUsd      Float    @default(0)
+  inputUnits           Int      @default(1)
+  approvalTokenHash    String?  @unique @db.VarChar(191)
+  approvalTokenExpiresAt DateTime?
+  error                String?  @db.Text
+  metadataJson         Json     @default("{}")
+  createdAt            DateTime @default(now())
+  committedAt          DateTime?
+  refundedAt           DateTime?
+
+  creditTransactions CreditTransaction[]
+  providerCostEvents ProviderCostEvent[]
+
+  @@unique([clientId, idempotencyKey])
+  @@index([clientId, createdAt])
+  @@index([featureKey, status])
+  @@index([projectId])
+  @@index([websiteId])
+  @@index([status])
+}
+
+model ProviderCostEvent {
+  id              String   @id @default(cuid())
+  clientId        String
+  client          Client   @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  usageEventId    String?
+  usageEvent      UsageEvent? @relation(fields: [usageEventId], references: [id], onDelete: SetNull)
+  featureKey      String   @db.VarChar(120)
+  feature         FeatureCostCatalog @relation(fields: [featureKey], references: [featureKey], onDelete: Restrict)
+  provider        String   @db.VarChar(80)
+  model           String?  @db.VarChar(120)
+  inputTokens     Int      @default(0)
+  outputTokens    Int      @default(0)
+  costUsd         Float    @default(0)
+  metadataJson    Json     @default("{}")
+  createdAt       DateTime @default(now())
+
+  @@index([clientId, createdAt])
+  @@index([usageEventId])
+  @@index([featureKey])
+  @@index([provider])
+}
+
+model CacheRecord {
+  id             String   @id @default(cuid())
+  clientId       String
+  client         Client   @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  featureKey     String   @db.VarChar(120)
+  feature        FeatureCostCatalog @relation(fields: [featureKey], references: [featureKey], onDelete: Cascade)
+  cacheKeyHash   String   @db.VarChar(191)
+  sourceHash     String?  @db.VarChar(191)
+  resultJson     Json     @default("{}")
+  expiresAt      DateTime
+  hitCount       Int      @default(0)
+  lastHitAt      DateTime?
+  createdAt      DateTime @default(now())
+
+  @@unique([clientId, featureKey, cacheKeyHash])
+  @@index([expiresAt])
+  @@index([featureKey])
+}
+
+model BudgetCap {
+  id             String   @id @default(cuid())
+  clientId       String
+  client         Client   @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  scope          String   @db.VarChar(40) // workspace | project | feature | provider
+  scopeKey       String   @db.VarChar(191)
+  monthlyCredits Int?
+  monthlyCostUsd Float?
+  isActive       Boolean  @default(true)
+  alertAtPercent Int      @default(80)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  @@unique([clientId, scope, scopeKey])
+  @@index([clientId, isActive])
+}
+
+model UsageAlert {
+  id           String   @id @default(cuid())
+  clientId     String
+  client       Client   @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  alertType    String   @db.VarChar(80)
+  severity     String   @default("info") @db.VarChar(40)
+  message      String   @db.Text
+  metadataJson Json     @default("{}")
+  resolvedAt   DateTime?
+  createdAt    DateTime @default(now())
+
+  @@index([clientId, createdAt])
+  @@index([alertType])
+  @@index([resolvedAt])
+}
+
+model JobQueueRecord {
+  id              String   @id @default(cuid())
+  clientId        String
+  featureKey      String   @db.VarChar(120)
+  feature         FeatureCostCatalog @relation(fields: [featureKey], references: [featureKey], onDelete: Restrict)
+  projectId       String?
+  websiteId       String?
+  status          String   @default("queued") @db.VarChar(40)
+  priority        Int      @default(50)
+  payloadJson     Json     @default("{}")
+  approvalRequired Boolean @default(false)
+  runAfter        DateTime?
+  startedAt       DateTime?
+  completedAt     DateTime?
+  error           String?  @db.Text
+  createdAt       DateTime @default(now())
+
+  @@index([clientId, status])
+  @@index([featureKey])
+  @@index([runAfter])
+}
+
+model ModelRoutingRule {
+  id              String   @id @default(cuid())
+  featureKey      String   @db.VarChar(120)
+  feature         FeatureCostCatalog @relation(fields: [featureKey], references: [featureKey], onDelete: Cascade)
+  planCode        String?  @db.VarChar(40)
+  taskComplexity  String   @default("standard") @db.VarChar(40)
+  provider        String   @default("openai") @db.VarChar(80)
+  model           String   @db.VarChar(120)
+  maxInputTokens  Int?
+  maxOutputTokens Int?
+  isActive        Boolean  @default(true)
+  sortOrder       Int      @default(0)
+  configJson      Json     @default("{}")
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@index([featureKey, isActive])
+  @@index([planCode])
+  @@index([sortOrder])
+}
+
 model Website {
   id                  String                 @id @default(cuid())
   clientId            String
@@ -261,6 +505,14 @@ model Project {
   growthExperiments GrowthExperiment[]
   growthChannelTests GrowthChannelTest[]
   growthReports GrowthReport[]
+  competitiveIntelligenceRuns CompetitiveIntelligenceRun[]
+  keywordRevenueScores KeywordRevenueScore[]
+  pageGrowthScores PageGrowthScore[]
+  authorityAssets AuthorityAsset[]
+  aiCitationGaps AiCitationGap[]
+  communityInsights CommunityInsight[]
+  intentDriftSnapshots IntentDriftSnapshot[]
+  moatScores MoatScore[]
 
   @@index([clientId, status])
   @@index([websiteId])
@@ -706,6 +958,155 @@ model ExecutionTask {
   @@index([safetyCategory])
   @@index([priority])
   @@index([createdAt])
+}
+
+// ─── Competitive SEO & Growth Intelligence ─────────────────────────────────
+
+model CompetitiveIntelligenceRun {
+  id              String    @id @default(cuid())
+  projectId       String
+  project         Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  clientId        String
+  userId          String?
+  websiteId       String?
+  featureKey      String    @db.VarChar(120)
+  status          String    @default("queued") @db.VarChar(40)
+  inputJson       Json      @default("{}")
+  outputJson      Json      @default("{}")
+  creditsReserved Int       @default(0)
+  creditsUsed     Int       @default(0)
+  estimatedCostUsd Float    @default(0)
+  actualCostUsd    Float    @default(0)
+  usageEventId    String?   @db.VarChar(191)
+  error           String?   @db.Text
+  createdAt       DateTime  @default(now())
+  completedAt     DateTime?
+
+  @@index([projectId, createdAt])
+  @@index([clientId, createdAt])
+  @@index([featureKey, status])
+}
+
+model KeywordRevenueScore {
+  id                         String   @id @default(cuid())
+  projectId                  String
+  project                    Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  keyword                    String   @db.VarChar(512)
+  searchVolume               Int?
+  difficulty                 Float?
+  buyerIntentScore           Float?
+  offerFitScore              Float?
+  authorityGapScore          Float?
+  aiCitationPotentialScore   Float?
+  revenueOpportunityScore    Int
+  recommendation             String?  @db.Text
+  createdAt                  DateTime @default(now())
+
+  @@index([projectId, createdAt])
+  @@index([keyword])
+  @@index([revenueOpportunityScore])
+}
+
+model PageGrowthScore {
+  id                              String   @id @default(cuid())
+  projectId                       String
+  project                         Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  pageId                          String?  @db.VarChar(191)
+  url                             String   @db.VarChar(512)
+  proofGapScore                   Int      @default(0)
+  monetizationFitScore            Int      @default(0)
+  refreshPriorityScore            Int      @default(0)
+  internalLinkOpportunityScore    Int      @default(0)
+  aiCitationPotentialScore        Int      @default(0)
+  overallScore                    Int      @default(0)
+  recommendedActions              Json     @default("[]")
+  createdAt                       DateTime @default(now())
+
+  @@index([projectId, createdAt])
+  @@index([pageId])
+  @@index([overallScore])
+}
+
+model AuthorityAsset {
+  id              String   @id @default(cuid())
+  projectId       String
+  project         Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  assetType       String   @db.VarChar(80)
+  title           String   @db.VarChar(220)
+  rationale       String?  @db.Text
+  status          String   @default("idea") @db.VarChar(60)
+  riskScore       Int      @default(0)
+  priorityScore   Int      @default(0)
+  executionTaskId String?  @db.VarChar(191)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@index([projectId, status])
+  @@index([priorityScore])
+}
+
+model AiCitationGap {
+  id                String   @id @default(cuid())
+  projectId         String
+  project           Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  query             String   @db.VarChar(512)
+  competitorUrl     String?  @db.VarChar(512)
+  citedPageUrl      String?  @db.VarChar(512)
+  gapSummary        String?  @db.Text
+  recommendedFixes  Json     @default("[]")
+  createdAt         DateTime @default(now())
+
+  @@index([projectId, createdAt])
+  @@index([query])
+}
+
+model CommunityInsight {
+  id               String   @id @default(cuid())
+  projectId        String
+  project          Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  sourceType       String   @db.VarChar(80)
+  sourceUrl        String?  @db.VarChar(512)
+  insightType      String   @db.VarChar(80)
+  summary          String   @db.Text
+  suggestedAction  String?  @db.Text
+  requiresApproval Boolean  @default(true)
+  createdAt        DateTime @default(now())
+
+  @@index([projectId, createdAt])
+  @@index([sourceType])
+  @@index([insightType])
+}
+
+model IntentDriftSnapshot {
+  id                  String   @id @default(cuid())
+  projectId           String
+  project             Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  keyword             String   @db.VarChar(512)
+  serpSnapshot        Json     @default("{}")
+  resultFormatSummary Json     @default("{}")
+  intentClass         String?  @db.VarChar(80)
+  capturedAt          DateTime @default(now())
+
+  @@index([projectId, capturedAt])
+  @@index([keyword])
+}
+
+model MoatScore {
+  id                       String   @id @default(cuid())
+  projectId                String
+  project                  Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  topicalCoverageScore     Int      @default(0)
+  authorityAssetScore      Int      @default(0)
+  brandEntityScore         Int      @default(0)
+  aiCitationScore          Int      @default(0)
+  conversionAssetScore     Int      @default(0)
+  communitySignalScore     Int      @default(0)
+  totalMoatScore           Int
+  recommendedNextAction    String?  @db.Text
+  createdAt                DateTime @default(now())
+
+  @@index([projectId, createdAt])
+  @@index([totalMoatScore])
 }
 
 // ─── Growth Marketing Engine ────────────────────────────────────────────────

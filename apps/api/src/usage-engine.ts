@@ -1,0 +1,395 @@
+import crypto from "node:crypto";
+import { prisma, type Prisma } from "@webtummy/db";
+import { normalizePlanCode } from "./billing.js";
+
+export const USAGE_APPROVAL_HEADER = "x-senuke-usage-token";
+
+type Db = typeof prisma | Prisma.TransactionClient;
+
+export type UsagePreflightInput = {
+  clientId: string;
+  userId?: string | null;
+  projectId?: string | null;
+  websiteId?: string | null;
+  featureKey: string;
+  actionKey?: string | null;
+  idempotencyKey?: string | null;
+  inputUnits?: number;
+  metadata?: Record<string, unknown>;
+};
+
+export type CommitUsageInput = {
+  usageEventId?: string | null;
+  approvalToken?: string | null;
+  provider?: string | null;
+  model?: string | null;
+  inputTokens?: number;
+  outputTokens?: number;
+  providerCostUsd?: number;
+  metadata?: Record<string, unknown>;
+};
+
+type FeatureSeed = {
+  featureKey: string;
+  moduleName: string;
+  label: string;
+  description: string;
+  defaultCreditCost: number;
+  estimatedProviderCost: number;
+  unitLabel?: string;
+  requiresApproval?: boolean;
+  requiresIntegration?: boolean;
+  cacheTtlMinutes?: number;
+};
+
+const featureSeeds: FeatureSeed[] = [
+  { featureKey: "opportunity_refresh", moduleName: "opportunities", label: "Refresh opportunities", description: "Generate scored opportunity recommendations from intake and project intelligence.", defaultCreditCost: 6, estimatedProviderCost: 0.08, cacheTtlMinutes: 1440 },
+  { featureKey: "strategy_generate", moduleName: "strategy", label: "Generate strategy", description: "Create or regenerate the AI strategy and execution roadmap.", defaultCreditCost: 10, estimatedProviderCost: 0.12, requiresApproval: true, cacheTtlMinutes: 720 },
+  { featureKey: "keyword_research_batch", moduleName: "keywords", label: "Keyword research batch", description: "Fetch keyword demand, SERP competitors, and ranking visibility.", defaultCreditCost: 8, estimatedProviderCost: 0.1, requiresIntegration: true, cacheTtlMinutes: 1440 },
+  { featureKey: "site_crawl_small", moduleName: "site_analysis", label: "Site crawl", description: "Crawl a connected site and create health, SEO issue, page, link, and readiness data.", defaultCreditCost: 12, estimatedProviderCost: 0.18, cacheTtlMinutes: 4320 },
+  { featureKey: "backlink_snapshot", moduleName: "backlinks", label: "Backlink snapshot", description: "Refresh authority, backlink, and outreach opportunity data.", defaultCreditCost: 8, estimatedProviderCost: 0.1, requiresIntegration: true, cacheTtlMinutes: 10080 },
+  { featureKey: "ai_citation_scan", moduleName: "ai_citations", label: "AI citation scan", description: "Analyze AI search readiness, schema, NAP, entity, and citation opportunities.", defaultCreditCost: 8, estimatedProviderCost: 0.1, cacheTtlMinutes: 1440 },
+  { featureKey: "site_architect_generate", moduleName: "site_architect", label: "Generate site architecture", description: "Generate sitemap, page plans, metadata, internal links, and sections.", defaultCreditCost: 10, estimatedProviderCost: 0.12, requiresApproval: true, cacheTtlMinutes: 1440 },
+  { featureKey: "lead_magnet_generate", moduleName: "lead_magnets", label: "Generate lead magnet", description: "Generate a lead magnet package, landing page copy, delivery email, and CTA flow.", defaultCreditCost: 10, estimatedProviderCost: 0.14, requiresApproval: true, cacheTtlMinutes: 720 },
+  { featureKey: "growth_diagnosis", moduleName: "growth", label: "Growth diagnosis", description: "Diagnose growth bottlenecks, funnel gaps, and recommended experiments.", defaultCreditCost: 10, estimatedProviderCost: 0.13, cacheTtlMinutes: 720 },
+  { featureKey: "growth_report", moduleName: "growth", label: "Growth report", description: "Generate client-ready growth diagnosis, roadmap, KPI plan, and recommendations.", defaultCreditCost: 14, estimatedProviderCost: 0.2, requiresApproval: true, cacheTtlMinutes: 1440 },
+  { featureKey: "social_calendar_generate", moduleName: "social", label: "Generate social calendar", description: "Generate social posts, schedule suggestions, and channel recommendations.", defaultCreditCost: 8, estimatedProviderCost: 0.1, requiresApproval: true, cacheTtlMinutes: 720 },
+  { featureKey: "agency_report_generate", moduleName: "reports", label: "Generate agency report", description: "Generate export-ready project, SEO, growth, or client report output.", defaultCreditCost: 12, estimatedProviderCost: 0.16, requiresApproval: true, cacheTtlMinutes: 1440 },
+  { featureKey: "revenue_keyword_score", moduleName: "competitive_intelligence", label: "Revenue keyword score", description: "Score keywords by business value, intent, authority gap, AI citation potential, and offer fit.", defaultCreditCost: 2, estimatedProviderCost: 0.02, cacheTtlMinutes: 1440 },
+  { featureKey: "improve_page_stack", moduleName: "competitive_intelligence", label: "Improve this page", description: "Run keyword value, proof gap, CTA strength, monetization fit, refresh, internal link, and AI citation checks for one page.", defaultCreditCost: 5, estimatedProviderCost: 0.04, requiresApproval: true, cacheTtlMinutes: 1440 },
+  { featureKey: "authority_asset_builder", moduleName: "competitive_intelligence", label: "Authority asset builder", description: "Generate safe link-worthy asset recommendations such as guides, templates, tools, calculators, and comparison pages.", defaultCreditCost: 10, estimatedProviderCost: 0.12, requiresApproval: true, cacheTtlMinutes: 1440 },
+  { featureKey: "ai_citation_gap", moduleName: "competitive_intelligence", label: "AI citation competitor gap", description: "Compare competitors and identify missing proof, schema, entity clarity, and citation-ready page formats.", defaultCreditCost: 15, estimatedProviderCost: 0.18, requiresApproval: true, cacheTtlMinutes: 1440 },
+  { featureKey: "community_intelligence", moduleName: "competitive_intelligence", label: "Community intelligence", description: "Analyze allowed community sources for pain points, objections, FAQs, content angles, and approved reply drafts.", defaultCreditCost: 8, estimatedProviderCost: 0.1, requiresApproval: true, cacheTtlMinutes: 1440 },
+  { featureKey: "moat_tracker", moduleName: "competitive_intelligence", label: "Competitive moat tracker", description: "Track durable competitive advantage across topical coverage, authority assets, citations, proof, leads, and community signals.", defaultCreditCost: 3, estimatedProviderCost: 0.03, cacheTtlMinutes: 1440 },
+];
+
+const planDefaults: Record<string, { monthlyCredits: number; limits: Record<string, number | null> }> = {
+  mini: { monthlyCredits: 100, limits: { site_crawl_small: 2, backlink_snapshot: 2, growth_report: 1 } },
+  starter: { monthlyCredits: 250, limits: { site_crawl_small: 4, backlink_snapshot: 4, growth_report: 2 } },
+  basic: { monthlyCredits: 600, limits: { site_crawl_small: 8, backlink_snapshot: 8, growth_report: 4 } },
+  growth: { monthlyCredits: 1200, limits: { site_crawl_small: 16, backlink_snapshot: 16, growth_report: 8 } },
+  pro: { monthlyCredits: 2500, limits: { site_crawl_small: 30, backlink_snapshot: 30, growth_report: 15 } },
+  internal: { monthlyCredits: 10000, limits: {} },
+};
+
+function monthWindow(now = new Date()) {
+  const periodStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1, 0, 0, 0, 0));
+  const periodEnd = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 1, 0, 0, 0, 0));
+  return { periodStart, periodEnd };
+}
+
+function hashToken(token: string) {
+  return crypto.createHash("sha256").update(token).digest("hex");
+}
+
+function roundCost(value: number) {
+  return Math.round(value * 1_000_000) / 1_000_000;
+}
+
+function defaultPlanConfig(planCode: string | null | undefined) {
+  const code = normalizePlanCode(planCode);
+  return planDefaults[code] ?? planDefaults.mini;
+}
+
+export async function ensureUsageControlDefaults(db: Db = prisma) {
+  for (const feature of featureSeeds) {
+    await db.featureCostCatalog.upsert({
+      where: { featureKey: feature.featureKey },
+      update: {},
+      create: {
+        ...feature,
+        unitLabel: feature.unitLabel ?? "run",
+        requiresApproval: feature.requiresApproval ?? false,
+        requiresIntegration: feature.requiresIntegration ?? false,
+        cacheTtlMinutes: feature.cacheTtlMinutes ?? 0,
+      },
+    });
+  }
+
+  for (const [planCode, config] of Object.entries(planDefaults)) {
+    for (const feature of featureSeeds) {
+      await db.planFeatureLimit.upsert({
+        where: { planCode_featureKey: { planCode, featureKey: feature.featureKey } },
+        update: {},
+        create: {
+          planCode,
+          featureKey: feature.featureKey,
+          monthlyLimit: config.limits[feature.featureKey] ?? null,
+          creditCost: feature.defaultCreditCost,
+        },
+      });
+    }
+  }
+}
+
+export async function ensureCreditAccount(clientId: string, db: Db = prisma) {
+  const client = await db.client.findUnique({ where: { id: clientId }, select: { plan: true } });
+  if (!client) throw new Error("client not found");
+  const { periodStart, periodEnd } = monthWindow();
+  const allowance = defaultPlanConfig(client.plan).monthlyCredits;
+  return db.creditAccount.upsert({
+    where: { clientId_periodStart: { clientId, periodStart } },
+    update: { monthlyAllowance: allowance, periodEnd },
+    create: { clientId, periodStart, periodEnd, monthlyAllowance: allowance, balance: allowance },
+  });
+}
+
+export async function usageSummaryForClient(clientId: string) {
+  await ensureUsageControlDefaults();
+  const account = await ensureCreditAccount(clientId);
+  const { periodStart } = monthWindow();
+  const [events, credits, providerCost, alerts, caps] = await Promise.all([
+    prisma.usageEvent.groupBy({
+      by: ["featureKey", "status"],
+      where: { clientId, createdAt: { gte: periodStart } },
+      _count: { _all: true },
+      _sum: { creditsCommitted: true, providerCostUsd: true },
+    }),
+    prisma.creditTransaction.findMany({ where: { clientId }, orderBy: { createdAt: "desc" }, take: 20 }),
+    prisma.providerCostEvent.aggregate({ where: { clientId, createdAt: { gte: periodStart } }, _sum: { costUsd: true } }),
+    prisma.usageAlert.findMany({ where: { clientId, resolvedAt: null }, orderBy: { createdAt: "desc" }, take: 10 }),
+    prisma.budgetCap.findMany({ where: { clientId, isActive: true }, orderBy: { createdAt: "desc" } }),
+  ]);
+
+  return {
+    account,
+    events,
+    recentTransactions: credits,
+    providerCostUsd: providerCost._sum.costUsd ?? 0,
+    alerts,
+    budgetCaps: caps,
+  };
+}
+
+async function monthlyFeatureCount(clientId: string, featureKey: string, status?: string[]) {
+  const { periodStart } = monthWindow();
+  return prisma.usageEvent.count({
+    where: {
+      clientId,
+      featureKey,
+      createdAt: { gte: periodStart },
+      ...(status?.length ? { status: { in: status } } : {}),
+    },
+  });
+}
+
+async function checkBudgetCaps(input: UsagePreflightInput, creditCost: number) {
+  const caps = await prisma.budgetCap.findMany({ where: { clientId: input.clientId, isActive: true } });
+  if (!caps.length) return;
+  const { periodStart } = monthWindow();
+  for (const cap of caps) {
+    const applies =
+      cap.scope === "workspace" ||
+      (cap.scope === "feature" && cap.scopeKey === input.featureKey) ||
+      (cap.scope === "project" && input.projectId && cap.scopeKey === input.projectId);
+    if (!applies) continue;
+
+    if (cap.monthlyCredits != null) {
+      const spent = await prisma.usageEvent.aggregate({
+        where: { clientId: input.clientId, createdAt: { gte: periodStart }, status: "committed", ...(cap.scope === "feature" ? { featureKey: cap.scopeKey } : {}), ...(cap.scope === "project" ? { projectId: cap.scopeKey } : {}) },
+        _sum: { creditsCommitted: true },
+      });
+      if ((spent._sum.creditsCommitted ?? 0) + creditCost > cap.monthlyCredits) {
+        const error = new Error("monthly budget cap reached");
+        error.name = "usage_budget_cap_reached";
+        throw error;
+      }
+    }
+  }
+}
+
+export async function preflightUsage(input: UsagePreflightInput) {
+  await ensureUsageControlDefaults();
+  const units = Math.max(1, Math.floor(input.inputUnits ?? 1));
+  const client = await prisma.client.findUnique({ where: { id: input.clientId }, select: { id: true, plan: true, aiSubscriptionStatus: true } });
+  if (!client) throw new Error("client not found");
+
+  const feature = await prisma.featureCostCatalog.findUnique({ where: { featureKey: input.featureKey } });
+  if (!feature || !feature.isActive) {
+    const error = new Error("feature is not enabled");
+    error.name = "usage_feature_disabled";
+    throw error;
+  }
+
+  const planCode = normalizePlanCode(client.plan);
+  const limit = await prisma.planFeatureLimit.findUnique({ where: { planCode_featureKey: { planCode, featureKey: input.featureKey } } });
+  if (limit?.hardBlocked) {
+    const error = new Error("feature is not available on this plan");
+    error.name = "usage_plan_blocked";
+    throw error;
+  }
+
+  if (limit?.monthlyLimit != null) {
+    const used = await monthlyFeatureCount(input.clientId, input.featureKey, ["reserved", "committed"]);
+    if (used + units > limit.monthlyLimit && !limit.overageAllowed) {
+      const error = new Error("monthly feature limit reached");
+      error.name = "usage_limit_reached";
+      throw error;
+    }
+  }
+
+  const account = await ensureCreditAccount(input.clientId);
+  const creditCost = Math.max(0, (limit?.creditCost ?? feature.defaultCreditCost) * units);
+  if (account.balance < creditCost) {
+    const error = new Error("not enough credits");
+    error.name = "usage_insufficient_credits";
+    throw error;
+  }
+  await checkBudgetCaps(input, creditCost);
+
+  const token = crypto.randomBytes(24).toString("base64url");
+  const expiresAt = new Date(Date.now() + 15 * 60 * 1000);
+  const actionKey = input.actionKey?.trim() || input.featureKey;
+
+  const event = await prisma.$transaction(async (tx) => {
+    const updated = await tx.creditAccount.update({
+      where: { id: account.id },
+      data: { balance: { decrement: creditCost } },
+    });
+    const usageEvent = await tx.usageEvent.create({
+      data: {
+        clientId: input.clientId,
+        userId: input.userId ?? null,
+        projectId: input.projectId ?? null,
+        websiteId: input.websiteId ?? null,
+        featureKey: input.featureKey,
+        actionKey,
+        idempotencyKey: input.idempotencyKey ?? null,
+        creditsReserved: creditCost,
+        inputUnits: units,
+        approvalTokenHash: hashToken(token),
+        approvalTokenExpiresAt: expiresAt,
+        metadataJson: input.metadata ?? {},
+      },
+    });
+    if (creditCost > 0) {
+      await tx.creditTransaction.create({
+        data: {
+          clientId: input.clientId,
+          usageEventId: usageEvent.id,
+          type: "debit",
+          amount: -creditCost,
+          balanceAfter: updated.balance,
+          reason: actionKey,
+          metadataJson: { featureKey: input.featureKey },
+        },
+      });
+    }
+    return usageEvent;
+  });
+
+  return {
+    usageEventId: event.id,
+    approvalToken: token,
+    expiresAt,
+    feature,
+    creditsReserved: creditCost,
+    estimatedProviderCostUsd: roundCost(feature.estimatedProviderCost * units),
+  };
+}
+
+export async function commitUsage(input: CommitUsageInput) {
+  const usageEvent = input.usageEventId
+    ? await prisma.usageEvent.findUnique({ where: { id: input.usageEventId } })
+    : input.approvalToken
+      ? await prisma.usageEvent.findUnique({ where: { approvalTokenHash: hashToken(input.approvalToken) } })
+      : null;
+  if (!usageEvent) throw new Error("usage event not found");
+  if (usageEvent.status === "committed") return usageEvent;
+  if (usageEvent.status !== "reserved") throw new Error(`usage event cannot be committed from ${usageEvent.status}`);
+  if (usageEvent.approvalTokenExpiresAt && usageEvent.approvalTokenExpiresAt < new Date()) {
+    await refundUsage({ usageEventId: usageEvent.id, reason: "approval token expired" });
+    const error = new Error("usage approval token expired");
+    error.name = "usage_token_expired";
+    throw error;
+  }
+
+  const providerCostUsd = roundCost(input.providerCostUsd ?? 0);
+  return prisma.$transaction(async (tx) => {
+    const updated = await tx.usageEvent.update({
+      where: { id: usageEvent.id },
+      data: {
+        status: "committed",
+        creditsCommitted: usageEvent.creditsReserved,
+        providerCostUsd,
+        committedAt: new Date(),
+        metadataJson: { ...(usageEvent.metadataJson as object), ...(input.metadata ?? {}) },
+      },
+    });
+    if (providerCostUsd > 0 || input.inputTokens || input.outputTokens || input.provider) {
+      await tx.providerCostEvent.create({
+        data: {
+          clientId: usageEvent.clientId,
+          usageEventId: usageEvent.id,
+          featureKey: usageEvent.featureKey,
+          provider: input.provider ?? "unknown",
+          model: input.model ?? null,
+          inputTokens: input.inputTokens ?? 0,
+          outputTokens: input.outputTokens ?? 0,
+          costUsd: providerCostUsd,
+          metadataJson: input.metadata ?? {},
+        },
+      });
+    }
+    return updated;
+  });
+}
+
+export async function refundUsage(input: { usageEventId: string; reason?: string }) {
+  const usageEvent = await prisma.usageEvent.findUnique({ where: { id: input.usageEventId } });
+  if (!usageEvent) throw new Error("usage event not found");
+  if (usageEvent.status === "refunded") return usageEvent;
+  if (usageEvent.creditsReserved <= 0 || usageEvent.status === "committed") {
+    return prisma.usageEvent.update({ where: { id: usageEvent.id }, data: { status: "failed", error: input.reason ?? "failed after commit check" } });
+  }
+  const account = await ensureCreditAccount(usageEvent.clientId);
+  return prisma.$transaction(async (tx) => {
+    const updatedAccount = await tx.creditAccount.update({
+      where: { id: account.id },
+      data: { balance: { increment: usageEvent.creditsReserved } },
+    });
+    await tx.creditTransaction.create({
+      data: {
+        clientId: usageEvent.clientId,
+        usageEventId: usageEvent.id,
+        type: "refund",
+        amount: usageEvent.creditsReserved,
+        balanceAfter: updatedAccount.balance,
+        reason: input.reason ?? "usage refunded",
+      },
+    });
+    return tx.usageEvent.update({
+      where: { id: usageEvent.id },
+      data: { status: "refunded", refundedAt: new Date(), error: input.reason ?? null },
+    });
+  });
+}
+
+export async function guardedUsage<T>(input: UsagePreflightInput, fn: (usage: { usageEventId: string; approvalToken: string }) => Promise<T>, commit: Omit<CommitUsageInput, "usageEventId" | "approvalToken"> = {}) {
+  const preflight = await preflightUsage(input);
+  try {
+    const result = await fn({ usageEventId: preflight.usageEventId, approvalToken: preflight.approvalToken });
+    await commitUsage({ usageEventId: preflight.usageEventId, ...commit });
+    return { result, preflight };
+  } catch (error) {
+    await refundUsage({ usageEventId: preflight.usageEventId, reason: error instanceof Error ? error.message : "execution failed" });
+    throw error;
+  }
+}
+
+export async function modelForFeature(featureKey: string, planCode: string | null | undefined, fallbackModel: string) {
+  await ensureUsageControlDefaults();
+  const normalizedPlan = normalizePlanCode(planCode);
+  const rule = await prisma.modelRoutingRule.findFirst({
+    where: {
+      featureKey,
+      isActive: true,
+      OR: [{ planCode: normalizedPlan }, { planCode: null }],
+    },
+    orderBy: [{ planCode: "desc" }, { sortOrder: "asc" }],
+  });
+  return rule?.model ?? fallbackModel;
+}
+
+export const defaultUsageFeatures = featureSeeds;
+export const defaultUsagePlanConfig = planDefaults;

@@ -25,6 +25,7 @@ import SocialStrategy from "./pages/SocialStrategy.js";
 import LocalSeo from "./pages/LocalSeo.js";
 import GrowthEngine from "./pages/GrowthEngine.js";
 import AutomationCenter from "./pages/AutomationCenter.js";
+import AdminUsageConfig from "./pages/AdminUsageConfig.js";
 import Pricing from "./pages/Pricing.js";
 import Billing from "./pages/Billing.js";
 import AdminManagement from "./pages/AdminManagement.js";
@@ -118,6 +119,7 @@ function Shell() {
         <Route path="/privacy" element={<Legal kind="privacy" />} />
         {user.role === "super_admin" && <Route path="/admin" element={<AdminManagement />} />}
         {user.role === "super_admin" && <Route path="/admin/automation" element={<AutomationCenter />} />}
+        {user.role === "super_admin" && <Route path="/admin/usage-controls" element={<AdminUsageConfig />} />}
         {user.role === "super_admin" && <Route path="/admin/tasks" element={<AdminTasks mode="index" />} />}
         {user.role === "super_admin" && <Route path="/admin/tasks/project" element={<AdminTasks mode="project" />} />}
         {user.role === "super_admin" && <Route path="/admin/tasks/module" element={<AdminTasks mode="module" />} />}

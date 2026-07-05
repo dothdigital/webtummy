@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import type { ReactNode } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { Cell, Pie, PieChart, ResponsiveContainer } from "recharts";
 import { api } from "../api.js";
@@ -34,6 +35,7 @@ type CrawlPageRow = {
   crawlerPerformance?: { score?: number | null } | number | null;
 };
 type ScanDetailKey = "highIssues" | "brokenLinks" | "orphanPages" | "weakAnchors" | null;
+type StrategyTab = "score" | "core" | "audience" | "growth" | "funnel" | "roadmap";
 
 const moduleCopy: Record<ModuleKind, { title: string; subtitle: string; primary: string; secondary?: string }> = {
   opportunities: {
@@ -359,7 +361,8 @@ export default function ExecutionModule({ kind }: { kind: ModuleKind }) {
   };
 
   const runStrategyAction = async (action: "generate" | "approve" | "execution") => {
-    if (!activeProject || strategyBusy) return;
+    if (!activeProject) return { ok: false, message: "Create or select a project before using strategy actions." };
+    if (strategyBusy) return { ok: false, message: "Another strategy action is already running." };
     const endpoint = action === "generate"
       ? `/api/projects-v2/${activeProject.id}/strategy/generate`
       : action === "approve"
@@ -370,13 +373,26 @@ export default function ExecutionModule({ kind }: { kind: ModuleKind }) {
     try {
       const result = await api.post<{ project: GuidedProject }>(endpoint, {});
       updateActiveProject(result.project);
+      if (action === "execution") {
+        navigate(`/guided-projects/${result.project.id}#execution-tasks`);
+      }
       setStrategyMessage(action === "generate"
-        ? "Strategy regenerated."
+        ? "Strategy regenerated as a new draft. Review and approve this version before creating or updating the execution plan."
         : action === "approve"
           ? "Strategy approved. You can now create the execution plan."
-          : "Execution plan created.");
+          : "Execution plan created from the approved strategy. New execution tasks are now available in the roadmap and module pages.");
+      return {
+        ok: true,
+        message: action === "generate"
+          ? "Strategy regenerated as a new draft. Review and approve this version before creating or updating the execution plan."
+          : action === "approve"
+            ? "Strategy approved. You can now create the execution plan."
+            : "Execution plan created from the approved strategy. New execution tasks are now available.",
+      };
     } catch (error) {
-      setStrategyMessage(error instanceof Error ? error.message : "Strategy action failed.");
+      const message = error instanceof Error ? error.message : "Strategy action failed.";
+      setStrategyMessage(message);
+      return { ok: false, message };
     } finally {
       setStrategyBusy(null);
     }
@@ -404,7 +420,7 @@ export default function ExecutionModule({ kind }: { kind: ModuleKind }) {
     try {
       const result = await api.post<{ project: GuidedProject }>(`/api/projects-v2/${activeProject.id}/opportunities/${opportunityId}/select`, {});
       updateActiveProject(result.project);
-      setOpportunityMessage("Opportunity selected. Strategy generation will use this context.");
+      setOpportunityMessage("");
     } catch (error) {
       setOpportunityMessage(error instanceof Error ? error.message : "Opportunity selection failed.");
     } finally {
@@ -484,6 +500,41 @@ export default function ExecutionModule({ kind }: { kind: ModuleKind }) {
     : kind === "lead-magnets" && leadMagnetBusy
       ? "Preparing..."
     : copy.primary;
+  const moduleNextStep = activeProject ? getModuleNextStep({
+    kind,
+    project: activeProject,
+    website: activeWebsite,
+    latestCrawl: latestSiteCrawl,
+    siteScanBlocked: siteScanCooldown.blocked,
+    siteScanRemaining: siteScanCooldown.remainingLabel,
+  }) : null;
+
+  const runHeaderPrimaryAction = () => {
+    if (kind === "backlinks") {
+      void refreshBacklinks();
+      return;
+    }
+    if (kind === "site-analysis") {
+      void analyzeSite();
+      return;
+    }
+    if (kind === "strategy") {
+      setStrategyMessage("Regenerating strategy from the latest project data...");
+      void runStrategyAction("generate");
+      return;
+    }
+    if (kind === "opportunities") {
+      void generateOpportunities();
+      return;
+    }
+    if (kind === "keywords") {
+      openKeywordResearch();
+      return;
+    }
+    if (kind === "lead-magnets") {
+      void generateLeadMagnet();
+    }
+  };
 
   return (
     <div className="space-y-5">
@@ -523,7 +574,7 @@ export default function ExecutionModule({ kind }: { kind: ModuleKind }) {
             ) : (
               <button
                 type="button"
-                onClick={kind === "backlinks" ? refreshBacklinks : kind === "site-analysis" ? () => { void analyzeSite(); } : kind === "strategy" ? () => { void runStrategyAction("generate"); } : kind === "opportunities" ? () => { void generateOpportunities(); } : kind === "keywords" ? openKeywordResearch : kind === "lead-magnets" ? () => { void generateLeadMagnet(); } : undefined}
+                onClick={runHeaderPrimaryAction}
                 disabled={primaryDisabled}
                 className="rounded-lg bg-brand-600 px-5 py-2.5 text-sm font-bold text-white shadow-sm hover:bg-brand-700 disabled:cursor-not-allowed disabled:bg-slate-300 disabled:text-slate-600 disabled:hover:bg-slate-300"
               >
@@ -563,6 +614,18 @@ export default function ExecutionModule({ kind }: { kind: ModuleKind }) {
         <div className={`rounded-lg border px-4 py-3 text-sm ${leadMagnetMessage ? "border-brand-100 bg-brand-50 text-brand-700" : "border-slate-200 bg-white text-charcoal-500"}`}>
           {leadMagnetMessage || "Lead magnets are generated from the approved strategy, audience, offer, and project goal. They create a downloadable asset plus landing page, thank-you copy, delivery email, and CTA flow tasks."}
         </div>
+      )}
+      {hasActiveProject && hasWorkspaceRecords && canRunModule && kind !== "opportunities" && moduleNextStep && (
+        <ModuleNextStepCallout
+          step={moduleNextStep}
+          onAction={moduleNextStep.action === "generate-strategy"
+            ? () => { setStrategyMessage("Regenerating strategy from the latest project data..."); void runStrategyAction("generate"); }
+            : moduleNextStep.action === "analyze-site"
+              ? () => { void analyzeSite(); }
+              : moduleNextStep.action === "generate-lead-magnet"
+                ? () => { void generateLeadMagnet(); }
+                : undefined}
+        />
       )}
 
       {loading && <Card className="p-5 text-sm text-charcoal-500">Loading live project data...</Card>}
@@ -926,11 +989,18 @@ function OpportunityScreen({
     if (b.status === "selected" && a.status !== "selected") return 1;
     return (b.opportunityScore ?? 0) - (a.opportunityScore ?? 0);
   });
-  const selectedOpportunity = opportunities.find((opportunity) => opportunity.status === "selected") ?? opportunities[0];
+  const actualSelectedOpportunity = opportunities.find((opportunity) => opportunity.status === "selected");
+  const selectedOpportunity = actualSelectedOpportunity ?? opportunities[0];
   const [focusedId, setFocusedId] = useState(selectedOpportunity?.id ?? "");
   const [showAll, setShowAll] = useState(false);
   const [detailsOpen, setDetailsOpen] = useState(false);
   const [compareOpen, setCompareOpen] = useState(false);
+  const [reportOpen, setReportOpen] = useState(false);
+  const [opportunityNotice, setOpportunityNotice] = useState<string | null>(null);
+
+  const notifyOpportunity = (message: string) => {
+    setOpportunityNotice(message);
+  };
 
   useEffect(() => {
     if (selectedOpportunity?.id) setFocusedId(selectedOpportunity.id);
@@ -962,6 +1032,18 @@ function OpportunityScreen({
   return (
     <>
       <OpportunitySummaryStrip project={project} niche={niche} />
+      {actualSelectedOpportunity && (
+        <OpportunityNextStepCallout
+          project={project}
+          opportunity={actualSelectedOpportunity}
+          onNotify={notifyOpportunity}
+        />
+      )}
+      {opportunityNotice && (
+        <div className="rounded-lg border border-brand-100 bg-brand-50 px-4 py-3 text-sm font-semibold text-brand-700">
+          {opportunityNotice}
+        </div>
+      )}
       <div className="grid gap-5 xl:grid-cols-[1fr_340px]">
         <div className="space-y-5">
           <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
@@ -972,7 +1054,10 @@ function OpportunityScreen({
             <div className="flex flex-wrap gap-2">
               <button
                 type="button"
-                onClick={() => setCompareOpen(true)}
+                onClick={() => {
+                  notifyOpportunity("Opening opportunity comparison.");
+                  setCompareOpen(true);
+                }}
                 className="rounded-lg border border-slate-200 bg-white px-4 py-2 text-sm font-bold text-charcoal-800 hover:bg-slate-50"
               >
                 Compare ({Math.min(opportunityCount, 3)}/{opportunityCount})
@@ -986,7 +1071,16 @@ function OpportunityScreen({
                   {showAll ? "Show Top 3" : "Show All"}
                 </button>
               )}
-              <Link to="/reports" className="rounded-lg border border-brand-200 bg-white px-4 py-2 text-sm font-bold text-brand-700 hover:bg-brand-50">Full Report</Link>
+              <button
+                type="button"
+                onClick={() => {
+                  notifyOpportunity("Opening the full opportunity report.");
+                  setReportOpen(true);
+                }}
+                className="rounded-lg border border-brand-200 bg-white px-4 py-2 text-sm font-bold text-brand-700 hover:bg-brand-50"
+              >
+                Full Report
+              </button>
             </div>
           </div>
           <div className="grid gap-4 lg:grid-cols-3">
@@ -1000,11 +1094,18 @@ function OpportunityScreen({
                 busy={selectingId === opportunity.id}
                 onFocus={() => setFocusedId(opportunity.id)}
                 onDetails={() => {
+                  notifyOpportunity(`Opening details for ${opportunity.name}.`);
                   setFocusedId(opportunity.id);
                   setDetailsOpen(true);
                 }}
-                onSelect={() => { void onSelect(opportunity.id); }}
-                onClearSelection={() => { void onClearSelection(); }}
+                onSelect={() => {
+                  setOpportunityNotice(null);
+                  void onSelect(opportunity.id);
+                }}
+                onClearSelection={() => {
+                  setOpportunityNotice(null);
+                  void onClearSelection();
+                }}
                 clearing={selectingId === "clear"}
               />
             ))}
@@ -1026,15 +1127,23 @@ function OpportunityScreen({
             <OpportunityExecutionPreview projectId={project.id} />
           </div>
         </div>
-        <OpportunityInsights opportunity={focusedOpportunity} opportunityCount={opportunityCount} taskCount={taskCount} />
+        <OpportunityInsights opportunity={focusedOpportunity} opportunityCount={opportunityCount} taskCount={taskCount} onReport={() => {
+          notifyOpportunity("Opening the full opportunity report.");
+          setReportOpen(true);
+        }} />
       </div>
       <OpportunityDetailsDrawer opportunity={focusedOpportunity} open={detailsOpen} onClose={() => setDetailsOpen(false)} onSelect={focusedOpportunity ? () => { void onSelect(focusedOpportunity.id); } : undefined} selected={focusedOpportunity?.status === "selected"} />
       <OpportunityCompareDrawer opportunities={opportunities} open={compareOpen} onClose={() => setCompareOpen(false)} onFocus={(id) => { setFocusedId(id); setDetailsOpen(true); }} onSelect={(id) => { void onSelect(id); }} />
+      <OpportunityReportDrawer opportunity={focusedOpportunity} open={reportOpen} onClose={() => setReportOpen(false)} projectId={project.id} />
     </>
   );
 }
 
-function StrategyScreen({ data, busy, onAction }: { data: ModuleData; busy: "generate" | "approve" | "execution" | null; onAction: (action: "generate" | "approve" | "execution") => Promise<void> }) {
+type StrategyActionResult = { ok: boolean; message: string };
+
+function StrategyScreen({ data, busy, onAction }: { data: ModuleData; busy: "generate" | "approve" | "execution" | null; onAction: (action: "generate" | "approve" | "execution") => Promise<StrategyActionResult | undefined> }) {
+  const [activeTab, setActiveTab] = useState<StrategyTab>("score");
+  const [inlineNotice, setInlineNotice] = useState<{ tone: "info" | "success" | "error"; message: string } | null>(null);
   const project = data.projects[0];
   const strategyCount = project?._count?.strategyPlans ?? 0;
   const latestStrategy = project?.strategyPlans?.[0] as {
@@ -1062,10 +1171,49 @@ function StrategyScreen({ data, busy, onAction }: { data: ModuleData; busy: "gen
     ["Conversion Readiness", 86],
   ] as const;
   const audience = latestStrategy?.audienceProfile || project?.businessProfile?.targetAudience || "Not provided";
+  const audienceSegments = splitAudience(audience);
+  const audienceSummary = audienceSegments.length
+    ? `${audienceSegments.length} target segments`
+    : audience;
   const offer = latestStrategy?.offerRecommendation || project?.businessProfile?.offerSummary || "Offer recommendation pending.";
   const websiteType = label(project?.projectType);
   const businessModel = latestStrategy?.businessModel || project?.businessProfile?.businessModel || "Not provided";
   const roadmap = data.intelligence?.roadmap?.length ? data.intelligence.roadmap : strategyRoadmap(data, strategyApproved);
+  const actionLabels = {
+    generate: "Regenerate section",
+    approve: "Approve strategy",
+    execution: "Create execution plan",
+  } as const;
+
+  const runInlineAction = async (action: "generate" | "approve" | "execution") => {
+    if (busy) {
+      setInlineNotice({ tone: "info", message: "Please wait for the current strategy action to finish." });
+      return;
+    }
+    if (action === "approve" && strategyApproved) {
+      setInlineNotice({ tone: "success", message: "This strategy is already approved. You can create or refresh the execution plan now." });
+      return;
+    }
+    if (action === "execution" && !strategyApproved) {
+      setInlineNotice({ tone: "error", message: "Approve the strategy first. The execution plan is created only from an approved strategy version." });
+      return;
+    }
+
+    const workingMessage = `${actionLabels[action]} started...`;
+    setInlineNotice({ tone: "info", message: workingMessage });
+    try {
+      const result = await onAction(action);
+      if (!result) {
+        setInlineNotice({ tone: "error", message: `${actionLabels[action]} did not return a result. Please try again.` });
+        return;
+      }
+      setInlineNotice({ tone: result.ok ? "success" : "error", message: result.message });
+      if (result.ok && action === "generate") setActiveTab("core");
+      if (result.ok && action === "execution") setActiveTab("roadmap");
+    } catch (error) {
+      setInlineNotice({ tone: "error", message: error instanceof Error ? error.message : `${actionLabels[action]} failed.` });
+    }
+  };
 
   if (!project) {
     return (
@@ -1081,7 +1229,7 @@ function StrategyScreen({ data, busy, onAction }: { data: ModuleData; busy: "gen
     <>
       <Card className="grid gap-0 overflow-hidden md:grid-cols-3 xl:grid-cols-6">
         <StrategyStripItem icon="☆" label="Selected Opportunity" value={selectedOpportunity?.name ?? project.niche ?? "Not selected"} />
-        <StrategyStripItem icon="♙" label="Target Audience" value={audience} />
+        <StrategyStripItem icon="♙" label="Target Audience" value={audienceSummary} detail={audienceSegments.slice(0, 2).join(" · ")} />
         <StrategyStripItem icon="◎" label="Primary Goal" value={project.primaryGoal ?? "Not provided"} />
         <StrategyStripItem icon="▣" label="Business Model" value={businessModel} />
         <StrategyStripItem icon="▤" label="Website Type" value={websiteType} />
@@ -1100,18 +1248,95 @@ function StrategyScreen({ data, busy, onAction }: { data: ModuleData; busy: "gen
         <Card className="border-brand-100 bg-brand-50/60 p-6">
           <h2 className="text-xl font-bold text-charcoal-950">AI strategy has not been generated yet</h2>
           <p className="mt-2 text-sm leading-6 text-charcoal-600">Generate the strategy from the guided project intake, opportunity, audience, offer, and publishing preferences.</p>
-          <button type="button" onClick={() => { void onAction("generate"); }} disabled={busy === "generate"} className="mt-4 rounded-lg bg-brand-600 px-4 py-2 text-sm font-bold text-white disabled:bg-slate-300">
+          <button type="button" onClick={() => { void runInlineAction("generate"); }} disabled={Boolean(busy)} className="mt-4 rounded-lg bg-brand-600 px-4 py-2 text-sm font-bold text-white disabled:bg-slate-300">
             {busy === "generate" ? "Generating..." : "Generate AI Strategy"}
           </button>
+          {inlineNotice && (
+            <div className={`mt-4 rounded-lg border px-4 py-3 text-sm font-semibold ${
+              inlineNotice.tone === "success"
+                ? "border-emerald-100 bg-emerald-50 text-emerald-800"
+                : inlineNotice.tone === "error"
+                  ? "border-red-100 bg-red-50 text-red-800"
+                  : "border-brand-100 bg-brand-50 text-brand-700"
+            }`}>
+              {inlineNotice.message}
+            </div>
+          )}
         </Card>
       ) : (
-        <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_340px]">
-          <div className="space-y-5">
-            <div className="grid gap-5 lg:grid-cols-3">
+        <div className="space-y-5">
+          <StrategyTabs activeTab={activeTab} onChange={setActiveTab} />
+
+          {activeTab === "score" && (
+            <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_360px]">
+              <Card className="p-5">
+                <h2 className="font-bold text-charcoal-950">Strategy Score & Next Actions</h2>
+                <p className="mt-1 text-sm text-charcoal-500">Review the strategy readiness, approve the current version, or create the execution plan from the approved strategy.</p>
+                <div className="mt-5 grid gap-4 lg:grid-cols-[280px_1fr]">
+                  <div className="grid place-items-center rounded-xl border border-slate-200 bg-slate-50 p-5">
+                    <div className="grid h-36 w-36 place-items-center rounded-full border-[12px] border-emerald-600 bg-white text-center shadow-sm">
+                      <div><div className="text-4xl font-bold text-charcoal-950">{score}</div><div className="text-xs font-bold text-charcoal-500">Overall Score</div></div>
+                    </div>
+                    <div className="mt-4 rounded-full bg-emerald-100 px-3 py-1 text-xs font-bold text-emerald-700">{strategyApproved ? "Approved" : "Draft"}</div>
+                  </div>
+                  <div className="space-y-3">
+                    {scoreRows.map(([labelText, value]) => (
+                      <div key={labelText}>
+                        <div className="mb-1 flex justify-between text-sm font-semibold text-charcoal-700"><span>{labelText}</span><span>{value}/100</span></div>
+                        <div className="h-3 rounded-full bg-slate-100"><div className={`h-3 rounded-full ${value < 80 ? "bg-amber-500" : "bg-emerald-600"}`} style={{ width: `${value}%` }} /></div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+                <div className={`mt-5 rounded-lg border px-4 py-3 text-sm leading-6 ${strategyApproved ? "border-emerald-100 bg-emerald-50 text-emerald-800" : "border-amber-100 bg-amber-50 text-amber-800"}`}>
+                  {strategyApproved
+                    ? "This strategy is approved. You can create or refresh the execution plan from this approved version."
+                    : "This strategy is still a draft. Approve it first, then create the execution plan. Regenerating creates a new draft that also needs approval."}
+                </div>
+                <div className="mt-5 grid gap-3 sm:grid-cols-3">
+                  <button type="button" onClick={() => { void runInlineAction("approve"); }} disabled={Boolean(busy)} className="rounded-lg bg-brand-600 px-4 py-2.5 text-sm font-bold text-white disabled:cursor-not-allowed disabled:bg-slate-300 disabled:text-slate-600">
+                    {busy === "approve" ? "Approving..." : strategyApproved ? "Strategy Approved" : "Approve Strategy"}
+                  </button>
+                  <button type="button" onClick={() => { void runInlineAction("generate"); }} disabled={Boolean(busy)} className="rounded-lg border border-brand-200 bg-white px-4 py-2.5 text-sm font-bold text-brand-700 disabled:cursor-not-allowed disabled:border-slate-200 disabled:text-slate-400">
+                    {busy === "generate" ? "Regenerating..." : "Regenerate Section"}
+                  </button>
+                  <button type="button" onClick={() => { void runInlineAction("execution"); }} disabled={Boolean(busy)} className={`rounded-lg border bg-white px-4 py-2.5 text-sm font-bold disabled:cursor-not-allowed disabled:border-slate-200 disabled:text-slate-400 ${strategyApproved ? "border-brand-200 text-brand-700" : "border-amber-200 text-amber-700 hover:bg-amber-50"}`}>
+                    {busy === "execution" ? "Creating..." : "Create Execution Plan"}
+                  </button>
+                </div>
+                {inlineNotice && (
+                  <div className={`mt-4 rounded-lg border px-4 py-3 text-sm font-semibold ${
+                    inlineNotice.tone === "success"
+                      ? "border-emerald-100 bg-emerald-50 text-emerald-800"
+                      : inlineNotice.tone === "error"
+                        ? "border-red-100 bg-red-50 text-red-800"
+                        : "border-brand-100 bg-brand-50 text-brand-700"
+                  }`}>
+                    {inlineNotice.message}
+                  </div>
+                )}
+              </Card>
+              <Card className="p-5">
+                <div className="mb-4 flex items-center gap-2 border-b border-slate-100 pb-3">
+                  <IconBadge icon="◇" />
+                  <h2 className="font-bold text-charcoal-950">AI Recommendations</h2>
+                </div>
+                <div className="space-y-4 text-sm">
+                  <Recommendation icon="◎" title="Smart Recommendation" text={`Focus on "${selectedOpportunity?.name ?? project.niche ?? project.name}" topics with the highest fit and traffic potential.`} />
+                  <Recommendation icon="◌" title="Content Gap Opportunity" text="Unmapped topics and supporting pages should become keyword clusters after approval." />
+                  <Recommendation icon="▣" title="Key Dependencies" text="Approved strategy, sitemap generated, domain selected, and lead magnet created." />
+                </div>
+              </Card>
+            </div>
+          )}
+
+          {activeTab === "core" && (
+            <div className="grid gap-5 lg:grid-cols-2">
               <StrategyCard
                 icon="◎"
                 title="Core Strategy"
-                actionLabel="View Full Strategy"
+                actionLabel="Open Growth Plan"
+                onAction={() => setActiveTab("growth")}
                 items={[
                   ["Positioning Statement", latestStrategy.positioningStatement || latestStrategy.strategySummary || "Positioning statement pending."],
                   ["Recommended Offer", offer],
@@ -1120,20 +1345,51 @@ function StrategyScreen({ data, busy, onAction }: { data: ModuleData; busy: "gen
                 ]}
               />
               <StrategyCard
+                icon="☆"
+                title="Opportunity Context"
+                actionLabel="Open Opportunities"
+                actionTo={`/opportunities?projectId=${project.id}`}
+                items={[
+                  ["Selected Opportunity", selectedOpportunity?.name ?? project.niche ?? "Not selected"],
+                  ["Why This Fits", selectedOpportunity?.summary || project.businessProfile?.businessSummary || "Opportunity context will appear after opportunity selection."],
+                  ["Business Model", businessModel],
+                  ["Website Type", websiteType],
+                ]}
+              />
+            </div>
+          )}
+
+          {activeTab === "audience" && (
+            <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_360px]">
+              <StrategyCard
                 icon="♙"
                 title="Target Audience"
-                actionLabel="View Full Details"
+                actionLabel="Edit Intake"
+                actionTo={`/guided-projects/${project.id}/intake`}
                 items={[
-                  ["Audience Summary", audience],
+                  ["Audience Summary", <AudienceSegmentList segments={audienceSegments} fallback={audience} />],
                   ["Pain Points", arrayText(project.businessProfile?.constraints, "Visibility gaps, low conversions, weak authority, and unclear content focus.")],
                   ["Desired Outcomes", "More qualified traffic, stronger authority, clearer pages, and measurable growth."],
                   ["Buying Intent", "High-intent users researching solutions and comparing providers."],
                 ]}
               />
+              <Card className="p-5">
+                <h2 className="font-bold text-charcoal-950">Audience Notes</h2>
+                <div className="mt-4 space-y-3 text-sm leading-6 text-charcoal-600">
+                  <p>Use these segments to guide keyword selection, page messaging, lead magnet angles, proof blocks, and CTA copy.</p>
+                  <p>When an audience segment is too broad, split it into a dedicated page angle or campaign task instead of forcing one page to target everyone.</p>
+                </div>
+              </Card>
+            </div>
+          )}
+
+          {activeTab === "growth" && (
+            <div className="grid gap-5 lg:grid-cols-2">
               <StrategyCard
                 icon="↗"
                 title="Channel & Growth Plan"
-                actionLabel="View Full Plan"
+                actionLabel="Open Funnel Plan"
+                onAction={() => setActiveTab("funnel")}
                 items={[
                   ["Content Strategy", latestStrategy.contentStrategy || "Content strategy pending."],
                   ["SEO Priority", latestStrategy.seoStrategy || "SEO priority pending."],
@@ -1142,8 +1398,21 @@ function StrategyScreen({ data, busy, onAction }: { data: ModuleData; busy: "gen
                   ["Social Priority", latestStrategy.socialStrategy || "Social priority pending."],
                 ]}
               />
+              <Card className="p-5">
+                <div className="mb-4 flex items-center gap-2 border-b border-slate-100 pb-3">
+                  <IconBadge icon="◇" />
+                  <h2 className="font-bold text-charcoal-950">Growth Dependencies</h2>
+                </div>
+                <div className="space-y-4 text-sm">
+                  <Recommendation icon="◎" title="Smart Recommendation" text={`Focus on "${selectedOpportunity?.name ?? project.niche ?? project.name}" topics with the highest fit and traffic potential.`} />
+                  <Recommendation icon="◌" title="Content Gap Opportunity" text="Unmapped topics and supporting pages should become keyword clusters after approval." />
+                  <Recommendation icon="▣" title="Key Dependencies" text="Approved strategy, sitemap generated, domain selected, and lead magnet created." />
+                </div>
+              </Card>
             </div>
+          )}
 
+          {activeTab === "funnel" && (
             <Card className="p-5">
               <div className="mb-4 flex items-center gap-2 border-b border-slate-100 pb-3">
                 <IconBadge icon="◎" />
@@ -1156,7 +1425,9 @@ function StrategyScreen({ data, busy, onAction }: { data: ModuleData; busy: "gen
                 <PlanList title="Publishing Recommendation" items={[latestStrategy.publishingStrategy || project.preferredPublishingMethod || "Publishing method pending", latestStrategy.aiCitationStrategy || "Add answer-first sections and schema", "Refresh approved content monthly"]} />
               </div>
             </Card>
+          )}
 
+          {activeTab === "roadmap" && (
             <Card className="p-5">
               <div className="mb-4 flex items-center gap-2">
                 <IconBadge icon="◇" />
@@ -1172,49 +1443,7 @@ function StrategyScreen({ data, busy, onAction }: { data: ModuleData; busy: "gen
                 ))}
               </div>
             </Card>
-          </div>
-
-          <div className="space-y-5">
-            <Card className="p-5">
-              <h2 className="font-bold text-charcoal-950">Strategy Score & Next Actions</h2>
-              <div className="mt-4 space-y-3">
-                {scoreRows.map(([labelText, value]) => (
-                  <div key={labelText}>
-                    <div className="mb-1 flex justify-between text-xs font-semibold text-charcoal-600"><span>{labelText}</span><span>{value}/100</span></div>
-                    <div className="h-2 rounded-full bg-slate-100"><div className={`h-2 rounded-full ${value < 80 ? "bg-amber-500" : "bg-emerald-600"}`} style={{ width: `${value}%` }} /></div>
-                  </div>
-                ))}
-              </div>
-              <div className="my-5 flex justify-center">
-                <div className="grid h-32 w-32 place-items-center rounded-full border-[10px] border-emerald-600 text-center">
-                  <div><div className="text-3xl font-bold text-charcoal-950">{score}</div><div className="text-xs text-charcoal-500">Overall Score</div></div>
-                </div>
-              </div>
-              <div className="space-y-2">
-                <button type="button" onClick={() => { void onAction("approve"); }} disabled={strategyApproved || busy === "approve"} className="w-full rounded-lg bg-brand-600 px-4 py-2.5 text-sm font-bold text-white disabled:cursor-not-allowed disabled:bg-slate-300 disabled:text-slate-600">
-                  {strategyApproved ? "Strategy Approved" : busy === "approve" ? "Approving..." : "Approve Strategy"}
-                </button>
-                <button type="button" onClick={() => { void onAction("generate"); }} disabled={busy === "generate"} className="w-full rounded-lg border border-brand-200 bg-white px-4 py-2.5 text-sm font-bold text-brand-700 disabled:cursor-not-allowed disabled:border-slate-200 disabled:text-slate-400">
-                  {busy === "generate" ? "Regenerating..." : "Regenerate Section"}
-                </button>
-                <button type="button" onClick={() => { void onAction("execution"); }} disabled={!strategyApproved || busy === "execution"} className="w-full rounded-lg border border-brand-200 bg-white px-4 py-2.5 text-sm font-bold text-brand-700 disabled:cursor-not-allowed disabled:border-slate-200 disabled:text-slate-400">
-                  {busy === "execution" ? "Creating..." : "Create Execution Plan"}
-                </button>
-              </div>
-            </Card>
-
-            <Card className="p-5">
-              <div className="mb-4 flex items-center gap-2 border-b border-slate-100 pb-3">
-                <IconBadge icon="◇" />
-                <h2 className="font-bold text-charcoal-950">AI Recommendations</h2>
-              </div>
-              <div className="space-y-4 text-sm">
-                <Recommendation icon="◎" title="Smart Recommendation" text={`Focus on "${selectedOpportunity?.name ?? project.niche ?? project.name}" topics with the highest fit and traffic potential.`} />
-                <Recommendation icon="◌" title="Content Gap Opportunity" text="Unmapped topics and supporting pages should become keyword clusters after approval." />
-                <Recommendation icon="▣" title="Key Dependencies" text="Approved strategy, sitemap generated, domain selected, and lead magnet created." />
-              </div>
-            </Card>
-          </div>
+          )}
         </div>
       )}
     </>
@@ -1225,21 +1454,115 @@ function IconBadge({ icon }: { icon: string }) {
   return <span className="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-brand-50 text-sm font-bold text-brand-700">{icon}</span>;
 }
 
-function StrategyStripItem({ icon, label, value }: { icon: string; label: string; value: React.ReactNode }) {
+function StrategyTabs({ activeTab, onChange }: { activeTab: StrategyTab; onChange: (tab: StrategyTab) => void }) {
+  const tabs: Array<{ key: StrategyTab; label: string }> = [
+    { key: "score", label: "Score & Actions" },
+    { key: "core", label: "Core Strategy" },
+    { key: "audience", label: "Audience" },
+    { key: "growth", label: "Growth Plan" },
+    { key: "funnel", label: "Funnel Plan" },
+    { key: "roadmap", label: "Roadmap" },
+  ];
   return (
-    <div className="border-t border-slate-100 p-4 first:border-l-0 md:border-l md:border-t-0">
+    <Card className="p-2">
+      <div className="flex gap-2 overflow-x-auto">
+        {tabs.map((tab) => (
+          <button
+            key={tab.key}
+            type="button"
+            onClick={() => onChange(tab.key)}
+            className={`whitespace-nowrap rounded-lg px-4 py-2 text-sm font-bold transition ${activeTab === tab.key ? "bg-brand-600 text-white shadow-sm" : "text-charcoal-600 hover:bg-slate-50"}`}
+          >
+            {tab.label}
+          </button>
+        ))}
+      </div>
+    </Card>
+  );
+}
+
+function StrategyStripItem({ icon, label, value, detail }: { icon: string; label: string; value: ReactNode; detail?: string }) {
+  return (
+    <div className="min-w-0 border-t border-slate-100 p-4 first:border-l-0 md:border-l md:border-t-0">
       <div className="flex items-start gap-3">
         <IconBadge icon={icon} />
         <div className="min-w-0">
           <div className="text-xs font-semibold text-charcoal-500">{label}</div>
-          <div className="mt-1 text-sm font-bold leading-5 text-charcoal-950">{value}</div>
+          <div className="mt-1 truncate text-sm font-bold leading-5 text-charcoal-950">{value}</div>
+          {detail && <div className="mt-1 line-clamp-2 text-xs leading-5 text-charcoal-500">{detail}</div>}
         </div>
       </div>
     </div>
   );
 }
 
-function StrategyCard({ icon, title, items, actionLabel }: { icon: string; title: string; items: [string, string][]; actionLabel: string }) {
+function splitAudience(value: string) {
+  if (!value || value === "Not provided") return [];
+  return value
+    .split(/,(?=\s*(?:local|operations|service|business|startups|founders|teams|companies|decision|people|clients|customers)\b)/i)
+    .map((item) => item.trim().replace(/[.]+$/, ""))
+    .filter(Boolean);
+}
+
+function AudienceSegmentList({ segments, fallback }: { segments: string[]; fallback: string }) {
+  if (!segments.length) return <p className="text-sm leading-6 text-charcoal-600">{fallback}</p>;
+  const visible = segments.slice(0, 4);
+  const hidden = segments.slice(4);
+  return (
+    <div className="space-y-3">
+      <div className="grid gap-2 sm:grid-cols-2">
+        {visible.map((segment, index) => (
+          <AudienceChip key={`${segment}-${index}`} segment={segment} />
+        ))}
+      </div>
+      {hidden.length > 0 && (
+        <details className="rounded-lg border border-slate-200 bg-white">
+          <summary className="cursor-pointer list-none px-3 py-2 text-sm font-bold text-brand-700">
+            Show {hidden.length} more audience segment{hidden.length === 1 ? "" : "s"}
+          </summary>
+          <div className="grid gap-2 border-t border-slate-100 p-3 sm:grid-cols-2">
+            {hidden.map((segment, index) => (
+              <AudienceChip key={`${segment}-${index}`} segment={segment} muted />
+            ))}
+          </div>
+        </details>
+      )}
+    </div>
+  );
+}
+
+function AudienceChip({ segment, muted = false }: { segment: string; muted?: boolean }) {
+  const normalized = segment.replace(/\s+/g, " ").trim();
+  const words = normalized.split(" ");
+  const title = words.slice(0, Math.min(words.length, 6)).join(" ");
+  const detail = words.length > 6 ? words.slice(6).join(" ") : "";
+  return (
+    <div className={`rounded-lg border px-3 py-2 ${muted ? "border-slate-200 bg-slate-50" : "border-brand-100 bg-brand-50/70"}`}>
+      <div className="text-sm font-bold leading-5 text-charcoal-950">{title}</div>
+      {detail && (
+        <div className="mt-1 line-clamp-2 text-xs leading-5 text-charcoal-500">
+          {detail}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function StrategyCard({
+  icon,
+  title,
+  items,
+  actionLabel,
+  actionTo,
+  onAction,
+}: {
+  icon: string;
+  title: string;
+  items: [string, ReactNode][];
+  actionLabel: string;
+  actionTo?: string;
+  onAction?: () => void;
+}) {
   return (
     <Card className="p-5">
       <div className="mb-4 flex items-center gap-2 border-b border-slate-100 pb-3">
@@ -1252,14 +1575,20 @@ function StrategyCard({ icon, title, items, actionLabel }: { icon: string; title
             <span className="mt-1 grid h-5 w-5 shrink-0 place-items-center rounded-full border border-brand-200 text-[11px] font-bold text-brand-700">✓</span>
             <div>
               <div className="text-sm font-bold text-charcoal-950">{labelText}</div>
-              <p className="mt-1 text-sm leading-6 text-charcoal-600">{text}</p>
+              <div className="mt-1 text-sm leading-6 text-charcoal-600">{text}</div>
             </div>
           </div>
         ))}
       </div>
-      <button type="button" className="mx-auto mt-5 flex rounded-lg border border-slate-200 bg-white px-5 py-2 text-sm font-bold text-brand-700 hover:bg-slate-50">
-        {actionLabel}
-      </button>
+      {actionTo ? (
+        <Link to={actionTo} className="mx-auto mt-5 flex w-fit rounded-lg border border-slate-200 bg-white px-5 py-2 text-sm font-bold text-brand-700 hover:bg-slate-50">
+          {actionLabel}
+        </Link>
+      ) : (
+        <button type="button" onClick={onAction} className="mx-auto mt-5 flex rounded-lg border border-slate-200 bg-white px-5 py-2 text-sm font-bold text-brand-700 hover:bg-slate-50">
+          {actionLabel}
+        </button>
+      )}
     </Card>
   );
 }
@@ -2105,6 +2434,206 @@ function EmptyModuleState({
   );
 }
 
+type ModuleNextStep = {
+  eyebrow: string;
+  title: string;
+  detail: string;
+  actionLabel: string;
+  actionTo?: string;
+  action?: "generate-strategy" | "analyze-site" | "generate-lead-magnet";
+  helper?: string;
+  tone: "blue" | "emerald" | "amber" | "violet";
+};
+
+function getModuleNextStep({
+  kind,
+  project,
+  website,
+  latestCrawl,
+  siteScanBlocked,
+  siteScanRemaining,
+}: {
+  kind: ModuleKind;
+  project: GuidedProject;
+  website?: Website | null;
+  latestCrawl?: CrawlSummary | null;
+  siteScanBlocked: boolean;
+  siteScanRemaining: string;
+}): ModuleNextStep {
+  const latestStrategy = project.strategyPlans?.[0];
+  const selectedOpportunity = project.opportunities?.find((opportunity) => opportunity.status === "selected");
+  const strategyApproved = latestStrategy?.status === "approved";
+  const projectQuery = `?projectId=${project.id}`;
+  if (kind === "strategy") {
+    if (!latestStrategy) {
+      return {
+        eyebrow: "Next step",
+        title: "Generate the AI strategy",
+        detail: selectedOpportunity
+          ? "Use the selected opportunity and intake profile to create positioning, audience, SEO, content, authority, funnel, and execution recommendations."
+          : "Select an opportunity first if available, then generate the strategy from the project profile.",
+        actionLabel: "Generate Strategy",
+        action: "generate-strategy",
+        helper: selectedOpportunity ? `Selected opportunity: ${selectedOpportunity.name}` : "Opportunity selection improves strategy quality.",
+        tone: "blue",
+      };
+    }
+    if (!strategyApproved) {
+      return {
+        eyebrow: "Next step",
+        title: "Review and approve strategy",
+        detail: "Approve the strategy before SEnuke AI creates downstream execution tasks for sitemap, content, lead magnets, SEO, domains, publishing, and social.",
+        actionLabel: "Review Strategy",
+        actionTo: `/strategy${projectQuery}`,
+        helper: "Draft strategies do not create live execution tasks until approved.",
+        tone: "amber",
+      };
+    }
+    return {
+      eyebrow: "Next step",
+      title: "Create or open execution plan",
+      detail: "The approved strategy can now be turned into actionable project and module tasks.",
+      actionLabel: "Open Project Plan",
+      actionTo: `/guided-projects/${project.id}#execution-tasks`,
+      helper: "Execution tasks inherit the approved strategy context.",
+      tone: "emerald",
+    };
+  }
+  if (kind === "site-analysis") {
+    if (!website) {
+      return {
+        eyebrow: "Next step",
+        title: "Connect a website",
+        detail: "Site Analysis needs a website URL before SEnuke AI can crawl pages, issues, internal links, schema, AI readiness, and conversion opportunities.",
+        actionLabel: "Edit Project",
+        actionTo: `/guided-projects/${project.id}/intake`,
+        helper: "Add the primary website URL in project intake.",
+        tone: "amber",
+      };
+    }
+    if (siteScanBlocked) {
+      return {
+        eyebrow: "Next step",
+        title: "Review latest site analysis",
+        detail: `A recent crawl already exists. To avoid repeated crawl load, the next scan unlocks in ${siteScanRemaining}.`,
+        actionLabel: "Open Site Report",
+        actionTo: `/website-projects/${website.id}`,
+        helper: latestCrawl ? `${formatNumber(latestCrawl.pagesCrawled)} page(s) crawled in the latest scan.` : "Latest crawl data is available.",
+        tone: "emerald",
+      };
+    }
+    return {
+      eyebrow: "Next step",
+      title: "Run site analysis",
+      detail: "Run a crawl to create health, SEO issue, page, internal link, AI citation readiness, and optimization task data.",
+      actionLabel: "Analyze Site",
+      action: "analyze-site",
+      helper: website.url,
+      tone: "blue",
+    };
+  }
+  if (kind === "keywords") {
+    return {
+      eyebrow: "Next step",
+      title: "Add seed keywords",
+      detail: "Start with keywords the project actually wants to rank for. SEnuke AI will fetch demand, SERP competitors, visibility, and page mapping signals.",
+      actionLabel: "Add Keywords",
+      actionTo: website?.id ? `/keyword-insights?project=${encodeURIComponent(website.id)}&add=1` : "/keyword-insights?add=1",
+      helper: website?.url ?? "Keyword runs become available after a website is connected.",
+      tone: "violet",
+    };
+  }
+  if (kind === "backlinks") {
+    return {
+      eyebrow: "Next step",
+      title: "Review authority opportunities",
+      detail: "Use backlink data with strategy context to identify authority gaps, outreach assets, and linkable content opportunities.",
+      actionLabel: "Review Backlinks",
+      actionTo: `/backlinks${projectQuery}`,
+      helper: "Refresh is rate-limited so users cannot repeatedly run provider calls.",
+      tone: "blue",
+    };
+  }
+  if (kind === "ai-citations") {
+    return {
+      eyebrow: "Next step",
+      title: "Review AI search readiness",
+      detail: "Check llms.txt, organization schema, NAP profile, sitemap, robots, FAQ, breadcrumbs, and structured-data tasks from the latest crawl.",
+      actionLabel: "Open Citation Dashboard",
+      actionTo: `/ai-citations${projectQuery}`,
+      helper: "Citation tasks should come from live crawl and project data.",
+      tone: "violet",
+    };
+  }
+  if (kind === "site-architect") {
+    return {
+      eyebrow: "Next step",
+      title: "Generate or validate site structure",
+      detail: "Use the approved strategy, existing crawl, and keyword direction to plan pages, sections, internal links, metadata, and publishing tasks.",
+      actionLabel: "Open Site Architect",
+      actionTo: `/site-architect${projectQuery}`,
+      helper: strategyApproved ? "Strategy is approved." : "Approve strategy first for stronger sitemap recommendations.",
+      tone: strategyApproved ? "emerald" : "amber",
+    };
+  }
+  return {
+    eyebrow: "Next step",
+    title: strategyApproved ? "Generate lead magnet package" : "Approve strategy first",
+    detail: strategyApproved
+      ? "Create the recommended lead magnet, landing-page copy, delivery email, thank-you page, and CTA flow from the approved strategy."
+      : "Lead magnets depend on the approved strategy so the offer, audience, CTA, and funnel are aligned.",
+    actionLabel: strategyApproved ? "Generate Lead Magnet" : "Review Strategy",
+    action: strategyApproved ? "generate-lead-magnet" : undefined,
+    actionTo: strategyApproved ? undefined : `/strategy${projectQuery}`,
+    helper: "Nothing publishes or sends until the user approves it.",
+    tone: strategyApproved ? "emerald" : "amber",
+  };
+}
+
+function ModuleNextStepCallout({ step, onAction }: { step: ModuleNextStep; onAction?: () => void }) {
+  const toneClass = {
+    blue: "border-brand-200 bg-gradient-to-r from-brand-50 via-white to-sky-50 text-brand-700",
+    emerald: "border-emerald-200 bg-gradient-to-r from-emerald-50 via-white to-brand-50 text-emerald-700",
+    amber: "border-amber-200 bg-gradient-to-r from-amber-50 via-white to-orange-50 text-amber-700",
+    violet: "border-violet-200 bg-gradient-to-r from-violet-50 via-white to-brand-50 text-violet-700",
+  }[step.tone];
+  const iconClass = {
+    blue: "bg-brand-600 text-white",
+    emerald: "bg-emerald-600 text-white",
+    amber: "bg-amber-500 text-white",
+    violet: "bg-violet-600 text-white",
+  }[step.tone];
+  const buttonClass = {
+    blue: "bg-brand-600 hover:bg-brand-700",
+    emerald: "bg-emerald-600 hover:bg-emerald-700",
+    amber: "bg-amber-500 hover:bg-amber-600",
+    violet: "bg-violet-600 hover:bg-violet-700",
+  }[step.tone];
+  const content = (
+    <span className={`inline-flex items-center justify-center rounded-lg px-4 py-2.5 text-sm font-bold text-white shadow-sm ${buttonClass}`}>
+      {step.actionLabel} <span className="ml-2">→</span>
+    </span>
+  );
+  return (
+    <Card className={`overflow-hidden border ${toneClass}`}>
+      <div className="flex flex-col gap-4 p-5 lg:flex-row lg:items-center lg:justify-between">
+        <div className="flex min-w-0 gap-4">
+          <div className={`grid h-12 w-12 shrink-0 place-items-center rounded-xl text-lg font-bold shadow-sm ${iconClass}`}>→</div>
+          <div className="min-w-0">
+            <div className="text-xs font-bold uppercase tracking-wide">{step.eyebrow}</div>
+            <h2 className="mt-1 text-xl font-bold text-charcoal-950">{step.title}</h2>
+            <p className="mt-2 text-sm leading-6 text-charcoal-600">{step.detail}</p>
+            {step.helper && <div className="mt-3 inline-flex rounded-full bg-white/80 px-3 py-1 text-xs font-bold text-charcoal-600">{step.helper}</div>}
+          </div>
+        </div>
+        <div className="shrink-0">
+          {step.actionTo ? <Link to={step.actionTo}>{content}</Link> : <button type="button" onClick={onAction}>{content}</button>}
+        </div>
+      </div>
+    </Card>
+  );
+}
+
 function MetricGrid({ items }: { items: [string, string, string][] }) {
   return <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-6">{items.map(([label, value, detail]) => <Card key={label} className="p-4"><div className="text-xs font-semibold text-charcoal-500">{label}</div><div className="mt-2 text-2xl font-bold text-charcoal-950">{value}</div><div className="mt-1 text-xs font-semibold text-emerald-600">{detail}</div></Card>)}</div>;
 }
@@ -2133,6 +2662,7 @@ function OpportunityCard({
   onClearSelection: () => void;
 }) {
   const score = safeScore(opportunity.opportunityScore, 72);
+  const shortOpportunityName = opportunity.name.length > 44 ? `${opportunity.name.slice(0, 41)}...` : opportunity.name;
   return (
     <Card className={`flex min-h-[330px] flex-col p-4 transition ${focused ? "border-brand-500 ring-1 ring-brand-200" : "hover:border-brand-200"}`}>
       <button type="button" onClick={onFocus} className="flex flex-1 flex-col text-left">
@@ -2157,14 +2687,19 @@ function OpportunityCard({
         <div className="text-right"><div className="text-4xl font-bold text-emerald-600">{score}</div><div className="text-xs text-charcoal-500">Overall Score</div></div>
       </div>
       {selected ? (
-        <button
-          type="button"
-          onClick={onClearSelection}
-          disabled={clearing}
-          className="mt-4 w-full rounded-lg border border-rose-200 bg-white px-4 py-2.5 text-sm font-bold text-rose-700 hover:bg-rose-50 disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-500"
-        >
-          {clearing ? "Removing..." : "Remove selection"}
-        </button>
+        <div className="mt-4 space-y-2">
+          <div className="w-full rounded-lg bg-emerald-600 px-4 py-2.5 text-center text-sm font-bold text-white shadow-sm">
+            {shortOpportunityName} selected as strategy direction
+          </div>
+          <button
+            type="button"
+            onClick={onClearSelection}
+            disabled={clearing}
+            className="w-full rounded-lg border border-rose-200 bg-white px-4 py-2 text-sm font-bold text-rose-700 hover:bg-rose-50 disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-500"
+          >
+            {clearing ? `Removing ${shortOpportunityName}...` : "Remove Strategy Direction"}
+          </button>
+        </div>
       ) : (
         <button
           type="button"
@@ -2172,7 +2707,7 @@ function OpportunityCard({
           disabled={busy}
           className="mt-4 w-full rounded-lg bg-brand-600 px-4 py-2.5 text-sm font-bold text-white hover:bg-brand-700 disabled:cursor-not-allowed disabled:bg-slate-300 disabled:text-slate-600"
         >
-          {busy ? "Selecting..." : "Select Opportunity"}
+          {busy ? `Selecting ${shortOpportunityName}...` : "Select as Strategy Direction"}
         </button>
       )}
     </Card>
@@ -2187,6 +2722,53 @@ function OpportunityMetricChip({ label, value, tone = "emerald" }: { label: stri
       <div className={`mt-1 text-sm font-bold ${tone === "amber" ? "text-amber-600" : "text-emerald-600"}`}>{value}</div>
       <div className="text-[11px] font-semibold text-charcoal-400">{valueLabel}</div>
     </div>
+  );
+}
+
+function OpportunityNextStepCallout({ project, opportunity, onNotify }: { project: GuidedProject; opportunity: Opportunity; onNotify: (message: string) => void }) {
+  const latestStrategy = project.strategyPlans?.[0];
+  const hasStrategy = Boolean(latestStrategy || project._count?.strategyPlans);
+  const strategyApproved = latestStrategy?.status === "approved";
+  const actionLabel = strategyApproved ? "Open Approved Strategy" : hasStrategy ? "Review Strategy Draft" : "Generate Strategy";
+  const description = strategyApproved
+    ? "This opportunity is already connected to an approved strategy. You can open the strategy or create the execution plan from there."
+    : hasStrategy
+      ? "A strategy draft exists. Review it against this selected opportunity, then approve it before creating the execution plan."
+      : "SEnuke AI will use this selected opportunity, intake profile, target audience, offer, and publishing preferences to generate the strategy.";
+  return (
+    <Card className="overflow-hidden border-brand-200 bg-gradient-to-r from-brand-50 via-white to-emerald-50">
+      <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+        <div className="flex min-w-0 gap-4 p-5">
+          <div className="grid h-12 w-12 shrink-0 place-items-center rounded-xl bg-brand-600 text-lg font-bold text-white shadow-sm">→</div>
+          <div className="min-w-0">
+            <div className="text-xs font-bold uppercase tracking-wide text-brand-700">Next step after opportunity selection</div>
+            <h2 className="mt-1 text-xl font-bold text-charcoal-950">{actionLabel}</h2>
+            <p className="mt-2 text-sm leading-6 text-charcoal-600">{description}</p>
+            <div className="mt-3 flex flex-wrap gap-2 text-xs font-bold">
+              <span className="rounded-full bg-white/90 px-3 py-1 text-brand-700 shadow-sm">Selected: {opportunity.name}</span>
+              <span className="rounded-full bg-white/90 px-3 py-1 text-charcoal-600 shadow-sm">Score {safeScore(opportunity.opportunityScore, 72)}/100</span>
+              <span className="rounded-full bg-white/90 px-3 py-1 text-charcoal-600 shadow-sm">{label(project.currentStep ?? "strategy")}</span>
+            </div>
+          </div>
+        </div>
+        <div className="flex shrink-0 flex-wrap gap-2 px-5 pb-5 lg:px-5 lg:py-5">
+          <Link
+            to={`/strategy?projectId=${project.id}`}
+            onClick={() => onNotify(`Opening Strategy for ${opportunity.name}.`)}
+            className="inline-flex items-center justify-center rounded-lg bg-brand-600 px-4 py-2.5 text-sm font-bold text-white shadow-sm hover:bg-brand-700"
+          >
+            {actionLabel} <span className="ml-2">→</span>
+          </Link>
+          <Link
+            to={`/guided-projects/${project.id}`}
+            onClick={() => onNotify("Opening the guided project workflow.")}
+            className="inline-flex items-center justify-center rounded-lg border border-brand-200 bg-white px-4 py-2.5 text-sm font-bold text-brand-700 shadow-sm hover:bg-brand-50"
+          >
+            View Project
+          </Link>
+        </div>
+      </div>
+    </Card>
   );
 }
 
@@ -2366,10 +2948,10 @@ function opportunityReasons(opportunity: Opportunity) {
 
 function OpportunityExecutionPreview({ projectId }: { projectId: string }) {
   const steps = [
-    ["Generate Strategy", "Create the strategy from the selected opportunity.", "/strategy"],
-    ["Create Site Structure", "Build sitemap and internal linking plan.", "/site-architect"],
+    ["Generate Strategy", "Create the strategy from the selected opportunity.", `/strategy?projectId=${projectId}`],
+    ["Create Site Structure", "Build sitemap and internal linking plan.", `/site-architect?projectId=${projectId}`],
     ["Generate Domain Ideas", "Create brandable or keyword-aligned domain suggestions.", "/local-seo"],
-    ["Build SEO Plan", "Map keywords, pages, metadata, and briefs.", "/keywords"],
+    ["Build SEO Plan", "Map keywords, pages, metadata, and briefs.", `/keywords?projectId=${projectId}`],
     ["Content Plan", "Plan pages, lead magnet, publishing, and social content.", "/ai-content"],
   ] as const;
   return (
@@ -2395,7 +2977,7 @@ function OpportunityExecutionPreview({ projectId }: { projectId: string }) {
   );
 }
 
-function OpportunityInsights({ opportunity, opportunityCount, taskCount }: { opportunity: Opportunity | undefined; opportunityCount: number; taskCount: number }) {
+function OpportunityInsights({ opportunity, opportunityCount, taskCount, onReport }: { opportunity: Opportunity | undefined; opportunityCount: number; taskCount: number; onReport: () => void }) {
   const score = safeScore(opportunity?.opportunityScore, 72);
   const demand = safeScore(opportunity?.seoScore, score);
   const revenue = safeScore(opportunity?.monetizationScore, score);
@@ -2439,10 +3021,82 @@ function OpportunityInsights({ opportunity, opportunityCount, taskCount }: { opp
             </div>
           ))}
         </div>
-        <Link to="/reports" className="mt-5 flex items-center justify-between rounded-lg border border-brand-100 px-4 py-3 text-sm font-bold text-brand-600 hover:bg-brand-50">
+        <button type="button" onClick={onReport} className="mt-5 flex w-full items-center justify-between rounded-lg border border-brand-100 px-4 py-3 text-sm font-bold text-brand-600 hover:bg-brand-50">
           View Full Opportunity Report <span>→</span>
-        </Link>
+        </button>
       </Card>
+    </div>
+  );
+}
+
+function OpportunityReportDrawer({ opportunity, open, onClose, projectId }: { opportunity: Opportunity | undefined; open: boolean; onClose: () => void; projectId: string }) {
+  if (!open) return null;
+  const score = safeScore(opportunity?.opportunityScore, 72);
+  const metrics = opportunity ? opportunityMetrics(opportunity) : [];
+  const reasons = opportunity ? opportunityReasons(opportunity) : [];
+  return (
+    <div className="fixed inset-0 z-50 flex justify-end">
+      <button type="button" className="absolute inset-0 bg-charcoal-950/30" aria-label="Close opportunity report" onClick={onClose} />
+      <aside className="relative flex h-full w-full max-w-2xl flex-col overflow-y-auto bg-white shadow-2xl">
+        <div className="sticky top-0 z-10 border-b border-slate-100 bg-white p-5">
+          <div className="flex items-start justify-between gap-4">
+            <div>
+              <div className="text-xs font-bold uppercase tracking-wide text-brand-600">Opportunity Report</div>
+              <h2 className="mt-1 text-xl font-bold text-charcoal-950">{opportunity?.name ?? "No opportunity selected"}</h2>
+              <p className="mt-2 text-sm leading-6 text-charcoal-500">Scored recommendation, fit rationale, execution path, and strategy handoff context.</p>
+            </div>
+            <button type="button" onClick={onClose} className="grid h-9 w-9 shrink-0 place-items-center rounded-lg border border-slate-200 text-lg font-bold text-charcoal-500 hover:bg-slate-50" aria-label="Close">×</button>
+          </div>
+        </div>
+        <div className="space-y-5 p-5">
+          <Card className="p-5">
+            <div className="grid gap-4 md:grid-cols-[140px_1fr]">
+              <div className="grid h-32 w-32 place-items-center rounded-full border-[10px] border-emerald-600 text-center">
+                <div><div className="text-3xl font-bold text-charcoal-950">{score}</div><div className="text-xs text-charcoal-500">Overall Score</div></div>
+              </div>
+              <div>
+                <h3 className="font-bold text-charcoal-950">Recommendation Summary</h3>
+                <p className="mt-2 text-sm leading-6 text-charcoal-600">{opportunity?.summary || opportunity?.problemSolved || "Refresh opportunities to generate a detailed opportunity report."}</p>
+                <div className="mt-4 grid gap-2 sm:grid-cols-2">
+                  {metrics.map((metric) => (
+                    <div key={metric.label} className="rounded-lg border border-slate-200 bg-slate-50 p-3">
+                      <div className="text-xs font-bold text-charcoal-500">{metric.label}</div>
+                      <div className={`mt-1 text-lg font-bold ${metric.tone === "amber" ? "text-amber-600" : "text-emerald-600"}`}>{metric.value}/100</div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+          </Card>
+          <Card className="p-5">
+            <h3 className="font-bold text-charcoal-950">Why SEnuke AI Recommends This</h3>
+            <div className="mt-4 space-y-3">
+              {(reasons.length ? reasons : ["No scored rationale is available yet. Refresh opportunities after completing intake."]).map((reason, index) => (
+                <div key={`${opportunity?.id ?? "report"}-reason-${index}`} className="flex gap-2 text-sm leading-6 text-charcoal-600">
+                  <span className="font-bold text-emerald-600">✓</span>
+                  <span>{reason}</span>
+                </div>
+              ))}
+            </div>
+          </Card>
+          <Card className="p-5">
+            <h3 className="font-bold text-charcoal-950">Strategy Handoff</h3>
+            <div className="mt-4 grid gap-4 sm:grid-cols-2">
+              <DetailBlock title="Target audience" value={opportunity?.targetAudience ?? null} />
+              <DetailBlock title="Problem solved" value={opportunity?.problemSolved ?? null} />
+              <DetailBlock title="Recommended offer" value={opportunity?.recommendedOffer ?? null} />
+              <DetailBlock title="Business model" value={opportunity?.businessModel ?? null} />
+            </div>
+          </Card>
+          <OpportunityExecutionPreview projectId={projectId} />
+        </div>
+        <div className="sticky bottom-0 border-t border-slate-100 bg-white p-5">
+          <div className="flex flex-wrap justify-end gap-2">
+            <button type="button" onClick={onClose} className="rounded-lg border border-slate-200 bg-white px-4 py-2.5 text-sm font-bold text-charcoal-700 hover:bg-slate-50">Close</button>
+            <Link to={`/strategy?projectId=${projectId}`} className="rounded-lg bg-brand-600 px-4 py-2.5 text-sm font-bold text-white hover:bg-brand-700">Generate Strategy</Link>
+          </div>
+        </div>
+      </aside>
     </div>
   );
 }

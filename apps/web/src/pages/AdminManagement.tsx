@@ -28,6 +28,11 @@ const adminLinks = [
     to: "/admin/automation",
   },
   {
+    title: "Usage & Cost Controls",
+    description: "Manage feature costs, plan limits, credit controls, budget caps, and model routing.",
+    to: "/admin/usage-controls",
+  },
+  {
     title: "Plan Management",
     description: "Create and maintain billing plans, article limits, pricing, and features.",
     to: "/admin/plans",

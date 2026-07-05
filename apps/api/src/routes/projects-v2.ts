@@ -4,6 +4,7 @@ import { prisma, type Prisma } from "@webtummy/db";
 import { requireAuth, requireRole } from "../middleware.js";
 import { projectClientIdForRequest } from "../project-scope.js";
 import { config } from "../config.js";
+import { commitUsage, modelForFeature, preflightUsage, refundUsage } from "../usage-engine.js";
 
 export const guidedProjectsRouter = Router();
 guidedProjectsRouter.use(requireAuth);
@@ -81,7 +82,7 @@ const moduleTaskCreateSchema = z.object({
   manualRequired: z.boolean().default(true),
 });
 
-async function openaiJson(prompt: string) {
+async function openaiJson(prompt: string, model = config.openaiModel) {
   if (!config.openaiApiKey) throw new Error("openai_not_configured");
   const response = await fetch("https://api.openai.com/v1/chat/completions", {
     method: "POST",
@@ -90,7 +91,7 @@ async function openaiJson(prompt: string) {
       "Content-Type": "application/json",
     },
     body: JSON.stringify({
-      model: config.openaiModel,
+      model,
       temperature: 0.35,
       response_format: { type: "json_object" },
       messages: [
@@ -105,7 +106,7 @@ async function openaiJson(prompt: string) {
   if (typeof content !== "string") throw new Error("OpenAI returned no content");
   return {
     result: JSON.parse(content) as unknown,
-    model: data?.model ?? config.openaiModel,
+    model: data?.model ?? model,
     inputTokens: Number(data?.usage?.prompt_tokens ?? 0),
     outputTokens: Number(data?.usage?.completion_tokens ?? 0),
   };
@@ -131,10 +132,26 @@ const projectWorkflowDefinitions = [
   {
     stepKey: "strategy",
     title: "Generate execution strategy",
-    description: "Create the SEO, AI citation, content, authority, social, and publishing strategy.",
+    description: "Create the SEO, AI citation, content, authority, social, and publishing strategy after discovery data is ready.",
     priority: "medium",
     actionLabel: "Generate Strategy",
+    sortOrder: 50,
+  },
+  {
+    stepKey: "keyword_analysis",
+    title: "Run keyword analysis",
+    description: "Research target keywords, buyer intent, topical clusters, competitor gaps, difficulty, opportunity score, and revenue potential.",
+    priority: "high",
+    actionLabel: "Add Keywords",
     sortOrder: 30,
+  },
+  {
+    stepKey: "site_analysis",
+    title: "Run site analysis",
+    description: "For existing websites, crawl the current site before strategy and full execution planning. New projects schedule this after pages exist.",
+    priority: "high",
+    actionLabel: "Analyze Site",
+    sortOrder: 40,
   },
   {
     stepKey: "strategy_approval",
@@ -142,7 +159,7 @@ const projectWorkflowDefinitions = [
     description: "Review the generated strategy before downstream keyword, site, content, domain, publishing, and social tasks are created.",
     priority: "high",
     actionLabel: "Review Strategy",
-    sortOrder: 40,
+    sortOrder: 60,
   },
   {
     stepKey: "execution_plan",
@@ -150,7 +167,7 @@ const projectWorkflowDefinitions = [
     description: "Create module-specific tasks for sitemap, content, keywords, domain, lead magnets, and publishing.",
     priority: "medium",
     actionLabel: "Create Execution Plan",
-    sortOrder: 50,
+    sortOrder: 70,
   },
 ] as const;
 
@@ -602,7 +619,16 @@ async function syncProjectWorkflow(tx: Prisma.TransactionClient, projectId: stri
       intakeAnswers: { select: { id: true }, take: 1 },
       opportunities: { select: { id: true, status: true }, orderBy: { createdAt: "desc" }, take: 10 },
       strategyPlans: { orderBy: { createdAt: "desc" }, take: 3 },
-      executionTasks: { select: { id: true, status: true }, take: 50 },
+      executionPlans: { where: { status: "active" }, select: { id: true, title: true }, take: 1 },
+      executionTasks: { select: { id: true, status: true, moduleName: true }, take: 50 },
+      website: {
+        select: {
+          id: true,
+          rootUrl: true,
+          crawlJobs: { select: { id: true, status: true, pagesCrawled: true }, orderBy: { createdAt: "desc" }, take: 3 },
+          keywordResearchRuns: { select: { id: true, status: true, keywordCount: true }, orderBy: { createdAt: "desc" }, take: 3 },
+        },
+      },
     },
   });
   if (!project) return;
@@ -613,9 +639,14 @@ async function syncProjectWorkflow(tx: Prisma.TransactionClient, projectId: stri
   const latestStrategy = project.strategyPlans[0];
   const strategyGenerated = Boolean(latestStrategy);
   const strategyApproved = latestStrategy?.status === "approved" || project.currentStep === "execution";
+  const hasWebsite = Boolean(project.websiteId || project.websiteUrl || project.website?.rootUrl);
+  const isExistingWebsite = project.projectType === "existing_website" || Boolean(project.websiteId || project.websiteUrl);
+  const keywordAnalysisComplete = Boolean(project.website?.keywordResearchRuns.some((run) => run.status === "completed" || run.keywordCount > 0) || project.executionTasks.some((task) => task.moduleName === "keyword_research" && ["completed", "skipped"].includes(task.status)));
+  const siteAnalysisComplete = Boolean(!isExistingWebsite || project.website?.crawlJobs.some((crawl) => crawl.status === "completed" && crawl.pagesCrawled > 0) || project.executionTasks.some((task) => task.moduleName === "site_analysis" && ["completed", "skipped"].includes(task.status)));
   const projectWorkflowModuleNames = new Set(["core_intake", "opportunity", "strategy", "strategy_approval"]);
   const moduleTaskCount = project.executionTasks.filter((task) => !["completed", "skipped", "cancelled", "canceled"].includes(task.status) && !projectWorkflowModuleNames.has(task.moduleName)).length;
-  const executionPlanCreated = strategyApproved && moduleTaskCount > 0;
+  const hasFullExecutionPlan = project.executionPlans.some((plan) => plan.title.toLowerCase().includes("full seo/growth execution plan"));
+  const executionPlanCreated = strategyApproved && hasFullExecutionPlan && moduleTaskCount > 0;
 
   const statusByStep: Record<string, { status: string; actionUrl: string; sourceType?: string; sourceId?: string | null; completionReason?: string; readyReason?: string; completedAt?: Date | null }> = {
     intake: intakeComplete
@@ -626,11 +657,23 @@ async function syncProjectWorkflow(tx: Prisma.TransactionClient, projectId: stri
       : intakeComplete
         ? { status: "ready", actionUrl: `/guided-projects/${project.id}`, readyReason: "Intake is complete and opportunities can be generated." }
         : { status: "pending", actionUrl: `/guided-projects/${project.id}`, readyReason: "Waiting for intake completion." },
+    keyword_analysis: keywordAnalysisComplete
+      ? { status: "completed", actionUrl: "/keywords", sourceType: "keyword_research", completionReason: "Keyword analysis exists for this project or connected website.", completedAt: new Date() }
+      : opportunitiesGenerated
+        ? { status: "ready", actionUrl: "/keywords", readyReason: "Opportunity direction exists. Run keyword analysis before strategy and full execution planning." }
+        : { status: "pending", actionUrl: "/keywords", readyReason: "Waiting for opportunity generation." },
+    site_analysis: siteAnalysisComplete
+      ? { status: "completed", actionUrl: "/site-analysis", sourceType: "site_analysis", completionReason: isExistingWebsite ? "A completed site crawl exists for the connected website." : "Site analysis is not required until generated pages or a website exist.", completedAt: new Date() }
+      : !hasWebsite
+        ? { status: "pending", actionUrl: "/site-architect", readyReason: "No website exists yet. Create website structure first, then schedule crawl after pages exist." }
+        : keywordAnalysisComplete
+          ? { status: "ready", actionUrl: "/site-analysis", readyReason: "Keyword analysis exists and the connected website can now be crawled." }
+          : { status: "pending", actionUrl: "/site-analysis", readyReason: "Waiting for keyword analysis." },
     strategy: strategyGenerated
       ? { status: "completed", actionUrl: "/strategy", sourceType: "strategy_plan", sourceId: latestStrategy?.id, completionReason: "A strategy plan exists.", completedAt: new Date() }
-      : opportunitiesGenerated
-        ? { status: "ready", actionUrl: "/strategy", readyReason: "Opportunities exist and strategy can be generated." }
-        : { status: "pending", actionUrl: "/strategy", readyReason: "Waiting for opportunities." },
+      : opportunitiesGenerated && keywordAnalysisComplete && siteAnalysisComplete
+        ? { status: "ready", actionUrl: "/strategy", readyReason: "Opportunity, keyword analysis, and required site analysis are ready." }
+        : { status: "pending", actionUrl: "/strategy", readyReason: "Waiting for opportunity, keyword analysis, and required site analysis." },
     strategy_approval: strategyApproved
       ? { status: "completed", actionUrl: "/strategy", sourceType: "strategy_plan", sourceId: latestStrategy?.id, completionReason: "The current strategy is approved.", completedAt: latestStrategy?.approvedAt ?? new Date() }
       : strategyGenerated
@@ -1709,8 +1752,123 @@ guidedProjectsRouter.post("/projects-v2/:projectId/execution-plan/create", async
   const approvedStrategy = project.strategyPlans.find((strategy) => strategy.status === "approved");
   if (!approvedStrategy) return res.status(409).json({ error: "approve strategy before creating execution plan" });
 
+  const websiteId = project.websiteId ?? project.website?.id ?? null;
+  const isExistingWebsite = project.projectType === "existing_website" || Boolean(project.websiteId || project.websiteUrl || project.website);
+  const hasWebsite = Boolean(websiteId || project.websiteUrl || project.website?.rootUrl);
+  const [completedCrawl, keywordRuns, existingTasks] = await Promise.all([
+    websiteId
+      ? prisma.crawlJob.findFirst({
+          where: { websiteId, status: "completed", pagesCrawled: { gt: 0 } },
+          orderBy: { createdAt: "desc" },
+          select: { id: true, pagesCrawled: true },
+        })
+      : Promise.resolve(null),
+    websiteId
+      ? prisma.keywordResearchRun.findMany({
+          where: { clientId: project.clientId, websiteId },
+          orderBy: { createdAt: "desc" },
+          take: 5,
+          select: { id: true, status: true, keywordCount: true },
+        })
+      : prisma.keywordResearchRun.findMany({
+          where: { clientId: project.clientId, targetDomain: project.websiteUrl ?? undefined },
+          orderBy: { createdAt: "desc" },
+          take: 5,
+          select: { id: true, status: true, keywordCount: true },
+        }),
+    prisma.executionTask.findMany({
+      where: { projectId: project.id, status: { notIn: ["cancelled", "canceled"] } },
+      select: { moduleName: true, status: true },
+      take: 100,
+    }),
+  ]);
+  const keywordAnalysisComplete = keywordRuns.some((run) => run.status === "completed" || run.keywordCount > 0)
+    || existingTasks.some((task) => task.moduleName === "keyword_research" && ["completed", "skipped"].includes(task.status));
+  const siteAnalysisComplete = !isExistingWebsite || Boolean(completedCrawl)
+    || existingTasks.some((task) => task.moduleName === "site_analysis" && ["completed", "skipped"].includes(task.status));
+  const siteArchitectureComplete = hasWebsite || existingTasks.some((task) => task.moduleName === "site_architect" && ["completed", "skipped"].includes(task.status));
+  const missingDiscovery: Array<"keyword" | "site" | "architecture"> = [];
+  if (!keywordAnalysisComplete) missingDiscovery.push("keyword");
+  if (isExistingWebsite && hasWebsite && !siteAnalysisComplete) missingDiscovery.push("site");
+  if (!isExistingWebsite && !siteArchitectureComplete) missingDiscovery.push("architecture");
+
   await prisma.$transaction(async (tx) => {
     const planId = await activePlanId(tx, project.id);
+    if (missingDiscovery.length > 0) {
+      await tx.executionPlan.update({
+        where: { id: planId },
+        data: {
+          title: "Execution readiness plan",
+          summary: isExistingWebsite
+            ? "Your full SEO/Growth Execution Plan is not fully ready yet. Complete keyword analysis and site analysis first so the final plan uses real discovery data."
+            : "Your full SEO/Growth Execution Plan is not fully ready yet. Complete keyword analysis and AI Site Architecture first. Site analysis will be scheduled after pages or a website exist.",
+        },
+      });
+      const readinessTasks = [
+        !keywordAnalysisComplete ? {
+          key: "readiness-keyword-analysis",
+          moduleName: "keyword_research",
+          title: "Run keyword analysis",
+          description: "Research target keywords, buyer-intent keywords, topical clusters, competitor gaps, difficulty, opportunity score, and revenue potential before creating the full execution plan.",
+          actionButtonLabel: "Add Keywords",
+          relatedUrl: websiteId ? `/keyword-insights?project=${websiteId}&add=1` : "/keyword-insights?add=1",
+          priority: "high" as const,
+        } : null,
+        isExistingWebsite && hasWebsite && !siteAnalysisComplete ? {
+          key: "readiness-site-analysis",
+          moduleName: "site_analysis",
+          title: "Run site analysis",
+          description: "Crawl the existing website to review pages, technical SEO, titles/metas, structure, internal links, content gaps, speed/mobile basics, indexability, CTAs, conversion issues, and keyword alignment.",
+          actionButtonLabel: "Analyze Site",
+          relatedUrl: "/site-analysis",
+          priority: "high" as const,
+        } : null,
+        !isExistingWebsite && !siteArchitectureComplete ? {
+          key: "readiness-site-architecture",
+          moduleName: "site_architect",
+          title: "Create AI site architecture",
+          description: "No website exists yet. Create the site structure and page plan first, then schedule site analysis after pages are generated or published.",
+          actionButtonLabel: "Open Site Architect",
+          relatedUrl: "/site-architect",
+          priority: "high" as const,
+        } : null,
+        keywordAnalysisComplete && siteAnalysisComplete ? {
+          key: "readiness-refresh-strategy",
+          moduleName: "strategy",
+          title: "Refresh strategy with discovery data",
+          description: "Keyword and site discovery data are available. Regenerate or review the strategy so the final execution plan uses the latest evidence.",
+          actionButtonLabel: "Review Strategy",
+          relatedUrl: "/strategy",
+          priority: "medium" as const,
+        } : null,
+      ].filter((task): task is NonNullable<typeof task> => Boolean(task));
+      for (const input of readinessTasks) {
+        await ensureNextTask(tx, {
+          clientId: project.clientId,
+          websiteId: project.websiteId,
+          projectId: project.id,
+          executionPlanId: planId,
+          key: `project:${project.id}:execution:${input.key}`,
+          moduleName: input.moduleName,
+          title: input.title,
+          description: input.description,
+          actionButtonLabel: input.actionButtonLabel,
+          relatedUrl: input.relatedUrl,
+          priority: input.priority,
+          automationLevel: "manual_guided",
+        });
+      }
+      await syncProjectWorkflow(tx, project.id);
+      return;
+    }
+
+    await tx.executionPlan.update({
+      where: { id: planId },
+      data: {
+        title: "Full SEO/Growth execution plan",
+        summary: "Prioritized execution tasks created from approved strategy, opportunity direction, keyword analysis, site analysis, business goal, and project path.",
+      },
+    });
     const taskInputs = [
       {
         key: "generate-sitemap",
@@ -1797,7 +1955,22 @@ guidedProjectsRouter.post("/projects-v2/:projectId/lead-magnet/generate", async 
   const approvedStrategy = project.strategyPlans.find((strategy) => strategy.status === "approved");
   if (!approvedStrategy) return res.status(409).json({ error: "approve strategy before generating a lead magnet" });
 
+  let usageEventId: string | null = null;
   try {
+    const client = await prisma.client.findUnique({ where: { id: project.clientId }, select: { plan: true } });
+    const routedModel = await modelForFeature("lead_magnet_generate", client?.plan, config.openaiModel);
+    const preflight = await preflightUsage({
+      clientId: project.clientId,
+      userId: req.user?.userId,
+      projectId: project.id,
+      websiteId: project.websiteId,
+      featureKey: "lead_magnet_generate",
+      actionKey: "Generate lead magnet",
+      idempotencyKey: `lead-magnet:${project.id}:${Date.now()}`,
+      metadata: { source: "guided_project_lead_magnet" },
+    });
+    usageEventId = preflight.usageEventId;
+
     const keywordRuns = project.websiteId
       ? await prisma.keywordResearchRun.findMany({
           where: { clientId: project.clientId, websiteId: project.websiteId },
@@ -1807,7 +1980,7 @@ guidedProjectsRouter.post("/projects-v2/:projectId/lead-magnet/generate", async 
         })
       : [];
     const prompt = buildLeadMagnetPrompt({ project, strategy: approvedStrategy, keywordRuns });
-    const generated = await openaiJson(prompt);
+    const generated = await openaiJson(prompt, routedModel);
     const result = generated.result as { leadMagnet?: { title?: unknown; assetType?: unknown } };
     const title = typeof result.leadMagnet?.title === "string" && result.leadMagnet.title.trim()
       ? result.leadMagnet.title.trim()
@@ -1877,9 +2050,23 @@ guidedProjectsRouter.post("/projects-v2/:projectId/lead-magnet/generate", async 
       return record;
     });
 
+    await commitUsage({
+      usageEventId,
+      provider: "openai",
+      model: generated.model,
+      inputTokens: generated.inputTokens,
+      outputTokens: generated.outputTokens,
+      providerCostUsd: Number(generation.estimatedCostUsd ?? 0),
+      metadata: { aiContentGenerationId: generation.id },
+    });
+    usageEventId = null;
+
     const updated = await scopedProject(req, project.id);
     res.status(201).json({ project: updated, generation });
   } catch (error) {
+    if (usageEventId) {
+      await refundUsage({ usageEventId, reason: error instanceof Error ? error.message : "Lead magnet generation failed" }).catch(() => undefined);
+    }
     if (error instanceof Error && error.message === "openai_not_configured") return res.status(503).json({ error: "OpenAI is not configured" });
     res.status(500).json({ error: error instanceof Error ? error.message : "Lead magnet generation failed" });
   }

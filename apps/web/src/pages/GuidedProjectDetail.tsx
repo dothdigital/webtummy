@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import type { ReactNode } from "react";
-import { Link, useNavigate, useParams } from "react-router-dom";
+import { Link, useLocation, useNavigate, useParams } from "react-router-dom";
 import { api } from "../api.js";
 import { Button, Card, StatusPill } from "../components/ui.js";
 import type { GuidedExecutionTask, GuidedProject } from "../types.js";
@@ -85,22 +85,32 @@ function InfoBlock({ label, children }: { label: string; children: ReactNode }) 
 
 function BusinessProfileCard({ project, preferredOutputs }: { project: GuidedProject; preferredOutputs: string[] }) {
   const profile = project.businessProfile;
-  const profileItems = [
-    ["Summary", profile?.businessSummary ?? "Not set"],
-    ["Audience", profile?.targetAudience ?? "Not set"],
-    ["Offer", profile?.offerSummary ?? "Not set"],
-  ] as const;
   const briefItems = [
     ["Project type", labelize(project.projectType)],
     ["Primary goal", project.primaryGoal ?? "Not set"],
     ["Timeline", project.targetLaunchTimeline ?? "Not set"],
     ["Publishing", project.preferredPublishingMethod ?? "Not set"],
   ] as const;
+  const summaryParts = (profile?.businessSummary ?? "").split("|").map((item) => item.trim()).filter(Boolean);
+  const audienceSegments = splitList(profile?.targetAudience).slice(0, 3);
+  const offerSegments = splitList(profile?.offerSummary).slice(0, 3);
 
   return (
-    <Card className="overflow-hidden border-brand-100 bg-gradient-to-br from-white via-white to-brand-50/50">
-      <div className="flex flex-col gap-3 p-4 xl:flex-row xl:items-start xl:justify-between">
-        <div className="grid flex-1 gap-2 sm:grid-cols-2 lg:grid-cols-5">
+    <Card className="overflow-hidden border-brand-100 bg-white">
+      <div className="grid gap-4 p-4 xl:grid-cols-[1.15fr_1fr]">
+        <div>
+          <div className="text-[11px] font-bold uppercase tracking-wide text-brand-700">Project snapshot</div>
+          <div className="mt-2 flex flex-wrap gap-2">
+            {(summaryParts.length ? summaryParts : [project.businessName ?? project.name, project.niche ?? "Niche not set", project.targetLocation ?? "Location not set"]).slice(0, 5).map((item) => (
+              <span key={item} className="rounded-full bg-brand-50 px-3 py-1 text-xs font-bold text-brand-800">{item}</span>
+            ))}
+          </div>
+          <div className="mt-3 grid gap-3 md:grid-cols-2">
+            <CompactProfileBlock label="Audience" items={audienceSegments} empty="Audience not set" />
+            <CompactProfileBlock label="Offer" items={offerSegments} empty="Offer not set" />
+          </div>
+        </div>
+        <div className="grid gap-2 sm:grid-cols-2">
           {briefItems.map(([label, value]) => (
             <div key={label} className="rounded-lg border border-charcoal-100 bg-white px-3 py-2">
               <div className="text-[10px] font-bold uppercase tracking-wide text-charcoal-400">{label}</div>
@@ -115,21 +125,24 @@ function BusinessProfileCard({ project, preferredOutputs }: { project: GuidedPro
           </div>
         </div>
       </div>
-      {profile ? (
-        <div className="grid border-t border-brand-100 bg-white/70 md:grid-cols-3">
-          {profileItems.map(([label, value]) => (
-            <div key={label} className="border-t border-brand-100 p-5 first:border-t-0 md:border-l md:border-t-0 md:first:border-l-0">
-              <div className="text-[11px] font-bold uppercase tracking-wide text-charcoal-400">{label}</div>
-              <p className="mt-2 text-sm font-semibold leading-6 text-charcoal-800">{value}</p>
-            </div>
-          ))}
-        </div>
-      ) : (
-        <div className="border-t border-brand-100 bg-white/70 p-5">
-          <p className="text-sm leading-6 text-charcoal-500">No profile yet. Complete intake first so SEnuke AI can reuse the business context across modules.</p>
-        </div>
-      )}
     </Card>
+  );
+}
+
+function splitList(value?: string | null) {
+  return (value ?? "").split(/,|\n/).map((item) => item.trim()).filter(Boolean);
+}
+
+function CompactProfileBlock({ label, items, empty }: { label: string; items: string[]; empty: string }) {
+  return (
+    <div className="rounded-lg border border-charcoal-100 bg-charcoal-50/60 px-3 py-2">
+      <div className="text-[10px] font-bold uppercase tracking-wide text-charcoal-400">{label}</div>
+      <div className="mt-1 flex flex-wrap gap-1">
+        {items.length ? items.map((item) => (
+          <span key={item} className="max-w-full truncate rounded-md bg-white px-2 py-0.5 text-xs font-semibold text-charcoal-700">{item}</span>
+        )) : <span className="text-xs font-semibold text-amber-700">{empty}</span>}
+      </div>
+    </div>
   );
 }
 
@@ -167,6 +180,50 @@ function FocusCard({
   );
 }
 
+type ProjectNextAction = {
+  title: string;
+  detail: string;
+  label: string;
+  to?: string;
+  onClick?: () => void;
+  tone: "brand" | "green" | "amber";
+};
+
+function ProjectNextActionCard({ action }: { action: ProjectNextAction }) {
+  const toneClass = action.tone === "green"
+    ? "border-emerald-200 bg-gradient-to-r from-emerald-50 via-white to-brand-50"
+    : action.tone === "amber"
+      ? "border-amber-200 bg-gradient-to-r from-amber-50 via-white to-orange-50"
+      : "border-brand-200 bg-gradient-to-r from-brand-50 via-white to-sky-50";
+  const buttonClass = action.tone === "green"
+    ? "bg-emerald-600 hover:bg-emerald-700"
+    : action.tone === "amber"
+      ? "bg-amber-500 hover:bg-amber-600"
+      : "bg-brand-600 hover:bg-brand-700";
+  const cta = (
+    <span className={`inline-flex items-center justify-center rounded-lg px-4 py-2.5 text-sm font-bold text-white shadow-sm ${buttonClass}`}>
+      {action.label} <span className="ml-2">→</span>
+    </span>
+  );
+  return (
+    <Card className={`overflow-hidden border ${toneClass}`}>
+      <div className="flex flex-col gap-4 p-5 lg:flex-row lg:items-center lg:justify-between">
+        <div className="flex min-w-0 gap-4">
+          <div className={`grid h-12 w-12 shrink-0 place-items-center rounded-xl text-lg font-bold text-white shadow-sm ${buttonClass}`}>→</div>
+          <div className="min-w-0">
+            <div className="text-xs font-bold uppercase tracking-wide text-brand-700">What to do next</div>
+            <h2 className="mt-1 text-xl font-bold text-charcoal-950">{action.title}</h2>
+            <p className="mt-2 text-sm leading-6 text-charcoal-600">{action.detail}</p>
+          </div>
+        </div>
+        <div className="shrink-0">
+          {action.to ? <Link to={action.to}>{cta}</Link> : <button type="button" onClick={action.onClick}>{cta}</button>}
+        </div>
+      </div>
+    </Card>
+  );
+}
+
 type StrategyView = {
   status?: string;
   strategySummary?: string | null;
@@ -180,6 +237,7 @@ type StrategyView = {
 
 export default function GuidedProjectDetail() {
   const { id } = useParams();
+  const location = useLocation();
   const navigate = useNavigate();
   const [project, setProject] = useState<GuidedProject | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -193,6 +251,22 @@ export default function GuidedProjectDetail() {
   };
 
   useEffect(() => { load(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [id]);
+
+  useEffect(() => {
+    if (!project || !location.hash) return;
+    const targetId = location.hash.slice(1);
+    let attempts = 0;
+    const scrollToHash = () => {
+      const target = document.getElementById(targetId);
+      if (target) {
+        target.scrollIntoView({ behavior: "smooth", block: "start" });
+        return;
+      }
+      attempts += 1;
+      if (attempts < 8) window.setTimeout(scrollToHash, 80);
+    };
+    window.setTimeout(scrollToHash, 0);
+  }, [location.hash, project]);
 
   const runTask = async (task: GuidedExecutionTask) => {
     if (!project) return;
@@ -235,7 +309,8 @@ export default function GuidedProjectDetail() {
   if (error) return <Card className="border-red-200 bg-red-50 p-4 text-sm text-red-800">{error}</Card>;
   if (!project) return <div className="text-charcoal-400">Loading project...</div>;
 
-  const tasks = project.executionPlans?.[0]?.tasks ?? [];
+  const executionPlan = project.executionPlans?.[0] ?? null;
+  const tasks = executionPlan?.tasks ?? [];
   const preferredOutputs = Array.isArray(project.preferredOutputs) ? project.preferredOutputs.filter((item): item is string => typeof item === "string") : [];
   const projectUrl = project.website?.rootUrl ?? project.websiteUrl ?? project.businessName ?? "No website connected yet";
   const displayName = project.businessName ?? project.name;
@@ -244,6 +319,7 @@ export default function GuidedProjectDetail() {
   const opportunityCount = project.opportunities?.length ?? project._count?.opportunities ?? 0;
   const strategyCount = project.strategyPlans?.length ?? project._count?.strategyPlans ?? 0;
   const latestStrategy = project.strategyPlans?.[0] as StrategyView | undefined;
+  const workflowState = (key: string) => project.workflowSteps?.find((step) => step.stepKey === key);
   const strategyReviewTasks = tasks.filter((task) => task.moduleName === "strategy_approval");
   const strategyApproved = latestStrategy?.status === "approved" || project.currentStep === "execution" || strategyReviewTasks.some((task) => ["completed", "skipped"].includes(task.status));
   const activeTasks = tasks.filter((task) => !["completed", "skipped"].includes(task.status) && !(strategyApproved && task.moduleName === "strategy_approval"));
@@ -268,33 +344,98 @@ export default function GuidedProjectDetail() {
         : "There are no open tasks in the current project plan.";
   const progressSteps = [
     { key: "intake", label: "Intake", to: `/guided-projects/${project.id}/intake` },
-    { key: "opportunity", label: "Opportunity", to: `/opportunities?projectId=${project.id}` },
+    { key: "opportunities", label: "Opportunity", to: `/opportunities?projectId=${project.id}` },
+    { key: "keyword_analysis", label: "Keywords", to: "/keywords" },
+    { key: "site_analysis", label: "Site analysis", to: "/site-analysis" },
     { key: "strategy", label: "Strategy", to: "/strategy" },
-    { key: "execution", label: "Execution", to: "#execution-tasks" },
+    { key: "execution_plan", label: "Execution", to: "#execution-tasks" },
   ];
   const intakeComplete = intakeCount > 0 || Boolean(project.businessProfile) || project.currentStep !== "intake";
   const opportunityComplete = opportunityCount > 0;
   const strategyGenerated = strategyCount > 0 || Boolean(latestStrategy);
+  const keywordWorkflow = workflowState("keyword_analysis");
+  const siteWorkflow = workflowState("site_analysis");
+  const executionWorkflow = workflowState("execution_plan");
+  const keywordComplete = keywordWorkflow?.status === "completed";
+  const siteComplete = siteWorkflow?.status === "completed";
   const derivedCurrentStep = !intakeComplete
     ? "intake"
     : !opportunityComplete
-      ? "opportunity"
+      ? "opportunities"
+      : !keywordComplete
+        ? "keyword_analysis"
+      : !siteComplete
+        ? "site_analysis"
       : !strategyGenerated || !strategyApproved
         ? "strategy"
-        : "execution";
+        : "execution_plan";
   const currentStepIndex = Math.max(0, progressSteps.findIndex((step) => step.key === derivedCurrentStep));
   const stageState = (key: string, index: number) => {
     if (key === "intake") return intakeComplete ? "Completed" : "Current stage";
-    if (key === "opportunity") return opportunityComplete ? "Completed" : derivedCurrentStep === "opportunity" ? "Current stage" : "Coming next";
+    if (key === "opportunities") return opportunityComplete ? "Completed" : derivedCurrentStep === "opportunities" ? "Current stage" : "Coming next";
+    if (key === "keyword_analysis") return keywordComplete ? "Completed" : derivedCurrentStep === "keyword_analysis" ? "Current stage" : workflowState("keyword_analysis")?.status === "ready" ? "Ready" : "Coming next";
+    if (key === "site_analysis") return siteComplete ? "Completed" : derivedCurrentStep === "site_analysis" ? "Current stage" : workflowState("site_analysis")?.status === "ready" ? "Ready" : "Coming next";
     if (key === "strategy") {
       if (strategyApproved) return "Approved";
       if (strategyGenerated) return "Draft";
       return derivedCurrentStep === "strategy" ? "Current stage" : "Coming next";
     }
-    if (key === "execution") return derivedCurrentStep === "execution" ? (activeTasks.length ? "Current stage" : "Ready") : "Coming next";
+    if (key === "execution_plan") return executionWorkflow?.status === "completed" ? "Completed" : derivedCurrentStep === "execution_plan" ? (activeTasks.length ? "Current stage" : "Ready") : "Coming next";
     return index <= currentStepIndex ? "Completed" : "Coming next";
   };
   const strategyTask = activeTasks.find((task) => task.moduleName === "strategy");
+  const nextAction: ProjectNextAction = !intakeComplete
+    ? {
+        title: "Complete the project profile",
+        detail: "Answer the required intake questions so SEnuke AI can use the business, audience, offer, goal, and project path across every module.",
+        label: "Open Intake",
+        to: `/guided-projects/${project.id}/intake`,
+        tone: "brand",
+      }
+    : !opportunityComplete
+      ? {
+          title: "Find the best opportunity",
+          detail: "Generate and select the project direction before keyword analysis, site analysis, strategy, and execution planning.",
+          label: "Open Opportunity Finder",
+          to: `/opportunities?projectId=${project.id}`,
+          tone: "brand",
+        }
+      : !keywordComplete
+        ? {
+            title: "Run keyword analysis",
+            detail: "Research target keywords, buyer intent, clusters, competitor gaps, difficulty, opportunity score, and revenue potential before strategy.",
+            label: "Add Keywords",
+            to: project.website?.id ? `/keyword-insights?project=${project.website.id}&add=1` : "/keyword-insights?add=1",
+            tone: "amber",
+          }
+        : !siteComplete
+          ? {
+              title: "Run site analysis",
+              detail: "For an existing website, crawl the site before the full execution plan so recommendations use current pages, SEO issues, content gaps, links, speed, and conversion signals.",
+              label: "Analyze Site",
+              to: "/site-analysis",
+              tone: "amber",
+            }
+          : !strategyApproved
+            ? {
+                title: strategyGenerated ? "Review and approve strategy" : "Generate strategy",
+                detail: strategyGenerated
+                  ? "A draft strategy exists. Approve it only after confirming it uses the opportunity, keyword, and site-analysis context."
+                  : "Create the strategy from opportunity, keyword analysis, site analysis, business goal, and user path.",
+                label: strategyGenerated ? "Review Strategy" : "Open Strategy",
+                to: "/strategy",
+                tone: "brand",
+              }
+            : {
+                title: activeTasks.length ? "Work the next execution task" : "Create the full execution plan",
+                detail: activeTasks.length
+                  ? `${activeTasks[0].title}: ${activeTasks[0].description}`
+                  : "Discovery and strategy are ready. Create the prioritized SEO/Growth execution plan with impact, effort, automation, approval, cost, and next action.",
+                label: activeTasks.length ? activeTasks[0].actionButtonLabel ?? "Open Next Task" : "Create Execution Plan",
+                to: activeTasks.length ? activeTasks[0].relatedUrl ?? "#execution-tasks" : undefined,
+                onClick: activeTasks.length ? undefined : () => void createExecutionPlan(),
+                tone: activeTasks.length ? "amber" : "green",
+              };
   return (
     <div className="space-y-5">
       <Card className="overflow-hidden">
@@ -329,6 +470,7 @@ export default function GuidedProjectDetail() {
 
         <div className="space-y-5 p-5">
           <BusinessProfileCard project={project} preferredOutputs={preferredOutputs} />
+          <ProjectNextActionCard action={nextAction} />
 
           <div>
             <Card className="p-4">
@@ -340,15 +482,23 @@ export default function GuidedProjectDetail() {
                   const badge = reached && (state === "Completed" || state === "Approved") ? "✓" : index + 1;
                   const count = step.key === "intake"
                     ? intakeCount
-                    : step.key === "opportunity"
+                    : step.key === "opportunities"
                       ? opportunityCount
+                      : step.key === "keyword_analysis"
+                        ? keywordComplete ? "✓" : activeTasks.filter((task) => task.moduleName === "keyword_research").length
+                      : step.key === "site_analysis"
+                        ? siteComplete ? "✓" : activeTasks.filter((task) => task.moduleName === "site_analysis").length
                       : step.key === "strategy"
                         ? strategyCount
                         : activeTasks.length;
                   const helper = step.key === "intake"
                     ? "answers saved"
-                    : step.key === "opportunity"
+                    : step.key === "opportunities"
                       ? "generated ideas"
+                      : step.key === "keyword_analysis"
+                        ? keywordComplete ? "complete" : "needed before strategy"
+                      : step.key === "site_analysis"
+                        ? siteComplete ? "complete" : "required for existing site"
                       : step.key === "strategy"
                         ? "plans created"
                         : "open tasks";
@@ -430,6 +580,40 @@ export default function GuidedProjectDetail() {
         <Card id="execution-tasks" className="scroll-mt-24 overflow-hidden">
           <div className="border-b border-charcoal-100 bg-charcoal-50/70 px-5 py-4">
             <SectionTitle title="Execution tasks" helper="Work through these in order. Generated actions and manual review steps stay together here." />
+          </div>
+          <div className="border-b border-charcoal-100 bg-gradient-to-r from-brand-50 via-white to-emerald-50 p-5">
+            <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+              <div className="flex min-w-0 gap-4">
+                <div className="grid h-12 w-12 shrink-0 place-items-center rounded-xl bg-brand-600 text-lg font-bold text-white shadow-sm">→</div>
+                <div className="min-w-0">
+                  <div className="text-xs font-bold uppercase tracking-wide text-brand-700">Execution plan</div>
+                  <h2 className="mt-1 text-xl font-bold text-charcoal-950">{executionPlan?.title ?? "Execution plan is ready"}</h2>
+                  <p className="mt-2 text-sm leading-6 text-charcoal-600">
+                    {executionPlan?.summary ?? "This plan was created from the approved strategy. Review tasks in order and open each module when you are ready to act."}
+                  </p>
+                  <div className="mt-3 flex flex-wrap gap-2 text-xs font-bold">
+                    <span className="rounded-full bg-white/90 px-3 py-1 text-brand-700 shadow-sm">{activeTasks.length} open task{activeTasks.length === 1 ? "" : "s"}</span>
+                    <span className="rounded-full bg-white/90 px-3 py-1 text-emerald-700 shadow-sm">{completedTasks.length} completed</span>
+                    <span className="rounded-full bg-white/90 px-3 py-1 text-charcoal-600 shadow-sm">{labelize(executionPlan?.status ?? project.currentStep)}</span>
+                  </div>
+                </div>
+              </div>
+              <div className="shrink-0">
+                {activeTasks[0]?.relatedUrl ? (
+                  <Link to={activeTasks[0].relatedUrl} className="inline-flex items-center justify-center rounded-lg bg-brand-600 px-4 py-2.5 text-sm font-bold text-white shadow-sm hover:bg-brand-700">
+                    {activeTasks[0].actionButtonLabel ?? "Open Next Task"} <span className="ml-2">→</span>
+                  </Link>
+                ) : strategyApproved && !tasks.length ? (
+                  <Button onClick={() => void createExecutionPlan()} disabled={busyAction === "execution-plan"}>
+                    {busyAction === "execution-plan" ? "Creating..." : "Create Execution Plan"}
+                  </Button>
+                ) : (
+                  <Link to="/strategy" className="inline-flex items-center justify-center rounded-lg bg-brand-600 px-4 py-2.5 text-sm font-bold text-white shadow-sm hover:bg-brand-700">
+                    Review Strategy
+                  </Link>
+                )}
+              </div>
+            </div>
           </div>
           {activeTasks.length === 0 ? (
             <div className="p-5">
