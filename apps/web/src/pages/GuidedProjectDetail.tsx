@@ -3,6 +3,7 @@ import type { ReactNode } from "react";
 import { Link, useLocation, useNavigate, useParams } from "react-router-dom";
 import { api } from "../api.js";
 import { Button, Card, StatusPill } from "../components/ui.js";
+import { requiresSiteAnalysisBeforeStrategy } from "../project-flow.js";
 import type { GuidedExecutionTask, GuidedProject } from "../types.js";
 
 function taskTone(task: GuidedExecutionTask) {
@@ -345,9 +346,9 @@ export default function GuidedProjectDetail() {
   const progressSteps = [
     { key: "intake", label: "Intake", to: `/guided-projects/${project.id}/intake` },
     { key: "opportunities", label: "Opportunity", to: `/opportunities?projectId=${project.id}` },
-    { key: "keyword_analysis", label: "Keywords", to: "/keywords" },
-    { key: "site_analysis", label: "Site analysis", to: "/site-analysis" },
-    { key: "strategy", label: "Strategy", to: "/strategy" },
+    { key: "keyword_analysis", label: "Keywords", to: `/keywords?projectId=${project.id}` },
+    { key: "site_analysis", label: "Site analysis", to: `/site-analysis?projectId=${project.id}` },
+    { key: "strategy", label: "Strategy", to: `/strategy?projectId=${project.id}` },
     { key: "execution_plan", label: "Execution", to: "#execution-tasks" },
   ];
   const intakeComplete = intakeCount > 0 || Boolean(project.businessProfile) || project.currentStep !== "intake";
@@ -358,13 +359,14 @@ export default function GuidedProjectDetail() {
   const executionWorkflow = workflowState("execution_plan");
   const keywordComplete = keywordWorkflow?.status === "completed";
   const siteComplete = siteWorkflow?.status === "completed";
+  const siteAnalysisRequired = requiresSiteAnalysisBeforeStrategy(project);
   const derivedCurrentStep = !intakeComplete
     ? "intake"
     : !opportunityComplete
       ? "opportunities"
       : !keywordComplete
         ? "keyword_analysis"
-      : !siteComplete
+      : siteAnalysisRequired && !siteComplete
         ? "site_analysis"
       : !strategyGenerated || !strategyApproved
         ? "strategy"
@@ -374,7 +376,10 @@ export default function GuidedProjectDetail() {
     if (key === "intake") return intakeComplete ? "Completed" : "Current stage";
     if (key === "opportunities") return opportunityComplete ? "Completed" : derivedCurrentStep === "opportunities" ? "Current stage" : "Coming next";
     if (key === "keyword_analysis") return keywordComplete ? "Completed" : derivedCurrentStep === "keyword_analysis" ? "Current stage" : workflowState("keyword_analysis")?.status === "ready" ? "Ready" : "Coming next";
-    if (key === "site_analysis") return siteComplete ? "Completed" : derivedCurrentStep === "site_analysis" ? "Current stage" : workflowState("site_analysis")?.status === "ready" ? "Ready" : "Coming next";
+    if (key === "site_analysis") {
+      if (!siteAnalysisRequired) return "Scheduled later";
+      return siteComplete ? "Completed" : derivedCurrentStep === "site_analysis" ? "Current stage" : workflowState("site_analysis")?.status === "ready" ? "Ready" : "Coming next";
+    }
     if (key === "strategy") {
       if (strategyApproved) return "Approved";
       if (strategyGenerated) return "Draft";
@@ -408,12 +413,12 @@ export default function GuidedProjectDetail() {
             to: project.website?.id ? `/keyword-insights?project=${project.website.id}&add=1` : "/keyword-insights?add=1",
             tone: "amber",
           }
-        : !siteComplete
+        : siteAnalysisRequired && !siteComplete
           ? {
               title: "Run site analysis",
               detail: "For an existing website, crawl the site before the full execution plan so recommendations use current pages, SEO issues, content gaps, links, speed, and conversion signals.",
               label: "Analyze Site",
-              to: "/site-analysis",
+              to: `/site-analysis?projectId=${project.id}`,
               tone: "amber",
             }
           : !strategyApproved
@@ -423,7 +428,7 @@ export default function GuidedProjectDetail() {
                   ? "A draft strategy exists. Approve it only after confirming it uses the opportunity, keyword, and site-analysis context."
                   : "Create the strategy from opportunity, keyword analysis, site analysis, business goal, and user path.",
                 label: strategyGenerated ? "Review Strategy" : "Open Strategy",
-                to: "/strategy",
+                to: `/strategy?projectId=${project.id}`,
                 tone: "brand",
               }
             : {
@@ -527,10 +532,10 @@ export default function GuidedProjectDetail() {
                   : strategyGenerated
                     ? "A draft strategy exists and needs review before execution tasks proceed."
                     : opportunityComplete
-                      ? "Generate the AI strategy from the selected opportunity and project profile."
+                      ? "Generate the AI strategy only after keyword analysis and required site analysis are complete."
                       : "Generate opportunities before strategy creation."}
               >
-                <Link to="/strategy" className="inline-flex w-full items-center justify-center rounded-lg border border-brand-200 bg-white px-3 py-2 text-sm font-bold text-brand-700 hover:bg-brand-50">
+                <Link to={`/strategy?projectId=${project.id}`} className="inline-flex w-full items-center justify-center rounded-lg border border-brand-200 bg-white px-3 py-2 text-sm font-bold text-brand-700 hover:bg-brand-50">
                   {strategyApproved ? "View Strategy" : strategyGenerated ? "Review Strategy" : "Open Strategy"}
                 </Link>
               </FocusCard>
@@ -554,7 +559,7 @@ export default function GuidedProjectDetail() {
                     {busyAction === "execution-plan" ? "Creating..." : "Create Execution Plan"}
                   </Button>
                 ) : (
-                  <Link to={strategyApproved ? "#execution-tasks" : "/strategy"} className="inline-flex w-full items-center justify-center rounded-lg border border-brand-200 bg-white px-3 py-2 text-sm font-bold text-brand-700 hover:bg-brand-50">
+                  <Link to={strategyApproved ? "#execution-tasks" : `/strategy?projectId=${project.id}`} className="inline-flex w-full items-center justify-center rounded-lg border border-brand-200 bg-white px-3 py-2 text-sm font-bold text-brand-700 hover:bg-brand-50">
                     {strategyApproved ? "View Execution" : "Review Strategy"}
                   </Link>
                 )}
@@ -608,7 +613,7 @@ export default function GuidedProjectDetail() {
                     {busyAction === "execution-plan" ? "Creating..." : "Create Execution Plan"}
                   </Button>
                 ) : (
-                  <Link to="/strategy" className="inline-flex items-center justify-center rounded-lg bg-brand-600 px-4 py-2.5 text-sm font-bold text-white shadow-sm hover:bg-brand-700">
+                  <Link to={`/strategy?projectId=${project.id}`} className="inline-flex items-center justify-center rounded-lg bg-brand-600 px-4 py-2.5 text-sm font-bold text-white shadow-sm hover:bg-brand-700">
                     Review Strategy
                   </Link>
                 )}

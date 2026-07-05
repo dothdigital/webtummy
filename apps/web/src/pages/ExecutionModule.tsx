@@ -4,6 +4,7 @@ import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { Cell, Pie, PieChart, ResponsiveContainer } from "recharts";
 import { api } from "../api.js";
 import { Card, StatusPill } from "../components/ui.js";
+import { isExistingWebsiteFlow, nextProjectFlowStep } from "../project-flow.js";
 import type { AiContentGeneration, DomainBacklinkLinks, DomainBacklinkSummary, GuidedExecutionTask, GuidedProject, HealthReport, KeywordResearchRun, Opportunity, Website, WorkspaceIntelligence, WorkspaceIntelligenceResponse } from "../types.js";
 
 type ModuleKind = "opportunities" | "strategy" | "keywords" | "site-analysis" | "backlinks" | "ai-citations" | "site-architect" | "lead-magnets";
@@ -63,8 +64,8 @@ const moduleCopy: Record<ModuleKind, { title: string; subtitle: string; primary:
     secondary: "How it works",
   },
   backlinks: {
-    title: "Backlink Intelligence",
-    subtitle: "Track backlinks, monitor authority, and discover high-value link opportunities.",
+    title: "Backlinks & Authority",
+    subtitle: "Track backlinks, monitor authority, and discover safe link, citation, and outreach opportunities.",
     primary: "Refresh Backlinks",
     secondary: "How it works",
   },
@@ -123,7 +124,13 @@ function moduleReadiness(kind: ModuleKind, data: ModuleData, project?: GuidedPro
   const strategyExists = (project.strategyPlans?.length ?? 0) > 0;
   const strategyApproved = project.strategyPlans?.some((strategy) => typeof strategy === "object" && strategy !== null && "status" in strategy && strategy.status === "approved") ?? false;
   const hasWebsite = Boolean(project.websiteId || project.websiteUrl || website);
+  const isExistingWebsite = isExistingWebsiteFlow(project, website);
   const siteAnalysisComplete = hasCompletedSiteAnalysis(data, project, website);
+  const keywordAnalysisComplete = data.keywordRuns.some((run) => {
+    const runBelongsToWebsite = website?.id ? run.websiteId === website.id : true;
+    const runBelongsToDomain = project.websiteUrl && run.targetDomain ? project.websiteUrl.includes(run.targetDomain) || run.targetDomain.includes(project.websiteUrl.replace(/^https?:\/\//i, "")) : true;
+    return (runBelongsToWebsite || runBelongsToDomain) && (run.status === "completed" || run.keywordCount > 0 || (run.ideas?.length ?? 0) > 0);
+  }) || data.tasks.some((task) => task.projectId === project.id && task.moduleName === "keyword_research" && ["completed", "skipped"].includes(task.status));
   const item = (key: string, title: string, description: string, complete: boolean, actions: { label: string; url: string }[]): ReadinessItem => ({
     key,
     title,
@@ -159,6 +166,13 @@ function moduleReadiness(kind: ModuleKind, data: ModuleData, project?: GuidedPro
     strategyApproved,
     [{ label: strategyExists ? "Approve Strategy" : "Generate Strategy", url: `/strategy?projectId=${project.id}` }],
   );
+  const keywordAnalysis = item(
+    "keyword_analysis",
+    "Keyword analysis required",
+    "SEnuke AI needs target keywords, buyer intent, topical clusters, competitor gaps, difficulty, opportunity score, and revenue potential before strategy and full execution planning.",
+    keywordAnalysisComplete,
+    [{ label: "Run Keyword Analysis", url: `/keywords?projectId=${project.id}` }],
+  );
   const websiteItem = item(
     "website",
     "No website found",
@@ -179,9 +193,9 @@ function moduleReadiness(kind: ModuleKind, data: ModuleData, project?: GuidedPro
 
   const requiredByModule: Partial<Record<ModuleKind, ReadinessItem[]>> = {
     opportunities: [intake],
-    strategy: [intake, opportunity, selectedOpportunity],
-    keywords: [intake, strategy],
-    "site-analysis": [websiteItem],
+    strategy: [intake, opportunity, selectedOpportunity, keywordAnalysis, ...(isExistingWebsite && hasWebsite ? [siteAnalysis] : [])],
+    keywords: [intake, opportunity, selectedOpportunity],
+    "site-analysis": [websiteItem, keywordAnalysis],
     backlinks: [websiteItem, siteAnalysis],
     "ai-citations": [websiteItem, siteAnalysis],
     "site-architect": [intake, strategy],
@@ -2395,7 +2409,7 @@ function LeadMagnetScreen({ data }: { data: ModuleData }) {
               <p>3. It prepares the asset outline, landing-page copy, delivery email, thank-you copy, and follow-up flow.</p>
               <p>4. You review and approve before anything is published or sent.</p>
             </div>
-            <Link to="/strategy" className="mt-5 inline-flex w-full justify-center rounded-lg border border-brand-200 bg-white px-4 py-2.5 text-sm font-bold text-brand-700 hover:bg-brand-50">
+            <Link to={project ? `/strategy?projectId=${project.id}` : "/strategy"} className="mt-5 inline-flex w-full justify-center rounded-lg border border-brand-200 bg-white px-4 py-2.5 text-sm font-bold text-brand-700 hover:bg-brand-50">
               Review Strategy
             </Link>
           </Card>
@@ -2734,15 +2748,7 @@ function OpportunityMetricChip({ label, value, tone = "emerald" }: { label: stri
 }
 
 function OpportunityNextStepCallout({ project, opportunity, onNotify }: { project: GuidedProject; opportunity: Opportunity; onNotify: (message: string) => void }) {
-  const latestStrategy = project.strategyPlans?.[0];
-  const hasStrategy = Boolean(latestStrategy || project._count?.strategyPlans);
-  const strategyApproved = latestStrategy?.status === "approved";
-  const actionLabel = strategyApproved ? "Open Approved Strategy" : hasStrategy ? "Review Strategy Draft" : "Generate Strategy";
-  const description = strategyApproved
-    ? "This opportunity is already connected to an approved strategy. You can open the strategy or create the execution plan from there."
-    : hasStrategy
-      ? "A strategy draft exists. Review it against this selected opportunity, then approve it before creating the execution plan."
-      : "SEnuke AI will use this selected opportunity, intake profile, target audience, offer, and publishing preferences to generate the strategy.";
+  const nextStep = opportunityFlowNextStep(project);
   return (
     <Card className="overflow-hidden border-brand-200 bg-gradient-to-r from-brand-50 via-white to-emerald-50">
       <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
@@ -2750,22 +2756,22 @@ function OpportunityNextStepCallout({ project, opportunity, onNotify }: { projec
           <div className="grid h-12 w-12 shrink-0 place-items-center rounded-xl bg-brand-600 text-lg font-bold text-white shadow-sm">→</div>
           <div className="min-w-0">
             <div className="text-xs font-bold uppercase tracking-wide text-brand-700">Next step after opportunity selection</div>
-            <h2 className="mt-1 text-xl font-bold text-charcoal-950">{actionLabel}</h2>
-            <p className="mt-2 text-sm leading-6 text-charcoal-600">{description}</p>
+            <h2 className="mt-1 text-xl font-bold text-charcoal-950">{nextStep.title}</h2>
+            <p className="mt-2 text-sm leading-6 text-charcoal-600">{nextStep.description}</p>
             <div className="mt-3 flex flex-wrap gap-2 text-xs font-bold">
               <span className="rounded-full bg-white/90 px-3 py-1 text-brand-700 shadow-sm">Selected: {opportunity.name}</span>
               <span className="rounded-full bg-white/90 px-3 py-1 text-charcoal-600 shadow-sm">Score {safeScore(opportunity.opportunityScore, 72)}/100</span>
-              <span className="rounded-full bg-white/90 px-3 py-1 text-charcoal-600 shadow-sm">{label(project.currentStep ?? "strategy")}</span>
+              <span className="rounded-full bg-white/90 px-3 py-1 text-charcoal-600 shadow-sm">{nextStep.badge}</span>
             </div>
           </div>
         </div>
         <div className="flex shrink-0 flex-wrap gap-2 px-5 pb-5 lg:px-5 lg:py-5">
           <Link
-            to={`/strategy?projectId=${project.id}`}
-            onClick={() => onNotify(`Opening Strategy for ${opportunity.name}.`)}
+            to={nextStep.to}
+            onClick={() => onNotify(nextStep.notice)}
             className="inline-flex items-center justify-center rounded-lg bg-brand-600 px-4 py-2.5 text-sm font-bold text-white shadow-sm hover:bg-brand-700"
           >
-            {actionLabel} <span className="ml-2">→</span>
+            {nextStep.actionLabel} <span className="ml-2">→</span>
           </Link>
           <Link
             to={`/guided-projects/${project.id}`}
@@ -2778,6 +2784,10 @@ function OpportunityNextStepCallout({ project, opportunity, onNotify }: { projec
       </div>
     </Card>
   );
+}
+
+function opportunityFlowNextStep(project: GuidedProject) {
+  return nextProjectFlowStep(project);
 }
 
 function OpportunityDetailsDrawer({
@@ -2956,11 +2966,11 @@ function opportunityReasons(opportunity: Opportunity) {
 
 function OpportunityExecutionPreview({ projectId }: { projectId: string }) {
   const steps = [
-    ["Generate Strategy", "Create the strategy from the selected opportunity.", `/strategy?projectId=${projectId}`],
-    ["Create Site Structure", "Build sitemap and internal linking plan.", `/site-architect?projectId=${projectId}`],
-    ["Generate Domain Ideas", "Create brandable or keyword-aligned domain suggestions.", "/local-seo"],
-    ["Build SEO Plan", "Map keywords, pages, metadata, and briefs.", `/keywords?projectId=${projectId}`],
-    ["Content Plan", "Plan pages, lead magnet, publishing, and social content.", "/ai-content"],
+    ["Run Keyword Analysis", "Research buyer-intent keywords, topical clusters, competitor gaps, difficulty, and opportunity score.", `/keywords?projectId=${projectId}`],
+    ["Run Site Analysis", "For existing websites, crawl pages, technical SEO, metadata, internal links, content gaps, speed, CTAs, and indexability.", `/site-analysis?projectId=${projectId}`],
+    ["Generate Strategy", "Use opportunity, keyword, site, competitor, goal, and user-path data to create the strategy.", `/strategy?projectId=${projectId}`],
+    ["Approve Strategy", "Review and approve the strategy version before downstream tasks are created.", `/strategy?projectId=${projectId}`],
+    ["Create Execution Plan", "Create prioritized tasks with why, priority, effort, impact, automation, approvals, credits, status, and next action.", `/strategy?projectId=${projectId}`],
   ] as const;
   return (
     <Card className="p-5">
@@ -3101,7 +3111,7 @@ function OpportunityReportDrawer({ opportunity, open, onClose, projectId }: { op
         <div className="sticky bottom-0 border-t border-slate-100 bg-white p-5">
           <div className="flex flex-wrap justify-end gap-2">
             <button type="button" onClick={onClose} className="rounded-lg border border-slate-200 bg-white px-4 py-2.5 text-sm font-bold text-charcoal-700 hover:bg-slate-50">Close</button>
-            <Link to={`/strategy?projectId=${projectId}`} className="rounded-lg bg-brand-600 px-4 py-2.5 text-sm font-bold text-white hover:bg-brand-700">Generate Strategy</Link>
+            <Link to={`/keywords?projectId=${projectId}`} className="rounded-lg bg-brand-600 px-4 py-2.5 text-sm font-bold text-white hover:bg-brand-700">Run Keyword Analysis</Link>
           </div>
         </div>
       </aside>

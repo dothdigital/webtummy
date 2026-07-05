@@ -23,7 +23,7 @@ const nav = [
   { to: "/strategy", label: "Strategy", icon: "plans" },
   { to: "/keywords", label: "Keywords", icon: "keywords" },
   { to: "/site-analysis", label: "Site Analysis", icon: "audits" },
-  { to: "/backlinks", label: "Backlinks", icon: "social" },
+  { to: "/backlinks", label: "Backlinks & Authority", icon: "social" },
   { to: "/ai-citations", label: "AI Citations", icon: "content" },
   { to: "/site-architect", label: "Site Architect", icon: "overview" },
   { to: "/lead-magnets", label: "Lead Magnets", icon: "billing" },
@@ -258,15 +258,23 @@ const helpByPath: Record<string, HelpContent> = {
   },
   "/backlinks": {
     eyebrow: "Module Help",
-    title: "Backlink Intelligence",
-    intro: "Backlink Intelligence tracks referring domains, active links, new/lost links, authority gaps, competitor gaps, and outreach opportunities.",
+    title: "Backlinks & Authority",
+    intro: "Backlinks & Authority tracks referring domains, active links, new/lost links, safe authority gaps, competitor gaps, local citation opportunities, and outreach tasks.",
     sections: [
       {
         title: "Refresh behavior",
         bullets: [
           "Refresh Backlinks should call the provider only when allowed.",
           "After a successful refresh, the button should be disabled for 7 days.",
-          "The page should show real backlink records or a readiness state, not generic authority data.",
+          "The page should show real backlink records, citation opportunities, authority tasks, or a readiness state, not generic authority data.",
+        ],
+      },
+      {
+        title: "Safe authority rule",
+        bullets: [
+          "SEnuke AI should recommend safe authority building, not spammy automated link schemes.",
+          "For Local SEO, authority tasks can include citations, local directories, chambers, local media, partnerships, and review signals.",
+          "For SEO Campaigns, authority tasks can include backlink gaps, resource pages, digital PR assets, expert content, and approved outreach drafts.",
         ],
       },
       {

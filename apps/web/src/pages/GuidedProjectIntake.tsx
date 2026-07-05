@@ -254,9 +254,19 @@ function aiSuggestionOptions(question: IntakeQuestion, answers: Record<string, s
     case "target_audience":
       return Array.from(new Set((niches.length ? niches : [niche]).flatMap((item) => audienceSuggestionsForNiche(item, locations, project.projectType, offerText)))).slice(0, 8);
     case "industry_niche":
-      return project.projectType === "ecommerce" ? ["Ecommerce products", "Product reviews", "Online store growth", "Shopify store"] : project.projectType === "agency_client" ? ["Client SEO and digital growth", "Local SEO", "Website lead generation", "Content marketing"] : ["Software", "SaaS", "CRM automation", "Local services", "Ecommerce", "B2B services"];
+      return project.projectType === "ecommerce"
+        ? ["Ecommerce products", "Product reviews", "Online store growth", "Shopify store"]
+        : project.projectType === "local_seo"
+          ? ["Local services", "Home services", "Medical clinic", "Legal services", "Restaurant", "Local retail"]
+          : project.projectType === "agency_client"
+            ? ["Client SEO and digital growth", "Local SEO", "Website lead generation", "Content marketing"]
+            : ["Software", "SaaS", "CRM automation", "Local services", "Ecommerce", "B2B services"];
     case "target_location":
-      return project.projectType === "existing_website" || project.projectType === "agency_client" ? ["Canada", "United States", "Toronto GTA", "Ontario", "Local service area"] : ["Canada", "United States", "North America", "Global English-speaking market"];
+      return project.projectType === "local_seo"
+        ? ["Primary city", "Service area", "Nearby cities", "County or region", "Google Maps target area"]
+        : project.projectType === "existing_website" || project.projectType === "agency_client"
+          ? ["Canada", "United States", "Toronto GTA", "Ontario", "Local service area"]
+          : ["Canada", "United States", "North America", "Global English-speaking market"];
     case "products_services":
       if (kind === "software") return ["Custom software development", "Web application development", "CRM and workflow automation", "AI-powered business tools"];
       if (kind === "marketing") return ["SEO services", "Website design and development", "Lead generation campaigns", "Content and automation services"];
@@ -269,7 +279,13 @@ function aiSuggestionOptions(question: IntakeQuestion, answers: Record<string, s
     case "tone_preference":
       return kind === "software" ? ["Clear and practical", "Expert but simple", "Professional and trustworthy", "Direct and ROI-focused"] : ["Helpful and professional", "Clear and direct", "Expert but simple", "Friendly and practical"];
     case "preferred_output":
-      return project.projectType === "new_business" ? ["SEO plan", "Landing page", "Domain", "Lead magnet"] : project.projectType === "agency_client" ? ["Report", "Proposal", "SEO plan", "Website"] : ["SEO plan", "Website", "Lead magnet", "Report"];
+      return project.projectType === "new_business"
+        ? ["SEO plan", "Landing page", "Domain", "Lead magnet"]
+        : project.projectType === "local_seo"
+          ? ["SEO plan", "Local landing pages", "Report", "Lead magnet"]
+          : project.projectType === "agency_client"
+            ? ["Report", "Proposal", "SEO plan", "Website"]
+            : ["SEO plan", "Website", "Lead magnet", "Report"];
     case "publishing_preference":
       return project.projectType === "ecommerce" ? ["Shopify", "WordPress", "Developer handoff", "HTML ZIP"] : ["WordPress", "HTML ZIP", "Developer handoff", "SEnuke-hosted site"];
     case "budget_level":
@@ -316,6 +332,7 @@ function stepHelper(step: string) {
 function projectPathLabel(projectType: string) {
   if (projectType === "new_business") return "Start a new online business";
   if (projectType === "existing_website") return "Improve an existing website";
+  if (projectType === "local_seo") return "Improve local search and map visibility";
   if (projectType === "agency_client") return "Help a client as an agency/freelancer";
   if (projectType === "ecommerce") return "Build or improve an ecommerce store";
   return "Guided project";
@@ -549,6 +566,8 @@ export default function GuidedProjectIntake() {
               <p className="mt-2 text-sm leading-6 text-charcoal-600">
                 {project.projectType === "new_business"
                   ? "For a new business, start with the niche, audience, and main goal. SEnuke AI can recommend uncertain answers and ask for competitors, keywords, domains, and social channels later."
+                  : project.projectType === "local_seo"
+                    ? "For Local SEO, start with the service area, city keywords, reviews, citations, Google Maps visibility, and local lead goals. SEnuke AI can ask for advanced local details later."
                   : "Answer the fields you know. Use AI recommendations when unsure, and mark optional items to ask later so setup does not block progress."}
               </p>
               <div className="mt-4 grid grid-cols-3 gap-2 text-center">

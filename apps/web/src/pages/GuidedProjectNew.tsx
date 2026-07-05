@@ -5,10 +5,42 @@ import { Button, Card, Input } from "../components/ui.js";
 import type { GuidedProject } from "../types.js";
 
 const projectTypes = [
-  { value: "existing_website", label: "SEO Campaign", description: "Improve rankings and grow organic traffic." },
-  { value: "new_business", label: "Local SEO", description: "Find a market and build a launch plan." },
-  { value: "agency_client", label: "Content Marketing", description: "Create strategy, reports, and proposals." },
-  { value: "ecommerce", label: "Other / Custom", description: "Plan a store, catalog, or custom growth project." },
+  {
+    value: "existing_website",
+    label: "SEO Campaign",
+    icon: "↗",
+    description: "Improve rankings, fix SEO issues, grow organic traffic, and create a prioritized SEO execution plan.",
+    purpose: "General organic search growth for a website, product, service, business, or niche.",
+    help: "Best when you want better rankings and more organic traffic outside of a strictly local/map-pack focus.",
+    focus: ["Keyword research", "Site analysis", "Technical SEO", "Content gaps", "Backlinks", "AI citations"],
+  },
+  {
+    value: "local_seo",
+    label: "Local SEO",
+    icon: "⌖",
+    description: "Improve visibility in local search, Google Maps, city keywords, reviews, citations, and service-area rankings.",
+    purpose: "Rank a local business in specific cities, regions, service areas, and map results.",
+    help: "Best for plumbers, dentists, roofers, restaurants, lawyers, clinics, contractors, local stores, and service-area businesses.",
+    focus: ["City keywords", "Google Business Profile", "Local pages", "Reviews", "Citations", "Map rankings"],
+  },
+  {
+    value: "agency_client",
+    label: "Content Marketing",
+    icon: "▣",
+    description: "Create content strategy, reports, proposals, publishing plans, and reusable client deliverables.",
+    purpose: "Plan and manage content-led growth for a client, team, or campaign.",
+    help: "Best when the main deliverable is content planning, reporting, proposals, or ongoing publishing support.",
+    focus: ["Content briefs", "Reports", "Publishing", "Proposals", "Client strategy"],
+  },
+  {
+    value: "ecommerce",
+    label: "Other / Custom",
+    icon: "◌",
+    description: "Plan a store, catalog, custom website, launch package, or specialized growth project.",
+    purpose: "Use this when the project does not fit a standard SEO or Local SEO campaign.",
+    help: "Best for ecommerce, custom sites, product catalogs, special workflows, or mixed deliverables.",
+    focus: ["Custom plan", "Store pages", "Product SEO", "Launch tasks", "Publishing"],
+  },
 ];
 
 const primaryGoals = ["More leads", "More sales", "Better rankings", "New website", "Client proposal", "Ecommerce launch"];
@@ -93,14 +125,32 @@ export default function GuidedProjectNew() {
           <Card className="p-5">
             <h2 className="text-lg font-bold text-slate-950">Project Type</h2>
             <p className="mt-1 text-sm text-slate-500">Choose the type of project you want to create.</p>
-            <div className="mt-5 grid gap-3 md:grid-cols-4">
+            <div className="mt-5 grid gap-4 lg:grid-cols-2">
               {projectTypes.map((type) => {
                 const selected = form.projectType === type.value;
                 return (
-                  <button key={type.value} type="button" onClick={() => patch({ projectType: type.value })} className={`min-h-[132px] rounded-lg border p-4 text-left transition ${selected ? "border-brand-600 bg-brand-50 ring-2 ring-brand-100" : "border-slate-200 bg-white hover:border-brand-200 hover:bg-brand-50/40"}`}>
-                    <span className={`flex h-5 w-5 items-center justify-center rounded-full border text-xs ${selected ? "border-brand-600 bg-brand-600 text-white" : "border-slate-300 text-transparent"}`}>✓</span>
-                    <span className="mt-4 block font-bold text-slate-900">{type.label}</span>
-                    <span className="mt-1 block text-xs leading-5 text-slate-500">{type.description}</span>
+                  <button key={type.value} type="button" onClick={() => patch({ projectType: type.value })} className={`min-h-[220px] rounded-lg border p-4 text-left transition ${selected ? "border-brand-600 bg-brand-50 ring-2 ring-brand-100" : "border-slate-200 bg-white hover:border-brand-200 hover:bg-brand-50/40"}`}>
+                    <span className="flex items-start gap-3">
+                      <span className={`grid h-11 w-11 shrink-0 place-items-center rounded-lg text-xl font-bold ${selected ? "bg-brand-600 text-white" : "bg-slate-100 text-brand-700"}`}>{type.icon}</span>
+                      <span className="min-w-0">
+                        <span className="flex items-center gap-2">
+                          <span className="block font-bold text-slate-950">{type.label}</span>
+                          <span className={`grid h-5 w-5 place-items-center rounded-full border text-xs ${selected ? "border-brand-600 bg-brand-600 text-white" : "border-slate-300 text-transparent"}`}>✓</span>
+                        </span>
+                        <span className="mt-1 block text-sm leading-6 text-slate-600">{type.description}</span>
+                      </span>
+                    </span>
+                    <span className="mt-4 block rounded-lg border border-slate-200 bg-white/80 p-3">
+                      <span className="block text-xs font-bold uppercase tracking-wide text-slate-500">Purpose</span>
+                      <span className="mt-1 block text-xs leading-5 text-slate-600">{type.purpose}</span>
+                    </span>
+                    <span className="mt-3 block rounded-lg bg-slate-50 p-3">
+                      <span className="block text-xs font-bold uppercase tracking-wide text-slate-500">Help</span>
+                      <span className="mt-1 block text-xs leading-5 text-slate-600">{type.help}</span>
+                    </span>
+                    <span className="mt-3 flex flex-wrap gap-1.5">
+                      {type.focus.map((item) => <span key={item} className="rounded-full bg-white px-2.5 py-1 text-[11px] font-semibold text-slate-600 shadow-sm">{item}</span>)}
+                    </span>
                   </button>
                 );
               })}

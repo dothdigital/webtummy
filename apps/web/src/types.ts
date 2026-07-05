@@ -119,7 +119,7 @@ export interface GuidedProject {
   clientId: string;
   websiteId: string | null;
   name: string;
-  projectType: "new_business" | "existing_website" | "agency_client" | "ecommerce" | string;
+  projectType: "new_business" | "existing_website" | "local_seo" | "agency_client" | "ecommerce" | string;
   status: string;
   currentStep: string;
   businessName: string | null;
