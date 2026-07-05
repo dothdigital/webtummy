@@ -276,6 +276,8 @@ export default function ExecutionModule({ kind }: { kind: ModuleKind }) {
   const titleSuffix = activeProject?.businessName || activeProject?.name || activeWebsite?.domain;
   const moduleTitle = titleSuffix || copy.title;
   const hasActiveProject = Boolean(activeProject);
+  const activeOpportunityCount = activeProject?.opportunities?.length ?? activeProject?._count?.opportunities ?? 0;
+  const hasOpportunities = activeOpportunityCount > 0;
   const hasWorkspaceRecords = data.projects.length > 0
     || data.websites.length > 0
     || data.keywordRuns.length > 0
@@ -400,14 +402,17 @@ export default function ExecutionModule({ kind }: { kind: ModuleKind }) {
 
   const generateOpportunities = async () => {
     if (!activeProject || opportunityBusy) return;
+    const creatingFirstOpportunity = !hasOpportunities;
     setOpportunityBusy("generate");
     setOpportunityMessage("");
     try {
       const result = await api.post<{ project: GuidedProject }>(`/api/projects-v2/${activeProject.id}/opportunities/generate`, {});
       updateActiveProject(result.project);
-      setOpportunityMessage("Opportunities refreshed from the current project intake.");
+      setOpportunityMessage(creatingFirstOpportunity
+        ? "Opportunities created from the current project intake. Review and select the best direction."
+        : "Opportunities refreshed from the current project intake.");
     } catch (error) {
-      setOpportunityMessage(error instanceof Error ? error.message : "Opportunity refresh failed.");
+      setOpportunityMessage(error instanceof Error ? error.message : creatingFirstOpportunity ? "Opportunity creation failed." : "Opportunity refresh failed.");
     } finally {
       setOpportunityBusy(null);
     }
@@ -496,7 +501,9 @@ export default function ExecutionModule({ kind }: { kind: ModuleKind }) {
     : kind === "strategy" && strategyBusy === "generate"
       ? "Refreshing..."
     : kind === "opportunities" && opportunityBusy === "generate"
-      ? "Refreshing..."
+      ? hasOpportunities ? "Refreshing..." : "Creating..."
+    : kind === "opportunities"
+      ? hasOpportunities ? "Refresh Opportunities" : "Create Opportunity"
     : kind === "lead-magnets" && leadMagnetBusy
       ? "Preparing..."
     : copy.primary;
@@ -675,7 +682,8 @@ function moduleHelpSections(kind: ModuleKind, projectName: string): HelpSection[
         title: "How to use it",
         bullets: [
           "Complete intake first so the project has enough business context.",
-          "Use Refresh Opportunities only after the project profile changes or new analysis data is available.",
+          "Use Create Opportunity when no recommendations exist yet.",
+          "Use Refresh Opportunities only after recommendations already exist and the project profile or analysis data has changed.",
           "Review the score, fit rationale, execution preview, and insights panel.",
           "Select one opportunity to make it the strategy context.",
         ],
@@ -1021,7 +1029,7 @@ function OpportunityScreen({
         <EmptyModuleState
           title={intakeComplete ? "No opportunity recommendations yet" : "Complete intake first"}
           detail={intakeComplete
-            ? "The project profile is ready. Use Refresh Opportunities to generate scored options from this project's intake, audience, offer, and constraints."
+            ? "The project profile is ready. Use Create Opportunity to generate scored options from this project's intake, audience, offer, and constraints."
             : "Opportunity generation needs the intake profile first, including business context, audience, offer, goals, budget, and publishing method."}
           actionTo={intakeComplete ? null : `/guided-projects/${project.id}/intake`}
           actionLabel={intakeComplete ? null : "Open Intake"}
@@ -3014,7 +3022,7 @@ function OpportunityInsights({ opportunity, opportunityCount, taskCount, onRepor
       <Card className="p-5">
         <h2 className="font-bold text-charcoal-950">Top Opportunity Factors</h2>
         <div className="mt-4 space-y-3">
-          {(factors.length ? factors : ["Complete project intake and refresh opportunities to populate scored recommendation factors."]).map((factor, index) => (
+          {(factors.length ? factors : ["Complete project intake and create opportunities to populate scored recommendation factors."]).map((factor, index) => (
             <div key={`${opportunity?.id ?? "empty"}-factor-${index}`} className="flex gap-2 text-sm leading-6 text-charcoal-600">
               <span className="font-bold text-emerald-600">✓</span>
               <span>{factor}</span>

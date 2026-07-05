@@ -1,5 +1,5 @@
 // App shell: light mockup-aligned sidebar + topbar, responsive.
-import { Link, NavLink, useNavigate } from "react-router-dom";
+import { Link, NavLink, useLocation, useNavigate } from "react-router-dom";
 import { useEffect, useState, type ReactNode } from "react";
 import { useAuth } from "../auth.js";
 import { ACTIVE_CLIENT_EVENT, api, endImpersonation, getImpersonationLabel } from "../api.js";
@@ -7,6 +7,14 @@ import { Logo, LogoMark } from "./Logo.js";
 import type { BillingPlan, BillingStatus } from "../types.js";
 
 type NavIcon = "overview" | "projects" | "audits" | "keywords" | "local" | "social" | "content" | "billing" | "users" | "plans";
+type HelpSection = { title: string; body?: string; bullets?: string[] };
+type HelpContent = {
+  title: string;
+  eyebrow: string;
+  intro: string;
+  primaryAction?: { label: string; to: string };
+  sections: HelpSection[];
+};
 
 const nav = [
   { to: "/", label: "Dashboard", icon: "overview", end: true },
@@ -34,6 +42,515 @@ const nav = [
   end?: boolean;
   superOnly?: boolean;
 }[];
+
+const sharedHelpSections = {
+  projectRequired: {
+    title: "Readiness behavior",
+    bullets: [
+      "If a module needs project data, SEnuke AI should show a readiness checklist instead of fake or static data.",
+      "Missing prerequisites become direct next actions, such as create project, complete intake, find opportunity, generate strategy, run keyword analysis, or analyze site.",
+      "Completed project signals should automatically update the dashboard, guided project, strategy, and module pages.",
+    ],
+  },
+  approvalSafety: {
+    title: "Approval and automation safety",
+    bullets: [
+      "SEnuke AI can recommend, generate, and prepare work automatically.",
+      "Publishing pages, sending emails, scheduling social posts, changing DNS, buying domains, or delivering client assets must require explicit approval.",
+      "Blocked or risky automation should be converted into manual guided steps.",
+    ],
+  },
+};
+
+const defaultHelp: HelpContent = {
+  eyebrow: "Help",
+  title: "SEnuke AI Help",
+  intro: "This workspace is organized around projects. Create or select a project first, then move through opportunity, keyword analysis, site analysis, strategy, and execution.",
+  primaryAction: { label: "Open Projects", to: "/projects" },
+  sections: [
+    {
+      title: "Recommended workflow",
+      bullets: [
+        "Create a project and complete the intake profile.",
+        "Find and select the best opportunity direction.",
+        "Run keyword analysis and site analysis when a website exists.",
+        "Generate and approve the strategy.",
+        "Create the execution plan and complete module tasks.",
+      ],
+    },
+    sharedHelpSections.projectRequired,
+    sharedHelpSections.approvalSafety,
+  ],
+};
+
+const helpByPath: Record<string, HelpContent> = {
+  "/": {
+    eyebrow: "Dashboard Help",
+    title: "Dashboard",
+    intro: "The dashboard gives a high-level execution overview for active projects, recommended next actions, project progress, recent activity, and module health.",
+    primaryAction: { label: "Create Project", to: "/projects/new" },
+    sections: [
+      {
+        title: "What to look at first",
+        bullets: [
+          "Recommended Next Actions tells you the most important thing to do next based on real project status.",
+          "Project Progress shows where the selected project is in the workflow.",
+          "Execution Queue shows ready, in-progress, needs-review, and completed tasks.",
+          "Right-side widgets summarize traffic, keyword, citation, and social activity when data exists.",
+        ],
+      },
+      {
+        title: "When no project exists",
+        bullets: [
+          "The dashboard should stay clean and show a clear create-project action.",
+          "Project-specific cards and fake recommendation lists should not appear until project data exists.",
+        ],
+      },
+      sharedHelpSections.projectRequired,
+    ],
+  },
+  "/projects": {
+    eyebrow: "Projects Help",
+    title: "Projects",
+    intro: "Projects are the core workspace records. Every module should use the selected project context and should not show unrelated or static data.",
+    primaryAction: { label: "New Project", to: "/projects/new" },
+    sections: [
+      {
+        title: "What this page does",
+        bullets: [
+          "Lists active guided projects and their current stage.",
+          "Shows progress, next action, and quick access to the project workspace.",
+          "Keeps legacy website-project records separate while the new guided flow becomes the main workflow.",
+        ],
+      },
+      {
+        title: "Deleting projects",
+        bullets: [
+          "Deleting a project should soft-delete or archive all project-related records, including strategy, tasks, keywords, crawl links, opportunities, assets, and reports.",
+          "The user record should remain untouched.",
+        ],
+      },
+      sharedHelpSections.projectRequired,
+    ],
+  },
+  "/projects/new": {
+    eyebrow: "Project Setup Help",
+    title: "Create Project",
+    intro: "The project wizard collects enough context for SEnuke AI to recommend opportunities, keywords, strategy, site architecture, and execution tasks.",
+    sections: [
+      {
+        title: "Setup modes",
+        bullets: [
+          "Quick Guided Setup is for beginners or users who want the fastest path.",
+          "Advanced Setup exposes optional SEO, publishing, keyword, competitor, and integration details.",
+          "Agency or Client Setup captures client deliverables while staying connected to the same project engine.",
+        ],
+      },
+      {
+        title: "AI recommendations",
+        bullets: [
+          "Suggestions should be based on industry, niche, services, location, audience, and project type.",
+          "Textual options should support multi-select when multiple answers make sense.",
+          "Ask me later should allow setup to continue without blocking advanced fields.",
+        ],
+      },
+    ],
+  },
+  "/opportunities": {
+    eyebrow: "Module Help",
+    title: "Opportunity Finder",
+    intro: "Opportunity Finder converts project intake into scored growth directions. The selected opportunity becomes the strategy direction.",
+    primaryAction: { label: "Open Opportunities", to: "/opportunities" },
+    sections: [
+      {
+        title: "Data used",
+        bullets: [
+          "Project type, niche, location, audience, goal, budget, timeline, and publishing method.",
+          "Website crawl, keyword, and competitor data when available.",
+          "Existing selected opportunity state and downstream task status.",
+        ],
+      },
+      {
+        title: "How to use it",
+        bullets: [
+          "Create opportunities after intake is complete when no recommendations exist yet.",
+          "Refresh opportunities only after recommendations already exist and the project profile or analysis data has changed.",
+          "Compare opportunities by score, fit, execution effort, revenue potential, and confidence.",
+          "Select one opportunity to set the strategy direction.",
+          "After selection, move to keyword analysis and strategy readiness based on the project flow.",
+        ],
+      },
+      sharedHelpSections.approvalSafety,
+    ],
+  },
+  "/keywords": {
+    eyebrow: "Module Help",
+    title: "Keyword Research",
+    intro: "Keyword Research finds demand, buyer intent, topical clusters, competitor gaps, difficulty, opportunity scores, and page targets.",
+    primaryAction: { label: "Add Keywords", to: "/keyword-insights?add=1" },
+    sections: [
+      {
+        title: "Data used",
+        bullets: [
+          "Project industry, services, audience, location, selected opportunity, and strategy context.",
+          "Manually added seed keywords and AI-suggested keyword ideas.",
+          "Search provider data when credentials are configured.",
+        ],
+      },
+      {
+        title: "How to use it",
+        bullets: [
+          "Add a primary keyword with location, target URL, and target domain context.",
+          "Use suggestions as a starting point, then select the keywords that match the business goal.",
+          "Run keyword intelligence to populate volume, difficulty, intent, CPC, competitors, and clusters.",
+          "Map approved keywords to pages or create tasks for missing content.",
+        ],
+      },
+      sharedHelpSections.projectRequired,
+    ],
+  },
+  "/site-analysis": {
+    eyebrow: "Module Help",
+    title: "Site Analysis",
+    intro: "Site Analysis crawls a connected website and turns technical, page, internal-linking, SEO, CTA, AI-readiness, and conversion issues into actionable data.",
+    sections: [
+      {
+        title: "Analyze Site",
+        bullets: [
+          "Analyze Site runs a crawl when the project has a website URL.",
+          "After a successful crawl, repeated scans should be disabled for 72 hours and show the remaining wait time.",
+          "The latest crawl should power health score, crawled pages, broken links, orphan pages, weak anchors, schema, sitemap, robots, and page details.",
+        ],
+      },
+      {
+        title: "When no website exists",
+        bullets: [
+          "Show a clear message to create or connect a website first.",
+          "For new-site projects, Site Architect should run before crawling.",
+        ],
+      },
+      sharedHelpSections.projectRequired,
+    ],
+  },
+  "/strategy": {
+    eyebrow: "Module Help",
+    title: "AI Strategy Engine",
+    intro: "AI Strategy Engine turns opportunity, intake, keyword analysis, site analysis, and project goals into a structured strategy and execution roadmap.",
+    sections: [
+      {
+        title: "Correct order",
+        bullets: [
+          "For existing websites: project, opportunity, keyword analysis, site analysis, strategy, then full execution plan.",
+          "For new websites: project, opportunity, keyword analysis, strategy, site architecture, page generation, then crawl after pages exist.",
+          "The execution plan can exist early as a readiness plan, but the full SEO/Growth plan should wait until required discovery data exists.",
+        ],
+      },
+      {
+        title: "Strategy actions",
+        bullets: [
+          "Regenerate section should update the relevant strategy content and notify the user.",
+          "Approve Strategy should lock the approved version for downstream modules.",
+          "Create Execution Plan should create tasks from the approved strategy and take the user to the execution section.",
+        ],
+      },
+      sharedHelpSections.approvalSafety,
+    ],
+  },
+  "/backlinks": {
+    eyebrow: "Module Help",
+    title: "Backlink Intelligence",
+    intro: "Backlink Intelligence tracks referring domains, active links, new/lost links, authority gaps, competitor gaps, and outreach opportunities.",
+    sections: [
+      {
+        title: "Refresh behavior",
+        bullets: [
+          "Refresh Backlinks should call the provider only when allowed.",
+          "After a successful refresh, the button should be disabled for 7 days.",
+          "The page should show real backlink records or a readiness state, not generic authority data.",
+        ],
+      },
+      {
+        title: "Actions",
+        bullets: [
+          "Outreach and link-building tasks should be manual guided or approval-based.",
+          "The system must not automate spam, low-quality submissions, comments, fake reviews, or deceptive link activity.",
+        ],
+      },
+      sharedHelpSections.approvalSafety,
+    ],
+  },
+  "/ai-citations": {
+    eyebrow: "Module Help",
+    title: "AI Citation Dashboard",
+    intro: "AI Citations should be a smart dashboard for entity readiness, NAP profile, schema, sitemap, robots, FAQ, breadcrumb, llms.txt, and citation-related tasks.",
+    sections: [
+      {
+        title: "Data source",
+        bullets: [
+          "Latest site crawl and health report.",
+          "NAP/local profile data when available.",
+          "Schema and structured-data findings from crawl.",
+          "Citation, schema, FAQ, keyword, and site-analysis execution tasks.",
+        ],
+      },
+      {
+        title: "What should appear",
+        bullets: [
+          "Show missing items as missing, not with green checkmarks.",
+          "Create citation tasks when crawl data identifies missing NAP, organization schema, FAQ, breadcrumb, llms.txt, or AI-readiness gaps.",
+          "If no crawl exists, ask the user to run Site Analysis first.",
+        ],
+      },
+      sharedHelpSections.projectRequired,
+    ],
+  },
+  "/site-architect": {
+    eyebrow: "Module Help",
+    title: "AI Site Architect",
+    intro: "Site Architect creates a site blueprint, sitemap, page hierarchy, page metadata, CTA structure, internal linking plan, and generation tasks.",
+    sections: [
+      {
+        title: "Data used",
+        bullets: [
+          "Approved strategy and selected opportunity.",
+          "Keyword clusters, target audience, offer, location, publishing target, and site crawl data when available.",
+          "Existing website structure for projects that already have a site.",
+        ],
+      },
+      {
+        title: "How to use it",
+        bullets: [
+          "Generate a sitemap or blueprint after strategy readiness is met.",
+          "Mark pages as complete when they already exist and are verified by crawl.",
+          "Create page generation or optimization tasks only for missing or weak pages.",
+        ],
+      },
+      sharedHelpSections.approvalSafety,
+    ],
+  },
+  "/lead-magnets": {
+    eyebrow: "Module Help",
+    title: "Lead Magnet Builder",
+    intro: "Lead Magnet Builder creates conversion assets such as guides, checklists, landing pages, thank-you pages, delivery emails, and CTA flows.",
+    sections: [
+      {
+        title: "What is a lead magnet",
+        bullets: [
+          "A lead magnet is a valuable resource users receive in exchange for contact information.",
+          "Examples include checklists, guides, templates, audits, comparison sheets, and reports.",
+          "It connects SEO traffic to measurable leads and follow-up workflows.",
+        ],
+      },
+      {
+        title: "How generation should work",
+        bullets: [
+          "Use approved strategy, audience, pain points, offer, and conversion goal.",
+          "Generate the asset, landing page copy, delivery email, thank-you page, and CTA flow.",
+          "Require approval before publishing, exporting to clients, sending emails, or connecting automations.",
+        ],
+      },
+      sharedHelpSections.approvalSafety,
+    ],
+  },
+  "/growth": {
+    eyebrow: "Module Help",
+    title: "Growth Engine",
+    intro: "Growth Engine diagnoses growth constraints, maps funnel health, creates experiments, prioritizes them, and turns approved experiments into execution tasks.",
+    sections: [
+      {
+        title: "Required foundation",
+        bullets: [
+          "Minimum: project, intake, opportunity or goal, and approved strategy.",
+          "Recommended: website URL, site analysis, keyword data, and funnel/page data.",
+          "Advanced: analytics, competitors, backlinks, social, AI citations, CRM, email, and conversion data.",
+        ],
+      },
+      {
+        title: "Outputs",
+        bullets: [
+          "Growth diagnosis and bottleneck scorecard.",
+          "Funnel map and missing stage recommendations.",
+          "Prioritized experiments with hypothesis, metric, threshold, effort, confidence, and required assets.",
+          "Experiment tracker and agency growth reports.",
+        ],
+      },
+      sharedHelpSections.approvalSafety,
+    ],
+  },
+  "/ai-content": {
+    eyebrow: "Module Help",
+    title: "Publishing",
+    intro: "Publishing prepares, previews, exports, and publishes approved content or pages through the selected publishing target.",
+    sections: [
+      {
+        title: "Data used",
+        bullets: [
+          "Approved strategy, site architecture, content tasks, keyword mapping, and publishing method.",
+          "Connected WordPress, static export, or other publishing integration when configured.",
+        ],
+      },
+      {
+        title: "Safety",
+        bullets: [
+          "SEnuke AI can prepare drafts automatically.",
+          "Publishing live pages must require review and approval.",
+          "Integration errors should create clear tasks instead of failing silently.",
+        ],
+      },
+      sharedHelpSections.approvalSafety,
+    ],
+  },
+  "/social-strategy": {
+    eyebrow: "Module Help",
+    title: "Social",
+    intro: "Social creates platform-specific content, schedules approved posts, and turns strategy into social campaigns.",
+    sections: [
+      {
+        title: "Data used",
+        bullets: [
+          "Project audience, offer, strategy, publishing calendar, and approved content assets.",
+          "Connected social platform status when integrations are configured.",
+        ],
+      },
+      {
+        title: "Approval",
+        bullets: [
+          "Posts can be generated and prepared automatically.",
+          "Scheduling or posting must require approval and a connected platform.",
+          "Replies, outreach, or comments should be reviewed before sending.",
+        ],
+      },
+      sharedHelpSections.approvalSafety,
+    ],
+  },
+  "/local-seo": {
+    eyebrow: "Module Help",
+    title: "Domain and Local SEO",
+    intro: "This area supports domain, location, local profile, and local SEO readiness workflows depending on project setup.",
+    sections: [
+      {
+        title: "Data used",
+        bullets: [
+          "Project website, location, business profile, target regions, and local services.",
+          "Connected crawl, NAP profile, and local SEO signals when available.",
+        ],
+      },
+      {
+        title: "Actions",
+        bullets: [
+          "Domain purchase or DNS changes require explicit approval.",
+          "Local profile and NAP recommendations should generate tasks with clear manual or integration steps.",
+        ],
+      },
+      sharedHelpSections.approvalSafety,
+    ],
+  },
+  "/keyword-insights": {
+    eyebrow: "Reports Help",
+    title: "Keyword Insights and Reports",
+    intro: "Keyword reports store historical keyword intelligence runs and detailed keyword analysis for each project.",
+    sections: [
+      {
+        title: "How to use it",
+        bullets: [
+          "Use Add Keywords to create a focused keyword run for a project.",
+          "Open a report to review SERP competitors, demand, difficulty, intent, and page recommendations.",
+          "Use report results to create keyword, content, site architecture, or optimization tasks.",
+        ],
+      },
+      sharedHelpSections.projectRequired,
+    ],
+  },
+  "/billing": {
+    eyebrow: "Billing Help",
+    title: "Billing",
+    intro: "Billing shows subscription status, plan access, invoices, trial state, and account billing controls.",
+    sections: [
+      {
+        title: "What users can manage",
+        bullets: [
+          "Current plan and access status.",
+          "Trial or offline access state.",
+          "Upgrade or checkout actions when billing is enabled.",
+        ],
+      },
+    ],
+  },
+  "/admin": {
+    eyebrow: "Admin Help",
+    title: "Admin Management",
+    intro: "Admin Management is for super admins only. It links to user management, task management, plan management, billing, automation, and usage controls.",
+    sections: [
+      {
+        title: "Admin areas",
+        bullets: [
+          "Users: manage users, roles, client access, and passwords.",
+          "Task Management: define project and module task templates.",
+          "Plan Management: control subscription plans and feature access.",
+          "Usage Controls: manage credits, cost catalog, budgets, model routing, and limits.",
+          "Automation Center: review automation policy, approvals, and logs.",
+        ],
+      },
+      sharedHelpSections.approvalSafety,
+    ],
+  },
+  "/admin/tasks": {
+    eyebrow: "Admin Help",
+    title: "Task Management",
+    intro: "Task Management controls the project workflow and module task templates that drive stages, readiness, recommended actions, and execution queues.",
+    sections: [
+      {
+        title: "Project tasks",
+        bullets: [
+          "Project tasks determine the main workflow stage, such as intake, opportunity, keywords, site analysis, strategy, and execution.",
+          "These tasks should be project-specific and update the guided project progress.",
+        ],
+      },
+      {
+        title: "Module tasks",
+        bullets: [
+          "Module tasks determine module completion and next actions.",
+          "Each task should have automation level, approval rules, required integrations, safety category, and action labels.",
+        ],
+      },
+    ],
+  },
+  "/admin/automation": {
+    eyebrow: "Admin Help",
+    title: "Automation Center",
+    intro: "Automation Center governs safe automation, approval policy, integrations, manual guidance, and audit logs across all modules.",
+    sections: [
+      {
+        title: "Automation levels",
+        bullets: [
+          "Recommend: AI identifies what should be done.",
+          "Generate: AI creates needed output or assets.",
+          "Prepare: system prepares an action without executing a live change.",
+          "Execute with approval: user approves before execution.",
+          "Execute through integration: connected API completes the action.",
+          "Manual guided: user receives step-by-step instructions.",
+        ],
+      },
+      sharedHelpSections.approvalSafety,
+    ],
+  },
+  "/admin/usage-controls": {
+    eyebrow: "Admin Help",
+    title: "Usage Controls",
+    intro: "Usage Controls manages credits, feature costs, model routing, cache policy, budget caps, scan frequency, queues, alerts, and plan limits.",
+    sections: [
+      {
+        title: "Admin controls",
+        bullets: [
+          "Feature cost catalog controls credit and provider-cost estimates.",
+          "Plan limits control who can run which feature and how often.",
+          "Budget caps and alerts protect workspace and system cost.",
+          "Model routing rules decide which AI model/provider to use for each feature.",
+        ],
+      },
+    ],
+  },
+};
 
 function NavGlyph({ icon }: { icon: NavIcon }) {
   const common = { fill: "none", stroke: "currentColor", strokeWidth: 2, strokeLinecap: "round" as const, strokeLinejoin: "round" as const };
@@ -125,8 +642,10 @@ function NavGlyph({ icon }: { icon: NavIcon }) {
 
 export default function Layout({ children }: { children: ReactNode }) {
   const { user, logout } = useAuth();
+  const location = useLocation();
   const navigate = useNavigate();
   const [open, setOpen] = useState(false);
+  const [helpOpen, setHelpOpen] = useState(false);
   const [impersonation, setImpersonation] = useState<string | null>(() => getImpersonationLabel());
   const [billingStatus, setBillingStatus] = useState<BillingStatus | null>(null);
   const [plans, setPlans] = useState<BillingPlan[]>([]);
@@ -137,6 +656,10 @@ export default function Layout({ children }: { children: ReactNode }) {
     window.addEventListener(ACTIVE_CLIENT_EVENT, onClientChanged);
     return () => window.removeEventListener(ACTIVE_CLIENT_EVENT, onClientChanged);
   }, []);
+
+  useEffect(() => {
+    setHelpOpen(false);
+  }, [location.pathname]);
 
   useEffect(() => {
     if (!user || user.role === "super_admin") {
@@ -228,22 +751,7 @@ export default function Layout({ children }: { children: ReactNode }) {
           <button type="button" className="rounded-lg p-2 hover:bg-charcoal-50 lg:hidden" onClick={() => setOpen(true)}>
             ☰
           </button>
-          <div className="hidden min-w-0 flex-1 items-center gap-4 lg:flex">
-            <div className="inline-flex h-11 min-w-[260px] items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 text-sm font-semibold text-slate-800 shadow-sm">
-              <NavGlyph icon="projects" />
-              <span>{impersonation ?? "SEnuke AI Workspace"}</span>
-              <span className="ml-auto text-slate-400">⌄</span>
-            </div>
-            <div className="relative max-w-xl flex-1">
-              <span className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-400">⌕</span>
-              <input
-                aria-label="Search"
-                placeholder="Search across projects, keywords, pages..."
-                className="h-11 w-full rounded-lg border border-slate-200 bg-white pl-9 pr-12 text-sm outline-none transition placeholder:text-slate-400 focus:border-brand-400 focus:ring-2 focus:ring-brand-100"
-              />
-              <span className="absolute right-3 top-1/2 -translate-y-1/2 rounded border border-slate-200 bg-slate-50 px-1.5 py-0.5 text-xs font-semibold text-slate-400">⌘ K</span>
-            </div>
-          </div>
+          <div className="hidden flex-1 lg:block" />
           <div className="flex items-center gap-3">
             {user?.role === "super_admin" && impersonation && (
               <div className="hidden items-center gap-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-1.5 text-sm text-amber-900 md:flex">
@@ -260,8 +768,14 @@ export default function Layout({ children }: { children: ReactNode }) {
                 </button>
               </div>
             )}
-            <button type="button" aria-label="Notifications" className="hidden h-9 w-9 items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-500 hover:bg-slate-50 md:inline-flex">♢</button>
-            <button type="button" aria-label="Help" className="hidden h-9 w-9 items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-500 hover:bg-slate-50 md:inline-flex">?</button>
+            <button
+              type="button"
+              aria-label="Help"
+              onClick={() => setHelpOpen(true)}
+              className="hidden h-9 w-9 items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-500 hover:bg-slate-50 md:inline-flex"
+            >
+              ?
+            </button>
             <div className="hidden text-right sm:block">
               <div className="text-sm font-medium text-charcoal-800">{user?.name ?? user?.email}</div>
               <div className="text-xs capitalize text-charcoal-400">{user?.role.replace("_", " ")}</div>
@@ -333,6 +847,118 @@ export default function Layout({ children }: { children: ReactNode }) {
         <main className="min-w-0 flex-1 overflow-x-hidden p-4 lg:p-8">{children}</main>
         <Footer />
       </div>
+      <GlobalHelpDrawer content={getHelpContent(location.pathname)} open={helpOpen} onClose={() => setHelpOpen(false)} />
+    </div>
+  );
+}
+
+function getHelpContent(pathname: string): HelpContent {
+  if (pathname.startsWith("/guided-projects/") && pathname.endsWith("/intake")) {
+    return {
+      ...helpByPath["/projects/new"],
+      eyebrow: "Intake Help",
+      title: "Project Intake Wizard",
+      intro: "The intake wizard collects the business, audience, offer, SEO, publishing, and automation context that every downstream module uses.",
+    };
+  }
+  if (pathname.startsWith("/guided-projects/")) {
+    return {
+      eyebrow: "Project Help",
+      title: "Guided Project",
+      intro: "Guided Project is the project command center. It should show the current project status, what data exists, what is missing, and the clearest next action.",
+      primaryAction: { label: "Back to Projects", to: "/projects" },
+      sections: [
+        {
+          title: "What this page should answer",
+          bullets: [
+            "What project am I working on?",
+            "What has already been completed?",
+            "What should I do next?",
+            "Which modules have data and which still need setup?",
+            "Which execution tasks are ready, blocked, or complete?",
+          ],
+        },
+        {
+          title: "Correct workflow logic",
+          bullets: [
+            "For existing websites, keyword analysis and site analysis should happen before the full execution plan.",
+            "For new websites, site architecture and page generation happen before a crawl can run.",
+            "Recommended actions should disappear once their underlying task or requirement is complete.",
+          ],
+        },
+        sharedHelpSections.projectRequired,
+      ],
+    };
+  }
+  if (pathname.startsWith("/keyword-insights/")) return helpByPath["/keyword-insights"];
+  if (pathname.startsWith("/keyword-research")) return helpByPath["/keywords"];
+  if (pathname.startsWith("/website-projects")) return helpByPath["/site-analysis"];
+  if (pathname.startsWith("/crawls")) return helpByPath["/site-analysis"];
+  if (pathname.startsWith("/admin/tasks/project") || pathname.startsWith("/admin/tasks/module")) return helpByPath["/admin/tasks"];
+  const exact = helpByPath[pathname];
+  if (exact) return exact;
+  const prefix = Object.keys(helpByPath)
+    .filter((path) => path !== "/" && pathname.startsWith(`${path}/`))
+    .sort((a, b) => b.length - a.length)[0];
+  return prefix ? helpByPath[prefix] : defaultHelp;
+}
+
+function GlobalHelpDrawer({ content, open, onClose }: { content: HelpContent; open: boolean; onClose: () => void }) {
+  if (!open) return null;
+  return (
+    <div className="fixed inset-0 z-50" role="dialog" aria-modal="true" aria-label={content.title}>
+      <button type="button" aria-label="Close help drawer" className="absolute inset-0 bg-charcoal-950/35" onClick={onClose} />
+      <aside className="absolute right-0 top-0 flex h-full w-full max-w-[480px] flex-col border-l border-slate-200 bg-white shadow-2xl">
+        <div className="border-b border-slate-100 px-5 py-5">
+          <div className="flex items-start justify-between gap-4">
+            <div>
+              <div className="text-xs font-bold uppercase tracking-wide text-brand-600">{content.eyebrow}</div>
+              <h2 className="mt-1 text-2xl font-bold text-charcoal-950">{content.title}</h2>
+              <p className="mt-2 text-sm leading-6 text-charcoal-600">{content.intro}</p>
+            </div>
+            <button
+              type="button"
+              onClick={onClose}
+              aria-label="Close"
+              className="grid h-9 w-9 shrink-0 place-items-center rounded-lg border border-slate-200 text-lg font-bold text-charcoal-500 hover:bg-slate-50"
+            >
+              ×
+            </button>
+          </div>
+          {content.primaryAction && (
+            <Link
+              to={content.primaryAction.to}
+              onClick={onClose}
+              className="mt-4 inline-flex rounded-lg bg-brand-600 px-4 py-2 text-sm font-bold text-white hover:bg-brand-700"
+            >
+              {content.primaryAction.label}
+            </Link>
+          )}
+        </div>
+        <div className="flex-1 space-y-5 overflow-y-auto px-5 py-5">
+          {content.sections.map((section) => (
+            <section key={section.title} className="rounded-lg border border-slate-100 bg-slate-50/70 p-4">
+              <h3 className="text-sm font-bold text-charcoal-950">{section.title}</h3>
+              {section.body && <p className="mt-2 text-sm leading-6 text-charcoal-600">{section.body}</p>}
+              {section.bullets && (
+                <div className="mt-3 space-y-2">
+                  {section.bullets.map((bullet) => (
+                    <div key={bullet} className="flex gap-2 text-sm leading-6 text-charcoal-600">
+                      <span className="mt-2 h-1.5 w-1.5 shrink-0 rounded-full bg-brand-600" />
+                      <span>{bullet}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </section>
+          ))}
+        </div>
+        <div className="border-t border-slate-100 p-5">
+          <button type="button" onClick={onClose} className="w-full rounded-lg bg-charcoal-900 px-4 py-2.5 text-sm font-bold text-white hover:bg-charcoal-800">
+            Close Help
+          </button>
+        </div>
+      </aside>
     </div>
   );
 }
