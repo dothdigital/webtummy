@@ -71,6 +71,7 @@ export interface GuidedExecutionTask {
   actionButtonLabel: string | null;
   relatedUrl: string | null;
   manualInstructions: string | null;
+  impact?: string | null;
   createdAt: string;
 }
 

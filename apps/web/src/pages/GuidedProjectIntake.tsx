@@ -149,8 +149,26 @@ function industryKind(niche: string) {
   if (lower.includes("ecommerce") || lower.includes("shopify") || lower.includes("store")) return "ecommerce";
   if (lower.includes("marketing") || lower.includes("seo") || lower.includes("agency")) return "marketing";
   if (lower.includes("real estate")) return "real_estate";
-  if (lower.includes("health") || lower.includes("medical") || lower.includes("dental")) return "health";
+  if (/\b(physio|physiotherapy|physical therapy|chiropractic|chiropractor|massage|rehab|rehabilitation|clinic|health|healthcare|medical|dental|dentist|therapy|therapist|wellness|optometrist|podiatry|acupuncture)\b/.test(lower)) return "health";
+  if (/\b(roofing|plumbing|hvac|electrician|landscaping|cleaning|contractor|law|legal|restaurant|salon|spa|gym|fitness|tutor|repair|local service)\b/.test(lower)) return "local_service";
   return "general";
+}
+
+function nicheCategorySuggestions(niche: string, projectType: string) {
+  const kind = industryKind(niche);
+  const base = normalizeList(niche);
+  if (kind === "health") {
+    return Array.from(new Set([...base, "Healthcare services", "Rehabilitation clinic", "Local clinic", "Wellness services", "Patient care"])).slice(0, 6);
+  }
+  if (kind === "local_service") {
+    return Array.from(new Set([...base, "Local services", "Service business", "Appointment-based services", "Lead generation"])).slice(0, 6);
+  }
+  if (kind === "software") return ["Software", "SaaS", "CRM automation", "Business automation", "B2B services"];
+  if (kind === "marketing") return ["SEO services", "Digital marketing", "Website lead generation", "Content marketing"];
+  if (kind === "insurance") return ["Insurance services", "Insurance brokerage", "Lead generation", "Local services"];
+  if (kind === "ecommerce") return ["Ecommerce products", "Product reviews", "Online store growth", "Shopify store"];
+  if (projectType === "local_seo") return ["Local services", "Home services", "Medical clinic", "Legal services", "Restaurant", "Local retail"];
+  return Array.from(new Set([...base, "Local services", "Service business", "B2B services", "Lead generation"])).filter(Boolean).slice(0, 6);
 }
 
 function locationContext(answers: Record<string, string>, project: GuidedProject) {
@@ -164,11 +182,71 @@ function locationPhrase(location: string, allLocations: string[] = []) {
 
 function keywordBase(niche: string, location: string) {
   const local = location ? ` ${location}` : "";
+  const kind = industryKind(niche);
+  if (kind === "health") {
+    const service = /physio|physical therapy/i.test(niche) ? "physiotherapy" : niche;
+    return [
+      `${service}${local}`,
+      `best ${service}${local}`,
+      `${service} clinic${local}`,
+      `${service} near me`,
+      `sports injury clinic${local}`,
+      `back pain treatment${local}`,
+      `rehabilitation clinic${local}`,
+    ];
+  }
+  if (kind === "local_service") {
+    return [niche, `${niche}${local}`, `best ${niche}${local}`, `${niche} near me`, `${niche} services${local}`, `${niche} company${local}`];
+  }
   return [niche, `${niche}${local}`, `best ${niche}`, `${niche} services`, `${niche} company`];
 }
 
 function cleanLocationName(value: string) {
   return value.replace(/\s+/g, " ").trim();
+}
+
+function localized(value: string, location: string) {
+  return location ? `${value} in ${location}` : value;
+}
+
+function serviceSuggestionsForKind(kind: string, niche: string, business: string, goal: string, location: string) {
+  if (kind === "software") return ["Custom software development", "Web application development", "CRM and workflow automation", "AI-powered business tools"];
+  if (kind === "marketing") return ["SEO services", "Website design and development", "Lead generation campaigns", "Content and automation services"];
+  if (kind === "insurance") return [localized("Insurance quotes", location), localized("Policy review", location), "Renewal support", "Client communication automation"];
+  if (kind === "health") {
+    const service = /physio|physical therapy/i.test(niche) ? "Physiotherapy" : niche;
+    return [
+      localized(`${service} treatment`, location),
+      localized("Pain relief and injury rehabilitation", location),
+      localized("Sports injury rehab", location),
+      localized("Mobility and recovery programs", location),
+      "Patient assessments and care plans",
+    ];
+  }
+  if (kind === "local_service") return [localized(`${niche} services`, location), localized(`${niche} appointments`, location), `${business} services`, `${goal} support`];
+  return [`${business} services`, localized(`${niche} consulting`, location), `${goal} support`, "Done-for-you implementation"];
+}
+
+function ctaSuggestionsForKind(kind: string, location: string) {
+  if (kind === "software") return ["Book a software consultation", "Request a custom software quote", "Schedule a CRM automation demo", "Get a free workflow audit"];
+  if (kind === "marketing") return ["Book a strategy call", "Get a free SEO audit", "Request a website quote", "Schedule a growth consultation"];
+  if (kind === "health") return [localized("Book an appointment", location), localized("Request an assessment", location), "Call the clinic", "Start your recovery plan"];
+  if (kind === "local_service") return [localized("Book an appointment", location), "Request a quote", "Call now", "Get service details"];
+  return ["Book a consultation", "Request a demo", "Get a free audit", "Request a quote"];
+}
+
+function problemAreaSuggestions(kind: string) {
+  if (kind === "software") return ["Low conversions", "Weak copy", "Poor rankings", "Low traffic"];
+  if (kind === "health") return ["Low appointment bookings", "Weak local rankings", "Low Google Maps visibility", "Not enough reviews"];
+  if (kind === "local_service") return ["Low phone calls", "Weak local rankings", "Low Google Maps visibility", "Not enough reviews"];
+  return ["Low traffic", "Poor rankings", "Low conversions", "Slow site"];
+}
+
+function conversionGoalSuggestions(kind: string) {
+  if (kind === "software") return ["Bookings", "Form submissions", "Downloads"];
+  if (kind === "health") return ["Appointment bookings", "Phone calls", "New patient forms", "Consultation requests"];
+  if (kind === "local_service") return ["Phone calls", "Appointment bookings", "Quote requests", "Form submissions"];
+  return ["Phone calls", "Form submissions", "Bookings", "Purchases"];
 }
 
 function audienceSuggestionsForNiche(niche: string, locations: string[], projectType: string, offerText: string) {
@@ -214,6 +292,16 @@ function audienceSuggestionsForNiche(niche: string, locations: string[], project
     ];
   }
 
+  if (industryKind(niche) === "health") {
+    const service = lower.includes("physio") || lower.includes("physical therapy") ? "physiotherapy" : niche;
+    return [
+      `patients${loc} looking for ${service} treatment`,
+      `people recovering from injuries${loc}`,
+      `people comparing local ${service} clinics before booking`,
+      `patients who need pain relief, mobility improvement, or rehabilitation support`,
+    ];
+  }
+
   if (lower.includes("ecommerce") || lower.includes("shopify") || lower.includes("store")) {
     return [
       `online store owners${loc} trying to increase organic sales`,
@@ -254,32 +342,25 @@ function aiSuggestionOptions(question: IntakeQuestion, answers: Record<string, s
     case "target_audience":
       return Array.from(new Set((niches.length ? niches : [niche]).flatMap((item) => audienceSuggestionsForNiche(item, locations, project.projectType, offerText)))).slice(0, 8);
     case "industry_niche":
-      return project.projectType === "ecommerce"
-        ? ["Ecommerce products", "Product reviews", "Online store growth", "Shopify store"]
-        : project.projectType === "local_seo"
-          ? ["Local services", "Home services", "Medical clinic", "Legal services", "Restaurant", "Local retail"]
-          : project.projectType === "agency_client"
-            ? ["Client SEO and digital growth", "Local SEO", "Website lead generation", "Content marketing"]
-            : ["Software", "SaaS", "CRM automation", "Local services", "Ecommerce", "B2B services"];
+      return nicheCategorySuggestions(niche, project.projectType);
     case "target_location":
-      return project.projectType === "local_seo"
-        ? ["Primary city", "Service area", "Nearby cities", "County or region", "Google Maps target area"]
+      return locations.length
+        ? Array.from(new Set([...locations, ...locations.map((item) => `${item} service area`), "Nearby cities", "Google Maps target area"])).slice(0, 8)
+        : project.projectType === "local_seo" || kind === "health" || kind === "local_service"
+          ? ["Primary city", "Service area", "Nearby cities", "County or region", "Google Maps target area"]
         : project.projectType === "existing_website" || project.projectType === "agency_client"
           ? ["Canada", "United States", "Toronto GTA", "Ontario", "Local service area"]
           : ["Canada", "United States", "North America", "Global English-speaking market"];
     case "products_services":
-      if (kind === "software") return ["Custom software development", "Web application development", "CRM and workflow automation", "AI-powered business tools"];
-      if (kind === "marketing") return ["SEO services", "Website design and development", "Lead generation campaigns", "Content and automation services"];
-      if (kind === "insurance") return ["Insurance CRM", "Policy workflow automation", "Lead management for brokers", "Client communication automation"];
-      return [`${business} services`, `${niche} consulting`, `${goal} support`, "Done-for-you implementation"];
+      return serviceSuggestionsForKind(kind, niche, business, goal, location);
     case "current_offer_cta":
-      if (kind === "software") return ["Book a software consultation", "Request a custom software quote", "Schedule a CRM automation demo", "Get a free workflow audit"];
-      if (kind === "marketing") return ["Book a strategy call", "Get a free SEO audit", "Request a website quote", "Schedule a growth consultation"];
-      return ["Book a consultation", "Request a demo", "Get a free audit", "Request a quote"];
+      return ctaSuggestionsForKind(kind, location);
     case "tone_preference":
       return kind === "software" ? ["Clear and practical", "Expert but simple", "Professional and trustworthy", "Direct and ROI-focused"] : ["Helpful and professional", "Clear and direct", "Expert but simple", "Friendly and practical"];
     case "preferred_output":
-      return project.projectType === "new_business"
+      return kind === "health" || kind === "local_service"
+        ? ["SEO plan", "Local landing pages", "Google Business Profile plan", "Review plan", "Lead magnet"]
+        : project.projectType === "new_business"
         ? ["SEO plan", "Landing page", "Domain", "Lead magnet"]
         : project.projectType === "local_seo"
           ? ["SEO plan", "Local landing pages", "Report", "Lead magnet"]
@@ -297,13 +378,15 @@ function aiSuggestionOptions(question: IntakeQuestion, answers: Record<string, s
     case "known_competitors":
       return kind === "software" ? ["hubspot.com", "zoho.com", "salesforce.com", "monday.com"] : kind === "marketing" ? ["webfx.com", "victorious.com", "ignitevisibility.com"] : [];
     case "known_problem_areas":
-      return kind === "software" ? ["Low conversions", "Weak copy", "Poor rankings", "Low traffic"] : ["Low traffic", "Poor rankings", "Low conversions", "Slow site"];
+      return problemAreaSuggestions(kind);
     case "site_conversion_goal":
-      return kind === "software" ? ["Bookings", "Form submissions", "Downloads"] : ["Phone calls", "Form submissions", "Bookings", "Purchases"];
+      return conversionGoalSuggestions(kind);
     case "cms_platform":
       return project.websiteUrl?.includes("shopify") ? ["Shopify"] : ["WordPress", "Custom HTML", "Other", "Unknown"];
     case "client_goals":
-      return [`Increase qualified leads${loc}`, `Improve organic visibility${loc}`, "Create a client-ready SEO roadmap", "Find high-impact website improvements"];
+      return kind === "health"
+        ? [`Increase appointment bookings${loc}`, `Improve Google Maps visibility${loc}`, "Grow patient reviews", "Create a clinic-ready SEO roadmap"]
+        : [`Increase qualified leads${loc}`, `Improve organic visibility${loc}`, "Create a client-ready SEO roadmap", "Find high-impact website improvements"];
     case "services_to_propose":
       return ["SEO", "Website redesign", "Content", "Authority building", "Automation"];
     case "proposal_package_preference":

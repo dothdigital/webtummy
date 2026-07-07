@@ -581,6 +581,7 @@ async function syncProjectWorkflow(tx: Prisma.TransactionClient, projectId: stri
   const strategyApproved = latestStrategy?.status === "approved" || project.currentStep === "execution";
   const hasWebsite = Boolean(project.websiteId || project.websiteUrl || project.website?.rootUrl);
   const isExistingWebsite = isExistingWebsiteCampaign(project);
+  const isNewWebsiteLaunch = !isExistingWebsite || !hasWebsite;
   const keywordAnalysisComplete = Boolean(project.website?.keywordResearchRuns.some((run) => run.status === "completed" || run.keywordCount > 0) || project.executionTasks.some((task) => task.moduleName === "keyword_research" && ["completed", "skipped"].includes(task.status)));
   const siteAnalysisComplete = Boolean(project.website?.crawlJobs.some((crawl) => crawl.status === "completed" && crawl.pagesCrawled > 0) || project.executionTasks.some((task) => task.moduleName === "site_analysis" && ["completed", "skipped"].includes(task.status)));
   const siteAnalysisRequiredBeforeStrategy = requiresSiteAnalysisBeforeStrategy(project);
@@ -600,21 +601,21 @@ async function syncProjectWorkflow(tx: Prisma.TransactionClient, projectId: stri
         : { status: "pending", actionUrl: `/guided-projects/${project.id}`, readyReason: "Waiting for intake completion." },
     keyword_analysis: keywordAnalysisComplete
       ? { status: "completed", actionUrl: "/keywords", sourceType: "keyword_research", completionReason: "Keyword analysis exists for this project or connected website.", completedAt: new Date() }
-      : opportunitiesGenerated
-        ? { status: "ready", actionUrl: "/keywords", readyReason: "Opportunity direction exists. Run keyword analysis before strategy and full execution planning." }
-        : { status: "pending", actionUrl: "/keywords", readyReason: "Waiting for opportunity generation." },
+      : intakeComplete
+        ? { status: "ready", actionUrl: "/keywords", readyReason: isNewWebsiteLaunch ? "Use the project profile to create seed keywords and page targets before a website exists." : "Use the project profile and opportunity direction to run keyword analysis before full execution planning." }
+        : { status: "pending", actionUrl: "/keywords", readyReason: "Waiting for intake completion." },
     site_analysis: siteAnalysisComplete
       ? { status: "completed", actionUrl: "/site-analysis", sourceType: "site_analysis", completionReason: isExistingWebsite ? "A completed site crawl exists for the connected website." : "Site analysis is not required until generated pages or a website exist.", completedAt: new Date() }
       : !hasWebsite
-        ? { status: "pending", actionUrl: "/site-architect", readyReason: "No website exists yet. Create website structure first, then schedule crawl after pages exist." }
+        ? { status: "pending", actionUrl: "/site-architect", readyReason: "No website exists yet. Create site architecture, keyword seeds, local/GBP setup, and launch content first; crawl after pages exist." }
         : keywordAnalysisComplete
           ? { status: "ready", actionUrl: "/site-analysis", readyReason: "Keyword analysis exists and the connected website can now be crawled." }
           : { status: "pending", actionUrl: "/site-analysis", readyReason: "Waiting for keyword analysis." },
     strategy: strategyGenerated
       ? { status: "completed", actionUrl: "/strategy", sourceType: "strategy_plan", sourceId: latestStrategy?.id, completionReason: "A strategy plan exists.", completedAt: new Date() }
-      : opportunitiesGenerated && keywordAnalysisComplete && (!siteAnalysisRequiredBeforeStrategy || siteAnalysisComplete)
-        ? { status: "ready", actionUrl: "/strategy", readyReason: siteAnalysisRequiredBeforeStrategy ? "Opportunity, keyword analysis, and site analysis are ready." : "Opportunity and keyword analysis are ready. Site analysis will be scheduled after pages or a website exist." }
-        : { status: "pending", actionUrl: "/strategy", readyReason: siteAnalysisRequiredBeforeStrategy ? "Waiting for opportunity, keyword analysis, and site analysis." : "Waiting for opportunity and keyword analysis." },
+      : intakeComplete && (!siteAnalysisRequiredBeforeStrategy || siteAnalysisComplete)
+        ? { status: "ready", actionUrl: "/strategy", readyReason: isNewWebsiteLaunch ? "Project profile is enough to create the initial website, keyword, GBP/local, content, and publishing strategy." : keywordAnalysisComplete ? "Keyword and required site discovery are ready for strategy." : "Initial strategy can be generated now; keyword data can refine it later." }
+        : { status: "pending", actionUrl: "/strategy", readyReason: siteAnalysisRequiredBeforeStrategy ? "Waiting for site analysis on the existing website." : "Waiting for intake completion." },
     strategy_approval: strategyApproved
       ? { status: "completed", actionUrl: "/strategy", sourceType: "strategy_plan", sourceId: latestStrategy?.id, completionReason: "The current strategy is approved.", completedAt: latestStrategy?.approvedAt ?? new Date() }
       : strategyGenerated
@@ -729,6 +730,83 @@ function projectContext(project: NonNullable<Awaited<ReturnType<typeof scopedPro
     goal: project.primaryGoal ?? "growth",
     outputs: Array.isArray(project.preferredOutputs) ? project.preferredOutputs.filter((item): item is string => typeof item === "string") : [],
   };
+}
+
+function clampScore(value: number) {
+  return Math.max(45, Math.min(96, Math.round(value)));
+}
+
+function hasAny(value: string, patterns: RegExp[]) {
+  return patterns.some((pattern) => pattern.test(value));
+}
+
+function buildOpportunityOptions(project: NonNullable<Awaited<ReturnType<typeof scopedProject>>>, ctx: ReturnType<typeof projectContext>) {
+  const text = [ctx.niche, ctx.location, ctx.goal, ctx.offer, ctx.audience, ctx.outputs.join(" "), project.projectType].join(" ").toLowerCase();
+  const hasWebsite = Boolean(project.websiteId || project.websiteUrl || project.website);
+  const localIntent = hasAny(text, [/local/, /near me/, /maps?/, /city/, /service area/, /booking/, /appointment/, /clinic/, /physio/, /therapy/, /rehab/, /dent/, /medical/, /legal/, /roof/, /plumb/, /hvac/]);
+  const healthcare = hasAny(text, [/physio/, /physical therapy/, /rehab/, /clinic/, /health/, /medical/, /dental/, /therapy/, /wellness/]);
+  const ecommerce = project.projectType === "ecommerce" || hasAny(text, [/ecommerce/, /shopify/, /store/, /product/, /sales/]);
+  const fastTimeline = hasAny(project.targetLaunchTimeline?.toLowerCase() ?? "", [/as soon/, /7/, /14/]);
+  const wantsWebsite = ctx.outputs.some((output) => /website|landing|domain|page/i.test(output)) || hasAny(ctx.goal.toLowerCase(), [/website|launch|lead/]);
+  const wantsReport = ctx.outputs.some((output) => /report|proposal/i.test(output));
+  const locationPhrase = ctx.location && ctx.location !== "the target market" ? ` in ${ctx.location}` : "";
+  const serviceNiche = ctx.niche === "the selected market" ? "the service area" : ctx.niche;
+  const baseCompetition = localIntent ? 70 : ecommerce ? 76 : 66;
+
+  return [
+    {
+      name: `${ctx.name} local growth and booking plan`,
+      businessModel: healthcare ? "Healthcare appointment growth" : localIntent ? "Local service lead generation" : ecommerce ? "Ecommerce growth" : "Lead generation",
+      targetAudience: healthcare ? `Patients${locationPhrase} looking for ${serviceNiche}, pain relief, injury recovery, or mobility support.` : ctx.audience,
+      problemSolved: healthcare
+        ? `Turns ${serviceNiche}${locationPhrase} demand into appointment, review, GBP, local-page, and conversion tasks.`
+        : `Turns ${ctx.goal.toLowerCase()} into a concrete execution path${locationPhrase}.`,
+      recommendedOffer: healthcare ? "Assessment, treatment plan, recovery program, and appointment booking path." : ctx.offer,
+      seoScore: clampScore(76 + (localIntent ? 8 : 0) + (healthcare ? 4 : 0) + (hasWebsite ? 3 : -1)),
+      competitionScore: clampScore(baseCompetition - (healthcare ? 4 : 0) + (hasWebsite ? 0 : 3)),
+      monetizationScore: clampScore(72 + (localIntent ? 7 : 0) + (healthcare ? 5 : 0) + (ecommerce ? 6 : 0)),
+      executionScore: clampScore(76 + (fastTimeline ? 6 : 0) + (!hasWebsite ? 3 : 0)),
+      userFitScore: clampScore(74 + (wantsWebsite ? 4 : 0) + (localIntent ? 5 : 0)),
+      summary: healthcare
+        ? `Focus on ${serviceNiche}${locationPhrase} with local SEO, GBP readiness, patient trust, reviews, appointment CTAs, and crawl/AI citation work after pages exist.`
+        : `Focus on ${serviceNiche}${locationPhrase} with task-driven SEO, AI citation readiness, and conversion assets.`,
+    },
+    {
+      name: `${ctx.name} authority and content engine`,
+      businessModel: healthcare ? "Healthcare content and trust engine" : "Content-led growth",
+      targetAudience: ctx.audience,
+      problemSolved: healthcare
+        ? "Builds trust through condition/service pages, recovery FAQs, practitioner proof, reviews, and safe local authority tasks."
+        : "Builds topical trust through keyword clusters, supporting pages, and safe authority tasks.",
+      recommendedOffer: healthcare ? "Educational recovery content, service pages, review proof, and consultation booking." : ctx.offer,
+      seoScore: clampScore(82 + (healthcare ? 5 : 0) + (localIntent ? 3 : 0)),
+      competitionScore: clampScore(baseCompetition - 7),
+      monetizationScore: clampScore(66 + (healthcare ? 6 : 0) + (wantsReport ? 2 : 0)),
+      executionScore: clampScore(70 + (hasWebsite ? 4 : -2)),
+      userFitScore: clampScore(70 + (ctx.outputs.some((output) => /seo|content|report|lead magnet/i.test(output)) ? 6 : 0)),
+      summary: healthcare
+        ? "Best when the clinic can invest in service pages, patient education, reviews, practitioner proof, and recurring local authority work."
+        : "Best when the project can invest in pages, lead magnets, and recurring social/authority work.",
+    },
+    {
+      name: `${ctx.name} fast launch package`,
+      businessModel: "Fast MVP launch",
+      targetAudience: ctx.audience,
+      problemSolved: healthcare
+        ? "Prioritizes the smallest set of clinic pages, booking CTAs, GBP setup, and local keyword targets needed to start generating appointments."
+        : "Prioritizes the smallest publishable set of pages and tasks needed to launch quickly.",
+      recommendedOffer: healthcare ? "Fast appointment funnel with core services, location page, reviews, and phone/booking CTA." : ctx.offer,
+      seoScore: clampScore(66 + (localIntent ? 5 : 0) + (healthcare ? 2 : 0)),
+      competitionScore: clampScore(baseCompetition + (fastTimeline ? 1 : 0)),
+      monetizationScore: clampScore(70 + (healthcare ? 5 : 0) + (localIntent ? 3 : 0)),
+      executionScore: clampScore(84 + (fastTimeline ? 6 : 0) + (!hasWebsite ? 2 : 0)),
+      userFitScore: clampScore(72 + (fastTimeline ? 5 : 0) + (wantsWebsite ? 3 : 0)),
+      summary: `Recommended when timeline is ${project.targetLaunchTimeline ?? "short"} and outputs are ${ctx.outputs.join(", ") || "focused"}.`,
+    },
+  ].map((option) => ({
+    ...option,
+    opportunityScore: clampScore((option.seoScore + option.monetizationScore + option.executionScore + option.userFitScore + (100 - option.competitionScore)) / 5),
+  }));
 }
 
 function buildLeadMagnetPrompt(input: {
@@ -1309,12 +1387,13 @@ guidedProjectsRouter.post("/projects-v2", async (req, res) => {
   if (!clientId) return res.status(400).json({ error: "project context required" });
 
   const normalized = normalizeUrl(data.websiteUrl);
+  const effectiveProjectType = data.projectType === "existing_website" && !normalized ? "new_business" : data.projectType;
   const result = await prisma.$transaction(async (tx) => {
     let website = normalized
       ? await tx.website.findFirst({ where: { clientId, domain: normalized.domain, status: "active" } })
       : null;
 
-    if (!website && normalized && data.projectType !== "new_business") {
+    if (!website && normalized && effectiveProjectType !== "new_business") {
       website = await tx.website.create({
         data: {
           clientId,
@@ -1331,7 +1410,7 @@ guidedProjectsRouter.post("/projects-v2", async (req, res) => {
         clientId,
         websiteId: website?.id ?? null,
         name: data.name.trim(),
-        projectType: data.projectType,
+        projectType: effectiveProjectType,
         businessName: clean(data.businessName),
         websiteUrl: normalized?.rootUrl ?? clean(data.websiteUrl),
         niche: clean(data.niche),
@@ -1452,69 +1531,34 @@ guidedProjectsRouter.post("/projects-v2/:projectId/opportunities/generate", asyn
   const ctx = projectContext(project);
   const created = await prisma.$transaction(async (tx) => {
     await tx.opportunity.deleteMany({ where: { projectId: project.id, status: "suggested" } });
-    const rows = await Promise.all([
-      tx.opportunity.create({
-        data: {
-          projectId: project.id,
-          name: `${ctx.name} priority growth plan`,
-          targetAudience: ctx.audience,
-          problemSolved: `Turns ${ctx.goal.toLowerCase()} into a concrete execution path for ${ctx.location}.`,
-          recommendedOffer: ctx.offer,
-          businessModel: project.projectType === "ecommerce" ? "Ecommerce" : project.projectType === "local_seo" ? "Local service lead generation" : project.projectType === "agency_client" ? "Agency client campaign" : "Lead generation",
-          opportunityScore: 86,
-          seoScore: 84,
-          competitionScore: 68,
-          monetizationScore: 78,
-          executionScore: 82,
-          userFitScore: 80,
-          summary: `Focus on ${ctx.niche} with task-driven SEO, AI citation readiness, and conversion assets.`,
-        },
-      }),
-      tx.opportunity.create({
-        data: {
-          projectId: project.id,
-          name: `${ctx.name} authority and content engine`,
-          targetAudience: ctx.audience,
-          problemSolved: "Builds topical trust through keyword clusters, supporting pages, and safe authority tasks.",
-          recommendedOffer: ctx.offer,
-          businessModel: "Content-led growth",
-          opportunityScore: 79,
-          seoScore: 88,
-          competitionScore: 63,
-          monetizationScore: 70,
-          executionScore: 76,
-          userFitScore: 75,
-          summary: "Best when the project can invest in pages, lead magnets, and recurring social/authority work.",
-        },
-      }),
-      tx.opportunity.create({
-        data: {
-          projectId: project.id,
-          name: `${ctx.name} fast launch package`,
-          targetAudience: ctx.audience,
-          problemSolved: "Prioritizes the smallest publishable set of pages and tasks needed to launch quickly.",
-          recommendedOffer: ctx.offer,
-          businessModel: "Fast MVP launch",
-          opportunityScore: 74,
-          seoScore: 70,
-          competitionScore: 72,
-          monetizationScore: 74,
-          executionScore: 90,
-          userFitScore: 78,
-          summary: `Recommended when timeline is ${project.targetLaunchTimeline ?? "short"} and outputs are ${ctx.outputs.join(", ") || "focused"}.`,
-        },
-      }),
-    ]);
+    const options = buildOpportunityOptions(project, ctx);
+    const rows = await Promise.all(options.map((option) => tx.opportunity.create({
+      data: {
+        projectId: project.id,
+        name: option.name,
+        targetAudience: option.targetAudience,
+        problemSolved: option.problemSolved,
+        recommendedOffer: option.recommendedOffer,
+        businessModel: option.businessModel,
+        opportunityScore: option.opportunityScore,
+        seoScore: option.seoScore,
+        competitionScore: option.competitionScore,
+        monetizationScore: option.monetizationScore,
+        executionScore: option.executionScore,
+        userFitScore: option.userFitScore,
+        summary: option.summary,
+      },
+    })));
 
     await tx.aiRun.create({
       data: {
         projectId: project.id,
         clientId: project.clientId,
         moduleName: "opportunity",
-        promptVersion: "mock-opportunity-v1",
+        promptVersion: "dynamic-opportunity-v2",
         inputSnapshotJson: { projectId: project.id, context: ctx },
         outputJson: rows.map((row) => ({ id: row.id, name: row.name, score: row.opportunityScore })),
-        outputText: "Generated three scored opportunity options from intake and business profile.",
+        outputText: "Generated three scored opportunity options from project type, location, industry, goal, timeline, outputs, and website readiness.",
         status: "completed",
       },
     });
@@ -1730,6 +1774,8 @@ guidedProjectsRouter.post("/projects-v2/:projectId/execution-plan/create", async
   const siteAnalysisComplete = !isExistingWebsite || Boolean(completedCrawl)
     || existingTasks.some((task) => task.moduleName === "site_analysis" && ["completed", "skipped"].includes(task.status));
   const siteArchitectureComplete = hasWebsite || existingTasks.some((task) => task.moduleName === "site_architect" && ["completed", "skipped"].includes(task.status));
+  const localReadinessComplete = existingTasks.some((task) => task.moduleName === "local_seo" && ["completed", "skipped"].includes(task.status));
+  const needsLocalReadiness = project.projectType === "local_seo" || project.projectType === "new_business" || /local|lead|booking|appointment|service area|gbp|google business|review/i.test([project.primaryGoal, project.niche, project.targetLocation, project.businessProfile?.offerSummary].filter(Boolean).join(" "));
   const missingDiscovery: Array<"keyword" | "site" | "architecture"> = [];
   if (!keywordAnalysisComplete) missingDiscovery.push("keyword");
   if (isExistingWebsite && hasWebsite && !siteAnalysisComplete) missingDiscovery.push("site");
@@ -1737,81 +1783,104 @@ guidedProjectsRouter.post("/projects-v2/:projectId/execution-plan/create", async
 
   await prisma.$transaction(async (tx) => {
     const planId = await activePlanId(tx, project.id);
+    const readinessTasks = [
+      !keywordAnalysisComplete ? {
+        key: "readiness-keyword-analysis",
+        moduleName: "keyword_research",
+        title: "Create keyword plan",
+        description: hasWebsite
+          ? "Research target keywords, buyer-intent keywords, topical clusters, competitor gaps, difficulty, opportunity score, and revenue potential."
+          : "No website exists yet. Create seed keywords, buyer-intent terms, service/page targets, and topical clusters from the project profile.",
+        actionButtonLabel: "Open Keywords",
+        relatedUrl: websiteId ? `/keyword-insights?project=${websiteId}&add=1` : "/keyword-insights?add=1",
+        priority: "high" as const,
+      } : null,
+      isExistingWebsite && hasWebsite && !siteAnalysisComplete ? {
+        key: "readiness-site-analysis",
+        moduleName: "site_analysis",
+        title: "Run site analysis",
+        description: "Crawl the existing website to review pages, technical SEO, titles/metas, structure, internal links, content gaps, speed/mobile basics, indexability, CTAs, conversion issues, and keyword alignment.",
+        actionButtonLabel: "Analyze Site",
+        relatedUrl: "/site-analysis",
+        priority: "high" as const,
+      } : null,
+      !siteArchitectureComplete ? {
+        key: "readiness-site-architecture",
+        moduleName: "site_architect",
+        title: "Create website architecture",
+        description: hasWebsite
+          ? "Create or refine the site structure and page plan before deeper content and publishing work."
+          : "No website or domain exists yet. Create the site structure, page plan, draft sitemap, and publishing handoff first; crawl after pages exist.",
+        actionButtonLabel: "Open Site Architect",
+        relatedUrl: "/site-architect",
+        priority: "high" as const,
+      } : null,
+      !hasWebsite ? {
+        key: "readiness-domain-website",
+        moduleName: "domain",
+        title: "Choose domain and website path",
+        description: "Recommend domain options, hosting/publishing path, core URL structure, and handoff requirements. This does not block strategy, keyword, local SEO, or content planning.",
+        actionButtonLabel: "Plan Domain",
+        relatedUrl: "/site-architect",
+        priority: "high" as const,
+      } : null,
+      needsLocalReadiness && !localReadinessComplete ? {
+        key: "readiness-local-gbp",
+        moduleName: "local_seo",
+        title: "Prepare GBP and local SEO foundation",
+        description: "Prepare Google Business Profile categories, services, service areas, citation/NAP requirements, review workflow, and local trust signals before or alongside the website build.",
+        actionButtonLabel: "Open Local SEO",
+        relatedUrl: "/local-seo",
+        priority: "high" as const,
+      } : null,
+      keywordAnalysisComplete && siteAnalysisComplete ? {
+        key: "readiness-refresh-strategy",
+        moduleName: "strategy",
+        title: "Refresh strategy with discovery data",
+        description: "Keyword and site discovery data are available. Regenerate or review the strategy so the final execution plan uses the latest evidence.",
+        actionButtonLabel: "Review Strategy",
+        relatedUrl: "/strategy",
+        priority: "medium" as const,
+      } : null,
+    ].filter((task): task is NonNullable<typeof task> => Boolean(task));
+
     if (missingDiscovery.length > 0) {
       await tx.executionPlan.update({
         where: { id: planId },
         data: {
-          title: "Execution readiness plan",
+          title: "Adaptive SEO/Growth execution plan",
           summary: isExistingWebsite
-            ? "Your full SEO/Growth Execution Plan is not fully ready yet. Complete keyword analysis and site analysis first so the final plan uses real discovery data."
-            : "Your full SEO/Growth Execution Plan is not fully ready yet. Complete keyword analysis and AI Site Architecture first. Site analysis will be scheduled after pages or a website exist.",
+            ? "The plan is active. Missing crawl, keyword, or setup data appears as tasks and does not stop downstream work."
+            : "The plan is active for a pre-website project. Domain, website architecture, keyword seeds, GBP/local setup, content, and publishing tasks can proceed before crawl data exists.",
         },
       });
-      const readinessTasks = [
-        !keywordAnalysisComplete ? {
-          key: "readiness-keyword-analysis",
-          moduleName: "keyword_research",
-          title: "Run keyword analysis",
-          description: "Research target keywords, buyer-intent keywords, topical clusters, competitor gaps, difficulty, opportunity score, and revenue potential before creating the full execution plan.",
-          actionButtonLabel: "Add Keywords",
-          relatedUrl: websiteId ? `/keyword-insights?project=${websiteId}&add=1` : "/keyword-insights?add=1",
-          priority: "high" as const,
-        } : null,
-        isExistingWebsite && hasWebsite && !siteAnalysisComplete ? {
-          key: "readiness-site-analysis",
-          moduleName: "site_analysis",
-          title: "Run site analysis",
-          description: "Crawl the existing website to review pages, technical SEO, titles/metas, structure, internal links, content gaps, speed/mobile basics, indexability, CTAs, conversion issues, and keyword alignment.",
-          actionButtonLabel: "Analyze Site",
-          relatedUrl: "/site-analysis",
-          priority: "high" as const,
-        } : null,
-        !isExistingWebsite && !siteArchitectureComplete ? {
-          key: "readiness-site-architecture",
-          moduleName: "site_architect",
-          title: "Create AI site architecture",
-          description: "No website exists yet. Create the site structure and page plan first, then schedule site analysis after pages are generated or published.",
-          actionButtonLabel: "Open Site Architect",
-          relatedUrl: "/site-architect",
-          priority: "high" as const,
-        } : null,
-        keywordAnalysisComplete && siteAnalysisComplete ? {
-          key: "readiness-refresh-strategy",
-          moduleName: "strategy",
-          title: "Refresh strategy with discovery data",
-          description: "Keyword and site discovery data are available. Regenerate or review the strategy so the final execution plan uses the latest evidence.",
-          actionButtonLabel: "Review Strategy",
-          relatedUrl: "/strategy",
-          priority: "medium" as const,
-        } : null,
-      ].filter((task): task is NonNullable<typeof task> => Boolean(task));
-      for (const input of readinessTasks) {
-        await ensureNextTask(tx, {
-          clientId: project.clientId,
-          websiteId: project.websiteId,
-          projectId: project.id,
-          executionPlanId: planId,
-          key: `project:${project.id}:execution:${input.key}`,
-          moduleName: input.moduleName,
-          title: input.title,
-          description: input.description,
-          actionButtonLabel: input.actionButtonLabel,
-          relatedUrl: input.relatedUrl,
-          priority: input.priority,
-          automationLevel: "manual_guided",
-        });
-      }
-      await syncProjectWorkflow(tx, project.id);
-      return;
     }
 
     await tx.executionPlan.update({
       where: { id: planId },
       data: {
-        title: "Full SEO/Growth execution plan",
-        summary: "Prioritized execution tasks created from the campaign type, approved strategy, opportunity direction, keyword analysis, site analysis, business goal, and project readiness.",
+        title: missingDiscovery.length > 0 ? "Adaptive SEO/Growth execution plan" : "Full SEO/Growth execution plan",
+        summary: missingDiscovery.length > 0
+          ? "Prioritized execution tasks are active now. Missing dependencies are setup tasks, not blockers."
+          : "Prioritized execution tasks created from the campaign type, approved strategy, opportunity direction, keyword analysis, site analysis, business goal, and project readiness.",
       },
     });
+    for (const input of readinessTasks) {
+      await ensureNextTask(tx, {
+        clientId: project.clientId,
+        websiteId: project.websiteId,
+        projectId: project.id,
+        executionPlanId: planId,
+        key: `project:${project.id}:execution:${input.key}`,
+        moduleName: input.moduleName,
+        title: input.title,
+        description: input.description,
+        actionButtonLabel: input.actionButtonLabel,
+        relatedUrl: input.relatedUrl,
+        priority: input.priority,
+        automationLevel: "manual_guided",
+      });
+    }
     const taskInputs = buildCampaignExecutionTasks(project);
 
     for (const input of taskInputs) {

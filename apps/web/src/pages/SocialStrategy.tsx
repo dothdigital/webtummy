@@ -145,6 +145,426 @@ function StepFooter({ back, next, nextLabel, nextDisabled }: { back?: () => void
   );
 }
 
+
+type SocialConnectAccount = {
+  id: string;
+  platform: "facebook" | "instagram";
+  account_id?: string;
+  account_name: string;
+  status: string;
+};
+
+type SocialConnectAccountsResponse = {
+  accounts: SocialConnectAccount[];
+};
+
+type SocialPostPlatform = {
+  platform: "facebook" | "instagram";
+  accountId: string;
+  caption: string;
+  imageUrl?: string;
+};
+
+type SocialPublisherProps = {
+  websiteId: string;
+  strategy?: SocialStrategyType | null;
+};
+
+function toDateInputValue(value: string | Date | null | undefined) {
+  if (!value) return "";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  const local = new Date(date.getTime() - date.getTimezoneOffset() * 60000);
+  return local.toISOString().slice(0, 16);
+}
+
+function currentMonthRange() {
+  const now = new Date();
+  const start = new Date(Date.UTC(now.getFullYear(), now.getMonth(), 1));
+  const end = new Date(Date.UTC(now.getFullYear(), now.getMonth() + 1, 0));
+  return { start: start.toISOString().slice(0, 10), end: end.toISOString().slice(0, 10) };
+}
+
+function responsePostId(value: unknown): string {
+  if (!value || typeof value !== "object") return "";
+  const record = value as Record<string, unknown>;
+  if (typeof record.id === "string") return record.id;
+  if (typeof record.post_id === "string") return record.post_id;
+  const post = record.post;
+  if (post && typeof post === "object") {
+    const nested = post as Record<string, unknown>;
+    if (typeof nested.id === "string") return nested.id;
+  }
+  return "";
+}
+
+function PrettyJson({ value }: { value: unknown }) {
+  if (!value) return null;
+  return <pre className="max-h-80 overflow-auto rounded-lg bg-slate-950 p-3 text-xs leading-5 text-slate-100">{JSON.stringify(value, null, 2)}</pre>;
+}
+
+function SocialPublisher({ websiteId, strategy }: SocialPublisherProps) {
+  const strategyPosts = strategy?.posts ?? [];
+  const defaultPost = strategyPosts[0] ?? null;
+  const [accounts, setAccounts] = useState<SocialConnectAccount[]>([]);
+  const [selectedPostId, setSelectedPostId] = useState(defaultPost?.id ?? "");
+  const [selectedFacebookAccountId, setSelectedFacebookAccountId] = useState("");
+  const [selectedInstagramAccountId, setSelectedInstagramAccountId] = useState("");
+  const [publisherTab, setPublisherTab] = useState<"post" | "schedule" | "manage">("post");
+  const [title, setTitle] = useState(defaultPost?.topic ?? strategy?.monthlyTheme ?? "Social post");
+  const [caption, setCaption] = useState(defaultPost?.caption ?? "");
+  const [imageUrl, setImageUrl] = useState("");
+  const [scheduledAt, setScheduledAt] = useState(toDateInputValue(defaultPost?.publishDate));
+  const [timezone, setTimezone] = useState(Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC");
+  const [createdPostId, setCreatedPostId] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [message, setMessage] = useState("");
+  const [error, setError] = useState("");
+  const [statusResult, setStatusResult] = useState<unknown>(null);
+  const [logsResult, setLogsResult] = useState<unknown>(null);
+  const [calendarResult, setCalendarResult] = useState<unknown>(null);
+
+  const connectedAccounts = accounts.filter((account) => account.status === "connected");
+  const facebookAccounts = connectedAccounts.filter((account) => account.platform === "facebook");
+  const instagramAccounts = connectedAccounts.filter((account) => account.platform === "instagram");
+  const selectedPost = strategyPosts.find((post) => post.id === selectedPostId) ?? defaultPost;
+
+  const loadAccounts = async () => {
+    setBusy(true);
+    setError("");
+    try {
+      const result = await api.get<SocialConnectAccountsResponse>("/api/social-connect/accounts");
+      const loadedAccounts = result.accounts ?? [];
+      setAccounts(loadedAccounts);
+      const loadedFacebook = loadedAccounts.find((account) => account.status === "connected" && account.platform === "facebook");
+      const loadedInstagram = loadedAccounts.find((account) => account.status === "connected" && account.platform === "instagram");
+      setSelectedFacebookAccountId((current) => current || loadedFacebook?.id || "");
+      setSelectedInstagramAccountId((current) => current || loadedInstagram?.id || "");
+    } catch (err) {
+      setError(String(err).replace(/^Error:\s*/, ""));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  useEffect(() => {
+    void loadAccounts();
+    const params = new URLSearchParams(window.location.search);
+    if (params.get("status") === "connected" && params.get("provider") === "meta") {
+      setMessage(`Meta connected. ${params.get("account_count") ?? ""} account(s) returned.`.trim());
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const applyCalendarPost = (postId: string) => {
+    setSelectedPostId(postId);
+    const post = strategyPosts.find((item) => item.id === postId);
+    if (!post) return;
+    setTitle(post.topic);
+    setCaption(post.caption);
+    setScheduledAt(toDateInputValue(post.publishDate));
+  };
+
+  const connectProvider = async (provider: "facebook" | "instagram") => {
+    setBusy(true);
+    setError("");
+    try {
+      const redirectUrl = `${window.location.origin}${window.location.pathname}?project=${encodeURIComponent(websiteId)}`;
+      const result = await api.post<{ authorization_url: string }>(`/api/social-connect/accounts/connect/${provider}`, { redirectUrl });
+      window.location.href = result.authorization_url;
+    } catch (err) {
+      setError(String(err).replace(/^Error:\s*/, ""));
+      setBusy(false);
+    }
+  };
+
+  const buildPlatforms = (): SocialPostPlatform[] => {
+    const selectedIds = [selectedFacebookAccountId, selectedInstagramAccountId].filter(Boolean);
+    return connectedAccounts
+      .filter((account) => selectedIds.includes(account.id))
+      .map((account) => ({
+        platform: account.platform,
+        accountId: account.id,
+        caption,
+        imageUrl: account.platform === "instagram" ? imageUrl : imageUrl || undefined,
+      }));
+  };
+
+  const validatePost = (platforms: SocialPostPlatform[]) => {
+    if (!title.trim()) return "Title is required.";
+    if (!caption.trim()) return "Caption is required.";
+    if (!platforms.length) return "Select at least one connected Facebook or Instagram account.";
+    if (platforms.some((platform) => platform.platform === "instagram") && !imageUrl.trim()) return "Instagram requires a public image URL.";
+    return "";
+  };
+
+  const createPost = async (mode: "draft" | "publish" | "schedule") => {
+    const platforms = buildPlatforms();
+    const validation = validatePost(platforms);
+    if (validation) {
+      setError(validation);
+      return null;
+    }
+    if (mode === "schedule" && !scheduledAt) {
+      setError("Choose a schedule date and time.");
+      return null;
+    }
+    setBusy(true);
+    setError("");
+    setMessage("");
+    try {
+      const result = await api.post<unknown>("/api/social-connect/posts", {
+        externalReference: `social-strategy:${websiteId}:${selectedPost?.id ?? "custom"}`,
+        title,
+        mainCaption: caption,
+        imageUrl: imageUrl || undefined,
+        scheduledAt: mode === "schedule" ? new Date(scheduledAt).toISOString() : undefined,
+        timezone,
+        platforms,
+      });
+      const postId = responsePostId(result);
+      if (postId) setCreatedPostId(postId);
+      if (mode === "publish" && postId) {
+        const published = await api.post<unknown>(`/api/social-connect/posts/${encodeURIComponent(postId)}/post-now`, {});
+        setStatusResult(published);
+        setMessage("Post sent to Social Connect for immediate publishing.");
+      } else {
+        setStatusResult(result);
+        setMessage(mode === "schedule" ? "Post scheduled through Social Connect." : "Draft created in Social Connect.");
+      }
+      return result;
+    } catch (err) {
+      setError(String(err).replace(/^Error:\s*/, ""));
+      return null;
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const updateCreatedPost = async () => {
+    if (!createdPostId) return;
+    const platforms = buildPlatforms();
+    const validation = validatePost(platforms);
+    if (validation) {
+      setError(validation);
+      return;
+    }
+    setBusy(true);
+    setError("");
+    try {
+      const result = await api.put<unknown>(`/api/social-connect/posts/${encodeURIComponent(createdPostId)}`, {
+        title,
+        mainCaption: caption,
+        imageUrl: imageUrl || undefined,
+        scheduledAt: scheduledAt ? new Date(scheduledAt).toISOString() : undefined,
+        timezone,
+        platforms,
+      });
+      setStatusResult(result);
+      setMessage("Draft updated in Social Connect.");
+    } catch (err) {
+      setError(String(err).replace(/^Error:\s*/, ""));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const loadStatus = async () => {
+    if (!createdPostId) return;
+    setBusy(true);
+    setError("");
+    try {
+      setStatusResult(await api.get<unknown>(`/api/social-connect/posts/${encodeURIComponent(createdPostId)}`));
+    } catch (err) {
+      setError(String(err).replace(/^Error:\s*/, ""));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const loadLogs = async () => {
+    if (!createdPostId) return;
+    setBusy(true);
+    setError("");
+    try {
+      setLogsResult(await api.get<unknown>(`/api/social-connect/logs/${encodeURIComponent(createdPostId)}`));
+    } catch (err) {
+      setError(String(err).replace(/^Error:\s*/, ""));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const cancelScheduled = async () => {
+    if (!createdPostId) return;
+    setBusy(true);
+    setError("");
+    try {
+      setStatusResult(await api.post<unknown>(`/api/social-connect/posts/${encodeURIComponent(createdPostId)}/cancel`, {}));
+      setMessage("Scheduled post cancellation requested.");
+    } catch (err) {
+      setError(String(err).replace(/^Error:\s*/, ""));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const loadCalendar = async () => {
+    const range = currentMonthRange();
+    setBusy(true);
+    setError("");
+    try {
+      setCalendarResult(await api.get<unknown>(`/api/social-connect/calendar?start=${range.start}&end=${range.end}`));
+    } catch (err) {
+      setError(String(err).replace(/^Error:\s*/, ""));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <Card className="overflow-hidden">
+      <div className="border-b border-charcoal-100 px-5 py-3">
+        <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+          <div>
+            <div className="font-semibold text-charcoal-800">Meta and Instagram publishing</div>
+            <p className="mt-1 text-sm leading-6 text-charcoal-500">Connect Facebook Pages and Instagram professional accounts, then create drafts, publish now, or schedule posts from this social calendar.</p>
+          </div>
+          <div className="flex w-full flex-col gap-2 sm:flex-row sm:items-center lg:w-auto lg:shrink-0 lg:justify-end">
+            <Button className="min-w-[150px] border-slate-400 bg-slate-100 text-slate-800 shadow-sm hover:bg-slate-200 sm:w-auto" variant="ghost" onClick={() => void loadAccounts()} disabled={busy}>Refresh accounts</Button>
+            <Button className="min-w-[150px] !border-blue-600 !bg-blue-600 !text-white shadow-sm hover:!bg-blue-700 sm:w-auto" variant="ghost" onClick={() => void connectProvider("facebook")} disabled={busy}>Connect Facebook</Button>
+            <Button className="min-w-[150px] !bg-pink-600 !text-white shadow-sm hover:!bg-pink-700 sm:w-auto" onClick={() => void connectProvider("instagram")} disabled={busy}>Connect Instagram</Button>
+          </div>
+        </div>
+      </div>
+      <div className="p-5">
+        <div className="mb-5 grid gap-2 rounded-lg border border-slate-300 bg-white p-2 shadow-sm sm:grid-cols-3">
+          {[
+            { id: "post" as const, label: "Post now" },
+            { id: "schedule" as const, label: "Schedule" },
+            { id: "manage" as const, label: "Manage posts" },
+          ].map((tab) => (
+            <button key={tab.id} type="button" onClick={() => setPublisherTab(tab.id)} className={`rounded-md border px-4 py-3 text-sm font-bold shadow-sm transition ${publisherTab === tab.id ? "border-brand-500 bg-brand-600 text-white" : "border-slate-300 bg-slate-100 text-slate-800 hover:border-brand-300 hover:bg-brand-50 hover:text-brand-800"}`}>
+              {tab.label}
+            </button>
+          ))}
+        </div>
+
+        {publisherTab !== "manage" && (
+          <div className="grid gap-5 xl:grid-cols-[0.9fr_1.1fr]">
+            <div className="space-y-4">
+              <div>
+                <div className="mb-2 text-sm font-semibold text-charcoal-700">Connected accounts</div>
+                {connectedAccounts.length === 0 ? (
+                  <div className="rounded-lg border border-dashed border-slate-300 bg-slate-50 p-4 text-sm leading-6 text-slate-500">No connected Facebook or Instagram accounts loaded yet.</div>
+                ) : (
+                  <div className="grid gap-3 md:grid-cols-2">
+                    <label className="block">
+                      <span className="mb-1 block text-sm font-medium text-slate-600">Facebook Page</span>
+                      <select value={selectedFacebookAccountId} onChange={(event) => setSelectedFacebookAccountId(event.target.value)} className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-100">
+                        <option value="">Do not post to Facebook</option>
+                        {facebookAccounts.map((account) => <option key={account.id} value={account.id}>{account.account_name}</option>)}
+                      </select>
+                    </label>
+                    <label className="block">
+                      <span className="mb-1 block text-sm font-medium text-slate-600">Instagram Account</span>
+                      <select value={selectedInstagramAccountId} onChange={(event) => setSelectedInstagramAccountId(event.target.value)} className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-100">
+                        <option value="">Do not post to Instagram</option>
+                        {instagramAccounts.map((account) => <option key={account.id} value={account.id}>{account.account_name}</option>)}
+                      </select>
+                    </label>
+                  </div>
+                )}
+              </div>
+              {strategyPosts.length > 0 && (
+                <label className="block">
+                  <span className="mb-1 block text-sm font-medium text-slate-600">Use calendar post</span>
+                  <select value={selectedPostId} onChange={(event) => applyCalendarPost(event.target.value)} className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-100">
+                    {strategyPosts.map((post) => <option key={post.id} value={post.id}>{formatDate(post.publishDate)} - {platformLabel(post.platform)} - {post.topic}</option>)}
+                  </select>
+                </label>
+              )}
+              <Input label="Post title" value={title} onChange={setTitle} />
+              <label className="block">
+                <span className="mb-1 block text-sm font-medium text-slate-600">Caption</span>
+                <textarea value={caption} onChange={(event) => setCaption(event.target.value)} rows={6} className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-100" />
+              </label>
+              <Input label="Public image URL" value={imageUrl} onChange={setImageUrl} placeholder="https://cdn.example.com/post.jpg" />
+              {publisherTab === "schedule" && (
+                <div className="grid gap-3 md:grid-cols-2">
+                  <label className="block">
+                    <span className="mb-1 block text-sm font-medium text-slate-600">Schedule date/time</span>
+                    <input type="datetime-local" value={scheduledAt} onChange={(event) => setScheduledAt(event.target.value)} className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-100" />
+                  </label>
+                  <Input label="Timezone" value={timezone} onChange={setTimezone} />
+                </div>
+              )}
+              <div className="flex flex-wrap gap-2">
+                {publisherTab === "post" ? (
+                  <>
+                    <Button variant="ghost" onClick={() => void createPost("draft")} disabled={busy}>Create draft</Button>
+                    <Button onClick={() => void createPost("publish")} disabled={busy}>Post now</Button>
+                  </>
+                ) : (
+                  <Button onClick={() => void createPost("schedule")} disabled={busy}>Schedule post</Button>
+                )}
+              </div>
+              {message && <div className="rounded-lg border border-green-200 bg-green-50 px-3 py-2 text-sm text-green-800">{message}</div>}
+              {error && <div className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">{error}</div>}
+            </div>
+            <div className="rounded-lg border border-charcoal-100 bg-charcoal-50 p-4">
+              <div className="text-sm font-semibold text-charcoal-800">{publisherTab === "post" ? "Publishing summary" : "Scheduling summary"}</div>
+              <div className="mt-3 space-y-2 text-sm leading-6 text-charcoal-600">
+                <div><span className="font-semibold text-charcoal-800">Facebook:</span> {facebookAccounts.find((account) => account.id === selectedFacebookAccountId)?.account_name ?? "Not selected"}</div>
+                <div><span className="font-semibold text-charcoal-800">Instagram:</span> {instagramAccounts.find((account) => account.id === selectedInstagramAccountId)?.account_name ?? "Not selected"}</div>
+                {publisherTab === "schedule" && <div><span className="font-semibold text-charcoal-800">When:</span> {scheduledAt ? `${scheduledAt} ${timezone}` : "Not scheduled yet"}</div>}
+                <div><span className="font-semibold text-charcoal-800">Image:</span> {imageUrl ? "Attached by public URL" : "No image URL"}</div>
+              </div>
+              <p className="mt-3 text-xs leading-5 text-charcoal-400">Instagram requires a public image URL. Facebook can publish text-only or with an image.</p>
+            </div>
+          </div>
+        )}
+
+        {publisherTab === "manage" && (
+          <div className="grid gap-5 xl:grid-cols-[0.9fr_1.1fr]">
+            <div className="space-y-4">
+              <div className="rounded-lg border border-charcoal-100 bg-charcoal-50 p-4">
+                <div className="text-sm font-semibold text-charcoal-800">Manage created post</div>
+                <p className="mt-1 text-xs leading-5 text-charcoal-400">After creating a draft or scheduled post, use these actions to check status, inspect logs, update the draft, or cancel a scheduled post.</p>
+                <div className="mt-3 grid gap-2 sm:grid-cols-2">
+                  <Input label="Post ID" value={createdPostId} onChange={setCreatedPostId} placeholder="Created automatically after draft or schedule" />
+                  <div className="flex flex-wrap items-end gap-2 pt-6">
+                    <Button variant="ghost" onClick={() => void updateCreatedPost()} disabled={busy || !createdPostId}>Update draft</Button>
+                    <Button variant="ghost" onClick={() => void loadStatus()} disabled={busy || !createdPostId}>Check status</Button>
+                    <Button variant="ghost" onClick={() => void loadLogs()} disabled={busy || !createdPostId}>View logs</Button>
+                    <Button variant="danger" onClick={() => void cancelScheduled()} disabled={busy || !createdPostId}>Cancel scheduled post</Button>
+                  </div>
+                </div>
+              </div>
+              <div className="rounded-lg border border-charcoal-100 bg-white p-4">
+                <div className="flex items-center justify-between gap-3">
+                  <div>
+                    <div className="text-sm font-semibold text-charcoal-800">Social Connect calendar</div>
+                    <p className="mt-1 text-xs leading-5 text-charcoal-400">Loads this month from Dot H Social Connect.</p>
+                  </div>
+                  <Button variant="ghost" onClick={() => void loadCalendar()} disabled={busy}>Load calendar</Button>
+                </div>
+              </div>
+              {message && <div className="rounded-lg border border-green-200 bg-green-50 px-3 py-2 text-sm text-green-800">{message}</div>}
+              {error && <div className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">{error}</div>}
+            </div>
+            <div className="space-y-4">
+              <PrettyJson value={statusResult} />
+              <PrettyJson value={logsResult} />
+              <PrettyJson value={calendarResult} />
+            </div>
+          </div>
+        )}
+      </div>
+    </Card>
+  );
+}
+
 export default function SocialStrategy() {
   const [searchParams, setSearchParams] = useSearchParams();
   const [websites, setWebsites] = useState<Website[]>([]);
@@ -160,8 +580,10 @@ export default function SocialStrategy() {
   const [targetKeywords, setTargetKeywords] = useState("");
   const [targetUrls, setTargetUrls] = useState("");
   const [selectedPlatforms, setSelectedPlatforms] = useState<string[]>(DEFAULT_PLATFORMS.slice(0, 3));
+  const [mode, setMode] = useState<"posting" | "strategy">("posting");
   const [step, setStep] = useState<WizardStep>("project");
   const [loading, setLoading] = useState(true);
+  const [pageError, setPageError] = useState("");
   const [saving, setSaving] = useState(false);
   const [generating, setGenerating] = useState(false);
 
@@ -180,6 +602,7 @@ export default function SocialStrategy() {
 
   const load = async () => {
     setLoading(true);
+    setPageError("");
     try {
       const websiteResult = await api.get<{ websites: Website[] }>("/api/websites");
       setWebsites(websiteResult.websites);
@@ -188,8 +611,10 @@ export default function SocialStrategy() {
       if (selected) {
         setWebsiteId(selected.id);
         await loadStrategy(selected.id);
-        if (requestedProject) setStep("profiles");
+        if (requestedProject && selected.id === requestedProject) setStep("profiles");
       }
+    } catch (err) {
+      setPageError(String(err).replace(/^Error:\s*/, ""));
     } finally {
       setLoading(false);
     }
@@ -219,8 +644,11 @@ export default function SocialStrategy() {
     setWebsiteId(id);
     setSearchParams({ project: id });
     setLoading(true);
+    setPageError("");
     try {
       await loadStrategy(id);
+    } catch (err) {
+      setPageError(String(err).replace(/^Error:\s*/, ""));
     } finally {
       setLoading(false);
     }
@@ -281,8 +709,8 @@ export default function SocialStrategy() {
       <div className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
         <div>
           <div className="text-xs font-semibold uppercase tracking-wide text-brand-600">Brand Visibility</div>
-          <h1 className="mt-1 text-2xl font-bold text-charcoal-800">Social Strategy Wizard</h1>
-          <p className="mt-1 text-sm text-charcoal-400">Build a project-level social setup, compare competitors, and generate a search-connected posting strategy.</p>
+          <h1 className="mt-1 text-2xl font-bold text-charcoal-800">Social</h1>
+          <p className="mt-1 text-sm text-charcoal-400">Schedule posts to Meta and Instagram, or build a search-connected social strategy.</p>
         </div>
         <label className="block min-w-[260px]">
           <span className="mb-1 block text-sm font-medium text-slate-600">Selected project</span>
@@ -292,6 +720,35 @@ export default function SocialStrategy() {
         </label>
       </div>
 
+      {pageError && <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">{pageError}</div>}
+
+      <div className="grid gap-4 md:grid-cols-2">
+        <button type="button" onClick={() => setMode("posting")} className={`rounded-xl border p-6 text-left shadow-sm transition ${mode === "posting" ? "border-brand-300 bg-brand-50" : "border-slate-200 bg-white hover:border-brand-200 hover:bg-slate-50"}`}>
+          <div className="text-xs font-semibold uppercase tracking-wide text-brand-600">Scheduling / Posting</div>
+          <div className="mt-2 text-2xl font-bold text-charcoal-900">Post to Meta and Instagram</div>
+          <p className="mt-2 text-sm leading-6 text-charcoal-500">Connect Facebook or Instagram, select accounts, create drafts, publish now, schedule posts, check logs, and cancel scheduled posts.</p>
+        </button>
+        <button type="button" onClick={() => setMode("strategy")} className={`rounded-xl border p-6 text-left shadow-sm transition ${mode === "strategy" ? "border-brand-300 bg-brand-50" : "border-slate-200 bg-white hover:border-brand-200 hover:bg-slate-50"}`}>
+          <div className="text-xs font-semibold uppercase tracking-wide text-brand-600">Create Strategy</div>
+          <div className="mt-2 text-2xl font-bold text-charcoal-900">Build a social strategy</div>
+          <p className="mt-2 text-sm leading-6 text-charcoal-500">Add profile audit details, competitor examples, campaign inputs, and generate recommendations plus a 30-day content calendar.</p>
+        </button>
+      </div>
+
+      {mode === "posting" && (
+        websiteId ? (
+          <SocialPublisher websiteId={websiteId} strategy={activeStrategy} />
+        ) : (
+          <Card className="p-6 text-center">
+            <div className="text-lg font-bold text-charcoal-900">Select a project first</div>
+            <p className="mx-auto mt-2 max-w-2xl text-sm leading-6 text-charcoal-500">Scheduling and posting needs a project context so posts, accounts, and calendar activity stay attached to the right workspace.</p>
+            <Link to="/projects" className="mt-4 inline-flex items-center justify-center rounded-lg bg-brand-600 px-4 py-2 text-sm font-bold text-white hover:bg-brand-700">Create or open project</Link>
+          </Card>
+        )
+      )}
+
+      {mode === "strategy" && (
+        <>
       <Card className="overflow-hidden">
         <div className="grid gap-0 border-b border-charcoal-100 bg-charcoal-50 md:grid-cols-5">
           {WIZARD_STEPS.map((item, index) => {
@@ -560,6 +1017,8 @@ export default function SocialStrategy() {
             </table>
           </div>
         </Card>
+      )}
+        </>
       )}
     </div>
   );

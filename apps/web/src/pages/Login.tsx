@@ -385,11 +385,10 @@ function SignUpForm({
   onRegister,
   onSignIn,
 }: {
-  onRegister: (i: { name: string; companyName: string; email: string; password: string; captchaToken?: string }) => Promise<string>;
+  onRegister: (i: { name: string; workspaceType: string; email: string; password: string; captchaToken?: string }) => Promise<string>;
   onSignIn: () => void;
 }) {
   const [name, setName] = useState("");
-  const [companyName, setCompany] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [confirm, setConfirm] = useState("");
@@ -399,7 +398,7 @@ function SignUpForm({
   const [success, setSuccess] = useState("");
   const [busy, setBusy] = useState(false);
   const [captchaSiteKey, setCaptchaSiteKey] = useState("");
-  const canSubmit = Boolean(name && companyName && emailOk(email) && passwordValid(password) && confirm === password && workspaceType && acceptedTerms);
+  const canSubmit = Boolean(name && emailOk(email) && passwordValid(password) && confirm === password && workspaceType && acceptedTerms);
 
   useEffect(() => {
     let cancelled = false;
@@ -417,7 +416,6 @@ function SignUpForm({
     e.preventDefault();
     const next: Record<string, string> = {};
     if (!name) next.name = "Your name is required";
-    if (!companyName) next.companyName = "Company name is required";
     if (!emailOk(email)) next.email = "Enter a valid email";
     if (!passwordValid(password)) next.password = "Complete all password requirements";
     if (confirm !== password) next.confirm = "Passwords do not match";
@@ -428,7 +426,7 @@ function SignUpForm({
     setBusy(true);
     try {
       const captchaToken = captchaSiteKey ? await executeRecaptcha(captchaSiteKey, "register") : undefined;
-      setSuccess(await onRegister({ name, companyName: companyName || workspaceType, email, password, captchaToken }));
+      setSuccess(await onRegister({ name, workspaceType, email, password, captchaToken }));
       setPassword("");
       setConfirm("");
     } catch (e) {
@@ -470,15 +468,15 @@ function SignUpForm({
         </div>
         <PasswordChecklist password={password} confirm={confirm} />
         <label className="block">
-          <span className="mb-1.5 block text-sm font-bold text-slate-900">Account Type / Workspace Type</span>
+          <span className="mb-1.5 block text-sm font-bold text-slate-900">Workspace Type</span>
           <span className="relative block">
             <span className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400"><AuthIcon name="workspace" /></span>
-            <select value={workspaceType} onChange={(event) => { setWorkspaceType(event.target.value); setCompany(event.target.value || companyName); }} className="h-11 w-full appearance-none rounded-lg border border-slate-200 bg-white pl-11 pr-10 text-sm text-slate-600 outline-none transition focus:border-brand-400 focus:ring-2 focus:ring-brand-100 xl:h-12 xl:text-base">
+            <select value={workspaceType} onChange={(event) => setWorkspaceType(event.target.value)} className="h-11 w-full appearance-none rounded-lg border border-slate-200 bg-white pl-11 pr-10 text-sm text-slate-600 outline-none transition focus:border-brand-400 focus:ring-2 focus:ring-brand-100 xl:h-12 xl:text-base">
               <option value="">Select workspace type</option>
-              <option value="Agency Workspace">Agency Workspace</option>
-              <option value="Business Workspace">Business Workspace</option>
-              <option value="Freelancer Workspace">Freelancer Workspace</option>
-              <option value="Team Workspace">Team Workspace</option>
+              <option value="Personal">Personal</option>
+              <option value="Business">Business</option>
+              <option value="Agency">Agency</option>
+              <option value="Ecommerce">Ecommerce</option>
             </select>
             <span className="pointer-events-none absolute right-4 top-1/2 -translate-y-1/2 text-slate-400"><AuthIcon name="chevron" /></span>
           </span>

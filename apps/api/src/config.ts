@@ -37,6 +37,10 @@ export const config = {
   recaptchaMinScore: process.env.RECAPTCHA_MIN_SCORE ? parseFloat(process.env.RECAPTCHA_MIN_SCORE) : 0.5,
   openaiApiKey: process.env.OPENAI_API_KEY ?? "",
   openaiModel: process.env.OPENAI_MODEL ?? "gpt-4o-mini",
+  socialConnectBaseUrl: process.env.SOCIAL_CONNECT_BASE_URL ?? "https://api.dothdigital.com",
+  socialConnectApiKey: process.env.SOCIAL_CONNECT_API_KEY ?? "",
+  socialConnectAppKey: process.env.SOCIAL_CONNECT_APP_KEY ?? "",
+  socialConnectMasterApiKey: process.env.SOCIAL_CONNECT_MASTER_API_KEY ?? "",
   stripeSecretKey: process.env.STRIPE_SECRET_KEY ?? "",
   stripeWebhookSecret: process.env.STRIPE_WEBHOOK_SECRET ?? "",
   defaultPageLimit: process.env.CRAWL_DEFAULT_MAX_PAGES

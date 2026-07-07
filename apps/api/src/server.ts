@@ -11,6 +11,7 @@ import { geoKeywordRouter } from "./routes/geo-keyword.js";
 import { keywordResearchRouter } from "./routes/keyword-research.js";
 import { aiContentRouter } from "./routes/ai-content.js";
 import { socialStrategyRouter } from "./routes/social-strategy.js";
+import { socialConnectRouter } from "./routes/social-connect.js";
 import { localSeoRouter } from "./routes/local-seo.js";
 import { executionTasksRouter } from "./routes/execution-tasks.js";
 import { billingRouter } from "./routes/billing.js";
@@ -19,6 +20,7 @@ import { growthRouter } from "./routes/growth.js";
 import { automationRouter } from "./routes/automation.js";
 import { usageRouter } from "./routes/usage.js";
 import { competitiveIntelligenceRouter } from "./routes/competitive-intelligence.js";
+import { gapAnalysisRouter } from "./routes/gap-analysis.js";
 import { rawBodySaver } from "./billing.js";
 
 const app = express();
@@ -85,12 +87,14 @@ app.get("/", (_req, res) =>
       aiContent: "GET|POST /api/ai-content",
       billing: "GET|POST /api/billing",
       socialStrategy: "GET|POST /api/social-strategy",
+      socialConnect: "GET|POST /api/social-connect",
       localSeo: "GET|POST /api/local/business",
       executionTasks: "GET|POST /api/execution-tasks",
       growth: "GET|POST /api/projects-v2/:projectId/growth",
       automation: "GET /api/automation/overview",
       usage: "GET|POST /api/usage",
       competitiveIntelligence: "GET|POST /api/projects/:projectId/intelligence",
+      gapAnalysis: "GET|POST /api/projects/:projectId/gap-analysis",
     },
   }),
 );
@@ -104,6 +108,7 @@ app.use("/api", growthRouter);
 app.use("/api", automationRouter);
 app.use("/api", usageRouter);
 app.use("/api", competitiveIntelligenceRouter);
+app.use("/api", gapAnalysisRouter);
 app.use("/api/websites", websitesRouter);
 app.use("/api", crawlsRouter); // crawls routes carry their own full paths
 app.use("/api", overviewRouter);
@@ -111,6 +116,7 @@ app.use("/api", geoKeywordRouter);
 app.use("/api", keywordResearchRouter);
 app.use("/api", aiContentRouter);
 app.use("/api", socialStrategyRouter);
+app.use("/api", socialConnectRouter);
 app.use("/api", localSeoRouter);
 app.use("/api", executionTasksRouter);
 

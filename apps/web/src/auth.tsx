@@ -15,7 +15,7 @@ interface AuthCtx {
   user: AppUser | null;
   loading: boolean;
   login: (email: string, password: string) => Promise<void>;
-  register: (input: { name: string; companyName: string; email: string; password: string; captchaToken?: string }) => Promise<string>;
+  register: (input: { name: string; workspaceType: string; email: string; password: string; captchaToken?: string }) => Promise<string>;
   verifyEmail: (token: string) => Promise<void>;
   resetPassword: (token: string, password: string) => Promise<void>;
   logout: () => void;
@@ -40,7 +40,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const login = async (email: string, password: string) => {
     setUser(await apiLogin(email, password));
   };
-  const register = async (input: { name: string; companyName: string; email: string; password: string; captchaToken?: string }) => {
+  const register = async (input: { name: string; workspaceType: string; email: string; password: string; captchaToken?: string }) => {
     return apiRegister(input);
   };
   const verifyEmail = async (token: string) => {

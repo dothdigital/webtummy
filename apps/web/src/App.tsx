@@ -24,6 +24,7 @@ import AiContentStudio from "./pages/AiContentStudio.js";
 import SocialStrategy from "./pages/SocialStrategy.js";
 import LocalSeo from "./pages/LocalSeo.js";
 import GrowthEngine from "./pages/GrowthEngine.js";
+import GapAnalysis from "./pages/GapAnalysis.js";
 import AutomationCenter from "./pages/AutomationCenter.js";
 import AdminUsageConfig from "./pages/AdminUsageConfig.js";
 import Pricing from "./pages/Pricing.js";
@@ -111,6 +112,7 @@ function Shell() {
         <Route path="/keyword-insights" element={<KeywordReports />} />
         <Route path="/social-strategy" element={<SocialStrategy />} />
         <Route path="/growth" element={<GrowthEngine />} />
+        <Route path="/gap-analysis" element={<GapAnalysis />} />
         <Route path="/local-seo" element={<LocalSeo />} />
         <Route path="/ai-content" element={<AiContentStudio />} />
         <Route path="/billing" element={<Billing />} />

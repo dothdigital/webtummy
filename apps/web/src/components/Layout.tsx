@@ -28,6 +28,7 @@ const nav = [
   { to: "/site-architect", label: "Site Architect", icon: "overview" },
   { to: "/lead-magnets", label: "Lead Magnets", icon: "billing" },
   { to: "/growth", label: "Growth Engine", icon: "plans" },
+  { to: "/gap-analysis", label: "Gap Analysis", icon: "plans" },
   { to: "/local-seo", label: "Domain", icon: "local" },
   { to: "/ai-content", label: "Publishing", icon: "content" },
   { to: "/social-strategy", label: "Social", icon: "social" },

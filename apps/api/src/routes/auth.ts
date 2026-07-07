@@ -100,7 +100,7 @@ async function sendPasswordResetEmail(user: { id: string; email: string; name: s
   });
 }
 
-async function sendSignupNotification(input: { name: string; companyName: string; email: string }) {
+async function sendSignupNotification(input: { name: string; workspaceType: string; email: string }) {
   if (!config.signupNotifyEmail) return;
 
   const subject = "New SEnuke AI signup";
@@ -108,7 +108,7 @@ async function sendSignupNotification(input: { name: string; companyName: string
     "A new user registered for SEnuke AI.",
     "",
     "Name: " + input.name,
-    "Company: " + input.companyName,
+    "Workspace Type: " + input.workspaceType,
     "Email: " + input.email,
   ].join("\n");
 
@@ -116,7 +116,7 @@ async function sendSignupNotification(input: { name: string; companyName: string
     to: config.signupNotifyEmail,
     subject,
     text,
-    html: "<p>A new user registered for SEnuke AI.</p><ul><li><strong>Name:</strong> " + escapeHtml(input.name) + "</li><li><strong>Company:</strong> " + escapeHtml(input.companyName) + "</li><li><strong>Email:</strong> " + escapeHtml(input.email) + "</li></ul>",
+    html: "<p>A new user registered for SEnuke AI.</p><ul><li><strong>Name:</strong> " + escapeHtml(input.name) + "</li><li><strong>Workspace Type:</strong> " + escapeHtml(input.workspaceType) + "</li><li><strong>Email:</strong> " + escapeHtml(input.email) + "</li></ul>",
   });
 }
 
@@ -149,7 +149,7 @@ authRouter.post("/login", async (req, res) => {
 // (Super-admins are created via the seed script, not here.)
 const registerSchema = z.object({
   name: z.string().min(1, "Name is required"),
-  companyName: z.string().min(1, "Company name is required"),
+  workspaceType: z.enum(["Personal", "Business", "Agency", "Ecommerce"], { errorMap: () => ({ message: "Select workspace type" }) }),
   email: z.string().email("Enter a valid email"),
   password: z
     .string()
@@ -180,7 +180,7 @@ authRouter.post("/register", async (req, res) => {
     const trialStartedAt = new Date();
     const client = await tx.client.create({
       data: {
-        name: d.companyName,
+        name: d.workspaceType,
         contactEmail: d.email,
         plan: "mini",
         aiSubscriptionStatus: "trialing",
@@ -208,7 +208,7 @@ authRouter.post("/register", async (req, res) => {
     return res.status(502).json({ error: { email: ["Account was created, but the verification email could not be sent. Contact support to verify the account."] } });
   }
 
-  sendSignupNotification({ name: d.name, companyName: d.companyName, email: d.email }).catch((error) => {
+  sendSignupNotification({ name: d.name, workspaceType: d.workspaceType, email: d.email }).catch((error) => {
     console.error("Failed to send signup notification", error);
   });
 

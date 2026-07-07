@@ -513,6 +513,20 @@ model Project {
   communityInsights CommunityInsight[]
   intentDriftSnapshots IntentDriftSnapshot[]
   moatScores MoatScore[]
+  seoFixQueueItems SeoFixQueueItem[]
+  seoFixApprovals SeoFixApproval[]
+  wordpressIntegrations WordPressIntegration[]
+  wordpressPublishJobs WordPressPublishJob[]
+  gapLocalSeoProfiles GapLocalSeoProfile[]
+  gapLocalSeoTasks GapLocalSeoTask[]
+  aiVisibilityQueries AiVisibilityQuery[]
+  aiVisibilitySnapshots AiVisibilitySnapshot[]
+  authorityOpportunities AuthorityOpportunity[]
+  whiteLabelProfiles WhiteLabelProfile[]
+  gapReportExports GapReportExport[]
+  demoProjects DemoProject[]
+  adLandingSuggestions AdLandingSuggestion[]
+  ecommerceExportGuides EcommerceExportGuide[]
 
   @@index([clientId, status])
   @@index([websiteId])
@@ -1107,6 +1121,301 @@ model MoatScore {
 
   @@index([projectId, createdAt])
   @@index([totalMoatScore])
+}
+
+// ─── Gap Analysis Launch Add-On ─────────────────────────────────────────────
+
+model SeoFixQueueItem {
+  id                 String   @id @default(cuid())
+  projectId          String
+  project            Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  clientId           String
+  websiteId          String?
+  sourceAnalysisId   String?
+  affectedUrl        String   @db.VarChar(512)
+  issueType          String   @db.VarChar(80)
+  severity           String   @db.VarChar(20)
+  riskLevel          String   @db.VarChar(40)
+  automationLevel    String   @db.VarChar(60)
+  recommendedFix     String   @db.Text
+  plainEnglishReason String?  @db.Text
+  expectedImpact     String?  @db.Text
+  approvalStatus     String   @default("needs_review") @db.VarChar(40)
+  creditCostEstimate Int      @default(0)
+  aiOutputId         String?  @db.VarChar(191)
+  executionTaskId    String?  @db.VarChar(191)
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  approvals SeoFixApproval[]
+
+  @@index([projectId, approvalStatus])
+  @@index([clientId, createdAt])
+  @@index([websiteId])
+  @@index([severity])
+  @@index([riskLevel])
+}
+
+model SeoFixApproval {
+  id           String   @id @default(cuid())
+  projectId    String
+  project      Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  fixItemId    String
+  fixItem      SeoFixQueueItem @relation(fields: [fixItemId], references: [id], onDelete: Cascade)
+  userId       String?
+  action       String   @db.VarChar(40)
+  editedFix    String?  @db.Text
+  notes        String?  @db.Text
+  snapshotJson Json     @default("{}")
+  createdAt    DateTime @default(now())
+
+  @@index([projectId, createdAt])
+  @@index([fixItemId])
+}
+
+model WordPressIntegration {
+  id                    String   @id @default(cuid())
+  projectId             String
+  project               Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  clientId              String
+  siteUrl               String   @db.VarChar(512)
+  authMethod            String   @db.VarChar(60)
+  connectionStatus      String   @default("not_connected") @db.VarChar(60)
+  permissionScope       Json     @default("[]")
+  defaultPublishMode    String   @default("draft") @db.VarChar(60)
+  secretRef             String?  @db.VarChar(255)
+  lastConnectionCheckAt DateTime?
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+
+  publishJobs WordPressPublishJob[]
+
+  @@index([projectId, connectionStatus])
+  @@index([clientId])
+}
+
+model WordPressPublishJob {
+  id             String   @id @default(cuid())
+  projectId      String
+  project        Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  clientId       String
+  integrationId  String?
+  integration    WordPressIntegration? @relation(fields: [integrationId], references: [id], onDelete: SetNull)
+  aiOutputId     String?
+  targetType     String   @db.VarChar(60)
+  publishMode    String   @db.VarChar(60)
+  title          String?  @db.VarChar(255)
+  htmlContent    String?  @db.Text
+  externalPostId String?  @db.VarChar(191)
+  status         String   @default("queued") @db.VarChar(60)
+  rollbackNote   String?  @db.Text
+  errorMessage   String?  @db.Text
+  createdAt      DateTime @default(now())
+  completedAt    DateTime?
+
+  @@index([projectId, status])
+  @@index([integrationId])
+  @@index([clientId, createdAt])
+}
+
+model GapLocalSeoProfile {
+  id                   String   @id @default(cuid())
+  projectId            String   @unique
+  project              Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  clientId             String
+  businessName         String   @db.VarChar(180)
+  businessType         String   @db.VarChar(120)
+  primaryPhone         String?  @db.VarChar(80)
+  addressOrServiceArea String   @db.Text
+  citiesServed         Json     @default("[]")
+  services             Json     @default("[]")
+  gbpStatus            String   @default("unknown") @db.VarChar(60)
+  reviewGoal           Int?
+  citationStatus       String   @default("unknown") @db.VarChar(60)
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+
+  tasks GapLocalSeoTask[]
+
+  @@index([clientId])
+}
+
+model GapLocalSeoTask {
+  id              String   @id @default(cuid())
+  projectId       String
+  project         Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  profileId       String
+  profile         GapLocalSeoProfile @relation(fields: [profileId], references: [id], onDelete: Cascade)
+  taskType        String   @db.VarChar(80)
+  title           String   @db.VarChar(220)
+  description     String   @db.Text
+  priority        String   @default("medium") @db.VarChar(20)
+  status          String   @default("planned") @db.VarChar(60)
+  executionTaskId String?  @db.VarChar(191)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@index([projectId, status])
+  @@index([profileId])
+  @@index([taskType])
+}
+
+model AiVisibilityQuery {
+  id              String   @id @default(cuid())
+  projectId       String
+  project         Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  clientId        String
+  queryText       String   @db.VarChar(512)
+  targetBrand     String   @db.VarChar(180)
+  targetUrl       String?  @db.VarChar(512)
+  competitors     Json     @default("[]")
+  scanFrequency   String   @default("manual") @db.VarChar(40)
+  lastScanStatus  String   @default("queued") @db.VarChar(40)
+  visibilityStatus String? @db.VarChar(60)
+  recommendedAction String? @db.Text
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  snapshots AiVisibilitySnapshot[]
+
+  @@index([projectId, createdAt])
+  @@index([clientId])
+}
+
+model AiVisibilitySnapshot {
+  id                 String   @id @default(cuid())
+  projectId          String
+  project            Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  queryId            String
+  query              AiVisibilityQuery @relation(fields: [queryId], references: [id], onDelete: Cascade)
+  scanProvider       String   @default("manual_v1") @db.VarChar(80)
+  visibilityStatus   String   @db.VarChar(60)
+  citedUrls          Json     @default("[]")
+  competitorsVisible Json     @default("[]")
+  recommendedActions Json     @default("[]")
+  creditCost         Int      @default(0)
+  createdAt          DateTime @default(now())
+
+  @@index([projectId, createdAt])
+  @@index([queryId])
+}
+
+model AuthorityOpportunity {
+  id                    String   @id @default(cuid())
+  projectId             String
+  project               Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  clientId              String
+  opportunityType       String   @db.VarChar(80)
+  opportunityUrl        String?  @db.VarChar(512)
+  targetPageUrl         String?  @db.VarChar(512)
+  description           String   @db.Text
+  riskScore             Int      @default(0)
+  riskLabel             String   @db.VarChar(40)
+  estimatedValue        String   @default("medium") @db.VarChar(40)
+  outreachRequired      Boolean  @default(false)
+  outreachDraftAiOutputId String? @db.VarChar(191)
+  executionTaskId       String?  @db.VarChar(191)
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+
+  @@index([projectId, createdAt])
+  @@index([clientId])
+  @@index([riskLabel])
+}
+
+model WhiteLabelProfile {
+  id               String   @id @default(cuid())
+  projectId        String?
+  project          Project? @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  clientId         String
+  agencyName       String?  @db.VarChar(180)
+  agencyLogoFileId String?  @db.VarChar(191)
+  preparedByName   String?  @db.VarChar(180)
+  contactEmail     String?  @db.VarChar(180)
+  colorPreference  String?  @db.VarChar(80)
+  footerDisclaimer String?  @db.Text
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  @@index([clientId])
+  @@index([projectId])
+}
+
+model GapReportExport {
+  id             String   @id @default(cuid())
+  projectId      String
+  project        Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  clientId       String
+  reportType     String   @db.VarChar(80)
+  clientName     String?  @db.VarChar(180)
+  approvalStatus String   @default("needs_review") @db.VarChar(60)
+  exportFormat   String   @db.VarChar(40)
+  outputFileId   String?  @db.VarChar(191)
+  contentJson    Json     @default("{}")
+  status         String   @default("queued") @db.VarChar(60)
+  createdAt      DateTime @default(now())
+  completedAt    DateTime?
+
+  @@index([projectId, status])
+  @@index([clientId, createdAt])
+  @@index([reportType])
+}
+
+model DemoProject {
+  id                   String   @id @default(cuid())
+  projectId            String
+  project              Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  clientId             String
+  demoTemplate         String   @db.VarChar(80)
+  sampleDataVisibility String   @default("clearly_marked_demo") @db.VarChar(80)
+  demoResetAllowed     Boolean  @default(true)
+  includedAssets       Json     @default("[]")
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+
+  @@index([clientId, createdAt])
+  @@index([demoTemplate])
+}
+
+model AdLandingSuggestion {
+  id               String   @id @default(cuid())
+  projectId        String
+  project          Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  clientId         String
+  campaignGoal     String   @db.VarChar(80)
+  offerSummary     String   @db.Text
+  landingPageUrl   String?  @db.VarChar(512)
+  adPlatformTarget String?  @db.VarChar(80)
+  suggestionType   String   @db.VarChar(80)
+  suggestionsJson  Json     @default("[]")
+  approvalStatus   String   @default("needs_review") @db.VarChar(60)
+  executionTaskId  String?  @db.VarChar(191)
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  @@index([projectId, createdAt])
+  @@index([clientId])
+  @@index([suggestionType])
+}
+
+model EcommerceExportGuide {
+  id                      String   @id @default(cuid())
+  projectId               String
+  project                 Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  clientId                String
+  storePlatform           String   @db.VarChar(80)
+  shopDomain              String?  @db.VarChar(512)
+  productOrCollectionType String?  @db.VarChar(80)
+  targetName              String?  @db.VarChar(220)
+  manualPublishSteps      String   @db.Text
+  contentJson             Json     @default("{}")
+  futureIntegrationStatus String   @default("planned") @db.VarChar(60)
+  createdAt               DateTime @default(now())
+  updatedAt               DateTime @updatedAt
+
+  @@index([projectId, createdAt])
+  @@index([clientId])
+  @@index([storePlatform])
 }
 
 // ─── Growth Marketing Engine ────────────────────────────────────────────────

@@ -6,7 +6,7 @@ export function projectHasWebsite(project?: GuidedProject, website?: Website | n
 
 export function isExistingWebsiteFlow(project?: GuidedProject, website?: Website | null) {
   if (!project) return false;
-  return project.projectType === "existing_website" || project.projectType === "local_seo" || projectHasWebsite(project, website);
+  return projectHasWebsite(project, website);
 }
 
 export function requiresSiteAnalysisBeforeStrategy(project?: GuidedProject, website?: Website | null) {
@@ -26,8 +26,20 @@ export function nextProjectFlowStep(project: GuidedProject) {
   const hasStrategy = Boolean(latestStrategy || project._count?.strategyPlans);
   const strategyApproved = latestStrategy?.status === "approved" || workflowStepComplete(project, "strategy_approval");
   const siteAnalysisRequired = requiresSiteAnalysisBeforeStrategy(project);
+  const hasWebsite = projectHasWebsite(project);
 
-  if (!workflowStepComplete(project, "keyword_analysis")) {
+  if (!hasStrategy && !hasWebsite) {
+    return {
+      title: "Generate Launch Strategy",
+      description: "This project can move forward without a website or domain. SEnuke AI will use the project profile to plan website structure, keyword seeds, GBP/local setup, content, publishing, and measurement tasks.",
+      actionLabel: "Generate Strategy",
+      to: `/strategy?projectId=${project.id}`,
+      badge: "Launch Strategy",
+      notice: "Opening Strategy. Website, domain, GBP, and crawl data can be added as setup tasks later.",
+    };
+  }
+
+  if (hasWebsite && !workflowStepComplete(project, "keyword_analysis")) {
     return {
       title: "Run Keyword Analysis",
       description: "Next, SEnuke AI should research target keywords, buyer-intent terms, topical clusters, competitor gaps, difficulty, opportunity score, and revenue potential before strategy.",

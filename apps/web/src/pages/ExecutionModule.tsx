@@ -116,6 +116,41 @@ function hasCompletedSiteAnalysis(data: ModuleData, project?: GuidedProject, web
   return crawlJobs.some((crawl) => crawl.status === "completed");
 }
 
+function normalizeDomainForMatch(value: string | null | undefined) {
+  if (!value) return "";
+  return value
+    .trim()
+    .toLowerCase()
+    .replace(/^https?:\/\//, "")
+    .replace(/^www\./, "")
+    .split("/")[0]
+    .replace(/:\d+$/, "");
+}
+
+function keywordRunBelongsToProject(run: KeywordResearchRun, project: GuidedProject, website?: Website) {
+  if (project.websiteId && run.websiteId === project.websiteId) return true;
+  if (website?.id && run.websiteId === website.id) return true;
+
+  const projectDomains = [
+    project.websiteUrl,
+    project.website?.rootUrl,
+    project.website?.domain,
+    website?.rootUrl,
+    website?.domain,
+  ].map(normalizeDomainForMatch).filter(Boolean);
+  const runDomains = [
+    run.targetDomain,
+    run.website?.rootUrl,
+    run.website?.domain,
+    run.targetUrl,
+    run.rankingUrl,
+    run.manualUrl,
+  ].map(normalizeDomainForMatch).filter(Boolean);
+
+  if (!projectDomains.length || !runDomains.length) return false;
+  return projectDomains.some((projectDomain) => runDomains.some((runDomain) => projectDomain === runDomain || projectDomain.endsWith(`.${runDomain}`) || runDomain.endsWith(`.${projectDomain}`)));
+}
+
 function moduleReadiness(kind: ModuleKind, data: ModuleData, project?: GuidedProject, website?: Website) {
   if (!project) return { canRun: false, items: [] as ReadinessItem[] };
   const intakeComplete = Boolean(project.businessProfile || (project.intakeAnswers?.length ?? 0) > 0);
@@ -277,15 +312,27 @@ export default function ExecutionModule({ kind }: { kind: ModuleKind }) {
   }, []);
 
   const selectedProject = data.projects.find((project) => project.id === selectedProjectId) ?? data.projects[0];
+  const selectedProjectWebsite = selectedProject?.websiteId
+    ? data.websites.find((website) => website.id === selectedProject.websiteId)
+    : undefined;
+  const scopedWebsites = selectedProject
+    ? selectedProjectWebsite ? [selectedProjectWebsite] : []
+    : data.websites;
+  const scopedKeywordRuns = selectedProject
+    ? data.keywordRuns.filter((run) => keywordRunBelongsToProject(run, selectedProject, selectedProjectWebsite))
+    : data.keywordRuns;
   const scopedData = selectedProject ? {
     ...data,
     projects: [selectedProject, ...data.projects.filter((project) => project.id !== selectedProject.id)],
+    websites: scopedWebsites,
+    keywordRuns: scopedKeywordRuns,
     tasks: data.tasks.filter((task) => !task.projectId || task.projectId === selectedProject.id),
   } : data;
   const activeProject = scopedData.projects[0];
   const activeWebsite = activeProject?.websiteId
-    ? data.websites.find((website) => website.id === activeProject.websiteId) ?? data.websites[0]
-    : data.websites[0];
+    ? scopedData.websites.find((website) => website.id === activeProject.websiteId)
+    : scopedData.websites[0];
+  const activeSiteCrawl = activeWebsite?.crawlJobs?.find((crawl) => crawl.status === "queued" || crawl.status === "running");
   const latestSiteCrawl = activeWebsite?.crawlJobs?.find((crawl) => crawl.status === "completed" && (crawl.pagesCrawled > 0 || crawl.siteScore != null));
   const titleSuffix = activeProject?.businessName || activeProject?.name || activeWebsite?.domain;
   const moduleTitle = titleSuffix || copy.title;
@@ -326,7 +373,7 @@ export default function ExecutionModule({ kind }: { kind: ModuleKind }) {
   };
 
   const analyzeSite = async () => {
-    if (!activeWebsite || siteAnalysisBusy || siteScanCooldown.blocked) return;
+    if (!activeWebsite || activeSiteCrawl || siteAnalysisBusy || siteScanCooldown.blocked) return;
     setSiteAnalysisBusy(true);
     setSiteAnalysisMessage("");
     try {
@@ -490,7 +537,7 @@ export default function ExecutionModule({ kind }: { kind: ModuleKind }) {
   const primaryDisabled = kind === "backlinks"
     ? (!activeWebsite || refreshingBacklinks || backlinkCooldown.blocked || !canRunModule)
     : kind === "site-analysis"
-      ? (!activeWebsite || siteAnalysisBusy || siteScanCooldown.blocked || !canRunModule)
+      ? (!activeWebsite || Boolean(activeSiteCrawl) || siteAnalysisBusy || siteScanCooldown.blocked || !canRunModule)
     : kind === "ai-citations"
       ? true
     : kind === "strategy"
@@ -508,6 +555,8 @@ export default function ExecutionModule({ kind }: { kind: ModuleKind }) {
         : copy.primary
     : kind === "site-analysis" && siteAnalysisBusy
       ? "Analyzing..."
+    : kind === "site-analysis" && activeSiteCrawl
+      ? activeSiteCrawl.status === "queued" ? "Crawl queued..." : "Crawl running..."
     : kind === "site-analysis" && siteScanCooldown.blocked
       ? `Available ${siteScanCooldown.remainingLabel}`
     : kind === "ai-citations"
@@ -616,14 +665,27 @@ export default function ExecutionModule({ kind }: { kind: ModuleKind }) {
         </div>
       )}
       {hasActiveProject && kind === "site-analysis" && (
-        <div className={`rounded-lg border px-4 py-3 text-sm ${siteAnalysisMessage ? "border-brand-100 bg-brand-50 text-brand-700" : "border-slate-200 bg-white text-charcoal-500"}`}>
-          {siteAnalysisMessage || (siteScanCooldown.blocked
-            ? `The last scan completed ${formatDateTime(latestSiteCrawl?.completedAt ?? latestSiteCrawl?.createdAt)}. To avoid repeated crawl load, you can scan again after 72 hours. Time remaining: ${siteScanCooldown.remainingLabel}.`
-            : latestSiteCrawl
-              ? `${crawlSource(latestSiteCrawl)} completed ${formatDateTime(latestSiteCrawl.completedAt ?? latestSiteCrawl.createdAt)} with ${formatNumber(latestSiteCrawl.pagesCrawled)} page(s) crawled. You can run a new scan now.`
-            : activeWebsite
-              ? "Run a crawl to create site health, SEO issue, page, internal link, and readiness data for this project."
-              : "Connect a website before analyzing site health.")}
+        <div className={`rounded-lg border px-5 py-4 text-sm shadow-sm ${activeSiteCrawl || siteAnalysisBusy || siteAnalysisMessage.includes("started") ? "border-amber-200 bg-amber-50 text-amber-900" : siteAnalysisMessage ? "border-brand-100 bg-brand-50 text-brand-700" : "border-slate-200 bg-white text-charcoal-500"}`}>
+          {activeSiteCrawl || siteAnalysisBusy || siteAnalysisMessage.includes("started") ? (
+            <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+              <div>
+                <div className="text-xs font-bold uppercase tracking-wide text-amber-700">Site analysis in progress</div>
+                <div className="mt-1 text-base font-bold text-slate-950">Site analysis started. Crawl results will appear here when the worker finishes.</div>
+                <div className="mt-1 text-sm leading-6 text-amber-900">
+                  {activeSiteCrawl ? `Current crawl status: ${activeSiteCrawl.status}. The Analyze Site button is disabled until this crawl completes.` : "The Analyze Site button is disabled while the crawl is being created."}
+                </div>
+              </div>
+              <span className="inline-flex w-fit rounded-lg border border-amber-300 bg-white px-3 py-1.5 text-xs font-bold uppercase tracking-wide text-amber-800">
+                {activeSiteCrawl?.status ?? "starting"}
+              </span>
+            </div>
+          ) : siteAnalysisMessage || (siteScanCooldown.blocked
+              ? `The last scan completed ${formatDateTime(latestSiteCrawl?.completedAt ?? latestSiteCrawl?.createdAt)}. To avoid repeated crawl load, you can scan again after 72 hours. Time remaining: ${siteScanCooldown.remainingLabel}.`
+              : latestSiteCrawl
+                ? `${crawlSource(latestSiteCrawl)} completed ${formatDateTime(latestSiteCrawl.completedAt ?? latestSiteCrawl.createdAt)} with ${formatNumber(latestSiteCrawl.pagesCrawled)} page(s) crawled. You can run a new scan now.`
+              : activeWebsite
+                ? "Run a crawl to create site health, SEO issue, page, internal link, and readiness data for this project."
+                : "Connect a website before analyzing site health.")}
         </div>
       )}
       {hasActiveProject && kind === "opportunities" && opportunityMessage && (
@@ -1185,20 +1247,14 @@ function StrategyScreen({ data, busy, onAction }: { data: ModuleData; busy: "gen
   const strategyApproved = latestStrategy?.status === "approved";
   const selectedOpportunity = project?.opportunities?.find((opportunity) => opportunity.status === "selected") ?? project?.opportunities?.[0];
   const score = selectedOpportunity?.opportunityScore ?? strategyScore(data);
-  const scoreRows = [
-    ["Business Fit", 92],
-    ["SEO Potential", 89],
-    ["Revenue Potential", 90],
-    ["Ease of Execution", 76],
-    ["Conversion Readiness", 86],
-  ] as const;
+  const scoreRows = opportunityInsightScoreRows(selectedOpportunity);
   const audience = latestStrategy?.audienceProfile || project?.businessProfile?.targetAudience || "Not provided";
   const audienceSegments = splitAudience(audience);
   const audienceSummary = audienceSegments.length
     ? `${audienceSegments.length} target segments`
     : audience;
   const offer = latestStrategy?.offerRecommendation || project?.businessProfile?.offerSummary || "Offer recommendation pending.";
-  const websiteType = label(project?.projectType);
+  const websiteType = projectTypeLabel(project);
   const businessModel = latestStrategy?.businessModel || project?.businessProfile?.businessModel || "Not provided";
   const roadmap = data.intelligence?.roadmap?.length ? data.intelligence.roadmap : strategyRoadmap(data, strategyApproved);
   const actionLabels = {
@@ -1249,20 +1305,29 @@ function StrategyScreen({ data, busy, onAction }: { data: ModuleData; busy: "gen
 
   return (
     <>
-      <Card className="grid gap-0 overflow-hidden md:grid-cols-3 xl:grid-cols-6">
-        <StrategyStripItem icon="☆" label="Selected Opportunity" value={selectedOpportunity?.name ?? project.niche ?? "Not selected"} />
-        <StrategyStripItem icon="♙" label="Target Audience" value={audienceSummary} detail={audienceSegments.slice(0, 2).join(" · ")} />
-        <StrategyStripItem icon="◎" label="Primary Goal" value={project.primaryGoal ?? "Not provided"} />
-        <StrategyStripItem icon="▣" label="Business Model" value={businessModel} />
-        <StrategyStripItem icon="▤" label="Website Type" value={websiteType} />
-        <div className="border-t border-slate-100 p-4 md:border-l md:border-t-0">
-          <div className="flex items-center justify-between gap-3">
-            <div>
-              <div className="text-xs font-semibold text-charcoal-500">Confidence Score</div>
-              <div className="mt-1 text-lg font-bold text-charcoal-950">{score} <span className="text-sm font-semibold text-charcoal-400">/ 100</span></div>
+      <Card className="overflow-hidden">
+        <div className="border-b border-slate-100 bg-gradient-to-r from-brand-50 via-white to-emerald-50 p-5">
+          <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_220px] xl:items-start">
+            <div className="min-w-0">
+              <div className="flex items-center gap-2">
+                <IconBadge icon="☆" />
+                <div className="text-xs font-bold uppercase tracking-wide text-brand-700">Selected Opportunity</div>
+              </div>
+              <h2 className="mt-3 max-w-4xl text-xl font-bold leading-7 text-charcoal-950">
+                {selectedOpportunity?.name ?? project.niche ?? "Not selected"}
+              </h2>
+              <p className="mt-2 max-w-4xl text-sm leading-6 text-charcoal-600">
+                {selectedOpportunity?.summary || latestStrategy?.strategySummary || "Choose an opportunity to guide the strategy."}
+              </p>
             </div>
-            <div className="grid h-14 w-14 place-items-center rounded-full border-[7px] border-emerald-500 text-sm font-bold text-charcoal-950">{score}</div>
+            <StrategyConfidenceBlock score={score} />
           </div>
+        </div>
+        <div className="grid gap-0 sm:grid-cols-2 xl:grid-cols-4">
+          <StrategySummaryFact icon="♙" label="Target Audience" value={audienceSummary} detail={audienceSegments.slice(0, 2).join(" · ")} />
+          <StrategySummaryFact icon="◎" label="Primary Goal" value={project.primaryGoal ?? "Not provided"} />
+          <StrategySummaryFact icon="▣" label="Business Model" value={businessModel} />
+          <StrategySummaryFact icon="▤" label="Website Type" value={websiteType} />
         </div>
       </Card>
 
@@ -1302,10 +1367,12 @@ function StrategyScreen({ data, busy, onAction }: { data: ModuleData; busy: "gen
                     <div className="mt-4 rounded-full bg-emerald-100 px-3 py-1 text-xs font-bold text-emerald-700">{strategyApproved ? "Approved" : "Draft"}</div>
                   </div>
                   <div className="space-y-3">
-                    {scoreRows.map(([labelText, value]) => (
-                      <div key={labelText}>
-                        <div className="mb-1 flex justify-between text-sm font-semibold text-charcoal-700"><span>{labelText}</span><span>{value}/100</span></div>
-                        <div className="h-3 rounded-full bg-slate-100"><div className={`h-3 rounded-full ${value < 80 ? "bg-amber-500" : "bg-emerald-600"}`} style={{ width: `${value}%` }} /></div>
+                    {scoreRows.map((row) => (
+                      <div key={row.label}>
+                        <div className="mb-1 flex justify-between text-sm font-semibold text-charcoal-700"><span>{row.label}</span><span>{row.value}/100</span></div>
+                        <div className="h-3 rounded-full bg-slate-100">
+                          <div className={`h-3 rounded-full ${row.tone === "amber" ? "bg-amber-500" : row.value < 80 ? "bg-amber-500" : "bg-emerald-600"}`} style={{ width: `${row.value}%` }} />
+                        </div>
                       </div>
                     ))}
                   </div>
@@ -1315,10 +1382,12 @@ function StrategyScreen({ data, busy, onAction }: { data: ModuleData; busy: "gen
                     ? "This strategy is approved. You can create or refresh the execution plan from this approved version."
                     : "This strategy is still a draft. Approve it first, then create the execution plan. Regenerating creates a new draft that also needs approval."}
                 </div>
-                <div className="mt-5 grid gap-3 sm:grid-cols-3">
-                  <button type="button" onClick={() => { void runInlineAction("approve"); }} disabled={Boolean(busy)} className="rounded-lg bg-brand-600 px-4 py-2.5 text-sm font-bold text-white disabled:cursor-not-allowed disabled:bg-slate-300 disabled:text-slate-600">
-                    {busy === "approve" ? "Approving..." : strategyApproved ? "Strategy Approved" : "Approve Strategy"}
-                  </button>
+                <div className={`mt-5 grid gap-3 ${strategyApproved ? "sm:grid-cols-2" : "sm:grid-cols-3"}`}>
+                  {!strategyApproved && (
+                    <button type="button" onClick={() => { void runInlineAction("approve"); }} disabled={Boolean(busy)} className="rounded-lg bg-brand-600 px-4 py-2.5 text-sm font-bold text-white disabled:cursor-not-allowed disabled:bg-slate-300 disabled:text-slate-600">
+                      {busy === "approve" ? "Approving..." : "Approve Strategy"}
+                    </button>
+                  )}
                   <button type="button" onClick={() => { void runInlineAction("generate"); }} disabled={Boolean(busy)} className="rounded-lg border border-brand-200 bg-white px-4 py-2.5 text-sm font-bold text-brand-700 disabled:cursor-not-allowed disabled:border-slate-200 disabled:text-slate-400">
                     {busy === "generate" ? "Regenerating..." : "Regenerate Section"}
                   </button>
@@ -1503,16 +1572,33 @@ function StrategyTabs({ activeTab, onChange }: { activeTab: StrategyTab; onChang
   );
 }
 
-function StrategyStripItem({ icon, label, value, detail }: { icon: string; label: string; value: ReactNode; detail?: string }) {
+function StrategySummaryFact({ icon, label, value, detail }: { icon: string; label: string; value: ReactNode; detail?: string }) {
   return (
-    <div className="min-w-0 border-t border-slate-100 p-4 first:border-l-0 md:border-l md:border-t-0">
-      <div className="flex items-start gap-3">
+    <div className="min-w-0 border-t border-slate-100 p-4 sm:border-l sm:first:border-l-0">
+      <div className="flex items-center gap-2">
         <IconBadge icon={icon} />
+        <div className="text-xs font-bold uppercase tracking-wide text-charcoal-500">{label}</div>
+      </div>
+      <div className="mt-3 break-words text-sm font-bold leading-5 text-charcoal-950">{value}</div>
+      {detail && <div className="mt-1 break-words text-xs leading-5 text-charcoal-500">{detail}</div>}
+    </div>
+  );
+}
+
+function StrategyConfidenceBlock({ score }: { score: number }) {
+  return (
+    <div className="rounded-lg border border-white/80 bg-white/85 p-4 shadow-sm">
+      <div className="flex items-center justify-between gap-3">
         <div className="min-w-0">
-          <div className="text-xs font-semibold text-charcoal-500">{label}</div>
-          <div className="mt-1 truncate text-sm font-bold leading-5 text-charcoal-950">{value}</div>
-          {detail && <div className="mt-1 line-clamp-2 text-xs leading-5 text-charcoal-500">{detail}</div>}
+          <div className="text-xs font-bold uppercase tracking-wide text-charcoal-500">Confidence Score</div>
+          <div className="mt-1 text-2xl font-bold text-charcoal-950">
+            {score} <span className="text-sm font-semibold text-charcoal-400">/ 100</span>
+          </div>
         </div>
+        <div className="grid h-14 w-14 shrink-0 place-items-center rounded-full border-[6px] border-emerald-500 text-sm font-bold text-charcoal-950">{score}</div>
+      </div>
+      <div className="mt-3 h-2 overflow-hidden rounded-full bg-slate-100">
+        <div className="h-full rounded-full bg-emerald-500" style={{ width: `${Math.min(100, Math.max(0, score))}%` }} />
       </div>
     </div>
   );
@@ -1645,7 +1731,7 @@ function Recommendation({ icon, title, text }: { icon: string; title: string; te
 
 function OpportunitySummaryStrip({ project, niche }: { project: GuidedProject; niche: string }) {
   const items = [
-    { label: "Type", value: label(project.projectType) },
+    { label: "Type", value: projectTypeLabel(project) },
     { label: "Niche", value: niche },
     { label: "Audience", value: project.businessProfile?.targetAudience || "Not provided" },
     { label: "Goal", value: project.primaryGoal || "Not provided" },
@@ -2964,6 +3050,24 @@ function opportunityReasons(opportunity: Opportunity) {
   ].filter((item): item is string => Boolean(item));
 }
 
+function opportunityInsightScoreRows(opportunity: Opportunity | undefined) {
+  const score = safeScore(opportunity?.opportunityScore, 72);
+  const demand = Math.round(avg([opportunity?.seoScore, opportunity?.userFitScore, opportunity?.opportunityScore]) ?? score);
+  const seoPotential = safeScore(opportunity?.seoScore, score);
+  const revenue = safeScore(opportunity?.monetizationScore, score);
+  const executionSpeed = safeScore(opportunity?.executionScore, score);
+  const complexity = Math.max(0, 100 - executionSpeed);
+  const confidence = Math.round(avg([opportunity?.seoScore, opportunity?.monetizationScore, opportunity?.userFitScore, opportunity?.executionScore]) ?? score);
+
+  return [
+    { label: "Profile Demand Fit", value: demand, tone: "emerald" },
+    { label: "SEO Potential", value: seoPotential, tone: "emerald" },
+    { label: "Revenue Potential", value: revenue, tone: "emerald" },
+    { label: "Execution Complexity", value: complexity, tone: "amber" },
+    { label: "Confidence", value: confidence, tone: "emerald" },
+  ] as const;
+}
+
 function OpportunityExecutionPreview({ projectId }: { projectId: string }) {
   const steps = [
     ["Run Keyword Analysis", "Research buyer-intent keywords, topical clusters, competitor gaps, difficulty, and opportunity score.", `/keywords?projectId=${projectId}`],
@@ -2997,10 +3101,7 @@ function OpportunityExecutionPreview({ projectId }: { projectId: string }) {
 
 function OpportunityInsights({ opportunity, opportunityCount, taskCount, onReport }: { opportunity: Opportunity | undefined; opportunityCount: number; taskCount: number; onReport: () => void }) {
   const score = safeScore(opportunity?.opportunityScore, 72);
-  const demand = safeScore(opportunity?.seoScore, score);
-  const revenue = safeScore(opportunity?.monetizationScore, score);
-  const complexity = Math.max(0, 100 - safeScore(opportunity?.executionScore, score));
-  const confidence = Math.round(avg([opportunity?.seoScore, opportunity?.monetizationScore, opportunity?.userFitScore, opportunity?.executionScore]) ?? score);
+  const scoreRows = opportunityInsightScoreRows(opportunity);
   const factors = [
     opportunity?.targetAudience ? `Audience: ${opportunity.targetAudience}` : null,
     opportunity?.problemSolved ? `Problem: ${opportunity.problemSolved}` : null,
@@ -3011,13 +3112,17 @@ function OpportunityInsights({ opportunity, opportunityCount, taskCount, onRepor
   return (
     <div className="space-y-4">
       <Card className="p-5">
-        <h2 className="font-bold text-charcoal-950">Opportunity Insights</h2>
+        <div>
+          <h2 className="font-bold text-charcoal-950">Opportunity Insights</h2>
+          <p className="mt-1 text-xs leading-5 text-charcoal-500">Planning estimates from project profile, niche, location, timeline, outputs, and website readiness. Keyword/crawl data will refine these later.</p>
+        </div>
         <div className="mt-4 space-y-3">
-          <OpportunityScoreBar label="Demand" value={demand} />
-          <OpportunityScoreBar label="SEO Potential" value={demand} />
-          <OpportunityScoreBar label="Revenue Potential" value={revenue} />
-          <OpportunityScoreBar label="Execution Complexity" value={complexity} tone="amber" />
-          <OpportunityScoreBar label="Confidence" value={confidence} />
+          {scoreRows.map((row) => (
+            <OpportunityScoreBar key={row.label} label={row.label} value={row.value} tone={row.tone} />
+          ))}
+        </div>
+        <div className="mt-4 rounded-lg bg-slate-50 p-3 text-xs leading-5 text-charcoal-600">
+          Complexity is inverted from speed to launch. Lower complexity means easier to execute.
         </div>
         <div className="my-5 flex justify-center">
           <div className="grid h-32 w-32 place-items-center rounded-full border-[10px] border-emerald-600 text-center">
@@ -3274,6 +3379,14 @@ function TreePanel({ data }: { data: ModuleData }) {
 function label(value: string | null | undefined) {
   if (!value) return "Not provided";
   return value.replace(/_/g, " ").replace(/\b\w/g, (char) => char.toUpperCase());
+}
+
+function projectTypeLabel(project: GuidedProject | null | undefined) {
+  if (!project) return "Not provided";
+  const hasWebsite = Boolean(project.websiteId || project.websiteUrl || project.website);
+  if (project.projectType === "existing_website" && !hasWebsite) return "Pre-website project";
+  if (project.projectType === "new_business") return hasWebsite ? "New website launch" : "Pre-website project";
+  return label(project.projectType);
 }
 
 function formatNumber(value: number | null | undefined) {

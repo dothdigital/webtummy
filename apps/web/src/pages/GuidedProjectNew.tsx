@@ -4,46 +4,27 @@ import { api } from "../api.js";
 import { Button, Card, Input } from "../components/ui.js";
 import type { GuidedProject } from "../types.js";
 
-const projectTypes = [
-  {
-    value: "existing_website",
-    label: "SEO Campaign",
-    icon: "↗",
-    description: "Improve rankings, fix SEO issues, grow organic traffic, and create a prioritized SEO execution plan.",
-    purpose: "General organic search growth for a website, product, service, business, or niche.",
-    help: "Best when you want better rankings and more organic traffic outside of a strictly local/map-pack focus.",
-    focus: ["Keyword research", "Site analysis", "Technical SEO", "Content gaps", "Backlinks", "AI citations"],
-  },
-  {
-    value: "local_seo",
-    label: "Local SEO",
-    icon: "⌖",
-    description: "Improve visibility in local search, Google Maps, city keywords, reviews, citations, and service-area rankings.",
-    purpose: "Rank a local business in specific cities, regions, service areas, and map results.",
-    help: "Best for plumbers, dentists, roofers, restaurants, lawyers, clinics, contractors, local stores, and service-area businesses.",
-    focus: ["City keywords", "Google Business Profile", "Local pages", "Reviews", "Citations", "Map rankings"],
-  },
-  {
-    value: "agency_client",
-    label: "Content Marketing",
-    icon: "▣",
-    description: "Create content strategy, reports, proposals, publishing plans, and reusable client deliverables.",
-    purpose: "Plan and manage content-led growth for a client, team, or campaign.",
-    help: "Best when the main deliverable is content planning, reporting, proposals, or ongoing publishing support.",
-    focus: ["Content briefs", "Reports", "Publishing", "Proposals", "Client strategy"],
-  },
-  {
-    value: "ecommerce",
-    label: "Other / Custom",
-    icon: "◌",
-    description: "Plan a store, catalog, custom website, launch package, or specialized growth project.",
-    purpose: "Use this when the project does not fit a standard SEO or Local SEO campaign.",
-    help: "Best for ecommerce, custom sites, product catalogs, special workflows, or mixed deliverables.",
-    focus: ["Custom plan", "Store pages", "Product SEO", "Launch tasks", "Publishing"],
-  },
-];
+const clientProjectTypes = [
+  { value: "local_business", label: "Local Business", description: "City or service-area business that needs local rankings, maps visibility, reviews, and local pages.", projectType: "local_seo" },
+  { value: "service_business", label: "Service Business", description: "Lead generation campaign for a service provider, contractor, consultant, or B2B company.", projectType: "existing_website" },
+  { value: "professional_service", label: "Professional Service", description: "Law, medical, finance, consulting, agency, or expert-led service business.", projectType: "existing_website" },
+  { value: "saas_software", label: "SaaS / Software", description: "Software, platform, app, or technology product with SEO and conversion goals.", projectType: "existing_website" },
+  { value: "ecommerce", label: "Ecommerce", description: "Online store, product catalog, category pages, buyer keywords, and sales-focused growth.", projectType: "ecommerce" },
+  { value: "content_affiliate", label: "Content / Affiliate Site", description: "Publisher, niche site, affiliate content, topical authority, and monetized content growth.", projectType: "existing_website" },
+  { value: "personal_brand", label: "Personal Brand", description: "Founder, creator, consultant, expert, or public profile growth project.", projectType: "existing_website" },
+  { value: "other", label: "Other", description: "Custom client or project type that does not fit the standard categories.", projectType: "existing_website" },
+] as const;
 
-const primaryGoals = ["More leads", "More sales", "Better rankings", "New website", "Client proposal", "Ecommerce launch"];
+const primaryGoals = [
+  "Create Client Audit / Proposal",
+  "Improve SEO Rankings",
+  "Generate More Leads",
+  "Increase Sales / Conversions",
+  "Improve Existing Website",
+  "Build / Launch New Website",
+  "Improve Local SEO / Map Visibility",
+  "Build Content / Authority",
+];
 
 export default function GuidedProjectNew() {
   const navigate = useNavigate();
@@ -51,7 +32,7 @@ export default function GuidedProjectNew() {
   const [message, setMessage] = useState<string | null>(null);
   const [form, setForm] = useState({
     name: "",
-    projectType: "existing_website",
+    clientProjectType: "service_business",
     websiteUrl: "",
     businessName: "",
     niche: "",
@@ -66,11 +47,12 @@ export default function GuidedProjectNew() {
 
   const createProject = async (event: React.FormEvent) => {
     event.preventDefault();
-    if (!form.name.trim() || !form.businessName.trim() || !form.niche.trim() || !form.targetLocation.trim() || !form.primaryGoal) return;
+    if (!form.name.trim() || !form.businessName.trim() || !form.niche.trim() || !form.targetLocation.trim() || !form.primaryGoal || !form.clientProjectType) return;
     setBusy(true);
     setMessage(null);
     try {
-      const result = await api.post<{ project: GuidedProject }>("/api/projects-v2", form);
+      const selectedClientType = clientProjectTypes.find((type) => type.value === form.clientProjectType) ?? clientProjectTypes[1];
+      const result = await api.post<{ project: GuidedProject }>("/api/projects-v2", { ...form, projectType: selectedClientType.projectType });
       navigate(`/guided-projects/${result.project.id}/intake`);
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "Could not create project");
@@ -79,7 +61,7 @@ export default function GuidedProjectNew() {
     }
   };
 
-  const canSubmit = Boolean(form.name.trim() && form.businessName.trim() && form.niche.trim() && form.targetLocation.trim() && form.primaryGoal);
+  const canSubmit = Boolean(form.name.trim() && form.businessName.trim() && form.niche.trim() && form.targetLocation.trim() && form.primaryGoal && form.clientProjectType);
 
   return (
     <form onSubmit={createProject} className="space-y-5">
@@ -103,13 +85,13 @@ export default function GuidedProjectNew() {
               </div>
               <label className="block">
                 <span className="mb-1 block text-sm font-bold text-slate-800">Industry / Niche *</span>
-                <input value={form.niche} onChange={(event) => patch({ niche: event.target.value })} placeholder="Select your industry or niche" className="h-11 w-full rounded-lg border border-slate-200 px-3 text-sm outline-none focus:border-brand-400 focus:ring-2 focus:ring-brand-100" />
-                <span className="mt-1 block text-xs text-slate-500">Choose the industry that best describes your business.</span>
+                <input value={form.niche} onChange={(event) => patch({ niche: event.target.value })} placeholder="e.g., Roofing, Med spa, SaaS CRM, Fitness coaching" className="h-11 w-full rounded-lg border border-slate-200 px-3 text-sm outline-none focus:border-brand-400 focus:ring-2 focus:ring-brand-100" />
+                <span className="mt-1 block text-xs text-slate-500">Enter the client niche in your own words.</span>
               </label>
               <label className="block">
                 <span className="mb-1 block text-sm font-bold text-slate-800">Location *</span>
-                <input value={form.targetLocation} onChange={(event) => patch({ targetLocation: event.target.value })} placeholder="Select location" className="h-11 w-full rounded-lg border border-slate-200 px-3 text-sm outline-none focus:border-brand-400 focus:ring-2 focus:ring-brand-100" />
-                <span className="mt-1 block text-xs text-slate-500">Target location for SEO and content strategy.</span>
+                <input value={form.targetLocation} onChange={(event) => patch({ targetLocation: event.target.value })} placeholder="e.g., Toronto, Ontario or United States" className="h-11 w-full rounded-lg border border-slate-200 px-3 text-sm outline-none focus:border-brand-400 focus:ring-2 focus:ring-brand-100" />
+                <span className="mt-1 block text-xs text-slate-500">Type the city, region, country, or service area.</span>
               </label>
               <label className="block md:col-span-2">
                 <span className="mb-1 block text-sm font-bold text-slate-800">Primary Goal *</span>
@@ -117,39 +99,25 @@ export default function GuidedProjectNew() {
                   <option value="">Select your primary goal</option>
                   {primaryGoals.map((goal) => <option key={goal} value={goal}>{goal}</option>)}
                 </select>
-                <span className="mt-1 block text-xs text-slate-500">What’s the main outcome you want to achieve?</span>
+                <span className="mt-1 block text-xs text-slate-500">Primary Goal is what the agency wants to accomplish for the client.</span>
               </label>
             </div>
           </Card>
 
           <Card className="p-5">
-            <h2 className="text-lg font-bold text-slate-950">Project Type</h2>
-            <p className="mt-1 text-sm text-slate-500">Choose the type of project you want to create.</p>
-            <div className="mt-5 grid gap-4 lg:grid-cols-2">
-              {projectTypes.map((type) => {
-                const selected = form.projectType === type.value;
+            <h2 className="text-lg font-bold text-slate-950">Client / Project Type</h2>
+            <p className="mt-1 text-sm text-slate-500">Choose what kind of client or business this project is for. This is separate from the primary goal.</p>
+            <div className="mt-5 grid gap-3 md:grid-cols-2">
+              {clientProjectTypes.map((type) => {
+                const selected = form.clientProjectType === type.value;
                 return (
-                  <button key={type.value} type="button" onClick={() => patch({ projectType: type.value })} className={`min-h-[220px] rounded-lg border p-4 text-left transition ${selected ? "border-brand-600 bg-brand-50 ring-2 ring-brand-100" : "border-slate-200 bg-white hover:border-brand-200 hover:bg-brand-50/40"}`}>
-                    <span className="flex items-start gap-3">
-                      <span className={`grid h-11 w-11 shrink-0 place-items-center rounded-lg text-xl font-bold ${selected ? "bg-brand-600 text-white" : "bg-slate-100 text-brand-700"}`}>{type.icon}</span>
-                      <span className="min-w-0">
-                        <span className="flex items-center gap-2">
-                          <span className="block font-bold text-slate-950">{type.label}</span>
-                          <span className={`grid h-5 w-5 place-items-center rounded-full border text-xs ${selected ? "border-brand-600 bg-brand-600 text-white" : "border-slate-300 text-transparent"}`}>✓</span>
-                        </span>
+                  <button key={type.value} type="button" onClick={() => patch({ clientProjectType: type.value })} className={`rounded-lg border p-4 text-left transition ${selected ? "border-brand-600 bg-brand-50 ring-2 ring-brand-100" : "border-slate-200 bg-white hover:border-brand-200 hover:bg-brand-50/40"}`}>
+                    <span className="flex items-start justify-between gap-3">
+                      <span>
+                        <span className="block font-bold text-slate-950">{type.label}</span>
                         <span className="mt-1 block text-sm leading-6 text-slate-600">{type.description}</span>
                       </span>
-                    </span>
-                    <span className="mt-4 block rounded-lg border border-slate-200 bg-white/80 p-3">
-                      <span className="block text-xs font-bold uppercase tracking-wide text-slate-500">Purpose</span>
-                      <span className="mt-1 block text-xs leading-5 text-slate-600">{type.purpose}</span>
-                    </span>
-                    <span className="mt-3 block rounded-lg bg-slate-50 p-3">
-                      <span className="block text-xs font-bold uppercase tracking-wide text-slate-500">Help</span>
-                      <span className="mt-1 block text-xs leading-5 text-slate-600">{type.help}</span>
-                    </span>
-                    <span className="mt-3 flex flex-wrap gap-1.5">
-                      {type.focus.map((item) => <span key={item} className="rounded-full bg-white px-2.5 py-1 text-[11px] font-semibold text-slate-600 shadow-sm">{item}</span>)}
+                      <span className={`grid h-5 w-5 shrink-0 place-items-center rounded-full border text-xs ${selected ? "border-brand-600 bg-brand-600 text-white" : "border-slate-300 text-transparent"}`}>✓</span>
                     </span>
                   </button>
                 );

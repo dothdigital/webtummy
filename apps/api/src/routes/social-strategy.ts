@@ -2,7 +2,8 @@ import { Router } from "express";
 import type { Request } from "express";
 import { z } from "zod";
 import { prisma } from "@webtummy/db";
-import { requireAuth, tenantScope } from "../middleware.js";
+import { requireAuth } from "../middleware.js";
+import { projectClientIdForRequest } from "../project-scope.js";
 
 export const socialStrategyRouter = Router();
 socialStrategyRouter.use(requireAuth);
@@ -58,9 +59,9 @@ type CompetitorInput = z.infer<typeof competitorSchema>;
 type GenerateInput = z.infer<typeof generateSchema>;
 
 async function getScopedWebsite(req: Request, websiteId: string) {
-  const scope = tenantScope(req);
+  const clientId = await projectClientIdForRequest(req);
   return prisma.website.findFirst({
-    where: { id: websiteId, ...(scope.clientId ? { clientId: scope.clientId } : {}) },
+    where: { id: websiteId, ...(clientId ? { clientId } : {}) },
     select: { id: true, domain: true, rootUrl: true, targetCities: true },
   });
 }

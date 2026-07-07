@@ -132,6 +132,7 @@ export function campaignSignals(project: CampaignProjectContext) {
   const isNewBusiness = project.projectType === "new_business";
   const isContentMarketing = project.projectType === "agency_client";
   const isEcommerceOrCustom = project.projectType === "ecommerce";
+  const hasLocalIntent = isLocalSeo || isNewBusiness || /local|near me|city|service area|map|gbp|google business|reviews?|appointments?|booking|leads?/.test(contextText);
   const hasLeadIntent = /(lead|quote|consult|booking|appointment|call|demo|form|capture|conversion|signup|subscriber|download)/.test(contextText);
 
   return {
@@ -147,6 +148,7 @@ export function campaignSignals(project: CampaignProjectContext) {
     hasLeadIntent,
     shouldRecommendDomain: !hasWebsite || isNewBusiness || hasOutput(/domain/),
     shouldCreateSiteArchitecture: !hasWebsite || isNewBusiness || isLocalSeo || isEcommerceOrCustom || hasOutput(/website|landing|page|site/),
+    shouldCreateLocalSeo: hasLocalIntent,
     shouldCreateLeadMagnet: hasLeadIntent || isLocalSeo || hasOutput(/lead magnet|checklist|guide|report|proposal/),
     shouldCreatePublishing: !hasWebsite || isNewBusiness || isLocalSeo || isEcommerceOrCustom || hasOutput(/website|landing|social|content|report|proposal/),
     shouldCreateSocial: hasOutput(/social/) || isContentMarketing || isNewBusiness || /social|linkedin|facebook|instagram|youtube|reddit|community/.test(contextText),
@@ -162,6 +164,7 @@ export function buildCampaignExecutionTasks(project: CampaignProjectContext): Ca
     isLocalSeo,
     shouldRecommendDomain,
     shouldCreateSiteArchitecture,
+    shouldCreateLocalSeo,
     shouldCreateLeadMagnet,
     shouldCreatePublishing,
     shouldCreateSocial,
@@ -222,11 +225,13 @@ export function buildCampaignExecutionTasks(project: CampaignProjectContext): Ca
       automationLevel: "generate",
       requiresApproval: true,
     } as const] : []),
-    ...(isLocalSeo ? [{
+    ...(shouldCreateLocalSeo ? [{
       key: "local-citations-reviews",
       moduleName: "local_seo",
-      title: "Build local citations and review signals",
-      description: "Create local citation, directory, NAP consistency, Google Business Profile, review, and local trust-signal tasks.",
+      title: isLocalSeo ? "Build local citations and review signals" : "Prepare local SEO and Google Business Profile",
+      description: isLocalSeo
+        ? "Create local citation, directory, NAP consistency, Google Business Profile, review, and local trust-signal tasks."
+        : "Prepare Google Business Profile, service-area, category, review, citation, and local trust-signal tasks even before the website exists.",
       actionButtonLabel: "Open Local SEO",
       relatedUrl: "/local-seo",
       priority: "high",

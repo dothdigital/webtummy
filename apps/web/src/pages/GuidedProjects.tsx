@@ -17,6 +17,13 @@ function projectProgress(project: GuidedProject) {
   return 45;
 }
 
+function projectTypeLabel(project: GuidedProject) {
+  const hasWebsite = Boolean(project.websiteId || project.websiteUrl || project.website);
+  if (project.projectType === "existing_website" && !hasWebsite) return "Pre-website project";
+  if (project.projectType === "new_business") return hasWebsite ? "New website launch" : "Pre-website project";
+  return project.projectType.replace("_", " ");
+}
+
 function StatCard({ label, value, helper, tone = "brand" }: { label: string; value: string | number; helper: string; tone?: "brand" | "green" | "violet" }) {
   const toneClass = tone === "green" ? "bg-green-50 text-green-700" : tone === "violet" ? "bg-violet-50 text-violet-700" : "bg-brand-50 text-brand-700";
   return (
@@ -123,7 +130,7 @@ export default function GuidedProjects() {
                             </div>
                           </div>
                         </td>
-                        <td className="px-3 py-4"><span className="rounded-md bg-brand-50 px-2 py-1 text-xs font-bold capitalize text-brand-700">{project.projectType.replace("_", " ")}</span></td>
+                        <td className="px-3 py-4"><span className="rounded-md bg-brand-50 px-2 py-1 text-xs font-bold capitalize text-brand-700">{projectTypeLabel(project)}</span></td>
                         <td className="px-3 py-4"><StatusPill status={project.currentStep} /></td>
                         <td className="px-3 py-4">
                           <div className="font-bold text-slate-900">{progress}%</div>
