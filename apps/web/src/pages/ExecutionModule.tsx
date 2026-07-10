@@ -3895,7 +3895,7 @@ function architectureSeoFocus(project: GuidedProject | undefined, data: ModuleDa
 function architectureSeoInputs(project: GuidedProject | undefined, data: ModuleData) {
   const inputs = [
     project?.niche ? `Niche: ${project.niche}` : "Niche pending",
-    project?.targetLocation ? `Location: ${project.targetLocation}` : "Location pending",
+    Array.isArray(project?.targetLocations) && project.targetLocations.length ? `Target markets: ${project.targetLocations.join(", ")}` : project?.targetLocation ? `Target markets: ${project.targetLocation}` : "Target markets pending",
     data.keywordRuns.length ? `${formatNumber(data.keywordRuns.length)} keyword run(s)` : "Keyword research needed",
     data.keywordRuns[0]?.intent ? `Primary intent: ${label(data.keywordRuns[0].intent)}` : "Intent mapping pending",
   ];

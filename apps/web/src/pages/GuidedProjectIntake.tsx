@@ -19,7 +19,7 @@ type IntakeQuestion = {
 type IntakeMode = "quick" | "advanced" | "agency";
 
 const wizardSteps = ["Project Info", "Goals & Audience", "Content Focus", "Integrations", "Review & Launch"];
-const projectInfoKeys = new Set(["project_name", "business_name", "website_url", "industry_niche", "target_location"]);
+const projectInfoKeys = new Set(["project_name", "business_name", "website_url", "industry_niche", "business_location", "target_location"]);
 const goalKeys = new Set(["primary_goal", "target_launch_timeline", "target_audience", "preferred_output", "publishing_preference", "skill_level"]);
 const contextKeys = new Set(["products_services", "current_offer_cta", "budget_level", "time_available_weekly", "skill_level", "tone_preference"]);
 const commaSeparatedInputKeys = new Set(["industry_niche", "target_location", "current_target_keywords", "known_competitors"]);
@@ -29,6 +29,7 @@ const aiEligibleKeys = new Set([
   "target_audience",
   "industry_niche",
   "target_location",
+  "business_location",
   "products_services",
   "current_offer_cta",
   "tone_preference",
@@ -172,7 +173,7 @@ function nicheCategorySuggestions(niche: string, projectType: string) {
 }
 
 function locationContext(answers: Record<string, string>, project: GuidedProject) {
-  return normalizeList(answers.target_location || project.targetLocation || "")[0] || "";
+  return normalizeList(answers.target_location || (Array.isArray(project.targetLocations) ? project.targetLocations.join(", ") : project.targetLocation) || "")[0] || "";
 }
 
 function locationPhrase(location: string, allLocations: string[] = []) {
@@ -331,7 +332,7 @@ function audienceSuggestionsForNiche(niche: string, locations: string[], project
 function aiSuggestionOptions(question: IntakeQuestion, answers: Record<string, string>, project: GuidedProject) {
   const business = answers.business_name || project.businessName || project.name || "this business";
   const niches = normalizeList(answers.industry_niche || project.niche || "");
-  const locations = normalizeList(answers.target_location || project.targetLocation || "");
+  const locations = normalizeList(answers.target_location || (Array.isArray(project.targetLocations) ? project.targetLocations.join(", ") : project.targetLocation) || "");
   const niche = niches[0] || project.niche || "your niche";
   const goal = answers.primary_goal || project.primaryGoal || "growth";
   const kind = industryKind(niche);
@@ -457,7 +458,8 @@ export default function GuidedProjectIntake() {
         business_name: projectResult.project.businessName || projectResult.project.name || "",
         website_url: projectResult.project.website?.rootUrl || projectResult.project.websiteUrl || "",
         industry_niche: projectResult.project.niche || "",
-        target_location: projectResult.project.targetLocation || "",
+        business_location: projectResult.project.businessLocation || "",
+        target_location: Array.isArray(projectResult.project.targetLocations) ? projectResult.project.targetLocations.join(", ") : projectResult.project.targetLocation || "",
         primary_goal: projectResult.project.primaryGoal || "",
         target_launch_timeline: projectResult.project.targetLaunchTimeline || "",
         preferred_output: Array.isArray(projectResult.project.preferredOutputs) ? projectResult.project.preferredOutputs.filter((item): item is string => typeof item === "string").join(", ") : "",

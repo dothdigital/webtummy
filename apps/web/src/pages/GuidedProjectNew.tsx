@@ -26,6 +26,27 @@ const primaryGoals = [
   "Build Content / Authority",
 ];
 
+function TargetLocationsInput({ values, onChange, local }: { values: string[]; onChange: (values: string[]) => void; local: boolean }) {
+  const [draft, setDraft] = useState("");
+  const add = () => {
+    const additions = draft.split(/[,;\n]/g).map((value) => value.trim()).filter(Boolean);
+    if (additions.length) onChange([...new Set([...values, ...additions])]);
+    setDraft("");
+  };
+  return (
+    <label className="block md:col-span-2">
+      <span className="mb-1 block text-sm font-bold text-slate-800">{local ? "Target Service Areas *" : "Target Market / Locations *"}</span>
+      <div className="rounded-lg border border-slate-200 bg-white p-2 focus-within:border-brand-400 focus-within:ring-2 focus-within:ring-brand-100">
+        <div className="flex flex-wrap gap-2">
+          {values.map((value) => <button key={value} type="button" onClick={() => onChange(values.filter((item) => item !== value))} className="rounded-full bg-brand-50 px-3 py-1 text-xs font-bold text-brand-800" title={`Remove ${value}`}>{value} ×</button>)}
+          <input value={draft} onChange={(event) => setDraft(event.target.value)} onBlur={add} onKeyDown={(event) => { if (event.key === "Enter" || event.key === ",") { event.preventDefault(); add(); } }} placeholder={values.length ? "Add another location" : "Canada, United States, Toronto…"} className="h-8 min-w-56 flex-1 border-0 px-1 text-sm outline-none" />
+        </div>
+      </div>
+      <span className="mt-1 block text-xs text-slate-500">Press Enter or comma after each country, region, city, or service area. These markets drive research and campaign planning.</span>
+    </label>
+  );
+}
+
 export default function GuidedProjectNew() {
   const navigate = useNavigate();
   const [busy, setBusy] = useState(false);
@@ -36,7 +57,8 @@ export default function GuidedProjectNew() {
     websiteUrl: "",
     businessName: "",
     niche: "",
-    targetLocation: "",
+    businessLocation: "",
+    targetLocations: [] as string[],
     primaryGoal: "",
     targetLaunchTimeline: "14 days",
     preferredOutputs: ["SEO plan"],
@@ -47,7 +69,7 @@ export default function GuidedProjectNew() {
 
   const createProject = async (event: React.FormEvent) => {
     event.preventDefault();
-    if (!form.name.trim() || !form.businessName.trim() || !form.niche.trim() || !form.targetLocation.trim() || !form.primaryGoal || !form.clientProjectType) return;
+    if (!form.name.trim() || !form.businessName.trim() || !form.niche.trim() || !form.businessLocation.trim() || !form.targetLocations.length || !form.primaryGoal || !form.clientProjectType) return;
     setBusy(true);
     setMessage(null);
     try {
@@ -61,7 +83,7 @@ export default function GuidedProjectNew() {
     }
   };
 
-  const canSubmit = Boolean(form.name.trim() && form.businessName.trim() && form.niche.trim() && form.targetLocation.trim() && form.primaryGoal && form.clientProjectType);
+  const canSubmit = Boolean(form.name.trim() && form.businessName.trim() && form.niche.trim() && form.businessLocation.trim() && form.targetLocations.length && form.primaryGoal && form.clientProjectType);
 
   return (
     <form onSubmit={createProject} className="space-y-5">
@@ -88,11 +110,8 @@ export default function GuidedProjectNew() {
                 <input value={form.niche} onChange={(event) => patch({ niche: event.target.value })} placeholder="e.g., Roofing, Med spa, SaaS CRM, Fitness coaching" className="h-11 w-full rounded-lg border border-slate-200 px-3 text-sm outline-none focus:border-brand-400 focus:ring-2 focus:ring-brand-100" />
                 <span className="mt-1 block text-xs text-slate-500">Enter the client niche in your own words.</span>
               </label>
-              <label className="block">
-                <span className="mb-1 block text-sm font-bold text-slate-800">Location *</span>
-                <input value={form.targetLocation} onChange={(event) => patch({ targetLocation: event.target.value })} placeholder="e.g., Toronto, Ontario or United States" className="h-11 w-full rounded-lg border border-slate-200 px-3 text-sm outline-none focus:border-brand-400 focus:ring-2 focus:ring-brand-100" />
-                <span className="mt-1 block text-xs text-slate-500">Type the city, region, country, or service area.</span>
-              </label>
+              <Input label="Business Location *" value={form.businessLocation} onChange={(businessLocation) => patch({ businessLocation })} placeholder="e.g., Toronto, Ontario, Canada" />
+              <TargetLocationsInput values={form.targetLocations} onChange={(targetLocations) => patch({ targetLocations })} local={form.clientProjectType === "local_business"} />
               <label className="block md:col-span-2">
                 <span className="mb-1 block text-sm font-bold text-slate-800">Primary Goal *</span>
                 <select value={form.primaryGoal} onChange={(event) => patch({ primaryGoal: event.target.value })} className="h-11 w-full rounded-lg border border-slate-200 bg-white px-3 text-sm outline-none focus:border-brand-400 focus:ring-2 focus:ring-brand-100">

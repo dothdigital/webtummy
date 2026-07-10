@@ -83,7 +83,7 @@ function intakeAnswer(project: GuidedProject, key: string) {
 function localFormFromOverview(result: LaunchOverview) {
   const project = result.project;
   const profile = result.localProfile;
-  const targetLocation = project.targetLocation || intakeAnswer(project, "target_location");
+  const targetLocation = (Array.isArray(project.targetLocations) ? project.targetLocations.join(", ") : "") || project.targetLocation || intakeAnswer(project, "target_location");
   const services = project.businessProfile?.offerSummary || intakeAnswer(project, "products_services") || project.primaryGoal || "";
   return {
     businessName: profile?.businessName || project.businessName || intakeAnswer(project, "business_name") || project.name || "",

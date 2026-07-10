@@ -49,6 +49,7 @@ function jsonList(value: unknown): string[] {
 }
 
 function projectContext(project: NonNullable<Awaited<ReturnType<typeof scopedProject>>>) {
+  const targetMarkets = jsonList(project.targetLocations);
   return {
     name: project.businessName ?? project.name,
     website: project.website?.rootUrl ?? project.websiteUrl ?? null,
@@ -56,6 +57,9 @@ function projectContext(project: NonNullable<Awaited<ReturnType<typeof scopedPro
     audience: project.businessProfile?.targetAudience ?? "the target audience",
     offer: project.businessProfile?.offerSummary ?? project.primaryGoal ?? "the main offer",
     goal: project.primaryGoal ?? "growth",
+    businessLocation: project.businessLocation,
+    targetMarkets,
+    market: targetMarkets.join(", ") || project.targetLocation || "the target market",
     outputs: jsonList(project.preferredOutputs),
     strategy: project.strategyPlans[0] ?? null,
     approvedStrategy: project.strategyPlans.find((strategy) => strategy.status === "approved") ?? null,

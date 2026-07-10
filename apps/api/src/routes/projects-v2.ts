@@ -16,6 +16,8 @@ const createProjectSchema = z.object({
   websiteUrl: z.string().max(512).optional().nullable(),
   businessName: z.string().max(180).optional().nullable(),
   niche: z.string().max(180).optional().nullable(),
+  businessLocation: z.string().max(255).optional().nullable(),
+  targetLocations: z.array(z.string().min(1).max(180)).max(50).default([]),
   targetLocation: z.string().max(180).optional().nullable(),
   primaryGoal: z.string().max(255).optional().nullable(),
   targetLaunchTimeline: z.string().max(80).optional().nullable(),
@@ -114,6 +116,11 @@ async function openaiJson(prompt: string, model = config.openaiModel) {
 function clean(value?: string | null) {
   const trimmed = value?.trim();
   return trimmed ? trimmed : null;
+}
+
+function cleanLocations(values: string[] = [], legacy?: string | null) {
+  const source = values.length ? values : (legacy ?? "").split(/[,;\n]/g);
+  return [...new Set(source.map((value) => value.trim()).filter(Boolean))].slice(0, 50);
 }
 
 function normalizeUrl(input?: string | null) {
@@ -240,8 +247,16 @@ const intakeQuestions: IntakeQuestion[] = [
     help: "Used by strategy, site architecture, lead magnet, social, reports, and proposals.",
   },
   {
+    key: "business_location",
+    text: "Business location",
+    type: "text",
+    required: false,
+    placeholder: "Fredericton, New Brunswick, Canada",
+    help: "Where the business is physically based or primarily operated. Used for business identity, reports, NAP, citations, and Google Business Profile context.",
+  },
+  {
     key: "target_location",
-    text: "Target locations",
+    text: "Target market / locations",
     type: "text",
     required: false,
     placeholder: "Canada, United States, Toronto GTA",
@@ -508,7 +523,7 @@ const intakeQuestions: IntakeQuestion[] = [
   },
 ];
 
-function normalizeBusinessProfile(project: { businessName: string | null; niche: string | null; targetLocation: string | null; primaryGoal: string | null }, answers: z.infer<typeof intakeAnswerSchema>[]) {
+function normalizeBusinessProfile(project: { businessName: string | null; niche: string | null; businessLocation: string | null; targetLocation: string | null; primaryGoal: string | null }, answers: z.infer<typeof intakeAnswerSchema>[]) {
   const businessName = answerText(answers, "business_name") ?? answerText(answers, "client_company") ?? project.businessName;
   const niche = answerText(answers, "industry_niche") ?? answerText(answers, "client_industry") ?? answerText(answers, "product_category") ?? project.niche;
   const audience = answerText(answers, "target_audience") ?? answerText(answers, "ideal_customer");
@@ -525,7 +540,7 @@ function normalizeBusinessProfile(project: { businessName: string | null; niche:
   ].filter(Boolean);
 
   return {
-    businessSummary: [businessName, niche, answerText(answers, "target_location") ?? project.targetLocation].filter(Boolean).join(" | ") || null,
+    businessSummary: [businessName, niche, answerText(answers, "business_location") ?? project.businessLocation].filter(Boolean).join(" | ") || null,
     targetAudience: audience ?? answerText(answers, "target_buyer"),
     offerSummary: offer,
     businessModel: answerText(answers, "business_model") ?? answerText(answers, "preferred_business_model") ?? answerText(answers, "store_type"),
@@ -721,12 +736,15 @@ async function ensureNextTask(tx: Prisma.TransactionClient, input: {
 
 function projectContext(project: NonNullable<Awaited<ReturnType<typeof scopedProject>>>) {
   const profile = project.businessProfile;
+  const targetMarkets = cleanLocations(Array.isArray(project.targetLocations) ? project.targetLocations.filter((item): item is string => typeof item === "string") : [], project.targetLocation);
   return {
     name: project.businessName ?? project.name,
     niche: project.niche ?? profile?.businessSummary ?? "the selected market",
     audience: profile?.targetAudience ?? "the target audience",
     offer: profile?.offerSummary ?? project.primaryGoal ?? "the main offer",
-    location: project.targetLocation ?? "the target market",
+    location: targetMarkets.join(", ") || "the target market",
+    targetMarkets,
+    businessLocation: project.businessLocation,
     goal: project.primaryGoal ?? "growth",
     outputs: Array.isArray(project.preferredOutputs) ? project.preferredOutputs.filter((item): item is string => typeof item === "string") : [],
   };
@@ -1383,6 +1401,7 @@ guidedProjectsRouter.post("/projects-v2", async (req, res) => {
   const parsed = createProjectSchema.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() });
   const data = parsed.data;
+  const targetLocations = cleanLocations(data.targetLocations, data.targetLocation);
   const clientId = await projectClientIdForRequest(req, data.clientId);
   if (!clientId) return res.status(400).json({ error: "project context required" });
 
@@ -1400,7 +1419,16 @@ guidedProjectsRouter.post("/projects-v2", async (req, res) => {
           domain: normalized.domain,
           rootUrl: normalized.rootUrl,
           status: "active",
-          targetCountry: clean(data.targetLocation) ?? undefined,
+          targetCountry: targetLocations[0] ?? undefined,
+          targetCities: targetLocations,
+        },
+      });
+    } else if (website && targetLocations.length) {
+      website = await tx.website.update({
+        where: { id: website.id },
+        data: {
+          targetCountry: targetLocations[0],
+          targetCities: targetLocations,
         },
       });
     }
@@ -1414,7 +1442,9 @@ guidedProjectsRouter.post("/projects-v2", async (req, res) => {
         businessName: clean(data.businessName),
         websiteUrl: normalized?.rootUrl ?? clean(data.websiteUrl),
         niche: clean(data.niche),
-        targetLocation: clean(data.targetLocation),
+        businessLocation: clean(data.businessLocation),
+        targetLocations,
+        targetLocation: targetLocations.join(", ").slice(0, 180) || null,
         primaryGoal: clean(data.primaryGoal),
         targetLaunchTimeline: clean(data.targetLaunchTimeline),
         preferredOutputs: data.preferredOutputs,
@@ -1506,7 +1536,9 @@ guidedProjectsRouter.post("/projects-v2/:projectId/intake", async (req, res) => 
         name: answerText(parsed.data.answers, "project_name") ?? project.name,
         currentStep: "strategy",
         businessName: answerText(parsed.data.answers, "business_name") ?? project.businessName,
-        targetLocation: answerText(parsed.data.answers, "target_location") ?? project.targetLocation,
+        businessLocation: answerText(parsed.data.answers, "business_location") ?? project.businessLocation,
+        targetLocations: cleanLocations([], answerText(parsed.data.answers, "target_location") ?? project.targetLocation),
+        targetLocation: (answerText(parsed.data.answers, "target_location") ?? project.targetLocation)?.slice(0, 180),
         primaryGoal: answerText(parsed.data.answers, "primary_goal") ?? project.primaryGoal,
       },
     });
@@ -1775,7 +1807,7 @@ guidedProjectsRouter.post("/projects-v2/:projectId/execution-plan/create", async
     || existingTasks.some((task) => task.moduleName === "site_analysis" && ["completed", "skipped"].includes(task.status));
   const siteArchitectureComplete = hasWebsite || existingTasks.some((task) => task.moduleName === "site_architect" && ["completed", "skipped"].includes(task.status));
   const localReadinessComplete = existingTasks.some((task) => task.moduleName === "local_seo" && ["completed", "skipped"].includes(task.status));
-  const needsLocalReadiness = project.projectType === "local_seo" || project.projectType === "new_business" || /local|lead|booking|appointment|service area|gbp|google business|review/i.test([project.primaryGoal, project.niche, project.targetLocation, project.businessProfile?.offerSummary].filter(Boolean).join(" "));
+  const needsLocalReadiness = project.projectType === "local_seo" || project.projectType === "new_business" || /local|lead|booking|appointment|service area|gbp|google business|review/i.test([project.primaryGoal, project.niche, ...cleanLocations(Array.isArray(project.targetLocations) ? project.targetLocations.filter((item): item is string => typeof item === "string") : [], project.targetLocation), project.businessProfile?.offerSummary].filter(Boolean).join(" "));
   const missingDiscovery: Array<"keyword" | "site" | "architecture"> = [];
   if (!keywordAnalysisComplete) missingDiscovery.push("keyword");
   if (isExistingWebsite && hasWebsite && !siteAnalysisComplete) missingDiscovery.push("site");

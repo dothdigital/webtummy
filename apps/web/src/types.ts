@@ -126,6 +126,8 @@ export interface GuidedProject {
   businessName: string | null;
   websiteUrl: string | null;
   niche: string | null;
+  businessLocation: string | null;
+  targetLocations: unknown;
   targetLocation: string | null;
   primaryGoal: string | null;
   targetLaunchTimeline: string | null;

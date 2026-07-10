@@ -28,6 +28,8 @@ export type CampaignProjectContext = {
   website?: { id?: string | null; rootUrl?: string | null } | null;
   primaryGoal?: string | null;
   niche?: string | null;
+  businessLocation?: string | null;
+  targetLocations?: unknown;
   preferredOutputs?: unknown;
   businessProfile?: {
     businessSummary?: string | null;
@@ -121,6 +123,7 @@ export function campaignSignals(project: CampaignProjectContext) {
   const contextText = [
     project.primaryGoal,
     project.niche,
+    ...(Array.isArray(project.targetLocations) ? project.targetLocations.map(String) : []),
     project.businessProfile?.businessSummary,
     project.businessProfile?.targetAudience,
     project.businessProfile?.offerSummary,
@@ -172,7 +175,9 @@ export function buildCampaignExecutionTasks(project: CampaignProjectContext): Ca
     shouldCreateAuthority,
   } = signals;
 
-  return [
+  const targetMarkets = Array.isArray(project.targetLocations) ? project.targetLocations.map(String).map((value) => value.trim()).filter(Boolean) : [];
+  const marketContext = targetMarkets.length ? ` Target markets: ${targetMarkets.join(", ")}.` : "";
+  const tasks: CampaignExecutionTaskInput[] = [
     {
       key: isLocalSeo ? "local-keyword-plan" : "seo-keyword-plan",
       moduleName: "keyword_research",
@@ -334,4 +339,5 @@ export function buildCampaignExecutionTasks(project: CampaignProjectContext): Ca
       automationLevel: "prepare",
     },
   ];
+  return tasks.map((task) => ({ ...task, description: `${task.description}${marketContext}` }));
 }

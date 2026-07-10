@@ -111,6 +111,8 @@ function BusinessProfileCard({ project, preferredOutputs }: { project: GuidedPro
   const profile = project.businessProfile;
   const briefItems = [
     ["Project type", projectTypeLabel(project)],
+    ["Business location", project.businessLocation ?? "Not set"],
+    ["Target markets", Array.isArray(project.targetLocations) ? project.targetLocations.join(", ") || "Not set" : project.targetLocation ?? "Not set"],
     ["Primary goal", project.primaryGoal ?? "Not set"],
     ["Timeline", project.targetLaunchTimeline ?? "Not set"],
     ["Publishing", project.preferredPublishingMethod ?? "Not set"],
@@ -125,7 +127,7 @@ function BusinessProfileCard({ project, preferredOutputs }: { project: GuidedPro
         <div>
           <div className="text-[11px] font-bold uppercase tracking-wide text-brand-700">Project snapshot</div>
           <div className="mt-2 flex flex-wrap gap-2">
-            {(summaryParts.length ? summaryParts : [project.businessName ?? project.name, project.niche ?? "Niche not set", project.targetLocation ?? "Location not set"]).slice(0, 5).map((item) => (
+            {(summaryParts.length ? summaryParts : [project.businessName ?? project.name, project.niche ?? "Niche not set", project.businessLocation ?? "Business location not set"]).slice(0, 5).map((item) => (
               <span key={item} className="rounded-full bg-brand-50 px-3 py-1 text-xs font-bold text-brand-800">{item}</span>
             ))}
           </div>

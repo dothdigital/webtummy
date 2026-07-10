@@ -484,6 +484,9 @@ model Project {
   businessName              String?               @db.VarChar(180)
   websiteUrl                String?               @db.VarChar(512)
   niche                     String?               @db.VarChar(180)
+  businessLocation          String?               @db.VarChar(255)
+  targetLocations           Json                  @default("[]")
+  // Legacy compatibility value. New code should use targetLocations.
   targetLocation            String?               @db.VarChar(180)
   primaryGoal               String?               @db.VarChar(255)
   targetLaunchTimeline      String?               @db.VarChar(80)

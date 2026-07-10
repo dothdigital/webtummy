@@ -293,7 +293,8 @@ gapAnalysisRouter.post(gapRoutes("/launch-strategy/generate"), (req, res) => rou
   const existingLocalProfile = await prisma.gapLocalSeoProfile.findUnique({ where: { projectId: project.id } });
   const businessName = firstUseful(project.businessName, existingLocalProfile?.businessName, project.name);
   const niche = firstUseful(project.niche, existingLocalProfile?.businessType, project.businessProfile?.businessSummary, "the target market");
-  const targetLocation = firstUseful(project.targetLocation, existingLocalProfile?.addressOrServiceArea, "primary service area");
+  const projectTargetLocations = jsonStringList(project.targetLocations);
+  const targetLocation = firstUseful(projectTargetLocations.join(", "), project.targetLocation, existingLocalProfile?.addressOrServiceArea, "primary service area");
   const offer = firstUseful(project.businessProfile?.offerSummary, project.primaryGoal, `services for ${niche}`);
   const services = uniqueList([
     ...jsonStringList(existingLocalProfile?.services),
@@ -301,6 +302,7 @@ gapAnalysisRouter.post(gapRoutes("/launch-strategy/generate"), (req, res) => rou
     niche,
   ], 8);
   const cities = uniqueList([
+    ...projectTargetLocations,
     ...jsonStringList(existingLocalProfile?.citiesServed),
     ...targetLocation.split(/,|;|\band\b/gi),
   ], 6);
