@@ -5,6 +5,7 @@ import { sendMail } from "./email.js";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const PAYMENT_BLOCKED = new Set(["past_due", "incomplete", "incomplete_expired", "unpaid", "canceled"]);
+const STALE_RUNNING_CRAWL_MS = 2 * 60 * 1000;
 
 function monthStart(date = new Date()) {
   return new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), 1));
@@ -63,16 +64,58 @@ async function notifyClient(input: { clientId: string; fallbackEmail: string | n
 
 export async function recoverQueuedCrawlJobs() {
   return runLogged("recover_queued_crawl_jobs", async () => {
+    const staleStartedBefore = new Date(Date.now() - STALE_RUNNING_CRAWL_MS);
     const crawls = await prisma.crawlJob.findMany({
-      where: { status: "queued" },
+      where: {
+        OR: [
+          { status: "queued" },
+          { status: "running", startedAt: { lte: staleStartedBefore } },
+        ],
+      },
       orderBy: { createdAt: "asc" },
       take: 100,
-      select: { id: true },
+      select: { id: true, status: true },
     });
+
+    let requeued = 0;
+    let markedFailed = 0;
+    let alreadyTracked = 0;
+    const trackedStates = new Set(["active", "waiting", "delayed", "prioritized", "waiting-children"]);
+
     for (const crawl of crawls) {
+      const existingJob = await crawlQueue.getJob(crawl.id);
+      if (existingJob) {
+        const state = await existingJob.getState();
+        if (trackedStates.has(state)) {
+          alreadyTracked++;
+          continue;
+        }
+        if (crawl.status === "running" && (state === "failed" || state === "completed")) {
+          await prisma.crawlJob.updateMany({
+            where: { id: crawl.id, status: "running" },
+            data: {
+              status: "failed",
+              completedAt: new Date(),
+              error: "Crawl worker job ended in BullMQ state " + state + " before the database status was finalized. Please run Analyze Site again.",
+            },
+          });
+          markedFailed++;
+          continue;
+        }
+        await existingJob.remove().catch(() => undefined);
+      }
+
+      if (crawl.status === "running") {
+        await prisma.crawlJob.updateMany({
+          where: { id: crawl.id, status: "running" },
+          data: { status: "queued", startedAt: null, completedAt: null, error: null },
+        });
+      }
       await crawlQueue.add("crawl:start", { crawlJobId: crawl.id }, { jobId: crawl.id });
+      requeued++;
     }
-    return { requeued: crawls.length };
+
+    return { requeued, markedFailed, alreadyTracked };
   });
 }
 

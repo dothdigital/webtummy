@@ -788,7 +788,7 @@ export default function KeywordResearchDetail() {
   return (
     <div className="space-y-6">
       <div>
-        <Link to="/keyword-insights" className="text-sm font-medium text-brand-600 hover:underline">Back to Keyword Insight</Link>
+        <Link to="/keywords" className="text-sm font-medium text-brand-600 hover:underline">Back to Keyword Insight</Link>
         <div className="mt-2 flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
           <div>
             <h1 className="text-2xl font-bold text-charcoal-800">{run.seedKeyword}</h1>

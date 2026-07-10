@@ -7,6 +7,22 @@ import { runCrawl } from "./crawl.js";
 import { recoverQueuedCrawlJobs, startMaintenanceScheduler } from "./maintenance.js";
 import type { CrawlOptions } from "@webtummy/core";
 
+async function markCrawlFailed(crawlJobId: string, error: unknown) {
+  const message = error instanceof Error ? error.message : String(error);
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      await prisma.crawlJob.updateMany({
+        where: { id: crawlJobId, status: "running" },
+        data: { status: "failed", completedAt: new Date(), error: message },
+      });
+      return;
+    } catch (updateError) {
+      if (attempt === 3) throw updateError;
+      await new Promise((resolve) => setTimeout(resolve, attempt * 500));
+    }
+  }
+}
+
 async function runWithTimeout(crawlJobId: string, task: Promise<void>) {
   let timeout: NodeJS.Timeout | null = null;
   try {
@@ -17,10 +33,7 @@ async function runWithTimeout(crawlJobId: string, task: Promise<void>) {
       }),
     ]);
   } catch (error) {
-    await prisma.crawlJob.updateMany({
-      where: { id: crawlJobId, status: "running" },
-      data: { status: "failed", completedAt: new Date(), error: error instanceof Error ? error.message : String(error) },
-    });
+    await markCrawlFailed(crawlJobId, error);
     throw error;
   } finally {
     if (timeout) clearTimeout(timeout);
@@ -61,7 +74,13 @@ const worker = new Worker<CrawlJobData>(
 );
 
 worker.on("failed", (job, err) => {
-  console.error(`[worker] crawl ${job?.data.crawlJobId} failed:`, err.message);
+  const crawlJobId = job?.data.crawlJobId;
+  console.error("[worker] crawl " + crawlJobId + " failed:", err.message);
+  if (crawlJobId) {
+    markCrawlFailed(crawlJobId, err).catch((updateError) => {
+      console.error("[worker] failed to persist crawl " + crawlJobId + " failure:", updateError);
+    });
+  }
 });
 
 const maintenanceTimer = startMaintenanceScheduler();

@@ -3,7 +3,7 @@ import type { ReactNode } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { Cell, Pie, PieChart, ResponsiveContainer } from "recharts";
 import { api } from "../api.js";
-import { Card, StatusPill } from "../components/ui.js";
+import { ActionIconButton, ActionIconLink, Card, StatusPill } from "../components/ui.js";
 import { isExistingWebsiteFlow, nextProjectFlowStep } from "../project-flow.js";
 import type { AiContentGeneration, DomainBacklinkLinks, DomainBacklinkSummary, GuidedExecutionTask, GuidedProject, HealthReport, KeywordResearchRun, Opportunity, Website, WorkspaceIntelligence, WorkspaceIntelligenceResponse } from "../types.js";
 
@@ -577,6 +577,7 @@ export default function ExecutionModule({ kind }: { kind: ModuleKind }) {
     latestCrawl: latestSiteCrawl,
     siteScanBlocked: siteScanCooldown.blocked,
     siteScanRemaining: siteScanCooldown.remainingLabel,
+    keywordRuns: scopedKeywordRuns,
   }) : null;
 
   const runHeaderPrimaryAction = () => {
@@ -1755,6 +1756,17 @@ function OpportunitySummaryStrip({ project, niche }: { project: GuidedProject; n
 
 function KeywordScreen({ data }: { data: ModuleData }) {
   const runs = data.keywordRuns;
+  const [refreshingId, setRefreshingId] = useState<string | null>(null);
+  const refreshRun = async (run: KeywordResearchRun) => {
+    if (!canRefreshKeyword(run)) return;
+    setRefreshingId(run.id);
+    try {
+      const result = await api.post<{ run: KeywordResearchRun }>("/api/keyword-research/" + run.id + "/refresh", {});
+      window.location.href = "/keyword-insights/" + result.run.id;
+    } finally {
+      setRefreshingId(null);
+    }
+  };
   if (!runs.length) {
     const project = data.projects[0];
     const website = data.websites[0];
@@ -1768,17 +1780,25 @@ function KeywordScreen({ data }: { data: ModuleData }) {
     );
   }
   const topRun = runs[0];
-  const rows = keywordRows(runs);
+  const rows = keywordRows(runs, (run) => (
+    <div className="flex justify-end gap-3">
+      <ActionIconLink icon="view" label="View keyword report" to={"/keyword-insights/" + run.id} />
+      <ActionIconButton
+        icon="refresh"
+        label={refreshingId === run.id ? "Refreshing keyword" : canRefreshKeyword(run) ? "Refresh keyword" : refreshBlockedLabel(run)}
+        onClick={() => void refreshRun(run)}
+        disabled={refreshingId === run.id || !canRefreshKeyword(run)}
+      />
+    </div>
+  ));
   const totalKeywords = runs.reduce((sum, run) => sum + (run.keywordCount || 0), 0);
   const avgDifficulty = avg(runs.map((run) => run.avgDifficulty ?? null)) ?? avg(runs.flatMap((run) => run.ideas?.map((idea) => idea.competitionIndex ?? null) ?? [])) ?? 0;
   return (
     <>
       <FilterBar labels={[`Search Keyword: ${topRun?.seedKeyword || "No run yet"}`, `Location: ${topRun?.locationName || "Not selected"}`, "Language: English", "Search Engine: Google"]} />
-      <MetricGrid items={[["Total Keywords Found", formatNumber(totalKeywords), `${runs.length} run(s)`], ["Average Difficulty", formatNumber(Math.round(avgDifficulty)), difficultyLabel(avgDifficulty)], ["High-Opportunity Keywords", formatNumber(rows.filter((row) => Number(row[5]) >= 70).length), "from stored ideas"], ["Selected Page Targets", formatNumber(new Set(runs.map((run) => run.website?.id).filter(Boolean)).size), "websites mapped"]]} />
-      <div className="grid gap-5 xl:grid-cols-[1fr_320px]">
-        <DataTable title="Keywords" columns={["Keyword", "Search Volume", "Difficulty", "Intent", "CPC", "Opportunity Score", "Cluster"]} rows={rows} />
-        <SideStack title="Keyword Insights" data={data} />
-      </div>
+      <MetricGrid items={[["Total Keywords Found", formatNumber(totalKeywords), `${runs.length} run(s)`], ["Average Difficulty", formatNumber(Math.round(avgDifficulty)), difficultyLabel(avgDifficulty)], ["High-Opportunity Keywords", formatNumber(rows.filter((row) => Number(row[4]) >= 70).length), "from stored ideas"], ["Selected Page Targets", formatNumber(new Set(runs.map((run) => run.website?.id).filter(Boolean)).size), "websites mapped"]]} />
+      <KeywordInsightsBanner data={data} />
+      <DataTable title="Keywords" columns={["Keyword", "Search Volume", "Difficulty", "CPC", "Opportunity Score", "Rank", "Change", "Avg volume", "Ideas", "Competitors", "Actions"]} rows={rows} />
     </>
   );
 }
@@ -2560,6 +2580,7 @@ function getModuleNextStep({
   latestCrawl,
   siteScanBlocked,
   siteScanRemaining,
+  keywordRuns,
 }: {
   kind: ModuleKind;
   project: GuidedProject;
@@ -2567,7 +2588,8 @@ function getModuleNextStep({
   latestCrawl?: CrawlSummary | null;
   siteScanBlocked: boolean;
   siteScanRemaining: string;
-}): ModuleNextStep {
+  keywordRuns?: KeywordResearchRun[];
+}): ModuleNextStep | null {
   const latestStrategy = project.strategyPlans?.[0];
   const selectedOpportunity = project.opportunities?.find((opportunity) => opportunity.status === "selected");
   const strategyApproved = latestStrategy?.status === "approved";
@@ -2641,6 +2663,7 @@ function getModuleNextStep({
     };
   }
   if (kind === "keywords") {
+    if (keywordRuns?.some((run) => run.status === "completed" || run.keywordCount > 0 || (run.ideas?.length ?? 0) > 0)) return null;
     return {
       eyebrow: "Next step",
       title: "Add seed keywords",
@@ -3303,7 +3326,7 @@ function TextPanel({ title, items }: { title: string; items: string[] }) {
   return <Card className="p-5"><h2 className="font-bold text-brand-700">{title}</h2><div className="mt-4 space-y-4">{items.map((item, index) => <div key={`${title}-item-${index}`} className="rounded-lg border border-slate-100 bg-slate-50/60 p-3 text-sm leading-6 text-charcoal-700">{item}</div>)}</div></Card>;
 }
 
-function DataTable({ title, columns, rows, footerAction }: { title: string; columns: string[]; rows: string[][]; footerAction?: React.ReactNode }) {
+function DataTable({ title, columns, rows, footerAction }: { title: string; columns: string[]; rows: ReactNode[][]; footerAction?: React.ReactNode }) {
   return (
     <Card className="overflow-hidden">
       <div className="border-b border-slate-100 p-4 font-bold text-charcoal-950">{title}</div>
@@ -3358,6 +3381,53 @@ function SideStack({ title = "Keyword Insights", data }: { title?: string; data:
       <InsightPanel title={title} score={averageOpportunityScore(data)} lines={[`Average Search Volume ${formatNumber(avg(data.keywordRuns.map((run) => run.avgSearchVolume ?? null)))}`, `Average CPC $${money(avg(data.keywordRuns.map((run) => run.avgCpc ?? null)))}`, `Keyword runs ${data.keywordRuns.length}`, `Open tasks ${data.tasks.length}`]} />
       <InfoCard title="Recommended Next Actions" items={taskSteps(data.tasks, ["keyword", "content", "backlink"]).slice(0, 4)} />
     </div>
+  );
+}
+
+function KeywordInsightsBanner({ data }: { data: ModuleData }) {
+  const score = averageOpportunityScore(data);
+  const chart = [{ name: "score", value: score, color: "#0f9f87" }, { name: "rest", value: 100 - score, color: "#e8eef8" }];
+  const metrics = [
+    ["Average Search Volume", formatNumber(avg(data.keywordRuns.map((run) => run.avgSearchVolume ?? null)))],
+    ["Average CPC", "$" + money(avg(data.keywordRuns.map((run) => run.avgCpc ?? null)))],
+    ["Keyword runs", formatNumber(data.keywordRuns.length)],
+    ["Open tasks", formatNumber(data.tasks.length)],
+  ];
+  const actions = taskSteps(data.tasks, ["keyword", "content", "backlink"]).slice(0, 4);
+  return (
+    <Card className="overflow-hidden">
+      <div className="grid gap-0 lg:grid-cols-[260px_1fr_360px]">
+        <div className="border-b border-slate-100 p-5 lg:border-b-0 lg:border-r">
+          <h2 className="font-bold text-charcoal-950">Keyword Insights</h2>
+          <div className="mt-4 flex items-center gap-4">
+            <div className="relative h-28 w-28 shrink-0">
+              <ResponsiveContainer width="100%" height="100%">
+                <PieChart><Pie data={chart} dataKey="value" innerRadius={38} outerRadius={50} startAngle={90} endAngle={-270}>{chart.map((item) => <Cell key={item.name} fill={item.color} />)}</Pie></PieChart>
+              </ResponsiveContainer>
+              <div className="absolute inset-0 grid place-items-center text-center"><div><div className="text-2xl font-bold text-charcoal-950">{score}</div><div className="text-[11px] text-charcoal-500">Score</div></div></div>
+            </div>
+            <div className="min-w-0">
+              <div className="text-sm font-semibold text-charcoal-700">Overall keyword health</div>
+              <div className="mt-1 text-xs leading-5 text-charcoal-500">Demand, cost, and workflow signals for this keyword set.</div>
+            </div>
+          </div>
+        </div>
+        <div className="grid gap-3 border-b border-slate-100 p-5 sm:grid-cols-2 lg:border-b-0 lg:border-r">
+          {metrics.map(([labelText, value]) => (
+            <div key={labelText} className="rounded-lg border border-slate-100 bg-slate-50/70 p-4">
+              <div className="text-xs font-bold uppercase tracking-wide text-charcoal-400">{labelText}</div>
+              <div className="mt-2 text-xl font-bold text-charcoal-950">{value}</div>
+            </div>
+          ))}
+        </div>
+        <div className="p-5">
+          <h3 className="font-bold text-charcoal-950">Recommended Next Actions</h3>
+          <div className="mt-4 flex flex-wrap gap-2">
+            {actions.map((action) => <span key={action} className="rounded-lg border border-emerald-100 bg-emerald-50 px-3 py-2 text-sm font-semibold text-charcoal-700">✓ {action}</span>)}
+          </div>
+        </div>
+      </div>
+    </Card>
   );
 }
 
@@ -3429,6 +3499,32 @@ function latestSiteScore(data: ModuleData) {
 
 function keywordIdeaCount(data: ModuleData) {
   return data.keywordRuns.reduce((sum, run) => sum + (run.ideas?.length ?? 0), 0);
+}
+
+function canRefreshKeyword(run: KeywordResearchRun): boolean {
+  if (typeof run.canRefresh === "boolean") return run.canRefresh;
+  return run.status === "completed" || run.status === "failed";
+}
+
+function refreshBlockedLabel(run: KeywordResearchRun): string {
+  if (run.refreshBlockedUntil) return "Refresh available " + formatDateTime(run.refreshBlockedUntil);
+  return "Refresh unavailable";
+}
+
+function keywordRankLabel(run: KeywordResearchRun): string {
+  const rank = run.manualRank ?? run.targetRank ?? null;
+  return rank ? "#" + rank : "Not found";
+}
+
+function RankMovement({ change }: { change: number | null | undefined }) {
+  if (change == null || change === 0) return <span className="text-xs font-semibold text-charcoal-400">-</span>;
+  const improved = change < 0;
+  return (
+    <span className={"inline-flex items-center gap-1 rounded-full px-2 py-1 text-xs font-bold " + (improved ? "bg-green-50 text-green-700" : "bg-red-50 text-red-700")}>
+      <span>{improved ? "+" : "-"}</span>
+      <span>{Math.abs(change)}</span>
+    </span>
+  );
 }
 
 function difficultyLabel(value: number) {
@@ -3855,7 +3951,7 @@ function slugify(value: string) {
   return value.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 80) || "page";
 }
 
-function keywordRows(runs: KeywordRun[]) {
+function keywordRows(runs: KeywordResearchRun[], renderActions?: (run: KeywordResearchRun) => ReactNode) {
   const rows = runs.flatMap((run) => {
     const ideas = run.ideas?.length ? run.ideas : [{ keyword: run.seedKeyword, avgMonthlySearches: run.avgSearchVolume ?? null, competitionIndex: run.avgDifficulty ?? null, competitionLevel: null, cpc: run.avgCpc ?? null, currency: "USD" }];
     return ideas.map((idea) => {
@@ -3865,10 +3961,14 @@ function keywordRows(runs: KeywordRun[]) {
         idea.keyword,
         formatNumber(idea.avgMonthlySearches),
         `${Math.round(difficulty)} ${idea.competitionLevel || difficultyLabel(difficulty)}`,
-        run.intent || "Mixed",
         `$${money(idea.cpc)}`,
         String(score),
-        run.seedKeyword,
+        keywordRankLabel(run),
+        <RankMovement key={run.id + "-movement"} change={run.rankChange} />,
+        formatNumber(run.averageVolume),
+        formatNumber(run.keywordCount),
+        formatNumber(run.competitorCount),
+        ...(renderActions ? [renderActions(run)] : []),
       ];
     });
   });
