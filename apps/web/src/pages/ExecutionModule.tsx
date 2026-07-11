@@ -336,6 +336,41 @@ export default function ExecutionModule({ kind }: { kind: ModuleKind }) {
     : scopedData.websites[0];
   const activeSiteCrawl = activeWebsite?.crawlJobs?.find((crawl) => crawl.status === "queued" || crawl.status === "running");
   const latestSiteCrawl = activeWebsite?.crawlJobs?.find((crawl) => crawl.status === "completed" && (crawl.pagesCrawled > 0 || crawl.siteScore != null));
+
+  useEffect(() => {
+    if (kind !== "site-analysis" || !activeWebsite?.id || !activeSiteCrawl?.id) return;
+    let cancelled = false;
+    const pollCrawl = async () => {
+      try {
+        const result = await api.get<{ website: Website }>(`/api/websites/${encodeURIComponent(activeWebsite.id)}`);
+        if (cancelled) return;
+        const crawl = result.website.crawlJobs?.find((item) => item.id === activeSiteCrawl.id);
+        setData((current) => ({
+          ...current,
+          websites: current.websites.map((website) => website.id === result.website.id ? result.website : website),
+        }));
+        if (!crawl || crawl.status === "queued" || crawl.status === "running") return;
+        if (crawl.status === "completed") {
+          const pages = crawl.pagesCrawled ? ` ${formatNumber(crawl.pagesCrawled)} pages were analyzed.` : "";
+          setSiteAnalysisMessage(`Site analysis completed.${pages} The report and recommendations are now updated.`);
+          if (document.hidden && "Notification" in window && Notification.permission === "granted") {
+            new Notification("Site analysis completed", { body: `${activeWebsite.domain} is ready to review.` });
+          }
+        } else {
+          setSiteAnalysisMessage(`Site analysis ${crawl.status}. Review the crawl details and try again if needed.`);
+        }
+      } catch {
+        // Keep the current status visible and retry on the next interval.
+      }
+    };
+    void pollCrawl();
+    const timer = window.setInterval(() => { void pollCrawl(); }, 5000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [activeSiteCrawl?.id, activeWebsite?.domain, activeWebsite?.id, kind]);
+
   const titleSuffix = activeProject?.businessName || activeProject?.name || activeWebsite?.domain;
   const moduleTitle = titleSuffix || copy.title;
   const hasActiveProject = Boolean(activeProject);

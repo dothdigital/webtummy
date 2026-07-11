@@ -311,7 +311,7 @@ export default function WebsiteHealth() {
       id: "crawl",
       title: "Crawl Status",
       headline: latestCompleted ? `Score ${health?.overallScore ?? latestCompleted.siteScore ?? "—"}` : "No completed crawl yet",
-      description: latestCompleted ? `Latest crawl checked ${latestCompleted.pagesCrawled}/150 pages. Open details for technical, linking, AI search, and schema health.` : "Run the 150-page check to create the project health report and execution tasks.",
+      description: latestCompleted ? `Latest site analysis checked ${latestCompleted.pagesCrawled} pages. Open details for technical, linking, AI search, and schema health.` : "Run Site Analysis to create the project health report and execution tasks.",
       tone: latest?.status === "failed" ? "red" : latestCompleted ? "green" : "slate",
       stats: [
         { label: "Pages", value: latestCompleted?.pagesCrawled ?? latest?.pagesCrawled ?? 0, detail: "checked" },
@@ -400,7 +400,7 @@ export default function WebsiteHealth() {
         </div>
         <div className="flex flex-wrap gap-2">
           <Button onClick={runCrawl} disabled={starting || Boolean(activeCrawl)}>
-            {activeCrawl ? "Crawl running" : starting ? "Starting..." : "Run 150-page check"}
+            {activeCrawl ? "Site analysis running" : starting ? "Starting..." : "Run Site Analysis"}
           </Button>
           {latestCompleted && (
             <Button variant="ghost" onClick={() => navigate("/crawls/" + latestCompleted.id)}>
