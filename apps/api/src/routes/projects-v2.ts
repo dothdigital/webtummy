@@ -37,6 +37,11 @@ const intakeAnswerSchema = z.object({
 const saveIntakeSchema = z.object({
   answers: z.array(intakeAnswerSchema).min(1),
 });
+const leadMagnetGenerateSchema = z.object({
+  selectedIdea: z.string().trim().min(3).max(240).optional().nullable(),
+  instructions: z.string().trim().max(2000).optional().nullable(),
+});
+
 
 const workflowStepPatchSchema = z.object({
   status: z.enum(["pending", "ready", "in_progress", "blocked", "completed", "skipped"]).optional(),
@@ -831,8 +836,10 @@ function buildLeadMagnetPrompt(input: {
   project: NonNullable<Awaited<ReturnType<typeof scopedProject>>>;
   strategy: NonNullable<NonNullable<Awaited<ReturnType<typeof scopedProject>>>["strategyPlans"][number]>;
   keywordRuns: Array<{ seedKeyword: string; intent: string | null; avgSearchVolume: number | null; opportunityScore: number | null; ideas: Array<{ keyword: string; avgMonthlySearches: number | null }> }>;
+  selectedIdea?: string | null;
+  instructions?: string | null;
 }) {
-  const { project, strategy, keywordRuns } = input;
+  const { project, strategy, keywordRuns, selectedIdea, instructions } = input;
   const ctx = projectContext(project);
   const selectedOpportunity = project.opportunities.find((opportunity) => opportunity.status === "selected") ?? project.opportunities[0] ?? null;
   const keywords = keywordRuns.slice(0, 8).map((run) => ({
@@ -847,6 +854,9 @@ function buildLeadMagnetPrompt(input: {
     "The output must be practical, specific to the provided business, and suitable for review before publishing or sending.",
     "Do not use generic placeholder advice. If data is missing, use the best available project context and mark assumptions clearly.",
     "Return JSON with this exact top-level shape:",
+    selectedIdea ? `The user selected this lead magnet concept. Preserve its core intent and improve it: ${selectedIdea}` : "Choose the strongest concept from the project evidence.",
+    instructions ? `User requirements and constraints (follow unless unsafe or contradicted by project facts): ${instructions}` : "No additional user requirements were supplied.",
+    "The title, promise, format, outline, CTA, and follow-up must align with the selected concept, target audience, offer, primary goal, market, and available keyword intent.",
     JSON.stringify({
       leadMagnet: {
         title: "string",
@@ -1949,6 +1959,8 @@ guidedProjectsRouter.post("/projects-v2/:projectId/lead-magnet/generate", async 
   if (!project) return res.status(404).json({ error: "project not found" });
   if (!project.businessProfile) return res.status(409).json({ error: "complete intake before generating a lead magnet" });
   const approvedStrategy = project.strategyPlans.find((strategy) => strategy.status === "approved");
+  const parsed = leadMagnetGenerateSchema.safeParse(req.body ?? {});
+  if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() });
   if (!approvedStrategy) return res.status(409).json({ error: "approve strategy before generating a lead magnet" });
 
   let usageEventId: string | null = null;
@@ -1975,7 +1987,13 @@ guidedProjectsRouter.post("/projects-v2/:projectId/lead-magnet/generate", async 
           take: 10,
         })
       : [];
-    const prompt = buildLeadMagnetPrompt({ project, strategy: approvedStrategy, keywordRuns });
+    const prompt = buildLeadMagnetPrompt({
+      project,
+      strategy: approvedStrategy,
+      keywordRuns,
+      selectedIdea: parsed.data.selectedIdea,
+      instructions: parsed.data.instructions,
+    });
     const generated = await openaiJson(prompt, routedModel);
     const result = generated.result as { leadMagnet?: { title?: unknown; assetType?: unknown } };
     const title = typeof result.leadMagnet?.title === "string" && result.leadMagnet.title.trim()
@@ -2035,8 +2053,14 @@ guidedProjectsRouter.post("/projects-v2/:projectId/lead-magnet/generate", async 
           projectId: project.id,
           clientId: project.clientId,
           moduleName: "lead_magnet",
-          promptVersion: "lead-magnet-openai-v1",
-          inputSnapshotJson: { projectId: project.id, strategyId: approvedStrategy.id, keywordRunCount: keywordRuns.length },
+          promptVersion: "lead-magnet-openai-v2",
+          inputSnapshotJson: {
+            projectId: project.id,
+            strategyId: approvedStrategy.id,
+            keywordRunCount: keywordRuns.length,
+            selectedIdea: parsed.data.selectedIdea ?? null,
+            instructions: parsed.data.instructions ?? null,
+          },
           outputJson: { generationId: record.id, title },
           outputText: title,
           status: "completed",

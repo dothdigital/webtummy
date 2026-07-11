@@ -263,6 +263,8 @@ export default function ExecutionModule({ kind }: { kind: ModuleKind }) {
   const [strategyMessage, setStrategyMessage] = useState("");
   const [leadMagnetBusy, setLeadMagnetBusy] = useState(false);
   const [leadMagnetMessage, setLeadMagnetMessage] = useState("");
+  const [leadMagnetIdea, setLeadMagnetIdea] = useState("");
+  const [leadMagnetInstructions, setLeadMagnetInstructions] = useState("");
   const [opportunityBusy, setOpportunityBusy] = useState<"generate" | string | null>(null);
   const [opportunityMessage, setOpportunityMessage] = useState("");
   const [selectedProjectId, setSelectedProjectId] = useState(searchParams.get("projectId") ?? "");
@@ -421,6 +423,8 @@ export default function ExecutionModule({ kind }: { kind: ModuleKind }) {
     setStrategyMessage("");
     setSiteAnalysisMessage("");
     setLeadMagnetMessage("");
+    setLeadMagnetIdea("");
+    setLeadMagnetInstructions("");
   };
 
   const runStrategyAction = async (action: "generate" | "approve" | "execution") => {
@@ -519,7 +523,11 @@ export default function ExecutionModule({ kind }: { kind: ModuleKind }) {
     setLeadMagnetBusy(true);
     setLeadMagnetMessage("");
     try {
-      const result = await api.post<{ project: GuidedProject; generation: AiContentGeneration }>(`/api/projects-v2/${activeProject.id}/lead-magnet/generate`, {});
+      const effectiveIdea = leadMagnetIdea.trim() || leadMagnetIdeas(scopedData)[0] || null;
+      const result = await api.post<{ project: GuidedProject; generation: AiContentGeneration }>(`/api/projects-v2/${activeProject.id}/lead-magnet/generate`, {
+        selectedIdea: effectiveIdea,
+        instructions: leadMagnetInstructions.trim() || null,
+      });
       updateActiveProject(result.project);
       setData((current) => ({
         ...current,
@@ -642,7 +650,7 @@ export default function ExecutionModule({ kind }: { kind: ModuleKind }) {
               <span className="inline-flex rounded-lg border border-slate-200 bg-slate-50 px-4 py-2.5 text-sm font-bold text-charcoal-600">
                 Live snapshot from latest crawl
               </span>
-            ) : (
+            ) : kind === "keywords" && scopedKeywordRuns.length === 0 ? null : (
               <button
                 type="button"
                 onClick={runHeaderPrimaryAction}
@@ -699,7 +707,7 @@ export default function ExecutionModule({ kind }: { kind: ModuleKind }) {
           {leadMagnetMessage || "Lead magnets are generated from the approved strategy, audience, offer, and project goal. They create a downloadable asset plus landing page, thank-you copy, delivery email, and CTA flow tasks."}
         </div>
       )}
-      {hasActiveProject && hasWorkspaceRecords && canRunModule && kind !== "opportunities" && moduleNextStep && (
+      {hasActiveProject && hasWorkspaceRecords && canRunModule && kind !== "opportunities" && !(kind === "keywords" && scopedKeywordRuns.length === 0) && moduleNextStep && (
         <ModuleNextStepCallout
           step={moduleNextStep}
           onAction={moduleNextStep.action === "generate-strategy"
@@ -723,7 +731,15 @@ export default function ExecutionModule({ kind }: { kind: ModuleKind }) {
       {!loading && hasActiveProject && hasWorkspaceRecords && canRunModule && kind === "backlinks" && <BacklinkScreen data={scopedData} />}
       {!loading && hasActiveProject && hasWorkspaceRecords && canRunModule && kind === "ai-citations" && <CitationScreen data={scopedData} />}
       {!loading && hasActiveProject && hasWorkspaceRecords && canRunModule && kind === "site-architect" && <ArchitectScreen data={scopedData} />}
-      {!loading && hasActiveProject && hasWorkspaceRecords && canRunModule && kind === "lead-magnets" && <LeadMagnetScreen data={scopedData} />}
+      {!loading && hasActiveProject && hasWorkspaceRecords && canRunModule && kind === "lead-magnets" && (
+        <LeadMagnetScreen
+          data={scopedData}
+          selectedIdea={leadMagnetIdea}
+          instructions={leadMagnetInstructions}
+          onSelectIdea={setLeadMagnetIdea}
+          onChangeInstructions={setLeadMagnetInstructions}
+        />
+      )}
       <ModuleHelpDrawer kind={kind} project={activeProject} open={helpOpen} onClose={() => setHelpOpen(false)} />
     </div>
   );
@@ -2379,7 +2395,13 @@ function GeneratedBlock({ title, items }: { title: string; items: string[] }) {
   );
 }
 
-function LeadMagnetScreen({ data }: { data: ModuleData }) {
+function LeadMagnetScreen({ data, selectedIdea: selectedInput, instructions, onSelectIdea, onChangeInstructions }: {
+  data: ModuleData;
+  selectedIdea: string;
+  instructions: string;
+  onSelectIdea: (value: string) => void;
+  onChangeInstructions: (value: string) => void;
+}) {
   const project = data.projects[0];
   const leadTasks = data.tasks.filter((task) => task.moduleName.includes("lead") || task.title.toLowerCase().includes("lead"));
   const approvedStrategy = project?.strategyPlans?.find((strategy) => typeof strategy === "object" && strategy !== null && "status" in strategy && strategy.status === "approved") as {
@@ -2392,7 +2414,7 @@ function LeadMagnetScreen({ data }: { data: ModuleData }) {
   const ideas = leadMagnetIdeas(data);
   const latestGeneration = data.leadMagnetGenerations[0] ?? null;
   const generatedPackage = latestGeneration ? normalizeLeadMagnetPackage(latestGeneration.resultJson) : null;
-  const selectedIdea = generatedPackage?.leadMagnet.title || ideas[0];
+  const selectedIdea = selectedInput || generatedPackage?.leadMagnet.title || ideas[0];
   const audience = project?.businessProfile?.targetAudience || "Target audience not provided";
   const offer = approvedStrategy?.offerRecommendation || project?.businessProfile?.offerSummary || project?.primaryGoal || "Offer not provided";
   const readiness = leadMagnetReadiness(data, approvedStrategy);
@@ -2426,7 +2448,7 @@ function LeadMagnetScreen({ data }: { data: ModuleData }) {
           <p className="mt-1 text-sm leading-6 text-charcoal-500">A lead magnet is a useful gated asset that gives visitors a reason to share contact details before booking or buying.</p>
           <div className="mt-4 space-y-3">
             {ideas.length ? ideas.map((item, index) => (
-              <div key={`${item}-${index}`} className={`rounded-lg border p-3 ${index === 0 ? "border-brand-500 bg-brand-50" : "border-slate-200 bg-white"}`}>
+              <button type="button" onClick={() => onSelectIdea(item)} key={`${item}-${index}`} className={`w-full rounded-lg border p-3 text-left ${selectedIdea === item ? "border-brand-500 bg-brand-50 ring-2 ring-brand-100" : "border-slate-200 bg-white hover:border-brand-200"}`}>
                 <div className="flex items-start justify-between gap-3">
                   <div>
                     <div className="text-sm font-bold text-charcoal-950">{item}</div>
@@ -2434,11 +2456,21 @@ function LeadMagnetScreen({ data }: { data: ModuleData }) {
                   </div>
                   <span className="rounded-full bg-white px-2 py-1 text-xs font-bold text-brand-700">{leadMagnetScore(data, index)}</span>
                 </div>
-              </div>
+              </button>
             )) : <EmptyModuleState title="No ideas yet" detail="Approve strategy first. SEnuke AI will use the offer, audience, and goal to create lead magnet ideas." compact />}
           </div>
+          <label className="mt-5 block border-t border-slate-100 pt-4">
+            <span className="text-sm font-bold text-charcoal-950">Selected concept</span>
+            <span className="mt-1 block text-xs leading-5 text-charcoal-500">Choose a recommendation above or edit the concept in your own words.</span>
+            <input value={selectedInput || ideas[0] || ""} onChange={(event) => onSelectIdea(event.target.value)} maxLength={240} className="mt-3 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-100" />
+          </label>
+          <label className="mt-5 block border-t border-slate-100 pt-4">
+            <span className="text-sm font-bold text-charcoal-950">Your criteria or instructions</span>
+            <span className="mt-1 block text-xs leading-5 text-charcoal-500">Optional. Add the format, tone, must-cover points, CTA, audience concern, or anything to avoid.</span>
+            <textarea value={instructions} onChange={(event) => onChangeInstructions(event.target.value)} maxLength={2000} rows={5} placeholder="Example: Make this a one-page scorecard for clinic owners, use a professional tone, and end with a consultation CTA." className="mt-3 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-100" />
+            <span className="mt-1 block text-right text-xs text-charcoal-400">{instructions.length}/2000</span>
+          </label>
         </Card>
-
         <div className="space-y-5">
           <Card className="p-5">
             <div className="flex flex-col gap-4 border-b border-slate-100 pb-4 lg:flex-row lg:items-start lg:justify-between">
@@ -4109,11 +4141,21 @@ function taskRows(tasks: GuidedExecutionTask[]) {
 }
 
 function leadMagnetIdeas(data: ModuleData) {
-  const fromTasks = data.tasks.filter((task) => task.moduleName.includes("lead") || task.title.toLowerCase().includes("lead")).map((task) => task.title);
-  const fromKeywords = data.keywordRuns.slice(0, 3).map((run) => `${label(run.seedKeyword)} Guide`);
-  const fromProject = data.projects[0]?.niche ? [`${data.projects[0].niche} Checklist`] : [];
-  const merged = [...fromTasks, ...fromKeywords, ...fromProject];
-  return merged.slice(0, 5);
+  const project = data.projects[0];
+  if (!project) return [];
+  const strategy = project.strategyPlans?.find((item) => typeof item === "object" && item !== null && "status" in item && item.status === "approved") as { offerRecommendation?: string | null } | undefined;
+  const compact = (value: string | null | undefined, fallback: string) => ((value || fallback).split(/[.;|\n]/)[0]?.trim() || fallback).slice(0, 72);
+  const niche = compact(project.niche, project.businessName || project.name || "Business");
+  const offer = compact(strategy?.offerRecommendation || project.businessProfile?.offerSummary, niche);
+  const keyword = compact(data.keywordRuns[0]?.seedKeyword, niche);
+  const audience = compact(project.businessProfile?.targetAudience, "buyers");
+  return Array.from(new Set([
+    `${label(keyword)} Quick-Win Checklist`,
+    `${label(niche)} Readiness Scorecard`,
+    `${label(offer)} Buyer's Guide`,
+    `${label(niche)} Planning Template for ${audience}`,
+    `${label(keyword)} Mistakes and Fixes Guide`,
+  ])).slice(0, 5);
 }
 
 type LeadMagnetPackage = {
