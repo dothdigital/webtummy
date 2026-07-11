@@ -75,6 +75,12 @@ type SearchDataPayload = {
 };
 
 type KeywordSuggestion = { keyword: string; reason: string };
+type KeywordSuggestionResult = {
+  suggestions: KeywordSuggestion[];
+  intakeComplete: boolean;
+  projectId: string | null;
+  workspaceType: "Personal" | "Business" | "Agency" | "Ecommerce";
+};
 
 type KeywordIdeaInput = {
   keyword: string;
@@ -210,6 +216,22 @@ function normalizeSuggestionKeyword(value: string): string {
 
 function jsonStringList(value: unknown): string[] {
   return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string").map(cleanSuggestionText).filter(Boolean) : [];
+}
+
+function intakeAnswerText(value: unknown): string {
+  if (typeof value === "string") return cleanSuggestionText(value);
+  if (Array.isArray(value)) {
+    return value.filter((item): item is string => typeof item === "string").map(cleanSuggestionText).filter(Boolean).join(", ");
+  }
+  return "";
+}
+
+function normalizedWorkspaceType(value: string | null | undefined): KeywordSuggestionResult["workspaceType"] {
+  const match = value?.toLowerCase();
+  if (match === "business") return "Business";
+  if (match === "agency") return "Agency";
+  if (match === "ecommerce") return "Ecommerce";
+  return "Personal";
 }
 
 async function openaiKeywordSuggestions(prompt: string): Promise<unknown> {
@@ -407,7 +429,7 @@ async function suggestKeywordsForWebsite(
   language: string,
   excludeKeywords: string[] = [],
   selectedLocation: { country?: string; region?: string; cities?: string } = {},
-): Promise<KeywordSuggestion[]> {
+): Promise<KeywordSuggestionResult> {
   const profile = await prisma.website.findUnique({
     where: { id: website.id },
     select: {
@@ -446,18 +468,23 @@ async function suggestKeywordsForWebsite(
       },
     },
   });
-  if (!profile) return [];
+  if (!profile) return { suggestions: [], intakeComplete: false, projectId: null, workspaceType: "Personal" };
   const project = await prisma.project.findFirst({
     where: { websiteId: website.id, clientId: website.clientId, status: { not: "deleted" } },
     orderBy: { updatedAt: "desc" },
     select: {
+      id: true,
       businessName: true,
+      projectType: true,
+      websiteUrl: true,
       niche: true,
       primaryGoal: true,
       businessLocation: true,
       targetLocations: true,
       targetLocation: true,
       preferredOutputs: true,
+      client: { select: { name: true } },
+      intakeAnswers: { select: { questionKey: true, answerValue: true } },
       businessProfile: {
         select: {
           businessSummary: true,
@@ -481,6 +508,17 @@ async function suggestKeywordsForWebsite(
       },
     },
   });
+  const workspaceType = normalizedWorkspaceType(project?.client.name);
+  const answers = new Map(project?.intakeAnswers.map((answer) => [answer.questionKey, intakeAnswerText(answer.answerValue)]) ?? []);
+  const description = answers.get("business_description") || project?.businessProfile?.businessSummary || "";
+  const offer = answers.get("products_services") || answers.get("product_category") || project?.businessProfile?.offerSummary || "";
+  const niche = project?.niche || answers.get("industry_niche") || answers.get("store_type") || "";
+  // A name, URL, or location alone is not enough to infer useful search intent.
+  const intakeComplete = Boolean(description.trim() || offer.trim() || niche.trim());
+  if (!intakeComplete) {
+    return { suggestions: [], intakeComplete: false, projectId: project?.id ?? null, workspaceType };
+  }
+
 
   const existingKeywords = new Set<string>();
   for (const run of profile.keywordResearchRuns) {
@@ -530,7 +568,12 @@ async function suggestKeywordsForWebsite(
     `Root URL: ${profile.rootUrl}`,
     `Target country: ${profile.targetCountry ?? "not provided"}`,
     `Project target cities: ${jsonStringList(profile.targetCities).join(", ") || "not provided"}`,
-    `Project business name: ${project?.businessName ?? "not provided"}`,
+    `Workspace type: ${workspaceType}`,
+    `Use the ${workspaceType} workspace intake fields and search intent appropriate to that workspace.`,
+    `Project business/store/client name: ${project?.businessName ?? answers.get("client_name") ?? answers.get("store_name") ?? "not provided"}`,
+    `Project type: ${project?.projectType ?? "not provided"}`,
+    `Project website URL: ${project?.websiteUrl ?? profile.rootUrl}`,
+    `Additional intake context: ${project?.intakeAnswers.map((answer) => `${answer.questionKey}: ${intakeAnswerText(answer.answerValue)}`).filter((item) => !item.endsWith(": ")).join(" | ") || "not provided"}`,
     `Project niche/industry: ${project?.niche ?? "not provided"}`,
     `Project primary goal: ${project?.primaryGoal ?? "not provided"}`,
     `Business location (identity only): ${project?.businessLocation ?? "not provided"}`,
@@ -567,10 +610,10 @@ async function suggestKeywordsForWebsite(
   try {
     const generated = await openaiKeywordSuggestions(prompt);
     const suggestions = filterRelevantKeywordSuggestions(parseKeywordSuggestions(generated, existingKeywords, limit * 2), contextTerms, limit);
-    if (suggestions.length) return suggestions;
-    return fallback();
+    if (suggestions.length) return { suggestions, intakeComplete, projectId: project?.id ?? null, workspaceType };
+    return { suggestions: fallback(), intakeComplete, projectId: project?.id ?? null, workspaceType };
   } catch {
-    return fallback();
+    return { suggestions: fallback(), intakeComplete, projectId: project?.id ?? null, workspaceType };
   }
 }
 
@@ -694,14 +737,14 @@ keywordResearchRouter.post("/keyword-research/suggestions", async (req, res) => 
   }
 
   try {
-    const suggestions = await suggestKeywordsForWebsite(
+    const result = await suggestKeywordsForWebsite(
       website,
       parsed.data.limit,
       parsed.data.language,
       parsed.data.excludeKeywords,
       { country: parsed.data.locationCountry, region: parsed.data.locationRegion, cities: parsed.data.locationCities },
     );
-    res.json({ suggestions });
+    res.json(result);
   } catch (error) {
     if (error instanceof Error && error.message === "openai_not_configured") return res.status(503).json({ error: "OpenAI is not configured" });
     res.status(500).json({ error: error instanceof Error ? error.message : "keyword suggestions failed" });

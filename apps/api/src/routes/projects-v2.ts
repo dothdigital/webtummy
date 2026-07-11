@@ -1540,6 +1540,10 @@ guidedProjectsRouter.post("/projects-v2/:projectId/intake", async (req, res) => 
         targetLocations: cleanLocations([], answerText(parsed.data.answers, "target_location") ?? project.targetLocation),
         targetLocation: (answerText(parsed.data.answers, "target_location") ?? project.targetLocation)?.slice(0, 180),
         primaryGoal: answerText(parsed.data.answers, "primary_goal") ?? project.primaryGoal,
+        niche: answerText(parsed.data.answers, "industry_niche") ?? project.niche,
+        targetLaunchTimeline: answerText(parsed.data.answers, "target_launch_timeline") ?? project.targetLaunchTimeline,
+        preferredOutputs: answerText(parsed.data.answers, "preferred_output") ? cleanLocations([], answerText(parsed.data.answers, "preferred_output")) : project.preferredOutputs,
+        preferredPublishingMethod: answerText(parsed.data.answers, "publishing_preference") ?? project.preferredPublishingMethod,
       },
     });
 

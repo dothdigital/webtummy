@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { useNavigate, useSearchParams } from "react-router-dom";
+import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { api } from "../api.js";
 import type { KeywordResearchRun, Website } from "../types.js";
 import { ActionIconButton, ActionIconLink, Button, Card, Input, StatusPill } from "../components/ui.js";
@@ -173,9 +173,15 @@ export default function KeywordReports() {
   const [creating, setCreating] = useState(false);
   const [refreshingId, setRefreshingId] = useState<string | null>(null);
   const [showAddKeyword, setShowAddKeyword] = useState(searchParams.get("add") === "1");
+  const [showManualKeywordForm, setShowManualKeywordForm] = useState(false);
+  const [keywordStep, setKeywordStep] = useState<"select" | "review">("select");
   const [suggestingKeywords, setSuggestingKeywords] = useState(false);
   const [keywordSuggestions, setKeywordSuggestions] = useState<KeywordSuggestion[]>([]);
   const [selectedKeywordSuggestions, setSelectedKeywordSuggestions] = useState<string[]>([]);
+  const [intakeNeedsMoreInfo, setIntakeNeedsMoreInfo] = useState(false);
+  const [intakeProjectId, setIntakeProjectId] = useState<string | null>(null);
+  const [editingSuggestion, setEditingSuggestion] = useState<string | null>(null);
+  const [editingSuggestionValue, setEditingSuggestionValue] = useState("");
   const [queuedKeywords, setQueuedKeywords] = useState<QueuedKeywordRun[]>([]);
   const [formError, setFormError] = useState<FormError | null>(null);
   const [message, setMessage] = useState("");
@@ -279,6 +285,12 @@ export default function KeywordReports() {
     setFormError(null);
   };
 
+  const addManualKeyword = () => {
+    if (!seedKeyword.trim()) return;
+    queueKeywordWithSettings();
+    setShowManualKeywordForm(false);
+  };
+
   const refreshRun = async (run: KeywordResearchRun) => {
     if (!canRefreshKeyword(run)) return;
     setRefreshingId(run.id);
@@ -301,7 +313,7 @@ export default function KeywordReports() {
       const excludeKeywords = mode === "more"
         ? [...keywordSuggestions.map((suggestion) => suggestion.keyword), ...queuedKeywords.map((item) => item.keyword)]
         : queuedKeywords.map((item) => item.keyword);
-      const result = await api.post<{ suggestions: KeywordSuggestion[] }>("/api/keyword-research/suggestions", {
+      const result = await api.post<{ suggestions: KeywordSuggestion[]; intakeComplete: boolean; projectId: string | null }>("/api/keyword-research/suggestions", {
         websiteId,
         limit: 10,
         language: languageCode,
@@ -310,10 +322,12 @@ export default function KeywordReports() {
         locationCities: locationCity,
         excludeKeywords,
       });
+      setIntakeNeedsMoreInfo(!result.intakeComplete);
+      setIntakeProjectId(result.projectId);
       const suggestions = result.suggestions.slice(0, 10);
       setKeywordSuggestions(suggestions);
-      setSelectedKeywordSuggestions([]);
-      setMessage(suggestions.length ? "" : mode === "more" ? "No more new keyword suggestions found for this project." : "No new keyword suggestions found for this project.");
+      setSelectedKeywordSuggestions(suggestions.map((suggestion) => suggestion.keyword));
+      setMessage(!result.intakeComplete || suggestions.length ? "" : mode === "more" ? "No more new keyword suggestions found for this project." : "No new keyword suggestions found for this project.");
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "Could not suggest keywords");
     } finally {
@@ -321,8 +335,34 @@ export default function KeywordReports() {
     }
   };
 
+  useEffect(() => {
+    if (!showAddKeyword || !websiteId || keywordSuggestions.length || suggestingKeywords) return;
+    void suggestKeywords();
+    // Suggestions are generated once when the selected project intake becomes available.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [showAddKeyword, websiteId]);
+
   const toggleKeywordSuggestion = (keyword: string) => {
     setSelectedKeywordSuggestions((current) => current.includes(keyword) ? current.filter((item) => item !== keyword) : [...current, keyword]);
+  };
+
+  const removeKeywordSuggestion = (keyword: string) => {
+    setKeywordSuggestions((current) => current.filter((suggestion) => suggestion.keyword !== keyword));
+    setSelectedKeywordSuggestions((current) => current.filter((item) => item !== keyword));
+  };
+
+  const startEditingSuggestion = (suggestion: KeywordSuggestion) => {
+    setEditingSuggestion(suggestion.keyword);
+    setEditingSuggestionValue(suggestion.keyword);
+  };
+
+  const saveEditedSuggestion = () => {
+    const next = editingSuggestionValue.trim();
+    if (!editingSuggestion || !next) return;
+    setKeywordSuggestions((current) => current.map((suggestion) => suggestion.keyword === editingSuggestion ? { ...suggestion, keyword: next } : suggestion));
+    setSelectedKeywordSuggestions((current) => current.map((keyword) => keyword === editingSuggestion ? next : keyword));
+    setEditingSuggestion(null);
+    setEditingSuggestionValue("");
   };
 
   const toggleAllKeywordSuggestions = () => {
@@ -350,9 +390,9 @@ export default function KeywordReports() {
   return (
     <div className="space-y-6">
       <div>
-        <h1 className="text-2xl font-bold text-charcoal-800">{focusedAddMode ? "Add Keyword" : "Keyword Insight"}</h1>
+        <h1 className="text-2xl font-bold text-charcoal-800">{focusedAddMode ? "Start Keyword Research" : "Keyword Insight"}</h1>
         <p className="mt-1 text-sm text-charcoal-400">
-          {focusedAddMode ? "Add seed keywords and run location-specific keyword intelligence for the selected project." : "Create, manage, and open keyword-level intelligence reports for each project domain."}
+          {focusedAddMode ? "SEnuke AI recommends keyword themes from the client intake. Review them, or optionally add your own seed keyword." : "Create, manage, and open keyword-level intelligence reports for each project domain."}
         </p>
       </div>
 
@@ -391,15 +431,27 @@ export default function KeywordReports() {
         {showAddKeyword && (
           <div className="border-b border-charcoal-100 bg-white">
             <form onSubmit={createRun} className="space-y-4 p-5">
+              <div className="grid grid-cols-2 overflow-hidden rounded-xl border border-slate-200 bg-slate-50 text-sm">
+                <div className={`px-4 py-3 font-semibold ${keywordStep === "select" ? "bg-brand-600 text-white" : "text-slate-500"}`}>
+                  <span className="mr-2">1</span>Select or add keywords
+                </div>
+                <div className={`px-4 py-3 font-semibold ${keywordStep === "review" ? "bg-brand-600 text-white" : "text-slate-500"}`}>
+                  <span className="mr-2">2</span>Review and run analysis
+                </div>
+              </div>
+
+              {keywordStep === "select" && <>
+              {showManualKeywordForm && (
               <div className="rounded-xl border border-slate-200 bg-slate-50/60 p-4">
                 <div className="mb-3 flex flex-col gap-1 sm:flex-row sm:items-end sm:justify-between">
                   <div>
-                    <div className="text-sm font-bold text-charcoal-900">Keyword setup</div>
-                    <div className="text-xs text-charcoal-500">Define the keyword and search context before adding it to the run list.</div>
+                    <div className="text-sm font-bold text-charcoal-900">Start Keyword Research</div>
+                    <div className="text-xs text-charcoal-500">SEnuke AI uses the project intake to recommend starting themes. Manual seed entry is optional.</div>
                   </div>
-                  <Button type="button" onClick={() => queueKeywordWithSettings()} disabled={!seedKeyword.trim()}>
-                    Add Keyword With Settings
-                  </Button>
+                  <div className="flex gap-2">
+                    <Button type="button" variant="ghost" onClick={() => setShowManualKeywordForm(false)}>Cancel</Button>
+                    <Button type="button" onClick={addManualKeyword} disabled={!seedKeyword.trim()}>Add Keyword</Button>
+                  </div>
                 </div>
                 <div className="grid gap-4 lg:grid-cols-4">
                 <label className="block">
@@ -428,7 +480,7 @@ export default function KeywordReports() {
                   </select>
                 </label>
                 <div className="lg:col-span-2">
-                  <Input label="Primary keyword" value={seedKeyword} onChange={setSeedKeyword} placeholder="website design company" />
+                  <Input label={intakeNeedsMoreInfo ? "Seed keyword" : "Optional: Add your own seed keyword"} value={seedKeyword} onChange={setSeedKeyword} placeholder="website design company" />
                 </div>
                 <Input label="Target URL" value={targetUrl} onChange={setTargetUrl} placeholder="https://example.com/service-page" />
                 <Input label="Target domain" value={targetDomain} onChange={setTargetDomain} placeholder="example.com" />
@@ -497,55 +549,86 @@ export default function KeywordReports() {
                   {locationPreview || "No location selected"} · {languageCode} · {device} · top {serpDepth} · {keywordLimit} ideas
                 </div>
               </div>
+              )}
 
               <div className="rounded-xl border border-emerald-100 bg-emerald-50/40 p-4">
                 <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                   <div>
-                    <div className="text-sm font-bold text-emerald-950">Get location-aware keyword suggestions</div>
-                    <p className="mt-1 text-xs leading-5 text-emerald-800">{locationPreview || "Select a location first"}.</p>
+                    <div className="text-sm font-bold text-emerald-950">{intakeNeedsMoreInfo ? "More information needed" : "Recommended Keyword Themes"}</div>
+                    <p className="mt-1 text-xs leading-5 text-emerald-800">{intakeNeedsMoreInfo ? "Add project details or a manual seed keyword before keyword research can run." : "Based on your project intake, SEnuke AI found these starting keyword ideas."}</p>
                   </div>
+                  <div className="flex flex-wrap gap-2">
+                  <Button type="button" variant="ghost" onClick={() => setShowManualKeywordForm(true)}>Add Keyword</Button>
                   <Button
                     type="button"
                     onClick={() => void suggestKeywords()}
-                    disabled={!websiteId || suggestingKeywords || !locationCountry || !locationCity.trim()}
+                    disabled={!websiteId || suggestingKeywords || intakeNeedsMoreInfo}
                     className="border border-emerald-500 bg-emerald-500 text-white shadow-sm shadow-emerald-100 hover:bg-emerald-600"
                   >
                     <svg viewBox="0 0 24 24" aria-hidden="true" className="h-4 w-4">
                       <path d="M12 3l1.7 4.8L18.5 9.5l-4.8 1.7L12 16l-1.7-4.8-4.8-1.7 4.8-1.7L12 3Z" fill="currentColor" />
                       <path d="M18 14l.9 2.6 2.6.9-2.6.9L18 21l-.9-2.6-2.6-.9 2.6-.9L18 14Z" fill="currentColor" />
                     </svg>
-                    {suggestingKeywords ? "Suggesting..." : "Suggest keywords"}
+                    {suggestingKeywords ? "Suggesting..." : keywordSuggestions.length ? "Suggest More" : "Generate Recommendations"}
                   </Button>
+                  </div>
                 </div>
-                {keywordSuggestions.length > 0 && (
+                {suggestingKeywords && (
+                  <div className="mt-4 flex items-center gap-3 rounded-lg border border-emerald-200 bg-white px-4 py-4 text-sm text-emerald-900 shadow-sm" role="status" aria-live="polite">
+                    <span className="h-5 w-5 shrink-0 animate-spin rounded-full border-2 border-emerald-200 border-t-emerald-600" aria-hidden="true" />
+                    <span>SEnuke AI is reviewing the project intake and generating recommended seed keywords...</span>
+                  </div>
+                )}
+                {intakeNeedsMoreInfo && !suggestingKeywords && (
+                  <div className="mt-4 rounded-lg border border-amber-200 bg-amber-50 p-4 text-sm text-amber-950">
+                    <div className="font-bold">More information needed</div>
+                    <p className="mt-1 leading-6">We need either a business description, product/service, niche, or starting keyword before keyword research can run.</p>
+                    <div className="mt-3 flex flex-wrap gap-2">
+                      {intakeProjectId && <Link to={`/guided-projects/${intakeProjectId}/intake`} className="inline-flex items-center justify-center rounded-lg bg-brand-600 px-4 py-2 text-sm font-semibold text-white hover:bg-brand-700">Complete Project Intake</Link>}
+                      <Button type="button" variant="ghost" onClick={() => setShowManualKeywordForm(true)}>Add Seed Keyword Manually</Button>
+                    </div>
+                  </div>
+                )}
+                {!intakeNeedsMoreInfo && keywordSuggestions.length > 0 && (
                   <div className="mt-4 rounded-lg border border-blue-100 bg-white p-3">
                     <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                     <div>
-                      <div className="text-sm font-semibold text-blue-950">Top 10 AI keyword suggestions</div>
-                      <p className="mt-1 text-xs leading-5 text-blue-800">Select suggestions, then add them with the current settings.</p>
+                      <div className="text-sm font-semibold text-blue-950">Recommended seed keywords</div>
+                      <p className="mt-1 text-xs leading-5 text-blue-800">Approve the useful themes, remove irrelevant ones, and add them with the current settings.</p>
                     </div>
                     <div className="flex flex-wrap gap-2">
-                      <Button type="button" variant="ghost" onClick={() => void suggestKeywords("more")} disabled={suggestingKeywords}>{suggestingKeywords ? "Loading..." : "More suggestions"}</Button>
+                      <Button type="button" variant="ghost" onClick={() => void suggestKeywords("more")} disabled={suggestingKeywords}>{suggestingKeywords ? "Loading..." : "Suggest more"}</Button>
                       <Button type="button" variant="ghost" onClick={toggleAllKeywordSuggestions}>{selectedKeywordSuggestions.length === keywordSuggestions.length ? "Clear all" : "Select all"}</Button>
-                      <Button type="button" onClick={useSelectedSuggestions} disabled={selectedKeywordSuggestions.length === 0}>Use selected</Button>
+                      <Button type="button" onClick={useSelectedSuggestions} disabled={selectedKeywordSuggestions.length === 0}>Approve selected</Button>
                     </div>
                     </div>
                     <div className="mt-3 grid gap-2 md:grid-cols-2">
                     {keywordSuggestions.map((suggestion) => {
                       const active = selectedKeywordSuggestions.includes(suggestion.keyword);
                       return (
-                        <label key={suggestion.keyword} className={`flex min-h-16 cursor-pointer items-start gap-3 rounded-lg border bg-white p-3 text-sm shadow-sm ${active ? "border-emerald-300 ring-2 ring-emerald-100" : "border-blue-100 hover:border-blue-200 hover:bg-blue-50/70"}`}>
-                          <input
-                            type="checkbox"
-                            checked={active}
-                            onChange={() => toggleKeywordSuggestion(suggestion.keyword)}
-                            className="mt-1 h-4 w-4 rounded border-blue-300 text-emerald-600 focus:ring-emerald-500"
-                          />
-                          <span className="min-w-0">
-                            <span className="block font-semibold text-blue-950">{suggestion.keyword}</span>
-                            <span className="mt-0.5 block text-xs leading-5 text-blue-800">{suggestion.reason}</span>
-                          </span>
-                        </label>
+                        <div key={suggestion.keyword} className={`min-h-16 rounded-lg border bg-white p-3 text-sm shadow-sm ${active ? "border-emerald-300 ring-2 ring-emerald-100" : "border-blue-100"}`}>
+                          {editingSuggestion === suggestion.keyword ? (
+                            <div className="flex gap-2">
+                              <input value={editingSuggestionValue} onChange={(event) => setEditingSuggestionValue(event.target.value)} className="min-w-0 flex-1 rounded-lg border border-slate-300 px-3 py-2" autoFocus />
+                              <Button type="button" onClick={saveEditedSuggestion} disabled={!editingSuggestionValue.trim()}>Save</Button>
+                              <Button type="button" variant="ghost" onClick={() => setEditingSuggestion(null)}>Cancel</Button>
+                            </div>
+                          ) : (
+                            <div className="flex items-start gap-3">
+                              <label className="flex min-w-0 flex-1 cursor-pointer items-start gap-3">
+                                <input type="checkbox" checked={active} onChange={() => toggleKeywordSuggestion(suggestion.keyword)} className="mt-1 h-4 w-4 rounded border-blue-300 text-emerald-600 focus:ring-emerald-500" />
+                                <span className="min-w-0">
+                                  <span className="block font-semibold text-blue-950">{suggestion.keyword}</span>
+                                  <span className="mt-0.5 block text-xs leading-5 text-blue-800">{suggestion.reason}</span>
+                                </span>
+                              </label>
+                              <div className="flex shrink-0 gap-1">
+                                <button type="button" onClick={() => startEditingSuggestion(suggestion)} className="rounded px-2 py-1 text-xs font-semibold text-blue-700 hover:bg-blue-50">Edit</button>
+                                <button type="button" onClick={() => removeKeywordSuggestion(suggestion.keyword)} className="rounded px-2 py-1 text-xs font-semibold text-red-700 hover:bg-red-50">Remove</button>
+                              </div>
+                            </div>
+                          )}
+                        </div>
                       );
                     })}
                     </div>
@@ -553,6 +636,17 @@ export default function KeywordReports() {
                 )}
               </div>
 
+              <div className="flex justify-end">
+                <Button type="button" onClick={() => {
+                  if (selectedKeywordSuggestions.length) useSelectedSuggestions();
+                  setKeywordStep("review");
+                }} disabled={queuedKeywords.length === 0 && selectedKeywordSuggestions.length === 0}>
+                  Review selected keywords ({queuedKeywords.length + selectedKeywordSuggestions.length})
+                </Button>
+              </div>
+              </>}
+
+              {keywordStep === "review" && <>
               <div className="rounded-xl border border-slate-200 bg-white p-4">
                 <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
                   <div>
@@ -604,11 +698,14 @@ export default function KeywordReports() {
                       <div className="h-full w-1/2 animate-pulse rounded-full bg-brand-500" />
                     </div>
                   </div>
-                ) : <div />}
+                ) : (
+                  <Button type="button" variant="ghost" onClick={() => setKeywordStep("select")}>Go back</Button>
+                )}
                 <Button type="submit" disabled={creating || !websiteId || queuedKeywords.length === 0}>
-                  {creating ? "Running..." : queuedKeywords.length ? `Run keyword intelligence (${queuedKeywords.length})` : "Run keyword intelligence"}
+                  {creating ? "Running..." : queuedKeywords.length ? `Start keyword analysis (${queuedKeywords.length})` : "Start keyword analysis"}
                 </Button>
               </div>
+              </>}
             </form>
           </div>
         )}

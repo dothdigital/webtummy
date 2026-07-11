@@ -434,6 +434,7 @@ export default function GuidedProjectIntake() {
   const [currentStep, setCurrentStep] = useState(0);
   const [started, setStarted] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [savedMessage, setSavedMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -472,8 +473,21 @@ export default function GuidedProjectIntake() {
           ? "advanced"
           : "quick";
       setMode(setupMode);
+      try {
+        const draft = JSON.parse(localStorage.getItem("guided-intake-draft:" + id) ?? "null") as { answers?: Record<string, string>; mode?: IntakeMode } | null;
+        if (draft?.answers) setAnswers((current) => ({ ...current, ...draft.answers }));
+        if (draft?.mode) setMode(draft.mode);
+      } catch {
+        localStorage.removeItem("guided-intake-draft:" + id);
+      }
+      setStarted((projectResult.project.intakeAnswers?.length ?? 0) > 0 || Boolean(projectResult.project.businessProfile));
     }).catch((err) => setError(err instanceof Error ? err.message : "Could not load intake"));
   }, [id]);
+
+  useEffect(() => {
+    if (!id || !project) return;
+    localStorage.setItem("guided-intake-draft:" + id, JSON.stringify({ answers, mode, updatedAt: new Date().toISOString() }));
+  }, [answers, id, mode, project]);
 
   const allQuestions = useMemo(() => {
     const byKey = new Map<string, IntakeQuestion>();
@@ -546,10 +560,16 @@ export default function GuidedProjectIntake() {
     update(question.key, answers[question.key] ?? "");
   };
 
-  const save = async () => {
-    if (!id || missingRequired.length) return;
+  const save = async (exitAfter = false) => {
+    if (!id) return;
+    if (missingRequired.length) {
+      setSavedMessage("Draft saved on this device");
+      if (exitAfter) navigate("/guided-projects/" + id);
+      return;
+    }
     setBusy(true);
     setError(null);
+    setSavedMessage(null);
     try {
       await api.post(`/api/projects-v2/${id}/intake`, {
         answers: [
@@ -585,7 +605,9 @@ export default function GuidedProjectIntake() {
           },
         ],
       });
-      navigate(`/guided-projects/${id}`);
+      localStorage.removeItem("guided-intake-draft:" + id);
+      setSavedMessage("Changes saved");
+      if (exitAfter) navigate("/guided-projects/" + id);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not save intake");
     } finally {
@@ -601,12 +623,18 @@ export default function GuidedProjectIntake() {
   const goNext = async () => {
     if (currentMissingRequired.length) return;
     if (isLastStep) {
-      await save();
+      await save(true);
       return;
     }
     setCurrentStep((step) => Math.min(groupedQuestions.length - 1, step + 1));
   };
-  const goBack = () => setCurrentStep((step) => Math.max(0, step - 1));
+  const goBack = () => {
+    if (currentStep === 0) {
+      setStarted(false);
+      return;
+    }
+    setCurrentStep((step) => step - 1);
+  };
 
   return (
     <form onSubmit={(event) => { event.preventDefault(); void goNext(); }} className="space-y-5">
@@ -616,7 +644,7 @@ export default function GuidedProjectIntake() {
           <h1 className="mt-2 text-[28px] font-bold leading-tight text-charcoal-950">{project.businessName || project.name}</h1>
           <p className="text-sm text-charcoal-500">Quick setup is enough to create your first strategy. Advanced details can be added later when a module needs them.</p>
         </div>
-        <Link to={`/guided-projects/${project.id}`} className="inline-flex items-center justify-center rounded-lg border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-700 shadow-sm hover:bg-slate-50">Save & Exit</Link>
+        <button type="button" onClick={() => void save(true)} disabled={busy} className="inline-flex items-center justify-center rounded-lg border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-700 shadow-sm hover:bg-slate-50 disabled:opacity-50">Save & Exit</button>
       </div>
 
       {!started ? (
@@ -733,10 +761,17 @@ export default function GuidedProjectIntake() {
           title={activeGroup.step}
           helper={stepHelper(activeGroup.step)}
         >
-          {activeGroup.questions.length === 0 && (
-            <div className="rounded-lg border border-slate-200 bg-slate-50 p-4 text-sm text-slate-600 lg:col-span-2">
-              <div className="font-bold text-charcoal-950">Ready to launch this setup</div>
-              <p className="mt-2 leading-6">SEnuke AI will save this profile, generate the project context, and use missing optional fields as ask-later prompts inside the modules that need them.</p>
+          {activeGroup.step === "Review & Launch" && (
+            <div className="lg:col-span-2">
+              <div className="mb-4 rounded-lg border border-brand-100 bg-brand-50 p-4 text-sm text-brand-900">Review the information below before saving. Use Previous to edit any section.</div>
+              <div className="grid gap-3 md:grid-cols-2">
+                {visibleQuestions.map((question) => (
+                  <div key={question.key} className="rounded-lg border border-slate-200 bg-white p-4">
+                    <div className="text-xs font-bold uppercase tracking-wide text-slate-500">{question.text}</div>
+                    <div className="mt-2 whitespace-pre-wrap text-sm font-semibold text-slate-900">{answers[question.key]?.trim() || "Not provided"}</div>
+                  </div>
+                ))}
+              </div>
             </div>
           )}
           {activeGroup.questions.map((question) => {
@@ -859,9 +894,11 @@ export default function GuidedProjectIntake() {
         <div className="text-sm text-slate-500">
           Step {currentStep + 1} of {groupedQuestions.length}. {mode === "quick" ? "Quick setup keeps advanced details out of the way." : "Optional fields can be completed now or later."}
         </div>
+        {savedMessage && <div className="text-sm font-semibold text-emerald-700">{savedMessage}</div>}
         <div className="flex justify-end gap-3">
-          <button type="button" onClick={goBack} disabled={currentStep === 0} className="inline-flex items-center justify-center rounded-lg border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50">Previous</button>
-          <Link to={`/guided-projects/${project.id}`} className="inline-flex items-center justify-center rounded-lg border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50">Save & Exit</Link>
+          <button type="button" onClick={goBack} className="inline-flex items-center justify-center rounded-lg border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50">Previous</button>
+          <button type="button" onClick={() => void save(false)} disabled={busy || missingRequired.length > 0} className="inline-flex items-center justify-center rounded-lg border border-brand-200 bg-white px-4 py-2 text-sm font-semibold text-brand-700 hover:bg-brand-50 disabled:opacity-50">Save</button>
+          <button type="button" onClick={() => void save(true)} disabled={busy} className="inline-flex items-center justify-center rounded-lg border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-50">Save & Exit</button>
           <Button type="submit" disabled={busy || currentMissingRequired.length > 0}>{busy ? "Saving..." : isLastStep ? "Create Strategy Profile" : "Next"}</Button>
         </div>
       </div>
