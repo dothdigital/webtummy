@@ -732,6 +732,8 @@ export default function Layout({ children }: { children: ReactNode }) {
     if (n.to === "/workspace") return primaryRole === "admin" || primaryRole === "manager";
     return true;
   });
+  const workspaceItems = items.filter((item) => !item.superOnly);
+  const platformAdminItems = items.filter((item) => item.superOnly);
   const workspaceHref = workspaceIdentity?.workspaceType === "agency" ? "/agency" : "/";
   const workspaceTypeLabel = workspaceIdentity
     ? workspaceIdentity.workspaceType.charAt(0).toUpperCase() + workspaceIdentity.workspaceType.slice(1) + " Workspace"
@@ -788,8 +790,9 @@ export default function Layout({ children }: { children: ReactNode }) {
             </div>
           </div>
         </div>
-        <nav className="flex-1 space-y-1 overflow-y-auto px-4 pb-4">
-          {items.map((n) => (
+        <nav className="flex-1 overflow-y-auto px-4 pb-4">
+          <div className="mb-2 px-3 text-[10px] font-bold uppercase tracking-[0.16em] text-slate-400">Workspace</div>
+          <div className="space-y-1">{workspaceItems.map((n) => (
             <NavLink
               key={n.to}
               to={n.to}
@@ -804,10 +807,14 @@ export default function Layout({ children }: { children: ReactNode }) {
               <NavGlyph icon={n.icon} />
               {n.label}
             </NavLink>
-          ))}
+          ))}</div>
+          {platformAdminItems.length > 0 && <div className="mt-6 border-t border-slate-200 pt-4">
+            <div className="mb-2 px-3 text-[10px] font-bold uppercase tracking-[0.16em] text-rose-500">Platform Admin</div>
+            <div className="space-y-1">{platformAdminItems.map((n) => <NavLink key={n.to} to={n.to} end={n.end} onClick={() => setOpen(false)} className={({ isActive }) => `flex items-center gap-3 rounded-lg border-l-2 px-3 py-2.5 text-sm font-semibold transition ${isActive ? "border-rose-500 bg-white text-rose-700 shadow-sm" : "border-transparent text-slate-700 hover:bg-white/70 hover:text-rose-700"}`}><NavGlyph icon={n.icon} />{n.label}</NavLink>)}</div>
+          </div>}
         </nav>
         <div className="mx-4 mb-3 rounded-lg border border-slate-200 bg-slate-50 p-4 shadow-sm">
-          <div className="text-sm font-semibold text-slate-900">{user?.role === "super_admin" ? "Admin Workspace" : "Pro Agency Plan"}</div>
+          <div className="text-sm font-semibold text-slate-900">{workspaceIdentity ? `${workspaceTypeLabel}` : user?.role === "super_admin" ? "Platform Admin" : "Pro Plan"}</div>
           <div className="mt-2 text-xs leading-5 text-slate-500">AI credits and project activity update as tasks run.</div>
         </div>
         <div className="border-t border-slate-200 p-4">

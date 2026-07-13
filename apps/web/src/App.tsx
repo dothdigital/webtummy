@@ -1,5 +1,5 @@
 import { Routes, Route, Navigate, useLocation, useParams, useNavigate } from "react-router-dom";
-import { useEffect } from "react";
+import { useEffect, type ReactNode } from "react";
 import { AuthProvider, useAuth } from "./auth.js";
 import { api, welcomePending } from "./api.js";
 import type { BillingStatus } from "./types.js";
@@ -53,6 +53,11 @@ function GuidedProjectReadyRedirect() {
   return <Navigate to={id ? `/guided-projects/${id}` : "/projects"} replace />;
 }
 
+function PlatformAdminOnly({ children }: { children: ReactNode }) {
+  const { user } = useAuth();
+  return user?.role === "super_admin" ? children : <Navigate to="/" replace />;
+}
+
 function Shell() {
   const { user, loading } = useAuth();
   const location = useLocation();
@@ -103,7 +108,7 @@ function Shell() {
       <Routes>
         <Route path="/" element={<Overview />} />
         <Route path="/login" element={<Navigate to={landingPath} replace />} />
-        {user.role === "super_admin" && <Route path="/users" element={<Users />} />}
+        <Route path="/users" element={<PlatformAdminOnly><Users /></PlatformAdminOnly>} />
         <Route path="/projects" element={<GuidedProjects />} />
         <Route path="/projects/new" element={<GuidedProjectNew />} />
         <Route path="/guided-projects" element={<GuidedProjects />} />
@@ -141,13 +146,13 @@ function Shell() {
         <Route path="/pricing" element={<Pricing />} />
         <Route path="/terms" element={<Legal kind="terms" />} />
         <Route path="/privacy" element={<Legal kind="privacy" />} />
-        {user.role === "super_admin" && <Route path="/admin" element={<AdminManagement />} />}
-        {user.role === "super_admin" && <Route path="/admin/automation" element={<AutomationCenter />} />}
-        {user.role === "super_admin" && <Route path="/admin/usage-controls" element={<AdminUsageConfig />} />}
-        {user.role === "super_admin" && <Route path="/admin/tasks" element={<AdminTasks mode="index" />} />}
-        {user.role === "super_admin" && <Route path="/admin/tasks/project" element={<AdminTasks mode="project" />} />}
-        {user.role === "super_admin" && <Route path="/admin/tasks/module" element={<AdminTasks mode="module" />} />}
-        {user.role === "super_admin" && <Route path="/admin/plans" element={<AdminPlans />} />}
+        <Route path="/admin" element={<PlatformAdminOnly><AdminManagement /></PlatformAdminOnly>} />
+        <Route path="/admin/automation" element={<PlatformAdminOnly><AutomationCenter /></PlatformAdminOnly>} />
+        <Route path="/admin/usage-controls" element={<PlatformAdminOnly><AdminUsageConfig /></PlatformAdminOnly>} />
+        <Route path="/admin/tasks" element={<PlatformAdminOnly><AdminTasks mode="index" /></PlatformAdminOnly>} />
+        <Route path="/admin/tasks/project" element={<PlatformAdminOnly><AdminTasks mode="project" /></PlatformAdminOnly>} />
+        <Route path="/admin/tasks/module" element={<PlatformAdminOnly><AdminTasks mode="module" /></PlatformAdminOnly>} />
+        <Route path="/admin/plans" element={<PlatformAdminOnly><AdminPlans /></PlatformAdminOnly>} />
         <Route path="/keyword-insights/:id" element={<KeywordResearchDetail />} />
         <Route path="/keyword-reports" element={<Navigate to="/keyword-insights" replace />} />
         <Route path="/geo-keyword-intelligence" element={<GeoKeywordIntelligence />} />

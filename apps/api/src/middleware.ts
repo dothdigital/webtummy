@@ -44,7 +44,8 @@ export async function requireAuth(req: Request, res: Response, next: NextFunctio
 /** Enforce DEV-016 role capabilities for every authenticated API action. */
 export async function enforceWorkspacePermissions(req: Request, res: Response, next: NextFunction) {
   if (!req.user) return res.status(401).json({ error: "unauthenticated" });
-  if (req.user.role === "super_admin") return next();
+  const platformAdminRoute = ["/api/users", "/api/clients", "/api/admin"].some((prefix) => req.originalUrl.startsWith(prefix));
+  if (req.user.role === "super_admin" && platformAdminRoute) return next();
   if (req.originalUrl.startsWith("/api/workspace") || req.originalUrl.startsWith("/api/agency")) return next();
   try {
     const context = await workspaceContext(req);
