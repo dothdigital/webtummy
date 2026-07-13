@@ -769,7 +769,7 @@ export default function Layout({ children }: { children: ReactNode }) {
                   onClick={() => setOpen(false)}
                   className="block truncate text-[10px] font-bold uppercase tracking-wide text-brand-600 hover:text-brand-800 hover:underline"
                 >
-                  {user?.workspace?.primaryRole ? `${user.workspace.primaryRole === "admin" ? "Owner/Admin" : user.workspace.primaryRole === "manager" ? "Manager/Approver" : user.workspace.primaryRole.replace("_", " ")} · ${workspaceTypeLabel}` : workspaceTypeLabel}
+                  {workspaceTypeLabel}
                 </Link>
               ) : (
                 <div className="truncate text-[10px] font-bold uppercase tracking-wide text-brand-600">
