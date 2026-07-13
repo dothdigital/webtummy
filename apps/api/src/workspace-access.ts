@@ -60,8 +60,17 @@ export async function workspaceContext(req: Request): Promise<WorkspaceContext> 
   if (!req.user) throw Object.assign(new Error("Unauthenticated."), { statusCode: 401 });
   const explicitWorkspaceId = req.header("x-senuke-ai-workspace-id")?.trim();
   let workspace = explicitWorkspaceId
-    ? await prisma.workspace.findUnique({ where: { id: explicitWorkspaceId } })
+    ? await prisma.workspace.findFirst({ where: { id: explicitWorkspaceId, memberships: { some: { userId: req.user.userId, status: "active" } } } })
     : await prisma.workspace.findFirst({ where: { memberships: { some: { userId: req.user.userId } } }, orderBy: { createdAt: "asc" } });
+
+  // Browsers can retain a workspace id after local data or membership changes.
+  // Use the user's active workspace instead of entering legacy bootstrap.
+  if (!workspace && explicitWorkspaceId) {
+    workspace = await prisma.workspace.findFirst({
+      where: { memberships: { some: { userId: req.user.userId, status: "active" } } },
+      orderBy: { createdAt: "asc" },
+    });
+  }
 
   if (!workspace) {
     const legacyClientId = await projectClientIdForRequest(req);
