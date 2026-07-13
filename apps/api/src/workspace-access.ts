@@ -73,6 +73,9 @@ export async function workspaceContext(req: Request): Promise<WorkspaceContext> 
   }
 
   if (!workspace) {
+    if (req.user.role === "super_admin") {
+      throw Object.assign(new Error("Create or join a workspace before using workspace projects."), { statusCode: 409 });
+    }
     const legacyClientId = await projectClientIdForRequest(req);
     if (!legacyClientId || legacyClientId === "__no_client_scope__") throw Object.assign(new Error("Workspace context is required."), { statusCode: 400 });
     workspace = await bootstrapWorkspace(req, legacyClientId);

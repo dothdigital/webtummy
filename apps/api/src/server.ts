@@ -1,4 +1,5 @@
 // SEnuke AI API server.
+import "./async-errors.js";
 import express from "express";
 import { config } from "./config.js";
 import { authRouter } from "./routes/auth.js";
