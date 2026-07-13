@@ -28,6 +28,20 @@ export interface AppUser {
   role: "super_admin" | "client_admin" | "client_user";
   clientId: string | null;
   firstLogin?: boolean;
+  workspace: {
+    id: string;
+    name: string;
+    type: string;
+    membershipId: string;
+    roles: string[];
+    primaryRole: "admin" | "manager" | "editor" | "viewer" | "client_viewer";
+    primaryOwner: boolean;
+    landingPath: string;
+    capabilities: {
+      manageWorkspace: boolean; manageProjects: boolean; assignTasks: boolean; approve: boolean;
+      edit: boolean; publish: boolean; billing: boolean; viewInternal: boolean;
+    };
+  } | null;
 }
 
 export function getToken() {
@@ -97,7 +111,7 @@ export async function login(email: string, password: string): Promise<AppUser> {
   localStorage.setItem("wt_token", token!);
   const authenticatedUser = data.user as AppUser;
   if (authenticatedUser.role === "super_admin") endImpersonation();
-  if (authenticatedUser.firstLogin) localStorage.setItem(WELCOME_USER_KEY, authenticatedUser.id);
+  if (authenticatedUser.firstLogin && authenticatedUser.workspace?.primaryOwner) localStorage.setItem(WELCOME_USER_KEY, authenticatedUser.id);
   rememberUser(authenticatedUser);
   return authenticatedUser;
 }

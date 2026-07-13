@@ -9,6 +9,22 @@ function formatDate(value: string | null | undefined) {
   return new Intl.DateTimeFormat(undefined, { month: "numeric", day: "numeric", year: "numeric" }).format(new Date(value));
 }
 
+function effectiveRole(roles: string[]) {
+  if (roles.includes("owner") || roles.includes("admin")) return "admin";
+  if (roles.includes("manager") || roles.includes("approver")) return "manager";
+  if (roles.includes("editor")) return "editor";
+  if (roles.includes("client_viewer")) return "client_viewer";
+  return "viewer";
+}
+
+function effectiveRoleLabel(roles: string[]) {
+  const role = roles.length === 1 && ["admin", "manager", "editor", "viewer", "client_viewer"].includes(roles[0]) ? roles[0] : effectiveRole(roles);
+  if (role === "admin") return "Owner/Admin";
+  if (role === "manager") return "Manager/Approver";
+  if (role === "client_viewer") return "Client Viewer";
+  return role.charAt(0).toUpperCase() + role.slice(1);
+}
+
 function formatDateTime(value: string | null | undefined) {
   if (!value) return "-";
   return new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric", year: "numeric", hour: "numeric", minute: "2-digit" }).format(new Date(value));
@@ -67,7 +83,7 @@ export default function Users() {
   const [planFilter, setPlanFilter] = useState("all");
   const [loading, setLoading] = useState(true);
   const [busyId, setBusyId] = useState<string | null>(null);
-  const [modal, setModal] = useState<{ type: "details" | "edit" | "password" | "subscription"; user: AdminUser } | null>(null);
+  const [modal, setModal] = useState<{ type: "details" | "edit" | "password" | "subscription" | "rbac"; user: AdminUser } | null>(null);
   const [password, setPassword] = useState("");
   const [trialDays, setTrialDays] = useState("30");
   const [amount, setAmount] = useState("");
@@ -100,7 +116,7 @@ export default function Users() {
 
   const updateUser = (updated: AdminUser) => {
     setUsers((current) => current.map((item) => {
-      if (item.id === updated.id) return updated;
+      if (item.id === updated.id) return { ...updated, memberships: updated.memberships ?? item.memberships };
       if (updated.clientId && item.clientId === updated.clientId && item.client) return { ...item, client: updated.client };
       return item;
     }));
@@ -130,6 +146,34 @@ export default function Users() {
   const setActive = (user: AdminUser, isActive: boolean) => patchUser(user, `/api/users/${user.id}/active`, { isActive }, `${user.email} ${isActive ? "enabled" : "disabled"}.`);
   const changePlan = (user: AdminUser, plan: string) => patchUser(user, `/api/users/${user.id}/plan`, { plan }, `${user.client?.name ?? user.email} moved to ${planByCode.get(plan)?.name ?? plan}.`);
   const updateBillingAccess = (user: AdminUser, body: unknown, success: string) => patchUser(user, `/api/users/${user.id}/billing-access`, body, success);
+
+  const updateMembershipRole = async (membershipId: string, role: string) => {
+    setBusyId(membershipId); setMessage(null);
+    try { await api.patch(`/api/users/memberships/${membershipId}/role`, { role }); setMessage("Workspace role updated."); await load(); }
+    catch (error) { setMessage(error instanceof Error ? error.message : String(error)); }
+    finally { setBusyId(null); }
+  };
+
+  const updateMembershipStatus = async (membershipId: string, status: string) => {
+    setBusyId(membershipId); setMessage(null);
+    try { await api.patch(`/api/users/memberships/${membershipId}/status`, { status }); setMessage("Workspace membership updated."); await load(); }
+    catch (error) { setMessage(error instanceof Error ? error.message : String(error)); }
+    finally { setBusyId(null); }
+  };
+
+  const makePrimaryOwner = async (workspaceId: string, membershipId: string) => {
+    setBusyId(membershipId); setMessage(null);
+    try { await api.patch(`/api/users/workspaces/${workspaceId}/primary-owner`, { membershipId }); setMessage("Primary Owner updated."); await load(); }
+    catch (error) { setMessage(error instanceof Error ? error.message : String(error)); }
+    finally { setBusyId(null); }
+  };
+
+  const updateApprovalPolicy = async (workspaceId: string, allowManagerSelfApproval: boolean) => {
+    setBusyId(workspaceId); setMessage(null);
+    try { await api.patch(`/api/users/workspaces/${workspaceId}/approval-policy`, { allowManagerSelfApproval }); setMessage("Workspace approval policy updated."); await load(); }
+    catch (error) { setMessage(error instanceof Error ? error.message : String(error)); }
+    finally { setBusyId(null); }
+  };
 
   const changePassword = async (event: FormEvent, user: AdminUser) => {
     event.preventDefault();
@@ -168,7 +212,7 @@ export default function Users() {
     <div className="space-y-6">
       <div>
         <h1 className="text-2xl font-bold text-charcoal-800">User Management</h1>
-        <p className="text-sm text-charcoal-400">Manage accounts, plans, trials, offline subscriptions, and payment history.</p>
+        <p className="text-sm text-charcoal-400">Manage accounts, workspace roles, membership access, plans, subscriptions, and payment history.</p>
       </div>
       {message && <Card className="p-4 text-sm text-charcoal-600">{message}</Card>}
       <Card className="overflow-hidden">
@@ -205,7 +249,7 @@ export default function Users() {
                         <td className="px-5 py-3 font-medium text-charcoal-800">{user.name ?? "-"}</td>
                         <td className="px-5 py-3 text-charcoal-600">{user.email}</td>
                         <td className="px-5 py-3 text-charcoal-600">{user.client?.name ?? "-"}</td>
-                        <td className="px-5 py-3 text-charcoal-600">{user.role.replace("_", " ")}</td>
+                        <td className="px-5 py-3 text-charcoal-600">{user.role === "super_admin" ? "Super Admin" : (user.memberships ?? []).map((membership) => effectiveRoleLabel(membership.roles.map((item) => item.role))).join(", ") || user.role.replace("_", " ")}</td>
                         <td className="px-5 py-3">
                           <div className={`inline-flex rounded-full border px-2.5 py-1 text-xs font-semibold capitalize ${status.className}`}>{status.label}</div>
                           <div className="mt-1 text-xs text-charcoal-400">{status.detail}</div>
@@ -215,6 +259,7 @@ export default function Users() {
                         <td className="px-5 py-3 text-right">
                           <div className="flex flex-nowrap justify-end gap-2 whitespace-nowrap">
                             <ActionIconButton icon="details" label="Details" onClick={() => setModal({ type: "details", user })} />
+                            {user.role !== "super_admin" && <ActionIconButton icon="edit" label="Manage workspace roles" onClick={() => setModal({ type: "rbac", user })} />}
                             {user.clientId && <ActionIconButton icon="save" label="Manage subscription" onClick={() => setModal({ type: "subscription", user })} />}
                             {user.clientId && <ActionIconButton icon="edit" label="Edit user and plan" onClick={() => setModal({ type: "edit", user })} disabled={busyId === user.id} />}
                             {user.clientId && <ActionIconButton icon="project" label="View projects" onClick={() => { startImpersonation(user.clientId!, user.name ?? user.email); navigate("/projects"); }} />}
@@ -232,7 +277,7 @@ export default function Users() {
         )}
       </Card>
       {modal && (
-        <Modal title={modal.type === "subscription" ? `Manage Subscription — ${modal.user.name ?? modal.user.email}` : modal.type === "password" ? `Change Password — ${modal.user.name ?? modal.user.email}` : modal.type === "edit" ? `Edit User — ${modal.user.name ?? modal.user.email}` : `User Details — ${modal.user.name ?? modal.user.email}`} onClose={() => setModal(null)}>
+        <Modal title={modal.type === "rbac" ? `Workspace Access — ${modal.user.name ?? modal.user.email}` : modal.type === "subscription" ? `Manage Subscription — ${modal.user.name ?? modal.user.email}` : modal.type === "password" ? `Change Password — ${modal.user.name ?? modal.user.email}` : modal.type === "edit" ? `Edit User — ${modal.user.name ?? modal.user.email}` : `User Details — ${modal.user.name ?? modal.user.email}`} onClose={() => setModal(null)}>
           {modal.type === "details" && (
             <div className="grid gap-4 text-sm md:grid-cols-3">
               <Detail label="User ID" value={modal.user.id} /><Detail label="Client ID" value={modal.user.clientId ?? "-"} /><Detail label="User created" value={formatDateTime(modal.user.createdAt)} />
@@ -259,6 +304,30 @@ export default function Users() {
                 <Button variant="ghost" onClick={() => setActive(modal.user, !modal.user.isActive)} disabled={busyId === modal.user.id}>{modal.user.isActive ? "Disable account" : "Enable account"}</Button>
                 {!modal.user.emailVerifiedAt && <Button onClick={() => verify(modal.user)} disabled={busyId === modal.user.id}>Verify email</Button>}
               </div>
+            </div>
+          )}
+          {modal.type === "rbac" && (
+            <div className="space-y-4">
+              {(users.find((item) => item.id === modal.user.id)?.memberships ?? modal.user.memberships ?? []).map((membership) => {
+                const primaryOwner = membership.workspace.ownerUserId === membership.userId;
+                const currentRole = effectiveRole(membership.roles.map((item) => item.role));
+                const allowedRoles = membership.workspace.workspaceType === "agency" ? ["admin", "manager", "editor", "viewer", "client_viewer"] : ["admin", "manager", "editor", "viewer"];
+                const approvalPolicy = membership.workspace.autoApprovalPolicyJson && typeof membership.workspace.autoApprovalPolicyJson === "object" ? membership.workspace.autoApprovalPolicyJson as { allowManagerSelfApproval?: unknown } : {};
+                return <Card key={membership.id} className="p-4">
+                  <div className="flex flex-wrap items-start justify-between gap-3"><div><div className="font-bold text-charcoal-900">{membership.workspace.name}</div><div className="mt-1 text-xs capitalize text-charcoal-500">{membership.workspace.workspaceType} workspace · {primaryOwner ? "Primary Owner" : "Member"}</div></div><span className={`rounded-full px-2.5 py-1 text-xs font-bold ${membership.status === "active" ? "bg-emerald-50 text-emerald-700" : "bg-amber-50 text-amber-700"}`}>{membership.status}</span></div>
+                  <div className="mt-4 grid gap-3 md:grid-cols-[1fr_1fr_auto]">
+                    <label className="text-xs font-bold text-charcoal-600">Effective role<select disabled={primaryOwner || busyId === membership.id} value={currentRole} onChange={(event) => void updateMembershipRole(membership.id, event.target.value)} className="mt-1 h-10 w-full rounded-lg border bg-white px-3 text-sm font-normal">{allowedRoles.map((role) => <option key={role} value={role}>{effectiveRoleLabel([role])}</option>)}</select></label>
+                    <label className="text-xs font-bold text-charcoal-600">Membership status<select disabled={primaryOwner || busyId === membership.id} value={membership.status} onChange={(event) => void updateMembershipStatus(membership.id, event.target.value)} className="mt-1 h-10 w-full rounded-lg border bg-white px-3 text-sm font-normal"><option value="active">Active</option><option value="suspended">Suspended</option><option value="deactivated">Deactivated</option></select></label>
+                    <div className="grid grid-cols-3 gap-2 text-center text-xs"><Detail label="Projects" value={String(membership._count.projectAssignments)} /><Detail label="Tasks" value={String(membership._count.assignedTasks)} /><Detail label="Approvals" value={String(membership._count.approvalTasks)} /></div>
+                  </div>
+                  <div className="mt-4 flex flex-wrap items-center justify-between gap-3 border-t border-slate-100 pt-3">
+                    <label className="flex items-start gap-2 text-xs text-charcoal-600"><input type="checkbox" checked={approvalPolicy.allowManagerSelfApproval === true} disabled={busyId === membership.workspace.id} onChange={(event) => void updateApprovalPolicy(membership.workspace.id, event.target.checked)} className="mt-0.5" /><span><b>Manager self-approval</b><span className="block text-charcoal-400">Allow Manager/Approver users to approve their own submitted work.</span></span></label>
+                    {!primaryOwner && currentRole === "admin" && <Button variant="ghost" disabled={busyId === membership.id} onClick={() => void makePrimaryOwner(membership.workspace.id, membership.id)}>Make Primary Owner</Button>}
+                  </div>
+                  {primaryOwner && <p className="mt-3 text-xs text-amber-700">Transfer Primary Owner from the workspace before changing this user’s Owner/Admin role or status.</p>}
+                </Card>;
+              })}
+              {!modal.user.memberships?.length && <p className="text-sm text-charcoal-500">This account has no workspace membership.</p>}
             </div>
           )}
           {modal.type === "password" && (

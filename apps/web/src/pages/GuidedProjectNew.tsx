@@ -58,12 +58,19 @@ export default function GuidedProjectNew() {
     agencyClientId: searchParams.get("agencyClientId") ?? "",
     name: "",
     clientProjectType: "service_business",
+    websiteStatus: "existing_website",
     websiteUrl: "",
     businessName: "",
     niche: "",
     businessLocation: "",
     targetLocations: [] as string[],
     primaryGoal: "",
+    secondaryGoalsText: "",
+    competitorsText: "",
+    notes: "",
+    brandVoice: "",
+    analyticsText: "",
+    cmsPlatform: "",
     targetLaunchTimeline: "14 days",
     preferredOutputs: ["SEO plan"],
     preferredPublishingMethod: "WordPress",
@@ -72,8 +79,7 @@ export default function GuidedProjectNew() {
 
   const patch = (data: Partial<typeof form>) => setForm((current) => ({ ...current, ...data }));
   const isAgency = workspaceType === "agency";
-  const isNewSite = form.primaryGoal === "Build / Launch New Website";
-  const requiresWebsite = !isNewSite;
+  const requiresWebsite = form.websiteStatus === "existing_website";
 
   useEffect(() => {
     void api.get<{ workspace: { workspaceType: string }; clients: { id: string; name: string; status: string; websites: unknown; businessLocations: unknown; targetMarkets: unknown; defaultSettings: unknown }[] }>("/api/agency/workspace")
@@ -98,13 +104,17 @@ export default function GuidedProjectNew() {
 
   const createProject = async (event: React.FormEvent) => {
     event.preventDefault();
-    if (!form.name.trim() || (!isAgency && !form.businessName.trim()) || !form.niche.trim() || (!isAgency && (!form.businessLocation.trim() || !form.targetLocations.length)) || !form.primaryGoal || !form.clientProjectType || (isAgency && !form.agencyClientId) || (requiresWebsite && !form.websiteUrl.trim())) return;
+    if (!form.name.trim() || !form.businessLocation.trim() || !form.targetLocations.length || !form.primaryGoal || !form.clientProjectType || (isAgency && !form.agencyClientId) || (requiresWebsite && !form.websiteUrl.trim())) return;
     setBusy(true);
     setMessage(null);
     try {
       const selectedClientType = clientProjectTypes.find((type) => type.value === form.clientProjectType) ?? clientProjectTypes[1];
-      const projectType = isNewSite ? "new_business" : selectedClientType.projectType;
-      const result = await api.post<{ project: GuidedProject }>("/api/projects-v2", { ...form, businessName: isAgency ? null : form.businessName, projectType });
+      const projectType = form.websiteStatus === "new_website_required" ? "new_business" : selectedClientType.projectType;
+      const split = (value: string) => value.split(/[,;\n]/g).map((item) => item.trim()).filter(Boolean);
+      const result = await api.post<{ project: GuidedProject }>("/api/projects-v2", {
+        ...form, businessName: isAgency ? null : form.businessName, projectType,
+        secondaryGoals: split(form.secondaryGoalsText), competitors: split(form.competitorsText), analyticsPlatforms: split(form.analyticsText),
+      });
       navigate(`/guided-projects/${result.project.id}/intake`);
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "Could not create project");
@@ -113,7 +123,7 @@ export default function GuidedProjectNew() {
     }
   };
 
-  const canSubmit = Boolean(form.name.trim() && (isAgency || form.businessName.trim()) && form.niche.trim() && (isAgency || (form.businessLocation.trim() && form.targetLocations.length)) && form.primaryGoal && form.clientProjectType && (!isAgency || form.agencyClientId) && (!requiresWebsite || form.websiteUrl.trim()));
+  const canSubmit = Boolean(form.name.trim() && form.businessLocation.trim() && form.targetLocations.length && form.primaryGoal && form.clientProjectType && (!isAgency || form.agencyClientId) && (!requiresWebsite || form.websiteUrl.trim()));
 
   return (
     <form onSubmit={createProject} className="space-y-5">
@@ -132,13 +142,11 @@ export default function GuidedProjectNew() {
             <div className="mt-5 grid gap-5 md:grid-cols-2">
               {isAgency && <label className="block md:col-span-2"><span className="mb-1 block text-sm font-bold text-slate-800">Client *</span><select required value={form.agencyClientId} onChange={(event) => patch({ agencyClientId: event.target.value })} className="h-11 w-full rounded-lg border border-slate-200 bg-white px-3 text-sm"><option value="">Select client</option>{agencyClients.map((client) => <option key={client.id} value={client.id}>{client.name}</option>)}</select><span className="mt-1 block text-xs text-slate-500">Client-wide business, contact, branding, market, and website defaults stay on the client record.</span></label>}
               <Input label="Project Name *" value={form.name} onChange={(name) => patch({ name })} placeholder="e.g., Acme SEO Campaign" />
-              {!isAgency && <Input label="Business Name *" value={form.businessName} onChange={(businessName) => patch({ businessName })} placeholder="e.g., Acme Digital Marketing" />}
-              <div className="md:col-span-2">
-                <Input label={requiresWebsite ? "Website URL *" : "Website URL (optional for new site)"} value={form.websiteUrl} onChange={(websiteUrl) => patch({ websiteUrl })} placeholder="https://www.example.com" />
-                <span className="mt-1 block text-xs text-slate-500">{requiresWebsite ? "Existing-site projects require a valid website URL." : "New-site projects continue without a crawl until a website exists."}</span>
-              </div>
+              {!isAgency && <Input label="Business Name (optional)" value={form.businessName} onChange={(businessName) => patch({ businessName })} placeholder="e.g., Acme Digital Marketing" />}
+              <label className="block md:col-span-2"><span className="mb-1 block text-sm font-bold text-slate-800">Website Status *</span><select required value={form.websiteStatus} onChange={(event) => patch({ websiteStatus: event.target.value })} className="h-11 w-full rounded-lg border border-slate-200 bg-white px-3 text-sm"><option value="existing_website">Existing Website</option><option value="new_website_required">New Website Required</option><option value="website_planned">Website Planned</option><option value="no_website_required">No Website Required</option></select></label>
+              {requiresWebsite && <div className="md:col-span-2"><Input label="Website URL *" value={form.websiteUrl} onChange={(websiteUrl) => patch({ websiteUrl })} placeholder="https://www.example.com" /><span className="mt-1 block text-xs text-slate-500">Only an Existing Website requires a URL and site analysis.</span></div>}
               <label className="block">
-                <span className="mb-1 block text-sm font-bold text-slate-800">Industry / Niche *</span>
+                <span className="mb-1 block text-sm font-bold text-slate-800">Industry / Niche (optional)</span>
                 <input value={form.niche} onChange={(event) => patch({ niche: event.target.value })} placeholder="e.g., Roofing, Med spa, SaaS CRM, Fitness coaching" className="h-11 w-full rounded-lg border border-slate-200 px-3 text-sm outline-none focus:border-brand-400 focus:ring-2 focus:ring-brand-100" />
                 <span className="mt-1 block text-xs text-slate-500">Enter the client niche in your own words.</span>
               </label>
@@ -153,6 +161,12 @@ export default function GuidedProjectNew() {
                 </select>
                 <span className="mt-1 block text-xs text-slate-500">Primary Goal is what the agency wants to accomplish for the client.</span>
               </label>
+              <Input label="Secondary Goals (optional)" value={form.secondaryGoalsText} onChange={(secondaryGoalsText) => patch({ secondaryGoalsText })} placeholder="Separate multiple goals with commas" />
+              <Input label="Competitors (optional)" value={form.competitorsText} onChange={(competitorsText) => patch({ competitorsText })} placeholder="competitor.com, another.com" />
+              <Input label="Brand Voice (optional)" value={form.brandVoice} onChange={(brandVoice) => patch({ brandVoice })} placeholder="Professional, clear, friendly" />
+              <Input label="Analytics (optional)" value={form.analyticsText} onChange={(analyticsText) => patch({ analyticsText })} placeholder="GA4, Search Console" />
+              <Input label="CMS (optional)" value={form.cmsPlatform} onChange={(cmsPlatform) => patch({ cmsPlatform })} placeholder="WordPress, Shopify, Webflow" />
+              <label className="block md:col-span-2"><span className="mb-1 block text-sm font-bold text-slate-800">Notes (optional)</span><textarea value={form.notes} onChange={(event) => patch({ notes: event.target.value })} rows={4} className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm" placeholder="Anything else the team should know" /></label>
             </div>
           </Card>
 

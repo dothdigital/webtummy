@@ -29,6 +29,10 @@ function publicUser(user: {
 }
 
 const activeSchema = z.object({ isActive: z.boolean() });
+const workspaceRoleSchema = z.object({ role: z.enum(["admin", "manager", "editor", "viewer", "client_viewer"]) });
+const membershipStatusSchema = z.object({ status: z.enum(["active", "suspended", "deactivated"]) });
+const primaryOwnerSchema = z.object({ membershipId: z.string().min(1) });
+const approvalPolicySchema = z.object({ allowManagerSelfApproval: z.boolean() });
 const planSchema = z.object({ plan: z.string().min(1).max(40) });
 const passwordSchema = z.object({ password: z.string().min(8).max(128) });
 const billingAccessSchema = z.discriminatedUnion("action", [
@@ -78,9 +82,81 @@ function addMonths(date: Date, months: number) {
 usersRouter.get("/", async (_req, res) => {
   const users = await prisma.user.findMany({
     orderBy: { createdAt: "desc" },
-    include: { client: { select: clientUserSelect } },
+    include: {
+      client: { select: clientUserSelect },
+      workspaceMemberships: {
+        orderBy: { createdAt: "asc" },
+        include: {
+          workspace: { select: { id: true, name: true, workspaceType: true, ownerUserId: true, status: true, autoApprovalPolicyJson: true } },
+          roles: { select: { role: true } },
+          _count: { select: { clientAssignments: true, projectAssignments: true, assignedTasks: true, managedTasks: true, approvalTasks: true } },
+        },
+      },
+    },
   });
-  res.json({ users: users.map(publicUser) });
+  res.json({ users: users.map((user) => ({ ...publicUser(user), memberships: user.workspaceMemberships })) });
+});
+
+usersRouter.patch("/memberships/:membershipId/role", async (req, res) => {
+  const parsed = workspaceRoleSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() });
+  const membership = await prisma.workspaceMembership.findUnique({ where: { id: req.params.membershipId }, include: { workspace: true, roles: true } });
+  if (!membership) return res.status(404).json({ error: "workspace membership not found" });
+  const role = parsed.data.role;
+  if (role === "client_viewer" && membership.workspace.workspaceType !== "agency") return res.status(400).json({ error: "Client Viewer is available only in Agency workspaces." });
+  if (membership.workspace.ownerUserId === membership.userId && role !== "admin") return res.status(409).json({ error: "The Primary Owner must retain Owner/Admin authority." });
+  const storedRoles = membership.workspace.ownerUserId === membership.userId ? ["owner", "admin"] : [role];
+  await prisma.$transaction(async (tx) => {
+    await tx.workspaceMemberRole.deleteMany({ where: { membershipId: membership.id } });
+    await tx.workspaceMemberRole.createMany({ data: storedRoles.map((item) => ({ membershipId: membership.id, role: item, grantedById: req.user!.userId })) });
+    await tx.workspaceActivity.create({ data: { workspaceId: membership.workspaceId, actorUserId: req.user!.userId, action: "super_admin.membership_role_changed", entityType: "workspace_membership", entityId: membership.id, previousJson: { roles: membership.roles.map((item) => item.role) }, nextJson: { roles: storedRoles } } });
+  });
+  res.json({ membershipId: membership.id, roles: storedRoles });
+});
+
+usersRouter.patch("/memberships/:membershipId/status", async (req, res) => {
+  const parsed = membershipStatusSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() });
+  const membership = await prisma.workspaceMembership.findUnique({ where: { id: req.params.membershipId }, include: { workspace: true } });
+  if (!membership) return res.status(404).json({ error: "workspace membership not found" });
+  if (membership.workspace.ownerUserId === membership.userId && parsed.data.status !== "active") return res.status(409).json({ error: "The Primary Owner cannot be suspended or deactivated." });
+  await prisma.$transaction(async (tx) => {
+    await tx.workspaceMembership.update({ where: { id: membership.id }, data: { status: parsed.data.status, suspendedAt: parsed.data.status === "suspended" ? new Date() : null, deactivatedAt: parsed.data.status === "deactivated" ? new Date() : null } });
+    await tx.workspaceActivity.create({ data: { workspaceId: membership.workspaceId, actorUserId: req.user!.userId, action: "super_admin.membership_status_changed", entityType: "workspace_membership", entityId: membership.id, previousJson: { status: membership.status }, nextJson: { status: parsed.data.status } } });
+  });
+  res.json({ membershipId: membership.id, status: parsed.data.status });
+});
+
+usersRouter.patch("/workspaces/:workspaceId/primary-owner", async (req, res) => {
+  const parsed = primaryOwnerSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() });
+  const workspace = await prisma.workspace.findUnique({ where: { id: req.params.workspaceId } });
+  if (!workspace) return res.status(404).json({ error: "workspace not found" });
+  const membership = await prisma.workspaceMembership.findFirst({ where: { id: parsed.data.membershipId, workspaceId: workspace.id, status: "active" } });
+  if (!membership) return res.status(400).json({ error: "The new Primary Owner must be an active member of this workspace." });
+  await prisma.$transaction(async (tx) => {
+    const previousOwner = await tx.workspaceMembership.findUnique({ where: { workspaceId_userId: { workspaceId: workspace.id, userId: workspace.ownerUserId } } });
+    await tx.workspace.update({ where: { id: workspace.id }, data: { ownerUserId: membership.userId } });
+    await tx.workspaceMemberRole.upsert({ where: { membershipId_role: { membershipId: membership.id, role: "owner" } }, create: { membershipId: membership.id, role: "owner", grantedById: req.user!.userId }, update: {} });
+    await tx.workspaceMemberRole.upsert({ where: { membershipId_role: { membershipId: membership.id, role: "admin" } }, create: { membershipId: membership.id, role: "admin", grantedById: req.user!.userId }, update: {} });
+    if (previousOwner && previousOwner.id !== membership.id) await tx.workspaceMemberRole.deleteMany({ where: { membershipId: previousOwner.id, role: "owner" } });
+    await tx.workspaceActivity.create({ data: { workspaceId: workspace.id, actorUserId: req.user!.userId, action: "super_admin.primary_owner_changed", entityType: "workspace", entityId: workspace.id, previousJson: { ownerUserId: workspace.ownerUserId }, nextJson: { ownerUserId: membership.userId } } });
+  });
+  res.json({ workspaceId: workspace.id, ownerUserId: membership.userId });
+});
+
+usersRouter.patch("/workspaces/:workspaceId/approval-policy", async (req, res) => {
+  const parsed = approvalPolicySchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() });
+  const workspace = await prisma.workspace.findUnique({ where: { id: req.params.workspaceId } });
+  if (!workspace) return res.status(404).json({ error: "workspace not found" });
+  const previous = workspace.autoApprovalPolicyJson && typeof workspace.autoApprovalPolicyJson === "object" ? workspace.autoApprovalPolicyJson as Record<string, unknown> : {};
+  const next = { ...previous, allowManagerSelfApproval: parsed.data.allowManagerSelfApproval };
+  await prisma.$transaction(async (tx) => {
+    await tx.workspace.update({ where: { id: workspace.id }, data: { autoApprovalPolicyJson: next } });
+    await tx.workspaceActivity.create({ data: { workspaceId: workspace.id, actorUserId: req.user!.userId, action: "super_admin.approval_policy_changed", entityType: "workspace", entityId: workspace.id, previousJson: previous, nextJson: next } });
+  });
+  res.json({ workspaceId: workspace.id, approvalPolicy: next });
 });
 
 usersRouter.patch("/:id/verify-email", async (req, res) => {

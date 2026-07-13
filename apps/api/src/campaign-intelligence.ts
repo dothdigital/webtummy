@@ -23,6 +23,7 @@ export type CampaignExecutionTaskInput = {
 };
 export type CampaignProjectContext = {
   projectType: string;
+  websiteStatus?: string | null;
   websiteId?: string | null;
   websiteUrl?: string | null;
   website?: { id?: string | null; rootUrl?: string | null } | null;
@@ -48,12 +49,20 @@ export const projectWorkflowDefinitions: ProjectWorkflowDefinition[] = [
     sortOrder: 10,
   },
   {
+    stepKey: "readiness",
+    title: "Confirm project readiness",
+    description: "Confirm the required project details are complete before opportunity and keyword research begins.",
+    priority: "high",
+    actionLabel: "Review Readiness",
+    sortOrder: 20,
+  },
+  {
     stepKey: "opportunities",
     title: "Generate opportunities",
     description: "Create scored growth opportunities using the completed intake and business profile.",
     priority: "medium",
     actionLabel: "Generate Opportunities",
-    sortOrder: 20,
+    sortOrder: 30,
   },
   {
     stepKey: "keyword_analysis",
@@ -61,7 +70,7 @@ export const projectWorkflowDefinitions: ProjectWorkflowDefinition[] = [
     description: "Research target keywords, buyer intent, topical clusters, competitor gaps, difficulty, opportunity score, and revenue potential.",
     priority: "high",
     actionLabel: "Add Keywords",
-    sortOrder: 30,
+    sortOrder: 40,
   },
   {
     stepKey: "site_analysis",
@@ -69,7 +78,7 @@ export const projectWorkflowDefinitions: ProjectWorkflowDefinition[] = [
     description: "For existing websites, crawl the current site before strategy and full execution planning. New projects schedule this after pages exist.",
     priority: "high",
     actionLabel: "Analyze Site",
-    sortOrder: 40,
+    sortOrder: 50,
   },
   {
     stepKey: "strategy",
@@ -77,7 +86,7 @@ export const projectWorkflowDefinitions: ProjectWorkflowDefinition[] = [
     description: "Create the SEO, AI citation, content, authority, social, and publishing strategy after opportunity, keyword analysis, and required site analysis are ready.",
     priority: "medium",
     actionLabel: "Generate Strategy",
-    sortOrder: 50,
+    sortOrder: 60,
   },
   {
     stepKey: "strategy_approval",
@@ -85,7 +94,7 @@ export const projectWorkflowDefinitions: ProjectWorkflowDefinition[] = [
     description: "Review the generated strategy before downstream keyword, site, content, domain, publishing, and social tasks are created.",
     priority: "high",
     actionLabel: "Review Strategy",
-    sortOrder: 60,
+    sortOrder: 70,
   },
   {
     stepKey: "execution_plan",
@@ -93,7 +102,7 @@ export const projectWorkflowDefinitions: ProjectWorkflowDefinition[] = [
     description: "Create module-specific tasks for sitemap, content, keywords, domain, lead magnets, authority, social, growth, and publishing.",
     priority: "medium",
     actionLabel: "Create Execution Plan",
-    sortOrder: 70,
+    sortOrder: 80,
   },
 ];
 
@@ -102,6 +111,7 @@ export function hasProjectWebsite(project: CampaignProjectContext) {
 }
 
 export function isExistingWebsiteCampaign(project: CampaignProjectContext) {
+  if (project.websiteStatus) return project.websiteStatus === "existing_website";
   return project.projectType === "existing_website" || project.projectType === "local_seo" || hasProjectWebsite(project);
 }
 

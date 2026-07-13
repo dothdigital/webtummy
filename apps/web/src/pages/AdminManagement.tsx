@@ -4,7 +4,7 @@ import { Card } from "../components/ui.js";
 const adminLinks = [
   {
     title: "Users",
-    description: "Manage users, client access, impersonation, passwords, and subscriptions.",
+    description: "Manage users, workspace RBAC roles, membership status, client access, passwords, and subscriptions.",
     to: "/users",
   },
   {

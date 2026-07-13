@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { api } from "../api.js";
 import { Card } from "../components/ui.js";
+import { useAuth } from "../auth.js";
 import type { GuidedProject } from "../types.js";
 
 type ProjectFilter = "all" | "in_progress" | "needs_review" | "completed";
@@ -58,6 +59,8 @@ function relativeUpdated(value: string) {
 const avatarTones = ["bg-teal-100 text-teal-700", "bg-sky-100 text-sky-700", "bg-emerald-100 text-emerald-700", "bg-violet-100 text-violet-700"];
 
 export default function GuidedProjects() {
+  const { user } = useAuth();
+  const canManageProjects = user?.role === "super_admin" || Boolean(user?.workspace?.capabilities.manageProjects);
   const [projects, setProjects] = useState<GuidedProject[]>([]);
   const [deleteTarget, setDeleteTarget] = useState<GuidedProject | null>(null);
   const [deleting, setDeleting] = useState(false);
@@ -107,9 +110,9 @@ export default function GuidedProjects() {
           <h1 className="text-3xl font-bold tracking-tight text-slate-950">Projects</h1>
           <p className="mt-1 text-base text-slate-500">Every guided project and its current AI growth stage.</p>
         </div>
-        <Link to="/projects/new" className="inline-flex h-11 shrink-0 items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-teal-400 to-teal-600 px-5 text-sm font-bold text-white shadow-lg shadow-teal-200/70 hover:from-teal-500 hover:to-teal-700">
+        {canManageProjects && <Link to="/projects/new" className="inline-flex h-11 shrink-0 items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-teal-400 to-teal-600 px-5 text-sm font-bold text-white shadow-lg shadow-teal-200/70 hover:from-teal-500 hover:to-teal-700">
           <span className="text-xl leading-none">+</span> New Project
-        </Link>
+        </Link>}
       </div>
 
       <div className="mt-7 flex flex-col gap-3 xl:flex-row xl:items-center">
@@ -126,7 +129,7 @@ export default function GuidedProjects() {
         <div className="mt-7 rounded-2xl border border-dashed border-violet-200 bg-white p-10 text-center shadow-sm">
           <div className="text-lg font-bold text-slate-950">No projects yet</div>
           <p className="mx-auto mt-2 max-w-lg text-sm leading-6 text-slate-500">Create a project to begin intake, strategy, analysis, execution, approval, and delivery.</p>
-          <Link to="/projects/new" className="mt-5 inline-flex rounded-xl bg-teal-600 px-5 py-2.5 text-sm font-bold text-white hover:bg-teal-700">Create Project</Link>
+          {canManageProjects && <Link to="/projects/new" className="mt-5 inline-flex rounded-xl bg-teal-600 px-5 py-2.5 text-sm font-bold text-white hover:bg-teal-700">Create Project</Link>}
         </div>
       ) : visibleProjects.length === 0 ? (
         <div className="mt-7 rounded-2xl border border-violet-100 bg-white p-10 text-center shadow-sm"><div className="font-bold text-slate-900">No matching projects</div><p className="mt-2 text-sm text-slate-500">Try another search or status filter.</p><button type="button" onClick={() => { setSearch(""); setFilter("all"); }} className="mt-4 text-sm font-bold text-teal-700">Clear filters</button></div>
@@ -151,7 +154,7 @@ export default function GuidedProjects() {
 
               <div className="mt-5 flex flex-col gap-3 border-t border-violet-50 pt-4 md:flex-row md:items-center md:justify-between">
                 <div className="flex min-w-0 flex-col gap-2 text-sm text-slate-500 sm:flex-row sm:items-center sm:gap-7"><div className="min-w-0 truncate">Next: <span className="font-bold text-slate-900">{nextTitle}</span></div><div className="shrink-0">Updated <span className="font-bold text-slate-800">{relativeUpdated(project.updatedAt)}</span></div></div>
-                <div className="flex shrink-0 items-center gap-4"><button type="button" onClick={() => setDeleteTarget(project)} className="text-xs font-bold text-slate-400 hover:text-rose-600">Delete</button><Link to={project.currentStep === "intake" ? `/guided-projects/${project.id}/intake` : `/guided-projects/${project.id}`} className="text-sm font-bold text-teal-700 hover:text-teal-900">Open project →</Link></div>
+                <div className="flex shrink-0 items-center gap-4">{canManageProjects && <button type="button" onClick={() => setDeleteTarget(project)} className="text-xs font-bold text-slate-400 hover:text-rose-600">Delete</button>}<Link to={project.currentStep === "intake" && user?.workspace?.capabilities.edit ? `/guided-projects/${project.id}/intake` : `/guided-projects/${project.id}`} className="text-sm font-bold text-teal-700 hover:text-teal-900">Open project →</Link></div>
               </div>
             </article>;
           })}

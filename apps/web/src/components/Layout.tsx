@@ -19,6 +19,7 @@ type HelpContent = {
 const nav = [
   { to: "/", label: "Dashboard", icon: "overview", end: true },
   { to: "/projects", label: "Projects", icon: "projects" },
+  { to: "/workspace", label: "Workspace", icon: "users" },
   { to: "/opportunities", label: "Opportunities", icon: "local" },
   { to: "/strategy", label: "Strategy", icon: "plans" },
   { to: "/keywords", label: "Keywords", icon: "keywords" },
@@ -659,8 +660,8 @@ export default function Layout({ children }: { children: ReactNode }) {
   const [billingStatus, setBillingStatus] = useState<BillingStatus | null>(null);
   const [plans, setPlans] = useState<BillingPlan[]>([]);
   const [busyPlan, setBusyPlan] = useState<string | null>(null);
-  const [workspaceRoles, setWorkspaceRoles] = useState<string[]>([]);
-  const [workspaceIdentity, setWorkspaceIdentity] = useState<{ name: string; workspaceType: string } | null>(null);
+  const [workspaceRoles, setWorkspaceRoles] = useState<string[]>(() => user?.workspace?.roles ?? []);
+  const [workspaceIdentity, setWorkspaceIdentity] = useState<{ name: string; workspaceType: string } | null>(() => user?.workspace ? { name: user.workspace.name, workspaceType: user.workspace.type } : null);
 
   useEffect(() => {
     const onClientChanged = () => setImpersonation(getImpersonationLabel());
@@ -721,8 +722,16 @@ export default function Layout({ children }: { children: ReactNode }) {
     }
   };
 
-  const clientViewerOnly = workspaceRoles.length === 1 && workspaceRoles[0] === "client_viewer";
-  const items = nav.filter((n) => (!n.superOnly || user?.role === "super_admin") && !clientViewerOnly);
+  const effectiveRoles = user?.workspace?.roles ?? workspaceRoles;
+  const primaryRole = user?.workspace?.primaryRole;
+  const clientViewerOnly = primaryRole === "client_viewer" || (effectiveRoles.length === 1 && effectiveRoles[0] === "client_viewer");
+  const items = nav.filter((n) => {
+    if (n.superOnly) return user?.role === "super_admin";
+    if (clientViewerOnly) return n.to === "/workspace";
+    if (n.to === "/billing") return user?.role === "super_admin" || primaryRole === "admin";
+    if (n.to === "/workspace") return primaryRole === "admin" || primaryRole === "manager";
+    return true;
+  });
   const workspaceHref = workspaceIdentity?.workspaceType === "agency" ? "/agency" : "/";
   const workspaceTypeLabel = workspaceIdentity
     ? workspaceIdentity.workspaceType.charAt(0).toUpperCase() + workspaceIdentity.workspaceType.slice(1) + " Workspace"
@@ -760,7 +769,7 @@ export default function Layout({ children }: { children: ReactNode }) {
                   onClick={() => setOpen(false)}
                   className="block truncate text-[10px] font-bold uppercase tracking-wide text-brand-600 hover:text-brand-800 hover:underline"
                 >
-                  {workspaceTypeLabel}
+                  {user?.workspace?.primaryRole ? `${user.workspace.primaryRole === "admin" ? "Owner/Admin" : user.workspace.primaryRole === "manager" ? "Manager/Approver" : user.workspace.primaryRole.replace("_", " ")} · ${workspaceTypeLabel}` : workspaceTypeLabel}
                 </Link>
               ) : (
                 <div className="truncate text-[10px] font-bold uppercase tracking-wide text-brand-600">

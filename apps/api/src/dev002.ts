@@ -36,5 +36,6 @@ export function clientViewerRouteAllowed(method: string, originalUrl: string) {
   const suffix = "/dashboard";
   const clientId = path.startsWith(prefix) && path.endsWith(suffix) ? path.slice(prefix.length, -suffix.length) : "";
   const clientDashboard = Boolean(clientId) && !clientId.includes("/");
-  return originalUrl.startsWith("/api/auth/") || (method === "GET" && (path === "/api/workspace" || path === "/api/agency/workspace" || clientDashboard));
+  const clientDecision = method === "POST" && /^\/api\/agency\/tasks\/[^/]+\/decision$/.test(path);
+  return originalUrl.startsWith("/api/auth/") || clientDecision || (method === "GET" && (path === "/api/workspace" || path === "/api/agency/workspace" || clientDashboard));
 }

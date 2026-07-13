@@ -743,6 +743,7 @@ model Project {
   website                   Website?      @relation(fields: [websiteId], references: [id], onDelete: SetNull)
   name                      String        @db.VarChar(180)
   projectType               String        @default("existing_website") @db.VarChar(60)
+  websiteStatus             String        @default("existing_website") @db.VarChar(60)
   status                    String        @default("active") @db.VarChar(40)
   currentStep               String        @default("intake") @db.VarChar(80)
   businessName              String?       @db.VarChar(180)
@@ -753,6 +754,12 @@ model Project {
   // Legacy compatibility value. New code should use targetLocations.
   targetLocation            String?       @db.VarChar(180)
   primaryGoal               String?       @db.VarChar(255)
+  secondaryGoals            Json          @default("[]")
+  competitors               Json          @default("[]")
+  notes                     String?       @db.Text
+  brandVoice                String?       @db.Text
+  analyticsPlatforms        Json          @default("[]")
+  cmsPlatform               String?       @db.VarChar(120)
   targetLaunchTimeline      String?       @db.VarChar(80)
   preferredOutputs          Json          @default("[]")
   preferredPublishingMethod String?       @db.VarChar(80)

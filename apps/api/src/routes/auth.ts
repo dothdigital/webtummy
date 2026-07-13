@@ -26,6 +26,45 @@ function authUser(user: { id: string; email: string; name: string | null; role: 
   return { id: user.id, email: user.email, name: user.name, role: user.role, clientId: user.clientId };
 }
 
+async function workspaceSession(userId: string) {
+  const membership = await prisma.workspaceMembership.findFirst({
+    where: { userId, status: "active", workspace: { status: "active" } },
+    orderBy: { createdAt: "asc" },
+    include: { workspace: { select: { id: true, name: true, workspaceType: true, ownerUserId: true } }, roles: { select: { role: true } } },
+  });
+  if (!membership) return null;
+  const stored = new Set(membership.roles.map((item) => item.role));
+  const roles = [
+    ...(stored.has("owner") || stored.has("admin") ? ["admin"] : []),
+    ...(stored.has("manager") || stored.has("approver") ? ["manager"] : []),
+    ...(stored.has("editor") ? ["editor"] : []),
+    ...(stored.has("viewer") ? ["viewer"] : []),
+    ...(stored.has("client_viewer") ? ["client_viewer"] : []),
+  ];
+  const primaryRole = roles.find((role) => ["admin", "manager", "editor", "viewer", "client_viewer"].includes(role)) ?? "viewer";
+  const landingPath = primaryRole === "client_viewer" || primaryRole === "admin" || primaryRole === "manager" ? "/workspace" : "/";
+  return {
+    id: membership.workspace.id,
+    name: membership.workspace.name,
+    type: membership.workspace.workspaceType,
+    membershipId: membership.id,
+    roles,
+    primaryRole,
+    primaryOwner: membership.workspace.ownerUserId === userId,
+    landingPath,
+    capabilities: {
+      manageWorkspace: primaryRole === "admin",
+      manageProjects: primaryRole === "admin" || primaryRole === "manager",
+      assignTasks: primaryRole === "admin" || primaryRole === "manager",
+      approve: primaryRole === "admin" || primaryRole === "manager" || primaryRole === "client_viewer",
+      edit: primaryRole === "admin" || primaryRole === "manager" || primaryRole === "editor",
+      publish: primaryRole === "admin" || primaryRole === "manager",
+      billing: primaryRole === "admin",
+      viewInternal: primaryRole !== "client_viewer",
+    },
+  };
+}
+
 function issueLogin(user: { id: string; role: "super_admin" | "client_admin" | "client_user"; clientId: string | null }) {
   return signToken({ userId: user.id, role: user.role, clientId: user.clientId });
 }
@@ -142,7 +181,7 @@ authRouter.post("/login", async (req, res) => {
   const token = issueLogin(user);
   res.json({
     token,
-    user: { ...authUser(user), firstLogin },
+    user: { ...authUser(user), firstLogin, workspace: await workspaceSession(user.id) },
   });
 });
 
@@ -246,7 +285,7 @@ authRouter.post("/workspace-invitations/accept", async (req, res) => {
   const invitation = await prisma.workspaceInvitation.findUnique({ where: { tokenHash: hash }, include: { workspace: true } });
   if (!invitation || invitation.status !== "invited" || invitation.expiresAt < new Date()) return res.status(400).json({ error: "invalid or expired invitation" });
   const roles = Array.isArray(invitation.rolesJson) ? invitation.rolesJson.map(String) : [];
-  const allowedRoles = invitation.workspace.workspaceType === "personal" ? ["editor", "viewer"] : invitation.workspace.workspaceType === "agency" ? ["admin", "manager", "approver", "editor", "viewer", "client_viewer"] : ["admin", "manager", "approver", "editor", "viewer"];
+  const allowedRoles = invitation.workspace.workspaceType === "personal" ? ["admin", "editor", "viewer"] : invitation.workspace.workspaceType === "agency" ? ["admin", "manager", "editor", "viewer", "client_viewer"] : ["admin", "manager", "editor", "viewer"];
   if (!roles.length || roles.includes("owner") || roles.some((role) => !allowedRoles.includes(role))) return res.status(400).json({ error: "invitation contains roles that are not allowed for this workspace" });
   const teamIds = Array.isArray(invitation.teamIdsJson) ? invitation.teamIdsJson.map(String) : [];
   const agencyClientIds = Array.isArray(invitation.agencyClientIdsJson) ? invitation.agencyClientIdsJson.map(String) : [];
@@ -314,7 +353,7 @@ authRouter.post("/verify-email", async (req, res) => {
     });
   });
 
-  res.json({ token: issueLogin(user), user: authUser(user) });
+  res.json({ token: issueLogin(user), user: { ...authUser(user), workspace: await workspaceSession(user.id) } });
 });
 
 const resendVerificationSchema = z.object({ email: z.string().email("Enter a valid email") });
@@ -392,7 +431,7 @@ authRouter.post("/reset-password", async (req, res) => {
     });
   });
 
-  res.json({ token: issueLogin(user), user: authUser(user) });
+  res.json({ token: issueLogin(user), user: { ...authUser(user), workspace: await workspaceSession(user.id) } });
 });
 
 authRouter.get("/me", requireAuth, async (req, res) => {
@@ -400,5 +439,5 @@ authRouter.get("/me", requireAuth, async (req, res) => {
     where: { id: req.user!.userId },
     select: { id: true, email: true, name: true, role: true, clientId: true },
   });
-  res.json({ user });
+  res.json({ user: user ? { ...user, workspace: await workspaceSession(user.id) } : null });
 });

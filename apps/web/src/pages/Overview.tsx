@@ -14,6 +14,7 @@ import {
 } from "recharts";
 import { api } from "../api.js";
 import { Card } from "../components/ui.js";
+import { useAuth } from "../auth.js";
 import type { DomainBacklinkSummary, GuidedExecutionTask, GuidedProject, KeywordResearchRun, ProjectWorkflowStep, Website, WorkspaceIntelligenceResponse } from "../types.js";
 
 interface Overview {
@@ -70,6 +71,8 @@ const aiHealth = [
 ];
 
 export default function Overview() {
+  const { user } = useAuth();
+  const canManageProjects = user?.role === "super_admin" || Boolean(user?.workspace?.capabilities.manageProjects);
   const [data, setData] = useState<Overview | null>(null);
   const [projects, setProjects] = useState<GuidedProject[]>([]);
   const [websites, setWebsites] = useState<Website[]>([]);
@@ -153,9 +156,9 @@ export default function Overview() {
                 Create your first project to unlock intake, opportunity finding, strategy, site analysis, keywords, backlinks, AI citations, publishing, and growth actions.
               </p>
             </div>
-            <Link to="/projects/new" className="inline-flex items-center justify-center rounded-lg bg-brand-600 px-4 py-2.5 text-sm font-bold text-white shadow-sm hover:bg-brand-700">
+            {canManageProjects && <Link to="/projects/new" className="inline-flex items-center justify-center rounded-lg bg-brand-600 px-4 py-2.5 text-sm font-bold text-white shadow-sm hover:bg-brand-700">
               Create Project
-            </Link>
+            </Link>}
           </div>
         </Card>
       </div>
@@ -176,9 +179,9 @@ export default function Overview() {
               <div className="text-sm font-bold text-charcoal-950">Create your first project</div>
               <p className="mt-1 text-sm text-charcoal-500">Add a website or business goal to unlock the dashboard workflow.</p>
             </div>
-            <Link to="/projects/new" className="inline-flex items-center justify-center rounded-lg bg-brand-600 px-4 py-2 text-sm font-bold text-white shadow-sm hover:bg-brand-700">
+            {canManageProjects && <Link to="/projects/new" className="inline-flex items-center justify-center rounded-lg bg-brand-600 px-4 py-2 text-sm font-bold text-white shadow-sm hover:bg-brand-700">
               New Project
-            </Link>
+            </Link>}
           </div>
         </Card>
       )}

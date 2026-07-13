@@ -5,7 +5,7 @@ import { Card } from "../components/ui.js";
 import AgencyClientEditor from "../components/AgencyClientEditor.js";
 
 type Role = "owner" | "admin" | "manager" | "approver" | "editor" | "viewer" | "client_viewer";
-type Member = { id: string; status: string; user: { id: string; name: string | null; email: string; isActive: boolean }; roles: { role: Role }[]; teamMemberships: { team: { id: string; name: string } }[] };
+type Member = { id: string; status: string; user: { id: string; name: string | null; email: string; isActive: boolean }; roles: { role: string }[]; teamMemberships: { team: { id: string; name: string } }[] };
 type Team = { id: string; name: string; description: string | null; members: { membership: Member }[]; _count: { clientAssignments: number; projectAssignments: number } };
 type Project = {
   id: string; name: string; projectType: string; status: string; currentStep: string;
@@ -24,7 +24,7 @@ type AgencyClient = {
 type Notification = { id: string; title: string; body: string; actionUrl: string | null; readAt: string | null; createdAt: string };
 type Activity = { id: string; action: string; entityType: string; createdAt: string; actor: { name: string | null; email: string } | null };
 type WorkspaceData = {
-  workspace: { id: string; name: string; workspaceType: string; ownerUserId: string };
+  workspace: { id: string; name: string; workspaceType: string; ownerUserId: string; autoApprovalPolicyJson: unknown };
   currentMembership: { id: string; userId: string; roles: Role[] };
   clients: AgencyClient[]; projects: Project[]; teams: Team[]; members: Member[];
   invitations: { id: string; email: string; name: string | null; rolesJson: unknown; status: string; expiresAt: string; createdAt: string }[];
@@ -35,10 +35,11 @@ type WorkspaceData = {
 };
 type Tab = "dashboard" | "clients" | "teams" | "approvals" | "activity";
 
-const roleOrder: Role[] = ["owner", "admin", "manager", "approver", "editor", "viewer", "client_viewer"];
+const roleOrder: Role[] = ["admin", "manager", "editor", "viewer", "client_viewer"];
 const roleLabels: Record<Role, string> = {
-  owner: "Owner", admin: "Admin", manager: "Manager", approver: "Approver", editor: "Editor", viewer: "Viewer", client_viewer: "Client Viewer",
+  owner: "Owner/Admin", admin: "Owner/Admin", manager: "Manager/Approver", approver: "Manager/Approver", editor: "Editor", viewer: "Viewer", client_viewer: "Client Viewer — Agency only",
 };
+const normalizedRoles = (roles: { role: string }[]): Role[] => [...new Set(roles.map((item) => item.role === "owner" ? "admin" : item.role === "approver" ? "manager" : item.role).filter((role): role is Role => role in roleLabels))];
 const label = (value: string) => value.replace(/_/g, " ").replace(/\b\w/g, (char) => char.toUpperCase());
 const list = (value: unknown) => Array.isArray(value) ? value.map(String) : [];
 const totalProgress = (projects: Project[]) => projects.reduce((total, project) => ({
@@ -77,11 +78,14 @@ export default function AgencyWorkspace() {
 
   const isAgency = data?.workspace.workspaceType === "agency";
   const allowedRoles: Role[] = data?.workspace.workspaceType === "personal"
-    ? ["owner", "editor", "viewer"]
+    ? ["admin", "editor", "viewer"]
     : isAgency ? roleOrder : roleOrder.filter((role) => role !== "client_viewer");
   const roles = new Set(data?.currentMembership.roles ?? []);
-  const canAdmin = roles.has("owner") || roles.has("admin");
-  const isOwner = data?.workspace.ownerUserId === data?.currentMembership.userId && roles.has("owner");
+  const canAdmin = roles.has("admin");
+  const canManage = canAdmin || roles.has("manager");
+  const isOwner = data?.workspace.ownerUserId === data?.currentMembership.userId && roles.has("admin");
+  const approvalPolicy = data?.workspace.autoApprovalPolicyJson && typeof data.workspace.autoApprovalPolicyJson === "object" ? data.workspace.autoApprovalPolicyJson as { allowManagerSelfApproval?: unknown } : {};
+  const selfApprovalEnabled = approvalPolicy.allowManagerSelfApproval === true;
   const unread = data?.notifications.filter((item) => !item.readAt).length ?? 0;
   const activeProjects = useMemo<ActiveProject[]>(() => data ? (isAgency ? data.clients.flatMap((client) => client.projects.map((project) => ({ ...project, client }))) : data.projects) : [], [data, isAgency]);
   const portfolioProjects = useMemo(() => activeProjects.filter((project) => project.status !== "archived" && (!project.client || project.client.status === "active")), [activeProjects]);
@@ -141,7 +145,7 @@ export default function AgencyWorkspace() {
     }), `Invitation sent to ${inviteEmail}.`);
     setInviteEmail(""); setInviteName(""); setInviteRole("editor"); setInviteTeamId(""); setInviteClientId("");
   }
-  function editRoles(member: Member) { setEditingMember(member.id); setDraftRoles(member.roles.map((item) => item.role)); }
+  function editRoles(member: Member) { setEditingMember(member.id); setDraftRoles(normalizedRoles(member.roles)); }
   function toggleRole(role: Role) { setDraftRoles((current) => current.includes(role) ? current.filter((item) => item !== role) : [...current, role]); }
 
   if (loading && !data) return <Card className="p-10 text-center text-sm text-slate-500">Loading Workspace…</Card>;
@@ -150,16 +154,17 @@ export default function AgencyWorkspace() {
   if (clientViewerOnly) return <div className="space-y-6"><div><div className="text-xs font-bold uppercase tracking-wide text-brand-600">Shared reports</div><h1 className="mt-1 text-3xl font-bold">{data.workspace.name}</h1><p className="mt-2 text-sm text-slate-600">You can access only approved reports intentionally shared with you.</p></div><div className="grid gap-4 md:grid-cols-2">{data.clients.map((client) => <Link key={client.id} to={"/agency/clients/" + client.id} className="rounded-xl border bg-white p-5 hover:border-brand-300"><div className="font-bold text-slate-950">{client.name}</div><div className="mt-2 text-sm text-brand-700">Open approved reports →</div></Link>)}{!data.clients.length && <Card className="p-5 text-sm text-slate-500">No clients or approved reports have been assigned to you.</Card>}</div></div>;
 
   const tabs: { id: Tab; label: string; count?: number }[] = [
-    { id: "dashboard", label: "Dashboard" }, ...(isAgency ? [{ id: "clients" as Tab, label: "Clients", count: data.summary.clients }] : []),
-    { id: "teams", label: "Team Management", count: data.members.length }, { id: "approvals", label: "Notifications", count: unread },
-    { id: "activity", label: "Activity" },
+    { id: "dashboard", label: "Dashboard" },
+    ...(isAgency && canManage ? [{ id: "clients" as Tab, label: "Clients", count: data.summary.clients }] : []),
+    ...(canAdmin ? [{ id: "teams" as Tab, label: "Users & Teams", count: data.members.length }] : []),
+    ...(canManage ? [{ id: "approvals" as Tab, label: "Approvals", count: data.summary.pendingApprovals }, { id: "activity" as Tab, label: "Activity" }] : []),
   ];
 
   return <div className="space-y-6">
     <div className="rounded-2xl border border-slate-200 bg-white px-5 py-5 shadow-sm lg:px-7 lg:py-6">
       <div className="flex flex-col gap-5 xl:flex-row xl:items-start xl:justify-between">
         <div className="min-w-0">
-          <div className="flex flex-wrap items-center gap-2 text-xs font-bold text-slate-400"><Link to="/" className="hover:text-brand-700">My Workspace</Link><span>/</span><span className="text-brand-700">Agency Portfolio</span></div>
+          <div className="flex flex-wrap items-center gap-2 text-xs font-bold text-slate-400"><Link to="/" className="hover:text-brand-700">My Workspace</Link><span>/</span><span className="text-brand-700">{isAgency ? "Agency Portfolio" : "Business Operations"}</span></div>
           <div className="mt-3 flex flex-wrap items-center gap-3"><h1 className="text-3xl font-bold tracking-tight text-slate-950">{data.workspace.name}</h1><Badge tone="blue">{label(data.workspace.workspaceType)}</Badge></div>
         </div>
         <div className="flex shrink-0 flex-nowrap gap-2 overflow-x-auto pb-1"><Link to="/" className="inline-flex h-10 shrink-0 items-center rounded-lg border border-slate-200 bg-white px-4 text-sm font-bold text-slate-700 hover:border-slate-300 hover:bg-slate-50">My Dashboard</Link>{canAdmin && isAgency && <button onClick={() => openTab("clients")} className="h-10 shrink-0 rounded-lg border border-slate-200 bg-white px-4 text-sm font-bold text-slate-700 hover:bg-slate-50">New client</button>}<Link to="/projects/new" className="inline-flex h-10 shrink-0 items-center rounded-lg bg-brand-600 px-4 text-sm font-bold text-white shadow-sm hover:bg-brand-700">New project</Link></div>
@@ -238,11 +243,12 @@ export default function AgencyWorkspace() {
       {canAdmin && <Card className="p-5"><h2 className="font-bold">Invite member</h2><form onSubmit={(event) => void inviteMember(event)} className="mt-4 grid gap-4 md:grid-cols-2 xl:grid-cols-6"><label className="text-xs font-bold">Name<input value={inviteName} onChange={(event) => setInviteName(event.target.value)} className="mt-1 h-10 w-full rounded-lg border px-3 text-sm font-normal" /></label><label className="text-xs font-bold">Email *<input required type="email" value={inviteEmail} onChange={(event) => setInviteEmail(event.target.value)} className="mt-1 h-10 w-full rounded-lg border px-3 text-sm font-normal" /></label><label className="text-xs font-bold">Role<select value={inviteRole} onChange={(event) => setInviteRole(event.target.value as Role)} className="mt-1 h-10 w-full rounded-lg border bg-white px-3 text-sm font-normal">{allowedRoles.filter((role) => role !== "owner").map((role) => <option key={role} value={role}>{roleLabels[role]}</option>)}</select></label><label className="text-xs font-bold">Team<select value={inviteTeamId} onChange={(event) => setInviteTeamId(event.target.value)} className="mt-1 h-10 w-full rounded-lg border bg-white px-3 text-sm font-normal"><option value="">No team</option>{data.teams.map((team) => <option key={team.id} value={team.id}>{team.name}</option>)}</select></label><label className="text-xs font-bold">Client {inviteRole === "client_viewer" ? "*" : ""}<select required={inviteRole === "client_viewer"} value={inviteClientId} onChange={(event) => setInviteClientId(event.target.value)} className="mt-1 h-10 w-full rounded-lg border bg-white px-3 text-sm font-normal"><option value="">No client</option>{data.clients.filter((client) => client.status === "active").map((client) => <option key={client.id} value={client.id}>{client.name}</option>)}</select></label><button disabled={busy === "invite"} className="mt-5 h-10 rounded-lg bg-brand-600 text-sm font-bold text-white disabled:bg-slate-300">{busy === "invite" ? "Sending…" : "Send invitation"}</button></form>
         {data.invitations.length > 0 && <div className="mt-5 border-t pt-4"><div className="text-xs font-bold uppercase text-slate-500">Pending invitations</div><div className="mt-2 space-y-2">{data.invitations.map((invitation) => <div key={invitation.id} className="flex flex-wrap items-center justify-between gap-3 rounded-lg bg-slate-50 p-3"><div><b className="text-sm">{invitation.name || invitation.email}</b><span className="ml-2 text-xs text-slate-500">{invitation.email}</span></div><button disabled={busy === invitation.id} onClick={() => action(invitation.id, () => api.post(`/api/workspace/invitations/${invitation.id}/revoke`, {}), "Invitation revoked.")} className="rounded-lg border bg-white px-3 py-1.5 text-xs font-bold">Revoke</button></div>)}</div></div>}
       </Card>}
-      <Card className="overflow-hidden p-0"><div className="border-b px-5 py-4"><h2 className="font-bold">Members and roles</h2><p className="text-xs text-slate-500">Roles are separate and composable. Additional authority requires another role or an explicit permission override.</p></div><div className="divide-y">{data.members.map((member) => <div key={member.id} className="p-5">
-        <div className="flex flex-wrap items-center justify-between gap-3"><div><div className="font-bold">{member.user.name || member.user.email}{member.user.id === data.workspace.ownerUserId && <span className="ml-2 text-xs text-brand-600">Workspace Owner</span>}</div><div className="text-xs text-slate-500">{member.user.email} · {label(member.status)}</div></div><div className="flex flex-wrap items-center gap-2">{member.roles.map((item) => <Badge key={item.role} tone={item.role === "owner" ? "amber" : "blue"}>{roleLabels[item.role]}</Badge>)}{canAdmin && <button onClick={() => editRoles(member)} className="rounded-lg border px-3 py-1.5 text-xs font-bold">Edit roles</button>}{canAdmin && member.user.id !== data.workspace.ownerUserId && (member.status === "active" ? <button onClick={() => action("status-" + member.id, () => api.patch(`/api/workspace/members/${member.id}/status`, { status: "suspended" }), "Member suspended.")} className="rounded-lg border px-3 py-1.5 text-xs font-bold">Suspend</button> : <button onClick={() => action("status-" + member.id, () => api.patch(`/api/workspace/members/${member.id}/status`, { status: "active" }), "Member restored.")} className="rounded-lg border px-3 py-1.5 text-xs font-bold">Restore</button>)}</div></div>
+      <Card className="overflow-hidden p-0"><div className="border-b px-5 py-4"><h2 className="font-bold">Members and roles</h2><p className="text-xs text-slate-500">Owner/Admin has full workspace control; Manager/Approver manages projects and approvals; Editor creates work; Viewer is read-only.</p></div><div className="divide-y">{data.members.map((member) => <div key={member.id} className="p-5">
+        <div className="flex flex-wrap items-center justify-between gap-3"><div><div className="font-bold">{member.user.name || member.user.email}{member.user.id === data.workspace.ownerUserId && <span className="ml-2 text-xs text-brand-600">Primary Owner</span>}</div><div className="text-xs text-slate-500">{member.user.email} · {label(member.status)}</div></div><div className="flex flex-wrap items-center gap-2">{normalizedRoles(member.roles).map((role) => <Badge key={role} tone={role === "admin" ? "amber" : "blue"}>{roleLabels[role]}</Badge>)}{canAdmin && <button onClick={() => editRoles(member)} className="rounded-lg border px-3 py-1.5 text-xs font-bold">Edit roles</button>}{canAdmin && member.user.id !== data.workspace.ownerUserId && (member.status === "active" ? <button onClick={() => action("status-" + member.id, () => api.patch(`/api/workspace/members/${member.id}/status`, { status: "suspended" }), "Member suspended.")} className="rounded-lg border px-3 py-1.5 text-xs font-bold">Suspend</button> : <button onClick={() => action("status-" + member.id, () => api.patch(`/api/workspace/members/${member.id}/status`, { status: "active" }), "Member restored.")} className="rounded-lg border px-3 py-1.5 text-xs font-bold">Restore</button>)}</div></div>
         {editingMember === member.id && <div className="mt-4 rounded-lg border bg-slate-50 p-4"><div className="flex flex-wrap gap-2">{allowedRoles.map((role) => <label key={role} className={`flex items-center gap-2 rounded-lg border bg-white px-3 py-2 text-xs font-bold ${role === "owner" && member.user.id !== data.workspace.ownerUserId ? "opacity-40" : ""}`}><input type="checkbox" disabled={role === "owner"} checked={draftRoles.includes(role)} onChange={() => toggleRole(role)} />{roleLabels[role]}</label>)}</div><div className="mt-3 flex gap-2"><button disabled={!draftRoles.length || busy === member.id} onClick={() => action(member.id, () => api.patch(`/api/workspace/members/${member.id}/roles`, { roles: draftRoles }), "Roles updated.").then(() => setEditingMember(null))} className="rounded-lg bg-brand-600 px-4 py-2 text-xs font-bold text-white">Save roles</button><button onClick={() => setEditingMember(null)} className="rounded-lg border bg-white px-4 py-2 text-xs font-bold">Cancel</button></div></div>}
       </div>)}</div></Card>
-      {isOwner && <Card className="border-amber-200 bg-amber-50 p-5"><h2 className="font-bold text-amber-900">Owner controls</h2><p className="mt-1 text-sm text-amber-800">Ownership transfer uses a separate atomic confirmation flow. The Owner cannot be demoted, suspended, or removed through normal member editing.</p></Card>}
+      {canAdmin && <Card className="p-5"><h2 className="font-bold">Approval policy</h2><label className="mt-3 flex items-start gap-3 text-sm"><input type="checkbox" checked={selfApprovalEnabled} onChange={(event) => action("approval-policy", () => api.patch("/api/workspace/settings/approval-policy", { allowManagerSelfApproval: event.target.checked }), "Approval policy updated.")} className="mt-1" /><span><b>Allow Manager/Approver self-approval</b><span className="mt-1 block text-slate-500">Off by default. When off, managers cannot approve work they created or were assigned to complete.</span></span></label></Card>}
+      {isOwner && <Card className="border-amber-200 bg-amber-50 p-5"><h2 className="font-bold text-amber-900">Primary Owner controls</h2><p className="mt-1 text-sm text-amber-800">One Owner/Admin remains the Primary Owner for billing and ownership transfer. That designation cannot be removed through normal role editing.</p></Card>}
     </div>}
 
     {tab === "approvals" && <div className="space-y-6"><Card className="p-5"><h2 className="font-bold">Pending approvals</h2><p className="mt-1 text-sm text-slate-500">This is live workspace data and includes only work submitted for approval.</p><div className="mt-4 space-y-3">{data.pendingApprovalTasks.map((task) => <Link key={task.id} to={"/guided-projects/" + task.projectId} className="block rounded-lg border p-4 hover:border-brand-300"><div className="flex flex-wrap items-start justify-between gap-2"><div><b>{task.title}</b><p className="mt-1 text-sm text-slate-500">{task.project?.agencyClient?.name || "Client"} · {task.project?.name || "Project"}</p></div><Badge tone="amber">{label(task.priority)}</Badge></div></Link>)}{!data.pendingApprovalTasks.length && <p className="text-sm text-slate-500">No work is currently waiting for approval.</p>}</div></Card><Card className="p-5"><h2 className="font-bold">Notifications</h2><div className="mt-4 space-y-2">{data.notifications.map((item) => <button key={item.id} onClick={() => !item.readAt && action(item.id, () => api.patch(`/api/workspace/notifications/${item.id}/read`, {}), "Notification marked read.")} className={`w-full rounded-lg border p-4 text-left ${item.readAt ? "bg-white" : "border-brand-200 bg-brand-50"}`}><div className="flex justify-between gap-3"><b className="text-sm">{item.title}</b><span className="text-xs text-slate-400">{new Date(item.createdAt).toLocaleString()}</span></div><p className="mt-1 text-sm text-slate-600">{item.body}</p></button>)}</div></Card></div>}

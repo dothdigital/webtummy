@@ -10,6 +10,12 @@ export interface AdminUser {
   lastLoginAt: string | null;
   createdAt: string;
   client: { id: string; name: string; contactEmail: string | null; plan: string; isActive: boolean; createdAt: string; aiSubscriptionStatus: string; trialStartedAt: string | null; trialEndsAt: string | null; manualAccessEndsAt: string | null; graceEndsAt: string | null; subscriptionSource: string; offlineAutoRenew: boolean; offlineNextRenewalAt: string | null; offlinePayments: OfflinePayment[] } | null;
+  memberships?: Array<{
+    id: string; status: string; workspaceId: string; userId: string;
+    workspace: { id: string; name: string; workspaceType: string; ownerUserId: string; status: string; autoApprovalPolicyJson: unknown };
+    roles: Array<{ role: string }>;
+    _count: { clientAssignments: number; projectAssignments: number; assignedTasks: number; managedTasks: number; approvalTasks: number };
+  }>;
 }
 
 export interface OfflinePayment {

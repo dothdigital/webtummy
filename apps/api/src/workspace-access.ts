@@ -4,9 +4,11 @@ import { projectClientIdForRequest } from "./project-scope.js";
 
 export const workspaceRoles = ["owner", "admin", "manager", "approver", "editor", "viewer", "client_viewer"] as const;
 export type WorkspaceRole = (typeof workspaceRoles)[number];
+export const assignableWorkspaceRoles = ["admin", "manager", "editor", "viewer", "client_viewer"] as const;
+export type AssignableWorkspaceRole = (typeof assignableWorkspaceRoles)[number];
 
 export const rolesByWorkspaceType: Record<string, readonly WorkspaceRole[]> = {
-  personal: ["owner", "editor", "viewer"],
+  personal: ["owner", "admin", "editor", "viewer"],
   business: ["owner", "admin", "manager", "approver", "editor", "viewer"],
   agency: ["owner", "admin", "manager", "approver", "editor", "viewer", "client_viewer"],
   ecommerce: ["owner", "admin", "manager", "approver", "editor", "viewer"],
@@ -104,7 +106,7 @@ export function hasWorkspaceRole(context: WorkspaceContext, required: WorkspaceR
 }
 
 export function hasWorkspacePermission(context: WorkspaceContext, permission: string) {
-  if (context.roles.has("owner")) return true;
+  if (context.roles.has("owner") || context.roles.has("admin")) return true;
   const overrides = context.membership.permissionOverrides && typeof context.membership.permissionOverrides === "object"
     ? context.membership.permissionOverrides as { deny?: unknown; allow?: unknown }
     : {};
@@ -115,13 +117,31 @@ export function hasWorkspacePermission(context: WorkspaceContext, permission: st
   const defaults: Record<WorkspaceRole, readonly string[]> = {
     owner: [],
     admin: ["manage_clients", "manage_projects", "manage_users", "manage_teams", "manage_templates", "manage_reports", "manage_settings"],
-    manager: ["manage_assigned_clients", "manage_assigned_projects", "assign_tasks", "request_approval"],
-    approver: ["approve"],
+    manager: ["manage_assigned_clients", "manage_assigned_projects", "assign_tasks", "request_approval", "approve"],
+    // Legacy role retained for existing records; it behaves as Manager/Approver.
+    approver: ["manage_assigned_clients", "manage_assigned_projects", "assign_tasks", "request_approval", "approve"],
     editor: ["edit_assigned_work", "submit_for_approval"],
     viewer: ["read_internal"],
     client_viewer: ["read_shared_client_data"],
   };
   return workspaceRoles.some((role) => hasWorkspaceRole(context, role) && defaults[role].includes(permission));
+}
+
+export function effectiveWorkspaceRoles(context: WorkspaceContext): AssignableWorkspaceRole[] {
+  const effective = new Set<AssignableWorkspaceRole>();
+  if (context.roles.has("owner") || context.roles.has("admin")) effective.add("admin");
+  if (context.roles.has("manager") || context.roles.has("approver")) effective.add("manager");
+  if (context.roles.has("editor")) effective.add("editor");
+  if (context.roles.has("viewer")) effective.add("viewer");
+  if (context.roles.has("client_viewer")) effective.add("client_viewer");
+  return [...effective];
+}
+
+export function managerSelfApprovalEnabled(context: WorkspaceContext) {
+  const policy = context.workspace.autoApprovalPolicyJson && typeof context.workspace.autoApprovalPolicyJson === "object"
+    ? context.workspace.autoApprovalPolicyJson as { allowManagerSelfApproval?: unknown }
+    : {};
+  return policy.allowManagerSelfApproval === true;
 }
 
 export function validateRolesForWorkspace(context: WorkspaceContext, roles: readonly WorkspaceRole[]) {

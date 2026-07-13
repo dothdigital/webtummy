@@ -52,7 +52,10 @@ export async function enforceWorkspacePermissions(req: Request, res: Response, n
     let permission = "read_internal";
     if (req.method === "DELETE") permission = "manage_projects";
     else if (req.method !== "GET") {
-      permission = /publish|schedule|send-to-client/.test(path) ? "publish"
+      permission = req.method === "POST" && /^\/projects-v2\/?$/.test(path) ? "manage_projects"
+        : /billing|subscription|checkout|seats/.test(path) ? "billing"
+        : /workspace-settings|security|integrations?/.test(path) ? "manage_settings"
+        : /publish|schedule|send-to-client/.test(path) ? "publish"
         : /approve|decision/.test(path) ? "approve"
         : "edit_assigned_work";
     }

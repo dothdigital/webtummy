@@ -31,10 +31,10 @@ describe("DEV-002 Agency → Clients → Projects", () => {
     expect(keys).toEqual(["review_approvals", "send_reports"]);
   });
 
-  it("limits Client Viewer API access to report dashboards", () => {
+  it("limits Client Viewer API access to shared dashboards and explicit client decisions", () => {
     expect(clientViewerRouteAllowed("GET", "/api/workspace")).toBe(true);
     expect(clientViewerRouteAllowed("GET", "/api/agency/clients/client-1/dashboard")).toBe(true);
-    expect(clientViewerRouteAllowed("POST", "/api/agency/tasks/task-1/decision")).toBe(false);
+    expect(clientViewerRouteAllowed("POST", "/api/agency/tasks/task-1/decision")).toBe(true);
     expect(clientViewerRouteAllowed("GET", "/api/projects-v2")).toBe(false);
   });
 });

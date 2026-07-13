@@ -31,6 +31,20 @@ describe("workspace role enforcement", () => {
     expect(hasWorkspacePermission(managerApprover, "submit_for_approval")).toBe(true);
   });
 
+  it("gives the simplified Manager/Approver role both management and approval authority", () => {
+    const manager = context(["manager"]);
+    expect(hasWorkspacePermission(manager, "assign_tasks")).toBe(true);
+    expect(hasWorkspacePermission(manager, "approve")).toBe(true);
+    expect(hasWorkspacePermission(manager, "submit_for_approval")).toBe(true);
+  });
+
+  it("gives additional Owner/Admin members full workspace permission", () => {
+    const admin = context(["admin"]);
+    expect(hasWorkspacePermission(admin, "billing")).toBe(true);
+    expect(hasWorkspacePermission(admin, "publish")).toBe(true);
+    expect(hasWorkspacePermission(admin, "manage_settings")).toBe(true);
+  });
+
   it("keeps Owner unrestricted", () => {
     const owner = context(["owner", "admin"]);
     expect(hasWorkspacePermission(owner, "publish")).toBe(true);
@@ -50,14 +64,19 @@ describe("workspace role enforcement", () => {
 
   it("limits Personal workspace roles", () => {
     expect(() => validateRolesForWorkspace(context(["owner"], "personal"), ["editor"])).not.toThrow();
-    expect(() => validateRolesForWorkspace(context(["owner"], "personal"), ["admin"])).toThrow(/Personal workspaces/);
+    expect(() => validateRolesForWorkspace(context(["owner"], "personal"), ["admin"])).not.toThrow();
+    expect(() => validateRolesForWorkspace(context(["owner"], "personal"), ["manager"])).toThrow(/Personal workspaces/);
   });
 
-  it("supports Business and Ecommerce role sets", () => {
+  it("supports the four simplified internal roles in Business and Ecommerce workspaces", () => {
     for (const workspaceType of ["business", "ecommerce"]) {
-      expect(() => validateRolesForWorkspace(context(["owner"], workspaceType), ["owner", "admin", "manager", "approver", "editor", "viewer"])).not.toThrow();
+      expect(() => validateRolesForWorkspace(context(["owner"], workspaceType), ["admin", "manager", "editor", "viewer"])).not.toThrow();
       expect(() => validateRolesForWorkspace(context(["owner"], workspaceType), ["client_viewer"])).toThrow();
     }
+  });
+
+  it("allows Client Viewer only as the fifth Agency role", () => {
+    expect(() => validateRolesForWorkspace(context(["owner"], "agency"), ["admin", "manager", "editor", "viewer", "client_viewer"])).not.toThrow();
   });
 
   it("keeps Client Viewer isolated from the internal hierarchy", () => {

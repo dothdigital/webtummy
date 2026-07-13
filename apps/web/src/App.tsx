@@ -85,6 +85,13 @@ function Shell() {
     return <Login />;
   }
 
+  const workspaceRole = user.workspace?.primaryRole;
+  const landingPath = user.workspace?.landingPath ?? "/";
+  if (location.pathname === "/login") return <Navigate to={landingPath} replace />;
+  if (workspaceRole === "client_viewer" && location.pathname !== "/workspace" && !location.pathname.startsWith("/agency/clients/")) return <Navigate to="/workspace" replace />;
+  if ((workspaceRole === "editor" || workspaceRole === "viewer") && (location.pathname === "/workspace" || location.pathname === "/agency" || location.pathname === "/projects/new" || location.pathname === "/billing" || location.pathname === "/pricing")) return <Navigate to="/" replace />;
+  if (workspaceRole === "viewer" && location.pathname.endsWith("/intake")) return <Navigate to={location.pathname.replace(/\/intake$/, "")} replace />;
+
   const showWelcome = user.role !== "super_admin" && welcomePending(user.id);
   if (showWelcome && location.pathname !== "/welcome") return <Navigate to="/welcome" replace />;
   if (!showWelcome && location.pathname === "/welcome") return <Navigate to="/" replace />;
@@ -94,7 +101,7 @@ function Shell() {
     <Layout>
       <Routes>
         <Route path="/" element={<Overview />} />
-        <Route path="/login" element={<Navigate to="/" replace />} />
+        <Route path="/login" element={<Navigate to={landingPath} replace />} />
         {user.role === "super_admin" && <Route path="/users" element={<Users />} />}
         <Route path="/projects" element={<GuidedProjects />} />
         <Route path="/projects/new" element={<GuidedProjectNew />} />
