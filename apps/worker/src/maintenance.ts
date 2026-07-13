@@ -395,6 +395,83 @@ export async function monthlyClientReportGeneration() {
   });
 }
 
+export async function taskDeadlineNotifications() {
+  return runLogged("task_deadline_notifications", async () => {
+    const now = new Date();
+    const approachingCutoff = new Date(now.getTime() + DAY_MS);
+    const tasks = await prisma.executionTask.findMany({
+      where: {
+        dueAt: { lte: approachingCutoff },
+        status: { notIn: ["completed", "skipped", "published", "cancelled", "canceled"] },
+        project: { agencyClient: { isNot: null } },
+        OR: [
+          { dueAt: { gt: now }, deadlineApproachingNotifiedAt: null },
+          { dueAt: { lte: now }, deadlineOverdueNotifiedAt: null },
+        ],
+      },
+      include: {
+        assignee: { include: { user: { select: { id: true, name: true, email: true } }, roles: true } },
+        manager: { include: { user: { select: { id: true, name: true, email: true } }, roles: true } },
+        project: { include: { agencyClient: { include: { workspace: true } } } },
+      },
+      take: 500,
+    });
+    let approaching = 0;
+    let overdue = 0;
+    let emails = 0;
+    for (const task of tasks) {
+      const workspace = task.project?.agencyClient?.workspace;
+      if (!workspace || !task.dueAt) continue;
+      const isOverdue = task.dueAt <= now;
+      const settings = workspace.settingsJson && typeof workspace.settingsJson === "object" && !Array.isArray(workspace.settingsJson)
+        ? workspace.settingsJson as { emailNotifications?: { deadlineApproaching?: boolean; deadlineOverdue?: boolean } }
+        : {};
+      const emailEnabled = isOverdue
+        ? settings.emailNotifications?.deadlineOverdue !== false
+        : settings.emailNotifications?.deadlineApproaching !== false;
+      const memberships = [task.assignee, task.manager].filter((membership): membership is NonNullable<typeof task.assignee> => Boolean(membership));
+      const recipients = [...new Map(memberships
+        .filter((membership) => !membership.roles.some((role) => role.role === "client_viewer"))
+        .map((membership) => [membership.user.id, membership.user])).values()];
+      const title = isOverdue ? "Task deadline overdue" : "Task deadline approaching";
+      const body = isOverdue
+        ? `${task.title} was due ${task.dueAt.toLocaleDateString()}.`
+        : `${task.title} is due ${task.dueAt.toLocaleString()}.`;
+      for (const recipient of recipients) {
+        const notification = await prisma.workspaceNotification.create({
+          data: {
+            workspaceId: workspace.id, userId: recipient.id, agencyClientId: task.project!.agencyClientId,
+            projectId: task.projectId, type: isOverdue ? "deadline_overdue" : "deadline_approaching",
+            title, body, actionUrl: `/guided-projects/${task.projectId}#execution-tasks`,
+            emailEligible: emailEnabled, emailStatus: emailEnabled ? "pending" : "disabled",
+          },
+        });
+        if (emailEnabled) {
+          try {
+            await sendMail({
+              to: recipient.email, subject: `${title}: ${task.title}`,
+              text: `${body} Open the project: ${appLink(`/guided-projects/${task.projectId}#execution-tasks`)}`,
+              html: `<p>${body}</p><p><a href="${appLink(`/guided-projects/${task.projectId}#execution-tasks`)}">Open project task</a></p>`,
+            });
+            await prisma.workspaceNotification.update({ where: { id: notification.id }, data: { emailStatus: "sent" } });
+            emails += 1;
+          } catch (error) {
+            await prisma.workspaceNotification.update({ where: { id: notification.id }, data: { emailStatus: "failed" } });
+            console.error("[maintenance] deadline email failed", error);
+          }
+        }
+      }
+      await prisma.executionTask.update({
+        where: { id: task.id },
+        data: isOverdue ? { deadlineOverdueNotifiedAt: now } : { deadlineApproachingNotifiedAt: now },
+      });
+      if (isOverdue) overdue += 1;
+      else approaching += 1;
+    }
+    return { checked: tasks.length, approaching, overdue, emails };
+  });
+}
+
 let running = false;
 
 export async function runMaintenanceSuite() {
@@ -407,6 +484,7 @@ export async function runMaintenanceSuite() {
     await monthlyScheduledAudit();
     await weeklyRankingReportGeneration();
     await monthlyClientReportGeneration();
+    await taskDeadlineNotifications();
   } finally {
     running = false;
   }

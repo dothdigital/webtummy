@@ -1,50 +1,69 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { api } from "../api.js";
-import { Card, StatusPill } from "../components/ui.js";
+import { Card } from "../components/ui.js";
 import type { GuidedProject } from "../types.js";
 
+type ProjectFilter = "all" | "in_progress" | "needs_review" | "completed";
+
+const completedStatuses = new Set(["completed", "skipped", "published"]);
+const reviewStatuses = new Set(["submitted_for_approval", "needs_review", "changes_requested"]);
+
 function nextTask(project: GuidedProject) {
-  return project.executionPlans?.[0]?.tasks?.find((task) => !["completed", "skipped"].includes(task.status)) ?? null;
+  return project.executionPlans?.[0]?.tasks?.find((task) => !completedStatuses.has(task.status)) ?? null;
+}
+
+function nextWorkflowStep(project: GuidedProject) {
+  return project.workflowSteps?.find((step) => !completedStatuses.has(step.status)) ?? null;
 }
 
 function projectProgress(project: GuidedProject) {
-  if (project.currentStep === "intake") return 10;
-  if (project.currentStep === "opportunity") return 35;
-  if (project.currentStep === "strategy") return 60;
-  if (project.currentStep === "execution") return 78;
   if (project.status === "completed") return 100;
-  return 45;
+  const steps = project.workflowSteps ?? [];
+  const completedSteps = steps.filter((step) => completedStatuses.has(step.status)).length;
+  const workflowRatio = steps.length ? completedSteps / steps.length : 0;
+  const execution = project.executionProgress ?? { total: 0, completed: 0 };
+  const executionRatio = execution.total ? execution.completed / execution.total : 0;
+  return Math.round((workflowRatio * 50) + (executionRatio * 50));
+}
+
+function projectNeedsReview(project: GuidedProject) {
+  return Boolean(project.executionPlans?.[0]?.tasks?.some((task) => reviewStatuses.has(task.status)) || project.workflowSteps?.some((step) => reviewStatuses.has(step.status)));
 }
 
 function projectTypeLabel(project: GuidedProject) {
   const hasWebsite = Boolean(project.websiteId || project.websiteUrl || project.website);
   if (project.projectType === "existing_website" && !hasWebsite) return "Pre-website project";
   if (project.projectType === "new_business") return hasWebsite ? "New website launch" : "Pre-website project";
-  return project.projectType.replace("_", " ");
+  return project.projectType.replace(/_/g, " ").replace(/\b\w/g, (character) => character.toUpperCase());
 }
 
-function StatCard({ label, value, helper, tone = "brand" }: { label: string; value: string | number; helper: string; tone?: "brand" | "green" | "violet" }) {
-  const toneClass = tone === "green" ? "bg-green-50 text-green-700" : tone === "violet" ? "bg-violet-50 text-violet-700" : "bg-brand-50 text-brand-700";
-  return (
-    <Card className="p-4">
-      <div className="flex items-center gap-3">
-        <div className={`flex h-10 w-10 items-center justify-center rounded-full text-base font-bold ${toneClass}`}>□</div>
-        <div>
-          <div className="text-xs font-semibold text-slate-500">{label}</div>
-          <div className="mt-1 text-xl font-bold text-slate-950">{value}</div>
-          <div className="mt-1 text-xs font-medium text-slate-500">{helper}</div>
-        </div>
-      </div>
-    </Card>
-  );
+function stageLabel(project: GuidedProject) {
+  return project.currentStep.replace(/_/g, " ").replace(/\b\w/g, (character) => character.toUpperCase());
 }
+
+function relativeUpdated(value: string) {
+  const elapsed = Math.max(0, Date.now() - new Date(value).getTime());
+  const minutes = Math.floor(elapsed / 60000);
+  if (minutes < 1) return "just now";
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h ago`;
+  const days = Math.floor(hours / 24);
+  if (days === 1) return "yesterday";
+  if (days < 30) return `${days}d ago`;
+  return new Date(value).toLocaleDateString();
+}
+
+const avatarTones = ["bg-teal-100 text-teal-700", "bg-sky-100 text-sky-700", "bg-emerald-100 text-emerald-700", "bg-violet-100 text-violet-700"];
 
 export default function GuidedProjects() {
   const [projects, setProjects] = useState<GuidedProject[]>([]);
   const [deleteTarget, setDeleteTarget] = useState<GuidedProject | null>(null);
   const [deleting, setDeleting] = useState(false);
   const [deleteError, setDeleteError] = useState("");
+  const [search, setSearch] = useState("");
+  const [filter, setFilter] = useState<ProjectFilter>("all");
 
   const load = async () => {
     const result = await api.get<{ projects: GuidedProject[] }>("/api/projects-v2");
@@ -52,6 +71,19 @@ export default function GuidedProjects() {
   };
 
   useEffect(() => { void load(); }, []);
+
+  const visibleProjects = useMemo(() => {
+    const query = search.trim().toLowerCase();
+    return projects.filter((project) => {
+      const matchesSearch = !query || [project.name, project.businessName, project.website?.domain, project.websiteUrl, project.projectType]
+        .filter(Boolean).some((value) => String(value).toLowerCase().includes(query));
+      const matchesFilter = filter === "all"
+        || (filter === "completed" && project.status === "completed")
+        || (filter === "needs_review" && projectNeedsReview(project))
+        || (filter === "in_progress" && project.status !== "completed" && !projectNeedsReview(project));
+      return matchesSearch && matchesFilter;
+    });
+  }, [filter, projects, search]);
 
   const deleteProject = async () => {
     if (!deleteTarget) return;
@@ -69,116 +101,62 @@ export default function GuidedProjects() {
   };
 
   return (
-    <div className="space-y-5">
-      <div className="flex flex-col gap-4 xl:flex-row xl:items-end xl:justify-between">
+    <div className="-m-4 min-h-full bg-[#f7f7ff] p-4 lg:-m-8 lg:p-8">
+      <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
         <div>
-          <h1 className="text-[28px] font-bold leading-tight text-charcoal-950">Projects</h1>
-          <p className="text-sm text-charcoal-500">Manage business growth projects, guided strategy, and execution tasks.</p>
+          <h1 className="text-3xl font-bold tracking-tight text-slate-950">Projects</h1>
+          <p className="mt-1 text-base text-slate-500">Every guided project and its current AI growth stage.</p>
         </div>
-        <Link to="/projects/new" className="inline-flex items-center justify-center gap-2 rounded-lg bg-brand-600 px-4 py-2.5 text-sm font-bold text-white shadow-sm hover:bg-brand-700">
-          <span className="text-lg leading-none">+</span>
-          New Project
+        <Link to="/projects/new" className="inline-flex h-11 shrink-0 items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-teal-400 to-teal-600 px-5 text-sm font-bold text-white shadow-lg shadow-teal-200/70 hover:from-teal-500 hover:to-teal-700">
+          <span className="text-xl leading-none">+</span> New Project
         </Link>
       </div>
 
-      <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_240px]">
-        <Card className="overflow-hidden">
-          <div className="flex flex-col gap-3 border-b border-slate-100 p-5 lg:flex-row lg:items-center lg:justify-between">
-            <div className="inline-flex rounded-lg border border-slate-200 bg-white p-1 text-sm font-semibold">
-              <button type="button" className="rounded-md bg-brand-50 px-3 py-1.5 text-brand-700">All Projects</button>
-              <button type="button" className="rounded-md px-3 py-1.5 text-slate-600 hover:bg-slate-50">Active</button>
-              <button type="button" className="rounded-md px-3 py-1.5 text-slate-600 hover:bg-slate-50">Completed</button>
-            </div>
-            <div className="relative w-full lg:w-72">
-              <span className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-400">⌕</span>
-              <input className="h-10 w-full rounded-lg border border-slate-200 pl-9 pr-3 text-sm outline-none focus:border-brand-400 focus:ring-2 focus:ring-brand-100" placeholder="Search projects..." />
-            </div>
-          </div>
-          {projects.length === 0 ? (
-            <div className="p-6">
-              <div className="rounded-lg border border-dashed border-slate-200 bg-slate-50/70 p-6 text-center">
-                <div className="text-base font-bold text-slate-950">No project available</div>
-                <p className="mx-auto mt-2 max-w-md text-sm leading-6 text-slate-500">Create one to start intake, strategy, site analysis, keywords, backlinks, and execution tasks.</p>
-                <Link to="/projects/new" className="mt-4 inline-flex items-center justify-center rounded-lg bg-brand-600 px-4 py-2 text-sm font-bold text-white hover:bg-brand-700">Create Project</Link>
-              </div>
-            </div>
-          ) : (
-            <div className="overflow-x-auto">
-              <table className="w-full min-w-[760px] text-sm">
-                <thead className="bg-slate-50 text-left text-xs font-bold uppercase tracking-wide text-slate-500">
-                  <tr>
-                    <th className="px-4 py-3">Project Name</th>
-                    <th className="px-3 py-3">Type</th>
-                    <th className="px-3 py-3">Stage</th>
-                    <th className="px-3 py-3">Progress</th>
-                    <th className="px-3 py-3">Next Action</th>
-                    <th className="px-4 py-3 text-right">Quick Actions</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {projects.map((project) => {
-                    const task = nextTask(project);
-                    const progress = projectProgress(project);
-                    return (
-                      <tr key={project.id} className="border-t border-slate-100 hover:bg-slate-50/70">
-                        <td className="px-4 py-4">
-                          <div className="flex items-center gap-3">
-                            <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-brand-600 text-sm font-bold text-white">{project.name[0]?.toUpperCase()}</div>
-                            <div className="min-w-0">
-                              <Link to={`/guided-projects/${project.id}`} className="font-bold text-slate-900 hover:text-brand-700 hover:underline">{project.name}</Link>
-                              <div className="mt-1 max-w-[220px] truncate text-xs text-slate-500">{project.website?.domain ?? project.websiteUrl ?? project.businessName ?? "No website connected"}</div>
-                            </div>
-                          </div>
-                        </td>
-                        <td className="px-3 py-4"><span className="rounded-md bg-brand-50 px-2 py-1 text-xs font-bold capitalize text-brand-700">{projectTypeLabel(project)}</span></td>
-                        <td className="px-3 py-4"><StatusPill status={project.currentStep} /></td>
-                        <td className="px-3 py-4">
-                          <div className="font-bold text-slate-900">{progress}%</div>
-                          <div className="mt-2 h-1.5 w-20 rounded-full bg-slate-100">
-                            <div className="h-1.5 rounded-full bg-brand-600" style={{ width: `${progress}%` }} />
-                          </div>
-                        </td>
-                        <td className="px-3 py-4">{task ? <span className="line-clamp-2 font-medium text-slate-700">{task.title}</span> : <span className="text-slate-400">No active task</span>}</td>
-                        <td className="px-4 py-4 text-right">
-                          <div className="flex justify-end gap-2">
-                            <Link to={project.currentStep === "intake" ? `/guided-projects/${project.id}/intake` : `/guided-projects/${project.id}`} className="inline-flex h-9 items-center justify-center rounded-lg border border-slate-200 bg-white px-3 text-sm font-semibold text-brand-700 hover:bg-brand-50">
-                              Open
-                            </Link>
-                            <button
-                              type="button"
-                              onClick={() => setDeleteTarget(project)}
-                              className="inline-flex h-9 items-center justify-center rounded-lg border border-rose-200 bg-white px-3 text-sm font-semibold text-rose-700 hover:bg-rose-50"
-                            >
-                              Delete
-                            </button>
-                          </div>
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
-          )}
-        </Card>
-
-        <div className="space-y-4">
-          <StatCard label="Total Projects" value={projects.length} helper="All time" />
-          <StatCard label="In Progress" value={projects.filter((project) => project.status === "active").length} helper="Active projects" tone="green" />
-          <StatCard label="Ready Tasks" value={projects.reduce((total, project) => total + (project.executionPlans?.[0]?.tasks?.length ?? 0), 0)} helper="Across all projects" tone="violet" />
-          <Card className="overflow-hidden">
-            <div className="border-b border-slate-100 px-5 py-4 font-bold text-slate-900">Recently Updated</div>
-            <div className="divide-y divide-slate-100">
-              {projects.slice(0, 5).map((project) => (
-                <Link key={project.id} to={`/guided-projects/${project.id}`} className="block px-5 py-3 hover:bg-slate-50">
-                  <div className="font-semibold text-slate-900">{project.name}</div>
-                  <div className="mt-1 text-xs capitalize text-slate-500">{project.currentStep} · {projectProgress(project)}%</div>
-                </Link>
-              ))}
-            </div>
-          </Card>
+      <div className="mt-7 flex flex-col gap-3 xl:flex-row xl:items-center">
+        <label className="relative block w-full xl:max-w-[480px]">
+          <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="pointer-events-none absolute left-4 top-1/2 h-5 w-5 -translate-y-1/2 text-slate-400"><circle cx="11" cy="11" r="7" /><path d="m20 20-3.5-3.5" /></svg>
+          <input value={search} onChange={(event) => setSearch(event.target.value)} className="h-12 w-full rounded-xl border border-violet-100 bg-white pl-12 pr-4 text-sm text-slate-800 shadow-sm outline-none placeholder:text-slate-400 focus:border-teal-300 focus:ring-4 focus:ring-teal-100/60" placeholder="Search projects..." />
+        </label>
+        <div className="flex gap-2 overflow-x-auto pb-1">
+          {([{ id: "all", label: "All" }, { id: "in_progress", label: "In Progress" }, { id: "needs_review", label: "Needs Review" }, { id: "completed", label: "Completed" }] as { id: ProjectFilter; label: string }[]).map((item) => <button key={item.id} type="button" onClick={() => setFilter(item.id)} className={`h-11 shrink-0 rounded-full border px-5 text-sm font-bold transition ${filter === item.id ? "border-teal-300 bg-teal-100 text-teal-800 shadow-sm" : "border-violet-100 bg-transparent text-slate-500 hover:border-violet-200 hover:bg-white"}`}>{item.label}</button>)}
         </div>
       </div>
+
+      {projects.length === 0 ? (
+        <div className="mt-7 rounded-2xl border border-dashed border-violet-200 bg-white p-10 text-center shadow-sm">
+          <div className="text-lg font-bold text-slate-950">No projects yet</div>
+          <p className="mx-auto mt-2 max-w-lg text-sm leading-6 text-slate-500">Create a project to begin intake, strategy, analysis, execution, approval, and delivery.</p>
+          <Link to="/projects/new" className="mt-5 inline-flex rounded-xl bg-teal-600 px-5 py-2.5 text-sm font-bold text-white hover:bg-teal-700">Create Project</Link>
+        </div>
+      ) : visibleProjects.length === 0 ? (
+        <div className="mt-7 rounded-2xl border border-violet-100 bg-white p-10 text-center shadow-sm"><div className="font-bold text-slate-900">No matching projects</div><p className="mt-2 text-sm text-slate-500">Try another search or status filter.</p><button type="button" onClick={() => { setSearch(""); setFilter("all"); }} className="mt-4 text-sm font-bold text-teal-700">Clear filters</button></div>
+      ) : (
+        <div className="mt-7 space-y-4">
+          {visibleProjects.map((project, index) => {
+            const task = nextTask(project);
+            const workflowStep = nextWorkflowStep(project);
+            const progress = projectProgress(project);
+            const needsReview = projectNeedsReview(project);
+            const nextTitle = task?.title ?? workflowStep?.title ?? (project.status === "completed" ? "Project complete" : "Review project overview");
+            return <article key={project.id} className="rounded-2xl border border-violet-100 bg-white px-5 py-5 shadow-sm transition hover:border-teal-200 hover:shadow-md sm:px-6">
+              <div className="flex items-start justify-between gap-4">
+                <div className="flex min-w-0 items-center gap-4">
+                  <div className={`flex h-14 w-14 shrink-0 items-center justify-center rounded-2xl text-lg font-bold ${avatarTones[index % avatarTones.length]}`}>{project.name.slice(0, 2).toUpperCase()}</div>
+                  <div className="min-w-0"><Link to={`/guided-projects/${project.id}`} className="block truncate text-lg font-bold text-slate-950 hover:text-teal-700">{project.name}</Link><div className="mt-1 truncate text-sm text-slate-500">{project.website?.domain ?? project.websiteUrl ?? project.businessName ?? "No website connected"} <span className="px-1 text-slate-300">·</span> {projectTypeLabel(project)}</div></div>
+                </div>
+                <span className={`shrink-0 rounded-full px-4 py-1.5 text-xs font-bold ${needsReview ? "bg-amber-100 text-amber-800" : project.status === "completed" ? "bg-emerald-100 text-emerald-800" : "bg-teal-100 text-teal-800"}`}>{needsReview ? "Needs Review" : stageLabel(project)}</span>
+              </div>
+
+              <div className="mt-6 flex items-center gap-4"><div className="h-2.5 flex-1 overflow-hidden rounded-full bg-violet-50"><div className="h-full rounded-full bg-gradient-to-r from-teal-400 to-teal-600 transition-all" style={{ width: `${progress}%` }} /></div><div className="w-11 text-right text-sm font-bold text-slate-600">{progress}%</div></div>
+
+              <div className="mt-5 flex flex-col gap-3 border-t border-violet-50 pt-4 md:flex-row md:items-center md:justify-between">
+                <div className="flex min-w-0 flex-col gap-2 text-sm text-slate-500 sm:flex-row sm:items-center sm:gap-7"><div className="min-w-0 truncate">Next: <span className="font-bold text-slate-900">{nextTitle}</span></div><div className="shrink-0">Updated <span className="font-bold text-slate-800">{relativeUpdated(project.updatedAt)}</span></div></div>
+                <div className="flex shrink-0 items-center gap-4"><button type="button" onClick={() => setDeleteTarget(project)} className="text-xs font-bold text-slate-400 hover:text-rose-600">Delete</button><Link to={project.currentStep === "intake" ? `/guided-projects/${project.id}/intake` : `/guided-projects/${project.id}`} className="text-sm font-bold text-teal-700 hover:text-teal-900">Open project →</Link></div>
+              </div>
+            </article>;
+          })}
+        </div>
+      )}
       {deleteTarget && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-charcoal-950/35 p-4" role="dialog" aria-modal="true" aria-label="Delete project">
           <Card className="w-full max-w-lg p-5 shadow-2xl">

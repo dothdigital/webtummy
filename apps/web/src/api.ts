@@ -5,6 +5,7 @@ let currentRole: AppUser["role"] | null = localStorage.getItem("wt_role") as App
 let impersonationLabel: string | null = localStorage.getItem("wt_impersonation_label");
 export const SESSION_EXPIRED_EVENT = "senuke-ai:session-expired";
 export const ACTIVE_CLIENT_EVENT = "senuke-ai:active-client-changed";
+const WELCOME_USER_KEY = "wt_welcome_user_id";
 
 async function readJson(res: Response) {
   const text = await res.text();
@@ -26,10 +27,19 @@ export interface AppUser {
   name: string | null;
   role: "super_admin" | "client_admin" | "client_user";
   clientId: string | null;
+  firstLogin?: boolean;
 }
 
 export function getToken() {
   return token;
+}
+
+export function welcomePending(userId: string) {
+  return localStorage.getItem(WELCOME_USER_KEY) === userId;
+}
+
+export function completeWelcome() {
+  localStorage.removeItem(WELCOME_USER_KEY);
 }
 
 export function getActiveClientId() {
@@ -85,9 +95,11 @@ export async function login(email: string, password: string): Promise<AppUser> {
   const data = await res.json();
   token = data.token;
   localStorage.setItem("wt_token", token!);
-  if ((data.user as AppUser).role === "super_admin") endImpersonation();
-  rememberUser(data.user as AppUser);
-  return data.user as AppUser;
+  const authenticatedUser = data.user as AppUser;
+  if (authenticatedUser.role === "super_admin") endImpersonation();
+  if (authenticatedUser.firstLogin) localStorage.setItem(WELCOME_USER_KEY, authenticatedUser.id);
+  rememberUser(authenticatedUser);
+  return authenticatedUser;
 }
 
 export async function fetchPublicConfig(): Promise<{ recaptchaSiteKey: string }> {
@@ -228,5 +240,5 @@ export const api = {
   post: <T>(p: string, body: unknown) => request<T>(p, { method: "POST", body: JSON.stringify(body) }),
   put: <T>(p: string, body: unknown) => request<T>(p, { method: "PUT", body: JSON.stringify(body) }),
   patch: <T>(p: string, body: unknown) => request<T>(p, { method: "PATCH", body: JSON.stringify(body) }),
-  delete: <T>(p: string) => request<T>(p, { method: "DELETE" }),
+  delete: <T>(p: string, body?: unknown) => request<T>(p, { method: "DELETE", ...(body === undefined ? {} : { body: JSON.stringify(body) }) }),
 };

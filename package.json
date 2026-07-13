@@ -12,6 +12,7 @@
     "db:generate": "npm run -w @webtummy/db generate",
     "db:migrate": "npm run -w @webtummy/db migrate",
     "db:push": "npm run -w @webtummy/db push",
+    "db:backfill-workspaces": "npm run -w @webtummy/db backfill-workspaces",
     "dev:api": "npm run -w @webtummy/api dev",
     "dev:worker": "npm run -w @webtummy/worker dev",
     "test": "vitest run",

@@ -29,6 +29,7 @@ export interface OfflinePayment {
 export interface Website {
   id: string;
   clientId: string;
+  agencyClientId?: string | null;
   domain: string;
   rootUrl: string;
   status: "active" | "archived" | string;
@@ -118,6 +119,7 @@ export interface Opportunity {
 export interface GuidedProject {
   id: string;
   clientId: string;
+  agencyClientId?: string | null;
   websiteId: string | null;
   name: string;
   projectType: "new_business" | "existing_website" | "local_seo" | "agency_client" | "ecommerce" | string;
@@ -163,6 +165,7 @@ export interface GuidedProject {
     tasks: GuidedExecutionTask[];
   }[];
   workflowSteps?: ProjectWorkflowStep[];
+  executionProgress?: { total: number; completed: number };
   opportunities?: Opportunity[];
   strategyPlans?: unknown[];
   _count?: { intakeAnswers: number; strategyPlans: number; opportunities: number };

@@ -43,7 +43,7 @@ services:
       REDIS_URL: redis://redis:6379
       API_PORT: 4000
       WEB_APP_URL: https://doth-dev.webtummy.com
-    command: sh -c "npm run db:push && npm run -w @webtummy/api seed && npm run -w @webtummy/api start"
+    command: sh -c "npm run db:push && npm run -w @webtummy/api seed && npm run db:backfill-workspaces && npm run -w @webtummy/api start"
     depends_on:
       mysql:
         condition: service_healthy

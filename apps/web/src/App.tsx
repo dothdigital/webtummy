@@ -1,7 +1,7 @@
 import { Routes, Route, Navigate, useLocation, useParams, useNavigate } from "react-router-dom";
 import { useEffect } from "react";
 import { AuthProvider, useAuth } from "./auth.js";
-import { api } from "./api.js";
+import { api, welcomePending } from "./api.js";
 import type { BillingStatus } from "./types.js";
 import Layout from "./components/Layout.js";
 import Login from "./pages/Login.js";
@@ -33,6 +33,10 @@ import AdminManagement from "./pages/AdminManagement.js";
 import AdminPlans from "./pages/AdminPlans.js";
 import AdminTasks from "./pages/AdminTasks.js";
 import Legal from "./pages/Legal.js";
+import AgencyWorkspace from "./pages/AgencyWorkspace.js";
+import AcceptInvitation from "./pages/AcceptInvitation.js";
+import AgencyClientDashboard from "./pages/AgencyClientDashboard.js";
+import Welcome from "./pages/Welcome.js";
 
 function KeywordAnalyticsDetailRedirect() {
   const { id } = useParams();
@@ -75,10 +79,16 @@ function Shell() {
   if (!user) {
     if (location.pathname === "/terms") return <Legal kind="terms" />;
     if (location.pathname === "/privacy") return <Legal kind="privacy" />;
+    if (location.pathname === "/accept-invitation") return <AcceptInvitation />;
     const publicAuthPath = location.pathname === "/login" || location.pathname === "/verify-email" || location.pathname === "/reset-password";
     if (!publicAuthPath) return <Navigate to="/login" replace />;
     return <Login />;
   }
+
+  const showWelcome = user.role !== "super_admin" && welcomePending(user.id);
+  if (showWelcome && location.pathname !== "/welcome") return <Navigate to="/welcome" replace />;
+  if (!showWelcome && location.pathname === "/welcome") return <Navigate to="/" replace />;
+  if (showWelcome) return <Welcome />;
 
   return (
     <Layout>
@@ -113,6 +123,10 @@ function Shell() {
         <Route path="/social-strategy" element={<SocialStrategy />} />
         <Route path="/growth" element={<GrowthEngine />} />
         <Route path="/gap-analysis" element={<GapAnalysis />} />
+        <Route path="/workspace" element={<AgencyWorkspace />} />
+        <Route path="/agency" element={<AgencyWorkspace />} />
+        <Route path="/agency/clients/:clientId" element={<AgencyClientDashboard />} />
+        <Route path="/accept-invitation" element={<AcceptInvitation />} />
         <Route path="/local-seo" element={<LocalSeo />} />
         <Route path="/ai-content" element={<AiContentStudio />} />
         <Route path="/billing" element={<Billing />} />

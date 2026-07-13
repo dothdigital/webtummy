@@ -2,7 +2,7 @@
 import { createHash, randomBytes } from "node:crypto";
 import { Router } from "express";
 import { z } from "zod";
-import { prisma } from "@webtummy/db";
+import { Prisma, prisma } from "@webtummy/db";
 import { verifyPassword, signToken, hashPassword } from "../auth.js";
 import { requireAuth } from "../middleware.js";
 import { config } from "../config.js";
@@ -137,11 +137,12 @@ authRouter.post("/login", async (req, res) => {
     return res.status(403).json({ error: "email_not_verified" });
   }
 
+  const firstLogin = !user.lastLoginAt;
   await prisma.user.update({ where: { id: user.id }, data: { lastLoginAt: new Date() } });
   const token = issueLogin(user);
   res.json({
     token,
-    user: authUser(user),
+    user: { ...authUser(user), firstLogin },
   });
 });
 
@@ -198,6 +199,20 @@ authRouter.post("/register", async (req, res) => {
         emailVerifiedAt: null,
       },
     });
+    const workspaceType = d.workspaceType.toLowerCase();
+    const workspace = await tx.workspace.create({
+      data: { legacyClientId: client.id, name: d.workspaceType, workspaceType, ownerUserId: user.id },
+    });
+    const membership = await tx.workspaceMembership.create({
+      data: { workspaceId: workspace.id, userId: user.id, status: "active", joinedAt: new Date() },
+    });
+    const initialRoles = workspaceType === "personal" ? ["owner"] : ["owner", "admin"];
+    await tx.workspaceMemberRole.createMany({
+      data: initialRoles.map((role) => ({ membershipId: membership.id, role, grantedById: user.id })),
+    });
+    await tx.workspaceActivity.create({
+      data: { workspaceId: workspace.id, actorUserId: user.id, action: "workspace.created", entityType: "workspace", entityId: workspace.id, nextJson: { workspaceType, roles: initialRoles } },
+    });
     return { client, user };
   });
 
@@ -216,6 +231,59 @@ authRouter.post("/register", async (req, res) => {
     ok: true,
     message: "Account created. Check your email to verify your account before signing in.",
   });
+});
+
+const acceptWorkspaceInvitationSchema = z.object({
+  token: z.string().min(32),
+  name: z.string().trim().min(1).max(180).optional(),
+  password: z.string().min(8).max(128).optional(),
+});
+
+authRouter.post("/workspace-invitations/accept", async (req, res) => {
+  const parsed = acceptWorkspaceInvitationSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() });
+  const hash = tokenHash(parsed.data.token);
+  const invitation = await prisma.workspaceInvitation.findUnique({ where: { tokenHash: hash }, include: { workspace: true } });
+  if (!invitation || invitation.status !== "invited" || invitation.expiresAt < new Date()) return res.status(400).json({ error: "invalid or expired invitation" });
+  const roles = Array.isArray(invitation.rolesJson) ? invitation.rolesJson.map(String) : [];
+  const allowedRoles = invitation.workspace.workspaceType === "personal" ? ["editor", "viewer"] : invitation.workspace.workspaceType === "agency" ? ["admin", "manager", "approver", "editor", "viewer", "client_viewer"] : ["admin", "manager", "approver", "editor", "viewer"];
+  if (!roles.length || roles.includes("owner") || roles.some((role) => !allowedRoles.includes(role))) return res.status(400).json({ error: "invitation contains roles that are not allowed for this workspace" });
+  const teamIds = Array.isArray(invitation.teamIdsJson) ? invitation.teamIdsJson.map(String) : [];
+  const agencyClientIds = Array.isArray(invitation.agencyClientIdsJson) ? invitation.agencyClientIdsJson.map(String) : [];
+  let user = await prisma.user.findUnique({ where: { email: invitation.normalizedEmail } });
+  const existingAccount = Boolean(user);
+  if (!user && (!parsed.data.name && !invitation.name || !parsed.data.password)) {
+    return res.status(400).json({ error: "name and password are required for a new account" });
+  }
+  const now = new Date();
+  const result = await prisma.$transaction(async (tx) => {
+    if (!user) user = await tx.user.create({ data: {
+      email: invitation.normalizedEmail,
+      name: parsed.data.name ?? invitation.name,
+      passwordHash: await hashPassword(parsed.data.password!),
+      role: "client_user",
+      clientId: invitation.workspace.legacyClientId,
+      emailVerifiedAt: now,
+    } });
+    const membership = await tx.workspaceMembership.create({ data: {
+      workspaceId: invitation.workspaceId, userId: user.id, status: "active", joinedAt: now,
+      permissionOverrides: invitation.permissionOverrides as Prisma.InputJsonValue,
+    } });
+    if (roles.length) await tx.workspaceMemberRole.createMany({ data: roles.map((role) => ({ membershipId: membership.id, role, grantedById: invitation.invitedByUserId })) });
+    if (teamIds.length) await tx.workspaceTeamMember.createMany({ data: teamIds.map((teamId) => ({ teamId, membershipId: membership.id })) });
+    if (agencyClientIds.length) await tx.agencyClientMember.createMany({ data: agencyClientIds.map((agencyClientId) => ({ agencyClientId, membershipId: membership.id, assignmentRole: roles.includes("client_viewer") ? "client_viewer" : null })) });
+    await tx.workspaceInvitation.update({ where: { id: invitation.id }, data: { status: "accepted", acceptedAt: now } });
+    await tx.workspaceNotification.create({ data: {
+      workspaceId: invitation.workspaceId, userId: user.id, type: "workspace_invitation",
+      title: "Workspace invitation accepted", body: `You joined ${invitation.workspace.name}.`, actionUrl: "/workspace", emailEligible: false,
+    } });
+    await tx.workspaceActivity.create({ data: {
+      workspaceId: invitation.workspaceId, actorUserId: user.id, action: "membership.joined",
+      entityType: "workspace_membership", entityId: membership.id, nextJson: { roles, teamIds, agencyClientIds },
+    } });
+    return { membership, user };
+  });
+  res.json({ accepted: true, workspaceId: result.membership.workspaceId, existingAccount });
 });
 
 const verifyEmailSchema = z.object({ token: z.string().min(32) });
@@ -242,7 +310,7 @@ authRouter.post("/verify-email", async (req, res) => {
     });
     return tx.user.update({
       where: { id: record.userId },
-      data: { emailVerifiedAt: now, lastLoginAt: now },
+      data: { emailVerifiedAt: now },
     });
   });
 

@@ -11,6 +11,7 @@
     "generate": "prisma generate",
     "migrate": "prisma migrate dev",
     "push": "prisma db push",
+    "backfill-workspaces": "tsx scripts/backfill-workspaces.ts",
     "studio": "prisma studio"
   },
   "dependencies": {

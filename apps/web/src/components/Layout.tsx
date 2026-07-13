@@ -659,6 +659,8 @@ export default function Layout({ children }: { children: ReactNode }) {
   const [billingStatus, setBillingStatus] = useState<BillingStatus | null>(null);
   const [plans, setPlans] = useState<BillingPlan[]>([]);
   const [busyPlan, setBusyPlan] = useState<string | null>(null);
+  const [workspaceRoles, setWorkspaceRoles] = useState<string[]>([]);
+  const [workspaceIdentity, setWorkspaceIdentity] = useState<{ name: string; workspaceType: string } | null>(null);
 
   useEffect(() => {
     const onClientChanged = () => setImpersonation(getImpersonationLabel());
@@ -683,6 +685,23 @@ export default function Layout({ children }: { children: ReactNode }) {
   }, [user]);
 
   useEffect(() => {
+    if (!user) { setWorkspaceRoles([]); setWorkspaceIdentity(null); return; }
+    let cancelled = false;
+    api.get<{ workspace: { name: string; workspaceType: string }; currentMembership: { roles: string[] } }>("/api/workspace")
+      .then((result) => {
+        if (cancelled) return;
+        setWorkspaceRoles(result.currentMembership.roles);
+        setWorkspaceIdentity(result.workspace);
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setWorkspaceRoles([]);
+        setWorkspaceIdentity(null);
+      });
+    return () => { cancelled = true; };
+  }, [user]);
+
+  useEffect(() => {
     if (!billingStatus || billingStatus.hasAccess || user?.role === "super_admin") return;
     if (plans.length > 0) return;
     let cancelled = false;
@@ -702,22 +721,56 @@ export default function Layout({ children }: { children: ReactNode }) {
     }
   };
 
-  const items = nav.filter((n) => !n.superOnly || user?.role === "super_admin");
+  const clientViewerOnly = workspaceRoles.length === 1 && workspaceRoles[0] === "client_viewer";
+  const items = nav.filter((n) => (!n.superOnly || user?.role === "super_admin") && !clientViewerOnly);
+  const workspaceHref = workspaceIdentity?.workspaceType === "agency" ? "/agency" : "/";
+  const workspaceTypeLabel = workspaceIdentity
+    ? workspaceIdentity.workspaceType.charAt(0).toUpperCase() + workspaceIdentity.workspaceType.slice(1) + " Workspace"
+    : null;
+
+  useEffect(() => {
+    const clientReportPath = location.pathname.startsWith("/agency/clients/");
+    if (clientViewerOnly && !location.pathname.startsWith("/workspace") && !clientReportPath) navigate("/workspace", { replace: true });
+  }, [clientViewerOnly, location.pathname, navigate]);
 
   return (
     <div className="flex min-h-screen bg-slate-50 text-slate-700">
       {/* Sidebar */}
       <aside
-        className={`fixed inset-y-0 left-0 z-30 w-56 transform overflow-y-auto border-r border-slate-200 bg-slate-100 text-slate-700 transition-transform lg:translate-x-0 ${
+        className={`fixed inset-y-0 left-0 z-30 flex w-56 transform flex-col overflow-hidden border-r border-slate-200 bg-slate-100 text-slate-700 transition-transform lg:translate-x-0 ${
           open ? "translate-x-0" : "-translate-x-full"
         }`}
       >
-        <div className="flex h-20 items-center gap-2.5 px-4">
+        <div className="px-4 pb-4 pt-5">
           <Link to="/" className="inline-flex max-w-full items-center">
             <Logo size={30} />
           </Link>
+          <div className="mt-4 flex min-w-0 items-center gap-3 border-t border-slate-200 pt-4">
+            <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-brand-100 font-bold text-brand-700">
+              {(user?.name ?? user?.email ?? "?")[0].toUpperCase()}
+            </div>
+            <div className="min-w-0">
+              <div className="truncate text-sm font-bold text-slate-900">{user?.name ?? user?.email}</div>
+              <div className="truncate text-xs font-medium text-slate-500">
+                {workspaceIdentity?.name ?? (user?.role === "super_admin" ? "Admin Workspace" : "My Workspace")}
+              </div>
+              {workspaceIdentity ? (
+                <Link
+                  to={workspaceHref}
+                  onClick={() => setOpen(false)}
+                  className="block truncate text-[10px] font-bold uppercase tracking-wide text-brand-600 hover:text-brand-800 hover:underline"
+                >
+                  {workspaceTypeLabel}
+                </Link>
+              ) : (
+                <div className="truncate text-[10px] font-bold uppercase tracking-wide text-brand-600">
+                  {user?.role.replace("_", " ")}
+                </div>
+              )}
+            </div>
+          </div>
         </div>
-        <nav className="space-y-1 px-4 pb-4">
+        <nav className="flex-1 space-y-1 overflow-y-auto px-4 pb-4">
           {items.map((n) => (
             <NavLink
               key={n.to}
@@ -735,11 +788,14 @@ export default function Layout({ children }: { children: ReactNode }) {
             </NavLink>
           ))}
         </nav>
-        <div className="mx-4 mt-4 rounded-lg border border-slate-200 bg-slate-50 p-4 shadow-sm">
+        <div className="mx-4 mb-3 rounded-lg border border-slate-200 bg-slate-50 p-4 shadow-sm">
           <div className="text-sm font-semibold text-slate-900">{user?.role === "super_admin" ? "Admin Workspace" : "Pro Agency Plan"}</div>
           <div className="mt-2 text-xs leading-5 text-slate-500">AI credits and project activity update as tasks run.</div>
-          <div className="mt-3 h-2 rounded-full bg-slate-100">
-            <div className="h-2 w-3/4 rounded-full bg-brand-600" />
+        </div>
+        <div className="border-t border-slate-200 p-4">
+          <div className="grid grid-cols-[40px_1fr] gap-2">
+            <button type="button" aria-label="Help" onClick={() => setHelpOpen(true)} className="flex h-10 items-center justify-center rounded-lg border border-slate-200 bg-white font-bold text-slate-500 hover:bg-slate-50">?</button>
+            <button type="button" onClick={() => { logout(); navigate("/"); }} className="h-10 rounded-lg border border-slate-200 bg-white px-3 text-sm font-bold text-slate-700 hover:bg-slate-50">Sign out</button>
           </div>
         </div>
       </aside>
@@ -748,6 +804,7 @@ export default function Layout({ children }: { children: ReactNode }) {
 
       {/* Main */}
       <div className="flex min-w-0 flex-1 flex-col lg:ml-56">
+        <button type="button" aria-label="Open navigation" className="fixed left-3 top-3 z-20 rounded-lg border border-slate-200 bg-white p-2 shadow-sm hover:bg-charcoal-50 lg:hidden" onClick={() => setOpen(true)}>☰</button>
         {billingStatus?.status === "trialing" && billingStatus.hasAccess && (
           <div className="border-b border-amber-300 bg-amber-300 px-4 py-3 text-sm text-amber-950 shadow-sm lg:px-8">
             <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
@@ -756,54 +813,12 @@ export default function Layout({ children }: { children: ReactNode }) {
             </div>
           </div>
         )}
-        <header className="flex h-20 items-center justify-between border-b border-slate-200 bg-white px-4 lg:px-8">
-          <button type="button" className="rounded-lg p-2 hover:bg-charcoal-50 lg:hidden" onClick={() => setOpen(true)}>
-            ☰
-          </button>
-          <div className="hidden flex-1 lg:block" />
-          <div className="flex items-center gap-3">
-            {user?.role === "super_admin" && impersonation && (
-              <div className="hidden items-center gap-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-1.5 text-sm text-amber-900 md:flex">
-                <span className="font-medium">Viewing {impersonation}</span>
-                <button
-                  type="button"
-                  onClick={() => {
-                    endImpersonation();
-                    window.location.assign("/projects");
-                  }}
-                  className="rounded border border-amber-300 bg-white px-2 py-0.5 text-xs font-medium text-amber-900 hover:bg-amber-100"
-                >
-                  End session
-                </button>
-              </div>
-            )}
-            <button
-              type="button"
-              aria-label="Help"
-              onClick={() => setHelpOpen(true)}
-              className="hidden h-9 w-9 items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-500 hover:bg-slate-50 md:inline-flex"
-            >
-              ?
-            </button>
-            <div className="hidden text-right sm:block">
-              <div className="text-sm font-medium text-charcoal-800">{user?.name ?? user?.email}</div>
-              <div className="text-xs capitalize text-charcoal-400">{user?.role.replace("_", " ")}</div>
-            </div>
-            <div className="flex h-9 w-9 items-center justify-center rounded-full bg-brand-100 font-bold text-brand-700">
-              {(user?.name ?? user?.email ?? "?")[0].toUpperCase()}
-            </div>
-            <button
-              type="button"
-              onClick={() => {
-                logout();
-                navigate("/");
-              }}
-              className="rounded-lg border border-slate-200 px-3 py-1.5 text-sm font-medium text-slate-600 hover:bg-slate-50"
-            >
-              Sign out
-            </button>
+        {user?.role === "super_admin" && impersonation && (
+          <div className="flex items-center justify-between gap-3 border-b border-amber-200 bg-amber-50 px-4 py-2 text-sm text-amber-900 lg:px-8">
+            <span className="font-medium">Viewing {impersonation}</span>
+            <button type="button" onClick={() => { endImpersonation(); window.location.assign("/projects"); }} className="rounded border border-amber-300 bg-white px-2 py-1 text-xs font-medium text-amber-900 hover:bg-amber-100">End session</button>
           </div>
-        </header>
+        )}
         {billingStatus?.status === "offline" && billingStatus.hasAccess && (
           <div className="border-b border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-950 lg:px-8">
             <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
@@ -853,7 +868,7 @@ export default function Layout({ children }: { children: ReactNode }) {
             </div>
           </section>
         )}
-        <main className="min-w-0 flex-1 overflow-x-hidden p-4 lg:p-8">{children}</main>
+        <main className="min-w-0 flex-1 overflow-x-hidden px-4 pb-4 pt-16 lg:p-8">{children}</main>
         <Footer />
       </div>
       <GlobalHelpDrawer content={getHelpContent(location.pathname)} open={helpOpen} onClose={() => setHelpOpen(false)} />

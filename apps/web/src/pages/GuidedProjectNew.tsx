@@ -1,5 +1,5 @@
-import { useState } from "react";
-import { Link, useNavigate } from "react-router-dom";
+import { useEffect, useState } from "react";
+import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { api } from "../api.js";
 import { Button, Card, Input } from "../components/ui.js";
 import type { GuidedProject } from "../types.js";
@@ -49,9 +49,13 @@ function TargetLocationsInput({ values, onChange, local }: { values: string[]; o
 
 export default function GuidedProjectNew() {
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
+  const [workspaceType, setWorkspaceType] = useState("");
+  const [agencyClients, setAgencyClients] = useState<{ id: string; name: string; status: string; websites: unknown; businessLocations: unknown; targetMarkets: unknown; defaultSettings: unknown }[]>([]);
   const [form, setForm] = useState({
+    agencyClientId: searchParams.get("agencyClientId") ?? "",
     name: "",
     clientProjectType: "service_business",
     websiteUrl: "",
@@ -63,18 +67,44 @@ export default function GuidedProjectNew() {
     targetLaunchTimeline: "14 days",
     preferredOutputs: ["SEO plan"],
     preferredPublishingMethod: "WordPress",
+    updateClientDefaults: false,
   });
 
   const patch = (data: Partial<typeof form>) => setForm((current) => ({ ...current, ...data }));
+  const isAgency = workspaceType === "agency";
+  const isNewSite = form.primaryGoal === "Build / Launch New Website";
+  const requiresWebsite = !isNewSite;
+
+  useEffect(() => {
+    void api.get<{ workspace: { workspaceType: string }; clients: { id: string; name: string; status: string; websites: unknown; businessLocations: unknown; targetMarkets: unknown; defaultSettings: unknown }[] }>("/api/agency/workspace")
+      .then((result) => {
+        setWorkspaceType(result.workspace.workspaceType);
+        setAgencyClients(result.clients.filter((client) => client.status === "active"));
+        if (result.workspace.workspaceType === "agency" && !form.agencyClientId && result.clients.length === 1) patch({ agencyClientId: result.clients[0].id });
+      })
+      .catch(() => undefined);
+  }, []);
+
+  useEffect(() => {
+    if (!isAgency || !form.agencyClientId) return;
+    const client = agencyClients.find((item) => item.id === form.agencyClientId);
+    if (!client) return;
+    const websites = Array.isArray(client.websites) ? client.websites.map(String).filter(Boolean) : [];
+    const locations = Array.isArray(client.businessLocations) ? client.businessLocations.map(String).filter(Boolean) : [];
+    const markets = Array.isArray(client.targetMarkets) ? client.targetMarkets.map(String).filter(Boolean) : [];
+    const settings = client.defaultSettings && typeof client.defaultSettings === "object" ? client.defaultSettings as Record<string, unknown> : {};
+    patch({ websiteUrl: form.websiteUrl || websites[0] || "", businessLocation: form.businessLocation || locations[0] || "", targetLocations: form.targetLocations.length ? form.targetLocations : markets, niche: form.niche || (typeof settings.niche === "string" ? settings.niche : "") });
+  }, [form.agencyClientId, isAgency, agencyClients]);
 
   const createProject = async (event: React.FormEvent) => {
     event.preventDefault();
-    if (!form.name.trim() || !form.businessName.trim() || !form.niche.trim() || !form.businessLocation.trim() || !form.targetLocations.length || !form.primaryGoal || !form.clientProjectType) return;
+    if (!form.name.trim() || (!isAgency && !form.businessName.trim()) || !form.niche.trim() || (!isAgency && (!form.businessLocation.trim() || !form.targetLocations.length)) || !form.primaryGoal || !form.clientProjectType || (isAgency && !form.agencyClientId) || (requiresWebsite && !form.websiteUrl.trim())) return;
     setBusy(true);
     setMessage(null);
     try {
       const selectedClientType = clientProjectTypes.find((type) => type.value === form.clientProjectType) ?? clientProjectTypes[1];
-      const result = await api.post<{ project: GuidedProject }>("/api/projects-v2", { ...form, projectType: selectedClientType.projectType });
+      const projectType = isNewSite ? "new_business" : selectedClientType.projectType;
+      const result = await api.post<{ project: GuidedProject }>("/api/projects-v2", { ...form, businessName: isAgency ? null : form.businessName, projectType });
       navigate(`/guided-projects/${result.project.id}/intake`);
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "Could not create project");
@@ -83,7 +113,7 @@ export default function GuidedProjectNew() {
     }
   };
 
-  const canSubmit = Boolean(form.name.trim() && form.businessName.trim() && form.niche.trim() && form.businessLocation.trim() && form.targetLocations.length && form.primaryGoal && form.clientProjectType);
+  const canSubmit = Boolean(form.name.trim() && (isAgency || form.businessName.trim()) && form.niche.trim() && (isAgency || (form.businessLocation.trim() && form.targetLocations.length)) && form.primaryGoal && form.clientProjectType && (!isAgency || form.agencyClientId) && (!requiresWebsite || form.websiteUrl.trim()));
 
   return (
     <form onSubmit={createProject} className="space-y-5">
@@ -100,18 +130,21 @@ export default function GuidedProjectNew() {
           <Card className="p-5">
             <h2 className="text-lg font-bold text-slate-950">Project Information</h2>
             <div className="mt-5 grid gap-5 md:grid-cols-2">
+              {isAgency && <label className="block md:col-span-2"><span className="mb-1 block text-sm font-bold text-slate-800">Client *</span><select required value={form.agencyClientId} onChange={(event) => patch({ agencyClientId: event.target.value })} className="h-11 w-full rounded-lg border border-slate-200 bg-white px-3 text-sm"><option value="">Select client</option>{agencyClients.map((client) => <option key={client.id} value={client.id}>{client.name}</option>)}</select><span className="mt-1 block text-xs text-slate-500">Client-wide business, contact, branding, market, and website defaults stay on the client record.</span></label>}
               <Input label="Project Name *" value={form.name} onChange={(name) => patch({ name })} placeholder="e.g., Acme SEO Campaign" />
-              <Input label="Business Name *" value={form.businessName} onChange={(businessName) => patch({ businessName })} placeholder="e.g., Acme Digital Marketing" />
+              {!isAgency && <Input label="Business Name *" value={form.businessName} onChange={(businessName) => patch({ businessName })} placeholder="e.g., Acme Digital Marketing" />}
               <div className="md:col-span-2">
-                <Input label="Website URL (optional)" value={form.websiteUrl} onChange={(websiteUrl) => patch({ websiteUrl })} placeholder="https://www.example.com" />
+                <Input label={requiresWebsite ? "Website URL *" : "Website URL (optional for new site)"} value={form.websiteUrl} onChange={(websiteUrl) => patch({ websiteUrl })} placeholder="https://www.example.com" />
+                <span className="mt-1 block text-xs text-slate-500">{requiresWebsite ? "Existing-site projects require a valid website URL." : "New-site projects continue without a crawl until a website exists."}</span>
               </div>
               <label className="block">
                 <span className="mb-1 block text-sm font-bold text-slate-800">Industry / Niche *</span>
                 <input value={form.niche} onChange={(event) => patch({ niche: event.target.value })} placeholder="e.g., Roofing, Med spa, SaaS CRM, Fitness coaching" className="h-11 w-full rounded-lg border border-slate-200 px-3 text-sm outline-none focus:border-brand-400 focus:ring-2 focus:ring-brand-100" />
                 <span className="mt-1 block text-xs text-slate-500">Enter the client niche in your own words.</span>
               </label>
-              <Input label="Business Location *" value={form.businessLocation} onChange={(businessLocation) => patch({ businessLocation })} placeholder="e.g., Toronto, Ontario, Canada" />
+              <Input label={isAgency ? "Business Location (shared default or override)" : "Business Location *"} value={form.businessLocation} onChange={(businessLocation) => patch({ businessLocation })} placeholder="e.g., Toronto, Ontario, Canada" />
               <TargetLocationsInput values={form.targetLocations} onChange={(targetLocations) => patch({ targetLocations })} local={form.clientProjectType === "local_business"} />
+              {isAgency && <label className="flex items-start gap-3 rounded-lg border border-brand-100 bg-brand-50 p-4 text-sm md:col-span-2"><input type="checkbox" checked={form.updateClientDefaults} onChange={(event) => patch({ updateClientDefaults: event.target.checked })} className="mt-1" /><span><b>Update Client defaults</b><span className="mt-1 block text-slate-600">Keep this off for project-only overrides. Turn it on only when these website, location, market, and niche values should become the shared client defaults.</span></span></label>}
               <label className="block md:col-span-2">
                 <span className="mb-1 block text-sm font-bold text-slate-800">Primary Goal *</span>
                 <select value={form.primaryGoal} onChange={(event) => patch({ primaryGoal: event.target.value })} className="h-11 w-full rounded-lg border border-slate-200 bg-white px-3 text-sm outline-none focus:border-brand-400 focus:ring-2 focus:ring-brand-100">

@@ -5,6 +5,7 @@ import { api } from "../api.js";
 import { Button, Card, StatusPill } from "../components/ui.js";
 import { projectHasWebsite, requiresSiteAnalysisBeforeStrategy } from "../project-flow.js";
 import type { GuidedExecutionTask, GuidedProject } from "../types.js";
+import ProjectOperations from "../components/ProjectOperations.js";
 
 function taskTone(task: GuidedExecutionTask) {
   if (task.priority === "high") return "border-rose-200 bg-rose-50/70";
@@ -515,6 +516,7 @@ export default function GuidedProjectDetail() {
         </div>
 
         <div className="space-y-5 p-5">
+          {project.agencyClientId && <ProjectOperations projectId={project.id} />}
           <BusinessProfileCard project={project} preferredOutputs={preferredOutputs} />
           <ProjectNextActionCard action={nextAction} />
 

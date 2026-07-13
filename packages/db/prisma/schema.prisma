@@ -49,6 +49,10 @@ model User {
   createdAt               DateTime                 @default(now())
   emailVerificationTokens EmailVerificationToken[]
   passwordResetTokens     PasswordResetToken[]
+  workspaceMemberships    WorkspaceMembership[]
+  ownedWorkspaces         Workspace[]              @relation("WorkspaceOwner")
+  notifications           WorkspaceNotification[]
+  activityEvents          WorkspaceActivity[]      @relation("ActivityActor")
 
   @@index([clientId])
 }
@@ -80,105 +84,363 @@ model PasswordResetToken {
 }
 
 model Client {
-  id                    String                @id @default(cuid())
-  name                  String
-  contactEmail          String?
-  plan                  String                @default("mini")
-  aiSubscriptionStatus  String                @default("active")
-  stripeCustomerId      String?
-  stripeSubscriptionId  String?
-  trialStartedAt        DateTime?
-  trialEndsAt           DateTime?
-  manualAccessEndsAt    DateTime?
-  graceEndsAt           DateTime?
-  subscriptionSource    String                @default("trial") @db.VarChar(40)
-  offlineAutoRenew      Boolean               @default(false)
-  offlineNextRenewalAt  DateTime?
-  subscriptionCurrentPeriodEnd DateTime?
-  trialEndingSoonNotifiedAt DateTime?
-  trialExpiredNotifiedAt DateTime?
-  paymentFailedNotifiedAt DateTime?
-  manualAccessEndingSoonNotifiedAt DateTime?
-  manualAccessExpiredNotifiedAt DateTime?
+  id                                 String                 @id @default(cuid())
+  name                               String
+  contactEmail                       String?
+  plan                               String                 @default("mini")
+  aiSubscriptionStatus               String                 @default("active")
+  stripeCustomerId                   String?
+  stripeSubscriptionId               String?
+  trialStartedAt                     DateTime?
+  trialEndsAt                        DateTime?
+  manualAccessEndsAt                 DateTime?
+  graceEndsAt                        DateTime?
+  subscriptionSource                 String                 @default("trial") @db.VarChar(40)
+  offlineAutoRenew                   Boolean                @default(false)
+  offlineNextRenewalAt               DateTime?
+  subscriptionCurrentPeriodEnd       DateTime?
+  trialEndingSoonNotifiedAt          DateTime?
+  trialExpiredNotifiedAt             DateTime?
+  paymentFailedNotifiedAt            DateTime?
+  manualAccessEndingSoonNotifiedAt   DateTime?
+  manualAccessExpiredNotifiedAt      DateTime?
   subscriptionExpiringSoonNotifiedAt DateTime?
-  reportEmailEnabled Boolean               @default(true)
-  weeklyReportEmailEnabled Boolean         @default(true)
-  monthlyReportEmailEnabled Boolean        @default(true)
-  rankingChangeEmailEnabled Boolean        @default(true)
-  lastWeeklyReportAt DateTime?
-  lastMonthlyUsageResetAt DateTime?
-  lastMonthlyAuditAt DateTime?
-  lastMonthlyReportAt DateTime?
-  activeWebsiteLimit    Int                   @default(1)
-  extraWebsiteSlots     Int                   @default(0)
-  lastWebsiteReplacementAt DateTime?
-  isActive              Boolean               @default(true)
-  createdAt             DateTime              @default(now())
-  websites              Website[]
-  users                 User[]
-  keywordResearchRuns   KeywordResearchRun[]
-  aiContentGenerations  AiContentGeneration[]
-  aiUsageCounters       AiUsageCounter[]
-  creditAccounts        CreditAccount[]
-  creditTransactions    CreditTransaction[]
-  usageEvents           UsageEvent[]
-  providerCostEvents    ProviderCostEvent[]
-  cacheRecords          CacheRecord[]
-  budgetCaps            BudgetCap[]
-  usageAlerts           UsageAlert[]
-  localBusinessProfiles LocalBusinessProfile[]
-  offlinePayments       OfflinePayment[]
-  monthlyReports        MonthlyClientReport[]
-  executionTasks        ExecutionTask[]
-  projects              Project[]
+  reportEmailEnabled                 Boolean                @default(true)
+  weeklyReportEmailEnabled           Boolean                @default(true)
+  monthlyReportEmailEnabled          Boolean                @default(true)
+  rankingChangeEmailEnabled          Boolean                @default(true)
+  lastWeeklyReportAt                 DateTime?
+  lastMonthlyUsageResetAt            DateTime?
+  lastMonthlyAuditAt                 DateTime?
+  lastMonthlyReportAt                DateTime?
+  activeWebsiteLimit                 Int                    @default(1)
+  extraWebsiteSlots                  Int                    @default(0)
+  lastWebsiteReplacementAt           DateTime?
+  isActive                           Boolean                @default(true)
+  createdAt                          DateTime               @default(now())
+  websites                           Website[]
+  users                              User[]
+  keywordResearchRuns                KeywordResearchRun[]
+  aiContentGenerations               AiContentGeneration[]
+  aiUsageCounters                    AiUsageCounter[]
+  creditAccounts                     CreditAccount[]
+  creditTransactions                 CreditTransaction[]
+  usageEvents                        UsageEvent[]
+  providerCostEvents                 ProviderCostEvent[]
+  cacheRecords                       CacheRecord[]
+  budgetCaps                         BudgetCap[]
+  usageAlerts                        UsageAlert[]
+  localBusinessProfiles              LocalBusinessProfile[]
+  offlinePayments                    OfflinePayment[]
+  monthlyReports                     MonthlyClientReport[]
+  executionTasks                     ExecutionTask[]
+  projects                           Project[]
+  workspace                          Workspace?
 
   @@index([plan])
   @@index([aiSubscriptionStatus, manualAccessEndsAt])
   @@index([stripeCustomerId])
 }
 
+// Agency tenancy. Client above remains the legacy billing tenant during the
+// migration; Workspace is the authorization and operational boundary.
+model Workspace {
+  id                      String   @id @default(cuid())
+  legacyClientId          String?  @unique
+  legacyClient            Client?  @relation(fields: [legacyClientId], references: [id], onDelete: SetNull)
+  name                    String   @db.VarChar(180)
+  workspaceType           String   @default("business") @db.VarChar(40)
+  ownerUserId             String
+  owner                   User     @relation("WorkspaceOwner", fields: [ownerUserId], references: [id], onDelete: Restrict)
+  status                  String   @default("active") @db.VarChar(40)
+  settingsJson            Json     @default("{}")
+  securitySettingsJson    Json     @default("{}")
+  integrationSettingsJson Json     @default("{}")
+  autoApprovalPolicyJson  Json     @default("{}")
+  brandingJson            Json     @default("{}")
+  defaultTemplatesJson    Json     @default("{}")
+  createdAt               DateTime @default(now())
+  updatedAt               DateTime @updatedAt
+
+  memberships   WorkspaceMembership[]
+  teams         WorkspaceTeam[]
+  agencyClients AgencyClient[]
+  notifications WorkspaceNotification[]
+  activity      WorkspaceActivity[]
+  invitations   WorkspaceInvitation[]
+
+  @@index([ownerUserId])
+  @@index([status])
+}
+
+model WorkspaceInvitation {
+  id                  String    @id @default(cuid())
+  workspaceId         String
+  workspace           Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  email               String    @db.VarChar(180)
+  normalizedEmail     String    @db.VarChar(180)
+  name                String?   @db.VarChar(180)
+  rolesJson           Json      @default("[]")
+  teamIdsJson         Json      @default("[]")
+  agencyClientIdsJson Json      @default("[]")
+  permissionOverrides Json      @default("{}")
+  tokenHash           String    @unique @db.VarChar(191)
+  status              String    @default("invited") @db.VarChar(40)
+  invitedByUserId     String
+  expiresAt           DateTime
+  acceptedAt          DateTime?
+  revokedAt           DateTime?
+  createdAt           DateTime  @default(now())
+
+  @@index([workspaceId, status])
+  @@index([workspaceId, normalizedEmail])
+  @@index([expiresAt])
+}
+
+model WorkspaceMembership {
+  id                  String    @id @default(cuid())
+  workspaceId         String
+  workspace           Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  userId              String
+  user                User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  status              String    @default("active") @db.VarChar(40)
+  permissionOverrides Json      @default("{}")
+  invitedAt           DateTime?
+  joinedAt            DateTime?
+  suspendedAt         DateTime?
+  deactivatedAt       DateTime?
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
+
+  roles              WorkspaceMemberRole[]
+  teamMemberships    WorkspaceTeamMember[]
+  clientAssignments  AgencyClientMember[]
+  projectAssignments ProjectMemberAssignment[]
+  assignedTasks      ExecutionTask[]           @relation("TaskAssignee")
+  managedTasks       ExecutionTask[]           @relation("TaskManager")
+  approvalTasks      ExecutionTask[]           @relation("TaskApprover")
+
+  @@unique([workspaceId, userId])
+  @@index([workspaceId, status])
+  @@index([userId, status])
+}
+
+model WorkspaceMemberRole {
+  id           String              @id @default(cuid())
+  membershipId String
+  membership   WorkspaceMembership @relation(fields: [membershipId], references: [id], onDelete: Cascade)
+  role         String              @db.VarChar(40)
+  grantedById  String?
+  createdAt    DateTime            @default(now())
+
+  @@unique([membershipId, role])
+  @@index([role])
+}
+
+model WorkspaceTeam {
+  id          String    @id @default(cuid())
+  workspaceId String
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  name        String    @db.VarChar(180)
+  description String?   @db.Text
+  isActive    Boolean   @default(true)
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  members            WorkspaceTeamMember[]
+  clientAssignments  AgencyClientTeam[]
+  projectAssignments ProjectTeamAssignment[]
+  assignedTasks      ExecutionTask[]
+
+  @@unique([workspaceId, name])
+  @@index([workspaceId, isActive])
+}
+
+model WorkspaceTeamMember {
+  id           String              @id @default(cuid())
+  teamId       String
+  team         WorkspaceTeam       @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  membershipId String
+  membership   WorkspaceMembership @relation(fields: [membershipId], references: [id], onDelete: Cascade)
+  createdAt    DateTime            @default(now())
+
+  @@unique([teamId, membershipId])
+  @@index([membershipId])
+}
+
+model AgencyClient {
+  id                 String    @id @default(cuid())
+  workspaceId        String
+  workspace          Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  name               String    @db.VarChar(180)
+  normalizedName     String    @db.VarChar(180)
+  status             String    @default("active") @db.VarChar(40)
+  contactName        String?   @db.VarChar(180)
+  contactEmail       String?   @db.VarChar(180)
+  contactPhone       String?   @db.VarChar(80)
+  websites           Json      @default("[]")
+  businessLocations  Json      @default("[]")
+  targetMarkets      Json      @default("[]")
+  competitors        Json      @default("[]")
+  brandingJson       Json      @default("{}")
+  internalNotes      String?   @db.Text
+  clientVisibleNotes String?   @db.Text
+  defaultSettings    Json      @default("{}")
+  archivedAt         DateTime?
+  archivedById       String?
+  createdById        String
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
+
+  projects          Project[]
+  memberAssignments AgencyClientMember[]
+  teamAssignments   AgencyClientTeam[]
+  activity          WorkspaceActivity[]
+  notifications     WorkspaceNotification[]
+
+  @@unique([workspaceId, normalizedName])
+  @@index([workspaceId, status])
+}
+
+model AgencyClientMember {
+  id             String              @id @default(cuid())
+  agencyClientId String
+  agencyClient   AgencyClient        @relation(fields: [agencyClientId], references: [id], onDelete: Cascade)
+  membershipId   String
+  membership     WorkspaceMembership @relation(fields: [membershipId], references: [id], onDelete: Cascade)
+  assignmentRole String?             @db.VarChar(40)
+  createdAt      DateTime            @default(now())
+
+  @@unique([agencyClientId, membershipId])
+  @@index([membershipId])
+}
+
+model AgencyClientTeam {
+  id             String        @id @default(cuid())
+  agencyClientId String
+  agencyClient   AgencyClient  @relation(fields: [agencyClientId], references: [id], onDelete: Cascade)
+  teamId         String
+  team           WorkspaceTeam @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  createdAt      DateTime      @default(now())
+
+  @@unique([agencyClientId, teamId])
+  @@index([teamId])
+}
+
+model ProjectMemberAssignment {
+  id             String              @id @default(cuid())
+  projectId      String
+  project        Project             @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  membershipId   String
+  membership     WorkspaceMembership @relation(fields: [membershipId], references: [id], onDelete: Cascade)
+  assignmentRole String?             @db.VarChar(40)
+  createdAt      DateTime            @default(now())
+
+  @@unique([projectId, membershipId])
+  @@index([membershipId])
+}
+
+model ProjectTeamAssignment {
+  id        String        @id @default(cuid())
+  projectId String
+  project   Project       @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  teamId    String
+  team      WorkspaceTeam @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  createdAt DateTime      @default(now())
+
+  @@unique([projectId, teamId])
+  @@index([teamId])
+}
+
+model WorkspaceNotification {
+  id             String        @id @default(cuid())
+  workspaceId    String
+  workspace      Workspace     @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  userId         String
+  user           User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  agencyClientId String?
+  agencyClient   AgencyClient? @relation(fields: [agencyClientId], references: [id], onDelete: Cascade)
+  projectId      String?
+  type           String        @db.VarChar(80)
+  title          String        @db.VarChar(255)
+  body           String        @db.Text
+  actionUrl      String?       @db.VarChar(512)
+  emailEligible  Boolean       @default(true)
+  emailStatus    String        @default("pending") @db.VarChar(40)
+  readAt         DateTime?
+  createdAt      DateTime      @default(now())
+
+  @@index([userId, readAt, createdAt])
+  @@index([workspaceId, createdAt])
+  @@index([agencyClientId])
+  @@index([projectId])
+}
+
+model WorkspaceActivity {
+  id             String        @id @default(cuid())
+  workspaceId    String
+  workspace      Workspace     @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  actorUserId    String?
+  actor          User?         @relation("ActivityActor", fields: [actorUserId], references: [id], onDelete: SetNull)
+  agencyClientId String?
+  agencyClient   AgencyClient? @relation(fields: [agencyClientId], references: [id], onDelete: SetNull)
+  projectId      String?
+  action         String        @db.VarChar(100)
+  entityType     String        @db.VarChar(80)
+  entityId       String?       @db.VarChar(191)
+  previousJson   Json?
+  nextJson       Json?
+  metadataJson   Json          @default("{}")
+  createdAt      DateTime      @default(now())
+
+  @@index([workspaceId, createdAt])
+  @@index([agencyClientId, createdAt])
+  @@index([projectId, createdAt])
+  @@index([actorUserId, createdAt])
+}
+
 model OfflinePayment {
-  id                 String   @id @default(cuid())
+  id                 String    @id @default(cuid())
   clientId           String
-  client             Client   @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  client             Client    @relation(fields: [clientId], references: [id], onDelete: Cascade)
   amountCents        Int
-  method             String   @db.VarChar(80)
-  duration           String   @db.VarChar(20)
-  reference          String?  @db.VarChar(255)
-  notes              String?  @db.Text
-  autoRenew          Boolean  @default(false)
+  method             String    @db.VarChar(80)
+  duration           String    @db.VarChar(20)
+  reference          String?   @db.VarChar(255)
+  notes              String?   @db.Text
+  autoRenew          Boolean   @default(false)
   subscriptionEndsAt DateTime
   nextRenewalAt      DateTime?
-  status             String   @default("recorded") @db.VarChar(40)
-  createdAt          DateTime @default(now())
+  status             String    @default("recorded") @db.VarChar(40)
+  createdAt          DateTime  @default(now())
 
   @@index([clientId, createdAt])
   @@index([subscriptionEndsAt])
 }
 
 model MonthlyClientReport {
-  id          String   @id @default(cuid())
+  id          String    @id @default(cuid())
   clientId    String
-  client      Client   @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  client      Client    @relation(fields: [clientId], references: [id], onDelete: Cascade)
   periodStart DateTime
-  status      String   @default("ready") @db.VarChar(40)
-  summaryJson Json     @default("{}")
+  status      String    @default("ready") @db.VarChar(40)
+  summaryJson Json      @default("{}")
   emailSentAt DateTime?
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
 
   @@unique([clientId, periodStart])
   @@index([periodStart])
 }
 
 model MaintenanceRun {
-  id          String   @id @default(cuid())
-  jobKey      String   @db.VarChar(120)
-  status      String   @db.VarChar(40)
-  startedAt   DateTime @default(now())
+  id          String    @id @default(cuid())
+  jobKey      String    @db.VarChar(120)
+  status      String    @db.VarChar(40)
+  startedAt   DateTime  @default(now())
   finishedAt  DateTime?
-  detailsJson Json     @default("{}")
-  error       String?  @db.Text
+  detailsJson Json      @default("{}")
+  error       String?   @db.Text
 
   @@index([jobKey, startedAt])
   @@index([status])
@@ -224,30 +486,30 @@ model FeatureCostCatalog {
   createdAt             DateTime @default(now())
   updatedAt             DateTime @updatedAt
 
-  planLimits PlanFeatureLimit[]
-  usageEvents UsageEvent[]
+  planLimits         PlanFeatureLimit[]
+  usageEvents        UsageEvent[]
   providerCostEvents ProviderCostEvent[]
-  cacheRecords CacheRecord[]
-  jobQueueRecords JobQueueRecord[]
-  modelRoutingRules ModelRoutingRule[]
+  cacheRecords       CacheRecord[]
+  jobQueueRecords    JobQueueRecord[]
+  modelRoutingRules  ModelRoutingRule[]
 
   @@index([moduleName])
   @@index([isActive])
 }
 
 model PlanFeatureLimit {
-  id              String             @id @default(cuid())
-  planCode        String             @db.VarChar(40)
-  featureKey      String             @db.VarChar(120)
-  feature         FeatureCostCatalog @relation(fields: [featureKey], references: [featureKey], onDelete: Cascade)
-  monthlyLimit    Int?
-  dailyLimit      Int?
-  creditCost      Int?
-  hardBlocked     Boolean            @default(false)
-  overageAllowed  Boolean            @default(false)
-  configJson      Json               @default("{}")
-  createdAt       DateTime           @default(now())
-  updatedAt       DateTime           @updatedAt
+  id             String             @id @default(cuid())
+  planCode       String             @db.VarChar(40)
+  featureKey     String             @db.VarChar(120)
+  feature        FeatureCostCatalog @relation(fields: [featureKey], references: [featureKey], onDelete: Cascade)
+  monthlyLimit   Int?
+  dailyLimit     Int?
+  creditCost     Int?
+  hardBlocked    Boolean            @default(false)
+  overageAllowed Boolean            @default(false)
+  configJson     Json               @default("{}")
+  createdAt      DateTime           @default(now())
+  updatedAt      DateTime           @updatedAt
 
   @@unique([planCode, featureKey])
   @@index([planCode])
@@ -255,17 +517,17 @@ model PlanFeatureLimit {
 }
 
 model CreditAccount {
-  id              String   @id @default(cuid())
-  clientId        String
-  client          Client   @relation(fields: [clientId], references: [id], onDelete: Cascade)
-  balance         Int      @default(0)
-  monthlyAllowance Int     @default(0)
-  monthlyUsed     Int      @default(0)
-  periodStart     DateTime
-  periodEnd       DateTime
-  status          String   @default("active") @db.VarChar(40)
-  createdAt       DateTime @default(now())
-  updatedAt       DateTime @updatedAt
+  id               String   @id @default(cuid())
+  clientId         String
+  client           Client   @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  balance          Int      @default(0)
+  monthlyAllowance Int      @default(0)
+  monthlyUsed      Int      @default(0)
+  periodStart      DateTime
+  periodEnd        DateTime
+  status           String   @default("active") @db.VarChar(40)
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
 
   @@unique([clientId, periodStart])
   @@index([clientId, status])
@@ -273,17 +535,17 @@ model CreditAccount {
 }
 
 model CreditTransaction {
-  id             String   @id @default(cuid())
-  clientId       String
-  client         Client   @relation(fields: [clientId], references: [id], onDelete: Cascade)
-  usageEventId   String?
-  usageEvent     UsageEvent? @relation(fields: [usageEventId], references: [id], onDelete: SetNull)
-  type           String   @db.VarChar(40) // grant | debit | refund | adjustment | expiry
-  amount         Int
-  balanceAfter   Int
-  reason         String   @db.VarChar(255)
-  metadataJson   Json     @default("{}")
-  createdAt      DateTime @default(now())
+  id           String      @id @default(cuid())
+  clientId     String
+  client       Client      @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  usageEventId String?
+  usageEvent   UsageEvent? @relation(fields: [usageEventId], references: [id], onDelete: SetNull)
+  type         String      @db.VarChar(40) // grant | debit | refund | adjustment | expiry
+  amount       Int
+  balanceAfter Int
+  reason       String      @db.VarChar(255)
+  metadataJson Json        @default("{}")
+  createdAt    DateTime    @default(now())
 
   @@index([clientId, createdAt])
   @@index([usageEventId])
@@ -291,28 +553,28 @@ model CreditTransaction {
 }
 
 model UsageEvent {
-  id                   String   @id @default(cuid())
-  clientId             String
-  client               Client   @relation(fields: [clientId], references: [id], onDelete: Cascade)
-  userId               String?
-  projectId            String?
-  websiteId            String?
-  featureKey           String   @db.VarChar(120)
-  feature              FeatureCostCatalog @relation(fields: [featureKey], references: [featureKey], onDelete: Restrict)
-  actionKey            String   @db.VarChar(160)
-  idempotencyKey       String?  @db.VarChar(255)
-  status               String   @default("reserved") @db.VarChar(40)
-  creditsReserved      Int      @default(0)
-  creditsCommitted     Int      @default(0)
-  providerCostUsd      Float    @default(0)
-  inputUnits           Int      @default(1)
-  approvalTokenHash    String?  @unique @db.VarChar(191)
+  id                     String             @id @default(cuid())
+  clientId               String
+  client                 Client             @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  userId                 String?
+  projectId              String?
+  websiteId              String?
+  featureKey             String             @db.VarChar(120)
+  feature                FeatureCostCatalog @relation(fields: [featureKey], references: [featureKey], onDelete: Restrict)
+  actionKey              String             @db.VarChar(160)
+  idempotencyKey         String?            @db.VarChar(255)
+  status                 String             @default("reserved") @db.VarChar(40)
+  creditsReserved        Int                @default(0)
+  creditsCommitted       Int                @default(0)
+  providerCostUsd        Float              @default(0)
+  inputUnits             Int                @default(1)
+  approvalTokenHash      String?            @unique @db.VarChar(191)
   approvalTokenExpiresAt DateTime?
-  error                String?  @db.Text
-  metadataJson         Json     @default("{}")
-  createdAt            DateTime @default(now())
-  committedAt          DateTime?
-  refundedAt           DateTime?
+  error                  String?            @db.Text
+  metadataJson           Json               @default("{}")
+  createdAt              DateTime           @default(now())
+  committedAt            DateTime?
+  refundedAt             DateTime?
 
   creditTransactions CreditTransaction[]
   providerCostEvents ProviderCostEvent[]
@@ -326,20 +588,20 @@ model UsageEvent {
 }
 
 model ProviderCostEvent {
-  id              String   @id @default(cuid())
-  clientId        String
-  client          Client   @relation(fields: [clientId], references: [id], onDelete: Cascade)
-  usageEventId    String?
-  usageEvent      UsageEvent? @relation(fields: [usageEventId], references: [id], onDelete: SetNull)
-  featureKey      String   @db.VarChar(120)
-  feature         FeatureCostCatalog @relation(fields: [featureKey], references: [featureKey], onDelete: Restrict)
-  provider        String   @db.VarChar(80)
-  model           String?  @db.VarChar(120)
-  inputTokens     Int      @default(0)
-  outputTokens    Int      @default(0)
-  costUsd         Float    @default(0)
-  metadataJson    Json     @default("{}")
-  createdAt       DateTime @default(now())
+  id           String             @id @default(cuid())
+  clientId     String
+  client       Client             @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  usageEventId String?
+  usageEvent   UsageEvent?        @relation(fields: [usageEventId], references: [id], onDelete: SetNull)
+  featureKey   String             @db.VarChar(120)
+  feature      FeatureCostCatalog @relation(fields: [featureKey], references: [featureKey], onDelete: Restrict)
+  provider     String             @db.VarChar(80)
+  model        String?            @db.VarChar(120)
+  inputTokens  Int                @default(0)
+  outputTokens Int                @default(0)
+  costUsd      Float              @default(0)
+  metadataJson Json               @default("{}")
+  createdAt    DateTime           @default(now())
 
   @@index([clientId, createdAt])
   @@index([usageEventId])
@@ -348,18 +610,18 @@ model ProviderCostEvent {
 }
 
 model CacheRecord {
-  id             String   @id @default(cuid())
-  clientId       String
-  client         Client   @relation(fields: [clientId], references: [id], onDelete: Cascade)
-  featureKey     String   @db.VarChar(120)
-  feature        FeatureCostCatalog @relation(fields: [featureKey], references: [featureKey], onDelete: Cascade)
-  cacheKeyHash   String   @db.VarChar(191)
-  sourceHash     String?  @db.VarChar(191)
-  resultJson     Json     @default("{}")
-  expiresAt      DateTime
-  hitCount       Int      @default(0)
-  lastHitAt      DateTime?
-  createdAt      DateTime @default(now())
+  id           String             @id @default(cuid())
+  clientId     String
+  client       Client             @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  featureKey   String             @db.VarChar(120)
+  feature      FeatureCostCatalog @relation(fields: [featureKey], references: [featureKey], onDelete: Cascade)
+  cacheKeyHash String             @db.VarChar(191)
+  sourceHash   String?            @db.VarChar(191)
+  resultJson   Json               @default("{}")
+  expiresAt    DateTime
+  hitCount     Int                @default(0)
+  lastHitAt    DateTime?
+  createdAt    DateTime           @default(now())
 
   @@unique([clientId, featureKey, cacheKeyHash])
   @@index([expiresAt])
@@ -384,15 +646,15 @@ model BudgetCap {
 }
 
 model UsageAlert {
-  id           String   @id @default(cuid())
+  id           String    @id @default(cuid())
   clientId     String
-  client       Client   @relation(fields: [clientId], references: [id], onDelete: Cascade)
-  alertType    String   @db.VarChar(80)
-  severity     String   @default("info") @db.VarChar(40)
-  message      String   @db.Text
-  metadataJson Json     @default("{}")
+  client       Client    @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  alertType    String    @db.VarChar(80)
+  severity     String    @default("info") @db.VarChar(40)
+  message      String    @db.Text
+  metadataJson Json      @default("{}")
   resolvedAt   DateTime?
-  createdAt    DateTime @default(now())
+  createdAt    DateTime  @default(now())
 
   @@index([clientId, createdAt])
   @@index([alertType])
@@ -400,21 +662,21 @@ model UsageAlert {
 }
 
 model JobQueueRecord {
-  id              String   @id @default(cuid())
-  clientId        String
-  featureKey      String   @db.VarChar(120)
-  feature         FeatureCostCatalog @relation(fields: [featureKey], references: [featureKey], onDelete: Restrict)
-  projectId       String?
-  websiteId       String?
-  status          String   @default("queued") @db.VarChar(40)
-  priority        Int      @default(50)
-  payloadJson     Json     @default("{}")
-  approvalRequired Boolean @default(false)
-  runAfter        DateTime?
-  startedAt       DateTime?
-  completedAt     DateTime?
-  error           String?  @db.Text
-  createdAt       DateTime @default(now())
+  id               String             @id @default(cuid())
+  clientId         String
+  featureKey       String             @db.VarChar(120)
+  feature          FeatureCostCatalog @relation(fields: [featureKey], references: [featureKey], onDelete: Restrict)
+  projectId        String?
+  websiteId        String?
+  status           String             @default("queued") @db.VarChar(40)
+  priority         Int                @default(50)
+  payloadJson      Json               @default("{}")
+  approvalRequired Boolean            @default(false)
+  runAfter         DateTime?
+  startedAt        DateTime?
+  completedAt      DateTime?
+  error            String?            @db.Text
+  createdAt        DateTime           @default(now())
 
   @@index([clientId, status])
   @@index([featureKey])
@@ -422,20 +684,20 @@ model JobQueueRecord {
 }
 
 model ModelRoutingRule {
-  id              String   @id @default(cuid())
-  featureKey      String   @db.VarChar(120)
+  id              String             @id @default(cuid())
+  featureKey      String             @db.VarChar(120)
   feature         FeatureCostCatalog @relation(fields: [featureKey], references: [featureKey], onDelete: Cascade)
-  planCode        String?  @db.VarChar(40)
-  taskComplexity  String   @default("standard") @db.VarChar(40)
-  provider        String   @default("openai") @db.VarChar(80)
-  model           String   @db.VarChar(120)
+  planCode        String?            @db.VarChar(40)
+  taskComplexity  String             @default("standard") @db.VarChar(40)
+  provider        String             @default("openai") @db.VarChar(80)
+  model           String             @db.VarChar(120)
   maxInputTokens  Int?
   maxOutputTokens Int?
-  isActive        Boolean  @default(true)
-  sortOrder       Int      @default(0)
-  configJson      Json     @default("{}")
-  createdAt       DateTime @default(now())
-  updatedAt       DateTime @updatedAt
+  isActive        Boolean            @default(true)
+  sortOrder       Int                @default(0)
+  configJson      Json               @default("{}")
+  createdAt       DateTime           @default(now())
+  updatedAt       DateTime           @updatedAt
 
   @@index([featureKey, isActive])
   @@index([planCode])
@@ -443,24 +705,24 @@ model ModelRoutingRule {
 }
 
 model Website {
-  id                  String                 @id @default(cuid())
-  clientId            String
-  client              Client                 @relation(fields: [clientId], references: [id], onDelete: Cascade)
-  domain              String                 @db.VarChar(255)
-  rootUrl             String                 @db.VarChar(512)
-  status              String                 @default("active") @db.VarChar(40)
-  archivedAt          DateTime?
-  targetCountry       String?
-  targetCities        Json                   @default("[]")
+  id                    String                    @id @default(cuid())
+  clientId              String
+  client                Client                    @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  domain                String                    @db.VarChar(255)
+  rootUrl               String                    @db.VarChar(512)
+  status                String                    @default("active") @db.VarChar(40)
+  archivedAt            DateTime?
+  targetCountry         String?
+  targetCities          Json                      @default("[]")
   // Owned-site override allows ignoring robots.txt (Phase 2: requires verification).
-  verifiedOwned       Boolean                @default(false)
-  createdAt           DateTime               @default(now())
-  crawlJobs           CrawlJob[]
-  keywordAudits       KeywordAuditCampaign[]
-  keywordResearchRuns KeywordResearchRun[]
-  socialProfiles      SocialProfile[]
-  socialCompetitors   SocialCompetitorProfile[]
-  socialStrategies    SocialStrategy[]
+  verifiedOwned         Boolean                   @default(false)
+  createdAt             DateTime                  @default(now())
+  crawlJobs             CrawlJob[]
+  keywordAudits         KeywordAuditCampaign[]
+  keywordResearchRuns   KeywordResearchRun[]
+  socialProfiles        SocialProfile[]
+  socialCompetitors     SocialCompetitorProfile[]
+  socialStrategies      SocialStrategy[]
   localBusinessProfiles LocalBusinessProfile[]
   executionTasks        ExecutionTask[]
   projects              Project[]
@@ -472,90 +734,95 @@ model Website {
 // ─── Guided Project Foundation ──────────────────────────────────────────────
 
 model Project {
-  id                        String                @id @default(cuid())
+  id                        String        @id @default(cuid())
   clientId                  String
-  client                    Client                @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  client                    Client        @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  agencyClientId            String?
+  agencyClient              AgencyClient? @relation(fields: [agencyClientId], references: [id], onDelete: Cascade)
   websiteId                 String?
-  website                   Website?              @relation(fields: [websiteId], references: [id], onDelete: SetNull)
-  name                      String                @db.VarChar(180)
-  projectType               String                @default("existing_website") @db.VarChar(60)
-  status                    String                @default("active") @db.VarChar(40)
-  currentStep               String                @default("intake") @db.VarChar(80)
-  businessName              String?               @db.VarChar(180)
-  websiteUrl                String?               @db.VarChar(512)
-  niche                     String?               @db.VarChar(180)
-  businessLocation          String?               @db.VarChar(255)
-  targetLocations           Json                  @default("[]")
+  website                   Website?      @relation(fields: [websiteId], references: [id], onDelete: SetNull)
+  name                      String        @db.VarChar(180)
+  projectType               String        @default("existing_website") @db.VarChar(60)
+  status                    String        @default("active") @db.VarChar(40)
+  currentStep               String        @default("intake") @db.VarChar(80)
+  businessName              String?       @db.VarChar(180)
+  websiteUrl                String?       @db.VarChar(512)
+  niche                     String?       @db.VarChar(180)
+  businessLocation          String?       @db.VarChar(255)
+  targetLocations           Json          @default("[]")
   // Legacy compatibility value. New code should use targetLocations.
-  targetLocation            String?               @db.VarChar(180)
-  primaryGoal               String?               @db.VarChar(255)
-  targetLaunchTimeline      String?               @db.VarChar(80)
-  preferredOutputs          Json                  @default("[]")
-  preferredPublishingMethod String?               @db.VarChar(80)
-  createdAt                 DateTime              @default(now())
-  updatedAt                 DateTime              @updatedAt
+  targetLocation            String?       @db.VarChar(180)
+  primaryGoal               String?       @db.VarChar(255)
+  targetLaunchTimeline      String?       @db.VarChar(80)
+  preferredOutputs          Json          @default("[]")
+  preferredPublishingMethod String?       @db.VarChar(80)
+  createdAt                 DateTime      @default(now())
+  updatedAt                 DateTime      @updatedAt
 
-  intakeAnswers   ProjectIntakeAnswer[]
-  businessProfile BusinessProfile?
-  aiRuns          AiRun[]
-  executionPlans  ExecutionPlan[]
-  opportunities   Opportunity[]
-  strategyPlans   StrategyPlan[]
-  executionTasks  ExecutionTask[]
-  workflowSteps   ProjectWorkflowStep[]
-  growthDiagnoses GrowthDiagnosis[]
-  growthFunnelStages GrowthFunnelStage[]
-  growthExperiments GrowthExperiment[]
-  growthChannelTests GrowthChannelTest[]
-  growthReports GrowthReport[]
+  intakeAnswers               ProjectIntakeAnswer[]
+  businessProfile             BusinessProfile?
+  aiRuns                      AiRun[]
+  executionPlans              ExecutionPlan[]
+  opportunities               Opportunity[]
+  strategyPlans               StrategyPlan[]
+  executionTasks              ExecutionTask[]
+  workflowSteps               ProjectWorkflowStep[]
+  growthDiagnoses             GrowthDiagnosis[]
+  growthFunnelStages          GrowthFunnelStage[]
+  growthExperiments           GrowthExperiment[]
+  growthChannelTests          GrowthChannelTest[]
+  growthReports               GrowthReport[]
   competitiveIntelligenceRuns CompetitiveIntelligenceRun[]
-  keywordRevenueScores KeywordRevenueScore[]
-  pageGrowthScores PageGrowthScore[]
-  authorityAssets AuthorityAsset[]
-  aiCitationGaps AiCitationGap[]
-  communityInsights CommunityInsight[]
-  intentDriftSnapshots IntentDriftSnapshot[]
-  moatScores MoatScore[]
-  seoFixQueueItems SeoFixQueueItem[]
-  seoFixApprovals SeoFixApproval[]
-  wordpressIntegrations WordPressIntegration[]
-  wordpressPublishJobs WordPressPublishJob[]
-  gapLocalSeoProfiles GapLocalSeoProfile[]
-  gapLocalSeoTasks GapLocalSeoTask[]
-  aiVisibilityQueries AiVisibilityQuery[]
-  aiVisibilitySnapshots AiVisibilitySnapshot[]
-  authorityOpportunities AuthorityOpportunity[]
-  whiteLabelProfiles WhiteLabelProfile[]
-  gapReportExports GapReportExport[]
-  demoProjects DemoProject[]
-  adLandingSuggestions AdLandingSuggestion[]
-  ecommerceExportGuides EcommerceExportGuide[]
+  keywordRevenueScores        KeywordRevenueScore[]
+  pageGrowthScores            PageGrowthScore[]
+  authorityAssets             AuthorityAsset[]
+  aiCitationGaps              AiCitationGap[]
+  communityInsights           CommunityInsight[]
+  intentDriftSnapshots        IntentDriftSnapshot[]
+  moatScores                  MoatScore[]
+  seoFixQueueItems            SeoFixQueueItem[]
+  seoFixApprovals             SeoFixApproval[]
+  wordpressIntegrations       WordPressIntegration[]
+  wordpressPublishJobs        WordPressPublishJob[]
+  gapLocalSeoProfiles         GapLocalSeoProfile[]
+  gapLocalSeoTasks            GapLocalSeoTask[]
+  aiVisibilityQueries         AiVisibilityQuery[]
+  aiVisibilitySnapshots       AiVisibilitySnapshot[]
+  authorityOpportunities      AuthorityOpportunity[]
+  whiteLabelProfiles          WhiteLabelProfile[]
+  gapReportExports            GapReportExport[]
+  demoProjects                DemoProject[]
+  adLandingSuggestions        AdLandingSuggestion[]
+  ecommerceExportGuides       EcommerceExportGuide[]
+  memberAssignments           ProjectMemberAssignment[]
+  teamAssignments             ProjectTeamAssignment[]
 
   @@index([clientId, status])
+  @@index([agencyClientId, status])
   @@index([websiteId])
   @@index([currentStep])
 }
 
 model ProjectWorkflowStep {
-  id                String    @id @default(cuid())
-  projectId         String
-  project           Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  stepKey           String    @db.VarChar(80)
-  title             String    @db.VarChar(180)
-  description       String    @db.Text
-  status            String    @default("pending") @db.VarChar(60)
-  priority          String    @default("medium") @db.VarChar(20)
-  actionLabel       String?   @db.VarChar(120)
-  actionUrl         String?   @db.VarChar(512)
-  sortOrder         Int       @default(0)
-  sourceType        String?   @db.VarChar(80)
-  sourceId          String?   @db.VarChar(191)
-  completionReason  String?   @db.Text
-  readyReason       String?   @db.Text
-  blockedReason     String?   @db.Text
-  completedAt       DateTime?
-  createdAt         DateTime  @default(now())
-  updatedAt         DateTime  @updatedAt
+  id               String    @id @default(cuid())
+  projectId        String
+  project          Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  stepKey          String    @db.VarChar(80)
+  title            String    @db.VarChar(180)
+  description      String    @db.Text
+  status           String    @default("pending") @db.VarChar(60)
+  priority         String    @default("medium") @db.VarChar(20)
+  actionLabel      String?   @db.VarChar(120)
+  actionUrl        String?   @db.VarChar(512)
+  sortOrder        Int       @default(0)
+  sourceType       String?   @db.VarChar(80)
+  sourceId         String?   @db.VarChar(191)
+  completionReason String?   @db.Text
+  readyReason      String?   @db.Text
+  blockedReason    String?   @db.Text
+  completedAt      DateTime?
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
 
   @@unique([projectId, stepKey])
   @@index([projectId, status])
@@ -618,14 +885,14 @@ model AiRun {
 }
 
 model ExecutionPlan {
-  id        String          @id @default(cuid())
+  id        String   @id @default(cuid())
   projectId String
-  project   Project         @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  title     String          @db.VarChar(180)
-  summary   String?         @db.Text
-  status    String          @default("active") @db.VarChar(40)
-  createdAt DateTime        @default(now())
-  updatedAt DateTime        @updatedAt
+  project   Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  title     String   @db.VarChar(180)
+  summary   String?  @db.Text
+  status    String   @default("active") @db.VarChar(40)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   tasks ExecutionTask[]
 
@@ -633,23 +900,23 @@ model ExecutionPlan {
 }
 
 model Opportunity {
-  id                  String   @id @default(cuid())
-  projectId           String
-  project             Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  name                String   @db.VarChar(180)
-  targetAudience      String?  @db.Text
-  problemSolved       String?  @db.Text
-  recommendedOffer    String?  @db.Text
-  businessModel       String?  @db.VarChar(120)
-  opportunityScore    Int?
-  seoScore            Int?
-  competitionScore    Int?
-  monetizationScore   Int?
-  executionScore      Int?
-  userFitScore        Int?
-  summary             String?  @db.Text
-  status              String   @default("suggested") @db.VarChar(40)
-  createdAt           DateTime @default(now())
+  id                String   @id @default(cuid())
+  projectId         String
+  project           Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  name              String   @db.VarChar(180)
+  targetAudience    String?  @db.Text
+  problemSolved     String?  @db.Text
+  recommendedOffer  String?  @db.Text
+  businessModel     String?  @db.VarChar(120)
+  opportunityScore  Int?
+  seoScore          Int?
+  competitionScore  Int?
+  monetizationScore Int?
+  executionScore    Int?
+  userFitScore      Int?
+  summary           String?  @db.Text
+  status            String   @default("suggested") @db.VarChar(40)
+  createdAt         DateTime @default(now())
 
   strategyPlans StrategyPlan[]
 
@@ -931,44 +1198,75 @@ model Report {
 // ─── Project Execution Builder ──────────────────────────────────────────────
 
 model ExecutionTask {
-  id                   String    @id @default(cuid())
-  clientId             String
-  client               Client    @relation(fields: [clientId], references: [id], onDelete: Cascade)
-  websiteId            String?
-  website              Website?  @relation(fields: [websiteId], references: [id], onDelete: Cascade)
-  projectId            String?
-  project              Project?  @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  executionPlanId      String?
-  executionPlan        ExecutionPlan? @relation(fields: [executionPlanId], references: [id], onDelete: SetNull)
-  moduleName           String    @db.VarChar(80)
-  sourceType           String    @db.VarChar(80)
-  sourceId             String?   @db.VarChar(191)
-  dedupeKey            String    @unique @db.VarChar(255)
-  title                String    @db.VarChar(255)
-  description          String    @db.Text
-  priority             String    @default("medium") @db.VarChar(20)
-  automationLevel      String    @default("manual_guided") @db.VarChar(60)
-  status               String    @default("ready") @db.VarChar(60)
-  requiresApproval     Boolean   @default(false)
-  requiresIntegration  Boolean   @default(false)
-  manualRequired       Boolean   @default(true)
-  safetyCategory       String    @default("safe") @db.VarChar(60)
-  relatedModule        String?   @db.VarChar(80)
-  approvalSnapshotJson Json      @default("{}")
-  approvedAt           DateTime?
-  blockedReason        String?   @db.Text
-  actionButtonLabel    String?   @db.VarChar(120)
-  relatedUrl           String?   @db.VarChar(512)
-  relatedAssetId       String?   @db.VarChar(191)
-  manualInstructions   String?   @db.Text
-  impact               String?   @db.Text
-  completedAt          DateTime?
-  skippedAt            DateTime?
-  createdAt            DateTime  @default(now())
-  updatedAt            DateTime  @updatedAt
+  id                            String               @id @default(cuid())
+  clientId                      String
+  client                        Client               @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  websiteId                     String?
+  website                       Website?             @relation(fields: [websiteId], references: [id], onDelete: Cascade)
+  projectId                     String?
+  project                       Project?             @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  assigneeMembershipId          String?
+  assignee                      WorkspaceMembership? @relation("TaskAssignee", fields: [assigneeMembershipId], references: [id], onDelete: SetNull)
+  assignedTeamId                String?
+  assignedTeam                  WorkspaceTeam?       @relation(fields: [assignedTeamId], references: [id], onDelete: SetNull)
+  managerMembershipId           String?
+  manager                       WorkspaceMembership? @relation("TaskManager", fields: [managerMembershipId], references: [id], onDelete: SetNull)
+  approverMembershipId          String?
+  approver                      WorkspaceMembership? @relation("TaskApprover", fields: [approverMembershipId], references: [id], onDelete: SetNull)
+  createdByUserId               String?
+  executionPlanId               String?
+  executionPlan                 ExecutionPlan?       @relation(fields: [executionPlanId], references: [id], onDelete: SetNull)
+  moduleName                    String               @db.VarChar(80)
+  sourceType                    String               @db.VarChar(80)
+  sourceId                      String?              @db.VarChar(191)
+  dedupeKey                     String               @unique @db.VarChar(255)
+  title                         String               @db.VarChar(255)
+  description                   String               @db.Text
+  priority                      String               @default("medium") @db.VarChar(20)
+  dueAt                         DateTime?
+  deadlineApproachingNotifiedAt DateTime?
+  deadlineOverdueNotifiedAt     DateTime?
+  approvalRisk                  String               @default("medium") @db.VarChar(40)
+  automationLevel               String               @default("manual_guided") @db.VarChar(60)
+  status                        String               @default("ready") @db.VarChar(60)
+  requiresApproval              Boolean              @default(false)
+  clientApprovalRequired        Boolean              @default(false)
+  clientApprovedAt              DateTime?
+  requiresIntegration           Boolean              @default(false)
+  manualRequired                Boolean              @default(true)
+  safetyCategory                String               @default("safe") @db.VarChar(60)
+  relatedModule                 String?              @db.VarChar(80)
+  approvalSnapshotJson          Json                 @default("{}")
+  approvedAt                    DateTime?
+  submittedAt                   DateTime?
+  changesRequestedAt            DateTime?
+  publishedAt                   DateTime?
+  approvalDecision              String?              @db.VarChar(40)
+  approvalNotes                 String?              @db.Text
+  blockedReason                 String?              @db.Text
+  actionButtonLabel             String?              @db.VarChar(120)
+  relatedUrl                    String?              @db.VarChar(512)
+  relatedAssetId                String?              @db.VarChar(191)
+  manualInstructions            String?              @db.Text
+  internalNotes                 String?              @db.Text
+  clientVisibleNotes            String?              @db.Text
+  impact                        String?              @db.Text
+  completedAt                   DateTime?
+  skippedAt                     DateTime?
+  createdAt                     DateTime             @default(now())
+  updatedAt                     DateTime             @updatedAt
+
+  dependencies    ExecutionTaskDependency[] @relation("DependentTask")
+  requiredBy      ExecutionTaskDependency[] @relation("RequiredTask")
+  approvalHistory ExecutionTaskApproval[]
 
   @@index([clientId, status])
   @@index([projectId, status])
+  @@index([assigneeMembershipId, status])
+  @@index([assignedTeamId, status])
+  @@index([managerMembershipId, status])
+  @@index([approverMembershipId, status])
+  @@index([dueAt, status])
   @@index([executionPlanId])
   @@index([websiteId, status])
   @@index([moduleName])
@@ -977,27 +1275,53 @@ model ExecutionTask {
   @@index([createdAt])
 }
 
+model ExecutionTaskDependency {
+  id             String        @id @default(cuid())
+  taskId         String
+  task           ExecutionTask @relation("DependentTask", fields: [taskId], references: [id], onDelete: Cascade)
+  requiredTaskId String
+  requiredTask   ExecutionTask @relation("RequiredTask", fields: [requiredTaskId], references: [id], onDelete: Cascade)
+  createdAt      DateTime      @default(now())
+
+  @@unique([taskId, requiredTaskId])
+  @@index([requiredTaskId])
+}
+
+model ExecutionTaskApproval {
+  id                String        @id @default(cuid())
+  taskId            String
+  task              ExecutionTask @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  actorMembershipId String
+  decision          String        @db.VarChar(40)
+  notes             String?       @db.Text
+  snapshotJson      Json          @default("{}")
+  createdAt         DateTime      @default(now())
+
+  @@index([taskId, createdAt])
+  @@index([actorMembershipId, createdAt])
+}
+
 // ─── Competitive SEO & Growth Intelligence ─────────────────────────────────
 
 model CompetitiveIntelligenceRun {
-  id              String    @id @default(cuid())
-  projectId       String
-  project         Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  clientId        String
-  userId          String?
-  websiteId       String?
-  featureKey      String    @db.VarChar(120)
-  status          String    @default("queued") @db.VarChar(40)
-  inputJson       Json      @default("{}")
-  outputJson      Json      @default("{}")
-  creditsReserved Int       @default(0)
-  creditsUsed     Int       @default(0)
-  estimatedCostUsd Float    @default(0)
-  actualCostUsd    Float    @default(0)
-  usageEventId    String?   @db.VarChar(191)
-  error           String?   @db.Text
-  createdAt       DateTime  @default(now())
-  completedAt     DateTime?
+  id               String    @id @default(cuid())
+  projectId        String
+  project          Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  clientId         String
+  userId           String?
+  websiteId        String?
+  featureKey       String    @db.VarChar(120)
+  status           String    @default("queued") @db.VarChar(40)
+  inputJson        Json      @default("{}")
+  outputJson       Json      @default("{}")
+  creditsReserved  Int       @default(0)
+  creditsUsed      Int       @default(0)
+  estimatedCostUsd Float     @default(0)
+  actualCostUsd    Float     @default(0)
+  usageEventId     String?   @db.VarChar(191)
+  error            String?   @db.Text
+  createdAt        DateTime  @default(now())
+  completedAt      DateTime?
 
   @@index([projectId, createdAt])
   @@index([clientId, createdAt])
@@ -1005,19 +1329,19 @@ model CompetitiveIntelligenceRun {
 }
 
 model KeywordRevenueScore {
-  id                         String   @id @default(cuid())
-  projectId                  String
-  project                    Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  keyword                    String   @db.VarChar(512)
-  searchVolume               Int?
-  difficulty                 Float?
-  buyerIntentScore           Float?
-  offerFitScore              Float?
-  authorityGapScore          Float?
-  aiCitationPotentialScore   Float?
-  revenueOpportunityScore    Int
-  recommendation             String?  @db.Text
-  createdAt                  DateTime @default(now())
+  id                       String   @id @default(cuid())
+  projectId                String
+  project                  Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  keyword                  String   @db.VarChar(512)
+  searchVolume             Int?
+  difficulty               Float?
+  buyerIntentScore         Float?
+  offerFitScore            Float?
+  authorityGapScore        Float?
+  aiCitationPotentialScore Float?
+  revenueOpportunityScore  Int
+  recommendation           String?  @db.Text
+  createdAt                DateTime @default(now())
 
   @@index([projectId, createdAt])
   @@index([keyword])
@@ -1025,19 +1349,19 @@ model KeywordRevenueScore {
 }
 
 model PageGrowthScore {
-  id                              String   @id @default(cuid())
-  projectId                       String
-  project                         Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  pageId                          String?  @db.VarChar(191)
-  url                             String   @db.VarChar(512)
-  proofGapScore                   Int      @default(0)
-  monetizationFitScore            Int      @default(0)
-  refreshPriorityScore            Int      @default(0)
-  internalLinkOpportunityScore    Int      @default(0)
-  aiCitationPotentialScore        Int      @default(0)
-  overallScore                    Int      @default(0)
-  recommendedActions              Json     @default("[]")
-  createdAt                       DateTime @default(now())
+  id                           String   @id @default(cuid())
+  projectId                    String
+  project                      Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  pageId                       String?  @db.VarChar(191)
+  url                          String   @db.VarChar(512)
+  proofGapScore                Int      @default(0)
+  monetizationFitScore         Int      @default(0)
+  refreshPriorityScore         Int      @default(0)
+  internalLinkOpportunityScore Int      @default(0)
+  aiCitationPotentialScore     Int      @default(0)
+  overallScore                 Int      @default(0)
+  recommendedActions           Json     @default("[]")
+  createdAt                    DateTime @default(now())
 
   @@index([projectId, createdAt])
   @@index([pageId])
@@ -1063,15 +1387,15 @@ model AuthorityAsset {
 }
 
 model AiCitationGap {
-  id                String   @id @default(cuid())
-  projectId         String
-  project           Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  query             String   @db.VarChar(512)
-  competitorUrl     String?  @db.VarChar(512)
-  citedPageUrl      String?  @db.VarChar(512)
-  gapSummary        String?  @db.Text
-  recommendedFixes  Json     @default("[]")
-  createdAt         DateTime @default(now())
+  id               String   @id @default(cuid())
+  projectId        String
+  project          Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  query            String   @db.VarChar(512)
+  competitorUrl    String?  @db.VarChar(512)
+  citedPageUrl     String?  @db.VarChar(512)
+  gapSummary       String?  @db.Text
+  recommendedFixes Json     @default("[]")
+  createdAt        DateTime @default(now())
 
   @@index([projectId, createdAt])
   @@index([query])
@@ -1109,18 +1433,18 @@ model IntentDriftSnapshot {
 }
 
 model MoatScore {
-  id                       String   @id @default(cuid())
-  projectId                String
-  project                  Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  topicalCoverageScore     Int      @default(0)
-  authorityAssetScore      Int      @default(0)
-  brandEntityScore         Int      @default(0)
-  aiCitationScore          Int      @default(0)
-  conversionAssetScore     Int      @default(0)
-  communitySignalScore     Int      @default(0)
-  totalMoatScore           Int
-  recommendedNextAction    String?  @db.Text
-  createdAt                DateTime @default(now())
+  id                    String   @id @default(cuid())
+  projectId             String
+  project               Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  topicalCoverageScore  Int      @default(0)
+  authorityAssetScore   Int      @default(0)
+  brandEntityScore      Int      @default(0)
+  aiCitationScore       Int      @default(0)
+  conversionAssetScore  Int      @default(0)
+  communitySignalScore  Int      @default(0)
+  totalMoatScore        Int
+  recommendedNextAction String?  @db.Text
+  createdAt             DateTime @default(now())
 
   @@index([projectId, createdAt])
   @@index([totalMoatScore])
@@ -1160,36 +1484,36 @@ model SeoFixQueueItem {
 }
 
 model SeoFixApproval {
-  id           String   @id @default(cuid())
+  id           String          @id @default(cuid())
   projectId    String
-  project      Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  project      Project         @relation(fields: [projectId], references: [id], onDelete: Cascade)
   fixItemId    String
   fixItem      SeoFixQueueItem @relation(fields: [fixItemId], references: [id], onDelete: Cascade)
   userId       String?
-  action       String   @db.VarChar(40)
-  editedFix    String?  @db.Text
-  notes        String?  @db.Text
-  snapshotJson Json     @default("{}")
-  createdAt    DateTime @default(now())
+  action       String          @db.VarChar(40)
+  editedFix    String?         @db.Text
+  notes        String?         @db.Text
+  snapshotJson Json            @default("{}")
+  createdAt    DateTime        @default(now())
 
   @@index([projectId, createdAt])
   @@index([fixItemId])
 }
 
 model WordPressIntegration {
-  id                    String   @id @default(cuid())
+  id                    String    @id @default(cuid())
   projectId             String
-  project               Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  project               Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
   clientId              String
-  siteUrl               String   @db.VarChar(512)
-  authMethod            String   @db.VarChar(60)
-  connectionStatus      String   @default("not_connected") @db.VarChar(60)
-  permissionScope       Json     @default("[]")
-  defaultPublishMode    String   @default("draft") @db.VarChar(60)
-  secretRef             String?  @db.VarChar(255)
+  siteUrl               String    @db.VarChar(512)
+  authMethod            String    @db.VarChar(60)
+  connectionStatus      String    @default("not_connected") @db.VarChar(60)
+  permissionScope       Json      @default("[]")
+  defaultPublishMode    String    @default("draft") @db.VarChar(60)
+  secretRef             String?   @db.VarChar(255)
   lastConnectionCheckAt DateTime?
-  createdAt             DateTime @default(now())
-  updatedAt             DateTime @updatedAt
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime  @updatedAt
 
   publishJobs WordPressPublishJob[]
 
@@ -1198,22 +1522,22 @@ model WordPressIntegration {
 }
 
 model WordPressPublishJob {
-  id             String   @id @default(cuid())
+  id             String                @id @default(cuid())
   projectId      String
-  project        Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  project        Project               @relation(fields: [projectId], references: [id], onDelete: Cascade)
   clientId       String
   integrationId  String?
   integration    WordPressIntegration? @relation(fields: [integrationId], references: [id], onDelete: SetNull)
   aiOutputId     String?
-  targetType     String   @db.VarChar(60)
-  publishMode    String   @db.VarChar(60)
-  title          String?  @db.VarChar(255)
-  htmlContent    String?  @db.Text
-  externalPostId String?  @db.VarChar(191)
-  status         String   @default("queued") @db.VarChar(60)
-  rollbackNote   String?  @db.Text
-  errorMessage   String?  @db.Text
-  createdAt      DateTime @default(now())
+  targetType     String                @db.VarChar(60)
+  publishMode    String                @db.VarChar(60)
+  title          String?               @db.VarChar(255)
+  htmlContent    String?               @db.Text
+  externalPostId String?               @db.VarChar(191)
+  status         String                @default("queued") @db.VarChar(60)
+  rollbackNote   String?               @db.Text
+  errorMessage   String?               @db.Text
+  createdAt      DateTime              @default(now())
   completedAt    DateTime?
 
   @@index([projectId, status])
@@ -1244,19 +1568,19 @@ model GapLocalSeoProfile {
 }
 
 model GapLocalSeoTask {
-  id              String   @id @default(cuid())
+  id              String             @id @default(cuid())
   projectId       String
-  project         Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  project         Project            @relation(fields: [projectId], references: [id], onDelete: Cascade)
   profileId       String
   profile         GapLocalSeoProfile @relation(fields: [profileId], references: [id], onDelete: Cascade)
-  taskType        String   @db.VarChar(80)
-  title           String   @db.VarChar(220)
-  description     String   @db.Text
-  priority        String   @default("medium") @db.VarChar(20)
-  status          String   @default("planned") @db.VarChar(60)
-  executionTaskId String?  @db.VarChar(191)
-  createdAt       DateTime @default(now())
-  updatedAt       DateTime @updatedAt
+  taskType        String             @db.VarChar(80)
+  title           String             @db.VarChar(220)
+  description     String             @db.Text
+  priority        String             @default("medium") @db.VarChar(20)
+  status          String             @default("planned") @db.VarChar(60)
+  executionTaskId String?            @db.VarChar(191)
+  createdAt       DateTime           @default(now())
+  updatedAt       DateTime           @updatedAt
 
   @@index([projectId, status])
   @@index([profileId])
@@ -1264,20 +1588,20 @@ model GapLocalSeoTask {
 }
 
 model AiVisibilityQuery {
-  id              String   @id @default(cuid())
-  projectId       String
-  project         Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  clientId        String
-  queryText       String   @db.VarChar(512)
-  targetBrand     String   @db.VarChar(180)
-  targetUrl       String?  @db.VarChar(512)
-  competitors     Json     @default("[]")
-  scanFrequency   String   @default("manual") @db.VarChar(40)
-  lastScanStatus  String   @default("queued") @db.VarChar(40)
-  visibilityStatus String? @db.VarChar(60)
-  recommendedAction String? @db.Text
-  createdAt       DateTime @default(now())
-  updatedAt       DateTime @updatedAt
+  id                String   @id @default(cuid())
+  projectId         String
+  project           Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  clientId          String
+  queryText         String   @db.VarChar(512)
+  targetBrand       String   @db.VarChar(180)
+  targetUrl         String?  @db.VarChar(512)
+  competitors       Json     @default("[]")
+  scanFrequency     String   @default("manual") @db.VarChar(40)
+  lastScanStatus    String   @default("queued") @db.VarChar(40)
+  visibilityStatus  String?  @db.VarChar(60)
+  recommendedAction String?  @db.Text
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
 
   snapshots AiVisibilitySnapshot[]
 
@@ -1286,40 +1610,40 @@ model AiVisibilityQuery {
 }
 
 model AiVisibilitySnapshot {
-  id                 String   @id @default(cuid())
+  id                 String            @id @default(cuid())
   projectId          String
-  project            Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  project            Project           @relation(fields: [projectId], references: [id], onDelete: Cascade)
   queryId            String
   query              AiVisibilityQuery @relation(fields: [queryId], references: [id], onDelete: Cascade)
-  scanProvider       String   @default("manual_v1") @db.VarChar(80)
-  visibilityStatus   String   @db.VarChar(60)
-  citedUrls          Json     @default("[]")
-  competitorsVisible Json     @default("[]")
-  recommendedActions Json     @default("[]")
-  creditCost         Int      @default(0)
-  createdAt          DateTime @default(now())
+  scanProvider       String            @default("manual_v1") @db.VarChar(80)
+  visibilityStatus   String            @db.VarChar(60)
+  citedUrls          Json              @default("[]")
+  competitorsVisible Json              @default("[]")
+  recommendedActions Json              @default("[]")
+  creditCost         Int               @default(0)
+  createdAt          DateTime          @default(now())
 
   @@index([projectId, createdAt])
   @@index([queryId])
 }
 
 model AuthorityOpportunity {
-  id                    String   @id @default(cuid())
-  projectId             String
-  project               Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  clientId              String
-  opportunityType       String   @db.VarChar(80)
-  opportunityUrl        String?  @db.VarChar(512)
-  targetPageUrl         String?  @db.VarChar(512)
-  description           String   @db.Text
-  riskScore             Int      @default(0)
-  riskLabel             String   @db.VarChar(40)
-  estimatedValue        String   @default("medium") @db.VarChar(40)
-  outreachRequired      Boolean  @default(false)
-  outreachDraftAiOutputId String? @db.VarChar(191)
-  executionTaskId       String?  @db.VarChar(191)
-  createdAt             DateTime @default(now())
-  updatedAt             DateTime @updatedAt
+  id                      String   @id @default(cuid())
+  projectId               String
+  project                 Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  clientId                String
+  opportunityType         String   @db.VarChar(80)
+  opportunityUrl          String?  @db.VarChar(512)
+  targetPageUrl           String?  @db.VarChar(512)
+  description             String   @db.Text
+  riskScore               Int      @default(0)
+  riskLabel               String   @db.VarChar(40)
+  estimatedValue          String   @default("medium") @db.VarChar(40)
+  outreachRequired        Boolean  @default(false)
+  outreachDraftAiOutputId String?  @db.VarChar(191)
+  executionTaskId         String?  @db.VarChar(191)
+  createdAt               DateTime @default(now())
+  updatedAt               DateTime @updatedAt
 
   @@index([projectId, createdAt])
   @@index([clientId])
@@ -1345,19 +1669,22 @@ model WhiteLabelProfile {
 }
 
 model GapReportExport {
-  id             String   @id @default(cuid())
+  id             String    @id @default(cuid())
   projectId      String
-  project        Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  project        Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
   clientId       String
-  reportType     String   @db.VarChar(80)
-  clientName     String?  @db.VarChar(180)
-  approvalStatus String   @default("needs_review") @db.VarChar(60)
-  exportFormat   String   @db.VarChar(40)
-  outputFileId   String?  @db.VarChar(191)
-  contentJson    Json     @default("{}")
-  status         String   @default("queued") @db.VarChar(60)
-  createdAt      DateTime @default(now())
+  reportType     String    @db.VarChar(80)
+  clientName     String?   @db.VarChar(180)
+  approvalStatus String    @default("needs_review") @db.VarChar(60)
+  exportFormat   String    @db.VarChar(40)
+  outputFileId   String?   @db.VarChar(191)
+  contentJson    Json      @default("{}")
+  status         String    @default("queued") @db.VarChar(60)
+  createdAt      DateTime  @default(now())
   completedAt    DateTime?
+  clientVisible  Boolean   @default(false)
+  sentToClientAt DateTime?
+  sentByUserId   String?   @db.VarChar(191)
 
   @@index([projectId, status])
   @@index([clientId, createdAt])
@@ -1457,29 +1784,29 @@ model GrowthFunnelStage {
 }
 
 model GrowthExperiment {
-  id                String   @id @default(cuid())
-  projectId         String
-  project           Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  title             String   @db.VarChar(220)
-  hypothesis        String   @db.Text
-  metric            String   @db.VarChar(160)
-  successThreshold  String   @db.VarChar(220)
-  status            String   @default("planned") @db.VarChar(60)
-  iceScore          Int      @default(0)
-  pieScore          Int      @default(0)
-  impactScore       Int      @default(0)
-  confidenceScore   Int      @default(0)
-  easeScore         Int      @default(0)
-  potentialScore    Int      @default(0)
-  importanceScore   Int      @default(0)
-  requiredAssets    Json     @default("[]")
-  automationLevel   String   @default("prepare") @db.VarChar(60)
-  requiresApproval  Boolean  @default(true)
-  safetyCategory    String   @default("review_required") @db.VarChar(60)
-  startedAt         DateTime?
-  completedAt       DateTime?
-  createdAt         DateTime @default(now())
-  updatedAt         DateTime @updatedAt
+  id               String    @id @default(cuid())
+  projectId        String
+  project          Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  title            String    @db.VarChar(220)
+  hypothesis       String    @db.Text
+  metric           String    @db.VarChar(160)
+  successThreshold String    @db.VarChar(220)
+  status           String    @default("planned") @db.VarChar(60)
+  iceScore         Int       @default(0)
+  pieScore         Int       @default(0)
+  impactScore      Int       @default(0)
+  confidenceScore  Int       @default(0)
+  easeScore        Int       @default(0)
+  potentialScore   Int       @default(0)
+  importanceScore  Int       @default(0)
+  requiredAssets   Json      @default("[]")
+  automationLevel  String    @default("prepare") @db.VarChar(60)
+  requiresApproval Boolean   @default(true)
+  safetyCategory   String    @default("review_required") @db.VarChar(60)
+  startedAt        DateTime?
+  completedAt      DateTime?
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
 
   assets  GrowthExperimentAsset[]
   results GrowthExperimentResult[]
@@ -1506,14 +1833,14 @@ model GrowthExperimentAsset {
 }
 
 model GrowthExperimentResult {
-  id             String           @id @default(cuid())
-  experimentId   String
-  experiment     GrowthExperiment @relation(fields: [experimentId], references: [id], onDelete: Cascade)
-  baselineValue  Float?
-  currentValue   Float?
-  resultStatus   String           @default("tracking") @db.VarChar(60)
-  notes          String?          @db.Text
-  recordedAt     DateTime         @default(now())
+  id            String           @id @default(cuid())
+  experimentId  String
+  experiment    GrowthExperiment @relation(fields: [experimentId], references: [id], onDelete: Cascade)
+  baselineValue Float?
+  currentValue  Float?
+  resultStatus  String           @default("tracking") @db.VarChar(60)
+  notes         String?          @db.Text
+  recordedAt    DateTime         @default(now())
 
   @@index([experimentId, recordedAt])
   @@index([resultStatus])
@@ -1642,17 +1969,17 @@ model LocalBusinessProfile {
 }
 
 model LocalKeyword {
-  id         String   @id @default(cuid())
+  id         String               @id @default(cuid())
   businessId String
   business   LocalBusinessProfile @relation(fields: [businessId], references: [id], onDelete: Cascade)
-  keyword    String   @db.VarChar(255)
-  city       String   @db.VarChar(120)
-  country    String   @default("United States") @db.VarChar(120)
-  device     String   @default("desktop") @db.VarChar(32)
-  language   String   @default("en") @db.VarChar(16)
-  active     Boolean  @default(true)
-  createdAt  DateTime @default(now())
-  updatedAt  DateTime @updatedAt
+  keyword    String               @db.VarChar(255)
+  city       String               @db.VarChar(120)
+  country    String               @default("United States") @db.VarChar(120)
+  device     String               @default("desktop") @db.VarChar(32)
+  language   String               @default("en") @db.VarChar(16)
+  active     Boolean              @default(true)
+  createdAt  DateTime             @default(now())
+  updatedAt  DateTime             @updatedAt
 
   snapshots   LocalRankSnapshot[]
   scores      LocalScore[]
@@ -1663,41 +1990,41 @@ model LocalKeyword {
 }
 
 model LocalRankSnapshot {
-  id                  String   @id @default(cuid())
+  id                  String       @id @default(cuid())
   keywordId           String
   keyword             LocalKeyword @relation(fields: [keywordId], references: [id], onDelete: Cascade)
-  scanDate            DateTime @default(now())
+  scanDate            DateTime     @default(now())
   organicPosition     Int?
   mapsPosition        Int?
   localPackPosition   Int?
-  foundDomain         Boolean  @default(false)
-  matchedBusinessName String?  @db.VarChar(180)
-  confidenceScore     Int      @default(0)
-  matchStatus         String   @default("no_reliable_match") @db.VarChar(40)
-  rawResponseRef      String?  @db.VarChar(255)
-  evidenceJson        Json     @default("{}")
+  foundDomain         Boolean      @default(false)
+  matchedBusinessName String?      @db.VarChar(180)
+  confidenceScore     Int          @default(0)
+  matchStatus         String       @default("no_reliable_match") @db.VarChar(40)
+  rawResponseRef      String?      @db.VarChar(255)
+  evidenceJson        Json         @default("{}")
 
   @@index([keywordId, scanDate])
 }
 
 model LocalCompetitor {
-  id              String   @id @default(cuid())
+  id              String               @id @default(cuid())
   businessId      String
   business        LocalBusinessProfile @relation(fields: [businessId], references: [id], onDelete: Cascade)
   keywordId       String?
-  keyword         LocalKeyword? @relation(fields: [keywordId], references: [id], onDelete: SetNull)
-  competitorName  String   @db.VarChar(180)
-  domain          String?  @db.VarChar(255)
-  phone           String?  @db.VarChar(80)
-  address         String?  @db.VarChar(255)
+  keyword         LocalKeyword?        @relation(fields: [keywordId], references: [id], onDelete: SetNull)
+  competitorName  String               @db.VarChar(180)
+  domain          String?              @db.VarChar(255)
+  phone           String?              @db.VarChar(80)
+  address         String?              @db.VarChar(255)
   rating          Float?
   reviewCount     Int?
   mapsPosition    Int?
   organicPosition Int?
-  categoriesJson  Json     @default("[]")
-  evidenceJson    Json     @default("{}")
-  createdAt       DateTime @default(now())
-  updatedAt       DateTime @updatedAt
+  categoriesJson  Json                 @default("[]")
+  evidenceJson    Json                 @default("{}")
+  createdAt       DateTime             @default(now())
+  updatedAt       DateTime             @updatedAt
 
   @@index([businessId])
   @@index([keywordId])
@@ -1705,17 +2032,17 @@ model LocalCompetitor {
 }
 
 model LocalReview {
-  id          String   @id @default(cuid())
+  id          String               @id @default(cuid())
   businessId  String
   business    LocalBusinessProfile @relation(fields: [businessId], references: [id], onDelete: Cascade)
-  source      String   @db.VarChar(80)
-  reviewer    String?  @db.VarChar(180)
+  source      String               @db.VarChar(80)
+  reviewer    String?              @db.VarChar(180)
   rating      Float?
-  reviewText  String?  @db.Text
+  reviewText  String?              @db.Text
   reviewDate  DateTime?
-  sentiment   String?  @db.VarChar(40)
-  replyStatus String   @default("not_replied") @db.VarChar(40)
-  createdAt   DateTime @default(now())
+  sentiment   String?              @db.VarChar(40)
+  replyStatus String               @default("not_replied") @db.VarChar(40)
+  createdAt   DateTime             @default(now())
 
   @@index([businessId])
   @@index([source])
@@ -1723,58 +2050,58 @@ model LocalReview {
 }
 
 model LocalCitation {
-  id           String   @id @default(cuid())
+  id           String               @id @default(cuid())
   businessId   String
   business     LocalBusinessProfile @relation(fields: [businessId], references: [id], onDelete: Cascade)
-  source       String   @db.VarChar(120)
-  found        Boolean  @default(false)
-  nameMatch    Boolean  @default(false)
-  phoneMatch   Boolean  @default(false)
-  addressMatch Boolean  @default(false)
-  websiteMatch Boolean  @default(false)
-  status       String   @default("missing") @db.VarChar(40)
-  fixUrl       String?  @db.VarChar(512)
-  notes        String?  @db.Text
-  checkedAt    DateTime @default(now())
+  source       String               @db.VarChar(120)
+  found        Boolean              @default(false)
+  nameMatch    Boolean              @default(false)
+  phoneMatch   Boolean              @default(false)
+  addressMatch Boolean              @default(false)
+  websiteMatch Boolean              @default(false)
+  status       String               @default("missing") @db.VarChar(40)
+  fixUrl       String?              @db.VarChar(512)
+  notes        String?              @db.Text
+  checkedAt    DateTime             @default(now())
 
   @@unique([businessId, source])
   @@index([businessId])
 }
 
 model LocalScore {
-  id            String   @id @default(cuid())
-  businessId    String
-  business      LocalBusinessProfile @relation(fields: [businessId], references: [id], onDelete: Cascade)
-  keywordId     String?
-  keyword       LocalKeyword? @relation(fields: [keywordId], references: [id], onDelete: SetNull)
-  scoreDate     DateTime @default(now())
-  totalScore    Int
-  organicScore  Int      @default(0)
-  mapsScore     Int      @default(0)
-  packScore     Int      @default(0)
-  reviewScore   Int      @default(0)
-  napScore      Int      @default(0)
-  websiteScore  Int      @default(0)
-  contentScore  Int      @default(0)
-  statusLabel   String   @db.VarChar(40)
-  evidenceJson  Json     @default("{}")
+  id           String               @id @default(cuid())
+  businessId   String
+  business     LocalBusinessProfile @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  keywordId    String?
+  keyword      LocalKeyword?        @relation(fields: [keywordId], references: [id], onDelete: SetNull)
+  scoreDate    DateTime             @default(now())
+  totalScore   Int
+  organicScore Int                  @default(0)
+  mapsScore    Int                  @default(0)
+  packScore    Int                  @default(0)
+  reviewScore  Int                  @default(0)
+  napScore     Int                  @default(0)
+  websiteScore Int                  @default(0)
+  contentScore Int                  @default(0)
+  statusLabel  String               @db.VarChar(40)
+  evidenceJson Json                 @default("{}")
 
   @@index([businessId, scoreDate])
   @@index([keywordId, scoreDate])
 }
 
 model LocalRecommendation {
-  id             String   @id @default(cuid())
+  id             String               @id @default(cuid())
   businessId     String
   business       LocalBusinessProfile @relation(fields: [businessId], references: [id], onDelete: Cascade)
-  priority       String   @db.VarChar(20)
-  category       String   @db.VarChar(80)
-  recommendation String   @db.Text
-  expectedImpact String?  @db.Text
-  status         String   @default("open") @db.VarChar(40)
-  evidenceJson   Json     @default("{}")
-  createdAt      DateTime @default(now())
-  updatedAt      DateTime @updatedAt
+  priority       String               @db.VarChar(20)
+  category       String               @db.VarChar(80)
+  recommendation String               @db.Text
+  expectedImpact String?              @db.Text
+  status         String               @default("open") @db.VarChar(40)
+  evidenceJson   Json                 @default("{}")
+  createdAt      DateTime             @default(now())
+  updatedAt      DateTime             @updatedAt
 
   @@index([businessId, status])
   @@index([priority])
@@ -1931,23 +2258,23 @@ model AiUsageCounter {
 // ─── Social Strategy & Brand Visibility ──────────────────────────────────────
 
 model SocialProfile {
-  id               String   @id @default(cuid())
+  id               String    @id @default(cuid())
   websiteId        String
-  website          Website  @relation(fields: [websiteId], references: [id], onDelete: Cascade)
-  platform         String   @db.VarChar(40)
-  profileUrl       String   @db.VarChar(512)
-  handle           String?  @db.VarChar(120)
-  displayName      String?  @db.VarChar(180)
-  bio              String?  @db.Text
+  website          Website   @relation(fields: [websiteId], references: [id], onDelete: Cascade)
+  platform         String    @db.VarChar(40)
+  profileUrl       String    @db.VarChar(512)
+  handle           String?   @db.VarChar(120)
+  displayName      String?   @db.VarChar(180)
+  bio              String?   @db.Text
   followerCount    Int?
-  postingFrequency String?  @db.VarChar(80)
+  postingFrequency String?   @db.VarChar(80)
   lastPostAt       DateTime?
-  websiteLinked    Boolean  @default(false)
-  profileComplete  Boolean  @default(false)
-  brandConsistent  Boolean  @default(false)
-  notes            String?  @db.Text
-  createdAt        DateTime @default(now())
-  updatedAt        DateTime @updatedAt
+  websiteLinked    Boolean   @default(false)
+  profileComplete  Boolean   @default(false)
+  brandConsistent  Boolean   @default(false)
+  notes            String?   @db.Text
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
 
   @@unique([websiteId, platform])
   @@index([websiteId])

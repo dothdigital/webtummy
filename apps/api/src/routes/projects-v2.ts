@@ -6,6 +6,8 @@ import { projectClientIdForRequest } from "../project-scope.js";
 import { config } from "../config.js";
 import { commitUsage, modelForFeature, preflightUsage, refundUsage } from "../usage-engine.js";
 import { buildCampaignExecutionTasks, isExistingWebsiteCampaign, projectTypes, projectWorkflowDefinitions, requiresSiteAnalysisBeforeStrategy } from "../campaign-intelligence.js";
+import { canAccessAgencyClient, canAccessProject, createWorkspaceNotification, hasWorkspacePermission, recordWorkspaceActivity, requireWorkspaceRole, workspaceContext } from "../workspace-access.js";
+import { clientDefaults } from "../dev002.js";
 
 export const guidedProjectsRouter = Router();
 guidedProjectsRouter.use(requireAuth);
@@ -24,6 +26,11 @@ const createProjectSchema = z.object({
   preferredOutputs: z.array(z.string().max(80)).default([]),
   preferredPublishingMethod: z.string().max(80).optional().nullable(),
   clientId: z.string().optional(),
+  agencyClientId: z.string().optional().nullable(),
+  updateClientDefaults: z.boolean().default(false),
+  managerMembershipId: z.string().optional().nullable(),
+  assignedMembershipIds: z.array(z.string()).max(100).default([]),
+  assignedTeamIds: z.array(z.string()).max(100).default([]),
 });
 
 const intakeAnswerSchema = z.object({
@@ -41,6 +48,24 @@ const leadMagnetGenerateSchema = z.object({
   selectedIdea: z.string().trim().min(3).max(240).optional().nullable(),
   instructions: z.string().trim().max(2000).optional().nullable(),
 });
+
+function workspaceProjectAssignmentFilter(context: Awaited<ReturnType<typeof workspaceContext>>): Prisma.ProjectWhereInput {
+  if (context.roles.has("owner") || context.roles.has("admin") || context.workspace.workspaceType === "personal") return {};
+  const assignments: Prisma.ProjectWhereInput[] = [
+    { memberAssignments: { some: { membershipId: context.membership.id } } },
+    { teamAssignments: { some: { team: { members: { some: { membershipId: context.membership.id } } } } } },
+    { executionTasks: { some: { OR: [
+      { assigneeMembershipId: context.membership.id },
+      { managerMembershipId: context.membership.id },
+      { approverMembershipId: context.membership.id },
+    ] } } },
+  ];
+  if (context.workspace.workspaceType === "agency") assignments.push(
+    { agencyClient: { memberAssignments: { some: { membershipId: context.membership.id } } } },
+    { agencyClient: { teamAssignments: { some: { team: { members: { some: { membershipId: context.membership.id } } } } } } },
+  );
+  return { OR: assignments };
+}
 
 
 const workflowStepPatchSchema = z.object({
@@ -144,9 +169,15 @@ function normalizeUrl(input?: string | null) {
   }
 }
 
+async function requireRequestPermission(req: Request, permission: string) {
+  const context = await workspaceContext(req);
+  if (!hasWorkspacePermission(context, permission)) throw Object.assign(new Error("Insufficient workspace permission."), { statusCode: 403 });
+  return context;
+}
+
 async function scopedProject(req: Request, projectId: string) {
   const clientId = await projectClientIdForRequest(req);
-  return prisma.project.findFirst({
+  const project = await prisma.project.findFirst({
     where: { id: projectId, ...(clientId ? { clientId } : {}) },
     include: {
       website: { select: { id: true, domain: true, rootUrl: true, status: true } },
@@ -165,6 +196,10 @@ async function scopedProject(req: Request, projectId: string) {
       strategyPlans: { orderBy: { createdAt: "desc" }, take: 3 },
     },
   });
+  if (!project) return null;
+  const context = await workspaceContext(req);
+  if (context.workspace.workspaceType === "personal") return project;
+  return await canAccessProject(context, project.id) ? project : null;
 }
 
 function answerText(answers: z.infer<typeof intakeAnswerSchema>[], key: string) {
@@ -1217,8 +1252,10 @@ guidedProjectsRouter.get("/workspace/intelligence", async (req, res) => {
   const requestedWebsiteId = typeof req.query.websiteId === "string" ? req.query.websiteId : null;
   await syncProjectWorkflowsForClient(clientId, requestedProjectId);
 
+  const context = await workspaceContext(req);
+  const assignmentFilter = workspaceProjectAssignmentFilter(context);
   const projects = await prisma.project.findMany({
-    where: { clientId, ...(requestedProjectId ? { id: requestedProjectId } : {}) },
+    where: { clientId, ...assignmentFilter, ...(requestedProjectId ? { id: requestedProjectId } : {}) },
     orderBy: { createdAt: "desc" },
     include: {
       website: {
@@ -1382,9 +1419,11 @@ guidedProjectsRouter.get("/workspace/intelligence", async (req, res) => {
 
 guidedProjectsRouter.get("/projects-v2", async (req, res) => {
   const clientId = await projectClientIdForRequest(req);
+  const context = await workspaceContext(req);
+  const assignmentFilter = workspaceProjectAssignmentFilter(context);
   if (clientId) await syncProjectWorkflowsForClient(clientId);
   const projects = clientId ? await prisma.project.findMany({
-    where: { clientId },
+    where: { clientId, ...assignmentFilter },
     orderBy: { createdAt: "desc" },
     include: {
       website: { select: { id: true, domain: true, rootUrl: true, status: true } },
@@ -1404,7 +1443,23 @@ guidedProjectsRouter.get("/projects-v2", async (req, res) => {
       _count: { select: { intakeAnswers: true, strategyPlans: true, opportunities: true } },
     },
   }) : [];
-  res.json({ projects });
+  const taskStatusCounts = projects.length ? await prisma.executionTask.groupBy({
+    by: ["projectId", "status"],
+    where: { projectId: { in: projects.map((project) => project.id) } },
+    _count: { _all: true },
+  }) : [];
+  const executionByProject = new Map<string, { total: number; completed: number }>();
+  for (const row of taskStatusCounts) {
+    if (!row.projectId) continue;
+    const counts = executionByProject.get(row.projectId) ?? { total: 0, completed: 0 };
+    counts.total += row._count._all;
+    if (["completed", "skipped", "published"].includes(row.status)) counts.completed += row._count._all;
+    executionByProject.set(row.projectId, counts);
+  }
+  res.json({ projects: projects.map((project) => ({
+    ...project,
+    executionProgress: executionByProject.get(project.id) ?? { total: 0, completed: 0 },
+  })) });
 });
 
 guidedProjectsRouter.post("/projects-v2", async (req, res) => {
@@ -1412,11 +1467,28 @@ guidedProjectsRouter.post("/projects-v2", async (req, res) => {
   if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() });
   const data = parsed.data;
   const targetLocations = cleanLocations(data.targetLocations, data.targetLocation);
+  const workspace = await workspaceContext(req);
+  requireWorkspaceRole(workspace, "editor");
+  if (workspace.workspace.workspaceType === "agency" && !data.agencyClientId) {
+    return res.status(400).json({ error: "Agency Workspace projects require a client." });
+  }
+  if (data.agencyClientId && !await canAccessAgencyClient(workspace, data.agencyClientId)) {
+    return res.status(404).json({ error: "agency client not found" });
+  }
+  const agencyClient = data.agencyClientId ? await prisma.agencyClient.findFirst({
+    where: { id: data.agencyClientId, workspaceId: workspace.workspace.id, status: "active" },
+  }) : null;
+  if (data.agencyClientId && !agencyClient) return res.status(404).json({ error: "agency client not found" });
+  const defaults = clientDefaults(agencyClient);
   const clientId = await projectClientIdForRequest(req, data.clientId);
   if (!clientId) return res.status(400).json({ error: "project context required" });
 
-  const normalized = normalizeUrl(data.websiteUrl);
-  const effectiveProjectType = data.projectType === "existing_website" && !normalized ? "new_business" : data.projectType;
+  const normalized = normalizeUrl(clean(data.websiteUrl) || defaults.websiteUrl);
+  const effectiveTargetLocations = targetLocations.length ? targetLocations : defaults.targetLocations;
+  if (data.projectType === "existing_website" && !normalized) {
+    return res.status(400).json({ error: "Existing-site projects require a valid website URL." });
+  }
+  const effectiveProjectType = data.projectType;
   const result = await prisma.$transaction(async (tx) => {
     let website = normalized
       ? await tx.website.findFirst({ where: { clientId, domain: normalized.domain, status: "active" } })
@@ -1429,16 +1501,16 @@ guidedProjectsRouter.post("/projects-v2", async (req, res) => {
           domain: normalized.domain,
           rootUrl: normalized.rootUrl,
           status: "active",
-          targetCountry: targetLocations[0] ?? undefined,
-          targetCities: targetLocations,
+          targetCountry: effectiveTargetLocations[0] ?? undefined,
+          targetCities: effectiveTargetLocations,
         },
       });
-    } else if (website && targetLocations.length) {
+    } else if (website && effectiveTargetLocations.length) {
       website = await tx.website.update({
         where: { id: website.id },
         data: {
-          targetCountry: targetLocations[0],
-          targetCities: targetLocations,
+          targetCountry: effectiveTargetLocations[0],
+          targetCities: effectiveTargetLocations,
         },
       });
     }
@@ -1446,15 +1518,16 @@ guidedProjectsRouter.post("/projects-v2", async (req, res) => {
     const project = await tx.project.create({
       data: {
         clientId,
+        agencyClientId: agencyClient?.id ?? null,
         websiteId: website?.id ?? null,
         name: data.name.trim(),
         projectType: effectiveProjectType,
-        businessName: clean(data.businessName),
+        businessName: agencyClient ? null : clean(data.businessName),
         websiteUrl: normalized?.rootUrl ?? clean(data.websiteUrl),
         niche: clean(data.niche),
-        businessLocation: clean(data.businessLocation),
-        targetLocations,
-        targetLocation: targetLocations.join(", ").slice(0, 180) || null,
+        businessLocation: clean(data.businessLocation) || defaults.businessLocation || null,
+        targetLocations: effectiveTargetLocations,
+        targetLocation: effectiveTargetLocations.join(", ").slice(0, 180) || null,
         primaryGoal: clean(data.primaryGoal),
         targetLaunchTimeline: clean(data.targetLaunchTimeline),
         preferredOutputs: data.preferredOutputs,
@@ -1462,7 +1535,42 @@ guidedProjectsRouter.post("/projects-v2", async (req, res) => {
       },
     });
 
+    if (agencyClient && data.updateClientDefaults) {
+      const previousSettings = agencyClient.defaultSettings && typeof agencyClient.defaultSettings === "object" ? agencyClient.defaultSettings as Record<string, unknown> : {};
+      const existingWebsites = Array.isArray(agencyClient.websites) ? agencyClient.websites.map(String) : [];
+      await tx.agencyClient.update({ where: { id: agencyClient.id }, data: {
+        websites: normalized ? [...new Set([normalized.rootUrl, ...existingWebsites])] : existingWebsites,
+        businessLocations: clean(data.businessLocation) ? [clean(data.businessLocation)!] : agencyClient.businessLocations,
+        targetMarkets: effectiveTargetLocations,
+        defaultSettings: { ...previousSettings, ...(clean(data.niche) ? { niche: clean(data.niche) } : {}) },
+      } });
+      await recordWorkspaceActivity(tx, { context: workspace, action: "client.defaults_updated_from_project", entityType: "agency_client", entityId: agencyClient.id, agencyClientId: agencyClient.id, projectId: project.id, nextJson: { projectId: project.id } });
+    }
+
     await createInitialPlan(tx, project);
+    const assignmentIds = [...new Set([data.managerMembershipId, ...data.assignedMembershipIds].filter((id): id is string => Boolean(id)))];
+    if (assignmentIds.length) {
+      const validMembers = await tx.workspaceMembership.findMany({ where: { id: { in: assignmentIds }, workspaceId: workspace.workspace.id, status: "active" }, select: { id: true, userId: true } });
+      if (validMembers.length !== assignmentIds.length) throw Object.assign(new Error("Project assignees must be active workspace members."), { statusCode: 400 });
+      await tx.projectMemberAssignment.createMany({ data: validMembers.map((member) => ({ projectId: project.id, membershipId: member.id, assignmentRole: member.id === data.managerMembershipId ? "manager" : "contributor" })) });
+      for (const member of validMembers) {
+        await createWorkspaceNotification(tx, {
+          context: workspace, userId: member.userId, type: "project_created", title: "Project assigned",
+          body: `${project.name} was created and assigned to you.`, actionUrl: `/guided-projects/${project.id}`,
+          agencyClientId: agencyClient?.id, projectId: project.id,
+        });
+      }
+    }
+    if (data.assignedTeamIds.length) {
+      const validTeams = await tx.workspaceTeam.findMany({ where: { id: { in: [...new Set(data.assignedTeamIds)] }, workspaceId: workspace.workspace.id, isActive: true }, select: { id: true } });
+      if (validTeams.length !== new Set(data.assignedTeamIds).size) throw Object.assign(new Error("Project teams must belong to the active workspace."), { statusCode: 400 });
+      await tx.projectTeamAssignment.createMany({ data: validTeams.map((team) => ({ projectId: project.id, teamId: team.id })) });
+    }
+    await recordWorkspaceActivity(tx, {
+      context: workspace, action: "project.created", entityType: "project", entityId: project.id,
+      agencyClientId: agencyClient?.id, projectId: project.id,
+      nextJson: { name: project.name, projectType: project.projectType, managerMembershipId: data.managerMembershipId },
+    });
     return project;
   });
 
@@ -1476,6 +1584,7 @@ guidedProjectsRouter.get("/projects-v2/:projectId", async (req, res) => {
 });
 
 guidedProjectsRouter.delete("/projects-v2/:projectId", async (req, res) => {
+  await requireRequestPermission(req, "manage_projects");
   const project = await scopedProject(req, req.params.projectId);
   if (!project) return res.status(404).json({ error: "project not found" });
 
@@ -1505,6 +1614,7 @@ guidedProjectsRouter.delete("/projects-v2/:projectId", async (req, res) => {
 });
 
 guidedProjectsRouter.post("/projects-v2/:projectId/intake", async (req, res) => {
+  await requireRequestPermission(req, "edit_assigned_work");
   const parsed = saveIntakeSchema.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() });
 
@@ -1570,6 +1680,7 @@ guidedProjectsRouter.post("/projects-v2/:projectId/intake", async (req, res) => 
 });
 
 guidedProjectsRouter.post("/projects-v2/:projectId/opportunities/generate", async (req, res) => {
+  await requireRequestPermission(req, "edit_assigned_work");
   const project = await scopedProject(req, req.params.projectId);
   if (!project) return res.status(404).json({ error: "project not found" });
   if (!project.businessProfile) return res.status(409).json({ error: "complete intake before generating opportunities" });
@@ -1624,6 +1735,7 @@ guidedProjectsRouter.post("/projects-v2/:projectId/opportunities/generate", asyn
 });
 
 guidedProjectsRouter.post("/projects-v2/:projectId/opportunities/:opportunityId/select", async (req, res) => {
+  await requireRequestPermission(req, "edit_assigned_work");
   const project = await scopedProject(req, req.params.projectId);
   if (!project) return res.status(404).json({ error: "project not found" });
 
@@ -1661,6 +1773,7 @@ guidedProjectsRouter.post("/projects-v2/:projectId/opportunities/:opportunityId/
 });
 
 guidedProjectsRouter.post("/projects-v2/:projectId/opportunities/clear-selection", async (req, res) => {
+  await requireRequestPermission(req, "edit_assigned_work");
   const project = await scopedProject(req, req.params.projectId);
   if (!project) return res.status(404).json({ error: "project not found" });
 
@@ -1689,6 +1802,7 @@ guidedProjectsRouter.post("/projects-v2/:projectId/opportunities/clear-selection
 });
 
 guidedProjectsRouter.post("/projects-v2/:projectId/strategy/generate", async (req, res) => {
+  await requireRequestPermission(req, "edit_assigned_work");
   const project = await scopedProject(req, req.params.projectId);
   if (!project) return res.status(404).json({ error: "project not found" });
   if (!project.businessProfile) return res.status(409).json({ error: "complete intake before generating strategy" });
@@ -1749,6 +1863,7 @@ guidedProjectsRouter.post("/projects-v2/:projectId/strategy/generate", async (re
 });
 
 guidedProjectsRouter.post("/projects-v2/:projectId/strategy/approve", async (req, res) => {
+  await requireRequestPermission(req, "approve");
   const project = await scopedProject(req, req.params.projectId);
   if (!project) return res.status(404).json({ error: "project not found" });
 
@@ -1780,6 +1895,7 @@ guidedProjectsRouter.post("/projects-v2/:projectId/strategy/approve", async (req
 });
 
 guidedProjectsRouter.post("/projects-v2/:projectId/execution-plan/create", async (req, res) => {
+  await requireRequestPermission(req, "edit_assigned_work");
   const project = await scopedProject(req, req.params.projectId);
   if (!project) return res.status(404).json({ error: "project not found" });
   const approvedStrategy = project.strategyPlans.find((strategy) => strategy.status === "approved");
@@ -1955,6 +2071,7 @@ guidedProjectsRouter.post("/projects-v2/:projectId/execution-plan/create", async
 });
 
 guidedProjectsRouter.post("/projects-v2/:projectId/lead-magnet/generate", async (req, res) => {
+  await requireRequestPermission(req, "edit_assigned_work");
   const project = await scopedProject(req, req.params.projectId);
   if (!project) return res.status(404).json({ error: "project not found" });
   if (!project.businessProfile) return res.status(409).json({ error: "complete intake before generating a lead magnet" });

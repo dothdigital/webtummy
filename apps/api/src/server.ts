@@ -21,7 +21,9 @@ import { automationRouter } from "./routes/automation.js";
 import { usageRouter } from "./routes/usage.js";
 import { competitiveIntelligenceRouter } from "./routes/competitive-intelligence.js";
 import { gapAnalysisRouter } from "./routes/gap-analysis.js";
+import { agencyWorkspaceRouter } from "./routes/agency-workspace.js";
 import { rawBodySaver } from "./billing.js";
+import { enforceWorkspacePermissions, requireAuth } from "./middleware.js";
 
 const app = express();
 
@@ -61,6 +63,7 @@ app.use((req, res, next) => {
 app.use(express.json({ limit: "1mb", verify: rawBodySaver }));
 
 app.get("/health", (_req, res) => res.json({ ok: true, service: "senuke-ai-api" }));
+app.get("/api/health", (_req, res) => res.json({ ok: true, service: "senuke-ai-api" }));
 
 // Root: this is a JSON API, not the web dashboard.
 app.get("/", (_req, res) =>
@@ -101,6 +104,7 @@ app.get("/", (_req, res) =>
 
 app.use("/api/billing", billingRouter);
 app.use("/api/auth", authRouter);
+app.use("/api", requireAuth, enforceWorkspacePermissions);
 app.use("/api/clients", clientsRouter);
 app.use("/api/users", usersRouter);
 app.use("/api", guidedProjectsRouter);
@@ -109,6 +113,7 @@ app.use("/api", automationRouter);
 app.use("/api", usageRouter);
 app.use("/api", competitiveIntelligenceRouter);
 app.use("/api", gapAnalysisRouter);
+app.use("/api", agencyWorkspaceRouter);
 app.use("/api/websites", websitesRouter);
 app.use("/api", crawlsRouter); // crawls routes carry their own full paths
 app.use("/api", overviewRouter);
@@ -122,8 +127,10 @@ app.use("/api", executionTasksRouter);
 
 // Centralized error handler.
 app.use((err: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
-  console.error("[api] error:", err);
-  res.status(500).json({ error: "internal server error" });
+  const statusCode = typeof err === "object" && err !== null && "statusCode" in err && typeof err.statusCode === "number" ? err.statusCode : 500;
+  const message = statusCode < 500 && err instanceof Error ? err.message : "internal server error";
+  if (statusCode >= 500) console.error("[api] error:", err);
+  res.status(statusCode).json({ error: message });
 });
 
 app.listen(config.port, () => {

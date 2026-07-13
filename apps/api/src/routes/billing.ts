@@ -4,6 +4,7 @@ import { z } from "zod";
 import { prisma } from "@webtummy/db";
 import { requireAuth, requireRole } from "../middleware.js";
 import { projectClientIdForRequest } from "../project-scope.js";
+import { hasWorkspacePermission, isWorkspaceOwner, workspaceContext } from "../workspace-access.js";
 import {
   billingBlockReason,
   billingPlanForClient,
@@ -21,6 +22,28 @@ import {
 } from "../billing.js";
 
 export const billingRouter = Router();
+
+async function requireBillingOwner(req: Request, res: import("express").Response, next: import("express").NextFunction) {
+  if (req.user?.role === "super_admin") return next();
+  try {
+    const context = await workspaceContext(req);
+    if (!isWorkspaceOwner(context)) return res.status(403).json({ error: "Only the Workspace Owner can manage billing." });
+    next();
+  } catch {
+    res.status(403).json({ error: "Workspace Owner access is required." });
+  }
+}
+
+async function requireWorkspaceSettings(req: Request, res: import("express").Response, next: import("express").NextFunction) {
+  if (req.user?.role === "super_admin") return next();
+  try {
+    const context = await workspaceContext(req);
+    if (!hasWorkspacePermission(context, "manage_settings")) return res.status(403).json({ error: "Workspace settings permission is required." });
+    next();
+  } catch {
+    res.status(403).json({ error: "Workspace settings permission is required." });
+  }
+}
 
 const planCodeSchema = z.string().trim().toLowerCase().regex(/^[a-z0-9][a-z0-9_-]{1,39}$/, "Use 2-40 lowercase letters, numbers, hyphens, or underscores");
 
@@ -148,7 +171,7 @@ billingRouter.get("/status", requireAuth, async (req, res) => {
   }
 });
 
-billingRouter.post("/checkout-session", requireAuth, requireRole("client_admin", "super_admin"), async (req, res) => {
+billingRouter.post("/checkout-session", requireAuth, requireBillingOwner, async (req, res) => {
   const parsed = z.object({ planCode: z.string().min(1) }).safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() });
 
@@ -171,7 +194,7 @@ billingRouter.post("/checkout-session", requireAuth, requireRole("client_admin",
   }
 });
 
-billingRouter.post("/portal-session", requireAuth, requireRole("client_admin", "super_admin"), async (req, res) => {
+billingRouter.post("/portal-session", requireAuth, requireBillingOwner, async (req, res) => {
   try {
     const client = await clientForBillingRequest(req);
     if (!client.stripeCustomerId) return res.status(400).json({ error: "No Stripe customer exists for this account yet" });
@@ -182,7 +205,7 @@ billingRouter.post("/portal-session", requireAuth, requireRole("client_admin", "
   }
 });
 
-billingRouter.get("/invoices", requireAuth, requireRole("client_admin", "super_admin"), async (req, res) => {
+billingRouter.get("/invoices", requireAuth, requireBillingOwner, async (req, res) => {
   try {
     const client = await clientForBillingRequest(req);
     if (!client.stripeCustomerId) return res.json({ invoices: [] });
@@ -193,7 +216,7 @@ billingRouter.get("/invoices", requireAuth, requireRole("client_admin", "super_a
   }
 });
 
-billingRouter.patch("/report-email-preferences", requireAuth, requireRole("client_admin", "super_admin"), async (req, res) => {
+billingRouter.patch("/report-email-preferences", requireAuth, requireWorkspaceSettings, async (req, res) => {
   const parsed = reportEmailPreferencesSchema.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() });
   try {
