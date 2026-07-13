@@ -484,7 +484,7 @@ for (const action of ["archive", "restore"] as const) {
     const status = action === "archive" ? "archived" : "active";
     return prisma.$transaction(async (tx) => {
       const updated = await tx.agencyClient.update({ where: { id: client.id }, data: { status, archivedAt: action === "archive" ? new Date() : null, archivedById: action === "archive" ? context.membership.userId : null } });
-      await tx.project.updateMany({ where: { agencyClientId: client.id }, data: { status } });
+      await tx.project.updateMany({ where: { agencyClientId: client.id }, data: { status, archivedAt: action === "archive" ? new Date() : null, archivedById: action === "archive" ? context.membership.userId : null } });
       await recordWorkspaceActivity(tx, { context, action: `client.${action}d`, entityType: "agency_client", entityId: client.id, agencyClientId: client.id, previousJson: { status: client.status }, nextJson: { status } });
       return { client: updated };
     });
@@ -497,6 +497,7 @@ agencyWorkspaceRouter.delete("/agency/clients/:clientId", (req, res) => handle(r
   const body = deleteClientSchema.parse(req.body);
   const client = await prisma.agencyClient.findFirst({ where: { id: req.params.clientId, workspaceId: context.workspace.id } });
   if (!client) throw Object.assign(new Error("Client not found."), { statusCode: 404 });
+  if (client.status !== "archived") throw Object.assign(new Error("Archive the client before permanently deleting it."), { statusCode: 409 });
   if (body.confirmation !== client.name) throw Object.assign(new Error("Type the exact client name to confirm permanent deletion."), { statusCode: 400 });
   await prisma.$transaction(async (tx) => {
     await recordWorkspaceActivity(tx, { context, action: "client.permanently_deleted", entityType: "agency_client", entityId: client.id, metadataJson: { deletedName: client.name } });

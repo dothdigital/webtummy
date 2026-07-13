@@ -5,7 +5,7 @@ import { Card } from "../components/ui.js";
 import { useAuth } from "../auth.js";
 import type { GuidedProject } from "../types.js";
 
-type ProjectFilter = "all" | "in_progress" | "needs_review" | "completed";
+type ProjectFilter = "all" | "in_progress" | "needs_review" | "completed" | "archived";
 
 const completedStatuses = new Set(["completed", "skipped", "published"]);
 const reviewStatuses = new Set(["submitted_for_approval", "needs_review", "changes_requested"]);
@@ -65,6 +65,7 @@ export default function GuidedProjects() {
   const [deleteTarget, setDeleteTarget] = useState<GuidedProject | null>(null);
   const [deleting, setDeleting] = useState(false);
   const [deleteError, setDeleteError] = useState("");
+  const [statusBusy, setStatusBusy] = useState<string | null>(null);
   const [search, setSearch] = useState("");
   const [filter, setFilter] = useState<ProjectFilter>("all");
 
@@ -82,8 +83,9 @@ export default function GuidedProjects() {
         .filter(Boolean).some((value) => String(value).toLowerCase().includes(query));
       const matchesFilter = filter === "all"
         || (filter === "completed" && project.status === "completed")
+        || (filter === "archived" && project.status === "archived")
         || (filter === "needs_review" && projectNeedsReview(project))
-        || (filter === "in_progress" && project.status !== "completed" && !projectNeedsReview(project));
+        || (filter === "in_progress" && !["completed", "archived"].includes(project.status) && !projectNeedsReview(project));
       return matchesSearch && matchesFilter;
     });
   }, [filter, projects, search]);
@@ -100,6 +102,16 @@ export default function GuidedProjects() {
       setDeleteError(error instanceof Error ? error.message : "Could not delete project");
     } finally {
       setDeleting(false);
+    }
+  };
+
+  const changeArchiveStatus = async (project: GuidedProject, action: "archive" | "restore") => {
+    setStatusBusy(project.id);
+    try {
+      const result = await api.post<{ project: GuidedProject }>(`/api/projects-v2/${project.id}/${action}`, {});
+      setProjects((current) => current.map((item) => item.id === project.id ? { ...item, ...result.project } : item));
+    } finally {
+      setStatusBusy(null);
     }
   };
 
@@ -121,7 +133,7 @@ export default function GuidedProjects() {
           <input value={search} onChange={(event) => setSearch(event.target.value)} className="h-12 w-full rounded-xl border border-violet-100 bg-white pl-12 pr-4 text-sm text-slate-800 shadow-sm outline-none placeholder:text-slate-400 focus:border-teal-300 focus:ring-4 focus:ring-teal-100/60" placeholder="Search projects..." />
         </label>
         <div className="flex gap-2 overflow-x-auto pb-1">
-          {([{ id: "all", label: "All" }, { id: "in_progress", label: "In Progress" }, { id: "needs_review", label: "Needs Review" }, { id: "completed", label: "Completed" }] as { id: ProjectFilter; label: string }[]).map((item) => <button key={item.id} type="button" onClick={() => setFilter(item.id)} className={`h-11 shrink-0 rounded-full border px-5 text-sm font-bold transition ${filter === item.id ? "border-teal-300 bg-teal-100 text-teal-800 shadow-sm" : "border-violet-100 bg-transparent text-slate-500 hover:border-violet-200 hover:bg-white"}`}>{item.label}</button>)}
+          {([{ id: "all", label: "All" }, { id: "in_progress", label: "In Progress" }, { id: "needs_review", label: "Needs Review" }, { id: "completed", label: "Completed" }, { id: "archived", label: "Archived" }] as { id: ProjectFilter; label: string }[]).map((item) => <button key={item.id} type="button" onClick={() => setFilter(item.id)} className={`h-11 shrink-0 rounded-full border px-5 text-sm font-bold transition ${filter === item.id ? "border-teal-300 bg-teal-100 text-teal-800 shadow-sm" : "border-violet-100 bg-transparent text-slate-500 hover:border-violet-200 hover:bg-white"}`}>{item.label}</button>)}
         </div>
       </div>
 
@@ -147,14 +159,14 @@ export default function GuidedProjects() {
                   <div className={`flex h-14 w-14 shrink-0 items-center justify-center rounded-2xl text-lg font-bold ${avatarTones[index % avatarTones.length]}`}>{project.name.slice(0, 2).toUpperCase()}</div>
                   <div className="min-w-0"><Link to={`/guided-projects/${project.id}`} className="block truncate text-lg font-bold text-slate-950 hover:text-teal-700">{project.name}</Link><div className="mt-1 truncate text-sm text-slate-500">{project.website?.domain ?? project.websiteUrl ?? project.businessName ?? "No website connected"} <span className="px-1 text-slate-300">·</span> {projectTypeLabel(project)}</div></div>
                 </div>
-                <span className={`shrink-0 rounded-full px-4 py-1.5 text-xs font-bold ${needsReview ? "bg-amber-100 text-amber-800" : project.status === "completed" ? "bg-emerald-100 text-emerald-800" : "bg-teal-100 text-teal-800"}`}>{needsReview ? "Needs Review" : stageLabel(project)}</span>
+                <span className={`shrink-0 rounded-full px-4 py-1.5 text-xs font-bold ${project.status === "archived" ? "bg-slate-200 text-slate-700" : needsReview ? "bg-amber-100 text-amber-800" : project.status === "completed" ? "bg-emerald-100 text-emerald-800" : "bg-teal-100 text-teal-800"}`}>{project.status === "archived" ? "Archived · View only" : needsReview ? "Needs Review" : stageLabel(project)}</span>
               </div>
 
               <div className="mt-6 flex items-center gap-4"><div className="h-2.5 flex-1 overflow-hidden rounded-full bg-violet-50"><div className="h-full rounded-full bg-gradient-to-r from-teal-400 to-teal-600 transition-all" style={{ width: `${progress}%` }} /></div><div className="w-11 text-right text-sm font-bold text-slate-600">{progress}%</div></div>
 
               <div className="mt-5 flex flex-col gap-3 border-t border-violet-50 pt-4 md:flex-row md:items-center md:justify-between">
                 <div className="flex min-w-0 flex-col gap-2 text-sm text-slate-500 sm:flex-row sm:items-center sm:gap-7"><div className="min-w-0 truncate">Next: <span className="font-bold text-slate-900">{nextTitle}</span></div><div className="shrink-0">Updated <span className="font-bold text-slate-800">{relativeUpdated(project.updatedAt)}</span></div></div>
-                <div className="flex shrink-0 items-center gap-4">{canManageProjects && <button type="button" onClick={() => setDeleteTarget(project)} className="text-xs font-bold text-slate-400 hover:text-rose-600">Delete</button>}<Link to={project.currentStep === "intake" && user?.workspace?.capabilities.edit ? `/guided-projects/${project.id}/intake` : `/guided-projects/${project.id}`} className="text-sm font-bold text-teal-700 hover:text-teal-900">Open project →</Link></div>
+                <div className="flex shrink-0 items-center gap-4">{canManageProjects && project.status !== "archived" && <button disabled={statusBusy === project.id} type="button" onClick={() => void changeArchiveStatus(project, "archive")} className="text-xs font-bold text-slate-500 hover:text-amber-700 disabled:opacity-50">Archive</button>}{canManageProjects && project.status === "archived" && <><button disabled={statusBusy === project.id} type="button" onClick={() => void changeArchiveStatus(project, "restore")} className="text-xs font-bold text-teal-700 disabled:opacity-50">Restore</button><button type="button" onClick={() => setDeleteTarget(project)} className="text-xs font-bold text-rose-600 hover:text-rose-800">Permanently delete</button></>}<Link to={project.status !== "archived" && project.currentStep === "intake" && user?.workspace?.capabilities.edit ? `/guided-projects/${project.id}/intake` : `/guided-projects/${project.id}`} className="text-sm font-bold text-teal-700 hover:text-teal-900">{project.status === "archived" ? "View project →" : "Open project →"}</Link></div>
               </div>
             </article>;
           })}
@@ -163,7 +175,7 @@ export default function GuidedProjects() {
       {deleteTarget && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-charcoal-950/35 p-4" role="dialog" aria-modal="true" aria-label="Delete project">
           <Card className="w-full max-w-lg p-5 shadow-2xl">
-            <div className="text-lg font-bold text-charcoal-950">Delete project?</div>
+            <div className="text-lg font-bold text-charcoal-950">Permanently delete project?</div>
             <p className="mt-2 text-sm leading-6 text-charcoal-600">
               This will permanently delete <span className="font-semibold text-charcoal-900">{deleteTarget.name}</span>, including its intake answers, business profile, opportunities, strategies, AI runs, execution plans, workflow steps, and project tasks.
             </p>
@@ -186,7 +198,7 @@ export default function GuidedProjects() {
                 disabled={deleting}
                 className="inline-flex items-center justify-center rounded-lg bg-rose-600 px-4 py-2 text-sm font-bold text-white hover:bg-rose-700 disabled:cursor-not-allowed disabled:bg-slate-300"
               >
-                {deleting ? "Deleting..." : "Delete Project"}
+                {deleting ? "Deleting..." : "Permanently Delete"}
               </button>
             </div>
           </Card>

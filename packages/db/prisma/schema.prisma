@@ -745,6 +745,8 @@ model Project {
   projectType               String        @default("existing_website") @db.VarChar(60)
   websiteStatus             String        @default("existing_website") @db.VarChar(60)
   status                    String        @default("active") @db.VarChar(40)
+  archivedAt                DateTime?
+  archivedById              String?
   currentStep               String        @default("intake") @db.VarChar(80)
   businessName              String?       @db.VarChar(180)
   websiteUrl                String?       @db.VarChar(512)

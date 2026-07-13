@@ -373,6 +373,7 @@ export default function GuidedProjectDetail() {
 
   if (error) return <Card className="border-red-200 bg-red-50 p-4 text-sm text-red-800">{error}</Card>;
   if (!project) return <div className="text-charcoal-400">Loading project...</div>;
+  const archived = project.status === "archived";
 
   const executionPlan = project.executionPlans?.[0] ?? null;
   const tasks = executionPlan?.tasks ?? [];
@@ -546,7 +547,7 @@ export default function GuidedProjectDetail() {
                 )}
                 <StatusPill status={project.currentStep} />
                 <StatusPill status={project.status} />
-                <Link to={`/guided-projects/${project.id}/intake`} className="inline-flex items-center justify-center rounded-lg border border-brand-200 bg-white px-3 py-2 text-sm font-semibold text-brand-700 hover:bg-brand-50">Edit profile</Link>
+                {!archived && <Link to={`/guided-projects/${project.id}/intake`} className="inline-flex items-center justify-center rounded-lg border border-brand-200 bg-white px-3 py-2 text-sm font-semibold text-brand-700 hover:bg-brand-50">Edit profile</Link>}
                 <Link to="/projects" className="inline-flex items-center justify-center rounded-lg border border-charcoal-200 bg-white px-3 py-2 text-sm font-semibold text-charcoal-700 hover:bg-charcoal-50">Back to projects</Link>
               </div>
             </div>
@@ -554,10 +555,11 @@ export default function GuidedProjectDetail() {
         </div>
 
         <div className="space-y-5 p-5">
-          {project.agencyClientId && <ProjectOperations projectId={project.id} />}
+          {archived && <Card className="border-slate-300 bg-slate-100 p-4 text-sm text-slate-700"><b>Archived project — view only.</b> Restore this project from the Projects page before editing, assigning, approving, generating, publishing, or changing tasks.</Card>}
+          {!archived && project.agencyClientId && <ProjectOperations projectId={project.id} />}
           <ProjectLocationEditor project={project} onSaved={setProject} />
           <BusinessProfileCard project={project} preferredOutputs={preferredOutputs} />
-          <ProjectNextActionCard action={nextAction} />
+          {!archived && <ProjectNextActionCard action={nextAction} />}
 
           <div>
             <Card className="p-4">

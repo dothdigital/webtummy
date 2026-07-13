@@ -75,6 +75,7 @@ export default function AgencyWorkspace() {
   const [inviteTeamId, setInviteTeamId] = useState("");
   const [inviteClientId, setInviteClientId] = useState("");
   const [editingClient, setEditingClient] = useState<AgencyClient | null>(null);
+  const [clientFilter, setClientFilter] = useState<"active" | "archived">("active");
 
   const isAgency = data?.workspace.workspaceType === "agency";
   const allowedRoles: Role[] = data?.workspace.workspaceType === "personal"
@@ -101,6 +102,7 @@ export default function AgencyWorkspace() {
     : 0;
   const completedProjects = portfolioProjects.filter((project) => project.status === "completed").length;
   const approvedStrategies = portfolioProjects.filter((project) => project.strategyStatus === "approved").length;
+  const filteredClients = data?.clients.filter((client) => client.status === clientFilter) ?? [];
 
   async function load() {
     setLoading(true);
@@ -147,6 +149,11 @@ export default function AgencyWorkspace() {
   }
   function editRoles(member: Member) { setEditingMember(member.id); setDraftRoles(normalizedRoles(member.roles)); }
   function toggleRole(role: Role) { setDraftRoles((current) => current.includes(role) ? current.filter((item) => item !== role) : [...current, role]); }
+  async function permanentlyDeleteClient(client: AgencyClient) {
+    const confirmation = window.prompt(`Permanently delete ${client.name} and all of its projects? Type the exact client name to confirm.`);
+    if (confirmation !== client.name) return;
+    await action(`delete-${client.id}`, () => api.delete(`/api/agency/clients/${client.id}`, { confirmation }), `${client.name} was permanently deleted.`);
+  }
 
   if (loading && !data) return <Card className="p-10 text-center text-sm text-slate-500">Loading Workspace…</Card>;
   if (!data) return <Card className="p-8 text-center text-red-700">{error || "Workspace is unavailable."}</Card>;
@@ -230,10 +237,10 @@ export default function AgencyWorkspace() {
     </>}
 
     {isAgency && tab === "clients" && <div className="grid gap-6 xl:grid-cols-[1fr_340px]">
-      <Card className="overflow-hidden p-0"><div className="border-b px-5 py-4"><h2 className="font-bold">Clients</h2><p className="text-xs text-slate-500">Shared client data is reused by every project.</p></div><div className="divide-y">{data.clients.map((client) => <div key={client.id} className="p-5">
-        <div className="flex flex-wrap items-start justify-between gap-3"><div><div className="flex gap-2"><Link to={`/agency/clients/${client.id}`} className="font-bold hover:text-brand-700">{client.name}</Link><Badge tone={client.status === "active" ? "green" : "slate"}>{label(client.status)}</Badge></div><p className="mt-1 text-sm text-slate-500">{client.contactEmail || "No contact email"} · {list(client.targetMarkets).join(", ") || "No target markets"}</p></div><div className="flex gap-2">{canAdmin && <button onClick={() => setEditingClient(client)} className="rounded-lg border px-3 py-2 text-xs font-bold">Edit</button>}{client.status === "active" ? <button disabled={!canAdmin || busy === client.id} onClick={() => action(client.id, () => api.post(`/api/agency/clients/${client.id}/archive`, {}), `${client.name} archived.`)} className="rounded-lg border px-3 py-2 text-xs font-bold disabled:opacity-40">Archive</button> : <button disabled={!canAdmin || busy === client.id} onClick={() => action(client.id, () => api.post(`/api/agency/clients/${client.id}/restore`, {}), `${client.name} restored.`)} className="rounded-lg border px-3 py-2 text-xs font-bold disabled:opacity-40">Restore</button>}</div></div>
+      <Card className="overflow-hidden p-0"><div className="flex flex-wrap items-center justify-between gap-3 border-b px-5 py-4"><div><h2 className="font-bold">Clients</h2><p className="text-xs text-slate-500">Shared client data is reused by every project.</p></div><div className="flex gap-2">{(["active", "archived"] as const).map((status) => <button key={status} type="button" onClick={() => setClientFilter(status)} className={`rounded-full border px-4 py-2 text-xs font-bold ${clientFilter === status ? "border-brand-300 bg-brand-50 text-brand-800" : "border-slate-200 bg-white text-slate-500"}`}>{status === "active" ? "Active" : "Archived"} ({data.clients.filter((client) => client.status === status).length})</button>)}</div></div><div className="divide-y">{filteredClients.map((client) => <div key={client.id} className="p-5">
+        <div className="flex flex-wrap items-start justify-between gap-3"><div><div className="flex gap-2"><Link to={`/agency/clients/${client.id}`} className="font-bold hover:text-brand-700">{client.name}</Link><Badge tone={client.status === "active" ? "green" : "slate"}>{client.status === "archived" ? "Archived · View only" : label(client.status)}</Badge></div><p className="mt-1 text-sm text-slate-500">{client.contactEmail || "No contact email"} · {list(client.targetMarkets).join(", ") || "No target markets"}</p></div><div className="flex flex-wrap gap-2">{canAdmin && client.status === "active" && <button onClick={() => setEditingClient(client)} className="rounded-lg border px-3 py-2 text-xs font-bold">Edit</button>}{client.status === "active" ? <button disabled={!canAdmin || busy === client.id} onClick={() => action(client.id, () => api.post(`/api/agency/clients/${client.id}/archive`, {}), `${client.name} archived and is now view-only.`)} className="rounded-lg border px-3 py-2 text-xs font-bold disabled:opacity-40">Archive</button> : <>{canAdmin && <button disabled={busy === client.id} onClick={() => action(client.id, () => api.post(`/api/agency/clients/${client.id}/restore`, {}), `${client.name} restored.`)} className="rounded-lg border px-3 py-2 text-xs font-bold disabled:opacity-40">Restore</button>}{canAdmin && <button disabled={busy === `delete-${client.id}`} onClick={() => void permanentlyDeleteClient(client)} className="rounded-lg border border-rose-200 px-3 py-2 text-xs font-bold text-rose-700 disabled:opacity-40">Permanently delete</button>}</>}</div></div>
         <div className="mt-4 grid gap-2 sm:grid-cols-3"><div className="rounded-lg bg-slate-50 p-3 text-sm"><b>{client.projects.length}</b><span className="block text-xs text-slate-500">Projects</span></div><div className="rounded-lg bg-slate-50 p-3 text-sm"><b>{client.teamAssignments.length}</b><span className="block text-xs text-slate-500">Teams</span></div><div className="rounded-lg bg-slate-50 p-3 text-sm"><b>{client.memberAssignments.length}</b><span className="block text-xs text-slate-500">Assigned users</span></div></div>
-      </div>)}</div></Card>
+      </div>)}{!filteredClients.length && <div className="p-8 text-center text-sm text-slate-500">No {clientFilter} clients.</div>}</div></Card>
       {canAdmin && <Card className="h-fit p-5"><h2 className="font-bold">Create client</h2><form onSubmit={(event) => void createClient(event)} className="mt-4 space-y-4"><label className="block text-xs font-bold">Client name *<input required value={clientName} onChange={(event) => setClientName(event.target.value)} className="mt-1 h-10 w-full rounded-lg border px-3 text-sm font-normal" /></label><label className="block text-xs font-bold">Contact email<input type="email" value={clientEmail} onChange={(event) => setClientEmail(event.target.value)} className="mt-1 h-10 w-full rounded-lg border px-3 text-sm font-normal" /></label><label className="block text-xs font-bold">Target markets<textarea value={clientMarkets} onChange={(event) => setClientMarkets(event.target.value)} placeholder="New York, United States" className="mt-1 min-h-24 w-full rounded-lg border p-3 text-sm font-normal" /></label><button disabled={busy === "client-create"} className="h-10 w-full rounded-lg bg-brand-600 text-sm font-bold text-white disabled:bg-slate-300">{busy === "client-create" ? "Creating…" : "Create client"}</button></form></Card>}
     </div>}
 

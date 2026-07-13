@@ -1682,6 +1682,7 @@ guidedProjectsRouter.delete("/projects-v2/:projectId", async (req, res) => {
   const workspace = await workspaceContext(req);
   const project = await scopedProject(req, req.params.projectId);
   if (!project) return res.status(404).json({ error: "project not found" });
+  if (project.status !== "archived") return res.status(409).json({ error: "Archive the project before permanently deleting it." });
 
   const result = await prisma.$transaction(async (tx) => {
     const websiteId = project.websiteId;
@@ -1716,7 +1717,7 @@ guidedProjectsRouter.post("/projects-v2/:projectId/archive", async (req, res) =>
   const project = await scopedProject(req, req.params.projectId);
   if (!project) return res.status(404).json({ error: "project not found" });
   const updated = await prisma.$transaction(async (tx) => {
-    const next = await tx.project.update({ where: { id: project.id }, data: { status: "archived" } });
+    const next = await tx.project.update({ where: { id: project.id }, data: { status: "archived", archivedAt: new Date(), archivedById: context.membership.userId } });
     await recordWorkspaceActivity(tx, { context, action: "project.archived", entityType: "project", entityId: project.id, agencyClientId: project.agencyClientId, projectId: project.id, previousJson: { status: project.status }, nextJson: { status: "archived" } });
     return next;
   });
@@ -1729,7 +1730,7 @@ guidedProjectsRouter.post("/projects-v2/:projectId/restore", async (req, res) =>
   const project = await scopedProject(req, req.params.projectId);
   if (!project) return res.status(404).json({ error: "project not found" });
   const updated = await prisma.$transaction(async (tx) => {
-    const next = await tx.project.update({ where: { id: project.id }, data: { status: "active" } });
+    const next = await tx.project.update({ where: { id: project.id }, data: { status: "active", archivedAt: null, archivedById: null } });
     await recordWorkspaceActivity(tx, { context, action: "project.restored", entityType: "project", entityId: project.id, agencyClientId: project.agencyClientId, projectId: project.id, previousJson: { status: project.status }, nextJson: { status: "active" } });
     return next;
   });

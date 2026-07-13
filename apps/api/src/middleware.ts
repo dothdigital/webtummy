@@ -68,6 +68,55 @@ export async function enforceWorkspacePermissions(req: Request, res: Response, n
   }
 }
 
+/** Archived clients/projects remain viewable but cannot be changed until restored. */
+export async function enforceArchivedReadOnly(req: Request, res: Response, next: NextFunction) {
+  const isPermanentDelete = req.method === "DELETE" && (/^\/projects-v2\/[^/]+\/?$/i.test(req.path) || /^\/agency\/clients\/[^/]+\/?$/i.test(req.path));
+  if (["GET", "HEAD", "OPTIONS"].includes(req.method) || isPermanentDelete || /\/restore\/?$/i.test(req.path)) return next();
+  try {
+    const projectPathId = req.path.match(/^\/projects(?:-v2)?\/([^/]+)/i)?.[1];
+    const taskPathId = req.path.match(/\/(?:execution-)?tasks\/([^/]+)/i)?.[1];
+    const agencyClientPathId = req.path.match(/^\/agency\/clients\/([^/]+)/i)?.[1];
+    const body = req.body && typeof req.body === "object" ? req.body as Record<string, unknown> : {};
+    const projectId = projectPathId || (typeof body.projectId === "string" ? body.projectId : null) || (typeof req.query.projectId === "string" ? req.query.projectId : null);
+    const agencyClientId = agencyClientPathId || (typeof body.agencyClientId === "string" ? body.agencyClientId : null);
+
+    if (agencyClientId) {
+      const client = await prisma.agencyClient.findUnique({ where: { id: agencyClientId }, select: { status: true } });
+      if (client?.status === "archived") return res.status(409).json({ error: "Archived clients are view-only. Restore the client before making changes." });
+    }
+
+    let effectiveProjectId = projectId;
+    if (!effectiveProjectId && taskPathId) {
+      const task = await prisma.executionTask.findUnique({ where: { id: taskPathId }, select: { projectId: true } });
+      effectiveProjectId = task?.projectId ?? null;
+    }
+    if (effectiveProjectId && effectiveProjectId !== "new") {
+      const project = await prisma.project.findUnique({ where: { id: effectiveProjectId }, select: { status: true } });
+      if (project?.status === "archived") return res.status(409).json({ error: "Archived projects are view-only. Restore the project before making changes." });
+    }
+
+    const reportId = req.path.match(/^\/agency\/reports\/([^/]+)/i)?.[1];
+    if (reportId) {
+      const report = await prisma.gapReportExport.findUnique({ where: { id: reportId }, select: { project: { select: { status: true, agencyClient: { select: { status: true } } } } } });
+      if (report?.project.status === "archived" || report?.project.agencyClient?.status === "archived") {
+        return res.status(409).json({ error: "Archived client and project records are view-only. Restore them before sending reports." });
+      }
+    }
+
+    const websitePathId = req.path.match(/^\/websites\/([^/]+)/i)?.[1];
+    const websiteId = websitePathId || (typeof body.websiteId === "string" ? body.websiteId : null);
+    if (websiteId) {
+      const linkedProjects = await prisma.project.findMany({ where: { websiteId }, select: { status: true }, take: 25 });
+      if (linkedProjects.length && linkedProjects.every((project) => project.status === "archived")) {
+        return res.status(409).json({ error: "This website belongs only to archived projects and is view-only until a project is restored." });
+      }
+    }
+    next();
+  } catch (error) {
+    next(error);
+  }
+}
+
 /** Require one of the given roles. */
 export function requireRole(...roles: Role[]) {
   return (req: Request, res: Response, next: NextFunction) => {

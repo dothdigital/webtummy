@@ -24,7 +24,7 @@ import { competitiveIntelligenceRouter } from "./routes/competitive-intelligence
 import { gapAnalysisRouter } from "./routes/gap-analysis.js";
 import { agencyWorkspaceRouter } from "./routes/agency-workspace.js";
 import { rawBodySaver } from "./billing.js";
-import { enforceWorkspacePermissions, requireAuth } from "./middleware.js";
+import { enforceArchivedReadOnly, enforceWorkspacePermissions, requireAuth } from "./middleware.js";
 
 const app = express();
 
@@ -105,7 +105,7 @@ app.get("/", (_req, res) =>
 
 app.use("/api/billing", billingRouter);
 app.use("/api/auth", authRouter);
-app.use("/api", requireAuth, enforceWorkspacePermissions);
+app.use("/api", requireAuth, enforceArchivedReadOnly, enforceWorkspacePermissions);
 app.use("/api/clients", clientsRouter);
 app.use("/api/users", usersRouter);
 app.use("/api", guidedProjectsRouter);
