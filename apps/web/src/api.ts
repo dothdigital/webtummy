@@ -6,6 +6,7 @@ let impersonationLabel: string | null = localStorage.getItem("wt_impersonation_l
 export const SESSION_EXPIRED_EVENT = "senuke-ai:session-expired";
 export const ACTIVE_CLIENT_EVENT = "senuke-ai:active-client-changed";
 const WELCOME_USER_KEY = "wt_welcome_user_id";
+const WELCOME_WORKSPACE_PREFIX = "wt_welcome_completed_workspace:";
 
 async function readJson(res: Response) {
   const text = await res.text();
@@ -48,11 +49,13 @@ export function getToken() {
   return token;
 }
 
-export function welcomePending(userId: string) {
+export function welcomePending(userId: string, workspaceId?: string | null) {
+  if (workspaceId) return localStorage.getItem(WELCOME_WORKSPACE_PREFIX + workspaceId) !== "true";
   return localStorage.getItem(WELCOME_USER_KEY) === userId;
 }
 
-export function completeWelcome() {
+export function completeWelcome(workspaceId?: string | null) {
+  if (workspaceId) localStorage.setItem(WELCOME_WORKSPACE_PREFIX + workspaceId, "true");
   localStorage.removeItem(WELCOME_USER_KEY);
 }
 

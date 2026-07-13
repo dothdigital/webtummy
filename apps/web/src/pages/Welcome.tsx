@@ -4,7 +4,7 @@ import { api, completeWelcome } from "../api.js";
 import { Logo } from "../components/Logo.js";
 
 type WorkspaceWelcome = {
-  workspace: { name: string; workspaceType: string };
+  workspace: { id: string; name: string; workspaceType: string };
   summary: { clients: number };
 };
 
@@ -26,7 +26,7 @@ export default function Welcome() {
   const agency = data?.workspace.workspaceType === "agency";
 
   function finish(destination: string) {
-    completeWelcome();
+    completeWelcome(data?.workspace.id);
     navigate(destination, { replace: true });
   }
 
