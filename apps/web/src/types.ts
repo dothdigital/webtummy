@@ -135,6 +135,7 @@ export interface GuidedProject {
   websiteUrl: string | null;
   niche: string | null;
   businessLocation: string | null;
+  businessLocationJson?: { country: string; stateProvince: string; city: string; streetAddress?: string; postalCode?: string } | null;
   targetLocations: unknown;
   targetLocation: string | null;
   primaryGoal: string | null;

@@ -9,6 +9,7 @@ import { buildCampaignExecutionTasks, isExistingWebsiteCampaign, projectTypes, p
 import { canAccessAgencyClient, canAccessProject, createWorkspaceNotification, hasWorkspacePermission, recordWorkspaceActivity, requireWorkspaceRole, workspaceContext } from "../workspace-access.js";
 import { clientDefaults } from "../dev002.js";
 import { validateProjectCreation, websiteStatuses } from "../dev003.js";
+import { cleanTargetMarkets, formatBusinessLocation, locationIsComplete } from "../project-location.js";
 
 export const guidedProjectsRouter = Router();
 guidedProjectsRouter.use(requireAuth);
@@ -21,6 +22,10 @@ const createProjectSchema = z.object({
   businessName: z.string().max(180).optional().nullable(),
   niche: z.string().max(180).optional().nullable(),
   businessLocation: z.string().max(255).optional().nullable(),
+  businessLocationDetails: z.object({
+    country: z.string().trim().min(1).max(120), stateProvince: z.string().trim().min(1).max(120), city: z.string().trim().min(1).max(120),
+    streetAddress: z.string().trim().max(255).optional().default(""), postalCode: z.string().trim().max(40).optional().default(""),
+  }).optional().nullable(),
   targetLocations: z.array(z.string().min(1).max(180)).max(50).default([]),
   targetLocation: z.string().max(180).optional().nullable(),
   primaryGoal: z.string().min(1).max(255),
@@ -51,6 +56,14 @@ const intakeAnswerSchema = z.object({
 
 const saveIntakeSchema = z.object({
   answers: z.array(intakeAnswerSchema).min(1),
+});
+const projectLocationsSchema = z.object({
+  businessLocationDetails: z.object({
+    country: z.string().trim().min(1).max(120), stateProvince: z.string().trim().min(1).max(120), city: z.string().trim().min(1).max(120),
+    streetAddress: z.string().trim().max(255).optional().default(""), postalCode: z.string().trim().max(40).optional().default(""),
+  }),
+  targetMarkets: z.array(z.string().trim().min(1).max(180)).min(1).max(100),
+  updateClient: z.boolean().default(false),
 });
 const leadMagnetGenerateSchema = z.object({
   selectedIdea: z.string().trim().min(3).max(240).optional().nullable(),
@@ -1482,7 +1495,7 @@ guidedProjectsRouter.post("/projects-v2", async (req, res) => {
   const parsed = createProjectSchema.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() });
   const data = parsed.data;
-  const targetLocations = cleanLocations(data.targetLocations, data.targetLocation);
+  const targetLocations = cleanTargetMarkets(cleanLocations(data.targetLocations, data.targetLocation));
   const workspace = await workspaceContext(req);
   requireWorkspaceRole(workspace, "editor");
   if (workspace.workspace.workspaceType === "agency" && !data.agencyClientId) {
@@ -1499,7 +1512,8 @@ guidedProjectsRouter.post("/projects-v2", async (req, res) => {
   const clientId = await projectClientIdForRequest(req, data.clientId);
   if (!clientId) return res.status(400).json({ error: "project context required" });
 
-  const effectiveBusinessLocation = clean(data.businessLocation) || defaults.businessLocation || null;
+  const formattedBusinessLocation = data.businessLocationDetails && locationIsComplete(data.businessLocationDetails) ? formatBusinessLocation(data.businessLocationDetails) : null;
+  const effectiveBusinessLocation = formattedBusinessLocation || clean(data.businessLocation) || defaults.businessLocation || null;
   const effectiveTargetLocations = targetLocations.length ? targetLocations : defaults.targetLocations;
   const websiteUrl = data.websiteStatus === "existing_website" ? clean(data.websiteUrl) || defaults.websiteUrl : clean(data.websiteUrl);
   const creationErrors = validateProjectCreation({ ...data, websiteUrl, businessLocation: effectiveBusinessLocation, targetLocations: effectiveTargetLocations }, workspace.workspace.workspaceType);
@@ -1545,6 +1559,7 @@ guidedProjectsRouter.post("/projects-v2", async (req, res) => {
         websiteUrl: normalized?.rootUrl ?? clean(data.websiteUrl),
         niche: clean(data.niche),
         businessLocation: effectiveBusinessLocation,
+        businessLocationJson: data.businessLocationDetails ?? undefined,
         targetLocations: effectiveTargetLocations,
         targetLocation: effectiveTargetLocations.join(", ").slice(0, 180) || null,
         primaryGoal: clean(data.primaryGoal),
@@ -1594,7 +1609,7 @@ guidedProjectsRouter.post("/projects-v2", async (req, res) => {
     await recordWorkspaceActivity(tx, {
       context: workspace, action: "project.created", entityType: "project", entityId: project.id,
       agencyClientId: agencyClient?.id, projectId: project.id,
-      nextJson: { name: project.name, projectType: project.projectType, managerMembershipId: data.managerMembershipId },
+      nextJson: { name: project.name, projectType: project.projectType, businessLocation: project.businessLocation, businessLocationDetails: project.businessLocationJson, targetMarkets: project.targetLocations, managerMembershipId: data.managerMembershipId },
     });
     await createWorkspaceNotification(tx, {
       context: workspace, userId: workspace.membership.userId, type: "project_created", title: "Project created",
@@ -1622,6 +1637,44 @@ guidedProjectsRouter.get("/projects-v2/:projectId", async (req, res) => {
   const project = await scopedProject(req, req.params.projectId);
   if (!project) return res.status(404).json({ error: "project not found" });
   res.json({ project });
+});
+
+guidedProjectsRouter.patch("/projects-v2/:projectId/locations", async (req, res) => {
+  await requireRequestPermission(req, "edit_assigned_work");
+  const parsed = projectLocationsSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() });
+  const context = await workspaceContext(req);
+  const project = await scopedProject(req, req.params.projectId);
+  if (!project) return res.status(404).json({ error: "project not found" });
+  const targetMarkets = cleanTargetMarkets(parsed.data.targetMarkets);
+  if (!targetMarkets.length) return res.status(400).json({ error: "At least one Target Market is required." });
+  const businessLocation = formatBusinessLocation(parsed.data.businessLocationDetails);
+  const strategyApproved = project.strategyPlans.some((strategy) => strategy.status === "approved");
+  const projectChanged = project.businessLocation !== businessLocation || JSON.stringify(cleanTargetMarkets(Array.isArray(project.targetLocations) ? project.targetLocations.map(String) : [])) !== JSON.stringify(targetMarkets);
+  const updated = await prisma.$transaction(async (tx) => {
+    const next = await tx.project.update({ where: { id: project.id }, data: {
+      businessLocation, businessLocationJson: parsed.data.businessLocationDetails,
+      targetLocations: targetMarkets, targetLocation: targetMarkets.join(", ").slice(0, 180),
+    } });
+    if (project.websiteId) await tx.website.update({ where: { id: project.websiteId }, data: { targetCountry: targetMarkets[0], targetCities: targetMarkets } });
+    if (parsed.data.updateClient && project.agencyClientId) {
+      const previousClient = await tx.agencyClient.findUnique({ where: { id: project.agencyClientId } });
+      await tx.agencyClient.update({ where: { id: project.agencyClientId }, data: { businessLocations: [businessLocation], targetMarkets } });
+      await recordWorkspaceActivity(tx, { context, action: "client.locations_updated", entityType: "agency_client", entityId: project.agencyClientId, agencyClientId: project.agencyClientId, projectId: project.id, previousJson: { businessLocations: previousClient?.businessLocations, targetMarkets: previousClient?.targetMarkets }, nextJson: { businessLocations: [businessLocation], targetMarkets } });
+    }
+    if (projectChanged) await recordWorkspaceActivity(tx, {
+      context, action: "project.locations_updated", entityType: "project", entityId: project.id, agencyClientId: project.agencyClientId, projectId: project.id,
+      previousJson: { businessLocation: project.businessLocation, businessLocationDetails: project.businessLocationJson, targetMarkets: project.targetLocations },
+      nextJson: { businessLocation, businessLocationDetails: parsed.data.businessLocationDetails, targetMarkets, updateClient: parsed.data.updateClient },
+    });
+    if (projectChanged && strategyApproved) await createWorkspaceNotification(tx, {
+      context, userId: context.workspace.ownerUserId, type: "project_location_changed", title: "Refresh project research",
+      body: `${project.name}'s location or target markets changed after strategy approval. Refresh Strategy and Keyword Research.`,
+      actionUrl: `/guided-projects/${project.id}`, agencyClientId: project.agencyClientId, projectId: project.id,
+    });
+    return next;
+  });
+  res.json({ project: updated, refreshRecommended: projectChanged && strategyApproved });
 });
 
 guidedProjectsRouter.delete("/projects-v2/:projectId", async (req, res) => {

@@ -63,6 +63,11 @@ export default function GuidedProjectNew() {
     businessName: "",
     niche: "",
     businessLocation: "",
+    locationCountry: "",
+    locationStateProvince: "",
+    locationCity: "",
+    locationStreetAddress: "",
+    locationPostalCode: "",
     targetLocations: [] as string[],
     primaryGoal: "",
     secondaryGoalsText: "",
@@ -104,7 +109,8 @@ export default function GuidedProjectNew() {
 
   const createProject = async (event: React.FormEvent) => {
     event.preventDefault();
-    if (!form.name.trim() || !form.businessLocation.trim() || !form.targetLocations.length || !form.primaryGoal || !form.clientProjectType || (isAgency && !form.agencyClientId) || (requiresWebsite && !form.websiteUrl.trim())) return;
+    const hasLocation = Boolean(form.businessLocation.trim() || (form.locationCountry.trim() && form.locationStateProvince.trim() && form.locationCity.trim()));
+    if (!form.name.trim() || !hasLocation || !form.targetLocations.length || !form.primaryGoal || !form.clientProjectType || (isAgency && !form.agencyClientId) || (requiresWebsite && !form.websiteUrl.trim())) return;
     setBusy(true);
     setMessage(null);
     try {
@@ -113,6 +119,7 @@ export default function GuidedProjectNew() {
       const split = (value: string) => value.split(/[,;\n]/g).map((item) => item.trim()).filter(Boolean);
       const result = await api.post<{ project: GuidedProject }>("/api/projects-v2", {
         ...form, businessName: isAgency ? null : form.businessName, projectType,
+        businessLocationDetails: form.locationCountry && form.locationStateProvince && form.locationCity ? { country: form.locationCountry, stateProvince: form.locationStateProvince, city: form.locationCity, streetAddress: form.locationStreetAddress, postalCode: form.locationPostalCode } : undefined,
         secondaryGoals: split(form.secondaryGoalsText), competitors: split(form.competitorsText), analyticsPlatforms: split(form.analyticsText),
       });
       navigate(`/guided-projects/${result.project.id}/intake`);
@@ -123,7 +130,8 @@ export default function GuidedProjectNew() {
     }
   };
 
-  const canSubmit = Boolean(form.name.trim() && form.businessLocation.trim() && form.targetLocations.length && form.primaryGoal && form.clientProjectType && (!isAgency || form.agencyClientId) && (!requiresWebsite || form.websiteUrl.trim()));
+  const hasLocation = Boolean(form.businessLocation.trim() || (form.locationCountry.trim() && form.locationStateProvince.trim() && form.locationCity.trim()));
+  const canSubmit = Boolean(form.name.trim() && hasLocation && form.targetLocations.length && form.primaryGoal && form.clientProjectType && (!isAgency || form.agencyClientId) && (!requiresWebsite || form.websiteUrl.trim()));
 
   return (
     <form onSubmit={createProject} className="space-y-5">
@@ -150,7 +158,12 @@ export default function GuidedProjectNew() {
                 <input value={form.niche} onChange={(event) => patch({ niche: event.target.value })} placeholder="e.g., Roofing, Med spa, SaaS CRM, Fitness coaching" className="h-11 w-full rounded-lg border border-slate-200 px-3 text-sm outline-none focus:border-brand-400 focus:ring-2 focus:ring-brand-100" />
                 <span className="mt-1 block text-xs text-slate-500">Enter the client niche in your own words.</span>
               </label>
-              <Input label={isAgency ? "Business Location (shared default or override)" : "Business Location *"} value={form.businessLocation} onChange={(businessLocation) => patch({ businessLocation })} placeholder="e.g., Toronto, Ontario, Canada" />
+              {isAgency && form.businessLocation && <div className="rounded-lg border border-brand-100 bg-brand-50 p-3 text-sm md:col-span-2"><b>Inherited Business Location:</b> {form.businessLocation}<span className="mt-1 block text-xs text-slate-600">Enter structured fields below only to override it for this project.</span></div>}
+              <Input label={`Country ${form.businessLocation ? "(override)" : "*"}`} value={form.locationCountry} onChange={(locationCountry) => patch({ locationCountry })} placeholder="Canada" />
+              <Input label={`State / Province ${form.businessLocation ? "(override)" : "*"}`} value={form.locationStateProvince} onChange={(locationStateProvince) => patch({ locationStateProvince })} placeholder="Ontario" />
+              <Input label={`City ${form.businessLocation ? "(override)" : "*"}`} value={form.locationCity} onChange={(locationCity) => patch({ locationCity })} placeholder="Toronto" />
+              <Input label="Street Address (optional)" value={form.locationStreetAddress} onChange={(locationStreetAddress) => patch({ locationStreetAddress })} placeholder="1 King Street" />
+              <Input label="Postal Code (optional)" value={form.locationPostalCode} onChange={(locationPostalCode) => patch({ locationPostalCode })} placeholder="M5H 1A1" />
               <TargetLocationsInput values={form.targetLocations} onChange={(targetLocations) => patch({ targetLocations })} local={form.clientProjectType === "local_business"} />
               {isAgency && <label className="flex items-start gap-3 rounded-lg border border-brand-100 bg-brand-50 p-4 text-sm md:col-span-2"><input type="checkbox" checked={form.updateClientDefaults} onChange={(event) => patch({ updateClientDefaults: event.target.checked })} className="mt-1" /><span><b>Update Client defaults</b><span className="mt-1 block text-slate-600">Keep this off for project-only overrides. Turn it on only when these website, location, market, and niche values should become the shared client defaults.</span></span></label>}
               <label className="block md:col-span-2">
