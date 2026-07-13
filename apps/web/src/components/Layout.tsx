@@ -736,6 +736,15 @@ export default function Layout({ children }: { children: ReactNode }) {
   const workspaceTypeLabel = workspaceIdentity
     ? workspaceIdentity.workspaceType.charAt(0).toUpperCase() + workspaceIdentity.workspaceType.slice(1) + " Workspace"
     : null;
+  const workspaceRoleLabel = effectiveRoles.some((role) => role === "owner" || role === "admin")
+    ? "Owner/Admin"
+    : effectiveRoles.some((role) => role === "manager" || role === "approver")
+      ? "Manager/Approver"
+      : primaryRole === "client_viewer"
+        ? "Client Viewer"
+        : primaryRole
+          ? primaryRole.charAt(0).toUpperCase() + primaryRole.slice(1).replace("_", " ")
+          : "Workspace Member";
 
   useEffect(() => {
     const clientReportPath = location.pathname.startsWith("/agency/clients/");
@@ -761,7 +770,7 @@ export default function Layout({ children }: { children: ReactNode }) {
             <div className="min-w-0">
               <div className="truncate text-sm font-bold text-slate-900">{user?.name ?? user?.email}</div>
               <div className="truncate text-xs font-medium text-slate-500">
-                {workspaceIdentity?.name ?? (user?.role === "super_admin" ? "Admin Workspace" : "My Workspace")}
+                {workspaceIdentity ? workspaceRoleLabel : (user?.role === "super_admin" ? "Admin Workspace" : "My Workspace")}
               </div>
               {workspaceIdentity ? (
                 <Link
