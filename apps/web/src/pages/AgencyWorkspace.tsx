@@ -4,6 +4,7 @@ import { api } from "../api.js";
 import { Card } from "../components/ui.js";
 import AgencyClientEditor from "../components/AgencyClientEditor.js";
 import BusinessLocationTargetMarkets from "../components/BusinessLocationTargetMarkets.js";
+import { primaryGoalsForWorkspace } from "@webtummy/core/project-goals";
 
 type Role = "owner" | "admin" | "manager" | "approver" | "editor" | "viewer" | "client_viewer";
 type Member = { id: string; status: string; user: { id: string; name: string | null; email: string; isActive: boolean }; roles: { role: string }[]; teamMemberships: { team: { id: string; name: string } }[] };
@@ -289,7 +290,7 @@ export default function AgencyWorkspace() {
         <ClientField label="Website URL *" value={clientWebsite} onChange={setClientWebsite} type="url" placeholder="https://example.com" required />
         <ClientField label="Industry / niche *" value={clientNiche} onChange={setClientNiche} required />
         <BusinessLocationTargetMarkets value={{ country: clientCountry, stateProvince: clientRegion, city: clientCity, streetAddress: clientStreetAddress, postalCode: clientPostalCode, targetMarkets: clientMarkets.split(/[,\n]/).map((item) => item.trim()).filter(Boolean) }} onChange={(value) => { setClientCountry(value.country); setClientRegion(value.stateProvince); setClientCity(value.city); setClientStreetAddress(value.streetAddress); setClientPostalCode(value.postalCode); setClientMarkets(value.targetMarkets.join("\n")); }} />
-        <label className="block text-xs font-bold">Primary business goal *<select required value={clientGoal} onChange={(event) => setClientGoal(event.target.value)} className="mt-1 h-10 w-full rounded-lg border bg-white px-3 text-sm font-normal"><option value="">Select goal</option><option>Leads</option><option>Sales</option><option>Traffic</option><option>Branding</option><option>Local visibility</option><option>Customer retention</option></select></label>
+        <label className="block text-xs font-bold">Primary business goal *<select required value={clientGoal} onChange={(event) => setClientGoal(event.target.value)} className="mt-1 h-10 w-full rounded-lg border bg-white px-3 text-sm font-normal"><option value="">Select goal</option>{primaryGoalsForWorkspace("agency").map((goal) => <option key={goal}>{goal}</option>)}</select></label>
         <ClientArea label="Business description *" value={clientDescription} onChange={setClientDescription} required />
         <ClientArea label="Target audience *" value={clientAudience} onChange={setClientAudience} required />
         <ClientArea label="Main products / services *" value={clientProducts} onChange={setClientProducts} required />

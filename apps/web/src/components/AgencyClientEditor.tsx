@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { api } from "../api.js";
 import BusinessLocationTargetMarkets from "./BusinessLocationTargetMarkets.js";
+import { canonicalPrimaryGoal, primaryGoalsForWorkspace } from "@webtummy/core/project-goals";
 
 type Client = {
   id: string; name: string; contactName: string | null; contactEmail: string | null; contactPhone: string | null;
@@ -20,7 +21,7 @@ export default function AgencyClientEditor({ client, owner, onClose, onSaved }: 
     name: client.name, contactName: client.contactName ?? "", contactEmail: client.contactEmail ?? "", contactPhone: client.contactPhone ?? "",
     websites: lines(client.websites), businessLocations: lines(client.businessLocations), targetMarkets: lines(client.targetMarkets), competitors: lines(client.competitors),
     internalNotes: client.internalNotes ?? "", clientVisibleNotes: client.clientVisibleNotes ?? "",
-    industryNiche: String(settings.industryNiche ?? settings.niche ?? ""), primaryBusinessGoal: String(settings.primaryBusinessGoal ?? ""),
+    industryNiche: String(settings.industryNiche ?? settings.niche ?? ""), primaryBusinessGoal: canonicalPrimaryGoal(String(settings.primaryBusinessGoal ?? "")),
     businessDescription: String(settings.businessDescription ?? ""), targetAudience: String(settings.targetAudience ?? ""), mainProductsServices: String(settings.mainProductsServices ?? ""),
     primaryKeywords: lines(settings.primaryKeywords), brandVoice: String(settings.brandVoice ?? ""), preferredLanguage: String(settings.preferredLanguage ?? "English"), timeZone: String(settings.timeZone ?? "America/Toronto"),
     country: String(location.country ?? ""), stateProvince: String(location.stateProvince ?? ""), city: String(location.city ?? ""),
@@ -61,7 +62,7 @@ export default function AgencyClientEditor({ client, owner, onClose, onSaved }: 
         <Field label="Contact email" value={form.contactEmail} onChange={(contactEmail) => patch({ contactEmail })} type="email" />
         <Field label="Contact phone" value={form.contactPhone} onChange={(contactPhone) => patch({ contactPhone })} />
         <Field label="Industry / niche" value={form.industryNiche} onChange={(industryNiche) => patch({ industryNiche })} />
-        <Field label="Primary business goal" value={form.primaryBusinessGoal} onChange={(primaryBusinessGoal) => patch({ primaryBusinessGoal })} />
+        <label className="text-xs font-bold">Primary business goal<select required value={form.primaryBusinessGoal} onChange={(event) => patch({ primaryBusinessGoal: event.target.value })} className="mt-1 h-10 w-full rounded-lg border bg-white px-3 text-sm font-normal"><option value="">Select goal</option>{primaryGoalsForWorkspace("agency").map((goal) => <option key={goal}>{goal}</option>)}</select></label>
         <BusinessLocationTargetMarkets value={{ country: form.country, stateProvince: form.stateProvince, city: form.city, streetAddress: form.streetAddress, postalCode: form.postalCode, targetMarkets: values(form.targetMarkets) }} onChange={(value) => patch({ country: value.country, stateProvince: value.stateProvince, city: value.city, streetAddress: value.streetAddress, postalCode: value.postalCode, targetMarkets: value.targetMarkets.join("\n") })} />
         <Area label="Websites" value={form.websites} onChange={(websites) => patch({ websites })} hint="One URL per line" />
         <Area label="Competitors" value={form.competitors} onChange={(competitors) => patch({ competitors })} hint="One competitor per line" />

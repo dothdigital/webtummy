@@ -50,13 +50,15 @@ function jsonList(value: unknown): string[] {
 
 function projectContext(project: NonNullable<Awaited<ReturnType<typeof scopedProject>>>) {
   const targetMarkets = jsonList(project.targetLocations);
+  const secondaryGoals = jsonList(project.secondaryGoals);
   return {
     name: project.businessName ?? project.name,
     website: project.website?.rootUrl ?? project.websiteUrl ?? null,
     niche: project.niche ?? project.businessProfile?.businessSummary ?? "this market",
     audience: project.businessProfile?.targetAudience ?? "the target audience",
     offer: project.businessProfile?.offerSummary ?? project.primaryGoal ?? "the main offer",
-    goal: project.primaryGoal ?? "growth",
+    goal: [project.primaryGoal, ...secondaryGoals].filter(Boolean).join("; ") || "growth",
+    secondaryGoals,
     businessLocation: project.businessLocation,
     targetMarkets,
     market: targetMarkets.join(", ") || project.targetLocation || "the target market",

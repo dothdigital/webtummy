@@ -7,6 +7,8 @@ import { projectHasWebsite, requiresSiteAnalysisBeforeStrategy } from "../projec
 import type { GuidedExecutionTask, GuidedProject } from "../types.js";
 import ProjectOperations from "../components/ProjectOperations.js";
 import BusinessLocationTargetMarkets from "../components/BusinessLocationTargetMarkets.js";
+import ProjectGoals from "../components/ProjectGoals.js";
+import { canonicalPrimaryGoal } from "@webtummy/core/project-goals";
 
 function taskTone(task: GuidedExecutionTask) {
   if (task.priority === "high") return "border-rose-200 bg-rose-50/70";
@@ -116,6 +118,7 @@ function BusinessProfileCard({ project, preferredOutputs }: { project: GuidedPro
     ["Business location", project.businessLocation ?? "Not set"],
     ["Target markets", Array.isArray(project.targetLocations) ? project.targetLocations.join(", ") || "Not set" : project.targetLocation ?? "Not set"],
     ["Primary goal", project.primaryGoal ?? "Not set"],
+    ["Secondary goals", Array.isArray(project.secondaryGoals) ? project.secondaryGoals.join(", ") || "None" : "None"],
     ["Timeline", project.targetLaunchTimeline ?? "Not set"],
     ["Publishing", project.preferredPublishingMethod ?? "Not set"],
   ] as const;
@@ -188,6 +191,26 @@ function ProjectLocationEditor({ project, onSaved }: { project: GuidedProject; o
       <Button type="button" disabled={busy || !form.country || !form.stateProvince || !form.city || !form.targetMarkets.length} onClick={() => void save()}>{busy ? "Saving…" : "Save locations"}</Button>
     </div>}
   </Card>;
+}
+
+function ProjectGoalsEditor({ project, onSaved }: { project: GuidedProject; onSaved: (project: GuidedProject) => void }) {
+  const [editing, setEditing] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [message, setMessage] = useState<string | null>(null);
+  const [primaryGoal, setPrimaryGoal] = useState(project.primaryGoal ? canonicalPrimaryGoal(project.primaryGoal) : "");
+  const [secondaryGoals, setSecondaryGoals] = useState<string[]>(Array.isArray(project.secondaryGoals) ? project.secondaryGoals.map(String) : []);
+  const [reason, setReason] = useState("");
+  const save = async () => {
+    if (!primaryGoal) return;
+    setBusy(true); setMessage(null);
+    try {
+      const result = await api.patch<{ project: GuidedProject; strategyRegenerationRecommended: boolean }>(`/api/projects-v2/${project.id}/goals`, { primaryGoal, secondaryGoals, reason: reason || null });
+      onSaved({ ...project, ...result.project }); setEditing(false);
+      setMessage(result.strategyRegenerationRecommended ? "Saved. Strategy, Keyword Research, and the Execution Plan should now be refreshed." : "Goals saved.");
+    } catch (error) { setMessage(error instanceof Error ? error.message : "Could not update goals"); }
+    finally { setBusy(false); }
+  };
+  return <Card className="p-4"><div className="flex flex-wrap items-center justify-between gap-3"><div><h3 className="font-bold text-charcoal-950">Primary & Secondary Goals</h3><p className="mt-1 text-sm text-charcoal-500">One primary objective with optional supporting outcomes.</p></div><button type="button" onClick={() => setEditing(!editing)} className="rounded-lg border px-3 py-2 text-sm font-bold">{editing ? "Cancel" : "Edit goals"}</button></div>{message && <p className="mt-3 rounded-lg bg-amber-50 p-3 text-sm text-amber-900">{message}</p>}{editing && <div className="mt-4 space-y-4"><ProjectGoals workspaceType={project.agencyClientId ? "agency" : "business"} primaryGoal={primaryGoal} secondaryGoals={secondaryGoals} onChange={(value) => { setPrimaryGoal(value.primaryGoal); setSecondaryGoals(value.secondaryGoals); }} /><label className="block"><span className="text-sm font-bold">Reason for change (optional)</span><textarea value={reason} onChange={(event) => setReason(event.target.value)} rows={3} className="mt-1 w-full rounded-lg border p-3 text-sm" placeholder="Why are these goals changing?" /></label><Button type="button" disabled={busy || !primaryGoal} onClick={() => void save()}>{busy ? "Saving…" : "Save goals"}</Button></div>}</Card>;
 }
 
 function splitList(value?: string | null) {
@@ -554,6 +577,7 @@ export default function GuidedProjectDetail() {
           {archived && <Card className="border-slate-300 bg-slate-100 p-4 text-sm text-slate-700"><b>Archived project — view only.</b> Restore this project from the Projects page before editing, assigning, approving, generating, publishing, or changing tasks.</Card>}
           {!archived && project.agencyClientId && <ProjectOperations projectId={project.id} />}
           <ProjectLocationEditor project={project} onSaved={setProject} />
+          <ProjectGoalsEditor project={project} onSaved={setProject} />
           <BusinessProfileCard project={project} preferredOutputs={preferredOutputs} />
           {!archived && <ProjectNextActionCard action={nextAction} />}
 

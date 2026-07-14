@@ -500,6 +500,7 @@ export default function GuidedProjectIntake() {
       .filter((question) => !question.projectTypes?.length || question.projectTypes.includes(project?.projectType ?? ""))
       .filter((question) => question.key !== "business_location" || !project?.businessLocation)
       .filter((question) => question.key !== "target_location" || !(Array.isArray(project?.targetLocations) && project.targetLocations.length))
+      .filter((question) => question.key !== "primary_goal" || !project?.primaryGoal)
       .filter((question) => {
         if (mode === "quick") return quickFieldKeys.has(question.key);
         if (mode === "agency") return agencyCoreKeys.has(question.key) || question.projectTypes?.includes("agency_client");
@@ -509,7 +510,7 @@ export default function GuidedProjectIntake() {
         ...question,
         required: mode === "quick" ? quickRequiredKeys.has(question.key) : mode === "advanced" ? quickRequiredKeys.has(question.key) && question.required : question.required,
       })),
-    [allQuestions, mode, project?.projectType, project?.businessLocation, project?.targetLocations],
+    [allQuestions, mode, project?.projectType, project?.businessLocation, project?.targetLocations, project?.primaryGoal],
   );
 
   const groupedQuestions = useMemo(() => {

@@ -11,6 +11,7 @@ import { clientDefaults } from "../dev002.js";
 import { validateProjectCreation, websiteStatuses } from "../dev003.js";
 import { cleanTargetMarkets, formatBusinessLocation, locationIsComplete, type BusinessLocation } from "../project-location.js";
 import { locationDefaultsFromSettings, resolveProjectLocations, withLocationDefaults } from "../dev004.js";
+import { goalContext, normalizeProjectGoals } from "../dev005.js";
 
 export const guidedProjectsRouter = Router();
 guidedProjectsRouter.use(requireAuth);
@@ -67,6 +68,11 @@ const projectLocationsSchema = z.object({
   targetMarkets: z.array(z.string().trim().min(1).max(180)).min(1).max(100),
   updateClient: z.boolean().default(false),
   updateWorkspace: z.boolean().default(false),
+});
+const projectGoalsSchema = z.object({
+  primaryGoal: z.string().trim().min(1).max(255),
+  secondaryGoals: z.array(z.string().trim().min(1).max(255)).max(20).default([]),
+  reason: z.string().trim().max(1000).optional().nullable(),
 });
 const leadMagnetGenerateSchema = z.object({
   selectedIdea: z.string().trim().min(3).max(240).optional().nullable(),
@@ -817,6 +823,7 @@ async function ensureNextTask(tx: Prisma.TransactionClient, input: {
 function projectContext(project: NonNullable<Awaited<ReturnType<typeof scopedProject>>>) {
   const profile = project.businessProfile;
   const targetMarkets = cleanLocations(Array.isArray(project.targetLocations) ? project.targetLocations.filter((item): item is string => typeof item === "string") : [], project.targetLocation);
+  const goals = goalContext(project.primaryGoal, project.secondaryGoals);
   return {
     name: project.businessName ?? project.name,
     niche: project.niche ?? profile?.businessSummary ?? "the selected market",
@@ -825,7 +832,9 @@ function projectContext(project: NonNullable<Awaited<ReturnType<typeof scopedPro
     location: targetMarkets.join(", ") || "the target market",
     targetMarkets,
     businessLocation: project.businessLocation,
-    goal: project.primaryGoal ?? "growth",
+    goal: goals.primaryGoal,
+    secondaryGoals: goals.secondaryGoals,
+    goalSummary: goals.summary,
     outputs: Array.isArray(project.preferredOutputs) ? project.preferredOutputs.filter((item): item is string => typeof item === "string") : [],
   };
 }
@@ -839,7 +848,7 @@ function hasAny(value: string, patterns: RegExp[]) {
 }
 
 function buildOpportunityOptions(project: NonNullable<Awaited<ReturnType<typeof scopedProject>>>, ctx: ReturnType<typeof projectContext>) {
-  const text = [ctx.niche, ctx.location, ctx.goal, ctx.offer, ctx.audience, ctx.outputs.join(" "), project.projectType].join(" ").toLowerCase();
+  const text = [ctx.niche, ctx.location, ctx.goalSummary, ctx.offer, ctx.audience, ctx.outputs.join(" "), project.projectType].join(" ").toLowerCase();
   const hasWebsite = Boolean(project.websiteId || project.websiteUrl || project.website);
   const localIntent = hasAny(text, [/local/, /near me/, /maps?/, /city/, /service area/, /booking/, /appointment/, /clinic/, /physio/, /therapy/, /rehab/, /dent/, /medical/, /legal/, /roof/, /plumb/, /hvac/]);
   const healthcare = hasAny(text, [/physio/, /physical therapy/, /rehab/, /clinic/, /health/, /medical/, /dental/, /therapy/, /wellness/]);
@@ -1545,7 +1554,8 @@ guidedProjectsRouter.post("/projects-v2", async (req, res) => {
   const effectiveBusinessLocation = resolvedLocations.businessLocation || null;
   const effectiveTargetLocations = resolvedLocations.targetMarkets;
   const effectiveBusinessLocationDetails = resolvedLocations.businessLocationDetails;
-  const effectivePrimaryGoal = clean(data.primaryGoal) || defaults.primaryGoal || null;
+  const goals = normalizeProjectGoals(clean(data.primaryGoal) || defaults.primaryGoal, data.secondaryGoals, workspace.workspace.workspaceType);
+  const effectivePrimaryGoal = goals.primaryGoal;
   const websiteUrl = data.websiteStatus === "existing_website" ? clean(data.websiteUrl) || defaults.websiteUrl : clean(data.websiteUrl);
   const creationErrors = validateProjectCreation({ ...data, websiteUrl, businessLocation: effectiveBusinessLocation, targetLocations: effectiveTargetLocations, primaryGoal: effectivePrimaryGoal }, workspace.workspace.workspaceType);
   if (creationErrors.length) return res.status(400).json({ error: creationErrors.join(" ") });
@@ -1594,7 +1604,7 @@ guidedProjectsRouter.post("/projects-v2", async (req, res) => {
         targetLocations: effectiveTargetLocations,
         targetLocation: effectiveTargetLocations.join(", ").slice(0, 180) || null,
         primaryGoal: effectivePrimaryGoal,
-        secondaryGoals: data.secondaryGoals,
+        secondaryGoals: goals.secondaryGoals,
         competitors: data.competitors,
         notes: clean(data.notes) || inheritedClientNotes || null,
         brandVoice: clean(data.brandVoice) || defaults.brandVoice || null,
@@ -1669,7 +1679,7 @@ guidedProjectsRouter.post("/projects-v2", async (req, res) => {
     await recordWorkspaceActivity(tx, {
       context: workspace, action: "project.created", entityType: "project", entityId: project.id,
       agencyClientId: agencyClient?.id, projectId: project.id,
-      nextJson: { name: project.name, projectType: project.projectType, businessLocation: project.businessLocation, businessLocationDetails: project.businessLocationJson, targetMarkets: project.targetLocations, managerMembershipId: data.managerMembershipId },
+      nextJson: { name: project.name, projectType: project.projectType, businessLocation: project.businessLocation, businessLocationDetails: project.businessLocationJson, targetMarkets: project.targetLocations, primaryGoal: project.primaryGoal, secondaryGoals: project.secondaryGoals, managerMembershipId: data.managerMembershipId },
     });
     await createWorkspaceNotification(tx, {
       context: workspace, userId: workspace.membership.userId, type: "project_created", title: "Project created",
@@ -1747,6 +1757,39 @@ guidedProjectsRouter.patch("/projects-v2/:projectId/locations", async (req, res)
     return next;
   });
   res.json({ project: updated, refreshRecommended: projectChanged && strategyApproved });
+});
+
+guidedProjectsRouter.patch("/projects-v2/:projectId/goals", async (req, res) => {
+  await requireRequestPermission(req, "edit_assigned_work");
+  const parsed = projectGoalsSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() });
+  const context = await workspaceContext(req);
+  const project = await scopedProject(req, req.params.projectId);
+  if (!project) return res.status(404).json({ error: "project not found" });
+  const goals = normalizeProjectGoals(parsed.data.primaryGoal, parsed.data.secondaryGoals, context.workspace.workspaceType);
+  const previousSecondary = Array.isArray(project.secondaryGoals) ? project.secondaryGoals.map(String) : [];
+  const primaryChanged = project.primaryGoal !== goals.primaryGoal;
+  const previousSet = new Set(previousSecondary);
+  const nextSet = new Set(goals.secondaryGoals);
+  const secondaryAdded = goals.secondaryGoals.filter((goal) => !previousSet.has(goal));
+  const secondaryRemoved = previousSecondary.filter((goal) => !nextSet.has(goal));
+  const changed = primaryChanged || secondaryAdded.length > 0 || secondaryRemoved.length > 0;
+  const strategyApproved = project.strategyPlans.some((strategy) => strategy.status === "approved");
+  const updated = await prisma.$transaction(async (tx) => {
+    const next = await tx.project.update({ where: { id: project.id }, data: { primaryGoal: goals.primaryGoal, secondaryGoals: goals.secondaryGoals } });
+    if (changed) await recordWorkspaceActivity(tx, {
+      context, action: "project.goals_updated", entityType: "project", entityId: project.id, agencyClientId: project.agencyClientId, projectId: project.id,
+      previousJson: { primaryGoal: project.primaryGoal, secondaryGoals: previousSecondary },
+      nextJson: { primaryGoal: goals.primaryGoal, secondaryGoals: goals.secondaryGoals, secondaryAdded, secondaryRemoved, reason: parsed.data.reason ?? null },
+    });
+    if (primaryChanged && strategyApproved) await createWorkspaceNotification(tx, {
+      context, userId: context.workspace.ownerUserId, type: "project_primary_goal_changed", title: "Refresh project plan",
+      body: `${project.name}'s Primary Goal changed after strategy approval. Refresh Strategy, Keyword Research, and the Execution Plan.`,
+      actionUrl: `/guided-projects/${project.id}`, agencyClientId: project.agencyClientId, projectId: project.id,
+    });
+    return next;
+  });
+  res.json({ project: updated, strategyRegenerationRecommended: changed && strategyApproved, primaryGoalChanged: primaryChanged });
 });
 
 guidedProjectsRouter.delete("/projects-v2/:projectId", async (req, res) => {
@@ -2013,12 +2056,12 @@ guidedProjectsRouter.post("/projects-v2/:projectId/strategy/generate", async (re
       data: {
         projectId: project.id,
         opportunityId: selectedOpportunity?.id ?? null,
-        strategySummary: `Build ${ctx.name} around ${ctx.goal.toLowerCase()} with a project dashboard that moves from keyword demand to pages, optimization tasks, and approved publishing/export.`,
+        strategySummary: `Build ${ctx.name} around ${ctx.goal.toLowerCase()}${ctx.secondaryGoals.length ? ` while supporting ${ctx.secondaryGoals.join(", ").toLowerCase()}` : ""} with a project dashboard that moves from keyword demand to pages, optimization tasks, and approved publishing/export.`,
         positioningStatement: `${ctx.name} should be positioned for ${ctx.audience} with clear proof, direct CTAs, and answer-first content.`,
         audienceProfile: ctx.audience,
         offerRecommendation: ctx.offer,
         businessModel: selectedOpportunity?.businessModel ?? (project.projectType === "ecommerce" ? "Ecommerce" : project.projectType === "local_seo" ? "Local service lead generation" : "Lead generation"),
-        seoStrategy: `Prioritize keyword clusters for ${ctx.niche}, map each approved keyword to a page, and create execution tasks for metadata, internal links, FAQs, and schema.`,
+        seoStrategy: `Prioritize keyword clusters for ${ctx.niche} against these success goals: ${ctx.goalSummary}. Map each approved keyword to a page, and create execution tasks for metadata, internal links, FAQs, and schema.`,
         aiCitationStrategy: "Add entity summaries, answer-first sections, source clarity blocks, FAQs, and schema suggestions to improve AI citation readiness.",
         contentStrategy: `Generate the selected outputs: ${ctx.outputs.join(", ") || "SEO plan and supporting pages"}. Keep review approval before publishing.`,
         authorityStrategy: "Use safe authority tasks only: citations, partnerships, resource pages, reviews, digital PR, and outreach drafts requiring approval.",

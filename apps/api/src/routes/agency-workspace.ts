@@ -7,6 +7,7 @@ import { config } from "../config.js";
 import { sendMail } from "../email.js";
 import { assignableWorkspaceRoles, canAccessAgencyClient, canAccessProject, createWorkspaceNotification, effectiveWorkspaceRoles, hasWorkspacePermission, isWorkspaceOwner, managerSelfApprovalEnabled, recordWorkspaceActivity, requireWorkspaceRole, validateRolesForWorkspace, workspaceContext } from "../workspace-access.js";
 import { locationDefaultsFromSettings, normalizeRequiredLocations } from "../dev004.js";
+import { normalizeProjectGoals } from "../dev005.js";
 import { agencyNextActions } from "../dev002.js";
 
 export const agencyWorkspaceRouter = Router();
@@ -322,7 +323,7 @@ agencyWorkspaceRouter.get("/agency/clients/:clientId/dashboard", (req, res) => h
   const projects = await prisma.project.findMany({
     where: { agencyClientId: client.id },
     orderBy: { createdAt: "desc" },
-    select: { id: true, name: true, projectType: true, status: true, currentStep: true, primaryGoal: true, websiteUrl: true, createdAt: true },
+    select: { id: true, name: true, projectType: true, status: true, currentStep: true, primaryGoal: true, secondaryGoals: true, websiteUrl: true, createdAt: true },
   });
   const projectIds = projects.map((project) => project.id);
   const [tasks, reports, activity] = await Promise.all([
@@ -455,7 +456,8 @@ agencyWorkspaceRouter.post("/agency/clients", (req, res) => handle(res, async ()
   if (context.workspace.workspaceType !== "agency") throw Object.assign(new Error("Client management is available only in Agency workspaces."), { statusCode: 400 });
   const parsed = createClientSchema.parse(req.body);
   const normalizedLocations = normalizeRequiredLocations(parsed.businessLocations, parsed.targetMarkets);
-  const data = { ...parsed, ...normalizedLocations };
+  const clientPrimaryGoal = normalizeProjectGoals(String(parsed.defaultSettings.primaryBusinessGoal ?? ""), [], "agency").primaryGoal;
+  const data = { ...parsed, ...normalizedLocations, defaultSettings: { ...parsed.defaultSettings, primaryBusinessGoal: clientPrimaryGoal } };
   const normalizedName = normalizeName(data.name);
   const duplicate = await prisma.agencyClient.findUnique({ where: { workspaceId_normalizedName: { workspaceId: context.workspace.id, normalizedName } } });
   if (duplicate) throw Object.assign(new Error("A client with this name already exists."), { statusCode: 409 });
@@ -489,12 +491,18 @@ agencyWorkspaceRouter.patch("/agency/clients/:clientId", (req, res) => handle(re
     parsed.businessLocations ?? (Array.isArray(previous.businessLocations) ? previous.businessLocations.map(String) : []),
     parsed.targetMarkets ?? (Array.isArray(previous.targetMarkets) ? previous.targetMarkets.map(String) : []),
   );
+  const previousSettings = previous.defaultSettings && typeof previous.defaultSettings === "object" ? previous.defaultSettings as Record<string, unknown> : {};
+  const normalizedSettings = parsed.defaultSettings ? {
+    ...parsed.defaultSettings,
+    primaryBusinessGoal: normalizeProjectGoals(String(parsed.defaultSettings.primaryBusinessGoal ?? previousSettings.primaryBusinessGoal ?? ""), [], "agency").primaryGoal,
+  } : undefined;
   const data = {
     ...parsed,
+    ...(normalizedSettings ? { defaultSettings: normalizedSettings } : {}),
     ...(parsed.businessLocations ? { businessLocations: normalizedLocations.businessLocations } : {}),
     ...(parsed.targetMarkets ? { targetMarkets: normalizedLocations.targetMarkets } : {}),
   };
-  const previousSettings = previous.defaultSettings && typeof previous.defaultSettings === "object" ? previous.defaultSettings as Record<string, unknown> : {};
+  const nextSettings = data.defaultSettings && typeof data.defaultSettings === "object" ? data.defaultSettings as Record<string, unknown> : previousSettings;
   return prisma.$transaction(async (tx) => {
     const client = await tx.agencyClient.update({ where: { id: previous.id }, data: {
       ...data, brandingJson: data.brandingJson as Prisma.InputJsonValue | undefined,
@@ -504,7 +512,7 @@ agencyWorkspaceRouter.patch("/agency/clients/:clientId", (req, res) => handle(re
     await recordWorkspaceActivity(tx, {
       context, action: "client.updated", entityType: "agency_client", entityId: client.id, agencyClientId: client.id,
       previousJson: { name: previous.name, businessLocations: previous.businessLocations, targetMarkets: previous.targetMarkets, businessLocationDetails: previousSettings.businessLocationDetails ?? null } as Prisma.InputJsonValue,
-      nextJson: { name: client.name, businessLocations: client.businessLocations, targetMarkets: client.targetMarkets, businessLocationDetails: data.defaultSettings?.businessLocationDetails ?? previousSettings.businessLocationDetails ?? null } as Prisma.InputJsonValue,
+      nextJson: { name: client.name, businessLocations: client.businessLocations, targetMarkets: client.targetMarkets, businessLocationDetails: nextSettings.businessLocationDetails ?? previousSettings.businessLocationDetails ?? null } as Prisma.InputJsonValue,
     });
     return { client };
   });

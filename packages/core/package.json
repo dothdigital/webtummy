@@ -5,7 +5,8 @@
   "type": "module",
   "main": "./src/index.ts",
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./src/index.ts",
+    "./project-goals": "./src/projectGoals.ts"
   },
   "dependencies": {
     "cheerio": "^1.0.0"

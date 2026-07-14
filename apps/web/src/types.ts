@@ -139,6 +139,7 @@ export interface GuidedProject {
   targetLocations: unknown;
   targetLocation: string | null;
   primaryGoal: string | null;
+  secondaryGoals: unknown;
   targetLaunchTimeline: string | null;
   preferredOutputs: unknown;
   preferredPublishingMethod: string | null;

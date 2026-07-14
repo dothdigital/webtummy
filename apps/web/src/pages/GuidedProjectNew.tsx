@@ -4,6 +4,8 @@ import { api } from "../api.js";
 import { Button, Card, Input } from "../components/ui.js";
 import type { GuidedProject } from "../types.js";
 import BusinessLocationTargetMarkets from "../components/BusinessLocationTargetMarkets.js";
+import ProjectGoals from "../components/ProjectGoals.js";
+import { canonicalPrimaryGoal } from "@webtummy/core/project-goals";
 
 const clientProjectTypes = [
   { value: "local_business", label: "Local Business", description: "City or service-area business that needs local rankings, maps visibility, reviews, and local pages.", projectType: "local_seo" },
@@ -15,23 +17,6 @@ const clientProjectTypes = [
   { value: "personal_brand", label: "Personal Brand", description: "Founder, creator, consultant, expert, or public profile growth project.", projectType: "existing_website" },
   { value: "other", label: "Other", description: "Custom client or project type that does not fit the standard categories.", projectType: "existing_website" },
 ] as const;
-
-const primaryGoals = [
-  "Leads",
-  "Sales",
-  "Traffic",
-  "Branding",
-  "Local visibility",
-  "Customer retention",
-  "Create Client Audit / Proposal",
-  "Improve SEO Rankings",
-  "Generate More Leads",
-  "Increase Sales / Conversions",
-  "Improve Existing Website",
-  "Build / Launch New Website",
-  "Improve Local SEO / Map Visibility",
-  "Build Content / Authority",
-];
 
 export default function GuidedProjectNew() {
   const navigate = useNavigate();
@@ -57,7 +42,7 @@ export default function GuidedProjectNew() {
     locationPostalCode: "",
     targetLocations: [] as string[],
     primaryGoal: "",
-    secondaryGoalsText: "",
+    secondaryGoals: [] as string[],
     competitorsText: "",
     notes: "",
     brandVoice: "",
@@ -114,7 +99,7 @@ export default function GuidedProjectNew() {
       typeof settings.preferredLanguage === "string" && `Preferred language: ${settings.preferredLanguage}`,
       typeof settings.timeZone === "string" && `Time zone: ${settings.timeZone}`,
     ].filter(Boolean).join("\n");
-    patch({ websiteUrl: form.websiteUrl || websites[0] || "", businessLocation: form.businessLocation || locations[0] || "", targetLocations: form.targetLocations.length ? form.targetLocations : markets, niche: form.niche || (typeof settings.niche === "string" ? settings.niche : ""), primaryGoal: form.primaryGoal || (typeof settings.primaryBusinessGoal === "string" ? settings.primaryBusinessGoal : ""), brandVoice: form.brandVoice || (typeof settings.brandVoice === "string" ? settings.brandVoice : ""), notes: form.notes || inheritedNotes });
+    patch({ websiteUrl: form.websiteUrl || websites[0] || "", businessLocation: form.businessLocation || locations[0] || "", targetLocations: form.targetLocations.length ? form.targetLocations : markets, niche: form.niche || (typeof settings.niche === "string" ? settings.niche : ""), primaryGoal: form.primaryGoal || (typeof settings.primaryBusinessGoal === "string" ? canonicalPrimaryGoal(settings.primaryBusinessGoal) : ""), brandVoice: form.brandVoice || (typeof settings.brandVoice === "string" ? settings.brandVoice : ""), notes: form.notes || inheritedNotes });
   }, [form.agencyClientId, isAgency, agencyClients]);
 
   const createProject = async (event: React.FormEvent) => {
@@ -130,7 +115,7 @@ export default function GuidedProjectNew() {
       const result = await api.post<{ project: GuidedProject }>("/api/projects-v2", {
         ...form, businessName: isAgency ? null : form.businessName, projectType,
         businessLocationDetails: form.locationCountry && form.locationStateProvince && form.locationCity ? { country: form.locationCountry, stateProvince: form.locationStateProvince, city: form.locationCity, streetAddress: form.locationStreetAddress, postalCode: form.locationPostalCode } : undefined,
-        secondaryGoals: split(form.secondaryGoalsText), competitors: split(form.competitorsText), analyticsPlatforms: split(form.analyticsText),
+        secondaryGoals: form.secondaryGoals, competitors: split(form.competitorsText), analyticsPlatforms: split(form.analyticsText),
       });
       navigate(`/guided-projects/${result.project.id}/intake`);
     } catch (error) {
@@ -185,15 +170,7 @@ export default function GuidedProjectNew() {
               <BusinessLocationTargetMarkets value={{ country: form.locationCountry, stateProvince: form.locationStateProvince, city: form.locationCity, streetAddress: form.locationStreetAddress, postalCode: form.locationPostalCode, targetMarkets: form.targetLocations }} onChange={(value) => patch({ locationCountry: value.country, locationStateProvince: value.stateProvince, locationCity: value.city, locationStreetAddress: value.streetAddress, locationPostalCode: value.postalCode, targetLocations: value.targetMarkets })} inheritedLocation={isAgency ? form.businessLocation : undefined} local={form.clientProjectType === "local_business"} />
               {isAgency && <label className="flex items-start gap-3 rounded-lg border border-brand-100 bg-brand-50 p-4 text-sm md:col-span-2"><input type="checkbox" checked={form.updateClientDefaults} onChange={(event) => patch({ updateClientDefaults: event.target.checked })} className="mt-1" /><span><b>Update Client defaults</b><span className="mt-1 block text-slate-600">Keep this off for project-only overrides. Turn it on only when these website, location, market, and niche values should become the shared client defaults.</span></span></label>}
               {!isAgency && form.businessLocation && <label className="flex items-start gap-3 rounded-lg border border-brand-100 bg-brand-50 p-4 text-sm md:col-span-2"><input type="checkbox" checked={form.updateWorkspaceDefaults} onChange={(event) => patch({ updateWorkspaceDefaults: event.target.checked })} className="mt-1" /><span><b>Update workspace location defaults</b><span className="mt-1 block text-slate-600">Keep this off for a project-only override. Enable it to reuse these values in future projects.</span></span></label>}
-              <label className="block md:col-span-2">
-                <span className="mb-1 block text-sm font-bold text-slate-800">Primary Goal *</span>
-                <select value={form.primaryGoal} onChange={(event) => patch({ primaryGoal: event.target.value })} className="h-11 w-full rounded-lg border border-slate-200 bg-white px-3 text-sm outline-none focus:border-brand-400 focus:ring-2 focus:ring-brand-100">
-                  <option value="">Select your primary goal</option>
-                  {primaryGoals.map((goal) => <option key={goal} value={goal}>{goal}</option>)}
-                </select>
-                <span className="mt-1 block text-xs text-slate-500">Primary Goal is what the agency wants to accomplish for the client.</span>
-              </label>
-              <Input label="Secondary Goals (optional)" value={form.secondaryGoalsText} onChange={(secondaryGoalsText) => patch({ secondaryGoalsText })} placeholder="Separate multiple goals with commas" />
+              <ProjectGoals workspaceType={workspaceType} primaryGoal={form.primaryGoal} secondaryGoals={form.secondaryGoals} onChange={(goals) => patch(goals)} />
               <Input label="Competitors (optional)" value={form.competitorsText} onChange={(competitorsText) => patch({ competitorsText })} placeholder="competitor.com, another.com" />
               <Input label="Brand Voice (optional)" value={form.brandVoice} onChange={(brandVoice) => patch({ brandVoice })} placeholder="Professional, clear, friendly" />
               <Input label="Analytics (optional)" value={form.analyticsText} onChange={(analyticsText) => patch({ analyticsText })} placeholder="GA4, Search Console" />

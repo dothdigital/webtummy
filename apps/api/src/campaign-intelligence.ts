@@ -28,6 +28,7 @@ export type CampaignProjectContext = {
   websiteUrl?: string | null;
   website?: { id?: string | null; rootUrl?: string | null } | null;
   primaryGoal?: string | null;
+  secondaryGoals?: unknown;
   niche?: string | null;
   businessLocation?: string | null;
   targetLocations?: unknown;
@@ -132,6 +133,7 @@ export function campaignSignals(project: CampaignProjectContext) {
   const outputText = preferredOutputs.join(" ").toLowerCase();
   const contextText = [
     project.primaryGoal,
+    ...(Array.isArray(project.secondaryGoals) ? project.secondaryGoals.map(String) : []),
     project.niche,
     ...(Array.isArray(project.targetLocations) ? project.targetLocations.map(String) : []),
     project.businessProfile?.businessSummary,
@@ -165,14 +167,15 @@ export function campaignSignals(project: CampaignProjectContext) {
     shouldCreateLeadMagnet: hasLeadIntent || isLocalSeo || hasOutput(/lead magnet|checklist|guide|report|proposal/),
     shouldCreatePublishing: !hasWebsite || isNewBusiness || isLocalSeo || isEcommerceOrCustom || hasOutput(/website|landing|social|content|report|proposal/),
     shouldCreateSocial: hasOutput(/social/) || isContentMarketing || isNewBusiness || /social|linkedin|facebook|instagram|youtube|reddit|community/.test(contextText),
-    shouldCreateGrowth: hasLeadIntent || isLocalSeo || isNewBusiness || isContentMarketing,
-    shouldCreateAuthority: isLocalSeo || project.projectType === "existing_website" || isContentMarketing,
+    shouldCreateGrowth: hasLeadIntent || isLocalSeo || isNewBusiness || isContentMarketing || /conversion|email list|sales/.test(contextText),
+    shouldCreateAuthority: isLocalSeo || project.projectType === "existing_website" || isContentMarketing || /backlink|content authority/.test(contextText),
   };
 }
 
 export function buildCampaignExecutionTasks(project: CampaignProjectContext): CampaignExecutionTaskInput[] {
   const signals = campaignSignals(project);
   const {
+    contextText,
     hasWebsite,
     isLocalSeo,
     shouldRecommendDomain,
@@ -187,6 +190,8 @@ export function buildCampaignExecutionTasks(project: CampaignProjectContext): Ca
 
   const targetMarkets = Array.isArray(project.targetLocations) ? project.targetLocations.map(String).map((value) => value.trim()).filter(Boolean) : [];
   const marketContext = targetMarkets.length ? ` Target markets: ${targetMarkets.join(", ")}.` : "";
+  const goals = [project.primaryGoal, ...(Array.isArray(project.secondaryGoals) ? project.secondaryGoals.map(String) : [])].filter(Boolean);
+  const goalContext = goals.length ? ` Success goals: ${goals.join(", ")}.` : "";
   const tasks: CampaignExecutionTaskInput[] = [
     {
       key: isLocalSeo ? "local-keyword-plan" : "seo-keyword-plan",
@@ -261,7 +266,7 @@ export function buildCampaignExecutionTasks(project: CampaignProjectContext): Ca
         : "Generate page updates, supporting content, FAQs, proof blocks, and briefs tied to keyword clusters and the approved strategy.",
       actionButtonLabel: "Create Content Plan",
       relatedUrl: "/ai-content",
-      priority: "medium",
+      priority: /publish more content|content authority/.test(contextText) ? "high" : "medium",
       automationLevel: "generate",
       requiresApproval: true,
     },
@@ -274,7 +279,7 @@ export function buildCampaignExecutionTasks(project: CampaignProjectContext): Ca
         : "Create the recommended lead magnet, landing page copy, delivery email, and CTA flow from the approved strategy.",
       actionButtonLabel: "Build Lead Magnet",
       relatedUrl: "/lead-magnets",
-      priority: "medium",
+      priority: /grow email list|generate more leads|improve conversion/.test(contextText) ? "high" : "medium",
       automationLevel: "generate",
       requiresApproval: true,
     } as const] : []),
@@ -287,7 +292,7 @@ export function buildCampaignExecutionTasks(project: CampaignProjectContext): Ca
         : "Find safe backlink gaps, resource opportunities, authority assets, expert content, and outreach tasks for priority pages.",
       actionButtonLabel: "Review Authority Tasks",
       relatedUrl: "/backlinks",
-      priority: "medium",
+      priority: /build backlinks|content authority/.test(contextText) ? "high" : "medium",
       automationLevel: "manual_guided",
     } as const] : []),
     {
@@ -297,7 +302,7 @@ export function buildCampaignExecutionTasks(project: CampaignProjectContext): Ca
       description: "Prepare entity clarity, schema, answer-first FAQ sections, proof blocks, and citation-ready page improvements.",
       actionButtonLabel: "Review AI Citations",
       relatedUrl: "/ai-citations",
-      priority: "medium",
+      priority: /improve ai visibility/.test(contextText) ? "high" : "medium",
       automationLevel: "prepare",
       requiresApproval: true,
     },
@@ -308,7 +313,7 @@ export function buildCampaignExecutionTasks(project: CampaignProjectContext): Ca
       description: "Turn approved pages, offers, lead magnets, and content into reviewable social posts before scheduling.",
       actionButtonLabel: "Create Social Posts",
       relatedUrl: "/social-strategy",
-      priority: "low",
+      priority: /increase social presence/.test(contextText) ? "high" : "low",
       automationLevel: "prepare",
       requiresApproval: true,
       requiresIntegration: true,
@@ -320,7 +325,7 @@ export function buildCampaignExecutionTasks(project: CampaignProjectContext): Ca
       description: "Prepare WordPress, static export, landing page, or content update tasks. Nothing is published until the user approves.",
       actionButtonLabel: "Review Publishing",
       relatedUrl: "/ai-content",
-      priority: "medium",
+      priority: /publish more content|build new website|improve existing website/.test(contextText) ? "high" : "medium",
       automationLevel: "execute_with_approval",
       requiresApproval: true,
       requiresIntegration: true,
@@ -332,7 +337,7 @@ export function buildCampaignExecutionTasks(project: CampaignProjectContext): Ca
       description: "Use strategy, keyword, site, content, and lead-capture data to create growth experiments, funnel fixes, and conversion tasks.",
       actionButtonLabel: "Open Growth Engine",
       relatedUrl: "/growth",
-      priority: "medium",
+      priority: /conversion|grow email list|increase sales|generate more leads/.test(contextText) ? "high" : "medium",
       automationLevel: "prepare",
       requiresApproval: true,
     } as const] : []),
@@ -349,5 +354,5 @@ export function buildCampaignExecutionTasks(project: CampaignProjectContext): Ca
       automationLevel: "prepare",
     },
   ];
-  return tasks.map((task) => ({ ...task, description: `${task.description}${marketContext}` }));
+  return tasks.map((task) => ({ ...task, description: `${task.description}${marketContext}${goalContext}` }));
 }
