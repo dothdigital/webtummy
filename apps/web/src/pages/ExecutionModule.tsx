@@ -155,7 +155,7 @@ function moduleReadiness(kind: ModuleKind, data: ModuleData, project?: GuidedPro
   if (!project) return { canRun: false, items: [] as ReadinessItem[] };
   const intakeComplete = Boolean(project.businessProfile || (project.intakeAnswers?.length ?? 0) > 0);
   const opportunityExists = (project.opportunities?.length ?? 0) > 0;
-  const opportunitySelected = project.opportunities?.some((opportunity) => opportunity.status === "selected") ?? false;
+  const opportunitySelected = project.opportunities?.some((opportunity) => ["selected", "confirmed"].includes(opportunity.status)) ?? false;
   const strategyExists = (project.strategyPlans?.length ?? 0) > 0;
   const strategyApproved = project.strategyPlans?.some((strategy) => typeof strategy === "object" && strategy !== null && "status" in strategy && strategy.status === "approved") ?? false;
   const hasWebsite = Boolean(project.websiteId || project.websiteUrl || website);
@@ -523,7 +523,13 @@ export default function ExecutionModule({ kind }: { kind: ModuleKind }) {
     setOpportunityBusy(opportunityId);
     setOpportunityMessage("");
     try {
-      const result = await api.post<{ project: GuidedProject }>(`/api/projects-v2/${activeProject.id}/opportunities/${opportunityId}/select`, {});
+      let result: { project: GuidedProject };
+      try {
+        result = await api.post<{ project: GuidedProject }>(`/api/projects-v2/${activeProject.id}/opportunities/${opportunityId}/select`, {});
+      } catch (error) {
+        if (!(error instanceof Error) || !/confirm changing/i.test(error.message) || !window.confirm("Strategy is already approved. Change the active opportunity and refresh downstream work?")) throw error;
+        result = await api.post<{ project: GuidedProject }>(`/api/projects-v2/${activeProject.id}/opportunities/${opportunityId}/select`, { confirmation: true, reason: "Confirmed from Opportunity Finder" });
+      }
       updateActiveProject(result.project);
       setOpportunityMessage("");
     } catch (error) {
@@ -538,7 +544,13 @@ export default function ExecutionModule({ kind }: { kind: ModuleKind }) {
     setOpportunityBusy("clear");
     setOpportunityMessage("");
     try {
-      const result = await api.post<{ project: GuidedProject }>(`/api/projects-v2/${activeProject.id}/opportunities/clear-selection`, {});
+      let result: { project: GuidedProject };
+      try {
+        result = await api.post<{ project: GuidedProject }>(`/api/projects-v2/${activeProject.id}/opportunities/clear-selection`, {});
+      } catch (error) {
+        if (!(error instanceof Error) || !/confirm removing/i.test(error.message) || !window.confirm("Strategy is already approved. Remove the active direction and block new Strategy generation until another is chosen?")) throw error;
+        result = await api.post<{ project: GuidedProject }>(`/api/projects-v2/${activeProject.id}/opportunities/clear-selection`, { confirmation: true, reason: "Confirmed from Opportunity Finder" });
+      }
       updateActiveProject(result.project);
       setOpportunityMessage("Selected opportunity removed. Choose another opportunity before generating the next strategy version.");
     } catch (error) {
@@ -546,6 +558,32 @@ export default function ExecutionModule({ kind }: { kind: ModuleKind }) {
     } finally {
       setOpportunityBusy(null);
     }
+  };
+
+  const refineOpportunities = async () => {
+    if (!activeProject || opportunityBusy) return;
+    const instructions = window.prompt("What should AI refine or prioritize in these recommendations?");
+    if (!instructions?.trim()) return;
+    setOpportunityBusy("refine"); setOpportunityMessage("");
+    try { const result = await api.post<{ project: GuidedProject }>(`/api/projects-v2/${activeProject.id}/opportunities/refine`, { instructions }); updateActiveProject(result.project); setOpportunityMessage("Recommendations refined from the current project intake and your instructions."); }
+    catch (error) { setOpportunityMessage(error instanceof Error ? error.message : "Could not refine opportunities."); }
+    finally { setOpportunityBusy(null); }
+  };
+
+  const saveOpportunityForLater = async (opportunityId: string) => {
+    if (!activeProject || opportunityBusy) return;
+    setOpportunityBusy(`save-${opportunityId}`);
+    try { const result = await api.post<{ project: GuidedProject }>(`/api/projects-v2/${activeProject.id}/opportunities/${opportunityId}/save`, {}); updateActiveProject(result.project); setOpportunityMessage("Opportunity saved for later."); }
+    catch (error) { setOpportunityMessage(error instanceof Error ? error.message : "Could not save opportunity."); }
+    finally { setOpportunityBusy(null); }
+  };
+
+  const skipOpportunityFinder = async () => {
+    if (!activeProject || opportunityBusy || !window.confirm("Skip recommendations and confirm the existing project direction?")) return;
+    setOpportunityBusy("skip");
+    try { const result = await api.post<{ project: GuidedProject }>(`/api/projects-v2/${activeProject.id}/opportunities/skip`, { confirmation: true }); updateActiveProject(result.project); setOpportunityMessage("Existing project direction confirmed."); }
+    catch (error) { setOpportunityMessage(error instanceof Error ? error.message : "Could not confirm the existing direction."); }
+    finally { setOpportunityBusy(null); }
   };
 
   const openKeywordResearch = () => {
@@ -759,7 +797,7 @@ export default function ExecutionModule({ kind }: { kind: ModuleKind }) {
       {!loading && !hasActiveProject && <EmptyModuleState title="Create project first" detail="This module depends on a project. Create a project before using module actions." />}
       {!loading && hasActiveProject && !hasWorkspaceRecords && <EmptyModuleState title="No data available" detail="Project data will appear here after intake, crawls, tasks, or generation runs exist." />}
       {!loading && hasActiveProject && hasWorkspaceRecords && !canRunModule && <ModuleReadinessChecklist moduleTitle={copy.title} items={readiness.items} />}
-      {!loading && hasActiveProject && hasWorkspaceRecords && canRunModule && kind === "opportunities" && <OpportunityScreen data={scopedData} selectingId={opportunityBusy} onSelect={selectOpportunity} onClearSelection={clearOpportunitySelection} />}
+      {!loading && hasActiveProject && hasWorkspaceRecords && canRunModule && kind === "opportunities" && <OpportunityScreen data={scopedData} selectingId={opportunityBusy} onSelect={selectOpportunity} onClearSelection={clearOpportunitySelection} onRefine={refineOpportunities} onSave={saveOpportunityForLater} onSkip={skipOpportunityFinder} />}
       {!loading && hasActiveProject && hasWorkspaceRecords && canRunModule && kind === "strategy" && <StrategyScreen data={scopedData} busy={strategyBusy} onAction={runStrategyAction} />}
       {!loading && hasActiveProject && hasWorkspaceRecords && canRunModule && kind === "keywords" && <KeywordScreen data={scopedData} />}
       {!loading && hasActiveProject && hasWorkspaceRecords && canRunModule && kind === "site-analysis" && <SiteAnalysisScreen data={scopedData} />}
@@ -1113,19 +1151,25 @@ function OpportunityScreen({
   selectingId,
   onSelect,
   onClearSelection,
+  onRefine,
+  onSave,
+  onSkip,
 }: {
   data: ModuleData;
   selectingId: string | null;
   onSelect: (opportunityId: string) => Promise<void>;
   onClearSelection: () => Promise<void>;
+  onRefine: () => Promise<void>;
+  onSave: (opportunityId: string) => Promise<void>;
+  onSkip: () => Promise<void>;
 }) {
   const project = data.projects[0];
   const opportunities = [...(project?.opportunities ?? [])].sort((a, b) => {
-    if (a.status === "selected" && b.status !== "selected") return -1;
-    if (b.status === "selected" && a.status !== "selected") return 1;
+    if (["selected", "confirmed"].includes(a.status) && !["selected", "confirmed"].includes(b.status)) return -1;
+    if (["selected", "confirmed"].includes(b.status) && !["selected", "confirmed"].includes(a.status)) return 1;
     return (b.opportunityScore ?? 0) - (a.opportunityScore ?? 0);
   });
-  const actualSelectedOpportunity = opportunities.find((opportunity) => opportunity.status === "selected");
+  const actualSelectedOpportunity = opportunities.find((opportunity) => ["selected", "confirmed"].includes(opportunity.status));
   const selectedOpportunity = actualSelectedOpportunity ?? opportunities[0];
   const [focusedId, setFocusedId] = useState(selectedOpportunity?.id ?? "");
   const [showAll, setShowAll] = useState(false);
@@ -1217,6 +1261,8 @@ function OpportunityScreen({
               >
                 Full Report
               </button>
+              <button type="button" onClick={() => void onRefine()} disabled={selectingId === "refine"} className="rounded-lg border border-brand-200 bg-white px-4 py-2 text-sm font-bold text-brand-700 hover:bg-brand-50 disabled:opacity-50">{selectingId === "refine" ? "Refining…" : "Ask AI to Refine"}</button>
+              <button type="button" onClick={() => void onSkip()} disabled={selectingId === "skip"} className="rounded-lg border border-slate-200 bg-white px-4 py-2 text-sm font-bold text-charcoal-700 hover:bg-slate-50 disabled:opacity-50">Confirm Existing Direction / Skip</button>
             </div>
           </div>
           <div className="grid gap-4 lg:grid-cols-3">
@@ -1226,7 +1272,7 @@ function OpportunityScreen({
                 opportunity={opportunity}
                 rank={index + 1}
                 focused={focusedOpportunity?.id === opportunity.id}
-                selected={opportunity.status === "selected"}
+                selected={["selected", "confirmed"].includes(opportunity.status)}
                 busy={selectingId === opportunity.id}
                 onFocus={() => setFocusedId(opportunity.id)}
                 onDetails={() => {
@@ -1243,6 +1289,8 @@ function OpportunityScreen({
                   void onClearSelection();
                 }}
                 clearing={selectingId === "clear"}
+                onSave={() => void onSave(opportunity.id)}
+                saving={selectingId === `save-${opportunity.id}`}
               />
             ))}
           </div>
@@ -1268,7 +1316,7 @@ function OpportunityScreen({
           setReportOpen(true);
         }} />
       </div>
-      <OpportunityDetailsDrawer opportunity={focusedOpportunity} open={detailsOpen} onClose={() => setDetailsOpen(false)} onSelect={focusedOpportunity ? () => { void onSelect(focusedOpportunity.id); } : undefined} selected={focusedOpportunity?.status === "selected"} />
+      <OpportunityDetailsDrawer opportunity={focusedOpportunity} open={detailsOpen} onClose={() => setDetailsOpen(false)} onSelect={focusedOpportunity ? () => { void onSelect(focusedOpportunity.id); } : undefined} selected={Boolean(focusedOpportunity && ["selected", "confirmed"].includes(focusedOpportunity.status))} />
       <OpportunityCompareDrawer opportunities={opportunities} open={compareOpen} onClose={() => setCompareOpen(false)} onFocus={(id) => { setFocusedId(id); setDetailsOpen(true); }} onSelect={(id) => { void onSelect(id); }} />
       <OpportunityReportDrawer opportunity={focusedOpportunity} open={reportOpen} onClose={() => setReportOpen(false)} projectId={project.id} />
     </>
@@ -1297,7 +1345,7 @@ function StrategyScreen({ data, busy, onAction }: { data: ModuleData; busy: "gen
     publishingStrategy?: string | null;
   } | undefined;
   const strategyApproved = latestStrategy?.status === "approved";
-  const selectedOpportunity = project?.opportunities?.find((opportunity) => opportunity.status === "selected") ?? project?.opportunities?.[0];
+  const selectedOpportunity = project?.opportunities?.find((opportunity) => ["selected", "confirmed"].includes(opportunity.status)) ?? project?.opportunities?.[0];
   const score = selectedOpportunity?.opportunityScore ?? strategyScore(data);
   const scoreRows = opportunityInsightScoreRows(selectedOpportunity);
   const audience = latestStrategy?.audienceProfile || project?.businessProfile?.targetAudience || "Not provided";
@@ -2682,7 +2730,7 @@ function getModuleNextStep({
   keywordRuns?: KeywordResearchRun[];
 }): ModuleNextStep | null {
   const latestStrategy = project.strategyPlans?.[0];
-  const selectedOpportunity = project.opportunities?.find((opportunity) => opportunity.status === "selected");
+  const selectedOpportunity = project.opportunities?.find((opportunity) => ["selected", "confirmed"].includes(opportunity.status));
   const strategyApproved = latestStrategy?.status === "approved";
   const projectQuery = `?projectId=${project.id}`;
   if (kind === "strategy") {
@@ -2871,6 +2919,8 @@ function OpportunityCard({
   onDetails,
   onSelect,
   onClearSelection,
+  onSave,
+  saving,
 }: {
   opportunity: Opportunity;
   rank: number;
@@ -2882,6 +2932,8 @@ function OpportunityCard({
   onDetails: () => void;
   onSelect: () => void;
   onClearSelection: () => void;
+  onSave: () => void;
+  saving: boolean;
 }) {
   const score = safeScore(opportunity.opportunityScore, 72);
   const shortOpportunityName = opportunity.name.length > 44 ? `${opportunity.name.slice(0, 41)}...` : opportunity.name;
@@ -2889,13 +2941,14 @@ function OpportunityCard({
     <Card className={`flex min-h-[330px] flex-col p-4 transition ${focused ? "border-brand-500 ring-1 ring-brand-200" : "hover:border-brand-200"}`}>
       <button type="button" onClick={onFocus} className="flex flex-1 flex-col text-left">
         <div className="flex items-center justify-between gap-3">
-          <span className={`rounded-full px-3 py-1 text-xs font-bold ${selected ? "bg-brand-600 text-white" : rank === 1 ? "bg-emerald-50 text-emerald-700" : "bg-slate-100 text-charcoal-600"}`}>
-            {selected ? "Selected" : rank === 1 ? "Recommended" : `Option ${rank}`}
+          <span className={`rounded-full px-3 py-1 text-xs font-bold ${selected ? "bg-brand-600 text-white" : opportunity.status === "saved" ? "bg-violet-50 text-violet-700" : rank === 1 ? "bg-emerald-50 text-emerald-700" : "bg-slate-100 text-charcoal-600"}`}>
+            {selected ? (opportunity.status === "confirmed" ? "Confirmed" : "Selected") : opportunity.status === "saved" ? "Saved for later" : rank === 1 ? "Recommended" : `Option ${rank}`}
           </span>
           {focused ? <span className="grid h-6 w-6 place-items-center rounded-full bg-brand-600 text-xs font-bold text-white">✓</span> : null}
         </div>
         <h2 className="mt-4 min-h-[52px] text-lg font-bold leading-6 text-charcoal-950">{opportunity.name}</h2>
         <p className="mt-2 line-clamp-3 text-sm leading-6 text-charcoal-500">{opportunity.summary || opportunity.problemSolved || "AI-generated opportunity from project intake."}</p>
+        <div className="mt-3 space-y-1 text-xs leading-5 text-charcoal-600"><p><b>Expected outcome:</b> {opportunity.recommendedOffer || opportunity.problemSolved || "A focused, measurable project direction."}</p><p><b>Estimated effort:</b> {(opportunity.executionScore ?? 50) >= 82 ? "Low" : (opportunity.executionScore ?? 50) >= 68 ? "Medium" : "High"} · <b>Confidence:</b> {Math.round(((opportunity.opportunityScore ?? 60) * 0.6) + ((opportunity.userFitScore ?? 60) * 0.4))}%</p></div>
         <div className="mt-4 grid grid-cols-2 gap-2">
           <OpportunityMetricChip label="SEO Potential" value={safeScore(opportunity.seoScore, score)} />
           <OpportunityMetricChip label="Monetization" value={safeScore(opportunity.monetizationScore, score)} />
@@ -2923,14 +2976,14 @@ function OpportunityCard({
           </button>
         </div>
       ) : (
-        <button
+        <div className="mt-4 grid grid-cols-[1fr_auto] gap-2"><button
           type="button"
           onClick={onSelect}
           disabled={busy}
-          className="mt-4 w-full rounded-lg bg-brand-600 px-4 py-2.5 text-sm font-bold text-white hover:bg-brand-700 disabled:cursor-not-allowed disabled:bg-slate-300 disabled:text-slate-600"
+          className="w-full rounded-lg bg-brand-600 px-4 py-2.5 text-sm font-bold text-white hover:bg-brand-700 disabled:cursor-not-allowed disabled:bg-slate-300 disabled:text-slate-600"
         >
-          {busy ? `Selecting ${shortOpportunityName}...` : "Select as Strategy Direction"}
-        </button>
+          {busy ? `Selecting ${shortOpportunityName}...` : opportunity.status === "confirmation_required" ? "Confirm Direction" : "Select Opportunity"}
+        </button><button type="button" onClick={onSave} disabled={saving || opportunity.status === "saved"} className="rounded-lg border px-3 py-2 text-xs font-bold text-charcoal-700 disabled:opacity-50">{opportunity.status === "saved" ? "Saved" : saving ? "Saving…" : "Save"}</button></div>
       )}
     </Card>
   );
@@ -3100,9 +3153,9 @@ function OpportunityCompareDrawer({
               const score = safeScore(opportunity.opportunityScore, 72);
               const reasons = opportunityReasons(opportunity).slice(0, 3);
               return (
-                <div key={opportunity.id} className={`flex min-h-[360px] flex-col rounded-lg border p-4 ${opportunity.status === "selected" ? "border-brand-500 bg-brand-50" : "border-slate-200 bg-white"}`}>
+                <div key={opportunity.id} className={`flex min-h-[360px] flex-col rounded-lg border p-4 ${["selected", "confirmed"].includes(opportunity.status) ? "border-brand-500 bg-brand-50" : "border-slate-200 bg-white"}`}>
                   <div className="flex items-center justify-between gap-2">
-                    <span className="rounded-full bg-slate-100 px-2 py-1 text-xs font-bold text-charcoal-600">{opportunity.status === "selected" ? "Selected" : `Option ${index + 1}`}</span>
+                    <span className="rounded-full bg-slate-100 px-2 py-1 text-xs font-bold text-charcoal-600">{["selected", "confirmed"].includes(opportunity.status) ? (opportunity.status === "confirmed" ? "Confirmed" : "Selected") : opportunity.status === "saved" ? "Saved" : `Option ${index + 1}`}</span>
                     <span className="text-2xl font-bold text-emerald-600">{score}</span>
                   </div>
                   <h3 className="mt-3 text-base font-bold leading-6 text-charcoal-950">{opportunity.name}</h3>
@@ -3119,8 +3172,8 @@ function OpportunityCompareDrawer({
                   </div>
                   <div className="mt-auto pt-4">
                     <button type="button" onClick={() => onFocus(opportunity.id)} className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm font-bold text-charcoal-800 hover:bg-slate-50">View Details</button>
-                    <button type="button" onClick={() => onSelect(opportunity.id)} disabled={opportunity.status === "selected"} className="mt-2 w-full rounded-lg bg-brand-600 px-3 py-2 text-sm font-bold text-white hover:bg-brand-700 disabled:cursor-not-allowed disabled:bg-slate-300 disabled:text-slate-600">
-                      {opportunity.status === "selected" ? "Selected" : "Choose This"}
+                    <button type="button" onClick={() => onSelect(opportunity.id)} disabled={["selected", "confirmed"].includes(opportunity.status)} className="mt-2 w-full rounded-lg bg-brand-600 px-3 py-2 text-sm font-bold text-white hover:bg-brand-700 disabled:cursor-not-allowed disabled:bg-slate-300 disabled:text-slate-600">
+                      {["selected", "confirmed"].includes(opportunity.status) ? (opportunity.status === "confirmed" ? "Confirmed" : "Selected") : "Choose This"}
                     </button>
                   </div>
                 </div>

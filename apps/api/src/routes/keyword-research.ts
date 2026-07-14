@@ -497,7 +497,7 @@ async function suggestKeywordsForWebsite(
         },
       },
       opportunities: {
-        where: { status: "selected" },
+        where: { status: { in: ["selected", "confirmed"] } },
         take: 1,
         select: { name: true, targetAudience: true, recommendedOffer: true, summary: true },
       },

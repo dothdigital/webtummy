@@ -12,6 +12,7 @@ import { validateProjectCreation, websiteStatuses } from "../dev003.js";
 import { cleanTargetMarkets, formatBusinessLocation, locationIsComplete, type BusinessLocation } from "../project-location.js";
 import { locationDefaultsFromSettings, resolveProjectLocations, withLocationDefaults } from "../dev004.js";
 import { goalContext, normalizeProjectGoals } from "../dev005.js";
+import { opportunityDecisionStatus, opportunityInputSummary, opportunityRunMode } from "../dev006.js";
 
 export const guidedProjectsRouter = Router();
 guidedProjectsRouter.use(requireAuth);
@@ -74,6 +75,8 @@ const projectGoalsSchema = z.object({
   secondaryGoals: z.array(z.string().trim().min(1).max(255)).max(20).default([]),
   reason: z.string().trim().max(1000).optional().nullable(),
 });
+const opportunityActionSchema = z.object({ confirmation: z.boolean().default(false), reason: z.string().trim().max(1000).optional().nullable() });
+const opportunityRefineSchema = z.object({ instructions: z.string().trim().min(3).max(2000) });
 const leadMagnetGenerateSchema = z.object({
   selectedIdea: z.string().trim().min(3).max(240).optional().nullable(),
   instructions: z.string().trim().max(2000).optional().nullable(),
@@ -668,7 +671,7 @@ async function syncProjectWorkflow(tx: Prisma.TransactionClient, projectId: stri
 
   const intakeComplete = project.intakeAnswers.length > 0 || Boolean(project.businessProfile);
   const opportunitiesGenerated = project.opportunities.length > 0;
-  const selectedOpportunity = project.opportunities.find((opportunity) => opportunity.status === "selected") ?? project.opportunities[0] ?? null;
+  const selectedOpportunity = project.opportunities.find((opportunity) => opportunityDecisionStatus(opportunity.status)) ?? null;
   const latestStrategy = project.strategyPlans[0];
   const strategyGenerated = Boolean(latestStrategy);
   const strategyApproved = latestStrategy?.status === "approved" || project.currentStep === "execution";
@@ -693,16 +696,18 @@ async function syncProjectWorkflow(tx: Prisma.TransactionClient, projectId: stri
       : intakeComplete
         ? { status: "ready", actionUrl: `/guided-projects/${project.id}`, readyReason: "Review missing required project details." }
         : { status: "pending", actionUrl: `/guided-projects/${project.id}/intake`, readyReason: "Waiting for intake completion." },
-    opportunities: opportunitiesGenerated
-      ? { status: "completed", actionUrl: "/opportunities", sourceType: "opportunity", sourceId: selectedOpportunity?.id, completionReason: selectedOpportunity?.status === "selected" ? "An opportunity has been selected for strategy context." : "Opportunity records exist for this project.", completedAt: new Date() }
+    opportunities: selectedOpportunity
+      ? { status: "completed", actionUrl: "/opportunities", sourceType: "opportunity", sourceId: selectedOpportunity.id, completionReason: selectedOpportunity.status === "confirmed" ? "The existing project direction has been confirmed." : "An opportunity has been selected for strategy context.", completedAt: new Date() }
+      : opportunitiesGenerated
+        ? { status: "ready", actionUrl: "/opportunities", readyReason: "Review recommendations and select an opportunity or confirm the existing direction." }
       : readinessComplete
         ? { status: "ready", actionUrl: `/guided-projects/${project.id}`, readyReason: "Intake is complete and opportunities can be generated." }
         : { status: "pending", actionUrl: `/guided-projects/${project.id}`, readyReason: "Waiting for intake completion." },
     keyword_analysis: keywordAnalysisComplete
       ? { status: "completed", actionUrl: "/keywords", sourceType: "keyword_research", completionReason: "Keyword analysis exists for this project or connected website.", completedAt: new Date() }
-      : opportunitiesGenerated
+      : selectedOpportunity
         ? { status: "ready", actionUrl: "/keywords", readyReason: isNewWebsiteLaunch ? "Use the project profile to create seed keywords and page targets before a website exists." : "Use the project profile and opportunity direction to run keyword analysis before full execution planning." }
-        : { status: "pending", actionUrl: "/keywords", readyReason: "Waiting for opportunity generation." },
+        : { status: "pending", actionUrl: "/keywords", readyReason: "Waiting for an opportunity selection or confirmed existing direction." },
     site_analysis: siteAnalysisComplete
       ? { status: "completed", actionUrl: "/site-analysis", sourceType: "site_analysis", completionReason: isExistingWebsite ? "A completed site crawl exists for the connected website." : "Site analysis is not required until generated pages or a website exist.", completedAt: new Date() }
       : !isExistingWebsite
@@ -714,9 +719,9 @@ async function syncProjectWorkflow(tx: Prisma.TransactionClient, projectId: stri
           : { status: "pending", actionUrl: "/site-analysis", readyReason: "Waiting for keyword analysis." },
     strategy: strategyGenerated
       ? { status: "completed", actionUrl: "/strategy", sourceType: "strategy_plan", sourceId: latestStrategy?.id, completionReason: "A strategy plan exists.", completedAt: new Date() }
-      : intakeComplete && (!siteAnalysisRequiredBeforeStrategy || siteAnalysisComplete)
+      : selectedOpportunity && intakeComplete && (!siteAnalysisRequiredBeforeStrategy || siteAnalysisComplete)
         ? { status: "ready", actionUrl: "/strategy", readyReason: isNewWebsiteLaunch ? "Project profile is enough to create the initial website, keyword, GBP/local, content, and publishing strategy." : keywordAnalysisComplete ? "Keyword and required site discovery are ready for strategy." : "Initial strategy can be generated now; keyword data can refine it later." }
-        : { status: "pending", actionUrl: "/strategy", readyReason: siteAnalysisRequiredBeforeStrategy ? "Waiting for site analysis on the existing website." : "Waiting for intake completion." },
+        : { status: "pending", actionUrl: "/strategy", readyReason: !selectedOpportunity ? "Select an opportunity or confirm the existing direction first." : siteAnalysisRequiredBeforeStrategy ? "Waiting for site analysis on the existing website." : "Waiting for intake completion." },
     strategy_approval: strategyApproved
       ? { status: "completed", actionUrl: "/strategy", sourceType: "strategy_plan", sourceId: latestStrategy?.id, completionReason: "The current strategy is approved.", completedAt: latestStrategy?.approvedAt ?? new Date() }
       : strategyGenerated
@@ -916,6 +921,40 @@ function buildOpportunityOptions(project: NonNullable<Awaited<ReturnType<typeof 
   }));
 }
 
+async function generateOpportunityRecommendations(project: NonNullable<Awaited<ReturnType<typeof scopedProject>>>, context: Awaited<ReturnType<typeof workspaceContext>>, refinement?: string | null) {
+  const ctx = projectContext(project);
+  const run = opportunityRunMode(project);
+  const options = buildOpportunityOptions(project, ctx);
+  const recommendations = run.mode === "confirmation" && !refinement ? options.slice(0, 1) : options;
+  return prisma.$transaction(async (tx) => {
+    // Saved ideas are user-owned decisions and must survive regeneration/refinement.
+    await tx.opportunity.deleteMany({ where: { projectId: project.id, status: { in: ["suggested", "confirmation_required"] } } });
+    const rows = await Promise.all(recommendations.map((option, index) => tx.opportunity.create({ data: {
+      projectId: project.id,
+      name: refinement ? `${option.name} — refined` : option.name,
+      targetAudience: option.targetAudience, problemSolved: option.problemSolved, recommendedOffer: option.recommendedOffer,
+      businessModel: option.businessModel, opportunityScore: option.opportunityScore, seoScore: option.seoScore,
+      competitionScore: option.competitionScore, monetizationScore: option.monetizationScore, executionScore: option.executionScore,
+      userFitScore: option.userFitScore,
+      summary: refinement ? `${option.summary} Refined for: ${refinement}` : option.summary,
+      status: run.mode === "confirmation" && index === 0 && !refinement ? "confirmation_required" : "suggested",
+    } })));
+    await tx.aiRun.create({ data: {
+      projectId: project.id, clientId: project.clientId, moduleName: "opportunity", promptVersion: refinement ? "opportunity-refine-v1" : "dynamic-opportunity-v3",
+      inputSnapshotJson: { projectId: project.id, inputs: opportunityInputSummary(project), context: ctx, mode: run.mode, refinement: refinement ?? null },
+      outputJson: rows.map((row) => ({ id: row.id, name: row.name, score: row.opportunityScore, status: row.status })),
+      outputText: refinement ? `Refined opportunity recommendations using: ${refinement}` : `Generated ${rows.length} ${run.mode} opportunity recommendation(s) from project intake.`, status: "completed",
+    } });
+    await recordWorkspaceActivity(tx, {
+      context, action: refinement ? "opportunity.recommendations_refined" : "opportunity.recommendations_generated", entityType: "project", entityId: project.id,
+      agencyClientId: project.agencyClientId, projectId: project.id,
+      nextJson: { mode: run.mode, recommendationIds: rows.map((row) => row.id), input: opportunityInputSummary(project), refinement: refinement ?? null },
+    });
+    await syncProjectWorkflow(tx, project.id);
+    return rows;
+  });
+}
+
 function buildLeadMagnetPrompt(input: {
   project: NonNullable<Awaited<ReturnType<typeof scopedProject>>>;
   strategy: NonNullable<NonNullable<Awaited<ReturnType<typeof scopedProject>>>["strategyPlans"][number]>;
@@ -925,7 +964,7 @@ function buildLeadMagnetPrompt(input: {
 }) {
   const { project, strategy, keywordRuns, selectedIdea, instructions } = input;
   const ctx = projectContext(project);
-  const selectedOpportunity = project.opportunities.find((opportunity) => opportunity.status === "selected") ?? project.opportunities[0] ?? null;
+  const selectedOpportunity = project.opportunities.find((opportunity) => opportunityDecisionStatus(opportunity.status)) ?? null;
   const keywords = keywordRuns.slice(0, 8).map((run) => ({
     seedKeyword: run.seedKeyword,
     intent: run.intent,
@@ -1916,8 +1955,12 @@ guidedProjectsRouter.post("/projects-v2/:projectId/intake", async (req, res) => 
     await recordWorkspaceActivity(tx, { context, action: "project.milestone.intake_completed", entityType: "project", entityId: project.id, agencyClientId: project.agencyClientId, projectId: project.id, nextJson: { milestone: "intake", answerCount: parsed.data.answers.length } });
   });
 
-  const updated = await scopedProject(req, project.id);
-  res.json({ project: updated });
+  let updated = await scopedProject(req, project.id);
+  if (updated?.businessProfile && !updated.opportunities.length) {
+    await generateOpportunityRecommendations(updated, context);
+    updated = await scopedProject(req, project.id);
+  }
+  res.json({ project: updated, opportunityMode: updated ? opportunityRunMode(updated).mode : null });
 });
 
 guidedProjectsRouter.post("/projects-v2/:projectId/opportunities/generate", async (req, res) => {
@@ -1925,58 +1968,27 @@ guidedProjectsRouter.post("/projects-v2/:projectId/opportunities/generate", asyn
   const project = await scopedProject(req, req.params.projectId);
   if (!project) return res.status(404).json({ error: "project not found" });
   if (!project.businessProfile) return res.status(409).json({ error: "complete intake before generating opportunities" });
-
-  const ctx = projectContext(project);
-  const created = await prisma.$transaction(async (tx) => {
-    await tx.opportunity.deleteMany({ where: { projectId: project.id, status: "suggested" } });
-    const options = buildOpportunityOptions(project, ctx);
-    const rows = await Promise.all(options.map((option) => tx.opportunity.create({
-      data: {
-        projectId: project.id,
-        name: option.name,
-        targetAudience: option.targetAudience,
-        problemSolved: option.problemSolved,
-        recommendedOffer: option.recommendedOffer,
-        businessModel: option.businessModel,
-        opportunityScore: option.opportunityScore,
-        seoScore: option.seoScore,
-        competitionScore: option.competitionScore,
-        monetizationScore: option.monetizationScore,
-        executionScore: option.executionScore,
-        userFitScore: option.userFitScore,
-        summary: option.summary,
-      },
-    })));
-
-    await tx.aiRun.create({
-      data: {
-        projectId: project.id,
-        clientId: project.clientId,
-        moduleName: "opportunity",
-        promptVersion: "dynamic-opportunity-v2",
-        inputSnapshotJson: { projectId: project.id, context: ctx },
-        outputJson: rows.map((row) => ({ id: row.id, name: row.name, score: row.opportunityScore })),
-        outputText: "Generated three scored opportunity options from project type, location, industry, goal, timeline, outputs, and website readiness.",
-        status: "completed",
-      },
-    });
-
-    await tx.executionTask.updateMany({
-      where: { projectId: project.id, moduleName: "opportunity", status: { notIn: ["completed", "skipped"] } },
-      data: { status: "completed", completedAt: new Date() },
-    });
-
-    await syncProjectWorkflow(tx, project.id);
-
-    return rows;
-  });
+  const context = await workspaceContext(req);
+  const created = await generateOpportunityRecommendations(project, context);
 
   const updated = await scopedProject(req, project.id);
   res.json({ opportunities: created, project: updated });
 });
 
+guidedProjectsRouter.post("/projects-v2/:projectId/opportunities/refine", async (req, res) => {
+  await requireRequestPermission(req, "edit_assigned_work");
+  const parsed = opportunityRefineSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() });
+  const project = await scopedProject(req, req.params.projectId);
+  if (!project?.businessProfile) return res.status(409).json({ error: "complete intake before refining opportunities" });
+  const context = await workspaceContext(req);
+  const opportunities = await generateOpportunityRecommendations(project, context, parsed.data.instructions);
+  res.json({ opportunities, project: await scopedProject(req, project.id) });
+});
+
 guidedProjectsRouter.post("/projects-v2/:projectId/opportunities/:opportunityId/select", async (req, res) => {
   await requireRequestPermission(req, "edit_assigned_work");
+  const action = opportunityActionSchema.parse(req.body ?? {});
   const project = await scopedProject(req, req.params.projectId);
   if (!project) return res.status(404).json({ error: "project not found" });
 
@@ -1984,15 +1996,21 @@ guidedProjectsRouter.post("/projects-v2/:projectId/opportunities/:opportunityId/
     where: { id: req.params.opportunityId, projectId: project.id },
   });
   if (!opportunity) return res.status(404).json({ error: "opportunity not found" });
+  const previous = project.opportunities.find((item) => opportunityDecisionStatus(item.status)) ?? null;
+  const strategyApproved = project.strategyPlans.some((strategy) => strategy.status === "approved");
+  const changingApprovedDirection = strategyApproved && previous && previous.id !== opportunity.id;
+  if (changingApprovedDirection && !action.confirmation) return res.status(409).json({ error: "Confirm changing the approved project direction before selecting this opportunity.", confirmationRequired: true });
+  const nextStatus = opportunity.status === "confirmation_required" ? "confirmed" : "selected";
+  const context = await workspaceContext(req);
 
   await prisma.$transaction(async (tx) => {
     await tx.opportunity.updateMany({
-      where: { projectId: project.id, status: "selected", id: { not: opportunity.id } },
+      where: { projectId: project.id, status: { in: ["selected", "confirmed"] }, id: { not: opportunity.id } },
       data: { status: "suggested" },
     });
     await tx.opportunity.update({
       where: { id: opportunity.id },
-      data: { status: "selected" },
+      data: { status: nextStatus },
     });
     await tx.aiRun.create({
       data: {
@@ -2001,10 +2019,21 @@ guidedProjectsRouter.post("/projects-v2/:projectId/opportunities/:opportunityId/
         moduleName: "opportunity",
         promptVersion: "opportunity-select-v1",
         inputSnapshotJson: { projectId: project.id, opportunityId: opportunity.id },
-        outputJson: { selectedOpportunityId: opportunity.id, name: opportunity.name, score: opportunity.opportunityScore },
-        outputText: `Selected opportunity: ${opportunity.name}`,
+        outputJson: { selectedOpportunityId: opportunity.id, name: opportunity.name, score: opportunity.opportunityScore, status: nextStatus },
+        outputText: `${nextStatus === "confirmed" ? "Confirmed" : "Selected"} opportunity: ${opportunity.name}`,
         status: "completed",
       },
+    });
+    await recordWorkspaceActivity(tx, {
+      context, action: previous && previous.id !== opportunity.id ? "opportunity.selection_changed" : nextStatus === "confirmed" ? "opportunity.direction_confirmed" : "opportunity.selected",
+      entityType: "opportunity", entityId: opportunity.id, agencyClientId: project.agencyClientId, projectId: project.id,
+      previousJson: previous ? { id: previous.id, name: previous.name, status: previous.status } : undefined,
+      nextJson: { id: opportunity.id, name: opportunity.name, status: nextStatus, reason: action.reason ?? null },
+    });
+    if (changingApprovedDirection) await createWorkspaceNotification(tx, {
+      context, userId: context.workspace.ownerUserId, type: "approved_opportunity_changed", title: "Approved project direction changed",
+      body: `${project.name}'s selected opportunity changed after Strategy approval. Refresh Strategy, Keyword Research, and the Execution Plan.`, actionUrl: `/guided-projects/${project.id}`,
+      agencyClientId: project.agencyClientId, projectId: project.id,
     });
     await syncProjectWorkflow(tx, project.id);
   });
@@ -2015,12 +2044,17 @@ guidedProjectsRouter.post("/projects-v2/:projectId/opportunities/:opportunityId/
 
 guidedProjectsRouter.post("/projects-v2/:projectId/opportunities/clear-selection", async (req, res) => {
   await requireRequestPermission(req, "edit_assigned_work");
+  const action = opportunityActionSchema.parse(req.body ?? {});
   const project = await scopedProject(req, req.params.projectId);
   if (!project) return res.status(404).json({ error: "project not found" });
+  const previous = project.opportunities.find((item) => opportunityDecisionStatus(item.status));
+  const strategyApproved = project.strategyPlans.some((strategy) => strategy.status === "approved");
+  if (previous && strategyApproved && !action.confirmation) return res.status(409).json({ error: "Confirm removing the approved project direction.", confirmationRequired: true });
+  const context = await workspaceContext(req);
 
   await prisma.$transaction(async (tx) => {
     await tx.opportunity.updateMany({
-      where: { projectId: project.id, status: "selected" },
+      where: { projectId: project.id, status: { in: ["selected", "confirmed"] } },
       data: { status: "suggested" },
     });
     await tx.aiRun.create({
@@ -2035,11 +2069,49 @@ guidedProjectsRouter.post("/projects-v2/:projectId/opportunities/clear-selection
         status: "completed",
       },
     });
+    if (previous) await recordWorkspaceActivity(tx, { context, action: "opportunity.selection_cleared", entityType: "opportunity", entityId: previous.id, agencyClientId: project.agencyClientId, projectId: project.id, previousJson: { id: previous.id, name: previous.name, status: previous.status }, nextJson: { status: "suggested", reason: action.reason ?? null } });
+    if (previous && strategyApproved) await createWorkspaceNotification(tx, { context, userId: context.workspace.ownerUserId, type: "approved_opportunity_changed", title: "Approved project direction removed", body: `${project.name}'s selected opportunity was removed after Strategy approval. Select or confirm a direction and refresh downstream work.`, actionUrl: `/guided-projects/${project.id}`, agencyClientId: project.agencyClientId, projectId: project.id });
     await syncProjectWorkflow(tx, project.id);
   });
 
   const updated = await scopedProject(req, project.id);
   res.json({ project: updated });
+});
+
+guidedProjectsRouter.post("/projects-v2/:projectId/opportunities/:opportunityId/save", async (req, res) => {
+  await requireRequestPermission(req, "edit_assigned_work");
+  const project = await scopedProject(req, req.params.projectId);
+  if (!project) return res.status(404).json({ error: "project not found" });
+  const opportunity = project.opportunities.find((item) => item.id === req.params.opportunityId);
+  if (!opportunity) return res.status(404).json({ error: "opportunity not found" });
+  if (opportunityDecisionStatus(opportunity.status)) return res.status(409).json({ error: "The active direction cannot be saved for later until another direction is selected." });
+  const context = await workspaceContext(req);
+  await prisma.$transaction(async (tx) => {
+    await tx.opportunity.update({ where: { id: opportunity.id }, data: { status: "saved" } });
+    await recordWorkspaceActivity(tx, { context, action: "opportunity.saved_for_later", entityType: "opportunity", entityId: opportunity.id, agencyClientId: project.agencyClientId, projectId: project.id, previousJson: { status: opportunity.status }, nextJson: { status: "saved" } });
+  });
+  res.json({ project: await scopedProject(req, project.id) });
+});
+
+guidedProjectsRouter.post("/projects-v2/:projectId/opportunities/skip", async (req, res) => {
+  await requireRequestPermission(req, "edit_assigned_work");
+  const action = opportunityActionSchema.parse(req.body ?? {});
+  if (!action.confirmation) return res.status(400).json({ error: "Confirm that the existing project direction should be used." });
+  const project = await scopedProject(req, req.params.projectId);
+  if (!project) return res.status(404).json({ error: "project not found" });
+  const context = await workspaceContext(req);
+  await prisma.$transaction(async (tx) => {
+    await tx.opportunity.updateMany({ where: { projectId: project.id, status: { in: ["selected", "confirmed"] } }, data: { status: "suggested" } });
+    const confirmation = await tx.opportunity.create({ data: {
+      projectId: project.id, name: `${project.name} existing project direction`, targetAudience: project.businessProfile?.targetAudience,
+      problemSolved: "Confirms the existing project direction from intake without forcing a new recommendation.", recommendedOffer: project.businessProfile?.offerSummary,
+      businessModel: project.projectType, opportunityScore: 75, executionScore: 80, userFitScore: 90,
+      summary: `Existing direction confirmed from the project intake, goals, audience, offer, markets, competitors, and website status.${action.reason ? ` Reason: ${action.reason}` : ""}`, status: "confirmed",
+    } });
+    await recordWorkspaceActivity(tx, { context, action: "opportunity.finder_skipped_direction_confirmed", entityType: "opportunity", entityId: confirmation.id, agencyClientId: project.agencyClientId, projectId: project.id, nextJson: { id: confirmation.id, status: "confirmed", reason: action.reason ?? null } });
+    await syncProjectWorkflow(tx, project.id);
+  });
+  res.json({ project: await scopedProject(req, project.id) });
 });
 
 guidedProjectsRouter.post("/projects-v2/:projectId/strategy/generate", async (req, res) => {
@@ -2049,7 +2121,8 @@ guidedProjectsRouter.post("/projects-v2/:projectId/strategy/generate", async (re
   if (!project.businessProfile) return res.status(409).json({ error: "complete intake before generating strategy" });
 
   const ctx = projectContext(project);
-  const selectedOpportunity = project.opportunities.find((opportunity) => opportunity.status === "selected") ?? project.opportunities[0] ?? null;
+  const selectedOpportunity = project.opportunities.find((opportunity) => opportunityDecisionStatus(opportunity.status)) ?? null;
+  if (!selectedOpportunity) return res.status(409).json({ error: "Select an opportunity or confirm the existing project direction before generating Strategy." });
 
   const strategy = await prisma.$transaction(async (tx) => {
     const row = await tx.strategyPlan.create({
