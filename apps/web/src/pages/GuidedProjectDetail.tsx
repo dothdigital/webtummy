@@ -594,6 +594,7 @@ export default function GuidedProjectDetail() {
           {archived && <Card className="border-slate-300 bg-slate-100 p-4 text-sm text-slate-700"><b>Archived project — view only.</b> Restore this project from the Projects page before editing, assigning, approving, generating, publishing, or changing tasks.</Card>}
           {activeTab === "overview" && <>
           {!archived && <ProjectNextActionCard action={nextAction} />}
+          <BusinessProfileCard project={project} preferredOutputs={preferredOutputs} />
 
           <div>
             <Card className="p-4">
@@ -695,7 +696,6 @@ export default function GuidedProjectDetail() {
                 <h2 className="text-lg font-bold text-charcoal-950">Project profile & settings</h2>
                 <p className="mt-1 text-sm text-charcoal-500">Business profile, location, target markets, goals, and Agency Client defaults.</p>
               </div>
-              <BusinessProfileCard project={project} preferredOutputs={preferredOutputs} />
               <div className="grid gap-4 xl:grid-cols-2">
                 <ProjectLocationEditor project={project} onSaved={setProject} />
                 <ProjectGoalsEditor project={project} onSaved={setProject} />
