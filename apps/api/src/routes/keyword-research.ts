@@ -1513,22 +1513,36 @@ async function searchDataRequest(path: string, body: unknown): Promise<SearchDat
   const password = process.env.SEARCH_DATA_PROVIDER_PASSWORD || process.env[`${legacyPrefix}_PASSWORD`];
   const auth = process.env.SEARCH_DATA_PROVIDER_AUTH_BASE64 || process.env[`${legacyPrefix}_AUTH_BASE64`] || (login && password ? Buffer.from(`${login}:${password}`).toString("base64") : null);
   if (!auth) throw new Error("Keyword data provider credentials are not configured.");
-  const response = await fetch(`https://api.${SEARCH_PROVIDER_KEY}.com${path}`, {
-    method: "POST",
-    headers: {
-      authorization: `Basic ${auth}`,
-      "content-type": "application/json",
-      accept: "application/json",
-    },
-    body: JSON.stringify(body),
-  });
-  const payload = await response.json() as SearchDataPayload;
-  if (!response.ok || (payload.status_code && payload.status_code > 40000)) {
-    throw new Error(`Keyword data provider ${path}: ${payload.status_message || `returned ${response.status}`}`);
+  let lastError: Error | null = null;
+  for (let attempt = 1; attempt <= 2; attempt += 1) {
+    try {
+      const response = await fetch(`https://api.${SEARCH_PROVIDER_KEY}.com${path}`, {
+        method: "POST",
+        headers: {
+          authorization: `Basic ${auth}`,
+          "content-type": "application/json",
+          accept: "application/json",
+        },
+        body: JSON.stringify(body),
+      });
+      const payload = await response.json() as SearchDataPayload;
+      if (!response.ok || (payload.status_code && payload.status_code > 40000)) {
+        throw new Error(`Keyword data provider ${path}: ${payload.status_message || `returned ${response.status}`}`);
+      }
+      const taskError = payload.tasks?.find((task) => task.status_code && task.status_code > 40000);
+      if (taskError) throw new Error(`Keyword data provider ${path}: ${taskError.status_message || "task failed."}`);
+      return payload;
+    } catch (error) {
+      lastError = error instanceof Error ? error : new Error("Keyword data provider request failed.");
+      if (attempt === 2 || !retryableSearchProviderError(lastError.message)) throw lastError;
+      await new Promise((resolve) => setTimeout(resolve, 350));
+    }
   }
-  const taskError = payload.tasks?.find((task) => task.status_code && task.status_code > 40000);
-  if (taskError) throw new Error(`Keyword data provider ${path}: ${taskError.status_message || "task failed."}`);
-  return payload;
+  throw lastError ?? new Error("Keyword data provider request failed.");
+}
+
+export function retryableSearchProviderError(message: string) {
+  return /internal se server error|internal server error|temporar|timeout|timed out|rate limit|too many requests|returned 5\d\d|fetch failed|network/i.test(message);
 }
 
 async function fetchKeywordIdeas(keyword: string, location: SearchLocation, languageCode: string, limit: number): Promise<KeywordIdeaInput[]> {
@@ -1562,15 +1576,28 @@ function keywordIdeaSeeds(keyword: string): string[] {
 }
 
 async function fetchSerpResults(keyword: string, location: SearchLocation, languageCode: string, device: "desktop" | "mobile", depth: number): Promise<SerpResultInput[]> {
-  const payload = await searchDataRequest("/v3/serp/google/organic/live/advanced", [{
+  const request = (target: SearchLocation) => searchDataRequest("/v3/serp/google/organic/live/advanced", [{
     keyword,
-    ...location.serp,
+    ...target.serp,
     language_code: languageCode,
     device,
     os: device === "mobile" ? "android" : "windows",
     depth,
-    ...(googleSearchDomain(location.displayName) ? { se_domain: googleSearchDomain(location.displayName) } : {}),
+    ...(googleSearchDomain(target.displayName) ? { se_domain: googleSearchDomain(target.displayName) } : {}),
   }]);
+  let payload: SearchDataPayload;
+  try {
+    payload = await request(location);
+  } catch (error) {
+    const countryFallback = location.locationType === "City" && location.countryIsoCode === "CA"
+      ? countryLocation("Canada", 2124, "CA")
+      : location.locationType === "City" && location.countryIsoCode === "US"
+        ? countryLocation("United States", 2840, "US")
+        : null;
+    if (!countryFallback || !retryableSearchProviderError(error instanceof Error ? error.message : "")) throw error;
+    // Keep the city in the keyword while broadening only the provider's SERP location.
+    payload = await request(countryFallback);
+  }
   const items = extractSearchDataItems(payload);
   return items
     .map(parseSerpResult)
