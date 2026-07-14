@@ -117,7 +117,6 @@ function BusinessProfileCard({ project, preferredOutputs }: { project: GuidedPro
     ["Target markets", Array.isArray(project.targetLocations) ? project.targetLocations.join(", ") || "Not set" : project.targetLocation ?? "Not set"],
     ["Primary goal", project.primaryGoal ?? "Not set"],
     ["Secondary goals", Array.isArray(project.secondaryGoals) ? project.secondaryGoals.join(", ") || "None" : "None"],
-    ["Publishing", project.preferredPublishingMethod ?? "Not set"],
   ] as const;
   const audienceSegments = splitList(profile?.targetAudience).slice(0, 3);
   const offerSegments = splitList(profile?.offerSummary).slice(0, 3);
