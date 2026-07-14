@@ -44,6 +44,9 @@ describe("DEV-002 Agency → Clients → Projects", () => {
     expect(clientViewerRouteAllowed("GET", "/api/workspace")).toBe(true);
     expect(clientViewerRouteAllowed("GET", "/api/agency/clients/client-1/dashboard")).toBe(true);
     expect(clientViewerRouteAllowed("POST", "/api/agency/tasks/task-1/decision")).toBe(true);
+    expect(clientViewerRouteAllowed("GET", "/api/project-reports?projectId=project-1")).toBe(true);
+    expect(clientViewerRouteAllowed("POST", "/api/project-reports/generate")).toBe(false);
+    expect(clientViewerRouteAllowed("PATCH", "/api/notification-preferences")).toBe(true);
     expect(clientViewerRouteAllowed("GET", "/api/projects-v2")).toBe(false);
   });
 });

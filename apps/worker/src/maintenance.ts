@@ -472,6 +472,81 @@ export async function taskDeadlineNotifications() {
   });
 }
 
+export async function workspaceNotificationEmailDelivery(now = new Date()) {
+  return runLogged("workspace_notification_email_delivery", async () => {
+    const notifications = await prisma.workspaceNotification.findMany({
+      where: { emailEligible: true, emailStatus: "pending" }, orderBy: { createdAt: "asc" }, take: 500,
+      include: { user: { select: { email: true, workspaceMemberships: { where: { status: "active" }, select: { workspaceId: true, permissionOverrides: true } } } } },
+    });
+    const groups = new Map<string, typeof notifications>();
+    for (const notification of notifications) groups.set(notification.userId, [...(groups.get(notification.userId) ?? []), notification]);
+    let sent = 0; let deferred = 0; let failed = 0;
+    for (const items of groups.values()) {
+      const recipient = items[0].user;
+      const membership = recipient.workspaceMemberships.find((item) => item.workspaceId === items[0].workspaceId);
+      const overrides = membership?.permissionOverrides && typeof membership.permissionOverrides === "object" && !Array.isArray(membership.permissionOverrides) ? membership.permissionOverrides as { notificationPreferences?: unknown } : {};
+      const preferences = overrides.notificationPreferences && typeof overrides.notificationPreferences === "object" && !Array.isArray(overrides.notificationPreferences) ? overrides.notificationPreferences as { emailFrequency?: unknown } : {};
+      const frequency = ["immediate", "daily", "weekly", "monthly"].includes(String(preferences.emailFrequency)) ? String(preferences.emailFrequency) : "daily";
+      const critical = items.filter((item) => /security|integration.*(failed|disconnected)|publishing_failed|critical/.test(item.type));
+      const routine = items.filter((item) => !critical.includes(item));
+      const batches: (typeof notifications)[] = critical.map((item) => [item]);
+      const ageRequired = frequency === "daily" ? DAY_MS : frequency === "weekly" ? 7 * DAY_MS : frequency === "monthly" ? 30 * DAY_MS : 0;
+      const readyRoutine = routine.filter((item) => now.getTime() - item.createdAt.getTime() >= ageRequired);
+      if (readyRoutine.length) batches.push(readyRoutine);
+      deferred += routine.length - readyRoutine.length;
+      for (const batch of batches) {
+        const lines = batch.map((item) => `${item.title}: ${item.body}`);
+        try {
+          await sendMail({ to: recipient.email, subject: batch.length > 1 ? `${batch.length} SEnuke AI project updates` : batch[0].title, text: lines.join("\n\n"), html: `<p>${lines.map((line) => line.replace(/&/g, "&amp;").replace(/</g, "&lt;")).join("</p><p>")}</p><p><a href="${appLink(batch[0].actionUrl || "/")}">Open SEnuke AI</a></p>` });
+          await prisma.workspaceNotification.updateMany({ where: { id: { in: batch.map((item) => item.id) } }, data: { emailStatus: "sent" } });
+          sent += batch.length;
+        } catch (error) {
+          await prisma.workspaceNotification.updateMany({ where: { id: { in: batch.map((item) => item.id) } }, data: { emailStatus: "failed" } });
+          failed += batch.length;
+          console.error("[maintenance] workspace notification email failed", error);
+        }
+      }
+    }
+    return { checked: notifications.length, sent, deferred, failed };
+  });
+}
+
+export async function scheduledProjectReportGeneration(now = new Date()) {
+  return runLogged("scheduled_project_report_generation", async () => {
+    const workspaces = await prisma.workspace.findMany({ where: { status: "active" }, select: { id: true, workspaceType: true, ownerUserId: true, settingsJson: true } });
+    let generated = 0; let delivered = 0;
+    for (const workspace of workspaces) {
+      const settings = workspace.settingsJson && typeof workspace.settingsJson === "object" && !Array.isArray(workspace.settingsJson) ? workspace.settingsJson as { reportSchedules?: unknown } : {};
+      const schedules = Array.isArray(settings.reportSchedules) ? settings.reportSchedules : [];
+      for (const raw of schedules) {
+        if (!raw || typeof raw !== "object") continue;
+        const schedule = raw as { projectId?: unknown; reportType?: unknown; frequency?: unknown; automaticClientDelivery?: unknown };
+        if (typeof schedule.projectId !== "string" || typeof schedule.reportType !== "string" || !["weekly", "monthly", "milestone"].includes(String(schedule.frequency))) continue;
+        const project = await prisma.project.findFirst({ where: { id: schedule.projectId }, include: { agencyClient: { select: { id: true, name: true, memberAssignments: { include: { membership: { include: { user: { select: { id: true } }, roles: true } } } } } }, executionTasks: { select: { title: true, status: true, completedAt: true, publishedAt: true, approvedAt: true } } } });
+        if (!project) continue;
+        const latest = await prisma.gapReportExport.findFirst({ where: { projectId: project.id, reportType: schedule.reportType }, orderBy: { createdAt: "desc" }, select: { createdAt: true } });
+        const interval = schedule.frequency === "weekly" ? 7 * DAY_MS : schedule.frequency === "monthly" ? 30 * DAY_MS : 0;
+        const due = !latest || (schedule.frequency === "milestone" ? project.updatedAt > latest.createdAt : now.getTime() - latest.createdAt.getTime() >= interval);
+        if (!due) continue;
+        const automatic = workspace.workspaceType === "agency" && schedule.automaticClientDelivery === true;
+        const completed = project.executionTasks.filter((task) => task.completedAt || task.status === "completed");
+        const published = project.executionTasks.filter((task) => task.publishedAt || task.status === "published");
+        const awaitingApproval = project.executionTasks.filter((task) => !task.approvedAt && /approval/.test(task.status));
+        const report = await prisma.gapReportExport.create({ data: { projectId: project.id, clientId: project.clientId, reportType: schedule.reportType, clientName: project.agencyClient?.name ?? project.businessName ?? project.name, approvalStatus: workspace.workspaceType === "agency" && !automatic ? "needs_review" : "approved", exportFormat: "secure_link", status: "ready", completedAt: now, clientVisible: automatic, sentToClientAt: automatic ? now : null, contentJson: { title: `${project.name} ${String(schedule.reportType).replace(/_/g, " ")}`, generatedAt: now.toISOString(), frequency: schedule.frequency, project: { id: project.id, name: project.name }, execution: { completed: completed.map((task) => task.title), published: published.map((task) => task.title), awaitingApproval: awaitingApproval.map((task) => task.title) }, clientSafe: automatic } } });
+        await prisma.workspaceNotification.create({ data: { workspaceId: workspace.id, userId: workspace.ownerUserId, agencyClientId: project.agencyClientId, projectId: project.id, type: "report_ready", title: "Scheduled report ready", body: `${project.name}'s ${String(schedule.reportType).replace(/_/g, " ")} is ready${automatic ? " and was shared automatically" : " for review"}.`, actionUrl: `/reports?projectId=${project.id}`, emailEligible: true, emailStatus: "pending" } });
+        if (automatic && project.agencyClient) {
+          const clientViewers = project.agencyClient.memberAssignments.filter((assignment) => assignment.membership.roles.length === 1 && assignment.membership.roles[0].role === "client_viewer");
+          for (const viewer of clientViewers) await prisma.workspaceNotification.create({ data: { workspaceId: workspace.id, userId: viewer.membership.user.id, agencyClientId: project.agencyClientId, projectId: project.id, type: "report_sent", title: "New client report", body: `${project.name}'s report is ready.`, actionUrl: `/reports?projectId=${project.id}`, emailEligible: true, emailStatus: "pending" } });
+          delivered += 1;
+        }
+        generated += 1;
+        void report;
+      }
+    }
+    return { generated, delivered };
+  });
+}
+
 let running = false;
 
 export async function runMaintenanceSuite() {
@@ -485,6 +560,8 @@ export async function runMaintenanceSuite() {
     await weeklyRankingReportGeneration();
     await monthlyClientReportGeneration();
     await taskDeadlineNotifications();
+    await scheduledProjectReportGeneration();
+    await workspaceNotificationEmailDelivery();
   } finally {
     running = false;
   }

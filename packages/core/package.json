@@ -7,7 +7,8 @@
   "exports": {
     ".": "./src/index.ts",
     "./project-goals": "./src/projectGoals.ts",
-    "./workspace-permissions": "./src/workspacePermissions.ts"
+    "./workspace-permissions": "./src/workspacePermissions.ts",
+    "./reporting": "./src/reporting.ts"
   },
   "dependencies": {
     "cheerio": "^1.0.0"

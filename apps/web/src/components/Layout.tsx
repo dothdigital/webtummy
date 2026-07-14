@@ -35,7 +35,7 @@ const nav = [
   { to: "/social-strategy", label: "Social", icon: "social", permission: "publish" },
   { to: "/admin", label: "Admin Management", icon: "users", superOnly: true },
   { to: "/admin/automation", label: "Automation Center", icon: "plans", superOnly: true },
-  { to: "/keyword-insights", label: "Reports", icon: "audits", permission: "view_reports" },
+  { to: "/reports", label: "Reports", icon: "audits", permission: "view_reports" },
   { to: "/billing", label: "Billing", icon: "billing", permission: "billing" },
 ] satisfies {
   to: string;
@@ -732,7 +732,7 @@ export default function Layout({ children }: { children: ReactNode }) {
   const items = nav.filter((n) => {
     if (n.superOnly) return user?.role === "super_admin";
     if (n.permission && user?.role !== "super_admin" && workspacePermissions[n.permission] !== true) return false;
-    if (clientViewerOnly) return n.to === "/workspace";
+    if (clientViewerOnly) return n.to === "/workspace" || n.to === "/reports";
     if (n.to === "/billing") return user?.role === "super_admin" || primaryRole === "admin";
     if (n.to === "/workspace") return primaryRole === "admin" || primaryRole === "manager";
     return true;

@@ -257,6 +257,28 @@ export async function createWorkspaceNotification(tx: Prisma.TransactionClient, 
   projectId?: string | null;
   emailEligible?: boolean;
 }) {
+  const recipient = await tx.workspaceMembership.findUnique({ where: { workspaceId_userId: { workspaceId: input.context.workspace.id, userId: input.userId } }, include: { roles: { select: { role: true } } } });
+  if (!recipient || recipient.status !== "active") return null;
+  const recipientRoles = recipient.roles.map((item) => item.role);
+  const clientViewerOnly = recipientRoles.length === 1 && recipientRoles[0] === "client_viewer";
+  const clientSafeTypes = new Set(["report_sent", "approval_requested_client", "publishing_completed", "major_milestone", "performance_change", "client_feedback_requested"]);
+  if (clientViewerOnly && !clientSafeTypes.has(input.type)) return null;
+  if (input.projectId && !recipientRoles.some((role) => role === "owner" || role === "admin")) {
+    const accessible = await tx.project.findFirst({ where: { id: input.projectId, OR: [
+      { memberAssignments: { some: { membershipId: recipient.id } } },
+      { teamAssignments: { some: { team: { members: { some: { membershipId: recipient.id } } } } } },
+      { executionTasks: { some: { OR: [{ assigneeMembershipId: recipient.id }, { managerMembershipId: recipient.id }, { approverMembershipId: recipient.id }] } } },
+      { agencyClient: { memberAssignments: { some: { membershipId: recipient.id } } } },
+      { agencyClient: { teamAssignments: { some: { team: { members: { some: { membershipId: recipient.id } } } } } } },
+    ] }, select: { id: true } });
+    if (!accessible) return null;
+  }
+  const overrides = recipient.permissionOverrides && typeof recipient.permissionOverrides === "object" ? recipient.permissionOverrides as { notificationPreferences?: unknown } : {};
+  const preferences = overrides.notificationPreferences && typeof overrides.notificationPreferences === "object" ? overrides.notificationPreferences as { nonCriticalEmail?: unknown; reportEmails?: unknown } : {};
+  const critical = /security|integration.*(failed|disconnected)|publishing_failed|critical/.test(input.type);
+  const reportNotification = /report/.test(input.type);
+  const preferenceAllowsEmail = critical || (preferences.nonCriticalEmail !== false && (!reportNotification || preferences.reportEmails !== false));
+  const emailEligible = input.emailEligible === false ? false : preferenceAllowsEmail;
   return tx.workspaceNotification.create({
     data: {
       workspaceId: input.context.workspace.id,
@@ -267,7 +289,8 @@ export async function createWorkspaceNotification(tx: Prisma.TransactionClient, 
       actionUrl: input.actionUrl ?? null,
       agencyClientId: input.agencyClientId ?? null,
       projectId: input.projectId ?? null,
-      emailEligible: input.emailEligible ?? true,
+      emailEligible,
+      emailStatus: emailEligible ? "pending" : "disabled",
     },
   });
 }

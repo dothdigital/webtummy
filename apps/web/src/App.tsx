@@ -37,6 +37,7 @@ import AgencyWorkspace from "./pages/AgencyWorkspace.js";
 import AcceptInvitation from "./pages/AcceptInvitation.js";
 import AgencyClientDashboard from "./pages/AgencyClientDashboard.js";
 import Welcome from "./pages/Welcome.js";
+import ProjectReports from "./pages/ProjectReports.js";
 
 function KeywordAnalyticsDetailRedirect() {
   const { id } = useParams();
@@ -101,7 +102,7 @@ function Shell() {
   const workspaceRole = user.workspace?.primaryRole;
   const landingPath = user.workspace?.landingPath ?? "/";
   if (location.pathname === "/login") return <Navigate to={landingPath} replace />;
-  if (workspaceRole === "client_viewer" && location.pathname !== "/workspace" && !location.pathname.startsWith("/agency/clients/")) return <Navigate to="/workspace" replace />;
+  if (workspaceRole === "client_viewer" && location.pathname !== "/workspace" && location.pathname !== "/reports" && !location.pathname.startsWith("/agency/clients/")) return <Navigate to="/workspace" replace />;
 
   const welcomeEligible = Boolean(user.workspace && user.workspace.primaryRole === "admin" && user.workspace.onboardingRequired);
   const showWelcome = welcomeEligible && welcomePending(user.id, user.workspace?.id);
@@ -139,6 +140,7 @@ function Shell() {
         <Route path="/keyword-analytics" element={<KeywordResearch />} />
         <Route path="/keyword-analytics/:id" element={<KeywordAnalyticsDetailRedirect />} />
         <Route path="/keyword-insights" element={<PermissionRoute permission="view_reports"><KeywordReports /></PermissionRoute>} />
+        <Route path="/reports" element={<PermissionRoute permission="view_reports"><ProjectReports /></PermissionRoute>} />
         <Route path="/social-strategy" element={<PermissionRoute permission="publish"><SocialStrategy /></PermissionRoute>} />
         <Route path="/growth" element={<PermissionRoute permission="run_ai_analysis"><GrowthEngine /></PermissionRoute>} />
         <Route path="/gap-analysis" element={<PermissionRoute permission="run_ai_analysis"><GapAnalysis /></PermissionRoute>} />

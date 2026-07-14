@@ -23,6 +23,7 @@ import { usageRouter } from "./routes/usage.js";
 import { competitiveIntelligenceRouter } from "./routes/competitive-intelligence.js";
 import { gapAnalysisRouter } from "./routes/gap-analysis.js";
 import { agencyWorkspaceRouter } from "./routes/agency-workspace.js";
+import { projectReportsRouter } from "./routes/project-reports.js";
 import { rawBodySaver } from "./billing.js";
 import { enforceArchivedReadOnly, enforceWorkspacePermissions, requireAuth } from "./middleware.js";
 
@@ -115,6 +116,7 @@ app.use("/api", usageRouter);
 app.use("/api", competitiveIntelligenceRouter);
 app.use("/api", gapAnalysisRouter);
 app.use("/api", agencyWorkspaceRouter);
+app.use("/api", projectReportsRouter);
 app.use("/api/websites", websitesRouter);
 app.use("/api", crawlsRouter); // crawls routes carry their own full paths
 app.use("/api", overviewRouter);
