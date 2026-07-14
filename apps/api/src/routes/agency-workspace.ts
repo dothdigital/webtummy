@@ -848,12 +848,17 @@ agencyWorkspaceRouter.post("/agency/tasks/:taskId/submit", (req, res) => handle(
   const body = taskSubmitSchema.parse(req.body);
   const blocked = task.dependencies.filter((dependency) => !["completed", "published", "approved"].includes(dependency.requiredTask.status));
   if (blocked.length) throw Object.assign(new Error(`Complete dependencies first: ${blocked.map((dependency) => dependency.requiredTask.title).join(", ")}`), { statusCode: 409 });
+  const fallbackApprovers = task.approver?.userId ? [] : await prisma.workspaceMembership.findMany({
+    where: { workspaceId: context.workspace.id, status: "active", roles: { some: { role: { in: ["owner", "admin", "manager", "approver"] } } } },
+    select: { userId: true },
+  });
   return prisma.$transaction(async (tx) => {
     const updated = await tx.executionTask.update({ where: { id: task.id }, data: { status: "submitted_for_approval", submittedAt: new Date(), approvalDecision: null, approvalNotes: body.notes } });
     await recordWorkspaceActivity(tx, { context, action: "approval.requested", entityType: "execution_task", entityId: task.id, agencyClientId: task.project!.agencyClientId, projectId: task.projectId, nextJson: { status: "submitted_for_approval" } });
-    if (task.approver?.userId) await createWorkspaceNotification(tx, {
-      context, userId: task.approver.userId, type: "approval_requested", title: "Approval requested",
-      body: `${task.title} is ready for your review.`, actionUrl: task.relatedUrl ?? `/guided-projects/${task.projectId}`,
+    const approverUserIds = [...new Set([task.approver?.userId, ...fallbackApprovers.map((member) => member.userId)].filter((id): id is string => Boolean(id)))];
+    for (const userId of approverUserIds) await createWorkspaceNotification(tx, {
+      context, userId, type: "approval_requested", title: "Approval requested",
+      body: `${task.title} is ready for your review.`, actionUrl: `/approvals?projectId=${task.projectId}`,
       agencyClientId: task.project!.agencyClientId, projectId: task.projectId,
     });
     return { task: updated };

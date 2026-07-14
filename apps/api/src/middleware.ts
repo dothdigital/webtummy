@@ -60,6 +60,7 @@ export function permissionForWorkspaceRequest(method: string, rawPath: string) {
   if (/integrations?|connect\/(facebook|instagram)|wordpress\/connect/.test(path)) return "manage_integrations";
   if (/invitations?|memberships?|\/users(?:\/|$)/.test(path)) return "manage_users";
   if (/notification-preferences/.test(path)) return "view_notifications";
+  if (/approval-policy/.test(path)) return "edit_project_settings";
   if (/publish|schedule|post-now|send-to-client/.test(path)) return "publish";
   if (/approve|decision/.test(path)) return "approve";
   if (/\/archive\/?$|\/restore\/?$/.test(path) || (method.toUpperCase() === "DELETE" && /^\/projects-v2\/[^/]+\/?$/.test(path))) return "manage_projects";

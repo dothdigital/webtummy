@@ -38,6 +38,7 @@ import AcceptInvitation from "./pages/AcceptInvitation.js";
 import AgencyClientDashboard from "./pages/AgencyClientDashboard.js";
 import Welcome from "./pages/Welcome.js";
 import ProjectReports from "./pages/ProjectReports.js";
+import Approvals from "./pages/Approvals.js";
 
 function KeywordAnalyticsDetailRedirect() {
   const { id } = useParams();
@@ -141,6 +142,7 @@ function Shell() {
         <Route path="/keyword-analytics/:id" element={<KeywordAnalyticsDetailRedirect />} />
         <Route path="/keyword-insights" element={<PermissionRoute permission="view_reports"><KeywordReports /></PermissionRoute>} />
         <Route path="/reports" element={<PermissionRoute permission="view_reports"><ProjectReports /></PermissionRoute>} />
+        <Route path="/approvals" element={<PermissionRoute permission="approve"><Approvals /></PermissionRoute>} />
         <Route path="/social-strategy" element={<PermissionRoute permission="publish"><SocialStrategy /></PermissionRoute>} />
         <Route path="/growth" element={<PermissionRoute permission="run_ai_analysis"><GrowthEngine /></PermissionRoute>} />
         <Route path="/gap-analysis" element={<PermissionRoute permission="run_ai_analysis"><GapAnalysis /></PermissionRoute>} />

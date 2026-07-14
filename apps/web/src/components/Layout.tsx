@@ -36,6 +36,7 @@ const nav = [
   { to: "/admin", label: "Admin Management", icon: "users", superOnly: true },
   { to: "/admin/automation", label: "Automation Center", icon: "plans", superOnly: true },
   { to: "/reports", label: "Reports", icon: "audits", permission: "view_reports" },
+  { to: "/approvals", label: "Approvals", icon: "plans", permission: "approve" },
   { to: "/billing", label: "Billing", icon: "billing", permission: "billing" },
 ] satisfies {
   to: string;

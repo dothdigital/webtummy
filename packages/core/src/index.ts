@@ -11,3 +11,4 @@ export * from "./localSeo.js";
 export * from "./projectGoals.js";
 export * from "./workspacePermissions.js";
 export * from "./reporting.js";
+export * from "./approvals.js";

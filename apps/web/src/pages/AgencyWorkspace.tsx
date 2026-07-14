@@ -267,7 +267,7 @@ export default function AgencyWorkspace() {
       <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-5">{[
         { title: isAgency ? "Clients" : "Teams", value: isAgency ? data.summary.clients : data.teams.length, href: isAgency ? "/workspace?tab=clients" : "/workspace?tab=teams" },
         { title: "Active projects", value: data.summary.activeProjects, href: "/projects" },
-        { title: "Pending approvals", value: data.summary.pendingApprovals, href: "/workspace?tab=approvals" },
+        { title: "Pending approvals", value: data.summary.pendingApprovals, href: "/approvals" },
         { title: "Overdue tasks", value: data.summary.overdueTasks, href: "/workspace?tab=dashboard#client-project-actions" },
         { title: "Reports ready", value: data.summary.reportsReady, href: "/workspace?tab=clients" },
       ].map((item) => <Link key={item.title} to={item.href} className="group block"><Card className="h-full p-5 transition group-hover:border-brand-300 group-hover:shadow-sm"><div className="text-xs font-bold uppercase text-slate-500">{item.title}</div><div className="mt-2 flex items-end justify-between"><div className="text-3xl font-bold">{item.value}</div><span className="text-sm font-bold text-brand-600">View →</span></div></Card></Link>)}</div>
