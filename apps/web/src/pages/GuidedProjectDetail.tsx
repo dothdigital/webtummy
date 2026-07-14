@@ -127,7 +127,7 @@ function BusinessProfileCard({ project }: { project: GuidedProject }) {
               <div className="mt-1 text-sm font-bold leading-5 text-brand-900">{project.niche ?? "Not set"}</div>
             </div>
           </div>
-          <div className="mt-3 grid gap-3">
+          <div className="mt-3 grid gap-3 md:grid-cols-2">
             <CompactProfileBlock label="Audience" items={audienceSegments} empty="Audience not set" />
             <CompactProfileBlock label="Offer" items={offerSegments} empty="Offer not set" />
           </div>
