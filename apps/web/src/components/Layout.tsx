@@ -37,7 +37,6 @@ const nav = [
   { to: "/admin/automation", label: "Automation Center", icon: "plans", superOnly: true },
   { to: "/reports", label: "Reports", icon: "audits", permission: "view_reports" },
   { to: "/approvals", label: "Approvals", icon: "plans", permission: "approve" },
-  { to: "/workspace?tab=notifications", label: "Notifications", icon: "notifications", permission: "view_notifications" },
   { to: "/billing", label: "Billing", icon: "billing", permission: "billing" },
 ] satisfies {
   to: string;
@@ -845,9 +844,10 @@ export default function Layout({ children }: { children: ReactNode }) {
           <div className="mt-2 text-xs leading-5 text-slate-500">AI credits and project activity update as tasks run.</div>
         </div>
         <div className="border-t border-slate-200 p-4">
-          <div className="grid grid-cols-[40px_1fr] gap-2">
-            <button type="button" aria-label="Help" onClick={() => setHelpOpen(true)} className="flex h-10 items-center justify-center rounded-lg border border-slate-200 bg-white font-bold text-slate-500 hover:bg-slate-50">?</button>
-            <button type="button" onClick={() => { logout(); navigate("/"); }} className="h-10 rounded-lg border border-slate-200 bg-white px-3 text-sm font-bold text-slate-700 hover:bg-slate-50">Sign out</button>
+          <div className="grid grid-cols-3 gap-2">
+            <button type="button" aria-label="Help" title="Help" onClick={() => setHelpOpen(true)} className="flex h-10 items-center justify-center rounded-lg border border-slate-200 bg-white font-bold text-slate-500 hover:bg-slate-50">?</button>
+            {workspacePermissions.view_notifications === true && <Link to="/workspace?tab=notifications" aria-label={unreadNotifications ? `${unreadNotifications} unread notifications` : "Notifications"} title="Notifications" className="relative flex h-10 items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-500 hover:border-brand-300 hover:text-brand-700"><NavGlyph icon="notifications" />{unreadNotifications > 0 && <span className="absolute -right-1.5 -top-1.5 flex min-h-5 min-w-5 items-center justify-center rounded-full border-2 border-slate-100 bg-red-600 px-1 text-[10px] font-bold text-white">{unreadNotifications > 99 ? "99+" : unreadNotifications}</span>}</Link>}
+            <button type="button" aria-label="Sign out" title="Sign out" onClick={() => { logout(); navigate("/"); }} className="flex h-10 items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-500 hover:border-red-200 hover:text-red-600"><svg viewBox="0 0 24 24" aria-hidden="true" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M10 17l5-5-5-5" /><path d="M15 12H3" /><path d="M14 3h5a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-5" /></svg></button>
           </div>
         </div>
       </aside>
@@ -857,9 +857,6 @@ export default function Layout({ children }: { children: ReactNode }) {
       {/* Main */}
       <div className="flex min-w-0 flex-1 flex-col lg:ml-56">
         <button type="button" aria-label="Open navigation" className="fixed left-3 top-3 z-20 rounded-lg border border-slate-200 bg-white p-2 shadow-sm hover:bg-charcoal-50 lg:hidden" onClick={() => setOpen(true)}>☰</button>
-        {workspacePermissions.view_notifications === true && <div className="sticky top-0 z-10 flex h-14 items-center justify-end border-b border-slate-200 bg-white/95 px-4 backdrop-blur lg:px-8">
-          <Link to="/workspace?tab=notifications" aria-label={unreadNotifications ? `${unreadNotifications} unread notifications` : "Notifications"} className="relative flex h-10 w-10 items-center justify-center rounded-full border border-slate-200 bg-white text-slate-600 hover:border-brand-300 hover:text-brand-700"><NavGlyph icon="notifications" />{unreadNotifications > 0 && <span className="absolute -right-1 -top-1 flex min-h-5 min-w-5 items-center justify-center rounded-full border-2 border-white bg-red-600 px-1 text-[10px] font-bold text-white">{unreadNotifications > 99 ? "99+" : unreadNotifications}</span>}</Link>
-        </div>}
         {billingStatus?.status === "trialing" && billingStatus.hasAccess && (
           <div className="border-b border-amber-300 bg-amber-300 px-4 py-3 text-sm text-amber-950 shadow-sm lg:px-8">
             <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
@@ -923,7 +920,7 @@ export default function Layout({ children }: { children: ReactNode }) {
             </div>
           </section>
         )}
-        <main className={`min-w-0 flex-1 overflow-x-hidden px-4 pb-4 lg:p-8 ${workspacePermissions.view_notifications === true ? "pt-4" : "pt-16"}`}>{children}</main>
+        <main className="min-w-0 flex-1 overflow-x-hidden px-4 pb-4 pt-16 lg:p-8">{children}</main>
         <Footer />
       </div>
       <GlobalHelpDrawer content={getHelpContent(location.pathname)} open={helpOpen} onClose={() => setHelpOpen(false)} />
