@@ -182,7 +182,7 @@ function ProjectLocationEditor({ project, onSaved }: { project: GuidedProject; o
     finally { setBusy(false); }
   };
   return <Card className="p-4">
-    <div className="flex flex-wrap items-center justify-between gap-3"><div><h3 className="font-bold text-charcoal-950">Business Location & Target Markets</h3><p className="mt-1 text-sm text-charcoal-500">Business identity and campaign targeting remain separate.</p></div><button type="button" onClick={() => setEditing(!editing)} className="rounded-lg border border-brand-200 px-3 py-2 text-sm font-bold text-brand-700 hover:bg-brand-50">{editing ? "Cancel" : "Edit locations"}</button></div>
+    <div className="flex flex-wrap items-center justify-between gap-3"><div><h3 className="font-bold text-charcoal-950">Business Location & Target Markets</h3><p className="mt-1 text-sm text-charcoal-500">Business identity and campaign targeting remain separate.</p></div><button type="button" onClick={() => setEditing(!editing)} className="rounded-lg bg-brand-600 px-3 py-2 text-sm font-bold text-white hover:bg-brand-700">{editing ? "Cancel" : "Edit locations"}</button></div>
     {message && <p className="mt-3 rounded-lg bg-amber-50 p-3 text-sm text-amber-900">{message}</p>}
     {editing && <div className="mt-4 grid gap-4 md:grid-cols-2">
       <BusinessLocationTargetMarkets value={{ country: form.country, stateProvince: form.stateProvince, city: form.city, streetAddress: form.streetAddress, postalCode: form.postalCode, targetMarkets: form.targetMarkets }} onChange={(value) => patch({ country: value.country, stateProvince: value.stateProvince, city: value.city, streetAddress: value.streetAddress, postalCode: value.postalCode, targetMarkets: value.targetMarkets })} />
@@ -210,7 +210,7 @@ function ProjectGoalsEditor({ project, onSaved }: { project: GuidedProject; onSa
     } catch (error) { setMessage(error instanceof Error ? error.message : "Could not update goals"); }
     finally { setBusy(false); }
   };
-  return <Card className="p-4"><div className="flex flex-wrap items-center justify-between gap-3"><div><h3 className="font-bold text-charcoal-950">Primary & Secondary Goals</h3><p className="mt-1 text-sm text-charcoal-500">One primary objective with optional supporting outcomes.</p></div><button type="button" onClick={() => setEditing(!editing)} className="rounded-lg border border-brand-200 px-3 py-2 text-sm font-bold text-brand-700 hover:bg-brand-50">{editing ? "Cancel" : "Edit goals"}</button></div>{message && <p className="mt-3 rounded-lg bg-amber-50 p-3 text-sm text-amber-900">{message}</p>}{editing && <div className="mt-4 space-y-4"><ProjectGoals workspaceType={project.agencyClientId ? "agency" : "business"} primaryGoal={primaryGoal} secondaryGoals={secondaryGoals} onChange={(value) => { setPrimaryGoal(value.primaryGoal); setSecondaryGoals(value.secondaryGoals); }} /><label className="block"><span className="text-sm font-bold">Reason for change (optional)</span><textarea value={reason} onChange={(event) => setReason(event.target.value)} rows={3} className="mt-1 w-full rounded-lg border p-3 text-sm" placeholder="Why are these goals changing?" /></label><Button type="button" disabled={busy || !primaryGoal} onClick={() => void save()}>{busy ? "Saving…" : "Save goals"}</Button></div>}</Card>;
+  return <Card className="p-4"><div className="flex flex-wrap items-center justify-between gap-3"><div><h3 className="font-bold text-charcoal-950">Primary & Secondary Goals</h3><p className="mt-1 text-sm text-charcoal-500">One primary objective with optional supporting outcomes.</p></div><button type="button" onClick={() => setEditing(!editing)} className="rounded-lg bg-brand-600 px-3 py-2 text-sm font-bold text-white hover:bg-brand-700">{editing ? "Cancel" : "Edit goals"}</button></div>{message && <p className="mt-3 rounded-lg bg-amber-50 p-3 text-sm text-amber-900">{message}</p>}{editing && <div className="mt-4 space-y-4"><ProjectGoals workspaceType={project.agencyClientId ? "agency" : "business"} primaryGoal={primaryGoal} secondaryGoals={secondaryGoals} onChange={(value) => { setPrimaryGoal(value.primaryGoal); setSecondaryGoals(value.secondaryGoals); }} /><label className="block"><span className="text-sm font-bold">Reason for change (optional)</span><textarea value={reason} onChange={(event) => setReason(event.target.value)} rows={3} className="mt-1 w-full rounded-lg border p-3 text-sm" placeholder="Why are these goals changing?" /></label><Button type="button" disabled={busy || !primaryGoal} onClick={() => void save()}>{busy ? "Saving…" : "Save goals"}</Button></div>}</Card>;
 }
 
 function splitList(value?: string | null) {
@@ -558,16 +558,16 @@ export default function GuidedProjectDetail() {
                 {project.website && (
                   <Link
                     to={`/website-projects/${project.website.id}`}
-                    className="inline-flex min-h-9 flex-col justify-center rounded-lg border border-charcoal-200 bg-white px-3 py-1.5 text-sm shadow-sm hover:bg-charcoal-50"
+                    className="inline-flex min-h-9 flex-col justify-center rounded-lg bg-brand-600 px-3 py-1.5 text-sm text-white shadow-sm hover:bg-brand-700"
                   >
-                    <span className="text-[11px] font-semibold uppercase leading-4 tracking-wide text-charcoal-500">Connected website project</span>
-                    <span className="max-w-[260px] truncate font-semibold leading-5 text-brand-700">{project.website.rootUrl}</span>
+                    <span className="text-[11px] font-semibold uppercase leading-4 tracking-wide text-white/75">Connected website project</span>
+                    <span className="max-w-[260px] truncate font-semibold leading-5 text-white">{project.website.rootUrl}</span>
                   </Link>
                 )}
                 <StatusPill status={project.currentStep} />
                 <StatusPill status={project.status} />
-                {!archived && <Link to={`/guided-projects/${project.id}/intake`} className="inline-flex items-center justify-center rounded-lg border border-brand-200 bg-white px-3 py-2 text-sm font-semibold text-brand-700 hover:bg-brand-50">Edit profile</Link>}
-                <Link to="/projects" className="inline-flex items-center justify-center rounded-lg border border-charcoal-200 bg-white px-3 py-2 text-sm font-semibold text-charcoal-700 hover:bg-charcoal-50">Back to projects</Link>
+                {!archived && <Link to={`/guided-projects/${project.id}/intake`} className="inline-flex items-center justify-center rounded-lg bg-brand-600 px-3 py-2 text-sm font-semibold text-white hover:bg-brand-700">Edit profile</Link>}
+                <Link to="/projects" className="inline-flex items-center justify-center rounded-lg bg-brand-600 px-3 py-2 text-sm font-semibold text-white hover:bg-brand-700">Back to projects</Link>
               </div>
             </div>
           </div>
