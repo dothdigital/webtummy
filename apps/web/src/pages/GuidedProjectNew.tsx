@@ -3,6 +3,7 @@ import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { api } from "../api.js";
 import { Button, Card, Input } from "../components/ui.js";
 import type { GuidedProject } from "../types.js";
+import BusinessLocationTargetMarkets from "../components/BusinessLocationTargetMarkets.js";
 
 const clientProjectTypes = [
   { value: "local_business", label: "Local Business", description: "City or service-area business that needs local rankings, maps visibility, reviews, and local pages.", projectType: "local_seo" },
@@ -31,27 +32,6 @@ const primaryGoals = [
   "Improve Local SEO / Map Visibility",
   "Build Content / Authority",
 ];
-
-function TargetLocationsInput({ values, onChange, local }: { values: string[]; onChange: (values: string[]) => void; local: boolean }) {
-  const [draft, setDraft] = useState("");
-  const add = () => {
-    const additions = draft.split(/[,;\n]/g).map((value) => value.trim()).filter(Boolean);
-    if (additions.length) onChange([...new Set([...values, ...additions])]);
-    setDraft("");
-  };
-  return (
-    <label className="block md:col-span-2">
-      <span className="mb-1 block text-sm font-bold text-slate-800">{local ? "Target Service Areas *" : "Target Market / Locations *"}</span>
-      <div className="rounded-lg border border-slate-200 bg-white p-2 focus-within:border-brand-400 focus-within:ring-2 focus-within:ring-brand-100">
-        <div className="flex flex-wrap gap-2">
-          {values.map((value) => <button key={value} type="button" onClick={() => onChange(values.filter((item) => item !== value))} className="rounded-full bg-brand-50 px-3 py-1 text-xs font-bold text-brand-800" title={`Remove ${value}`}>{value} ×</button>)}
-          <input value={draft} onChange={(event) => setDraft(event.target.value)} onBlur={add} onKeyDown={(event) => { if (event.key === "Enter" || event.key === ",") { event.preventDefault(); add(); } }} placeholder={values.length ? "Add another location" : "Canada, United States, Toronto…"} className="h-8 min-w-56 flex-1 border-0 px-1 text-sm outline-none" />
-        </div>
-      </div>
-      <span className="mt-1 block text-xs text-slate-500">Press Enter or comma after each country, region, city, or service area. These markets drive research and campaign planning.</span>
-    </label>
-  );
-}
 
 export default function GuidedProjectNew() {
   const navigate = useNavigate();
@@ -87,6 +67,7 @@ export default function GuidedProjectNew() {
     preferredOutputs: ["SEO plan"],
     preferredPublishingMethod: "WordPress",
     updateClientDefaults: false,
+    updateWorkspaceDefaults: false,
   });
 
   const patch = (data: Partial<typeof form>) => setForm((current) => ({ ...current, ...data }));
@@ -94,12 +75,24 @@ export default function GuidedProjectNew() {
   const requiresWebsite = form.websiteStatus === "existing_website";
 
   useEffect(() => {
-    void api.get<{ workspace: { workspaceType: string }; clients: { id: string; name: string; status: string; websites: unknown; businessLocations: unknown; targetMarkets: unknown; defaultSettings: unknown }[] }>("/api/agency/workspace")
+    void api.get<{ workspace: { workspaceType: string; locationDefaults?: { businessLocation: string; businessLocationDetails: { country: string; stateProvince: string; city: string; streetAddress?: string; postalCode?: string } | null; targetMarkets: string[] } }; clients: { id: string; name: string; status: string; websites: unknown; businessLocations: unknown; targetMarkets: unknown; defaultSettings: unknown }[] }>("/api/agency/workspace")
       .then((result) => {
         const activeClients = result.clients.filter((client) => client.status === "active");
         setWorkspaceType(result.workspace.workspaceType);
         setAgencyClients(activeClients);
         if (result.workspace.workspaceType === "agency" && !form.agencyClientId && activeClients.length === 1) patch({ agencyClientId: activeClients[0].id });
+        if (result.workspace.workspaceType !== "agency" && result.workspace.locationDefaults) {
+          const defaults = result.workspace.locationDefaults;
+          patch({
+            businessLocation: defaults.businessLocation,
+            locationCountry: defaults.businessLocationDetails?.country ?? "",
+            locationStateProvince: defaults.businessLocationDetails?.stateProvince ?? "",
+            locationCity: defaults.businessLocationDetails?.city ?? "",
+            locationStreetAddress: defaults.businessLocationDetails?.streetAddress ?? "",
+            locationPostalCode: defaults.businessLocationDetails?.postalCode ?? "",
+            targetLocations: defaults.targetMarkets,
+          });
+        }
       })
       .catch(() => setMessage("Could not load workspace information."))
       .finally(() => setWorkspaceLoaded(true));
@@ -189,14 +182,9 @@ export default function GuidedProjectNew() {
                 <span className="mt-1 block text-xs text-slate-500">Enter the client niche in your own words.</span>
               </label>
               {!isAgency && <Input label="Business Name (optional)" value={form.businessName} onChange={(businessName) => patch({ businessName })} placeholder="e.g., Acme Digital Marketing" />}
-              {isAgency && form.businessLocation && <div className="rounded-lg border border-brand-100 bg-brand-50 p-3 text-sm md:col-span-2"><b>Inherited Business Location:</b> {form.businessLocation}<span className="mt-1 block text-xs text-slate-600">Enter structured fields below only to override it for this project.</span></div>}
-              <Input label={`Country ${form.businessLocation ? "(override)" : "*"}`} value={form.locationCountry} onChange={(locationCountry) => patch({ locationCountry })} placeholder="Canada" />
-              <Input label={`State / Province ${form.businessLocation ? "(override)" : "*"}`} value={form.locationStateProvince} onChange={(locationStateProvince) => patch({ locationStateProvince })} placeholder="Ontario" />
-              <Input label={`City ${form.businessLocation ? "(override)" : "*"}`} value={form.locationCity} onChange={(locationCity) => patch({ locationCity })} placeholder="Toronto" />
-              <Input label="Street Address (optional)" value={form.locationStreetAddress} onChange={(locationStreetAddress) => patch({ locationStreetAddress })} placeholder="1 King Street" />
-              <Input label="Postal Code (optional)" value={form.locationPostalCode} onChange={(locationPostalCode) => patch({ locationPostalCode })} placeholder="M5H 1A1" />
-              <TargetLocationsInput values={form.targetLocations} onChange={(targetLocations) => patch({ targetLocations })} local={form.clientProjectType === "local_business"} />
+              <BusinessLocationTargetMarkets value={{ country: form.locationCountry, stateProvince: form.locationStateProvince, city: form.locationCity, streetAddress: form.locationStreetAddress, postalCode: form.locationPostalCode, targetMarkets: form.targetLocations }} onChange={(value) => patch({ locationCountry: value.country, locationStateProvince: value.stateProvince, locationCity: value.city, locationStreetAddress: value.streetAddress, locationPostalCode: value.postalCode, targetLocations: value.targetMarkets })} inheritedLocation={isAgency ? form.businessLocation : undefined} local={form.clientProjectType === "local_business"} />
               {isAgency && <label className="flex items-start gap-3 rounded-lg border border-brand-100 bg-brand-50 p-4 text-sm md:col-span-2"><input type="checkbox" checked={form.updateClientDefaults} onChange={(event) => patch({ updateClientDefaults: event.target.checked })} className="mt-1" /><span><b>Update Client defaults</b><span className="mt-1 block text-slate-600">Keep this off for project-only overrides. Turn it on only when these website, location, market, and niche values should become the shared client defaults.</span></span></label>}
+              {!isAgency && form.businessLocation && <label className="flex items-start gap-3 rounded-lg border border-brand-100 bg-brand-50 p-4 text-sm md:col-span-2"><input type="checkbox" checked={form.updateWorkspaceDefaults} onChange={(event) => patch({ updateWorkspaceDefaults: event.target.checked })} className="mt-1" /><span><b>Update workspace location defaults</b><span className="mt-1 block text-slate-600">Keep this off for a project-only override. Enable it to reuse these values in future projects.</span></span></label>}
               <label className="block md:col-span-2">
                 <span className="mb-1 block text-sm font-bold text-slate-800">Primary Goal *</span>
                 <select value={form.primaryGoal} onChange={(event) => patch({ primaryGoal: event.target.value })} className="h-11 w-full rounded-lg border border-slate-200 bg-white px-3 text-sm outline-none focus:border-brand-400 focus:ring-2 focus:ring-brand-100">

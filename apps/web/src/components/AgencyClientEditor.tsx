@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { api } from "../api.js";
+import BusinessLocationTargetMarkets from "./BusinessLocationTargetMarkets.js";
 
 type Client = {
   id: string; name: string; contactName: string | null; contactEmail: string | null; contactPhone: string | null;
@@ -11,8 +12,6 @@ type Client = {
 const lines = (value: unknown) => Array.isArray(value) ? value.map(String).join("\n") : "";
 const values = (value: string) => value.split(/[\n,]/).map((item) => item.trim()).filter(Boolean);
 const timeZones = ["UTC", "America/Toronto", "America/Vancouver", "America/Edmonton", "America/Winnipeg", "America/Halifax", "America/St_Johns", "America/New_York", "America/Chicago", "America/Denver", "America/Los_Angeles", "America/Phoenix", "Europe/London", "Europe/Paris", "Europe/Berlin", "Asia/Dubai", "Asia/Kolkata", "Asia/Singapore", "Asia/Tokyo", "Australia/Sydney", "Pacific/Auckland"];
-const countries = ["Canada", "United States", "United Kingdom", "Australia", "New Zealand", "India", "United Arab Emirates", "Singapore", "Japan", "Germany", "France", "Italy", "Spain", "Netherlands", "Ireland", "Switzerland", "Sweden", "Norway", "Denmark", "Mexico", "Brazil", "South Africa", "Philippines", "Malaysia", "Indonesia"];
-const countryFlags: Record<string, string> = { Canada: "🇨🇦", "United States": "🇺🇸", "United Kingdom": "🇬🇧", Australia: "🇦🇺", "New Zealand": "🇳🇿", India: "🇮🇳", "United Arab Emirates": "🇦🇪", Singapore: "🇸🇬", Japan: "🇯🇵", Germany: "🇩🇪", France: "🇫🇷", Italy: "🇮🇹", Spain: "🇪🇸", Netherlands: "🇳🇱", Ireland: "🇮🇪", Switzerland: "🇨🇭", Sweden: "🇸🇪", Norway: "🇳🇴", Denmark: "🇩🇰", Mexico: "🇲🇽", Brazil: "🇧🇷", "South Africa": "🇿🇦", Philippines: "🇵🇭", Malaysia: "🇲🇾", Indonesia: "🇮🇩" };
 
 export default function AgencyClientEditor({ client, owner, onClose, onSaved }: { client: Client; owner: boolean; onClose: () => void; onSaved: (message: string) => void }) {
   const settings = client.defaultSettings && typeof client.defaultSettings === "object" ? client.defaultSettings as Record<string, unknown> : {};
@@ -25,6 +24,7 @@ export default function AgencyClientEditor({ client, owner, onClose, onSaved }: 
     businessDescription: String(settings.businessDescription ?? ""), targetAudience: String(settings.targetAudience ?? ""), mainProductsServices: String(settings.mainProductsServices ?? ""),
     primaryKeywords: lines(settings.primaryKeywords), brandVoice: String(settings.brandVoice ?? ""), preferredLanguage: String(settings.preferredLanguage ?? "English"), timeZone: String(settings.timeZone ?? "America/Toronto"),
     country: String(location.country ?? ""), stateProvince: String(location.stateProvince ?? ""), city: String(location.city ?? ""),
+    streetAddress: String(location.streetAddress ?? ""), postalCode: String(location.postalCode ?? ""),
   });
   const [confirmation, setConfirmation] = useState("");
   const [busy, setBusy] = useState("");
@@ -36,8 +36,8 @@ export default function AgencyClientEditor({ client, owner, onClose, onSaved }: 
     try {
       await api.patch(`/api/agency/clients/${client.id}`, {
         name: form.name, contactName: form.contactName || null, contactEmail: form.contactEmail || null, contactPhone: form.contactPhone || null,
-        websites: values(form.websites), businessLocations: form.country && form.stateProvince && form.city ? [[form.city, form.stateProvince, form.country].join(", ")] : values(form.businessLocations), targetMarkets: values(form.targetMarkets), competitors: values(form.competitors),
-        defaultSettings: { ...settings, industryNiche: form.industryNiche, niche: form.industryNiche, primaryBusinessGoal: form.primaryBusinessGoal, businessDescription: form.businessDescription, targetAudience: form.targetAudience, mainProductsServices: form.mainProductsServices, primaryKeywords: values(form.primaryKeywords), brandVoice: form.brandVoice, preferredLanguage: form.preferredLanguage, timeZone: form.timeZone, businessLocationDetails: { country: form.country, stateProvince: form.stateProvince, city: form.city } },
+        websites: values(form.websites), businessLocations: [[form.streetAddress, form.city, form.stateProvince, form.postalCode, form.country].filter(Boolean).join(", ")], targetMarkets: values(form.targetMarkets), competitors: values(form.competitors),
+        defaultSettings: { ...settings, industryNiche: form.industryNiche, niche: form.industryNiche, primaryBusinessGoal: form.primaryBusinessGoal, businessDescription: form.businessDescription, targetAudience: form.targetAudience, mainProductsServices: form.mainProductsServices, primaryKeywords: values(form.primaryKeywords), brandVoice: form.brandVoice, preferredLanguage: form.preferredLanguage, timeZone: form.timeZone, businessLocationDetails: { country: form.country, stateProvince: form.stateProvince, city: form.city, streetAddress: form.streetAddress, postalCode: form.postalCode } },
         internalNotes: form.internalNotes || null, clientVisibleNotes: form.clientVisibleNotes || null,
       });
       onSaved(`${form.name} updated.`);
@@ -62,12 +62,8 @@ export default function AgencyClientEditor({ client, owner, onClose, onSaved }: 
         <Field label="Contact phone" value={form.contactPhone} onChange={(contactPhone) => patch({ contactPhone })} />
         <Field label="Industry / niche" value={form.industryNiche} onChange={(industryNiche) => patch({ industryNiche })} />
         <Field label="Primary business goal" value={form.primaryBusinessGoal} onChange={(primaryBusinessGoal) => patch({ primaryBusinessGoal })} />
-        <label className="text-xs font-bold">Country<select value={form.country} onChange={(event) => patch({ country: event.target.value })} className="mt-1 h-10 w-full rounded-lg border bg-white px-3 text-sm font-normal"><option value="">Select country</option>{form.country && !countries.includes(form.country) && <option value={form.country}>{form.country}</option>}{countries.map((country) => <option key={country} value={country}>{countryFlags[country]} {country}</option>)}</select></label>
-        <Field label="State / Province" value={form.stateProvince} onChange={(stateProvince) => patch({ stateProvince })} />
-        <Field label="City" value={form.city} onChange={(city) => patch({ city })} />
+        <BusinessLocationTargetMarkets value={{ country: form.country, stateProvince: form.stateProvince, city: form.city, streetAddress: form.streetAddress, postalCode: form.postalCode, targetMarkets: values(form.targetMarkets) }} onChange={(value) => patch({ country: value.country, stateProvince: value.stateProvince, city: value.city, streetAddress: value.streetAddress, postalCode: value.postalCode, targetMarkets: value.targetMarkets.join("\n") })} />
         <Area label="Websites" value={form.websites} onChange={(websites) => patch({ websites })} hint="One URL per line" />
-        <Area label="Business locations" value={form.businessLocations} onChange={(businessLocations) => patch({ businessLocations })} hint="One location per line" />
-        <Area label="Target markets" value={form.targetMarkets} onChange={(targetMarkets) => patch({ targetMarkets })} hint="One market per line" />
         <Area label="Competitors" value={form.competitors} onChange={(competitors) => patch({ competitors })} hint="One competitor per line" />
         <Area label="Business description" value={form.businessDescription} onChange={(businessDescription) => patch({ businessDescription })} />
         <Area label="Target audience" value={form.targetAudience} onChange={(targetAudience) => patch({ targetAudience })} />
@@ -78,7 +74,7 @@ export default function AgencyClientEditor({ client, owner, onClose, onSaved }: 
         <label className="text-xs font-bold">Time zone<select value={form.timeZone} onChange={(event) => patch({ timeZone: event.target.value })} className="mt-1 h-10 w-full rounded-lg border bg-white px-3 text-sm font-normal">{!timeZones.includes(form.timeZone) && <option value={form.timeZone}>{form.timeZone}</option>}{timeZones.map((zone) => <option key={zone} value={zone}>{zone.replace(/_/g, " ")}</option>)}</select></label>
         <Area label="Internal notes" value={form.internalNotes} onChange={(internalNotes) => patch({ internalNotes })} />
         <Area label="Client-visible notes" value={form.clientVisibleNotes} onChange={(clientVisibleNotes) => patch({ clientVisibleNotes })} />
-        <button disabled={busy === "save" || !form.name.trim()} className="h-11 rounded-lg bg-brand-600 px-4 text-sm font-bold text-white disabled:opacity-50 md:col-span-2">{busy === "save" ? "Saving…" : "Save shared client details"}</button>
+        <button disabled={busy === "save" || !form.name.trim() || !form.country || !form.stateProvince || !form.city || !values(form.targetMarkets).length} className="h-11 rounded-lg bg-brand-600 px-4 text-sm font-bold text-white disabled:opacity-50 md:col-span-2">{busy === "save" ? "Saving…" : "Save shared client details"}</button>
       </form>
       {owner && <div className="mt-6 rounded-xl border border-red-200 bg-red-50 p-4"><h3 className="font-bold text-red-900">Permanently delete client</h3><p className="mt-1 text-sm text-red-800">This also deletes the client’s projects. Type <b>{client.name}</b> to confirm.</p><div className="mt-3 flex flex-col gap-2 sm:flex-row"><input value={confirmation} onChange={(event) => setConfirmation(event.target.value)} className="h-10 flex-1 rounded-lg border border-red-200 px-3 text-sm" /><button type="button" disabled={confirmation !== client.name || busy === "delete"} onClick={() => void permanentlyDelete()} className="h-10 rounded-lg bg-red-700 px-4 text-sm font-bold text-white disabled:opacity-40">Permanently delete</button></div></div>}
     </div>

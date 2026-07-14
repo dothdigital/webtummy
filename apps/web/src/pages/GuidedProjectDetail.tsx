@@ -6,6 +6,7 @@ import { Button, Card, Input, StatusPill } from "../components/ui.js";
 import { projectHasWebsite, requiresSiteAnalysisBeforeStrategy } from "../project-flow.js";
 import type { GuidedExecutionTask, GuidedProject } from "../types.js";
 import ProjectOperations from "../components/ProjectOperations.js";
+import BusinessLocationTargetMarkets from "../components/BusinessLocationTargetMarkets.js";
 
 function taskTone(task: GuidedExecutionTask) {
   if (task.priority === "high") return "border-rose-200 bg-rose-50/70";
@@ -164,19 +165,14 @@ function ProjectLocationEditor({ project, onSaved }: { project: GuidedProject; o
   const [form, setForm] = useState({
     country: current?.country ?? "", stateProvince: current?.stateProvince ?? "", city: current?.city ?? "",
     streetAddress: current?.streetAddress ?? "", postalCode: current?.postalCode ?? "",
-    targetMarkets: Array.isArray(project.targetLocations) ? project.targetLocations.map(String) : [], targetDraft: "", updateClient: false,
+    targetMarkets: Array.isArray(project.targetLocations) ? project.targetLocations.map(String) : [], updateClient: false, updateWorkspace: false,
   });
   const patch = (value: Partial<typeof form>) => setForm((existing) => ({ ...existing, ...value }));
-  const addMarket = () => {
-    const additions = form.targetDraft.split(/[,;\n]/).map((value) => value.trim()).filter(Boolean);
-    const seen = new Set<string>();
-    patch({ targetMarkets: [...form.targetMarkets, ...additions].filter((value) => { const key = value.toLowerCase(); if (seen.has(key)) return false; seen.add(key); return true; }), targetDraft: "" });
-  };
   const save = async () => {
     if (!form.country || !form.stateProvince || !form.city || !form.targetMarkets.length) return;
     setBusy(true); setMessage(null);
     try {
-      const result = await api.patch<{ project: GuidedProject; refreshRecommended: boolean }>(`/api/projects-v2/${project.id}/locations`, { businessLocationDetails: form, targetMarkets: form.targetMarkets, updateClient: form.updateClient });
+      const result = await api.patch<{ project: GuidedProject; refreshRecommended: boolean }>(`/api/projects-v2/${project.id}/locations`, { businessLocationDetails: form, targetMarkets: form.targetMarkets, updateClient: form.updateClient, updateWorkspace: form.updateWorkspace });
       onSaved({ ...project, ...result.project }); setEditing(false);
       if (result.refreshRecommended) setMessage("Saved. Strategy and Keyword Research should now be refreshed.");
     } catch (error) { setMessage(error instanceof Error ? error.message : "Could not update locations"); }
@@ -186,9 +182,9 @@ function ProjectLocationEditor({ project, onSaved }: { project: GuidedProject; o
     <div className="flex flex-wrap items-center justify-between gap-3"><div><h3 className="font-bold text-charcoal-950">Business Location & Target Markets</h3><p className="mt-1 text-sm text-charcoal-500">Business identity and campaign targeting remain separate.</p></div><button type="button" onClick={() => setEditing(!editing)} className="rounded-lg border px-3 py-2 text-sm font-bold">{editing ? "Cancel" : "Edit locations"}</button></div>
     {message && <p className="mt-3 rounded-lg bg-amber-50 p-3 text-sm text-amber-900">{message}</p>}
     {editing && <div className="mt-4 grid gap-4 md:grid-cols-2">
-      <Input label="Country *" value={form.country} onChange={(country) => patch({ country })} /><Input label="State / Province *" value={form.stateProvince} onChange={(stateProvince) => patch({ stateProvince })} /><Input label="City *" value={form.city} onChange={(city) => patch({ city })} /><Input label="Street Address (optional)" value={form.streetAddress} onChange={(streetAddress) => patch({ streetAddress })} /><Input label="Postal Code (optional)" value={form.postalCode} onChange={(postalCode) => patch({ postalCode })} />
-      <div className="md:col-span-2"><div className="text-sm font-bold">Target Markets *</div><div className="mt-2 flex flex-wrap gap-2">{form.targetMarkets.map((market) => <button type="button" key={market} onClick={() => patch({ targetMarkets: form.targetMarkets.filter((value) => value !== market) })} className="rounded-full bg-brand-50 px-3 py-1 text-xs font-bold text-brand-800">{market} ×</button>)}</div><input value={form.targetDraft} onChange={(event) => patch({ targetDraft: event.target.value })} onBlur={addMarket} onKeyDown={(event) => { if (event.key === "Enter" || event.key === ",") { event.preventDefault(); addMarket(); } }} className="mt-2 h-11 w-full rounded-lg border px-3 text-sm" placeholder="Add countries, states, cities or regions" /></div>
+      <BusinessLocationTargetMarkets value={{ country: form.country, stateProvince: form.stateProvince, city: form.city, streetAddress: form.streetAddress, postalCode: form.postalCode, targetMarkets: form.targetMarkets }} onChange={(value) => patch({ country: value.country, stateProvince: value.stateProvince, city: value.city, streetAddress: value.streetAddress, postalCode: value.postalCode, targetMarkets: value.targetMarkets })} />
       {project.agencyClientId && <label className="flex gap-2 text-sm md:col-span-2"><input type="checkbox" checked={form.updateClient} onChange={(event) => patch({ updateClient: event.target.checked })} /> Update the Agency Client defaults too</label>}
+      {!project.agencyClientId && <label className="flex gap-2 text-sm md:col-span-2"><input type="checkbox" checked={form.updateWorkspace} onChange={(event) => patch({ updateWorkspace: event.target.checked })} /> Update workspace location defaults too</label>}
       <Button type="button" disabled={busy || !form.country || !form.stateProvince || !form.city || !form.targetMarkets.length} onClick={() => void save()}>{busy ? "Saving…" : "Save locations"}</Button>
     </div>}
   </Card>;

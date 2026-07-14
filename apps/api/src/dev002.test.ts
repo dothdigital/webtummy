@@ -11,6 +11,7 @@ describe("DEV-002 Agency → Clients → Projects", () => {
     })).toEqual({
       websiteUrl: "https://example.com",
       businessLocation: "Toronto, Canada",
+      businessLocationDetails: null,
       targetLocations: ["Toronto", "Ontario"],
       niche: "Roofing",
       primaryGoal: "Leads",
@@ -26,7 +27,7 @@ describe("DEV-002 Agency → Clients → Projects", () => {
 
   it("returns safe empty defaults for incomplete client records", () => {
     expect(clientDefaults({ websites: null, businessLocations: {}, targetMarkets: null, defaultSettings: null })).toEqual({
-      websiteUrl: "", businessLocation: "", targetLocations: [], niche: "", primaryGoal: "", brandVoice: "", businessDescription: "", targetAudience: "", mainProductsServices: "", primaryKeywords: [], preferredLanguage: "", timeZone: "",
+      websiteUrl: "", businessLocation: "", businessLocationDetails: null, targetLocations: [], niche: "", primaryGoal: "", brandVoice: "", businessDescription: "", targetAudience: "", mainProductsServices: "", primaryKeywords: [], preferredLanguage: "", timeZone: "",
     });
   });
 

@@ -5,7 +5,7 @@ function context(roles: string[], workspaceType = "agency", overrides: unknown =
   return {
     workspace: {
       id: "workspace-1", name: "Test", workspaceType, ownerUserId: roles.includes("owner") ? "user-1" : "owner-1",
-      legacyClientId: "legacy-1", securitySettingsJson: {}, autoApprovalPolicyJson: {},
+      legacyClientId: "legacy-1", settingsJson: {}, securitySettingsJson: {}, autoApprovalPolicyJson: {},
     },
     membership: { id: "membership-1", userId: "user-1", status: "active", permissionOverrides: overrides, roles: roles.map((role) => ({ role })) },
     roles: new Set(roles),

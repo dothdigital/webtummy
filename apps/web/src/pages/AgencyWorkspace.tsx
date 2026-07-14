@@ -3,6 +3,7 @@ import { Link, useSearchParams } from "react-router-dom";
 import { api } from "../api.js";
 import { Card } from "../components/ui.js";
 import AgencyClientEditor from "../components/AgencyClientEditor.js";
+import BusinessLocationTargetMarkets from "../components/BusinessLocationTargetMarkets.js";
 
 type Role = "owner" | "admin" | "manager" | "approver" | "editor" | "viewer" | "client_viewer";
 type Member = { id: string; status: string; user: { id: string; name: string | null; email: string; isActive: boolean }; roles: { role: string }[]; teamMemberships: { team: { id: string; name: string } }[] };
@@ -38,8 +39,6 @@ type Tab = "dashboard" | "clients" | "teams" | "approvals" | "activity";
 
 const roleOrder: Role[] = ["admin", "manager", "editor", "viewer", "client_viewer"];
 const timeZones = ["UTC", "America/Toronto", "America/Vancouver", "America/Edmonton", "America/Winnipeg", "America/Halifax", "America/St_Johns", "America/New_York", "America/Chicago", "America/Denver", "America/Los_Angeles", "America/Phoenix", "Europe/London", "Europe/Paris", "Europe/Berlin", "Asia/Dubai", "Asia/Kolkata", "Asia/Singapore", "Asia/Tokyo", "Australia/Sydney", "Pacific/Auckland"];
-const countries = ["Canada", "United States", "United Kingdom", "Australia", "New Zealand", "India", "United Arab Emirates", "Singapore", "Japan", "Germany", "France", "Italy", "Spain", "Netherlands", "Ireland", "Switzerland", "Sweden", "Norway", "Denmark", "Mexico", "Brazil", "South Africa", "Philippines", "Malaysia", "Indonesia"];
-const countryFlags: Record<string, string> = { Canada: "🇨🇦", "United States": "🇺🇸", "United Kingdom": "🇬🇧", Australia: "🇦🇺", "New Zealand": "🇳🇿", India: "🇮🇳", "United Arab Emirates": "🇦🇪", Singapore: "🇸🇬", Japan: "🇯🇵", Germany: "🇩🇪", France: "🇫🇷", Italy: "🇮🇹", Spain: "🇪🇸", Netherlands: "🇳🇱", Ireland: "🇮🇪", Switzerland: "🇨🇭", Sweden: "🇸🇪", Norway: "🇳🇴", Denmark: "🇩🇰", Mexico: "🇲🇽", Brazil: "🇧🇷", "South Africa": "🇿🇦", Philippines: "🇵🇭", Malaysia: "🇲🇾", Indonesia: "🇮🇩" };
 const roleLabels: Record<Role, string> = {
   owner: "Owner/Admin", admin: "Owner/Admin", manager: "Manager/Approver", approver: "Manager/Approver", editor: "Editor", viewer: "Viewer", client_viewer: "Client Viewer — Agency only",
 };
@@ -75,6 +74,8 @@ export default function AgencyWorkspace() {
   const [clientCountry, setClientCountry] = useState("");
   const [clientRegion, setClientRegion] = useState("");
   const [clientCity, setClientCity] = useState("");
+  const [clientStreetAddress, setClientStreetAddress] = useState("");
+  const [clientPostalCode, setClientPostalCode] = useState("");
   const [clientMarkets, setClientMarkets] = useState("");
   const [clientGoal, setClientGoal] = useState("");
   const [clientDescription, setClientDescription] = useState("");
@@ -151,14 +152,14 @@ export default function AgencyWorkspace() {
   }
   async function createClient(event: React.FormEvent) {
     event.preventDefault();
-    const businessLocation = [clientCity, clientRegion, clientCountry].map((value) => value.trim()).filter(Boolean).join(", ");
+    const businessLocation = [clientStreetAddress, clientCity, clientRegion, clientPostalCode, clientCountry].map((value) => value.trim()).filter(Boolean).join(", ");
     await action("client-create", () => api.post("/api/agency/clients", {
       name: clientName, contactName: clientContactName, contactEmail: clientEmail, contactPhone: clientPhone || null,
       targetMarkets: clientMarkets.split(/[,\n]/).map((item) => item.trim()).filter(Boolean),
       websites: [clientWebsite], businessLocations: [businessLocation], competitors: clientCompetitors.split(/[,\n]/).map((item) => item.trim()).filter(Boolean), brandingJson: {},
-      defaultSettings: { industryNiche: clientNiche, niche: clientNiche, primaryBusinessGoal: clientGoal, businessDescription: clientDescription, targetAudience: clientAudience, mainProductsServices: clientProducts, primaryKeywords: clientKeywords.split(/[,\n]/).map((item) => item.trim()).filter(Boolean), brandVoice: clientBrandVoice, preferredLanguage: clientLanguage, timeZone: clientTimeZone, businessLocationDetails: { country: clientCountry, stateProvince: clientRegion, city: clientCity } },
+      defaultSettings: { industryNiche: clientNiche, niche: clientNiche, primaryBusinessGoal: clientGoal, businessDescription: clientDescription, targetAudience: clientAudience, mainProductsServices: clientProducts, primaryKeywords: clientKeywords.split(/[,\n]/).map((item) => item.trim()).filter(Boolean), brandVoice: clientBrandVoice, preferredLanguage: clientLanguage, timeZone: clientTimeZone, businessLocationDetails: { country: clientCountry, stateProvince: clientRegion, city: clientCity, streetAddress: clientStreetAddress, postalCode: clientPostalCode } },
     }), `${clientName} was created.`);
-    setClientName(""); setClientContactName(""); setClientEmail(""); setClientPhone(""); setClientWebsite(""); setClientNiche(""); setClientCountry(""); setClientRegion(""); setClientCity(""); setClientMarkets(""); setClientGoal(""); setClientDescription(""); setClientAudience(""); setClientProducts(""); setClientCompetitors(""); setClientKeywords(""); setClientBrandVoice(""); setClientLanguage("English"); setClientTimeZone("America/Toronto");
+    setClientName(""); setClientContactName(""); setClientEmail(""); setClientPhone(""); setClientWebsite(""); setClientNiche(""); setClientCountry(""); setClientRegion(""); setClientCity(""); setClientStreetAddress(""); setClientPostalCode(""); setClientMarkets(""); setClientGoal(""); setClientDescription(""); setClientAudience(""); setClientProducts(""); setClientCompetitors(""); setClientKeywords(""); setClientBrandVoice(""); setClientLanguage("English"); setClientTimeZone("America/Toronto");
     setShowClientForm(false);
   }
   async function createTeam(event: React.FormEvent) {
@@ -287,8 +288,7 @@ export default function AgencyWorkspace() {
         <ClientField label="Phone number" value={clientPhone} onChange={setClientPhone} type="tel" />
         <ClientField label="Website URL *" value={clientWebsite} onChange={setClientWebsite} type="url" placeholder="https://example.com" required />
         <ClientField label="Industry / niche *" value={clientNiche} onChange={setClientNiche} required />
-        <label className="block text-xs font-bold">Country *<select required value={clientCountry} onChange={(event) => setClientCountry(event.target.value)} className="mt-1 h-10 w-full rounded-lg border bg-white px-3 text-sm font-normal"><option value="">Select country</option>{countries.map((country) => <option key={country} value={country}>{countryFlags[country]} {country}</option>)}</select></label><ClientField label="State / Province *" value={clientRegion} onChange={setClientRegion} required /><ClientField label="City *" value={clientCity} onChange={setClientCity} required />
-        <ClientArea label="Target markets *" value={clientMarkets} onChange={setClientMarkets} placeholder="Toronto, Ontario, Canada" required />
+        <BusinessLocationTargetMarkets value={{ country: clientCountry, stateProvince: clientRegion, city: clientCity, streetAddress: clientStreetAddress, postalCode: clientPostalCode, targetMarkets: clientMarkets.split(/[,\n]/).map((item) => item.trim()).filter(Boolean) }} onChange={(value) => { setClientCountry(value.country); setClientRegion(value.stateProvince); setClientCity(value.city); setClientStreetAddress(value.streetAddress); setClientPostalCode(value.postalCode); setClientMarkets(value.targetMarkets.join("\n")); }} />
         <label className="block text-xs font-bold">Primary business goal *<select required value={clientGoal} onChange={(event) => setClientGoal(event.target.value)} className="mt-1 h-10 w-full rounded-lg border bg-white px-3 text-sm font-normal"><option value="">Select goal</option><option>Leads</option><option>Sales</option><option>Traffic</option><option>Branding</option><option>Local visibility</option><option>Customer retention</option></select></label>
         <ClientArea label="Business description *" value={clientDescription} onChange={setClientDescription} required />
         <ClientArea label="Target audience *" value={clientAudience} onChange={setClientAudience} required />
@@ -298,7 +298,7 @@ export default function AgencyWorkspace() {
         <ClientField label="Brand voice / tone *" value={clientBrandVoice} onChange={setClientBrandVoice} placeholder="Professional, clear, friendly" required />
         <ClientField label="Preferred language *" value={clientLanguage} onChange={setClientLanguage} required />
         <label className="block text-xs font-bold">Time zone *<select required value={clientTimeZone} onChange={(event) => setClientTimeZone(event.target.value)} className="mt-1 h-10 w-full rounded-lg border bg-white px-3 text-sm font-normal">{timeZones.map((zone) => <option key={zone} value={zone}>{zone.replace(/_/g, " ")}</option>)}</select></label>
-        <div className="flex justify-end gap-3 md:col-span-2 xl:col-span-3"><button type="button" onClick={() => setShowClientForm(false)} className="h-11 rounded-lg border px-5 text-sm font-bold text-slate-600">Cancel</button><button disabled={busy === "client-create"} className="h-11 rounded-lg bg-brand-600 px-6 text-sm font-bold text-white disabled:bg-slate-300">{busy === "client-create" ? "Creating…" : "Create client"}</button></div>
+        <div className="flex justify-end gap-3 md:col-span-2 xl:col-span-3"><button type="button" onClick={() => setShowClientForm(false)} className="h-11 rounded-lg border px-5 text-sm font-bold text-slate-600">Cancel</button><button disabled={busy === "client-create" || !clientCountry || !clientRegion || !clientCity || !clientMarkets.trim()} className="h-11 rounded-lg bg-brand-600 px-6 text-sm font-bold text-white disabled:bg-slate-300">{busy === "client-create" ? "Creating…" : "Create client"}</button></div>
       </form></Card>}
     </div>}
 

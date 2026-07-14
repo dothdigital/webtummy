@@ -19,7 +19,7 @@ const inheritedRoleOrder: readonly WorkspaceRole[] = ["owner", "admin", "manager
 export type WorkspaceContext = {
   workspace: {
     id: string; name: string; workspaceType: string; ownerUserId: string; legacyClientId: string | null;
-    securitySettingsJson: unknown; autoApprovalPolicyJson: unknown;
+    settingsJson: unknown; securitySettingsJson: unknown; autoApprovalPolicyJson: unknown;
   };
   membership: { id: string; userId: string; status: string; permissionOverrides: unknown; roles: { role: string }[] };
   roles: Set<string>;
@@ -89,6 +89,7 @@ export async function workspaceContext(req: Request): Promise<WorkspaceContext> 
     workspace: {
       id: workspace.id, name: workspace.name, workspaceType: workspace.workspaceType,
       ownerUserId: workspace.ownerUserId, legacyClientId: workspace.legacyClientId,
+      settingsJson: workspace.settingsJson,
       securitySettingsJson: workspace.securitySettingsJson, autoApprovalPolicyJson: workspace.autoApprovalPolicyJson,
     },
     membership,

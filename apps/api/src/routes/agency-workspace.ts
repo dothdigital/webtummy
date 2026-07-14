@@ -6,6 +6,7 @@ import { requireAuth } from "../middleware.js";
 import { config } from "../config.js";
 import { sendMail } from "../email.js";
 import { assignableWorkspaceRoles, canAccessAgencyClient, canAccessProject, createWorkspaceNotification, effectiveWorkspaceRoles, hasWorkspacePermission, isWorkspaceOwner, managerSelfApprovalEnabled, recordWorkspaceActivity, requireWorkspaceRole, validateRolesForWorkspace, workspaceContext } from "../workspace-access.js";
+import { locationDefaultsFromSettings, normalizeRequiredLocations } from "../dev004.js";
 import { agencyNextActions } from "../dev002.js";
 
 export const agencyWorkspaceRouter = Router();
@@ -209,7 +210,7 @@ agencyWorkspaceRouter.get(["/agency/workspace", "/workspace"], (req, res) => han
     }).length, reportsReady,
   };
   return {
-    workspace: context.workspace,
+    workspace: { ...context.workspace, settingsJson: undefined, locationDefaults: locationDefaultsFromSettings(context.workspace.settingsJson) },
     currentMembership: { ...context.membership, roles: effectiveWorkspaceRoles(context) },
     clients: safeClients,
     projects: projectsWithProgress,
@@ -452,7 +453,9 @@ agencyWorkspaceRouter.post("/agency/clients", (req, res) => handle(res, async ()
   const context = await workspaceContext(req);
   requireWorkspaceRole(context, "owner", "admin", "manager");
   if (context.workspace.workspaceType !== "agency") throw Object.assign(new Error("Client management is available only in Agency workspaces."), { statusCode: 400 });
-  const data = createClientSchema.parse(req.body);
+  const parsed = createClientSchema.parse(req.body);
+  const normalizedLocations = normalizeRequiredLocations(parsed.businessLocations, parsed.targetMarkets);
+  const data = { ...parsed, ...normalizedLocations };
   const normalizedName = normalizeName(data.name);
   const duplicate = await prisma.agencyClient.findUnique({ where: { workspaceId_normalizedName: { workspaceId: context.workspace.id, normalizedName } } });
   if (duplicate) throw Object.assign(new Error("A client with this name already exists."), { statusCode: 409 });
@@ -469,7 +472,7 @@ agencyWorkspaceRouter.post("/agency/clients", (req, res) => handle(res, async ()
         data: { agencyClientId: client.id, membershipId: context.membership.id, assignmentRole: "manager" },
       });
     }
-    await recordWorkspaceActivity(tx, { context, action: "client.created", entityType: "agency_client", entityId: client.id, agencyClientId: client.id, nextJson: { name: client.name, status: client.status } });
+    await recordWorkspaceActivity(tx, { context, action: "client.created", entityType: "agency_client", entityId: client.id, agencyClientId: client.id, nextJson: { name: client.name, status: client.status, businessLocations: client.businessLocations, targetMarkets: client.targetMarkets } });
     await createWorkspaceNotification(tx, { context, userId: context.membership.userId, type: "client_created", title: "Client created", body: `${client.name} was added to the workspace.`, actionUrl: `/agency/clients/${client.id}`, agencyClientId: client.id, emailEligible: false });
     return { client };
   });
@@ -479,16 +482,30 @@ agencyWorkspaceRouter.patch("/agency/clients/:clientId", (req, res) => handle(re
   const context = await workspaceContext(req);
   requireWorkspaceRole(context, "owner", "admin", "manager");
   if (!await canAccessAgencyClient(context, req.params.clientId)) throw Object.assign(new Error("Client not found."), { statusCode: 404 });
-  const data = updateClientSchema.parse(req.body);
+  const parsed = updateClientSchema.parse(req.body);
   const previous = await prisma.agencyClient.findFirst({ where: { id: req.params.clientId, workspaceId: context.workspace.id } });
   if (!previous) throw Object.assign(new Error("Client not found."), { statusCode: 404 });
+  const normalizedLocations = normalizeRequiredLocations(
+    parsed.businessLocations ?? (Array.isArray(previous.businessLocations) ? previous.businessLocations.map(String) : []),
+    parsed.targetMarkets ?? (Array.isArray(previous.targetMarkets) ? previous.targetMarkets.map(String) : []),
+  );
+  const data = {
+    ...parsed,
+    ...(parsed.businessLocations ? { businessLocations: normalizedLocations.businessLocations } : {}),
+    ...(parsed.targetMarkets ? { targetMarkets: normalizedLocations.targetMarkets } : {}),
+  };
+  const previousSettings = previous.defaultSettings && typeof previous.defaultSettings === "object" ? previous.defaultSettings as Record<string, unknown> : {};
   return prisma.$transaction(async (tx) => {
     const client = await tx.agencyClient.update({ where: { id: previous.id }, data: {
       ...data, brandingJson: data.brandingJson as Prisma.InputJsonValue | undefined,
       defaultSettings: data.defaultSettings as Prisma.InputJsonValue | undefined,
       ...(data.name ? { normalizedName: normalizeName(data.name) } : {}),
     } });
-    await recordWorkspaceActivity(tx, { context, action: "client.updated", entityType: "agency_client", entityId: client.id, agencyClientId: client.id, previousJson: { name: previous.name }, nextJson: { name: client.name } });
+    await recordWorkspaceActivity(tx, {
+      context, action: "client.updated", entityType: "agency_client", entityId: client.id, agencyClientId: client.id,
+      previousJson: { name: previous.name, businessLocations: previous.businessLocations, targetMarkets: previous.targetMarkets, businessLocationDetails: previousSettings.businessLocationDetails ?? null } as Prisma.InputJsonValue,
+      nextJson: { name: client.name, businessLocations: client.businessLocations, targetMarkets: client.targetMarkets, businessLocationDetails: data.defaultSettings?.businessLocationDetails ?? previousSettings.businessLocationDetails ?? null } as Prisma.InputJsonValue,
+    });
     return { client };
   });
 }));

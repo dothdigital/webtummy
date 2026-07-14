@@ -1,3 +1,5 @@
+import { locationIsComplete, type BusinessLocation } from "./project-location.js";
+
 export type AgencyClientDefaults = {
   websites: unknown;
   businessLocations: unknown;
@@ -13,9 +15,15 @@ export function clientDefaults(client: AgencyClientDefaults | null) {
   const settings = client?.defaultSettings && typeof client.defaultSettings === "object"
     ? client.defaultSettings as Record<string, unknown>
     : {};
+  const savedLocation = settings.businessLocationDetails && typeof settings.businessLocationDetails === "object" ? settings.businessLocationDetails as Partial<BusinessLocation> : null;
+  const businessLocationDetails: BusinessLocation | null = locationIsComplete(savedLocation) ? {
+    country: savedLocation!.country!.trim(), stateProvince: savedLocation!.stateProvince!.trim(), city: savedLocation!.city!.trim(),
+    streetAddress: savedLocation!.streetAddress?.trim() ?? "", postalCode: savedLocation!.postalCode?.trim() ?? "",
+  } : null;
   return {
     websiteUrl: strings(client?.websites)[0] ?? "",
     businessLocation: strings(client?.businessLocations)[0] ?? "",
+    businessLocationDetails,
     targetLocations: strings(client?.targetMarkets),
     niche: typeof settings.niche === "string" ? settings.niche : "",
     primaryGoal: typeof settings.primaryBusinessGoal === "string" ? settings.primaryBusinessGoal : "",

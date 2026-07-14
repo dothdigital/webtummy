@@ -9,7 +9,8 @@ import { buildCampaignExecutionTasks, isExistingWebsiteCampaign, projectTypes, p
 import { canAccessAgencyClient, canAccessProject, createWorkspaceNotification, hasWorkspacePermission, recordWorkspaceActivity, requireWorkspaceRole, workspaceContext } from "../workspace-access.js";
 import { clientDefaults } from "../dev002.js";
 import { validateProjectCreation, websiteStatuses } from "../dev003.js";
-import { cleanTargetMarkets, formatBusinessLocation, locationIsComplete } from "../project-location.js";
+import { cleanTargetMarkets, formatBusinessLocation, locationIsComplete, type BusinessLocation } from "../project-location.js";
+import { locationDefaultsFromSettings, resolveProjectLocations, withLocationDefaults } from "../dev004.js";
 
 export const guidedProjectsRouter = Router();
 guidedProjectsRouter.use(requireAuth);
@@ -41,6 +42,7 @@ const createProjectSchema = z.object({
   clientId: z.string().optional(),
   agencyClientId: z.string().optional().nullable(),
   updateClientDefaults: z.boolean().default(false),
+  updateWorkspaceDefaults: z.boolean().default(false),
   managerMembershipId: z.string().optional().nullable(),
   assignedMembershipIds: z.array(z.string()).max(100).default([]),
   assignedTeamIds: z.array(z.string()).max(100).default([]),
@@ -64,6 +66,7 @@ const projectLocationsSchema = z.object({
   }),
   targetMarkets: z.array(z.string().trim().min(1).max(180)).min(1).max(100),
   updateClient: z.boolean().default(false),
+  updateWorkspace: z.boolean().default(false),
 });
 const leadMagnetGenerateSchema = z.object({
   selectedIdea: z.string().trim().min(3).max(240).optional().nullable(),
@@ -202,6 +205,7 @@ async function scopedProject(req: Request, projectId: string) {
     where: { id: projectId, ...(clientId ? { clientId } : {}) },
     include: {
       website: { select: { id: true, domain: true, rootUrl: true, status: true } },
+      agencyClient: { select: { defaultSettings: true } },
       businessProfile: true,
       workflowSteps: { orderBy: { sortOrder: "asc" } },
       intakeAnswers: { orderBy: { createdAt: "asc" } },
@@ -219,8 +223,15 @@ async function scopedProject(req: Request, projectId: string) {
   });
   if (!project) return null;
   const context = await workspaceContext(req);
-  if (context.workspace.workspaceType === "personal") return project;
-  return await canAccessProject(context, project.id) ? project : null;
+  const accessible = context.workspace.workspaceType === "personal" || await canAccessProject(context, project.id);
+  if (!accessible) return null;
+  if (project.businessLocationJson) return project;
+  const clientSettings = project.agencyClient?.defaultSettings && typeof project.agencyClient.defaultSettings === "object"
+    ? project.agencyClient.defaultSettings as Record<string, unknown> : {};
+  const inheritedDetails = clientSettings.businessLocationDetails;
+  return inheritedDetails && typeof inheritedDetails === "object" && locationIsComplete(inheritedDetails as Record<string, unknown>)
+    ? { ...project, businessLocationJson: inheritedDetails }
+    : project;
 }
 
 function answerText(answers: z.infer<typeof intakeAnswerSchema>[], key: string) {
@@ -1508,7 +1519,12 @@ guidedProjectsRouter.post("/projects-v2", async (req, res) => {
     where: { id: data.agencyClientId, workspaceId: workspace.workspace.id, status: "active" },
   }) : null;
   if (data.agencyClientId && !agencyClient) return res.status(404).json({ error: "agency client not found" });
-  const defaults = clientDefaults(agencyClient);
+  const workspaceDefaults = locationDefaultsFromSettings(workspace.workspace.settingsJson);
+  const defaults = agencyClient ? clientDefaults(agencyClient) : {
+    businessLocation: workspaceDefaults.businessLocation, businessLocationDetails: workspaceDefaults.businessLocationDetails, targetLocations: workspaceDefaults.targetMarkets,
+    websiteUrl: "", niche: "", primaryGoal: "", brandVoice: "", businessDescription: "", targetAudience: "",
+    mainProductsServices: "", primaryKeywords: [] as string[], preferredLanguage: "", timeZone: "",
+  };
   const inheritedClientNotes = [
     defaults.businessDescription && `Business description: ${defaults.businessDescription}`,
     defaults.targetAudience && `Target audience: ${defaults.targetAudience}`,
@@ -1520,9 +1536,15 @@ guidedProjectsRouter.post("/projects-v2", async (req, res) => {
   const clientId = await projectClientIdForRequest(req, data.clientId);
   if (!clientId) return res.status(400).json({ error: "project context required" });
 
-  const formattedBusinessLocation = data.businessLocationDetails && locationIsComplete(data.businessLocationDetails) ? formatBusinessLocation(data.businessLocationDetails) : null;
-  const effectiveBusinessLocation = formattedBusinessLocation || clean(data.businessLocation) || defaults.businessLocation || null;
-  const effectiveTargetLocations = targetLocations.length ? targetLocations : defaults.targetLocations;
+  const resolvedLocations = resolveProjectLocations({
+    businessLocation: data.businessLocation,
+    businessLocationDetails: data.businessLocationDetails,
+    targetMarkets: targetLocations,
+    defaults: { businessLocation: defaults.businessLocation, businessLocationDetails: defaults.businessLocationDetails, targetMarkets: defaults.targetLocations },
+  });
+  const effectiveBusinessLocation = resolvedLocations.businessLocation || null;
+  const effectiveTargetLocations = resolvedLocations.targetMarkets;
+  const effectiveBusinessLocationDetails = resolvedLocations.businessLocationDetails;
   const effectivePrimaryGoal = clean(data.primaryGoal) || defaults.primaryGoal || null;
   const websiteUrl = data.websiteStatus === "existing_website" ? clean(data.websiteUrl) || defaults.websiteUrl : clean(data.websiteUrl);
   const creationErrors = validateProjectCreation({ ...data, websiteUrl, businessLocation: effectiveBusinessLocation, targetLocations: effectiveTargetLocations, primaryGoal: effectivePrimaryGoal }, workspace.workspace.workspaceType);
@@ -1568,7 +1590,7 @@ guidedProjectsRouter.post("/projects-v2", async (req, res) => {
         websiteUrl: normalized?.rootUrl ?? clean(data.websiteUrl),
         niche: clean(data.niche),
         businessLocation: effectiveBusinessLocation,
-        businessLocationJson: data.businessLocationDetails ?? undefined,
+        businessLocationJson: effectiveBusinessLocationDetails ?? undefined,
         targetLocations: effectiveTargetLocations,
         targetLocation: effectiveTargetLocations.join(", ").slice(0, 180) || null,
         primaryGoal: effectivePrimaryGoal,
@@ -1589,11 +1611,30 @@ guidedProjectsRouter.post("/projects-v2", async (req, res) => {
       const existingWebsites = Array.isArray(agencyClient.websites) ? agencyClient.websites.map(String) : [];
       await tx.agencyClient.update({ where: { id: agencyClient.id }, data: {
         websites: normalized ? [...new Set([normalized.rootUrl, ...existingWebsites])] : existingWebsites,
-        businessLocations: clean(data.businessLocation) ? [clean(data.businessLocation)!] : agencyClient.businessLocations,
+        businessLocations: effectiveBusinessLocation ? [effectiveBusinessLocation] : agencyClient.businessLocations,
         targetMarkets: effectiveTargetLocations,
-        defaultSettings: { ...previousSettings, ...(clean(data.niche) ? { niche: clean(data.niche), industryNiche: clean(data.niche) } : {}), ...(clean(data.primaryGoal) ? { primaryBusinessGoal: clean(data.primaryGoal) } : {}), ...(clean(data.brandVoice) ? { brandVoice: clean(data.brandVoice) } : {}) },
+        defaultSettings: { ...previousSettings, ...(effectiveBusinessLocationDetails ? { businessLocationDetails: effectiveBusinessLocationDetails } : {}), ...(clean(data.niche) ? { niche: clean(data.niche), industryNiche: clean(data.niche) } : {}), ...(clean(data.primaryGoal) ? { primaryBusinessGoal: clean(data.primaryGoal) } : {}), ...(clean(data.brandVoice) ? { brandVoice: clean(data.brandVoice) } : {}) },
       } });
-      await recordWorkspaceActivity(tx, { context: workspace, action: "client.defaults_updated_from_project", entityType: "agency_client", entityId: agencyClient.id, agencyClientId: agencyClient.id, projectId: project.id, nextJson: { projectId: project.id } });
+      await recordWorkspaceActivity(tx, {
+        context: workspace, action: "client.defaults_updated_from_project", entityType: "agency_client", entityId: agencyClient.id, agencyClientId: agencyClient.id, projectId: project.id,
+        previousJson: { businessLocations: agencyClient.businessLocations, targetMarkets: agencyClient.targetMarkets, businessLocationDetails: previousSettings.businessLocationDetails ?? null } as Prisma.InputJsonValue,
+        nextJson: { businessLocations: effectiveBusinessLocation ? [effectiveBusinessLocation] : agencyClient.businessLocations, targetMarkets: effectiveTargetLocations, businessLocationDetails: effectiveBusinessLocationDetails, projectId: project.id },
+      });
+    }
+    const existingWorkspaceDefaults = locationDefaultsFromSettings(workspace.workspace.settingsJson);
+    const shouldSaveWorkspaceDefaults = workspace.workspace.workspaceType !== "agency" && (data.updateWorkspaceDefaults || !existingWorkspaceDefaults.businessLocation || !existingWorkspaceDefaults.targetMarkets.length);
+    if (shouldSaveWorkspaceDefaults && effectiveBusinessLocation) {
+      const nextSettings = withLocationDefaults(workspace.workspace.settingsJson, {
+        businessLocation: effectiveBusinessLocation,
+        businessLocationDetails: effectiveBusinessLocationDetails,
+        targetMarkets: effectiveTargetLocations,
+      });
+      await tx.workspace.update({ where: { id: workspace.workspace.id }, data: { settingsJson: nextSettings as Prisma.InputJsonValue } });
+      await recordWorkspaceActivity(tx, {
+        context: workspace, action: "workspace.location_defaults_updated", entityType: "workspace", entityId: workspace.workspace.id, projectId: project.id,
+        previousJson: existingWorkspaceDefaults as unknown as Prisma.InputJsonValue,
+        nextJson: locationDefaultsFromSettings(nextSettings) as unknown as Prisma.InputJsonValue,
+      });
     }
 
     await createInitialPlan(tx, project);
@@ -1667,24 +1708,36 @@ guidedProjectsRouter.patch("/projects-v2/:projectId/locations", async (req, res)
   if (!project) return res.status(404).json({ error: "project not found" });
   const targetMarkets = cleanTargetMarkets(parsed.data.targetMarkets);
   if (!targetMarkets.length) return res.status(400).json({ error: "At least one Target Market is required." });
-  const businessLocation = formatBusinessLocation(parsed.data.businessLocationDetails);
+  const businessLocationDetails = parsed.data.businessLocationDetails as BusinessLocation;
+  const businessLocation = formatBusinessLocation(businessLocationDetails);
   const strategyApproved = project.strategyPlans.some((strategy) => strategy.status === "approved");
   const projectChanged = project.businessLocation !== businessLocation || JSON.stringify(cleanTargetMarkets(Array.isArray(project.targetLocations) ? project.targetLocations.map(String) : [])) !== JSON.stringify(targetMarkets);
   const updated = await prisma.$transaction(async (tx) => {
     const next = await tx.project.update({ where: { id: project.id }, data: {
-      businessLocation, businessLocationJson: parsed.data.businessLocationDetails,
+      businessLocation, businessLocationJson: businessLocationDetails,
       targetLocations: targetMarkets, targetLocation: targetMarkets.join(", ").slice(0, 180),
     } });
     if (project.websiteId) await tx.website.update({ where: { id: project.websiteId }, data: { targetCountry: targetMarkets[0], targetCities: targetMarkets } });
     if (parsed.data.updateClient && project.agencyClientId) {
       const previousClient = await tx.agencyClient.findUnique({ where: { id: project.agencyClientId } });
-      await tx.agencyClient.update({ where: { id: project.agencyClientId }, data: { businessLocations: [businessLocation], targetMarkets } });
-      await recordWorkspaceActivity(tx, { context, action: "client.locations_updated", entityType: "agency_client", entityId: project.agencyClientId, agencyClientId: project.agencyClientId, projectId: project.id, previousJson: { businessLocations: previousClient?.businessLocations, targetMarkets: previousClient?.targetMarkets }, nextJson: { businessLocations: [businessLocation], targetMarkets } });
+      const previousSettings = previousClient?.defaultSettings && typeof previousClient.defaultSettings === "object" ? previousClient.defaultSettings as Record<string, unknown> : {};
+      await tx.agencyClient.update({ where: { id: project.agencyClientId }, data: { businessLocations: [businessLocation], targetMarkets, defaultSettings: { ...previousSettings, businessLocationDetails } } });
+      await recordWorkspaceActivity(tx, { context, action: "client.locations_updated", entityType: "agency_client", entityId: project.agencyClientId, agencyClientId: project.agencyClientId, projectId: project.id, previousJson: { businessLocations: previousClient?.businessLocations, targetMarkets: previousClient?.targetMarkets, businessLocationDetails: previousSettings.businessLocationDetails ?? null } as Prisma.InputJsonValue, nextJson: { businessLocations: [businessLocation], targetMarkets, businessLocationDetails } });
+    }
+    if (parsed.data.updateWorkspace && context.workspace.workspaceType !== "agency") {
+      const previousDefaults = locationDefaultsFromSettings(context.workspace.settingsJson);
+      const nextSettings = withLocationDefaults(context.workspace.settingsJson, { businessLocation, businessLocationDetails, targetMarkets });
+      await tx.workspace.update({ where: { id: context.workspace.id }, data: { settingsJson: nextSettings as Prisma.InputJsonValue } });
+      await recordWorkspaceActivity(tx, {
+        context, action: "workspace.location_defaults_updated", entityType: "workspace", entityId: context.workspace.id, projectId: project.id,
+        previousJson: previousDefaults as unknown as Prisma.InputJsonValue,
+        nextJson: locationDefaultsFromSettings(nextSettings) as unknown as Prisma.InputJsonValue,
+      });
     }
     if (projectChanged) await recordWorkspaceActivity(tx, {
       context, action: "project.locations_updated", entityType: "project", entityId: project.id, agencyClientId: project.agencyClientId, projectId: project.id,
       previousJson: { businessLocation: project.businessLocation, businessLocationDetails: project.businessLocationJson, targetMarkets: project.targetLocations },
-      nextJson: { businessLocation, businessLocationDetails: parsed.data.businessLocationDetails, targetMarkets, updateClient: parsed.data.updateClient },
+      nextJson: { businessLocation, businessLocationDetails, targetMarkets, updateClient: parsed.data.updateClient, updateWorkspace: parsed.data.updateWorkspace },
     });
     if (projectChanged && strategyApproved) await createWorkspaceNotification(tx, {
       context, userId: context.workspace.ownerUserId, type: "project_location_changed", title: "Refresh project research",
