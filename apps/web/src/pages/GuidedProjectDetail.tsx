@@ -566,11 +566,16 @@ export default function GuidedProjectDetail() {
         <div className="border-b border-charcoal-100 bg-charcoal-50/70 px-5 py-4">
           <div className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
             <div className="min-w-0">
-              <h1 className="text-[28px] font-bold leading-tight text-charcoal-950">{displayName}</h1>
+              <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
+                <h1 className="text-[28px] font-bold leading-tight text-charcoal-950">{displayName}</h1>
+                {project.website ? (
+                  <Link to={`/website-projects/${project.website.id}`} className="max-w-full break-all text-sm font-semibold text-brand-700 hover:text-brand-800 hover:underline">{project.website.rootUrl}</Link>
+                ) : (
+                  <span className="max-w-full break-all text-sm font-semibold text-brand-700">{projectUrl}</span>
+                )}
+              </div>
               <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-sm text-charcoal-500">
                 {internalProjectName && <span>Project: {internalProjectName}</span>}
-                <span className="break-words font-semibold text-brand-700">{project.website?.rootUrl ?? projectUrl}</span>
-                <span aria-hidden="true" className="text-charcoal-300">•</span>
                 <span><span className="font-semibold text-charcoal-700">Project type:</span> {projectTypeLabel(project)}</span>
                 <span aria-hidden="true" className="text-charcoal-300">•</span>
                 <span><span className="font-semibold text-charcoal-700">Location:</span> {project.businessLocation ?? "Not set"}</span>
@@ -578,15 +583,6 @@ export default function GuidedProjectDetail() {
             </div>
             <div className="flex flex-col gap-3 xl:items-end">
               <div className="flex flex-wrap items-center gap-2 xl:justify-end">
-                {project.website && (
-                  <Link
-                    to={`/website-projects/${project.website.id}`}
-                    className="inline-flex min-h-9 flex-col justify-center rounded-lg bg-brand-600 px-3 py-1.5 text-sm text-white shadow-sm hover:bg-brand-700"
-                  >
-                    <span className="text-[11px] font-semibold uppercase leading-4 tracking-wide text-white/75">Connected website project</span>
-                    <span className="max-w-[260px] truncate font-semibold leading-5 text-white">{project.website.rootUrl}</span>
-                  </Link>
-                )}
                 <StatusPill status={project.currentStep} />
                 <StatusPill status={project.status} />
                 {!archived && <Link to={`/guided-projects/${project.id}/intake`} className="inline-flex items-center justify-center rounded-lg bg-brand-600 px-3 py-2 text-sm font-semibold text-white hover:bg-brand-700">Edit profile</Link>}
