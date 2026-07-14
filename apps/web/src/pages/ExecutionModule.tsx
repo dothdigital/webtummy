@@ -1163,7 +1163,6 @@ function OpportunityScreen({
   onSkip: () => Promise<void>;
 }) {
   const project = data.projects[0];
-  const website = data.websites[0];
   const opportunities = [...(project?.opportunities ?? [])].sort((a, b) => {
     if (["selected", "confirmed"].includes(a.status) && !["selected", "confirmed"].includes(b.status)) return -1;
     if (["selected", "confirmed"].includes(b.status) && !["selected", "confirmed"].includes(a.status)) return 1;
@@ -1897,6 +1896,7 @@ function KeywordScreen({ data }: { data: ModuleData }) {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const project = data.projects[0];
+  const website = data.websites[0];
   const runs = data.keywordRuns;
   const [groups, setGroups] = useState(project?.keywordGroups ?? []);
   const [busy, setBusy] = useState<string | null>(null);
