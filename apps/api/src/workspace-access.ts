@@ -177,6 +177,7 @@ export async function canAccessAgencyClient(context: WorkspaceContext, agencyCli
       id: agencyClientId,
       workspaceId: context.workspace.id,
       OR: [
+        { createdById: context.membership.userId },
         { memberAssignments: { some: { membershipId: context.membership.id } } },
         { teamAssignments: { some: { team: { members: { some: { membershipId: context.membership.id } } } } } },
       ],

@@ -91,6 +91,7 @@ agencyWorkspaceRouter.get(["/agency/workspace", "/workspace"], (req, res) => han
   const context = await workspaceContext(req);
   const clientFilter = context.roles.has("owner") || context.roles.has("admin") ? {} : {
     OR: [
+      { createdById: context.membership.userId },
       { memberAssignments: { some: { membershipId: context.membership.id } } },
       { teamAssignments: { some: { team: { members: { some: { membershipId: context.membership.id } } } } } },
     ],
@@ -463,6 +464,11 @@ agencyWorkspaceRouter.post("/agency/clients", (req, res) => handle(res, async ()
       brandingJson: data.brandingJson as Prisma.InputJsonValue, internalNotes: data.internalNotes,
       clientVisibleNotes: data.clientVisibleNotes, defaultSettings: data.defaultSettings as Prisma.InputJsonValue,
     } });
+    if (!context.roles.has("owner") && !context.roles.has("admin")) {
+      await tx.agencyClientMember.create({
+        data: { agencyClientId: client.id, membershipId: context.membership.id, assignmentRole: "manager" },
+      });
+    }
     await recordWorkspaceActivity(tx, { context, action: "client.created", entityType: "agency_client", entityId: client.id, agencyClientId: client.id, nextJson: { name: client.name, status: client.status } });
     await createWorkspaceNotification(tx, { context, userId: context.membership.userId, type: "client_created", title: "Client created", body: `${client.name} was added to the workspace.`, actionUrl: `/agency/clients/${client.id}`, agencyClientId: client.id, emailEligible: false });
     return { client };
