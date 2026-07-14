@@ -1597,12 +1597,22 @@ guidedProjectsRouter.post("/projects-v2", async (req, res) => {
     }
 
     await createInitialPlan(tx, project);
-    const assignmentIds = [...new Set([data.managerMembershipId, ...data.assignedMembershipIds].filter((id): id is string => Boolean(id)))];
+    const assignCreator = !workspace.roles.has("owner") && !workspace.roles.has("admin");
+    const assignmentIds = [...new Set([
+      data.managerMembershipId,
+      ...data.assignedMembershipIds,
+      ...(assignCreator ? [workspace.membership.id] : []),
+    ].filter((id): id is string => Boolean(id)))];
     if (assignmentIds.length) {
       const validMembers = await tx.workspaceMembership.findMany({ where: { id: { in: assignmentIds }, workspaceId: workspace.workspace.id, status: "active" }, select: { id: true, userId: true } });
       if (validMembers.length !== assignmentIds.length) throw Object.assign(new Error("Project assignees must be active workspace members."), { statusCode: 400 });
-      await tx.projectMemberAssignment.createMany({ data: validMembers.map((member) => ({ projectId: project.id, membershipId: member.id, assignmentRole: member.id === data.managerMembershipId ? "manager" : "contributor" })) });
+      await tx.projectMemberAssignment.createMany({ data: validMembers.map((member) => ({
+        projectId: project.id,
+        membershipId: member.id,
+        assignmentRole: member.id === data.managerMembershipId || (member.id === workspace.membership.id && workspace.roles.has("manager")) ? "manager" : "contributor",
+      })) });
       for (const member of validMembers) {
+        if (member.userId === workspace.membership.userId) continue;
         await createWorkspaceNotification(tx, {
           context: workspace, userId: member.userId, type: "project_created", title: "Project assigned",
           body: `${project.name} was created and assigned to you.`, actionUrl: `/guided-projects/${project.id}`,

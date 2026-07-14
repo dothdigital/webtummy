@@ -203,6 +203,7 @@ export async function canAccessProject(context: WorkspaceContext, projectId: str
     ] } } },
   ];
   if (context.workspace.workspaceType === "agency") assignments.push(
+    { agencyClient: { workspaceId: context.workspace.id, createdById: context.membership.userId } },
     { agencyClient: { workspaceId: context.workspace.id, memberAssignments: { some: { membershipId: context.membership.id } } } },
     { agencyClient: { workspaceId: context.workspace.id, teamAssignments: { some: { team: { members: { some: { membershipId: context.membership.id } } } } } } },
   );
