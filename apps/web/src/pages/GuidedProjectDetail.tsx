@@ -162,6 +162,12 @@ function BusinessProfileCard({ project, preferredOutputs }: { project: GuidedPro
 
 function ProjectLocationEditor({ project, onSaved }: { project: GuidedProject; onSaved: (project: GuidedProject) => void }) {
   const current = project.businessLocationJson;
+  const existingBusinessLocation = [current?.city, current?.stateProvince, current?.country].filter(Boolean).join(", ") || project.businessLocation || "Not set";
+  const existingTargetMarkets = Array.isArray(project.targetLocations) && project.targetLocations.length
+    ? project.targetLocations.map(String)
+    : project.targetLocation
+      ? [project.targetLocation]
+      : [];
   const [editing, setEditing] = useState(false);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
@@ -184,6 +190,19 @@ function ProjectLocationEditor({ project, onSaved }: { project: GuidedProject; o
   return <Card className="p-4">
     <div className="flex flex-wrap items-center justify-between gap-3"><div><h3 className="font-bold text-charcoal-950">Business Location & Target Markets</h3><p className="mt-1 text-sm text-charcoal-500">Business identity and campaign targeting remain separate.</p></div><button type="button" onClick={() => setEditing(!editing)} className="rounded-lg bg-brand-600 px-3 py-2 text-sm font-bold text-white hover:bg-brand-700">{editing ? "Cancel" : "Edit locations"}</button></div>
     {message && <p className="mt-3 rounded-lg bg-amber-50 p-3 text-sm text-amber-900">{message}</p>}
+    {!editing && <div className="mt-4 grid gap-3 sm:grid-cols-2">
+      <div className="rounded-lg border border-charcoal-100 bg-charcoal-50/60 p-3">
+        <div className="text-[11px] font-bold uppercase tracking-wide text-charcoal-400">Business location</div>
+        <div className="mt-1 text-sm font-bold text-charcoal-900">{existingBusinessLocation}</div>
+        {(current?.streetAddress || current?.postalCode) && <div className="mt-1 text-xs text-charcoal-500">{[current.streetAddress, current.postalCode].filter(Boolean).join(", ")}</div>}
+      </div>
+      <div className="rounded-lg border border-charcoal-100 bg-charcoal-50/60 p-3">
+        <div className="text-[11px] font-bold uppercase tracking-wide text-charcoal-400">Target markets</div>
+        <div className="mt-2 flex flex-wrap gap-2">
+          {existingTargetMarkets.length ? existingTargetMarkets.map((market) => <span key={market} className="rounded-full bg-white px-2.5 py-1 text-xs font-bold text-charcoal-700 shadow-sm">{market}</span>) : <span className="text-sm font-bold text-charcoal-900">Not set</span>}
+        </div>
+      </div>
+    </div>}
     {editing && <div className="mt-4 grid gap-4 md:grid-cols-2">
       <BusinessLocationTargetMarkets value={{ country: form.country, stateProvince: form.stateProvince, city: form.city, streetAddress: form.streetAddress, postalCode: form.postalCode, targetMarkets: form.targetMarkets }} onChange={(value) => patch({ country: value.country, stateProvince: value.stateProvince, city: value.city, streetAddress: value.streetAddress, postalCode: value.postalCode, targetMarkets: value.targetMarkets })} />
       {project.agencyClientId && <label className="flex items-start gap-3 rounded-lg border border-brand-100 bg-brand-50 p-3 text-sm md:col-span-2"><input type="checkbox" checked={form.updateClient} onChange={(event) => patch({ updateClient: event.target.checked })} className="mt-1" /><span className="min-w-0"><span className="flex items-center gap-2 font-bold text-charcoal-900">Update the Agency Client defaults too <span className="group relative inline-flex" tabIndex={0}><span className="grid h-5 w-5 cursor-help place-items-center rounded-full border border-brand-300 bg-white text-xs font-bold text-brand-700" aria-label="About Agency Client defaults">i</span><span role="tooltip" className="pointer-events-none absolute bottom-full left-1/2 z-30 mb-2 hidden w-72 -translate-x-1/2 rounded-lg bg-charcoal-950 px-3 py-2 text-xs font-medium leading-5 text-white shadow-xl group-hover:block group-focus:block">Turn this on only when the new Business Location and Target Markets should become the reusable defaults for this Agency Client. Future projects can inherit them. Leave it off to change only this project.</span></span></span><span className="mt-1 block leading-5 text-charcoal-600">Off: project-only override. On: also update the client record used by future projects.</span></span></label>}
