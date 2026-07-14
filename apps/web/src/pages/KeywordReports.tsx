@@ -488,6 +488,10 @@ export default function KeywordReports() {
         {showAddKeyword && (
           <div className="border-b border-charcoal-100 bg-white">
             <form onSubmit={createRun} className="space-y-4 p-5">
+              <div className="sticky top-2 z-20 flex flex-col gap-2 rounded-xl border border-slate-200 bg-white/95 px-4 py-3 shadow-sm backdrop-blur sm:flex-row sm:items-center sm:justify-between">
+                <div><div className="text-sm font-bold text-charcoal-900">Keyword analysis workflow</div><div className="mt-0.5 text-xs text-charcoal-500">Return to Keyword Intelligence at any time without starting an analysis.</div></div>
+                <Link to={backToKeywords} className="inline-flex w-fit items-center justify-center rounded-lg border border-brand-200 bg-brand-50 px-4 py-2 text-sm font-bold text-brand-700 hover:bg-brand-100">← Back to Keyword Intelligence</Link>
+              </div>
               <div className="grid grid-cols-1 overflow-hidden rounded-xl border border-slate-200 bg-slate-50 text-sm sm:grid-cols-3">
                 <div className={`px-4 py-3 font-semibold ${keywordStep === "select" ? "bg-brand-600 text-white" : "text-slate-500"}`}>
                   <span className="mr-2">1</span>Select or add keywords
@@ -767,6 +771,9 @@ export default function KeywordReports() {
                 </Button>
               </div>
               </>}
+              <div className="flex justify-center border-t border-slate-100 pt-4 sm:justify-end">
+                <Link to={backToKeywords} className="inline-flex w-full items-center justify-center rounded-lg border border-brand-200 bg-white px-5 py-2.5 text-sm font-bold text-brand-700 shadow-sm hover:bg-brand-50 sm:w-auto">← Back to Keyword Intelligence</Link>
+              </div>
             </form>
           </div>
         )}
