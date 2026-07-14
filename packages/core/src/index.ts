@@ -9,3 +9,4 @@ export * from "./scoring.js";
 export * from "./geoKeywordScoring.js";
 export * from "./localSeo.js";
 export * from "./projectGoals.js";
+export * from "./workspacePermissions.js";

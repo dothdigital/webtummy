@@ -8,6 +8,7 @@ import { requireAuth } from "../middleware.js";
 import { config } from "../config.js";
 import { sendMail } from "../email.js";
 import { trialEndsFrom } from "../billing.js";
+import { hasWorkspacePermission, type WorkspaceContext } from "../workspace-access.js";
 
 export const authRouter = Router();
 
@@ -30,7 +31,7 @@ async function workspaceSession(userId: string) {
   const membership = await prisma.workspaceMembership.findFirst({
     where: { userId, status: "active", workspace: { status: "active" } },
     orderBy: { createdAt: "asc" },
-    include: { workspace: { select: { id: true, name: true, workspaceType: true, ownerUserId: true, legacyClientId: true } }, roles: { select: { role: true } } },
+    include: { workspace: { select: { id: true, name: true, workspaceType: true, ownerUserId: true, legacyClientId: true, settingsJson: true, securitySettingsJson: true, autoApprovalPolicyJson: true } }, roles: { select: { role: true } } },
   });
   if (!membership) return null;
   const [clientCount, projectCount] = await Promise.all([
@@ -53,6 +54,9 @@ async function workspaceSession(userId: string) {
   ];
   const primaryRole = roles.find((role) => ["admin", "manager", "editor", "viewer", "client_viewer"].includes(role)) ?? "viewer";
   const landingPath = primaryRole === "client_viewer" || primaryRole === "admin" || primaryRole === "manager" ? "/workspace" : "/";
+  const context: WorkspaceContext = { workspace: membership.workspace, membership, roles: stored };
+  const permissionNames = ["manage_settings", "manage_projects", "create_projects", "edit_project_settings", "assign_tasks", "approve", "edit_assigned_work", "run_ai_analysis", "edit_strategy", "execute_tasks", "publish", "billing", "read_internal", "manage_clients", "manage_users", "manage_integrations", "read_integrations", "manage_api_keys", "view_reports", "export_reports", "view_activity", "view_notifications"];
+  const permissions = Object.fromEntries(permissionNames.map((permission) => [permission, hasWorkspacePermission(context, permission)]));
   return {
     id: membership.workspace.id,
     name: membership.workspace.name,
@@ -64,14 +68,15 @@ async function workspaceSession(userId: string) {
     onboardingRequired: clientCount === 0 && projectCount === 0,
     landingPath,
     capabilities: {
-      manageWorkspace: primaryRole === "admin",
-      manageProjects: primaryRole === "admin" || primaryRole === "manager",
-      assignTasks: primaryRole === "admin" || primaryRole === "manager",
-      approve: primaryRole === "admin" || primaryRole === "manager" || primaryRole === "client_viewer",
-      edit: primaryRole === "admin" || primaryRole === "manager" || primaryRole === "editor",
-      publish: primaryRole === "admin" || primaryRole === "manager",
-      billing: primaryRole === "admin",
-      viewInternal: primaryRole !== "client_viewer",
+      manageWorkspace: permissions.manage_settings,
+      manageProjects: permissions.manage_projects,
+      assignTasks: permissions.assign_tasks,
+      approve: permissions.approve,
+      edit: permissions.edit_assigned_work,
+      publish: permissions.publish,
+      billing: permissions.billing,
+      viewInternal: permissions.read_internal,
+      permissions,
     },
   };
 }

@@ -9,6 +9,7 @@ import { assignableWorkspaceRoles, canAccessAgencyClient, canAccessProject, crea
 import { locationDefaultsFromSettings, normalizeRequiredLocations } from "../dev004.js";
 import { normalizeProjectGoals } from "../dev005.js";
 import { agencyNextActions } from "../dev002.js";
+import { configurableWorkspaceRoles } from "@webtummy/core/workspace-permissions";
 
 export const agencyWorkspaceRouter = Router();
 agencyWorkspaceRouter.use(requireAuth);
@@ -20,6 +21,9 @@ function handle(res: Response, action: () => Promise<unknown>) {
     if (typed.code === "P2002") return res.status(409).json({ error: "A record with this name already exists." });
     return res.status(typed.statusCode ?? 500).json({ error: typed.message ?? "Agency Workspace request failed." });
   });
+}
+function requirePermission(context: Awaited<ReturnType<typeof workspaceContext>>, permission: string) {
+  if (!hasWorkspacePermission(context, permission)) throw Object.assign(new Error("Insufficient workspace permission."), { statusCode: 403 });
 }
 
 const clientFields = {
@@ -92,9 +96,8 @@ const taskDecisionSchema = z.object({
   snapshotJson: z.record(z.unknown()).default({}),
 });
 const approvalPolicySchema = z.object({ allowManagerSelfApproval: z.boolean() });
-const configurablePermissionRoles = ["manager", "editor", "viewer", "client_viewer"] as const;
 const rolePermissionPolicySchema = z.object({
-  roles: z.record(z.enum(configurablePermissionRoles), z.object({
+  roles: z.record(z.enum(configurableWorkspaceRoles), z.object({
     allow: z.array(z.string().trim().min(1)).max(100).default([]),
     deny: z.array(z.string().trim().min(1)).max(100).default([]),
   })).default({}),
@@ -104,7 +107,7 @@ const normalizeName = (name: string) => name.trim().toLocaleLowerCase().replace(
 
 agencyWorkspaceRouter.get(["/agency/workspace", "/workspace"], (req, res) => handle(res, async () => {
   const context = await workspaceContext(req);
-  const clientFilter = context.roles.has("owner") || context.roles.has("admin") ? {} : {
+  const clientFilter = hasWorkspacePermission(context, "manage_clients") ? {} : {
     OR: [
       { createdById: context.membership.userId },
       { memberAssignments: { some: { membershipId: context.membership.id } } },
@@ -112,7 +115,9 @@ agencyWorkspaceRouter.get(["/agency/workspace", "/workspace"], (req, res) => han
     ],
   };
   const clientViewer = context.roles.has("client_viewer") && context.roles.size === 1;
-  const workspaceAdmin = context.roles.has("owner") || context.roles.has("admin");
+  const canManageUsers = hasWorkspacePermission(context, "manage_users");
+  const canViewNotifications = hasWorkspacePermission(context, "view_notifications");
+  const canViewActivity = hasWorkspacePermission(context, "view_activity");
   const [clients, teams, members, invitations, notifications, activity] = await Promise.all([
     prisma.agencyClient.findMany({
       where: { workspaceId: context.workspace.id, ...clientFilter },
@@ -129,13 +134,13 @@ agencyWorkspaceRouter.get(["/agency/workspace", "/workspace"], (req, res) => han
         teamAssignments: { include: { team: true } },
       },
     }),
-    workspaceAdmin ? prisma.workspaceTeam.findMany({ where: { workspaceId: context.workspace.id }, orderBy: { name: "asc" }, include: { members: { include: { membership: { include: { user: { select: { id: true, name: true, email: true } }, roles: true } } } }, _count: { select: { clientAssignments: true, projectAssignments: true } } } }) : Promise.resolve([]),
-    workspaceAdmin ? prisma.workspaceMembership.findMany({ where: { workspaceId: context.workspace.id }, orderBy: { createdAt: "asc" }, include: { user: { select: { id: true, name: true, email: true, isActive: true } }, roles: true, teamMemberships: { include: { team: true } } } }) : Promise.resolve([]),
-    workspaceAdmin ? prisma.workspaceInvitation.findMany({ where: { workspaceId: context.workspace.id, status: "invited" }, orderBy: { createdAt: "desc" }, select: { id: true, email: true, name: true, rolesJson: true, teamIdsJson: true, agencyClientIdsJson: true, status: true, expiresAt: true, createdAt: true } }) : Promise.resolve([]),
-    prisma.workspaceNotification.findMany({ where: { workspaceId: context.workspace.id, userId: context.membership.userId, ...(clientViewer ? { type: "report_sent" } : {}) }, orderBy: { createdAt: "desc" }, take: 50 }),
-    prisma.workspaceActivity.findMany({ where: { workspaceId: context.workspace.id, ...(clientViewer ? { agencyClientId: { in: [] } } : {}) }, orderBy: { createdAt: "desc" }, take: 100, include: { actor: { select: { id: true, name: true, email: true } } } }),
+    canManageUsers ? prisma.workspaceTeam.findMany({ where: { workspaceId: context.workspace.id }, orderBy: { name: "asc" }, include: { members: { include: { membership: { include: { user: { select: { id: true, name: true, email: true } }, roles: true } } } }, _count: { select: { clientAssignments: true, projectAssignments: true } } } }) : Promise.resolve([]),
+    canManageUsers ? prisma.workspaceMembership.findMany({ where: { workspaceId: context.workspace.id }, orderBy: { createdAt: "asc" }, include: { user: { select: { id: true, name: true, email: true, isActive: true } }, roles: true, teamMemberships: { include: { team: true } } } }) : Promise.resolve([]),
+    canManageUsers ? prisma.workspaceInvitation.findMany({ where: { workspaceId: context.workspace.id, status: "invited" }, orderBy: { createdAt: "desc" }, select: { id: true, email: true, name: true, rolesJson: true, teamIdsJson: true, agencyClientIdsJson: true, status: true, expiresAt: true, createdAt: true } }) : Promise.resolve([]),
+    canViewNotifications ? prisma.workspaceNotification.findMany({ where: { workspaceId: context.workspace.id, userId: context.membership.userId, ...(clientViewer ? { type: "report_sent" } : {}) }, orderBy: { createdAt: "desc" }, take: 50 }) : Promise.resolve([]),
+    canViewActivity ? prisma.workspaceActivity.findMany({ where: { workspaceId: context.workspace.id, ...(clientViewer ? { agencyClientId: { in: [] } } : {}) }, orderBy: { createdAt: "desc" }, take: 100, include: { actor: { select: { id: true, name: true, email: true } } } }) : Promise.resolve([]),
   ]);
-  const directProjectFilter: Prisma.ProjectWhereInput = context.roles.has("owner") || context.roles.has("admin") || context.workspace.workspaceType === "personal" ? {} : {
+  const directProjectFilter: Prisma.ProjectWhereInput = hasWorkspacePermission(context, "manage_projects") || context.workspace.workspaceType === "personal" ? {} : {
     OR: [
       { memberAssignments: { some: { membershipId: context.membership.id } } },
       { teamAssignments: { some: { team: { members: { some: { membershipId: context.membership.id } } } } } },
@@ -245,6 +250,7 @@ agencyWorkspaceRouter.get(["/agency/workspace", "/workspace"], (req, res) => han
     pendingApprovalTasks: clientViewer ? [] : pendingApprovalTasks,
     summary,
     nextActions: clientViewer ? [] : agencyNextActions(summary),
+    permissions: Object.fromEntries(["manage_users", "manage_roles", "manage_clients", "create_projects", "edit_project_settings", "manage_projects", "run_ai_analysis", "edit_strategy", "execute_tasks", "assign_tasks", "approve", "publish", "view_reports", "export_reports", "view_activity", "view_notifications", "manage_integrations", "read_integrations", "manage_api_keys", "billing"].map((permission) => [permission, hasWorkspacePermission(context, permission)])),
   };
 }));
 
@@ -286,8 +292,11 @@ agencyWorkspaceRouter.patch(["/agency/settings/approval-policy", "/workspace/set
 
 agencyWorkspaceRouter.post(["/agency/invitations", "/workspace/invitations"], (req, res) => handle(res, async () => {
   const context = await workspaceContext(req);
-  requireWorkspaceRole(context, "owner", "admin");
+  requirePermission(context, "manage_users");
   const data = invitationSchema.parse(req.body);
+  if (!hasWorkspacePermission(context, "manage_roles") && data.roles.some((role) => role === "admin" || role === "manager")) {
+    throw Object.assign(new Error("Only Owner/Admin can invite administrators or managers."), { statusCode: 403 });
+  }
   validateRolesForWorkspace(context, data.roles);
   if (data.roles.includes("client_viewer") && !data.agencyClientIds.length) throw Object.assign(new Error("Client Viewer invitations require at least one client assignment."), { statusCode: 400 });
   const normalizedEmail = data.email.trim().toLowerCase();
@@ -322,7 +331,7 @@ agencyWorkspaceRouter.post(["/agency/invitations", "/workspace/invitations"], (r
 
 agencyWorkspaceRouter.post(["/agency/invitations/:invitationId/revoke", "/workspace/invitations/:invitationId/revoke"], (req, res) => handle(res, async () => {
   const context = await workspaceContext(req);
-  requireWorkspaceRole(context, "owner", "admin");
+  requirePermission(context, "manage_users");
   const invitation = await prisma.workspaceInvitation.findFirst({ where: { id: req.params.invitationId, workspaceId: context.workspace.id, status: "invited" } });
   if (!invitation) throw Object.assign(new Error("Invitation not found."), { statusCode: 404 });
   await prisma.$transaction(async (tx) => {
@@ -334,7 +343,7 @@ agencyWorkspaceRouter.post(["/agency/invitations/:invitationId/revoke", "/worksp
 
 agencyWorkspaceRouter.put("/agency/clients/:clientId/assignments", (req, res) => handle(res, async () => {
   const context = await workspaceContext(req);
-  requireWorkspaceRole(context, "owner", "admin");
+  requirePermission(context, "manage_clients");
   const data = clientAssignmentsSchema.parse(req.body);
   const client = await prisma.agencyClient.findFirst({ where: { id: req.params.clientId, workspaceId: context.workspace.id } });
   if (!client) throw Object.assign(new Error("Client not found."), { statusCode: 404 });
@@ -444,7 +453,7 @@ agencyWorkspaceRouter.get("/agency/projects/:projectId/dashboard", (req, res) =>
 
 agencyWorkspaceRouter.put("/agency/projects/:projectId/assignments", (req, res) => handle(res, async () => {
   const context = await workspaceContext(req);
-  requireWorkspaceRole(context, "owner", "admin");
+  requirePermission(context, "manage_projects");
   const data = clientAssignmentsSchema.parse(req.body);
   const project = await prisma.project.findFirst({ where: { id: req.params.projectId, agencyClient: { workspaceId: context.workspace.id } } });
   if (!project) throw Object.assign(new Error("Project not found."), { statusCode: 404 });
@@ -467,7 +476,7 @@ agencyWorkspaceRouter.put("/agency/projects/:projectId/assignments", (req, res) 
 
 agencyWorkspaceRouter.post("/agency/reports/:reportId/send-to-client", (req, res) => handle(res, async () => {
   const context = await workspaceContext(req);
-  if (!hasWorkspacePermission(context, "manage_reports") && !context.roles.has("manager")) throw Object.assign(new Error("Report delivery requires Manager, Admin, or Owner authority."), { statusCode: 403 });
+  requirePermission(context, "export_reports");
   const report = await prisma.gapReportExport.findFirst({
     where: { id: req.params.reportId, project: { agencyClient: { workspaceId: context.workspace.id } } },
     include: { project: { include: { agencyClient: true } } },
@@ -496,7 +505,7 @@ agencyWorkspaceRouter.post("/agency/reports/:reportId/send-to-client", (req, res
 
 agencyWorkspaceRouter.post("/agency/clients", (req, res) => handle(res, async () => {
   const context = await workspaceContext(req);
-  requireWorkspaceRole(context, "owner", "admin", "manager");
+  requirePermission(context, "manage_clients");
   if (context.workspace.workspaceType !== "agency") throw Object.assign(new Error("Client management is available only in Agency workspaces."), { statusCode: 400 });
   const parsed = createClientSchema.parse(req.body);
   const normalizedLocations = normalizeRequiredLocations(parsed.businessLocations, parsed.targetMarkets);
@@ -526,7 +535,7 @@ agencyWorkspaceRouter.post("/agency/clients", (req, res) => handle(res, async ()
 
 agencyWorkspaceRouter.patch("/agency/clients/:clientId", (req, res) => handle(res, async () => {
   const context = await workspaceContext(req);
-  requireWorkspaceRole(context, "owner", "admin", "manager");
+  requirePermission(context, "manage_clients");
   if (!await canAccessAgencyClient(context, req.params.clientId)) throw Object.assign(new Error("Client not found."), { statusCode: 404 });
   const parsed = updateClientSchema.parse(req.body);
   const previous = await prisma.agencyClient.findFirst({ where: { id: req.params.clientId, workspaceId: context.workspace.id } });
@@ -565,7 +574,7 @@ agencyWorkspaceRouter.patch("/agency/clients/:clientId", (req, res) => handle(re
 for (const action of ["archive", "restore"] as const) {
   agencyWorkspaceRouter.post(`/agency/clients/:clientId/${action}`, (req, res) => handle(res, async () => {
     const context = await workspaceContext(req);
-    requireWorkspaceRole(context, "owner", "admin", "manager");
+    requirePermission(context, "manage_clients");
     const client = await prisma.agencyClient.findFirst({ where: { id: req.params.clientId, workspaceId: context.workspace.id } });
     if (!client) throw Object.assign(new Error("Client not found."), { statusCode: 404 });
     const status = action === "archive" ? "archived" : "active";
@@ -626,7 +635,7 @@ agencyWorkspaceRouter.put(["/agency/teams/:teamId/members", "/workspace/teams/:t
 
 agencyWorkspaceRouter.patch(["/agency/members/:membershipId/status", "/workspace/members/:membershipId/status"], (req, res) => handle(res, async () => {
   const context = await workspaceContext(req);
-  requireWorkspaceRole(context, "owner", "admin");
+  requirePermission(context, "manage_users");
   const data = membershipStatusSchema.parse(req.body);
   const target = await prisma.workspaceMembership.findFirst({ where: { id: req.params.membershipId, workspaceId: context.workspace.id }, include: { user: { select: { id: true } } } });
   if (!target) throw Object.assign(new Error("Member not found."), { statusCode: 404 });
@@ -645,7 +654,7 @@ agencyWorkspaceRouter.patch(["/agency/members/:membershipId/status", "/workspace
 
 agencyWorkspaceRouter.delete(["/agency/members/:membershipId", "/workspace/members/:membershipId"], (req, res) => handle(res, async () => {
   const context = await workspaceContext(req);
-  requireWorkspaceRole(context, "owner", "admin");
+  requirePermission(context, "manage_users");
   const data = deleteMembershipSchema.parse(req.body);
   const target = await prisma.workspaceMembership.findFirst({
     where: { id: req.params.membershipId, workspaceId: context.workspace.id },
@@ -744,6 +753,7 @@ agencyWorkspaceRouter.post(["/agency/ownership/transfer", "/workspace/ownership/
 
 agencyWorkspaceRouter.patch(["/agency/notifications/:notificationId/read", "/workspace/notifications/:notificationId/read"], (req, res) => handle(res, async () => {
   const context = await workspaceContext(req);
+  requirePermission(context, "view_notifications");
   const result = await prisma.workspaceNotification.updateMany({ where: { id: req.params.notificationId, workspaceId: context.workspace.id, userId: context.membership.userId }, data: { readAt: new Date() } });
   if (!result.count) throw Object.assign(new Error("Notification not found."), { statusCode: 404 });
   return { updated: true };

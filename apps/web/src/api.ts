@@ -42,6 +42,7 @@ export interface AppUser {
     capabilities: {
       manageWorkspace: boolean; manageProjects: boolean; assignTasks: boolean; approve: boolean;
       edit: boolean; publish: boolean; billing: boolean; viewInternal: boolean;
+      permissions: Record<string, boolean>;
     };
   } | null;
 }

@@ -18,31 +18,32 @@ type HelpContent = {
 
 const nav = [
   { to: "/", label: "Dashboard", icon: "overview", end: true },
-  { to: "/projects", label: "Projects", icon: "projects" },
+  { to: "/projects", label: "Projects", icon: "projects", permission: "read_internal" },
   { to: "/workspace", label: "Workspace", icon: "users" },
-  { to: "/opportunities", label: "Opportunities", icon: "local" },
-  { to: "/strategy", label: "Strategy", icon: "plans" },
-  { to: "/keywords", label: "Keywords", icon: "keywords" },
-  { to: "/site-analysis", label: "Site Analysis", icon: "audits" },
-  { to: "/backlinks", label: "Backlinks & Authority", icon: "social" },
-  { to: "/ai-citations", label: "AI Citations", icon: "content" },
-  { to: "/site-architect", label: "Site Architect", icon: "overview" },
-  { to: "/lead-magnets", label: "Lead Magnets", icon: "billing" },
-  { to: "/growth", label: "Growth Engine", icon: "plans" },
-  { to: "/gap-analysis", label: "Gap Analysis", icon: "plans" },
-  { to: "/local-seo", label: "Domain", icon: "local" },
-  { to: "/ai-content", label: "Publishing", icon: "content" },
-  { to: "/social-strategy", label: "Social", icon: "social" },
+  { to: "/opportunities", label: "Opportunities", icon: "local", permission: "run_ai_analysis" },
+  { to: "/strategy", label: "Strategy", icon: "plans", permission: "edit_strategy" },
+  { to: "/keywords", label: "Keywords", icon: "keywords", permission: "run_ai_analysis" },
+  { to: "/site-analysis", label: "Site Analysis", icon: "audits", permission: "run_ai_analysis" },
+  { to: "/backlinks", label: "Backlinks & Authority", icon: "social", permission: "run_ai_analysis" },
+  { to: "/ai-citations", label: "AI Citations", icon: "content", permission: "run_ai_analysis" },
+  { to: "/site-architect", label: "Site Architect", icon: "overview", permission: "run_ai_analysis" },
+  { to: "/lead-magnets", label: "Lead Magnets", icon: "billing", permission: "run_ai_analysis" },
+  { to: "/growth", label: "Growth Engine", icon: "plans", permission: "run_ai_analysis" },
+  { to: "/gap-analysis", label: "Gap Analysis", icon: "plans", permission: "run_ai_analysis" },
+  { to: "/local-seo", label: "Domain", icon: "local", permission: "run_ai_analysis" },
+  { to: "/ai-content", label: "Publishing", icon: "content", permission: "publish" },
+  { to: "/social-strategy", label: "Social", icon: "social", permission: "publish" },
   { to: "/admin", label: "Admin Management", icon: "users", superOnly: true },
   { to: "/admin/automation", label: "Automation Center", icon: "plans", superOnly: true },
-  { to: "/keyword-insights", label: "Reports", icon: "audits" },
-  { to: "/billing", label: "Billing", icon: "billing" },
+  { to: "/keyword-insights", label: "Reports", icon: "audits", permission: "view_reports" },
+  { to: "/billing", label: "Billing", icon: "billing", permission: "billing" },
 ] satisfies {
   to: string;
   label: string;
   icon: NavIcon;
   end?: boolean;
   superOnly?: boolean;
+  permission?: string;
 }[];
 
 const sharedHelpSections = {
@@ -661,6 +662,7 @@ export default function Layout({ children }: { children: ReactNode }) {
   const [plans, setPlans] = useState<BillingPlan[]>([]);
   const [busyPlan, setBusyPlan] = useState<string | null>(null);
   const [workspaceRoles, setWorkspaceRoles] = useState<string[]>(() => user?.workspace?.roles ?? []);
+  const [workspacePermissions, setWorkspacePermissions] = useState<Record<string, boolean>>(() => user?.workspace?.capabilities.permissions ?? {});
   const [workspaceIdentity, setWorkspaceIdentity] = useState<{ name: string; workspaceType: string } | null>(() => user?.workspace ? { name: user.workspace.name, workspaceType: user.workspace.type } : null);
 
   useEffect(() => {
@@ -686,18 +688,20 @@ export default function Layout({ children }: { children: ReactNode }) {
   }, [user]);
 
   useEffect(() => {
-    if (!user) { setWorkspaceRoles([]); setWorkspaceIdentity(null); return; }
+    if (!user) { setWorkspaceRoles([]); setWorkspacePermissions({}); setWorkspaceIdentity(null); return; }
     let cancelled = false;
-    api.get<{ workspace: { name: string; workspaceType: string }; currentMembership: { roles: string[] } }>("/api/workspace")
+    api.get<{ workspace: { name: string; workspaceType: string }; currentMembership: { roles: string[] }; permissions: Record<string, boolean> }>("/api/workspace")
       .then((result) => {
         if (cancelled) return;
         setWorkspaceRoles(result.currentMembership.roles);
         setWorkspaceIdentity(result.workspace);
+        setWorkspacePermissions(result.permissions);
       })
       .catch(() => {
         if (cancelled) return;
         setWorkspaceRoles([]);
         setWorkspaceIdentity(null);
+        setWorkspacePermissions({});
       });
     return () => { cancelled = true; };
   }, [user]);
@@ -727,6 +731,7 @@ export default function Layout({ children }: { children: ReactNode }) {
   const clientViewerOnly = primaryRole === "client_viewer" || (effectiveRoles.length === 1 && effectiveRoles[0] === "client_viewer");
   const items = nav.filter((n) => {
     if (n.superOnly) return user?.role === "super_admin";
+    if (n.permission && user?.role !== "super_admin" && workspacePermissions[n.permission] !== true) return false;
     if (clientViewerOnly) return n.to === "/workspace";
     if (n.to === "/billing") return user?.role === "super_admin" || primaryRole === "admin";
     if (n.to === "/workspace") return primaryRole === "admin" || primaryRole === "manager";

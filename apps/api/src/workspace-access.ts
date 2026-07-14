@@ -1,6 +1,7 @@
 import type { Request } from "express";
 import { prisma, type Prisma } from "@webtummy/db";
 import { projectClientIdForRequest } from "./project-scope.js";
+import { defaultWorkspacePermission, type ConfigurableWorkspaceRole } from "@webtummy/core/workspace-permissions";
 
 export const workspaceRoles = ["owner", "admin", "manager", "approver", "editor", "viewer", "client_viewer"] as const;
 export type WorkspaceRole = (typeof workspaceRoles)[number];
@@ -136,17 +137,11 @@ export function hasWorkspacePermission(context: WorkspaceContext, permission: st
   const policyRoles = [...context.roles].map((role) => role === "approver" ? "manager" : role);
   if (policyRoles.some((role) => Array.isArray(rolePolicies[role]?.deny) && rolePolicies[role].deny.includes(permission))) return false;
   if (policyRoles.some((role) => Array.isArray(rolePolicies[role]?.allow) && rolePolicies[role].allow.includes(permission))) return true;
-  const defaults: Record<WorkspaceRole, readonly string[]> = {
-    owner: [],
-    admin: ["manage_clients", "manage_projects", "manage_users", "manage_teams", "manage_templates", "manage_reports", "manage_settings", "manage_integrations", "manage_api_keys", "billing"],
-    manager: ["manage_clients", "manage_projects", "manage_assigned_clients", "manage_assigned_projects", "manage_integrations", "assign_tasks", "request_approval", "approve", "publish", "run_ai_analysis", "edit_strategy", "execute_tasks", "view_reports", "export_reports", "view_activity", "view_notifications"],
-    // Legacy role retained for existing records; it behaves as Manager/Approver.
-    approver: ["manage_clients", "manage_projects", "manage_assigned_clients", "manage_assigned_projects", "manage_integrations", "assign_tasks", "request_approval", "approve", "publish", "run_ai_analysis", "edit_strategy", "execute_tasks", "view_reports", "export_reports", "view_activity", "view_notifications"],
-    editor: ["create_projects", "edit_project_settings", "edit_assigned_work", "run_ai_analysis", "edit_strategy", "execute_tasks", "submit_for_approval", "publish", "view_reports", "export_reports", "view_activity", "view_notifications", "read_integrations"],
-    viewer: ["read_internal", "view_reports", "view_activity", "view_notifications"],
-    client_viewer: ["read_shared_client_data", "view_reports", "export_reports", "view_activity", "view_notifications"],
-  };
-  return workspaceRoles.some((role) => hasWorkspaceRole(context, role) && defaults[role].includes(permission));
+  return workspaceRoles.some((role) => {
+    if (!hasWorkspaceRole(context, role) || role === "owner" || role === "admin") return false;
+    const defaultRole = (role === "approver" ? "manager" : role) as ConfigurableWorkspaceRole;
+    return defaultWorkspacePermission(defaultRole, permission);
+  });
 }
 
 export function effectiveWorkspaceRoles(context: WorkspaceContext): AssignableWorkspaceRole[] {

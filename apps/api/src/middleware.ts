@@ -42,6 +42,35 @@ export async function requireAuth(req: Request, res: Response, next: NextFunctio
 }
 
 /** Enforce DEV-016 role capabilities for every authenticated API action. */
+export function permissionForWorkspaceRequest(method: string, rawPath: string) {
+  const path = rawPath.toLowerCase();
+  const write = !["GET", "HEAD", "OPTIONS"].includes(method.toUpperCase());
+  if (!write) {
+    if (/activity|audit-log/.test(path)) return "view_activity";
+    if (/notifications?/.test(path)) return "view_notifications";
+    if (/reports?|insights|analytics|rankings|health-report/.test(path)) return "view_reports";
+    if (/integrations?|social-connect\/accounts/.test(path)) return "read_integrations";
+    if (/strategy/.test(path)) return "edit_strategy";
+    if (/execution-plan|execution-tasks?/.test(path)) return "execute_tasks";
+    if (/opportunit|keyword-research|geo-keyword|crawl|site-analysis|ai-content|growth|gap-analysis|local-seo/.test(path)) return "run_ai_analysis";
+    return "read_internal";
+  }
+  if (/billing|subscription|checkout|portal-session|seats/.test(path)) return "billing";
+  if (/api[-_/]?keys?|credentials?/.test(path)) return "manage_api_keys";
+  if (/integrations?|connect\/(facebook|instagram)|wordpress\/connect/.test(path)) return "manage_integrations";
+  if (/invitations?|memberships?|\/users(?:\/|$)/.test(path)) return "manage_users";
+  if (/publish|schedule|post-now|send-to-client/.test(path)) return "publish";
+  if (/approve|decision/.test(path)) return "approve";
+  if (/\/archive\/?$|\/restore\/?$/.test(path) || (method.toUpperCase() === "DELETE" && /^\/projects-v2\/[^/]+\/?$/.test(path))) return "manage_projects";
+  if (method.toUpperCase() === "POST" && /^\/projects-v2\/?$/.test(path)) return "create_projects";
+  if (/\/projects-v2\/[^/]+\/(locations|goals|intake)\/?$/.test(path)) return "edit_project_settings";
+  if (/strategy/.test(path)) return "edit_strategy";
+  if (/execution-plan|execution-tasks?|\/tasks?\//.test(path)) return "execute_tasks";
+  if (/reports?/.test(path)) return "export_reports";
+  if (/opportunit|keyword|crawl|pagespeed|intelligence|analy[sz]|generate|suggestion|recommendation|audit|scan|ai-content|growth|local-seo|geo-keyword/.test(path)) return "run_ai_analysis";
+  return "edit_assigned_work";
+}
+
 export async function enforceWorkspacePermissions(req: Request, res: Response, next: NextFunction) {
   if (!req.user) return res.status(401).json({ error: "unauthenticated" });
   const platformAdminRoute = ["/api/users", "/api/clients", "/api/admin"].some((prefix) => req.originalUrl.startsWith(prefix));
@@ -49,19 +78,7 @@ export async function enforceWorkspacePermissions(req: Request, res: Response, n
   if (req.originalUrl.startsWith("/api/workspace") || req.originalUrl.startsWith("/api/agency")) return next();
   try {
     const context = await workspaceContext(req);
-    const path = req.path.toLowerCase();
-    let permission = "read_internal";
-    if (req.method === "DELETE") permission = "manage_projects";
-    else if (req.method !== "GET") {
-      // Project creation is available to Editors and above. Agency client
-      // visibility is checked by the project route before anything is created.
-      permission = req.method === "POST" && /^\/projects-v2\/?$/.test(path) ? "edit_assigned_work"
-        : /billing|subscription|checkout|seats/.test(path) ? "billing"
-        : /workspace-settings|security|integrations?/.test(path) ? "manage_settings"
-        : /publish|schedule|send-to-client/.test(path) ? "publish"
-        : /approve|decision/.test(path) ? "approve"
-        : "edit_assigned_work";
-    }
+    const permission = permissionForWorkspaceRequest(req.method, req.path);
     if (!hasWorkspacePermission(context, permission)) return res.status(403).json({ error: "Insufficient workspace permission." });
     next();
   } catch (error) {

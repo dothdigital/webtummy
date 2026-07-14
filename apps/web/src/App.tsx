@@ -58,6 +58,14 @@ function PlatformAdminOnly({ children }: { children: ReactNode }) {
   return user?.role === "super_admin" ? children : <Navigate to="/" replace />;
 }
 
+function PermissionRoute({ permission, anyOf, children }: { permission?: string; anyOf?: string[]; children: ReactNode }) {
+  const { user } = useAuth();
+  if (user?.role === "super_admin") return children;
+  const permissions = user?.workspace?.capabilities.permissions ?? {};
+  const permitted = permission ? permissions[permission] === true : (anyOf ?? []).some((item) => permissions[item] === true);
+  return permitted ? children : <Navigate to="/" replace />;
+}
+
 function Shell() {
   const { user, loading } = useAuth();
   const location = useLocation();
@@ -94,8 +102,6 @@ function Shell() {
   const landingPath = user.workspace?.landingPath ?? "/";
   if (location.pathname === "/login") return <Navigate to={landingPath} replace />;
   if (workspaceRole === "client_viewer" && location.pathname !== "/workspace" && !location.pathname.startsWith("/agency/clients/")) return <Navigate to="/workspace" replace />;
-  if ((workspaceRole === "editor" || workspaceRole === "viewer") && (location.pathname === "/workspace" || location.pathname === "/agency" || location.pathname === "/projects/new" || location.pathname === "/billing" || location.pathname === "/pricing")) return <Navigate to="/" replace />;
-  if (workspaceRole === "viewer" && location.pathname.endsWith("/intake")) return <Navigate to={location.pathname.replace(/\/intake$/, "")} replace />;
 
   const welcomeEligible = Boolean(user.workspace && user.workspace.primaryRole === "admin" && user.workspace.onboardingRequired);
   const showWelcome = welcomeEligible && welcomePending(user.id, user.workspace?.id);
@@ -110,19 +116,19 @@ function Shell() {
         <Route path="/login" element={<Navigate to={landingPath} replace />} />
         <Route path="/users" element={<PlatformAdminOnly><Users /></PlatformAdminOnly>} />
         <Route path="/projects" element={<GuidedProjects />} />
-        <Route path="/projects/new" element={<GuidedProjectNew />} />
+        <Route path="/projects/new" element={<PermissionRoute permission="create_projects"><GuidedProjectNew /></PermissionRoute>} />
         <Route path="/guided-projects" element={<GuidedProjects />} />
         <Route path="/guided-projects/:id" element={<GuidedProjectDetail />} />
-        <Route path="/guided-projects/:id/intake" element={<GuidedProjectIntake />} />
+        <Route path="/guided-projects/:id/intake" element={<PermissionRoute permission="edit_project_settings"><GuidedProjectIntake /></PermissionRoute>} />
         <Route path="/guided-projects/:id/ready" element={<GuidedProjectReadyRedirect />} />
-        <Route path="/opportunities" element={<ExecutionModule kind="opportunities" />} />
-        <Route path="/strategy" element={<ExecutionModule kind="strategy" />} />
-        <Route path="/keywords" element={<ExecutionModule kind="keywords" />} />
-        <Route path="/site-analysis" element={<ExecutionModule kind="site-analysis" />} />
-        <Route path="/backlinks" element={<ExecutionModule kind="backlinks" />} />
-        <Route path="/ai-citations" element={<ExecutionModule kind="ai-citations" />} />
-        <Route path="/site-architect" element={<ExecutionModule kind="site-architect" />} />
-        <Route path="/lead-magnets" element={<ExecutionModule kind="lead-magnets" />} />
+        <Route path="/opportunities" element={<PermissionRoute permission="run_ai_analysis"><ExecutionModule kind="opportunities" /></PermissionRoute>} />
+        <Route path="/strategy" element={<PermissionRoute permission="edit_strategy"><ExecutionModule kind="strategy" /></PermissionRoute>} />
+        <Route path="/keywords" element={<PermissionRoute permission="run_ai_analysis"><ExecutionModule kind="keywords" /></PermissionRoute>} />
+        <Route path="/site-analysis" element={<PermissionRoute permission="run_ai_analysis"><ExecutionModule kind="site-analysis" /></PermissionRoute>} />
+        <Route path="/backlinks" element={<PermissionRoute permission="run_ai_analysis"><ExecutionModule kind="backlinks" /></PermissionRoute>} />
+        <Route path="/ai-citations" element={<PermissionRoute permission="run_ai_analysis"><ExecutionModule kind="ai-citations" /></PermissionRoute>} />
+        <Route path="/site-architect" element={<PermissionRoute permission="run_ai_analysis"><ExecutionModule kind="site-architect" /></PermissionRoute>} />
+        <Route path="/lead-magnets" element={<PermissionRoute permission="run_ai_analysis"><ExecutionModule kind="lead-magnets" /></PermissionRoute>} />
         <Route path="/website-projects" element={<Websites />} />
         <Route path="/website-projects/:id" element={<WebsiteHealth />} />
         <Route path="/websites" element={<WebsiteRedirect />} />
@@ -132,17 +138,17 @@ function Shell() {
         <Route path="/keyword-research/:id" element={<KeywordAnalyticsDetailRedirect />} />
         <Route path="/keyword-analytics" element={<KeywordResearch />} />
         <Route path="/keyword-analytics/:id" element={<KeywordAnalyticsDetailRedirect />} />
-        <Route path="/keyword-insights" element={<KeywordReports />} />
-        <Route path="/social-strategy" element={<SocialStrategy />} />
-        <Route path="/growth" element={<GrowthEngine />} />
-        <Route path="/gap-analysis" element={<GapAnalysis />} />
+        <Route path="/keyword-insights" element={<PermissionRoute permission="view_reports"><KeywordReports /></PermissionRoute>} />
+        <Route path="/social-strategy" element={<PermissionRoute permission="publish"><SocialStrategy /></PermissionRoute>} />
+        <Route path="/growth" element={<PermissionRoute permission="run_ai_analysis"><GrowthEngine /></PermissionRoute>} />
+        <Route path="/gap-analysis" element={<PermissionRoute permission="run_ai_analysis"><GapAnalysis /></PermissionRoute>} />
         <Route path="/workspace" element={<AgencyWorkspace />} />
         <Route path="/agency" element={<AgencyWorkspace />} />
         <Route path="/agency/clients/:clientId" element={<AgencyClientDashboard />} />
         <Route path="/accept-invitation" element={<AcceptInvitation />} />
-        <Route path="/local-seo" element={<LocalSeo />} />
-        <Route path="/ai-content" element={<AiContentStudio />} />
-        <Route path="/billing" element={<Billing />} />
+        <Route path="/local-seo" element={<PermissionRoute permission="run_ai_analysis"><LocalSeo /></PermissionRoute>} />
+        <Route path="/ai-content" element={<PermissionRoute permission="publish"><AiContentStudio /></PermissionRoute>} />
+        <Route path="/billing" element={<PermissionRoute permission="billing"><Billing /></PermissionRoute>} />
         <Route path="/pricing" element={<Pricing />} />
         <Route path="/terms" element={<Legal kind="terms" />} />
         <Route path="/privacy" element={<Legal kind="privacy" />} />
@@ -153,10 +159,10 @@ function Shell() {
         <Route path="/admin/tasks/project" element={<PlatformAdminOnly><AdminTasks mode="project" /></PlatformAdminOnly>} />
         <Route path="/admin/tasks/module" element={<PlatformAdminOnly><AdminTasks mode="module" /></PlatformAdminOnly>} />
         <Route path="/admin/plans" element={<PlatformAdminOnly><AdminPlans /></PlatformAdminOnly>} />
-        <Route path="/keyword-insights/:id" element={<KeywordResearchDetail />} />
+        <Route path="/keyword-insights/:id" element={<PermissionRoute permission="view_reports"><KeywordResearchDetail /></PermissionRoute>} />
         <Route path="/keyword-reports" element={<Navigate to="/keyword-insights" replace />} />
-        <Route path="/geo-keyword-intelligence" element={<GeoKeywordIntelligence />} />
-        <Route path="/geo-keyword-intelligence/:id" element={<GeoKeywordAuditDetail />} />
+        <Route path="/geo-keyword-intelligence" element={<PermissionRoute permission="run_ai_analysis"><GeoKeywordIntelligence /></PermissionRoute>} />
+        <Route path="/geo-keyword-intelligence/:id" element={<PermissionRoute permission="run_ai_analysis"><GeoKeywordAuditDetail /></PermissionRoute>} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
     </Layout>
