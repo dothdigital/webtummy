@@ -1509,14 +1509,23 @@ guidedProjectsRouter.post("/projects-v2", async (req, res) => {
   }) : null;
   if (data.agencyClientId && !agencyClient) return res.status(404).json({ error: "agency client not found" });
   const defaults = clientDefaults(agencyClient);
+  const inheritedClientNotes = [
+    defaults.businessDescription && `Business description: ${defaults.businessDescription}`,
+    defaults.targetAudience && `Target audience: ${defaults.targetAudience}`,
+    defaults.mainProductsServices && `Main products/services: ${defaults.mainProductsServices}`,
+    defaults.primaryKeywords.length && `Primary keywords: ${defaults.primaryKeywords.join(", ")}`,
+    defaults.preferredLanguage && `Preferred language: ${defaults.preferredLanguage}`,
+    defaults.timeZone && `Time zone: ${defaults.timeZone}`,
+  ].filter(Boolean).join("\n");
   const clientId = await projectClientIdForRequest(req, data.clientId);
   if (!clientId) return res.status(400).json({ error: "project context required" });
 
   const formattedBusinessLocation = data.businessLocationDetails && locationIsComplete(data.businessLocationDetails) ? formatBusinessLocation(data.businessLocationDetails) : null;
   const effectiveBusinessLocation = formattedBusinessLocation || clean(data.businessLocation) || defaults.businessLocation || null;
   const effectiveTargetLocations = targetLocations.length ? targetLocations : defaults.targetLocations;
+  const effectivePrimaryGoal = clean(data.primaryGoal) || defaults.primaryGoal || null;
   const websiteUrl = data.websiteStatus === "existing_website" ? clean(data.websiteUrl) || defaults.websiteUrl : clean(data.websiteUrl);
-  const creationErrors = validateProjectCreation({ ...data, websiteUrl, businessLocation: effectiveBusinessLocation, targetLocations: effectiveTargetLocations }, workspace.workspace.workspaceType);
+  const creationErrors = validateProjectCreation({ ...data, websiteUrl, businessLocation: effectiveBusinessLocation, targetLocations: effectiveTargetLocations, primaryGoal: effectivePrimaryGoal }, workspace.workspace.workspaceType);
   if (creationErrors.length) return res.status(400).json({ error: creationErrors.join(" ") });
   const normalized = normalizeUrl(websiteUrl);
   if (data.websiteStatus === "existing_website" && !normalized) return res.status(400).json({ error: "Existing Website requires a valid Website URL." });
@@ -1562,11 +1571,11 @@ guidedProjectsRouter.post("/projects-v2", async (req, res) => {
         businessLocationJson: data.businessLocationDetails ?? undefined,
         targetLocations: effectiveTargetLocations,
         targetLocation: effectiveTargetLocations.join(", ").slice(0, 180) || null,
-        primaryGoal: clean(data.primaryGoal),
+        primaryGoal: effectivePrimaryGoal,
         secondaryGoals: data.secondaryGoals,
         competitors: data.competitors,
-        notes: clean(data.notes),
-        brandVoice: clean(data.brandVoice),
+        notes: clean(data.notes) || inheritedClientNotes || null,
+        brandVoice: clean(data.brandVoice) || defaults.brandVoice || null,
         analyticsPlatforms: data.analyticsPlatforms,
         cmsPlatform: clean(data.cmsPlatform),
         targetLaunchTimeline: clean(data.targetLaunchTimeline),
@@ -1582,7 +1591,7 @@ guidedProjectsRouter.post("/projects-v2", async (req, res) => {
         websites: normalized ? [...new Set([normalized.rootUrl, ...existingWebsites])] : existingWebsites,
         businessLocations: clean(data.businessLocation) ? [clean(data.businessLocation)!] : agencyClient.businessLocations,
         targetMarkets: effectiveTargetLocations,
-        defaultSettings: { ...previousSettings, ...(clean(data.niche) ? { niche: clean(data.niche) } : {}) },
+        defaultSettings: { ...previousSettings, ...(clean(data.niche) ? { niche: clean(data.niche), industryNiche: clean(data.niche) } : {}), ...(clean(data.primaryGoal) ? { primaryBusinessGoal: clean(data.primaryGoal) } : {}), ...(clean(data.brandVoice) ? { brandVoice: clean(data.brandVoice) } : {}) },
       } });
       await recordWorkspaceActivity(tx, { context: workspace, action: "client.defaults_updated_from_project", entityType: "agency_client", entityId: agencyClient.id, agencyClientId: agencyClient.id, projectId: project.id, nextJson: { projectId: project.id } });
     }

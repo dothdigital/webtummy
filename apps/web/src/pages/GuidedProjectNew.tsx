@@ -16,6 +16,12 @@ const clientProjectTypes = [
 ] as const;
 
 const primaryGoals = [
+  "Leads",
+  "Sales",
+  "Traffic",
+  "Branding",
+  "Local visibility",
+  "Customer retention",
   "Create Client Audit / Proposal",
   "Improve SEO Rankings",
   "Generate More Leads",
@@ -107,7 +113,15 @@ export default function GuidedProjectNew() {
     const locations = Array.isArray(client.businessLocations) ? client.businessLocations.map(String).filter(Boolean) : [];
     const markets = Array.isArray(client.targetMarkets) ? client.targetMarkets.map(String).filter(Boolean) : [];
     const settings = client.defaultSettings && typeof client.defaultSettings === "object" ? client.defaultSettings as Record<string, unknown> : {};
-    patch({ websiteUrl: form.websiteUrl || websites[0] || "", businessLocation: form.businessLocation || locations[0] || "", targetLocations: form.targetLocations.length ? form.targetLocations : markets, niche: form.niche || (typeof settings.niche === "string" ? settings.niche : "") });
+    const inheritedNotes = [
+      typeof settings.businessDescription === "string" && `Business description: ${settings.businessDescription}`,
+      typeof settings.targetAudience === "string" && `Target audience: ${settings.targetAudience}`,
+      typeof settings.mainProductsServices === "string" && `Main products/services: ${settings.mainProductsServices}`,
+      Array.isArray(settings.primaryKeywords) && settings.primaryKeywords.length && `Primary keywords: ${settings.primaryKeywords.map(String).join(", ")}`,
+      typeof settings.preferredLanguage === "string" && `Preferred language: ${settings.preferredLanguage}`,
+      typeof settings.timeZone === "string" && `Time zone: ${settings.timeZone}`,
+    ].filter(Boolean).join("\n");
+    patch({ websiteUrl: form.websiteUrl || websites[0] || "", businessLocation: form.businessLocation || locations[0] || "", targetLocations: form.targetLocations.length ? form.targetLocations : markets, niche: form.niche || (typeof settings.niche === "string" ? settings.niche : ""), primaryGoal: form.primaryGoal || (typeof settings.primaryBusinessGoal === "string" ? settings.primaryBusinessGoal : ""), brandVoice: form.brandVoice || (typeof settings.brandVoice === "string" ? settings.brandVoice : ""), notes: form.notes || inheritedNotes });
   }, [form.agencyClientId, isAgency, agencyClients]);
 
   const createProject = async (event: React.FormEvent) => {

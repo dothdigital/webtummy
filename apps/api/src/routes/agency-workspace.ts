@@ -34,7 +34,18 @@ const clientFields = {
   clientVisibleNotes: z.string().max(20000).optional().nullable(),
   defaultSettings: z.record(z.unknown()).default({}),
 };
-const createClientSchema = z.object(clientFields);
+const createClientSchema = z.object(clientFields).superRefine((data, ctx) => {
+  if (!data.contactName?.trim()) ctx.addIssue({ code: "custom", path: ["contactName"], message: "Contact name is required." });
+  if (!data.contactEmail) ctx.addIssue({ code: "custom", path: ["contactEmail"], message: "Email address is required." });
+  if (!data.websites.length) ctx.addIssue({ code: "custom", path: ["websites"], message: "Website URL is required." });
+  if (!data.businessLocations.length) ctx.addIssue({ code: "custom", path: ["businessLocations"], message: "Business location is required." });
+  if (!data.targetMarkets.length) ctx.addIssue({ code: "custom", path: ["targetMarkets"], message: "At least one target market is required." });
+  if (typeof data.defaultSettings.industryNiche !== "string" || !data.defaultSettings.industryNiche.trim()) ctx.addIssue({ code: "custom", path: ["defaultSettings", "industryNiche"], message: "Industry or niche is required." });
+  if (typeof data.defaultSettings.primaryBusinessGoal !== "string" || !data.defaultSettings.primaryBusinessGoal.trim()) ctx.addIssue({ code: "custom", path: ["defaultSettings", "primaryBusinessGoal"], message: "Primary business goal is required." });
+  for (const [key, label] of [["businessDescription", "Business description"], ["targetAudience", "Target audience"], ["mainProductsServices", "Main products or services"], ["brandVoice", "Brand voice or tone"], ["preferredLanguage", "Preferred language"], ["timeZone", "Time zone"]] as const) {
+    if (typeof data.defaultSettings[key] !== "string" || !data.defaultSettings[key].trim()) ctx.addIssue({ code: "custom", path: ["defaultSettings", key], message: `${label} is required.` });
+  }
+});
 const updateClientSchema = z.object(clientFields).partial();
 const teamSchema = z.object({ name: z.string().trim().min(1).max(180), description: z.string().trim().max(5000).optional().nullable() });
 const teamMembersSchema = z.object({ membershipIds: z.array(z.string()).max(500) });

@@ -18,6 +18,14 @@ export function clientDefaults(client: AgencyClientDefaults | null) {
     businessLocation: strings(client?.businessLocations)[0] ?? "",
     targetLocations: strings(client?.targetMarkets),
     niche: typeof settings.niche === "string" ? settings.niche : "",
+    primaryGoal: typeof settings.primaryBusinessGoal === "string" ? settings.primaryBusinessGoal : "",
+    brandVoice: typeof settings.brandVoice === "string" ? settings.brandVoice : "",
+    businessDescription: typeof settings.businessDescription === "string" ? settings.businessDescription : "",
+    targetAudience: typeof settings.targetAudience === "string" ? settings.targetAudience : "",
+    mainProductsServices: typeof settings.mainProductsServices === "string" ? settings.mainProductsServices : "",
+    primaryKeywords: strings(settings.primaryKeywords),
+    preferredLanguage: typeof settings.preferredLanguage === "string" ? settings.preferredLanguage : "",
+    timeZone: typeof settings.timeZone === "string" ? settings.timeZone : "",
   };
 }
 

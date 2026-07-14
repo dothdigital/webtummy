@@ -4,6 +4,7 @@ import { api } from "../api.js";
 type Client = {
   id: string; name: string; contactName: string | null; contactEmail: string | null; contactPhone: string | null;
   websites: unknown; businessLocations: unknown; targetMarkets: unknown; competitors: unknown;
+  defaultSettings?: unknown;
   internalNotes: string | null; clientVisibleNotes: string | null;
 };
 
@@ -11,10 +12,16 @@ const lines = (value: unknown) => Array.isArray(value) ? value.map(String).join(
 const values = (value: string) => value.split(/[\n,]/).map((item) => item.trim()).filter(Boolean);
 
 export default function AgencyClientEditor({ client, owner, onClose, onSaved }: { client: Client; owner: boolean; onClose: () => void; onSaved: (message: string) => void }) {
+  const settings = client.defaultSettings && typeof client.defaultSettings === "object" ? client.defaultSettings as Record<string, unknown> : {};
+  const location = settings.businessLocationDetails && typeof settings.businessLocationDetails === "object" ? settings.businessLocationDetails as Record<string, unknown> : {};
   const [form, setForm] = useState({
     name: client.name, contactName: client.contactName ?? "", contactEmail: client.contactEmail ?? "", contactPhone: client.contactPhone ?? "",
     websites: lines(client.websites), businessLocations: lines(client.businessLocations), targetMarkets: lines(client.targetMarkets), competitors: lines(client.competitors),
     internalNotes: client.internalNotes ?? "", clientVisibleNotes: client.clientVisibleNotes ?? "",
+    industryNiche: String(settings.industryNiche ?? settings.niche ?? ""), primaryBusinessGoal: String(settings.primaryBusinessGoal ?? ""),
+    businessDescription: String(settings.businessDescription ?? ""), targetAudience: String(settings.targetAudience ?? ""), mainProductsServices: String(settings.mainProductsServices ?? ""),
+    primaryKeywords: lines(settings.primaryKeywords), brandVoice: String(settings.brandVoice ?? ""), preferredLanguage: String(settings.preferredLanguage ?? "English"), timeZone: String(settings.timeZone ?? "America/Toronto"),
+    country: String(location.country ?? ""), stateProvince: String(location.stateProvince ?? ""), city: String(location.city ?? ""),
   });
   const [confirmation, setConfirmation] = useState("");
   const [busy, setBusy] = useState("");
@@ -26,7 +33,8 @@ export default function AgencyClientEditor({ client, owner, onClose, onSaved }: 
     try {
       await api.patch(`/api/agency/clients/${client.id}`, {
         name: form.name, contactName: form.contactName || null, contactEmail: form.contactEmail || null, contactPhone: form.contactPhone || null,
-        websites: values(form.websites), businessLocations: values(form.businessLocations), targetMarkets: values(form.targetMarkets), competitors: values(form.competitors),
+        websites: values(form.websites), businessLocations: form.country && form.stateProvince && form.city ? [[form.city, form.stateProvince, form.country].join(", ")] : values(form.businessLocations), targetMarkets: values(form.targetMarkets), competitors: values(form.competitors),
+        defaultSettings: { ...settings, industryNiche: form.industryNiche, niche: form.industryNiche, primaryBusinessGoal: form.primaryBusinessGoal, businessDescription: form.businessDescription, targetAudience: form.targetAudience, mainProductsServices: form.mainProductsServices, primaryKeywords: values(form.primaryKeywords), brandVoice: form.brandVoice, preferredLanguage: form.preferredLanguage, timeZone: form.timeZone, businessLocationDetails: { country: form.country, stateProvince: form.stateProvince, city: form.city } },
         internalNotes: form.internalNotes || null, clientVisibleNotes: form.clientVisibleNotes || null,
       });
       onSaved(`${form.name} updated.`);
@@ -49,10 +57,22 @@ export default function AgencyClientEditor({ client, owner, onClose, onSaved }: 
         <Field label="Contact name" value={form.contactName} onChange={(contactName) => patch({ contactName })} />
         <Field label="Contact email" value={form.contactEmail} onChange={(contactEmail) => patch({ contactEmail })} type="email" />
         <Field label="Contact phone" value={form.contactPhone} onChange={(contactPhone) => patch({ contactPhone })} />
+        <Field label="Industry / niche" value={form.industryNiche} onChange={(industryNiche) => patch({ industryNiche })} />
+        <Field label="Primary business goal" value={form.primaryBusinessGoal} onChange={(primaryBusinessGoal) => patch({ primaryBusinessGoal })} />
+        <Field label="Country" value={form.country} onChange={(country) => patch({ country })} />
+        <Field label="State / Province" value={form.stateProvince} onChange={(stateProvince) => patch({ stateProvince })} />
+        <Field label="City" value={form.city} onChange={(city) => patch({ city })} />
         <Area label="Websites" value={form.websites} onChange={(websites) => patch({ websites })} hint="One URL per line" />
         <Area label="Business locations" value={form.businessLocations} onChange={(businessLocations) => patch({ businessLocations })} hint="One location per line" />
         <Area label="Target markets" value={form.targetMarkets} onChange={(targetMarkets) => patch({ targetMarkets })} hint="One market per line" />
         <Area label="Competitors" value={form.competitors} onChange={(competitors) => patch({ competitors })} hint="One competitor per line" />
+        <Area label="Business description" value={form.businessDescription} onChange={(businessDescription) => patch({ businessDescription })} />
+        <Area label="Target audience" value={form.targetAudience} onChange={(targetAudience) => patch({ targetAudience })} />
+        <Area label="Main products / services" value={form.mainProductsServices} onChange={(mainProductsServices) => patch({ mainProductsServices })} />
+        <Area label="Primary keywords" value={form.primaryKeywords} onChange={(primaryKeywords) => patch({ primaryKeywords })} hint="One keyword per line" />
+        <Field label="Brand voice / tone" value={form.brandVoice} onChange={(brandVoice) => patch({ brandVoice })} />
+        <Field label="Preferred language" value={form.preferredLanguage} onChange={(preferredLanguage) => patch({ preferredLanguage })} />
+        <Field label="Time zone" value={form.timeZone} onChange={(timeZone) => patch({ timeZone })} />
         <Area label="Internal notes" value={form.internalNotes} onChange={(internalNotes) => patch({ internalNotes })} />
         <Area label="Client-visible notes" value={form.clientVisibleNotes} onChange={(clientVisibleNotes) => patch({ clientVisibleNotes })} />
         <button disabled={busy === "save" || !form.name.trim()} className="h-11 rounded-lg bg-brand-600 px-4 text-sm font-bold text-white disabled:opacity-50 md:col-span-2">{busy === "save" ? "Saving…" : "Save shared client details"}</button>

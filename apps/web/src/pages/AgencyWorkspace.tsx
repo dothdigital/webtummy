@@ -19,6 +19,7 @@ type ActiveProject = Project & { client?: AgencyClient };
 type AgencyClient = {
   id: string; name: string; status: string; contactName: string | null; contactEmail: string | null; contactPhone: string | null; websites: unknown; businessLocations: unknown; competitors: unknown;
   targetMarkets: unknown; internalNotes: string | null; clientVisibleNotes: string | null; projects: Project[];
+  defaultSettings?: unknown;
   memberAssignments: { membership: Member }[]; teamAssignments: { team: Team }[];
 };
 type Notification = { id: string; title: string; body: string; actionUrl: string | null; readAt: string | null; createdAt: string };
@@ -63,8 +64,24 @@ export default function AgencyWorkspace() {
   const [notice, setNotice] = useState("");
   const [tab, setTab] = useState<Tab>((params.get("tab") as Tab) || "dashboard");
   const [clientName, setClientName] = useState("");
+  const [clientContactName, setClientContactName] = useState("");
   const [clientEmail, setClientEmail] = useState("");
+  const [clientPhone, setClientPhone] = useState("");
+  const [clientWebsite, setClientWebsite] = useState("");
+  const [clientNiche, setClientNiche] = useState("");
+  const [clientCountry, setClientCountry] = useState("");
+  const [clientRegion, setClientRegion] = useState("");
+  const [clientCity, setClientCity] = useState("");
   const [clientMarkets, setClientMarkets] = useState("");
+  const [clientGoal, setClientGoal] = useState("");
+  const [clientDescription, setClientDescription] = useState("");
+  const [clientAudience, setClientAudience] = useState("");
+  const [clientProducts, setClientProducts] = useState("");
+  const [clientCompetitors, setClientCompetitors] = useState("");
+  const [clientKeywords, setClientKeywords] = useState("");
+  const [clientBrandVoice, setClientBrandVoice] = useState("");
+  const [clientLanguage, setClientLanguage] = useState("English");
+  const [clientTimeZone, setClientTimeZone] = useState("America/Toronto");
   const [teamName, setTeamName] = useState("");
   const [teamDescription, setTeamDescription] = useState("");
   const [editingMember, setEditingMember] = useState<string | null>(null);
@@ -127,12 +144,14 @@ export default function AgencyWorkspace() {
   }
   async function createClient(event: React.FormEvent) {
     event.preventDefault();
+    const businessLocation = [clientCity, clientRegion, clientCountry].map((value) => value.trim()).filter(Boolean).join(", ");
     await action("client-create", () => api.post("/api/agency/clients", {
-      name: clientName, contactEmail: clientEmail || null,
+      name: clientName, contactName: clientContactName, contactEmail: clientEmail, contactPhone: clientPhone || null,
       targetMarkets: clientMarkets.split(/[,\n]/).map((item) => item.trim()).filter(Boolean),
-      websites: [], businessLocations: [], competitors: [], brandingJson: {}, defaultSettings: {},
+      websites: [clientWebsite], businessLocations: [businessLocation], competitors: clientCompetitors.split(/[,\n]/).map((item) => item.trim()).filter(Boolean), brandingJson: {},
+      defaultSettings: { industryNiche: clientNiche, niche: clientNiche, primaryBusinessGoal: clientGoal, businessDescription: clientDescription, targetAudience: clientAudience, mainProductsServices: clientProducts, primaryKeywords: clientKeywords.split(/[,\n]/).map((item) => item.trim()).filter(Boolean), brandVoice: clientBrandVoice, preferredLanguage: clientLanguage, timeZone: clientTimeZone, businessLocationDetails: { country: clientCountry, stateProvince: clientRegion, city: clientCity } },
     }), `${clientName} was created.`);
-    setClientName(""); setClientEmail(""); setClientMarkets("");
+    setClientName(""); setClientContactName(""); setClientEmail(""); setClientPhone(""); setClientWebsite(""); setClientNiche(""); setClientCountry(""); setClientRegion(""); setClientCity(""); setClientMarkets(""); setClientGoal(""); setClientDescription(""); setClientAudience(""); setClientProducts(""); setClientCompetitors(""); setClientKeywords(""); setClientBrandVoice(""); setClientLanguage("English"); setClientTimeZone("America/Toronto");
   }
   async function createTeam(event: React.FormEvent) {
     event.preventDefault();
@@ -241,7 +260,26 @@ export default function AgencyWorkspace() {
         <div className="flex flex-wrap items-start justify-between gap-3"><div><div className="flex gap-2"><Link to={`/agency/clients/${client.id}`} className="font-bold hover:text-brand-700">{client.name}</Link><Badge tone={client.status === "active" ? "green" : "slate"}>{client.status === "archived" ? "Archived · View only" : label(client.status)}</Badge></div><p className="mt-1 text-sm text-slate-500">{client.contactEmail || "No contact email"} · {list(client.targetMarkets).join(", ") || "No target markets"}</p></div><div className="flex flex-wrap gap-2">{canAdmin && client.status === "active" && <button onClick={() => setEditingClient(client)} className="rounded-lg border px-3 py-2 text-xs font-bold">Edit</button>}{client.status === "active" ? <button disabled={!canAdmin || busy === client.id} onClick={() => action(client.id, () => api.post(`/api/agency/clients/${client.id}/archive`, {}), `${client.name} archived and is now view-only.`)} className="rounded-lg border px-3 py-2 text-xs font-bold disabled:opacity-40">Archive</button> : <>{canAdmin && <button disabled={busy === client.id} onClick={() => action(client.id, () => api.post(`/api/agency/clients/${client.id}/restore`, {}), `${client.name} restored.`)} className="rounded-lg border px-3 py-2 text-xs font-bold disabled:opacity-40">Restore</button>}{canAdmin && <button disabled={busy === `delete-${client.id}`} onClick={() => void permanentlyDeleteClient(client)} className="rounded-lg border border-rose-200 px-3 py-2 text-xs font-bold text-rose-700 disabled:opacity-40">Permanently delete</button>}</>}</div></div>
         <div className="mt-4 grid gap-2 sm:grid-cols-3"><div className="rounded-lg bg-slate-50 p-3 text-sm"><b>{client.projects.length}</b><span className="block text-xs text-slate-500">Projects</span></div><div className="rounded-lg bg-slate-50 p-3 text-sm"><b>{client.teamAssignments.length}</b><span className="block text-xs text-slate-500">Teams</span></div><div className="rounded-lg bg-slate-50 p-3 text-sm"><b>{client.memberAssignments.length}</b><span className="block text-xs text-slate-500">Assigned users</span></div></div>
       </div>)}{!filteredClients.length && <div className="p-8 text-center text-sm text-slate-500">No {clientFilter} clients.</div>}</div></Card>
-      {canAdmin && <Card className="h-fit p-5"><h2 className="font-bold">Create client</h2><form onSubmit={(event) => void createClient(event)} className="mt-4 space-y-4"><label className="block text-xs font-bold">Client name *<input required value={clientName} onChange={(event) => setClientName(event.target.value)} className="mt-1 h-10 w-full rounded-lg border px-3 text-sm font-normal" /></label><label className="block text-xs font-bold">Contact email<input type="email" value={clientEmail} onChange={(event) => setClientEmail(event.target.value)} className="mt-1 h-10 w-full rounded-lg border px-3 text-sm font-normal" /></label><label className="block text-xs font-bold">Target markets<textarea value={clientMarkets} onChange={(event) => setClientMarkets(event.target.value)} placeholder="New York, United States" className="mt-1 min-h-24 w-full rounded-lg border p-3 text-sm font-normal" /></label><button disabled={busy === "client-create"} className="h-10 w-full rounded-lg bg-brand-600 text-sm font-bold text-white disabled:bg-slate-300">{busy === "client-create" ? "Creating…" : "Create client"}</button></form></Card>}
+      {canAdmin && <Card className="h-fit p-5"><h2 className="font-bold">Create client</h2><p className="mt-1 text-xs text-slate-500">This shared client profile is reused across every project.</p><form onSubmit={(event) => void createClient(event)} className="mt-4 space-y-4">
+        <ClientField label="Business name *" value={clientName} onChange={setClientName} required />
+        <ClientField label="Contact name *" value={clientContactName} onChange={setClientContactName} required />
+        <ClientField label="Email address *" value={clientEmail} onChange={setClientEmail} type="email" required />
+        <ClientField label="Phone number" value={clientPhone} onChange={setClientPhone} type="tel" />
+        <ClientField label="Website URL *" value={clientWebsite} onChange={setClientWebsite} type="url" placeholder="https://example.com" required />
+        <ClientField label="Industry / niche *" value={clientNiche} onChange={setClientNiche} required />
+        <div className="grid gap-3 sm:grid-cols-3 xl:grid-cols-1"><ClientField label="Country *" value={clientCountry} onChange={setClientCountry} required /><ClientField label="State / Province *" value={clientRegion} onChange={setClientRegion} required /><ClientField label="City *" value={clientCity} onChange={setClientCity} required /></div>
+        <ClientArea label="Target markets *" value={clientMarkets} onChange={setClientMarkets} placeholder="Toronto, Ontario, Canada" required />
+        <label className="block text-xs font-bold">Primary business goal *<select required value={clientGoal} onChange={(event) => setClientGoal(event.target.value)} className="mt-1 h-10 w-full rounded-lg border bg-white px-3 text-sm font-normal"><option value="">Select goal</option><option>Leads</option><option>Sales</option><option>Traffic</option><option>Branding</option><option>Local visibility</option><option>Customer retention</option></select></label>
+        <ClientArea label="Business description *" value={clientDescription} onChange={setClientDescription} required />
+        <ClientArea label="Target audience *" value={clientAudience} onChange={setClientAudience} required />
+        <ClientArea label="Main products / services *" value={clientProducts} onChange={setClientProducts} required />
+        <ClientArea label="Primary competitors" value={clientCompetitors} onChange={setClientCompetitors} hint="Optional; separate with commas or new lines" />
+        <ClientArea label="Primary keywords" value={clientKeywords} onChange={setClientKeywords} hint="Optional; separate with commas or new lines" />
+        <ClientField label="Brand voice / tone *" value={clientBrandVoice} onChange={setClientBrandVoice} placeholder="Professional, clear, friendly" required />
+        <ClientField label="Preferred language *" value={clientLanguage} onChange={setClientLanguage} required />
+        <ClientField label="Time zone *" value={clientTimeZone} onChange={setClientTimeZone} placeholder="America/Toronto" required />
+        <button disabled={busy === "client-create"} className="h-10 w-full rounded-lg bg-brand-600 text-sm font-bold text-white disabled:bg-slate-300">{busy === "client-create" ? "Creating…" : "Create client"}</button>
+      </form></Card>}
     </div>}
 
     {tab === "teams" && <div className="space-y-6">
@@ -263,4 +301,12 @@ export default function AgencyWorkspace() {
     {tab === "activity" && <Card className="p-5"><h2 className="font-bold">Immutable activity history</h2><div className="mt-4 space-y-2">{data.activity.map((item) => <div key={item.id} className="grid gap-2 rounded-lg border p-4 md:grid-cols-[180px_minmax(0,1fr)_180px]"><div className="text-sm font-bold">{label(item.action)}</div><div className="text-sm text-slate-600">{item.actor?.name || item.actor?.email || "System"} · {label(item.entityType)}</div><div className="text-xs text-slate-400 md:text-right">{new Date(item.createdAt).toLocaleString()}</div></div>)}</div></Card>}
     {editingClient && <AgencyClientEditor client={editingClient} owner={Boolean(isOwner)} onClose={() => setEditingClient(null)} onSaved={(message) => { setEditingClient(null); setNotice(message); void load(); }} />}
   </div>;
+}
+
+function ClientField({ label, value, onChange, required, type = "text", placeholder }: { label: string; value: string; onChange: (value: string) => void; required?: boolean; type?: string; placeholder?: string }) {
+  return <label className="block text-xs font-bold">{label}<input required={required} type={type} value={value} onChange={(event) => onChange(event.target.value)} placeholder={placeholder} className="mt-1 h-10 w-full rounded-lg border px-3 text-sm font-normal" /></label>;
+}
+
+function ClientArea({ label, value, onChange, required, placeholder, hint }: { label: string; value: string; onChange: (value: string) => void; required?: boolean; placeholder?: string; hint?: string }) {
+  return <label className="block text-xs font-bold">{label}<textarea required={required} value={value} onChange={(event) => onChange(event.target.value)} placeholder={placeholder} className="mt-1 min-h-20 w-full rounded-lg border p-3 text-sm font-normal" />{hint && <span className="mt-1 block font-normal text-slate-500">{hint}</span>}</label>;
 }

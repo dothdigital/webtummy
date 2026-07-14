@@ -2,23 +2,31 @@ import { describe, expect, it } from "vitest";
 import { agencyNextActions, clientDefaults, clientViewerRouteAllowed } from "./dev002.js";
 
 describe("DEV-002 Agency → Clients → Projects", () => {
-  it("reuses client-wide website, location, market, and niche defaults", () => {
+  it("reuses the complete client profile as project defaults", () => {
     expect(clientDefaults({
       websites: ["https://example.com", "https://shop.example.com"],
       businessLocations: ["Toronto, Canada"],
       targetMarkets: ["Toronto", "Ontario"],
-      defaultSettings: { niche: "Roofing" },
+      defaultSettings: { niche: "Roofing", primaryBusinessGoal: "Leads", brandVoice: "Friendly expert", businessDescription: "Residential roofer", targetAudience: "Toronto homeowners", mainProductsServices: "Roof repair", primaryKeywords: ["roof repair"], preferredLanguage: "English", timeZone: "America/Toronto" },
     })).toEqual({
       websiteUrl: "https://example.com",
       businessLocation: "Toronto, Canada",
       targetLocations: ["Toronto", "Ontario"],
       niche: "Roofing",
+      primaryGoal: "Leads",
+      brandVoice: "Friendly expert",
+      businessDescription: "Residential roofer",
+      targetAudience: "Toronto homeowners",
+      mainProductsServices: "Roof repair",
+      primaryKeywords: ["roof repair"],
+      preferredLanguage: "English",
+      timeZone: "America/Toronto",
     });
   });
 
   it("returns safe empty defaults for incomplete client records", () => {
     expect(clientDefaults({ websites: null, businessLocations: {}, targetMarkets: null, defaultSettings: null })).toEqual({
-      websiteUrl: "", businessLocation: "", targetLocations: [], niche: "",
+      websiteUrl: "", businessLocation: "", targetLocations: [], niche: "", primaryGoal: "", brandVoice: "", businessDescription: "", targetAudience: "", mainProductsServices: "", primaryKeywords: [], preferredLanguage: "", timeZone: "",
     });
   });
 
