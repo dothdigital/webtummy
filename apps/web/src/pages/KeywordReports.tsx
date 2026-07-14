@@ -159,6 +159,8 @@ export default function KeywordReports() {
   const [runs, setRuns] = useState<KeywordResearchRun[]>([]);
   const [websites, setWebsites] = useState<Website[]>([]);
   const [guidedProject, setGuidedProject] = useState<GuidedProject | null>(null);
+  const [targetMarkets, setTargetMarkets] = useState<string[]>([]);
+  const [selectedTargetMarkets, setSelectedTargetMarkets] = useState<string[]>([]);
   const [websiteId, setWebsiteId] = useState("");
   const [seedKeyword, setSeedKeyword] = useState("");
   const [targetUrl, setTargetUrl] = useState("");
@@ -227,7 +229,11 @@ export default function KeywordReports() {
           try { setTargetDomain(new URL(guided.project.websiteUrl).hostname.replace(/^www\./, "")); } catch { setTargetDomain(guided.project.websiteUrl); }
         }
         const targets = Array.isArray(guided.project.targetLocations) ? guided.project.targetLocations.filter((item): item is string => typeof item === "string") : [];
-        if (targets.length) setLocationCity(targets.join(", "));
+        if (targets.length) {
+          setTargetMarkets(targets);
+          setSelectedTargetMarkets(targets);
+          setLocationCity(targets.join(", "));
+        }
       }
     } finally {
       setLoading(false);
@@ -252,7 +258,7 @@ export default function KeywordReports() {
         for (const locationName of queued.locationNames) {
           activeLocation = locationName;
           const result = await api.post<{ run: KeywordResearchRun }>("/api/keyword-research", {
-            websiteId,
+            websiteId: websiteId || null,
             seedKeyword: queued.keyword,
             targetUrl: queued.targetUrl || null,
             targetDomain: queued.targetDomain || null,
@@ -403,6 +409,28 @@ export default function KeywordReports() {
 
   const removeQueuedKeyword = (id: string) => {
     setQueuedKeywords((current) => current.filter((item) => item.id !== id));
+  };
+
+  const toggleTargetMarket = (market: string) => setSelectedTargetMarkets((current) => current.includes(market) ? current.filter((item) => item !== market) : [...current, market]);
+
+  const addTargetMarketVariants = () => {
+    if (!selectedTargetMarkets.length) return;
+    setQueuedKeywords((current) => {
+      const baseItems = current.filter((item) => !targetMarkets.some((market) => item.keyword.toLowerCase().endsWith(` ${market.toLowerCase()}`)));
+      const next = [...current];
+      const existing = new Set(current.flatMap((item) => item.locationNames.map((location) => `${item.keyword.toLowerCase()}|${location.toLowerCase()}`)));
+      for (const item of baseItems) {
+        for (const market of selectedTargetMarkets) {
+          const keyword = item.keyword.toLowerCase().includes(market.toLowerCase()) ? item.keyword : `${item.keyword} ${market}`;
+          const key = `${keyword.toLowerCase()}|${market.toLowerCase()}`;
+          if (existing.has(key)) continue;
+          existing.add(key);
+          next.push({ ...item, id: `${Date.now()}-${keyword}-${next.length}`, keyword, locationCity: market, locationNames: [market] });
+        }
+      }
+      return next;
+    });
+    setMessage(`Added local keyword variants for ${selectedTargetMarkets.join(", ")}.`);
   };
 
   const selectedWebsite = websites.find((website) => website.id === websiteId) ?? websites[0];
@@ -679,6 +707,7 @@ export default function KeywordReports() {
               </>}
 
               {keywordStep === "review" && <>
+              {targetMarkets.length > 0 && <div className="rounded-xl border border-brand-200 bg-gradient-to-r from-brand-50 via-white to-emerald-50 p-4"><div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between"><div><div className="text-sm font-bold text-charcoal-900">Add target markets to selected keywords</div><p className="mt-1 max-w-2xl text-xs leading-5 text-charcoal-600">Choose the markets where you want local visibility. Generic keywords stay in the queue, and local variants are added only when the keyword does not already contain that market.</p></div><Button type="button" onClick={addTargetMarketVariants} disabled={!selectedTargetMarkets.length || !queuedKeywords.length}>Add Local Variants</Button></div><div className="mt-4 flex flex-wrap gap-2">{targetMarkets.map((market) => { const active = selectedTargetMarkets.includes(market); return <button key={market} type="button" onClick={() => toggleTargetMarket(market)} className={`rounded-full border px-3 py-1.5 text-xs font-bold transition ${active ? "border-brand-500 bg-brand-600 text-white" : "border-slate-200 bg-white text-charcoal-600 hover:border-brand-300"}`}>{active ? "✓ " : ""}{market}</button>; })}</div></div>}
               <div className="rounded-xl border border-slate-200 bg-white p-4">
                 <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
                   <div>
@@ -733,7 +762,7 @@ export default function KeywordReports() {
                 ) : (
                   <Button type="button" variant="ghost" onClick={() => setKeywordStep("select")}>Go back</Button>
                 )}
-                <Button type="submit" disabled={creating || !websiteId || queuedKeywords.length === 0}>
+                <Button type="submit" disabled={creating || (!websiteId && !guidedProject) || queuedKeywords.length === 0}>
                   {creating ? "Running..." : queuedKeywords.length ? `Start keyword analysis (${queuedKeywords.length})` : "Start keyword analysis"}
                 </Button>
               </div>
