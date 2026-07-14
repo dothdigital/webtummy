@@ -113,11 +113,14 @@ function InfoBlock({ label, children }: { label: string; children: ReactNode }) 
 
 function BusinessProfileCard({ project, preferredOutputs }: { project: GuidedProject; preferredOutputs: string[] }) {
   const profile = project.businessProfile;
+  const targetMarketItems = Array.isArray(project.targetLocations)
+    ? project.targetLocations.flatMap((location) => splitList(String(location)))
+    : splitList(project.targetLocation);
+  const secondaryGoalItems = Array.isArray(project.secondaryGoals) ? project.secondaryGoals.flatMap((goal) => splitList(String(goal))) : [];
   const briefItems = [
-    ["Target markets", Array.isArray(project.targetLocations) ? project.targetLocations.join(", ") || "Not set" : project.targetLocation ?? "Not set"],
-    ["Secondary goals", Array.isArray(project.secondaryGoals) ? project.secondaryGoals.join(", ") || "None" : "None"],
+    ["Target markets", targetMarketItems, "Not set"],
+    ["Secondary goals", secondaryGoalItems, "None"],
   ] as const;
-  const nicheSegments = splitList(project.niche);
   const audienceSegments = splitList(profile?.targetAudience).slice(0, 3);
   const offerSegments = splitList(profile?.offerSummary).slice(0, 3);
 
@@ -129,9 +132,7 @@ function BusinessProfileCard({ project, preferredOutputs }: { project: GuidedPro
           <div className="mt-2">
             <div className="rounded-lg border border-brand-100 bg-brand-50 px-3 py-2">
               <div className="text-[10px] font-bold uppercase tracking-wide text-brand-600">Industry / Niche</div>
-              <div className="mt-1 grid gap-1">
-                {nicheSegments.length ? nicheSegments.map((item) => <div key={item} className="text-sm font-bold leading-5 text-brand-900">{item}</div>) : <div className="text-sm font-bold text-brand-900">Not set</div>}
-              </div>
+              <div className="mt-1 text-sm font-bold leading-5 text-brand-900">{project.niche ?? "Not set"}</div>
             </div>
           </div>
           <div className="mt-3 grid gap-3">
@@ -140,10 +141,12 @@ function BusinessProfileCard({ project, preferredOutputs }: { project: GuidedPro
           </div>
         </div>
         <div className="grid gap-2 sm:grid-cols-2">
-          {briefItems.map(([label, value]) => (
+          {briefItems.map(([label, values, empty]) => (
             <div key={label} className="rounded-lg border border-charcoal-100 bg-white px-3 py-2">
               <div className="text-[10px] font-bold uppercase tracking-wide text-charcoal-400">{label}</div>
-              <div className="mt-1 truncate text-sm font-bold capitalize text-charcoal-900">{value}</div>
+              <div className="mt-1 grid gap-1">
+                {values.length ? values.map((value) => <div key={value} className="text-sm font-bold capitalize leading-5 text-charcoal-900">{value}</div>) : <div className="text-sm font-bold text-charcoal-900">{empty}</div>}
+              </div>
             </div>
           ))}
           <div className="rounded-lg border border-charcoal-100 bg-white px-3 py-2">
