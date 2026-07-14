@@ -410,15 +410,19 @@ export default function KeywordReports() {
     selectedWebsite ? runs.filter((run) => run.websiteId === selectedWebsite.id) : runs,
   );
   const focusedAddMode = showAddKeyword && searchParams.get("add") === "1";
+  const guidedProjectId = searchParams.get("projectId");
+  const backToKeywords = guidedProjectId ? `/keywords?projectId=${encodeURIComponent(guidedProjectId)}` : "/keywords";
   const locationPreview = buildLocationNames(locationCity, locationRegion, locationCountry).join(" | ");
 
   return (
     <div className="space-y-6">
-      <div>
-        <h1 className="text-2xl font-bold text-charcoal-800">{focusedAddMode ? "Start Keyword Research" : "Keyword Insight"}</h1>
-        <p className="mt-1 text-sm text-charcoal-400">
-          {focusedAddMode ? "SEnuke AI recommends keyword themes from the client intake. Review them, or optionally add your own seed keyword." : "Create, manage, and open keyword-level intelligence reports for each project domain."}
-        </p>
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+        <div><h1 className="text-2xl font-bold text-charcoal-800">{focusedAddMode ? "Start Keyword Research" : "Keyword Insight"}</h1>
+          <p className="mt-1 text-sm text-charcoal-400">
+            {focusedAddMode ? "SEnuke AI recommends keyword themes from the client intake. Review them, or optionally add your own seed keyword." : "Create, manage, and open keyword-level intelligence reports for each project domain."}
+          </p>
+        </div>
+        <Link to={backToKeywords} className="inline-flex w-fit items-center justify-center rounded-lg border border-slate-200 bg-white px-4 py-2.5 text-sm font-bold text-charcoal-700 shadow-sm hover:border-brand-200 hover:bg-brand-50 hover:text-brand-700">← Back to Keyword Intelligence</Link>
       </div>
 
       <Card className="overflow-hidden">
