@@ -67,36 +67,6 @@ function SectionTitle({ eyebrow, title, helper }: { eyebrow?: string; title: str
   );
 }
 
-function CollapsibleSection({
-  title,
-  helper,
-  badge,
-  defaultOpen = false,
-  children,
-}: {
-  title: string;
-  helper: string;
-  badge?: string;
-  defaultOpen?: boolean;
-  children: ReactNode;
-}) {
-  return (
-    <details className="group overflow-hidden rounded-xl border border-charcoal-200 bg-white shadow-sm" open={defaultOpen || undefined}>
-      <summary className="flex cursor-pointer list-none items-center justify-between gap-4 px-5 py-4 hover:bg-charcoal-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-brand-300 [&::-webkit-details-marker]:hidden">
-        <div className="min-w-0">
-          <div className="flex flex-wrap items-center gap-2">
-            <h2 className="font-bold text-charcoal-950">{title}</h2>
-            {badge && <span className="rounded-full bg-charcoal-100 px-2.5 py-1 text-xs font-bold text-charcoal-600">{badge}</span>}
-          </div>
-          <p className="mt-1 text-sm text-charcoal-500">{helper}</p>
-        </div>
-        <span className="grid h-8 w-8 shrink-0 place-items-center rounded-full border border-charcoal-200 bg-white text-lg font-bold text-charcoal-500 transition group-open:rotate-180" aria-hidden="true">⌄</span>
-      </summary>
-      <div className="border-t border-charcoal-100 p-5">{children}</div>
-    </details>
-  );
-}
-
 function MetricTile({ label, value, helper }: { label: string; value: string | number; helper?: string }) {
   return (
     <div className="rounded-lg border border-charcoal-100 bg-white px-4 py-3 shadow-sm">
@@ -467,7 +437,7 @@ export default function GuidedProjectDetail() {
     { key: "keyword_analysis", label: "Keywords", to: `/keywords?projectId=${project.id}` },
     { key: "site_analysis", label: "Site analysis", to: `/site-analysis?projectId=${project.id}` },
     { key: "strategy", label: "Strategy", to: `/strategy?projectId=${project.id}` },
-    { key: "execution_plan", label: "Execution", to: "#execution-tasks" },
+    { key: "execution_plan", label: "Execution", to: `/guided-projects/${project.id}?tab=execution#execution-tasks` },
   ];
   const intakeComplete = intakeCount > 0 || Boolean(project.businessProfile) || project.currentStep !== "intake";
   const opportunityComplete = opportunityCount > 0;
@@ -567,10 +537,14 @@ export default function GuidedProjectDetail() {
                   ? `${activeTasks[0].title}: ${activeTasks[0].description}`
                   : "Discovery and strategy are ready. Create the prioritized SEO/Growth execution plan with impact, effort, automation, approval, cost, and next action.",
                 label: activeTasks.length ? activeTasks[0].actionButtonLabel ?? "Open Next Task" : "Create Execution Plan",
-                to: activeTasks.length ? activeTasks[0].relatedUrl ?? "#execution-tasks" : undefined,
+                to: activeTasks.length ? activeTasks[0].relatedUrl ?? `/guided-projects/${project.id}?tab=execution#execution-tasks` : undefined,
                 onClick: activeTasks.length ? undefined : () => void createExecutionPlan(),
                 tone: activeTasks.length ? "amber" : "green",
               };
+  const requestedTab = new URLSearchParams(location.search).get("tab");
+  const activeTab = requestedTab === "profile" || requestedTab === "execution" ? requestedTab : "overview";
+  const projectTab = (tab: "overview" | "profile" | "execution") =>
+    `/guided-projects/${project.id}${tab === "overview" ? "" : `?tab=${tab}`}`;
   return (
     <div className="space-y-5">
       <Card className="overflow-hidden">
@@ -603,8 +577,26 @@ export default function GuidedProjectDetail() {
           </div>
         </div>
 
+        <nav className="flex gap-1 overflow-x-auto border-b border-charcoal-200 bg-white px-3 pt-2 sm:px-5" aria-label="Project sections">
+          {([
+            ["overview", "Overview"],
+            ["profile", "Profile & Settings"],
+            ["execution", `Execution (${activeTasks.length})`],
+          ] as const).map(([tab, label]) => (
+            <Link
+              key={tab}
+              to={projectTab(tab)}
+              className={`whitespace-nowrap border-b-2 px-3 py-3 text-sm font-bold transition ${activeTab === tab ? "border-brand-600 text-brand-700" : "border-transparent text-charcoal-500 hover:border-charcoal-300 hover:text-charcoal-800"}`}
+              aria-current={activeTab === tab ? "page" : undefined}
+            >
+              {label}
+            </Link>
+          ))}
+        </nav>
+
         <div className="space-y-5 p-5">
           {archived && <Card className="border-slate-300 bg-slate-100 p-4 text-sm text-slate-700"><b>Archived project — view only.</b> Restore this project from the Projects page before editing, assigning, approving, generating, publishing, or changing tasks.</Card>}
+          {activeTab === "overview" && <>
           {!archived && <ProjectNextActionCard action={nextAction} />}
 
           <div>
@@ -643,12 +635,7 @@ export default function GuidedProjectDetail() {
             </Card>
           </div>
 
-          <CollapsibleSection
-            title="Workflow details"
-            helper="Open for opportunity, strategy, and execution status and shortcuts."
-            badge={`${progressSteps.filter((step, index) => ["Completed", "Approved"].includes(stageState(step.key, index))).length} of ${progressSteps.length} stages complete`}
-          >
-            <div className="grid gap-4 lg:grid-cols-3">
+          <div className="grid gap-4 lg:grid-cols-3">
               <FocusCard
                 title="Opportunity"
                 status={opportunityComplete ? "Ready to view" : intakeComplete ? "Pending" : "Waiting"}
@@ -698,19 +685,20 @@ export default function GuidedProjectDetail() {
                     {busyAction === "execution-plan" ? "Creating..." : "Create Execution Plan"}
                   </Button>
                 ) : (
-                  <Link to={strategyApproved ? "#execution-tasks" : `/strategy?projectId=${project.id}`} className="inline-flex w-full items-center justify-center rounded-lg border border-brand-200 bg-white px-3 py-2 text-sm font-bold text-brand-700 hover:bg-brand-50">
+                  <Link to={strategyApproved ? projectTab("execution") : `/strategy?projectId=${project.id}`} className="inline-flex w-full items-center justify-center rounded-lg border border-brand-200 bg-white px-3 py-2 text-sm font-bold text-brand-700 hover:bg-brand-50">
                     {strategyApproved ? "View Execution" : "Review Strategy"}
                   </Link>
                 )}
               </FocusCard>
-            </div>
-          </CollapsibleSection>
+          </div>
+          </>}
 
-          <CollapsibleSection
-            title="Project profile & settings"
-            helper="Business profile, location, target markets, goals, and Agency Client defaults."
-          >
+          {activeTab === "profile" && (
             <div className="space-y-4">
+              <div>
+                <h2 className="text-lg font-bold text-charcoal-950">Project profile & settings</h2>
+                <p className="mt-1 text-sm text-charcoal-500">Business profile, location, target markets, goals, and Agency Client defaults.</p>
+              </div>
               <BusinessProfileCard project={project} preferredOutputs={preferredOutputs} />
               <div className="grid gap-4 xl:grid-cols-2">
                 <ProjectLocationEditor project={project} onSaved={setProject} />
@@ -718,11 +706,11 @@ export default function GuidedProjectDetail() {
               </div>
               {!archived && project.agencyClientId && <ProjectOperations projectId={project.id} />}
             </div>
-          </CollapsibleSection>
+          )}
         </div>
       </Card>
 
-      {project.currentStep === "intake" && (
+      {activeTab === "overview" && project.currentStep === "intake" && (
         <Card className="border-brand-100 bg-brand-50 p-5">
           <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
             <div>
@@ -734,13 +722,8 @@ export default function GuidedProjectDetail() {
         </Card>
       )}
 
-      <CollapsibleSection
-        title="Execution plan & tasks"
-        helper="Open when you are ready to work through the prioritized task plan."
-        badge={`${activeTasks.length} open · ${completedTasks.length} complete`}
-        defaultOpen={location.hash === "#execution-tasks" || derivedCurrentStep === "execution_plan"}
-      >
-        <div id="execution-tasks" className="-m-5 scroll-mt-24">
+      {activeTab === "execution" && (
+        <Card id="execution-tasks" className="scroll-mt-24 overflow-hidden">
           <div className="border-b border-charcoal-100 bg-charcoal-50/70 px-5 py-4">
             <SectionTitle title="Execution tasks" helper="Work through these in order. Generated actions and manual review steps stay together here." />
           </div>
@@ -876,8 +859,8 @@ export default function GuidedProjectDetail() {
               ))}
             </div>
           )}
-        </div>
-      </CollapsibleSection>
+        </Card>
+      )}
 
     </div>
   );
