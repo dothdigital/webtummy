@@ -928,10 +928,31 @@ function buildOpportunityOptions(project: NonNullable<Awaited<ReturnType<typeof 
   }));
 }
 
+function applyOpportunityRefinement(options: ReturnType<typeof buildOpportunityOptions>, instructions?: string | null) {
+  if (!instructions?.trim()) return options;
+  const request = instructions.toLowerCase();
+  return options.map((option) => {
+    let seoScore = option.seoScore;
+    let competitionScore = option.competitionScore;
+    let monetizationScore = option.monetizationScore;
+    let executionScore = option.executionScore;
+    let userFitScore = option.userFitScore;
+    const evidence: string[] = [];
+    if (/quick|faster|quickly|low implementation|low effort|30 days|launch/.test(request)) { executionScore += option.businessModel.includes("Fast") ? 14 : 7; evidence.push("faster execution"); }
+    if (/lead|conversion|appointment|call to action|enquir/.test(request)) { monetizationScore += /lead|appointment/.test(option.businessModel.toLowerCase()) ? 14 : 7; userFitScore += 4; evidence.push("lead generation"); }
+    if (/local|google business|service-area|location|review/.test(request)) { seoScore += /local|healthcare|appointment/.test(`${option.businessModel} ${option.name}`.toLowerCase()) ? 14 : 5; userFitScore += 6; evidence.push("local growth"); }
+    if (/lower competition|realistic|early visibility/.test(request)) { competitionScore -= option.competitionScore <= 65 ? 15 : 9; seoScore += 4; evidence.push("lower competition"); }
+    if (/revenue|buyer intent|value per|higher value|sales/.test(request)) { monetizationScore += option.monetizationScore >= 74 ? 14 : 8; evidence.push("revenue potential"); }
+    if (/content|topical authority|keyword cluster|authority/.test(request)) { seoScore += /content|authority/.test(option.businessModel.toLowerCase()) ? 15 : 6; userFitScore += 4; evidence.push("content authority"); }
+    seoScore = clampScore(seoScore); competitionScore = clampScore(competitionScore); monetizationScore = clampScore(monetizationScore); executionScore = clampScore(executionScore); userFitScore = clampScore(userFitScore);
+    return { ...option, seoScore, competitionScore, monetizationScore, executionScore, userFitScore, opportunityScore: clampScore((seoScore + monetizationScore + executionScore + userFitScore + (100 - competitionScore)) / 5), summary: `${option.summary} Refined to prioritize ${evidence.length ? evidence.join(", ") : instructions.trim()}.` };
+  }).sort((a, b) => b.opportunityScore - a.opportunityScore);
+}
+
 async function generateOpportunityRecommendations(project: NonNullable<Awaited<ReturnType<typeof scopedProject>>>, context: Awaited<ReturnType<typeof workspaceContext>>, refinement?: string | null) {
   const ctx = projectContext(project);
   const run = opportunityRunMode(project);
-  const options = buildOpportunityOptions(project, ctx);
+  const options = applyOpportunityRefinement(buildOpportunityOptions(project, ctx), refinement);
   const recommendations = run.mode === "confirmation" && !refinement ? options.slice(0, 1) : options;
   return prisma.$transaction(async (tx) => {
     // Saved ideas are user-owned decisions and must survive regeneration/refinement.
@@ -943,7 +964,7 @@ async function generateOpportunityRecommendations(project: NonNullable<Awaited<R
       businessModel: option.businessModel, opportunityScore: option.opportunityScore, seoScore: option.seoScore,
       competitionScore: option.competitionScore, monetizationScore: option.monetizationScore, executionScore: option.executionScore,
       userFitScore: option.userFitScore,
-      summary: refinement ? `${option.summary} Refined for: ${refinement}` : option.summary,
+      summary: option.summary,
       status: run.mode === "confirmation" && index === 0 && !refinement ? "confirmation_required" : "suggested",
     } })));
     await tx.aiRun.create({ data: {
