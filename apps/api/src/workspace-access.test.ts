@@ -1,11 +1,11 @@
 import { describe, expect, it } from "vitest";
 import { hasWorkspacePermission, hasWorkspaceRole, validateRolesForWorkspace, type WorkspaceContext } from "./workspace-access.js";
 
-function context(roles: string[], workspaceType = "agency", overrides: unknown = {}): WorkspaceContext {
+function context(roles: string[], workspaceType = "agency", overrides: unknown = {}, settingsJson: unknown = {}): WorkspaceContext {
   return {
     workspace: {
       id: "workspace-1", name: "Test", workspaceType, ownerUserId: roles.includes("owner") ? "user-1" : "owner-1",
-      legacyClientId: "legacy-1", settingsJson: {}, securitySettingsJson: {}, autoApprovalPolicyJson: {},
+      legacyClientId: "legacy-1", settingsJson, securitySettingsJson: {}, autoApprovalPolicyJson: {},
     },
     membership: { id: "membership-1", userId: "user-1", status: "active", permissionOverrides: overrides, roles: roles.map((role) => ({ role })) },
     roles: new Set(roles),
@@ -84,5 +84,50 @@ describe("workspace role enforcement", () => {
     expect(hasWorkspaceRole(clientViewer, "viewer")).toBe(false);
     expect(hasWorkspacePermission(clientViewer, "read_internal")).toBe(false);
     expect(hasWorkspacePermission(clientViewer, "read_shared_client_data")).toBe(true);
+    expect(hasWorkspacePermission(clientViewer, "view_reports")).toBe(true);
+    expect(hasWorkspacePermission(clientViewer, "export_reports")).toBe(true);
+    expect(hasWorkspacePermission(clientViewer, "publish")).toBe(false);
+  });
+
+  it("enforces the launch permission matrix", () => {
+    const manager = context(["manager"]);
+    const editor = context(["editor"]);
+    const viewer = context(["viewer"]);
+
+    for (const permission of ["manage_clients", "manage_projects", "manage_integrations", "run_ai_analysis", "edit_strategy", "execute_tasks", "approve", "publish", "export_reports"]) {
+      expect(hasWorkspacePermission(manager, permission), `manager: ${permission}`).toBe(true);
+    }
+    expect(hasWorkspacePermission(manager, "manage_users")).toBe(false);
+    expect(hasWorkspacePermission(manager, "manage_settings")).toBe(false);
+    expect(hasWorkspacePermission(manager, "billing")).toBe(false);
+
+    for (const permission of ["create_projects", "edit_project_settings", "run_ai_analysis", "edit_strategy", "execute_tasks", "publish", "view_reports", "export_reports", "view_activity", "view_notifications", "read_integrations"]) {
+      expect(hasWorkspacePermission(editor, permission), `editor: ${permission}`).toBe(true);
+    }
+    for (const permission of ["manage_clients", "manage_projects", "approve", "manage_integrations", "manage_api_keys"]) {
+      expect(hasWorkspacePermission(editor, permission), `editor denied: ${permission}`).toBe(false);
+    }
+
+    for (const permission of ["read_internal", "view_reports", "view_activity", "view_notifications"]) {
+      expect(hasWorkspacePermission(viewer, permission), `viewer: ${permission}`).toBe(true);
+    }
+    for (const permission of ["create_projects", "edit_assigned_work", "run_ai_analysis", "approve", "publish", "export_reports"]) {
+      expect(hasWorkspacePermission(viewer, permission), `viewer denied: ${permission}`).toBe(false);
+    }
+  });
+
+  it("supports optional manager invitation permission without role-management authority", () => {
+    const manager = context(["manager"], "agency", { allow: ["manage_users"] });
+    expect(hasWorkspacePermission(manager, "manage_users")).toBe(true);
+    expect(hasWorkspacePermission(manager, "manage_roles")).toBe(false);
+  });
+
+  it("applies workspace role policies while preserving member-specific precedence", () => {
+    const policy = { rolePermissionOverrides: { editor: { allow: ["approve"], deny: ["publish"] } } };
+    expect(hasWorkspacePermission(context(["editor"], "agency", {}, policy), "approve")).toBe(true);
+    expect(hasWorkspacePermission(context(["editor"], "agency", {}, policy), "publish")).toBe(false);
+    expect(hasWorkspacePermission(context(["editor"], "agency", { allow: ["publish"] }, policy), "publish")).toBe(true);
+    expect(hasWorkspacePermission(context(["editor"], "agency", { deny: ["approve"] }, policy), "approve")).toBe(false);
+    expect(hasWorkspacePermission(context(["admin"], "agency", {}, policy), "publish")).toBe(true);
   });
 });

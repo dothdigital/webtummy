@@ -28,7 +28,7 @@ type AgencyClient = {
 type Notification = { id: string; title: string; body: string; actionUrl: string | null; readAt: string | null; createdAt: string };
 type Activity = { id: string; action: string; entityType: string; createdAt: string; actor: { name: string | null; email: string } | null };
 type WorkspaceData = {
-  workspace: { id: string; name: string; workspaceType: string; ownerUserId: string; autoApprovalPolicyJson: unknown };
+  workspace: { id: string; name: string; workspaceType: string; ownerUserId: string; autoApprovalPolicyJson: unknown; rolePermissionOverrides: RolePermissionPolicies };
   currentMembership: { id: string; userId: string; roles: Role[] };
   clients: AgencyClient[]; projects: Project[]; teams: Team[]; members: Member[];
   invitations: { id: string; email: string; name: string | null; rolesJson: unknown; status: string; expiresAt: string; createdAt: string }[];
@@ -37,6 +37,8 @@ type WorkspaceData = {
   summary: { clients: number; activeProjects: number; pendingApprovals: number; overdueTasks: number; reportsReady: number };
   nextActions: { key: string; title: string; description: string; href: string }[];
 };
+type ConfigurableRole = "manager" | "editor" | "viewer" | "client_viewer";
+type RolePermissionPolicies = Partial<Record<ConfigurableRole, { allow?: string[]; deny?: string[] }>>;
 type Tab = "dashboard" | "clients" | "teams" | "approvals" | "activity";
 
 const roleOrder: Role[] = ["admin", "manager", "editor", "viewer", "client_viewer"];
@@ -223,7 +225,8 @@ export default function AgencyWorkspace() {
     { id: "dashboard", label: "Dashboard" },
     ...(isAgency && canManage ? [{ id: "clients" as Tab, label: "Clients", count: data.summary.clients }] : []),
     ...(canAdmin ? [{ id: "teams" as Tab, label: "Users & Teams", count: data.members.length }] : []),
-    ...(canManage ? [{ id: "approvals" as Tab, label: "Approvals", count: data.summary.pendingApprovals }, { id: "activity" as Tab, label: "Activity" }] : []),
+    ...(canManage ? [{ id: "approvals" as Tab, label: "Approvals", count: data.summary.pendingApprovals }] : []),
+    { id: "activity", label: "Activity" },
   ];
 
   return <div className="space-y-6">
@@ -298,7 +301,7 @@ export default function AgencyWorkspace() {
     {isAgency && tab === "clients" && <div className="space-y-6">
       {!showClientForm && <div className={`flex ${data.clients.length ? "justify-end" : "min-h-[45vh] items-center justify-center"}`}>{canManage && <button type="button" onClick={() => setShowClientForm(true)} className="inline-flex h-11 items-center rounded-xl bg-brand-600 px-6 text-sm font-bold text-white shadow-sm hover:bg-brand-700">+ Create Client</button>}</div>}
       {data.clients.length > 0 && !showClientForm && <Card className="overflow-hidden p-0"><div className="flex flex-wrap items-center justify-between gap-3 border-b px-5 py-4"><div><h2 className="font-bold">Clients</h2><p className="text-xs text-slate-500">Shared client data is reused by every project.</p></div><div className="flex gap-2">{(["active", "archived"] as const).map((status) => <button key={status} type="button" onClick={() => setClientFilter(status)} className={`rounded-full border px-4 py-2 text-xs font-bold ${clientFilter === status ? "border-brand-300 bg-brand-50 text-brand-800" : "border-slate-200 bg-white text-slate-500"}`}>{status === "active" ? "Active" : "Archived"} ({data.clients.filter((client) => client.status === status).length})</button>)}</div></div><div className="divide-y">{filteredClients.map((client) => <div key={client.id} className="p-5">
-        <div className="flex flex-wrap items-start justify-between gap-3"><div><div className="flex gap-2"><Link to={`/agency/clients/${client.id}`} className="font-bold hover:text-brand-700">{client.name}</Link><Badge tone={client.status === "active" ? "green" : "slate"}>{client.status === "archived" ? "Archived · View only" : label(client.status)}</Badge></div><p className="mt-1 text-sm text-slate-500">{client.contactEmail || "No contact email"} · {list(client.targetMarkets).join(", ") || "No target markets"}</p></div><div className="flex flex-wrap gap-2">{canManage && client.status === "active" && <button onClick={() => setEditingClient(client)} className="rounded-lg border px-3 py-2 text-xs font-bold">Edit</button>}{client.status === "active" ? canAdmin && <button disabled={busy === client.id} onClick={() => action(client.id, () => api.post(`/api/agency/clients/${client.id}/archive`, {}), `${client.name} archived and is now view-only.`)} className="rounded-lg border px-3 py-2 text-xs font-bold disabled:opacity-40">Archive</button> : <>{canAdmin && <button disabled={busy === client.id} onClick={() => action(client.id, () => api.post(`/api/agency/clients/${client.id}/restore`, {}), `${client.name} restored.`)} className="rounded-lg border px-3 py-2 text-xs font-bold disabled:opacity-40">Restore</button>}{canAdmin && <button disabled={busy === `delete-${client.id}`} onClick={() => void permanentlyDeleteClient(client)} className="rounded-lg border border-rose-200 px-3 py-2 text-xs font-bold text-rose-700 disabled:opacity-40">Permanently delete</button>}</>}</div></div>
+        <div className="flex flex-wrap items-start justify-between gap-3"><div><div className="flex gap-2"><Link to={`/agency/clients/${client.id}`} className="font-bold hover:text-brand-700">{client.name}</Link><Badge tone={client.status === "active" ? "green" : "slate"}>{client.status === "archived" ? "Archived · View only" : label(client.status)}</Badge></div><p className="mt-1 text-sm text-slate-500">{client.contactEmail || "No contact email"} · {list(client.targetMarkets).join(", ") || "No target markets"}</p></div><div className="flex flex-wrap gap-2">{canManage && client.status === "active" && <button onClick={() => setEditingClient(client)} className="rounded-lg border px-3 py-2 text-xs font-bold">Edit</button>}{client.status === "active" ? canManage && <button disabled={busy === client.id} onClick={() => action(client.id, () => api.post(`/api/agency/clients/${client.id}/archive`, {}), `${client.name} archived and is now view-only.`)} className="rounded-lg border px-3 py-2 text-xs font-bold disabled:opacity-40">Archive</button> : <>{canManage && <button disabled={busy === client.id} onClick={() => action(client.id, () => api.post(`/api/agency/clients/${client.id}/restore`, {}), `${client.name} restored.`)} className="rounded-lg border px-3 py-2 text-xs font-bold disabled:opacity-40">Restore</button>}{canAdmin && <button disabled={busy === `delete-${client.id}`} onClick={() => void permanentlyDeleteClient(client)} className="rounded-lg border border-rose-200 px-3 py-2 text-xs font-bold text-rose-700 disabled:opacity-40">Permanently delete</button>}</>}</div></div>
         <div className="mt-4 grid gap-2 sm:grid-cols-3"><div className="rounded-lg bg-slate-50 p-3 text-sm"><b>{client.projects.length}</b><span className="block text-xs text-slate-500">Projects</span></div><div className="rounded-lg bg-slate-50 p-3 text-sm"><b>{client.teamAssignments.length}</b><span className="block text-xs text-slate-500">Teams</span></div><div className="rounded-lg bg-slate-50 p-3 text-sm"><b>{client.memberAssignments.length}</b><span className="block text-xs text-slate-500">Assigned users</span></div></div>
       </div>)}{!filteredClients.length && <div className="p-8 text-center text-sm text-slate-500">No {clientFilter} clients.</div>}</div></Card>}
       {canManage && showClientForm && <Card className="p-6 lg:p-8"><div className="flex items-start justify-between gap-4"><div><h2 className="text-xl font-bold">Create client</h2><p className="mt-1 text-sm text-slate-500">This shared client profile is reused across every project.</p></div><button type="button" onClick={() => setShowClientForm(false)} className="rounded-lg border px-4 py-2 text-sm font-bold text-slate-600">Cancel</button></div><form onSubmit={(event) => void createClient(event)} className="mt-6 grid gap-5 md:grid-cols-2 xl:grid-cols-3">
@@ -329,6 +332,7 @@ export default function AgencyWorkspace() {
       {canAdmin && showInviteForm && <Card className="p-6 lg:p-8"><div className="flex items-start justify-between gap-4"><div><h2 className="text-xl font-bold">Invite user</h2><p className="mt-1 text-sm text-slate-500">Choose their workspace role and optional team or client assignments. They will receive an email to create their own login.</p></div><button type="button" onClick={() => setShowInviteForm(false)} className="rounded-lg border px-4 py-2 text-sm font-bold text-slate-600">Cancel</button></div><form onSubmit={(event) => void inviteMember(event)} className="mt-6 grid gap-5 md:grid-cols-2 xl:grid-cols-3"><label className="text-xs font-bold">Name<input value={inviteName} onChange={(event) => setInviteName(event.target.value)} className="mt-1 h-10 w-full rounded-lg border px-3 text-sm font-normal" /></label><label className="text-xs font-bold">Email *<input required type="email" value={inviteEmail} onChange={(event) => setInviteEmail(event.target.value)} className="mt-1 h-10 w-full rounded-lg border px-3 text-sm font-normal" /></label><label className="text-xs font-bold">Role<select value={inviteRole} onChange={(event) => setInviteRole(event.target.value as Role)} className="mt-1 h-10 w-full rounded-lg border bg-white px-3 text-sm font-normal">{allowedRoles.filter((role) => role !== "owner").map((role) => <option key={role} value={role}>{roleLabels[role]}</option>)}</select></label><label className="text-xs font-bold">Team<select value={inviteTeamId} onChange={(event) => setInviteTeamId(event.target.value)} className="mt-1 h-10 w-full rounded-lg border bg-white px-3 text-sm font-normal"><option value="">No team</option>{data.teams.map((team) => <option key={team.id} value={team.id}>{team.name}</option>)}</select></label><fieldset className="md:col-span-2"><legend className="text-xs font-bold">Clients {inviteRole === "client_viewer" ? "*" : "(optional)"}</legend><div className="mt-1 grid max-h-40 gap-2 overflow-y-auto rounded-lg border bg-white p-3 sm:grid-cols-2">{data.clients.filter((client) => client.status === "active").map((client) => <label key={client.id} className="flex items-center gap-2 rounded-md px-2 py-1.5 text-sm hover:bg-slate-50"><input type="checkbox" checked={inviteClientIds.includes(client.id)} onChange={() => setInviteClientIds((current) => current.includes(client.id) ? current.filter((id) => id !== client.id) : [...current, client.id])} />{client.name}</label>)}{!data.clients.some((client) => client.status === "active") && <span className="text-sm text-slate-500">No active clients available.</span>}</div><p className="mt-1 text-xs font-normal text-slate-500">Select every client this user may access.</p></fieldset><div className="flex items-end justify-end gap-3 xl:col-span-1"><button type="button" onClick={() => setShowInviteForm(false)} className="h-10 rounded-lg border px-4 text-sm font-bold text-slate-600">Cancel</button><button disabled={busy === "invite" || (inviteRole === "client_viewer" && inviteClientIds.length === 0)} className="h-10 rounded-lg bg-brand-600 px-5 text-sm font-bold text-white disabled:bg-slate-300">{busy === "invite" ? "Sending…" : "Send Invitation"}</button></div></form></Card>}
       {data.invitations.length > 0 && <Card className="p-5"><div className="text-xs font-bold uppercase text-slate-500">Pending invitations</div><div className="mt-3 space-y-2">{data.invitations.map((invitation) => <div key={invitation.id} className="flex flex-wrap items-center justify-between gap-3 rounded-lg bg-slate-50 p-3"><div><b className="text-sm">{invitation.name || invitation.email}</b><span className="ml-2 text-xs text-slate-500">{invitation.email}</span></div><button disabled={busy === invitation.id} onClick={() => action(invitation.id, () => api.post(`/api/workspace/invitations/${invitation.id}/revoke`, {}), "Invitation revoked.")} className="rounded-lg border bg-white px-3 py-1.5 text-xs font-bold">Revoke</button></div>)}</div></Card>}
       {canAdmin && <Card className="p-5"><h2 className="font-bold">Approval policy</h2><label className="mt-3 flex items-start gap-3 text-sm"><input type="checkbox" checked={selfApprovalEnabled} onChange={(event) => action("approval-policy", () => api.patch("/api/workspace/settings/approval-policy", { allowManagerSelfApproval: event.target.checked }), "Approval policy updated.")} className="mt-1" /><span><b>Allow Manager/Approver self-approval</b><span className="mt-1 block text-slate-500">Off by default. When off, managers cannot approve work they created or were assigned to complete.</span></span></label></Card>}
+      {canAdmin && <RolePermissionMatrix workspaceType={data.workspace.workspaceType} stored={data.workspace.rolePermissionOverrides} onSaved={() => void load()} />}
       {isOwner && <Card className="border-amber-200 bg-amber-50 p-5"><h2 className="font-bold text-amber-900">Primary Owner controls</h2><p className="mt-1 text-sm text-amber-800">One Owner/Admin remains the Primary Owner for billing and ownership transfer. That designation cannot be removed through normal role editing.</p></Card>}
     </div>}
 
@@ -340,6 +344,49 @@ export default function AgencyWorkspace() {
 
 function ClientField({ label, value, onChange, required, type = "text", placeholder }: { label: string; value: string; onChange: (value: string) => void; required?: boolean; type?: string; placeholder?: string }) {
   return <label className="block text-xs font-bold">{label}<input required={required} type={type} value={value} onChange={(event) => onChange(event.target.value)} placeholder={placeholder} className="mt-1 h-10 w-full rounded-lg border px-3 text-sm font-normal" /></label>;
+}
+
+const configurablePermissions = [
+  ["manage_integrations", "Manage integrations"], ["manage_users", "Invite/remove users"], ["manage_clients", "Create, edit and archive clients"],
+  ["create_projects", "Create projects"], ["edit_project_settings", "Edit project settings"], ["manage_projects", "Archive/delete projects"],
+  ["run_ai_analysis", "Run AI analysis"], ["edit_strategy", "Create/edit strategy"], ["execute_tasks", "Execute approved tasks"],
+  ["approve", "Approve AI changes"], ["publish", "Publish changes"], ["view_reports", "View reports"], ["export_reports", "Export reports"],
+  ["view_activity", "View activity history"], ["view_notifications", "View notifications"], ["read_integrations", "Read Integrations Hub"],
+] as const;
+const launchRoleDefaults: Record<ConfigurableRole, Set<string>> = {
+  manager: new Set(["manage_integrations", "manage_clients", "create_projects", "edit_project_settings", "manage_projects", "run_ai_analysis", "edit_strategy", "execute_tasks", "approve", "publish", "view_reports", "export_reports", "view_activity", "view_notifications"]),
+  editor: new Set(["create_projects", "edit_project_settings", "run_ai_analysis", "edit_strategy", "execute_tasks", "publish", "view_reports", "export_reports", "view_activity", "view_notifications", "read_integrations"]),
+  viewer: new Set(["view_reports", "view_activity", "view_notifications"]),
+  client_viewer: new Set(["view_reports", "export_reports", "view_activity", "view_notifications"]),
+};
+
+function RolePermissionMatrix({ workspaceType, stored, onSaved }: { workspaceType: string; stored: RolePermissionPolicies; onSaved: () => void }) {
+  const roles: ConfigurableRole[] = workspaceType === "agency" ? ["manager", "editor", "viewer", "client_viewer"] : ["manager", "editor", "viewer"];
+  const [policies, setPolicies] = useState<RolePermissionPolicies>(stored || {});
+  const [saving, setSaving] = useState(false);
+  const [message, setMessage] = useState("");
+  useEffect(() => setPolicies(stored || {}), [stored]);
+  const enabled = (role: ConfigurableRole, permission: string) => {
+    if (policies[role]?.deny?.includes(permission)) return false;
+    if (policies[role]?.allow?.includes(permission)) return true;
+    return launchRoleDefaults[role].has(permission);
+  };
+  const toggle = (role: ConfigurableRole, permission: string) => setPolicies((current) => {
+    const nextEnabled = !enabled(role, permission);
+    const defaultEnabled = launchRoleDefaults[role].has(permission);
+    const policy = current[role] || {};
+    const allow = (policy.allow || []).filter((item) => item !== permission);
+    const deny = (policy.deny || []).filter((item) => item !== permission);
+    if (nextEnabled !== defaultEnabled) (nextEnabled ? allow : deny).push(permission);
+    return { ...current, [role]: { allow, deny } };
+  });
+  const save = async () => {
+    setSaving(true); setMessage("");
+    try { await api.patch("/api/workspace/settings/role-permissions", { roles: policies }); setMessage("Role permissions saved."); onSaved(); }
+    catch (error) { setMessage(error instanceof Error ? error.message : "Role permissions could not be saved."); }
+    finally { setSaving(false); }
+  };
+  return <Card className="overflow-hidden p-0"><div className="border-b px-5 py-4"><h2 className="font-bold">Role permissions</h2><p className="mt-1 text-xs text-slate-500">Enable or disable workspace capabilities by role. Owner/Admin always retains full control.</p></div><div className="overflow-x-auto"><table className="w-full min-w-[760px] text-left text-sm"><thead className="bg-slate-50 text-xs uppercase text-slate-500"><tr><th className="px-5 py-3">Permission</th>{roles.map((role) => <th key={role} className="px-4 py-3 text-center">{roleLabels[role]}</th>)}</tr></thead><tbody className="divide-y">{configurablePermissions.map(([permission, permissionLabel]) => <tr key={permission}><td className="px-5 py-3 font-medium">{permissionLabel}</td>{roles.map((role) => <td key={role} className="px-4 py-3 text-center"><input type="checkbox" checked={enabled(role, permission)} onChange={() => toggle(role, permission)} aria-label={`${permissionLabel} for ${roleLabels[role]}`} className="h-4 w-4 rounded border-slate-300 text-brand-600 focus:ring-brand-500" /></td>)}</tr>)}</tbody></table></div><div className="flex flex-wrap items-center justify-end gap-3 border-t px-5 py-4">{message && <span className="mr-auto text-xs text-slate-600">{message}</span>}<button type="button" disabled={saving} onClick={() => setPolicies({})} className="h-10 rounded-lg border px-4 text-sm font-bold text-slate-600">Reset to launch defaults</button><button type="button" disabled={saving} onClick={() => void save()} className="h-10 rounded-lg bg-brand-600 px-5 text-sm font-bold text-white disabled:opacity-50">{saving ? "Saving…" : "Save permissions"}</button></div></Card>;
 }
 
 function ClientArea({ label, value, onChange, required, placeholder, hint }: { label: string; value: string; onChange: (value: string) => void; required?: boolean; placeholder?: string; hint?: string }) {

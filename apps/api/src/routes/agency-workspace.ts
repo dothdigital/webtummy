@@ -92,6 +92,13 @@ const taskDecisionSchema = z.object({
   snapshotJson: z.record(z.unknown()).default({}),
 });
 const approvalPolicySchema = z.object({ allowManagerSelfApproval: z.boolean() });
+const configurablePermissionRoles = ["manager", "editor", "viewer", "client_viewer"] as const;
+const rolePermissionPolicySchema = z.object({
+  roles: z.record(z.enum(configurablePermissionRoles), z.object({
+    allow: z.array(z.string().trim().min(1)).max(100).default([]),
+    deny: z.array(z.string().trim().min(1)).max(100).default([]),
+  })).default({}),
+});
 
 const normalizeName = (name: string) => name.trim().toLocaleLowerCase().replace(/\s+/g, " ");
 
@@ -219,7 +226,14 @@ agencyWorkspaceRouter.get(["/agency/workspace", "/workspace"], (req, res) => han
     }).length, reportsReady,
   };
   return {
-    workspace: { ...context.workspace, settingsJson: undefined, locationDefaults: locationDefaultsFromSettings(context.workspace.settingsJson) },
+    workspace: {
+      ...context.workspace,
+      settingsJson: undefined,
+      locationDefaults: locationDefaultsFromSettings(context.workspace.settingsJson),
+      rolePermissionOverrides: context.workspace.settingsJson && typeof context.workspace.settingsJson === "object"
+        ? (context.workspace.settingsJson as { rolePermissionOverrides?: unknown }).rolePermissionOverrides ?? {}
+        : {},
+    },
     currentMembership: { ...context.membership, roles: effectiveWorkspaceRoles(context) },
     clients: safeClients,
     projects: projectsWithProgress,
@@ -232,6 +246,28 @@ agencyWorkspaceRouter.get(["/agency/workspace", "/workspace"], (req, res) => han
     summary,
     nextActions: clientViewer ? [] : agencyNextActions(summary),
   };
+}));
+
+agencyWorkspaceRouter.patch(["/agency/settings/role-permissions", "/workspace/settings/role-permissions"], (req, res) => handle(res, async () => {
+  const context = await workspaceContext(req);
+  requireWorkspaceRole(context, "owner", "admin");
+  const data = rolePermissionPolicySchema.parse(req.body);
+  const previousSettings = context.workspace.settingsJson && typeof context.workspace.settingsJson === "object"
+    ? context.workspace.settingsJson as Record<string, unknown> : {};
+  const rolePermissionOverrides = Object.fromEntries(Object.entries(data.roles).map(([role, policy]) => [role, {
+    allow: [...new Set(policy.allow)].filter((permission) => !policy.deny.includes(permission)),
+    deny: [...new Set(policy.deny)],
+  }]));
+  const nextSettings = { ...previousSettings, rolePermissionOverrides };
+  await prisma.$transaction(async (tx) => {
+    await tx.workspace.update({ where: { id: context.workspace.id }, data: { settingsJson: nextSettings as Prisma.InputJsonValue } });
+    await recordWorkspaceActivity(tx, {
+      context, action: "workspace.role_permissions_changed", entityType: "workspace", entityId: context.workspace.id,
+      previousJson: { rolePermissionOverrides: previousSettings.rolePermissionOverrides ?? {} } as Prisma.InputJsonValue,
+      nextJson: { rolePermissionOverrides } as Prisma.InputJsonValue,
+    });
+  });
+  return { rolePermissionOverrides };
 }));
 
 agencyWorkspaceRouter.patch(["/agency/settings/approval-policy", "/workspace/settings/approval-policy"], (req, res) => handle(res, async () => {
@@ -529,7 +565,7 @@ agencyWorkspaceRouter.patch("/agency/clients/:clientId", (req, res) => handle(re
 for (const action of ["archive", "restore"] as const) {
   agencyWorkspaceRouter.post(`/agency/clients/:clientId/${action}`, (req, res) => handle(res, async () => {
     const context = await workspaceContext(req);
-    requireWorkspaceRole(context, "owner", "admin");
+    requireWorkspaceRole(context, "owner", "admin", "manager");
     const client = await prisma.agencyClient.findFirst({ where: { id: req.params.clientId, workspaceId: context.workspace.id } });
     if (!client) throw Object.assign(new Error("Client not found."), { statusCode: 404 });
     const status = action === "archive" ? "archived" : "active";
@@ -861,7 +897,7 @@ agencyWorkspaceRouter.post("/agency/tasks/:taskId/decision", (req, res) => handl
 agencyWorkspaceRouter.post("/agency/tasks/:taskId/publish", (req, res) => handle(res, async () => {
   const { context, task } = await scopedAgencyTask(req, req.params.taskId);
   if (!hasWorkspacePermission(context, "publish")) throw Object.assign(new Error("Explicit publishing permission is required."), { statusCode: 403 });
-  if (task.status !== "ready_to_publish" || !task.approvedAt) throw Object.assign(new Error("Only approved work can be published."), { statusCode: 409 });
+  if (task.status !== "ready_to_publish" || (task.requiresApproval && !task.approvedAt)) throw Object.assign(new Error(task.requiresApproval ? "Only approved work can be published." : "Work must be ready to publish."), { statusCode: 409 });
   return prisma.$transaction(async (tx) => {
     const updated = await tx.executionTask.update({ where: { id: task.id }, data: { status: "published", publishedAt: new Date() } });
     await recordWorkspaceActivity(tx, { context, action: "publishing.completed", entityType: "execution_task", entityId: task.id, agencyClientId: task.project!.agencyClientId, projectId: task.projectId, previousJson: { status: task.status }, nextJson: { status: "published" } });

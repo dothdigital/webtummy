@@ -127,15 +127,24 @@ export function hasWorkspacePermission(context: WorkspaceContext, permission: st
   const allowed = Array.isArray(overrides.allow) && overrides.allow.includes(permission);
   if (denied) return false;
   if (allowed) return true;
+  const settings = context.workspace.settingsJson && typeof context.workspace.settingsJson === "object"
+    ? context.workspace.settingsJson as { rolePermissionOverrides?: unknown }
+    : {};
+  const rolePolicies = settings.rolePermissionOverrides && typeof settings.rolePermissionOverrides === "object"
+    ? settings.rolePermissionOverrides as Record<string, { allow?: unknown; deny?: unknown }>
+    : {};
+  const policyRoles = [...context.roles].map((role) => role === "approver" ? "manager" : role);
+  if (policyRoles.some((role) => Array.isArray(rolePolicies[role]?.deny) && rolePolicies[role].deny.includes(permission))) return false;
+  if (policyRoles.some((role) => Array.isArray(rolePolicies[role]?.allow) && rolePolicies[role].allow.includes(permission))) return true;
   const defaults: Record<WorkspaceRole, readonly string[]> = {
     owner: [],
-    admin: ["manage_clients", "manage_projects", "manage_users", "manage_teams", "manage_templates", "manage_reports", "manage_settings"],
-    manager: ["manage_assigned_clients", "manage_assigned_projects", "assign_tasks", "request_approval", "approve"],
+    admin: ["manage_clients", "manage_projects", "manage_users", "manage_teams", "manage_templates", "manage_reports", "manage_settings", "manage_integrations", "manage_api_keys", "billing"],
+    manager: ["manage_clients", "manage_projects", "manage_assigned_clients", "manage_assigned_projects", "manage_integrations", "assign_tasks", "request_approval", "approve", "publish", "run_ai_analysis", "edit_strategy", "execute_tasks", "view_reports", "export_reports", "view_activity", "view_notifications"],
     // Legacy role retained for existing records; it behaves as Manager/Approver.
-    approver: ["manage_assigned_clients", "manage_assigned_projects", "assign_tasks", "request_approval", "approve"],
-    editor: ["edit_assigned_work", "submit_for_approval"],
-    viewer: ["read_internal"],
-    client_viewer: ["read_shared_client_data"],
+    approver: ["manage_clients", "manage_projects", "manage_assigned_clients", "manage_assigned_projects", "manage_integrations", "assign_tasks", "request_approval", "approve", "publish", "run_ai_analysis", "edit_strategy", "execute_tasks", "view_reports", "export_reports", "view_activity", "view_notifications"],
+    editor: ["create_projects", "edit_project_settings", "edit_assigned_work", "run_ai_analysis", "edit_strategy", "execute_tasks", "submit_for_approval", "publish", "view_reports", "export_reports", "view_activity", "view_notifications", "read_integrations"],
+    viewer: ["read_internal", "view_reports", "view_activity", "view_notifications"],
+    client_viewer: ["read_shared_client_data", "view_reports", "export_reports", "view_activity", "view_notifications"],
   };
   return workspaceRoles.some((role) => hasWorkspaceRole(context, role) && defaults[role].includes(permission));
 }
