@@ -41,7 +41,7 @@ type WorkspaceData = {
 };
 type ConfigurableRole = ConfigurableWorkspaceRole;
 type RolePermissionPolicies = Partial<Record<ConfigurableWorkspaceRole, { allow?: string[]; deny?: string[] }>>;
-type Tab = "dashboard" | "clients" | "teams" | "approvals" | "activity";
+type Tab = "dashboard" | "clients" | "teams" | "approvals" | "notifications" | "activity";
 
 const roleOrder: Role[] = ["admin", "manager", "editor", "viewer", "client_viewer"];
 const timeZones = ["UTC", "America/Toronto", "America/Vancouver", "America/Edmonton", "America/Winnipeg", "America/Halifax", "America/St_Johns", "America/New_York", "America/Chicago", "America/Denver", "America/Los_Angeles", "America/Phoenix", "Europe/London", "Europe/Paris", "Europe/Berlin", "Asia/Dubai", "Asia/Kolkata", "Asia/Singapore", "Asia/Tokyo", "Australia/Sydney", "Pacific/Auckland"];
@@ -151,7 +151,7 @@ export default function AgencyWorkspace() {
   useEffect(() => { void load(); }, []);
   useEffect(() => {
     const requested = params.get("tab") as Tab | null;
-    if (requested && ["dashboard", "clients", "teams", "approvals", "activity"].includes(requested) && requested !== tab) setTab(requested);
+    if (requested && ["dashboard", "clients", "teams", "approvals", "notifications", "activity"].includes(requested) && requested !== tab) setTab(requested);
   }, [params, tab]);
 
   function openTab(next: Tab) {
@@ -232,6 +232,7 @@ export default function AgencyWorkspace() {
     ...(isAgency && canManageClients ? [{ id: "clients" as Tab, label: "Clients", count: data.summary.clients }] : []),
     ...(canManageUsers ? [{ id: "teams" as Tab, label: "Users & Teams", count: data.members.length }] : []),
     ...(canApprove ? [{ id: "approvals" as Tab, label: "Approvals", count: data.summary.pendingApprovals }] : []),
+    ...(data.permissions.view_notifications ? [{ id: "notifications" as Tab, label: "Notifications", count: unread }] : []),
     ...(canViewActivity ? [{ id: "activity" as Tab, label: "Activity" }] : []),
   ];
 
@@ -344,6 +345,7 @@ export default function AgencyWorkspace() {
 
     {tab === "approvals" && <div className="space-y-6"><Card className="p-5"><h2 className="font-bold">Pending approvals</h2><p className="mt-1 text-sm text-slate-500">This is live workspace data and includes only work submitted for approval.</p><div className="mt-4 space-y-3">{data.pendingApprovalTasks.map((task) => <Link key={task.id} to={"/guided-projects/" + task.projectId} className="block rounded-lg border p-4 hover:border-brand-300"><div className="flex flex-wrap items-start justify-between gap-2"><div><b>{task.title}</b><p className="mt-1 text-sm text-slate-500">{task.project?.agencyClient?.name || "Client"} · {task.project?.name || "Project"}</p></div><Badge tone="amber">{label(task.priority)}</Badge></div></Link>)}{!data.pendingApprovalTasks.length && <p className="text-sm text-slate-500">No work is currently waiting for approval.</p>}</div></Card><Card className="p-5"><h2 className="font-bold">Notifications</h2><div className="mt-4 space-y-2">{data.notifications.map((item) => <button key={item.id} onClick={() => !item.readAt && action(item.id, () => api.patch(`/api/workspace/notifications/${item.id}/read`, {}), "Notification marked read.")} className={`w-full rounded-lg border p-4 text-left ${item.readAt ? "bg-white" : "border-brand-200 bg-brand-50"}`}><div className="flex justify-between gap-3"><b className="text-sm">{item.title}</b><span className="text-xs text-slate-400">{new Date(item.createdAt).toLocaleString()}</span></div><p className="mt-1 text-sm text-slate-600">{item.body}</p></button>)}</div></Card></div>}
     {tab === "activity" && <Card className="p-5"><h2 className="font-bold">Immutable activity history</h2><div className="mt-4 space-y-2">{data.activity.map((item) => <div key={item.id} className="grid gap-2 rounded-lg border p-4 md:grid-cols-[180px_minmax(0,1fr)_180px]"><div className="text-sm font-bold">{label(item.action)}</div><div className="text-sm text-slate-600">{item.actor?.name || item.actor?.email || "System"} · {label(item.entityType)}</div><div className="text-xs text-slate-400 md:text-right">{new Date(item.createdAt).toLocaleString()}</div></div>)}</div></Card>}
+    {tab === "notifications" && <Card className="p-5"><h2 className="font-bold">Notification center</h2><p className="mt-1 text-sm text-slate-500">Only notifications for projects you can access are shown here.</p><div className="mt-4 space-y-2">{data.notifications.map((item) => <button key={item.id} onClick={() => !item.readAt && action(item.id, () => api.patch(`/api/workspace/notifications/${item.id}/read`, {}), "Notification marked read.")} className={`w-full rounded-lg border p-4 text-left ${item.readAt ? "bg-white" : "border-brand-200 bg-brand-50"}`}><div className="flex justify-between gap-3"><b className="text-sm">{item.title}</b><span className="text-xs text-slate-400">{new Date(item.createdAt).toLocaleString()}</span></div><p className="mt-1 text-sm text-slate-600">{item.body}</p></button>)}{!data.notifications.length && <p className="text-sm text-slate-500">No notifications yet.</p>}</div></Card>}
     {editingClient && <AgencyClientEditor client={editingClient} owner={Boolean(isOwner)} onClose={() => setEditingClient(null)} onSaved={(message) => { setEditingClient(null); setNotice(message); void load(); }} />}
   </div>;
 }
