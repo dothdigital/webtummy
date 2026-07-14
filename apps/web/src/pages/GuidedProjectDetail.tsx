@@ -136,7 +136,7 @@ function BusinessProfileCard({ project, preferredOutputs }: { project: GuidedPro
               <span key={item} className="rounded-full bg-brand-50 px-3 py-1 text-xs font-bold text-brand-800">{item}</span>
             ))}
           </div>
-          <div className="mt-3 grid gap-3 md:grid-cols-2">
+          <div className="mt-3 grid gap-3">
             <CompactProfileBlock label="Audience" items={audienceSegments} empty="Audience not set" />
             <CompactProfileBlock label="Offer" items={offerSegments} empty="Offer not set" />
           </div>
@@ -242,9 +242,9 @@ function CompactProfileBlock({ label, items, empty }: { label: string; items: st
   return (
     <div className="rounded-lg border border-charcoal-100 bg-charcoal-50/60 px-3 py-2">
       <div className="text-[10px] font-bold uppercase tracking-wide text-charcoal-400">{label}</div>
-      <div className="mt-1 flex flex-wrap gap-1">
+      <div className="mt-2 grid gap-1.5">
         {items.length ? items.map((item) => (
-          <span key={item} className="max-w-full truncate rounded-md bg-white px-2 py-0.5 text-xs font-semibold text-charcoal-700">{item}</span>
+          <span key={item} className="rounded-md bg-white px-2.5 py-1.5 text-xs font-semibold leading-5 text-charcoal-700">{item}</span>
         )) : <span className="text-xs font-semibold text-amber-700">{empty}</span>}
       </div>
     </div>
