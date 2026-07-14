@@ -89,7 +89,7 @@ const taskAssignmentSchema = z.object({
   clientVisibleNotes: z.string().max(20000).optional().nullable(),
   dependencyTaskIds: z.array(z.string()).max(100).optional(),
 });
-const taskSubmitSchema = z.object({ notes: z.string().max(10000).optional().nullable() });
+const taskSubmitSchema = z.object({ notes: z.string().max(10000).optional().nullable(), confirmed: z.boolean().default(false) });
 const taskDecisionSchema = z.object({
   decision: z.enum(["approved", "rejected", "changes_requested"]),
   notes: z.string().max(10000).optional().nullable(),
@@ -447,6 +447,7 @@ agencyWorkspaceRouter.get("/agency/projects/:projectId/dashboard", (req, res) =>
       canApprove: hasWorkspacePermission(context, "approve"),
       canPublish: hasWorkspacePermission(context, "publish"),
       canSubmit: hasWorkspacePermission(context, "submit_for_approval"),
+      approvalMode: members.some((member) => member.id !== context.membership.id && member.roles.some((role) => ["owner", "admin", "manager", "approver"].includes(role.role))) ? "team" : "solo",
     },
   };
 }));
@@ -857,16 +858,24 @@ agencyWorkspaceRouter.post("/agency/tasks/:taskId/submit", (req, res) => handle(
     ...fallbackApprovers.filter((member) => member.id !== context.membership.id),
   ];
   const confirmationOnly = otherApprovers.length === 0 && (context.roles.has("owner") || context.roles.has("admin"));
+  if (confirmationOnly && !body.confirmed) throw Object.assign(new Error("Confirm this action before continuing."), { statusCode: 409 });
   return prisma.$transaction(async (tx) => {
-    const status = confirmationOnly ? "awaiting_confirmation" : "submitted_for_approval";
-    const updated = await tx.executionTask.update({ where: { id: task.id }, data: { status, submittedAt: new Date(), approvalDecision: null, approvalNotes: body.notes, approvalSnapshotJson: { confirmationOnly, stage: confirmationOnly ? "owner_confirmation" : "team_approval" } } });
-    await recordWorkspaceActivity(tx, { context, action: confirmationOnly ? "approval.confirmation_ready" : "approval.requested", entityType: "execution_task", entityId: task.id, agencyClientId: task.project!.agencyClientId, projectId: task.projectId, nextJson: { status, confirmationOnly } });
+    const needsClientStep = confirmationOnly && task.clientApprovalRequired;
+    const status = confirmationOnly ? (needsClientStep ? "submitted_for_approval" : "ready_to_publish") : "submitted_for_approval";
+    const approvalDecision = confirmationOnly ? (needsClientStep ? "team_approved" : "approved") : null;
+    const updated = await tx.executionTask.update({ where: { id: task.id }, data: { status, submittedAt: new Date(), approvalDecision, approvedAt: confirmationOnly ? new Date() : null, approvalNotes: body.notes, approvalSnapshotJson: { confirmationOnly: false, stage: needsClientStep ? "client_approval" : confirmationOnly ? "approved" : "team_approval" } } });
+    if (confirmationOnly) await tx.executionTaskApproval.create({ data: { taskId: task.id, actorMembershipId: context.membership.id, decision: "approved", notes: body.notes ?? "Owner confirmed before execution.", snapshotJson: { soloConfirmation: true, clientApprovalRequired: task.clientApprovalRequired } } });
+    await recordWorkspaceActivity(tx, { context, action: confirmationOnly ? "approval.owner_confirmed" : "approval.requested", entityType: "execution_task", entityId: task.id, agencyClientId: task.project!.agencyClientId, projectId: task.projectId, nextJson: { status, confirmationOnly: false, clientApprovalPending: needsClientStep } });
     const approverUserIds = [...new Set(otherApprovers.map((member) => member.userId))];
     for (const userId of approverUserIds) await createWorkspaceNotification(tx, {
       context, userId, type: "approval_requested", title: "Approval requested",
       body: `${task.title} is ready for your review.`, actionUrl: `/approvals?projectId=${task.projectId}`,
       agencyClientId: task.project!.agencyClientId, projectId: task.projectId,
     });
+    if (needsClientStep && task.project!.agencyClientId) {
+      const clientMembers = await tx.agencyClientMember.findMany({ where: { agencyClientId: task.project!.agencyClientId, membership: { status: "active", roles: { some: { role: "client_viewer" } } } }, select: { membership: { select: { userId: true } } } });
+      for (const member of clientMembers) await createWorkspaceNotification(tx, { context, userId: member.membership.userId, type: "client_approval_requested", title: "Client approval requested", body: `${task.title} is ready for your review.`, actionUrl: `/agency/clients/${task.project!.agencyClientId}`, agencyClientId: task.project!.agencyClientId, projectId: task.projectId });
+    }
     return { task: updated };
   });
 }));

@@ -1,5 +1,4 @@
 import { useEffect, useMemo, useState } from "react";
-import { Link } from "react-router-dom";
 import { api } from "../api.js";
 import { Card } from "./ui.js";
 
@@ -20,7 +19,7 @@ type Operations = {
   tasks: Task[]; members: Member[]; teams: Team[];
   activity: { id: string; action: string; createdAt: string; actor: { name: string | null; email: string } | null }[];
   reports: { id: string; reportType: string; approvalStatus: string; sentToClientAt: string | null }[];
-  permissions: { canAssignProjects: boolean; canAssignTasks: boolean; canApprove: boolean; canPublish: boolean; canSubmit: boolean };
+  permissions: { canAssignProjects: boolean; canAssignTasks: boolean; canApprove: boolean; canPublish: boolean; canSubmit: boolean; approvalMode: "solo" | "team" };
 };
 const terminal = new Set(["completed", "skipped", "published"]);
 const label = (value: string) => value.replace(/_/g, " ").replace(/\b\w/g, (char) => char.toUpperCase());
@@ -49,8 +48,7 @@ function TaskControl({ task, data, refresh }: { task: Task; data: Operations; re
       <button disabled={Boolean(busy)} onClick={() => run("save", () => api.patch(`/api/agency/tasks/${task.id}/assignment`, { ...form, assigneeMembershipId: form.assigneeMembershipId || null, assignedTeamId: form.assignedTeamId || null, managerMembershipId: form.managerMembershipId || null, approverMembershipId: form.approverMembershipId || null, dueAt: form.dueAt ? new Date(form.dueAt).toISOString() : null }))} className="h-9 rounded-lg bg-brand-600 px-3 text-xs font-bold text-white hover:bg-brand-700">Save assignment</button>
     </div>}
     <div className="mt-3 flex flex-wrap gap-2">
-      {data.permissions.canSubmit && ["draft", "in_progress", "changes_requested", "needs_review", "ready"].includes(task.status) && <button disabled={Boolean(busy)} onClick={() => run("submit", () => api.post(`/api/agency/tasks/${task.id}/submit`, {}))} className="rounded-lg bg-brand-600 px-3 py-2 text-xs font-bold text-white hover:bg-brand-700">Submit for approval</button>}
-      {task.status === "awaiting_confirmation" && <Link to={`/approvals?projectId=${data.project.id}`} className="rounded-lg bg-brand-600 px-3 py-2 text-xs font-bold text-white hover:bg-brand-700">Review and execute</Link>}
+      {data.permissions.canSubmit && ["draft", "in_progress", "changes_requested", "needs_review", "ready"].includes(task.status) && <button disabled={Boolean(busy)} onClick={() => { const solo = data.permissions.approvalMode === "solo"; if (!solo || window.confirm(`Are you sure you want to approve “${task.title}”?\n\nThe action will be approved immediately and can proceed to execution.`)) void run("submit", () => api.post(`/api/agency/tasks/${task.id}/submit`, { confirmed: solo })); }} className="rounded-lg bg-brand-600 px-3 py-2 text-xs font-bold text-white hover:bg-brand-700">{data.permissions.approvalMode === "solo" ? "Approve" : "Submit for approval"}</button>}
       {data.permissions.canApprove && task.status === "submitted_for_approval" && <><button disabled={Boolean(busy)} onClick={() => run("approve", () => api.post(`/api/approvals/${task.id}/decision`, { decision: "approved", snapshotJson: {} }))} className="rounded-lg bg-brand-600 px-3 py-2 text-xs font-bold text-white hover:bg-brand-700">Approve</button><button disabled={Boolean(busy)} onClick={() => run("changes", () => api.post(`/api/approvals/${task.id}/decision`, { decision: "changes_requested", notes: "Changes requested from Project Dashboard.", snapshotJson: {} }))} className="rounded-lg bg-brand-600 px-3 py-2 text-xs font-bold text-white hover:bg-brand-700">Request changes</button></>}
       {data.permissions.canPublish && task.status === "ready_to_publish" && <button disabled={Boolean(busy)} onClick={() => run("publish", () => api.post(`/api/agency/tasks/${task.id}/publish`, {}))} className="rounded-lg bg-brand-600 px-3 py-2 text-xs font-bold text-white hover:bg-brand-700">Publish approved work</button>}
     </div>
