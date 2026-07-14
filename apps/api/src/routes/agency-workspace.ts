@@ -449,7 +449,7 @@ agencyWorkspaceRouter.post("/agency/reports/:reportId/send-to-client", (req, res
 
 agencyWorkspaceRouter.post("/agency/clients", (req, res) => handle(res, async () => {
   const context = await workspaceContext(req);
-  requireWorkspaceRole(context, "owner", "admin");
+  requireWorkspaceRole(context, "owner", "admin", "manager");
   if (context.workspace.workspaceType !== "agency") throw Object.assign(new Error("Client management is available only in Agency workspaces."), { statusCode: 400 });
   const data = createClientSchema.parse(req.body);
   const normalizedName = normalizeName(data.name);
