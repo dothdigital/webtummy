@@ -32,6 +32,18 @@ function projectNeedsReview(project: GuidedProject) {
   return Boolean(project.executionPlans?.[0]?.tasks?.some((task) => reviewStatuses.has(task.status)) || project.workflowSteps?.some((step) => reviewStatuses.has(step.status)));
 }
 
+function workflowState(project: GuidedProject, index: number): "completed" | "skipped" | "current" | "pending" | "blocked" | "review" {
+  const steps = project.workflowSteps ?? [];
+  const step = steps[index];
+  if (!step) return "pending";
+  if (step.status === "skipped") return "skipped";
+  if (completedStatuses.has(step.status)) return "completed";
+  if (reviewStatuses.has(step.status)) return "review";
+  if (step.status === "blocked") return "blocked";
+  const firstIncomplete = steps.findIndex((item) => !completedStatuses.has(item.status));
+  return index === firstIncomplete ? "current" : "pending";
+}
+
 function projectTypeLabel(project: GuidedProject) {
   const hasWebsite = Boolean(project.websiteId || project.websiteUrl || project.website);
   if (project.projectType === "existing_website" && !hasWebsite) return "Pre-website project";
@@ -171,6 +183,8 @@ export default function GuidedProjects() {
               </div>
 
               <div className="mt-6 flex items-center gap-4"><div className="h-2.5 flex-1 overflow-hidden rounded-full bg-violet-50"><div className="h-full rounded-full bg-gradient-to-r from-teal-400 to-teal-600 transition-all" style={{ width: `${progress}%` }} /></div><div className="w-11 text-right text-sm font-bold text-slate-600">{progress}%</div></div>
+
+              {project.workflowSteps && project.workflowSteps.length > 0 && <div className="mt-5"><div className="mb-2 flex items-center justify-between gap-3"><div className="text-xs font-bold uppercase tracking-wide text-slate-500">Project steps</div><div className="text-right text-xs text-slate-400">{project.workflowSteps.filter((step) => step.status === "completed" || step.status === "published").length} completed · {project.workflowSteps.filter((step) => step.status === "skipped").length} skipped · {project.workflowSteps.length} total</div></div><div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">{project.workflowSteps.map((step, stepIndex) => { const state = workflowState(project, stepIndex); return <div key={step.id} className={`flex min-w-0 items-center gap-2.5 rounded-lg border px-3 py-2.5 ${state === "completed" ? "border-emerald-100 bg-emerald-50 text-emerald-800" : state === "skipped" ? "border-slate-200 bg-slate-100 text-slate-500" : state === "current" ? "border-teal-300 bg-teal-50 text-teal-900 ring-1 ring-teal-200" : state === "review" ? "border-amber-200 bg-amber-50 text-amber-900" : state === "blocked" ? "border-rose-200 bg-rose-50 text-rose-800" : "border-slate-100 bg-slate-50 text-slate-500"}`}><span className={`flex h-5 w-5 shrink-0 items-center justify-center rounded-md border text-[11px] font-bold ${state === "completed" ? "border-emerald-500 bg-emerald-500 text-white" : state === "skipped" ? "border-slate-300 bg-slate-200 text-slate-500" : state === "current" ? "border-teal-500 bg-white text-teal-700" : state === "review" ? "border-amber-500 bg-white text-amber-700" : state === "blocked" ? "border-rose-400 bg-white text-rose-600" : "border-slate-300 bg-white text-transparent"}`}>{state === "completed" ? "✓" : state === "skipped" ? "–" : state === "current" ? "●" : state === "review" ? "!" : state === "blocked" ? "×" : "·"}</span><span className="min-w-0"><span className="block truncate text-xs font-bold">{step.title}</span><span className="mt-0.5 block text-[10px] font-semibold uppercase tracking-wide opacity-70">{state === "review" ? "Needs review" : state}</span></span></div>; })}</div></div>}
 
               <div className="mt-5 flex flex-col gap-3 border-t border-violet-50 pt-4 md:flex-row md:items-center md:justify-between">
                 <div className="flex min-w-0 flex-col gap-2 text-sm text-slate-500 sm:flex-row sm:items-center sm:gap-7"><div className="min-w-0 truncate">Next: <span className="font-bold text-slate-900">{nextTitle}</span></div><div className="shrink-0">Updated <span className="font-bold text-slate-800">{relativeUpdated(project.updatedAt)}</span></div></div>
