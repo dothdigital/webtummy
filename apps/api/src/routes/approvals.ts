@@ -24,7 +24,7 @@ function approvalView(task: Awaited<ReturnType<typeof accessibleTask>>, level: A
   const snapshot = task.approvalSnapshotJson && typeof task.approvalSnapshotJson === "object" ? task.approvalSnapshotJson as Record<string, unknown> : {};
   const affectedCount = typeof snapshot.affectedCount === "number" ? snapshot.affectedCount : null;
   const classification = classifyApproval({ ...task, affectedCount });
-  return { ...task, approvalType: classification.type, effectiveRisk: classification.risk, highRisk: classification.highRisk, automationLevel: level, policyRequiresApproval: approvalRequired(level, { ...task, affectedCount }), expectedBenefit: task.impact || snapshot.expectedBenefit || null, aiReason: task.description, affectedCount, beforeVersion: snapshot.before ?? null, proposedVersion: snapshot.after ?? snapshot.proposed ?? null };
+  return { ...task, approvalType: classification.type, effectiveRisk: classification.risk, highRisk: classification.highRisk, confirmationOnly: task.status === "awaiting_confirmation" || snapshot.confirmationOnly === true, approvalStage: snapshot.stage ?? "team_approval", automationLevel: level, policyRequiresApproval: approvalRequired(level, { ...task, affectedCount }), expectedBenefit: task.impact || snapshot.expectedBenefit || null, aiReason: task.description, affectedCount, beforeVersion: snapshot.before ?? null, proposedVersion: snapshot.after ?? snapshot.proposed ?? null };
 }
 
 approvalsRouter.get("/approvals", async (req, res) => {
@@ -32,7 +32,7 @@ approvalsRouter.get("/approvals", async (req, res) => {
   const clientViewer = context.roles.size === 1 && context.roles.has("client_viewer");
   if (!clientViewer && !hasWorkspacePermission(context, "approve")) return res.status(403).json({ error: "Approval permission is required." });
   const projectId = typeof req.query.projectId === "string" ? req.query.projectId : null;
-  const candidates = await prisma.executionTask.findMany({ where: { projectId: projectId ?? { not: null }, status: "submitted_for_approval", ...(clientViewer ? { clientApprovalRequired: true } : {}) }, orderBy: [{ approvalRisk: "desc" }, { submittedAt: "asc" }], include: { project: { include: { agencyClient: true } }, assignee: { include: { user: true } }, manager: { include: { user: true } }, approver: { include: { user: true } }, approvalHistory: { orderBy: { createdAt: "desc" }, take: 20 } } });
+  const candidates = await prisma.executionTask.findMany({ where: { projectId: projectId ?? { not: null }, status: { in: clientViewer ? ["submitted_for_approval"] : ["submitted_for_approval", "awaiting_confirmation"] }, ...(clientViewer ? { clientApprovalRequired: true, approvalDecision: "team_approved" } : {}) }, orderBy: [{ approvalRisk: "desc" }, { submittedAt: "asc" }], include: { project: { include: { agencyClient: true } }, assignee: { include: { user: true } }, manager: { include: { user: true } }, approver: { include: { user: true } }, approvalHistory: { orderBy: { createdAt: "desc" }, take: 20 } } });
   const tasks = [];
   for (const task of candidates) if (task.projectId && await canAccessProject(context, task.projectId)) tasks.push(approvalView(task as Awaited<ReturnType<typeof accessibleTask>>, projectPolicy(context.workspace.settingsJson, task.projectId)));
   res.json({ tasks, automationLevels });
@@ -62,14 +62,23 @@ approvalsRouter.post("/approvals/:taskId/decision", async (req, res) => {
   const clientViewer = context.roles.size === 1 && context.roles.has("client_viewer");
   if (clientViewer && !task.clientApprovalRequired) return res.status(403).json({ error: "This request was not sent to the client." });
   if (!clientViewer && !hasWorkspacePermission(context, "approve")) return res.status(403).json({ error: "Approval permission is required." });
+  const snapshot = task.approvalSnapshotJson && typeof task.approvalSnapshotJson === "object" && !Array.isArray(task.approvalSnapshotJson) ? task.approvalSnapshotJson as Record<string, unknown> : {};
+  const confirmationOnly = task.status === "awaiting_confirmation" || snapshot.confirmationOnly === true;
+  if (confirmationOnly && !context.roles.has("owner") && !context.roles.has("admin")) return res.status(403).json({ error: "Only the working Owner/Admin can confirm this action." });
   const selfApproving = task.assigneeMembershipId === context.membership.id || task.createdByUserId === context.membership.userId;
   if (!clientViewer && selfApproving && !context.roles.has("owner") && !context.roles.has("admin") && !managerSelfApprovalEnabled(context)) return res.status(409).json({ error: "Managers cannot approve their own work unless self-approval is enabled." });
-  const status = data.decision === "approved" ? "ready_to_publish" : data.decision === "edit_first" || data.decision === "changes_requested" ? "changes_requested" : data.decision === "regenerate" ? "draft" : "rejected";
+  const needsClientStep = !clientViewer && data.decision === "approved" && task.clientApprovalRequired;
+  const status = needsClientStep ? "submitted_for_approval" : data.decision === "approved" ? "ready_to_publish" : data.decision === "edit_first" || data.decision === "changes_requested" ? "changes_requested" : data.decision === "regenerate" ? "draft" : "rejected";
+  const storedDecision = needsClientStep ? "team_approved" : data.decision;
   const updated = await prisma.$transaction(async (tx) => {
     await tx.executionTaskApproval.create({ data: { taskId: task.id, actorMembershipId: context.membership.id, decision: data.decision, notes: data.notes, snapshotJson: { ...data.snapshotJson, before: task.approvalSnapshotJson, action: task.title, aiReason: task.description } as Prisma.InputJsonValue } });
-    const next = await tx.executionTask.update({ where: { id: task.id }, data: { status, approvalDecision: data.decision, approvalNotes: data.notes, approvedAt: data.decision === "approved" ? new Date() : null, clientApprovedAt: clientViewer && data.decision === "approved" ? new Date() : undefined, changesRequestedAt: ["edit_first", "changes_requested"].includes(data.decision) ? new Date() : null } });
+    const next = await tx.executionTask.update({ where: { id: task.id }, data: { status, approvalDecision: storedDecision, approvalNotes: data.notes, approvedAt: data.decision === "approved" ? new Date() : null, clientApprovedAt: clientViewer && data.decision === "approved" ? new Date() : undefined, changesRequestedAt: ["edit_first", "changes_requested"].includes(data.decision) ? new Date() : null, approvalSnapshotJson: needsClientStep ? { ...snapshot, confirmationOnly: false, stage: "client_approval" } as Prisma.InputJsonValue : undefined } });
     await recordWorkspaceActivity(tx, { context, action: `approval.${clientViewer ? "client_" : ""}${data.decision}`, entityType: "execution_task", entityId: task.id, agencyClientId: task.project?.agencyClientId, projectId: task.projectId, previousJson: { status: task.status, snapshot: task.approvalSnapshotJson }, nextJson: { status, decision: data.decision, notes: data.notes, snapshot: data.snapshotJson } });
     for (const userId of [...new Set([task.assignee?.userId, task.manager?.userId, task.createdByUserId].filter((id): id is string => Boolean(id)))]) await createWorkspaceNotification(tx, { context, userId, type: "approval_decided", title: `Approval ${data.decision.replace("_", " ")}`, body: `${task.title}: ${data.notes || data.decision.replace("_", " ")}.`, actionUrl: task.relatedUrl ?? `/guided-projects/${task.projectId}`, agencyClientId: task.project?.agencyClientId, projectId: task.projectId });
+    if (needsClientStep && task.project?.agencyClientId) {
+      const clientMembers = await tx.agencyClientMember.findMany({ where: { agencyClientId: task.project.agencyClientId, membership: { status: "active", roles: { some: { role: "client_viewer" } } } }, select: { membership: { select: { userId: true } } } });
+      for (const member of clientMembers) await createWorkspaceNotification(tx, { context, userId: member.membership.userId, type: "client_approval_requested", title: "Client approval requested", body: `${task.title} is ready for your review.`, actionUrl: `/agency/clients/${task.project.agencyClientId}`, agencyClientId: task.project.agencyClientId, projectId: task.projectId });
+    }
     return next;
   });
   res.json({ task: updated });
@@ -80,6 +89,8 @@ approvalsRouter.post("/approvals/bulk-decision", async (req, res) => {
   const data = bulkSchema.parse(req.body); const results = [];
   for (const taskId of [...new Set(data.taskIds)]) {
     const task = await accessibleTask(context, taskId); const classification = classifyApproval(task);
+    const taskSnapshot = task.approvalSnapshotJson && typeof task.approvalSnapshotJson === "object" && !Array.isArray(task.approvalSnapshotJson) ? task.approvalSnapshotJson as Record<string, unknown> : {};
+    if (task.status === "awaiting_confirmation" || taskSnapshot.confirmationOnly === true) { results.push({ taskId, ok: false, error: "Owner confirmations require individual review." }); continue; }
     if (classification.highRisk && data.decision === "approved") { results.push({ taskId, ok: false, error: "High-risk actions require individual confirmation." }); continue; }
     const updated = await prisma.$transaction(async (tx) => {
       await tx.executionTaskApproval.create({ data: { taskId, actorMembershipId: context.membership.id, decision: data.decision, notes: data.notes, snapshotJson: { bulkDecision: true, before: task.approvalSnapshotJson } as Prisma.InputJsonValue } });

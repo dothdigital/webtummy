@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { Link } from "react-router-dom";
 import { api } from "../api.js";
 import { Card } from "./ui.js";
 
@@ -49,7 +50,8 @@ function TaskControl({ task, data, refresh }: { task: Task; data: Operations; re
     </div>}
     <div className="mt-3 flex flex-wrap gap-2">
       {data.permissions.canSubmit && ["draft", "in_progress", "changes_requested", "needs_review", "ready"].includes(task.status) && <button disabled={Boolean(busy)} onClick={() => run("submit", () => api.post(`/api/agency/tasks/${task.id}/submit`, {}))} className="rounded-lg bg-brand-600 px-3 py-2 text-xs font-bold text-white hover:bg-brand-700">Submit for approval</button>}
-      {data.permissions.canApprove && task.status === "submitted_for_approval" && <><button disabled={Boolean(busy)} onClick={() => run("approve", () => api.post(`/api/agency/tasks/${task.id}/decision`, { decision: "approved", snapshotJson: {} }))} className="rounded-lg bg-brand-600 px-3 py-2 text-xs font-bold text-white hover:bg-brand-700">Approve</button><button disabled={Boolean(busy)} onClick={() => run("changes", () => api.post(`/api/agency/tasks/${task.id}/decision`, { decision: "changes_requested", notes: "Changes requested from Project Dashboard.", snapshotJson: {} }))} className="rounded-lg bg-brand-600 px-3 py-2 text-xs font-bold text-white hover:bg-brand-700">Request changes</button></>}
+      {task.status === "awaiting_confirmation" && <Link to={`/approvals?projectId=${data.project.id}`} className="rounded-lg bg-brand-600 px-3 py-2 text-xs font-bold text-white hover:bg-brand-700">Review and execute</Link>}
+      {data.permissions.canApprove && task.status === "submitted_for_approval" && <><button disabled={Boolean(busy)} onClick={() => run("approve", () => api.post(`/api/approvals/${task.id}/decision`, { decision: "approved", snapshotJson: {} }))} className="rounded-lg bg-brand-600 px-3 py-2 text-xs font-bold text-white hover:bg-brand-700">Approve</button><button disabled={Boolean(busy)} onClick={() => run("changes", () => api.post(`/api/approvals/${task.id}/decision`, { decision: "changes_requested", notes: "Changes requested from Project Dashboard.", snapshotJson: {} }))} className="rounded-lg bg-brand-600 px-3 py-2 text-xs font-bold text-white hover:bg-brand-700">Request changes</button></>}
       {data.permissions.canPublish && task.status === "ready_to_publish" && <button disabled={Boolean(busy)} onClick={() => run("publish", () => api.post(`/api/agency/tasks/${task.id}/publish`, {}))} className="rounded-lg bg-brand-600 px-3 py-2 text-xs font-bold text-white hover:bg-brand-700">Publish approved work</button>}
     </div>
     {error && <div className="mt-2 text-xs font-bold text-red-700">{error}</div>}

@@ -381,7 +381,7 @@ agencyWorkspaceRouter.get("/agency/clients/:clientId/dashboard", (req, res) => h
   const projectIds = projects.map((project) => project.id);
   const [tasks, reports, activity] = await Promise.all([
     prisma.executionTask.findMany({
-      where: { projectId: { in: projectIds }, ...(clientViewer ? { clientVisibleNotes: { not: null }, status: { in: ["submitted_for_approval", "ready_to_publish", "published", "completed"] } } : {}) },
+      where: { projectId: { in: projectIds }, ...(clientViewer ? { clientVisibleNotes: { not: null }, status: { in: ["submitted_for_approval", "ready_to_publish", "published", "completed"] }, OR: [{ status: { not: "submitted_for_approval" } }, { approvalDecision: "team_approved" }] } : {}) },
       orderBy: [{ dueAt: "asc" }, { updatedAt: "desc" }], take: 200,
       select: { id: true, projectId: true, title: true, status: true, priority: true, dueAt: true, approvalRisk: true, clientApprovalRequired: true, clientApprovedAt: true, clientVisibleNotes: true, requiresApproval: true, approvedAt: true },
     }),
@@ -850,12 +850,18 @@ agencyWorkspaceRouter.post("/agency/tasks/:taskId/submit", (req, res) => handle(
   if (blocked.length) throw Object.assign(new Error(`Complete dependencies first: ${blocked.map((dependency) => dependency.requiredTask.title).join(", ")}`), { statusCode: 409 });
   const fallbackApprovers = task.approver?.userId ? [] : await prisma.workspaceMembership.findMany({
     where: { workspaceId: context.workspace.id, status: "active", roles: { some: { role: { in: ["owner", "admin", "manager", "approver"] } } } },
-    select: { userId: true },
+    select: { id: true, userId: true },
   });
+  const otherApprovers = [
+    ...(task.approver && task.approverMembershipId !== context.membership.id ? [{ id: task.approverMembershipId!, userId: task.approver.userId }] : []),
+    ...fallbackApprovers.filter((member) => member.id !== context.membership.id),
+  ];
+  const confirmationOnly = otherApprovers.length === 0 && (context.roles.has("owner") || context.roles.has("admin"));
   return prisma.$transaction(async (tx) => {
-    const updated = await tx.executionTask.update({ where: { id: task.id }, data: { status: "submitted_for_approval", submittedAt: new Date(), approvalDecision: null, approvalNotes: body.notes } });
-    await recordWorkspaceActivity(tx, { context, action: "approval.requested", entityType: "execution_task", entityId: task.id, agencyClientId: task.project!.agencyClientId, projectId: task.projectId, nextJson: { status: "submitted_for_approval" } });
-    const approverUserIds = [...new Set([task.approver?.userId, ...fallbackApprovers.map((member) => member.userId)].filter((id): id is string => Boolean(id)))];
+    const status = confirmationOnly ? "awaiting_confirmation" : "submitted_for_approval";
+    const updated = await tx.executionTask.update({ where: { id: task.id }, data: { status, submittedAt: new Date(), approvalDecision: null, approvalNotes: body.notes, approvalSnapshotJson: { confirmationOnly, stage: confirmationOnly ? "owner_confirmation" : "team_approval" } } });
+    await recordWorkspaceActivity(tx, { context, action: confirmationOnly ? "approval.confirmation_ready" : "approval.requested", entityType: "execution_task", entityId: task.id, agencyClientId: task.project!.agencyClientId, projectId: task.projectId, nextJson: { status, confirmationOnly } });
+    const approverUserIds = [...new Set(otherApprovers.map((member) => member.userId))];
     for (const userId of approverUserIds) await createWorkspaceNotification(tx, {
       context, userId, type: "approval_requested", title: "Approval requested",
       body: `${task.title} is ready for your review.`, actionUrl: `/approvals?projectId=${task.projectId}`,
