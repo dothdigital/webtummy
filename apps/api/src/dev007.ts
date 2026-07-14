@@ -27,7 +27,9 @@ export function keywordIntakeSufficient(project: KeywordProjectInput) {
 }
 
 export function buildKeywordGroups(project: KeywordProjectInput, extraTopic?: string | null) {
-  const offer = clean(extraTopic) || clean(project.businessProfile?.offerSummary) || clean(project.niche) || clean(project.opportunities?.find((item) => ["selected", "confirmed"].includes(item.status))?.recommendedOffer) || clean(project.name);
+  const rawOffer = clean(extraTopic) || clean(project.businessProfile?.offerSummary) || clean(project.niche) || clean(project.opportunities?.find((item) => ["selected", "confirmed"].includes(item.status))?.recommendedOffer) || clean(project.name);
+  const offerTerms = unique(rawOffer.split(/[,;|]/).map((item) => clean(item)).filter(Boolean));
+  const offer = offerTerms[0] || rawOffer;
   const audience = clean(project.businessProfile?.targetAudience) || "customers";
   const markets = list(project.targetLocations);
   const locations = unique([...markets, clean(project.businessLocation)].filter(Boolean));
@@ -35,10 +37,11 @@ export function buildKeywordGroups(project: KeywordProjectInput, extraTopic?: st
   const secondaryGoals = list(project.secondaryGoals);
   const competitors = list(project.competitors);
   const businessType = clean(project.projectType);
-  const topic = offer.toLowerCase();
+  const topics = offerTerms.length ? offerTerms.map((item) => item.toLowerCase()) : [offer.toLowerCase()];
+  const topic = topics[0];
   const rows: Record<string, string[]> = {
-    primary: [topic, `best ${topic}`, `${topic} services`],
-    buyer_intent: [`buy ${topic}`, `${topic} company`, `${topic} pricing`, `hire ${topic} expert`],
+    primary: unique([...topics, `best ${topic}`, `${topic} services`]),
+    buyer_intent: unique(topics.flatMap((item) => [`buy ${item}`, `${item} company`, `${item} pricing`, `hire ${item} expert`])).slice(0, 10),
     local: locations.flatMap((location) => [`${topic} ${location}`, `${topic} near me ${location}`]),
     informational: [`how does ${topic} work`, `${topic} guide`, `${topic} benefits`],
     supporting: [`${topic} strategy`, `${topic} solutions`, `${topic} examples`, ...secondaryGoals.map((secondaryGoal) => `${topic} ${secondaryGoal.toLowerCase()}`), ...competitors.map((competitor) => `${topic} vs ${competitor}`), businessType ? `${businessType.replaceAll("_", " ")} ${topic}` : ""],
@@ -54,5 +57,5 @@ export function buildKeywordGroups(project: KeywordProjectInput, extraTopic?: st
 }
 
 export function normalizeKeywordList(value: unknown) {
-  return unique(list(value));
+  return unique(list(value).flatMap((item) => item.split(/[,;\n]/).map((part) => part.trim()).filter(Boolean)));
 }

@@ -11,5 +11,6 @@ describe("DEV-007 Keyword Intelligence", () => {
     expect(groups[0].goalSupport).toContain("Generate More Leads");
   });
   it("deduplicates manual keywords case-insensitively", () => expect(normalizeKeywordList(["Roof Repair", "roof repair", "Toronto roofer"])).toEqual(["roof repair", "Toronto roofer"]));
+  it("treats every comma as a separate keyword", () => expect(normalizeKeywordList(["insurance crm, software, saas"])).toEqual(["insurance crm", "software", "saas"]));
   it("requests fallback input only when direction data is insufficient", () => expect(keywordIntakeSufficient({ name: "Untitled" })).toBe(false));
 });

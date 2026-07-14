@@ -1904,7 +1904,7 @@ function KeywordScreen({ data }: { data: ModuleData }) {
   const [manualSeed, setManualSeed] = useState("");
   const automaticGenerationProjectId = useRef<string | null>(null);
   const [refreshingId, setRefreshingId] = useState<string | null>(null);
-  const groupKeywords = (value: unknown) => Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
+  const groupKeywords = (value: unknown) => Array.isArray(value) ? [...new Set(value.filter((item): item is string => typeof item === "string").flatMap((item) => item.split(/[,;\n]/).map((part) => part.trim()).filter(Boolean)))] : [];
   const updateFromProject = (next: GuidedProject) => setGroups(next.keywordGroups ?? []);
   const generate = async (regenerate = false, seed?: string, append = false) => {
     if (!project || busy) return;
@@ -1999,11 +1999,12 @@ function KeywordScreen({ data }: { data: ModuleData }) {
   const approvedCount = groups.filter((group) => group.status === "approved").length;
   const focusedGroupId = searchParams.get("groupId");
   const analysisGroupId = focusedGroupId ?? groups.find((group) => group.status === "approved")?.id ?? null;
+  const analysisGroupIds = groups.filter((group) => group.status === "approved").map((group) => group.id);
   const totalRecommendations = groups.reduce((sum, group) => sum + groupKeywords(group.keywords).length, 0);
   const analysisWebsiteId = website?.id ?? project?.websiteId ?? project?.website?.id ?? null;
   const keywordAnalysisTo = analysisWebsiteId
-    ? `/keyword-insights?project=${encodeURIComponent(analysisWebsiteId)}&projectId=${encodeURIComponent(project?.id ?? "")}${analysisGroupId ? `&groupId=${encodeURIComponent(analysisGroupId)}` : ""}&add=1`
-    : `/keyword-insights?projectId=${encodeURIComponent(project?.id ?? "")}${analysisGroupId ? `&groupId=${encodeURIComponent(analysisGroupId)}` : ""}&add=1`;
+    ? `/keyword-insights?project=${encodeURIComponent(analysisWebsiteId)}&projectId=${encodeURIComponent(project?.id ?? "")}${analysisGroupIds.length ? `&groupIds=${encodeURIComponent(analysisGroupIds.join(","))}` : analysisGroupId ? `&groupId=${encodeURIComponent(analysisGroupId)}` : ""}&add=1`
+    : `/keyword-insights?projectId=${encodeURIComponent(project?.id ?? "")}${analysisGroupIds.length ? `&groupIds=${encodeURIComponent(analysisGroupIds.join(","))}` : analysisGroupId ? `&groupId=${encodeURIComponent(analysisGroupId)}` : ""}&add=1`;
   const needsSiteAnalysis = isExistingWebsiteFlow(project, website) && !hasCompletedSiteAnalysis(data, project, website);
   const nextStep = needsSiteAnalysis
     ? { title: "Continue to Site Analysis", detail: "Your approved keyword direction is ready. Compare it with the existing website before generating Strategy.", to: `/site-analysis?projectId=${project?.id ?? ""}`, label: "Open Site Analysis" }

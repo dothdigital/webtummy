@@ -199,6 +199,7 @@ export default function KeywordReports() {
       const requestedProject = searchParams.get("project");
       const requestedGuidedProject = searchParams.get("projectId");
       const requestedGroup = searchParams.get("groupId");
+      const requestedGroups = new Set((searchParams.get("groupIds") ?? requestedGroup ?? "").split(",").map((id) => id.trim()).filter(Boolean));
       if (searchParams.get("add") === "1") setShowAddKeyword(true);
       const selectedProject = websiteResult.websites.find((website) => website.id === requestedProject) ?? websiteResult.websites[0];
       if (!websiteId && selectedProject) {
@@ -211,11 +212,15 @@ export default function KeywordReports() {
         const guided = await api.get<{ project: GuidedProject }>(`/api/projects-v2/${requestedGuidedProject}`);
         setGuidedProject(guided.project);
         const eligibleGroups = (guided.project.keywordGroups ?? []).filter((group) => group.status === "approved");
-        const selectedGroups = requestedGroup ? eligibleGroups.filter((group) => group.id === requestedGroup) : eligibleGroups.slice(0, 1);
-        const approvedKeywords = selectedGroups
-          .flatMap((group) => Array.isArray(group.keywords) ? group.keywords.filter((keyword): keyword is string => typeof keyword === "string") : []);
-        const preselectedKeywords = [...new Set(approvedKeywords.map((keyword) => keyword.trim()).filter(Boolean))];
-        setKeywordSuggestions(preselectedKeywords.map((keyword) => ({ keyword, reason: `Approved in ${selectedGroups[0]?.title ?? "Keyword Intelligence"}` })));
+        const selectedGroups = requestedGroups.size ? eligibleGroups.filter((group) => requestedGroups.has(group.id)) : eligibleGroups;
+        const suggestions = selectedGroups.flatMap((group) => (Array.isArray(group.keywords) ? group.keywords : [])
+          .filter((keyword): keyword is string => typeof keyword === "string")
+          .flatMap((keyword) => keyword.split(/[,;\n]/).map((part) => part.trim()).filter(Boolean))
+          .map((keyword) => ({ keyword, reason: `Approved in ${group.title}` })))
+          .filter((suggestion) => suggestion.keyword);
+        const uniqueSuggestions = [...new Map(suggestions.map((suggestion) => [suggestion.keyword.toLowerCase(), suggestion])).values()];
+        const preselectedKeywords = uniqueSuggestions.map((suggestion) => suggestion.keyword);
+        setKeywordSuggestions(uniqueSuggestions);
         setSelectedKeywordSuggestions(preselectedKeywords);
         setTargetUrl(guided.project.websiteUrl ?? "");
         if (guided.project.websiteUrl) {
