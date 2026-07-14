@@ -54,7 +54,7 @@ const moduleCopy: Record<ModuleKind, { title: string; subtitle: string; primary:
   keywords: {
     title: "Keyword Research",
     subtitle: "Review saved keyword research, search demand, difficulty, intent, CPC, opportunities, and page targets.",
-    primary: "Add Keywords",
+    primary: "Start Keyword Analysis",
     secondary: "How it works",
   },
   "site-analysis": {
@@ -1163,6 +1163,7 @@ function OpportunityScreen({
   onSkip: () => Promise<void>;
 }) {
   const project = data.projects[0];
+  const website = data.websites[0];
   const opportunities = [...(project?.opportunities ?? [])].sort((a, b) => {
     if (["selected", "confirmed"].includes(a.status) && !["selected", "confirmed"].includes(b.status)) return -1;
     if (["selected", "confirmed"].includes(b.status) && !["selected", "confirmed"].includes(a.status)) return 1;
@@ -1932,9 +1933,9 @@ function KeywordScreen({ data }: { data: ModuleData }) {
     try {
       const result = await api.post<{ project: GuidedProject }>(`/api/projects-v2/${project.id}/keyword-groups/${groupId}/approve`, {});
       updateFromProject(result.project);
-      navigate(`/keywords?projectId=${encodeURIComponent(project.id)}&groupId=${encodeURIComponent(groupId)}`, { replace: true });
-      setMessage("Keyword group approved. Review, edit, or add manual keywords below before continuing.");
-      window.setTimeout(() => document.getElementById(`keyword-group-${groupId}`)?.scrollIntoView({ behavior: "smooth", block: "center" }), 0);
+      navigate(`/keywords?projectId=${encodeURIComponent(project.id)}`, { replace: true });
+      setMessage("Keyword group approved. Start Keyword Analysis to load demand, difficulty, CPC, ranking, competitor, and page-target data.");
+      window.scrollTo({ top: 0, behavior: "smooth" });
     } catch (error) { setMessage(error instanceof Error ? error.message : "Approval failed."); } finally { setBusy(null); }
   };
   const editGroup = async (group: NonNullable<GuidedProject["keywordGroups"]>[number]) => {
@@ -1998,7 +1999,7 @@ function KeywordScreen({ data }: { data: ModuleData }) {
   const approvedCount = groups.filter((group) => group.status === "approved").length;
   const focusedGroupId = searchParams.get("groupId");
   const totalRecommendations = groups.reduce((sum, group) => sum + groupKeywords(group.keywords).length, 0);
-  const website = data.websites[0];
+  const keywordAnalysisTo = website?.id ? `/keyword-insights?project=${encodeURIComponent(website.id)}&add=1` : "/keyword-insights?add=1";
   const needsSiteAnalysis = isExistingWebsiteFlow(project, website) && !hasCompletedSiteAnalysis(data, project, website);
   const nextStep = needsSiteAnalysis
     ? { title: "Continue to Site Analysis", detail: "Your approved keyword direction is ready. Compare it with the existing website before generating Strategy.", to: `/site-analysis?projectId=${project?.id ?? ""}`, label: "Open Site Analysis" }
@@ -2007,10 +2008,12 @@ function KeywordScreen({ data }: { data: ModuleData }) {
     <>
       {runs.length > 0 && <>
         <FilterBar labels={[`Search Keyword: ${topRun?.seedKeyword || "No run yet"}`, `Location: ${topRun?.locationName || "Not selected"}`, "Language: English", "Search Engine: Google"]} />
+        <Card className="border-brand-200 bg-gradient-to-r from-brand-50 via-white to-emerald-50 p-5"><div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between"><div><div className="text-xs font-bold uppercase tracking-wide text-brand-600">Keyword Research</div><h2 className="mt-1 text-lg font-bold text-charcoal-950">Run analysis for an approved keyword direction</h2><p className="mt-1 text-sm leading-6 text-charcoal-600">Fetch search demand, difficulty, CPC, intent, rankings, competitors, related ideas, and page-target opportunities.</p></div><Link to={keywordAnalysisTo} className="inline-flex shrink-0 items-center justify-center rounded-lg bg-brand-600 px-5 py-2.5 text-sm font-bold text-white shadow-sm hover:bg-brand-700">Start Keyword Analysis →</Link></div></Card>
         <MetricGrid items={[["Total Keywords Found", formatNumber(totalKeywords), `${runs.length} run(s)`], ["Average Difficulty", formatNumber(Math.round(avgDifficulty)), difficultyLabel(avgDifficulty)], ["High-Opportunity Keywords", formatNumber(rows.filter((row) => Number(row[4]) >= 70).length), "from stored ideas"], ["Selected Page Targets", formatNumber(new Set(runs.map((run) => run.website?.id).filter(Boolean)).size), "websites mapped"]]} />
         <KeywordInsightsBanner data={data} />
         <DataTable title="Keywords" columns={["Keyword", "Search Volume", "Difficulty", "CPC", "Opportunity Score", "Rank", "Change", "Avg volume", "Ideas", "Competitors", "Actions"]} rows={rows} />
       </>}
+      {runs.length === 0 && approvedCount > 0 && <Card className="border-brand-200 bg-gradient-to-r from-brand-50 via-white to-emerald-50 p-5"><div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between"><div><div className="text-xs font-bold uppercase tracking-wide text-brand-600">Keyword group selected</div><h2 className="mt-1 text-lg font-bold text-charcoal-950">Start the first Keyword Analysis</h2><p className="mt-1 text-sm leading-6 text-charcoal-600">Use the approved direction to collect demand, competition, CPC, intent, and page-target data.</p></div><Link to={keywordAnalysisTo} className="inline-flex shrink-0 items-center justify-center rounded-lg bg-brand-600 px-5 py-2.5 text-sm font-bold text-white shadow-sm hover:bg-brand-700">Start Keyword Analysis →</Link></div></Card>}
       {message && <div className="rounded-lg border border-brand-100 bg-brand-50 px-4 py-3 text-sm font-semibold text-brand-700">{message}</div>}
       {approvedCount > 0 && <Card className="overflow-hidden border-emerald-200 bg-gradient-to-r from-emerald-50 via-white to-brand-50"><div className="flex flex-col gap-4 p-5 sm:flex-row sm:items-center sm:justify-between"><div className="flex gap-3"><div className="grid h-11 w-11 shrink-0 place-items-center rounded-xl bg-emerald-600 font-bold text-white">✓</div><div><div className="text-xs font-bold uppercase tracking-wide text-emerald-700">Keyword approval complete</div><h2 className="mt-1 text-lg font-bold text-charcoal-950">{nextStep.title}</h2><p className="mt-1 text-sm leading-6 text-charcoal-600">{nextStep.detail}</p><p className="mt-1 text-xs font-semibold text-charcoal-500">{approvedCount} group{approvedCount === 1 ? "" : "s"} approved. You may approve more groups or continue now.</p></div></div><Link to={nextStep.to} className="inline-flex shrink-0 items-center justify-center rounded-lg bg-brand-600 px-5 py-2.5 text-sm font-bold text-white shadow-sm hover:bg-brand-700">{nextStep.label} →</Link></div></Card>}
       <Card className="p-5"><div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between"><div><div className="text-xs font-bold uppercase tracking-wide text-brand-600">Keyword Intelligence Groups</div><h2 className="mt-1 text-lg font-bold text-charcoal-950">Approve and manage keyword direction</h2><p className="mt-1 text-sm text-charcoal-500">{groups.length} groups · {approvedCount} approved · {totalRecommendations} recommendations · {project?.websiteStatus === "existing_website" ? "content gaps included" : "crawl not required"}</p></div></div></Card>
