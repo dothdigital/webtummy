@@ -564,11 +564,11 @@ export default function GuidedProjectDetail() {
               </div>
             </div>
             <div className="flex flex-col gap-3 xl:items-end">
-              <div className="flex flex-wrap items-center gap-2 xl:justify-end">
-                <StatusPill status={project.currentStep} />
-                <StatusPill status={project.status} />
-                {!archived && <Link to={`/guided-projects/${project.id}/intake`} className="inline-flex items-center justify-center rounded-lg bg-brand-600 px-3 py-2 text-sm font-semibold text-white hover:bg-brand-700">Edit profile</Link>}
-                <Link to="/projects" className="inline-flex items-center justify-center rounded-lg bg-brand-600 px-3 py-2 text-sm font-semibold text-white hover:bg-brand-700">Back to projects</Link>
+              <div className="flex max-w-full flex-nowrap items-center gap-2 overflow-x-auto whitespace-nowrap pb-1 xl:justify-end">
+                <span className="shrink-0"><StatusPill status={project.currentStep} /></span>
+                <span className="shrink-0"><StatusPill status={project.status} /></span>
+                {!archived && <Link to={`/guided-projects/${project.id}/intake`} className="inline-flex shrink-0 items-center justify-center rounded-lg bg-brand-600 px-3 py-2 text-sm font-semibold text-white hover:bg-brand-700">Edit profile</Link>}
+                <Link to="/projects" className="inline-flex shrink-0 items-center justify-center rounded-lg bg-brand-600 px-3 py-2 text-sm font-semibold text-white hover:bg-brand-700">Back to projects</Link>
               </div>
             </div>
           </div>
