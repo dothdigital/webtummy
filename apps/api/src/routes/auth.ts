@@ -30,14 +30,18 @@ async function workspaceSession(userId: string) {
   const membership = await prisma.workspaceMembership.findFirst({
     where: { userId, status: "active", workspace: { status: "active" } },
     orderBy: { createdAt: "asc" },
-    include: { workspace: { select: { id: true, name: true, workspaceType: true, ownerUserId: true } }, roles: { select: { role: true } } },
+    include: { workspace: { select: { id: true, name: true, workspaceType: true, ownerUserId: true, legacyClientId: true } }, roles: { select: { role: true } } },
   });
   if (!membership) return null;
   const [clientCount, projectCount] = await Promise.all([
     membership.workspace.workspaceType === "agency"
       ? prisma.agencyClient.count({ where: { workspaceId: membership.workspace.id } })
       : Promise.resolve(0),
-    prisma.project.count({ where: { workspaceId: membership.workspace.id } }),
+    membership.workspace.workspaceType === "agency"
+      ? prisma.project.count({ where: { agencyClient: { workspaceId: membership.workspace.id } } })
+      : membership.workspace.legacyClientId
+        ? prisma.project.count({ where: { clientId: membership.workspace.legacyClientId } })
+        : Promise.resolve(0),
   ]);
   const stored = new Set(membership.roles.map((item) => item.role));
   const roles = [
