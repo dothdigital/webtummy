@@ -114,8 +114,6 @@ function InfoBlock({ label, children }: { label: string; children: ReactNode }) 
 function BusinessProfileCard({ project, preferredOutputs }: { project: GuidedProject; preferredOutputs: string[] }) {
   const profile = project.businessProfile;
   const briefItems = [
-    ["Project type", projectTypeLabel(project)],
-    ["Business location", project.businessLocation ?? "Not set"],
     ["Target markets", Array.isArray(project.targetLocations) ? project.targetLocations.join(", ") || "Not set" : project.targetLocation ?? "Not set"],
     ["Primary goal", project.primaryGoal ?? "Not set"],
     ["Secondary goals", Array.isArray(project.secondaryGoals) ? project.secondaryGoals.join(", ") || "None" : "None"],
@@ -572,6 +570,16 @@ export default function GuidedProjectDetail() {
               <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-sm text-charcoal-500">
                 {internalProjectName && <span>Project: {internalProjectName}</span>}
                 {!project.website && <span className="break-words">{projectUrl}</span>}
+              </div>
+              <div className="mt-3 flex flex-wrap gap-2">
+                <div className="rounded-lg border border-charcoal-200 bg-white px-3 py-2 shadow-sm">
+                  <div className="text-[10px] font-bold uppercase tracking-wide text-charcoal-400">Project type</div>
+                  <div className="mt-0.5 text-sm font-bold text-charcoal-900">{projectTypeLabel(project)}</div>
+                </div>
+                <div className="rounded-lg border border-charcoal-200 bg-white px-3 py-2 shadow-sm">
+                  <div className="text-[10px] font-bold uppercase tracking-wide text-charcoal-400">Business location</div>
+                  <div className="mt-0.5 text-sm font-bold text-charcoal-900">{project.businessLocation ?? "Not set"}</div>
+                </div>
               </div>
             </div>
             <div className="flex flex-col gap-3 xl:items-end">
