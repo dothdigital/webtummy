@@ -117,6 +117,7 @@ function BusinessProfileCard({ project, preferredOutputs }: { project: GuidedPro
     ["Target markets", Array.isArray(project.targetLocations) ? project.targetLocations.join(", ") || "Not set" : project.targetLocation ?? "Not set"],
     ["Secondary goals", Array.isArray(project.secondaryGoals) ? project.secondaryGoals.join(", ") || "None" : "None"],
   ] as const;
+  const nicheSegments = splitList(project.niche);
   const audienceSegments = splitList(profile?.targetAudience).slice(0, 3);
   const offerSegments = splitList(profile?.offerSummary).slice(0, 3);
 
@@ -128,7 +129,9 @@ function BusinessProfileCard({ project, preferredOutputs }: { project: GuidedPro
           <div className="mt-2">
             <div className="rounded-lg border border-brand-100 bg-brand-50 px-3 py-2">
               <div className="text-[10px] font-bold uppercase tracking-wide text-brand-600">Industry / Niche</div>
-              <div className="mt-1 text-sm font-bold leading-5 text-brand-900">{project.niche ?? "Not set"}</div>
+              <div className="mt-1 grid gap-1">
+                {nicheSegments.length ? nicheSegments.map((item) => <div key={item} className="text-sm font-bold leading-5 text-brand-900">{item}</div>) : <div className="text-sm font-bold text-brand-900">Not set</div>}
+              </div>
             </div>
           </div>
           <div className="mt-3 grid gap-3">
