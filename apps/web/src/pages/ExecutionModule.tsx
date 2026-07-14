@@ -1933,7 +1933,7 @@ function KeywordScreen({ data }: { data: ModuleData }) {
     try {
       const result = await api.post<{ project: GuidedProject }>(`/api/projects-v2/${project.id}/keyword-groups/${groupId}/approve`, {});
       updateFromProject(result.project);
-      navigate(`/keywords?projectId=${encodeURIComponent(project.id)}`, { replace: true });
+      navigate(`/keywords?projectId=${encodeURIComponent(project.id)}&groupId=${encodeURIComponent(groupId)}`, { replace: true });
       setMessage("Keyword group approved. Start Keyword Analysis to load demand, difficulty, CPC, ranking, competitor, and page-target data.");
       window.scrollTo({ top: 0, behavior: "smooth" });
     } catch (error) { setMessage(error instanceof Error ? error.message : "Approval failed."); } finally { setBusy(null); }
@@ -1998,11 +1998,12 @@ function KeywordScreen({ data }: { data: ModuleData }) {
   const avgDifficulty = avg(runs.map((run) => run.avgDifficulty ?? null)) ?? avg(runs.flatMap((run) => run.ideas?.map((idea) => idea.competitionIndex ?? null) ?? [])) ?? 0;
   const approvedCount = groups.filter((group) => group.status === "approved").length;
   const focusedGroupId = searchParams.get("groupId");
+  const analysisGroupId = focusedGroupId ?? groups.find((group) => group.status === "approved")?.id ?? null;
   const totalRecommendations = groups.reduce((sum, group) => sum + groupKeywords(group.keywords).length, 0);
   const analysisWebsiteId = website?.id ?? project?.websiteId ?? project?.website?.id ?? null;
   const keywordAnalysisTo = analysisWebsiteId
-    ? `/keyword-insights?project=${encodeURIComponent(analysisWebsiteId)}&projectId=${encodeURIComponent(project?.id ?? "")}&add=1`
-    : `/keyword-insights?projectId=${encodeURIComponent(project?.id ?? "")}&add=1`;
+    ? `/keyword-insights?project=${encodeURIComponent(analysisWebsiteId)}&projectId=${encodeURIComponent(project?.id ?? "")}${analysisGroupId ? `&groupId=${encodeURIComponent(analysisGroupId)}` : ""}&add=1`
+    : `/keyword-insights?projectId=${encodeURIComponent(project?.id ?? "")}${analysisGroupId ? `&groupId=${encodeURIComponent(analysisGroupId)}` : ""}&add=1`;
   const needsSiteAnalysis = isExistingWebsiteFlow(project, website) && !hasCompletedSiteAnalysis(data, project, website);
   const nextStep = needsSiteAnalysis
     ? { title: "Continue to Site Analysis", detail: "Your approved keyword direction is ready. Compare it with the existing website before generating Strategy.", to: `/site-analysis?projectId=${project?.id ?? ""}`, label: "Open Site Analysis" }

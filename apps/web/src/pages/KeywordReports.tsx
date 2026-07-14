@@ -198,6 +198,7 @@ export default function KeywordReports() {
       setWebsites(websiteResult.websites);
       const requestedProject = searchParams.get("project");
       const requestedGuidedProject = searchParams.get("projectId");
+      const requestedGroup = searchParams.get("groupId");
       if (searchParams.get("add") === "1") setShowAddKeyword(true);
       const selectedProject = websiteResult.websites.find((website) => website.id === requestedProject) ?? websiteResult.websites[0];
       if (!websiteId && selectedProject) {
@@ -209,10 +210,13 @@ export default function KeywordReports() {
       if (requestedGuidedProject) {
         const guided = await api.get<{ project: GuidedProject }>(`/api/projects-v2/${requestedGuidedProject}`);
         setGuidedProject(guided.project);
-        const approvedKeywords = (guided.project.keywordGroups ?? [])
-          .filter((group) => group.status === "approved")
+        const eligibleGroups = (guided.project.keywordGroups ?? []).filter((group) => group.status === "approved");
+        const selectedGroups = requestedGroup ? eligibleGroups.filter((group) => group.id === requestedGroup) : eligibleGroups.slice(0, 1);
+        const approvedKeywords = selectedGroups
           .flatMap((group) => Array.isArray(group.keywords) ? group.keywords.filter((keyword): keyword is string => typeof keyword === "string") : []);
-        setKeywordSuggestions([...new Set(approvedKeywords.map((keyword) => keyword.trim()).filter(Boolean))].map((keyword) => ({ keyword, reason: "Approved in Keyword Intelligence" })));
+        const preselectedKeywords = [...new Set(approvedKeywords.map((keyword) => keyword.trim()).filter(Boolean))];
+        setKeywordSuggestions(preselectedKeywords.map((keyword) => ({ keyword, reason: `Approved in ${selectedGroups[0]?.title ?? "Keyword Intelligence"}` })));
+        setSelectedKeywordSuggestions(preselectedKeywords);
         setTargetUrl(guided.project.websiteUrl ?? "");
         if (guided.project.websiteUrl) {
           try { setTargetDomain(new URL(guided.project.websiteUrl).hostname.replace(/^www\./, "")); } catch { setTargetDomain(guided.project.websiteUrl); }
