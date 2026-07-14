@@ -11,6 +11,8 @@ type Client = {
 const lines = (value: unknown) => Array.isArray(value) ? value.map(String).join("\n") : "";
 const values = (value: string) => value.split(/[\n,]/).map((item) => item.trim()).filter(Boolean);
 const timeZones = ["UTC", "America/Toronto", "America/Vancouver", "America/Edmonton", "America/Winnipeg", "America/Halifax", "America/St_Johns", "America/New_York", "America/Chicago", "America/Denver", "America/Los_Angeles", "America/Phoenix", "Europe/London", "Europe/Paris", "Europe/Berlin", "Asia/Dubai", "Asia/Kolkata", "Asia/Singapore", "Asia/Tokyo", "Australia/Sydney", "Pacific/Auckland"];
+const countries = ["Canada", "United States", "United Kingdom", "Australia", "New Zealand", "India", "United Arab Emirates", "Singapore", "Japan", "Germany", "France", "Italy", "Spain", "Netherlands", "Ireland", "Switzerland", "Sweden", "Norway", "Denmark", "Mexico", "Brazil", "South Africa", "Philippines", "Malaysia", "Indonesia"];
+const countryFlags: Record<string, string> = { Canada: "🇨🇦", "United States": "🇺🇸", "United Kingdom": "🇬🇧", Australia: "🇦🇺", "New Zealand": "🇳🇿", India: "🇮🇳", "United Arab Emirates": "🇦🇪", Singapore: "🇸🇬", Japan: "🇯🇵", Germany: "🇩🇪", France: "🇫🇷", Italy: "🇮🇹", Spain: "🇪🇸", Netherlands: "🇳🇱", Ireland: "🇮🇪", Switzerland: "🇨🇭", Sweden: "🇸🇪", Norway: "🇳🇴", Denmark: "🇩🇰", Mexico: "🇲🇽", Brazil: "🇧🇷", "South Africa": "🇿🇦", Philippines: "🇵🇭", Malaysia: "🇲🇾", Indonesia: "🇮🇩" };
 
 export default function AgencyClientEditor({ client, owner, onClose, onSaved }: { client: Client; owner: boolean; onClose: () => void; onSaved: (message: string) => void }) {
   const settings = client.defaultSettings && typeof client.defaultSettings === "object" ? client.defaultSettings as Record<string, unknown> : {};
@@ -60,7 +62,7 @@ export default function AgencyClientEditor({ client, owner, onClose, onSaved }: 
         <Field label="Contact phone" value={form.contactPhone} onChange={(contactPhone) => patch({ contactPhone })} />
         <Field label="Industry / niche" value={form.industryNiche} onChange={(industryNiche) => patch({ industryNiche })} />
         <Field label="Primary business goal" value={form.primaryBusinessGoal} onChange={(primaryBusinessGoal) => patch({ primaryBusinessGoal })} />
-        <Field label="Country" value={form.country} onChange={(country) => patch({ country })} />
+        <label className="text-xs font-bold">Country<select value={form.country} onChange={(event) => patch({ country: event.target.value })} className="mt-1 h-10 w-full rounded-lg border bg-white px-3 text-sm font-normal"><option value="">Select country</option>{form.country && !countries.includes(form.country) && <option value={form.country}>{form.country}</option>}{countries.map((country) => <option key={country} value={country}>{countryFlags[country]} {country}</option>)}</select></label>
         <Field label="State / Province" value={form.stateProvince} onChange={(stateProvince) => patch({ stateProvince })} />
         <Field label="City" value={form.city} onChange={(city) => patch({ city })} />
         <Area label="Websites" value={form.websites} onChange={(websites) => patch({ websites })} hint="One URL per line" />
