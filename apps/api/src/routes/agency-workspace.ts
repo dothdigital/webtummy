@@ -109,6 +109,8 @@ agencyWorkspaceRouter.get(["/agency/workspace", "/workspace"], (req, res) => han
           _count: { select: { executionTasks: true, gapReportExports: true } },
           workflowSteps: { orderBy: { sortOrder: "asc" }, select: { stepKey: true, title: true, status: true, actionLabel: true, actionUrl: true, sortOrder: true } },
           strategyPlans: { orderBy: { updatedAt: "desc" }, take: 1, select: { status: true } },
+          memberAssignments: { select: { membershipId: true } },
+          teamAssignments: { select: { teamId: true } },
         } },
         memberAssignments: { include: { membership: { include: { user: { select: { id: true, name: true, email: true } }, roles: true } } } },
         teamAssignments: { include: { team: true } },
