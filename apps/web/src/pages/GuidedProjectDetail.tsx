@@ -567,19 +567,13 @@ export default function GuidedProjectDetail() {
           <div className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
             <div className="min-w-0">
               <h1 className="text-[28px] font-bold leading-tight text-charcoal-950">{displayName}</h1>
-              <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-sm text-charcoal-500">
+              <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-sm text-charcoal-500">
                 {internalProjectName && <span>Project: {internalProjectName}</span>}
-                {!project.website && <span className="break-words">{projectUrl}</span>}
-              </div>
-              <div className="mt-3 flex flex-wrap gap-2">
-                <div className="rounded-lg border border-charcoal-200 bg-white px-3 py-2 shadow-sm">
-                  <div className="text-[10px] font-bold uppercase tracking-wide text-charcoal-400">Project type</div>
-                  <div className="mt-0.5 text-sm font-bold text-charcoal-900">{projectTypeLabel(project)}</div>
-                </div>
-                <div className="rounded-lg border border-charcoal-200 bg-white px-3 py-2 shadow-sm">
-                  <div className="text-[10px] font-bold uppercase tracking-wide text-charcoal-400">Business location</div>
-                  <div className="mt-0.5 text-sm font-bold text-charcoal-900">{project.businessLocation ?? "Not set"}</div>
-                </div>
+                <span className="break-words font-semibold text-brand-700">{project.website?.rootUrl ?? projectUrl}</span>
+                <span aria-hidden="true" className="text-charcoal-300">•</span>
+                <span><span className="font-semibold text-charcoal-700">Project type:</span> {projectTypeLabel(project)}</span>
+                <span aria-hidden="true" className="text-charcoal-300">•</span>
+                <span><span className="font-semibold text-charcoal-700">Location:</span> {project.businessLocation ?? "Not set"}</span>
               </div>
             </div>
             <div className="flex flex-col gap-3 xl:items-end">
