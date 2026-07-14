@@ -67,6 +67,36 @@ function SectionTitle({ eyebrow, title, helper }: { eyebrow?: string; title: str
   );
 }
 
+function CollapsibleSection({
+  title,
+  helper,
+  badge,
+  defaultOpen = false,
+  children,
+}: {
+  title: string;
+  helper: string;
+  badge?: string;
+  defaultOpen?: boolean;
+  children: ReactNode;
+}) {
+  return (
+    <details className="group overflow-hidden rounded-xl border border-charcoal-200 bg-white shadow-sm" open={defaultOpen || undefined}>
+      <summary className="flex cursor-pointer list-none items-center justify-between gap-4 px-5 py-4 hover:bg-charcoal-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-brand-300 [&::-webkit-details-marker]:hidden">
+        <div className="min-w-0">
+          <div className="flex flex-wrap items-center gap-2">
+            <h2 className="font-bold text-charcoal-950">{title}</h2>
+            {badge && <span className="rounded-full bg-charcoal-100 px-2.5 py-1 text-xs font-bold text-charcoal-600">{badge}</span>}
+          </div>
+          <p className="mt-1 text-sm text-charcoal-500">{helper}</p>
+        </div>
+        <span className="grid h-8 w-8 shrink-0 place-items-center rounded-full border border-charcoal-200 bg-white text-lg font-bold text-charcoal-500 transition group-open:rotate-180" aria-hidden="true">⌄</span>
+      </summary>
+      <div className="border-t border-charcoal-100 p-5">{children}</div>
+    </details>
+  );
+}
+
 function MetricTile({ label, value, helper }: { label: string; value: string | number; helper?: string }) {
   return (
     <div className="rounded-lg border border-charcoal-100 bg-white px-4 py-3 shadow-sm">
@@ -575,10 +605,6 @@ export default function GuidedProjectDetail() {
 
         <div className="space-y-5 p-5">
           {archived && <Card className="border-slate-300 bg-slate-100 p-4 text-sm text-slate-700"><b>Archived project — view only.</b> Restore this project from the Projects page before editing, assigning, approving, generating, publishing, or changing tasks.</Card>}
-          {!archived && project.agencyClientId && <ProjectOperations projectId={project.id} />}
-          <ProjectLocationEditor project={project} onSaved={setProject} />
-          <ProjectGoalsEditor project={project} onSaved={setProject} />
-          <BusinessProfileCard project={project} preferredOutputs={preferredOutputs} />
           {!archived && <ProjectNextActionCard action={nextAction} />}
 
           <div>
@@ -615,7 +641,14 @@ export default function GuidedProjectDetail() {
                 })}
               </div>
             </Card>
-            <div className="mt-4 grid gap-4 lg:grid-cols-3">
+          </div>
+
+          <CollapsibleSection
+            title="Workflow details"
+            helper="Open for opportunity, strategy, and execution status and shortcuts."
+            badge={`${progressSteps.filter((step, index) => ["Completed", "Approved"].includes(stageState(step.key, index))).length} of ${progressSteps.length} stages complete`}
+          >
+            <div className="grid gap-4 lg:grid-cols-3">
               <FocusCard
                 title="Opportunity"
                 status={opportunityComplete ? "Ready to view" : intakeComplete ? "Pending" : "Waiting"}
@@ -671,7 +704,21 @@ export default function GuidedProjectDetail() {
                 )}
               </FocusCard>
             </div>
-          </div>
+          </CollapsibleSection>
+
+          <CollapsibleSection
+            title="Project profile & settings"
+            helper="Business profile, location, target markets, goals, and Agency Client defaults."
+          >
+            <div className="space-y-4">
+              <BusinessProfileCard project={project} preferredOutputs={preferredOutputs} />
+              <div className="grid gap-4 xl:grid-cols-2">
+                <ProjectLocationEditor project={project} onSaved={setProject} />
+                <ProjectGoalsEditor project={project} onSaved={setProject} />
+              </div>
+              {!archived && project.agencyClientId && <ProjectOperations projectId={project.id} />}
+            </div>
+          </CollapsibleSection>
         </div>
       </Card>
 
@@ -687,8 +734,13 @@ export default function GuidedProjectDetail() {
         </Card>
       )}
 
-      <div className="grid gap-6">
-        <Card id="execution-tasks" className="scroll-mt-24 overflow-hidden">
+      <CollapsibleSection
+        title="Execution plan & tasks"
+        helper="Open when you are ready to work through the prioritized task plan."
+        badge={`${activeTasks.length} open · ${completedTasks.length} complete`}
+        defaultOpen={location.hash === "#execution-tasks" || derivedCurrentStep === "execution_plan"}
+      >
+        <div id="execution-tasks" className="-m-5 scroll-mt-24">
           <div className="border-b border-charcoal-100 bg-charcoal-50/70 px-5 py-4">
             <SectionTitle title="Execution tasks" helper="Work through these in order. Generated actions and manual review steps stay together here." />
           </div>
@@ -824,8 +876,8 @@ export default function GuidedProjectDetail() {
               ))}
             </div>
           )}
-        </Card>
-      </div>
+        </div>
+      </CollapsibleSection>
 
     </div>
   );
