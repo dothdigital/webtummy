@@ -2000,7 +2000,9 @@ function KeywordScreen({ data }: { data: ModuleData }) {
   const focusedGroupId = searchParams.get("groupId");
   const totalRecommendations = groups.reduce((sum, group) => sum + groupKeywords(group.keywords).length, 0);
   const analysisWebsiteId = website?.id ?? project?.websiteId ?? project?.website?.id ?? null;
-  const keywordAnalysisTo = analysisWebsiteId ? `/keyword-insights?project=${encodeURIComponent(analysisWebsiteId)}&add=1` : "/keyword-insights?add=1";
+  const keywordAnalysisTo = analysisWebsiteId
+    ? `/keyword-insights?project=${encodeURIComponent(analysisWebsiteId)}&projectId=${encodeURIComponent(project?.id ?? "")}&add=1`
+    : `/keyword-insights?projectId=${encodeURIComponent(project?.id ?? "")}&add=1`;
   const needsSiteAnalysis = isExistingWebsiteFlow(project, website) && !hasCompletedSiteAnalysis(data, project, website);
   const nextStep = needsSiteAnalysis
     ? { title: "Continue to Site Analysis", detail: "Your approved keyword direction is ready. Compare it with the existing website before generating Strategy.", to: `/site-analysis?projectId=${project?.id ?? ""}`, label: "Open Site Analysis" }

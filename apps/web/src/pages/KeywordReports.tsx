@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { api } from "../api.js";
-import type { KeywordResearchRun, Website } from "../types.js";
+import type { GuidedProject, KeywordResearchRun, Website } from "../types.js";
 import { ActionIconButton, ActionIconLink, Button, Card, Input, StatusPill } from "../components/ui.js";
 import { COUNTRY_OPTIONS, buildLocationNames, defaultLocationParts } from "../locationOptions.js";
 
@@ -158,6 +158,7 @@ export default function KeywordReports() {
   const [searchParams, setSearchParams] = useSearchParams();
   const [runs, setRuns] = useState<KeywordResearchRun[]>([]);
   const [websites, setWebsites] = useState<Website[]>([]);
+  const [guidedProject, setGuidedProject] = useState<GuidedProject | null>(null);
   const [websiteId, setWebsiteId] = useState("");
   const [seedKeyword, setSeedKeyword] = useState("");
   const [targetUrl, setTargetUrl] = useState("");
@@ -196,6 +197,7 @@ export default function KeywordReports() {
       setRuns(runResult.runs);
       setWebsites(websiteResult.websites);
       const requestedProject = searchParams.get("project");
+      const requestedGuidedProject = searchParams.get("projectId");
       if (searchParams.get("add") === "1") setShowAddKeyword(true);
       const selectedProject = websiteResult.websites.find((website) => website.id === requestedProject) ?? websiteResult.websites[0];
       if (!websiteId && selectedProject) {
@@ -203,6 +205,20 @@ export default function KeywordReports() {
         if (selectedProject.targetCountry) setLocationCountry(selectedProject.targetCountry);
         const cities = targetCitiesText(selectedProject.targetCities);
         if (cities) setLocationCity(cities);
+      }
+      if (requestedGuidedProject) {
+        const guided = await api.get<{ project: GuidedProject }>(`/api/projects-v2/${requestedGuidedProject}`);
+        setGuidedProject(guided.project);
+        const approvedKeywords = (guided.project.keywordGroups ?? [])
+          .filter((group) => group.status === "approved")
+          .flatMap((group) => Array.isArray(group.keywords) ? group.keywords.filter((keyword): keyword is string => typeof keyword === "string") : []);
+        setKeywordSuggestions([...new Set(approvedKeywords.map((keyword) => keyword.trim()).filter(Boolean))].map((keyword) => ({ keyword, reason: "Approved in Keyword Intelligence" })));
+        setTargetUrl(guided.project.websiteUrl ?? "");
+        if (guided.project.websiteUrl) {
+          try { setTargetDomain(new URL(guided.project.websiteUrl).hostname.replace(/^www\./, "")); } catch { setTargetDomain(guided.project.websiteUrl); }
+        }
+        const targets = Array.isArray(guided.project.targetLocations) ? guided.project.targetLocations.filter((item): item is string => typeof item === "string") : [];
+        if (targets.length) setLocationCity(targets.join(", "));
       }
     } finally {
       setLoading(false);
@@ -457,7 +473,7 @@ export default function KeywordReports() {
                   </div>
                 </div>
                 <div className="grid gap-4 lg:grid-cols-4">
-                <label className="block">
+                {websites.length > 0 ? <label className="block">
                   <span className="mb-1 block text-sm font-medium text-slate-600">Project</span>
                   <select
                     value={websiteId}
@@ -481,7 +497,7 @@ export default function KeywordReports() {
                       <option key={website.id} value={website.id}>{website.domain}</option>
                     ))}
                   </select>
-                </label>
+                </label> : <div className="rounded-lg border border-slate-200 bg-white px-3 py-2"><span className="block text-xs font-medium text-slate-500">Project</span><span className="mt-1 block truncate text-sm font-semibold text-charcoal-800">{guidedProject?.businessName || guidedProject?.name || "Project intake"}</span></div>}
                 <div className="lg:col-span-2">
                   <Input label={intakeNeedsMoreInfo ? "Seed keyword" : "Optional: Add your own seed keyword"} value={seedKeyword} onChange={setSeedKeyword} placeholder="website design company" />
                 </div>
