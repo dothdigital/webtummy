@@ -97,7 +97,7 @@ function Shell() {
   if ((workspaceRole === "editor" || workspaceRole === "viewer") && (location.pathname === "/workspace" || location.pathname === "/agency" || location.pathname === "/projects/new" || location.pathname === "/billing" || location.pathname === "/pricing")) return <Navigate to="/" replace />;
   if (workspaceRole === "viewer" && location.pathname.endsWith("/intake")) return <Navigate to={location.pathname.replace(/\/intake$/, "")} replace />;
 
-  const welcomeEligible = Boolean(user.workspace && user.workspace.primaryRole === "admin");
+  const welcomeEligible = Boolean(user.workspace && user.workspace.primaryRole === "admin" && user.workspace.onboardingRequired);
   const showWelcome = welcomeEligible && welcomePending(user.id, user.workspace?.id);
   if (showWelcome && location.pathname !== "/welcome") return <Navigate to="/welcome" replace />;
   if (!showWelcome && location.pathname === "/welcome") return <Navigate to="/" replace />;

@@ -37,6 +37,7 @@ export interface AppUser {
     roles: string[];
     primaryRole: "admin" | "manager" | "editor" | "viewer" | "client_viewer";
     primaryOwner: boolean;
+    onboardingRequired: boolean;
     landingPath: string;
     capabilities: {
       manageWorkspace: boolean; manageProjects: boolean; assignTasks: boolean; approve: boolean;
@@ -50,12 +51,12 @@ export function getToken() {
 }
 
 export function welcomePending(userId: string, workspaceId?: string | null) {
-  if (workspaceId) return localStorage.getItem(WELCOME_WORKSPACE_PREFIX + workspaceId) !== "true";
+  if (workspaceId) return sessionStorage.getItem(WELCOME_WORKSPACE_PREFIX + workspaceId) !== "true";
   return localStorage.getItem(WELCOME_USER_KEY) === userId;
 }
 
 export function completeWelcome(workspaceId?: string | null) {
-  if (workspaceId) localStorage.setItem(WELCOME_WORKSPACE_PREFIX + workspaceId, "true");
+  if (workspaceId) sessionStorage.setItem(WELCOME_WORKSPACE_PREFIX + workspaceId, "true");
   localStorage.removeItem(WELCOME_USER_KEY);
 }
 

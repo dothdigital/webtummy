@@ -33,6 +33,12 @@ async function workspaceSession(userId: string) {
     include: { workspace: { select: { id: true, name: true, workspaceType: true, ownerUserId: true } }, roles: { select: { role: true } } },
   });
   if (!membership) return null;
+  const [clientCount, projectCount] = await Promise.all([
+    membership.workspace.workspaceType === "agency"
+      ? prisma.agencyClient.count({ where: { workspaceId: membership.workspace.id } })
+      : Promise.resolve(0),
+    prisma.project.count({ where: { workspaceId: membership.workspace.id } }),
+  ]);
   const stored = new Set(membership.roles.map((item) => item.role));
   const roles = [
     ...(stored.has("owner") || stored.has("admin") ? ["admin"] : []),
@@ -51,6 +57,7 @@ async function workspaceSession(userId: string) {
     roles,
     primaryRole,
     primaryOwner: membership.workspace.ownerUserId === userId,
+    onboardingRequired: clientCount === 0 && projectCount === 0,
     landingPath,
     capabilities: {
       manageWorkspace: primaryRole === "admin",
