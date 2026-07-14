@@ -53,6 +53,7 @@ export default function GuidedProjectNew() {
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const [workspaceType, setWorkspaceType] = useState("");
+  const [workspaceLoaded, setWorkspaceLoaded] = useState(false);
   const [agencyClients, setAgencyClients] = useState<{ id: string; name: string; status: string; websites: unknown; businessLocations: unknown; targetMarkets: unknown; defaultSettings: unknown }[]>([]);
   const [form, setForm] = useState({
     agencyClientId: searchParams.get("agencyClientId") ?? "",
@@ -89,11 +90,13 @@ export default function GuidedProjectNew() {
   useEffect(() => {
     void api.get<{ workspace: { workspaceType: string }; clients: { id: string; name: string; status: string; websites: unknown; businessLocations: unknown; targetMarkets: unknown; defaultSettings: unknown }[] }>("/api/agency/workspace")
       .then((result) => {
+        const activeClients = result.clients.filter((client) => client.status === "active");
         setWorkspaceType(result.workspace.workspaceType);
-        setAgencyClients(result.clients.filter((client) => client.status === "active"));
-        if (result.workspace.workspaceType === "agency" && !form.agencyClientId && result.clients.length === 1) patch({ agencyClientId: result.clients[0].id });
+        setAgencyClients(activeClients);
+        if (result.workspace.workspaceType === "agency" && !form.agencyClientId && activeClients.length === 1) patch({ agencyClientId: activeClients[0].id });
       })
-      .catch(() => undefined);
+      .catch(() => setMessage("Could not load workspace information."))
+      .finally(() => setWorkspaceLoaded(true));
   }, []);
 
   useEffect(() => {
@@ -132,6 +135,20 @@ export default function GuidedProjectNew() {
 
   const hasLocation = Boolean(form.businessLocation.trim() || (form.locationCountry.trim() && form.locationStateProvince.trim() && form.locationCity.trim()));
   const canSubmit = Boolean(form.name.trim() && hasLocation && form.targetLocations.length && form.primaryGoal && form.clientProjectType && (!isAgency || form.agencyClientId) && (!requiresWebsite || form.websiteUrl.trim()));
+
+  if (!workspaceLoaded) return <Card className="p-8 text-center text-sm text-slate-500">Loading project setup…</Card>;
+
+  if (isAgency && agencyClients.length === 0) return (
+    <div className="space-y-5">
+      <div className="text-sm font-semibold text-brand-700"><Link to="/projects">‹ Projects</Link> <span className="mx-2 text-slate-300">›</span> Create New Project</div>
+      <Card className="mx-auto max-w-2xl p-8 text-center sm:p-12">
+        <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-2xl bg-brand-50 text-2xl">◆</div>
+        <h1 className="mt-5 text-2xl font-bold text-slate-950">Create an Agency client first</h1>
+        <p className="mx-auto mt-3 max-w-lg text-sm leading-6 text-slate-600">Every Agency project must belong to an active client. Add the client’s business details and target markets, then create the project from that client.</p>
+        <Link to="/workspace?tab=clients" className="mt-6 inline-flex h-11 items-center rounded-lg bg-brand-600 px-5 text-sm font-bold text-white shadow-sm hover:bg-brand-700">Add your first client</Link>
+      </Card>
+    </div>
+  );
 
   return (
     <form onSubmit={createProject} className="space-y-5">

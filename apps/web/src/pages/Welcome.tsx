@@ -33,7 +33,7 @@ export default function Welcome() {
   const actions = [
     { title: agency ? "Add your first client" : "Set up your workspace", description: agency ? "Set up client details, sites, and target markets." : "Add your business details and shared defaults.", label: agency ? "Add client" : "Open workspace", destination: agency ? "/workspace?tab=clients" : "/workspace", tone: "teal", icon: "client" as const },
     { title: "Invite your team", description: "Bring in teammates and assign roles like Manager or Editor.", label: "Invite team", destination: "/workspace?tab=teams", tone: "blue", icon: "team" as const },
-    { title: "Start a project", description: "Kick off intake, keyword research, and strategy.", label: "New project", destination: "/projects/new", tone: "amber", icon: "project" as const },
+    { title: agency ? "Create a client project" : "Start a project", description: agency ? "Add a client first, then kick off intake, keyword research, and strategy." : "Kick off intake, keyword research, and strategy.", label: agency ? "Add client first" : "New project", destination: agency ? "/workspace?tab=clients" : "/projects/new", tone: "amber", icon: "project" as const },
   ];
 
   return (
