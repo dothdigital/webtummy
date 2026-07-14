@@ -13,6 +13,7 @@ import { cleanTargetMarkets, formatBusinessLocation, locationIsComplete, type Bu
 import { locationDefaultsFromSettings, resolveProjectLocations, withLocationDefaults } from "../dev004.js";
 import { goalContext, normalizeProjectGoals } from "../dev005.js";
 import { opportunityDecisionStatus, opportunityInputSummary, opportunityRunMode } from "../dev006.js";
+import { buildKeywordGroups, keywordIntakeSufficient, normalizeKeywordList } from "../dev007.js";
 
 export const guidedProjectsRouter = Router();
 guidedProjectsRouter.use(requireAuth);
@@ -77,6 +78,9 @@ const projectGoalsSchema = z.object({
 });
 const opportunityActionSchema = z.object({ confirmation: z.boolean().default(false), reason: z.string().trim().max(1000).optional().nullable() });
 const opportunityRefineSchema = z.object({ instructions: z.string().trim().min(3).max(2000) });
+const keywordGenerateSchema = z.object({ manualSeed: z.string().trim().min(2).max(255).optional().nullable(), regenerate: z.boolean().default(false), append: z.boolean().default(false) });
+const keywordGroupUpdateSchema = z.object({ keywords: z.array(z.string().trim().min(2).max(255)).min(1).max(100), reason: z.string().trim().max(1000).optional().nullable() });
+const keywordManualSchema = z.object({ keywords: z.array(z.string().trim().min(2).max(255)).min(1).max(50), category: z.string().trim().min(2).max(60).default("supporting") });
 const leadMagnetGenerateSchema = z.object({
   selectedIdea: z.string().trim().min(3).max(240).optional().nullable(),
   instructions: z.string().trim().max(2000).optional().nullable(),
@@ -227,6 +231,7 @@ async function scopedProject(req: Request, projectId: string) {
         },
       },
       opportunities: { orderBy: { createdAt: "desc" }, take: 10 },
+      keywordGroups: { orderBy: { createdAt: "asc" } },
       strategyPlans: { orderBy: { createdAt: "desc" }, take: 3 },
     },
   });
@@ -654,6 +659,7 @@ async function syncProjectWorkflow(tx: Prisma.TransactionClient, projectId: stri
       businessProfile: true,
       intakeAnswers: { select: { id: true }, take: 1 },
       opportunities: { select: { id: true, status: true }, orderBy: { createdAt: "desc" }, take: 10 },
+      keywordGroups: { select: { id: true, status: true }, take: 10 },
       strategyPlans: { orderBy: { createdAt: "desc" }, take: 3 },
       executionPlans: { where: { status: "active" }, select: { id: true, title: true }, take: 1 },
       executionTasks: { select: { id: true, status: true, moduleName: true }, take: 50 },
@@ -679,7 +685,8 @@ async function syncProjectWorkflow(tx: Prisma.TransactionClient, projectId: stri
   const readinessComplete = intakeComplete && Boolean(project.name && project.projectType && project.primaryGoal && project.businessLocation && Array.isArray(project.targetLocations) && project.targetLocations.length && (project.websiteStatus !== "existing_website" || hasWebsite));
   const isExistingWebsite = isExistingWebsiteCampaign(project);
   const isNewWebsiteLaunch = !isExistingWebsite || !hasWebsite;
-  const keywordAnalysisComplete = Boolean(project.website?.keywordResearchRuns.some((run) => run.status === "completed" || run.keywordCount > 0) || project.executionTasks.some((task) => task.moduleName === "keyword_research" && ["completed", "skipped"].includes(task.status)));
+  const keywordGroupApproved = project.keywordGroups.some((group) => group.status === "approved");
+  const keywordAnalysisComplete = Boolean(keywordGroupApproved || project.website?.keywordResearchRuns.some((run) => run.status === "completed" || run.keywordCount > 0) || project.executionTasks.some((task) => task.moduleName === "keyword_research" && ["completed", "skipped"].includes(task.status)));
   const siteAnalysisComplete = Boolean(project.website?.crawlJobs.some((crawl) => crawl.status === "completed" && crawl.pagesCrawled > 0) || project.executionTasks.some((task) => task.moduleName === "site_analysis" && ["completed", "skipped"].includes(task.status)));
   const siteAnalysisRequiredBeforeStrategy = requiresSiteAnalysisBeforeStrategy(project);
   const projectWorkflowModuleNames = new Set(["core_intake", "opportunity", "strategy", "strategy_approval"]);
@@ -719,9 +726,9 @@ async function syncProjectWorkflow(tx: Prisma.TransactionClient, projectId: stri
           : { status: "pending", actionUrl: "/site-analysis", readyReason: "Waiting for keyword analysis." },
     strategy: strategyGenerated
       ? { status: "completed", actionUrl: "/strategy", sourceType: "strategy_plan", sourceId: latestStrategy?.id, completionReason: "A strategy plan exists.", completedAt: new Date() }
-      : selectedOpportunity && intakeComplete && (!siteAnalysisRequiredBeforeStrategy || siteAnalysisComplete)
+      : selectedOpportunity && keywordGroupApproved && intakeComplete && (!siteAnalysisRequiredBeforeStrategy || siteAnalysisComplete)
         ? { status: "ready", actionUrl: "/strategy", readyReason: isNewWebsiteLaunch ? "Project profile is enough to create the initial website, keyword, GBP/local, content, and publishing strategy." : keywordAnalysisComplete ? "Keyword and required site discovery are ready for strategy." : "Initial strategy can be generated now; keyword data can refine it later." }
-        : { status: "pending", actionUrl: "/strategy", readyReason: !selectedOpportunity ? "Select an opportunity or confirm the existing direction first." : siteAnalysisRequiredBeforeStrategy ? "Waiting for site analysis on the existing website." : "Waiting for intake completion." },
+        : { status: "pending", actionUrl: "/strategy", readyReason: !selectedOpportunity ? "Select an opportunity or confirm the existing direction first." : !keywordGroupApproved ? "Approve at least one keyword group first." : siteAnalysisRequiredBeforeStrategy ? "Waiting for site analysis on the existing website." : "Waiting for intake completion." },
     strategy_approval: strategyApproved
       ? { status: "completed", actionUrl: "/strategy", sourceType: "strategy_plan", sourceId: latestStrategy?.id, completionReason: "The current strategy is approved.", completedAt: latestStrategy?.approvedAt ?? new Date() }
       : strategyGenerated
@@ -953,6 +960,35 @@ async function generateOpportunityRecommendations(project: NonNullable<Awaited<R
     await syncProjectWorkflow(tx, project.id);
     return rows;
   });
+}
+
+async function generateProjectKeywordGroups(project: NonNullable<Awaited<ReturnType<typeof scopedProject>>>, context: Awaited<ReturnType<typeof workspaceContext>>, manualSeed?: string | null, regenerate = false, append = false) {
+  if (!keywordIntakeSufficient(project) && !manualSeed) throw Object.assign(new Error("Project intake does not yet include a product/service, niche, or selected direction. Add that information or provide a manual seed keyword."), { statusCode: 409 });
+  const groups = buildKeywordGroups(project, manualSeed);
+  const pageText = project.websiteStatus === "existing_website" && project.websiteId
+    ? await prisma.page.findMany({ where: { crawlJob: { websiteId: project.websiteId, status: "completed" } }, orderBy: { createdAt: "desc" }, take: 100, select: { url: true, seo: { select: { title: true, metaDescription: true, h1Text: true, h2Json: true } } } })
+    : [];
+  const content = pageText.map((page) => JSON.stringify(page).toLowerCase()).join(" ");
+  const hadApprovedGroups = project.keywordGroups.some((group) => group.status === "approved");
+  const strategyApproved = project.strategyPlans.some((strategy) => strategy.status === "approved");
+  const rows = await prisma.$transaction(async (tx) => {
+    const saved = [];
+    for (const group of groups) {
+      const existing = project.keywordGroups.find((item) => item.category === group.category);
+      const keywords = append ? normalizeKeywordList([...normalizeKeywordList(existing?.keywords), ...group.keywords]) : group.keywords;
+      const gapKeywords = pageText.length ? keywords.filter((keyword) => !content.includes(keyword.toLowerCase())) : [];
+      saved.push(await tx.projectKeywordGroup.upsert({
+        where: { projectId_category: { projectId: project.id, category: group.category } },
+        update: { title: group.title, explanation: group.explanation, expectedValue: group.expectedValue, goalSupport: group.goalSupport, keywords, gapKeywords, source: manualSeed ? "manual_seed" : "project_intake", ...(regenerate ? { status: "suggested", approvedAt: null, approvedById: null } : {}) },
+        create: { projectId: project.id, ...group, keywords, gapKeywords, source: manualSeed ? "manual_seed" : "project_intake" },
+      }));
+    }
+    await recordWorkspaceActivity(tx, { context, action: regenerate ? "keyword.recommendations_regenerated" : append ? "keyword.more_ideas_generated" : "keyword.recommendations_generated", entityType: "project", entityId: project.id, agencyClientId: project.agencyClientId, projectId: project.id, nextJson: { groupIds: saved.map((row) => row.id), manualSeed: manualSeed ?? null, append, usedExistingWebsiteContent: pageText.length > 0 } });
+    if ((regenerate || append) && hadApprovedGroups && strategyApproved) await createWorkspaceNotification(tx, { context, userId: context.workspace.ownerUserId, type: "approved_keywords_changed", title: "Approved keywords changed", body: `${project.name}'s approved keyword recommendations changed after Strategy approval. Regenerate Strategy and the Execution Plan.`, actionUrl: "/keywords", agencyClientId: project.agencyClientId, projectId: project.id });
+    await syncProjectWorkflow(tx, project.id);
+    return saved;
+  });
+  return rows;
 }
 
 function buildLeadMagnetPrompt(input: {
@@ -1386,6 +1422,7 @@ guidedProjectsRouter.get("/workspace/intelligence", async (req, res) => {
         },
       },
       opportunities: { orderBy: { createdAt: "desc" }, take: 5 },
+      keywordGroups: { orderBy: { createdAt: "asc" } },
       strategyPlans: { orderBy: { createdAt: "desc" }, take: 3 },
       _count: { select: { intakeAnswers: true, strategyPlans: true, opportunities: true } },
     },
@@ -2114,6 +2151,71 @@ guidedProjectsRouter.post("/projects-v2/:projectId/opportunities/skip", async (r
   res.json({ project: await scopedProject(req, project.id) });
 });
 
+guidedProjectsRouter.post("/projects-v2/:projectId/keyword-groups/generate", async (req, res) => {
+  await requireRequestPermission(req, "edit_assigned_work");
+  const parsed = keywordGenerateSchema.safeParse(req.body ?? {});
+  if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() });
+  const project = await scopedProject(req, req.params.projectId);
+  if (!project) return res.status(404).json({ error: "project not found" });
+  const context = await workspaceContext(req);
+  const groups = await generateProjectKeywordGroups(project, context, parsed.data.manualSeed, parsed.data.regenerate, parsed.data.append);
+  res.json({ groups, project: await scopedProject(req, project.id) });
+});
+
+guidedProjectsRouter.post("/projects-v2/:projectId/keyword-groups/:groupId/approve", async (req, res) => {
+  await requireRequestPermission(req, "edit_assigned_work");
+  const project = await scopedProject(req, req.params.projectId);
+  const group = project?.keywordGroups.find((item) => item.id === req.params.groupId);
+  if (!project || !group) return res.status(404).json({ error: "keyword group not found" });
+  const context = await workspaceContext(req);
+  await prisma.$transaction(async (tx) => {
+    await tx.projectKeywordGroup.update({ where: { id: group.id }, data: { status: "approved", approvedAt: new Date(), approvedById: context.membership.userId } });
+    await recordWorkspaceActivity(tx, { context, action: "keyword.group_approved", entityType: "project_keyword_group", entityId: group.id, agencyClientId: project.agencyClientId, projectId: project.id, previousJson: { status: group.status }, nextJson: { status: "approved", keywords: group.keywords } });
+    await syncProjectWorkflow(tx, project.id);
+  });
+  res.json({ project: await scopedProject(req, project.id) });
+});
+
+guidedProjectsRouter.patch("/projects-v2/:projectId/keyword-groups/:groupId", async (req, res) => {
+  await requireRequestPermission(req, "edit_assigned_work");
+  const parsed = keywordGroupUpdateSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() });
+  const project = await scopedProject(req, req.params.projectId);
+  const group = project?.keywordGroups.find((item) => item.id === req.params.groupId);
+  if (!project || !group) return res.status(404).json({ error: "keyword group not found" });
+  const before = normalizeKeywordList(group.keywords);
+  const after = normalizeKeywordList(parsed.data.keywords);
+  const added = after.filter((keyword) => !before.some((item) => item.toLowerCase() === keyword.toLowerCase()));
+  const removed = before.filter((keyword) => !after.some((item) => item.toLowerCase() === keyword.toLowerCase()));
+  const strategyApproved = project.strategyPlans.some((strategy) => strategy.status === "approved");
+  const context = await workspaceContext(req);
+  await prisma.$transaction(async (tx) => {
+    await tx.projectKeywordGroup.update({ where: { id: group.id }, data: { keywords: after } });
+    await recordWorkspaceActivity(tx, { context, action: removed.length ? "keyword.keywords_deleted_or_edited" : "keyword.keywords_added_or_edited", entityType: "project_keyword_group", entityId: group.id, agencyClientId: project.agencyClientId, projectId: project.id, previousJson: { keywords: before }, nextJson: { keywords: after, added, removed, reason: parsed.data.reason ?? null } });
+    if (group.status === "approved" && strategyApproved && (added.length || removed.length)) await createWorkspaceNotification(tx, { context, userId: context.workspace.ownerUserId, type: "approved_keywords_changed", title: "Approved keywords changed", body: `${project.name}'s approved ${group.title} were edited after Strategy approval. Regenerate Strategy and the Execution Plan.`, actionUrl: "/keywords", agencyClientId: project.agencyClientId, projectId: project.id });
+  });
+  res.json({ project: await scopedProject(req, project.id) });
+});
+
+guidedProjectsRouter.post("/projects-v2/:projectId/keyword-groups/manual", async (req, res) => {
+  await requireRequestPermission(req, "edit_assigned_work");
+  const parsed = keywordManualSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() });
+  const project = await scopedProject(req, req.params.projectId);
+  if (!project) return res.status(404).json({ error: "project not found" });
+  const existing = project.keywordGroups.find((group) => group.category === parsed.data.category) ?? project.keywordGroups.find((group) => group.category === "supporting");
+  if (!existing) return res.status(409).json({ error: "Generate recommendations before adding manual keywords." });
+  const before = normalizeKeywordList(existing.keywords);
+  const keywords = normalizeKeywordList([...before, ...parsed.data.keywords]);
+  const context = await workspaceContext(req);
+  await prisma.$transaction(async (tx) => {
+    await tx.projectKeywordGroup.update({ where: { id: existing.id }, data: { keywords } });
+    await recordWorkspaceActivity(tx, { context, action: "keyword.manual_keywords_added", entityType: "project_keyword_group", entityId: existing.id, agencyClientId: project.agencyClientId, projectId: project.id, previousJson: { keywords: before }, nextJson: { keywords, added: parsed.data.keywords } });
+    if (existing.status === "approved" && project.strategyPlans.some((strategy) => strategy.status === "approved")) await createWorkspaceNotification(tx, { context, userId: context.workspace.ownerUserId, type: "approved_keywords_changed", title: "Approved keywords changed", body: `${project.name}'s approved keywords received manual additions after Strategy approval. Regenerate Strategy and the Execution Plan.`, actionUrl: "/keywords", agencyClientId: project.agencyClientId, projectId: project.id });
+  });
+  res.json({ project: await scopedProject(req, project.id) });
+});
+
 guidedProjectsRouter.post("/projects-v2/:projectId/strategy/generate", async (req, res) => {
   await requireRequestPermission(req, "edit_assigned_work");
   const project = await scopedProject(req, req.params.projectId);
@@ -2123,13 +2225,15 @@ guidedProjectsRouter.post("/projects-v2/:projectId/strategy/generate", async (re
   const ctx = projectContext(project);
   const selectedOpportunity = project.opportunities.find((opportunity) => opportunityDecisionStatus(opportunity.status)) ?? null;
   if (!selectedOpportunity) return res.status(409).json({ error: "Select an opportunity or confirm the existing project direction before generating Strategy." });
+  const approvedKeywordGroups = project.keywordGroups.filter((group) => group.status === "approved");
+  if (!approvedKeywordGroups.length) return res.status(409).json({ error: "Approve at least one keyword group before generating Strategy." });
 
   const strategy = await prisma.$transaction(async (tx) => {
     const row = await tx.strategyPlan.create({
       data: {
         projectId: project.id,
         opportunityId: selectedOpportunity?.id ?? null,
-        strategySummary: `Build ${ctx.name} around ${ctx.goal.toLowerCase()}${ctx.secondaryGoals.length ? ` while supporting ${ctx.secondaryGoals.join(", ").toLowerCase()}` : ""} with a project dashboard that moves from keyword demand to pages, optimization tasks, and approved publishing/export.`,
+        strategySummary: `Build ${ctx.name} around ${ctx.goal.toLowerCase()}${ctx.secondaryGoals.length ? ` while supporting ${ctx.secondaryGoals.join(", ").toLowerCase()}` : ""}. Prioritize the approved keyword groups: ${approvedKeywordGroups.map((group) => `${group.title} (${normalizeKeywordList(group.keywords).slice(0, 5).join(", ")})`).join("; ")}. Move from keyword demand to pages, optimization tasks, and approved publishing/export.`,
         positioningStatement: `${ctx.name} should be positioned for ${ctx.audience} with clear proof, direct CTAs, and answer-first content.`,
         audienceProfile: ctx.audience,
         offerRecommendation: ctx.offer,

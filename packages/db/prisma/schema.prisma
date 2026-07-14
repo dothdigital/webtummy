@@ -774,6 +774,7 @@ model Project {
   aiRuns                      AiRun[]
   executionPlans              ExecutionPlan[]
   opportunities               Opportunity[]
+  keywordGroups               ProjectKeywordGroup[]
   strategyPlans               StrategyPlan[]
   executionTasks              ExecutionTask[]
   workflowSteps               ProjectWorkflowStep[]
@@ -811,6 +812,28 @@ model Project {
   @@index([agencyClientId, status])
   @@index([websiteId])
   @@index([currentStep])
+}
+
+model ProjectKeywordGroup {
+  id             String   @id @default(cuid())
+  projectId      String
+  project        Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  category       String   @db.VarChar(60)
+  title          String   @db.VarChar(120)
+  explanation    String   @db.Text
+  expectedValue  String   @db.Text
+  goalSupport    String   @db.Text
+  keywords       Json     @default("[]")
+  gapKeywords    Json     @default("[]")
+  status         String   @default("suggested") @db.VarChar(30)
+  source         String   @default("project_intake") @db.VarChar(40)
+  approvedAt     DateTime?
+  approvedById   String?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  @@unique([projectId, category])
+  @@index([projectId, status])
 }
 
 model ProjectWorkflowStep {

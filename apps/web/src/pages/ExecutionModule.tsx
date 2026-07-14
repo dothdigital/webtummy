@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { Cell, Pie, PieChart, ResponsiveContainer } from "recharts";
@@ -161,7 +161,7 @@ function moduleReadiness(kind: ModuleKind, data: ModuleData, project?: GuidedPro
   const hasWebsite = Boolean(project.websiteId || project.websiteUrl || website);
   const isExistingWebsite = isExistingWebsiteFlow(project, website);
   const siteAnalysisComplete = hasCompletedSiteAnalysis(data, project, website);
-  const keywordAnalysisComplete = data.keywordRuns.some((run) => {
+  const keywordAnalysisComplete = (project.keywordGroups?.some((group) => group.status === "approved") ?? false) || data.keywordRuns.some((run) => {
     const runBelongsToWebsite = website?.id ? run.websiteId === website.id : true;
     const runBelongsToDomain = project.websiteUrl && run.targetDomain ? project.websiteUrl.includes(run.targetDomain) || run.targetDomain.includes(project.websiteUrl.replace(/^https?:\/\//i, "")) : true;
     return (runBelongsToWebsite || runBelongsToDomain) && (run.status === "completed" || run.keywordCount > 0 || (run.ideas?.length ?? 0) > 0);
@@ -1854,8 +1854,70 @@ function OpportunitySummaryStrip({ project, niche }: { project: GuidedProject; n
 }
 
 function KeywordScreen({ data }: { data: ModuleData }) {
+  const project = data.projects[0];
   const runs = data.keywordRuns;
+  const [groups, setGroups] = useState(project?.keywordGroups ?? []);
+  const [busy, setBusy] = useState<string | null>(null);
+  const [message, setMessage] = useState("");
+  const [manualSeed, setManualSeed] = useState("");
+  const automaticGenerationProjectId = useRef<string | null>(null);
   const [refreshingId, setRefreshingId] = useState<string | null>(null);
+  const groupKeywords = (value: unknown) => Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
+  const updateFromProject = (next: GuidedProject) => setGroups(next.keywordGroups ?? []);
+  const generate = async (regenerate = false, seed?: string, append = false) => {
+    if (!project || busy) return;
+    setBusy(regenerate ? "regenerate" : "generate");
+    setMessage("");
+    try {
+      const result = await api.post<{ project: GuidedProject }>(`/api/projects-v2/${project.id}/keyword-groups/generate`, { regenerate, append, manualSeed: seed || null });
+      updateFromProject(result.project);
+      setManualSeed("");
+      setMessage(append ? "Additional keyword ideas were added to the existing groups." : regenerate ? "Keyword recommendations regenerated from the latest project information." : "Keyword recommendations generated automatically from project intake.");
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Keyword recommendations could not be generated.");
+    } finally { setBusy(null); }
+  };
+  useEffect(() => {
+    const incomingGroups = project?.keywordGroups ?? [];
+    setGroups(incomingGroups);
+    if (project && incomingGroups.length === 0 && automaticGenerationProjectId.current !== project.id) {
+      automaticGenerationProjectId.current = project.id;
+      void generate(false);
+    }
+  }, [project?.id]);
+  const approve = async (groupId: string) => {
+    if (!project) return;
+    setBusy(groupId);
+    try {
+      const result = await api.post<{ project: GuidedProject }>(`/api/projects-v2/${project.id}/keyword-groups/${groupId}/approve`, {});
+      updateFromProject(result.project);
+      setMessage("Keyword group approved. Strategy can use these keywords.");
+    } catch (error) { setMessage(error instanceof Error ? error.message : "Approval failed."); } finally { setBusy(null); }
+  };
+  const editGroup = async (group: NonNullable<GuidedProject["keywordGroups"]>[number]) => {
+    if (!project) return;
+    const value = window.prompt(`Edit ${group.title}. Enter comma-separated keywords:`, groupKeywords(group.keywords).join(", "));
+    if (value === null) return;
+    const keywords = value.split(",").map((item) => item.trim()).filter(Boolean);
+    if (!keywords.length) return setMessage("Keep at least one keyword in the group.");
+    setBusy(group.id);
+    try {
+      const result = await api.patch<{ project: GuidedProject }>(`/api/projects-v2/${project.id}/keyword-groups/${group.id}`, { keywords });
+      updateFromProject(result.project);
+      setMessage("Keyword edits saved and recorded in Activity History.");
+    } catch (error) { setMessage(error instanceof Error ? error.message : "Changes could not be saved."); } finally { setBusy(null); }
+  };
+  const addManual = async () => {
+    if (!project) return;
+    const value = window.prompt("Add manual keywords, separated by commas:");
+    if (!value) return;
+    setBusy("manual");
+    try {
+      const result = await api.post<{ project: GuidedProject }>(`/api/projects-v2/${project.id}/keyword-groups/manual`, { keywords: value.split(",").map((item) => item.trim()).filter(Boolean), category: "supporting" });
+      updateFromProject(result.project);
+      setMessage("Manual keywords added to Supporting Topics.");
+    } catch (error) { setMessage(error instanceof Error ? error.message : "Manual keywords could not be added."); } finally { setBusy(null); }
+  };
   const refreshRun = async (run: KeywordResearchRun) => {
     if (!canRefreshKeyword(run)) return;
     setRefreshingId(run.id);
@@ -1866,19 +1928,16 @@ function KeywordScreen({ data }: { data: ModuleData }) {
       setRefreshingId(null);
     }
   };
-  if (!runs.length) {
-    const project = data.projects[0];
-    const website = data.websites[0];
+  if (!groups.length) {
     return (
-      <EmptyModuleState
-        title="Add keywords first"
-        detail={`${project?.businessName || project?.name || website?.domain || "This project"} is available, but no seed keywords have been researched yet. Add a primary keyword or select AI-suggested keywords first, then SEnuke AI can fetch search volume, difficulty, intent, CPC, opportunities, and page targets.`}
-        actionTo={website?.id ? `/keyword-insights?project=${encodeURIComponent(website.id)}&add=1` : "/keyword-insights?add=1"}
-        actionLabel="Add Keywords"
-      />
+      <Card className="p-6">
+        <h2 className="text-xl font-bold text-charcoal-950">Preparing keyword recommendations</h2>
+        <p className="mt-2 text-sm leading-6 text-charcoal-600">SEnuke AI starts with project intake, goals, markets, competitors, and the selected opportunity. A manual seed is only needed when that information is insufficient.</p>
+        {message && <div className="mt-4 rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">{message}</div>}
+        <div className="mt-4 flex flex-col gap-2 sm:flex-row"><input value={manualSeed} onChange={(event) => setManualSeed(event.target.value)} placeholder="Fallback manual seed keyword" className="min-w-0 flex-1 rounded-lg border border-slate-200 px-3 py-2 text-sm"/><button type="button" disabled={busy !== null || manualSeed.trim().length < 2} onClick={() => void generate(false, manualSeed)} className="rounded-lg bg-brand-600 px-4 py-2 text-sm font-bold text-white disabled:bg-slate-300">{busy ? "Generating…" : "Generate from seed"}</button></div>
+      </Card>
     );
   }
-  const topRun = runs[0];
   const rows = keywordRows(runs, (run) => (
     <div className="flex justify-end gap-3">
       <ActionIconLink icon="view" label="View keyword report" to={"/keyword-insights/" + run.id} />
@@ -1892,12 +1951,15 @@ function KeywordScreen({ data }: { data: ModuleData }) {
   ));
   const totalKeywords = runs.reduce((sum, run) => sum + (run.keywordCount || 0), 0);
   const avgDifficulty = avg(runs.map((run) => run.avgDifficulty ?? null)) ?? avg(runs.flatMap((run) => run.ideas?.map((idea) => idea.competitionIndex ?? null) ?? [])) ?? 0;
+  const approvedCount = groups.filter((group) => group.status === "approved").length;
+  const totalRecommendations = groups.reduce((sum, group) => sum + groupKeywords(group.keywords).length, 0);
   return (
     <>
-      <FilterBar labels={[`Search Keyword: ${topRun?.seedKeyword || "No run yet"}`, `Location: ${topRun?.locationName || "Not selected"}`, "Language: English", "Search Engine: Google"]} />
-      <MetricGrid items={[["Total Keywords Found", formatNumber(totalKeywords), `${runs.length} run(s)`], ["Average Difficulty", formatNumber(Math.round(avgDifficulty)), difficultyLabel(avgDifficulty)], ["High-Opportunity Keywords", formatNumber(rows.filter((row) => Number(row[4]) >= 70).length), "from stored ideas"], ["Selected Page Targets", formatNumber(new Set(runs.map((run) => run.website?.id).filter(Boolean)).size), "websites mapped"]]} />
-      <KeywordInsightsBanner data={data} />
-      <DataTable title="Keywords" columns={["Keyword", "Search Volume", "Difficulty", "CPC", "Opportunity Score", "Rank", "Change", "Avg volume", "Ideas", "Competitors", "Actions"]} rows={rows} />
+      <FilterBar labels={[`${groups.length} keyword groups`, `${approvedCount} approved`, `${totalRecommendations} recommendations`, project?.websiteStatus === "existing_website" ? "Content gaps included" : "Intake-only · crawl not required"]} />
+      {message && <div className="rounded-lg border border-brand-100 bg-brand-50 px-4 py-3 text-sm font-semibold text-brand-700">{message}</div>}
+      <div className="flex flex-wrap gap-2"><button type="button" onClick={() => void addManual()} disabled={busy !== null} className="rounded-lg border border-slate-200 bg-white px-4 py-2 text-sm font-bold">Add Manual Keywords</button><button type="button" onClick={() => { const topic = window.prompt("What additional topic should AI explore?"); if (topic) void generate(false, topic, true); }} disabled={busy !== null} className="rounded-lg border border-brand-200 bg-white px-4 py-2 text-sm font-bold text-brand-700">Ask AI for More Ideas</button><button type="button" onClick={() => { if (window.confirm("Regenerate recommendations from the latest intake? Existing approvals will be reset.")) void generate(true); }} disabled={busy !== null} className="rounded-lg bg-brand-600 px-4 py-2 text-sm font-bold text-white">{busy === "regenerate" ? "Regenerating…" : "Regenerate"}</button></div>
+      <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">{groups.map((group) => { const keywords = groupKeywords(group.keywords); const gaps = groupKeywords(group.gapKeywords); return <Card key={group.id} className={`flex flex-col p-5 ${group.status === "approved" ? "border-emerald-300 bg-emerald-50/30" : ""}`}><div className="flex items-start justify-between gap-3"><div><div className="text-xs font-bold uppercase tracking-wide text-brand-600">{group.status === "approved" ? "Approved" : "Recommended"}</div><h3 className="mt-1 text-lg font-bold text-charcoal-950">{group.title}</h3></div><span className="rounded-full bg-white px-2 py-1 text-xs font-bold text-charcoal-600">{keywords.length}</span></div><p className="mt-3 text-sm leading-6 text-charcoal-600">{group.explanation}</p><div className="mt-3 rounded-lg bg-white p-3 text-xs leading-5 text-charcoal-600"><b>Expected value:</b> {group.expectedValue}<br/><b>Goal:</b> {group.goalSupport}</div><div className="mt-4 flex flex-wrap gap-2">{keywords.map((keyword) => <span key={keyword} className={`rounded-full px-3 py-1 text-xs font-semibold ${gaps.includes(keyword) ? "bg-amber-100 text-amber-800" : "bg-slate-100 text-charcoal-700"}`}>{keyword}{gaps.includes(keyword) ? " · gap" : ""}</span>)}</div><div className="mt-auto flex gap-2 pt-5"><button type="button" onClick={() => void editGroup(group)} disabled={busy !== null} className="flex-1 rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm font-bold">Edit</button><button type="button" onClick={() => void approve(group.id)} disabled={busy !== null || group.status === "approved"} className="flex-1 rounded-lg bg-emerald-600 px-3 py-2 text-sm font-bold text-white disabled:bg-slate-300">{group.status === "approved" ? "Approved" : busy === group.id ? "Approving…" : "Approve Group"}</button></div></Card>; })}</div>
+      {runs.length > 0 && <><MetricGrid items={[["Provider Keywords", formatNumber(totalKeywords), `${runs.length} detailed run(s)`], ["Average Difficulty", formatNumber(Math.round(avgDifficulty)), difficultyLabel(avgDifficulty)], ["High Opportunity", formatNumber(rows.filter((row) => Number(row[4]) >= 70).length), "from search provider"], ["Page Targets", formatNumber(new Set(runs.map((run) => run.website?.id).filter(Boolean)).size), "websites mapped"]]} /><KeywordInsightsBanner data={data} /><DataTable title="Detailed Keyword Research" columns={["Keyword", "Search Volume", "Difficulty", "CPC", "Opportunity Score", "Rank", "Change", "Avg volume", "Ideas", "Competitors", "Actions"]} rows={rows} /></>}
     </>
   );
 }

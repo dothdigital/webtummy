@@ -129,6 +129,7 @@ export interface GuidedProject {
   websiteId: string | null;
   name: string;
   projectType: "new_business" | "existing_website" | "local_seo" | "agency_client" | "ecommerce" | string;
+  websiteStatus?: string;
   status: string;
   currentStep: string;
   businessName: string | null;
@@ -175,8 +176,24 @@ export interface GuidedProject {
   workflowSteps?: ProjectWorkflowStep[];
   executionProgress?: { total: number; completed: number };
   opportunities?: Opportunity[];
+  keywordGroups?: ProjectKeywordGroup[];
   strategyPlans?: unknown[];
   _count?: { intakeAnswers: number; strategyPlans: number; opportunities: number };
+}
+
+export interface ProjectKeywordGroup {
+  id: string;
+  projectId: string;
+  category: string;
+  title: string;
+  explanation: string;
+  expectedValue: string;
+  goalSupport: string;
+  keywords: unknown;
+  gapKeywords: unknown;
+  status: string;
+  source: string;
+  approvedAt: string | null;
 }
 
 export interface AutomationPolicy {
