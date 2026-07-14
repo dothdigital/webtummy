@@ -1893,6 +1893,8 @@ function OpportunitySummaryStrip({ project, niche }: { project: GuidedProject; n
 }
 
 function KeywordScreen({ data }: { data: ModuleData }) {
+  const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
   const project = data.projects[0];
   const runs = data.keywordRuns;
   const [groups, setGroups] = useState(project?.keywordGroups ?? []);
@@ -1930,7 +1932,9 @@ function KeywordScreen({ data }: { data: ModuleData }) {
     try {
       const result = await api.post<{ project: GuidedProject }>(`/api/projects-v2/${project.id}/keyword-groups/${groupId}/approve`, {});
       updateFromProject(result.project);
-      setMessage("Keyword group approved. Strategy can use these keywords.");
+      navigate(`/keywords?projectId=${encodeURIComponent(project.id)}&groupId=${encodeURIComponent(groupId)}`, { replace: true });
+      setMessage("Keyword group approved. Review, edit, or add manual keywords below before continuing.");
+      window.setTimeout(() => document.getElementById(`keyword-group-${groupId}`)?.scrollIntoView({ behavior: "smooth", block: "center" }), 0);
     } catch (error) { setMessage(error instanceof Error ? error.message : "Approval failed."); } finally { setBusy(null); }
   };
   const editGroup = async (group: NonNullable<GuidedProject["keywordGroups"]>[number]) => {
@@ -1946,15 +1950,15 @@ function KeywordScreen({ data }: { data: ModuleData }) {
       setMessage("Keyword edits saved and recorded in Activity History.");
     } catch (error) { setMessage(error instanceof Error ? error.message : "Changes could not be saved."); } finally { setBusy(null); }
   };
-  const addManual = async () => {
+  const addManual = async (category = "supporting", groupTitle = "Supporting Topics") => {
     if (!project) return;
-    const value = window.prompt("Add manual keywords, separated by commas:");
+    const value = window.prompt(`Add manual keywords to ${groupTitle}, separated by commas:`);
     if (!value) return;
     setBusy("manual");
     try {
-      const result = await api.post<{ project: GuidedProject }>(`/api/projects-v2/${project.id}/keyword-groups/manual`, { keywords: value.split(",").map((item) => item.trim()).filter(Boolean), category: "supporting" });
+      const result = await api.post<{ project: GuidedProject }>(`/api/projects-v2/${project.id}/keyword-groups/manual`, { keywords: value.split(",").map((item) => item.trim()).filter(Boolean), category });
       updateFromProject(result.project);
-      setMessage("Manual keywords added to Supporting Topics.");
+      setMessage(`Manual keywords added to ${groupTitle}.`);
     } catch (error) { setMessage(error instanceof Error ? error.message : "Manual keywords could not be added."); } finally { setBusy(null); }
   };
   const refreshRun = async (run: KeywordResearchRun) => {
@@ -1991,6 +1995,7 @@ function KeywordScreen({ data }: { data: ModuleData }) {
   const totalKeywords = runs.reduce((sum, run) => sum + (run.keywordCount || 0), 0);
   const avgDifficulty = avg(runs.map((run) => run.avgDifficulty ?? null)) ?? avg(runs.flatMap((run) => run.ideas?.map((idea) => idea.competitionIndex ?? null) ?? [])) ?? 0;
   const approvedCount = groups.filter((group) => group.status === "approved").length;
+  const focusedGroupId = searchParams.get("groupId");
   const totalRecommendations = groups.reduce((sum, group) => sum + groupKeywords(group.keywords).length, 0);
   const website = data.websites[0];
   const needsSiteAnalysis = isExistingWebsiteFlow(project, website) && !hasCompletedSiteAnalysis(data, project, website);
@@ -2003,7 +2008,7 @@ function KeywordScreen({ data }: { data: ModuleData }) {
       {message && <div className="rounded-lg border border-brand-100 bg-brand-50 px-4 py-3 text-sm font-semibold text-brand-700">{message}</div>}
       {approvedCount > 0 && <Card className="overflow-hidden border-emerald-200 bg-gradient-to-r from-emerald-50 via-white to-brand-50"><div className="flex flex-col gap-4 p-5 sm:flex-row sm:items-center sm:justify-between"><div className="flex gap-3"><div className="grid h-11 w-11 shrink-0 place-items-center rounded-xl bg-emerald-600 font-bold text-white">✓</div><div><div className="text-xs font-bold uppercase tracking-wide text-emerald-700">Keyword approval complete</div><h2 className="mt-1 text-lg font-bold text-charcoal-950">{nextStep.title}</h2><p className="mt-1 text-sm leading-6 text-charcoal-600">{nextStep.detail}</p><p className="mt-1 text-xs font-semibold text-charcoal-500">{approvedCount} group{approvedCount === 1 ? "" : "s"} approved. You may approve more groups or continue now.</p></div></div><Link to={nextStep.to} className="inline-flex shrink-0 items-center justify-center rounded-lg bg-brand-600 px-5 py-2.5 text-sm font-bold text-white shadow-sm hover:bg-brand-700">{nextStep.label} →</Link></div></Card>}
       <div className="flex flex-wrap gap-2"><button type="button" onClick={() => void addManual()} disabled={busy !== null} className="rounded-lg border border-slate-200 bg-white px-4 py-2 text-sm font-bold">Add Manual Keywords</button><button type="button" onClick={() => { const topic = window.prompt("What additional topic should AI explore?"); if (topic) void generate(false, topic, true); }} disabled={busy !== null} className="rounded-lg border border-brand-200 bg-white px-4 py-2 text-sm font-bold text-brand-700">Ask AI for More Ideas</button><button type="button" onClick={() => { if (window.confirm("Regenerate recommendations from the latest intake? Existing approvals will be reset.")) void generate(true); }} disabled={busy !== null} className="rounded-lg bg-brand-600 px-4 py-2 text-sm font-bold text-white">{busy === "regenerate" ? "Regenerating…" : "Regenerate"}</button></div>
-      <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">{groups.map((group) => { const keywords = groupKeywords(group.keywords); const gaps = groupKeywords(group.gapKeywords); return <Card key={group.id} className={`flex flex-col p-5 ${group.status === "approved" ? "border-emerald-300 bg-emerald-50/30" : ""}`}><div className="flex items-start justify-between gap-3"><div><div className="text-xs font-bold uppercase tracking-wide text-brand-600">{group.status === "approved" ? "Approved" : "Recommended"}</div><h3 className="mt-1 text-lg font-bold text-charcoal-950">{group.title}</h3></div><span className="rounded-full bg-white px-2 py-1 text-xs font-bold text-charcoal-600">{keywords.length}</span></div><p className="mt-3 text-sm leading-6 text-charcoal-600">{group.explanation}</p><div className="mt-3 rounded-lg bg-white p-3 text-xs leading-5 text-charcoal-600"><b>Expected value:</b> {group.expectedValue}<br/><b>Goal:</b> {group.goalSupport}</div><div className="mt-4 flex flex-wrap gap-2">{keywords.map((keyword) => <span key={keyword} className={`rounded-full px-3 py-1 text-xs font-semibold ${gaps.includes(keyword) ? "bg-amber-100 text-amber-800" : "bg-slate-100 text-charcoal-700"}`}>{keyword}{gaps.includes(keyword) ? " · gap" : ""}</span>)}</div><div className="mt-auto flex gap-2 pt-5"><button type="button" onClick={() => void editGroup(group)} disabled={busy !== null} className="flex-1 rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm font-bold">Edit</button><button type="button" onClick={() => void approve(group.id)} disabled={busy !== null || group.status === "approved"} className="flex-1 rounded-lg bg-emerald-600 px-3 py-2 text-sm font-bold text-white disabled:bg-slate-300">{group.status === "approved" ? "Approved" : busy === group.id ? "Approving…" : "Approve Group"}</button></div></Card>; })}</div>
+      <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">{groups.map((group) => { const keywords = groupKeywords(group.keywords); const gaps = groupKeywords(group.gapKeywords); const focused = focusedGroupId === group.id; return <Card id={`keyword-group-${group.id}`} key={group.id} className={`flex flex-col p-5 transition ${focused ? "border-brand-500 ring-2 ring-brand-200" : group.status === "approved" ? "border-emerald-300 bg-emerald-50/30" : ""}`}><div className="flex items-start justify-between gap-3"><div><div className="text-xs font-bold uppercase tracking-wide text-brand-600">{group.status === "approved" ? "Approved · Manage group" : "Recommended"}</div><h3 className="mt-1 text-lg font-bold text-charcoal-950">{group.title}</h3></div><span className="rounded-full bg-white px-2 py-1 text-xs font-bold text-charcoal-600">{keywords.length}</span></div><p className="mt-3 text-sm leading-6 text-charcoal-600">{group.explanation}</p><div className="mt-3 rounded-lg bg-white p-3 text-xs leading-5 text-charcoal-600"><b>Expected value:</b> {group.expectedValue}<br/><b>Goal:</b> {group.goalSupport}</div><div className="mt-4 flex flex-wrap gap-2">{keywords.map((keyword) => <span key={keyword} className={`rounded-full px-3 py-1 text-xs font-semibold ${gaps.includes(keyword) ? "bg-amber-100 text-amber-800" : "bg-slate-100 text-charcoal-700"}`}>{keyword}{gaps.includes(keyword) ? " · gap" : ""}</span>)}</div><div className="mt-auto grid grid-cols-2 gap-2 pt-5"><button type="button" onClick={() => void editGroup(group)} disabled={busy !== null} className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm font-bold">Edit Group</button><button type="button" onClick={() => void addManual(group.category, group.title)} disabled={busy !== null} className="rounded-lg border border-brand-200 bg-white px-3 py-2 text-sm font-bold text-brand-700">Add Keyword</button><button type="button" onClick={() => void approve(group.id)} disabled={busy !== null || group.status === "approved"} className="col-span-2 rounded-lg bg-emerald-600 px-3 py-2 text-sm font-bold text-white disabled:bg-slate-300">{group.status === "approved" ? "Approved — Continue Managing" : busy === group.id ? "Approving…" : "Approve & Manage Group"}</button></div></Card>; })}</div>
       {runs.length > 0 && <><MetricGrid items={[["Provider Keywords", formatNumber(totalKeywords), `${runs.length} detailed run(s)`], ["Average Difficulty", formatNumber(Math.round(avgDifficulty)), difficultyLabel(avgDifficulty)], ["High Opportunity", formatNumber(rows.filter((row) => Number(row[4]) >= 70).length), "from search provider"], ["Page Targets", formatNumber(new Set(runs.map((run) => run.website?.id).filter(Boolean)).size), "websites mapped"]]} /><KeywordInsightsBanner data={data} /><DataTable title="Detailed Keyword Research" columns={["Keyword", "Search Volume", "Difficulty", "CPC", "Opportunity Score", "Rank", "Change", "Avg volume", "Ideas", "Competitors", "Actions"]} rows={rows} /></>}
     </>
   );
