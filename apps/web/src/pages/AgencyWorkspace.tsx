@@ -159,7 +159,7 @@ export default function AgencyWorkspace() {
   }
   async function action(key: string, fn: () => Promise<unknown>, message: string) {
     setBusy(key); setError(""); setNotice("");
-    try { await fn(); setNotice(message); await load(); }
+    try { await fn(); setNotice(message); await load(); window.dispatchEvent(new Event("senuke-ai:notifications-changed")); }
     catch (err) { setError(err instanceof Error ? err.message : "Action failed."); }
     finally { setBusy(""); }
   }

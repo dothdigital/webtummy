@@ -760,6 +760,19 @@ agencyWorkspaceRouter.patch(["/agency/notifications/:notificationId/read", "/wor
   return { updated: true };
 }));
 
+agencyWorkspaceRouter.get(["/agency/notifications/summary", "/workspace/notifications/summary"], (req, res) => handle(res, async () => {
+  const context = await workspaceContext(req);
+  requirePermission(context, "view_notifications");
+  const clientViewer = context.roles.size === 1 && context.roles.has("client_viewer");
+  const clientTypes = ["report_sent", "approval_requested_client", "client_approval_requested", "publishing_completed", "major_milestone", "performance_change", "client_feedback_requested"];
+  const where = { workspaceId: context.workspace.id, userId: context.membership.userId, readAt: null, ...(clientViewer ? { type: { in: clientTypes } } : {}) };
+  const [unreadCount, latest] = await Promise.all([
+    prisma.workspaceNotification.count({ where }),
+    prisma.workspaceNotification.findFirst({ where, orderBy: { createdAt: "desc" }, select: { id: true, title: true, createdAt: true } }),
+  ]);
+  return { unreadCount, latest };
+}));
+
 async function scopedAgencyTask(req: Parameters<typeof workspaceContext>[0], taskId: string) {
   const context = await workspaceContext(req);
   const task = await prisma.executionTask.findFirst({

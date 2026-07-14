@@ -6,7 +6,7 @@ import { ACTIVE_CLIENT_EVENT, api, endImpersonation, getImpersonationLabel } fro
 import { Logo, LogoMark } from "./Logo.js";
 import type { BillingPlan, BillingStatus } from "../types.js";
 
-type NavIcon = "overview" | "projects" | "audits" | "keywords" | "local" | "social" | "content" | "billing" | "users" | "plans";
+type NavIcon = "overview" | "projects" | "audits" | "keywords" | "local" | "social" | "content" | "billing" | "users" | "plans" | "notifications";
 type HelpSection = { title: string; body?: string; bullets?: string[] };
 type HelpContent = {
   title: string;
@@ -37,6 +37,7 @@ const nav = [
   { to: "/admin/automation", label: "Automation Center", icon: "plans", superOnly: true },
   { to: "/reports", label: "Reports", icon: "audits", permission: "view_reports" },
   { to: "/approvals", label: "Approvals", icon: "plans", permission: "approve" },
+  { to: "/workspace?tab=notifications", label: "Notifications", icon: "notifications", permission: "view_notifications" },
   { to: "/billing", label: "Billing", icon: "billing", permission: "billing" },
 ] satisfies {
   to: string;
@@ -648,6 +649,12 @@ function NavGlyph({ icon }: { icon: NavIcon }) {
           <path {...common} d="m7.7 16.3-2.1 2.1" />
         </>
       )}
+      {icon === "notifications" && (
+        <>
+          <path {...common} d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9" />
+          <path {...common} d="M10 21h4" />
+        </>
+      )}
     </svg>
   );
 }
@@ -665,6 +672,7 @@ export default function Layout({ children }: { children: ReactNode }) {
   const [workspaceRoles, setWorkspaceRoles] = useState<string[]>(() => user?.workspace?.roles ?? []);
   const [workspacePermissions, setWorkspacePermissions] = useState<Record<string, boolean>>(() => user?.workspace?.capabilities.permissions ?? {});
   const [workspaceIdentity, setWorkspaceIdentity] = useState<{ name: string; workspaceType: string } | null>(() => user?.workspace ? { name: user.workspace.name, workspaceType: user.workspace.type } : null);
+  const [unreadNotifications, setUnreadNotifications] = useState(0);
 
   useEffect(() => {
     const onClientChanged = () => setImpersonation(getImpersonationLabel());
@@ -687,6 +695,18 @@ export default function Layout({ children }: { children: ReactNode }) {
       .catch(() => { if (!cancelled) setBillingStatus(null); });
     return () => { cancelled = true; };
   }, [user]);
+
+  useEffect(() => {
+    if (!user || user.role === "super_admin" || workspacePermissions.view_notifications !== true) { setUnreadNotifications(0); return; }
+    let cancelled = false;
+    const refresh = () => api.get<{ unreadCount: number }>("/api/workspace/notifications/summary")
+      .then((result) => { if (!cancelled) setUnreadNotifications(result.unreadCount); })
+      .catch(() => { if (!cancelled) setUnreadNotifications(0); });
+    void refresh();
+    const timer = window.setInterval(refresh, 30000);
+    window.addEventListener("senuke-ai:notifications-changed", refresh);
+    return () => { cancelled = true; window.clearInterval(timer); window.removeEventListener("senuke-ai:notifications-changed", refresh); };
+  }, [user, workspacePermissions.view_notifications]);
 
   useEffect(() => {
     if (!user) { setWorkspaceRoles([]); setWorkspacePermissions({}); setWorkspaceIdentity(null); return; }
@@ -733,7 +753,7 @@ export default function Layout({ children }: { children: ReactNode }) {
   const items = nav.filter((n) => {
     if (n.superOnly) return user?.role === "super_admin";
     if (n.permission && user?.role !== "super_admin" && workspacePermissions[n.permission] !== true) return false;
-    if (clientViewerOnly) return n.to === "/workspace" || n.to === "/reports";
+    if (clientViewerOnly) return n.to === "/workspace" || n.to === "/reports" || n.to.startsWith("/workspace?tab=notifications");
     if (n.to === "/billing") return user?.role === "super_admin" || primaryRole === "admin";
     if (n.to === "/workspace") return primaryRole === "admin" || primaryRole === "manager";
     return true;
@@ -811,7 +831,8 @@ export default function Layout({ children }: { children: ReactNode }) {
               }
             >
               <NavGlyph icon={n.icon} />
-              {n.label}
+              <span className="min-w-0 flex-1">{n.label}</span>
+              {n.to.includes("tab=notifications") && unreadNotifications > 0 && <span className="relative flex h-2.5 w-2.5" aria-label={`${unreadNotifications} unread notifications`}><span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-red-400 opacity-60" /><span className="relative inline-flex h-2.5 w-2.5 rounded-full bg-red-600" /></span>}
             </NavLink>
           ))}</div>
           {platformAdminItems.length > 0 && <div className="mt-6 border-t border-slate-200 pt-4">
@@ -836,6 +857,9 @@ export default function Layout({ children }: { children: ReactNode }) {
       {/* Main */}
       <div className="flex min-w-0 flex-1 flex-col lg:ml-56">
         <button type="button" aria-label="Open navigation" className="fixed left-3 top-3 z-20 rounded-lg border border-slate-200 bg-white p-2 shadow-sm hover:bg-charcoal-50 lg:hidden" onClick={() => setOpen(true)}>☰</button>
+        {workspacePermissions.view_notifications === true && <div className="sticky top-0 z-10 flex h-14 items-center justify-end border-b border-slate-200 bg-white/95 px-4 backdrop-blur lg:px-8">
+          <Link to="/workspace?tab=notifications" aria-label={unreadNotifications ? `${unreadNotifications} unread notifications` : "Notifications"} className="relative flex h-10 w-10 items-center justify-center rounded-full border border-slate-200 bg-white text-slate-600 hover:border-brand-300 hover:text-brand-700"><NavGlyph icon="notifications" />{unreadNotifications > 0 && <span className="absolute -right-1 -top-1 flex min-h-5 min-w-5 items-center justify-center rounded-full border-2 border-white bg-red-600 px-1 text-[10px] font-bold text-white">{unreadNotifications > 99 ? "99+" : unreadNotifications}</span>}</Link>
+        </div>}
         {billingStatus?.status === "trialing" && billingStatus.hasAccess && (
           <div className="border-b border-amber-300 bg-amber-300 px-4 py-3 text-sm text-amber-950 shadow-sm lg:px-8">
             <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
@@ -899,7 +923,7 @@ export default function Layout({ children }: { children: ReactNode }) {
             </div>
           </section>
         )}
-        <main className="min-w-0 flex-1 overflow-x-hidden px-4 pb-4 pt-16 lg:p-8">{children}</main>
+        <main className={`min-w-0 flex-1 overflow-x-hidden px-4 pb-4 lg:p-8 ${workspacePermissions.view_notifications === true ? "pt-4" : "pt-16"}`}>{children}</main>
         <Footer />
       </div>
       <GlobalHelpDrawer content={getHelpContent(location.pathname)} open={helpOpen} onClose={() => setHelpOpen(false)} />

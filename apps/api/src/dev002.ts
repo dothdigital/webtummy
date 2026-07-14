@@ -56,5 +56,6 @@ export function clientViewerRouteAllowed(method: string, originalUrl: string) {
   const clientReportAccess = method === "GET" && (path === "/api/project-reports" || path === "/api/project-reports/catalog");
   const notificationPreferences = ["GET", "PATCH"].includes(method) && path === "/api/notification-preferences";
   const clientApprovalAccess = (method === "GET" && path === "/api/approvals") || (method === "POST" && /^\/api\/approvals\/[^/]+\/decision$/.test(path));
-  return originalUrl.startsWith("/api/auth/") || clientDecision || clientApprovalAccess || clientReportAccess || notificationPreferences || (method === "GET" && (path === "/api/workspace" || path === "/api/agency/workspace" || clientDashboard));
+  const notificationSummary = method === "GET" && (path === "/api/workspace/notifications/summary" || path === "/api/agency/notifications/summary");
+  return originalUrl.startsWith("/api/auth/") || clientDecision || clientApprovalAccess || clientReportAccess || notificationPreferences || notificationSummary || (method === "GET" && (path === "/api/workspace" || path === "/api/agency/workspace" || clientDashboard));
 }
