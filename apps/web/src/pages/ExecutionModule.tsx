@@ -268,6 +268,7 @@ export default function ExecutionModule({ kind }: { kind: ModuleKind }) {
   const [opportunityBusy, setOpportunityBusy] = useState<"generate" | string | null>(null);
   const [opportunityMessage, setOpportunityMessage] = useState("");
   const [selectedProjectId, setSelectedProjectId] = useState(searchParams.get("projectId") ?? "");
+  const [workspaceLoadError, setWorkspaceLoadError] = useState("");
   const [helpOpen, setHelpOpen] = useState(false);
   const [nowMs, setNowMs] = useState(Date.now());
 
@@ -275,7 +276,13 @@ export default function ExecutionModule({ kind }: { kind: ModuleKind }) {
     let cancelled = false;
     async function load() {
       setLoading(true);
-      const workspace = await api.get<WorkspaceIntelligenceResponse>("/api/workspace/intelligence").catch(() => null);
+      setWorkspaceLoadError("");
+      const requestedProjectId = searchParams.get("projectId");
+      const workspaceUrl = requestedProjectId ? `/api/workspace/intelligence?projectId=${encodeURIComponent(requestedProjectId)}` : "/api/workspace/intelligence";
+      const workspace = await api.get<WorkspaceIntelligenceResponse>(workspaceUrl).catch((error) => {
+        if (!cancelled) setWorkspaceLoadError(error instanceof Error ? error.message : "Project data could not be loaded.");
+        return null;
+      });
       if (!workspace) {
         if (!cancelled) setLoading(false);
         return;
@@ -288,7 +295,6 @@ export default function ExecutionModule({ kind }: { kind: ModuleKind }) {
           ])
         : [{ summary: null }, { backlinks: null }];
       if (!cancelled) {
-        const requestedProjectId = searchParams.get("projectId");
         const defaultProjectId = requestedProjectId ?? workspace.intelligence.activeProjectId ?? workspace.projects[0]?.id ?? "";
         setData({
           projects: workspace.projects,
@@ -793,7 +799,9 @@ export default function ExecutionModule({ kind }: { kind: ModuleKind }) {
       )}
 
       {loading && <Card className="p-5 text-sm text-charcoal-500">Loading live project data...</Card>}
-      {!loading && !hasActiveProject && <EmptyModuleState title="Create project first" detail="This module depends on a project. Create a project before using module actions." />}
+      {!loading && workspaceLoadError && <Card className="border-red-200 bg-red-50 p-5"><h2 className="font-bold text-red-900">Project data could not be loaded</h2><p className="mt-2 text-sm text-red-800">{workspaceLoadError}</p><Link to="/projects" className="mt-4 inline-flex rounded-lg border border-red-200 bg-white px-4 py-2 text-sm font-bold text-red-800">Back to projects</Link></Card>}
+      {!loading && !workspaceLoadError && !hasActiveProject && searchParams.get("projectId") && <Card className="border-amber-200 bg-amber-50 p-5"><h2 className="font-bold text-amber-900">Project unavailable</h2><p className="mt-2 text-sm text-amber-800">This project was not found or is not assigned to your workspace account.</p><Link to="/projects" className="mt-4 inline-flex rounded-lg border border-amber-200 bg-white px-4 py-2 text-sm font-bold text-amber-900">Back to projects</Link></Card>}
+      {!loading && !workspaceLoadError && !hasActiveProject && !searchParams.get("projectId") && <EmptyModuleState title="Create project first" detail="This module depends on a project. Create a project before using module actions." />}
       {!loading && hasActiveProject && !hasWorkspaceRecords && <EmptyModuleState title="No data available" detail="Project data will appear here after intake, crawls, tasks, or generation runs exist." />}
       {!loading && hasActiveProject && hasWorkspaceRecords && !canRunModule && <ModuleReadinessChecklist moduleTitle={copy.title} items={readiness.items} />}
       {!loading && hasActiveProject && hasWorkspaceRecords && canRunModule && kind === "opportunities" && <OpportunityScreen data={scopedData} selectingId={opportunityBusy} onSelect={selectOpportunity} onClearSelection={clearOpportunitySelection} onRefine={refineOpportunities} onSave={saveOpportunityForLater} onSkip={skipOpportunityFinder} />}
