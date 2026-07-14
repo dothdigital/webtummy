@@ -122,7 +122,6 @@ function BusinessProfileCard({ project, preferredOutputs }: { project: GuidedPro
     ["Timeline", project.targetLaunchTimeline ?? "Not set"],
     ["Publishing", project.preferredPublishingMethod ?? "Not set"],
   ] as const;
-  const summaryParts = (profile?.businessSummary ?? "").split("|").map((item) => item.trim()).filter(Boolean);
   const audienceSegments = splitList(profile?.targetAudience).slice(0, 3);
   const offerSegments = splitList(profile?.offerSummary).slice(0, 3);
 
@@ -131,10 +130,15 @@ function BusinessProfileCard({ project, preferredOutputs }: { project: GuidedPro
       <div className="grid gap-4 p-4 xl:grid-cols-[1.15fr_1fr]">
         <div>
           <div className="text-[11px] font-bold uppercase tracking-wide text-brand-700">Project snapshot</div>
-          <div className="mt-2 flex flex-wrap gap-2">
-            {(summaryParts.length ? summaryParts : [project.businessName ?? project.name, project.niche ?? "Niche not set", project.businessLocation ?? "Business location not set"]).slice(0, 5).map((item) => (
-              <span key={item} className="rounded-full bg-brand-50 px-3 py-1 text-xs font-bold text-brand-800">{item}</span>
-            ))}
+          <div className="mt-2 grid gap-2 sm:grid-cols-2">
+            <div className="rounded-lg border border-brand-100 bg-brand-50 px-3 py-2">
+              <div className="text-[10px] font-bold uppercase tracking-wide text-brand-600">Industry / Niche</div>
+              <div className="mt-1 text-sm font-bold leading-5 text-brand-900">{project.niche ?? "Not set"}</div>
+            </div>
+            <div className="rounded-lg border border-brand-100 bg-brand-50 px-3 py-2">
+              <div className="text-[10px] font-bold uppercase tracking-wide text-brand-600">Business Location</div>
+              <div className="mt-1 text-sm font-bold leading-5 text-brand-900">{project.businessLocation ?? "Not set"}</div>
+            </div>
           </div>
           <div className="mt-3 grid gap-3">
             <CompactProfileBlock label="Audience" items={audienceSegments} empty="Audience not set" />
