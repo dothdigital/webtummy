@@ -3,6 +3,7 @@ import { Prisma, prisma } from "@webtummy/db";
 import { z } from "zod";
 import { projectReportCatalog, projectReportTypes, reportFrequencies } from "@webtummy/core/reporting";
 import { canAccessProject, createWorkspaceNotification, hasWorkspacePermission, recordWorkspaceActivity, workspaceContext } from "../workspace-access.js";
+import { createProfessionalReportPdf } from "../report-pdf.js";
 
 export const projectReportsRouter = Router();
 
@@ -105,6 +106,20 @@ projectReportsRouter.patch("/project-reports/:reportId/approval", async (req, re
     return next;
   });
   res.json({ report: updated });
+});
+
+projectReportsRouter.get("/project-reports/:reportId/download", async (req, res) => {
+  const context = await workspaceContext(req);
+  if (!hasWorkspacePermission(context, "export_reports")) return res.status(403).json({ error: "Report download permission is required." });
+  const clientViewer = context.roles.has("client_viewer") && context.roles.size === 1;
+  const report = await prisma.gapReportExport.findUnique({ where: { id: req.params.reportId }, include: { project: { include: { agencyClient: { select: { name: true } } } } } });
+  if (!report || !await canAccessProject(context, report.projectId) || (clientViewer && (report.approvalStatus !== "approved" || !report.clientVisible))) return res.status(404).json({ error: "Report not found." });
+  const pdf = await createProfessionalReportPdf(report.contentJson, { workspaceName: context.workspace.name, workspaceType: context.workspace.workspaceType, clientName: report.project.agencyClient?.name ?? report.clientName });
+  const safeName = `${report.project.name}-${report.reportType}`.replace(/[^a-z0-9-_]+/gi, "-").replace(/-+/g, "-").replace(/^-|-$/g, "").toLowerCase();
+  res.setHeader("Content-Type", "application/pdf");
+  res.setHeader("Content-Disposition", `attachment; filename="${safeName || "project-report"}.pdf"`);
+  res.setHeader("Content-Length", String(pdf.length));
+  res.send(pdf);
 });
 
 projectReportsRouter.get("/project-reports/schedules", async (req, res) => {

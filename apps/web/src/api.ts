@@ -254,10 +254,25 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   return res.json() as Promise<T>;
 }
 
+async function download(path: string) {
+  const res = await fetch(path, { headers: authHeaders() });
+  if (!res.ok) {
+    const data = await readJson(res).catch(() => ({}));
+    if (res.status === 401) expireSession();
+    throw new Error(typeof data.error === "string" ? data.error : "Download failed. Please try again.");
+  }
+  const disposition = res.headers.get("Content-Disposition") ?? "";
+  const filename = disposition.match(/filename="([^"]+)"/)?.[1] ?? "project-report.pdf";
+  const href = URL.createObjectURL(await res.blob());
+  const anchor = document.createElement("a"); anchor.href = href; anchor.download = filename; anchor.click();
+  setTimeout(() => URL.revokeObjectURL(href), 1000);
+}
+
 export const api = {
   get: <T>(p: string) => request<T>(p),
   post: <T>(p: string, body: unknown) => request<T>(p, { method: "POST", body: JSON.stringify(body) }),
   put: <T>(p: string, body: unknown) => request<T>(p, { method: "PUT", body: JSON.stringify(body) }),
   patch: <T>(p: string, body: unknown) => request<T>(p, { method: "PATCH", body: JSON.stringify(body) }),
   delete: <T>(p: string, body?: unknown) => request<T>(p, { method: "DELETE", ...(body === undefined ? {} : { body: JSON.stringify(body) }) }),
+  download,
 };
