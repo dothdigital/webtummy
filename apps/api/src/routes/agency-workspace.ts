@@ -52,6 +52,12 @@ const updateClientSchema = z.object(clientFields).partial();
 const teamSchema = z.object({ name: z.string().trim().min(1).max(180), description: z.string().trim().max(5000).optional().nullable() });
 const teamMembersSchema = z.object({ membershipIds: z.array(z.string()).max(500) });
 const rolesSchema = z.object({ roles: z.array(z.enum(assignableWorkspaceRoles)).min(1), permissionOverrides: z.record(z.unknown()).optional() });
+const memberAccessSchema = z.object({
+  roles: z.array(z.enum(assignableWorkspaceRoles)).min(1),
+  teamIds: z.array(z.string()).max(100).default([]),
+  agencyClientIds: z.array(z.string()).max(500).default([]),
+  projectIds: z.array(z.string()).max(500).default([]),
+});
 const membershipStatusSchema = z.object({ status: z.enum(["active", "suspended", "deactivated"]) });
 const deleteMembershipSchema = z.object({ replacementMembershipId: z.string().min(1) });
 const transferSchema = z.object({ newOwnerMembershipId: z.string(), confirmation: z.literal("TRANSFER OWNERSHIP") });
@@ -647,6 +653,36 @@ agencyWorkspaceRouter.patch(["/agency/members/:membershipId/roles", "/workspace/
     await tx.workspaceMembership.update({ where: { id: target.id }, data: { permissionOverrides: data.permissionOverrides as Prisma.InputJsonValue | undefined } });
     await recordWorkspaceActivity(tx, { context, action: "membership.roles_changed", entityType: "workspace_membership", entityId: target.id, previousJson: { roles: target.roles.map((role) => role.role) }, nextJson: { roles: data.roles } });
     await createWorkspaceNotification(tx, { context, userId: target.userId, type: "role_changed", title: "Workspace roles updated", body: `Your roles are now: ${data.roles.join(", ")}.`, actionUrl: "/workspace?tab=teams" });
+    return { updated: true };
+  });
+}));
+
+agencyWorkspaceRouter.patch(["/agency/members/:membershipId/access", "/workspace/members/:membershipId/access"], (req, res) => handle(res, async () => {
+  const context = await workspaceContext(req);
+  requireWorkspaceRole(context, "owner", "admin");
+  const data = memberAccessSchema.parse(req.body);
+  validateRolesForWorkspace(context, data.roles);
+  const target = await prisma.workspaceMembership.findFirst({ where: { id: req.params.membershipId, workspaceId: context.workspace.id }, include: { roles: true } });
+  if (!target) throw Object.assign(new Error("Member not found."), { statusCode: 404 });
+  if (target.userId === context.workspace.ownerUserId && !data.roles.includes("admin")) throw Object.assign(new Error("The Primary Owner cannot lose Owner/Admin authority."), { statusCode: 409 });
+  const [teams, clients, projects] = await Promise.all([
+    prisma.workspaceTeam.findMany({ where: { id: { in: data.teamIds }, workspaceId: context.workspace.id, isActive: true }, select: { id: true } }),
+    prisma.agencyClient.findMany({ where: { id: { in: data.agencyClientIds }, workspaceId: context.workspace.id, status: { not: "deleted" } }, select: { id: true } }),
+    prisma.project.findMany({ where: { id: { in: data.projectIds }, agencyClient: { workspaceId: context.workspace.id }, status: { not: "deleted" } }, select: { id: true } }),
+  ]);
+  if (teams.length !== new Set(data.teamIds).size || clients.length !== new Set(data.agencyClientIds).size || projects.length !== new Set(data.projectIds).size) throw Object.assign(new Error("Every assignment must belong to this workspace."), { statusCode: 400 });
+  const storedRoles = target.userId === context.workspace.ownerUserId ? ["owner", ...data.roles] : data.roles;
+  return prisma.$transaction(async (tx) => {
+    await tx.workspaceMemberRole.deleteMany({ where: { membershipId: target.id } });
+    await tx.workspaceMemberRole.createMany({ data: [...new Set(storedRoles)].map((role) => ({ membershipId: target.id, role, grantedById: context.membership.userId })) });
+    await tx.workspaceTeamMember.deleteMany({ where: { membershipId: target.id } });
+    await tx.agencyClientMember.deleteMany({ where: { membershipId: target.id } });
+    await tx.projectMemberAssignment.deleteMany({ where: { membershipId: target.id } });
+    if (teams.length) await tx.workspaceTeamMember.createMany({ data: teams.map((team) => ({ teamId: team.id, membershipId: target.id })) });
+    if (clients.length) await tx.agencyClientMember.createMany({ data: clients.map((client) => ({ agencyClientId: client.id, membershipId: target.id, assignmentRole: "contributor" })) });
+    if (projects.length) await tx.projectMemberAssignment.createMany({ data: projects.map((project) => ({ projectId: project.id, membershipId: target.id, assignmentRole: "contributor" })) });
+    await recordWorkspaceActivity(tx, { context, action: "membership.access_changed", entityType: "workspace_membership", entityId: target.id, previousJson: { roles: target.roles.map((role) => role.role) }, nextJson: { roles: data.roles, teamIds: data.teamIds, agencyClientIds: data.agencyClientIds, projectIds: data.projectIds } });
+    await createWorkspaceNotification(tx, { context, userId: target.userId, type: "membership_access_changed", title: "Workspace access updated", body: "Your workspace role and assignments were updated.", actionUrl: "/workspace" });
     return { updated: true };
   });
 }));
