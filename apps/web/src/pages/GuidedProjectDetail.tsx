@@ -117,7 +117,6 @@ function BusinessProfileCard({ project, preferredOutputs }: { project: GuidedPro
     ["Target markets", Array.isArray(project.targetLocations) ? project.targetLocations.join(", ") || "Not set" : project.targetLocation ?? "Not set"],
     ["Primary goal", project.primaryGoal ?? "Not set"],
     ["Secondary goals", Array.isArray(project.secondaryGoals) ? project.secondaryGoals.join(", ") || "None" : "None"],
-    ["Timeline", project.targetLaunchTimeline ?? "Not set"],
     ["Publishing", project.preferredPublishingMethod ?? "Not set"],
   ] as const;
   const audienceSegments = splitList(profile?.targetAudience).slice(0, 3);
@@ -579,6 +578,8 @@ export default function GuidedProjectDetail() {
                 <span><span className="font-semibold text-charcoal-700">Project type:</span> {projectTypeLabel(project)}</span>
                 <span aria-hidden="true" className="text-charcoal-300">•</span>
                 <span><span className="font-semibold text-charcoal-700">Location:</span> {project.businessLocation ?? "Not set"}</span>
+                <span aria-hidden="true" className="text-charcoal-300">•</span>
+                <span><span className="font-semibold text-charcoal-700">Timeline:</span> {project.targetLaunchTimeline ?? "Not set"}</span>
               </div>
             </div>
             <div className="flex flex-col gap-3 xl:items-end">
