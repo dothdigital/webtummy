@@ -51,6 +51,7 @@ const teamSchema = z.object({ name: z.string().trim().min(1).max(180), descripti
 const teamMembersSchema = z.object({ membershipIds: z.array(z.string()).max(500) });
 const rolesSchema = z.object({ roles: z.array(z.enum(assignableWorkspaceRoles)).min(1), permissionOverrides: z.record(z.unknown()).optional() });
 const membershipStatusSchema = z.object({ status: z.enum(["active", "suspended", "deactivated"]) });
+const deleteMembershipSchema = z.object({ replacementMembershipId: z.string().min(1) });
 const transferSchema = z.object({ newOwnerMembershipId: z.string(), confirmation: z.literal("TRANSFER OWNERSHIP") });
 const deleteClientSchema = z.object({ confirmation: z.string() });
 const clientAssignmentsSchema = z.object({
@@ -565,6 +566,37 @@ agencyWorkspaceRouter.patch(["/agency/members/:membershipId/status", "/workspace
     await createWorkspaceNotification(tx, { context, userId: target.userId, type: "membership_status_changed", title: "Workspace membership updated", body: "Your workspace membership is now " + data.status + ".", actionUrl: "/workspace" });
   });
   return { updated: true, status: data.status };
+}));
+
+agencyWorkspaceRouter.delete(["/agency/members/:membershipId", "/workspace/members/:membershipId"], (req, res) => handle(res, async () => {
+  const context = await workspaceContext(req);
+  requireWorkspaceRole(context, "owner", "admin");
+  const data = deleteMembershipSchema.parse(req.body);
+  const target = await prisma.workspaceMembership.findFirst({
+    where: { id: req.params.membershipId, workspaceId: context.workspace.id },
+    include: { user: { select: { id: true, name: true, email: true } }, projectAssignments: true, clientAssignments: true, teamMemberships: true },
+  });
+  if (!target) throw Object.assign(new Error("Member not found."), { statusCode: 404 });
+  if (target.userId === context.workspace.ownerUserId) throw Object.assign(new Error("Transfer workspace ownership before deleting the Primary Owner."), { statusCode: 409 });
+  if (target.id === context.membership.id) throw Object.assign(new Error("You cannot delete your own workspace membership."), { statusCode: 409 });
+  if (target.status === "active") throw Object.assign(new Error("Suspend the user before permanently removing them."), { statusCode: 409 });
+  const replacement = await prisma.workspaceMembership.findFirst({
+    where: { id: data.replacementMembershipId, workspaceId: context.workspace.id, status: "active", NOT: { id: target.id } },
+    include: { user: { select: { id: true, name: true, email: true } } },
+  });
+  if (!replacement) throw Object.assign(new Error("Select an active replacement user from this workspace."), { statusCode: 400 });
+  return prisma.$transaction(async (tx) => {
+    if (target.projectAssignments.length) await tx.projectMemberAssignment.createMany({ data: target.projectAssignments.map((item) => ({ projectId: item.projectId, membershipId: replacement.id, assignmentRole: item.assignmentRole })), skipDuplicates: true });
+    if (target.clientAssignments.length) await tx.agencyClientMember.createMany({ data: target.clientAssignments.map((item) => ({ agencyClientId: item.agencyClientId, membershipId: replacement.id, assignmentRole: item.assignmentRole })), skipDuplicates: true });
+    if (target.teamMemberships.length) await tx.workspaceTeamMember.createMany({ data: target.teamMemberships.map((item) => ({ teamId: item.teamId, membershipId: replacement.id })), skipDuplicates: true });
+    await tx.executionTask.updateMany({ where: { assigneeMembershipId: target.id }, data: { assigneeMembershipId: replacement.id } });
+    await tx.executionTask.updateMany({ where: { managerMembershipId: target.id }, data: { managerMembershipId: replacement.id } });
+    await tx.executionTask.updateMany({ where: { approverMembershipId: target.id }, data: { approverMembershipId: replacement.id } });
+    await tx.workspaceMembership.delete({ where: { id: target.id } });
+    await recordWorkspaceActivity(tx, { context, action: "membership.deleted_and_reassigned", entityType: "workspace_membership", entityId: target.id, previousJson: { userId: target.userId, email: target.user.email }, nextJson: { replacementMembershipId: replacement.id, replacementUserId: replacement.userId } });
+    await createWorkspaceNotification(tx, { context, userId: replacement.userId, type: "work_reassigned", title: "Work reassigned", body: `${target.user.name || target.user.email}'s client, project, team, and task assignments were transferred to you.`, actionUrl: "/workspace?tab=teams" });
+    return { deleted: true, replacementMembershipId: replacement.id };
+  });
 }));
 
 agencyWorkspaceRouter.patch(["/agency/members/:membershipId/roles", "/workspace/members/:membershipId/roles"], (req, res) => handle(res, async () => {
