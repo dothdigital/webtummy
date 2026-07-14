@@ -666,6 +666,11 @@ export default function ExecutionModule({ kind }: { kind: ModuleKind }) {
     siteScanRemaining: siteScanCooldown.remainingLabel,
     keywordRuns: scopedKeywordRuns,
   }) : null;
+  const milestoneNextAction = activeProject && kind === "opportunities"
+    ? (() => { const flow = nextProjectFlowStep(activeProject); const selected = activeProject.opportunities?.find((item) => ["selected", "confirmed"].includes(item.status)); return { title: flow.title, detail: selected ? `Selected opportunity: ${selected.name}` : flow.description, label: flow.actionLabel, to: flow.to }; })()
+    : activeProject && kind === "strategy" && moduleNextStep
+      ? { title: moduleNextStep.title, detail: moduleNextStep.helper || moduleNextStep.detail, label: moduleNextStep.actionLabel, to: moduleNextStep.actionTo, onAction: moduleNextStep.action === "generate-strategy" ? () => { setStrategyMessage("Generating strategy from the latest project data..."); void runStrategyAction("generate"); } : undefined }
+      : null;
 
   const runHeaderPrimaryAction = () => {
     if (kind === "backlinks") {
@@ -742,7 +747,7 @@ export default function ExecutionModule({ kind }: { kind: ModuleKind }) {
           </div>
         )}
       </div>
-      {hasActiveProject && activeProject && (kind === "opportunities" || kind === "strategy") && <ProjectMilestoneLine project={activeProject} showDependency />}
+      {hasActiveProject && activeProject && (kind === "opportunities" || kind === "strategy") && <ProjectMilestoneLine project={activeProject} showDependency nextAction={milestoneNextAction} />}
       {hasActiveProject && kind === "backlinks" && (
         <div className={`rounded-lg border px-4 py-3 text-sm ${backlinkMessage ? "border-brand-100 bg-brand-50 text-brand-700" : "border-slate-200 bg-white text-charcoal-500"}`}>
           {backlinkMessage || (activeWebsite ? backlinkCooldown.helpText : "Connect a website before refreshing backlinks.")}
@@ -787,7 +792,7 @@ export default function ExecutionModule({ kind }: { kind: ModuleKind }) {
           {leadMagnetMessage || "Lead magnets are generated from the approved strategy, audience, offer, and project goal. They create a downloadable asset plus landing page, thank-you copy, delivery email, and CTA flow tasks."}
         </div>
       )}
-      {hasActiveProject && hasWorkspaceRecords && canRunModule && kind !== "opportunities" && !(kind === "keywords" && scopedKeywordRuns.length === 0) && moduleNextStep && (
+      {hasActiveProject && hasWorkspaceRecords && canRunModule && kind !== "opportunities" && kind !== "strategy" && !(kind === "keywords" && scopedKeywordRuns.length === 0) && moduleNextStep && (
         <ModuleNextStepCallout
           step={moduleNextStep}
           onAction={moduleNextStep.action === "generate-strategy"
@@ -1222,13 +1227,6 @@ function OpportunityScreen({
   return (
     <>
       <OpportunitySummaryStrip project={project} niche={niche} />
-      {actualSelectedOpportunity && (
-        <OpportunityNextStepCallout
-          project={project}
-          opportunity={actualSelectedOpportunity}
-          onNotify={notifyOpportunity}
-        />
-      )}
       {opportunityNotice && (
         <div className="rounded-lg border border-brand-100 bg-brand-50 px-4 py-3 text-sm font-semibold text-brand-700">
           {opportunityNotice}
