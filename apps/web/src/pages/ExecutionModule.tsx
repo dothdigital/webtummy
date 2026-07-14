@@ -560,9 +560,8 @@ export default function ExecutionModule({ kind }: { kind: ModuleKind }) {
     }
   };
 
-  const refineOpportunities = async () => {
+  const refineOpportunities = async (instructions: string) => {
     if (!activeProject || opportunityBusy) return;
-    const instructions = window.prompt("What should AI refine or prioritize in these recommendations?");
     if (!instructions?.trim()) return;
     setOpportunityBusy("refine"); setOpportunityMessage("");
     try { const result = await api.post<{ project: GuidedProject }>(`/api/projects-v2/${activeProject.id}/opportunities/refine`, { instructions }); updateActiveProject(result.project); setOpportunityMessage("Recommendations refined from the current project intake and your instructions."); }
@@ -1159,7 +1158,7 @@ function OpportunityScreen({
   selectingId: string | null;
   onSelect: (opportunityId: string) => Promise<void>;
   onClearSelection: () => Promise<void>;
-  onRefine: () => Promise<void>;
+  onRefine: (instructions: string) => Promise<void>;
   onSave: (opportunityId: string) => Promise<void>;
   onSkip: () => Promise<void>;
 }) {
@@ -1176,6 +1175,7 @@ function OpportunityScreen({
   const [detailsOpen, setDetailsOpen] = useState(false);
   const [compareOpen, setCompareOpen] = useState(false);
   const [reportOpen, setReportOpen] = useState(false);
+  const [refineOpen, setRefineOpen] = useState(false);
   const [opportunityNotice, setOpportunityNotice] = useState<string | null>(null);
 
   const notifyOpportunity = (message: string) => {
@@ -1261,7 +1261,7 @@ function OpportunityScreen({
               >
                 Full Report
               </button>
-              <button type="button" onClick={() => void onRefine()} disabled={selectingId === "refine"} className="rounded-lg border border-brand-200 bg-white px-4 py-2 text-sm font-bold text-brand-700 hover:bg-brand-50 disabled:opacity-50">{selectingId === "refine" ? "Refining…" : "Ask AI to Refine"}</button>
+              <button type="button" onClick={() => setRefineOpen(true)} disabled={selectingId === "refine"} className="rounded-lg border border-brand-200 bg-white px-4 py-2 text-sm font-bold text-brand-700 hover:bg-brand-50 disabled:opacity-50">{selectingId === "refine" ? "Refining…" : "Ask AI to Refine"}</button>
               <button type="button" onClick={() => void onSkip()} disabled={selectingId === "skip"} className="rounded-lg border border-slate-200 bg-white px-4 py-2 text-sm font-bold text-charcoal-700 hover:bg-slate-50 disabled:opacity-50">Confirm Existing Direction / Skip</button>
             </div>
           </div>
@@ -1319,7 +1319,45 @@ function OpportunityScreen({
       <OpportunityDetailsDrawer opportunity={focusedOpportunity} open={detailsOpen} onClose={() => setDetailsOpen(false)} onSelect={focusedOpportunity ? () => { void onSelect(focusedOpportunity.id); } : undefined} selected={Boolean(focusedOpportunity && ["selected", "confirmed"].includes(focusedOpportunity.status))} />
       <OpportunityCompareDrawer opportunities={opportunities} open={compareOpen} onClose={() => setCompareOpen(false)} onFocus={(id) => { setFocusedId(id); setDetailsOpen(true); }} onSelect={(id) => { void onSelect(id); }} />
       <OpportunityReportDrawer opportunity={focusedOpportunity} open={reportOpen} onClose={() => setReportOpen(false)} projectId={project.id} />
+      <OpportunityRefineModal open={refineOpen} busy={selectingId === "refine"} onClose={() => setRefineOpen(false)} onSubmit={async (instructions) => { await onRefine(instructions); setRefineOpen(false); }} />
     </>
+  );
+}
+
+const opportunityRefinementIdeas = [
+  { title: "Faster results", instruction: "Prioritize opportunities that can produce measurable results quickly with low implementation effort." },
+  { title: "More leads", instruction: "Focus on high-intent lead generation opportunities with clear calls to action and conversion potential." },
+  { title: "Local growth", instruction: "Prioritize local SEO, Google Business Profile, service-area pages, reviews, and location-based demand." },
+  { title: "Lower competition", instruction: "Find realistic opportunities with lower competition and a stronger chance of early visibility." },
+  { title: "Higher revenue", instruction: "Rank opportunities by revenue potential, buyer intent, and value per acquired customer." },
+  { title: "Content authority", instruction: "Focus on opportunities that build topical authority through useful content and supporting keyword clusters." },
+];
+
+function OpportunityRefineModal({ open, busy, onClose, onSubmit }: { open: boolean; busy: boolean; onClose: () => void; onSubmit: (instructions: string) => Promise<void> }) {
+  const [selected, setSelected] = useState<string[]>([]);
+  const [custom, setCustom] = useState("");
+  useEffect(() => { if (!open) { setSelected([]); setCustom(""); } }, [open]);
+  if (!open) return null;
+  const instructions = [...selected, custom.trim()].filter(Boolean).join(" ");
+  const toggle = (instruction: string) => setSelected((current) => current.includes(instruction) ? current.filter((item) => item !== instruction) : [...current, instruction]);
+  return (
+    <div className="fixed inset-0 z-[60] grid place-items-center overflow-y-auto bg-charcoal-950/50 p-4" role="dialog" aria-modal="true" aria-labelledby="refine-opportunities-title">
+      <button type="button" className="absolute inset-0" aria-label="Close refinement" onClick={busy ? undefined : onClose} />
+      <div className="relative w-full max-w-2xl overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl">
+        <div className="flex items-start justify-between gap-4 border-b border-slate-100 px-5 py-5 sm:px-6">
+          <div><div className="text-xs font-bold uppercase tracking-wide text-brand-600">Opportunity Finder</div><h2 id="refine-opportunities-title" className="mt-1 text-xl font-bold text-charcoal-950">What should AI improve?</h2><p className="mt-2 text-sm leading-6 text-charcoal-600">Choose one or more priorities, then add any project-specific direction. Recommendations will be rebuilt using the existing intake and your instructions.</p></div>
+          <button type="button" onClick={onClose} disabled={busy} className="grid h-9 w-9 shrink-0 place-items-center rounded-lg border border-slate-200 text-lg text-charcoal-500 disabled:opacity-50" aria-label="Close">×</button>
+        </div>
+        <div className="max-h-[70vh] overflow-y-auto px-5 py-5 sm:px-6">
+          <div className="rounded-xl border border-brand-100 bg-brand-50 p-4 text-sm leading-6 text-brand-900"><b>How it works:</b> AI re-evaluates business value, expected impact, effort, and confidence. Your selected direction and saved-for-later ideas remain protected.</div>
+          <div className="mt-5 grid gap-3 sm:grid-cols-2">{opportunityRefinementIdeas.map((idea) => { const active = selected.includes(idea.instruction); return <button key={idea.title} type="button" onClick={() => toggle(idea.instruction)} className={`rounded-xl border p-4 text-left transition ${active ? "border-brand-500 bg-brand-50 ring-1 ring-brand-200" : "border-slate-200 hover:border-brand-300"}`}><div className="flex items-center justify-between gap-2"><span className="font-bold text-charcoal-950">{idea.title}</span><span className={`grid h-5 w-5 place-items-center rounded-full text-xs font-bold ${active ? "bg-brand-600 text-white" : "border border-slate-300 text-transparent"}`}>✓</span></div><p className="mt-2 text-xs leading-5 text-charcoal-500">{idea.instruction}</p></button>; })}</div>
+          <label className="mt-5 block text-sm font-bold text-charcoal-800" htmlFor="opportunity-refine-custom">Additional instructions</label>
+          <textarea id="opportunity-refine-custom" value={custom} onChange={(event) => setCustom(event.target.value)} rows={4} maxLength={2000} placeholder="Example: Target Toronto dental clinics, keep the launch under 30 days, and prioritize appointment bookings." className="mt-2 w-full resize-y rounded-xl border border-slate-200 px-4 py-3 text-sm leading-6 outline-none focus:border-brand-400 focus:ring-2 focus:ring-brand-100" />
+          <div className="mt-2 text-right text-xs text-charcoal-400">{custom.length}/2000</div>
+        </div>
+        <div className="flex flex-col-reverse gap-2 border-t border-slate-100 bg-slate-50 px-5 py-4 sm:flex-row sm:justify-end sm:px-6"><button type="button" onClick={onClose} disabled={busy} className="rounded-lg border border-slate-200 bg-white px-4 py-2.5 text-sm font-bold text-charcoal-700 disabled:opacity-50">Cancel</button><button type="button" onClick={() => void onSubmit(instructions)} disabled={busy || instructions.length < 3} className="rounded-lg bg-brand-600 px-5 py-2.5 text-sm font-bold text-white disabled:cursor-not-allowed disabled:bg-slate-300">{busy ? "Refining recommendations…" : "Refine Recommendations"}</button></div>
+      </div>
+    </div>
   );
 }
 
