@@ -23,8 +23,8 @@ const projectInfoKeys = new Set(["project_name", "business_name", "website_url",
 const goalKeys = new Set(["primary_goal", "target_launch_timeline", "target_audience", "preferred_output", "publishing_preference", "skill_level"]);
 const contextKeys = new Set(["products_services", "current_offer_cta", "budget_level", "time_available_weekly", "skill_level", "tone_preference"]);
 const commaSeparatedInputKeys = new Set(["industry_niche", "target_location", "current_target_keywords", "known_competitors"]);
-const quickFieldKeys = new Set(["project_name", "business_name", "website_url", "industry_niche", "target_audience", "primary_goal", "skill_level", "preferred_output", "publishing_preference"]);
-const quickRequiredKeys = new Set(["project_name", "business_name", "industry_niche", "target_audience", "primary_goal", "skill_level"]);
+const quickFieldKeys = new Set(["project_name", "business_name", "website_url", "industry_niche", "target_audience", "primary_goal", "products_services", "skill_level", "preferred_output", "publishing_preference"]);
+const quickRequiredKeys = new Set(["project_name", "business_name", "industry_niche", "target_audience", "primary_goal", "products_services", "skill_level"]);
 const aiEligibleKeys = new Set([
   "target_audience",
   "industry_niche",
