@@ -4,6 +4,7 @@ import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { Cell, Pie, PieChart, ResponsiveContainer } from "recharts";
 import { api } from "../api.js";
 import { ActionIconButton, ActionIconLink, Button, Card, StatusPill } from "../components/ui.js";
+import ProjectMilestoneLine from "../components/ProjectMilestoneLine.js";
 import { isExistingWebsiteFlow, nextProjectFlowStep } from "../project-flow.js";
 import type { AiContentGeneration, DomainBacklinkLinks, DomainBacklinkSummary, GuidedExecutionTask, GuidedProject, HealthReport, KeywordResearchRun, Opportunity, Website, WorkspaceIntelligence, WorkspaceIntelligenceResponse } from "../types.js";
 
@@ -741,6 +742,7 @@ export default function ExecutionModule({ kind }: { kind: ModuleKind }) {
           </div>
         )}
       </div>
+      {hasActiveProject && activeProject && (kind === "opportunities" || kind === "strategy") && <ProjectMilestoneLine project={activeProject} showDependency />}
       {hasActiveProject && kind === "backlinks" && (
         <div className={`rounded-lg border px-4 py-3 text-sm ${backlinkMessage ? "border-brand-100 bg-brand-50 text-brand-700" : "border-slate-200 bg-white text-charcoal-500"}`}>
           {backlinkMessage || (activeWebsite ? backlinkCooldown.helpText : "Connect a website before refreshing backlinks.")}
