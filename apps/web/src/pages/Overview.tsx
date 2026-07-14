@@ -79,15 +79,19 @@ export default function Overview() {
   const [keywordRuns, setKeywordRuns] = useState<KeywordResearchRun[]>([]);
   const [tasks, setTasks] = useState<GuidedExecutionTask[]>([]);
   const [backlinks, setBacklinks] = useState<DomainBacklinkSummary | null>(null);
+  const [agencyHasActiveClient, setAgencyHasActiveClient] = useState(true);
   const [err, setErr] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
     async function load() {
       try {
-        const [overviewResult, workspace] = await Promise.all([
+        const [overviewResult, workspace, agencyWorkspace] = await Promise.all([
           api.get<Overview>("/api/overview"),
           api.get<WorkspaceIntelligenceResponse>("/api/workspace/intelligence"),
+          user?.workspace?.type === "agency"
+            ? api.get<{ clients: { status: string }[] }>("/api/agency/workspace")
+            : Promise.resolve(null),
         ]);
         const websiteId = workspace.intelligence.activeWebsiteId ?? workspace.projects[0]?.websiteId ?? workspace.websites[0]?.id;
         const backlinkResult = websiteId
@@ -99,6 +103,7 @@ export default function Overview() {
           setWebsites(workspace.websites);
           setKeywordRuns(workspace.keywordRuns);
           setTasks(workspace.tasks);
+          setAgencyHasActiveClient(agencyWorkspace ? agencyWorkspace.clients.some((client) => client.status === "active") : true);
           setBacklinks(backlinkResult.summary);
         }
       } catch (e) {
@@ -107,7 +112,7 @@ export default function Overview() {
     }
     void load();
     return () => { cancelled = true; };
-  }, []);
+  }, [user?.workspace?.type]);
 
   const primaryProject = useMemo(() => {
     const crawl = data?.recentCrawls?.[0];
@@ -140,24 +145,25 @@ export default function Overview() {
   const recentActivity = dashboardActivity(projects, websites, keywordRuns, tasks);
   const queueRows = dashboardQueue(openTasks, primaryProject.name, websites[0]?.id);
   const socialRows = dashboardSocial(tasks);
+  const agencyNeedsClient = user?.workspace?.type === "agency" && !agencyHasActiveClient;
 
   if (!projects.length) {
     return (
       <div className="space-y-5">
         <div>
           <h1 className="text-[28px] font-bold leading-tight text-charcoal-950">Dashboard</h1>
-          <p className="text-sm text-charcoal-500">Create a project to start the SEnuke AI workflow.</p>
+          <p className="text-sm text-charcoal-500">{agencyNeedsClient ? "Create a client before starting an Agency project." : "Create a project to start the SEnuke AI workflow."}</p>
         </div>
         <Card className="border-brand-100 bg-brand-50/40 p-6">
           <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
             <div>
-              <div className="text-base font-bold text-charcoal-950">No project available</div>
+              <div className="text-base font-bold text-charcoal-950">{agencyNeedsClient ? "No Agency client available" : "No project available"}</div>
               <p className="mt-1 max-w-2xl text-sm leading-6 text-charcoal-500">
-                Create your first project to unlock intake, opportunity finding, strategy, site analysis, keywords, backlinks, AI citations, publishing, and growth actions.
+                {agencyNeedsClient ? "Add your first client with their business details and target markets. You can then create a project assigned to that client." : "Create your first project to unlock intake, opportunity finding, strategy, site analysis, keywords, backlinks, AI citations, publishing, and growth actions."}
               </p>
             </div>
-            {canManageProjects && <Link to="/projects/new" className="inline-flex items-center justify-center rounded-lg bg-brand-600 px-4 py-2.5 text-sm font-bold text-white shadow-sm hover:bg-brand-700">
-              Create Project
+            {canManageProjects && <Link to={agencyNeedsClient ? "/workspace?tab=clients" : "/projects/new"} className="inline-flex items-center justify-center rounded-lg bg-brand-600 px-4 py-2.5 text-sm font-bold text-white shadow-sm hover:bg-brand-700">
+              {agencyNeedsClient ? "Create Client" : "Create Project"}
             </Link>}
           </div>
         </Card>

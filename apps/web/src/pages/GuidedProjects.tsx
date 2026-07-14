@@ -68,13 +68,21 @@ export default function GuidedProjects() {
   const [statusBusy, setStatusBusy] = useState<string | null>(null);
   const [search, setSearch] = useState("");
   const [filter, setFilter] = useState<ProjectFilter>("all");
+  const [agencyHasActiveClient, setAgencyHasActiveClient] = useState(true);
 
   const load = async () => {
-    const result = await api.get<{ projects: GuidedProject[] }>("/api/projects-v2");
+    const [result, agencyWorkspace] = await Promise.all([
+      api.get<{ projects: GuidedProject[] }>("/api/projects-v2"),
+      user?.workspace?.type === "agency"
+        ? api.get<{ clients: { status: string }[] }>("/api/agency/workspace")
+        : Promise.resolve(null),
+    ]);
     setProjects(result.projects);
+    setAgencyHasActiveClient(agencyWorkspace ? agencyWorkspace.clients.some((client) => client.status === "active") : true);
   };
 
-  useEffect(() => { void load(); }, []);
+  useEffect(() => { void load(); }, [user?.workspace?.type]);
+  const agencyNeedsClient = user?.workspace?.type === "agency" && !agencyHasActiveClient;
 
   const visibleProjects = useMemo(() => {
     const query = search.trim().toLowerCase();
@@ -122,8 +130,8 @@ export default function GuidedProjects() {
           <h1 className="text-3xl font-bold tracking-tight text-slate-950">Projects</h1>
           <p className="mt-1 text-base text-slate-500">Every guided project and its current AI growth stage.</p>
         </div>
-        {canManageProjects && <Link to="/projects/new" className="inline-flex h-11 shrink-0 items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-teal-400 to-teal-600 px-5 text-sm font-bold text-white shadow-lg shadow-teal-200/70 hover:from-teal-500 hover:to-teal-700">
-          <span className="text-xl leading-none">+</span> New Project
+        {canManageProjects && <Link to={agencyNeedsClient ? "/workspace?tab=clients" : "/projects/new"} className="inline-flex h-11 shrink-0 items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-teal-400 to-teal-600 px-5 text-sm font-bold text-white shadow-lg shadow-teal-200/70 hover:from-teal-500 hover:to-teal-700">
+          <span className="text-xl leading-none">+</span> {agencyNeedsClient ? "New Client" : "New Project"}
         </Link>}
       </div>
 
@@ -139,9 +147,9 @@ export default function GuidedProjects() {
 
       {projects.length === 0 ? (
         <div className="mt-7 rounded-2xl border border-dashed border-violet-200 bg-white p-10 text-center shadow-sm">
-          <div className="text-lg font-bold text-slate-950">No projects yet</div>
-          <p className="mx-auto mt-2 max-w-lg text-sm leading-6 text-slate-500">Create a project to begin intake, strategy, analysis, execution, approval, and delivery.</p>
-          {canManageProjects && <Link to="/projects/new" className="mt-5 inline-flex rounded-xl bg-teal-600 px-5 py-2.5 text-sm font-bold text-white hover:bg-teal-700">Create Project</Link>}
+          <div className="text-lg font-bold text-slate-950">{agencyNeedsClient ? "Create a client first" : "No projects yet"}</div>
+          <p className="mx-auto mt-2 max-w-lg text-sm leading-6 text-slate-500">{agencyNeedsClient ? "Agency projects must belong to an active client. Add the client before creating their first project." : "Create a project to begin intake, strategy, analysis, execution, approval, and delivery."}</p>
+          {canManageProjects && <Link to={agencyNeedsClient ? "/workspace?tab=clients" : "/projects/new"} className="mt-5 inline-flex rounded-xl bg-teal-600 px-5 py-2.5 text-sm font-bold text-white hover:bg-teal-700">{agencyNeedsClient ? "Create Client" : "Create Project"}</Link>}
         </div>
       ) : visibleProjects.length === 0 ? (
         <div className="mt-7 rounded-2xl border border-violet-100 bg-white p-10 text-center shadow-sm"><div className="font-bold text-slate-900">No matching projects</div><p className="mt-2 text-sm text-slate-500">Try another search or status filter.</p><button type="button" onClick={() => { setSearch(""); setFilter("all"); }} className="mt-4 text-sm font-bold text-teal-700">Clear filters</button></div>
