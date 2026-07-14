@@ -37,6 +37,7 @@ type WorkspaceData = {
 type Tab = "dashboard" | "clients" | "teams" | "approvals" | "activity";
 
 const roleOrder: Role[] = ["admin", "manager", "editor", "viewer", "client_viewer"];
+const timeZones = ["UTC", "America/Toronto", "America/Vancouver", "America/Edmonton", "America/Winnipeg", "America/Halifax", "America/St_Johns", "America/New_York", "America/Chicago", "America/Denver", "America/Los_Angeles", "America/Phoenix", "Europe/London", "Europe/Paris", "Europe/Berlin", "Asia/Dubai", "Asia/Kolkata", "Asia/Singapore", "Asia/Tokyo", "Australia/Sydney", "Pacific/Auckland"];
 const roleLabels: Record<Role, string> = {
   owner: "Owner/Admin", admin: "Owner/Admin", manager: "Manager/Approver", approver: "Manager/Approver", editor: "Editor", viewer: "Viewer", client_viewer: "Client Viewer — Agency only",
 };
@@ -280,7 +281,7 @@ export default function AgencyWorkspace() {
         <ClientArea label="Primary keywords" value={clientKeywords} onChange={setClientKeywords} hint="Optional; separate with commas or new lines" />
         <ClientField label="Brand voice / tone *" value={clientBrandVoice} onChange={setClientBrandVoice} placeholder="Professional, clear, friendly" required />
         <ClientField label="Preferred language *" value={clientLanguage} onChange={setClientLanguage} required />
-        <ClientField label="Time zone *" value={clientTimeZone} onChange={setClientTimeZone} placeholder="America/Toronto" required />
+        <label className="block text-xs font-bold">Time zone *<select required value={clientTimeZone} onChange={(event) => setClientTimeZone(event.target.value)} className="mt-1 h-10 w-full rounded-lg border bg-white px-3 text-sm font-normal">{timeZones.map((zone) => <option key={zone} value={zone}>{zone.replace(/_/g, " ")}</option>)}</select></label>
         <div className="flex justify-end gap-3 md:col-span-2 xl:col-span-3"><button type="button" onClick={() => setShowClientForm(false)} className="h-11 rounded-lg border px-5 text-sm font-bold text-slate-600">Cancel</button><button disabled={busy === "client-create"} className="h-11 rounded-lg bg-brand-600 px-6 text-sm font-bold text-white disabled:bg-slate-300">{busy === "client-create" ? "Creating…" : "Create client"}</button></div>
       </form></Card>}
     </div>}

@@ -10,6 +10,7 @@ type Client = {
 
 const lines = (value: unknown) => Array.isArray(value) ? value.map(String).join("\n") : "";
 const values = (value: string) => value.split(/[\n,]/).map((item) => item.trim()).filter(Boolean);
+const timeZones = ["UTC", "America/Toronto", "America/Vancouver", "America/Edmonton", "America/Winnipeg", "America/Halifax", "America/St_Johns", "America/New_York", "America/Chicago", "America/Denver", "America/Los_Angeles", "America/Phoenix", "Europe/London", "Europe/Paris", "Europe/Berlin", "Asia/Dubai", "Asia/Kolkata", "Asia/Singapore", "Asia/Tokyo", "Australia/Sydney", "Pacific/Auckland"];
 
 export default function AgencyClientEditor({ client, owner, onClose, onSaved }: { client: Client; owner: boolean; onClose: () => void; onSaved: (message: string) => void }) {
   const settings = client.defaultSettings && typeof client.defaultSettings === "object" ? client.defaultSettings as Record<string, unknown> : {};
@@ -72,7 +73,7 @@ export default function AgencyClientEditor({ client, owner, onClose, onSaved }: 
         <Area label="Primary keywords" value={form.primaryKeywords} onChange={(primaryKeywords) => patch({ primaryKeywords })} hint="One keyword per line" />
         <Field label="Brand voice / tone" value={form.brandVoice} onChange={(brandVoice) => patch({ brandVoice })} />
         <Field label="Preferred language" value={form.preferredLanguage} onChange={(preferredLanguage) => patch({ preferredLanguage })} />
-        <Field label="Time zone" value={form.timeZone} onChange={(timeZone) => patch({ timeZone })} />
+        <label className="text-xs font-bold">Time zone<select value={form.timeZone} onChange={(event) => patch({ timeZone: event.target.value })} className="mt-1 h-10 w-full rounded-lg border bg-white px-3 text-sm font-normal">{!timeZones.includes(form.timeZone) && <option value={form.timeZone}>{form.timeZone}</option>}{timeZones.map((zone) => <option key={zone} value={zone}>{zone.replace(/_/g, " ")}</option>)}</select></label>
         <Area label="Internal notes" value={form.internalNotes} onChange={(internalNotes) => patch({ internalNotes })} />
         <Area label="Client-visible notes" value={form.clientVisibleNotes} onChange={(clientVisibleNotes) => patch({ clientVisibleNotes })} />
         <button disabled={busy === "save" || !form.name.trim()} className="h-11 rounded-lg bg-brand-600 px-4 text-sm font-bold text-white disabled:opacity-50 md:col-span-2">{busy === "save" ? "Saving…" : "Save shared client details"}</button>
