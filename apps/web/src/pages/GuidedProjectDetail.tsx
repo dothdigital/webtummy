@@ -111,22 +111,14 @@ function InfoBlock({ label, children }: { label: string; children: ReactNode }) 
   );
 }
 
-function BusinessProfileCard({ project, preferredOutputs }: { project: GuidedProject; preferredOutputs: string[] }) {
+function BusinessProfileCard({ project }: { project: GuidedProject }) {
   const profile = project.businessProfile;
-  const targetMarketItems = Array.isArray(project.targetLocations)
-    ? project.targetLocations.flatMap((location) => splitList(String(location)))
-    : splitList(project.targetLocation);
-  const secondaryGoalItems = Array.isArray(project.secondaryGoals) ? project.secondaryGoals.flatMap((goal) => splitList(String(goal))) : [];
-  const briefItems = [
-    ["Target markets", targetMarketItems, "Not set"],
-    ["Secondary goals", secondaryGoalItems, "None"],
-  ] as const;
   const audienceSegments = splitList(profile?.targetAudience).slice(0, 3);
   const offerSegments = splitList(profile?.offerSummary).slice(0, 3);
 
   return (
     <Card className="overflow-hidden border-brand-100 bg-white">
-      <div className="grid gap-4 p-4 xl:grid-cols-[1.15fr_1fr]">
+      <div className="p-4">
         <div>
           <div className="text-[11px] font-bold uppercase tracking-wide text-brand-700">Project snapshot</div>
           <div className="mt-2">
@@ -138,22 +130,6 @@ function BusinessProfileCard({ project, preferredOutputs }: { project: GuidedPro
           <div className="mt-3 grid gap-3">
             <CompactProfileBlock label="Audience" items={audienceSegments} empty="Audience not set" />
             <CompactProfileBlock label="Offer" items={offerSegments} empty="Offer not set" />
-          </div>
-        </div>
-        <div className="grid gap-2 sm:grid-cols-2">
-          {briefItems.map(([label, values, empty]) => (
-            <div key={label} className="rounded-lg border border-charcoal-100 bg-white px-3 py-2">
-              <div className="text-[10px] font-bold uppercase tracking-wide text-charcoal-400">{label}</div>
-              <div className="mt-1 grid gap-1">
-                {values.length ? values.map((value) => <div key={value} className="text-sm font-bold capitalize leading-5 text-charcoal-900">{value}</div>) : <div className="text-sm font-bold text-charcoal-900">{empty}</div>}
-              </div>
-            </div>
-          ))}
-          <div className="rounded-lg border border-charcoal-100 bg-white px-3 py-2">
-            <div className="text-[10px] font-bold uppercase tracking-wide text-charcoal-400">Outputs</div>
-            <div className="mt-1 flex flex-wrap gap-1">
-              {preferredOutputs.length ? preferredOutputs.map((output) => <span key={output} className="rounded-md bg-brand-50 px-2 py-0.5 text-xs font-bold text-brand-800">{output}</span>) : <span className="text-sm font-bold text-charcoal-900">Not set</span>}
-            </div>
           </div>
         </div>
       </div>
@@ -414,7 +390,6 @@ export default function GuidedProjectDetail() {
 
   const executionPlan = project.executionPlans?.[0] ?? null;
   const tasks = executionPlan?.tasks ?? [];
-  const preferredOutputs = Array.isArray(project.preferredOutputs) ? project.preferredOutputs.filter((item): item is string => typeof item === "string") : [];
   const projectUrl = project.website?.rootUrl ?? project.websiteUrl ?? project.businessName ?? "No website connected yet";
   const displayName = project.businessName ?? project.name;
   const internalProjectName = project.name !== displayName ? project.name : null;
@@ -620,7 +595,7 @@ export default function GuidedProjectDetail() {
           {archived && <Card className="border-slate-300 bg-slate-100 p-4 text-sm text-slate-700"><b>Archived project — view only.</b> Restore this project from the Projects page before editing, assigning, approving, generating, publishing, or changing tasks.</Card>}
           {activeTab === "overview" && <>
           {!archived && <ProjectNextActionCard action={nextAction} />}
-          <BusinessProfileCard project={project} preferredOutputs={preferredOutputs} />
+          <BusinessProfileCard project={project} />
 
           <div>
             <Card className="p-4">
