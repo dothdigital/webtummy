@@ -28,6 +28,20 @@ function projectProgress(project: GuidedProject) {
   return Math.round((workflowRatio * 50) + (executionRatio * 50));
 }
 
+function projectProgressBreakdown(project: GuidedProject) {
+  const steps = project.workflowSteps ?? [];
+  const completedSteps = steps.filter((step) => completedStatuses.has(step.status)).length;
+  const execution = project.executionProgress ?? { total: 0, completed: 0 };
+  return {
+    setupCompleted: completedSteps,
+    setupTotal: steps.length,
+    setupPercent: project.status === "completed" ? 100 : steps.length ? Math.round((completedSteps / steps.length) * 100) : 0,
+    executionCompleted: execution.completed,
+    executionTotal: execution.total,
+    executionPercent: project.status === "completed" ? 100 : execution.total ? Math.round((execution.completed / execution.total) * 100) : 0,
+  };
+}
+
 function projectNeedsReview(project: GuidedProject) {
   return Boolean(project.executionPlans?.[0]?.tasks?.some((task) => reviewStatuses.has(task.status)) || project.workflowSteps?.some((step) => reviewStatuses.has(step.status)));
 }
@@ -190,24 +204,53 @@ export default function GuidedProjects() {
             const task = nextTask(project);
             const workflowStep = nextWorkflowStep(project);
             const progress = projectProgress(project);
+            const breakdown = projectProgressBreakdown(project);
             const needsReview = projectNeedsReview(project);
             const nextTitle = task?.title ?? workflowStep?.title ?? (project.status === "completed" ? "Project complete" : "Review project overview");
             return <article key={project.id} className="rounded-2xl border border-violet-100 bg-white px-5 py-5 shadow-sm transition hover:border-teal-200 hover:shadow-md sm:px-6">
               <div className="flex items-start justify-between gap-4">
                 <div className="flex min-w-0 items-center gap-4">
                   <div className={`flex h-14 w-14 shrink-0 items-center justify-center rounded-2xl text-lg font-bold ${avatarTones[index % avatarTones.length]}`}>{project.name.slice(0, 2).toUpperCase()}</div>
-                  <div className="min-w-0"><Link to={`/guided-projects/${project.id}`} className="block truncate text-lg font-bold text-slate-950 hover:text-teal-700">{project.name}</Link><div className="mt-1 truncate text-sm text-slate-500">{project.website?.domain ?? project.websiteUrl ?? project.businessName ?? "No website connected"} <span className="px-1 text-slate-300">·</span> {projectTypeLabel(project)}</div></div>
+                  <div className="min-w-0">
+                    <Link to={`/guided-projects/${project.id}`} className="block truncate text-lg font-bold text-slate-950 hover:text-teal-700">{project.name}</Link>
+                    <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-sm text-slate-500">
+                      {project.website?.id ? <Link to={`/website-projects/${project.website.id}`} className="font-semibold text-teal-700 hover:underline">{project.website.rootUrl ?? project.websiteUrl ?? project.website.domain}</Link> : <span>{project.websiteUrl ?? "No website connected"}</span>}
+                      <span className="hidden text-slate-300 sm:inline">•</span>
+                      <span><b className="font-semibold text-slate-700">Project type:</b> {projectTypeLabel(project)}</span>
+                      <span className="text-slate-300">•</span>
+                      <span><b className="font-semibold text-slate-700">Location:</b> {project.businessLocation ?? "Not set"}</span>
+                      <span className="text-slate-300">•</span>
+                      <span><b className="font-semibold text-slate-700">Timeline:</b> {project.targetLaunchTimeline ?? "Not set"}</span>
+                      <span className="text-slate-300">•</span>
+                      <span><b className="font-semibold text-slate-700">Primary goal:</b> {project.primaryGoal ?? "Not set"}</span>
+                    </div>
+                  </div>
                 </div>
                 <span className={`shrink-0 rounded-full px-4 py-1.5 text-xs font-bold ${project.status === "archived" ? "bg-slate-200 text-slate-700" : needsReview ? "bg-amber-100 text-amber-800" : project.status === "completed" ? "bg-emerald-100 text-emerald-800" : "bg-teal-100 text-teal-800"}`}>{project.status === "archived" ? "Archived · View only" : needsReview ? "Needs Review" : stageLabel(project)}</span>
               </div>
 
-              <div className="mt-6 flex items-center gap-4"><div className="h-2.5 flex-1 overflow-hidden rounded-full bg-violet-50"><div className="h-full rounded-full bg-gradient-to-r from-teal-400 to-teal-600 transition-all" style={{ width: `${progress}%` }} /></div><div className="w-11 text-right text-sm font-bold text-slate-600">{progress}%</div></div>
+              <div className="mt-6 rounded-xl border border-violet-100 bg-slate-50/60 px-4 py-3">
+                <div className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_1px_minmax(0,1fr)_auto] sm:items-center sm:gap-5">
+                  <div>
+                    <div className="flex items-center justify-between gap-3"><span className="text-xs font-bold uppercase tracking-wide text-teal-700">Setup milestones</span><span className="text-sm font-black text-teal-800">{breakdown.setupPercent}%</span></div>
+                    <div className="mt-2 h-2 overflow-hidden rounded-full bg-teal-100"><div className="h-full rounded-full bg-teal-500 transition-all" style={{ width: `${breakdown.setupPercent}%` }} /></div>
+                    <div className="mt-1.5 text-[11px] font-semibold text-slate-500">{breakdown.setupCompleted} of {breakdown.setupTotal} milestones complete · 50% weight</div>
+                  </div>
+                  <div className="h-px bg-violet-200 sm:h-12 sm:w-px" aria-hidden="true" />
+                  <div>
+                    <div className="flex items-center justify-between gap-3"><span className="text-xs font-bold uppercase tracking-wide text-violet-700">Execution tasks</span><span className="text-sm font-black text-violet-800">{breakdown.executionPercent}%</span></div>
+                    <div className="mt-2 h-2 overflow-hidden rounded-full bg-violet-100"><div className="h-full rounded-full bg-violet-500 transition-all" style={{ width: `${breakdown.executionPercent}%` }} /></div>
+                    <div className="mt-1.5 text-[11px] font-semibold text-slate-500">{breakdown.executionCompleted} of {breakdown.executionTotal} tasks complete · 50% weight</div>
+                  </div>
+                  <div className="flex items-center justify-between gap-3 rounded-xl bg-gradient-to-br from-teal-500 to-teal-700 px-5 py-3 text-white shadow-md shadow-teal-200 sm:block sm:min-w-[112px] sm:text-center"><span className="text-[10px] font-black uppercase tracking-[0.16em] text-teal-50">Overall</span><div className="text-3xl font-black leading-none tracking-tight sm:mt-1">{progress}%</div></div>
+                </div>
+              </div>
 
               <WorkflowMilestones project={project} />
 
               <div className="mt-5 flex flex-col gap-3 border-t border-violet-50 pt-4 md:flex-row md:items-center md:justify-between">
                 <div className="flex min-w-0 flex-col gap-2 text-sm text-slate-500 sm:flex-row sm:items-center sm:gap-7"><div className="min-w-0 truncate">Next: <span className="font-bold text-slate-900">{nextTitle}</span></div><div className="shrink-0">Updated <span className="font-bold text-slate-800">{relativeUpdated(project.updatedAt)}</span></div></div>
-                <div className="flex shrink-0 items-center gap-4">{canEditProjects && project.status !== "archived" && <Link to={`/guided-projects/${project.id}/intake`} className="text-xs font-bold text-teal-700 hover:text-teal-900">Edit</Link>}{canManageProjects && project.status !== "archived" && <button disabled={statusBusy === project.id} type="button" onClick={() => void changeArchiveStatus(project, "archive")} className="text-xs font-bold text-slate-500 hover:text-amber-700 disabled:opacity-50">Archive</button>}{canManageProjects && project.status === "archived" && <><button disabled={statusBusy === project.id} type="button" onClick={() => void changeArchiveStatus(project, "restore")} className="text-xs font-bold text-teal-700 disabled:opacity-50">Restore</button><button type="button" onClick={() => setDeleteTarget(project)} className="text-xs font-bold text-rose-600 hover:text-rose-800">Permanently delete</button></>}<Link to={project.status !== "archived" && project.currentStep === "intake" && canEditProjects ? `/guided-projects/${project.id}/intake` : `/guided-projects/${project.id}`} className="text-sm font-bold text-teal-700 hover:text-teal-900">{project.status === "archived" ? "View project →" : "Open project →"}</Link></div>
+                <div className="flex shrink-0 items-center gap-4">{canEditProjects && project.status !== "archived" && <Link to={`/projects/new?edit=${project.id}`} className="text-xs font-bold text-teal-700 hover:text-teal-900">Edit</Link>}{canManageProjects && project.status !== "archived" && <button disabled={statusBusy === project.id} type="button" onClick={() => void changeArchiveStatus(project, "archive")} className="text-xs font-bold text-slate-500 hover:text-amber-700 disabled:opacity-50">Archive</button>}{canManageProjects && project.status === "archived" && <><button disabled={statusBusy === project.id} type="button" onClick={() => void changeArchiveStatus(project, "restore")} className="text-xs font-bold text-teal-700 disabled:opacity-50">Restore</button><button type="button" onClick={() => setDeleteTarget(project)} className="text-xs font-bold text-rose-600 hover:text-rose-800">Permanently delete</button></>}<Link to={project.status !== "archived" && project.currentStep === "intake" && canEditProjects ? `/guided-projects/${project.id}/intake` : `/guided-projects/${project.id}`} className="text-sm font-bold text-teal-700 hover:text-teal-900">{project.status === "archived" ? "View project →" : "Open project →"}</Link></div>
               </div>
             </article>;
           })}

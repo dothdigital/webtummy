@@ -4,6 +4,8 @@ import { api } from "../api.js";
 import type { GuidedProject, KeywordResearchRun, Website } from "../types.js";
 import { ActionIconButton, ActionIconLink, Button, Card, Input, StatusPill } from "../components/ui.js";
 import { COUNTRY_OPTIONS, buildLocationNames, defaultLocationParts } from "../locationOptions.js";
+import { isBackgroundJobFinished, registerBackgroundJob } from "../background-jobs.js";
+import { latestSuccessfulKeywordRuns } from "../keyword-runs.js";
 
 type KeywordSuggestion = {
   keyword: string;
@@ -135,24 +137,6 @@ function targetCitiesText(value: unknown): string {
     .join(", ");
 }
 
-function latestSuccessfulKeywordRuns(runs: KeywordResearchRun[]): KeywordResearchRun[] {
-  const latest = new Map<string, KeywordResearchRun>();
-  for (const run of runs) {
-    if (run.status !== "completed") continue;
-    const key = [
-      run.websiteId ?? "",
-      run.seedKeyword.trim().toLowerCase(),
-      run.locationName.trim().toLowerCase(),
-      run.device,
-    ].join("|");
-    const existing = latest.get(key);
-    if (!existing || new Date(run.createdAt).getTime() > new Date(existing.createdAt).getTime()) {
-      latest.set(key, run);
-    }
-  }
-  return [...latest.values()].sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
-}
-
 export default function KeywordReports() {
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
@@ -188,6 +172,22 @@ export default function KeywordReports() {
   const [queuedKeywords, setQueuedKeywords] = useState<QueuedKeywordRun[]>([]);
   const [formError, setFormError] = useState<FormError | null>(null);
   const [message, setMessage] = useState("");
+  const campaignQuery = () => {
+    const next = new URLSearchParams();
+    for (const key of ["project", "projectId", "groupId", "groupIds"]) {
+      const value = searchParams.get(key);
+      if (value) next.set(key, value);
+    }
+    return next.toString();
+  };
+  const reportUrl = (runId: string) => `/keyword-insights/${runId}${campaignQuery() ? `?${campaignQuery()}` : ""}`;
+  const selectWebsite = (nextWebsiteId: string, addMode: boolean) => {
+    const next = new URLSearchParams(searchParams);
+    next.set("project", nextWebsiteId);
+    if (addMode) next.set("add", "1");
+    else next.delete("add");
+    setSearchParams(next, { replace: true });
+  };
 
   const load = async () => {
     setLoading(true);
@@ -268,10 +268,28 @@ export default function KeywordReports() {
             serpDepth: Number(queued.serpDepth) || 10,
             keywordLimit: Number(queued.keywordLimit) || 25,
           });
+          if (!isBackgroundJobFinished(result.run.status)) {
+            registerBackgroundJob({
+              id: result.run.id,
+              type: "keyword-research",
+              title: "Keyword research",
+              subject: `${queued.keyword} · ${locationName}`,
+              status: result.run.status,
+              statusUrl: `/api/keyword-research/${result.run.id}`,
+              resultUrl: reportUrl(result.run.id),
+              startedAt: new Date().toISOString(),
+              progressMessage: `You can continue working. We’re researching “${queued.keyword}” for ${locationName} in the background.`,
+              completedMessage: `“${queued.keyword}” for ${locationName} is ready to review`,
+              failedMessage: `Keyword research for “${queued.keyword}” needs attention.`,
+              resultMetricKey: "keywordCount",
+              resultMetricLabel: "keywords found",
+              resultMetric: result.run.keywordCount,
+            });
+          }
           firstRun = firstRun ?? result.run;
         }
       }
-      if (firstRun) navigate(`/keyword-insights/${firstRun.id}`);
+      if (firstRun) navigate(reportUrl(firstRun.id));
     } catch (e) {
       const message = e instanceof Error ? e.message : "Keyword research could not be completed.";
       const context = [activeKeyword ? `Keyword: ${activeKeyword}` : "", activeLocation ? `Location: ${activeLocation}` : ""].filter(Boolean).join(" • ");
@@ -285,14 +303,21 @@ export default function KeywordReports() {
     }
   };
 
-  const queueKeywordWithSettings = (keywordValue = seedKeyword, clearInput = true) => {
+  const previouslyResearched = (keyword: string) => runs.some((run) =>
+    (!websiteId || run.websiteId === websiteId) && run.seedKeyword.trim().toLowerCase() === keyword.trim().toLowerCase(),
+  );
+
+  const queueKeywordWithSettings = (keywordValue = seedKeyword, clearInput = true, confirmExisting = true) => {
     const keyword = keywordValue.trim();
     if (!keyword) return;
     const locationNames = buildLocationNames(locationCity, locationRegion, locationCountry);
     const locationKey = locationNames.join("|").toLowerCase();
+    if (queuedKeywords.some((item) => item.keyword.toLowerCase() === keyword.toLowerCase() && item.locationNames.join("|").toLowerCase() === locationKey)) {
+      setMessage(`“${keyword}” is already queued with the same location settings.`);
+      return;
+    }
+    if (confirmExisting && previouslyResearched(keyword) && !window.confirm(`“${keyword}” already has saved keyword research. Do you want to analyze it again and keep both results?`)) return;
     setQueuedKeywords((current) => {
-      const exists = current.some((item) => item.keyword.toLowerCase() === keyword.toLowerCase() && item.locationNames.join("|").toLowerCase() === locationKey);
-      if (exists) return current;
       return [
         ...current,
         {
@@ -327,8 +352,11 @@ export default function KeywordReports() {
     setRefreshingId(run.id);
     try {
       const result = await api.post<{ run: KeywordResearchRun }>(`/api/keyword-research/${run.id}/refresh`, {});
+      if (!isBackgroundJobFinished(result.run.status)) {
+        registerBackgroundJob({ id: result.run.id, type: "keyword-research", title: "Keyword research", subject: `${result.run.seedKeyword} · ${result.run.locationName}`, status: result.run.status, statusUrl: `/api/keyword-research/${result.run.id}`, resultUrl: reportUrl(result.run.id), startedAt: new Date().toISOString(), progressMessage: `You can continue working. We’re refreshing “${result.run.seedKeyword}” in the background.`, completedMessage: `“${result.run.seedKeyword}” is ready to review`, failedMessage: `Keyword research for “${result.run.seedKeyword}” needs attention.`, resultMetricKey: "keywordCount", resultMetricLabel: "keywords found", resultMetric: result.run.keywordCount });
+      }
       await load();
-      navigate(`/keyword-insights/${result.run.id}`);
+      navigate(reportUrl(result.run.id));
     } catch (e) {
       alert(String(e));
     } finally {
@@ -356,8 +384,13 @@ export default function KeywordReports() {
       setIntakeNeedsMoreInfo(!result.intakeComplete);
       setIntakeProjectId(result.projectId);
       const suggestions = result.suggestions.slice(0, 10);
-      setKeywordSuggestions(suggestions);
-      setSelectedKeywordSuggestions(suggestions.map((suggestion) => suggestion.keyword));
+      if (mode === "more") {
+        setKeywordSuggestions((current) => [...new Map([...current, ...suggestions].map((suggestion) => [suggestion.keyword.toLowerCase(), suggestion])).values()]);
+        setSelectedKeywordSuggestions((current) => [...new Set([...current, ...suggestions.map((suggestion) => suggestion.keyword)])]);
+      } else {
+        setKeywordSuggestions(suggestions);
+        setSelectedKeywordSuggestions(suggestions.map((suggestion) => suggestion.keyword));
+      }
       setMessage(!result.intakeComplete || suggestions.length ? "" : mode === "more" ? "No more new keyword suggestions found for this project." : "No new keyword suggestions found for this project.");
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "Could not suggest keywords");
@@ -367,6 +400,7 @@ export default function KeywordReports() {
   };
 
   useEffect(() => {
+    if (searchParams.get("groupIds") || searchParams.get("groupId")) return;
     if (!showAddKeyword || !websiteId || keywordSuggestions.length || suggestingKeywords) return;
     void suggestKeywords();
     // Suggestions are generated once when the selected project intake becomes available.
@@ -402,7 +436,9 @@ export default function KeywordReports() {
 
   const useSelectedSuggestions = () => {
     if (!selectedKeywordSuggestions.length) return;
-    for (const keyword of selectedKeywordSuggestions) queueKeywordWithSettings(keyword, false);
+    const existing = selectedKeywordSuggestions.filter(previouslyResearched);
+    if (existing.length && !window.confirm(`${existing.length} selected keyword${existing.length === 1 ? " has" : "s have"} already been researched:\n\n${existing.join("\n")}\n\nDo you want to analyze ${existing.length === 1 ? "it" : "them"} again and keep the previous results?`)) return;
+    for (const keyword of selectedKeywordSuggestions) queueKeywordWithSettings(keyword, false, false);
     setSelectedKeywordSuggestions([]);
     setMessage("");
   };
@@ -445,10 +481,9 @@ export default function KeywordReports() {
   return (
     <div className="space-y-6">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-        <div><h1 className="text-2xl font-bold text-charcoal-800">{focusedAddMode ? "Start Keyword Research" : "Keyword Insight"}</h1>
-          <p className="mt-1 text-sm text-charcoal-400">
-            {focusedAddMode ? "SEnuke AI recommends keyword themes from the client intake. Review them, or optionally add your own seed keyword." : "Create, manage, and open keyword-level intelligence reports for each project domain."}
-          </p>
+        <div><div className="text-sm font-bold uppercase tracking-wide text-brand-600">Keyword Research</div>
+          <h1 className="mt-1 text-2xl font-bold text-charcoal-800">{guidedProject?.name || websites.find((website) => website.id === websiteId)?.domain || "Keyword Research"}</h1>
+          <p className="mt-1 text-sm text-charcoal-400">Review saved keyword research, search demand, difficulty, intent, CPC, opportunities, and page targets.</p>
         </div>
         <Link to={backToKeywords} className="inline-flex w-fit items-center justify-center rounded-lg border border-slate-200 bg-white px-4 py-2.5 text-sm font-bold text-charcoal-700 shadow-sm hover:border-brand-200 hover:bg-brand-50 hover:text-brand-700">← Back to Keyword Intelligence</Link>
       </div>
@@ -466,7 +501,7 @@ export default function KeywordReports() {
                 onChange={(event) => {
                   const nextProject = websites.find((website) => website.id === event.target.value);
                   setWebsiteId(event.target.value);
-                  setSearchParams(focusedAddMode ? { project: event.target.value, add: "1" } : { project: event.target.value });
+                  selectWebsite(event.target.value, focusedAddMode);
                   setKeywordSuggestions([]);
                   setSelectedKeywordSuggestions([]);
                   setMessage("");
@@ -488,10 +523,6 @@ export default function KeywordReports() {
         {showAddKeyword && (
           <div className="border-b border-charcoal-100 bg-white">
             <form onSubmit={createRun} className="space-y-4 p-5">
-              <div className="sticky top-2 z-20 flex flex-col gap-2 rounded-xl border border-slate-200 bg-white/95 px-4 py-3 shadow-sm backdrop-blur sm:flex-row sm:items-center sm:justify-between">
-                <div><div className="text-sm font-bold text-charcoal-900">Keyword analysis workflow</div><div className="mt-0.5 text-xs text-charcoal-500">Return to Keyword Intelligence at any time without starting an analysis.</div></div>
-                <Link to={backToKeywords} className="inline-flex w-fit items-center justify-center rounded-lg border border-brand-200 bg-brand-50 px-4 py-2 text-sm font-bold text-brand-700 hover:bg-brand-100">← Back to Keyword Intelligence</Link>
-              </div>
               <div className="grid grid-cols-1 overflow-hidden rounded-xl border border-slate-200 bg-slate-50 text-sm sm:grid-cols-3">
                 <div className={`px-4 py-3 font-semibold ${keywordStep === "select" ? "bg-brand-600 text-white" : "text-slate-500"}`}>
                   <span className="mr-2">1</span>Select or add keywords
@@ -525,7 +556,7 @@ export default function KeywordReports() {
                     onChange={(e) => {
                       const nextProject = websites.find((website) => website.id === e.target.value);
                       setWebsiteId(e.target.value);
-                      setSearchParams(focusedAddMode ? { project: e.target.value, add: "1" } : { project: e.target.value });
+                      selectWebsite(e.target.value, focusedAddMode);
                       setKeywordSuggestions([]);
                       setSelectedKeywordSuggestions([]);
                       setQueuedKeywords([]);
@@ -778,7 +809,9 @@ export default function KeywordReports() {
           </div>
         )}
 
-        {!focusedAddMode && (loading ? (
+        {focusedAddMode && <div className="border-b border-charcoal-100 bg-slate-50 px-5 py-4"><div className="font-semibold text-charcoal-700">Saved keyword research</div><div className="mt-0.5 text-xs text-charcoal-500">Completed analyses remain available while you prepare additional keywords.</div></div>}
+
+        {loading ? (
           <div className="p-6 text-sm text-charcoal-400">Loading reports...</div>
         ) : visibleRuns.length === 0 ? (
           <div className="p-6 text-sm text-charcoal-400">No completed keyword reports for this selected domain yet.</div>
@@ -815,7 +848,7 @@ export default function KeywordReports() {
                     <td className="px-5 py-3 text-charcoal-500">{formatDate(run.createdAt)}</td>
                     <td className="px-5 py-3">
                       <div className="flex justify-end gap-3">
-                        <ActionIconLink icon="view" label="View keyword report" to={`/keyword-insights/${run.id}`} />
+                        <ActionIconLink icon="view" label="View keyword report" to={reportUrl(run.id)} />
                         <ActionIconButton
                           icon="refresh"
                           label={refreshingId === run.id ? "Refreshing keyword" : canRefreshKeyword(run) ? "Refresh keyword" : refreshBlockedLabel(run)}
@@ -829,7 +862,7 @@ export default function KeywordReports() {
               </tbody>
             </table>
           </div>
-        ))}
+        )}
       </Card>
     </div>
   );

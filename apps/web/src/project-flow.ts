@@ -36,7 +36,6 @@ export function nextProjectFlowStep(project: GuidedProject) {
       actionLabel: "Run Keyword Analysis",
       to: `/keywords?projectId=${project.id}`,
       badge: "Step 3: Keywords",
-      notice: "Opening Keyword Analysis. This should happen before Strategy.",
     };
   }
   if (siteAnalysisRequired && !workflowStepComplete(project, "site_analysis")) {
@@ -46,7 +45,6 @@ export function nextProjectFlowStep(project: GuidedProject) {
       actionLabel: "Analyze Site",
       to: `/site-analysis?projectId=${project.id}`,
       badge: "Step 4: Site Analysis",
-      notice: "Opening Site Analysis. Existing websites should be crawled before Strategy.",
     };
   }
   if (!hasStrategy) {
@@ -56,7 +54,6 @@ export function nextProjectFlowStep(project: GuidedProject) {
       actionLabel: "Generate Strategy",
       to: `/strategy?projectId=${project.id}`,
       badge: "Step 5: Strategy",
-      notice: "Opening Strategy after required discovery steps.",
     };
   }
   if (!strategyApproved) {
@@ -66,7 +63,6 @@ export function nextProjectFlowStep(project: GuidedProject) {
       actionLabel: "Review Strategy",
       to: `/strategy?projectId=${project.id}`,
       badge: "Step 5: Strategy Review",
-      notice: "Opening the strategy draft for review.",
     };
   }
   return {
@@ -75,6 +71,5 @@ export function nextProjectFlowStep(project: GuidedProject) {
     actionLabel: "Create Execution Plan",
     to: `/strategy?projectId=${project.id}`,
     badge: "Step 6: Execution Plan",
-    notice: "Opening Strategy to create the execution plan from the approved version.",
   };
 }

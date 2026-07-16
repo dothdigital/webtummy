@@ -1,12 +1,14 @@
 import { createHash } from "node:crypto";
 import { Router } from "express";
 import type { Request } from "express";
+import { Worker } from "bullmq";
 import { z } from "zod";
 import { Prisma, prisma } from "@webtummy/db";
 import { parseHtml } from "@webtummy/core";
 import { requireAuth } from "../middleware.js";
 import { projectClientIdForRequest } from "../project-scope.js";
-import { config } from "../config.js";
+import { config, KEYWORD_RESEARCH_QUEUE } from "../config.js";
+import { keywordResearchQueue, queueConnection, type KeywordResearchQueueJobData } from "../queue.js";
 
 export const keywordResearchRouter = Router();
 keywordResearchRouter.use(requireAuth);
@@ -700,31 +702,24 @@ keywordResearchRouter.post("/keyword-research", async (req, res) => {
       languageCode: input.languageCode,
       device: input.device,
       serpDepth: input.serpDepth,
-      status: "running",
+      status: "queued",
     },
   });
+  const executionInput: KeywordResearchExecutionInput = {
+    seedKeyword: input.seedKeyword,
+    targetUrl: input.targetUrl || null,
+    targetDomain,
+    location,
+    languageCode: input.languageCode,
+    device: input.device,
+    serpDepth: input.serpDepth,
+    keywordLimit: input.keywordLimit,
+  };
 
-  try {
-    const updated = await completeKeywordResearchRun(run.id, {
-      seedKeyword: input.seedKeyword,
-      targetUrl: input.targetUrl || null,
-      targetDomain,
-      location,
-      languageCode: input.languageCode,
-      device: input.device,
-      serpDepth: input.serpDepth,
-      keywordLimit: input.keywordLimit,
-    });
-    res.status(201).json({ run: withRefreshState(withRelevantIdeas(updated), bypassRefreshLimit) });
-  } catch (error) {
-    const message = error instanceof Error ? error.message : "Keyword research failed";
-    await prisma.keywordResearchRun.update({
-      where: { id: run.id },
-      data: { status: "failed", error: message, completedAt: new Date() },
-    });
-    const publicError = publicKeywordResearchError(message);
-    res.status(publicError.status).json({ error: publicError.message });
-  }
+  // Return the persisted run immediately. The shared background-job center can
+  // now track it globally while provider and competitor work continues.
+  await enqueueKeywordResearchCompletion(run.id, executionInput);
+  res.status(202).json({ run: withRefreshState(run, bypassRefreshLimit) });
 });
 
 keywordResearchRouter.post("/keyword-research/suggestions", async (req, res) => {
@@ -921,30 +916,21 @@ keywordResearchRouter.post("/keyword-research/:id/refresh", async (req, res) => 
       languageCode: existing.languageCode,
       device: existing.device === "mobile" ? "mobile" : "desktop",
       serpDepth: existing.serpDepth,
-      status: "running",
+      status: "queued",
     },
   });
-
-  try {
-    const updated = await completeKeywordResearchRun(run.id, {
-      seedKeyword: existing.seedKeyword,
-      targetUrl: existing.targetUrl,
-      targetDomain: existing.targetDomain,
-      location,
-      languageCode: existing.languageCode,
-      device: existing.device === "mobile" ? "mobile" : "desktop",
-      serpDepth: existing.serpDepth,
-      keywordLimit,
-    });
-    res.status(201).json({ run: withRefreshState(withRelevantIdeas(updated), bypassRefreshLimit) });
-  } catch (error) {
-    const message = error instanceof Error ? error.message : "Keyword refresh failed";
-    const failed = await prisma.keywordResearchRun.update({
-      where: { id: run.id },
-      data: { status: "failed", error: message, completedAt: new Date() },
-    });
-    res.status(502).json({ error: message, run: failed });
-  }
+  const executionInput: KeywordResearchExecutionInput = {
+    seedKeyword: existing.seedKeyword,
+    targetUrl: existing.targetUrl,
+    targetDomain: existing.targetDomain,
+    location,
+    languageCode: existing.languageCode,
+    device: existing.device === "mobile" ? "mobile" : "desktop",
+    serpDepth: existing.serpDepth,
+    keywordLimit,
+  };
+  await enqueueKeywordResearchCompletion(run.id, executionInput);
+  res.status(202).json({ run: withRefreshState(run, bypassRefreshLimit) });
 });
 
 keywordResearchRouter.patch("/keyword-research/:id/manual-rank", async (req, res) => {
@@ -1088,6 +1074,97 @@ async function completeKeywordResearchRun(runId: string, input: KeywordResearchE
       competitors: { orderBy: { rank: "asc" }, take: 120 },
     },
   });
+}
+
+const KEYWORD_RESEARCH_CONCURRENCY = 3;
+let keywordResearchWorker: Worker<KeywordResearchQueueJobData> | null = null;
+
+async function enqueueKeywordResearchCompletion(runId: string, input: KeywordResearchExecutionInput) {
+  const existing = await keywordResearchQueue.getJob(runId);
+  if (existing) {
+    const state = await existing.getState();
+    if (!["completed", "failed", "unknown"].includes(state)) return;
+    await existing.remove().catch(() => undefined);
+  }
+  await keywordResearchQueue.add("keyword:run", { runId, input }, {
+    jobId: runId,
+    removeOnComplete: 500,
+    removeOnFail: 500,
+  });
+}
+
+async function executeKeywordResearchWork(work: { runId: string; input: KeywordResearchExecutionInput }) {
+  try {
+    await prisma.keywordResearchRun.update({ where: { id: work.runId }, data: { status: "running", error: null } });
+    await completeKeywordResearchRun(work.runId, work.input);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Keyword research failed";
+    const publicError = publicKeywordResearchError(message);
+    await prisma.keywordResearchRun.update({
+      where: { id: work.runId },
+      data: { status: "failed", error: publicError.message, completedAt: new Date() },
+    }).catch(() => undefined);
+  }
+}
+
+function executionInputFromRun(run: {
+  seedKeyword: string;
+  targetUrl: string | null;
+  targetDomain: string | null;
+  locationName: string;
+  languageCode: string;
+  device: string;
+  serpDepth: number;
+  keywordCount: number;
+}) {
+  return {
+    seedKeyword: run.seedKeyword,
+    targetUrl: run.targetUrl,
+    targetDomain: run.targetDomain,
+    location: resolveSearchLocation(run.locationName, run.seedKeyword),
+    languageCode: run.languageCode,
+    device: run.device === "mobile" ? "mobile" as const : "desktop" as const,
+    serpDepth: run.serpDepth,
+    keywordLimit: Math.min(100, Math.max(1, run.keywordCount || 25)),
+  };
+}
+
+async function recoverQueuedKeywordResearchRuns() {
+  const runs = await prisma.keywordResearchRun.findMany({
+    where: { status: { in: ["queued", "running"] } },
+    orderBy: { createdAt: "asc" },
+    select: { id: true, seedKeyword: true, targetUrl: true, targetDomain: true, locationName: true, languageCode: true, device: true, serpDepth: true, keywordCount: true },
+  });
+  for (const run of runs) {
+    await prisma.keywordResearchRun.update({ where: { id: run.id }, data: { status: "queued", error: null, completedAt: null } });
+    await enqueueKeywordResearchCompletion(run.id, executionInputFromRun(run));
+  }
+  if (runs.length) console.log(`[api] recovered ${runs.length} queued keyword research run(s)`);
+}
+
+export function startKeywordResearchQueueWorker() {
+  if (keywordResearchWorker) return keywordResearchWorker;
+  keywordResearchWorker = new Worker<KeywordResearchQueueJobData>(
+    KEYWORD_RESEARCH_QUEUE,
+    async (job) => {
+      const record = await prisma.keywordResearchRun.findUnique({ where: { id: job.data.runId }, select: { status: true } });
+      if (!record || ["completed", "failed", "cancelled"].includes(record.status)) return;
+      await executeKeywordResearchWork({ runId: job.data.runId, input: job.data.input as KeywordResearchExecutionInput });
+    },
+    { connection: queueConnection, concurrency: KEYWORD_RESEARCH_CONCURRENCY },
+  );
+  keywordResearchWorker.on("failed", (job, error) => {
+    const runId = job?.data.runId;
+    console.error(`[api] keyword research queue job ${runId ?? "unknown"} failed:`, error.message);
+    if (runId) {
+      void prisma.keywordResearchRun.updateMany({
+        where: { id: runId, status: { in: ["queued", "running"] } },
+        data: { status: "failed", error: "Keyword research worker stopped unexpectedly. Start the analysis again.", completedAt: new Date() },
+      });
+    }
+  });
+  void recoverQueuedKeywordResearchRuns().catch((error) => console.error("[api] keyword queue recovery failed:", error));
+  return keywordResearchWorker;
 }
 
 async function findRecentKeywordRefresh(run: {
@@ -1524,6 +1601,7 @@ async function searchDataRequest(path: string, body: unknown): Promise<SearchDat
           accept: "application/json",
         },
         body: JSON.stringify(body),
+        signal: AbortSignal.timeout(30_000),
       });
       const payload = await response.json() as SearchDataPayload;
       if (!response.ok || (payload.status_code && payload.status_code > 40000)) {

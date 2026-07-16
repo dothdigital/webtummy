@@ -2,6 +2,9 @@ import { Router, type Request, type Response } from "express";
 import { z } from "zod";
 import { config } from "../config.js";
 import { requireAuth, requireRole } from "../middleware.js";
+import { prisma } from "@webtummy/db";
+import { startTaskPublishing, verifyTaskPublishing } from "../publishing-workflow.js";
+import { workspaceContext } from "../workspace-access.js";
 
 export const socialConnectRouter = Router();
 socialConnectRouter.use(requireAuth);
@@ -36,7 +39,9 @@ const createPostSchema = postPayloadSchema.extend({
 const scheduleSchema = z.object({
   scheduledAt: z.string().datetime(),
   timezone: z.string().min(1).max(80).default("UTC"),
+  sourceId: z.string().min(1).max(191),
 });
+const publishNowSchema = z.object({ sourceId: z.string().min(1).max(191) });
 
 function requireSocialConnectConfig() {
   if (!config.socialConnectApiKey || !config.socialConnectAppKey) {
@@ -97,6 +102,22 @@ function externalUserId(req: Request) {
   return req.user?.id ?? "unknown_user";
 }
 
+function socialDeliveryState(value: unknown): "verified" | "pending" | "failed" {
+  const statuses: string[] = [];
+  const visit = (item: unknown, depth = 0) => {
+    if (depth > 4 || !item || typeof item !== "object") return;
+    if (Array.isArray(item)) return item.forEach((entry) => visit(entry, depth + 1));
+    for (const [key, child] of Object.entries(item as Record<string, unknown>)) {
+      if (/status|state/i.test(key) && typeof child === "string") statuses.push(child.toLowerCase());
+      else visit(child, depth + 1);
+    }
+  };
+  visit(value);
+  if (statuses.some((status) => /failed|error|rejected|cancelled/.test(status))) return "failed";
+  if (statuses.length && statuses.every((status) => /published|posted|completed|success/.test(status))) return "verified";
+  return "pending";
+}
+
 function toSocialPostPayload(input: z.infer<typeof postPayloadSchema>) {
   return {
     external_reference: input.externalReference,
@@ -142,6 +163,7 @@ socialConnectRouter.get("/social-connect/accounts", async (_req, res) => {
 socialConnectRouter.post("/social-connect/posts", async (req, res) => {
   const parsed = createPostSchema.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten().fieldErrors });
+  if (parsed.data.scheduledAt) return res.status(409).json({ error: "Create the draft first, then schedule it through an approved Execution Plan task." });
   const idempotencyKey = req.header("idempotency-key") ?? req.header("Idempotency-Key") ?? undefined;
   try {
     const data = await socialRequest("/api/social/posts", {
@@ -157,7 +179,19 @@ socialConnectRouter.post("/social-connect/posts", async (req, res) => {
 
 socialConnectRouter.get("/social-connect/posts/:postId", async (req, res) => {
   try {
-    res.json(await socialRequest(`/api/social/posts/${encodeURIComponent(req.params.postId)}`));
+    const data = await socialRequest(`/api/social/posts/${encodeURIComponent(req.params.postId)}`);
+    const sourceId = typeof req.query.sourceId === "string" ? req.query.sourceId : "";
+    if (sourceId) {
+      const task = await prisma.executionTask.findFirst({ where: { sourceType: "social_calendar_post", sourceId }, orderBy: { updatedAt: "desc" } });
+      const snapshot = task?.approvalSnapshotJson && typeof task.approvalSnapshotJson === "object" && !Array.isArray(task.approvalSnapshotJson) ? task.approvalSnapshotJson as Record<string, unknown> : {};
+      const publishing = snapshot.publishing && typeof snapshot.publishing === "object" && !Array.isArray(snapshot.publishing) ? snapshot.publishing as Record<string, unknown> : {};
+      if (task?.status === "publishing" && typeof publishing.attemptId === "string") {
+        const context = await workspaceContext(req);
+        const status = socialDeliveryState(data);
+        await verifyTaskPublishing(context, task.id, { attemptId: publishing.attemptId, status, externalId: req.params.postId, error: status === "failed" ? "Social provider reported that publishing failed." : undefined, trustedVerification: true });
+      }
+    }
+    res.json(data);
   } catch (error) {
     res.status(502).json({ error: String(error).replace(/^Error:\s*/, "") });
   }
@@ -166,6 +200,7 @@ socialConnectRouter.get("/social-connect/posts/:postId", async (req, res) => {
 socialConnectRouter.put("/social-connect/posts/:postId", async (req, res) => {
   const parsed = postPayloadSchema.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten().fieldErrors });
+  if (parsed.data.scheduledAt) return res.status(409).json({ error: "Scheduling requires an approved Execution Plan publishing task." });
   try {
     res.json(await socialRequest(`/api/social/posts/${encodeURIComponent(req.params.postId)}`, {
       method: "PUT",
@@ -177,10 +212,27 @@ socialConnectRouter.put("/social-connect/posts/:postId", async (req, res) => {
 });
 
 socialConnectRouter.post("/social-connect/posts/:postId/post-now", async (req, res) => {
+  const parsed = publishNowSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten().fieldErrors });
   try {
-    res.json(await socialRequest(`/api/social/posts/${encodeURIComponent(req.params.postId)}/post-now`, { method: "POST", body: JSON.stringify({}) }));
+    const task = await prisma.executionTask.findFirst({ where: { sourceType: "social_calendar_post", sourceId: parsed.data.sourceId }, orderBy: { updatedAt: "desc" } });
+    if (!task) return res.status(409).json({ error: "Approve the matching social publishing task in the Execution Plan first." });
+    const context = await workspaceContext(req);
+    const started = await startTaskPublishing(context, task.id, { target: "social", targetReference: req.params.postId, providerInitiated: true });
+    const attemptId = String((started.publishing as Record<string, unknown>).attemptId);
+    try {
+      const data = await socialRequest(`/api/social/posts/${encodeURIComponent(req.params.postId)}/post-now`, { method: "POST", body: JSON.stringify({}) });
+      const checked = socialDeliveryState(data) === "pending" ? await socialRequest(`/api/social/posts/${encodeURIComponent(req.params.postId)}`) : data;
+      const status = socialDeliveryState(checked);
+      await verifyTaskPublishing(context, task.id, { attemptId, status, externalId: req.params.postId, error: status === "failed" ? "Social provider reported that publishing failed." : undefined, trustedVerification: true });
+      res.json(data);
+    } catch (error) {
+      await verifyTaskPublishing(context, task.id, { attemptId, status: "failed", error: String(error).replace(/^Error:\s*/, "") });
+      throw error;
+    }
   } catch (error) {
-    res.status(502).json({ error: String(error).replace(/^Error:\s*/, "") });
+    const typed = error as { statusCode?: number };
+    res.status(typed.statusCode ?? 502).json({ error: String(error).replace(/^Error:\s*/, "") });
   }
 });
 
@@ -188,12 +240,26 @@ socialConnectRouter.post("/social-connect/posts/:postId/schedule", async (req, r
   const parsed = scheduleSchema.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten().fieldErrors });
   try {
-    res.json(await socialRequest(`/api/social/posts/${encodeURIComponent(req.params.postId)}/schedule`, {
-      method: "POST",
-      body: JSON.stringify({ scheduled_at: parsed.data.scheduledAt, timezone: parsed.data.timezone }),
-    }));
+    const task = await prisma.executionTask.findFirst({ where: { sourceType: "social_calendar_post", sourceId: parsed.data.sourceId }, orderBy: { updatedAt: "desc" } });
+    if (!task) return res.status(409).json({ error: "Approve the matching social publishing task in the Execution Plan first." });
+    const context = await workspaceContext(req);
+    const started = await startTaskPublishing(context, task.id, { target: "social", targetReference: req.params.postId, providerInitiated: true, metadata: { scheduledAt: parsed.data.scheduledAt, timezone: parsed.data.timezone } });
+    const attemptId = String((started.publishing as Record<string, unknown>).attemptId);
+    try {
+      const data = await socialRequest(`/api/social/posts/${encodeURIComponent(req.params.postId)}/schedule`, {
+        method: "POST",
+        body: JSON.stringify({ scheduled_at: parsed.data.scheduledAt, timezone: parsed.data.timezone }),
+      });
+      const status = socialDeliveryState(data);
+      await verifyTaskPublishing(context, task.id, { attemptId, status, externalId: req.params.postId, error: status === "failed" ? "Social provider rejected the scheduled post." : undefined, trustedVerification: true });
+      res.json(data);
+    } catch (error) {
+      await verifyTaskPublishing(context, task.id, { attemptId, status: "failed", error: String(error).replace(/^Error:\s*/, "") });
+      throw error;
+    }
   } catch (error) {
-    res.status(502).json({ error: String(error).replace(/^Error:\s*/, "") });
+    const typed = error as { statusCode?: number };
+    res.status(typed.statusCode ?? 502).json({ error: String(error).replace(/^Error:\s*/, "") });
   }
 });
 

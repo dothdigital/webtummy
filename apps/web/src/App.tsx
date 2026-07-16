@@ -5,7 +5,6 @@ import { api, welcomePending } from "./api.js";
 import type { BillingStatus } from "./types.js";
 import Layout from "./components/Layout.js";
 import Login from "./pages/Login.js";
-import Overview from "./pages/Overview.js";
 import Users from "./pages/Users.js";
 import Websites from "./pages/Websites.js";
 import GuidedProjects from "./pages/GuidedProjects.js";
@@ -114,7 +113,7 @@ function Shell() {
   return (
     <Layout>
       <Routes>
-        <Route path="/" element={<Overview />} />
+        <Route path="/" element={<Navigate to="/workspace" replace />} />
         <Route path="/login" element={<Navigate to={landingPath} replace />} />
         <Route path="/users" element={<PlatformAdminOnly><Users /></PlatformAdminOnly>} />
         <Route path="/projects" element={<GuidedProjects />} />

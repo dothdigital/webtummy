@@ -1,6 +1,15 @@
 export const configurableWorkspaceRoles = ["manager", "editor", "viewer", "client_viewer"] as const;
 export type ConfigurableWorkspaceRole = (typeof configurableWorkspaceRoles)[number];
 
+export const internalSeatRoles = ["owner", "admin", "manager", "approver", "manager_approver", "editor", "viewer"] as const;
+
+const permissionCeilings: Record<ConfigurableWorkspaceRole, ReadonlySet<string>> = {
+  manager: new Set(["manage_integrations", "manage_clients", "create_projects", "edit_project_settings", "manage_projects", "run_ai_analysis", "edit_strategy", "execute_tasks", "approve", "publish", "view_reports", "export_reports", "view_activity", "view_notifications", "read_integrations", "manage_assigned_clients", "manage_assigned_projects", "assign_tasks", "request_approval", "edit_assigned_work", "submit_for_approval", "read_internal"]),
+  editor: new Set(["create_projects", "edit_project_settings", "run_ai_analysis", "edit_strategy", "execute_tasks", "publish", "view_reports", "export_reports", "view_activity", "view_notifications", "read_integrations", "edit_assigned_work", "submit_for_approval", "read_internal"]),
+  viewer: new Set(["view_reports", "view_activity", "view_notifications", "read_internal"]),
+  client_viewer: new Set(["view_reports", "export_reports", "view_activity", "view_notifications", "read_shared_client_data"]),
+};
+
 type PermissionDefinition = {
   key: string;
   label: string;
@@ -37,4 +46,12 @@ export const workspacePermissionCatalog: readonly PermissionDefinition[] = [
 
 export function defaultWorkspacePermission(role: ConfigurableWorkspaceRole, permission: string) {
   return workspacePermissionCatalog.some((item) => item.key === permission && item.defaultRoles.includes(role));
+}
+
+export function workspaceRoleCanEver(role: ConfigurableWorkspaceRole, permission: string) {
+  return permissionCeilings[role].has(permission);
+}
+
+export function rolesConsumeSeat(roles: readonly string[]) {
+  return roles.some((role) => (internalSeatRoles as readonly string[]).includes(role));
 }

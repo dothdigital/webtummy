@@ -223,7 +223,7 @@ charts reflow. Layout target: usable from 360px wide up to desktop.
 ```
 webtummy/  (folder: crawler/)
   package.json                 # workspaces root  (name: "webtummy")
-  docker-compose.yml           # mysql/redis/minio (local uses host MySQL + redis)
+  docker-compose.yml           # PostgreSQL + pgvector, Redis, and MinIO
   docs/
   packages/
     db/                        # @webtummy/db — Prisma schema, migrations, client

@@ -1,9 +1,10 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { api } from "../api.js";
 import { Button, Card } from "../components/ui.js";
 import type { GuidedProject } from "../types.js";
+import { mergeTargetMarkets, targetMarketPhrase } from "../intake-markets.js";
 
 type IntakeQuestion = {
   key: string;
@@ -177,8 +178,7 @@ function locationContext(answers: Record<string, string>, project: GuidedProject
 }
 
 function locationPhrase(location: string, allLocations: string[] = []) {
-  if (allLocations.length > 1) return ` in ${allLocations.slice(0, 2).join(" and ")}`;
-  return location ? ` in ${location}` : "";
+  return targetMarketPhrase(location, allLocations);
 }
 
 function keywordBase(niche: string, location: string) {
@@ -262,7 +262,7 @@ function audienceSuggestionsForNiche(niche: string, locations: string[], project
       `${localBusiness} that need CRM, workflow, or process automation`,
       `operations teams${loc} replacing spreadsheets and manual follow-ups`,
       `service businesses${loc} that need better lead, client, and task tracking`,
-      "business owners comparing automation tools before hiring an implementation partner",
+      `business owners${loc} comparing automation tools before hiring an implementation partner`,
     ];
   }
 
@@ -271,7 +271,7 @@ function audienceSuggestionsForNiche(niche: string, locations: string[], project
       `startups and growing businesses${loc} that need custom software or web applications`,
       `founders${loc} planning a new software product, portal, or internal tool`,
       `business owners${loc} comparing custom software development partners`,
-      "teams with outdated systems that need modern web apps, integrations, or dashboards",
+      `teams${loc} with outdated systems that need modern web apps, integrations, or dashboards`,
     ];
   }
 
@@ -279,8 +279,8 @@ function audienceSuggestionsForNiche(niche: string, locations: string[], project
     return [
       `insurance agencies and brokerages${loc} looking to improve client management`,
       `insurance agents${loc} who need faster policy, renewal, and lead workflows`,
-      "broker owners comparing CRM, automation, and digital growth tools",
-      "insurance teams trying to reduce manual admin work",
+      `broker owners${loc} comparing CRM, automation, and digital growth tools`,
+      `insurance teams${loc} trying to reduce manual admin work`,
     ];
   }
 
@@ -288,8 +288,8 @@ function audienceSuggestionsForNiche(niche: string, locations: string[], project
     return [
       `business owners${loc} looking for SEO and digital growth support`,
       `local companies${loc} that need more qualified leads`,
-      "marketing managers comparing agencies or service providers",
-      "founders trying to improve search visibility and conversions",
+      `marketing managers${loc} comparing agencies or service providers`,
+      `founders${loc} trying to improve search visibility and conversions`,
     ];
   }
 
@@ -299,16 +299,16 @@ function audienceSuggestionsForNiche(niche: string, locations: string[], project
       `patients${loc} looking for ${service} treatment`,
       `people recovering from injuries${loc}`,
       `people comparing local ${service} clinics before booking`,
-      `patients who need pain relief, mobility improvement, or rehabilitation support`,
+      `patients${loc} who need pain relief, mobility improvement, or rehabilitation support`,
     ];
   }
 
   if (lower.includes("ecommerce") || lower.includes("shopify") || lower.includes("store")) {
     return [
       `online store owners${loc} trying to increase organic sales`,
-      "customers comparing products before buying",
-      "niche buyers looking for practical buying guides",
-      "repeat customers interested in offers, bundles, and product education",
+      `customers${loc} comparing products before buying`,
+      `niche buyers${loc} looking for practical buying guides`,
+      `repeat customers${loc} interested in offers, bundles, and product education`,
     ];
   }
 
@@ -316,23 +316,23 @@ function audienceSuggestionsForNiche(niche: string, locations: string[], project
     return [
       `buyers${loc} actively researching ${niche} options`,
       `people comparing ${niche} providers before taking action`,
-      `niche audiences interested in practical ${niche} guides and recommendations`,
-      `customers looking for trusted ${niche} solutions`,
+      `niche audiences${loc} interested in practical ${niche} guides and recommendations`,
+      `customers${loc} looking for trusted ${niche} solutions`,
     ];
   }
 
   return [
     `businesses${loc} looking for ${niche} support`,
-    `decision makers researching ${niche} solutions`,
-    `customers comparing providers in ${niche}`,
-    `people ready to take action on ${niche}`,
+    `decision makers${loc} researching ${niche} solutions`,
+    `customers${loc} comparing providers in ${niche}`,
+    `people${loc} ready to take action on ${niche}`,
   ];
 }
 
 function aiSuggestionOptions(question: IntakeQuestion, answers: Record<string, string>, project: GuidedProject) {
   const business = answers.business_name || project.businessName || project.name || "this business";
   const niches = normalizeList(answers.industry_niche || project.niche || "");
-  const locations = normalizeList(answers.target_location || (Array.isArray(project.targetLocations) ? project.targetLocations.join(", ") : project.targetLocation) || "");
+  const locations = mergeTargetMarkets(normalizeList(answers.target_location), Array.isArray(project.targetLocations) ? project.targetLocations.map(String) : normalizeList(project.targetLocation ?? undefined));
   const niche = niches[0] || project.niche || "your niche";
   const goal = answers.primary_goal || project.primaryGoal || "growth";
   const kind = industryKind(niche);
@@ -436,6 +436,7 @@ export default function GuidedProjectIntake() {
   const [busy, setBusy] = useState(false);
   const [savedMessage, setSavedMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const autoPositionedProject = useRef<string | null>(null);
 
   useEffect(() => {
     if (!id) return;
@@ -480,7 +481,9 @@ export default function GuidedProjectIntake() {
       } catch {
         localStorage.removeItem("guided-intake-draft:" + id);
       }
-      setStarted((projectResult.project.intakeAnswers?.length ?? 0) > 0 || Boolean(projectResult.project.businessProfile));
+      // Project Creation already established the workflow and saved reusable
+      // context. Open Intake directly instead of asking the user to start again.
+      setStarted(true);
     }).catch((err) => setError(err instanceof Error ? err.message : "Could not load intake"));
   }, [id]);
 
@@ -521,6 +524,13 @@ export default function GuidedProjectIntake() {
     if (mode === "quick") return groups.filter((group) => group.questions.length > 0 || group.step === "Review & Launch");
     return groups;
   }, [mode, visibleQuestions]);
+
+  useEffect(() => {
+    if (!project || !started || !groupedQuestions.length || autoPositionedProject.current === project.id) return;
+    autoPositionedProject.current = project.id;
+    const firstIncompleteStep = groupedQuestions.findIndex((group) => group.questions.some((question) => question.required && !answers[question.key]?.trim()));
+    if (firstIncompleteStep >= 0) setCurrentStep(firstIncompleteStep);
+  }, [answers, groupedQuestions, project, started]);
 
   const missingRequired = useMemo(
     () => visibleQuestions.filter((question) => question.required && !answers[question.key]?.trim()).map((question) => question.text),
@@ -854,7 +864,7 @@ export default function GuidedProjectIntake() {
                 <span className="mt-2 block">
                   {suggestions.length > 0 && (
                     <span className="block rounded-lg border border-brand-100 bg-brand-50/70 p-3">
-                      <span className="block text-xs font-bold uppercase tracking-wide text-brand-700">SEnuke AI suggestions</span>
+                      <span className="flex flex-wrap items-center justify-between gap-2"><span className="text-xs font-bold uppercase tracking-wide text-brand-700">SEnuke AI suggestions</span>{question.key === "target_audience" && <button type="button" onClick={(event) => { event.preventDefault(); event.stopPropagation(); update(question.key, suggestions.map(suggestionChipValue).join(", ")); setAiRecommended((current) => new Set(current).add(question.key)); }} className="rounded-md border border-brand-200 bg-white px-2.5 py-1 text-[11px] font-bold text-brand-700 hover:bg-brand-100">Refresh using current markets</button>}</span>
                       <span className="mt-2 flex flex-wrap gap-2">
                         {suggestions.map((suggestion) => {
                           const chipValue = suggestionChipValue(suggestion);

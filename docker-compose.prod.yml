@@ -1,20 +1,16 @@
 services:
-  mysql:
-    image: mysql:8.4
+  postgres:
+    image: pgvector/pgvector:pg17
     restart: unless-stopped
-    command:
-      - --innodb-buffer-pool-size=128M
-      - --max-connections=30
-      - --performance-schema=OFF
     environment:
-      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
-      MYSQL_DATABASE: webtummy
-      MYSQL_USER: webtummy
-      MYSQL_PASSWORD: ${MYSQL_PASSWORD}
+      POSTGRES_DB: webtummy
+      POSTGRES_USER: webtummy
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
     volumes:
-      - mysql_data:/var/lib/mysql
+      - ./packages/db/prisma/postgresql-init.sql:/docker-entrypoint-initdb.d/01-pgvector.sql:ro
+      - postgres_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -u root -p$${MYSQL_ROOT_PASSWORD} --silent"]
+      test: ["CMD-SHELL", "pg_isready -U webtummy -d webtummy"]
       interval: 10s
       timeout: 5s
       retries: 20
@@ -37,12 +33,12 @@ services:
     restart: unless-stopped
     env_file: .env
     environment:
-      DATABASE_URL: mysql://webtummy:${MYSQL_PASSWORD}@mysql:3306/webtummy
+      DATABASE_URL: postgresql://webtummy:${POSTGRES_PASSWORD}@postgres:5432/webtummy
       REDIS_URL: redis://redis:6379
       API_PORT: 4000
-    command: sh -c "npm run db:push && npm run -w @webtummy/api seed && npm run -w @webtummy/api start"
+    command: sh -c "npm run db:push && npm run db:postgres-init && npm run -w @webtummy/api seed && npm run -w @webtummy/api start"
     depends_on:
-      mysql:
+      postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
@@ -54,10 +50,10 @@ services:
     restart: unless-stopped
     env_file: .env
     environment:
-      DATABASE_URL: mysql://webtummy:${MYSQL_PASSWORD}@mysql:3306/webtummy
+      DATABASE_URL: postgresql://webtummy:${POSTGRES_PASSWORD}@postgres:5432/webtummy
       REDIS_URL: redis://redis:6379
     depends_on:
-      mysql:
+      postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
@@ -76,5 +72,5 @@ services:
         condition: service_started
 
 volumes:
-  mysql_data:
+  postgres_data:
   redis_data:

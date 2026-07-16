@@ -13,6 +13,10 @@ export function opportunityRunMode(project: OpportunityInput) {
   return { clearDirection, mode: clearDirection ? "confirmation" as const : "recommendation" as const, signalCount: explicitDirectionSignals };
 }
 
+export function rankedOpportunityRecommendations<T>(options: T[]) {
+  return options.slice(0, 3);
+}
+
 export function estimatedOpportunityEffort(executionScore?: number | null) {
   const score = executionScore ?? 50;
   return score >= 82 ? "Low" : score >= 68 ? "Medium" : "High";

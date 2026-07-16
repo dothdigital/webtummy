@@ -37,11 +37,18 @@ export default function AgencyClientDashboard() {
     catch (err) { setError(err instanceof Error ? err.message : "Action failed."); }
     finally { setBusy(""); }
   }
+  async function downloadDocument(reportId: string) {
+    setBusy(reportId); setError("");
+    try { await api.download(`/api/project-reports/${reportId}/download`); }
+    catch (err) { setError(err instanceof Error ? err.message : "Document could not be downloaded."); }
+    finally { setBusy(""); }
+  }
 
   if (!data) return <Card className="p-8 text-center text-sm text-slate-500">{error || "Loading client dashboard…"}</Card>;
   if (data.permissions.clientViewer) return <div className="space-y-6">
-    <div><Link to="/workspace" className="text-xs font-bold text-brand-700">← Shared reports</Link><h1 className="mt-2 text-3xl font-bold">{data.client.name}</h1><p className="mt-2 text-sm text-slate-600">Only reports explicitly approved and sent to you appear here.</p></div>
-    <Card className="p-5"><h2 className="font-bold">Approved reports</h2><div className="mt-4 space-y-3">{data.reports.map((report) => <div key={report.id} className="rounded-lg border p-4"><b>{label(report.reportType)}</b><p className="mt-1 text-xs text-slate-500">{report.exportFormat.toUpperCase()} · Sent {report.sentToClientAt ? new Date(report.sentToClientAt).toLocaleDateString() : "recently"}</p><details className="mt-3"><summary className="cursor-pointer text-sm font-bold text-brand-700">View report</summary><pre className="mt-3 max-h-96 overflow-auto whitespace-pre-wrap rounded-lg bg-slate-50 p-4 text-xs text-slate-700">{JSON.stringify(report.contentJson, null, 2)}</pre></details></div>)}{!data.reports.length && <p className="text-sm text-slate-500">No approved reports have been shared with you yet.</p>}</div></Card>
+    <div><Link to="/workspace" className="text-xs font-bold text-brand-700">← Shared documents</Link><h1 className="mt-2 text-3xl font-bold">{data.client.name}</h1><p className="mt-2 text-sm text-slate-600">Only approved reports and proposals intentionally sent to you appear here.</p></div>
+    {error && <div className="rounded-lg border border-red-200 bg-red-50 p-3 text-sm font-bold text-red-700">{error}</div>}
+    <Card className="p-5"><h2 className="font-bold">Approved reports and proposals</h2><div className="mt-4 grid gap-3 md:grid-cols-2">{data.reports.map((report) => <div key={report.id} className="flex items-center justify-between gap-4 rounded-xl border bg-white p-4"><div><b>{label(report.reportType)}</b><p className="mt-1 text-xs text-slate-500">Professional PDF · Sent {report.sentToClientAt ? new Date(report.sentToClientAt).toLocaleDateString() : "recently"}</p></div><button disabled={busy === report.id} onClick={() => void downloadDocument(report.id)} className="shrink-0 rounded-lg bg-brand-600 px-3 py-2 text-xs font-bold text-white">{busy === report.id ? "Preparing…" : "Open PDF"}</button></div>)}{!data.reports.length && <p className="text-sm text-slate-500">No approved reports or proposals have been shared with you yet.</p>}</div></Card>
   </div>;
   const pending = data.tasks.filter((task) => task.status === "submitted_for_approval");
 

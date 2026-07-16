@@ -50,9 +50,6 @@ export function permissionForWorkspaceRequest(method: string, rawPath: string) {
     if (/notifications?/.test(path)) return "view_notifications";
     if (/reports?|insights|analytics|rankings|health-report/.test(path)) return "view_reports";
     if (/integrations?|social-connect\/accounts/.test(path)) return "read_integrations";
-    if (/strategy/.test(path)) return "edit_strategy";
-    if (/execution-plan|execution-tasks?/.test(path)) return "execute_tasks";
-    if (/opportunit|keyword-research|geo-keyword|crawl|site-analysis|ai-content|growth|gap-analysis|local-seo/.test(path)) return "run_ai_analysis";
     return "read_internal";
   }
   if (/billing|subscription|checkout|portal-session|seats/.test(path)) return "billing";
@@ -65,7 +62,7 @@ export function permissionForWorkspaceRequest(method: string, rawPath: string) {
   if (/approve|decision/.test(path)) return "approve";
   if (/\/archive\/?$|\/restore\/?$/.test(path) || (method.toUpperCase() === "DELETE" && /^\/projects-v2\/[^/]+\/?$/.test(path))) return "manage_projects";
   if (method.toUpperCase() === "POST" && /^\/projects-v2\/?$/.test(path)) return "create_projects";
-  if (/\/projects-v2\/[^/]+\/(locations|goals|intake)\/?$/.test(path)) return "edit_project_settings";
+  if (/\/projects-v2\/[^/]+\/(locations|goals|intake|settings)\/?$/.test(path)) return "edit_project_settings";
   if (/strategy/.test(path)) return "edit_strategy";
   if (/execution-plan|execution-tasks?|\/tasks?\//.test(path)) return "execute_tasks";
   if (/reports?/.test(path)) return "export_reports";

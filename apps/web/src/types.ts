@@ -65,6 +65,7 @@ export interface GuidedExecutionTask {
   moduleName: string;
   title: string;
   description: string;
+  expectedOutcome?: string | null;
   priority: "high" | "medium" | "low" | string;
   automationLevel: string;
   status: string;
@@ -79,6 +80,9 @@ export interface GuidedExecutionTask {
   relatedUrl: string | null;
   manualInstructions: string | null;
   impact?: string | null;
+  dueAt?: string | null;
+  assignee?: { id: string; user: { name?: string | null; email: string } } | null;
+  dependencies?: Array<{ requiredTask: { id: string; title: string; status: string } }>;
   createdAt: string;
 }
 
@@ -173,12 +177,24 @@ export interface GuidedProject {
     status: string;
     tasks: GuidedExecutionTask[];
   }[];
+  executionTasks?: GuidedExecutionTask[];
   workflowSteps?: ProjectWorkflowStep[];
   executionProgress?: { total: number; completed: number };
   opportunities?: Opportunity[];
   keywordGroups?: ProjectKeywordGroup[];
   strategyPlans?: unknown[];
   _count?: { intakeAnswers: number; strategyPlans: number; opportunities: number };
+}
+
+export interface ProjectNotification {
+  id: string;
+  projectId: string | null;
+  type: string;
+  title: string;
+  body: string;
+  actionUrl: string | null;
+  readAt: string | null;
+  createdAt: string;
 }
 
 export interface ProjectKeywordGroup {
@@ -752,6 +768,7 @@ export interface WorkspaceIntelligenceResponse {
   keywordRuns: KeywordResearchRun[];
   leadMagnetGenerations?: AiContentGeneration[];
   tasks: GuidedExecutionTask[];
+  notifications?: ProjectNotification[];
   backlinkSummary: DomainBacklinkSummary | null;
   backlinkLinks: DomainBacklinkLinks | null;
   intelligence: WorkspaceIntelligence;

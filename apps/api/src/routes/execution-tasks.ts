@@ -3,6 +3,8 @@ import { z } from "zod";
 import { Prisma, prisma } from "@webtummy/db";
 import { requireAuth } from "../middleware.js";
 import { projectClientIdForRequest } from "../project-scope.js";
+import { canAccessProject, hasWorkspacePermission, recordWorkspaceActivity, workspaceContext } from "../workspace-access.js";
+import { startTaskPublishing, verifyTaskPublishing } from "../publishing-workflow.js";
 
 export const executionTasksRouter = Router();
 executionTasksRouter.use(requireAuth);
@@ -18,20 +20,47 @@ const querySchema = z.object({
 
 const patchSchema = z.object({
   status: z.string().min(2).max(60).optional(),
-  priority: z.enum(["high", "medium", "low"]).optional(),
+  priority: z.enum(["critical", "high", "medium", "low"]).optional(),
   manualInstructions: z.string().max(5000).optional().nullable(),
 });
+const publishSchema = z.object({
+  target: z.enum(["wordpress", "html", "shopify", "social"]).optional(),
+  targetReference: z.string().trim().min(1).max(1000).optional().nullable(),
+  previousVersionReference: z.string().trim().max(2000).optional().nullable(),
+  metadata: z.record(z.unknown()).default({}),
+});
+const publishVerificationSchema = z.object({
+  attemptId: z.string().uuid(),
+  status: z.enum(["verified", "pending", "failed"]),
+  externalId: z.string().trim().max(500).optional().nullable(),
+  liveUrl: z.string().url().optional().nullable(),
+  checksum: z.string().trim().max(255).optional().nullable(),
+  error: z.string().trim().max(5000).optional().nullable(),
+}).superRefine((data, ctx) => {
+  if (data.status === "verified" && !data.externalId && !data.liveUrl && !data.checksum) ctx.addIssue({ code: "custom", path: ["status"], message: "Verified publishing requires an external ID, live URL, or checksum." });
+  if (data.status === "failed" && !data.error) ctx.addIssue({ code: "custom", path: ["error"], message: "A publishing failure must include the provider error." });
+});
+
+function publishingAction(res: import("express").Response, action: () => Promise<unknown>) {
+  action().then((value) => res.json(value)).catch((error: unknown) => {
+    if (error instanceof z.ZodError) return res.status(400).json({ error: error.flatten() });
+    const typed = error as { statusCode?: number; message?: string };
+    return res.status(typed.statusCode ?? 500).json({ error: typed.message ?? "Publishing request failed." });
+  });
+}
 
 type TaskInput = {
   clientId: string;
   websiteId: string;
+  projectId?: string | null;
   moduleName: string;
   sourceType: string;
   sourceId?: string | null;
   dedupeKey: string;
   title: string;
   description: string;
-  priority: "high" | "medium" | "low";
+  expectedOutcome?: string | null;
+  priority: "critical" | "high" | "medium" | "low";
   automationLevel: string;
   status?: string;
   requiresApproval?: boolean;
@@ -77,11 +106,13 @@ async function upsertTask(tx: Prisma.TransactionClient, input: TaskInput) {
   const data = {
     clientId: input.clientId,
     websiteId: input.websiteId,
+    projectId: input.projectId ?? null,
     moduleName: input.moduleName,
     sourceType: input.sourceType,
     sourceId: input.sourceId ?? null,
     title: input.title,
     description: input.description,
+    expectedOutcome: input.expectedOutcome ?? input.impact ?? input.description,
     priority: input.priority,
     automationLevel: input.automationLevel,
     status: input.status ?? "ready",
@@ -121,14 +152,15 @@ async function withTransactionRetry<T>(action: () => Promise<T>, attempts = 3): 
   throw lastError;
 }
 
-async function buildTasksForWebsite(website: { id: string; clientId: string; domain: string; rootUrl: string }): Promise<TaskInput[]> {
+async function buildTasksForWebsite(website: { id: string; clientId: string; domain: string; rootUrl: string }, issueIds?: string[]): Promise<TaskInput[]> {
   const tasks: TaskInput[] = [];
+  const project = await prisma.project.findFirst({ where: { websiteId: website.id, status: { not: "deleted" } }, orderBy: { updatedAt: "desc" }, select: { id: true } });
   const latestCrawl = await prisma.crawlJob.findFirst({
     where: { websiteId: website.id, status: "completed" },
     orderBy: [{ completedAt: "desc" }, { createdAt: "desc" }],
     include: {
       issues: {
-        where: { status: "open", severity: { in: ["high", "medium", "low"] } },
+        where: { status: "open", severity: { in: ["high", "medium", "low"] }, ...(issueIds?.length ? { id: { in: issueIds } } : {}) },
         orderBy: [{ severity: "asc" }, { weightImpact: "desc" }],
         take: 80,
         include: { page: { select: { url: true } } },
@@ -141,6 +173,7 @@ async function buildTasksForWebsite(website: { id: string; clientId: string; dom
       tasks.push({
         clientId: website.clientId,
         websiteId: website.id,
+        projectId: project?.id,
         moduleName: "crawl",
         sourceType: "crawl_issue",
         sourceId: latestCrawl.id,
@@ -286,7 +319,7 @@ async function buildTasksForWebsite(website: { id: string; clientId: string; dom
     });
   }
 
-  return tasks;
+  return tasks.map((task) => ({ ...task, projectId: task.projectId ?? project?.id ?? null }));
 }
 
 executionTasksRouter.get("/execution-tasks", async (req, res) => {
@@ -304,8 +337,12 @@ executionTasksRouter.get("/execution-tasks", async (req, res) => {
     where,
     orderBy: [{ status: "asc" }, { priority: "asc" }, { updatedAt: "desc" }],
     take: 200,
+    include: { dependencies: { include: { requiredTask: { select: { title: true, status: true } } } } },
   });
-  res.json({ tasks });
+  const context = await workspaceContext(req);
+  const visible = [];
+  for (const task of tasks) if (!task.projectId || await canAccessProject(context, task.projectId)) visible.push(task);
+  res.json({ tasks: visible });
 });
 
 executionTasksRouter.get("/websites/:websiteId/execution-tasks", async (req, res) => {
@@ -323,7 +360,10 @@ executionTasksRouter.post("/websites/:websiteId/execution-tasks/sync", async (re
   const website = await scopedWebsite(req, req.params.websiteId);
   if (!website) return res.status(404).json({ error: "website not found" });
 
-  const inputs = await buildTasksForWebsite(website);
+  const parsed = z.object({ issueIds: z.array(z.string().min(1)).max(200).optional() }).safeParse(req.body ?? {});
+  if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() });
+
+  const inputs = await buildTasksForWebsite(website, parsed.data.issueIds);
   const result = await withTransactionRetry(() => prisma.$transaction(async (tx) => {
     let created = 0;
     let updated = 0;
@@ -351,16 +391,22 @@ executionTasksRouter.patch("/execution-tasks/:id", async (req, res) => {
   const clientId = await executionClientScope(req);
   const existing = await prisma.executionTask.findFirst({
     where: { id: req.params.id, ...(clientId ? { clientId } : {}) },
+    include: { project: { select: { id: true, agencyClientId: true } }, dependencies: { include: { requiredTask: { select: { title: true, status: true } } } } },
   });
   if (!existing) return res.status(404).json({ error: "task not found" });
+  const context = await workspaceContext(req);
   const status = parsed.data.status ?? existing.status;
-  const task = await prisma.executionTask.update({
-    where: { id: existing.id },
-    data: {
-      ...parsed.data,
-      completedAt: status === "completed" ? new Date() : existing.completedAt,
-      skippedAt: status === "skipped" ? new Date() : existing.skippedAt,
-    },
+  if (existing.projectId && !await canAccessProject(await workspaceContext(req), existing.projectId)) return res.status(404).json({ error: "task not found" });
+  if (status === "completed") {
+    const blocked = existing.dependencies.filter((dependency) => !["completed", "published", "approved"].includes(dependency.requiredTask.status));
+    if (blocked.length) return res.status(409).json({ error: `Complete dependencies first: ${blocked.map((item) => item.requiredTask.title).join(", ")}` });
+    if (context.workspace.workspaceType !== "personal" && existing.requiresApproval && !existing.approvedAt) return res.status(409).json({ error: "This task requires approval before it can be completed." });
+  }
+  if (!hasWorkspacePermission(context, "execute_tasks")) return res.status(403).json({ error: "Task execution permission is required." });
+  const task = await prisma.$transaction(async (tx) => {
+    const updated = await tx.executionTask.update({ where: { id: existing.id }, data: { ...parsed.data, completedAt: status === "completed" ? new Date() : existing.completedAt, skippedAt: status === "skipped" ? new Date() : existing.skippedAt } });
+    await recordWorkspaceActivity(tx, { context, action: status !== existing.status ? "task.status_changed" : "task.edited", entityType: "execution_task", entityId: existing.id, agencyClientId: existing.project?.agencyClientId, projectId: existing.projectId, previousJson: { status: existing.status, priority: existing.priority, manualInstructions: existing.manualInstructions }, nextJson: { status: updated.status, priority: updated.priority, manualInstructions: updated.manualInstructions } });
+    return updated;
   });
   res.json({ task });
 });
@@ -369,11 +415,28 @@ executionTasksRouter.post("/execution-tasks/:id/complete", async (req, res) => {
   const clientId = await executionClientScope(req);
   const existing = await prisma.executionTask.findFirst({
     where: { id: req.params.id, ...(clientId ? { clientId } : {}) },
+    include: { project: { select: { id: true, agencyClientId: true } }, dependencies: { include: { requiredTask: { select: { title: true, status: true } } } } },
   });
   if (!existing) return res.status(404).json({ error: "task not found" });
-  const task = await prisma.executionTask.update({ where: { id: existing.id }, data: { status: "completed", completedAt: new Date() } });
+  const context = await workspaceContext(req);
+  if (existing.projectId && !await canAccessProject(context, existing.projectId)) return res.status(404).json({ error: "task not found" });
+  if (!hasWorkspacePermission(context, "execute_tasks")) return res.status(403).json({ error: "Task execution permission is required." });
+  const blocked = existing.dependencies.filter((dependency) => !["completed", "published", "approved"].includes(dependency.requiredTask.status));
+  if (blocked.length) return res.status(409).json({ error: `Complete dependencies first: ${blocked.map((item) => item.requiredTask.title).join(", ")}` });
+  if (context.workspace.workspaceType !== "personal" && existing.requiresApproval && !existing.approvedAt) return res.status(409).json({ error: "This task requires approval before it can be completed." });
+  const task = await prisma.$transaction(async (tx) => { const updated = await tx.executionTask.update({ where: { id: existing.id }, data: { status: "completed", completedAt: new Date() } }); await recordWorkspaceActivity(tx, { context, action: "task.completed", entityType: "execution_task", entityId: existing.id, agencyClientId: existing.project?.agencyClientId, projectId: existing.projectId, previousJson: { status: existing.status }, nextJson: { status: "completed", expectedOutcome: existing.expectedOutcome } }); return updated; });
   res.json({ task });
 });
+
+executionTasksRouter.post("/execution-tasks/:id/publish", (req, res) => publishingAction(res, async () => {
+  const context = await workspaceContext(req);
+  return startTaskPublishing(context, req.params.id, publishSchema.parse(req.body ?? {}));
+}));
+
+executionTasksRouter.post("/execution-tasks/:id/publish/verify", (req, res) => publishingAction(res, async () => {
+  const context = await workspaceContext(req);
+  return verifyTaskPublishing(context, req.params.id, publishVerificationSchema.parse(req.body));
+}));
 
 executionTasksRouter.post("/execution-tasks/:id/skip", async (req, res) => {
   const clientId = await executionClientScope(req);

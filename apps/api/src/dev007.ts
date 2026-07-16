@@ -17,7 +17,8 @@ export type KeywordProjectInput = {
 
 const list = (value: unknown) => Array.isArray(value) ? value.map(String).map((item) => item.trim()).filter(Boolean) : [];
 const clean = (value?: string | null) => value?.trim().replace(/\s+/g, " ") ?? "";
-const unique = (values: string[]) => [...new Map(values.map((value) => [value.toLowerCase(), value])).values()].filter((value) => value.length >= 3).slice(0, 10);
+const isInstruction = (value: string) => /^(find|explore|create|suggest|expand|generate)\b/i.test(value) && /\b(keywords?|topics?|ideas?)\b/i.test(value) && value.split(/\s+/).length > 6;
+const unique = (values: string[]) => [...new Map(values.map((value) => [value.toLowerCase(), value])).values()].filter((value) => value.length >= 3 && !isInstruction(value)).slice(0, 10);
 
 export function keywordIntakeSufficient(project: KeywordProjectInput) {
   const offer = clean(project.businessProfile?.offerSummary);

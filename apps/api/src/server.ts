@@ -9,7 +9,7 @@ import { websitesRouter } from "./routes/websites.js";
 import { crawlsRouter } from "./routes/crawls.js";
 import { overviewRouter } from "./routes/overview.js";
 import { geoKeywordRouter } from "./routes/geo-keyword.js";
-import { keywordResearchRouter } from "./routes/keyword-research.js";
+import { keywordResearchRouter, startKeywordResearchQueueWorker } from "./routes/keyword-research.js";
 import { aiContentRouter } from "./routes/ai-content.js";
 import { socialStrategyRouter } from "./routes/social-strategy.js";
 import { socialConnectRouter } from "./routes/social-connect.js";
@@ -25,6 +25,7 @@ import { gapAnalysisRouter } from "./routes/gap-analysis.js";
 import { agencyWorkspaceRouter } from "./routes/agency-workspace.js";
 import { projectReportsRouter } from "./routes/project-reports.js";
 import { approvalsRouter } from "./routes/approvals.js";
+import { projectAgentRouter } from "./routes/project-agent.js";
 import { rawBodySaver } from "./billing.js";
 import { enforceArchivedReadOnly, enforceWorkspacePermissions, requireAuth } from "./middleware.js";
 
@@ -119,6 +120,7 @@ app.use("/api", gapAnalysisRouter);
 app.use("/api", agencyWorkspaceRouter);
 app.use("/api", projectReportsRouter);
 app.use("/api", approvalsRouter);
+app.use("/api", projectAgentRouter);
 app.use("/api/websites", websitesRouter);
 app.use("/api", crawlsRouter); // crawls routes carry their own full paths
 app.use("/api", overviewRouter);
@@ -137,6 +139,8 @@ app.use((err: unknown, _req: express.Request, res: express.Response, _next: expr
   if (statusCode >= 500) console.error("[api] error:", err);
   res.status(statusCode).json({ error: message });
 });
+
+startKeywordResearchQueueWorker();
 
 app.listen(config.port, () => {
   console.log(`[api] SEnuke AI API listening on http://localhost:${config.port}`);

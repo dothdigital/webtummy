@@ -5,11 +5,13 @@ import { createHash, randomBytes } from "node:crypto";
 import { requireAuth } from "../middleware.js";
 import { config } from "../config.js";
 import { sendMail } from "../email.js";
-import { assignableWorkspaceRoles, canAccessAgencyClient, canAccessProject, createWorkspaceNotification, effectiveWorkspaceRoles, hasWorkspacePermission, isWorkspaceOwner, managerSelfApprovalEnabled, recordWorkspaceActivity, requireWorkspaceRole, validateRolesForWorkspace, workspaceContext } from "../workspace-access.js";
+import { assignableWorkspaceRoles, canAccessAgencyClient, canAccessProject, createWorkspaceNotification, effectiveWorkspaceRoles, hasWorkspacePermission, isWorkspaceOwner, recordWorkspaceActivity, requireAvailableSeat, requireWorkspaceRole, validateRolesForWorkspace, workspaceApprovalMode, workspaceContext, workspaceSeatUsage } from "../workspace-access.js";
 import { locationDefaultsFromSettings, normalizeRequiredLocations } from "../dev004.js";
 import { normalizeProjectGoals } from "../dev005.js";
 import { agencyNextActions } from "../dev002.js";
-import { configurableWorkspaceRoles } from "@webtummy/core/workspace-permissions";
+import { configurableWorkspaceRoles, workspaceRoleCanEver } from "@webtummy/core/workspace-permissions";
+import { decideTaskApproval, submitTaskApproval } from "../approval-workflow.js";
+import { startTaskPublishing, verifyTaskPublishing } from "../publishing-workflow.js";
 
 export const agencyWorkspaceRouter = Router();
 agencyWorkspaceRouter.use(requireAuth);
@@ -94,6 +96,23 @@ const taskDecisionSchema = z.object({
   decision: z.enum(["approved", "rejected", "changes_requested"]),
   notes: z.string().max(10000).optional().nullable(),
   snapshotJson: z.record(z.unknown()).default({}),
+});
+const taskPublishSchema = z.object({
+  target: z.enum(["wordpress", "html", "shopify", "social"]).optional(),
+  targetReference: z.string().trim().min(1).max(1000).optional().nullable(),
+  previousVersionReference: z.string().trim().max(2000).optional().nullable(),
+  metadata: z.record(z.unknown()).default({}),
+});
+const taskPublishVerificationSchema = z.object({
+  attemptId: z.string().uuid(),
+  status: z.enum(["verified", "pending", "failed"]),
+  externalId: z.string().trim().max(500).optional().nullable(),
+  liveUrl: z.string().url().optional().nullable(),
+  checksum: z.string().trim().max(255).optional().nullable(),
+  error: z.string().trim().max(5000).optional().nullable(),
+}).superRefine((data, ctx) => {
+  if (data.status === "verified" && !data.externalId && !data.liveUrl && !data.checksum) ctx.addIssue({ code: "custom", path: ["status"], message: "Verified publishing requires an external ID, live URL, or checksum." });
+  if (data.status === "failed" && !data.error) ctx.addIssue({ code: "custom", path: ["error"], message: "A publishing failure must include the provider error." });
 });
 const approvalPolicySchema = z.object({ allowManagerSelfApproval: z.boolean() });
 const rolePermissionPolicySchema = z.object({
@@ -230,6 +249,7 @@ agencyWorkspaceRouter.get(["/agency/workspace", "/workspace"], (req, res) => han
       return !complete && Boolean(task.dueAt && task.dueAt < now);
     }).length, reportsReady,
   };
+  const seats = canManageUsers ? await workspaceSeatUsage(context.workspace.id, context.workspace.settingsJson) : null;
   return {
     workspace: {
       ...context.workspace,
@@ -249,6 +269,7 @@ agencyWorkspaceRouter.get(["/agency/workspace", "/workspace"], (req, res) => han
     activity,
     pendingApprovalTasks: clientViewer ? [] : pendingApprovalTasks,
     summary,
+    seats,
     nextActions: clientViewer ? [] : agencyNextActions(summary),
     permissions: Object.fromEntries(["manage_users", "manage_roles", "manage_clients", "create_projects", "edit_project_settings", "manage_projects", "run_ai_analysis", "edit_strategy", "execute_tasks", "assign_tasks", "approve", "publish", "view_reports", "export_reports", "view_activity", "view_notifications", "manage_integrations", "read_integrations", "manage_api_keys", "billing"].map((permission) => [permission, hasWorkspacePermission(context, permission)])),
   };
@@ -258,6 +279,10 @@ agencyWorkspaceRouter.patch(["/agency/settings/role-permissions", "/workspace/se
   const context = await workspaceContext(req);
   requireWorkspaceRole(context, "owner", "admin");
   const data = rolePermissionPolicySchema.parse(req.body);
+  for (const [role, policy] of Object.entries(data.roles)) {
+    const invalid = policy.allow.filter((permission) => !workspaceRoleCanEver(role as typeof configurableWorkspaceRoles[number], permission));
+    if (invalid.length) throw Object.assign(new Error(`${role} cannot be granted: ${invalid.join(", ")}. Change the member's role instead of bypassing its permission ceiling.`), { statusCode: 400 });
+  }
   const previousSettings = context.workspace.settingsJson && typeof context.workspace.settingsJson === "object"
     ? context.workspace.settingsJson as Record<string, unknown> : {};
   const rolePermissionOverrides = Object.fromEntries(Object.entries(data.roles).map(([role, policy]) => [role, {
@@ -292,6 +317,7 @@ agencyWorkspaceRouter.patch(["/agency/settings/approval-policy", "/workspace/set
 
 agencyWorkspaceRouter.post(["/agency/invitations", "/workspace/invitations"], (req, res) => handle(res, async () => {
   const context = await workspaceContext(req);
+  if (context.workspace.workspaceType === "personal") throw Object.assign(new Error("Personal is a single-user Owner/Admin workspace and does not support invitations."), { statusCode: 409 });
   requirePermission(context, "manage_users");
   const data = invitationSchema.parse(req.body);
   if (!hasWorkspacePermission(context, "manage_roles") && data.roles.some((role) => role === "admin" || role === "manager")) {
@@ -300,6 +326,7 @@ agencyWorkspaceRouter.post(["/agency/invitations", "/workspace/invitations"], (r
   validateRolesForWorkspace(context, data.roles);
   if (data.roles.includes("client_viewer") && !data.agencyClientIds.length) throw Object.assign(new Error("Client Viewer invitations require at least one client assignment."), { statusCode: 400 });
   const normalizedEmail = data.email.trim().toLowerCase();
+  await requireAvailableSeat(context, data.roles, { excludeInvitationEmail: normalizedEmail });
   const existingMember = await prisma.workspaceMembership.findFirst({ where: { workspaceId: context.workspace.id, user: { email: normalizedEmail } } });
   if (existingMember) throw Object.assign(new Error("This person is already a workspace member."), { statusCode: 409 });
   const validTeams = data.teamIds.length ? await prisma.workspaceTeam.findMany({ where: { id: { in: [...new Set(data.teamIds)] }, workspaceId: context.workspace.id, isActive: true }, select: { id: true } }) : [];
@@ -447,7 +474,7 @@ agencyWorkspaceRouter.get("/agency/projects/:projectId/dashboard", (req, res) =>
       canApprove: hasWorkspacePermission(context, "approve"),
       canPublish: hasWorkspacePermission(context, "publish"),
       canSubmit: hasWorkspacePermission(context, "submit_for_approval"),
-      approvalMode: members.some((member) => member.id !== context.membership.id && member.roles.some((role) => ["owner", "admin", "manager", "approver"].includes(role.role))) ? "team" : "solo",
+      approvalMode: await workspaceApprovalMode(context),
     },
   };
 }));
@@ -477,6 +504,7 @@ agencyWorkspaceRouter.put("/agency/projects/:projectId/assignments", (req, res) 
 
 agencyWorkspaceRouter.post("/agency/reports/:reportId/send-to-client", (req, res) => handle(res, async () => {
   const context = await workspaceContext(req);
+  if (context.roles.has("client_viewer")) throw Object.assign(new Error("Client Viewers cannot send agency documents."), { statusCode: 403 });
   requirePermission(context, "export_reports");
   const report = await prisma.gapReportExport.findFirst({
     where: { id: req.params.reportId, project: { agencyClient: { workspaceId: context.workspace.id } } },
@@ -638,8 +666,9 @@ agencyWorkspaceRouter.patch(["/agency/members/:membershipId/status", "/workspace
   const context = await workspaceContext(req);
   requirePermission(context, "manage_users");
   const data = membershipStatusSchema.parse(req.body);
-  const target = await prisma.workspaceMembership.findFirst({ where: { id: req.params.membershipId, workspaceId: context.workspace.id }, include: { user: { select: { id: true } } } });
+  const target = await prisma.workspaceMembership.findFirst({ where: { id: req.params.membershipId, workspaceId: context.workspace.id }, include: { user: { select: { id: true } }, roles: { select: { role: true } } } });
   if (!target) throw Object.assign(new Error("Member not found."), { statusCode: 404 });
+  if (data.status === "active" && target.status !== "active") await requireAvailableSeat(context, target.roles.map((role) => role.role), { currentMembershipId: target.id });
   if (target.userId === context.workspace.ownerUserId) throw Object.assign(new Error("The Workspace Owner cannot be suspended or deactivated."), { statusCode: 409 });
   if (target.id === context.membership.id && data.status !== "active") throw Object.assign(new Error("You cannot suspend or deactivate your own membership."), { statusCode: 409 });
   await prisma.$transaction(async (tx) => {
@@ -691,6 +720,7 @@ agencyWorkspaceRouter.patch(["/agency/members/:membershipId/roles", "/workspace/
   validateRolesForWorkspace(context, data.roles);
   const target = await prisma.workspaceMembership.findFirst({ where: { id: req.params.membershipId, workspaceId: context.workspace.id }, include: { roles: true } });
   if (!target) throw Object.assign(new Error("Member not found."), { statusCode: 404 });
+  await requireAvailableSeat(context, data.roles, { currentMembershipId: target.id });
   if (target.userId === context.workspace.ownerUserId && !data.roles.includes("admin")) throw Object.assign(new Error("The Primary Owner cannot lose Owner/Admin authority during normal role editing."), { statusCode: 409 });
   const storedRoles = target.userId === context.workspace.ownerUserId ? ["owner", ...data.roles] : data.roles;
   return prisma.$transaction(async (tx) => {
@@ -710,6 +740,7 @@ agencyWorkspaceRouter.patch(["/agency/members/:membershipId/access", "/workspace
   validateRolesForWorkspace(context, data.roles);
   const target = await prisma.workspaceMembership.findFirst({ where: { id: req.params.membershipId, workspaceId: context.workspace.id }, include: { roles: true } });
   if (!target) throw Object.assign(new Error("Member not found."), { statusCode: 404 });
+  await requireAvailableSeat(context, data.roles, { currentMembershipId: target.id });
   if (target.userId === context.workspace.ownerUserId && !data.roles.includes("admin")) throw Object.assign(new Error("The Primary Owner cannot lose Owner/Admin authority."), { statusCode: 409 });
   const [teams, clients, projects] = await Promise.all([
     prisma.workspaceTeam.findMany({ where: { id: { in: data.teamIds }, workspaceId: context.workspace.id, isActive: true }, select: { id: true } }),
@@ -736,6 +767,7 @@ agencyWorkspaceRouter.patch(["/agency/members/:membershipId/access", "/workspace
 agencyWorkspaceRouter.post(["/agency/ownership/transfer", "/workspace/ownership/transfer"], (req, res) => handle(res, async () => {
   const context = await workspaceContext(req);
   if (!isWorkspaceOwner(context)) throw Object.assign(new Error("Only the current Workspace Owner can transfer ownership."), { statusCode: 403 });
+  if (context.workspace.workspaceType === "personal") throw Object.assign(new Error("Personal is a single-user Owner/Admin workspace. Use the account ownership recovery flow instead of team ownership transfer."), { statusCode: 409 });
   const data = transferSchema.parse(req.body);
   const nextOwner = await prisma.workspaceMembership.findFirst({ where: { id: data.newOwnerMembershipId, workspaceId: context.workspace.id, status: "active" } });
   if (!nextOwner) throw Object.assign(new Error("The new owner must be an active workspace member."), { statusCode: 400 });
@@ -747,7 +779,6 @@ agencyWorkspaceRouter.post(["/agency/ownership/transfer", "/workspace/ownership/
     await tx.workspaceMemberRole.deleteMany({ where: { membershipId: context.membership.id, role: "owner" } });
     await recordWorkspaceActivity(tx, { context, action: "workspace.ownership_transferred", entityType: "workspace", entityId: context.workspace.id, previousJson: { ownerUserId: context.membership.userId }, nextJson: { ownerUserId: nextOwner.userId } });
     await createWorkspaceNotification(tx, { context, userId: nextOwner.userId, type: "ownership_transferred", title: "Workspace ownership transferred", body: `You are now the Owner of ${context.workspace.name}.`, actionUrl: "/workspace?tab=teams" });
-    if (context.workspace.workspaceType === "personal") await tx.workspaceMemberRole.upsert({ where: { membershipId_role: { membershipId: context.membership.id, role: "editor" } }, create: { membershipId: context.membership.id, role: "editor", grantedById: nextOwner.userId }, update: {} });
     return { ownerUserId: nextOwner.userId };
   }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
 }));
@@ -851,101 +882,23 @@ agencyWorkspaceRouter.patch("/agency/tasks/:taskId/assignment", (req, res) => ha
 }));
 
 agencyWorkspaceRouter.post("/agency/tasks/:taskId/submit", (req, res) => handle(res, async () => {
-  const { context, task } = await scopedAgencyTask(req, req.params.taskId);
-  if (!hasWorkspacePermission(context, "submit_for_approval")) throw Object.assign(new Error("Editor authority is required to submit work."), { statusCode: 403 });
-  if (task.assigneeMembershipId && task.assigneeMembershipId !== context.membership.id && !context.roles.has("owner") && !context.roles.has("admin")) {
-    throw Object.assign(new Error("Only the assigned Editor can submit this task."), { statusCode: 403 });
-  }
-  if (!["draft", "in_progress", "changes_requested", "needs_review", "ready"].includes(task.status)) {
-    throw Object.assign(new Error("This task cannot be submitted from its current status."), { statusCode: 409 });
-  }
+  const { context } = await scopedAgencyTask(req, req.params.taskId);
   const body = taskSubmitSchema.parse(req.body);
-  const blocked = task.dependencies.filter((dependency) => !["completed", "published", "approved"].includes(dependency.requiredTask.status));
-  if (blocked.length) throw Object.assign(new Error(`Complete dependencies first: ${blocked.map((dependency) => dependency.requiredTask.title).join(", ")}`), { statusCode: 409 });
-  const fallbackApprovers = task.approver?.userId ? [] : await prisma.workspaceMembership.findMany({
-    where: { workspaceId: context.workspace.id, status: "active", roles: { some: { role: { in: ["owner", "admin", "manager", "approver"] } } } },
-    select: { id: true, userId: true },
-  });
-  const otherApprovers = [
-    ...(task.approver && task.approverMembershipId !== context.membership.id ? [{ id: task.approverMembershipId!, userId: task.approver.userId }] : []),
-    ...fallbackApprovers.filter((member) => member.id !== context.membership.id),
-  ];
-  const confirmationOnly = otherApprovers.length === 0 && (context.roles.has("owner") || context.roles.has("admin"));
-  if (confirmationOnly && !body.confirmed) throw Object.assign(new Error("Confirm this action before continuing."), { statusCode: 409 });
-  return prisma.$transaction(async (tx) => {
-    const needsClientStep = confirmationOnly && task.clientApprovalRequired;
-    const status = confirmationOnly ? (needsClientStep ? "submitted_for_approval" : "ready_to_publish") : "submitted_for_approval";
-    const approvalDecision = confirmationOnly ? (needsClientStep ? "team_approved" : "approved") : null;
-    const updated = await tx.executionTask.update({ where: { id: task.id }, data: { status, submittedAt: new Date(), approvalDecision, approvedAt: confirmationOnly ? new Date() : null, approvalNotes: body.notes, approvalSnapshotJson: { confirmationOnly: false, stage: needsClientStep ? "client_approval" : confirmationOnly ? "approved" : "team_approval" } } });
-    if (confirmationOnly) await tx.executionTaskApproval.create({ data: { taskId: task.id, actorMembershipId: context.membership.id, decision: "approved", notes: body.notes ?? "Owner confirmed before execution.", snapshotJson: { soloConfirmation: true, clientApprovalRequired: task.clientApprovalRequired } } });
-    await recordWorkspaceActivity(tx, { context, action: confirmationOnly ? "approval.owner_confirmed" : "approval.requested", entityType: "execution_task", entityId: task.id, agencyClientId: task.project!.agencyClientId, projectId: task.projectId, nextJson: { status, confirmationOnly: false, clientApprovalPending: needsClientStep } });
-    const approverUserIds = [...new Set(otherApprovers.map((member) => member.userId))];
-    for (const userId of approverUserIds) await createWorkspaceNotification(tx, {
-      context, userId, type: "approval_requested", title: "Approval requested",
-      body: `${task.title} is ready for your review.`, actionUrl: `/approvals?projectId=${task.projectId}`,
-      agencyClientId: task.project!.agencyClientId, projectId: task.projectId,
-    });
-    if (needsClientStep && task.project!.agencyClientId) {
-      const clientMembers = await tx.agencyClientMember.findMany({ where: { agencyClientId: task.project!.agencyClientId, membership: { status: "active", roles: { some: { role: "client_viewer" } } } }, select: { membership: { select: { userId: true } } } });
-      for (const member of clientMembers) await createWorkspaceNotification(tx, { context, userId: member.membership.userId, type: "client_approval_requested", title: "Client approval requested", body: `${task.title} is ready for your review.`, actionUrl: `/agency/clients/${task.project!.agencyClientId}`, agencyClientId: task.project!.agencyClientId, projectId: task.projectId });
-    }
-    return { task: updated };
-  });
+  return submitTaskApproval(context, req.params.taskId, body);
 }));
 
 agencyWorkspaceRouter.post("/agency/tasks/:taskId/decision", (req, res) => handle(res, async () => {
-  const { context, task } = await scopedAgencyTask(req, req.params.taskId);
-  const clientDecision = context.roles.size === 1 && context.roles.has("client_viewer");
-  if (clientDecision && !task.clientApprovalRequired) throw Object.assign(new Error("This item was not sent for client approval."), { statusCode: 403 });
-  if (!clientDecision && !hasWorkspacePermission(context, "approve")) throw Object.assign(new Error("Manager/Approver authority is required."), { statusCode: 403 });
-  if (!clientDecision && task.approverMembershipId && task.approverMembershipId !== context.membership.id && !context.roles.has("owner") && !context.roles.has("admin")) {
-    throw Object.assign(new Error("This approval is assigned to another Approver."), { statusCode: 403 });
-  }
-  if (task.status !== "submitted_for_approval") throw Object.assign(new Error("Only submitted work can receive an approval decision."), { statusCode: 409 });
-  const security = context.workspace.securitySettingsJson && typeof context.workspace.securitySettingsJson === "object"
-    ? context.workspace.securitySettingsJson as { separationOfDuties?: unknown } : {};
-  const selfApproving = !clientDecision && (task.assigneeMembershipId === context.membership.id || task.createdByUserId === context.membership.userId);
-  const ownerAdmin = context.roles.has("owner") || context.roles.has("admin");
-  if (selfApproving && !ownerAdmin && !managerSelfApprovalEnabled(context)) {
-    throw Object.assign(new Error("Managers cannot approve their own work unless an Owner/Admin enables self-approval."), { statusCode: 409 });
-  }
-  if (security.separationOfDuties === true && selfApproving) {
-    throw Object.assign(new Error("Separation of duties prevents the creator or assignee from self-approving."), { statusCode: 409 });
-  }
+  const { context } = await scopedAgencyTask(req, req.params.taskId);
   const body = taskDecisionSchema.parse(req.body);
-  const status = body.decision === "approved" ? "ready_to_publish" : body.decision === "changes_requested" ? "changes_requested" : "rejected";
-  return prisma.$transaction(async (tx) => {
-    await tx.executionTaskApproval.create({ data: { taskId: task.id, actorMembershipId: context.membership.id, decision: body.decision, notes: body.notes, snapshotJson: body.snapshotJson as Prisma.InputJsonValue } });
-    const updated = await tx.executionTask.update({
-      where: { id: task.id },
-      data: {
-        status, approvalDecision: body.decision, approvalNotes: body.notes,
-        approvedAt: body.decision === "approved" ? new Date() : null,
-        clientApprovedAt: clientDecision && body.decision === "approved" ? new Date() : undefined,
-        changesRequestedAt: body.decision === "changes_requested" ? new Date() : null,
-        approvalSnapshotJson: body.snapshotJson as Prisma.InputJsonValue,
-      },
-    });
-    await recordWorkspaceActivity(tx, { context, action: clientDecision ? `approval.client_${body.decision}` : `approval.${body.decision}`, entityType: "execution_task", entityId: task.id, agencyClientId: task.project!.agencyClientId, projectId: task.projectId, previousJson: { status: task.status }, nextJson: { status, notes: body.notes } });
-    const recipients = [...new Set([task.assignee?.userId, task.manager?.userId].filter((id): id is string => Boolean(id)))];
-    for (const userId of recipients) await createWorkspaceNotification(tx, {
-      context, userId, type: body.decision, title: `Task ${body.decision.replace("_", " ")}`,
-      body: `${task.title}: ${body.notes || body.decision.replace("_", " ")}.`, actionUrl: task.relatedUrl ?? `/guided-projects/${task.projectId}`,
-      agencyClientId: task.project!.agencyClientId, projectId: task.projectId,
-    });
-    return { task: updated };
-  });
+  return decideTaskApproval(context, req.params.taskId, body);
 }));
 
 agencyWorkspaceRouter.post("/agency/tasks/:taskId/publish", (req, res) => handle(res, async () => {
-  const { context, task } = await scopedAgencyTask(req, req.params.taskId);
-  if (!hasWorkspacePermission(context, "publish")) throw Object.assign(new Error("Explicit publishing permission is required."), { statusCode: 403 });
-  if (task.status !== "ready_to_publish" || (task.requiresApproval && !task.approvedAt)) throw Object.assign(new Error(task.requiresApproval ? "Only approved work can be published." : "Work must be ready to publish."), { statusCode: 409 });
-  return prisma.$transaction(async (tx) => {
-    const updated = await tx.executionTask.update({ where: { id: task.id }, data: { status: "published", publishedAt: new Date() } });
-    await recordWorkspaceActivity(tx, { context, action: "publishing.completed", entityType: "execution_task", entityId: task.id, agencyClientId: task.project!.agencyClientId, projectId: task.projectId, previousJson: { status: task.status }, nextJson: { status: "published" } });
-    const recipients = [...new Set([task.assignee?.userId, task.manager?.userId].filter((id): id is string => Boolean(id)))];
-    for (const userId of recipients) await createWorkspaceNotification(tx, { context, userId, type: "publishing_completed", title: "Publishing completed", body: `${task.title} was published.`, actionUrl: task.relatedUrl, agencyClientId: task.project!.agencyClientId, projectId: task.projectId });
-    return { task: updated };
-  });
+  const { context } = await scopedAgencyTask(req, req.params.taskId);
+  return startTaskPublishing(context, req.params.taskId, taskPublishSchema.parse(req.body ?? {}));
+}));
+
+agencyWorkspaceRouter.post("/agency/tasks/:taskId/publish/verify", (req, res) => handle(res, async () => {
+  const { context } = await scopedAgencyTask(req, req.params.taskId);
+  return verifyTaskPublishing(context, req.params.taskId, taskPublishVerificationSchema.parse(req.body));
 }));

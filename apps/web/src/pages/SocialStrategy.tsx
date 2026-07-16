@@ -318,19 +318,22 @@ function SocialPublisher({ websiteId, strategy }: SocialPublisherProps) {
         title,
         mainCaption: caption,
         imageUrl: imageUrl || undefined,
-        scheduledAt: mode === "schedule" ? new Date(scheduledAt).toISOString() : undefined,
         timezone,
         platforms,
       });
       const postId = responsePostId(result);
       if (postId) setCreatedPostId(postId);
       if (mode === "publish" && postId) {
-        const published = await api.post<unknown>(`/api/social-connect/posts/${encodeURIComponent(postId)}/post-now`, {});
+        const published = await api.post<unknown>(`/api/social-connect/posts/${encodeURIComponent(postId)}/post-now`, { sourceId: selectedPost?.id ?? "custom" });
         setStatusResult(published);
         setMessage("Post sent to Social Connect for immediate publishing.");
+      } else if (mode === "schedule" && postId) {
+        const scheduled = await api.post<unknown>(`/api/social-connect/posts/${encodeURIComponent(postId)}/schedule`, { scheduledAt: new Date(scheduledAt).toISOString(), timezone, sourceId: selectedPost?.id ?? "custom" });
+        setStatusResult(scheduled);
+        setMessage("Approved post scheduled through Social Connect.");
       } else {
         setStatusResult(result);
-        setMessage(mode === "schedule" ? "Post scheduled through Social Connect." : "Draft created in Social Connect.");
+        setMessage("Draft created in Social Connect.");
       }
       return result;
     } catch (err) {
@@ -356,7 +359,6 @@ function SocialPublisher({ websiteId, strategy }: SocialPublisherProps) {
         title,
         mainCaption: caption,
         imageUrl: imageUrl || undefined,
-        scheduledAt: scheduledAt ? new Date(scheduledAt).toISOString() : undefined,
         timezone,
         platforms,
       });
@@ -374,7 +376,7 @@ function SocialPublisher({ websiteId, strategy }: SocialPublisherProps) {
     setBusy(true);
     setError("");
     try {
-      setStatusResult(await api.get<unknown>(`/api/social-connect/posts/${encodeURIComponent(createdPostId)}`));
+      setStatusResult(await api.get<unknown>(`/api/social-connect/posts/${encodeURIComponent(createdPostId)}?sourceId=${encodeURIComponent(selectedPost?.id ?? "custom")}`));
     } catch (err) {
       setError(String(err).replace(/^Error:\s*/, ""));
     } finally {

@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Link, useNavigate, useParams } from "react-router-dom";
+import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { api } from "../api.js";
 import type { AiContentGeneration, AiContentStatus, AiGenerationType, GeoKeywordAudit, GeoKeywordAuditPage, KeywordIdea, KeywordResearchRun, KeywordSerpCompetitor, OrganicGrowthPlan, OrganicGrowthTask } from "../types.js";
 import { ActionIconButton, Button, Card, StatusPill } from "../components/ui.js";
@@ -447,6 +447,19 @@ function CompareDrawer({
 export default function KeywordResearchDetail() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
+  const campaignQuery = () => {
+    const next = new URLSearchParams();
+    for (const key of ["project", "projectId", "groupId", "groupIds"]) {
+      const value = searchParams.get(key);
+      if (value) next.set(key, value);
+    }
+    return next.toString();
+  };
+  const campaignSuffix = campaignQuery() ? `?${campaignQuery()}` : "";
+  const guidedProjectId = searchParams.get("projectId");
+  const focusedKeyword = searchParams.get("keyword")?.trim() || "";
+  const backToIntelligence = guidedProjectId ? `/keywords?projectId=${encodeURIComponent(guidedProjectId)}` : "/keywords";
   const [run, setRun] = useState<KeywordResearchRun | null>(null);
   const [growthPlan, setGrowthPlan] = useState<OrganicGrowthPlan | null>(null);
   const [growthPlanLoading, setGrowthPlanLoading] = useState(false);
@@ -459,7 +472,7 @@ export default function KeywordResearchDetail() {
   const [comparisonError, setComparisonError] = useState<string | null>(null);
   const [comparing, setComparing] = useState(false);
   const [pageCompareCompetitorIds, setPageCompareCompetitorIds] = useState<Record<string, string>>({});
-  const [tab, setTab] = useState<DetailTab>("growth");
+  const [tab, setTab] = useState<DetailTab>(() => focusedKeyword ? "keywords" : "growth");
   const [manualPage, setManualPage] = useState("");
   const [manualPosition, setManualPosition] = useState("");
   const [manualUrl, setManualUrl] = useState("");
@@ -507,6 +520,7 @@ export default function KeywordResearchDetail() {
   if (!run) return <Card className="p-6 text-red-700">Keyword research report not found.</Card>;
 
   const ideas = run.ideas ?? [];
+  const focusedIdea = focusedKeyword ? ideas.find((idea) => idea.keyword.trim().toLowerCase() === focusedKeyword.toLowerCase()) : undefined;
   const competitors = run.competitors ?? [];
   const topIdea = ideas[0] as KeywordIdea | undefined;
   const competitorsAbove = run.competitorsAboveJson ?? [];
@@ -641,7 +655,7 @@ export default function KeywordResearchDetail() {
       await loadPageAudit(result.run);
       await loadGrowthPlan(result.run.id);
       await loadStoredContentFixes(result.run, result.run.targetUrl || result.run.rankingUrl || result.run.manualUrl || "");
-      navigate(`/keyword-insights/${result.run.id}`, { replace: true });
+      navigate(`/keyword-insights/${result.run.id}${campaignSuffix}`, { replace: true });
     } catch (e) {
       alert(String(e));
     } finally {
@@ -788,11 +802,11 @@ export default function KeywordResearchDetail() {
   return (
     <div className="space-y-6">
       <div>
-        <Link to="/keywords" className="text-sm font-medium text-brand-600 hover:underline">Back to Keyword Insight</Link>
+        <div className="flex flex-wrap gap-4"><Link to={backToIntelligence} className="text-sm font-medium text-brand-600 hover:underline">← Back to Keyword Results</Link><Link to={`/keyword-insights${campaignSuffix}`} className="text-sm font-medium text-brand-600 hover:underline">All Analysis Runs</Link></div>
         <div className="mt-2 flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
           <div>
-            <h1 className="text-2xl font-bold text-charcoal-800">{run.seedKeyword}</h1>
-            <p className="mt-1 text-sm text-charcoal-400">{run.locationName} · {run.device} · {run.website?.domain ?? "No website selected"}</p>
+            <h1 className="text-2xl font-bold text-charcoal-800">{focusedIdea?.keyword || run.seedKeyword}</h1>
+            <p className="mt-1 text-sm text-charcoal-400">{focusedIdea ? `Keyword idea from analysis: ${run.seedKeyword} · ` : ""}{run.locationName} · {run.device} · {run.website?.domain ?? "No website selected"}</p>
           </div>
           <div className="flex items-center gap-3">
             <StatusPill status={run.status} />
@@ -999,6 +1013,7 @@ export default function KeywordResearchDetail() {
         <div className="border-b border-charcoal-100 px-5 py-3">
           <div className="font-semibold text-charcoal-700">Keyword research analytics</div>
           <div className="mt-0.5 text-xs text-charcoal-400">Demand, CPC, competition, and bid range.</div>
+          {focusedIdea && <div className="mt-2 flex flex-wrap gap-x-3 gap-y-1 rounded-lg border border-brand-200 bg-brand-50 px-3 py-2 text-xs font-semibold text-brand-800"><span>Selected keyword: {focusedIdea.keyword}</span><span>Market: {run.locationName}</span><span>Parent analysis: {run.seedKeyword}</span></div>}
         </div>
         <div className="overflow-x-auto">
           <table className="w-full min-w-[900px] text-sm">
@@ -1014,7 +1029,7 @@ export default function KeywordResearchDetail() {
             </thead>
             <tbody>
               {ideas.map((idea) => (
-                <tr key={idea.id} className="border-t border-charcoal-50">
+                <tr key={idea.id} className={`border-t border-charcoal-50 ${focusedIdea?.id === idea.id ? "bg-brand-50 ring-1 ring-inset ring-brand-200" : ""}`}>
                   <td className="px-5 py-3 font-medium text-charcoal-800">{idea.keyword}</td>
                   <td className="px-5 py-3 text-charcoal-600">{formatNumber(idea.avgMonthlySearches)}</td>
                   <td className="px-5 py-3 text-charcoal-600">{idea.competition ?? "-"}</td>

@@ -8,5 +8,17 @@ body,
   height: 100%;
 }
 body {
-  @apply bg-charcoal-50 text-charcoal-700 antialiased;
+  @apply bg-[#f7f7ff] text-charcoal-700 antialiased;
+}
+
+/* Keep existing primary actions aligned with the Projects-page gradient.
+   This targets interactive actions only, leaving badges and charts semantic. */
+button[class~="bg-brand-600"],
+a[class~="bg-brand-600"] {
+  background-image: linear-gradient(to right, #2dd4bf, #0d9488);
+}
+
+button[class~="hover:bg-brand-700"]:hover,
+a[class~="hover:bg-brand-700"]:hover {
+  background-image: linear-gradient(to right, #14b8a6, #0f766e);
 }

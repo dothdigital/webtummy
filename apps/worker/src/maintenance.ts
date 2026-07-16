@@ -2,6 +2,7 @@ import { Prisma, prisma, type Client } from "@webtummy/db";
 import { crawlQueue } from "./queue.js";
 import { config } from "./config.js";
 import { sendMail } from "./email.js";
+import { approvalEscalationStage } from "@webtummy/core/approvals";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const PAYMENT_BLOCKED = new Set(["past_due", "incomplete", "incomplete_expired", "unpaid", "canceled"]);
@@ -472,6 +473,43 @@ export async function taskDeadlineNotifications() {
   });
 }
 
+export async function approvalReminderEscalations(now = new Date()) {
+  return runLogged("approval_reminder_escalations", async () => {
+    const tasks = await prisma.executionTask.findMany({
+      where: { status: "submitted_for_approval", submittedAt: { not: null, lte: new Date(now.getTime() - DAY_MS) } },
+      include: {
+        manager: { include: { user: { select: { id: true } } } },
+        project: { include: { agencyClient: { include: { workspace: { include: { memberships: { where: { status: "active" }, include: { roles: true } } } } } }, client: { include: { workspace: { include: { memberships: { where: { status: "active" }, include: { roles: true } } } } } } } },
+      },
+      take: 500,
+    });
+    let managerReminders = 0;
+    let ownerEscalations = 0;
+    for (const task of tasks) {
+      if (!task.submittedAt || !task.projectId) continue;
+      const workspace = task.project?.agencyClient?.workspace ?? task.project?.client.workspace;
+      if (!workspace) continue;
+      const stage = approvalEscalationStage(task.submittedAt, now);
+      if (!stage) continue;
+      const type = stage === "owner" ? "approval_escalated_owner" : "approval_reminder_manager";
+      const actionUrl = `/approvals?projectId=${task.projectId}&taskId=${task.id}`;
+      const alreadySent = await prisma.workspaceNotification.findFirst({ where: { workspaceId: workspace.id, type, actionUrl }, select: { id: true } });
+      if (alreadySent) continue;
+      const managerIds = task.manager?.userId ? [task.manager.userId] : workspace.memberships.filter((membership) => membership.roles.some((role) => ["manager", "approver", "manager_approver"].includes(role.role))).map((membership) => membership.userId);
+      const recipients = stage === "owner" ? [workspace.ownerUserId] : managerIds.length ? managerIds : [workspace.ownerUserId];
+      for (const userId of [...new Set(recipients)]) await prisma.workspaceNotification.create({ data: {
+        workspaceId: workspace.id, userId, agencyClientId: task.project.agencyClientId, projectId: task.projectId, type,
+        title: stage === "owner" ? "Approval escalated to Owner" : "Approval reminder",
+        body: `${task.title} has been waiting for approval since ${task.submittedAt.toLocaleString()}.`, actionUrl,
+        emailEligible: true, emailStatus: "pending",
+      } });
+      if (stage === "owner") ownerEscalations += 1;
+      else managerReminders += 1;
+    }
+    return { checked: tasks.length, managerReminders, ownerEscalations };
+  });
+}
+
 export async function workspaceNotificationEmailDelivery(now = new Date()) {
   return runLogged("workspace_notification_email_delivery", async () => {
     const notifications = await prisma.workspaceNotification.findMany({
@@ -560,6 +598,7 @@ export async function runMaintenanceSuite() {
     await weeklyRankingReportGeneration();
     await monthlyClientReportGeneration();
     await taskDeadlineNotifications();
+    await approvalReminderEscalations();
     await scheduledProjectReportGeneration();
     await workspaceNotificationEmailDelivery();
   } finally {

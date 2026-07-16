@@ -9,6 +9,8 @@
     "seed": "tsx src/seed.ts"
   },
   "dependencies": {
+    "@ai-sdk/openai": "^4.0.15",
+    "@mastra/core": "^1.51.0",
     "@webtummy/core": "*",
     "@webtummy/db": "*",
     "bcryptjs": "^2.4.3",

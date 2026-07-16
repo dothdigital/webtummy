@@ -1,10 +1,15 @@
 import { describe, expect, it } from "vitest";
-import { estimatedOpportunityEffort, opportunityConfidence, opportunityDecisionStatus, opportunityInputSummary, opportunityRunMode } from "./dev006.js";
+import { estimatedOpportunityEffort, opportunityConfidence, opportunityDecisionStatus, opportunityInputSummary, opportunityRunMode, rankedOpportunityRecommendations } from "./dev006.js";
 
 describe("DEV-006 Opportunity Finder", () => {
   it("runs recommendations when direction is unclear and confirmation when clear", () => {
     expect(opportunityRunMode({ projectType: "existing_website", primaryGoal: "Improve SEO Rankings" }).mode).toBe("recommendation");
     expect(opportunityRunMode({ projectType: "existing_website", primaryGoal: "Improve SEO Rankings", niche: "Roofing", businessProfile: { offerSummary: "Roof repair", targetAudience: "Toronto homeowners" } }).mode).toBe("confirmation");
+  });
+  it("keeps three ranked choices even when the strongest direction only needs confirmation", () => {
+    const mode = opportunityRunMode({ projectType: "existing_website", primaryGoal: "Improve SEO Rankings", niche: "Roofing", businessProfile: { offerSummary: "Roof repair", targetAudience: "Toronto homeowners" } });
+    expect(mode.mode).toBe("confirmation");
+    expect(rankedOpportunityRecommendations(["strongest", "alternative-1", "alternative-2", "extra"])).toEqual(["strongest", "alternative-1", "alternative-2"]);
   });
   it("derives simple effort and confidence values for cards", () => {
     expect(estimatedOpportunityEffort(85)).toBe("Low");

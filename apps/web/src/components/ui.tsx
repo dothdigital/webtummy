@@ -28,16 +28,16 @@ export function Button({
   className?: string;
 }) {
   const styles = {
-    primary: "bg-brand-600 text-white hover:bg-brand-700",
-    ghost: "bg-white text-slate-700 border border-slate-300 hover:bg-slate-50",
-    danger: "bg-red-600 text-white hover:bg-red-700",
+    primary: "bg-gradient-to-r from-brand-400 to-brand-600 text-white shadow-sm shadow-brand-100 hover:from-brand-500 hover:to-brand-700 focus-visible:ring-brand-200",
+    ghost: "border border-slate-200 bg-white text-slate-700 shadow-sm hover:border-brand-200 hover:bg-brand-50 hover:text-brand-800 focus-visible:ring-brand-100",
+    danger: "bg-rose-600 text-white shadow-sm shadow-rose-100 hover:bg-rose-700 focus-visible:ring-rose-200",
   }[variant];
   return (
     <button
       type={type}
       onClick={onClick}
       disabled={disabled}
-      className={`inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-lg px-4 py-2 text-sm font-medium transition disabled:cursor-not-allowed disabled:opacity-50 ${styles} ${className}`}
+      className={`inline-flex min-h-10 items-center justify-center gap-2 whitespace-nowrap rounded-xl px-4 py-2 text-sm font-bold transition focus-visible:outline-none focus-visible:ring-4 disabled:cursor-not-allowed disabled:opacity-50 ${styles} ${className}`}
     >
       {children}
     </button>

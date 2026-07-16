@@ -53,7 +53,7 @@ export function clientViewerRouteAllowed(method: string, originalUrl: string) {
   const clientId = path.startsWith(prefix) && path.endsWith(suffix) ? path.slice(prefix.length, -suffix.length) : "";
   const clientDashboard = Boolean(clientId) && !clientId.includes("/");
   const clientDecision = method === "POST" && /^\/api\/agency\/tasks\/[^/]+\/decision$/.test(path);
-  const clientReportAccess = method === "GET" && (path === "/api/project-reports" || path === "/api/project-reports/catalog");
+  const clientReportAccess = method === "GET" && (path === "/api/project-reports" || path === "/api/project-reports/catalog" || /^\/api\/project-reports\/[^/]+\/download$/.test(path));
   const notificationPreferences = ["GET", "PATCH"].includes(method) && path === "/api/notification-preferences";
   const clientApprovalAccess = (method === "GET" && path === "/api/approvals") || (method === "POST" && /^\/api\/approvals\/[^/]+\/decision$/.test(path));
   const notificationSummary = method === "GET" && (path === "/api/workspace/notifications/summary" || path === "/api/agency/notifications/summary");

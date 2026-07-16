@@ -1,7 +1,7 @@
 // Crawl detail: live status (polls while running), score gauge, summary stats,
 // pages table, and issues table with severity badges.
 import { useEffect, useState, type ReactNode } from "react";
-import { useNavigate, useParams } from "react-router-dom";
+import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { api } from "../api.js";
 import type {
   BrokenLinkRow,
@@ -298,14 +298,16 @@ function Pagination({
   page,
   total,
   onPage,
+  pageSize = PAGE_SIZE,
 }: {
   page: number;
   total: number;
   onPage: (page: number) => void;
+  pageSize?: number;
 }) {
-  const pages = pageCount(total);
-  const start = total === 0 ? 0 : (page - 1) * PAGE_SIZE + 1;
-  const end = Math.min(total, page * PAGE_SIZE);
+  const pages = Math.max(1, Math.ceil(total / pageSize));
+  const start = total === 0 ? 0 : (page - 1) * pageSize + 1;
+  const end = Math.min(total, page * pageSize);
 
   return (
     <div className="flex flex-wrap items-center justify-between gap-3 border-t border-charcoal-100 px-5 py-3 text-sm">
@@ -1767,21 +1769,23 @@ function taskCompletionSteps(task: ExecutionTask, issue: IssueRow | null): strin
   ];
 }
 
-function ExecutionTaskDrawer({
+export function ExecutionTaskDrawer({
   task,
   issue,
   onClose,
   onOpenIssue,
   onApprove,
   onComplete,
+  onReopen,
   onSkip,
 }: {
   task: ExecutionTask;
   issue: IssueRow | null;
   onClose: () => void;
-  onOpenIssue: () => void;
+  onOpenIssue?: () => void;
   onApprove: () => void;
   onComplete: () => void;
+  onReopen: () => void;
   onSkip: () => void;
 }) {
   const steps = taskCompletionSteps(task, issue);
@@ -1850,10 +1854,10 @@ function ExecutionTaskDrawer({
           </section>
         </div>
         <div className="flex flex-wrap justify-end gap-2 border-t border-charcoal-100 px-5 py-4">
-          {issue && <Button variant="ghost" onClick={onOpenIssue}>View source issue</Button>}
+          {issue && onOpenIssue && <Button variant="ghost" onClick={onOpenIssue}>View source issue</Button>}
           {task.requiresApproval && task.status !== "approved" && task.status !== "completed" && <Button variant="ghost" onClick={onApprove}>Approve</Button>}
-          {task.status !== "skipped" && <Button variant="ghost" onClick={onSkip}>Skip</Button>}
-          {task.status !== "completed" && <Button onClick={onComplete}>Mark complete</Button>}
+          {task.status !== "skipped" && task.status !== "completed" && <Button variant="ghost" onClick={onSkip}>Skip</Button>}
+          {task.status === "completed" ? <Button variant="ghost" className="border-amber-200 bg-amber-50 text-amber-800 hover:bg-amber-100" onClick={onReopen}>Reopen task</Button> : <Button onClick={onComplete}>Mark complete</Button>}
         </div>
       </aside>
     </div>
@@ -1863,6 +1867,9 @@ function ExecutionTaskDrawer({
 export default function CrawlDetail() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
+  const requestedReturnTo = searchParams.get("returnTo");
+  const returnTo = requestedReturnTo?.startsWith("/") && !requestedReturnTo.startsWith("//") ? requestedReturnTo : "/site-analysis";
   const [status, setStatus] = useState<CrawlStatus | null>(null);
   const [summary, setSummary] = useState<CrawlSummary | null>(null);
   const [pages, setPages] = useState<PageRow[]>([]);
@@ -1871,6 +1878,8 @@ export default function CrawlDetail() {
   const [brokenLinks, setBrokenLinks] = useState<BrokenLinkRow[]>([]);
   const [executionTasks, setExecutionTasks] = useState<ExecutionTask[]>([]);
   const [taskModuleFilter, setTaskModuleFilter] = useState("all");
+  const [taskPage, setTaskPage] = useState(1);
+  const [taskActionMessage, setTaskActionMessage] = useState("");
   const [syncingTasks, setSyncingTasks] = useState(false);
   const [healthReport, setHealthReport] = useState<HealthReport | null>(null);
   const [comparison, setComparison] = useState<CrawlComparison | null>(null);
@@ -1945,22 +1954,29 @@ export default function CrawlDetail() {
   };
 
   const syncExecutionTasks = async (websiteId?: string | null) => {
-    if (!id || !websiteId) return;
+    if (!id || !websiteId) return [] as ExecutionTask[];
     setSyncingTasks(true);
     try {
       const result = await api.post<{ tasks: ExecutionTask[] }>(`/api/websites/${websiteId}/execution-tasks/sync`, {});
       setExecutionTasks(result.tasks);
+      return result.tasks;
     } finally {
       setSyncingTasks(false);
     }
   };
 
   const updateTaskStatus = async (taskId: string, nextStatus: "completed" | "skipped" | "approved" | "ready") => {
-    const endpoint = nextStatus === "completed" ? "complete" : nextStatus === "skipped" ? "skip" : null;
-    const result = endpoint
-      ? await api.post<{ task: ExecutionTask }>(`/api/execution-tasks/${taskId}/${endpoint}`, {})
-      : await api.patch<{ task: ExecutionTask }>(`/api/execution-tasks/${taskId}`, { status: nextStatus });
-    setExecutionTasks((tasks) => tasks.map((task) => task.id === result.task.id ? result.task : task));
+    setTaskActionMessage("");
+    try {
+      const endpoint = nextStatus === "completed" ? "complete" : nextStatus === "skipped" ? "skip" : null;
+      const result = endpoint
+        ? await api.post<{ task: ExecutionTask }>(`/api/execution-tasks/${taskId}/${endpoint}`, {})
+        : await api.patch<{ task: ExecutionTask }>(`/api/execution-tasks/${taskId}`, { status: nextStatus });
+      setExecutionTasks((tasks) => tasks.map((task) => task.id === result.task.id ? result.task : task));
+      setTaskActionMessage(nextStatus === "completed" ? "Task marked completed. View it anytime using the Completed filter." : `Task marked ${taskLabel(nextStatus)}.`);
+    } catch (error) {
+      setTaskActionMessage(error instanceof Error ? error.message : "Task status could not be updated.");
+    }
   };
 
   // Poll status while queued/running.
@@ -1981,7 +1997,13 @@ export default function CrawlDetail() {
         setIssues((await api.get<{ issues: IssueRow[] }>(`/api/crawls/${id}/issues`)).issues);
         setBrokenLinks((await api.get<{ links: BrokenLinkRow[] }>(`/api/crawls/${id}/broken-links`)).links);
         setHealthReport(await api.get<HealthReport>(`/api/crawls/${id}/health-report`));
-        await syncExecutionTasks(s.website?.id);
+        const syncedTasks = await syncExecutionTasks(s.website?.id);
+        const sourceIssueId = searchParams.get("sourceIssueId");
+        if (searchParams.get("section") === "execution" || sourceIssueId) setSection("execution");
+        if (sourceIssueId) {
+          const matchingTask = syncedTasks.find((task) => task.dedupeKey === `crawl:${sourceIssueId}`);
+          if (matchingTask) setOpenTaskId(matchingTask.id);
+        }
       }
     };
     tick();
@@ -2047,12 +2069,18 @@ export default function CrawlDetail() {
     { key: "social_strategy", label: "Social", count: executionTasks.filter((task) => task.moduleName === "social_strategy").length },
     { key: "needs_review", label: "Needs Review", count: executionTasks.filter((task) => task.status === "needs_review").length },
     { key: "approved", label: "Approved", count: executionTasks.filter((task) => task.status === "approved").length },
-  ].filter((item) => item.key === "all" || item.count > 0);
+    { key: "completed", label: "Completed", count: executionTasks.filter((task) => task.status === "completed").length },
+  ].filter((item) => item.key === "all" || item.key === "completed" || item.count > 0);
   const visibleExecutionTasks = executionTasks.filter((task) => (
     taskModuleFilter === "all" ||
     task.moduleName === taskModuleFilter ||
     task.status === taskModuleFilter
   ));
+  const taskPageSize = 10;
+  const effectiveTaskPage = Math.min(taskPage, Math.max(1, Math.ceil(visibleExecutionTasks.length / taskPageSize)));
+  const pagedExecutionTasks = visibleExecutionTasks.slice((effectiveTaskPage - 1) * taskPageSize, effectiveTaskPage * taskPageSize);
+  const healthScore = Math.max(0, Math.min(100, summary?.siteScore ?? 0));
+  const scoreDash = 2 * Math.PI * 42;
   const navItems: { key: ReportSection; label: string; count?: ReactNode; detail: string; tone: string; active: string; countClass: string }[] = [
     { key: "execution", label: "Execution", count: openTaskCount, detail: "Open tasks", tone: "border-brand-200 bg-brand-50 text-brand-800 hover:border-brand-400", active: "border-brand-600 bg-brand-600 text-white shadow-md", countClass: "bg-white text-brand-700" },
     { key: "overview", label: "Overview", count: summary?.siteScore ?? "—", detail: "Site score", tone: "border-green-200 bg-green-50 text-green-800 hover:border-green-400", active: "border-green-600 bg-green-600 text-white shadow-md", countClass: "bg-white text-green-700" },
@@ -2064,15 +2092,17 @@ export default function CrawlDetail() {
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between">
-        <div>
+        <div className="flex min-w-0 items-start gap-3">
+          <button type="button" onClick={() => navigate(returnTo)} className="mt-0.5 inline-flex h-9 shrink-0 items-center rounded-lg border border-slate-200 bg-white px-3 text-sm font-bold text-charcoal-600 shadow-sm hover:border-brand-300 hover:text-brand-700">← Back</button>
+          <div className="min-w-0">
           <h1 className="text-2xl font-bold text-charcoal-800">
             Crawl results{status.website?.domain ? ` for ${status.website.domain}` : ""}
           </h1>
           <p className="text-sm text-charcoal-400">
             {status.website?.rootUrl ? `${status.website.rootUrl} · ` : ""}Crawl ID {id}
           </p>
+          </div>
         </div>
-        <StatusPill status={status.status} />
       </div>
 
       {running ? (
@@ -2089,28 +2119,23 @@ export default function CrawlDetail() {
         <>
           <div className="space-y-6">
             {summary && (
-              <Card className="p-5">
-                <div className="flex flex-col gap-2 border-b border-charcoal-100 pb-4 sm:flex-row sm:items-end sm:justify-between">
+              <Card className="overflow-hidden">
+                <div className="grid lg:grid-cols-[190px_minmax(0,1fr)]">
+                  <div className="flex items-center justify-center border-b border-slate-100 bg-slate-50/70 p-4 lg:border-b-0 lg:border-r">
+                    <div className="relative h-28 w-28"><svg viewBox="0 0 100 100" className="h-full w-full -rotate-90" aria-label={`Site health score ${healthScore} out of 100`}><circle cx="50" cy="50" r="42" fill="none" stroke="#e2e8f0" strokeWidth="8"/><circle cx="50" cy="50" r="42" fill="none" stroke={healthScore >= 80 ? "#059669" : healthScore >= 60 ? "#d97706" : "#dc2626"} strokeWidth="8" strokeLinecap="round" strokeDasharray={scoreDash} strokeDashoffset={scoreDash * (1 - healthScore / 100)}/></svg><div className="absolute inset-0 flex flex-col items-center justify-center"><span className={`text-3xl font-bold ${scoreTone(healthScore)}`}>{healthScore}</span><span className="text-[10px] font-bold uppercase tracking-wide text-charcoal-400">Health</span></div></div>
+                  </div>
                   <div>
-                    <h2 className="text-lg font-semibold text-charcoal-800">Crawl stats</h2>
-                    <p className="text-sm text-charcoal-400">Review crawled pages, issue details, broken links, and page performance from this crawl.</p>
+                    <div className="flex flex-col gap-2 border-b border-slate-100 px-5 py-3 sm:flex-row sm:items-center sm:justify-between"><div><h2 className="font-bold text-charcoal-900">Crawl overview</h2><p className="text-xs text-charcoal-500">Latest crawl health and actionable workload.</p></div><StatusPill status={summary.status} /></div>
+                    <div className="grid grid-cols-2 divide-x divide-y divide-slate-100 sm:grid-cols-3 xl:grid-cols-6 xl:divide-y-0">
+                      {[["Pages", summary.pageCount, "Crawled", "text-charcoal-900"], ["Indexable", summary.indexable, "Pages", "text-green-700"], ["Issues", issues.length, "Findings", issues.length ? "text-amber-700" : "text-green-700"], ["Broken", brokenLinks.length, "Links", brokenLinks.length ? "text-red-600" : "text-green-700"], ["Open tasks", openTaskCount, "Execution", "text-brand-700"], ["High priority", executionTasks.filter((task) => task.priority === "high" && task.status !== "completed" && task.status !== "skipped").length, "Tasks", "text-red-600"]].map(([labelText, value, detail, tone]) => <div key={String(labelText)} className="px-4 py-3"><div className="text-[10px] font-bold uppercase tracking-wide text-charcoal-400">{labelText}</div><div className={`mt-1 text-xl font-bold ${tone}`}>{value}</div><div className="text-[10px] font-semibold text-charcoal-400">{detail}</div></div>)}
+                    </div>
                   </div>
-                  <div className="text-sm font-medium text-charcoal-500">
-                    Score <span className={scoreTone(summary.siteScore)}>{summary.siteScore ?? "-"}</span>
-                  </div>
-                </div>
-                <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
-                  <StatBox label="Pages crawled" value={summary.pageCount} />
-                  <StatBox label="Indexable pages" value={summary.indexable} tone="text-green-700" />
-                  <StatBox label="Issues" value={issues.length} tone={issues.length > 0 ? "text-amber-700" : "text-green-700"} />
-                  <StatBox label="Broken links" value={brokenLinks.length} tone={brokenLinks.length > 0 ? "text-red-600" : "text-green-700"} />
-                  <StatBox label="Status" value={summary.status} />
                 </div>
               </Card>
             )}
 
             <Card className="sticky top-0 z-20 bg-white/95 p-3 backdrop-blur">
-              <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-6">
+              <div className="flex flex-wrap gap-2">
                 {navItems.map((item) => (
                   <button
                     key={item.key}
@@ -2120,17 +2145,12 @@ export default function CrawlDetail() {
                       if (item.key === "pages" || item.key === "issues" || item.key === "broken") setTab(item.key);
                       setOpenIssueId(null);
                     }}
-                    className={`min-h-[74px] rounded-lg border px-3 py-3 text-left transition ${section === item.key ? item.active : item.tone}`}
+                    className={`inline-flex min-h-10 items-center gap-2 rounded-lg border px-3 py-2 text-sm font-bold transition ${section === item.key ? "border-brand-600 bg-brand-600 text-white shadow-sm" : "border-slate-200 bg-white text-charcoal-600 hover:border-brand-300 hover:text-brand-700"}`}
                   >
-                    <div className="flex items-start justify-between gap-2">
-                      <div>
-                        <div className="text-sm font-bold">{item.label}</div>
-                        <div className={`mt-1 text-xs font-medium ${section === item.key ? "text-white/80" : "opacity-70"}`}>{item.detail}</div>
-                      </div>
+                    <span>{item.label}</span>
                       {item.count !== undefined && (
-                        <span className={`rounded-full px-2.5 py-1 text-sm font-bold ${section === item.key ? item.countClass : "bg-white/90"}`}>{item.count}</span>
+                        <span className={`rounded-full px-2 py-0.5 text-xs ${section === item.key ? "bg-white/20 text-white" : "bg-slate-100 text-charcoal-500"}`}>{item.count}</span>
                       )}
-                    </div>
                   </button>
                 ))}
               </div>
@@ -2145,29 +2165,24 @@ export default function CrawlDetail() {
                   <h2 className="mt-1 text-lg font-bold text-charcoal-800">Project tasks from all modules</h2>
                   <p className="mt-1 text-sm text-charcoal-500">Action items from crawl, keyword research, local SEO, AI content, and social strategy. External publishing and posting remain manual/approval-required.</p>
                 </div>
-                <div className="flex flex-wrap gap-2">
+                <div className="flex shrink-0 flex-nowrap items-center gap-2">
                   {status.website?.id && (
-                    <Button variant="ghost" disabled={syncingTasks} onClick={() => void syncExecutionTasks(status.website?.id)}>
+                    <Button disabled={syncingTasks} onClick={() => void syncExecutionTasks(status.website?.id)}>
                       {syncingTasks ? "Syncing..." : "Sync tasks"}
                     </Button>
                   )}
-                  <Button variant="ghost" onClick={() => status.website?.id && navigate(`/website-projects/${status.website.id}`)}>
+                  <Button variant="ghost" className="border-emerald-200 bg-emerald-50 text-emerald-700 hover:bg-emerald-100" onClick={() => status.website?.id && navigate(`/website-projects/${status.website.id}`)}>
                     Open project
                   </Button>
                 </div>
               </div>
-              <div className="grid gap-3 border-b border-charcoal-100 bg-charcoal-50 px-5 py-4 sm:grid-cols-4">
-                <StatBox label="Open tasks" value={executionTasks.filter((task) => task.status !== "completed" && task.status !== "skipped").length} />
-                <StatBox label="High priority" value={executionTasks.filter((task) => task.priority === "high" && task.status !== "completed" && task.status !== "skipped").length} tone="text-red-600" />
-                <StatBox label="Needs review" value={executionTasks.filter((task) => task.status === "needs_review").length} tone="text-blue-700" />
-                <StatBox label="Completed" value={executionTasks.filter((task) => task.status === "completed").length} tone="text-green-700" />
-              </div>
+              {taskActionMessage && <div className="border-b border-emerald-100 bg-emerald-50 px-5 py-2.5 text-sm font-semibold text-emerald-800">{taskActionMessage}</div>}
               <div className="flex flex-wrap gap-2 border-b border-charcoal-100 px-5 py-3">
                 {taskFilters.map((item) => (
                   <button
                     key={item.key}
                     type="button"
-                    onClick={() => setTaskModuleFilter(item.key)}
+                    onClick={() => { setTaskModuleFilter(item.key); setTaskPage(1); }}
                     className={`inline-flex items-center gap-2 rounded-full border px-3 py-1.5 text-xs font-semibold transition ${
                       taskModuleFilter === item.key
                         ? "border-brand-500 bg-brand-50 text-brand-700"
@@ -2179,13 +2194,14 @@ export default function CrawlDetail() {
                   </button>
                 ))}
               </div>
+              {visibleExecutionTasks.length > taskPageSize && <Pagination page={effectiveTaskPage} total={visibleExecutionTasks.length} pageSize={taskPageSize} onPage={setTaskPage} />}
               <div className="divide-y divide-charcoal-100">
                 {visibleExecutionTasks.length === 0 ? (
                   <div className="px-5 py-8 text-sm text-charcoal-500">
                     No execution tasks match this filter yet. Click Sync tasks after crawl, keyword research, local SEO, AI content, or social strategy data exists.
                   </div>
                 ) : (
-                  visibleExecutionTasks.slice(0, 40).map((task) => (
+                  pagedExecutionTasks.map((task) => (
                     <div key={task.id} className="px-5 py-4">
                       <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
                         <div className="min-w-0">
@@ -2203,15 +2219,17 @@ export default function CrawlDetail() {
                         </div>
                         <div className="flex shrink-0 flex-wrap gap-2">
                           <Button variant="ghost" onClick={() => setOpenTaskId(task.id)}>Open</Button>
+                          {task.status === "completed" && <Button variant="ghost" className="border-amber-200 bg-amber-50 text-amber-800 hover:bg-amber-100" onClick={() => void updateTaskStatus(task.id, "ready")}>Reopen</Button>}
                           {task.requiresApproval && task.status !== "approved" && task.status !== "completed" && <Button variant="ghost" onClick={() => void updateTaskStatus(task.id, "approved")}>Approve</Button>}
                           {task.status !== "completed" && <Button onClick={() => void updateTaskStatus(task.id, "completed")}>Complete</Button>}
-                          {task.status !== "skipped" && <Button variant="ghost" onClick={() => void updateTaskStatus(task.id, "skipped")}>Skip</Button>}
+                          {task.status !== "skipped" && task.status !== "completed" && <Button variant="ghost" onClick={() => void updateTaskStatus(task.id, "skipped")}>Skip</Button>}
                         </div>
                       </div>
                     </div>
                   ))
                 )}
               </div>
+              <Pagination page={effectiveTaskPage} total={visibleExecutionTasks.length} pageSize={taskPageSize} onPage={setTaskPage} />
             </Card>}
 
           {/* Issue breakdown grid — click a card to filter the issues table */}
@@ -2543,6 +2561,10 @@ export default function CrawlDetail() {
           }}
           onComplete={() => {
             void updateTaskStatus(openTask.id, "completed");
+            setOpenTaskId(null);
+          }}
+          onReopen={() => {
+            void updateTaskStatus(openTask.id, "ready");
             setOpenTaskId(null);
           }}
           onSkip={() => {

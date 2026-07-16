@@ -37,6 +37,7 @@ export const config = {
   recaptchaMinScore: process.env.RECAPTCHA_MIN_SCORE ? parseFloat(process.env.RECAPTCHA_MIN_SCORE) : 0.5,
   openaiApiKey: process.env.OPENAI_API_KEY ?? "",
   openaiModel: process.env.OPENAI_MODEL ?? "gpt-4o-mini",
+  openaiEmbeddingModel: process.env.OPENAI_EMBEDDING_MODEL ?? "text-embedding-3-small",
   socialConnectBaseUrl: process.env.SOCIAL_CONNECT_BASE_URL ?? "https://api.dothdigital.com",
   socialConnectApiKey: process.env.SOCIAL_CONNECT_API_KEY ?? "",
   socialConnectAppKey: process.env.SOCIAL_CONNECT_APP_KEY ?? "",
@@ -52,3 +53,4 @@ export const config = {
 };
 
 export const CRAWL_QUEUE = "crawl";
+export const KEYWORD_RESEARCH_QUEUE = "keyword-research";

@@ -44,7 +44,7 @@ docker compose -f docker-compose.dev.yml --env-file .env.dev up -d --build
 The staging compose project uses:
 
 - Separate Compose project name: `webtummy-dev`
-- Separate MySQL volume: `webtummy-dev_mysql_dev_data`
+- Separate PostgreSQL volume: `webtummy-dev_postgres_dev_data`
 - Separate Redis volume: `webtummy-dev_redis_dev_data`
 - Separate local web port: `127.0.0.1:8081`
 

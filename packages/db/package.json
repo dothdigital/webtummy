@@ -11,6 +11,7 @@
     "generate": "prisma generate",
     "migrate": "prisma migrate dev",
     "push": "prisma db push",
+    "postgres:init": "prisma db execute --file prisma/postgresql-init.sql --schema prisma/schema.prisma",
     "backfill-workspaces": "tsx scripts/backfill-workspaces.ts",
     "studio": "prisma studio"
   },

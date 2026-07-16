@@ -1,7 +1,7 @@
 import type { Request } from "express";
 import { prisma, type Prisma } from "@webtummy/db";
 import { projectClientIdForRequest } from "./project-scope.js";
-import { defaultWorkspacePermission, type ConfigurableWorkspaceRole } from "@webtummy/core/workspace-permissions";
+import { defaultWorkspacePermission, rolesConsumeSeat, workspaceRoleCanEver, type ConfigurableWorkspaceRole } from "@webtummy/core/workspace-permissions";
 
 export const workspaceRoles = ["owner", "admin", "manager", "approver", "editor", "viewer", "client_viewer"] as const;
 export type WorkspaceRole = (typeof workspaceRoles)[number];
@@ -9,7 +9,7 @@ export const assignableWorkspaceRoles = ["admin", "manager", "editor", "viewer",
 export type AssignableWorkspaceRole = (typeof assignableWorkspaceRoles)[number];
 
 export const rolesByWorkspaceType: Record<string, readonly WorkspaceRole[]> = {
-  personal: ["owner", "admin", "editor", "viewer"],
+  personal: ["owner", "admin"],
   business: ["owner", "admin", "manager", "approver", "editor", "viewer"],
   agency: ["owner", "admin", "manager", "approver", "editor", "viewer", "client_viewer"],
   ecommerce: ["owner", "admin", "manager", "approver", "editor", "viewer"],
@@ -44,10 +44,11 @@ async function bootstrapWorkspace(req: Request, legacyClientId: string) {
       data: { legacyClientId, name: tenant.name, workspaceType: normalizedType, ownerUserId: owner.id },
     });
     for (const user of users) {
+      if (normalizedType === "personal" && user.id !== owner.id) continue;
       const membership = await tx.workspaceMembership.create({
         data: { workspaceId: workspace.id, userId: user.id, status: "active", joinedAt: new Date() },
       });
-      const roles = user.id === owner.id ? (normalizedType === "personal" ? ["owner"] : ["owner", "admin"]) : user.role === "client_admin" ? (normalizedType === "personal" ? ["editor"] : ["admin"]) : ["viewer"];
+      const roles = user.id === owner.id ? (normalizedType === "personal" ? ["owner"] : ["owner", "admin"]) : user.role === "client_admin" ? ["admin"] : ["viewer"];
       await tx.workspaceMemberRole.createMany({ data: roles.map((role) => ({ membershipId: membership.id, role })) });
     }
     await tx.workspaceActivity.create({
@@ -86,6 +87,9 @@ export async function workspaceContext(req: Request): Promise<WorkspaceContext> 
     include: { roles: { select: { role: true } } },
   });
   if (!membership || membership.status !== "active") throw Object.assign(new Error("Active workspace membership is required."), { statusCode: 403 });
+  if (workspace.workspaceType === "personal" && workspace.ownerUserId !== membership.userId) throw Object.assign(new Error("Personal is a single-user Owner/Admin workspace."), { statusCode: 403 });
+  const storedRoles = membership.roles.map((item) => item.role);
+  if (storedRoles.includes("client_viewer") && (workspace.workspaceType !== "agency" || storedRoles.length !== 1)) throw Object.assign(new Error("Client Viewer must be an Agency-only, external-only role."), { statusCode: 403 });
   return {
     workspace: {
       id: workspace.id, name: workspace.name, workspaceType: workspace.workspaceType,
@@ -112,15 +116,25 @@ export function hasWorkspaceRole(context: WorkspaceContext, required: WorkspaceR
   if (denied) return false;
   if (allowed) return true;
   if (required === "client_viewer") return context.roles.has("client_viewer");
-  const requiredIndex = inheritedRoleOrder.indexOf(required);
+  const canonicalRequired = required === "approver" ? "manager" : required;
+  const requiredIndex = inheritedRoleOrder.indexOf(canonicalRequired);
   return [...context.roles].some((role) => {
-    const roleIndex = inheritedRoleOrder.indexOf(role as WorkspaceRole);
+    const canonicalRole = role === "approver" || role === "manager_approver" ? "manager" : role;
+    const roleIndex = inheritedRoleOrder.indexOf(canonicalRole as WorkspaceRole);
     return roleIndex >= 0 && requiredIndex >= 0 && roleIndex <= requiredIndex;
   });
 }
 
 export function hasWorkspacePermission(context: WorkspaceContext, permission: string) {
   if (context.roles.has("owner") || context.roles.has("admin")) return true;
+  const policyRoles = [...context.roles].map((role) => role === "approver" || role === "manager_approver" ? "manager" : role) as ConfigurableWorkspaceRole[];
+  if (context.roles.has("client_viewer")) return policyRoles.length === 1 && workspaceRoleCanEver("client_viewer", permission) && permissionDecision(context, permission, ["client_viewer"]);
+  const ceilingRoles = policyRoles.filter((role): role is ConfigurableWorkspaceRole => ["manager", "editor", "viewer"].includes(role));
+  if (!ceilingRoles.some((role) => workspaceRoleCanEver(role, permission))) return false;
+  return permissionDecision(context, permission, ceilingRoles);
+}
+
+function permissionDecision(context: WorkspaceContext, permission: string, policyRoles: ConfigurableWorkspaceRole[]) {
   const overrides = context.membership.permissionOverrides && typeof context.membership.permissionOverrides === "object"
     ? context.membership.permissionOverrides as { deny?: unknown; allow?: unknown }
     : {};
@@ -134,20 +148,21 @@ export function hasWorkspacePermission(context: WorkspaceContext, permission: st
   const rolePolicies = settings.rolePermissionOverrides && typeof settings.rolePermissionOverrides === "object"
     ? settings.rolePermissionOverrides as Record<string, { allow?: unknown; deny?: unknown }>
     : {};
-  const policyRoles = [...context.roles].map((role) => role === "approver" ? "manager" : role);
   if (policyRoles.some((role) => Array.isArray(rolePolicies[role]?.deny) && rolePolicies[role].deny.includes(permission))) return false;
-  if (policyRoles.some((role) => Array.isArray(rolePolicies[role]?.allow) && rolePolicies[role].allow.includes(permission))) return true;
-  return workspaceRoles.some((role) => {
-    if (!hasWorkspaceRole(context, role) || role === "owner" || role === "admin") return false;
-    const defaultRole = (role === "approver" ? "manager" : role) as ConfigurableWorkspaceRole;
-    return defaultWorkspacePermission(defaultRole, permission);
-  });
+  if (policyRoles.some((role) => workspaceRoleCanEver(role, permission) && Array.isArray(rolePolicies[role]?.allow) && rolePolicies[role].allow.includes(permission))) return true;
+  const inherited = new Set<ConfigurableWorkspaceRole>();
+  for (const role of policyRoles) {
+    if (role === "manager") { inherited.add("manager"); inherited.add("editor"); inherited.add("viewer"); }
+    else if (role === "editor") { inherited.add("editor"); inherited.add("viewer"); }
+    else inherited.add(role);
+  }
+  return [...inherited].some((role) => workspaceRoleCanEver(role, permission) && defaultWorkspacePermission(role, permission));
 }
 
 export function effectiveWorkspaceRoles(context: WorkspaceContext): AssignableWorkspaceRole[] {
   const effective = new Set<AssignableWorkspaceRole>();
   if (context.roles.has("owner") || context.roles.has("admin")) effective.add("admin");
-  if (context.roles.has("manager") || context.roles.has("approver")) effective.add("manager");
+  if (context.roles.has("manager") || context.roles.has("approver") || context.roles.has("manager_approver")) effective.add("manager");
   if (context.roles.has("editor")) effective.add("editor");
   if (context.roles.has("viewer")) effective.add("viewer");
   if (context.roles.has("client_viewer")) effective.add("client_viewer");
@@ -169,6 +184,46 @@ export function validateRolesForWorkspace(context: WorkspaceContext, roles: read
     const label = workspaceType.charAt(0).toUpperCase() + workspaceType.slice(1);
     throw Object.assign(new Error(label + " workspaces do not support: " + invalid.join(", ") + "."), { statusCode: 400 });
   }
+  if (roles.includes("client_viewer") && (workspaceType !== "agency" || roles.length !== 1)) throw Object.assign(new Error("Client Viewer is Agency-only and cannot be combined with an internal role."), { statusCode: 400 });
+}
+
+function seatLimit(settings: unknown) {
+  const value = settings && typeof settings === "object" ? Number((settings as { seatLimit?: unknown }).seatLimit) : NaN;
+  return Number.isInteger(value) && value > 0 ? value : null;
+}
+
+export async function workspaceSeatUsage(workspaceId: string, settings: unknown, excludeInvitationEmail?: string) {
+  const now = new Date();
+  const [memberships, invitations] = await Promise.all([
+    prisma.workspaceMembership.findMany({ where: { workspaceId, status: "active" }, select: { roles: { select: { role: true } } } }),
+    prisma.workspaceInvitation.findMany({ where: { workspaceId, status: "invited", expiresAt: { gt: now }, ...(excludeInvitationEmail ? { normalizedEmail: { not: excludeInvitationEmail } } : {}) }, select: { rolesJson: true } }),
+  ]);
+  const used = memberships.filter((membership) => rolesConsumeSeat(membership.roles.map((item) => item.role))).length;
+  const reserved = invitations.filter((invitation) => rolesConsumeSeat(Array.isArray(invitation.rolesJson) ? invitation.rolesJson.map(String) : [])).length;
+  const clientViewers = memberships.filter((membership) => { const roles = membership.roles.map((item) => item.role); return roles.length === 1 && roles[0] === "client_viewer"; }).length;
+  const limit = seatLimit(settings);
+  return { used, reserved, total: used + reserved, limit, available: limit == null ? null : Math.max(0, limit - used - reserved), clientViewers };
+}
+
+export async function requireAvailableSeat(context: WorkspaceContext, roles: readonly string[], options: { currentMembershipId?: string; excludeInvitationEmail?: string } = {}) {
+  if (!rolesConsumeSeat(roles)) return workspaceSeatUsage(context.workspace.id, context.workspace.settingsJson, options.excludeInvitationEmail);
+  const usage = await workspaceSeatUsage(context.workspace.id, context.workspace.settingsJson, options.excludeInvitationEmail);
+  let additional = 1;
+  if (options.currentMembershipId) {
+    const current = await prisma.workspaceMembership.findFirst({ where: { id: options.currentMembershipId, workspaceId: context.workspace.id }, select: { status: true, roles: { select: { role: true } } } });
+    if (current?.status === "active" && rolesConsumeSeat(current.roles.map((item) => item.role))) additional = 0;
+  }
+  if (usage.limit != null && usage.total + additional > usage.limit) throw Object.assign(new Error(`No paid workspace seats are available. ${usage.used} active and ${usage.reserved} invited internal seats are already allocated.`), { statusCode: 409 });
+  return usage;
+}
+
+export async function workspaceApprovalMode(context: WorkspaceContext) {
+  if (context.workspace.workspaceType === "personal") return "solo" as const;
+  const otherApprover = await prisma.workspaceMembership.findFirst({
+    where: { workspaceId: context.workspace.id, status: "active", id: { not: context.membership.id }, roles: { some: { role: { in: ["owner", "admin", "manager", "approver", "manager_approver"] } } } },
+    select: { id: true },
+  });
+  return otherApprover ? "team" as const : "solo" as const;
 }
 
 export function isWorkspaceOwner(context: WorkspaceContext) {

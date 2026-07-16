@@ -5,6 +5,7 @@ import { useAuth } from "../auth.js";
 import { ACTIVE_CLIENT_EVENT, api, endImpersonation, getImpersonationLabel } from "../api.js";
 import { Logo, LogoMark } from "./Logo.js";
 import type { BillingPlan, BillingStatus } from "../types.js";
+import BackgroundJobCenter from "./BackgroundJobCenter.js";
 
 type NavIcon = "overview" | "projects" | "audits" | "keywords" | "local" | "social" | "content" | "billing" | "users" | "plans" | "notifications";
 type HelpSection = { title: string; body?: string; bullets?: string[] };
@@ -17,9 +18,8 @@ type HelpContent = {
 };
 
 const nav = [
-  { to: "/", label: "Dashboard", icon: "overview", end: true },
+  { to: "/workspace", label: "My Workspace", icon: "overview", end: true },
   { to: "/projects", label: "Projects", icon: "projects", permission: "read_internal" },
-  { to: "/workspace", label: "Workspace", icon: "users" },
   { to: "/opportunities", label: "Opportunities", icon: "local", permission: "run_ai_analysis" },
   { to: "/strategy", label: "Strategy", icon: "plans", permission: "edit_strategy" },
   { to: "/keywords", label: "Keywords", icon: "keywords", permission: "run_ai_analysis" },
@@ -567,7 +567,7 @@ const helpByPath: Record<string, HelpContent> = {
 function NavGlyph({ icon }: { icon: NavIcon }) {
   const common = { fill: "none", stroke: "currentColor", strokeWidth: 2, strokeLinecap: "round" as const, strokeLinejoin: "round" as const };
   return (
-    <svg viewBox="0 0 24 24" aria-hidden="true" className="h-4 w-4 shrink-0">
+    <svg viewBox="0 0 24 24" aria-hidden="true" className="h-5 w-5 shrink-0">
       {icon === "overview" && (
         <>
           <path {...common} d="M4 13h6v7H4z" />
@@ -663,6 +663,8 @@ export default function Layout({ children }: { children: ReactNode }) {
   const location = useLocation();
   const navigate = useNavigate();
   const [open, setOpen] = useState(false);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(() => window.localStorage.getItem("senuke-sidebar") !== "expanded");
+  const [sidebarTooltip, setSidebarTooltip] = useState<{ label: string; top: number } | null>(null);
   const [helpOpen, setHelpOpen] = useState(false);
   const [impersonation, setImpersonation] = useState<string | null>(() => getImpersonationLabel());
   const [billingStatus, setBillingStatus] = useState<BillingStatus | null>(null);
@@ -682,6 +684,17 @@ export default function Layout({ children }: { children: ReactNode }) {
   useEffect(() => {
     setHelpOpen(false);
   }, [location.pathname]);
+
+  useEffect(() => {
+    window.localStorage.setItem("senuke-sidebar", sidebarCollapsed ? "collapsed" : "expanded");
+    if (!sidebarCollapsed) setSidebarTooltip(null);
+  }, [sidebarCollapsed]);
+
+  const showSidebarTooltip = (label: string, element: HTMLElement) => {
+    if (!sidebarCollapsed) return;
+    const bounds = element.getBoundingClientRect();
+    setSidebarTooltip({ label, top: bounds.top + bounds.height / 2 });
+  };
 
   useEffect(() => {
     if (!user || user.role === "super_admin") {
@@ -706,6 +719,7 @@ export default function Layout({ children }: { children: ReactNode }) {
     window.addEventListener("senuke-ai:notifications-changed", refresh);
     return () => { cancelled = true; window.clearInterval(timer); window.removeEventListener("senuke-ai:notifications-changed", refresh); };
   }, [user, workspacePermissions.view_notifications]);
+
 
   useEffect(() => {
     if (!user) { setWorkspaceRoles([]); setWorkspacePermissions({}); setWorkspaceIdentity(null); return; }
@@ -754,12 +768,12 @@ export default function Layout({ children }: { children: ReactNode }) {
     if (n.permission && user?.role !== "super_admin" && workspacePermissions[n.permission] !== true) return false;
     if (clientViewerOnly) return n.to === "/workspace" || n.to === "/reports" || n.to.startsWith("/workspace?tab=notifications");
     if (n.to === "/billing") return user?.role === "super_admin" || primaryRole === "admin";
-    if (n.to === "/workspace") return primaryRole === "admin" || primaryRole === "manager";
+    if (n.to === "/workspace") return true;
     return true;
   });
   const workspaceItems = items.filter((item) => !item.superOnly);
   const platformAdminItems = items.filter((item) => item.superOnly);
-  const workspaceHref = workspaceIdentity?.workspaceType === "agency" ? "/agency" : "/";
+  const workspaceHref = "/workspace";
   const workspaceTypeLabel = workspaceIdentity
     ? workspaceIdentity.workspaceType.charAt(0).toUpperCase() + workspaceIdentity.workspaceType.slice(1) + " Workspace"
     : null;
@@ -782,19 +796,21 @@ export default function Layout({ children }: { children: ReactNode }) {
     <div className="flex min-h-screen bg-slate-50 text-slate-700">
       {/* Sidebar */}
       <aside
-        className={`fixed inset-y-0 left-0 z-30 flex w-56 transform flex-col overflow-hidden border-r border-slate-200 bg-slate-100 text-slate-700 transition-transform lg:translate-x-0 ${
+        className={`fixed inset-y-0 left-0 z-30 flex w-56 transform flex-col overflow-visible border-r border-slate-200 bg-slate-100 text-slate-700 transition-[width,transform] duration-200 lg:translate-x-0 ${sidebarCollapsed ? "lg:w-20" : "lg:w-56"} ${
           open ? "translate-x-0" : "-translate-x-full"
         }`}
       >
-        <div className="px-4 pb-4 pt-5">
-          <Link to="/" className="inline-flex max-w-full items-center">
-            <Logo size={30} />
+        <div className="relative px-4 pb-4 pt-5">
+          <Link to="/" className={`inline-flex max-w-full items-center ${sidebarCollapsed ? "lg:w-full lg:justify-center" : ""}`} title="SEnuke AI">
+            <span className={sidebarCollapsed ? "lg:hidden" : ""}><Logo size={30} /></span>
+            <span className={`hidden ${sidebarCollapsed ? "lg:inline-flex" : ""}`}><LogoMark size={30} /></span>
           </Link>
-          <div className="mt-4 flex min-w-0 items-center gap-3 border-t border-slate-200 pt-4">
+          <button type="button" onClick={() => setSidebarCollapsed((value) => !value)} className="absolute -right-3 top-5 z-40 hidden h-8 w-8 items-center justify-center rounded-full border border-slate-200 bg-white text-xl font-black leading-none text-slate-600 shadow-md hover:border-brand-300 hover:text-brand-700 lg:flex" aria-label={sidebarCollapsed ? "Expand sidebar" : "Collapse sidebar"} title={sidebarCollapsed ? "Expand sidebar" : "Collapse sidebar"}><span className="-mt-0.5">{sidebarCollapsed ? "›" : "‹"}</span></button>
+          <div className={`mt-4 flex min-w-0 items-center gap-3 border-t border-slate-200 pt-4 ${sidebarCollapsed ? "lg:justify-center" : ""}`} title={sidebarCollapsed ? `${user?.name ?? user?.email} · ${workspaceRoleLabel}` : undefined}>
             <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-brand-100 font-bold text-brand-700">
               {(user?.name ?? user?.email ?? "?")[0].toUpperCase()}
             </div>
-            <div className="min-w-0">
+            <div className={`min-w-0 ${sidebarCollapsed ? "lg:hidden" : ""}`}>
               <div className="truncate text-sm font-bold text-slate-900">{user?.name ?? user?.email}</div>
               <div className="truncate text-xs font-medium text-slate-500">
                 {workspaceIdentity ? workspaceRoleLabel : (user?.role === "super_admin" ? "Admin Workspace" : "My Workspace")}
@@ -816,12 +832,17 @@ export default function Layout({ children }: { children: ReactNode }) {
           </div>
         </div>
         <nav className="flex-1 overflow-y-auto px-4 pb-4">
-          <div className="mb-2 px-3 text-[10px] font-bold uppercase tracking-[0.16em] text-slate-400">Workspace</div>
+          <div className={`mb-2 px-3 text-[10px] font-bold uppercase tracking-[0.16em] text-slate-400 ${sidebarCollapsed ? "lg:hidden" : ""}`}>Workspace</div>
           <div className="space-y-1">{workspaceItems.map((n) => (
             <NavLink
               key={n.to}
               to={n.to}
               end={n.end}
+              title={sidebarCollapsed ? n.label : undefined}
+              onMouseEnter={(event) => showSidebarTooltip(n.label, event.currentTarget)}
+              onMouseLeave={() => setSidebarTooltip(null)}
+              onFocus={(event) => showSidebarTooltip(n.label, event.currentTarget)}
+              onBlur={() => setSidebarTooltip(null)}
               onClick={() => setOpen(false)}
               className={({ isActive }) =>
                 `flex items-center gap-3 rounded-lg border-l-2 px-3 py-2.5 text-sm font-semibold transition ${
@@ -830,33 +851,32 @@ export default function Layout({ children }: { children: ReactNode }) {
               }
             >
               <NavGlyph icon={n.icon} />
-              <span className="min-w-0 flex-1">{n.label}</span>
+              <span className={`min-w-0 flex-1 ${sidebarCollapsed ? "lg:hidden" : ""}`}>{n.label}</span>
               {n.to.includes("tab=notifications") && unreadNotifications > 0 && <span className="relative flex h-2.5 w-2.5" aria-label={`${unreadNotifications} unread notifications`}><span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-red-400 opacity-60" /><span className="relative inline-flex h-2.5 w-2.5 rounded-full bg-red-600" /></span>}
             </NavLink>
           ))}</div>
           {platformAdminItems.length > 0 && <div className="mt-6 border-t border-slate-200 pt-4">
-            <div className="mb-2 px-3 text-[10px] font-bold uppercase tracking-[0.16em] text-rose-500">Platform Admin</div>
-            <div className="space-y-1">{platformAdminItems.map((n) => <NavLink key={n.to} to={n.to} end={n.end} onClick={() => setOpen(false)} className={({ isActive }) => `flex items-center gap-3 rounded-lg border-l-2 px-3 py-2.5 text-sm font-semibold transition ${isActive ? "border-rose-500 bg-white text-rose-700 shadow-sm" : "border-transparent text-slate-700 hover:bg-white/70 hover:text-rose-700"}`}><NavGlyph icon={n.icon} />{n.label}</NavLink>)}</div>
+            <div className={`mb-2 px-3 text-[10px] font-bold uppercase tracking-[0.16em] text-rose-500 ${sidebarCollapsed ? "lg:hidden" : ""}`}>Platform Admin</div>
+            <div className="space-y-1">{platformAdminItems.map((n) => <NavLink key={n.to} to={n.to} end={n.end} title={sidebarCollapsed ? n.label : undefined} onMouseEnter={(event) => showSidebarTooltip(n.label, event.currentTarget)} onMouseLeave={() => setSidebarTooltip(null)} onFocus={(event) => showSidebarTooltip(n.label, event.currentTarget)} onBlur={() => setSidebarTooltip(null)} onClick={() => setOpen(false)} className={({ isActive }) => `flex items-center gap-3 rounded-lg border-l-2 px-3 py-2.5 text-sm font-semibold transition ${isActive ? "border-rose-500 bg-white text-rose-700 shadow-sm" : "border-transparent text-slate-700 hover:bg-white/70 hover:text-rose-700"}`}><NavGlyph icon={n.icon} /><span className={sidebarCollapsed ? "lg:hidden" : ""}>{n.label}</span></NavLink>)}</div>
           </div>}
         </nav>
-        <div className="mx-4 mb-3 rounded-lg border border-slate-200 bg-slate-50 p-4 shadow-sm">
-          <div className="text-sm font-semibold text-slate-900">{workspaceIdentity ? `${workspaceTypeLabel}` : user?.role === "super_admin" ? "Platform Admin" : "Pro Plan"}</div>
-          <div className="mt-2 text-xs leading-5 text-slate-500">AI credits and project activity update as tasks run.</div>
-        </div>
         <div className="border-t border-slate-200 p-4">
-          <div className="grid grid-cols-3 gap-2">
-            <button type="button" aria-label="Help" title="Help" onClick={() => setHelpOpen(true)} className="flex h-10 items-center justify-center rounded-lg border border-slate-200 bg-white font-bold text-slate-500 hover:bg-slate-50">?</button>
-            {workspacePermissions.view_notifications === true && <Link to="/workspace?tab=notifications" aria-label={unreadNotifications ? `${unreadNotifications} unread notifications` : "Notifications"} title="Notifications" className="relative flex h-10 items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-500 hover:border-brand-300 hover:text-brand-700"><NavGlyph icon="notifications" />{unreadNotifications > 0 && <span className="absolute -right-1.5 -top-1.5 flex min-h-5 min-w-5 items-center justify-center rounded-full border-2 border-slate-100 bg-red-600 px-1 text-[10px] font-bold text-white">{unreadNotifications > 99 ? "99+" : unreadNotifications}</span>}</Link>}
-            <button type="button" aria-label="Sign out" title="Sign out" onClick={() => { logout(); navigate("/"); }} className="flex h-10 items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-500 hover:border-red-200 hover:text-red-600"><svg viewBox="0 0 24 24" aria-hidden="true" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M10 17l5-5-5-5" /><path d="M15 12H3" /><path d="M14 3h5a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-5" /></svg></button>
+          <div className={`grid grid-cols-3 gap-2 ${sidebarCollapsed ? "lg:grid-cols-1" : ""}`}>
+            <button type="button" aria-label="Help" title="Help" onMouseEnter={(event) => showSidebarTooltip("Help", event.currentTarget)} onMouseLeave={() => setSidebarTooltip(null)} onFocus={(event) => showSidebarTooltip("Help", event.currentTarget)} onBlur={() => setSidebarTooltip(null)} onClick={() => setHelpOpen(true)} className="flex h-10 items-center justify-center rounded-lg border border-slate-200 bg-white text-lg font-bold text-slate-500 hover:bg-slate-50">?</button>
+            {workspacePermissions.view_notifications === true && <Link to="/workspace?tab=notifications" aria-label={unreadNotifications ? `${unreadNotifications} unread notifications` : "Notifications"} title="Notifications" onMouseEnter={(event) => showSidebarTooltip("Notifications", event.currentTarget)} onMouseLeave={() => setSidebarTooltip(null)} onFocus={(event) => showSidebarTooltip("Notifications", event.currentTarget)} onBlur={() => setSidebarTooltip(null)} className="relative flex h-10 items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-500 hover:border-brand-300 hover:text-brand-700"><NavGlyph icon="notifications" />{unreadNotifications > 0 && <span className="absolute -right-1.5 -top-1.5 flex min-h-5 min-w-5 items-center justify-center rounded-full border-2 border-slate-100 bg-red-600 px-1 text-[10px] font-bold text-white">{unreadNotifications > 99 ? "99+" : unreadNotifications}</span>}</Link>}
+            <button type="button" aria-label="Sign out" title="Sign out" onMouseEnter={(event) => showSidebarTooltip("Sign out", event.currentTarget)} onMouseLeave={() => setSidebarTooltip(null)} onFocus={(event) => showSidebarTooltip("Sign out", event.currentTarget)} onBlur={() => setSidebarTooltip(null)} onClick={() => { logout(); navigate("/"); }} className="flex h-10 items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-500 hover:border-red-200 hover:text-red-600"><svg viewBox="0 0 24 24" aria-hidden="true" className="h-5 w-5" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M10 17l5-5-5-5" /><path d="M15 12H3" /><path d="M14 3h5a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-5" /></svg></button>
           </div>
         </div>
       </aside>
 
+      {sidebarCollapsed && sidebarTooltip && <div className="pointer-events-none fixed left-[88px] z-[80] hidden -translate-y-1/2 items-center lg:flex" style={{ top: sidebarTooltip.top }} role="tooltip"><span className="absolute -left-1 h-2.5 w-2.5 rotate-45 bg-slate-950" /><span className="relative whitespace-nowrap rounded-md bg-slate-950 px-3 py-2 text-xs font-bold text-white shadow-xl">{sidebarTooltip.label}</span></div>}
+
       {open && <div className="fixed inset-0 z-20 bg-black/30 lg:hidden" onClick={() => setOpen(false)} />}
 
       {/* Main */}
-      <div className="flex min-w-0 flex-1 flex-col lg:ml-56">
+      <div className={`flex min-w-0 flex-1 flex-col transition-[margin] duration-200 ${sidebarCollapsed ? "lg:ml-20" : "lg:ml-56"}`}>
         <button type="button" aria-label="Open navigation" className="fixed left-3 top-3 z-20 rounded-lg border border-slate-200 bg-white p-2 shadow-sm hover:bg-charcoal-50 lg:hidden" onClick={() => setOpen(true)}>☰</button>
+        <BackgroundJobCenter enabled={Boolean(user)} />
         {billingStatus?.status === "trialing" && billingStatus.hasAccess && (
           <div className="border-b border-amber-300 bg-amber-300 px-4 py-3 text-sm text-amber-950 shadow-sm lg:px-8">
             <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
@@ -923,9 +943,139 @@ export default function Layout({ children }: { children: ReactNode }) {
         <main className="min-w-0 flex-1 overflow-x-hidden px-4 pb-4 pt-16 lg:p-8">{children}</main>
         <Footer />
       </div>
-      <GlobalHelpDrawer content={getHelpContent(location.pathname)} open={helpOpen} onClose={() => setHelpOpen(false)} />
+      {!helpOpen && <button type="button" onClick={() => setHelpOpen(true)} className="fixed bottom-5 right-5 z-[70] inline-flex items-center gap-2 rounded-full bg-gradient-to-r from-brand-600 to-emerald-500 px-5 py-3 text-sm font-black text-white shadow-[0_14px_35px_rgba(13,148,136,0.32)] transition hover:-translate-y-0.5 hover:shadow-[0_18px_40px_rgba(13,148,136,0.38)] focus:outline-none focus:ring-4 focus:ring-brand-100" aria-label="Ask SEnuke AI"><span className="grid h-6 w-6 place-items-center rounded-full bg-white/20 text-base" aria-hidden="true">✦</span><span>Ask SEnuke</span></button>}
+      <ProjectAgentDrawer content={getHelpContent(location.pathname)} pathname={location.pathname} search={location.search} open={helpOpen} onClose={() => setHelpOpen(false)} />
     </div>
   );
+}
+
+type ProjectAgentPlan = {
+  projectId: string;
+  page: string;
+  answer: string;
+  summary: string;
+  currentState: { completed: string[]; active: string[]; blocked: string[] };
+  nextPlannedActivity: { title: string; reason: string; actionUrl: string; priority: string; expectedOutcome: string; dependencies: string[]; blocked: boolean };
+  suggestions: { title: string; reason: string; impact: string; confidence: number; evidence: string[] }[];
+  predictedOutcome: { statement: string; confidence: number; assumptions: string[]; dependencies: string[] };
+  pageGuidance: { title: string; detail: string; actionUrl: string | null }[];
+  suggestedChanges: { title: string; reason: string; requiresApproval: boolean }[];
+  support: { explanation: string; warnings: string[]; missingInputs: string[] };
+  generatedBy: "mastra" | "rules";
+};
+
+function agentPage(pathname: string) {
+  if (pathname.includes("/intake")) return "intake";
+  if (pathname.startsWith("/opportunities")) return "opportunities";
+  if (pathname.startsWith("/keyword-insights")) return "keyword-insights";
+  if (pathname.startsWith("/keywords")) return "keywords";
+  if (pathname.startsWith("/site-analysis") || pathname.startsWith("/crawls/")) return "site-analysis";
+  if (pathname.startsWith("/strategy")) return "strategy";
+  if (pathname.startsWith("/approvals")) return "approvals";
+  if (pathname.startsWith("/reports")) return "reports";
+  if (pathname.includes("notifications")) return "notifications";
+  return "project";
+}
+
+const agentPageHelp: Record<string, { label: string; purpose: string; prompts: string[] }> = {
+  project: { label: "Project overview", purpose: "Understand project progress, dependencies, pending tasks, and the safest next action.", prompts: ["What is the project’s current position?", "What should I do next?", "What is blocking this project?", "Summarize project progress"] },
+  intake: { label: "Project intake", purpose: "Check whether the saved business, audience, offer, locations, goals, and website details are complete enough for downstream AI.", prompts: ["What is the project’s current position?", "What intake information is missing?", "Will this intake produce useful recommendations?", "What should I improve before continuing?"] },
+  opportunities: { label: "Opportunity Finder", purpose: "Understand each recommended direction, its evidence, score, trade-offs, and how to improve it.", prompts: ["What is the project’s current position?", "How can I improve the opportunity score?", "Why is this opportunity recommended?", "Which opportunity best supports my goal?"] },
+  keywords: { label: "Keyword Intelligence", purpose: "Review keyword direction, intent, local-market fit, gaps, approvals, and readiness for analysis.", prompts: ["What is the project’s current position?", "Suggest project-specific long-tail keywords", "Are my approved groups strong enough?", "Which keywords support my primary goal?"] },
+  "keyword-insights": { label: "Keyword Research", purpose: "Interpret demand, difficulty, CPC, ranking, intent, locations, competitors, and page targets from saved analysis.", prompts: ["What is the project’s current position?", "Is this a good keyword for this project?", "Which analyzed keywords should I prioritize?", "What keyword gaps should I add next?"] },
+  "site-analysis": { label: "Site Analysis", purpose: "Prioritize crawl findings and understand why issues matter, how to fix them, and which tasks should run first.", prompts: ["What is the project’s current position?", "What are the highest-impact site issues?", "What should I do about the 404 pages?", "Which fixes should I complete first?"] },
+  strategy: { label: "Strategy", purpose: "Review whether the strategy reflects project evidence, predicted impact, dependencies, and execution readiness.", prompts: ["What is the project’s current position?", "Is this strategy ready for approval?", "What should I revise and why?", "How will this strategy affect execution?"] },
+  "execution-plan": { label: "Execution Plan", purpose: "Find dependency-ready work, blocked tasks, approvals, ownership, and the next best action.", prompts: ["What is the project’s current position?", "Which task should I start now?", "What tasks are blocked?", "What requires approval?"] },
+  approvals: { label: "Approvals", purpose: "Understand requested changes, risk, expected impact, and what happens after approval or rejection.", prompts: ["What is the project’s current position?", "Which approval is most urgent?", "What changes will this approval make?", "Is this safe to approve?"] },
+  reports: { label: "Reports", purpose: "Interpret project performance, missing data, completed work, risks, and client-ready conclusions.", prompts: ["What is the project’s current position?", "Summarize this report", "What should the client know?", "Which report data needs attention?"] },
+  notifications: { label: "Notifications", purpose: "Explain project alerts, required actions, urgency, and the responsible role.", prompts: ["What is the project’s current position?", "Which notification needs action first?", "Explain the latest project warning", "What can be safely dismissed?"] },
+};
+
+function pageProjectId(pathname: string, search: string) {
+  const query = new URLSearchParams(search).get("projectId");
+  if (query) return query;
+  return pathname.match(/\/guided-projects\/([^/]+)/)?.[1] ?? null;
+}
+
+function ProjectAgentDrawer({ content, pathname, search, open, onClose }: { content: HelpContent; pathname: string; search: string; open: boolean; onClose: () => void }) {
+  const creationPage = pathname === "/projects/new";
+  const urlProjectId = pageProjectId(pathname, search);
+  const [resolvedProjectId, setResolvedProjectId] = useState<string | null>(urlProjectId);
+  const [projectResolved, setProjectResolved] = useState(Boolean(urlProjectId));
+  const projectId = urlProjectId ?? resolvedProjectId;
+  const [question, setQuestion] = useState("");
+  const [messages, setMessages] = useState<{ id: number; role: "user" | "assistant"; text: string }[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const pageContext = agentPageHelp[agentPage(pathname)] ?? agentPageHelp.project;
+  const suggestedQuestions = pageContext.prompts;
+
+  useEffect(() => {
+    if (creationPage) { setResolvedProjectId(null); setProjectResolved(true); return; }
+    if (urlProjectId) { setResolvedProjectId(urlProjectId); setProjectResolved(true); return; }
+    if (!open) return;
+    let cancelled = false;
+    setProjectResolved(false);
+    api.get<{ intelligence?: { activeProjectId?: string | null }; projects?: { id: string; status?: string }[] }>("/api/workspace/intelligence")
+      .then((result) => { if (!cancelled) setResolvedProjectId(result.intelligence?.activeProjectId ?? result.projects?.find((item) => item.status === "active")?.id ?? result.projects?.[0]?.id ?? null); })
+      .catch(() => { if (!cancelled) setResolvedProjectId(null); })
+      .finally(() => { if (!cancelled) setProjectResolved(true); });
+    return () => { cancelled = true; };
+  }, [open, pathname, search, urlProjectId, creationPage]);
+
+  const load = async (userQuestion?: string) => {
+    if (!projectId) return;
+    const submittedQuestion = userQuestion?.trim();
+    if (submittedQuestion) setMessages((current) => [...current, { id: Date.now(), role: "user", text: submittedQuestion }]);
+    setLoading(true); setError(null);
+    try {
+      const result = await api.post<ProjectAgentPlan>(`/api/projects/${projectId}/agent/plan`, { page: agentPage(pathname), question: submittedQuestion || undefined, conversation: messages.slice(-12).map(({ role, text }) => ({ role, text })) });
+      if (submittedQuestion) setMessages((current) => [...current, { id: Date.now() + 1, role: "assistant", text: result.answer }]);
+    }
+    catch (requestError) { setError(requestError instanceof Error ? requestError.message : "The project agent could not load guidance."); }
+    finally { setLoading(false); }
+  };
+
+  useEffect(() => { setMessages([]); setQuestion(""); setError(null); }, [open, projectId, pathname]);
+  if (!open) return null;
+  if (!projectResolved) return <div className="fixed inset-0 z-[90]" role="dialog" aria-modal="true" aria-label="Loading SEnuke AI chat"><button type="button" className="absolute inset-0 bg-charcoal-950/35" aria-label="Close agent" onClick={onClose} /><aside className="absolute right-0 top-0 grid h-full w-full max-w-[520px] place-items-center border-l border-slate-200 bg-white shadow-2xl"><div className="text-center"><div className="mx-auto h-11 w-11 animate-spin rounded-full border-4 border-brand-100 border-t-brand-600" /><div className="mt-4 font-black text-charcoal-900">Opening project chat…</div><div className="mt-1 text-sm text-charcoal-500">Finding the active project for this page.</div></div></aside></div>;
+  if (!projectId && creationPage) return <ProjectCreationHelpDrawer open={open} onClose={onClose} />;
+  if (!projectId) return <GlobalHelpDrawer content={content} open={open} onClose={onClose} />;
+  return <div className="fixed inset-0 z-[90]" role="dialog" aria-modal="true" aria-label="SEnuke AI project agent">
+    <button type="button" className="absolute inset-0 bg-charcoal-950/35" aria-label="Close agent" onClick={onClose} />
+    <aside className="absolute right-0 top-0 flex h-full w-full max-w-[520px] flex-col border-l border-slate-200 bg-white shadow-2xl">
+      <header className="border-b border-slate-100 bg-gradient-to-r from-brand-50 to-emerald-50 px-5 py-4"><div className="flex items-start justify-between gap-4"><div><div className="text-xs font-black uppercase tracking-[0.14em] text-brand-700">SEnuke AI · {pageContext.label}</div><h2 className="mt-1 text-xl font-black text-charcoal-950">How can we help you here?</h2><p className="mt-1 text-sm leading-5 text-charcoal-600">{pageContext.purpose}</p></div><button type="button" onClick={onClose} className="grid h-9 w-9 shrink-0 place-items-center rounded-lg border border-slate-200 bg-white text-lg text-charcoal-500">×</button></div></header>
+      <div className="flex-1 overflow-y-auto p-5">
+        {error && <div className="rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-800">{error}</div>}
+        {messages.length > 0 && <section className="mb-5 space-y-3" aria-live="polite">{messages.map((message) => <div key={message.id} className={`flex ${message.role === "user" ? "justify-end" : "justify-start"}`}><div className={`max-w-[88%] whitespace-pre-line rounded-2xl px-4 py-3 text-sm leading-6 shadow-sm ${message.role === "user" ? "rounded-br-md bg-brand-600 text-white" : "rounded-bl-md border border-slate-200 bg-white text-charcoal-700"}`}>{message.role === "assistant" && <div className="mb-1 text-[10px] font-black uppercase tracking-wide text-brand-700">SEnuke AI</div>}{message.text}</div></div>)}{loading && <div className="flex justify-start"><div className="inline-flex items-center gap-2 rounded-2xl rounded-bl-md border border-slate-200 bg-white px-4 py-3 text-sm text-charcoal-500"><span className="flex gap-1"><i className="h-1.5 w-1.5 animate-bounce rounded-full bg-brand-500" /><i className="h-1.5 w-1.5 animate-bounce rounded-full bg-brand-500 [animation-delay:120ms]" /><i className="h-1.5 w-1.5 animate-bounce rounded-full bg-brand-500 [animation-delay:240ms]" /></span>Thinking with project context…</div></div>}</section>}
+      </div>
+      <form className="border-t border-slate-100 bg-white p-4" onSubmit={(event) => { event.preventDefault(); const value = question.trim(); if (value) { setQuestion(""); void load(value); } }}><div className="flex items-center justify-between gap-3"><label className="text-xs font-bold uppercase tracking-wide text-charcoal-500">Ask about {pageContext.label}</label><span className="text-[10px] font-semibold text-charcoal-400">Uses this project’s saved data</span></div><div className="mt-2 flex flex-wrap gap-1.5">{suggestedQuestions.map((item) => <button key={item} type="button" onClick={() => { setQuestion(""); void load(item); }} disabled={loading} className="rounded-full border border-brand-100 bg-brand-50 px-2.5 py-1 text-[11px] font-bold text-brand-700 disabled:opacity-50">{item}</button>)}</div><div className="mt-2 flex gap-2"><input value={question} onChange={(event) => setQuestion(event.target.value)} placeholder={`Ask SEnuke about ${pageContext.label.toLowerCase()}…`} className="min-w-0 flex-1 rounded-lg border border-slate-200 px-3 py-2.5 text-sm outline-none focus:border-brand-400" /><button type="submit" disabled={loading || !question.trim()} className="rounded-lg bg-brand-600 px-4 py-2.5 text-sm font-bold text-white disabled:bg-slate-300">Send</button></div></form>
+    </aside>
+  </div>;
+}
+
+function ProjectCreationHelpDrawer({ open, onClose }: { open: boolean; onClose: () => void }) {
+  const prompts: [string, string][] = [
+    ["How do I choose Website Status?", "Choose Existing Website only for a live URL that can be crawled. Choose New Website Required when SEnuke should plan the site, Website Planned when it is coming later, or No Website Required when the workflow does not depend on a site."],
+    ["What is the difference between Business Location and Target Markets?", "Business Location is the physical business identity. Target Markets are the cities, regions, states, or countries where the project wants to rank or acquire customers."],
+    ["How should I choose the Project Type?", "Choose the closest business model. Project Type controls the workflow and whether SEnuke prioritizes local visibility, lead generation, SaaS positioning, ecommerce, content authority, or personal-brand growth."],
+    ["How do Primary and Secondary Goals work?", "Choose exactly one Primary Goal as the main success objective. Secondary Goals are optional supporting outcomes that influence Strategy and execution without replacing the Primary Goal."],
+  ];
+  const [answer, setAnswer] = useState<string | null>(null);
+  const [question, setQuestion] = useState("");
+  const answerQuestion = (input: string) => {
+    const text = input.toLowerCase();
+    if (/website status|existing website|new website|planned website/.test(text)) return prompts[0][1];
+    if (/business location|target market|service area|location/.test(text)) return prompts[1][1];
+    if (/project type|business type|saas|ecommerce|local business/.test(text)) return prompts[2][1];
+    if (/primary goal|secondary goal|goal/.test(text)) return prompts[3][1];
+    if (/industry|niche/.test(text)) return "Use a specific commercial category that describes what the business sells and who it serves. SEnuke uses Industry / Niche for opportunities, competitors, keywords, content recommendations, and Strategy.";
+    if (/competitor/.test(text)) return "Add businesses competing for the same audience or search visibility. Use recognizable names or domains; competitors are optional and can be added later.";
+    if (/required|missing|continue|next/.test(text)) return "Complete the required fields in the current step. Existing Website also requires a valid URL; every project requires Business Location, at least one Target Market, and exactly one Primary Goal.";
+    return "Ask about a specific project-creation field, available option, required value, or how the information will be used. The field guide beside the form also updates for each setup step.";
+  };
+  if (!open) return null;
+  return <div className="fixed inset-0 z-[90]" role="dialog" aria-modal="true" aria-label="SEnuke project setup help"><button type="button" className="absolute inset-0 bg-charcoal-950/35" aria-label="Close help" onClick={onClose} /><aside className="absolute right-0 top-0 flex h-full w-full max-w-[520px] flex-col border-l border-slate-200 bg-white shadow-2xl"><header className="border-b border-slate-100 bg-gradient-to-r from-brand-50 to-emerald-50 px-5 py-4"><div className="flex items-start justify-between gap-4"><div><div className="text-xs font-black uppercase tracking-[0.14em] text-brand-700">SEnuke AI · Project setup</div><h2 className="mt-1 text-xl font-black text-charcoal-950">How can we help you create this project?</h2><p className="mt-1 text-sm leading-5 text-charcoal-600">Guidance uses the fields currently visible in the setup—not another project’s saved data.</p></div><button type="button" onClick={onClose} className="grid h-9 w-9 shrink-0 place-items-center rounded-lg border border-slate-200 bg-white text-lg text-charcoal-500">×</button></div></header><div className="flex-1 overflow-y-auto p-5">{answer && <div className="rounded-2xl rounded-bl-md border border-slate-200 bg-white px-4 py-3 text-sm leading-6 text-charcoal-700 shadow-sm"><div className="mb-1 text-[10px] font-black uppercase tracking-wide text-brand-700">SEnuke AI</div>{answer}</div>}</div><form className="border-t border-slate-100 bg-white p-4" onSubmit={(event) => { event.preventDefault(); if (!question.trim()) return; setAnswer(answerQuestion(question)); setQuestion(""); }}><div className="text-xs font-bold uppercase tracking-wide text-charcoal-500">Ask about project setup</div><div className="mt-2 flex flex-wrap gap-1.5">{prompts.map(([prompt, response]) => <button key={prompt} type="button" onClick={() => setAnswer(response)} className="rounded-full border border-brand-100 bg-brand-50 px-2.5 py-1 text-[11px] font-bold text-brand-700">{prompt}</button>)}</div><div className="mt-3 flex gap-2"><input value={question} onChange={(event) => setQuestion(event.target.value)} placeholder="Ask about any field or option…" className="min-w-0 flex-1 rounded-lg border border-slate-200 px-3 py-2.5 text-sm outline-none focus:border-brand-400" /><button type="submit" disabled={!question.trim()} className="rounded-lg bg-brand-600 px-4 py-2.5 text-sm font-bold text-white disabled:bg-slate-300">Send</button></div></form></aside></div>;
 }
 
 function getHelpContent(pathname: string): HelpContent {

@@ -1,18 +1,12 @@
 // SEO + AI Search crawler — data model.
-// See docs/ARCHITECTURE.md §9. MySQL 8+ / Prisma.
-//
-// MySQL notes vs the Postgres draft:
-//  - No native array columns -> string lists are stored as JSON.
-//  - Indexed URL columns are VARCHAR(512) (InnoDB index key-length limit with
-//    utf8mb4 is ~3072 bytes; cuid + 512-char url fits). Non-indexed long text
-//    uses @db.Text. URLs > 512 chars are rare; dedup key truncates -> acceptable MVP.
+// See docs/ARCHITECTURE.md §9. PostgreSQL 17+ / Prisma.
 
 generator client {
   provider = "prisma-client-js"
 }
 
 datasource db {
-  provider = "mysql"
+  provider = "postgresql"
   url      = env("DATABASE_URL")
 }
 
@@ -807,6 +801,7 @@ model Project {
   ecommerceExportGuides       EcommerceExportGuide[]
   memberAssignments           ProjectMemberAssignment[]
   teamAssignments             ProjectTeamAssignment[]
+  agentDocuments              ProjectAgentDocument[]
 
   @@index([clientId, status])
   @@index([agencyClientId, status])
@@ -814,23 +809,43 @@ model Project {
   @@index([currentStep])
 }
 
+model ProjectAgentDocument {
+  id          String   @id @default(cuid())
+  projectId   String
+  project     Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  sourceType  String   @db.VarChar(80)
+  sourceId    String   @db.VarChar(191)
+  title       String   @db.VarChar(255)
+  content     String   @db.Text
+  contentHash String   @db.VarChar(64)
+  embedding   Unsupported("vector(1536)")
+  model       String   @db.VarChar(120)
+  metadata    Json     @default("{}")
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@unique([projectId, sourceType, sourceId])
+  @@index([projectId, sourceType])
+  @@index([projectId, updatedAt])
+}
+
 model ProjectKeywordGroup {
-  id             String   @id @default(cuid())
-  projectId      String
-  project        Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  category       String   @db.VarChar(60)
-  title          String   @db.VarChar(120)
-  explanation    String   @db.Text
-  expectedValue  String   @db.Text
-  goalSupport    String   @db.Text
-  keywords       Json     @default("[]")
-  gapKeywords    Json     @default("[]")
-  status         String   @default("suggested") @db.VarChar(30)
-  source         String   @default("project_intake") @db.VarChar(40)
-  approvedAt     DateTime?
-  approvedById   String?
-  createdAt      DateTime @default(now())
-  updatedAt      DateTime @updatedAt
+  id            String    @id @default(cuid())
+  projectId     String
+  project       Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  category      String    @db.VarChar(60)
+  title         String    @db.VarChar(120)
+  explanation   String    @db.Text
+  expectedValue String    @db.Text
+  goalSupport   String    @db.Text
+  keywords      Json      @default("[]")
+  gapKeywords   Json      @default("[]")
+  status        String    @default("suggested") @db.VarChar(30)
+  source        String    @default("project_intake") @db.VarChar(40)
+  approvedAt    DateTime?
+  approvedById  String?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
 
   @@unique([projectId, category])
   @@index([projectId, status])
@@ -957,26 +972,38 @@ model Opportunity {
 }
 
 model StrategyPlan {
-  id                   String       @id @default(cuid())
-  projectId            String
-  project              Project      @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  opportunityId        String?
-  opportunity          Opportunity? @relation(fields: [opportunityId], references: [id], onDelete: SetNull)
-  strategySummary      String?      @db.Text
-  positioningStatement String?      @db.Text
-  audienceProfile      String?      @db.Text
-  offerRecommendation  String?      @db.Text
-  businessModel        String?      @db.VarChar(120)
-  seoStrategy          String?      @db.Text
-  aiCitationStrategy   String?      @db.Text
-  contentStrategy      String?      @db.Text
-  authorityStrategy    String?      @db.Text
-  socialStrategy       String?      @db.Text
-  publishingStrategy   String?      @db.Text
-  status               String       @default("draft") @db.VarChar(40)
-  approvedAt           DateTime?
-  createdAt            DateTime     @default(now())
-  updatedAt            DateTime     @updatedAt
+  id                    String       @id @default(cuid())
+  projectId             String
+  project               Project      @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  opportunityId         String?
+  opportunity           Opportunity? @relation(fields: [opportunityId], references: [id], onDelete: SetNull)
+  version               Int          @default(1)
+  strategySummary       String?      @db.Text
+  businessObjectives    Json         @default("[]")
+  positioningStatement  String?      @db.Text
+  audienceProfile       String?      @db.Text
+  offerRecommendation   String?      @db.Text
+  businessModel         String?      @db.VarChar(120)
+  seoStrategy           String?      @db.Text
+  localSeoStrategy      String?      @db.Text
+  aiCitationStrategy    String?      @db.Text
+  contentStrategy       String?      @db.Text
+  competitorStrategy    String?      @db.Text
+  competitiveInsights   Json         @default("[]")
+  authorityStrategy     String?      @db.Text
+  socialStrategy        String?      @db.Text
+  publishingStrategy    String?      @db.Text
+  growthRecommendations Json         @default("[]")
+  kpis                  Json         @default("[]")
+  revisionComment       String?      @db.Text
+  strategyScore         Int?
+  scoreBreakdown        Json         @default("{}")
+  advancedAnalysis      Json         @default("[]")
+  prioritizedRecommendations Json    @default("[]")
+  status                String       @default("draft") @db.VarChar(40)
+  approvedAt            DateTime?
+  createdAt             DateTime     @default(now())
+  updatedAt             DateTime     @updatedAt
 
   @@index([projectId, status])
   @@index([opportunityId])
@@ -1255,6 +1282,7 @@ model ExecutionTask {
   dedupeKey                     String               @unique @db.VarChar(255)
   title                         String               @db.VarChar(255)
   description                   String               @db.Text
+  expectedOutcome               String?              @db.Text
   priority                      String               @default("medium") @db.VarChar(20)
   dueAt                         DateTime?
   deadlineApproachingNotifiedAt DateTime?

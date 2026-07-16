@@ -38,3 +38,24 @@ export function automationLevelDescription(level: AutomationLevel) {
   if (level === "assisted") return "Low-risk drafts may continue automatically; higher-risk actions pause.";
   return "Most actions continue automatically, but publishing, integrations, strategy and high-risk changes still pause.";
 }
+
+export type ApprovalDecision = "approved" | "rejected" | "changes_requested";
+
+export function normalizedApprovalDecision(value: string): ApprovalDecision {
+  if (value === "approved" || value === "rejected") return value;
+  return "changes_requested";
+}
+
+export function approvalDecisionState(decision: ApprovalDecision, needsClientApproval: boolean) {
+  if (decision === "approved" && needsClientApproval) return { status: "submitted_for_approval", storedDecision: "team_approved" };
+  if (decision === "approved") return { status: "ready_to_publish", storedDecision: "approved" };
+  if (decision === "rejected") return { status: "rejected", storedDecision: "rejected" };
+  return { status: "changes_requested", storedDecision: "changes_requested" };
+}
+
+export function approvalEscalationStage(submittedAt: Date, now = new Date()) {
+  const hours = (now.getTime() - submittedAt.getTime()) / (60 * 60 * 1000);
+  if (hours >= 48) return "owner" as const;
+  if (hours >= 24) return "manager" as const;
+  return null;
+}

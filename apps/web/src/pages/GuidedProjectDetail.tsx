@@ -8,9 +8,11 @@ import type { GuidedExecutionTask, GuidedProject } from "../types.js";
 import ProjectOperations from "../components/ProjectOperations.js";
 import BusinessLocationTargetMarkets from "../components/BusinessLocationTargetMarkets.js";
 import ProjectGoals from "../components/ProjectGoals.js";
+import ProjectMilestoneLine from "../components/ProjectMilestoneLine.js";
 import { canonicalPrimaryGoal } from "@webtummy/core/project-goals";
 
 function taskTone(task: GuidedExecutionTask) {
+  if (task.priority === "critical") return "border-red-300 bg-red-50";
   if (task.priority === "high") return "border-rose-200 bg-rose-50/70";
   if (task.priority === "low") return "border-slate-200 bg-slate-50";
   return "border-amber-200 bg-amber-50/70";
@@ -30,6 +32,13 @@ function moduleLabel(moduleName: string) {
 
 function executionInstruction(task: GuidedExecutionTask) {
   return task.manualInstructions || task.description;
+}
+
+function automationLabel(value: string) {
+  if (["automatic", "recommend", "generate", "prepare", "execute_through_integration"].includes(value)) return "Automatic";
+  if (["one_click_approval", "one_click", "execute_with_approval", "approval_required"].includes(value)) return "One-Click Approval";
+  if (value === "manual_guided") return "Manual Guided Step";
+  return "Manual Task";
 }
 
 function projectTypeLabel(project: GuidedProject) {
@@ -111,30 +120,13 @@ function InfoBlock({ label, children }: { label: string; children: ReactNode }) 
   );
 }
 
-function BusinessProfileCard({ project }: { project: GuidedProject }) {
+function ProjectGlanceDrawer({ project, open, onClose }: { project: GuidedProject; open: boolean; onClose: () => void }) {
+  if (!open) return null;
   const profile = project.businessProfile;
-  const audienceSegments = splitList(profile?.targetAudience).slice(0, 3);
-  const offerSegments = splitList(profile?.offerSummary).slice(0, 3);
-
-  return (
-    <Card className="overflow-hidden border-brand-100 bg-white">
-      <div className="p-4">
-        <div>
-          <div className="text-[11px] font-bold uppercase tracking-wide text-brand-700">Project snapshot</div>
-          <div className="mt-2">
-            <div className="rounded-lg border border-brand-100 bg-brand-50 px-3 py-2">
-              <div className="text-[10px] font-bold uppercase tracking-wide text-brand-600">Industry / Niche</div>
-              <div className="mt-1 text-sm font-bold leading-5 text-brand-900">{project.niche ?? "Not set"}</div>
-            </div>
-          </div>
-          <div className="mt-3 grid gap-3 md:grid-cols-2">
-            <CompactProfileBlock label="Audience" items={audienceSegments} empty="Audience not set" />
-            <CompactProfileBlock label="Offer" items={offerSegments} empty="Offer not set" />
-          </div>
-        </div>
-      </div>
-    </Card>
-  );
+  const targets = Array.isArray(project.targetLocations) ? project.targetLocations.map(String) : [];
+  const secondaryGoals = Array.isArray(project.secondaryGoals) ? project.secondaryGoals.map(String) : [];
+  const outputs = Array.isArray(project.preferredOutputs) ? project.preferredOutputs.map(String) : [];
+  return <div className="fixed inset-0 z-50 bg-slate-950/35" role="dialog" aria-modal="true" aria-labelledby="project-glance-title" onMouseDown={(event) => { if (event.currentTarget === event.target) onClose(); }}><aside className="ml-auto flex h-full w-full max-w-xl flex-col bg-white shadow-2xl"><div className="flex items-start justify-between gap-4 border-b border-slate-200 px-6 py-5"><div><div className="text-xs font-bold uppercase tracking-wide text-brand-600">Project context</div><h2 id="project-glance-title" className="mt-1 text-xl font-bold text-charcoal-950">Quick Project Glance</h2><p className="mt-1 text-sm text-charcoal-500">The core details reused throughout this campaign.</p></div><button type="button" onClick={onClose} className="grid h-9 w-9 place-items-center rounded-lg border border-slate-200 text-lg text-slate-500 hover:bg-slate-50" aria-label="Close project glance">×</button></div><div className="flex-1 space-y-5 overflow-y-auto p-6"><div className="grid gap-3 sm:grid-cols-2">{[["Project type", projectTypeLabel(project)], ["Website", project.website?.rootUrl ?? project.websiteUrl ?? "Not connected"], ["Business location", project.businessLocation ?? "Not set"], ["Timeline", project.targetLaunchTimeline ?? "Not set"], ["Primary goal", project.primaryGoal ?? "Not set"], ["Industry / niche", project.niche ?? "Not set"]].map(([label, value]) => <div key={label} className="rounded-xl border border-slate-200 bg-slate-50 p-4"><div className="text-[11px] font-bold uppercase tracking-wide text-slate-400">{label}</div><div className="mt-1 break-words text-sm font-bold text-charcoal-900">{value}</div></div>)}</div><CompactProfileBlock label="Audience" items={splitList(profile?.targetAudience)} empty="Audience not set" /><CompactProfileBlock label="Offer" items={splitList(profile?.offerSummary)} empty="Offer not set" /><div><div className="text-[11px] font-bold uppercase tracking-wide text-slate-400">Target markets</div><div className="mt-2 flex flex-wrap gap-2">{targets.length ? targets.map((item) => <span key={item} className="rounded-full bg-brand-50 px-3 py-1.5 text-xs font-bold text-brand-700">{item}</span>) : <span className="text-sm text-slate-500">Not set</span>}</div></div><div><div className="text-[11px] font-bold uppercase tracking-wide text-slate-400">Secondary goals</div><div className="mt-2 flex flex-wrap gap-2">{secondaryGoals.length ? secondaryGoals.map((item) => <span key={item} className="rounded-full bg-slate-100 px-3 py-1.5 text-xs font-bold text-slate-700">{item}</span>) : <span className="text-sm text-slate-500">None</span>}</div></div>{outputs.length > 0 && <div><div className="text-[11px] font-bold uppercase tracking-wide text-slate-400">Outputs</div><div className="mt-2 flex flex-wrap gap-2">{outputs.map((item) => <span key={item} className="rounded-full bg-emerald-50 px-3 py-1.5 text-xs font-bold text-emerald-700">{item}</span>)}</div></div>}</div><div className="border-t border-slate-200 bg-slate-50 px-6 py-4"><Link to={`/projects/new?edit=${project.id}`} onClick={onClose} className="inline-flex w-full items-center justify-center rounded-lg bg-brand-600 px-4 py-2.5 text-sm font-bold text-white">Edit complete project setup</Link></div></aside></div>;
 }
 
 function ProjectLocationEditor({ project, onSaved }: { project: GuidedProject; onSaved: (project: GuidedProject) => void }) {
@@ -271,37 +263,6 @@ type ProjectNextAction = {
   tone: "brand" | "green" | "amber";
 };
 
-function ProjectNextActionCard({ action }: { action: ProjectNextAction }) {
-  const toneClass = action.tone === "green"
-    ? "border-emerald-200 bg-gradient-to-r from-emerald-50 via-white to-brand-50"
-    : action.tone === "amber"
-      ? "border-amber-200 bg-gradient-to-r from-amber-50 via-white to-orange-50"
-      : "border-brand-200 bg-gradient-to-r from-brand-50 via-white to-sky-50";
-  const buttonClass = "bg-brand-600 hover:bg-brand-700";
-  const cta = (
-    <span className={`inline-flex items-center justify-center rounded-lg px-4 py-2.5 text-sm font-bold text-white shadow-sm ${buttonClass}`}>
-      {action.label} <span className="ml-2">→</span>
-    </span>
-  );
-  return (
-    <Card className={`overflow-hidden border ${toneClass}`}>
-      <div className="flex flex-col gap-4 p-5 lg:flex-row lg:items-center lg:justify-between">
-        <div className="flex min-w-0 gap-4">
-          <div className={`grid h-12 w-12 shrink-0 place-items-center rounded-xl text-lg font-bold text-white shadow-sm ${buttonClass}`}>→</div>
-          <div className="min-w-0">
-            <div className="text-xs font-bold uppercase tracking-wide text-brand-700">What to do next</div>
-            <h2 className="mt-1 text-xl font-bold text-charcoal-950">{action.title}</h2>
-            <p className="mt-2 text-sm leading-6 text-charcoal-600">{action.detail}</p>
-          </div>
-        </div>
-        <div className="shrink-0">
-          {action.to ? <Link to={action.to}>{cta}</Link> : <button type="button" onClick={action.onClick}>{cta}</button>}
-        </div>
-      </div>
-    </Card>
-  );
-}
-
 type StrategyView = {
   status?: string;
   strategySummary?: string | null;
@@ -320,6 +281,7 @@ export default function GuidedProjectDetail() {
   const [project, setProject] = useState<GuidedProject | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busyAction, setBusyAction] = useState<string | null>(null);
+  const [projectGlanceOpen, setProjectGlanceOpen] = useState(false);
 
   const load = () => {
     if (!id) return;
@@ -389,7 +351,21 @@ export default function GuidedProjectDetail() {
   const archived = project.status === "archived";
 
   const executionPlan = project.executionPlans?.[0] ?? null;
-  const tasks = executionPlan?.tasks ?? [];
+  const tasks = Array.from(new Map([
+    ...(project.executionTasks ?? []),
+    ...(executionPlan?.tasks ?? []),
+  ].map((task) => [task.id, task])).values());
+  const executionPlanExists = Boolean(executionPlan && tasks.length > 0);
+  const milestoneProject: GuidedProject = executionPlanExists ? {
+    ...project,
+    workflowSteps: project.workflowSteps?.map((workflowStep) => workflowStep.stepKey === "execution_plan" ? {
+      ...workflowStep,
+      status: "completed",
+      sourceType: "execution_plan",
+      sourceId: executionPlan?.id ?? null,
+      completionReason: "The active project-wide Execution Plan contains module tasks.",
+    } : workflowStep),
+  } : project;
   const projectUrl = project.website?.rootUrl ?? project.websiteUrl ?? project.businessName ?? "No website connected yet";
   const displayName = project.businessName ?? project.name;
   const internalProjectName = project.name !== displayName ? project.name : null;
@@ -400,8 +376,17 @@ export default function GuidedProjectDetail() {
   const workflowState = (key: string) => project.workflowSteps?.find((step) => step.stepKey === key);
   const strategyReviewTasks = tasks.filter((task) => task.moduleName === "strategy_approval");
   const strategyApproved = latestStrategy?.status === "approved" || project.currentStep === "execution" || strategyReviewTasks.some((task) => ["completed", "skipped"].includes(task.status));
-  const activeTasks = tasks.filter((task) => !["completed", "skipped"].includes(task.status) && !(strategyApproved && task.moduleName === "strategy_approval"));
+  const priorityRank: Record<string, number> = { critical: 0, high: 1, medium: 2, low: 3 };
+  const statusRank: Record<string, number> = { ready: 0, in_progress: 1, needs_review: 2, submitted_for_approval: 3, pending: 4, blocked: 5, cancelled: 6, canceled: 6 };
+  const unresolvedDependencies = (task: GuidedExecutionTask) => (task.dependencies ?? []).filter((dependency) => !["completed", "published", "approved"].includes(dependency.requiredTask.status));
+  const activeTasks = tasks.filter((task) => !["completed", "skipped", "cancelled", "canceled"].includes(task.status) && !(strategyApproved && task.moduleName === "strategy_approval")).sort((a, b) => {
+    const aBlocked = unresolvedDependencies(a).length > 0 || a.status === "blocked" ? 1 : 0;
+    const bBlocked = unresolvedDependencies(b).length > 0 || b.status === "blocked" ? 1 : 0;
+    return aBlocked - bBlocked || (statusRank[a.status] ?? 4) - (statusRank[b.status] ?? 4) || (priorityRank[a.priority] ?? 2) - (priorityRank[b.priority] ?? 2) || new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime();
+  });
   const completedTasks = tasks.filter((task) => ["completed", "skipped"].includes(task.status) || (strategyApproved && task.moduleName === "strategy_approval"));
+  const approvedKeywordGroups = project.keywordGroups?.filter((group) => group.status === "approved").length ?? 0;
+  const keywordRecommendations = project.keywordGroups?.reduce((sum, group) => sum + (Array.isArray(group.keywords) ? group.keywords.length : 0), 0) ?? 0;
   const nextExecutionTask = activeTasks[0] ?? null;
   const executionGroups = ["Setup + Discovery", "Strategy", "Build + Publish", "Promote + Measure", "Execution"]
     .map((phase) => ({ phase, tasks: activeTasks.filter((task) => executionPhase(task) === phase) }))
@@ -437,7 +422,7 @@ export default function GuidedProjectDetail() {
   const strategyGenerated = strategyCount > 0 || Boolean(latestStrategy);
   const keywordWorkflow = workflowState("keyword_analysis");
   const siteWorkflow = workflowState("site_analysis");
-  const executionWorkflow = workflowState("execution_plan");
+  const executionWorkflow = executionPlanExists ? { ...workflowState("execution_plan"), status: "completed" } : workflowState("execution_plan");
   const keywordComplete = keywordWorkflow?.status === "completed";
   const siteComplete = siteWorkflow?.status === "completed";
   const hasWebsite = projectHasWebsite(project);
@@ -525,17 +510,19 @@ export default function GuidedProjectDetail() {
                 tone: "brand",
               }
             : {
-                title: activeTasks.length ? "Work the next execution task" : "Create the full execution plan",
+                title: activeTasks.length ? "Work the next execution task" : executionPlanExists ? "Execution plan is complete" : "Create the full execution plan",
                 detail: activeTasks.length
                   ? `${activeTasks[0].title}: ${activeTasks[0].description}`
+                  : executionPlanExists
+                    ? "The project-wide Execution Plan exists and all current tasks are closed. Review completed work or add the next project action."
                   : "Discovery and strategy are ready. Create the prioritized SEO/Growth execution plan with impact, effort, automation, approval, cost, and next action.",
-                label: activeTasks.length ? activeTasks[0].actionButtonLabel ?? "Open Next Task" : "Create Execution Plan",
-                to: activeTasks.length ? activeTasks[0].relatedUrl ?? `/guided-projects/${project.id}?tab=execution#execution-tasks` : undefined,
-                onClick: activeTasks.length ? undefined : () => void createExecutionPlan(),
+                label: activeTasks.length ? activeTasks[0].actionButtonLabel ?? "Open Next Task" : executionPlanExists ? "Review Execution Plan" : "Create Execution Plan",
+                to: activeTasks.length ? activeTasks[0].relatedUrl ?? `/guided-projects/${project.id}?tab=execution#execution-tasks` : executionPlanExists ? `/guided-projects/${project.id}?tab=execution#execution-tasks` : undefined,
+                onClick: activeTasks.length || executionPlanExists ? undefined : () => void createExecutionPlan(),
                 tone: activeTasks.length ? "amber" : "green",
               };
   const requestedTab = new URLSearchParams(location.search).get("tab");
-  const activeTab = requestedTab === "profile" || requestedTab === "execution" ? requestedTab : "overview";
+  const activeTab = requestedTab === "profile" || (requestedTab === "execution" && strategyApproved) ? requestedTab : "overview";
   const projectTab = (tab: "overview" | "profile" | "execution") =>
     `/guided-projects/${project.id}${tab === "overview" ? "" : `?tab=${tab}`}`;
   return (
@@ -567,6 +554,7 @@ export default function GuidedProjectDetail() {
               <div className="flex max-w-full flex-nowrap items-center gap-2 overflow-x-auto whitespace-nowrap pb-1 xl:justify-end">
                 <span className="shrink-0"><StatusPill status={project.currentStep} /></span>
                 <span className="shrink-0"><StatusPill status={project.status} /></span>
+                <button type="button" onClick={() => setProjectGlanceOpen(true)} className="inline-flex shrink-0 items-center justify-center rounded-lg border border-brand-200 bg-white px-3 py-2 text-sm font-semibold text-brand-700 hover:bg-brand-50">Quick Project Glance</button>
                 {!archived && <Link to={`/guided-projects/${project.id}/intake`} className="inline-flex shrink-0 items-center justify-center rounded-lg bg-brand-600 px-3 py-2 text-sm font-semibold text-white hover:bg-brand-700">Edit profile</Link>}
                 <Link to="/projects" className="inline-flex shrink-0 items-center justify-center rounded-lg bg-brand-600 px-3 py-2 text-sm font-semibold text-white hover:bg-brand-700">Back to projects</Link>
               </div>
@@ -594,8 +582,14 @@ export default function GuidedProjectDetail() {
         <div className="space-y-5 p-5">
           {archived && <Card className="border-slate-300 bg-slate-100 p-4 text-sm text-slate-700"><b>Archived project — view only.</b> Restore this project from the Projects page before editing, assigning, approving, generating, publishing, or changing tasks.</Card>}
           {activeTab === "overview" && <>
-          {!archived && <ProjectNextActionCard action={nextAction} />}
-          <BusinessProfileCard project={project} />
+          {!archived && <ProjectMilestoneLine project={milestoneProject} showDependency nextAction={{ title: nextAction.title, detail: nextAction.detail, label: nextAction.label, to: nextAction.to, onAction: nextAction.onClick }} />}
+
+          <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+            <MetricTile label="Opportunities" value={opportunityCount} helper="project directions" />
+            <MetricTile label="Approved keyword groups" value={approvedKeywordGroups} helper={`${keywordRecommendations} recommendations`} />
+            <MetricTile label="Open execution tasks" value={activeTasks.length} helper="current project only" />
+            <MetricTile label="Completed tasks" value={completedTasks.length} helper="current project only" />
+          </div>
 
           <div>
             <Card className="p-4">
@@ -719,7 +713,7 @@ export default function GuidedProjectDetail() {
         </Card>
       )}
 
-      {activeTab === "execution" && (
+      {activeTab === "execution" && strategyApproved && (
         <Card id="execution-tasks" className="scroll-mt-24 overflow-hidden">
           <div className="border-b border-charcoal-100 bg-charcoal-50/70 px-5 py-4">
             <SectionTitle title="Execution tasks" helper="Work through these in order. Generated actions and manual review steps stay together here." />
@@ -729,10 +723,10 @@ export default function GuidedProjectDetail() {
               <div className="flex min-w-0 gap-4">
                 <div className="grid h-12 w-12 shrink-0 place-items-center rounded-xl bg-brand-600 text-lg font-bold text-white shadow-sm">→</div>
                 <div className="min-w-0">
-                  <div className="text-xs font-bold uppercase tracking-wide text-brand-700">Execution plan</div>
-                  <h2 className="mt-1 text-xl font-bold text-charcoal-950">{executionPlan?.title ?? "Execution plan is ready"}</h2>
+                  <div className="text-xs font-bold uppercase tracking-wide text-brand-700">Project-wide execution plan</div>
+                  <h2 className="mt-1 text-xl font-bold text-charcoal-950">All project actions in one place</h2>
                   <p className="mt-2 text-sm leading-6 text-charcoal-600">
-                    {executionPlan?.summary ?? "This plan was created from the approved strategy. Review tasks in order and open each module when you are ready to act."}
+                    Crawl findings, keyword research, site analysis, approved Strategy recommendations, reports, and manual tasks are combined here without duplicates.
                   </p>
                   <div className="mt-3 flex flex-wrap gap-2 text-xs font-bold">
                     <span className="rounded-full bg-white/90 px-3 py-1 text-brand-700 shadow-sm">{activeTasks.length} open task{activeTasks.length === 1 ? "" : "s"}</span>
@@ -776,14 +770,16 @@ export default function GuidedProjectDetail() {
                 <div className="rounded-lg border border-brand-200 bg-brand-50 p-4">
                   <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
                     <div className="min-w-0">
-                      <div className="text-xs font-bold uppercase tracking-wide text-brand-700">Execute next</div>
+                      <div className="text-xs font-bold uppercase tracking-wide text-brand-700">Next Best Action</div>
                       <h3 className="mt-1 text-lg font-bold text-charcoal-950">{nextExecutionTask.title}</h3>
                       <p className="mt-2 text-sm leading-6 text-charcoal-700">{executionInstruction(nextExecutionTask)}</p>
-                      {nextExecutionTask.impact && <p className="mt-2 text-sm font-medium text-brand-800">Why it matters: {nextExecutionTask.impact}</p>}
+                      <p className="mt-2 text-xs font-semibold text-charcoal-500">Why recommended: this is the highest-priority ready task with no unresolved dependencies.</p>
+                      {(nextExecutionTask.expectedOutcome || nextExecutionTask.impact) && <p className="mt-2 text-sm font-medium text-brand-800">Expected outcome: {nextExecutionTask.expectedOutcome || nextExecutionTask.impact}</p>}
                       <div className="mt-3 flex flex-wrap gap-2 text-xs">
                         <span className="rounded-full bg-white px-2 py-1 font-bold text-charcoal-600">{executionPhase(nextExecutionTask)}</span>
                         <span className="rounded-full bg-white px-2 py-1 font-bold text-charcoal-600">{moduleLabel(nextExecutionTask.moduleName)}</span>
                         <span className="rounded-full bg-white px-2 py-1 font-bold text-charcoal-600">Priority: {nextExecutionTask.priority}</span>
+                        <span className="rounded-full bg-white px-2 py-1 font-bold text-charcoal-600">{automationLabel(nextExecutionTask.automationLevel)}</span>
                       </div>
                     </div>
                     <div className="shrink-0">
@@ -822,17 +818,20 @@ export default function GuidedProjectDetail() {
                                 <div className="text-[11px] font-bold uppercase tracking-wide text-charcoal-500">Do this</div>
                                 <p className="mt-1 text-sm leading-6 text-charcoal-700">{executionInstruction(task)}</p>
                               </div>
-                              {task.impact && (
+                              {(task.expectedOutcome || task.impact) && (
                                 <div className="mt-3 text-sm leading-6 text-charcoal-600">
-                                  <span className="font-semibold text-charcoal-800">Expected result:</span> {task.impact}
+                                  <span className="font-semibold text-charcoal-800">Expected outcome:</span> {task.expectedOutcome || task.impact}
                                 </div>
                               )}
                               <div className="mt-3 flex flex-wrap gap-2 text-xs text-charcoal-500">
                                 <span className="rounded-full bg-white px-2 py-1 font-medium">Module: {moduleLabel(task.moduleName)}</span>
                                 <span className="rounded-full bg-white px-2 py-1 font-medium">Priority: {task.priority}</span>
-                                <span className="rounded-full bg-white px-2 py-1 font-medium">Automation: {labelize(task.automationLevel)}</span>
+                                <span className="rounded-full bg-white px-2 py-1 font-medium">Automation: {automationLabel(task.automationLevel)}</span>
+                                {task.assignee && <span className="rounded-full bg-white px-2 py-1 font-medium">Assigned: {task.assignee.user.name || task.assignee.user.email}</span>}
+                                {task.dueAt && <span className="rounded-full bg-white px-2 py-1 font-medium">Due: {new Date(task.dueAt).toLocaleDateString()}</span>}
                                 {task.requiresApproval && <span className="rounded-full bg-white px-2 py-1">Approval required</span>}
                               </div>
+                              {unresolvedDependencies(task).length > 0 && <div className="mt-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-semibold text-amber-800">Blocked by: {unresolvedDependencies(task).map((dependency) => dependency.requiredTask.title).join(", ")}</div>}
                             </div>
                           </div>
                         </div>
@@ -858,6 +857,7 @@ export default function GuidedProjectDetail() {
           )}
         </Card>
       )}
+      <ProjectGlanceDrawer project={project} open={projectGlanceOpen} onClose={() => setProjectGlanceOpen(false)} />
 
     </div>
   );

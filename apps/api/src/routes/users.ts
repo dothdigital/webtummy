@@ -4,6 +4,8 @@ import { prisma } from "@webtummy/db";
 import { hashPassword } from "../auth.js";
 import { normalizePlanCode } from "../billing.js";
 import { requireAuth, requireRole } from "../middleware.js";
+import { rolesConsumeSeat } from "@webtummy/core/workspace-permissions";
+import { workspaceSeatUsage } from "../workspace-access.js";
 
 export const usersRouter = Router();
 usersRouter.use(requireAuth, requireRole("super_admin"));
@@ -103,8 +105,14 @@ usersRouter.patch("/memberships/:membershipId/role", async (req, res) => {
   const membership = await prisma.workspaceMembership.findUnique({ where: { id: req.params.membershipId }, include: { workspace: true, roles: true } });
   if (!membership) return res.status(404).json({ error: "workspace membership not found" });
   const role = parsed.data.role;
+  if (membership.workspace.workspaceType === "personal" && role !== "admin") return res.status(400).json({ error: "Personal supports only its single Owner/Admin." });
   if (role === "client_viewer" && membership.workspace.workspaceType !== "agency") return res.status(400).json({ error: "Client Viewer is available only in Agency workspaces." });
   if (membership.workspace.ownerUserId === membership.userId && role !== "admin") return res.status(409).json({ error: "The Primary Owner must retain Owner/Admin authority." });
+  const oldRoles = membership.roles.map((item) => item.role);
+  if (rolesConsumeSeat([role]) && !rolesConsumeSeat(oldRoles)) {
+    const usage = await workspaceSeatUsage(membership.workspace.id, membership.workspace.settingsJson);
+    if (usage.limit != null && usage.total >= usage.limit) return res.status(409).json({ error: "No paid workspace seat is available for this role change." });
+  }
   const storedRoles = membership.workspace.ownerUserId === membership.userId ? ["owner", "admin"] : [role];
   await prisma.$transaction(async (tx) => {
     await tx.workspaceMemberRole.deleteMany({ where: { membershipId: membership.id } });
@@ -117,9 +125,13 @@ usersRouter.patch("/memberships/:membershipId/role", async (req, res) => {
 usersRouter.patch("/memberships/:membershipId/status", async (req, res) => {
   const parsed = membershipStatusSchema.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() });
-  const membership = await prisma.workspaceMembership.findUnique({ where: { id: req.params.membershipId }, include: { workspace: true } });
+  const membership = await prisma.workspaceMembership.findUnique({ where: { id: req.params.membershipId }, include: { workspace: true, roles: true } });
   if (!membership) return res.status(404).json({ error: "workspace membership not found" });
   if (membership.workspace.ownerUserId === membership.userId && parsed.data.status !== "active") return res.status(409).json({ error: "The Primary Owner cannot be suspended or deactivated." });
+  if (parsed.data.status === "active" && membership.status !== "active" && rolesConsumeSeat(membership.roles.map((item) => item.role))) {
+    const usage = await workspaceSeatUsage(membership.workspace.id, membership.workspace.settingsJson);
+    if (usage.limit != null && usage.total >= usage.limit) return res.status(409).json({ error: "No paid workspace seat is available to restore this user." });
+  }
   await prisma.$transaction(async (tx) => {
     await tx.workspaceMembership.update({ where: { id: membership.id }, data: { status: parsed.data.status, suspendedAt: parsed.data.status === "suspended" ? new Date() : null, deactivatedAt: parsed.data.status === "deactivated" ? new Date() : null } });
     await tx.workspaceActivity.create({ data: { workspaceId: membership.workspaceId, actorUserId: req.user!.userId, action: "super_admin.membership_status_changed", entityType: "workspace_membership", entityId: membership.id, previousJson: { status: membership.status }, nextJson: { status: parsed.data.status } } });

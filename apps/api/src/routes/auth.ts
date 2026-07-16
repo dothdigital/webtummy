@@ -8,7 +8,8 @@ import { requireAuth } from "../middleware.js";
 import { config } from "../config.js";
 import { sendMail } from "../email.js";
 import { trialEndsFrom } from "../billing.js";
-import { hasWorkspacePermission, type WorkspaceContext } from "../workspace-access.js";
+import { hasWorkspacePermission, workspaceApprovalMode, workspaceSeatUsage, type WorkspaceContext } from "../workspace-access.js";
+import { rolesConsumeSeat } from "@webtummy/core/workspace-permissions";
 
 export const authRouter = Router();
 
@@ -34,6 +35,7 @@ async function workspaceSession(userId: string) {
     include: { workspace: { select: { id: true, name: true, workspaceType: true, ownerUserId: true, legacyClientId: true, settingsJson: true, securitySettingsJson: true, autoApprovalPolicyJson: true } }, roles: { select: { role: true } } },
   });
   if (!membership) return null;
+  if (membership.workspace.workspaceType === "personal" && membership.workspace.ownerUserId !== userId) return null;
   const [clientCount, projectCount] = await Promise.all([
     membership.workspace.workspaceType === "agency"
       ? prisma.agencyClient.count({ where: { workspaceId: membership.workspace.id } })
@@ -47,7 +49,7 @@ async function workspaceSession(userId: string) {
   const stored = new Set(membership.roles.map((item) => item.role));
   const roles = [
     ...(stored.has("owner") || stored.has("admin") ? ["admin"] : []),
-    ...(stored.has("manager") || stored.has("approver") ? ["manager"] : []),
+    ...(stored.has("manager") || stored.has("approver") || stored.has("manager_approver") ? ["manager"] : []),
     ...(stored.has("editor") ? ["editor"] : []),
     ...(stored.has("viewer") ? ["viewer"] : []),
     ...(stored.has("client_viewer") ? ["client_viewer"] : []),
@@ -55,6 +57,7 @@ async function workspaceSession(userId: string) {
   const primaryRole = roles.find((role) => ["admin", "manager", "editor", "viewer", "client_viewer"].includes(role)) ?? "viewer";
   const landingPath = primaryRole === "client_viewer" || primaryRole === "admin" || primaryRole === "manager" ? "/workspace" : "/";
   const context: WorkspaceContext = { workspace: membership.workspace, membership, roles: stored };
+  const approvalMode = await workspaceApprovalMode(context);
   const permissionNames = ["manage_settings", "manage_projects", "create_projects", "edit_project_settings", "assign_tasks", "approve", "edit_assigned_work", "run_ai_analysis", "edit_strategy", "execute_tasks", "publish", "billing", "read_internal", "manage_clients", "manage_users", "manage_integrations", "read_integrations", "manage_api_keys", "view_reports", "export_reports", "view_activity", "view_notifications"];
   const permissions = Object.fromEntries(permissionNames.map((permission) => [permission, hasWorkspacePermission(context, permission)]));
   return {
@@ -77,6 +80,7 @@ async function workspaceSession(userId: string) {
       billing: permissions.billing,
       viewInternal: permissions.read_internal,
       permissions,
+      approvalMode,
     },
   };
 }
@@ -300,9 +304,15 @@ authRouter.post("/workspace-invitations/accept", async (req, res) => {
   const hash = tokenHash(parsed.data.token);
   const invitation = await prisma.workspaceInvitation.findUnique({ where: { tokenHash: hash }, include: { workspace: true } });
   if (!invitation || invitation.status !== "invited" || invitation.expiresAt < new Date()) return res.status(400).json({ error: "invalid or expired invitation" });
+  if (invitation.workspace.workspaceType === "personal") return res.status(409).json({ error: "Personal is a single-user Owner/Admin workspace and cannot accept team invitations." });
   const roles = Array.isArray(invitation.rolesJson) ? invitation.rolesJson.map(String) : [];
-  const allowedRoles = invitation.workspace.workspaceType === "personal" ? ["admin", "editor", "viewer"] : invitation.workspace.workspaceType === "agency" ? ["admin", "manager", "editor", "viewer", "client_viewer"] : ["admin", "manager", "editor", "viewer"];
+  const allowedRoles = invitation.workspace.workspaceType === "agency" ? ["admin", "manager", "editor", "viewer", "client_viewer"] : ["admin", "manager", "editor", "viewer"];
   if (!roles.length || roles.includes("owner") || roles.some((role) => !allowedRoles.includes(role))) return res.status(400).json({ error: "invitation contains roles that are not allowed for this workspace" });
+  if (roles.includes("client_viewer") && (invitation.workspace.workspaceType !== "agency" || roles.length !== 1)) return res.status(400).json({ error: "Client Viewer is Agency-only and cannot be combined with an internal role" });
+  if (rolesConsumeSeat(roles)) {
+    const usage = await workspaceSeatUsage(invitation.workspace.id, invitation.workspace.settingsJson);
+    if (usage.limit != null && usage.total > usage.limit) return res.status(409).json({ error: "No paid workspace seat is available for this invitation." });
+  }
   const teamIds = Array.isArray(invitation.teamIdsJson) ? invitation.teamIdsJson.map(String) : [];
   const agencyClientIds = Array.isArray(invitation.agencyClientIdsJson) ? invitation.agencyClientIdsJson.map(String) : [];
   let user = await prisma.user.findUnique({ where: { email: invitation.normalizedEmail } });
