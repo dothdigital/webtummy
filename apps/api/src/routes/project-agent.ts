@@ -26,6 +26,14 @@ projectAgentRouter.post("/agent/provider-check", async (_req, res) => {
 
 const requestSchema = z.object({ page: agentPageSchema.default("project"), question: z.string().trim().max(2000).optional(), conversation: z.array(z.object({ role: z.enum(["user", "assistant"]), text: z.string().trim().max(4000) })).max(20).default([]) });
 
+async function activeThread(context: Awaited<ReturnType<typeof workspaceContext>>, projectId: string) {
+  return prisma.projectAgentThread.upsert({
+    where: { workspaceId_userId_projectId: { workspaceId: context.workspace.id, userId: context.membership.userId, projectId } },
+    create: { workspaceId: context.workspace.id, userId: context.membership.userId, projectId },
+    update: { status: "active" },
+  });
+}
+
 function agentAccess(context: Awaited<ReturnType<typeof workspaceContext>>) {
   return { canExecute: hasWorkspacePermission(context, "execute_tasks"), canApprove: hasWorkspacePermission(context, "approve") };
 }
@@ -37,6 +45,24 @@ async function recordDecision(context: Awaited<ReturnType<typeof workspaceContex
   await prisma.$transaction((tx) => recordWorkspaceActivity(tx, { context, action: "next_best_action.recommended", entityType: "execution_task", entityId: decision.taskId, agencyClientId: evidence.project.agencyClientId, projectId: evidence.project.id, nextJson: { taskId: decision.taskId, title: decision.title, score: decision.score, confidence: decision.confidence, reason: decision.reason, expectedOutcome: decision.expectedOutcome, signals: decision.signals, actionable: decision.actionable } }));
 }
 
+projectAgentRouter.get("/projects/:projectId/agent/thread", async (req, res) => {
+  const context = await workspaceContext(req);
+  if (!(await canAccessProject(context, req.params.projectId))) return res.status(404).json({ error: "Project not found or unavailable." });
+  const thread = await activeThread(context, req.params.projectId);
+  const limit = z.coerce.number().int().min(1).max(200).catch(100).parse(req.query.limit);
+  const messages = await prisma.projectAgentMessage.findMany({ where: { threadId: thread.id }, orderBy: { createdAt: "desc" }, take: limit });
+  res.json({ thread: { id: thread.id, title: thread.title, updatedAt: thread.updatedAt }, messages: messages.reverse().map((message) => ({ id: message.id, role: message.role, text: message.content, page: message.pageContext, createdAt: message.createdAt })) });
+});
+
+projectAgentRouter.delete("/projects/:projectId/agent/thread", async (req, res) => {
+  const context = await workspaceContext(req);
+  if (!(await canAccessProject(context, req.params.projectId))) return res.status(404).json({ error: "Project not found or unavailable." });
+  const thread = await activeThread(context, req.params.projectId);
+  await prisma.projectAgentMessage.deleteMany({ where: { threadId: thread.id } });
+  await prisma.projectAgentThread.update({ where: { id: thread.id }, data: { title: "Project conversation" } });
+  res.json({ cleared: true, threadId: thread.id });
+});
+
 projectAgentRouter.post("/projects/:projectId/agent/plan", async (req, res) => {
   const input = requestSchema.parse(req.body ?? {});
   const context = await workspaceContext(req);
@@ -44,10 +70,22 @@ projectAgentRouter.post("/projects/:projectId/agent/plan", async (req, res) => {
   const evidence = await loadProjectAgentEvidence(req.params.projectId);
   const access = agentAccess(context);
   const decision = rankNextBestAction(evidence.project.executionTasks, nextBestActionContext(evidence, access));
-  const output = await runProjectAgent(evidence, input.page, input.question, input.conversation, access);
+  const thread = await activeThread(context, req.params.projectId);
+  const savedMessages = await prisma.projectAgentMessage.findMany({ where: { threadId: thread.id }, orderBy: { createdAt: "desc" }, take: 12 });
+  const conversation = savedMessages.length
+    ? savedMessages.reverse().map((message) => ({ role: message.role === "assistant" ? "assistant" as const : "user" as const, text: message.content }))
+    : input.conversation;
+  if (input.question) await prisma.projectAgentMessage.create({ data: { threadId: thread.id, pageContext: input.page, role: "user", content: input.question } });
+  const output = await runProjectAgent(evidence, input.page, input.question, conversation, access);
+  if (input.question) {
+    await prisma.$transaction([
+      prisma.projectAgentMessage.create({ data: { threadId: thread.id, pageContext: input.page, role: "assistant", content: output.answer, metadata: { generatedBy: output.generatedBy, retrievalMode: output.retrieval.mode } } }),
+      prisma.projectAgentThread.update({ where: { id: thread.id }, data: { title: thread.title === "Project conversation" ? input.question.slice(0, 180) : thread.title } }),
+    ]);
+  }
   await recordDecision(context, evidence, decision);
-  await prisma.aiRun.create({ data: { projectId: req.params.projectId, clientId: evidence.project.clientId, moduleName: "project_orchestrator", promptVersion: "mastra-v1", inputSnapshotJson: { page: input.page, question: input.question ?? null, conversationTurns: input.conversation.length }, outputJson: output, outputText: output.summary, status: "completed" } });
-  res.json(output);
+  await prisma.aiRun.create({ data: { projectId: req.params.projectId, clientId: evidence.project.clientId, moduleName: "project_orchestrator", promptVersion: "mastra-v1", inputSnapshotJson: { page: input.page, question: input.question ?? null, conversationTurns: conversation.length, threadId: thread.id }, outputJson: output, outputText: output.summary, status: "completed" } });
+  res.json({ ...output, threadId: thread.id });
 });
 
 projectAgentRouter.get("/projects/:projectId/next-best-action", async (req, res) => {

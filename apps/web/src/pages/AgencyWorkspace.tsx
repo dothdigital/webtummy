@@ -4,6 +4,7 @@ import { api } from "../api.js";
 import { Card } from "../components/ui.js";
 import AgencyClientEditor from "../components/AgencyClientEditor.js";
 import BusinessLocationTargetMarkets from "../components/BusinessLocationTargetMarkets.js";
+import SenukeFieldGuide, { createFieldGuide } from "../components/SenukeFieldGuide.js";
 import { primaryGoalsForWorkspace } from "@webtummy/core/project-goals";
 import { configurableWorkspaceRoles, defaultWorkspacePermission, workspacePermissionCatalog, workspaceRoleCanEver, type ConfigurableWorkspaceRole } from "@webtummy/core/workspace-permissions";
 
@@ -117,6 +118,7 @@ export default function AgencyWorkspace() {
   const [clientFilter, setClientFilter] = useState<"active" | "archived">("active");
   const [showClientForm, setShowClientForm] = useState(false);
   const [showInviteForm, setShowInviteForm] = useState(false);
+  const [activeClientGuideKey, setActiveClientGuideKey] = useState("business_name");
   const [removingMemberId, setRemovingMemberId] = useState<string | null>(null);
   const [replacementMembershipId, setReplacementMembershipId] = useState("");
   const [pages, setPages] = useState<Record<string, number>>({});
@@ -152,6 +154,27 @@ export default function AgencyWorkspace() {
   const completedProjects = portfolioProjects.filter((project) => project.status === "completed").length;
   const approvedStrategies = portfolioProjects.filter((project) => project.strategyStatus === "approved").length;
   const filteredClients = data?.clients.filter((client) => client.status === clientFilter) ?? [];
+  const clientGuideFields: Record<string, { label: string; value: string; required?: boolean; options?: string[] }> = {
+    business_name: { label: "Business name", value: clientName, required: true },
+    client_name: { label: "Contact name", value: clientContactName, required: true },
+    client_email: { label: "Email address", value: clientEmail, required: true },
+    phone_number: { label: "Phone number", value: clientPhone },
+    website_url: { label: "Website URL", value: clientWebsite, required: true },
+    industry_niche: { label: "Industry / niche", value: clientNiche, required: true },
+    business_location: { label: "Business Location", value: [clientCity, clientRegion, clientCountry].filter(Boolean).join(", "), required: true },
+    target_location: { label: "Target Markets", value: clientMarkets, required: true },
+    primary_goal: { label: "Primary business goal", value: clientGoal, required: true, options: primaryGoalsForWorkspace("agency") },
+    business_description: { label: "Business description", value: clientDescription, required: true },
+    target_audience: { label: "Target audience", value: clientAudience, required: true },
+    products_services: { label: "Main products / services", value: clientProducts, required: true },
+    primary_competitors: { label: "Primary competitors", value: clientCompetitors },
+    primary_keywords: { label: "Primary keywords", value: clientKeywords },
+    tone_preference: { label: "Brand voice / tone", value: clientBrandVoice, required: true },
+    preferred_language: { label: "Preferred language", value: clientLanguage, required: true },
+    time_zone: { label: "Time zone", value: clientTimeZone, required: true, options: timeZones },
+  };
+  const activeClientGuideField = clientGuideFields[activeClientGuideKey] ?? clientGuideFields.business_name;
+  const activeClientGuide = createFieldGuide({ key: activeClientGuideKey, ...activeClientGuideField });
 
   async function load() {
     setLoading(true);
@@ -328,25 +351,25 @@ export default function AgencyWorkspace() {
         <div className="flex flex-wrap items-start justify-between gap-3"><div><div className="flex gap-2"><Link to={`/agency/clients/${client.id}`} className="font-bold hover:text-brand-700">{client.name}</Link><Badge tone={client.status === "active" ? "green" : "slate"}>{client.status === "archived" ? "Archived · View only" : label(client.status)}</Badge></div><p className="mt-1 text-sm text-slate-500">{client.contactEmail || "No contact email"} · {list(client.targetMarkets).join(", ") || "No target markets"}</p></div><div className="flex flex-wrap gap-2">{canManageClients && client.status === "active" && <button onClick={() => setEditingClient(client)} className="rounded-lg border px-3 py-2 text-xs font-bold">Edit</button>}{client.status === "active" ? canManageClients && <button disabled={busy === client.id} onClick={() => action(client.id, () => api.post(`/api/agency/clients/${client.id}/archive`, {}), `${client.name} archived and is now view-only.`)} className="rounded-lg border px-3 py-2 text-xs font-bold disabled:opacity-40">Archive</button> : <>{canManageClients && <button disabled={busy === client.id} onClick={() => action(client.id, () => api.post(`/api/agency/clients/${client.id}/restore`, {}), `${client.name} restored.`)} className="rounded-lg border px-3 py-2 text-xs font-bold disabled:opacity-40">Restore</button>}{canAdmin && <button disabled={busy === `delete-${client.id}`} onClick={() => void permanentlyDeleteClient(client)} className="rounded-lg border border-rose-200 px-3 py-2 text-xs font-bold text-rose-700 disabled:opacity-40">Permanently delete</button>}</>}</div></div>
         <div className="mt-4 grid gap-2 sm:grid-cols-3"><div className="rounded-lg bg-slate-50 p-3 text-sm"><b>{client.projects.length}</b><span className="block text-xs text-slate-500">Projects</span></div><div className="rounded-lg bg-slate-50 p-3 text-sm"><b>{client.teamAssignments.length}</b><span className="block text-xs text-slate-500">Teams</span></div><div className="rounded-lg bg-slate-50 p-3 text-sm"><b>{client.memberAssignments.length}</b><span className="block text-xs text-slate-500">Assigned users</span></div></div>
       </div>)}{!filteredClients.length && <div className="p-8 text-center text-sm text-slate-500">No {clientFilter} clients.</div>}</div></Card>}
-      {canManageClients && showClientForm && <Card className="p-6 lg:p-8"><div className="flex items-start justify-between gap-4"><div><h2 className="text-xl font-bold">Create client</h2><p className="mt-1 text-sm text-slate-500">This shared client profile is reused across every project.</p></div><button type="button" onClick={() => setShowClientForm(false)} className="rounded-lg border px-4 py-2 text-sm font-bold text-slate-600">Cancel</button></div><form onSubmit={(event) => void createClient(event)} className="mt-6 grid gap-5 md:grid-cols-2 xl:grid-cols-3">
-        <ClientField label="Business name *" value={clientName} onChange={setClientName} required />
-        <ClientField label="Contact name *" value={clientContactName} onChange={setClientContactName} required />
-        <ClientField label="Email address *" value={clientEmail} onChange={setClientEmail} type="email" required />
-        <ClientField label="Phone number" value={clientPhone} onChange={setClientPhone} type="tel" />
-        <ClientField label="Website URL *" value={clientWebsite} onChange={setClientWebsite} type="url" placeholder="https://example.com" required />
-        <ClientField label="Industry / niche *" value={clientNiche} onChange={setClientNiche} required />
-        <BusinessLocationTargetMarkets value={{ country: clientCountry, stateProvince: clientRegion, city: clientCity, streetAddress: clientStreetAddress, postalCode: clientPostalCode, targetMarkets: clientMarkets.split(/[,\n]/).map((item) => item.trim()).filter(Boolean) }} onChange={(value) => { setClientCountry(value.country); setClientRegion(value.stateProvince); setClientCity(value.city); setClientStreetAddress(value.streetAddress); setClientPostalCode(value.postalCode); setClientMarkets(value.targetMarkets.join("\n")); }} />
-        <label className="block text-xs font-bold">Primary business goal *<select required value={clientGoal} onChange={(event) => setClientGoal(event.target.value)} className="mt-1 h-10 w-full rounded-lg border bg-white px-3 text-sm font-normal"><option value="">Select goal</option>{primaryGoalsForWorkspace("agency").map((goal) => <option key={goal}>{goal}</option>)}</select></label>
-        <ClientArea label="Business description *" value={clientDescription} onChange={setClientDescription} required />
-        <ClientArea label="Target audience *" value={clientAudience} onChange={setClientAudience} required />
-        <ClientArea label="Main products / services *" value={clientProducts} onChange={setClientProducts} required />
-        <ClientArea label="Primary competitors" value={clientCompetitors} onChange={setClientCompetitors} hint="Optional; separate with commas or new lines" />
-        <ClientArea label="Primary keywords" value={clientKeywords} onChange={setClientKeywords} hint="Optional; separate with commas or new lines" />
-        <ClientField label="Brand voice / tone *" value={clientBrandVoice} onChange={setClientBrandVoice} placeholder="Professional, clear, friendly" required />
-        <ClientField label="Preferred language *" value={clientLanguage} onChange={setClientLanguage} required />
-        <label className="block text-xs font-bold">Time zone *<select required value={clientTimeZone} onChange={(event) => setClientTimeZone(event.target.value)} className="mt-1 h-10 w-full rounded-lg border bg-white px-3 text-sm font-normal">{timeZones.map((zone) => <option key={zone} value={zone}>{zone.replace(/_/g, " ")}</option>)}</select></label>
-        <div className="flex justify-end gap-3 md:col-span-2 xl:col-span-3"><button type="button" onClick={() => setShowClientForm(false)} className="h-11 rounded-lg border px-5 text-sm font-bold text-slate-600">Cancel</button><button disabled={busy === "client-create" || !clientCountry || !clientRegion || !clientCity || !clientMarkets.trim()} className="h-11 rounded-lg bg-brand-600 px-6 text-sm font-bold text-white disabled:bg-slate-300">{busy === "client-create" ? "Creating…" : "Create client"}</button></div>
-      </form></Card>}
+      {canManageClients && showClientForm && <Card className="p-6 lg:p-8"><div className="flex items-start justify-between gap-4"><div><h2 className="text-xl font-bold">Create client</h2><p className="mt-1 text-sm text-slate-500">This shared client profile is reused across every project.</p></div><button type="button" onClick={() => setShowClientForm(false)} className="rounded-lg border px-4 py-2 text-sm font-bold text-slate-600">Cancel</button></div><div className="mt-6 grid items-start gap-6 xl:grid-cols-[minmax(0,1fr)_340px]"><form onSubmit={(event) => void createClient(event)} className="grid gap-5 md:grid-cols-2">
+        <ClientField guideKey="business_name" onGuide={setActiveClientGuideKey} label="Business name *" value={clientName} onChange={setClientName} required />
+        <ClientField guideKey="client_name" onGuide={setActiveClientGuideKey} label="Contact name *" value={clientContactName} onChange={setClientContactName} required />
+        <ClientField guideKey="client_email" onGuide={setActiveClientGuideKey} label="Email address *" value={clientEmail} onChange={setClientEmail} type="email" required />
+        <ClientField guideKey="phone_number" onGuide={setActiveClientGuideKey} label="Phone number" value={clientPhone} onChange={setClientPhone} type="tel" />
+        <ClientField guideKey="website_url" onGuide={setActiveClientGuideKey} label="Website URL *" value={clientWebsite} onChange={setClientWebsite} type="url" placeholder="https://example.com" required />
+        <ClientField guideKey="industry_niche" onGuide={setActiveClientGuideKey} label="Industry / niche *" value={clientNiche} onChange={setClientNiche} required />
+        <div data-guide-key="business_location" onFocusCapture={() => setActiveClientGuideKey("business_location")} onClickCapture={() => setActiveClientGuideKey("business_location")} className="md:col-span-2"><BusinessLocationTargetMarkets value={{ country: clientCountry, stateProvince: clientRegion, city: clientCity, streetAddress: clientStreetAddress, postalCode: clientPostalCode, targetMarkets: clientMarkets.split(/[,\n]/).map((item) => item.trim()).filter(Boolean) }} onChange={(value) => { setClientCountry(value.country); setClientRegion(value.stateProvince); setClientCity(value.city); setClientStreetAddress(value.streetAddress); setClientPostalCode(value.postalCode); setClientMarkets(value.targetMarkets.join("\n")); }} /></div>
+        <label onFocusCapture={() => setActiveClientGuideKey("primary_goal")} onClickCapture={() => setActiveClientGuideKey("primary_goal")} className="block text-xs font-bold">Primary business goal *<select required value={clientGoal} onChange={(event) => setClientGoal(event.target.value)} className="mt-1 h-10 w-full rounded-lg border bg-white px-3 text-sm font-normal"><option value="">Select goal</option>{primaryGoalsForWorkspace("agency").map((goal) => <option key={goal}>{goal}</option>)}</select></label>
+        <ClientArea guideKey="business_description" onGuide={setActiveClientGuideKey} label="Business description *" value={clientDescription} onChange={setClientDescription} required />
+        <ClientArea guideKey="target_audience" onGuide={setActiveClientGuideKey} label="Target audience *" value={clientAudience} onChange={setClientAudience} required />
+        <ClientArea guideKey="products_services" onGuide={setActiveClientGuideKey} label="Main products / services *" value={clientProducts} onChange={setClientProducts} required />
+        <ClientArea guideKey="primary_competitors" onGuide={setActiveClientGuideKey} label="Primary competitors" value={clientCompetitors} onChange={setClientCompetitors} hint="Optional; separate with commas or new lines" />
+        <ClientArea guideKey="primary_keywords" onGuide={setActiveClientGuideKey} label="Primary keywords" value={clientKeywords} onChange={setClientKeywords} hint="Optional; separate with commas or new lines" />
+        <ClientField guideKey="tone_preference" onGuide={setActiveClientGuideKey} label="Brand voice / tone *" value={clientBrandVoice} onChange={setClientBrandVoice} placeholder="Professional, clear, friendly" required />
+        <ClientField guideKey="preferred_language" onGuide={setActiveClientGuideKey} label="Preferred language *" value={clientLanguage} onChange={setClientLanguage} required />
+        <label onFocusCapture={() => setActiveClientGuideKey("time_zone")} onClickCapture={() => setActiveClientGuideKey("time_zone")} className="block text-xs font-bold">Time zone *<select required value={clientTimeZone} onChange={(event) => setClientTimeZone(event.target.value)} className="mt-1 h-10 w-full rounded-lg border bg-white px-3 text-sm font-normal">{timeZones.map((zone) => <option key={zone} value={zone}>{zone.replace(/_/g, " ")}</option>)}</select></label>
+        <div className="flex justify-end gap-3 md:col-span-2"><button type="button" onClick={() => setShowClientForm(false)} className="h-11 rounded-lg border px-5 text-sm font-bold text-slate-600">Cancel</button><button disabled={busy === "client-create" || !clientCountry || !clientRegion || !clientCity || !clientMarkets.trim()} className="h-11 rounded-lg bg-brand-600 px-6 text-sm font-bold text-white disabled:bg-slate-300">{busy === "client-create" ? "Creating…" : "Create client"}</button></div>
+      </form><SenukeFieldGuide guide={activeClientGuide} contextLabel="Agency client setup · shared project defaults" onSelectOption={activeClientGuide.options?.length ? (value) => { if (activeClientGuideKey === "primary_goal") setClientGoal(value); if (activeClientGuideKey === "time_zone") setClientTimeZone(value); } : undefined} /></div></Card>}
     </div>}
 
     {tab === "teams" && <div className="space-y-6">
@@ -367,8 +390,8 @@ export default function AgencyWorkspace() {
   </div>;
 }
 
-function ClientField({ label, value, onChange, required, type = "text", placeholder }: { label: string; value: string; onChange: (value: string) => void; required?: boolean; type?: string; placeholder?: string }) {
-  return <label className="block text-xs font-bold">{label}<input required={required} type={type} value={value} onChange={(event) => onChange(event.target.value)} placeholder={placeholder} className="mt-1 h-10 w-full rounded-lg border px-3 text-sm font-normal" /></label>;
+function ClientField({ label, value, onChange, required, type = "text", placeholder, guideKey, onGuide }: { label: string; value: string; onChange: (value: string) => void; required?: boolean; type?: string; placeholder?: string; guideKey?: string; onGuide?: (key: string) => void }) {
+  return <label onFocusCapture={() => guideKey && onGuide?.(guideKey)} onClickCapture={() => guideKey && onGuide?.(guideKey)} className="block text-xs font-bold">{label}<input required={required} type={type} value={value} onChange={(event) => onChange(event.target.value)} placeholder={placeholder} className="mt-1 h-10 w-full rounded-lg border px-3 text-sm font-normal" /></label>;
 }
 
 const configurablePermissions = workspacePermissionCatalog.filter((permission) => permission.configurable);
@@ -402,8 +425,8 @@ function RolePermissionMatrix({ workspaceType, stored, onSaved }: { workspaceTyp
   return <Card className="overflow-hidden p-0"><div className="border-b px-5 py-4"><h2 className="font-bold">Role permissions</h2><p className="mt-1 text-xs text-slate-500">Enable or disable capabilities within each role’s safe boundary. Change the member’s role when broader access is required. Owner/Admin always retains full control.</p></div><div className="overflow-x-auto"><table className="w-full min-w-[760px] text-left text-sm"><thead className="bg-slate-50 text-xs uppercase text-slate-500"><tr><th className="px-5 py-3">Permission</th>{roles.map((role) => <th key={role} className="px-4 py-3 text-center">{roleLabels[role]}</th>)}</tr></thead><tbody className="divide-y">{configurablePermissions.map((permission) => <tr key={permission.key}><td className="px-5 py-3 font-medium">{permission.label}</td>{roles.map((role) => { const available = workspaceRoleCanEver(role, permission.key); return <td key={role} className="px-4 py-3 text-center"><input type="checkbox" checked={available && enabled(role, permission.key)} disabled={!available} onChange={() => toggle(role, permission.key)} aria-label={`${permission.label} for ${roleLabels[role]}`} title={available ? undefined : `Not available to ${roleLabels[role]}`} className="h-4 w-4 rounded border-slate-300 text-brand-600 focus:ring-brand-500 disabled:cursor-not-allowed disabled:opacity-30" /></td>; })}</tr>)}</tbody></table></div><div className="flex flex-wrap items-center justify-end gap-3 border-t px-5 py-4">{message && <span className="mr-auto text-xs text-slate-600">{message}</span>}<button type="button" disabled={saving} onClick={() => setPolicies({})} className="h-10 rounded-lg border px-4 text-sm font-bold text-slate-600">Reset to launch defaults</button><button type="button" disabled={saving} onClick={() => void save()} className="h-10 rounded-lg bg-brand-600 px-5 text-sm font-bold text-white disabled:opacity-50">{saving ? "Saving…" : "Save permissions"}</button></div></Card>;
 }
 
-function ClientArea({ label, value, onChange, required, placeholder, hint }: { label: string; value: string; onChange: (value: string) => void; required?: boolean; placeholder?: string; hint?: string }) {
-  return <label className="block text-xs font-bold">{label}<textarea required={required} value={value} onChange={(event) => onChange(event.target.value)} placeholder={placeholder} className="mt-1 min-h-20 w-full rounded-lg border p-3 text-sm font-normal" />{hint && <span className="mt-1 block font-normal text-slate-500">{hint}</span>}</label>;
+function ClientArea({ label, value, onChange, required, placeholder, hint, guideKey, onGuide }: { label: string; value: string; onChange: (value: string) => void; required?: boolean; placeholder?: string; hint?: string; guideKey?: string; onGuide?: (key: string) => void }) {
+  return <label onFocusCapture={() => guideKey && onGuide?.(guideKey)} onClickCapture={() => guideKey && onGuide?.(guideKey)} className="block text-xs font-bold">{label}<textarea required={required} value={value} onChange={(event) => onChange(event.target.value)} placeholder={placeholder} className="mt-1 min-h-20 w-full rounded-lg border p-3 text-sm font-normal" />{hint && <span className="mt-1 block font-normal text-slate-500">{hint}</span>}</label>;
 }
 
 function AssignmentChoices({ title, items, selected, toggle }: { title: string; items: { id: string; label: string }[]; selected: string[]; toggle: (id: string) => void }) {

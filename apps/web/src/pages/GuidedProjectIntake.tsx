@@ -3,6 +3,7 @@ import type { ReactNode } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { api } from "../api.js";
 import { Button, Card } from "../components/ui.js";
+import SenukeFieldGuide, { createFieldGuide } from "../components/SenukeFieldGuide.js";
 import type { GuidedProject } from "../types.js";
 import { mergeTargetMarkets, targetMarketPhrase } from "../intake-markets.js";
 
@@ -436,6 +437,7 @@ export default function GuidedProjectIntake() {
   const [busy, setBusy] = useState(false);
   const [savedMessage, setSavedMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [activeQuestionKey, setActiveQuestionKey] = useState<string | null>(null);
   const autoPositionedProject = useRef<string | null>(null);
 
   useEffect(() => {
@@ -631,6 +633,15 @@ export default function GuidedProjectIntake() {
   if (error) return <Card className="border-red-200 bg-red-50 p-4 text-sm text-red-800">{error}</Card>;
   if (!project) return <div className="text-charcoal-400">Loading intake...</div>;
   const activeGroup = groupedQuestions[currentStep] ?? groupedQuestions[0];
+  const activeQuestion = activeGroup?.questions.find((question) => question.key === activeQuestionKey) ?? activeGroup?.questions[0] ?? syntheticQuestions[0];
+  const activeFieldGuide = createFieldGuide({
+    key: activeQuestion.key,
+    label: activeQuestion.text,
+    help: activeQuestion.help,
+    required: activeQuestion.required,
+    value: answers[activeQuestion.key] ?? "",
+    options: activeQuestion.options,
+  });
   const currentMissingRequired = activeGroup.questions.filter((question) => question.required && !answers[question.key]?.trim()).map((question) => question.text);
   const isLastStep = currentStep === groupedQuestions.length - 1;
   const goNext = async () => {
@@ -769,6 +780,7 @@ export default function GuidedProjectIntake() {
       )}
 
       {activeGroup && (
+        <div className="grid items-start gap-5 xl:grid-cols-[minmax(0,1fr)_340px]">
         <SectionShell
           key={activeGroup.step}
           title={activeGroup.step}
@@ -793,7 +805,7 @@ export default function GuidedProjectIntake() {
             const canAskLater = !question.required && mode !== "quick";
             const suggestions = project ? aiSuggestionOptions(question, answers, project) : [];
             return (
-            <div key={question.key} className={question.type === "textarea" ? "block lg:col-span-2" : "block"}>
+            <div key={question.key} onFocusCapture={() => setActiveQuestionKey(question.key)} onClickCapture={() => setActiveQuestionKey(question.key)} className={question.type === "textarea" ? "block lg:col-span-2" : "block"}>
               <span className="mb-1 flex flex-wrap items-center gap-2 text-sm font-bold text-slate-800">
                 <span>{question.text} {question.required && <span className="text-rose-600">*</span>}</span>
                 {aiFilled && <span className="rounded-full bg-brand-50 px-2 py-0.5 text-[11px] font-bold text-brand-700">AI recommended</span>}
@@ -901,6 +913,12 @@ export default function GuidedProjectIntake() {
             </div>
           );})}
         </SectionShell>
+        <SenukeFieldGuide
+          guide={activeFieldGuide}
+          contextLabel={`${modeLabel(mode)} · ${activeGroup.step}`}
+          onSelectOption={activeQuestion.options?.length ? (value) => activeQuestion.type === "multiselect" ? toggleMulti(activeQuestion, value) : update(activeQuestion.key, value) : undefined}
+        />
+        </div>
       )}
 
       <div className="flex flex-col gap-3 rounded-xl border border-slate-200 bg-white p-5 shadow-sm sm:flex-row sm:items-center sm:justify-between">

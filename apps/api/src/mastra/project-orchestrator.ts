@@ -8,7 +8,9 @@ import { rankNextBestAction, type NextBestActionContext } from "../dev016.js";
 
 export const agentPageSchema = z.enum([
   "project", "intake", "opportunities", "keywords", "keyword-insights", "site-analysis",
-  "strategy", "execution-plan", "approvals", "reports", "notifications", "support",
+  "strategy", "execution-plan", "approvals", "reports", "notifications", "backlinks",
+  "ai-citations", "site-architect", "lead-magnets", "growth", "gap-analysis", "local-seo",
+  "publishing", "social", "workspace", "clients", "teams", "billing", "admin", "geo-keywords", "support",
 ]);
 
 const plannedActivitySchema = z.object({
@@ -237,10 +239,48 @@ export function deterministicProjectPlan(evidence: Awaited<ReturnType<typeof loa
   const issue404 = project.executionTasks.find((task) => /404|not found|broken (page|url|link)/i.test(`${task.title} ${task.description}`));
   const completedTasks = project.executionTasks.filter((task) => ["completed", "cancelled", "skipped"].includes(task.status));
   const blockedTasks = pendingTasks.filter((task) => task.status === "blocked" || Boolean(task.blockedReason) || task.dependencies.some((dependency) => !["completed", "skipped"].includes(dependency.requiredTask.status)));
+  const readyTasks = pendingTasks.filter((task) => !["blocked", "waiting_for_approval", "waiting_approval"].includes(task.status) && task.dependencies.every((dependency) => ["completed", "skipped"].includes(dependency.requiredTask.status)));
+  const approvalTasks = pendingTasks.filter((task) => task.requiresApproval || task.clientApprovalRequired || ["waiting_for_approval", "waiting_approval", "needs_approval"].includes(task.status));
   const achievedMilestones = project.workflowSteps.filter((step) => ["completed", "skipped"].includes(step.status));
   const totalMilestones = project.workflowSteps.length;
+  const profileMissing = [
+    !project.name && "Project Name",
+    !project.projectType && "Project Type",
+    !project.websiteStatus && "Website Status",
+    requiresCrawl && !project.websiteUrl && "Website URL",
+    !project.niche && "Industry / Niche",
+    !project.businessLocation && "Business Location",
+    !markets.length && "Target Markets",
+    !project.primaryGoal && "Primary Goal",
+    !project.businessProfile?.targetAudience && "Audience",
+    !project.businessProfile?.offerSummary && "Offer",
+  ].filter(Boolean) as string[];
   let answer = `The next recommended activity is ${actionLabel}. ${next.key === "execution_plan" && readyTask ? `${nextBestDecision?.reason ?? "It is dependency-ready and has the highest current priority."} Expected outcome: ${nextBestDecision?.expectedOutcome || readyTask.expectedOutcome || readyTask.description}` : "It is the first incomplete workflow dependency."}`;
-  if (/current (position|status|stage)|where (is|are) (the )?project|project.*(position|status|stage)/.test(normalizedQuestion)) {
+  if (/how is (the )?project progress calculated|what.*progress.*mean|progress calculation/.test(normalizedQuestion)) {
+    const workflowRatio = totalMilestones ? achievedMilestones.length / totalMilestones : 0;
+    const executionRatio = project.executionTasks.length ? completedTasks.length / project.executionTasks.length : 0;
+    answer = `Project progress combines two equally weighted measures: workflow/setup milestones contribute 50%, and completed Execution Plan tasks contribute 50%. ${project.name} currently has ${achievedMilestones.length} of ${totalMilestones} milestones achieved and ${completedTasks.length} of ${project.executionTasks.length} tasks completed, producing an overall progress of ${Math.round((workflowRatio * 50) + (executionRatio * 50))}%.`;
+  }
+  else if (/profile.*complete|intake.*complete|profile fields need|fields.*improve|information.*missing/.test(normalizedQuestion)) {
+    answer = profileMissing.length
+      ? `${project.name} still needs ${profileMissing.join(", ")}. Complete these values before relying on downstream Opportunity, Keyword, Site Analysis, and Strategy recommendations. Existing Website projects must also keep a valid Website URL.`
+      : `${project.name} has the core profile information required for downstream recommendations: website status, niche, Business Location, Target Markets, Primary Goal, Audience, and Offer. Optional competitors, secondary goals, brand voice, analytics, and CMS details can make recommendations more specific.`;
+  }
+  else if (/how.*target markets.*used|what.*target markets|why.*target markets/.test(normalizedQuestion)) {
+    answer = `${project.name} currently targets ${markets.length ? markets.join(", ") : "no saved markets"}. Target Markets control local and regional keyword variants, competitor discovery, content and landing-page planning, Local SEO recommendations, Strategy priorities, and Execution Plan tasks. They remain separate from Business Location, which represents the company’s physical identity.`;
+  }
+  else if (/what.*refresh.*(edit|change).*profile|refresh.*profile|edit.*profile.*affect|change.*profile.*affect/.test(normalizedQuestion)) {
+    answer = `Profile changes affect the modules that consume the edited field. Changes to Audience, Offer, Goals, Target Markets, competitors, niche, or website status should trigger a review of Opportunities and Keyword Intelligence; if a Strategy is already approved, it should be regenerated before relying on its Execution Plan. Changing an Agency project override does not update the Client record unless Update Client is explicitly selected.`;
+  }
+  else if (/how many tasks|tasks.*(ready|blocked|completed)|ready.*blocked.*completed/.test(normalizedQuestion)) {
+    answer = `${project.name} has ${project.executionTasks.length} Execution Plan tasks: ${completedTasks.length} completed, ${readyTasks.length} dependency-ready, ${blockedTasks.length} blocked, ${approvalTasks.length} requiring or waiting for approval, and ${pendingTasks.length} total unfinished. Counts come from tasks created across Strategy, Keyword Intelligence, Site Analysis, and other project modules.`;
+  }
+  else if (/which tasks.*approval|what.*requires approval|tasks require approval/.test(normalizedQuestion)) {
+    answer = approvalTasks.length
+      ? `${approvalTasks.length} unfinished task${approvalTasks.length === 1 ? " requires" : "s require"} approval: ${approvalTasks.slice(0, 5).map((task) => task.title).join("; ")}${approvalTasks.length > 5 ? `; and ${approvalTasks.length - 5} more` : ""}. Protected work cannot execute until the applicable Owner/Admin, Manager/Approver, or requested Agency client approves it.`
+      : `No unfinished ${project.name} task currently requires approval. Tasks can still become approval-required when they affect publishing, live websites, client deliverables, integrations, or other protected actions.`;
+  }
+  else if (/current (position|status|stage)|where (is|are) (the )?project|project.*(position|status|stage)/.test(normalizedQuestion)) {
     answer = `${project.name} has achieved ${achievedMilestones.length} of ${totalMilestones || flow.length} workflow milestones and completed ${completedTasks.length} of ${project.executionTasks.length} Execution Plan tasks. ${active.length ? `The active workflow stage is ${active.join(", ")}.` : `The next incomplete workflow stage is ${next.title}.`} ${pendingTasks.length ? `${pendingTasks.length} execution tasks remain open${blockedTasks.length ? `, including ${blockedTasks.length} blocked by status or dependencies` : ""}.` : "There are no open execution tasks."} The next dependency-ready action is ${actionLabel}.`;
   }
   else if (/what.*block|blocker|blocking (this|the) project|why.*stuck|cannot proceed|can.t proceed/.test(normalizedQuestion)) {

@@ -100,8 +100,10 @@ function Shell() {
   }
 
   const workspaceRole = user.workspace?.primaryRole;
-  const landingPath = user.workspace?.landingPath ?? "/";
+  const platformOnlySuperAdmin = user.role === "super_admin" && !user.workspace;
+  const landingPath = platformOnlySuperAdmin ? "/admin" : user.workspace?.landingPath ?? "/";
   if (location.pathname === "/login") return <Navigate to={landingPath} replace />;
+  if (platformOnlySuperAdmin && location.pathname !== "/users" && !location.pathname.startsWith("/admin")) return <Navigate to="/admin" replace />;
   if (workspaceRole === "client_viewer" && location.pathname !== "/workspace" && location.pathname !== "/reports" && !location.pathname.startsWith("/agency/clients/")) return <Navigate to="/workspace" replace />;
 
   const welcomeEligible = Boolean(user.workspace && user.workspace.primaryRole === "admin" && user.workspace.onboardingRequired);
@@ -113,7 +115,7 @@ function Shell() {
   return (
     <Layout>
       <Routes>
-        <Route path="/" element={<Navigate to="/workspace" replace />} />
+        <Route path="/" element={<Navigate to={platformOnlySuperAdmin ? "/admin" : "/workspace"} replace />} />
         <Route path="/login" element={<Navigate to={landingPath} replace />} />
         <Route path="/users" element={<PlatformAdminOnly><Users /></PlatformAdminOnly>} />
         <Route path="/projects" element={<GuidedProjects />} />

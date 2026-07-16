@@ -1,6 +1,6 @@
 // App shell: light mockup-aligned sidebar + topbar, responsive.
 import { Link, NavLink, useLocation, useNavigate } from "react-router-dom";
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { useAuth } from "../auth.js";
 import { ACTIVE_CLIENT_EVENT, api, endImpersonation, getImpersonationLabel } from "../api.js";
 import { Logo, LogoMark } from "./Logo.js";
@@ -722,7 +722,7 @@ export default function Layout({ children }: { children: ReactNode }) {
 
 
   useEffect(() => {
-    if (!user) { setWorkspaceRoles([]); setWorkspacePermissions({}); setWorkspaceIdentity(null); return; }
+    if (!user || (user.role === "super_admin" && !user.workspace)) { setWorkspaceRoles([]); setWorkspacePermissions({}); setWorkspaceIdentity(null); return; }
     let cancelled = false;
     api.get<{ workspace: { name: string; workspaceType: string }; currentMembership: { roles: string[] }; permissions: Record<string, boolean> }>("/api/workspace")
       .then((result) => {
@@ -761,10 +761,12 @@ export default function Layout({ children }: { children: ReactNode }) {
   };
 
   const effectiveRoles = user?.workspace?.roles ?? workspaceRoles;
+  const platformOnlySuperAdmin = user?.role === "super_admin" && !user.workspace;
   const primaryRole = user?.workspace?.primaryRole;
   const clientViewerOnly = primaryRole === "client_viewer" || (effectiveRoles.length === 1 && effectiveRoles[0] === "client_viewer");
   const items = nav.filter((n) => {
     if (n.superOnly) return user?.role === "super_admin";
+    if (platformOnlySuperAdmin) return false;
     if (n.permission && user?.role !== "super_admin" && workspacePermissions[n.permission] !== true) return false;
     if (clientViewerOnly) return n.to === "/workspace" || n.to === "/reports" || n.to.startsWith("/workspace?tab=notifications");
     if (n.to === "/billing") return user?.role === "super_admin" || primaryRole === "admin";
@@ -964,21 +966,59 @@ type ProjectAgentPlan = {
   generatedBy: "mastra" | "rules";
 };
 
-function agentPage(pathname: string) {
+function agentPage(pathname: string, search = "") {
+  const tab = new URLSearchParams(search).get("tab");
   if (pathname.includes("/intake")) return "intake";
+  if (pathname.startsWith("/guided-projects/") && tab === "profile") return "intake";
+  if (pathname.startsWith("/guided-projects/") && tab === "execution") return "execution-plan";
   if (pathname.startsWith("/opportunities")) return "opportunities";
-  if (pathname.startsWith("/keyword-insights")) return "keyword-insights";
+  if (pathname.startsWith("/keyword-insights") || pathname.startsWith("/keyword-research") || pathname.startsWith("/keyword-analytics")) return "keyword-insights";
   if (pathname.startsWith("/keywords")) return "keywords";
-  if (pathname.startsWith("/site-analysis") || pathname.startsWith("/crawls/")) return "site-analysis";
+  if (pathname.startsWith("/site-analysis") || pathname.startsWith("/crawls/") || pathname.startsWith("/website-projects")) return "site-analysis";
   if (pathname.startsWith("/strategy")) return "strategy";
+  if (pathname.startsWith("/backlinks")) return "backlinks";
+  if (pathname.startsWith("/ai-citations")) return "ai-citations";
+  if (pathname.startsWith("/site-architect")) return "site-architect";
+  if (pathname.startsWith("/lead-magnets")) return "lead-magnets";
+  if (pathname.startsWith("/growth")) return "growth";
+  if (pathname.startsWith("/gap-analysis")) return "gap-analysis";
+  if (pathname.startsWith("/local-seo")) return "local-seo";
+  if (pathname.startsWith("/ai-content")) return "publishing";
+  if (pathname.startsWith("/social-strategy")) return "social";
   if (pathname.startsWith("/approvals")) return "approvals";
   if (pathname.startsWith("/reports")) return "reports";
+  if (pathname.startsWith("/billing") || pathname.startsWith("/pricing")) return "billing";
+  if (pathname.startsWith("/geo-keyword-intelligence")) return "geo-keywords";
+  if (pathname.startsWith("/admin") || pathname.startsWith("/users")) return "admin";
+  if (pathname.startsWith("/agency/clients/")) return "clients";
+  if (pathname === "/workspace" || pathname === "/agency") {
+    if (tab === "clients") return "clients";
+    if (tab === "teams") return "teams";
+    if (tab === "approvals") return "approvals";
+    if (tab === "notifications") return "notifications";
+    return "workspace";
+  }
   if (pathname.includes("notifications")) return "notifications";
   return "project";
 }
 
+function agentPageContext(pathname: string, search = "") {
+  const tab = new URLSearchParams(search).get("tab");
+  if (pathname === "/projects") return "projects";
+  if (pathname.startsWith("/guided-projects/")) {
+    if (pathname.includes("/intake") || tab === "profile") return "project-profile";
+    if (tab === "execution") return "project-execution";
+    return "project-overview";
+  }
+  return agentPage(pathname, search);
+}
+
 const agentPageHelp: Record<string, { label: string; purpose: string; prompts: string[] }> = {
   project: { label: "Project overview", purpose: "Understand project progress, dependencies, pending tasks, and the safest next action.", prompts: ["What is the project’s current position?", "What should I do next?", "What is blocking this project?", "Summarize project progress"] },
+  projects: { label: "Projects", purpose: "Understand project status, workflow progress, next steps, and which project information needs attention.", prompts: ["Summarize the active project’s progress", "How is project progress calculated?", "What should I review before opening a project?", "What does the project’s next step mean?"] },
+  "project-overview": { label: "Project overview", purpose: "Explain this project’s current position, completed milestones, readiness, risks, and clearest next action.", prompts: ["Summarize this project’s progress", "What has already been completed?", "What should I do next and why?", "Is anything blocking this project?"] },
+  "project-profile": { label: "Project profile", purpose: "Review the saved intake, business identity, audience, offer, locations, goals, website details, and downstream impact of changes.", prompts: ["Is this project profile complete?", "Which profile fields need improvement?", "How are target markets used?", "What must be refreshed if I edit this profile?"] },
+  "project-execution": { label: "Execution Plan", purpose: "Understand all project tasks, priorities, dependencies, assignments, approvals, and the next dependency-ready action.", prompts: ["Which task should I start now?", "How many tasks are ready, blocked, and completed?", "Which tasks require approval?", "Why are some tasks blocked?"] },
   intake: { label: "Project intake", purpose: "Check whether the saved business, audience, offer, locations, goals, and website details are complete enough for downstream AI.", prompts: ["What is the project’s current position?", "What intake information is missing?", "Will this intake produce useful recommendations?", "What should I improve before continuing?"] },
   opportunities: { label: "Opportunity Finder", purpose: "Understand each recommended direction, its evidence, score, trade-offs, and how to improve it.", prompts: ["What is the project’s current position?", "How can I improve the opportunity score?", "Why is this opportunity recommended?", "Which opportunity best supports my goal?"] },
   keywords: { label: "Keyword Intelligence", purpose: "Review keyword direction, intent, local-market fit, gaps, approvals, and readiness for analysis.", prompts: ["What is the project’s current position?", "Suggest project-specific long-tail keywords", "Are my approved groups strong enough?", "Which keywords support my primary goal?"] },
@@ -989,12 +1029,81 @@ const agentPageHelp: Record<string, { label: string; purpose: string; prompts: s
   approvals: { label: "Approvals", purpose: "Understand requested changes, risk, expected impact, and what happens after approval or rejection.", prompts: ["What is the project’s current position?", "Which approval is most urgent?", "What changes will this approval make?", "Is this safe to approve?"] },
   reports: { label: "Reports", purpose: "Interpret project performance, missing data, completed work, risks, and client-ready conclusions.", prompts: ["What is the project’s current position?", "Summarize this report", "What should the client know?", "Which report data needs attention?"] },
   notifications: { label: "Notifications", purpose: "Explain project alerts, required actions, urgency, and the responsible role.", prompts: ["What is the project’s current position?", "Which notification needs action first?", "Explain the latest project warning", "What can be safely dismissed?"] },
+  backlinks: { label: "Backlinks & Authority", purpose: "Review authority gaps, referring domains, link opportunities, risk, and the highest-value outreach or authority action.", prompts: ["What authority gap should I address first?", "Which backlink opportunities fit this project?", "Are any links risky or low quality?", "What authority task should I create next?"] },
+  "ai-citations": { label: "AI Citations", purpose: "Understand AI visibility, citation gaps, entity coverage, source readiness, and content that could improve answer-engine inclusion.", prompts: ["Where is this project missing AI visibility?", "Which citation opportunity should I prioritize?", "What content could earn AI citations?", "How can I strengthen entity coverage?"] },
+  "site-architect": { label: "Site Architect", purpose: "Review recommended pages, hierarchy, URL structure, internal linking, keyword mapping, and dependencies before implementation.", prompts: ["Is this site structure complete?", "Which page should be created first?", "Are any keywords mapped to competing pages?", "How should these pages link together?"] },
+  "lead-magnets": { label: "Lead Magnets", purpose: "Connect audience problems, offers, conversion goals, and funnel stages to the most useful lead-magnet concept.", prompts: ["Which lead magnet best fits the audience?", "What should this lead magnet include?", "How will it support the primary goal?", "What is the next production step?"] },
+  growth: { label: "Growth Engine", purpose: "Interpret funnel performance, growth constraints, experiments, channel priorities, and the next measurable growth action.", prompts: ["What is the biggest growth constraint?", "Which experiment should run first?", "What metric should I watch next?", "How does this support the primary goal?"] },
+  "gap-analysis": { label: "Gap Analysis", purpose: "Compare current evidence with competitors and desired outcomes to prioritize content, keyword, authority, local, and technical gaps.", prompts: ["What is the highest-impact gap?", "Where do competitors have an advantage?", "Which gaps are realistic to close first?", "Turn the top gap into a next action"] },
+  "local-seo": { label: "Local SEO", purpose: "Review target-market coverage, Google Business Profile readiness, citations, reviews, local rankings, and location-specific priorities.", prompts: ["Which target market needs attention first?", "What is missing from Local SEO setup?", "How can I improve local visibility?", "Which local task should I prioritize?"] },
+  publishing: { label: "Content & Publishing", purpose: "Review content readiness, approval requirements, publishing targets, validation, verification, and rollback safety before anything goes live.", prompts: ["What is ready to publish?", "Which items still need approval?", "What will change when this is published?", "How will publishing be verified?"] },
+  social: { label: "Social Strategy", purpose: "Connect project goals, audience, offers, content themes, channels, approvals, and publishing cadence to the next social action.", prompts: ["Which social content should I create next?", "What channel best fits this audience?", "How does this support the project goal?", "What requires approval before publishing?"] },
+  workspace: { label: "My Workspace", purpose: "Understand workspace health, active projects, overdue work, approvals, reports, users, and the most important workspace-level action.", prompts: ["What needs attention in this workspace?", "Which project should I review next?", "Are any tasks or approvals overdue?", "Summarize recent workspace activity"] },
+  clients: { label: "Clients", purpose: "Explain client setup, inherited project defaults, assignments, access boundaries, archives, reports, and the correct next client action.", prompts: ["Which client information is incomplete?", "How do projects inherit client details?", "Who can access each client?", "What happens when a client is archived?"] },
+  teams: { label: "Users & Teams", purpose: "Explain roles, permissions, seats, invitations, team membership, client/project assignments, and safe user-management actions.", prompts: ["What can each role do?", "Who has access to this project?", "How do I assign clients and projects?", "What happens when a user is removed?"] },
+  billing: { label: "Billing & Plans", purpose: "Explain plan access, seats, credits, usage limits, billing status, and the effect of upgrading or changing a subscription.", prompts: ["What does my current plan include?", "How are seats counted?", "How are AI credits used?", "What changes if I upgrade?"] },
+  admin: { label: "Platform Administration", purpose: "Explain platform-level workspaces, users, plans, automation, usage controls, system tasks, and restricted administrative actions.", prompts: ["What needs administrator attention?", "How are platform and workspace roles different?", "Which automation jobs need review?", "What is safe to change here?"] },
+  "geo-keywords": { label: "Geo Keyword Intelligence", purpose: "Interpret keyword visibility by market, location differences, local competitors, coverage gaps, and geographic priorities.", prompts: ["Which market has the strongest opportunity?", "Why do rankings differ by location?", "Which local keywords should I prioritize?", "Where are competitors outperforming us?"] },
 };
 
 function pageProjectId(pathname: string, search: string) {
   const query = new URLSearchParams(search).get("projectId");
   if (query) return query;
   return pathname.match(/\/guided-projects\/([^/]+)/)?.[1] ?? null;
+}
+
+function FloatingChatWindow({ children, label, onClose }: { children: ReactNode; label: string; onClose: () => void }) {
+  const [expanded, setExpanded] = useState(false);
+  return (
+    <section
+      role="dialog"
+      aria-label={label}
+      className={`fixed z-[90] flex overflow-hidden border border-slate-200/80 bg-white shadow-[0_24px_80px_rgba(15,23,42,0.24)] transition-[width,height] duration-200 max-sm:inset-x-3 max-sm:bottom-3 max-sm:top-3 max-sm:flex-col max-sm:rounded-2xl sm:bottom-5 sm:right-5 sm:rounded-[24px] ${expanded ? "sm:h-[calc(100vh-2.5rem)] sm:w-[min(760px,calc(100vw-2.5rem))]" : "sm:h-[min(680px,calc(100vh-2.5rem))] sm:w-[440px]"}`}
+    >
+      <div className="pointer-events-none absolute right-3 top-3 z-20 flex items-center gap-1.5">
+        <button
+          type="button"
+          onClick={() => setExpanded((value) => !value)}
+          aria-label={expanded ? "Restore chat size" : "Expand chat"}
+          title={expanded ? "Restore chat size" : "Expand chat"}
+          className="pointer-events-auto hidden h-8 w-8 place-items-center rounded-full border border-slate-200 bg-white/90 text-sm font-bold text-charcoal-500 shadow-sm transition hover:bg-slate-50 hover:text-charcoal-900 sm:grid"
+        >
+          {expanded ? "↙" : "↗"}
+        </button>
+        <button
+          type="button"
+          onClick={onClose}
+          aria-label="Close chat"
+          title="Close chat"
+          className="pointer-events-auto grid h-8 w-8 place-items-center rounded-full border border-slate-200 bg-white/90 text-lg text-charcoal-500 shadow-sm transition hover:bg-slate-50 hover:text-charcoal-900"
+        >
+          ×
+        </button>
+      </div>
+      {children}
+    </section>
+  );
+}
+
+function AgentChatHeader({ label, purpose }: { label: string; purpose: string }) {
+  return (
+    <header className="shrink-0 border-b border-slate-100 bg-gradient-to-br from-brand-50 via-white to-emerald-50 px-4 py-3.5 pr-24">
+      <div className="flex items-center gap-3">
+        <div className="relative grid h-10 w-10 shrink-0 place-items-center rounded-2xl bg-charcoal-950 shadow-md">
+          <LogoMark size={23} />
+          <span className="absolute -bottom-0.5 -right-0.5 h-3 w-3 rounded-full border-2 border-white bg-emerald-500" />
+        </div>
+        <div className="min-w-0">
+          <div className="flex items-center gap-2">
+            <h2 className="truncate text-sm font-black text-charcoal-950">SEnuke AI</h2>
+            <span className="rounded-full bg-emerald-100 px-2 py-0.5 text-[9px] font-black uppercase tracking-wide text-emerald-700">Online</span>
+          </div>
+          <p className="truncate text-xs font-semibold text-brand-700">{label}</p>
+        </div>
+      </div>
+      <p className="mt-2 line-clamp-2 text-xs leading-5 text-charcoal-500">{purpose}</p>
+    </header>
+  );
 }
 
 function ProjectAgentDrawer({ content, pathname, search, open, onClose }: { content: HelpContent; pathname: string; search: string; open: boolean; onClose: () => void }) {
@@ -1004,10 +1113,14 @@ function ProjectAgentDrawer({ content, pathname, search, open, onClose }: { cont
   const [projectResolved, setProjectResolved] = useState(Boolean(urlProjectId));
   const projectId = urlProjectId ?? resolvedProjectId;
   const [question, setQuestion] = useState("");
-  const [messages, setMessages] = useState<{ id: number; role: "user" | "assistant"; text: string }[]>([]);
+  const [messages, setMessages] = useState<{ id: string; role: "user" | "assistant"; text: string; page?: string; createdAt?: string }[]>([]);
   const [loading, setLoading] = useState(false);
+  const [historyLoading, setHistoryLoading] = useState(false);
+  const [historyRestored, setHistoryRestored] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const pageContext = agentPageHelp[agentPage(pathname)] ?? agentPageHelp.project;
+  const messageViewportRef = useRef<HTMLDivElement | null>(null);
+  const instantChatPositionRef = useRef(true);
+  const pageContext = agentPageHelp[agentPageContext(pathname, search)] ?? agentPageHelp.project;
   const suggestedQuestions = pageContext.prompts;
 
   useEffect(() => {
@@ -1026,32 +1139,69 @@ function ProjectAgentDrawer({ content, pathname, search, open, onClose }: { cont
   const load = async (userQuestion?: string) => {
     if (!projectId) return;
     const submittedQuestion = userQuestion?.trim();
-    if (submittedQuestion) setMessages((current) => [...current, { id: Date.now(), role: "user", text: submittedQuestion }]);
+    if (submittedQuestion) instantChatPositionRef.current = false;
+    if (submittedQuestion) setMessages((current) => [...current, { id: `local-user-${Date.now()}`, role: "user", text: submittedQuestion, page: agentPage(pathname, search) }]);
     setLoading(true); setError(null);
     try {
-      const result = await api.post<ProjectAgentPlan>(`/api/projects/${projectId}/agent/plan`, { page: agentPage(pathname), question: submittedQuestion || undefined, conversation: messages.slice(-12).map(({ role, text }) => ({ role, text })) });
-      if (submittedQuestion) setMessages((current) => [...current, { id: Date.now() + 1, role: "assistant", text: result.answer }]);
+      const result = await api.post<ProjectAgentPlan>(`/api/projects/${projectId}/agent/plan`, { page: agentPage(pathname, search), question: submittedQuestion || undefined, conversation: messages.slice(-12).map(({ role, text }) => ({ role, text })) });
+      if (submittedQuestion) setMessages((current) => [...current, { id: `local-assistant-${Date.now()}`, role: "assistant", text: result.answer, page: agentPage(pathname, search) }]);
     }
     catch (requestError) { setError(requestError instanceof Error ? requestError.message : "The project agent could not load guidance."); }
     finally { setLoading(false); }
   };
 
-  useEffect(() => { setMessages([]); setQuestion(""); setError(null); }, [open, projectId, pathname]);
+  useEffect(() => {
+    setQuestion(""); setError(null);
+    if (!open || !projectId) return;
+    let cancelled = false;
+    instantChatPositionRef.current = true;
+    setHistoryLoading(true);
+    api.get<{ messages: { id: string; role: string; text: string; page?: string; createdAt?: string }[] }>(`/api/projects/${projectId}/agent/thread?limit=100`)
+      .then((result) => {
+        if (cancelled) return;
+        const restored = result.messages.filter((message): message is { id: string; role: "user" | "assistant"; text: string; page?: string; createdAt?: string } => message.role === "user" || message.role === "assistant");
+        setMessages(restored);
+        setHistoryRestored(restored.length > 0);
+      })
+      .catch((requestError) => { if (!cancelled) setError(requestError instanceof Error ? requestError.message : "Previous chat could not be restored."); })
+      .finally(() => { if (!cancelled) setHistoryLoading(false); });
+    return () => { cancelled = true; };
+  }, [open, projectId]);
+
+  const clearConversation = async () => {
+    if (!projectId || !window.confirm("Start a new chat? This will permanently clear the saved conversation for this project.")) return;
+    setLoading(true); setError(null);
+    try {
+      await api.delete(`/api/projects/${projectId}/agent/thread`);
+      setMessages([]); setHistoryRestored(false); setQuestion("");
+    } catch (requestError) { setError(requestError instanceof Error ? requestError.message : "The saved conversation could not be cleared."); }
+    finally { setLoading(false); }
+  };
+
+  useEffect(() => {
+    if (!open || historyLoading) return;
+    const frame = window.requestAnimationFrame(() => {
+      const viewport = messageViewportRef.current;
+      if (viewport) viewport.scrollTo({ top: viewport.scrollHeight, behavior: instantChatPositionRef.current ? "auto" : "smooth" });
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [open, historyLoading, loading, messages]);
   if (!open) return null;
-  if (!projectResolved) return <div className="fixed inset-0 z-[90]" role="dialog" aria-modal="true" aria-label="Loading SEnuke AI chat"><button type="button" className="absolute inset-0 bg-charcoal-950/35" aria-label="Close agent" onClick={onClose} /><aside className="absolute right-0 top-0 grid h-full w-full max-w-[520px] place-items-center border-l border-slate-200 bg-white shadow-2xl"><div className="text-center"><div className="mx-auto h-11 w-11 animate-spin rounded-full border-4 border-brand-100 border-t-brand-600" /><div className="mt-4 font-black text-charcoal-900">Opening project chat…</div><div className="mt-1 text-sm text-charcoal-500">Finding the active project for this page.</div></div></aside></div>;
+  if (!projectResolved) return <FloatingChatWindow label="Loading SEnuke AI chat" onClose={onClose}><div className="grid h-full w-full place-items-center"><div className="px-6 text-center"><div className="mx-auto h-11 w-11 animate-spin rounded-full border-4 border-brand-100 border-t-brand-600" /><div className="mt-4 font-black text-charcoal-900">Opening project chat…</div><div className="mt-1 text-sm text-charcoal-500">Finding the active project for this page.</div></div></div></FloatingChatWindow>;
   if (!projectId && creationPage) return <ProjectCreationHelpDrawer open={open} onClose={onClose} />;
   if (!projectId) return <GlobalHelpDrawer content={content} open={open} onClose={onClose} />;
-  return <div className="fixed inset-0 z-[90]" role="dialog" aria-modal="true" aria-label="SEnuke AI project agent">
-    <button type="button" className="absolute inset-0 bg-charcoal-950/35" aria-label="Close agent" onClick={onClose} />
-    <aside className="absolute right-0 top-0 flex h-full w-full max-w-[520px] flex-col border-l border-slate-200 bg-white shadow-2xl">
-      <header className="border-b border-slate-100 bg-gradient-to-r from-brand-50 to-emerald-50 px-5 py-4"><div className="flex items-start justify-between gap-4"><div><div className="text-xs font-black uppercase tracking-[0.14em] text-brand-700">SEnuke AI · {pageContext.label}</div><h2 className="mt-1 text-xl font-black text-charcoal-950">How can we help you here?</h2><p className="mt-1 text-sm leading-5 text-charcoal-600">{pageContext.purpose}</p></div><button type="button" onClick={onClose} className="grid h-9 w-9 shrink-0 place-items-center rounded-lg border border-slate-200 bg-white text-lg text-charcoal-500">×</button></div></header>
-      <div className="flex-1 overflow-y-auto p-5">
+  return <FloatingChatWindow label="SEnuke AI project agent" onClose={onClose}>
+    <div className="flex h-full min-h-0 w-full flex-col overflow-hidden">
+      <AgentChatHeader label={pageContext.label} purpose={pageContext.purpose} />
+      <div ref={messageViewportRef} className="min-h-0 flex-1 overflow-y-auto overscroll-contain bg-gradient-to-b from-white to-slate-50/60 p-4">
         {error && <div className="rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-800">{error}</div>}
+        {historyLoading && <div className="grid min-h-full place-items-center"><div className="text-center"><div className="mx-auto h-9 w-9 animate-spin rounded-full border-4 border-brand-100 border-t-brand-600" /><p className="mt-3 text-xs font-semibold text-charcoal-500">Restoring your conversation…</p></div></div>}
+        {!historyLoading && messages.length === 0 && <div className="flex min-h-full flex-col justify-center py-5 text-center"><div className="mx-auto grid h-14 w-14 place-items-center rounded-2xl bg-brand-100 text-2xl shadow-sm">✦</div><h3 className="mt-4 text-lg font-black text-charcoal-950">How can I help?</h3><p className="mx-auto mt-1 max-w-sm text-sm leading-6 text-charcoal-500">Ask about this page or choose a useful starting point. Answers use this project’s saved context.</p><div className="mt-5 grid gap-2 text-left">{suggestedQuestions.map((item) => <button key={item} type="button" onClick={() => { setQuestion(""); void load(item); }} disabled={loading} className="group flex items-center justify-between gap-3 rounded-xl border border-slate-200 bg-white px-3.5 py-3 text-left text-xs font-bold text-charcoal-700 shadow-sm transition hover:-translate-y-0.5 hover:border-brand-200 hover:shadow-md disabled:opacity-50"><span>{item}</span><span className="text-brand-600 transition group-hover:translate-x-0.5">→</span></button>)}</div></div>}
         {messages.length > 0 && <section className="mb-5 space-y-3" aria-live="polite">{messages.map((message) => <div key={message.id} className={`flex ${message.role === "user" ? "justify-end" : "justify-start"}`}><div className={`max-w-[88%] whitespace-pre-line rounded-2xl px-4 py-3 text-sm leading-6 shadow-sm ${message.role === "user" ? "rounded-br-md bg-brand-600 text-white" : "rounded-bl-md border border-slate-200 bg-white text-charcoal-700"}`}>{message.role === "assistant" && <div className="mb-1 text-[10px] font-black uppercase tracking-wide text-brand-700">SEnuke AI</div>}{message.text}</div></div>)}{loading && <div className="flex justify-start"><div className="inline-flex items-center gap-2 rounded-2xl rounded-bl-md border border-slate-200 bg-white px-4 py-3 text-sm text-charcoal-500"><span className="flex gap-1"><i className="h-1.5 w-1.5 animate-bounce rounded-full bg-brand-500" /><i className="h-1.5 w-1.5 animate-bounce rounded-full bg-brand-500 [animation-delay:120ms]" /><i className="h-1.5 w-1.5 animate-bounce rounded-full bg-brand-500 [animation-delay:240ms]" /></span>Thinking with project context…</div></div>}</section>}
       </div>
-      <form className="border-t border-slate-100 bg-white p-4" onSubmit={(event) => { event.preventDefault(); const value = question.trim(); if (value) { setQuestion(""); void load(value); } }}><div className="flex items-center justify-between gap-3"><label className="text-xs font-bold uppercase tracking-wide text-charcoal-500">Ask about {pageContext.label}</label><span className="text-[10px] font-semibold text-charcoal-400">Uses this project’s saved data</span></div><div className="mt-2 flex flex-wrap gap-1.5">{suggestedQuestions.map((item) => <button key={item} type="button" onClick={() => { setQuestion(""); void load(item); }} disabled={loading} className="rounded-full border border-brand-100 bg-brand-50 px-2.5 py-1 text-[11px] font-bold text-brand-700 disabled:opacity-50">{item}</button>)}</div><div className="mt-2 flex gap-2"><input value={question} onChange={(event) => setQuestion(event.target.value)} placeholder={`Ask SEnuke about ${pageContext.label.toLowerCase()}…`} className="min-w-0 flex-1 rounded-lg border border-slate-200 px-3 py-2.5 text-sm outline-none focus:border-brand-400" /><button type="submit" disabled={loading || !question.trim()} className="rounded-lg bg-brand-600 px-4 py-2.5 text-sm font-bold text-white disabled:bg-slate-300">Send</button></div></form>
-    </aside>
-  </div>;
+      <form className="shrink-0 border-t border-slate-100 bg-white p-3" onSubmit={(event) => { event.preventDefault(); const value = question.trim(); if (value) { setQuestion(""); void load(value); } }}><div className="flex items-end gap-2 rounded-2xl border border-slate-200 bg-slate-50 p-1.5 pl-3 shadow-inner transition focus-within:border-brand-300 focus-within:bg-white focus-within:ring-4 focus-within:ring-brand-50"><textarea rows={1} value={question} onChange={(event) => setQuestion(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); const value = question.trim(); if (value && !loading) { setQuestion(""); void load(value); } } }} placeholder={`Ask about ${pageContext.label.toLowerCase()}…`} className="max-h-24 min-h-10 min-w-0 flex-1 resize-none bg-transparent py-2 text-sm outline-none placeholder:text-charcoal-400" /><button type="submit" aria-label="Send message" disabled={loading || historyLoading || !question.trim()} className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-gradient-to-br from-brand-500 to-brand-700 text-base font-black text-white shadow-sm transition hover:scale-[1.03] disabled:scale-100 disabled:from-slate-300 disabled:to-slate-300 disabled:shadow-none">↑</button></div><div className="mt-1.5 flex items-center justify-between gap-3 px-1 text-[10px] text-charcoal-400"><span>{historyRestored ? "Conversation restored · saved privately" : "Project-aware guidance · saved privately"}</span>{messages.length > 0 ? <button type="button" onClick={() => void clearConversation()} disabled={loading} className="font-bold text-charcoal-500 hover:text-rose-600 disabled:opacity-50">New chat</button> : <span>Enter to send</span>}</div></form>
+    </div>
+  </FloatingChatWindow>;
 }
 
 function ProjectCreationHelpDrawer({ open, onClose }: { open: boolean; onClose: () => void }) {
@@ -1075,7 +1225,7 @@ function ProjectCreationHelpDrawer({ open, onClose }: { open: boolean; onClose: 
     return "Ask about a specific project-creation field, available option, required value, or how the information will be used. The field guide beside the form also updates for each setup step.";
   };
   if (!open) return null;
-  return <div className="fixed inset-0 z-[90]" role="dialog" aria-modal="true" aria-label="SEnuke project setup help"><button type="button" className="absolute inset-0 bg-charcoal-950/35" aria-label="Close help" onClick={onClose} /><aside className="absolute right-0 top-0 flex h-full w-full max-w-[520px] flex-col border-l border-slate-200 bg-white shadow-2xl"><header className="border-b border-slate-100 bg-gradient-to-r from-brand-50 to-emerald-50 px-5 py-4"><div className="flex items-start justify-between gap-4"><div><div className="text-xs font-black uppercase tracking-[0.14em] text-brand-700">SEnuke AI · Project setup</div><h2 className="mt-1 text-xl font-black text-charcoal-950">How can we help you create this project?</h2><p className="mt-1 text-sm leading-5 text-charcoal-600">Guidance uses the fields currently visible in the setup—not another project’s saved data.</p></div><button type="button" onClick={onClose} className="grid h-9 w-9 shrink-0 place-items-center rounded-lg border border-slate-200 bg-white text-lg text-charcoal-500">×</button></div></header><div className="flex-1 overflow-y-auto p-5">{answer && <div className="rounded-2xl rounded-bl-md border border-slate-200 bg-white px-4 py-3 text-sm leading-6 text-charcoal-700 shadow-sm"><div className="mb-1 text-[10px] font-black uppercase tracking-wide text-brand-700">SEnuke AI</div>{answer}</div>}</div><form className="border-t border-slate-100 bg-white p-4" onSubmit={(event) => { event.preventDefault(); if (!question.trim()) return; setAnswer(answerQuestion(question)); setQuestion(""); }}><div className="text-xs font-bold uppercase tracking-wide text-charcoal-500">Ask about project setup</div><div className="mt-2 flex flex-wrap gap-1.5">{prompts.map(([prompt, response]) => <button key={prompt} type="button" onClick={() => setAnswer(response)} className="rounded-full border border-brand-100 bg-brand-50 px-2.5 py-1 text-[11px] font-bold text-brand-700">{prompt}</button>)}</div><div className="mt-3 flex gap-2"><input value={question} onChange={(event) => setQuestion(event.target.value)} placeholder="Ask about any field or option…" className="min-w-0 flex-1 rounded-lg border border-slate-200 px-3 py-2.5 text-sm outline-none focus:border-brand-400" /><button type="submit" disabled={!question.trim()} className="rounded-lg bg-brand-600 px-4 py-2.5 text-sm font-bold text-white disabled:bg-slate-300">Send</button></div></form></aside></div>;
+  return <FloatingChatWindow label="SEnuke project setup help" onClose={onClose}><div className="flex h-full min-h-0 w-full flex-col"><AgentChatHeader label="Project setup" purpose="Ask about any field, option, validation rule, or how SEnuke will use the information." /><div className="flex-1 overflow-y-auto bg-gradient-to-b from-white to-slate-50/60 p-4">{!answer && <div className="flex min-h-full flex-col justify-center py-5 text-center"><div className="mx-auto grid h-14 w-14 place-items-center rounded-2xl bg-brand-100 text-2xl shadow-sm">✦</div><h3 className="mt-4 text-lg font-black text-charcoal-950">Let’s set up your project</h3><p className="mx-auto mt-1 max-w-sm text-sm leading-6 text-charcoal-500">Guidance follows the fields visible on this form and does not use another project’s saved data.</p><div className="mt-5 grid gap-2 text-left">{prompts.map(([prompt, response]) => <button key={prompt} type="button" onClick={() => setAnswer(response)} className="group flex items-center justify-between gap-3 rounded-xl border border-slate-200 bg-white px-3.5 py-3 text-left text-xs font-bold text-charcoal-700 shadow-sm transition hover:-translate-y-0.5 hover:border-brand-200 hover:shadow-md"><span>{prompt}</span><span className="text-brand-600">→</span></button>)}</div></div>}{answer && <div className="flex items-start gap-2.5"><div className="mt-1 grid h-8 w-8 shrink-0 place-items-center rounded-xl bg-charcoal-950 text-sm text-white">✦</div><div className="rounded-2xl rounded-bl-md border border-slate-200 bg-white px-4 py-3 text-sm leading-6 text-charcoal-700 shadow-sm"><div className="mb-1 text-[10px] font-black uppercase tracking-wide text-brand-700">SEnuke AI</div>{answer}</div></div>}</div><form className="shrink-0 border-t border-slate-100 bg-white p-3" onSubmit={(event) => { event.preventDefault(); if (!question.trim()) return; setAnswer(answerQuestion(question)); setQuestion(""); }}><div className="flex items-end gap-2 rounded-2xl border border-slate-200 bg-slate-50 p-1.5 pl-3 shadow-inner focus-within:border-brand-300 focus-within:bg-white focus-within:ring-4 focus-within:ring-brand-50"><input value={question} onChange={(event) => setQuestion(event.target.value)} placeholder="Ask about any field or option…" className="min-w-0 flex-1 bg-transparent py-2.5 text-sm outline-none" /><button type="submit" aria-label="Send message" disabled={!question.trim()} className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-gradient-to-br from-brand-500 to-brand-700 font-black text-white disabled:from-slate-300 disabled:to-slate-300">↑</button></div></form></div></FloatingChatWindow>;
 }
 
 function getHelpContent(pathname: string): HelpContent {
@@ -1132,38 +1282,23 @@ function getHelpContent(pathname: string): HelpContent {
 function GlobalHelpDrawer({ content, open, onClose }: { content: HelpContent; open: boolean; onClose: () => void }) {
   if (!open) return null;
   return (
-    <div className="fixed inset-0 z-50" role="dialog" aria-modal="true" aria-label={content.title}>
-      <button type="button" aria-label="Close help drawer" className="absolute inset-0 bg-charcoal-950/35" onClick={onClose} />
-      <aside className="absolute right-0 top-0 flex h-full w-full max-w-[480px] flex-col border-l border-slate-200 bg-white shadow-2xl">
-        <div className="border-b border-slate-100 px-5 py-5">
-          <div className="flex items-start justify-between gap-4">
-            <div>
-              <div className="text-xs font-bold uppercase tracking-wide text-brand-600">{content.eyebrow}</div>
-              <h2 className="mt-1 text-2xl font-bold text-charcoal-950">{content.title}</h2>
-              <p className="mt-2 text-sm leading-6 text-charcoal-600">{content.intro}</p>
-            </div>
-            <button
-              type="button"
-              onClick={onClose}
-              aria-label="Close"
-              className="grid h-9 w-9 shrink-0 place-items-center rounded-lg border border-slate-200 text-lg font-bold text-charcoal-500 hover:bg-slate-50"
-            >
-              ×
-            </button>
-          </div>
+    <FloatingChatWindow label={content.title} onClose={onClose}>
+      <div className="flex h-full min-h-0 w-full flex-col">
+        <AgentChatHeader label={`${content.eyebrow} · ${content.title}`} purpose={content.intro} />
+        <div className="border-b border-slate-100 px-4 py-3">
           {content.primaryAction && (
             <Link
               to={content.primaryAction.to}
               onClick={onClose}
-              className="mt-4 inline-flex rounded-lg bg-brand-600 px-4 py-2 text-sm font-bold text-white hover:bg-brand-700"
+              className="inline-flex rounded-lg bg-brand-600 px-4 py-2 text-sm font-bold text-white hover:bg-brand-700"
             >
               {content.primaryAction.label}
             </Link>
           )}
         </div>
-        <div className="flex-1 space-y-5 overflow-y-auto px-5 py-5">
+        <div className="flex-1 space-y-3 overflow-y-auto bg-gradient-to-b from-white to-slate-50/60 p-4">
           {content.sections.map((section) => (
-            <section key={section.title} className="rounded-lg border border-slate-100 bg-slate-50/70 p-4">
+            <section key={section.title} className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
               <h3 className="text-sm font-bold text-charcoal-950">{section.title}</h3>
               {section.body && <p className="mt-2 text-sm leading-6 text-charcoal-600">{section.body}</p>}
               {section.bullets && (
@@ -1179,13 +1314,9 @@ function GlobalHelpDrawer({ content, open, onClose }: { content: HelpContent; op
             </section>
           ))}
         </div>
-        <div className="border-t border-slate-100 p-5">
-          <button type="button" onClick={onClose} className="w-full rounded-lg bg-charcoal-900 px-4 py-2.5 text-sm font-bold text-white hover:bg-charcoal-800">
-            Close Help
-          </button>
-        </div>
-      </aside>
-    </div>
+        <div className="shrink-0 border-t border-slate-100 bg-white p-3 text-center text-xs text-charcoal-400">Page-aware SEnuke guidance</div>
+      </div>
+    </FloatingChatWindow>
   );
 }
 

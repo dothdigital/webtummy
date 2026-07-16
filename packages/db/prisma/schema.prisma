@@ -47,6 +47,7 @@ model User {
   ownedWorkspaces         Workspace[]              @relation("WorkspaceOwner")
   notifications           WorkspaceNotification[]
   activityEvents          WorkspaceActivity[]      @relation("ActivityActor")
+  projectAgentThreads     ProjectAgentThread[]
 
   @@index([clientId])
 }
@@ -162,6 +163,7 @@ model Workspace {
   notifications WorkspaceNotification[]
   activity      WorkspaceActivity[]
   invitations   WorkspaceInvitation[]
+  agentThreads  ProjectAgentThread[]
 
   @@index([ownerUserId])
   @@index([status])
@@ -802,6 +804,7 @@ model Project {
   memberAssignments           ProjectMemberAssignment[]
   teamAssignments             ProjectTeamAssignment[]
   agentDocuments              ProjectAgentDocument[]
+  agentThreads                ProjectAgentThread[]
 
   @@index([clientId, status])
   @@index([agencyClientId, status])
@@ -810,23 +813,55 @@ model Project {
 }
 
 model ProjectAgentDocument {
-  id          String   @id @default(cuid())
+  id          String                      @id @default(cuid())
   projectId   String
-  project     Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  sourceType  String   @db.VarChar(80)
-  sourceId    String   @db.VarChar(191)
-  title       String   @db.VarChar(255)
-  content     String   @db.Text
-  contentHash String   @db.VarChar(64)
+  project     Project                     @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  sourceType  String                      @db.VarChar(80)
+  sourceId    String                      @db.VarChar(191)
+  title       String                      @db.VarChar(255)
+  content     String                      @db.Text
+  contentHash String                      @db.VarChar(64)
   embedding   Unsupported("vector(1536)")
-  model       String   @db.VarChar(120)
-  metadata    Json     @default("{}")
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  model       String                      @db.VarChar(120)
+  metadata    Json                        @default("{}")
+  createdAt   DateTime                    @default(now())
+  updatedAt   DateTime                    @updatedAt
 
   @@unique([projectId, sourceType, sourceId])
   @@index([projectId, sourceType])
   @@index([projectId, updatedAt])
+}
+
+model ProjectAgentThread {
+  id          String                @id @default(cuid())
+  workspaceId String
+  workspace   Workspace             @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  projectId   String
+  project     Project               @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  userId      String
+  user        User                  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  title       String                @default("Project conversation") @db.VarChar(180)
+  status      String                @default("active") @db.VarChar(30)
+  createdAt   DateTime              @default(now())
+  updatedAt   DateTime              @updatedAt
+  messages    ProjectAgentMessage[]
+
+  @@unique([workspaceId, userId, projectId])
+  @@index([userId, updatedAt])
+  @@index([projectId, updatedAt])
+}
+
+model ProjectAgentMessage {
+  id          String             @id @default(cuid())
+  threadId    String
+  thread      ProjectAgentThread @relation(fields: [threadId], references: [id], onDelete: Cascade)
+  pageContext String             @default("project") @db.VarChar(80)
+  role        String             @db.VarChar(20)
+  content     String             @db.Text
+  metadata    Json               @default("{}")
+  createdAt   DateTime           @default(now())
+
+  @@index([threadId, createdAt])
 }
 
 model ProjectKeywordGroup {
@@ -972,38 +1007,38 @@ model Opportunity {
 }
 
 model StrategyPlan {
-  id                    String       @id @default(cuid())
-  projectId             String
-  project               Project      @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  opportunityId         String?
-  opportunity           Opportunity? @relation(fields: [opportunityId], references: [id], onDelete: SetNull)
-  version               Int          @default(1)
-  strategySummary       String?      @db.Text
-  businessObjectives    Json         @default("[]")
-  positioningStatement  String?      @db.Text
-  audienceProfile       String?      @db.Text
-  offerRecommendation   String?      @db.Text
-  businessModel         String?      @db.VarChar(120)
-  seoStrategy           String?      @db.Text
-  localSeoStrategy      String?      @db.Text
-  aiCitationStrategy    String?      @db.Text
-  contentStrategy       String?      @db.Text
-  competitorStrategy    String?      @db.Text
-  competitiveInsights   Json         @default("[]")
-  authorityStrategy     String?      @db.Text
-  socialStrategy        String?      @db.Text
-  publishingStrategy    String?      @db.Text
-  growthRecommendations Json         @default("[]")
-  kpis                  Json         @default("[]")
-  revisionComment       String?      @db.Text
-  strategyScore         Int?
-  scoreBreakdown        Json         @default("{}")
-  advancedAnalysis      Json         @default("[]")
-  prioritizedRecommendations Json    @default("[]")
-  status                String       @default("draft") @db.VarChar(40)
-  approvedAt            DateTime?
-  createdAt             DateTime     @default(now())
-  updatedAt             DateTime     @updatedAt
+  id                         String       @id @default(cuid())
+  projectId                  String
+  project                    Project      @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  opportunityId              String?
+  opportunity                Opportunity? @relation(fields: [opportunityId], references: [id], onDelete: SetNull)
+  version                    Int          @default(1)
+  strategySummary            String?      @db.Text
+  businessObjectives         Json         @default("[]")
+  positioningStatement       String?      @db.Text
+  audienceProfile            String?      @db.Text
+  offerRecommendation        String?      @db.Text
+  businessModel              String?      @db.VarChar(120)
+  seoStrategy                String?      @db.Text
+  localSeoStrategy           String?      @db.Text
+  aiCitationStrategy         String?      @db.Text
+  contentStrategy            String?      @db.Text
+  competitorStrategy         String?      @db.Text
+  competitiveInsights        Json         @default("[]")
+  authorityStrategy          String?      @db.Text
+  socialStrategy             String?      @db.Text
+  publishingStrategy         String?      @db.Text
+  growthRecommendations      Json         @default("[]")
+  kpis                       Json         @default("[]")
+  revisionComment            String?      @db.Text
+  strategyScore              Int?
+  scoreBreakdown             Json         @default("{}")
+  advancedAnalysis           Json         @default("[]")
+  prioritizedRecommendations Json         @default("[]")
+  status                     String       @default("draft") @db.VarChar(40)
+  approvedAt                 DateTime?
+  createdAt                  DateTime     @default(now())
+  updatedAt                  DateTime     @updatedAt
 
   @@index([projectId, status])
   @@index([opportunityId])
