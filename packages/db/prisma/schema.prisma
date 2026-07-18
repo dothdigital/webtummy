@@ -164,8 +164,40 @@ model Workspace {
   activity      WorkspaceActivity[]
   invitations   WorkspaceInvitation[]
   agentThreads  ProjectAgentThread[]
+  aiIntakeSessions WorkspaceAiIntakeSession[]
 
   @@index([ownerUserId])
+  @@index([status])
+}
+
+model WorkspaceAiIntakeSession {
+  id              String    @id @default(cuid())
+  workspaceId     String
+  workspace       Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  userId          String
+  contextType     String    @db.VarChar(40)
+  mode            String    @db.VarChar(30)
+  websiteUrl      String?   @db.VarChar(512)
+  websiteDomain   String?   @db.VarChar(255)
+  status          String    @default("running") @db.VarChar(40)
+  pagesAnalyzed   Json      @default("[]")
+  inputJson       Json      @default("{}")
+  suggestionsJson Json      @default("{}")
+  evidenceJson    Json      @default("{}")
+  reviewJson      Json      @default("{}")
+  appliedProjectId String?
+  appliedAgencyClientId String?
+  model           String?   @db.VarChar(120)
+  errorCode       String?   @db.VarChar(80)
+  errorMessage    String?   @db.Text
+  startedAt       DateTime  @default(now())
+  completedAt     DateTime?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  @@index([workspaceId, createdAt])
+  @@index([userId, createdAt])
+  @@index([websiteDomain])
   @@index([status])
 }
 
@@ -805,11 +837,128 @@ model Project {
   teamAssignments             ProjectTeamAssignment[]
   agentDocuments              ProjectAgentDocument[]
   agentThreads                ProjectAgentThread[]
+  gapAnalysisRuns             GapAnalysisRun[]
+  gapRecommendations          GapRecommendation[]
+  siteArchitectureVersions    SiteArchitectureVersion[]
+  leadMagnetFunnels           LeadMagnetFunnel[]
+  leadMagnetEspConnections    LeadMagnetEspConnection[]
 
   @@index([clientId, status])
   @@index([agencyClientId, status])
   @@index([websiteId])
   @@index([currentStep])
+}
+
+model LeadMagnetFunnel {
+  id                       String   @id @default(cuid())
+  projectId                String
+  project                  Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  clientId                 String
+  version                  Int      @default(1)
+  status                   String   @default("draft") @db.VarChar(40)
+  title                    String   @db.VarChar(255)
+  magnetType               String   @db.VarChar(60)
+  recommendationScore      Int?
+  recommendationReason     String?  @db.Text
+  audience                 String?  @db.Text
+  primaryGoal              String?  @db.VarChar(255)
+  brandVoice               String?  @db.VarChar(120)
+  assetJson                Json     @default("{}")
+  landingPageJson          Json     @default("{}")
+  optInFormJson            Json     @default("{}")
+  thankYouPageJson         Json     @default("{}")
+  deliveryEmailJson        Json     @default("{}")
+  followUpSequenceJson     Json     @default("[]")
+  abTestsJson              Json     @default("[]")
+  seoMetadataJson          Json     @default("{}")
+  trackingPlanJson         Json     @default("[]")
+  validationJson           Json     @default("{}")
+  aiContentGenerationId    String?  @db.VarChar(191)
+  espConnectionId          String?
+  espConnection            LeadMagnetEspConnection? @relation(fields: [espConnectionId], references: [id], onDelete: SetNull)
+  publicSlug               String?  @unique @db.VarChar(191)
+  publicUrl                String?  @db.VarChar(512)
+  sharedWithClient         Boolean  @default(false)
+  createdByUserId          String?
+  approvedByUserId         String?
+  approvedAt               DateTime?
+  publishedAt              DateTime?
+  conversionTarget         Float    @default(5)
+  lastOptimizationAt       DateTime?
+  lastPerformanceAlertAt   DateTime?
+  createdAt                DateTime @default(now())
+  updatedAt                DateTime @updatedAt
+
+  decisions LeadMagnetDecision[]
+  metrics   LeadMagnetMetricSnapshot[]
+
+  @@unique([projectId, version])
+  @@index([projectId, status])
+  @@index([clientId, createdAt])
+  @@index([espConnectionId])
+}
+
+model LeadMagnetEspConnection {
+  id                   String   @id @default(cuid())
+  projectId            String
+  project              Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  clientId             String
+  provider             String   @db.VarChar(60)
+  status               String   @default("not_connected") @db.VarChar(40)
+  accountId            String?  @db.VarChar(191)
+  listId               String?  @db.VarChar(191)
+  listName             String?  @db.VarChar(180)
+  endpointUrl          String?  @db.VarChar(512)
+  fieldMappingsJson    Json     @default("{}")
+  credentialCiphertext String?  @db.Text
+  credentialHint       String?  @db.VarChar(80)
+  lastVerifiedAt       DateTime?
+  errorMessage         String?  @db.Text
+  createdByUserId      String?
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+
+  funnels LeadMagnetFunnel[]
+
+  @@unique([projectId, provider])
+  @@index([projectId, status])
+  @@index([clientId, provider])
+}
+
+model LeadMagnetDecision {
+  id          String   @id @default(cuid())
+  funnelId    String
+  funnel      LeadMagnetFunnel @relation(fields: [funnelId], references: [id], onDelete: Cascade)
+  actorUserId String?
+  decision    String   @db.VarChar(40)
+  comments    String?  @db.Text
+  snapshotJson Json    @default("{}")
+  createdAt   DateTime @default(now())
+
+  @@index([funnelId, createdAt])
+  @@index([actorUserId, createdAt])
+}
+
+model LeadMagnetMetricSnapshot {
+  id             String   @id @default(cuid())
+  funnelId       String
+  funnel         LeadMagnetFunnel @relation(fields: [funnelId], references: [id], onDelete: Cascade)
+  source         String   @default("system") @db.VarChar(40)
+  views          Int      @default(0)
+  optIns         Int      @default(0)
+  downloads      Int      @default(0)
+  emailsDelivered Int    @default(0)
+  emailOpens     Int      @default(0)
+  emailClicks    Int      @default(0)
+  conversionRate Float   @default(0)
+  openRate       Float    @default(0)
+  clickRate      Float    @default(0)
+  metadataJson   Json     @default("{}")
+  periodStart    DateTime?
+  periodEnd      DateTime?
+  createdAt      DateTime @default(now())
+
+  @@index([funnelId, createdAt])
 }
 
 model ProjectAgentDocument {
@@ -942,6 +1091,7 @@ model BusinessProfile {
   budgetLevel     String?  @db.VarChar(80)
   skillLevel      String?  @db.VarChar(80)
   tonePreference  String?  @db.VarChar(80)
+  intelligenceJson Json    @default("{}")
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt
 }
@@ -1547,6 +1697,143 @@ model MoatScore {
 }
 
 // ─── Gap Analysis Launch Add-On ─────────────────────────────────────────────
+
+model GapAnalysisRun {
+  id              String    @id @default(cuid())
+  projectId       String
+  project         Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  clientId        String
+  createdByUserId String?
+  status          String    @default("completed") @db.VarChar(40)
+  evidenceJson    Json      @default("{}")
+  summaryJson     Json      @default("{}")
+  generatedBy     String    @default("evidence_engine_v1") @db.VarChar(80)
+  startedAt       DateTime  @default(now())
+  completedAt     DateTime?
+  createdAt       DateTime  @default(now())
+
+  recommendations GapRecommendation[]
+
+  @@index([projectId, createdAt])
+  @@index([clientId, createdAt])
+  @@index([status])
+}
+
+model GapRecommendation {
+  id                 String         @id @default(cuid())
+  runId              String
+  run                GapAnalysisRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+  projectId          String
+  project            Project        @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  category           String         @db.VarChar(60)
+  title              String         @db.VarChar(255)
+  explanation        String         @db.Text
+  recommendedAction  String         @db.Text
+  expectedImpact     String         @db.Text
+  evidenceJson       Json           @default("[]")
+  competitorEvidence Json           @default("[]")
+  priority           String         @default("medium") @db.VarChar(20)
+  impactScore        Int
+  confidenceScore    Int
+  status             String         @default("suggested") @db.VarChar(40)
+  dedupeKey          String         @unique @db.VarChar(255)
+  executionTaskId    String?        @db.VarChar(191)
+  approvedByUserId   String?
+  approvedAt         DateTime?
+  ignoredAt          DateTime?
+  createdAt          DateTime       @default(now())
+  updatedAt          DateTime       @updatedAt
+
+  @@index([projectId, status, priority])
+  @@index([runId, impactScore])
+  @@index([category])
+}
+
+model SiteArchitectureVersion {
+  id               String    @id @default(cuid())
+  projectId        String
+  project          Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  clientId         String
+  version          Int
+  status           String    @default("draft") @db.VarChar(40)
+  title            String    @db.VarChar(220)
+  executiveSummary String    @db.Text
+  rationale        String    @db.Text
+  goalsJson        Json      @default("[]")
+  evidenceJson     Json      @default("{}")
+  createdByUserId  String?
+  approvedByUserId String?
+  approvedAt       DateTime?
+  rejectedAt       DateTime?
+  rejectionReason  String?   @db.Text
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+
+  pages     SiteArchitecturePage[]
+  links     SiteArchitectureLink[]
+  decisions SiteArchitectureDecision[]
+
+  @@unique([projectId, version])
+  @@index([projectId, status])
+  @@index([clientId, createdAt])
+}
+
+model SiteArchitecturePage {
+  id                 String                  @id @default(cuid())
+  architectureId     String
+  architecture       SiteArchitectureVersion @relation(fields: [architectureId], references: [id], onDelete: Cascade)
+  pageKey            String                  @db.VarChar(120)
+  parentPageKey      String?                 @db.VarChar(120)
+  title              String                  @db.VarChar(220)
+  suggestedUrl       String                  @db.VarChar(512)
+  pageType           String                  @db.VarChar(60)
+  navigationGroup    String                  @default("main") @db.VarChar(60)
+  category           String?                 @db.VarChar(120)
+  searchIntent       String                  @db.VarChar(80)
+  purpose            String                  @db.Text
+  recommendationWhy  String                  @db.Text
+  targetKeywordsJson Json                    @default("[]")
+  status             String                  @default("recommended") @db.VarChar(40)
+  sortOrder          Int                     @default(0)
+  executionTaskId    String?                 @db.VarChar(191)
+  createdAt          DateTime                @default(now())
+  updatedAt          DateTime                @updatedAt
+
+  @@unique([architectureId, pageKey])
+  @@unique([architectureId, suggestedUrl])
+  @@index([architectureId, sortOrder])
+  @@index([pageType])
+}
+
+model SiteArchitectureLink {
+  id              String                  @id @default(cuid())
+  architectureId  String
+  architecture    SiteArchitectureVersion @relation(fields: [architectureId], references: [id], onDelete: Cascade)
+  sourcePageKey   String                  @db.VarChar(120)
+  targetPageKey   String                  @db.VarChar(120)
+  anchorText      String                  @db.VarChar(255)
+  linkType        String                  @default("contextual") @db.VarChar(60)
+  rationale       String                  @db.Text
+  executionTaskId String?                 @db.VarChar(191)
+  createdAt       DateTime                @default(now())
+
+  @@unique([architectureId, sourcePageKey, targetPageKey])
+  @@index([architectureId, linkType])
+}
+
+model SiteArchitectureDecision {
+  id             String                  @id @default(cuid())
+  architectureId String
+  architecture   SiteArchitectureVersion @relation(fields: [architectureId], references: [id], onDelete: Cascade)
+  actorUserId    String?
+  decision       String                  @db.VarChar(40)
+  comments       String?                 @db.Text
+  snapshotJson   Json                    @default("{}")
+  createdAt      DateTime                @default(now())
+
+  @@index([architectureId, createdAt])
+  @@index([actorUserId, createdAt])
+}
 
 model SeoFixQueueItem {
   id                 String   @id @default(cuid())

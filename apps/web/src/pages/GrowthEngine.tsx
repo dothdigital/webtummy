@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { api } from "../api.js";
+import { getActiveProjectId, resolveActiveProjectId, setActiveProjectId } from "../active-project.js";
 import { Button, Card } from "../components/ui.js";
 import type { GrowthExperiment, GrowthOverviewResponse, GrowthReadinessItem, GuidedProject } from "../types.js";
 
@@ -148,11 +149,11 @@ export default function GrowthEngine() {
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const projectId = params.get("projectId") || projects[0]?.id || "";
+  const projectId = resolveActiveProjectId(projects, params.get("projectId"), getActiveProjectId());
 
   useEffect(() => {
     api.get<{ projects: GuidedProject[] }>("/api/projects-v2")
-      .then((result) => setProjects(result.projects))
+      .then((result) => { setProjects(result.projects); const resolved = resolveActiveProjectId(result.projects, params.get("projectId"), getActiveProjectId()); if (resolved) { setActiveProjectId(resolved); if (params.get("projectId") !== resolved) setParams({ projectId: resolved, tab }); } })
       .catch((err) => setError(err instanceof Error ? err.message : "Could not load projects"));
   }, []);
 
@@ -162,6 +163,7 @@ export default function GrowthEngine() {
       return;
     }
     setLoading(true);
+    setActiveProjectId(projectId);
     api.get<GrowthOverviewResponse>(`/api/projects-v2/${projectId}/growth/overview`)
       .then((result) => {
         setData(result);
@@ -229,7 +231,7 @@ export default function GrowthEngine() {
         <div className="flex flex-wrap items-center gap-2">
           <select
             value={projectId}
-            onChange={(event) => setParams({ projectId: event.target.value, tab })}
+            onChange={(event) => { setActiveProjectId(event.target.value); setParams({ projectId: event.target.value, tab }); }}
             className="h-10 rounded-lg border border-slate-200 bg-white px-3 text-sm font-semibold text-slate-700"
           >
             {projects.map((project) => <option key={project.id} value={project.id}>{project.businessName || project.name}</option>)}

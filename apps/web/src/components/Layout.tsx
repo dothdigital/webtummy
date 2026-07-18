@@ -6,6 +6,7 @@ import { ACTIVE_CLIENT_EVENT, api, endImpersonation, getImpersonationLabel } fro
 import { Logo, LogoMark } from "./Logo.js";
 import type { BillingPlan, BillingStatus } from "../types.js";
 import BackgroundJobCenter from "./BackgroundJobCenter.js";
+import { ACTIVE_PROJECT_CHANGED_EVENT, getActiveProjectId, projectScopedPath, setActiveProjectId } from "../active-project.js";
 
 type NavIcon = "overview" | "projects" | "audits" | "keywords" | "local" | "social" | "content" | "billing" | "users" | "plans" | "notifications";
 type HelpSection = { title: string; body?: string; bullets?: string[] };
@@ -26,8 +27,8 @@ const nav = [
   { to: "/site-analysis", label: "Site Analysis", icon: "audits", permission: "run_ai_analysis" },
   { to: "/backlinks", label: "Backlinks & Authority", icon: "social", permission: "run_ai_analysis" },
   { to: "/ai-citations", label: "AI Citations", icon: "content", permission: "run_ai_analysis" },
-  { to: "/site-architect", label: "Site Architect", icon: "overview", permission: "run_ai_analysis" },
-  { to: "/lead-magnets", label: "Lead Magnets", icon: "billing", permission: "run_ai_analysis" },
+  { to: "/site-architect", label: "Site Architect", icon: "overview", anyPermissions: ["run_ai_analysis", "read_internal", "read_shared_client_data"] },
+  { to: "/lead-magnets", label: "Lead Magnets", icon: "billing", anyPermissions: ["run_ai_analysis", "read_internal", "read_shared_client_data"] },
   { to: "/growth", label: "Growth Engine", icon: "plans", permission: "run_ai_analysis" },
   { to: "/gap-analysis", label: "Gap Analysis", icon: "plans", permission: "run_ai_analysis" },
   { to: "/local-seo", label: "Domain", icon: "local", permission: "run_ai_analysis" },
@@ -45,6 +46,7 @@ const nav = [
   end?: boolean;
   superOnly?: boolean;
   permission?: string;
+  anyPermissions?: string[];
 }[];
 
 const sharedHelpSections = {
@@ -674,11 +676,25 @@ export default function Layout({ children }: { children: ReactNode }) {
   const [workspacePermissions, setWorkspacePermissions] = useState<Record<string, boolean>>(() => user?.workspace?.capabilities.permissions ?? {});
   const [workspaceIdentity, setWorkspaceIdentity] = useState<{ name: string; workspaceType: string } | null>(() => user?.workspace ? { name: user.workspace.name, workspaceType: user.workspace.type } : null);
   const [unreadNotifications, setUnreadNotifications] = useState(0);
+  const [activeProjectId, setActiveProjectContextId] = useState(() => getActiveProjectId());
 
   useEffect(() => {
     const onClientChanged = () => setImpersonation(getImpersonationLabel());
     window.addEventListener(ACTIVE_CLIENT_EVENT, onClientChanged);
     return () => window.removeEventListener(ACTIVE_CLIENT_EVENT, onClientChanged);
+  }, []);
+
+  useEffect(() => {
+    const explicit = pageProjectId(location.pathname, location.search);
+    if (explicit && explicit !== activeProjectId) setActiveProjectId(explicit);
+  }, [location.pathname, location.search]);
+
+  useEffect(() => {
+    const onProjectChanged = (event: Event) => setActiveProjectContextId((event as CustomEvent<{ projectId?: string }>).detail?.projectId ?? getActiveProjectId());
+    const onStorage = (event: StorageEvent) => { if (event.key === "senuke:active-project-id") setActiveProjectContextId(event.newValue ?? ""); };
+    window.addEventListener(ACTIVE_PROJECT_CHANGED_EVENT, onProjectChanged);
+    window.addEventListener("storage", onStorage);
+    return () => { window.removeEventListener(ACTIVE_PROJECT_CHANGED_EVENT, onProjectChanged); window.removeEventListener("storage", onStorage); };
   }, []);
 
   useEffect(() => {
@@ -768,7 +784,8 @@ export default function Layout({ children }: { children: ReactNode }) {
     if (n.superOnly) return user?.role === "super_admin";
     if (platformOnlySuperAdmin) return false;
     if (n.permission && user?.role !== "super_admin" && workspacePermissions[n.permission] !== true) return false;
-    if (clientViewerOnly) return n.to === "/workspace" || n.to === "/reports" || n.to.startsWith("/workspace?tab=notifications");
+    if (n.anyPermissions && user?.role !== "super_admin" && !n.anyPermissions.some((permission) => workspacePermissions[permission] === true)) return false;
+    if (clientViewerOnly) return n.to === "/workspace" || n.to === "/reports" || n.to === "/site-architect" || n.to.startsWith("/workspace?tab=notifications");
     if (n.to === "/billing") return user?.role === "super_admin" || primaryRole === "admin";
     if (n.to === "/workspace") return true;
     return true;
@@ -791,7 +808,7 @@ export default function Layout({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     const clientReportPath = location.pathname.startsWith("/agency/clients/");
-    if (clientViewerOnly && !location.pathname.startsWith("/workspace") && !clientReportPath) navigate("/workspace", { replace: true });
+    if (clientViewerOnly && !location.pathname.startsWith("/workspace") && location.pathname !== "/reports" && location.pathname !== "/site-architect" && !clientReportPath) navigate("/workspace", { replace: true });
   }, [clientViewerOnly, location.pathname, navigate]);
 
   return (
@@ -835,10 +852,13 @@ export default function Layout({ children }: { children: ReactNode }) {
         </div>
         <nav className="flex-1 overflow-y-auto px-4 pb-4">
           <div className={`mb-2 px-3 text-[10px] font-bold uppercase tracking-[0.16em] text-slate-400 ${sidebarCollapsed ? "lg:hidden" : ""}`}>Workspace</div>
-          <div className="space-y-1">{workspaceItems.map((n) => (
+          <div className="space-y-1">{workspaceItems.map((n) => {
+            const scopedModules = new Set(["/opportunities", "/strategy", "/keywords", "/site-analysis", "/backlinks", "/ai-citations", "/site-architect", "/lead-magnets", "/growth", "/gap-analysis", "/local-seo", "/ai-content", "/social-strategy", "/reports"]);
+            const target = activeProjectId && scopedModules.has(n.to) ? projectScopedPath(n.to, activeProjectId) : n.to;
+            return (
             <NavLink
               key={n.to}
-              to={n.to}
+              to={target}
               end={n.end}
               title={sidebarCollapsed ? n.label : undefined}
               onMouseEnter={(event) => showSidebarTooltip(n.label, event.currentTarget)}
@@ -856,7 +876,7 @@ export default function Layout({ children }: { children: ReactNode }) {
               <span className={`min-w-0 flex-1 ${sidebarCollapsed ? "lg:hidden" : ""}`}>{n.label}</span>
               {n.to.includes("tab=notifications") && unreadNotifications > 0 && <span className="relative flex h-2.5 w-2.5" aria-label={`${unreadNotifications} unread notifications`}><span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-red-400 opacity-60" /><span className="relative inline-flex h-2.5 w-2.5 rounded-full bg-red-600" /></span>}
             </NavLink>
-          ))}</div>
+          );})}</div>
           {platformAdminItems.length > 0 && <div className="mt-6 border-t border-slate-200 pt-4">
             <div className={`mb-2 px-3 text-[10px] font-bold uppercase tracking-[0.16em] text-rose-500 ${sidebarCollapsed ? "lg:hidden" : ""}`}>Platform Admin</div>
             <div className="space-y-1">{platformAdminItems.map((n) => <NavLink key={n.to} to={n.to} end={n.end} title={sidebarCollapsed ? n.label : undefined} onMouseEnter={(event) => showSidebarTooltip(n.label, event.currentTarget)} onMouseLeave={() => setSidebarTooltip(null)} onFocus={(event) => showSidebarTooltip(n.label, event.currentTarget)} onBlur={() => setSidebarTooltip(null)} onClick={() => setOpen(false)} className={({ isActive }) => `flex items-center gap-3 rounded-lg border-l-2 px-3 py-2.5 text-sm font-semibold transition ${isActive ? "border-rose-500 bg-white text-rose-700 shadow-sm" : "border-transparent text-slate-700 hover:bg-white/70 hover:text-rose-700"}`}><NavGlyph icon={n.icon} /><span className={sidebarCollapsed ? "lg:hidden" : ""}>{n.label}</span></NavLink>)}</div>
@@ -957,6 +977,9 @@ type ProjectAgentPlan = {
   answer: string;
   summary: string;
   currentState: { completed: string[]; active: string[]; blocked: string[] };
+  readinessChecklist: AgentReadinessItem[];
+  presentation: { showReadinessChecklist: boolean };
+  followUpQuestions: string[];
   nextPlannedActivity: { title: string; reason: string; actionUrl: string; priority: string; expectedOutcome: string; dependencies: string[]; blocked: boolean };
   suggestions: { title: string; reason: string; impact: string; confidence: number; evidence: string[] }[];
   predictedOutcome: { statement: string; confidence: number; assumptions: string[]; dependencies: string[] };
@@ -965,6 +988,16 @@ type ProjectAgentPlan = {
   support: { explanation: string; warnings: string[]; missingInputs: string[] };
   generatedBy: "mastra" | "rules";
 };
+
+type AgentReadinessItem = {
+  key: string;
+  label: string;
+  status: "complete" | "ready" | "blocked" | "pending" | "not_required";
+  detail: string;
+  actionUrl: string | null;
+};
+
+type AgentMessagePlan = Pick<ProjectAgentPlan, "readinessChecklist" | "nextPlannedActivity" | "support" | "presentation" | "followUpQuestions">;
 
 function agentPage(pathname: string, search = "") {
   const tab = new URLSearchParams(search).get("tab");
@@ -1020,8 +1053,8 @@ const agentPageHelp: Record<string, { label: string; purpose: string; prompts: s
   "project-profile": { label: "Project profile", purpose: "Review the saved intake, business identity, audience, offer, locations, goals, website details, and downstream impact of changes.", prompts: ["Is this project profile complete?", "Which profile fields need improvement?", "How are target markets used?", "What must be refreshed if I edit this profile?"] },
   "project-execution": { label: "Execution Plan", purpose: "Understand all project tasks, priorities, dependencies, assignments, approvals, and the next dependency-ready action.", prompts: ["Which task should I start now?", "How many tasks are ready, blocked, and completed?", "Which tasks require approval?", "Why are some tasks blocked?"] },
   intake: { label: "Project intake", purpose: "Check whether the saved business, audience, offer, locations, goals, and website details are complete enough for downstream AI.", prompts: ["What is the project’s current position?", "What intake information is missing?", "Will this intake produce useful recommendations?", "What should I improve before continuing?"] },
-  opportunities: { label: "Opportunity Finder", purpose: "Understand each recommended direction, its evidence, score, trade-offs, and how to improve it.", prompts: ["What is the project’s current position?", "How can I improve the opportunity score?", "Why is this opportunity recommended?", "Which opportunity best supports my goal?"] },
-  keywords: { label: "Keyword Intelligence", purpose: "Review keyword direction, intent, local-market fit, gaps, approvals, and readiness for analysis.", prompts: ["What is the project’s current position?", "Suggest project-specific long-tail keywords", "Are my approved groups strong enough?", "Which keywords support my primary goal?"] },
+  opportunities: { label: "Opportunity Finder", purpose: "Check readiness, compare evidence-backed directions, select one, and understand what it unlocks next.", prompts: ["I selected an opportunity. What should I do next?", "Which opportunity should I select and why?", "Am I ready to generate opportunities?", "What happens after I select an opportunity?"] },
+  keywords: { label: "Keyword Intelligence", purpose: "Review keyword direction, intent, local-market fit, approvals, analysis status, and the correct next action.", prompts: ["I added keywords. What should I do next?", "Am I ready to run Keyword Analysis?", "Explain my latest Keyword Analysis", "Which keywords support my primary goal?"] },
   "keyword-insights": { label: "Keyword Research", purpose: "Interpret demand, difficulty, CPC, ranking, intent, locations, competitors, and page targets from saved analysis.", prompts: ["What is the project’s current position?", "Is this a good keyword for this project?", "Which analyzed keywords should I prioritize?", "What keyword gaps should I add next?"] },
   "site-analysis": { label: "Site Analysis", purpose: "Prioritize crawl findings and understand why issues matter, how to fix them, and which tasks should run first.", prompts: ["What is the project’s current position?", "What are the highest-impact site issues?", "What should I do about the 404 pages?", "Which fixes should I complete first?"] },
   strategy: { label: "Strategy", purpose: "Review whether the strategy reflects project evidence, predicted impact, dependencies, and execution readiness.", prompts: ["What is the project’s current position?", "Is this strategy ready for approval?", "What should I revise and why?", "How will this strategy affect execution?"] },
@@ -1047,9 +1080,10 @@ const agentPageHelp: Record<string, { label: string; purpose: string; prompts: s
 };
 
 function pageProjectId(pathname: string, search: string) {
+  if (pathname === "/projects/new") return null;
   const query = new URLSearchParams(search).get("projectId");
   if (query) return query;
-  return pathname.match(/\/guided-projects\/([^/]+)/)?.[1] ?? null;
+  return pathname.match(/\/guided-projects\/([^/]+)/)?.[1] ?? (getActiveProjectId() || null);
 }
 
 function FloatingChatWindow({ children, label, onClose }: { children: ReactNode; label: string; onClose: () => void }) {
@@ -1106,6 +1140,35 @@ function AgentChatHeader({ label, purpose }: { label: string; purpose: string })
   );
 }
 
+function ModuleReadinessCard({ plan, title, onNavigate }: { plan: AgentMessagePlan; title: string; onNavigate: (actionUrl: string) => void }) {
+  const statusStyle: Record<AgentReadinessItem["status"], string> = {
+    complete: "bg-emerald-500 text-white",
+    ready: "bg-brand-600 text-white",
+    blocked: "bg-amber-100 text-amber-800",
+    pending: "bg-slate-100 text-slate-500",
+    not_required: "bg-slate-100 text-slate-500",
+  };
+  const statusMark: Record<AgentReadinessItem["status"], string> = { complete: "✓", ready: "→", blocked: "!", pending: "·", not_required: "–" };
+  return <div className="mt-2 max-w-[94%] overflow-hidden rounded-2xl border border-brand-100 bg-white shadow-sm">
+    <div className="border-b border-brand-100 bg-gradient-to-r from-brand-50 to-emerald-50 px-3.5 py-3">
+      <div className="text-[10px] font-black uppercase tracking-[0.14em] text-brand-700">{title}</div>
+      <div className="mt-0.5 text-xs font-semibold text-charcoal-600">Live project evidence—not sample data</div>
+    </div>
+    <div className="space-y-2 p-3">
+      {plan.readinessChecklist.map((item) => <div key={item.key} className="flex items-start gap-2.5 rounded-xl bg-slate-50 px-3 py-2.5">
+        <span className={`mt-0.5 grid h-5 w-5 shrink-0 place-items-center rounded-full text-[10px] font-black ${statusStyle[item.status]}`}>{statusMark[item.status]}</span>
+        <div className="min-w-0 flex-1"><div className="text-xs font-black text-charcoal-900">{item.label}</div><div className="mt-0.5 text-[11px] leading-4 text-charcoal-500">{item.detail}</div></div>
+      </div>)}
+    </div>
+    <div className="border-t border-slate-100 px-3.5 py-3">
+      <div className="text-[10px] font-black uppercase tracking-wide text-charcoal-400">Next action</div>
+      <div className="mt-1 text-xs font-black text-charcoal-900">{plan.nextPlannedActivity.title}</div>
+      <div className="mt-1 text-[11px] leading-4 text-charcoal-500">{plan.nextPlannedActivity.expectedOutcome}</div>
+      <Link to={plan.nextPlannedActivity.actionUrl} onClick={() => onNavigate(plan.nextPlannedActivity.actionUrl)} className="mt-2.5 inline-flex rounded-lg bg-gradient-to-r from-brand-600 to-emerald-500 px-3 py-2 text-[11px] font-black text-white shadow-sm hover:brightness-105">Open next action →</Link>
+    </div>
+  </div>;
+}
+
 function ProjectAgentDrawer({ content, pathname, search, open, onClose }: { content: HelpContent; pathname: string; search: string; open: boolean; onClose: () => void }) {
   const creationPage = pathname === "/projects/new";
   const urlProjectId = pageProjectId(pathname, search);
@@ -1113,7 +1176,7 @@ function ProjectAgentDrawer({ content, pathname, search, open, onClose }: { cont
   const [projectResolved, setProjectResolved] = useState(Boolean(urlProjectId));
   const projectId = urlProjectId ?? resolvedProjectId;
   const [question, setQuestion] = useState("");
-  const [messages, setMessages] = useState<{ id: string; role: "user" | "assistant"; text: string; page?: string; createdAt?: string }[]>([]);
+  const [messages, setMessages] = useState<{ id: string; role: "user" | "assistant"; text: string; page?: string; createdAt?: string; plan?: AgentMessagePlan | null }[]>([]);
   const [loading, setLoading] = useState(false);
   const [historyLoading, setHistoryLoading] = useState(false);
   const [historyRestored, setHistoryRestored] = useState(false);
@@ -1144,7 +1207,7 @@ function ProjectAgentDrawer({ content, pathname, search, open, onClose }: { cont
     setLoading(true); setError(null);
     try {
       const result = await api.post<ProjectAgentPlan>(`/api/projects/${projectId}/agent/plan`, { page: agentPage(pathname, search), question: submittedQuestion || undefined, conversation: messages.slice(-12).map(({ role, text }) => ({ role, text })) });
-      if (submittedQuestion) setMessages((current) => [...current, { id: `local-assistant-${Date.now()}`, role: "assistant", text: result.answer, page: agentPage(pathname, search) }]);
+      if (submittedQuestion) setMessages((current) => [...current, { id: `local-assistant-${Date.now()}`, role: "assistant", text: result.answer, page: agentPage(pathname, search), plan: { readinessChecklist: result.readinessChecklist, nextPlannedActivity: result.nextPlannedActivity, support: result.support, presentation: result.presentation, followUpQuestions: result.followUpQuestions } }]);
     }
     catch (requestError) { setError(requestError instanceof Error ? requestError.message : "The project agent could not load guidance."); }
     finally { setLoading(false); }
@@ -1156,10 +1219,10 @@ function ProjectAgentDrawer({ content, pathname, search, open, onClose }: { cont
     let cancelled = false;
     instantChatPositionRef.current = true;
     setHistoryLoading(true);
-    api.get<{ messages: { id: string; role: string; text: string; page?: string; createdAt?: string }[] }>(`/api/projects/${projectId}/agent/thread?limit=100`)
+    api.get<{ messages: { id: string; role: string; text: string; page?: string; createdAt?: string; plan?: AgentMessagePlan | null }[] }>(`/api/projects/${projectId}/agent/thread?limit=100`)
       .then((result) => {
         if (cancelled) return;
-        const restored = result.messages.filter((message): message is { id: string; role: "user" | "assistant"; text: string; page?: string; createdAt?: string } => message.role === "user" || message.role === "assistant");
+        const restored = result.messages.filter((message): message is { id: string; role: "user" | "assistant"; text: string; page?: string; createdAt?: string; plan?: AgentMessagePlan | null } => message.role === "user" || message.role === "assistant");
         setMessages(restored);
         setHistoryRestored(restored.length > 0);
       })
@@ -1176,6 +1239,13 @@ function ProjectAgentDrawer({ content, pathname, search, open, onClose }: { cont
       setMessages([]); setHistoryRestored(false); setQuestion("");
     } catch (requestError) { setError(requestError instanceof Error ? requestError.message : "The saved conversation could not be cleared."); }
     finally { setLoading(false); }
+  };
+
+  const openAgentAction = (actionUrl: string) => {
+    const target = new URL(actionUrl, window.location.origin);
+    const sameOpportunityPage = target.pathname === window.location.pathname && target.pathname === "/opportunities";
+    onClose();
+    if (sameOpportunityPage) window.setTimeout(() => document.getElementById("opportunity-options")?.scrollIntoView({ behavior: "smooth", block: "start" }), 50);
   };
 
   useEffect(() => {
@@ -1197,7 +1267,23 @@ function ProjectAgentDrawer({ content, pathname, search, open, onClose }: { cont
         {error && <div className="rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-800">{error}</div>}
         {historyLoading && <div className="grid min-h-full place-items-center"><div className="text-center"><div className="mx-auto h-9 w-9 animate-spin rounded-full border-4 border-brand-100 border-t-brand-600" /><p className="mt-3 text-xs font-semibold text-charcoal-500">Restoring your conversation…</p></div></div>}
         {!historyLoading && messages.length === 0 && <div className="flex min-h-full flex-col justify-center py-5 text-center"><div className="mx-auto grid h-14 w-14 place-items-center rounded-2xl bg-brand-100 text-2xl shadow-sm">✦</div><h3 className="mt-4 text-lg font-black text-charcoal-950">How can I help?</h3><p className="mx-auto mt-1 max-w-sm text-sm leading-6 text-charcoal-500">Ask about this page or choose a useful starting point. Answers use this project’s saved context.</p><div className="mt-5 grid gap-2 text-left">{suggestedQuestions.map((item) => <button key={item} type="button" onClick={() => { setQuestion(""); void load(item); }} disabled={loading} className="group flex items-center justify-between gap-3 rounded-xl border border-slate-200 bg-white px-3.5 py-3 text-left text-xs font-bold text-charcoal-700 shadow-sm transition hover:-translate-y-0.5 hover:border-brand-200 hover:shadow-md disabled:opacity-50"><span>{item}</span><span className="text-brand-600 transition group-hover:translate-x-0.5">→</span></button>)}</div></div>}
-        {messages.length > 0 && <section className="mb-5 space-y-3" aria-live="polite">{messages.map((message) => <div key={message.id} className={`flex ${message.role === "user" ? "justify-end" : "justify-start"}`}><div className={`max-w-[88%] whitespace-pre-line rounded-2xl px-4 py-3 text-sm leading-6 shadow-sm ${message.role === "user" ? "rounded-br-md bg-brand-600 text-white" : "rounded-bl-md border border-slate-200 bg-white text-charcoal-700"}`}>{message.role === "assistant" && <div className="mb-1 text-[10px] font-black uppercase tracking-wide text-brand-700">SEnuke AI</div>}{message.text}</div></div>)}{loading && <div className="flex justify-start"><div className="inline-flex items-center gap-2 rounded-2xl rounded-bl-md border border-slate-200 bg-white px-4 py-3 text-sm text-charcoal-500"><span className="flex gap-1"><i className="h-1.5 w-1.5 animate-bounce rounded-full bg-brand-500" /><i className="h-1.5 w-1.5 animate-bounce rounded-full bg-brand-500 [animation-delay:120ms]" /><i className="h-1.5 w-1.5 animate-bounce rounded-full bg-brand-500 [animation-delay:240ms]" /></span>Thinking with project context…</div></div>}</section>}
+        {messages.length > 0 && <section className="mb-5 space-y-3" aria-live="polite">
+          {messages.map((message, index) => {
+            const isLatestAssistant = message.role === "assistant" && !messages.slice(index + 1).some((item) => item.role === "assistant");
+            const showModuleReadiness = message.role === "assistant" && ["opportunities", "keywords"].includes(message.page ?? "") && message.plan?.presentation?.showReadinessChecklist === true && Boolean(message.plan.readinessChecklist?.length);
+            return <div key={message.id} className={`flex flex-col ${message.role === "user" ? "items-end" : "items-start"}`}>
+              <div className={`max-w-[88%] whitespace-pre-line rounded-2xl px-4 py-3 text-sm leading-6 shadow-sm ${message.role === "user" ? "rounded-br-md bg-brand-600 text-white" : "rounded-bl-md border border-slate-200 bg-white text-charcoal-700"}`}>
+                {message.role === "assistant" && <div className="mb-1 text-[10px] font-black uppercase tracking-wide text-brand-700">SEnuke AI</div>}
+                {message.text}
+              </div>
+              {showModuleReadiness && message.plan ? <ModuleReadinessCard plan={message.plan} title={message.page === "keywords" ? "Keyword readiness" : "Opportunity readiness"} onNavigate={openAgentAction} /> : null}
+              {isLatestAssistant && message.plan?.followUpQuestions?.length ? <div className="mt-2 flex max-w-[94%] flex-wrap gap-1.5">
+                {message.plan.followUpQuestions.map((followUp) => <button key={followUp} type="button" onClick={() => void load(followUp)} disabled={loading} className="rounded-full border border-brand-200 bg-white px-3 py-1.5 text-left text-[11px] font-bold leading-4 text-brand-700 shadow-sm transition hover:border-brand-300 hover:bg-brand-50 disabled:opacity-50">{followUp}</button>)}
+              </div> : null}
+            </div>;
+          })}
+          {loading && <div className="flex justify-start"><div className="inline-flex items-center gap-2 rounded-2xl rounded-bl-md border border-slate-200 bg-white px-4 py-3 text-sm text-charcoal-500"><span className="flex gap-1"><i className="h-1.5 w-1.5 animate-bounce rounded-full bg-brand-500" /><i className="h-1.5 w-1.5 animate-bounce rounded-full bg-brand-500 [animation-delay:120ms]" /><i className="h-1.5 w-1.5 animate-bounce rounded-full bg-brand-500 [animation-delay:240ms]" /></span>Thinking with project context…</div></div>}
+        </section>}
       </div>
       <form className="shrink-0 border-t border-slate-100 bg-white p-3" onSubmit={(event) => { event.preventDefault(); const value = question.trim(); if (value) { setQuestion(""); void load(value); } }}><div className="flex items-end gap-2 rounded-2xl border border-slate-200 bg-slate-50 p-1.5 pl-3 shadow-inner transition focus-within:border-brand-300 focus-within:bg-white focus-within:ring-4 focus-within:ring-brand-50"><textarea rows={1} value={question} onChange={(event) => setQuestion(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); const value = question.trim(); if (value && !loading) { setQuestion(""); void load(value); } } }} placeholder={`Ask about ${pageContext.label.toLowerCase()}…`} className="max-h-24 min-h-10 min-w-0 flex-1 resize-none bg-transparent py-2 text-sm outline-none placeholder:text-charcoal-400" /><button type="submit" aria-label="Send message" disabled={loading || historyLoading || !question.trim()} className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-gradient-to-br from-brand-500 to-brand-700 text-base font-black text-white shadow-sm transition hover:scale-[1.03] disabled:scale-100 disabled:from-slate-300 disabled:to-slate-300 disabled:shadow-none">↑</button></div><div className="mt-1.5 flex items-center justify-between gap-3 px-1 text-[10px] text-charcoal-400"><span>{historyRestored ? "Conversation restored · saved privately" : "Project-aware guidance · saved privately"}</span>{messages.length > 0 ? <button type="button" onClick={() => void clearConversation()} disabled={loading} className="font-bold text-charcoal-500 hover:text-rose-600 disabled:opacity-50">New chat</button> : <span>Enter to send</span>}</div></form>
     </div>

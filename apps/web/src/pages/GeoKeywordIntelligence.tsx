@@ -94,7 +94,7 @@ export default function GeoKeywordIntelligence() {
               </select>
             </label>
             <Input label="Primary keyword" value={targetKeyword} onChange={setTargetKeyword} placeholder="custom software development" />
-            <Input label="City" value={targetCity} onChange={setTargetCity} placeholder="Toronto" />
+            <Input label="City" value={targetCity} onChange={setTargetCity} placeholder="Enter your details" />
           </div>
           <div className="grid gap-4 lg:grid-cols-3">
             <Input label="Secondary keywords" value={secondaryKeywords} onChange={setSecondaryKeywords} placeholder="CRM automation, AI workflow automation" />

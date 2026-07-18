@@ -33,6 +33,7 @@ function projectProgressBreakdown(project: GuidedProject) {
   const completedSteps = steps.filter((step) => completedStatuses.has(step.status)).length;
   const execution = project.executionProgress ?? { total: 0, completed: 0 };
   return {
+    intakeComplete: steps.some((step) => step.stepKey === "intake" && completedStatuses.has(step.status)),
     setupCompleted: completedSteps,
     setupTotal: steps.length,
     setupPercent: project.status === "completed" ? 100 : steps.length ? Math.round((completedSteps / steps.length) * 100) : 0,
@@ -84,6 +85,9 @@ function projectTypeLabel(project: GuidedProject) {
 }
 
 function stageLabel(project: GuidedProject) {
+  const next = nextWorkflowStep(project);
+  if (next) return next.title;
+  if (project.status === "completed") return "Completed";
   return project.currentStep.replace(/_/g, " ").replace(/\b\w/g, (character) => character.toUpperCase());
 }
 
@@ -116,17 +120,24 @@ export default function GuidedProjects() {
   const [agencyHasActiveClient, setAgencyHasActiveClient] = useState(true);
 
   const load = async () => {
-    const [result, agencyWorkspace] = await Promise.all([
-      api.get<{ projects: GuidedProject[] }>("/api/projects-v2"),
-      user?.workspace?.type === "agency"
-        ? api.get<{ clients: { status: string }[] }>("/api/agency/workspace")
-        : Promise.resolve(null),
-    ]);
-    setProjects(result.projects);
-    setAgencyHasActiveClient(agencyWorkspace ? agencyWorkspace.clients.some((client) => client.status === "active") : true);
+    try {
+      const [result, agencyWorkspace] = await Promise.all([
+        api.get<{ projects: GuidedProject[] }>("/api/projects-v2"),
+        user?.workspace?.type === "agency"
+          ? api.get<{ clients: { status: string }[] }>("/api/agency/workspace")
+          : Promise.resolve(null),
+      ]);
+      setProjects(result.projects);
+      setAgencyHasActiveClient(agencyWorkspace ? agencyWorkspace.clients.some((client) => client.status === "active") : true);
+    } catch (error) {
+      // A 401 is handled globally by clearing the expired session and routing
+      // to login. Do not leave an unhandled Promise rejection in the console.
+      if (error instanceof Error && /invalid or expired token|missing bearer token/i.test(error.message)) return;
+      throw error;
+    }
   };
 
-  useEffect(() => { void load(); }, [user?.workspace?.type]);
+  useEffect(() => { void load().catch(() => undefined); }, [user?.workspace?.type]);
   const agencyNeedsClient = user?.workspace?.type === "agency" && !agencyHasActiveClient;
 
   const visibleProjects = useMemo(() => {
@@ -226,15 +237,15 @@ export default function GuidedProjects() {
                     </div>
                   </div>
                 </div>
-                <span className={`shrink-0 rounded-full px-4 py-1.5 text-xs font-bold ${project.status === "archived" ? "bg-slate-200 text-slate-700" : needsReview ? "bg-amber-100 text-amber-800" : project.status === "completed" ? "bg-emerald-100 text-emerald-800" : "bg-teal-100 text-teal-800"}`}>{project.status === "archived" ? "Archived · View only" : needsReview ? "Needs Review" : stageLabel(project)}</span>
+                <span className={`shrink-0 rounded-full px-4 py-1.5 text-xs font-bold ${project.status === "archived" ? "bg-slate-200 text-slate-700" : project.status === "intake_draft" ? "bg-violet-100 text-violet-800" : needsReview ? "bg-amber-100 text-amber-800" : project.status === "completed" ? "bg-emerald-100 text-emerald-800" : "bg-teal-100 text-teal-800"}`}>{project.status === "archived" ? "Archived · View only" : project.status === "intake_draft" ? "Intake draft" : needsReview ? "Needs Review" : stageLabel(project)}</span>
               </div>
 
               <div className="mt-6 rounded-xl border border-violet-100 bg-slate-50/60 px-4 py-3">
                 <div className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_1px_minmax(0,1fr)_auto] sm:items-center sm:gap-5">
                   <div>
-                    <div className="flex items-center justify-between gap-3"><span className="text-xs font-bold uppercase tracking-wide text-teal-700">Setup milestones</span><span className="text-sm font-black text-teal-800">{breakdown.setupPercent}%</span></div>
+                    <div className="flex items-center justify-between gap-3"><span className="text-xs font-bold uppercase tracking-wide text-teal-700">Project workflow</span><span className="text-sm font-black text-teal-800">{breakdown.setupPercent}%</span></div>
                     <div className="mt-2 h-2 overflow-hidden rounded-full bg-teal-100"><div className="h-full rounded-full bg-teal-500 transition-all" style={{ width: `${breakdown.setupPercent}%` }} /></div>
-                    <div className="mt-1.5 text-[11px] font-semibold text-slate-500">{breakdown.setupCompleted} of {breakdown.setupTotal} milestones complete · 50% weight</div>
+                    <div className="mt-1.5 text-[11px] font-semibold text-slate-500">{breakdown.intakeComplete ? "Intake complete · " : ""}{breakdown.setupCompleted} of {breakdown.setupTotal} workflow milestones complete · 50% weight</div>
                   </div>
                   <div className="h-px bg-violet-200 sm:h-12 sm:w-px" aria-hidden="true" />
                   <div>
@@ -250,7 +261,7 @@ export default function GuidedProjects() {
 
               <div className="mt-5 flex flex-col gap-3 border-t border-violet-50 pt-4 md:flex-row md:items-center md:justify-between">
                 <div className="flex min-w-0 flex-col gap-2 text-sm text-slate-500 sm:flex-row sm:items-center sm:gap-7"><div className="min-w-0 truncate">Next: <span className="font-bold text-slate-900">{nextTitle}</span></div><div className="shrink-0">Updated <span className="font-bold text-slate-800">{relativeUpdated(project.updatedAt)}</span></div></div>
-                <div className="flex shrink-0 items-center gap-4">{canEditProjects && project.status !== "archived" && <Link to={`/projects/new?edit=${project.id}`} className="text-xs font-bold text-teal-700 hover:text-teal-900">Edit</Link>}{canManageProjects && project.status !== "archived" && <button disabled={statusBusy === project.id} type="button" onClick={() => void changeArchiveStatus(project, "archive")} className="text-xs font-bold text-slate-500 hover:text-amber-700 disabled:opacity-50">Archive</button>}{canManageProjects && project.status === "archived" && <><button disabled={statusBusy === project.id} type="button" onClick={() => void changeArchiveStatus(project, "restore")} className="text-xs font-bold text-teal-700 disabled:opacity-50">Restore</button><button type="button" onClick={() => setDeleteTarget(project)} className="text-xs font-bold text-rose-600 hover:text-rose-800">Permanently delete</button></>}<Link to={project.status !== "archived" && project.currentStep === "intake" && canEditProjects ? `/guided-projects/${project.id}/intake` : `/guided-projects/${project.id}`} className="text-sm font-bold text-teal-700 hover:text-teal-900">{project.status === "archived" ? "View project →" : "Open project →"}</Link></div>
+                <div className="flex shrink-0 items-center gap-4">{canEditProjects && !["archived", "intake_draft"].includes(project.status) && <Link to={`/projects/new?edit=${project.id}`} className="text-xs font-bold text-teal-700 hover:text-teal-900">Edit</Link>}{canManageProjects && project.status !== "archived" && <button disabled={statusBusy === project.id} type="button" onClick={() => void changeArchiveStatus(project, "archive")} className="text-xs font-bold text-slate-500 hover:text-amber-700 disabled:opacity-50">Archive</button>}{canManageProjects && project.status === "archived" && <><button disabled={statusBusy === project.id} type="button" onClick={() => void changeArchiveStatus(project, "restore")} className="text-xs font-bold text-teal-700 disabled:opacity-50">Restore</button><button type="button" onClick={() => setDeleteTarget(project)} className="text-xs font-bold text-rose-600 hover:text-rose-800">Permanently delete</button></>}<Link to={project.status === "intake_draft" ? `/projects/new?resumeConversation=${project.id}` : project.status !== "archived" && nextWorkflowStep(project)?.stepKey === "intake" && canEditProjects ? `/guided-projects/${project.id}/intake` : `/guided-projects/${project.id}`} className="text-sm font-bold text-teal-700 hover:text-teal-900">{project.status === "archived" ? "View project →" : project.status === "intake_draft" ? "Continue intake →" : "Open project →"}</Link></div>
               </div>
             </article>;
           })}

@@ -26,6 +26,9 @@ import { agencyWorkspaceRouter } from "./routes/agency-workspace.js";
 import { projectReportsRouter } from "./routes/project-reports.js";
 import { approvalsRouter } from "./routes/approvals.js";
 import { projectAgentRouter } from "./routes/project-agent.js";
+import { siteArchitectureRouter } from "./routes/site-architecture.js";
+import { leadMagnetsRouter, publicLeadMagnetsRouter } from "./routes/lead-magnets.js";
+import { aiIntakeRouter } from "./routes/ai-intake.js";
 import { rawBodySaver } from "./billing.js";
 import { enforceArchivedReadOnly, enforceWorkspacePermissions, requireAuth } from "./middleware.js";
 
@@ -51,6 +54,7 @@ app.use((req, res, next) => {
     res.setHeader("Vary", "Origin");
     res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
     res.setHeader("Access-Control-Allow-Methods", "GET,POST,PATCH,DELETE,OPTIONS");
+    res.setHeader("Access-Control-Expose-Headers", "X-SEnuke-Session-Token");
   }
 
   if (req.method === "OPTIONS") {
@@ -102,12 +106,14 @@ app.get("/", (_req, res) =>
       usage: "GET|POST /api/usage",
       competitiveIntelligence: "GET|POST /api/projects/:projectId/intelligence",
       gapAnalysis: "GET|POST /api/projects/:projectId/gap-analysis",
+      siteArchitecture: "GET|POST /api/projects/:projectId/site-architecture",
     },
   }),
 );
 
 app.use("/api/billing", billingRouter);
 app.use("/api/auth", authRouter);
+app.use("/api/public", publicLeadMagnetsRouter);
 app.use("/api", requireAuth, enforceArchivedReadOnly, enforceWorkspacePermissions);
 app.use("/api/clients", clientsRouter);
 app.use("/api/users", usersRouter);
@@ -121,6 +127,9 @@ app.use("/api", agencyWorkspaceRouter);
 app.use("/api", projectReportsRouter);
 app.use("/api", approvalsRouter);
 app.use("/api", projectAgentRouter);
+app.use("/api", siteArchitectureRouter);
+app.use("/api", leadMagnetsRouter);
+app.use("/api", aiIntakeRouter);
 app.use("/api/websites", websitesRouter);
 app.use("/api", crawlsRouter); // crawls routes carry their own full paths
 app.use("/api", overviewRouter);
@@ -135,7 +144,8 @@ app.use("/api", executionTasksRouter);
 // Centralized error handler.
 app.use((err: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
   const statusCode = typeof err === "object" && err !== null && "statusCode" in err && typeof err.statusCode === "number" ? err.statusCode : 500;
-  const message = statusCode < 500 && err instanceof Error ? err.message : "internal server error";
+  const publicMessage = typeof err === "object" && err !== null && "publicMessage" in err && err.publicMessage === true;
+  const message = (statusCode < 500 || publicMessage) && err instanceof Error ? err.message : "internal server error";
   if (statusCode >= 500) console.error("[api] error:", err);
   res.status(statusCode).json({ error: message });
 });

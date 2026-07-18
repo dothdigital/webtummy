@@ -1,7 +1,9 @@
 import { Fragment, useEffect, useMemo, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import { api } from "../api.js";
-import type { AiContentGeneration, AiContentStatus, AiGenerationType, Website } from "../types.js";
+import type { AiContentGeneration, AiContentStatus, AiGenerationType, GuidedProject, Website } from "../types.js";
 import { Button, Card, Input } from "../components/ui.js";
+import { getActiveProjectId, resolveActiveProjectId, setActiveProjectId } from "../active-project.js";
 
 const GENERATION_TYPES: { value: AiGenerationType; label: string; detail: string }[] = [
   { value: "article", label: "Article", detail: "Full article with SEO fields, FAQ, schema, and AI-search notes." },
@@ -177,9 +179,11 @@ function WizardStep({ number, title, active, complete }: { number: number; title
 }
 
 export default function AiContentStudio() {
+  const [searchParams, setSearchParams] = useSearchParams();
   const [status, setStatus] = useState<AiContentStatus | null>(null);
   const [history, setHistory] = useState<AiContentGeneration[]>([]);
   const [websites, setWebsites] = useState<Website[]>([]);
+  const [projects, setProjects] = useState<GuidedProject[]>([]);
   const [websiteId, setWebsiteId] = useState("");
   const [type, setType] = useState<AiGenerationType>("article");
   const [topic, setTopic] = useState("");
@@ -232,15 +236,30 @@ export default function AiContentStudio() {
   const load = async () => {
     setLoading(true);
     try {
-      const [statusResult, historyResult, websiteResult] = await Promise.all([
+      const [statusResult, historyResult, websiteResult, projectResult] = await Promise.all([
         api.get<AiContentStatus>("/api/ai-content/status"),
         api.get<{ generations: AiContentGeneration[] }>("/api/ai-content/history"),
         api.get<{ websites: Website[] }>("/api/websites"),
+        api.get<{ projects: GuidedProject[] }>("/api/projects-v2"),
       ]);
       setStatus(statusResult);
       setHistory(historyResult.generations);
       setWebsites(websiteResult.websites);
-      if (!websiteId && websiteResult.websites[0]) setWebsiteId(websiteResult.websites[0].id);
+      setProjects(projectResult.projects);
+      const activeId = resolveActiveProjectId(projectResult.projects, searchParams.get("projectId"), getActiveProjectId());
+      const activeProject = projectResult.projects.find((project) => project.id === activeId);
+      if (activeId) setActiveProjectId(activeId);
+      if (!websiteId && websiteResult.websites[0]) setWebsiteId(activeProject?.websiteId ?? websiteResult.websites[0].id);
+      const requestedType = searchParams.get("type");
+      if (requestedType && GENERATION_TYPES.some((item) => item.value === requestedType)) setType(requestedType as AiGenerationType);
+      const requestedTopic = searchParams.get("topic");
+      const requestedTargetUrl = searchParams.get("targetUrl");
+      if (requestedTopic) setTopic(requestedTopic);
+      if (requestedTargetUrl) setTargetUrl(requestedTargetUrl);
+      if (searchParams.get("open") === "1") {
+        setWizardStep(requestedTopic ? 2 : 1);
+        setWizardOpen(true);
+      }
       if (!selectedResult && historyResult.generations[0]) {
         setSelectedResult(historyResult.generations[0]);
         setSelectedResultItems([historyResult.generations[0]]);
@@ -531,7 +550,7 @@ export default function AiContentStudio() {
                     <div className="grid gap-4 lg:grid-cols-2">
                       <label className="block lg:col-span-2">
                         <span className="mb-1 block text-sm font-medium text-slate-600">Project</span>
-                        <select value={websiteId} onChange={(e) => setWebsiteId(e.target.value)} className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-100">
+                        <select value={websiteId} onChange={(e) => { const nextWebsiteId = e.target.value; setWebsiteId(nextWebsiteId); const mapped = projects.find((project) => project.websiteId === nextWebsiteId); if (mapped) { setActiveProjectId(mapped.id); setSearchParams({ projectId: mapped.id }); } }} className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-100">
                           <option value="">No project context</option>
                           {websites.map((website) => <option key={website.id} value={website.id}>{website.domain}</option>)}
                         </select>

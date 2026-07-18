@@ -34,6 +34,7 @@ export function clientDefaults(client: AgencyClientDefaults | null) {
     primaryKeywords: strings(settings.primaryKeywords),
     preferredLanguage: typeof settings.preferredLanguage === "string" ? settings.preferredLanguage : "",
     timeZone: typeof settings.timeZone === "string" ? settings.timeZone : "",
+    aiBusinessIntelligence: settings.aiBusinessIntelligence && typeof settings.aiBusinessIntelligence === "object" && !Array.isArray(settings.aiBusinessIntelligence) ? settings.aiBusinessIntelligence as Record<string, unknown> : {},
   };
 }
 

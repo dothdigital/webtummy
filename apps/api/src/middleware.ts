@@ -1,7 +1,7 @@
 // Auth + RBAC + tenant-isolation middleware. See docs/ARCHITECTURE.md §1a.
 import type { Request, Response, NextFunction } from "express";
 import type { Role } from "@webtummy/db";
-import { verifyToken, type JwtPayload } from "./auth.js";
+import { signToken, verifyToken, type JwtPayload } from "./auth.js";
 import { prisma } from "@webtummy/db";
 import { hasWorkspacePermission, workspaceContext } from "./workspace-access.js";
 import { clientViewerRouteAllowed } from "./dev002.js";
@@ -23,6 +23,16 @@ export async function requireAuth(req: Request, res: Response, next: NextFunctio
   }
   try {
     req.user = verifyToken(header.slice(7));
+  } catch {
+    return res.status(401).json({ error: "invalid or expired token" });
+  }
+
+  // Return a renewed token on authenticated activity. The browser accepts this
+  // only when recent user interaction exists, so background polling does not
+  // keep an abandoned session alive indefinitely.
+  res.setHeader("X-SEnuke-Session-Token", signToken({ userId: req.user.userId, role: req.user.role, clientId: req.user.clientId }));
+
+  try {
     const requestedWorkspaceId = req.header("x-senuke-ai-workspace-id")?.trim();
     const membership = await prisma.workspaceMembership.findFirst({
       where: { userId: req.user.userId, status: "active", ...(requestedWorkspaceId ? { workspaceId: requestedWorkspaceId } : {}) },
@@ -36,8 +46,11 @@ export async function requireAuth(req: Request, res: Response, next: NextFunctio
       return res.status(403).json({ error: "Client Viewer access is limited to intentionally shared client resources." });
     }
     next();
-  } catch {
-    res.status(401).json({ error: "invalid or expired token" });
+  } catch (error) {
+    // Database or workspace lookup failures are server errors, not invalid
+    // credentials. Preserve the browser session and let the normal API error
+    // handler report the real failure.
+    next(error);
   }
 }
 
@@ -46,6 +59,7 @@ export function permissionForWorkspaceRequest(method: string, rawPath: string) {
   const path = rawPath.toLowerCase();
   const write = !["GET", "HEAD", "OPTIONS"].includes(method.toUpperCase());
   if (!write) {
+    if (/workspace\/intelligence|site-architecture/.test(path)) return "view_reports";
     if (/activity|audit-log/.test(path)) return "view_activity";
     if (/notifications?/.test(path)) return "view_notifications";
     if (/reports?|insights|analytics|rankings|health-report/.test(path)) return "view_reports";

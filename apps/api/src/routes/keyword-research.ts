@@ -25,7 +25,7 @@ const createSchema = z.object({
   seedKeyword: z.string().min(2),
   targetUrl: z.string().url().optional().nullable(),
   targetDomain: z.string().min(2).optional().nullable(),
-  locationName: z.string().min(2).default("Mississauga"),
+  locationName: z.string().trim().min(2),
   languageCode: z.string().min(2).max(8).default("en"),
   device: z.enum(["desktop", "mobile"]).default("desktop"),
   serpDepth: z.number().int().min(1).max(100).default(20),

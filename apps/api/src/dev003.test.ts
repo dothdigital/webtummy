@@ -7,9 +7,9 @@ const valid = {
   businessLocation: "Toronto, Canada", targetLocations: ["Canada"],
 };
 
-test("DEV-003 accepts every direct-workspace website status and only requires an existing URL", () => {
+test("DEV-011D accepts every website status without requiring a URL", () => {
   for (const websiteStatus of websiteStatuses) {
-    const errors = validateProjectCreation({ ...valid, websiteStatus, websiteUrl: websiteStatus === "existing_website" ? valid.websiteUrl : "" }, "business");
+    const errors = validateProjectCreation({ ...valid, websiteStatus, websiteUrl: "" }, "business");
     expect(errors).toEqual([]);
   }
 });

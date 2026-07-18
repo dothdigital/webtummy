@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import type { ReactNode } from "react";
+import type { MouseEvent, ReactNode } from "react";
 import { Link, useLocation, useNavigate, useParams } from "react-router-dom";
 import { api } from "../api.js";
 import { Button, Card, Input, StatusPill } from "../components/ui.js";
@@ -9,21 +9,82 @@ import ProjectOperations from "../components/ProjectOperations.js";
 import BusinessLocationTargetMarkets from "../components/BusinessLocationTargetMarkets.js";
 import ProjectGoals from "../components/ProjectGoals.js";
 import ProjectMilestoneLine from "../components/ProjectMilestoneLine.js";
+import SeoPlanDialog, { isSeoPlanTask } from "../components/SeoPlanDialog.js";
+import ContentPlanDialog, { isContentPlanTask } from "../components/ContentPlanDialog.js";
 import { canonicalPrimaryGoal } from "@webtummy/core/project-goals";
 
-function taskTone(task: GuidedExecutionTask) {
-  if (task.priority === "critical") return "border-red-300 bg-red-50";
-  if (task.priority === "high") return "border-rose-200 bg-rose-50/70";
-  if (task.priority === "low") return "border-slate-200 bg-slate-50";
-  return "border-amber-200 bg-amber-50/70";
-}
+const EXECUTION_PHASES = ["Setup + Discovery", "Strategy", "Build + Publish", "Promote + Measure", "Execution"] as const;
+type ExecutionPhase = typeof EXECUTION_PHASES[number];
+const EXECUTION_PHASE_MODULES: Record<ExecutionPhase, { label: string; modules: string[] }[]> = {
+  "Setup + Discovery": [
+    { label: "Domain Research", modules: ["domain"] },
+    { label: "Keyword Research", modules: ["keyword_research"] },
+    { label: "Site Analysis", modules: ["site_analysis", "crawl"] },
+    { label: "Site Architecture", modules: ["site_architect"] },
+    { label: "Local SEO", modules: ["local_seo"] },
+  ],
+  Strategy: [
+    { label: "Opportunities", modules: ["opportunity"] },
+    { label: "Strategy", modules: ["strategy"] },
+    { label: "Approvals", modules: ["strategy_approval"] },
+  ],
+  "Build + Publish": [
+    { label: "Content", modules: ["content"] },
+    { label: "Lead Magnets", modules: ["lead_magnet"] },
+    { label: "AI Citations", modules: ["ai_citations"] },
+    { label: "Publishing", modules: ["publishing"] },
+  ],
+  "Promote + Measure": [
+    { label: "Backlinks", modules: ["backlinks"] },
+    { label: "Social", modules: ["social"] },
+    { label: "Growth", modules: ["growth"] },
+    { label: "Reports", modules: ["reports"] },
+  ],
+  Execution: [
+    { label: "Intelligence", modules: ["strategy_intelligence"] },
+    { label: "Other Execution", modules: [] },
+  ],
+};
 
-function executionPhase(task: GuidedExecutionTask) {
-  if (["domain", "site_architect", "local_seo", "keyword_research", "site_analysis"].includes(task.moduleName)) return "Setup + Discovery";
+function executionPhase(task: GuidedExecutionTask): ExecutionPhase {
+  if (["domain", "site_architect", "local_seo", "keyword_research", "site_analysis", "crawl"].includes(task.moduleName)) return "Setup + Discovery";
   if (["content", "lead_magnet", "ai_citations", "publishing"].includes(task.moduleName)) return "Build + Publish";
   if (["backlinks", "social", "growth", "reports"].includes(task.moduleName)) return "Promote + Measure";
   if (["opportunity", "strategy", "strategy_approval"].includes(task.moduleName)) return "Strategy";
   return "Execution";
+}
+
+function taskPriorityBorder(task: GuidedExecutionTask) {
+  if (task.priority === "critical") return "border-l-red-500";
+  if (task.priority === "high") return "border-l-rose-400";
+  if (task.priority === "low") return "border-l-slate-300";
+  return "border-l-amber-400";
+}
+
+function taskActionUrl(task: GuidedExecutionTask, projectId: string) {
+  if (["waiting_for_approval", "pending_approval", "submitted_for_approval", "needs_approval"].includes(task.status)) return `/approvals?projectId=${encodeURIComponent(projectId)}`;
+  if (isSeoPlanTask(task) || isContentPlanTask(task)) return `/guided-projects/${encodeURIComponent(projectId)}?tab=execution&actionTask=${encodeURIComponent(task.id)}#execution-tasks`;
+  if (task.relatedUrl) return task.relatedUrl;
+  const query = `?projectId=${encodeURIComponent(projectId)}`;
+  const routes: Record<string, string> = {
+    opportunity: `/opportunities${query}`,
+    keyword_research: `/keywords${query}`,
+    site_analysis: `/site-analysis${query}`,
+    strategy: `/strategy${query}`,
+    strategy_approval: `/strategy${query}`,
+    site_architect: `/site-architect${query}`,
+    local_seo: `/local-seo${query}`,
+    content: `/ai-content${query}`,
+    lead_magnet: `/lead-magnets${query}`,
+    ai_citations: `/ai-citations${query}`,
+    publishing: `/ai-content${query}`,
+    backlinks: `/backlinks${query}`,
+    social: `/social-strategy${query}`,
+    growth: `/growth${query}`,
+    reports: `/reports${query}`,
+    domain: `/guided-projects/${projectId}?tab=profile`,
+  };
+  return routes[task.moduleName] ?? `/guided-projects/${projectId}?tab=execution#execution-tasks`;
 }
 
 function moduleLabel(moduleName: string) {
@@ -39,6 +100,32 @@ function automationLabel(value: string) {
   if (["one_click_approval", "one_click", "execute_with_approval", "approval_required"].includes(value)) return "One-Click Approval";
   if (value === "manual_guided") return "Manual Guided Step";
   return "Manual Task";
+}
+
+type SourceActivitySummary = NonNullable<GuidedProject["sourceActivitySummaries"]>[number];
+
+function activityMetricClasses(tone?: string) {
+  if (tone === "critical") return "border-red-200 bg-red-50 text-red-700";
+  if (tone === "high") return "border-rose-200 bg-rose-50 text-rose-700";
+  if (tone === "medium") return "border-amber-200 bg-amber-50 text-amber-700";
+  if (tone === "low") return "border-sky-200 bg-sky-50 text-sky-700";
+  return "border-slate-200 bg-slate-50 text-charcoal-700";
+}
+
+function SourceActivityDetails({ summary }: { summary: SourceActivitySummary }) {
+  return <div className="border-t border-slate-200 bg-slate-50/50 px-4 py-4">
+    <div className="flex flex-wrap items-center justify-between gap-2">
+      <div><div className="text-xs font-black uppercase tracking-wide text-charcoal-500">{summary.label}</div><div className="mt-0.5 text-xs text-charcoal-500">Live source records behind this combined Execution Plan action.</div></div>
+      <Link to={summary.actionUrl} className="text-xs font-bold text-brand-700 hover:text-brand-800">Review all {summary.total} →</Link>
+    </div>
+    <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-4 xl:grid-cols-7">
+      {summary.metrics.map((metric) => <div key={metric.label} className={`rounded-md border px-2.5 py-2 ${activityMetricClasses(metric.tone)}`}><div className="text-[10px] font-black uppercase tracking-wide opacity-75">{metric.label}</div><div className="mt-0.5 text-xl font-black leading-none">{metric.value}</div></div>)}
+    </div>
+    {summary.items.length > 0 && <div className="mt-3 overflow-hidden rounded-lg border border-slate-200 bg-white">
+      {summary.items.map((item, index) => <div key={item.id} className={`flex items-start justify-between gap-3 px-3 py-2.5 ${index > 0 ? "border-t border-slate-100" : ""}`}><div className="min-w-0"><div className="truncate text-sm font-bold text-charcoal-900">{item.title}</div>{item.detail && <div className="mt-0.5 line-clamp-1 text-xs text-charcoal-500">{item.detail}</div>}</div><div className="flex shrink-0 items-center gap-1.5">{item.priority && <StatusPill status={item.priority} />}{item.status && <StatusPill status={item.status} />}</div></div>)}
+      {summary.total > summary.items.length && <Link to={summary.actionUrl} className="block border-t border-slate-100 px-3 py-2 text-center text-xs font-bold text-brand-700 hover:bg-brand-50">View {summary.total - summary.items.length} more</Link>}
+    </div>}
+  </div>;
 }
 
 function projectTypeLabel(project: GuidedProject) {
@@ -282,6 +369,9 @@ export default function GuidedProjectDetail() {
   const [error, setError] = useState<string | null>(null);
   const [busyAction, setBusyAction] = useState<string | null>(null);
   const [projectGlanceOpen, setProjectGlanceOpen] = useState(false);
+  const [executionPhaseTab, setExecutionPhaseTab] = useState<ExecutionPhase | null>(null);
+  const [seoPlanTask, setSeoPlanTask] = useState<GuidedExecutionTask | null>(null);
+  const [contentPlanTask, setContentPlanTask] = useState<GuidedExecutionTask | null>(null);
 
   const load = () => {
     if (!id) return;
@@ -308,10 +398,20 @@ export default function GuidedProjectDetail() {
     window.setTimeout(scrollToHash, 0);
   }, [location.hash, project]);
 
+  useEffect(() => {
+    if (!project) return;
+    const requestedTaskId = new URLSearchParams(location.search).get("actionTask");
+    if (!requestedTaskId) return;
+    const projectTasks = [...(project.executionTasks ?? []), ...(project.executionPlans?.flatMap((plan) => plan.tasks ?? []) ?? [])];
+    const requestedTask = projectTasks.find((task) => task.id === requestedTaskId);
+    if (requestedTask && isSeoPlanTask(requestedTask)) setSeoPlanTask(requestedTask);
+    if (requestedTask && isContentPlanTask(requestedTask)) setContentPlanTask(requestedTask);
+  }, [location.search, project]);
+
   const runTask = async (task: GuidedExecutionTask) => {
     if (!project) return;
     if (task.moduleName === "strategy_approval") {
-      navigate("/strategy");
+      navigate(`/strategy?projectId=${encodeURIComponent(project.id)}`);
       return;
     }
     const endpoint = task.moduleName === "opportunity"
@@ -346,6 +446,33 @@ export default function GuidedProjectDetail() {
     }
   };
 
+  const openSeoPlan = async (existingTask?: GuidedExecutionTask | null) => {
+    if (existingTask) {
+      setSeoPlanTask(existingTask);
+      return;
+    }
+    if (!project || busyAction === "seo-plan") return;
+    setBusyAction("seo-plan");
+    setError(null);
+    try {
+      const result = await api.post<{ task: GuidedExecutionTask; created: boolean }>(`/api/projects/${project.id}/seo-plan/task`, {});
+      setProject((current) => current ? { ...current, executionTasks: [...(current.executionTasks ?? []).filter((task) => task.id !== result.task.id), result.task] } : current);
+      setSeoPlanTask(result.task);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not open the guided SEO plan.");
+    } finally {
+      setBusyAction(null);
+    }
+  };
+
+  const closeSeoPlan = () => {
+    setSeoPlanTask(null);
+    const search = new URLSearchParams(location.search);
+    if (!search.has("actionTask")) return;
+    search.delete("actionTask");
+    navigate(`${location.pathname}${search.size ? `?${search.toString()}` : ""}${location.hash}`, { replace: true });
+  };
+
   if (error) return <Card className="border-red-200 bg-red-50 p-4 text-sm text-red-800">{error}</Card>;
   if (!project) return <div className="text-charcoal-400">Loading project...</div>;
   const archived = project.status === "archived";
@@ -356,6 +483,24 @@ export default function GuidedProjectDetail() {
     ...(executionPlan?.tasks ?? []),
   ].map((task) => [task.id, task])).values());
   const executionPlanExists = Boolean(executionPlan && tasks.length > 0);
+  const seoPlanExecutionTask = tasks.find((task) => isSeoPlanTask(task)) ?? null;
+  const contentPlanExecutionTask = tasks.find((task) => isContentPlanTask(task)) ?? null;
+  const interceptGuidedPlanNavigation = (event: MouseEvent<HTMLDivElement>) => {
+    const action = event.target instanceof Element ? event.target.closest("a,button") : null;
+    if (!action || action.closest('[role="dialog"]')) return;
+    const label = action.textContent ?? "";
+    if (/content\s*plan/i.test(label) && contentPlanExecutionTask) {
+      event.preventDefault();
+      event.stopPropagation();
+      setContentPlanTask(contentPlanExecutionTask);
+      return;
+    }
+    if (/seo\s*plan/i.test(label)) {
+      event.preventDefault();
+      event.stopPropagation();
+      void openSeoPlan(seoPlanExecutionTask);
+    }
+  };
   const milestoneProject: GuidedProject = executionPlanExists ? {
     ...project,
     workflowSteps: project.workflowSteps?.map((workflowStep) => workflowStep.stepKey === "execution_plan" ? {
@@ -388,9 +533,25 @@ export default function GuidedProjectDetail() {
   const approvedKeywordGroups = project.keywordGroups?.filter((group) => group.status === "approved").length ?? 0;
   const keywordRecommendations = project.keywordGroups?.reduce((sum, group) => sum + (Array.isArray(group.keywords) ? group.keywords.length : 0), 0) ?? 0;
   const nextExecutionTask = activeTasks[0] ?? null;
-  const executionGroups = ["Setup + Discovery", "Strategy", "Build + Publish", "Promote + Measure", "Execution"]
-    .map((phase) => ({ phase, tasks: activeTasks.filter((task) => executionPhase(task) === phase) }))
-    .filter((group) => group.tasks.length > 0);
+  const sourceActivitySummary = (task: GuidedExecutionTask) => {
+    const key = task.moduleName === "crawl" ? "site_analysis" : task.moduleName;
+    const summary = project.sourceActivitySummaries?.find((item) => item.key === key);
+    if (!summary) return undefined;
+    if (["crawl_issue", "keyword_research_run", "keyword_ideas"].includes(task.sourceType)) return undefined;
+    return summary;
+  };
+  const hasSiteAnalysisAggregate = activeTasks.some((task) => task.moduleName === "site_analysis" && Boolean(sourceActivitySummary(task)));
+  const visibleActiveTasks = activeTasks.filter((task) => !(hasSiteAnalysisAggregate && task.moduleName === "crawl"));
+  const executionGroups = EXECUTION_PHASES.map((phase) => ({ phase, tasks: visibleActiveTasks.filter((task) => executionPhase(task) === phase) }));
+  const selectedExecutionPhase = executionPhaseTab ?? (nextExecutionTask ? executionPhase(nextExecutionTask) : executionGroups.find((group) => group.tasks.length > 0)?.phase ?? "Setup + Discovery");
+  const selectedExecutionTasks = executionGroups.find((group) => group.phase === selectedExecutionPhase)?.tasks ?? [];
+  const selectedModuleCounters = EXECUTION_PHASE_MODULES[selectedExecutionPhase].map((counter) => {
+    const summary = project.sourceActivitySummaries?.find((item) => counter.modules.includes(item.key) || (item.key === "site_analysis" && counter.modules.includes("crawl")));
+    const rowCount = counter.modules.length
+      ? selectedExecutionTasks.filter((task) => counter.modules.includes(task.moduleName)).length
+      : selectedExecutionTasks.filter((task) => !EXECUTION_PHASE_MODULES[selectedExecutionPhase].flatMap((item) => item.modules).includes(task.moduleName)).length;
+    return { ...counter, count: summary?.total ?? rowCount, summarized: Boolean(summary) };
+  });
   const emptyWorkflowTitle = strategyApproved
     ? activeTasks.length === 0 && tasks.length > 0
       ? "All current workflow tasks are complete"
@@ -517,7 +678,7 @@ export default function GuidedProjectDetail() {
                     ? "The project-wide Execution Plan exists and all current tasks are closed. Review completed work or add the next project action."
                   : "Discovery and strategy are ready. Create the prioritized SEO/Growth execution plan with impact, effort, automation, approval, cost, and next action.",
                 label: activeTasks.length ? activeTasks[0].actionButtonLabel ?? "Open Next Task" : executionPlanExists ? "Review Execution Plan" : "Create Execution Plan",
-                to: activeTasks.length ? activeTasks[0].relatedUrl ?? `/guided-projects/${project.id}?tab=execution#execution-tasks` : executionPlanExists ? `/guided-projects/${project.id}?tab=execution#execution-tasks` : undefined,
+                to: activeTasks.length ? taskActionUrl(activeTasks[0], project.id) : executionPlanExists ? `/guided-projects/${project.id}?tab=execution#execution-tasks` : undefined,
                 onClick: activeTasks.length || executionPlanExists ? undefined : () => void createExecutionPlan(),
                 tone: activeTasks.length ? "amber" : "green",
               };
@@ -526,7 +687,7 @@ export default function GuidedProjectDetail() {
   const projectTab = (tab: "overview" | "profile" | "execution") =>
     `/guided-projects/${project.id}${tab === "overview" ? "" : `?tab=${tab}`}`;
   return (
-    <div className="space-y-5">
+    <div className="space-y-5" onClickCapture={interceptGuidedPlanNavigation}>
       <Card className="overflow-hidden">
         <div className="border-b border-charcoal-100 bg-charcoal-50/70 px-5 py-4">
           <div className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
@@ -669,7 +830,7 @@ export default function GuidedProjectDetail() {
                   : "Approve the strategy before execution tasks become actionable."}
               >
                 {strategyApproved && activeTasks.length && activeTasks[0].relatedUrl ? (
-                  <Link to={activeTasks[0].relatedUrl} className="inline-flex w-full items-center justify-center rounded-lg bg-brand-600 px-3 py-2 text-sm font-bold text-white hover:bg-brand-700">
+                  <Link to={taskActionUrl(activeTasks[0], project.id)} className="inline-flex w-full items-center justify-center rounded-lg bg-brand-600 px-3 py-2 text-sm font-bold text-white hover:bg-brand-700">
                     {activeTasks[0].actionButtonLabel ?? "Open Task"}
                   </Link>
                 ) : strategyApproved && !tasks.length ? (
@@ -715,41 +876,22 @@ export default function GuidedProjectDetail() {
 
       {activeTab === "execution" && strategyApproved && (
         <Card id="execution-tasks" className="scroll-mt-24 overflow-hidden">
-          <div className="border-b border-charcoal-100 bg-charcoal-50/70 px-5 py-4">
-            <SectionTitle title="Execution tasks" helper="Work through these in order. Generated actions and manual review steps stay together here." />
+          <div className="flex flex-col gap-3 border-b border-charcoal-100 bg-gradient-to-r from-brand-50 via-white to-emerald-50 px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
+            <SectionTitle title="Execution tasks" helper="Choose a phase, review what to do, and open the correct action." />
+            <div className="flex flex-wrap gap-2 text-xs font-bold">
+              <span className="rounded-full bg-white px-3 py-1 text-brand-700 shadow-sm">{activeTasks.length} open</span>
+              <span className="rounded-full bg-white px-3 py-1 text-emerald-700 shadow-sm">{completedTasks.length} completed</span>
+            </div>
           </div>
-          <div className="border-b border-charcoal-100 bg-gradient-to-r from-brand-50 via-white to-emerald-50 p-5">
-            <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
-              <div className="flex min-w-0 gap-4">
-                <div className="grid h-12 w-12 shrink-0 place-items-center rounded-xl bg-brand-600 text-lg font-bold text-white shadow-sm">→</div>
-                <div className="min-w-0">
-                  <div className="text-xs font-bold uppercase tracking-wide text-brand-700">Project-wide execution plan</div>
-                  <h2 className="mt-1 text-xl font-bold text-charcoal-950">All project actions in one place</h2>
-                  <p className="mt-2 text-sm leading-6 text-charcoal-600">
-                    Crawl findings, keyword research, site analysis, approved Strategy recommendations, reports, and manual tasks are combined here without duplicates.
-                  </p>
-                  <div className="mt-3 flex flex-wrap gap-2 text-xs font-bold">
-                    <span className="rounded-full bg-white/90 px-3 py-1 text-brand-700 shadow-sm">{activeTasks.length} open task{activeTasks.length === 1 ? "" : "s"}</span>
-                    <span className="rounded-full bg-white/90 px-3 py-1 text-emerald-700 shadow-sm">{completedTasks.length} completed</span>
-                    <span className="rounded-full bg-white/90 px-3 py-1 text-charcoal-600 shadow-sm">{labelize(executionPlan?.status ?? project.currentStep)}</span>
-                  </div>
-                </div>
-              </div>
-              <div className="shrink-0">
-                {nextExecutionTask?.relatedUrl ? (
-                  <Link to={nextExecutionTask.relatedUrl} className="inline-flex items-center justify-center rounded-lg bg-brand-600 px-4 py-2.5 text-sm font-bold text-white shadow-sm hover:bg-brand-700">
-                    {nextExecutionTask.actionButtonLabel ?? "Open Next Task"} <span className="ml-2">→</span>
-                  </Link>
-                ) : strategyApproved && !tasks.length ? (
-                  <Button onClick={() => void createExecutionPlan()} disabled={busyAction === "execution-plan"}>
-                    {busyAction === "execution-plan" ? "Creating..." : "Create Execution Plan"}
-                  </Button>
-                ) : (
-                  <Link to={`/strategy?projectId=${project.id}`} className="inline-flex items-center justify-center rounded-lg bg-brand-600 px-4 py-2.5 text-sm font-bold text-white shadow-sm hover:bg-brand-700">
-                    Review Strategy
-                  </Link>
-                )}
-              </div>
+          <div className="border-b border-slate-200 bg-white px-3 pt-3 sm:px-5">
+            <div className="flex gap-2 overflow-x-auto pb-3" role="tablist" aria-label="Execution phases">
+              {executionGroups.map((group) => {
+                const active = selectedExecutionPhase === group.phase;
+                return <button key={group.phase} type="button" role="tab" aria-selected={active} onClick={() => setExecutionPhaseTab(group.phase)} className={`inline-flex shrink-0 items-center gap-2 rounded-lg border px-3.5 py-2 text-sm font-bold transition ${active ? "border-brand-600 bg-brand-600 text-white shadow-sm" : "border-slate-200 bg-white text-charcoal-600 hover:border-brand-300 hover:text-brand-700"}`}>
+                  {group.phase}
+                  <span className={`rounded-full px-2 py-0.5 text-[10px] ${active ? "bg-white/20 text-white" : "bg-slate-100 text-charcoal-500"}`}>{group.tasks.length}</span>
+                </button>;
+              })}
             </div>
           </div>
           {activeTasks.length === 0 ? (
@@ -757,6 +899,7 @@ export default function GuidedProjectDetail() {
               <div className="rounded-lg border border-charcoal-100 bg-charcoal-50/70 p-4">
                 <div className="font-semibold text-charcoal-900">{emptyWorkflowTitle}</div>
                 <p className="mt-2 text-sm leading-6 text-charcoal-600">{emptyWorkflowMessage}</p>
+                {!tasks.length && <div className="mt-4"><Button onClick={() => void createExecutionPlan()} disabled={busyAction === "execution-plan"}>{busyAction === "execution-plan" ? "Creating..." : "Create Execution Plan"}</Button></div>}
                 <div className="mt-4 grid gap-3 sm:grid-cols-3">
                   <MetricTile label="Completed" value={completedTasks.length} helper="tasks closed" />
                   <MetricTile label="Open" value={activeTasks.length} helper="tasks waiting" />
@@ -765,99 +908,42 @@ export default function GuidedProjectDetail() {
               </div>
             </div>
           ) : (
-            <div className="space-y-5 p-5">
-              {nextExecutionTask && (
-                <div className="rounded-lg border border-brand-200 bg-brand-50 p-4">
-                  <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
-                    <div className="min-w-0">
-                      <div className="text-xs font-bold uppercase tracking-wide text-brand-700">Next Best Action</div>
-                      <h3 className="mt-1 text-lg font-bold text-charcoal-950">{nextExecutionTask.title}</h3>
-                      <p className="mt-2 text-sm leading-6 text-charcoal-700">{executionInstruction(nextExecutionTask)}</p>
-                      <p className="mt-2 text-xs font-semibold text-charcoal-500">Why recommended: this is the highest-priority ready task with no unresolved dependencies.</p>
-                      {(nextExecutionTask.expectedOutcome || nextExecutionTask.impact) && <p className="mt-2 text-sm font-medium text-brand-800">Expected outcome: {nextExecutionTask.expectedOutcome || nextExecutionTask.impact}</p>}
-                      <div className="mt-3 flex flex-wrap gap-2 text-xs">
-                        <span className="rounded-full bg-white px-2 py-1 font-bold text-charcoal-600">{executionPhase(nextExecutionTask)}</span>
-                        <span className="rounded-full bg-white px-2 py-1 font-bold text-charcoal-600">{moduleLabel(nextExecutionTask.moduleName)}</span>
-                        <span className="rounded-full bg-white px-2 py-1 font-bold text-charcoal-600">Priority: {nextExecutionTask.priority}</span>
-                        <span className="rounded-full bg-white px-2 py-1 font-bold text-charcoal-600">{automationLabel(nextExecutionTask.automationLevel)}</span>
-                      </div>
-                    </div>
-                    <div className="shrink-0">
-                      {nextExecutionTask.relatedUrl ? (
-                        <Link to={nextExecutionTask.relatedUrl} className="inline-flex items-center justify-center rounded-lg bg-brand-600 px-4 py-2.5 text-sm font-bold text-white shadow-sm hover:bg-brand-700">
-                          {nextExecutionTask.actionButtonLabel ?? "Open Task"}
-                        </Link>
-                      ) : (
-                        <Button onClick={() => void runTask(nextExecutionTask)} disabled={busyAction === nextExecutionTask.id}>
-                          {busyAction === nextExecutionTask.id ? "Working..." : nextExecutionTask.actionButtonLabel ?? "Run Task"}
-                        </Button>
-                      )}
-                    </div>
-                  </div>
+            <div className="p-4 sm:p-5">
+              <div className="mb-3 flex items-center justify-between gap-3">
+                <div><h3 className="font-bold text-charcoal-950">{selectedExecutionPhase}</h3><p className="mt-0.5 text-xs text-charcoal-500">{selectedExecutionTasks.length} open action{selectedExecutionTasks.length === 1 ? "" : "s"} in this phase</p></div>
+              </div>
+              <div className="mb-4 grid grid-cols-2 gap-2 sm:grid-cols-3 xl:grid-cols-5" aria-label={`${selectedExecutionPhase} task counts`}>
+                {selectedModuleCounters.map((counter) => <div key={counter.label} className={`rounded-lg border px-3 py-2.5 ${counter.count > 0 ? "border-brand-100 bg-brand-50/70" : "border-slate-200 bg-slate-50"}`}><div className={`text-[10px] font-black uppercase tracking-wide ${counter.count > 0 ? "text-brand-700" : "text-charcoal-400"}`}>{counter.label}</div><div className={`mt-1 text-2xl font-black leading-none ${counter.count > 0 ? "text-brand-700" : "text-charcoal-400"}`}>{counter.count}</div><div className="mt-1 text-[10px] font-semibold text-charcoal-400">{counter.summarized ? "source items" : "open tasks"}</div></div>)}
+              </div>
+              {selectedExecutionTasks.length === 0 ? <div className="rounded-xl border border-dashed border-slate-200 bg-slate-50 px-5 py-10 text-center"><div className="font-bold text-charcoal-800">No open actions in this phase</div><p className="mt-1 text-sm text-charcoal-500">Choose another phase or review completed tasks in the project activity history.</p></div> : <div className="overflow-hidden rounded-xl border border-slate-200 bg-white">
+                <div className="hidden grid-cols-[1.1fr_1fr_1fr] gap-0 border-b border-slate-200 bg-slate-50 text-[11px] font-black uppercase tracking-wide text-charcoal-500 lg:grid">
+                  <div className="px-4 py-3">Action</div><div className="border-l border-slate-200 px-4 py-3">Do This</div><div className="border-l border-slate-200 px-4 py-3">Expected outcome</div>
                 </div>
-              )}
-
-              {executionGroups.map((group) => (
-                <div key={group.phase}>
-                  <div className="mb-3 flex items-center justify-between gap-3">
-                    <h3 className="text-sm font-bold uppercase tracking-wide text-charcoal-600">{group.phase}</h3>
-                    <span className="rounded-full bg-charcoal-100 px-2.5 py-1 text-xs font-bold text-charcoal-600">{group.tasks.length} task{group.tasks.length === 1 ? "" : "s"}</span>
-                  </div>
-                  <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
-                    {group.tasks.map((task) => (
-                      <div key={task.id} className={`flex min-h-[250px] flex-col justify-between rounded-lg border p-4 shadow-sm ${taskTone(task)}`}>
-                        <div>
-                          <div className="flex flex-col gap-3">
-                            <div>
-                              <div className="flex flex-wrap items-center gap-2">
-                                <span className="font-semibold text-charcoal-900">{task.title}</span>
-                                <StatusPill status={task.status} />
-                              </div>
-                              <p className="mt-2 text-sm leading-6 text-charcoal-600">{task.description}</p>
-                              <div className="mt-3 rounded-md bg-white/80 p-3">
-                                <div className="text-[11px] font-bold uppercase tracking-wide text-charcoal-500">Do this</div>
-                                <p className="mt-1 text-sm leading-6 text-charcoal-700">{executionInstruction(task)}</p>
-                              </div>
-                              {(task.expectedOutcome || task.impact) && (
-                                <div className="mt-3 text-sm leading-6 text-charcoal-600">
-                                  <span className="font-semibold text-charcoal-800">Expected outcome:</span> {task.expectedOutcome || task.impact}
-                                </div>
-                              )}
-                              <div className="mt-3 flex flex-wrap gap-2 text-xs text-charcoal-500">
-                                <span className="rounded-full bg-white px-2 py-1 font-medium">Module: {moduleLabel(task.moduleName)}</span>
-                                <span className="rounded-full bg-white px-2 py-1 font-medium">Priority: {task.priority}</span>
-                                <span className="rounded-full bg-white px-2 py-1 font-medium">Automation: {automationLabel(task.automationLevel)}</span>
-                                {task.assignee && <span className="rounded-full bg-white px-2 py-1 font-medium">Assigned: {task.assignee.user.name || task.assignee.user.email}</span>}
-                                {task.dueAt && <span className="rounded-full bg-white px-2 py-1 font-medium">Due: {new Date(task.dueAt).toLocaleDateString()}</span>}
-                                {task.requiresApproval && <span className="rounded-full bg-white px-2 py-1">Approval required</span>}
-                              </div>
-                              {unresolvedDependencies(task).length > 0 && <div className="mt-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-semibold text-amber-800">Blocked by: {unresolvedDependencies(task).map((dependency) => dependency.requiredTask.title).join(", ")}</div>}
-                            </div>
-                          </div>
-                        </div>
-                        <div className="mt-4">
-                          {(task.moduleName === "opportunity" || task.moduleName === "strategy" || task.moduleName === "strategy_approval") ? (
-                            <Button onClick={() => void runTask(task)} disabled={busyAction === task.id} className="w-full">
-                              {busyAction === task.id ? "Generating..." : task.actionButtonLabel ?? "Run"}
-                            </Button>
-                          ) : task.relatedUrl ? (
-                            <Link to={task.relatedUrl} className="inline-flex w-full items-center justify-center rounded-lg bg-brand-600 px-3 py-2 text-sm font-semibold text-white shadow-sm hover:bg-brand-700">
-                              {task.actionButtonLabel ?? "Open"}
-                            </Link>
-                          ) : (
-                            <span className="inline-flex w-full items-center justify-center rounded-lg bg-white px-3 py-2 text-sm font-semibold text-charcoal-400 shadow-sm">No action</span>
-                          )}
-                        </div>
+                <div className="divide-y divide-slate-200">
+                  {selectedExecutionTasks.map((task) => {
+                    const blockers = unresolvedDependencies(task);
+                    const blockedTask = task.status === "blocked" || blockers.length > 0;
+                    const directAction = ["opportunity", "strategy", "strategy_approval"].includes(task.moduleName) && !task.relatedUrl;
+                    const activitySummary = sourceActivitySummary(task);
+                    return <div key={task.id} className={`border-l-4 bg-white ${taskPriorityBorder(task)} ${task.id === nextExecutionTask?.id ? "bg-brand-50/30" : ""}`}><div className="grid lg:grid-cols-[1.1fr_1fr_1fr]">
+                      <div className="p-4">
+                        <div className="flex flex-wrap items-center gap-2"><h4 className="font-bold text-charcoal-950">{task.title}</h4>{task.id === nextExecutionTask?.id && <span className="rounded-full bg-brand-100 px-2 py-0.5 text-[10px] font-black uppercase text-brand-700">Next</span>}<StatusPill status={task.status} /></div>
+                        <p className="mt-2 text-sm leading-6 text-charcoal-600">{task.description}</p>
+                        <div className="mt-3 flex flex-wrap gap-1.5 text-[11px] font-semibold text-charcoal-500"><span className="rounded-full bg-slate-100 px-2 py-1">{moduleLabel(task.moduleName)}</span><span className="rounded-full bg-slate-100 px-2 py-1">{task.priority} priority</span><span className="rounded-full bg-slate-100 px-2 py-1">{automationLabel(task.automationLevel)}</span>{task.requiresApproval && <span className="rounded-full bg-amber-100 px-2 py-1 text-amber-800">Approval required</span>}</div>
                       </div>
-                    ))}
-                  </div>
+                      <div className="border-t border-slate-100 p-4 lg:border-l lg:border-t-0"><div className="text-[10px] font-black uppercase tracking-wide text-charcoal-400 lg:hidden">Do This</div>{activitySummary ? <p className="mt-1 text-sm leading-6 text-charcoal-700">Review the prioritized source items below, then open the source report to work through the full list.</p> : <p className="mt-1 text-sm leading-6 text-charcoal-700">{executionInstruction(task)}</p>}{blockers.length > 0 && <div className="mt-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-semibold text-amber-800">Blocked by: {blockers.map((dependency) => dependency.requiredTask.title).join(", ")}</div>}</div>
+                      <div className="flex flex-col justify-between gap-4 border-t border-slate-100 p-4 lg:border-l lg:border-t-0"><div><div className="text-[10px] font-black uppercase tracking-wide text-charcoal-400 lg:hidden">Expected outcome</div><p className="mt-1 text-sm leading-6 text-charcoal-700">{task.expectedOutcome || task.impact || "Complete this action so dependent project work can move forward."}</p></div><div>{blockedTask ? <button type="button" disabled className="inline-flex w-full items-center justify-center rounded-lg bg-slate-200 px-3 py-2 text-sm font-bold text-slate-500">Resolve dependency first</button> : isContentPlanTask(task) ? <button type="button" onClick={() => setContentPlanTask(task)} className="inline-flex w-full items-center justify-center rounded-lg bg-brand-600 px-3 py-2 text-sm font-bold text-white shadow-sm hover:bg-brand-700">{task.status === "in_progress" ? "Review Content Plan" : "Create Content Plan"}<span className="ml-2">→</span></button> : isSeoPlanTask(task) ? <button type="button" onClick={() => void openSeoPlan(task)} className="inline-flex w-full items-center justify-center rounded-lg bg-brand-600 px-3 py-2 text-sm font-bold text-white shadow-sm hover:bg-brand-700">{task.status === "in_progress" ? "Review SEO Plan" : "Create SEO Plan"}<span className="ml-2">→</span></button> : directAction ? <Button onClick={() => void runTask(task)} disabled={busyAction === task.id} className="w-full">{busyAction === task.id ? "Working..." : task.actionButtonLabel ?? "Start action"}</Button> : <Link to={taskActionUrl(task, project.id)} className="inline-flex w-full items-center justify-center rounded-lg bg-brand-600 px-3 py-2 text-sm font-bold text-white shadow-sm hover:bg-brand-700">{task.actionButtonLabel ?? (["waiting_for_approval", "pending_approval", "submitted_for_approval", "needs_approval"].includes(task.status) ? "Review approval" : "Open action")} <span className="ml-2">→</span></Link>}</div></div>
+                    </div>{activitySummary && <SourceActivityDetails summary={activitySummary} />}</div>;
+                  })}
                 </div>
-              ))}
+              </div>}
             </div>
           )}
         </Card>
       )}
       <ProjectGlanceDrawer project={project} open={projectGlanceOpen} onClose={() => setProjectGlanceOpen(false)} />
+      {seoPlanTask && <SeoPlanDialog task={seoPlanTask} onClose={closeSeoPlan} onSaved={() => { closeSeoPlan(); load(); }} />}
+      {contentPlanTask && <ContentPlanDialog task={contentPlanTask} onClose={() => setContentPlanTask(null)} onSaved={() => load()} />}
 
     </div>
   );

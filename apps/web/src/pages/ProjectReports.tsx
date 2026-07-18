@@ -4,6 +4,7 @@ import { projectReportCatalog, reportFrequencies, type ProjectReportType } from 
 import { api } from "../api.js";
 import { useAuth } from "../auth.js";
 import { Card } from "../components/ui.js";
+import { getActiveProjectId, resolveActiveProjectId, setActiveProjectId } from "../active-project.js";
 
 type Project = { id: string; name: string; projectType: string; agencyClient?: { name: string } | null };
 type StoredReport = { id: string; projectId: string; reportType: ProjectReportType; approvalStatus: string; exportFormat: string; status: string; clientVisible: boolean; contentJson: Record<string, unknown>; createdAt: string };
@@ -15,7 +16,7 @@ export default function ProjectReports() {
   const { user } = useAuth();
   const [params, setParams] = useSearchParams();
   const [projects, setProjects] = useState<Project[]>([]);
-  const [projectId, setProjectId] = useState(params.get("projectId") || "");
+  const [projectId, setProjectId] = useState(params.get("projectId") || getActiveProjectId());
   const [reports, setReports] = useState<StoredReport[]>([]);
   const [schedules, setSchedules] = useState<ReportSchedule[]>([]);
   const [reportType, setReportType] = useState<ProjectReportType>("executive_summary");
@@ -37,11 +38,11 @@ export default function ProjectReports() {
     setReports(result.reports);
   };
   useEffect(() => {
-    if (user?.workspace?.primaryRole !== "client_viewer") api.get<{ projects: Project[] }>("/api/projects-v2").then((result) => { setProjects(result.projects); if (!projectId && result.projects[0]) setProjectId(result.projects[0].id); }).catch(() => setProjects([]));
+    if (user?.workspace?.primaryRole !== "client_viewer") api.get<{ projects: Project[] }>("/api/projects-v2").then((result) => { setProjects(result.projects); const resolved = resolveActiveProjectId(result.projects, params.get("projectId"), projectId); if (resolved) setProjectId(resolved); }).catch(() => setProjects([]));
   }, []);
   useEffect(() => { api.get<{ preferences: typeof notificationPreferences }>("/api/notification-preferences").then((result) => setNotificationPreferences(result.preferences)).catch(() => undefined); }, []);
   useEffect(() => { if (workspaceType === "agency") api.get<{ branding: AgencyBranding }>("/api/agency-report-branding").then((result) => setBranding(result.branding)).catch(() => setBranding(null)); }, [workspaceType]);
-  useEffect(() => { if (projectId) { setParams({ projectId }, { replace: true }); void loadReports(projectId).catch((error) => setMessage(error instanceof Error ? error.message : "Reports could not be loaded.")); if (permissions.export_reports) void api.get<{ schedules: ReportSchedule[] }>(`/api/project-reports/schedules?projectId=${encodeURIComponent(projectId)}`).then((result) => setSchedules(result.schedules)).catch(() => setSchedules([])); } }, [projectId]);
+  useEffect(() => { if (projectId) { setActiveProjectId(projectId); setParams({ projectId }, { replace: true }); void loadReports(projectId).catch((error) => setMessage(error instanceof Error ? error.message : "Reports could not be loaded.")); if (permissions.export_reports) void api.get<{ schedules: ReportSchedule[] }>(`/api/project-reports/schedules?projectId=${encodeURIComponent(projectId)}`).then((result) => setSchedules(result.schedules)).catch(() => setSchedules([])); } }, [projectId]);
   useEffect(() => { const saved = schedules.find((item) => item.reportType === reportType); setFrequency(saved?.frequency ?? "on_demand"); setAutomaticDelivery(saved?.automaticClientDelivery ?? false); }, [reportType, schedules]);
 
   const generate = async () => {

@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { api } from "../api.js";
-import type { SocialCompetitorProfile, SocialProfile, SocialStrategy as SocialStrategyType, SocialStrategyResponse, Website } from "../types.js";
+import type { GuidedProject, SocialCompetitorProfile, SocialProfile, SocialStrategy as SocialStrategyType, SocialStrategyResponse, Website } from "../types.js";
 import { Button, Card, Input, ScoreGauge, StatusPill } from "../components/ui.js";
+import { getActiveProjectId, resolveActiveProjectId, setActiveProjectId } from "../active-project.js";
 
 const PLATFORM_LABELS: Record<string, string> = {
   instagram: "Instagram",
@@ -570,6 +571,7 @@ function SocialPublisher({ websiteId, strategy }: SocialPublisherProps) {
 export default function SocialStrategy() {
   const [searchParams, setSearchParams] = useSearchParams();
   const [websites, setWebsites] = useState<Website[]>([]);
+  const [projects, setProjects] = useState<GuidedProject[]>([]);
   const [websiteId, setWebsiteId] = useState("");
   const [platformOptions, setPlatformOptions] = useState<string[]>(DEFAULT_PLATFORMS);
   const [profiles, setProfiles] = useState<SocialProfile[]>([emptyProfile()]);
@@ -606,10 +608,14 @@ export default function SocialStrategy() {
     setLoading(true);
     setPageError("");
     try {
-      const websiteResult = await api.get<{ websites: Website[] }>("/api/websites");
+      const [websiteResult, projectResult] = await Promise.all([api.get<{ websites: Website[] }>("/api/websites"), api.get<{ projects: GuidedProject[] }>("/api/projects-v2")]);
       setWebsites(websiteResult.websites);
+      setProjects(projectResult.projects);
       const requestedProject = searchParams.get("project");
-      const selected = websiteResult.websites.find((website) => website.id === requestedProject) ?? websiteResult.websites[0];
+      const activeGuidedId = resolveActiveProjectId(projectResult.projects, searchParams.get("projectId"), getActiveProjectId());
+      const activeGuided = projectResult.projects.find((project) => project.id === activeGuidedId);
+      if (activeGuidedId) setActiveProjectId(activeGuidedId);
+      const selected = websiteResult.websites.find((website) => website.id === activeGuided?.websiteId) ?? websiteResult.websites.find((website) => website.id === requestedProject) ?? websiteResult.websites[0];
       if (selected) {
         setWebsiteId(selected.id);
         await loadStrategy(selected.id);
@@ -644,7 +650,9 @@ export default function SocialStrategy() {
 
   const changeWebsite = async (id: string) => {
     setWebsiteId(id);
-    setSearchParams({ project: id });
+    const mappedProject = projects.find((project) => project.websiteId === id);
+    if (mappedProject) setActiveProjectId(mappedProject.id);
+    setSearchParams({ project: id, ...(mappedProject?.id || getActiveProjectId() ? { projectId: mappedProject?.id || getActiveProjectId() } : {}) });
     setLoading(true);
     setPageError("");
     try {

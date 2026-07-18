@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { Link, useSearchParams } from "react-router-dom";
+import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { api } from "../api.js";
 import { Card } from "../components/ui.js";
 import AgencyClientEditor from "../components/AgencyClientEditor.js";
@@ -7,6 +7,7 @@ import BusinessLocationTargetMarkets from "../components/BusinessLocationTargetM
 import SenukeFieldGuide, { createFieldGuide } from "../components/SenukeFieldGuide.js";
 import { primaryGoalsForWorkspace } from "@webtummy/core/project-goals";
 import { configurableWorkspaceRoles, defaultWorkspacePermission, workspacePermissionCatalog, workspaceRoleCanEver, type ConfigurableWorkspaceRole } from "@webtummy/core/workspace-permissions";
+import AiAssistedIntake from "../components/AiAssistedIntake.js";
 
 type Role = "owner" | "admin" | "manager" | "approver" | "editor" | "viewer" | "client_viewer";
 type Member = { id: string; status: string; user: { id: string; name: string | null; email: string; isActive: boolean }; roles: { role: string }[]; teamMemberships: { team: { id: string; name: string } }[] };
@@ -74,6 +75,7 @@ function Pagination({ page, total, onChange }: { page: number; total: number; on
 }
 
 export default function AgencyWorkspace() {
+  const navigate = useNavigate();
   const [params, setParams] = useSearchParams();
   const [data, setData] = useState<WorkspaceData | null>(null);
   const [loading, setLoading] = useState(true);
@@ -102,6 +104,7 @@ export default function AgencyWorkspace() {
   const [clientBrandVoice, setClientBrandVoice] = useState("");
   const [clientLanguage, setClientLanguage] = useState("English");
   const [clientTimeZone, setClientTimeZone] = useState("America/Toronto");
+  const [clientAiIntakeSessionId, setClientAiIntakeSessionId] = useState("");
   const [teamName, setTeamName] = useState("");
   const [teamDescription, setTeamDescription] = useState("");
   const [editingMember, setEditingMember] = useState<string | null>(null);
@@ -116,7 +119,7 @@ export default function AgencyWorkspace() {
   const [inviteClientIds, setInviteClientIds] = useState<string[]>([]);
   const [editingClient, setEditingClient] = useState<AgencyClient | null>(null);
   const [clientFilter, setClientFilter] = useState<"active" | "archived">("active");
-  const [showClientForm, setShowClientForm] = useState(false);
+  const [showClientForm, setShowClientForm] = useState(Boolean(params.get("returnTo")));
   const [showInviteForm, setShowInviteForm] = useState(false);
   const [activeClientGuideKey, setActiveClientGuideKey] = useState("business_name");
   const [removingMemberId, setRemovingMemberId] = useState<string | null>(null);
@@ -159,7 +162,7 @@ export default function AgencyWorkspace() {
     client_name: { label: "Contact name", value: clientContactName, required: true },
     client_email: { label: "Email address", value: clientEmail, required: true },
     phone_number: { label: "Phone number", value: clientPhone },
-    website_url: { label: "Website URL", value: clientWebsite, required: true },
+    website_url: { label: "Website URL", value: clientWebsite },
     industry_niche: { label: "Industry / niche", value: clientNiche, required: true },
     business_location: { label: "Business Location", value: [clientCity, clientRegion, clientCountry].filter(Boolean).join(", "), required: true },
     target_location: { label: "Target Markets", value: clientMarkets, required: true },
@@ -183,6 +186,7 @@ export default function AgencyWorkspace() {
     finally { setLoading(false); }
   }
   useEffect(() => { void load(); }, []);
+  useEffect(() => { const applied = (event: Event) => { const detail = (event as CustomEvent<{ contextType: string; sessionId: string }>).detail; if (detail?.contextType === "client") setClientAiIntakeSessionId(detail.sessionId); }; window.addEventListener("senuke-ai:ai-intake-applied", applied); return () => window.removeEventListener("senuke-ai:ai-intake-applied", applied); }, []);
   useEffect(() => {
     const requested = params.get("tab") as Tab | null;
     if (requested && ["dashboard", "clients", "teams", "approvals", "notifications", "activity"].includes(requested) && requested !== tab) setTab(requested);
@@ -199,21 +203,25 @@ export default function AgencyWorkspace() {
   const setPage = (key: string, page: number) => setPages((current) => ({ ...current, [key]: page }));
   async function action(key: string, fn: () => Promise<unknown>, message: string) {
     setBusy(key); setError(""); setNotice("");
-    try { await fn(); setNotice(message); await load(); window.dispatchEvent(new Event("senuke-ai:notifications-changed")); }
-    catch (err) { setError(err instanceof Error ? err.message : "Action failed."); }
+    try { await fn(); setNotice(message); await load(); window.dispatchEvent(new Event("senuke-ai:notifications-changed")); return true; }
+    catch (err) { setError(err instanceof Error ? err.message : "Action failed."); return false; }
     finally { setBusy(""); }
   }
   async function createClient(event: React.FormEvent) {
     event.preventDefault();
     const businessLocation = [clientStreetAddress, clientCity, clientRegion, clientPostalCode, clientCountry].map((value) => value.trim()).filter(Boolean).join(", ");
-    await action("client-create", () => api.post("/api/agency/clients", {
+    const created = await action("client-create", () => api.post("/api/agency/clients", {
       name: clientName, contactName: clientContactName, contactEmail: clientEmail, contactPhone: clientPhone || null,
       targetMarkets: clientMarkets.split(/[,\n]/).map((item) => item.trim()).filter(Boolean),
-      websites: [clientWebsite], businessLocations: [businessLocation], competitors: clientCompetitors.split(/[,\n]/).map((item) => item.trim()).filter(Boolean), brandingJson: {},
-      defaultSettings: { industryNiche: clientNiche, niche: clientNiche, primaryBusinessGoal: clientGoal, businessDescription: clientDescription, targetAudience: clientAudience, mainProductsServices: clientProducts, primaryKeywords: clientKeywords.split(/[,\n]/).map((item) => item.trim()).filter(Boolean), brandVoice: clientBrandVoice, preferredLanguage: clientLanguage, timeZone: clientTimeZone, businessLocationDetails: { country: clientCountry, stateProvince: clientRegion, city: clientCity, streetAddress: clientStreetAddress, postalCode: clientPostalCode } },
+      websites: clientWebsite.trim() ? [clientWebsite.trim()] : [], businessLocations: [businessLocation], competitors: clientCompetitors.split(/[,\n]/).map((item) => item.trim()).filter(Boolean), brandingJson: {},
+      defaultSettings: { industryNiche: clientNiche, niche: clientNiche, primaryBusinessGoal: clientGoal, businessDescription: clientDescription, targetAudience: clientAudience, mainProductsServices: clientProducts, primaryKeywords: clientKeywords.split(/[,\n]/).map((item) => item.trim()).filter(Boolean), brandVoice: clientBrandVoice, preferredLanguage: clientLanguage, timeZone: clientTimeZone, businessLocationDetails: { country: clientCountry, stateProvince: clientRegion, city: clientCity, streetAddress: clientStreetAddress, postalCode: clientPostalCode } }, aiIntakeSessionId: clientAiIntakeSessionId || null,
     }), `${clientName} was created.`);
+    if (!created) return;
     setClientName(""); setClientContactName(""); setClientEmail(""); setClientPhone(""); setClientWebsite(""); setClientNiche(""); setClientCountry(""); setClientRegion(""); setClientCity(""); setClientStreetAddress(""); setClientPostalCode(""); setClientMarkets(""); setClientGoal(""); setClientDescription(""); setClientAudience(""); setClientProducts(""); setClientCompetitors(""); setClientKeywords(""); setClientBrandVoice(""); setClientLanguage("English"); setClientTimeZone("America/Toronto");
     setShowClientForm(false);
+    setClientAiIntakeSessionId("");
+    const returnTo = params.get("returnTo");
+    if (returnTo?.startsWith("/")) navigate(returnTo, { replace: true });
   }
   async function createTeam(event: React.FormEvent) {
     event.preventDefault();
@@ -356,8 +364,9 @@ export default function AgencyWorkspace() {
         <ClientField guideKey="client_name" onGuide={setActiveClientGuideKey} label="Contact name *" value={clientContactName} onChange={setClientContactName} required />
         <ClientField guideKey="client_email" onGuide={setActiveClientGuideKey} label="Email address *" value={clientEmail} onChange={setClientEmail} type="email" required />
         <ClientField guideKey="phone_number" onGuide={setActiveClientGuideKey} label="Phone number" value={clientPhone} onChange={setClientPhone} type="tel" />
-        <ClientField guideKey="website_url" onGuide={setActiveClientGuideKey} label="Website URL *" value={clientWebsite} onChange={setClientWebsite} type="url" placeholder="https://example.com" required />
+        <ClientField guideKey="website_url" onGuide={setActiveClientGuideKey} label="Website URL (optional)" value={clientWebsite} onChange={setClientWebsite} type="url" placeholder="https://example.com" />
         <ClientField guideKey="industry_niche" onGuide={setActiveClientGuideKey} label="Industry / niche *" value={clientNiche} onChange={setClientNiche} required />
+        <div className="rounded-xl border border-brand-200 bg-gradient-to-br from-brand-50 to-white p-4 md:col-span-2"><div className="mb-3"><div className="text-xs font-black uppercase tracking-wide text-brand-700">AI-assisted client setup</div><h3 className="mt-1 font-black text-slate-950">{clientWebsite.trim() ? "Research this client’s website" : "Define this client without a website"}</h3><p className="mt-1 text-xs leading-5 text-slate-600">{clientWebsite.trim() ? "SEnuke will review a limited set of public pages and suggest client details. You choose exactly which form values and insight groups to apply." : "Add a website above to research it, or use the information already entered to generate guided client suggestions."}</p></div><AiAssistedIntake contextType="client" websiteUrl={clientWebsite} knownInfo={{ businessName: clientName, contactName: clientContactName, industryNiche: clientNiche, businessDescription: clientDescription, targetAudience: clientAudience, productsServices: clientProducts, businessLocation: [clientCity, clientRegion, clientCountry].filter(Boolean).join(", "), targetMarkets: clientMarkets, primaryGoal: clientGoal }} onApply={(values) => { const location = values.businessLocation && typeof values.businessLocation === "object" ? values.businessLocation as Record<string, unknown> : {}; if (typeof values.businessDescription === "string") setClientDescription(values.businessDescription); if (typeof values.industryNiche === "string") setClientNiche(values.industryNiche); if (typeof values.targetAudience === "string") setClientAudience(values.targetAudience); if (values.productsServices) setClientProducts(Array.isArray(values.productsServices) ? values.productsServices.join("\n") : String(values.productsServices)); if (typeof values.primaryGoal === "string") setClientGoal(values.primaryGoal); if (typeof location.country === "string") setClientCountry(location.country); if (typeof location.stateProvince === "string") setClientRegion(location.stateProvince); if (typeof location.city === "string") setClientCity(location.city); if (Array.isArray(values.targetMarkets)) setClientMarkets(values.targetMarkets.join("\n")); if (Array.isArray(values.competitors)) setClientCompetitors(values.competitors.join("\n")); if (Array.isArray(values.seedKeywords)) setClientKeywords(values.seedKeywords.join("\n")); if (typeof values.brandVoice === "string") setClientBrandVoice(values.brandVoice); }} /></div>
         <div data-guide-key="business_location" onFocusCapture={() => setActiveClientGuideKey("business_location")} onClickCapture={() => setActiveClientGuideKey("business_location")} className="md:col-span-2"><BusinessLocationTargetMarkets value={{ country: clientCountry, stateProvince: clientRegion, city: clientCity, streetAddress: clientStreetAddress, postalCode: clientPostalCode, targetMarkets: clientMarkets.split(/[,\n]/).map((item) => item.trim()).filter(Boolean) }} onChange={(value) => { setClientCountry(value.country); setClientRegion(value.stateProvince); setClientCity(value.city); setClientStreetAddress(value.streetAddress); setClientPostalCode(value.postalCode); setClientMarkets(value.targetMarkets.join("\n")); }} /></div>
         <label onFocusCapture={() => setActiveClientGuideKey("primary_goal")} onClickCapture={() => setActiveClientGuideKey("primary_goal")} className="block text-xs font-bold">Primary business goal *<select required value={clientGoal} onChange={(event) => setClientGoal(event.target.value)} className="mt-1 h-10 w-full rounded-lg border bg-white px-3 text-sm font-normal"><option value="">Select goal</option>{primaryGoalsForWorkspace("agency").map((goal) => <option key={goal}>{goal}</option>)}</select></label>
         <ClientArea guideKey="business_description" onGuide={setActiveClientGuideKey} label="Business description *" value={clientDescription} onChange={setClientDescription} required />

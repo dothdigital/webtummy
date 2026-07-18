@@ -10,6 +10,8 @@ import { ExecutionTaskDrawer } from "./CrawlDetail.js";
 import { isExistingWebsiteFlow, nextProjectFlowStep } from "../project-flow.js";
 import { registerBackgroundJob } from "../background-jobs.js";
 import { keywordMarketKey, keywordMarketOptions, latestSuccessfulKeywordRuns, uniqueSerpDomains } from "../keyword-runs.js";
+import { getActiveProjectId, resolveActiveProjectId, setActiveProjectId } from "../active-project.js";
+import LeadFunnelWorkspace from "../components/LeadFunnelWorkspace.js";
 import type { AiContentGeneration, DomainBacklinkLinks, DomainBacklinkSummary, ExecutionTask, GuidedExecutionTask, GuidedProject, HealthReport, IssueRow, KeywordResearchRun, Opportunity, ProjectNotification, Website, WorkspaceIntelligence, WorkspaceIntelligenceResponse } from "../types.js";
 
 type ModuleKind = "opportunities" | "strategy" | "keywords" | "site-analysis" | "backlinks" | "ai-citations" | "site-architect" | "lead-magnets";
@@ -276,7 +278,7 @@ export default function ExecutionModule({ kind }: { kind: ModuleKind }) {
   const [leadMagnetInstructions, setLeadMagnetInstructions] = useState("");
   const [opportunityBusy, setOpportunityBusy] = useState<"generate" | string | null>(null);
   const [opportunityMessage, setOpportunityMessage] = useState("");
-  const [selectedProjectId, setSelectedProjectId] = useState(searchParams.get("projectId") ?? "");
+  const [selectedProjectId, setSelectedProjectId] = useState(searchParams.get("projectId") ?? getActiveProjectId());
   const [workspaceLoadError, setWorkspaceLoadError] = useState("");
   const [helpOpen, setHelpOpen] = useState(false);
   const [nowMs, setNowMs] = useState(Date.now());
@@ -304,7 +306,8 @@ export default function ExecutionModule({ kind }: { kind: ModuleKind }) {
           ])
         : [{ summary: null }, { backlinks: null }];
       if (!cancelled) {
-        const defaultProjectId = requestedProjectId ?? workspace.intelligence.activeProjectId ?? workspace.projects[0]?.id ?? "";
+        const defaultProjectId = resolveActiveProjectId(workspace.projects, requestedProjectId, workspace.intelligence.activeProjectId);
+        if (defaultProjectId) setActiveProjectId(defaultProjectId);
         setData({
           projects: workspace.projects,
           websites: workspace.websites,
@@ -317,6 +320,11 @@ export default function ExecutionModule({ kind }: { kind: ModuleKind }) {
           leadMagnetGenerations: workspace.leadMagnetGenerations ?? [],
         });
         setSelectedProjectId(defaultProjectId);
+        if (!requestedProjectId && defaultProjectId) {
+          const next = new URLSearchParams(searchParams);
+          next.set("projectId", defaultProjectId);
+          setSearchParams(next, { replace: true });
+        }
         setLoading(false);
       }
     }
@@ -498,10 +506,12 @@ export default function ExecutionModule({ kind }: { kind: ModuleKind }) {
       tasks: project.executionPlans?.flatMap((plan) => plan.tasks ?? []) ?? current.tasks,
     }));
     setSelectedProjectId(project.id);
+    setActiveProjectId(project.id);
   };
 
   const changeProject = (projectId: string) => {
     setSelectedProjectId(projectId);
+    setActiveProjectId(projectId);
     const next = new URLSearchParams(searchParams);
     if (projectId) next.set("projectId", projectId);
     else next.delete("projectId");
@@ -757,7 +767,7 @@ export default function ExecutionModule({ kind }: { kind: ModuleKind }) {
   const headerActions: ProjectHeaderAction[] = [];
   if (kind === "keywords" && scopedKeywordRuns.length > 0) headerActions.push({ key: "manage-keywords", label: "Manage keyword groups", variant: "secondary", onClick: () => { const next = new URLSearchParams(searchParams); next.set("manageKeywords", "1"); setSearchParams(next, { replace: true }); } });
   if (kind === "ai-citations") headerActions.push({ key: "live-snapshot", label: "Live snapshot from latest crawl", variant: "status" });
-  else if (!(kind === "keywords" && scopedKeywordRuns.length === 0) && !(kind === "site-analysis" && !latestSiteCrawl)) headerActions.push({ key: "primary", label: primaryLabel, disabled: primaryDisabled, onClick: runHeaderPrimaryAction });
+  else if (kind !== "site-architect" && kind !== "lead-magnets" && !(kind === "keywords" && scopedKeywordRuns.length === 0) && !(kind === "site-analysis" && !latestSiteCrawl)) headerActions.push({ key: "primary", label: primaryLabel, disabled: primaryDisabled, onClick: runHeaderPrimaryAction });
 
   return (
     <div className="space-y-5">
@@ -797,12 +807,7 @@ export default function ExecutionModule({ kind }: { kind: ModuleKind }) {
           {opportunityMessage}
         </div>
       )}
-      {hasActiveProject && kind === "lead-magnets" && (
-        <div className={`rounded-lg border px-4 py-3 text-sm ${leadMagnetMessage ? "border-brand-100 bg-brand-50 text-brand-700" : "border-slate-200 bg-white text-charcoal-500"}`}>
-          {leadMagnetMessage || "Lead magnets are generated from the approved strategy, audience, offer, and project goal. They create a downloadable asset plus landing page, thank-you copy, delivery email, and CTA flow tasks."}
-        </div>
-      )}
-      {hasActiveProject && hasWorkspaceRecords && canRunModule && kind !== "opportunities" && kind !== "strategy" && kind !== "site-analysis" && !(kind === "keywords" && scopedKeywordRuns.length === 0) && moduleNextStep && (
+      {hasActiveProject && hasWorkspaceRecords && canRunModule && kind !== "opportunities" && kind !== "strategy" && kind !== "site-analysis" && kind !== "lead-magnets" && kind !== "ai-citations" && !(kind === "keywords" && scopedKeywordRuns.length === 0) && moduleNextStep && (
         <ModuleNextStepCallout
           step={moduleNextStep}
           onAction={moduleNextStep.action === "generate-strategy"
@@ -817,10 +822,17 @@ export default function ExecutionModule({ kind }: { kind: ModuleKind }) {
 
       {loading && <Card className="p-5 text-sm text-charcoal-500">Loading live project data...</Card>}
       {!loading && workspaceLoadError && <Card className="border-red-200 bg-red-50 p-5"><h2 className="font-bold text-red-900">Project data could not be loaded</h2><p className="mt-2 text-sm text-red-800">{workspaceLoadError}</p><Link to="/projects" className="mt-4 inline-flex rounded-lg border border-red-200 bg-white px-4 py-2 text-sm font-bold text-red-800">Back to projects</Link></Card>}
-      {!loading && !workspaceLoadError && !hasActiveProject && searchParams.get("projectId") && <Card className="border-amber-200 bg-amber-50 p-5"><h2 className="font-bold text-amber-900">Project unavailable</h2><p className="mt-2 text-sm text-amber-800">This project was not found or is not assigned to your workspace account.</p><Link to="/projects" className="mt-4 inline-flex rounded-lg border border-amber-200 bg-white px-4 py-2 text-sm font-bold text-amber-900">Back to projects</Link></Card>}
-      {!loading && !workspaceLoadError && !hasActiveProject && !searchParams.get("projectId") && <EmptyModuleState title="Create project first" detail="This module depends on a project. Create a project before using module actions." />}
+      {!loading && !workspaceLoadError && !hasActiveProject && data.projects.length === 0 && (
+        <EmptyModuleState
+          title="No projects yet"
+          detail="Create a project to begin intake, strategy, analysis, execution, approval, and delivery."
+          actionTo="/projects/new"
+          actionLabel="Create Project"
+        />
+      )}
+      {!loading && !workspaceLoadError && !hasActiveProject && data.projects.length > 0 && searchParams.get("projectId") && <Card className="border-amber-200 bg-amber-50 p-5"><h2 className="font-bold text-amber-900">Project unavailable</h2><p className="mt-2 text-sm text-amber-800">This project was not found or is not assigned to your workspace account.</p><Link to="/projects" className="mt-4 inline-flex rounded-lg border border-amber-200 bg-white px-4 py-2 text-sm font-bold text-amber-900">Back to projects</Link></Card>}
       {!loading && hasActiveProject && !hasWorkspaceRecords && <EmptyModuleState title="No data available" detail="Project data will appear here after intake, crawls, tasks, or generation runs exist." />}
-      {!loading && hasActiveProject && hasWorkspaceRecords && !canRunModule && <ModuleReadinessChecklist moduleTitle={copy.title} items={readiness.items} />}
+      {!loading && hasActiveProject && hasWorkspaceRecords && !canRunModule && kind !== "site-architect" && <ModuleReadinessChecklist moduleTitle={copy.title} items={readiness.items} />}
       {!loading && hasActiveProject && hasWorkspaceRecords && canRunModule && kind === "opportunities" && <OpportunityScreen data={scopedData} selectingId={opportunityBusy} onSelect={selectOpportunity} onClearSelection={clearOpportunitySelection} onRefine={refineOpportunities} onSkip={skipOpportunityFinder} />}
       {!loading && hasActiveProject && hasWorkspaceRecords && canRunModule && kind === "strategy" && <StrategyScreen data={scopedData} busy={strategyBusy} onAction={runStrategyAction} />}
       {!loading && hasActiveProject && hasWorkspaceRecords && canRunModule && kind === "keywords" && <KeywordScreen data={scopedData} />}
@@ -845,16 +857,8 @@ export default function ExecutionModule({ kind }: { kind: ModuleKind }) {
       {!loading && hasActiveProject && hasWorkspaceRecords && canRunModule && kind === "site-analysis" && latestSiteCrawl && <SiteAnalysisScreen data={scopedData} />}
       {!loading && hasActiveProject && hasWorkspaceRecords && canRunModule && kind === "backlinks" && <BacklinkScreen data={scopedData} />}
       {!loading && hasActiveProject && hasWorkspaceRecords && canRunModule && kind === "ai-citations" && <CitationScreen data={scopedData} />}
-      {!loading && hasActiveProject && hasWorkspaceRecords && canRunModule && kind === "site-architect" && <ArchitectScreen data={scopedData} />}
-      {!loading && hasActiveProject && hasWorkspaceRecords && canRunModule && kind === "lead-magnets" && (
-        <LeadMagnetScreen
-          data={scopedData}
-          selectedIdea={leadMagnetIdea}
-          instructions={leadMagnetInstructions}
-          onSelectIdea={setLeadMagnetIdea}
-          onChangeInstructions={setLeadMagnetInstructions}
-        />
-      )}
+      {!loading && hasActiveProject && hasWorkspaceRecords && kind === "site-architect" && <ArchitectScreen data={scopedData} />}
+      {!loading && hasActiveProject && hasWorkspaceRecords && canRunModule && kind === "lead-magnets" && <LeadFunnelWorkspace projectId={activeProject.id} suggestedIdeas={leadMagnetIdeas(scopedData)} />}
       <ModuleHelpDrawer kind={kind} project={activeProject} open={helpOpen} onClose={() => setHelpOpen(false)} />
     </div>
   );
@@ -1249,7 +1253,7 @@ function OpportunityScreen({
       <OpportunityInsights project={project} niche={niche} opportunity={focusedOpportunity} opportunityCount={opportunityCount} taskCount={taskCount} onReport={() => {
         setReportOpen(true);
       }} />
-      <div>
+      <div id="opportunity-options" className="scroll-mt-6">
         <div className="space-y-5">
           <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
             <div>
@@ -1364,7 +1368,7 @@ function OpportunityRefineModal({ open, busy, onClose, onSubmit }: { open: boole
           <div className="mt-3 grid gap-3 sm:grid-cols-2">{opportunityRefinementIdeas.map((idea) => { const active = selected.includes(idea.instruction); return <label key={idea.title} className={`flex cursor-pointer items-start gap-3 rounded-xl border p-4 text-left transition ${active ? "border-brand-500 bg-brand-50 ring-1 ring-brand-200" : "border-slate-200 hover:border-brand-300"}`}><input type="checkbox" checked={active} disabled={busy} onChange={() => toggle(idea.instruction)} className="mt-0.5 h-5 w-5 shrink-0 rounded border-slate-300 accent-brand-600" /><span><span className="block font-bold text-charcoal-950">{idea.title}</span><span className="mt-2 block text-xs leading-5 text-charcoal-500">{idea.instruction}</span></span></label>; })}</div>
           <div className={`mt-4 rounded-xl border px-4 py-3 text-sm ${selected.length ? "border-emerald-200 bg-emerald-50 text-emerald-900" : "border-slate-200 bg-slate-50 text-charcoal-500"}`}><b>{selected.length ? `${selected.length} priorit${selected.length === 1 ? "y" : "ies"} selected` : "No priority selected yet"}</b><span className="ml-1">{selected.length ? "— scores and ranking will change after you click Refine Recommendations." : "Choose a suggestion above or write custom instructions below."}</span></div>
           <label className="mt-5 block text-sm font-bold text-charcoal-800" htmlFor="opportunity-refine-custom">Additional instructions</label>
-          <textarea id="opportunity-refine-custom" value={custom} onChange={(event) => setCustom(event.target.value)} rows={4} maxLength={2000} placeholder="Example: Target Toronto dental clinics, keep the launch under 30 days, and prioritize appointment bookings." className="mt-2 w-full resize-y rounded-xl border border-slate-200 px-4 py-3 text-sm leading-6 outline-none focus:border-brand-400 focus:ring-2 focus:ring-brand-100" />
+          <textarea id="opportunity-refine-custom" value={custom} onChange={(event) => setCustom(event.target.value)} rows={4} maxLength={2000} placeholder="Enter your details" className="mt-2 w-full resize-y rounded-xl border border-slate-200 px-4 py-3 text-sm leading-6 outline-none focus:border-brand-400 focus:ring-2 focus:ring-brand-100" />
           <div className="mt-2 text-right text-xs text-charcoal-400">{custom.length}/2000</div>
         </div>
         <div className="flex flex-col-reverse gap-2 border-t border-slate-100 bg-slate-50 px-5 py-4 sm:flex-row sm:items-center sm:justify-between sm:px-6"><span className="text-xs text-charcoal-500">Selecting a suggestion prepares it. Click the button to apply the refinement.</span><div className="flex flex-col-reverse gap-2 sm:flex-row"><button type="button" onClick={onClose} disabled={busy} className="rounded-lg border border-slate-200 bg-white px-4 py-2.5 text-sm font-bold text-charcoal-700 disabled:opacity-50">Cancel</button><button type="button" onClick={() => void onSubmit(instructions)} disabled={busy || instructions.length < 3} className="rounded-lg bg-brand-600 px-5 py-2.5 text-sm font-bold text-white disabled:cursor-not-allowed disabled:bg-slate-300">{busy ? "Refining recommendations…" : `Refine Recommendations${selected.length ? ` (${selected.length})` : ""}`}</button></div></div>
@@ -1591,7 +1595,7 @@ function StrategyScreen({ data, busy, onAction }: { data: ModuleData; busy: "gen
       {!latestStrategy ? (
         <Card className="border-brand-100 bg-brand-50/60 p-6">
           <h2 className="text-xl font-bold text-charcoal-950">AI strategy has not been generated yet</h2>
-          <p className="mt-2 text-sm leading-6 text-charcoal-600">Generate the strategy from the guided project intake, opportunity, audience, offer, and publishing preferences.</p>
+          <p className="mt-2 text-sm leading-6 text-charcoal-600">Generate the strategy from the guided project intake, opportunity, audience, offer, and publishing destination.</p>
           <button type="button" onClick={() => { void runInlineAction("generate"); }} disabled={Boolean(busy)} className="mt-4 rounded-lg bg-brand-600 px-4 py-2 text-sm font-bold text-white disabled:bg-slate-300">
             {busy === "generate" ? "Generating..." : "Generate AI Strategy"}
           </button>
@@ -2754,6 +2758,47 @@ function CitationScreen({ data }: { data: ModuleData }) {
   const localProfile = website?.localBusinessProfiles?.[0] ?? null;
   const [healthReport, setHealthReport] = useState<HealthReport | null>(null);
   const [healthLoading, setHealthLoading] = useState(false);
+  const clientSettings = objectValue(project?.agencyClient?.defaultSettings);
+  const clientLocation = objectValue(clientSettings?.businessLocationDetails);
+  const projectLocation = objectValue(project?.businessLocationJson);
+  const locationValue = (record: Record<string, unknown> | null, key: string) => typeof record?.[key] === "string" ? String(record[key]).trim() : "";
+  const fallbackClientLocation = stringArray(project?.agencyClient?.businessLocations)[0] ?? "";
+  const effectiveName = localProfile?.businessName || project?.businessName || project?.agencyClient?.name || project?.name || "";
+  const effectivePhone = localProfile?.phone || project?.agencyClient?.contactPhone || "";
+  const inheritedStreet = locationValue(projectLocation, "streetAddress") || locationValue(clientLocation, "streetAddress");
+  const inheritedCity = locationValue(projectLocation, "city") || locationValue(clientLocation, "city");
+  const inheritedRegion = locationValue(projectLocation, "stateProvince") || locationValue(clientLocation, "stateProvince");
+  const inheritedCountry = locationValue(projectLocation, "country") || locationValue(clientLocation, "country");
+  const inheritedPostalCode = locationValue(projectLocation, "postalCode") || locationValue(clientLocation, "postalCode");
+  const localAddress = [localProfile?.address, localProfile?.city, localProfile?.region, localProfile?.postalCode, localProfile?.country].filter(Boolean).join(", ");
+  const inheritedAddress = [inheritedStreet, inheritedCity, inheritedRegion, inheritedPostalCode, inheritedCountry].filter(Boolean).join(", ") || project?.businessLocation || fallbackClientLocation;
+  const effectiveAddress = localAddress || inheritedAddress || "";
+  const napReady = Boolean(effectiveName && effectivePhone && effectiveAddress);
+  const napSource = localProfile ? "Local SEO profile" : projectLocation || project?.businessLocation ? "Project intake" : project?.agencyClient ? "Agency Client defaults" : "Project profile";
+  const profileUrl = (() => {
+    if (!project || !website) return project ? `/guided-projects/${encodeURIComponent(project.id)}/intake` : "/projects";
+    const params = new URLSearchParams({ projectId: project.id, project: website.id, editProfile: "1" });
+    if (effectiveName) params.set("businessName", effectiveName);
+    if (effectivePhone) params.set("phone", effectivePhone);
+    if (localProfile?.address || inheritedStreet) params.set("address", localProfile?.address || inheritedStreet);
+    if (localProfile?.city || inheritedCity) params.set("city", localProfile?.city || inheritedCity);
+    if (localProfile?.region || inheritedRegion) params.set("region", localProfile?.region || inheritedRegion);
+    if (localProfile?.country || inheritedCountry) params.set("country", localProfile?.country || inheritedCountry);
+    if (localProfile?.postalCode || inheritedPostalCode) params.set("postalCode", localProfile?.postalCode || inheritedPostalCode);
+    if (project.niche) params.set("mainCategory", project.niche);
+    const inheritedTargets = stringArray(project.targetLocations).join(", ");
+    if (inheritedTargets) params.set("targetLocations", inheritedTargets);
+    if (project.businessProfile?.offerSummary) params.set("services", project.businessProfile.offerSummary);
+    return `/local-seo?${params.toString()}`;
+  })();
+  const siteAnalysisUrl = project ? `/site-analysis?projectId=${encodeURIComponent(project.id)}` : "/site-analysis";
+  const crawlUrl = latestCrawl?.id ? `/crawls/${encodeURIComponent(latestCrawl.id)}` : siteAnalysisUrl;
+  const generateUrl = (type: string, topic: string) => {
+    const params = new URLSearchParams({ type, topic, open: "1" });
+    if (project?.id) params.set("projectId", project.id);
+    if (website?.rootUrl) params.set("targetUrl", website.rootUrl);
+    return `/ai-content?${params.toString()}`;
+  };
 
   useEffect(() => {
     let cancelled = false;
@@ -2773,16 +2818,37 @@ function CitationScreen({ data }: { data: ModuleData }) {
     return () => { cancelled = true; };
   }, [latestCrawl?.id]);
 
+  const readinessScore = Math.max(0, Math.min(100, healthReport?.aiSearch.score ?? latestCrawl?.siteScore ?? 0));
+  const identityRows = [
+    { label: "Business name", value: effectiveName || "Not configured", ok: Boolean(effectiveName), action: "Edit profile", href: profileUrl },
+    { label: "Phone", value: effectivePhone || "Not configured", ok: Boolean(effectivePhone), action: effectivePhone ? "Edit phone" : "Add phone", href: profileUrl },
+    { label: "Address", value: effectiveAddress || "Not configured", ok: Boolean(effectiveAddress), action: effectiveAddress ? "Edit address" : "Add address", href: profileUrl },
+    { label: "Organization schema", value: `${schemaTypeCount(healthReport, "Organization", true)} detected`, ok: Boolean(healthReport?.schema.hasOrganization), action: "Generate schema", href: generateUrl("domain_schema", "Generate Organization schema for AI citation readiness") },
+  ];
+  const readinessSignals = [
+    { label: "Website", value: website?.domain ?? project?.websiteUrl ?? "Not connected", ok: Boolean(website?.domain || project?.websiteUrl) },
+    { label: "Strategy", value: strategyStatus, ok: latestStrategy?.status === "approved" },
+    { label: "Entity schema", value: healthReport?.schema.hasOrganization ? "Found" : "Missing", ok: Boolean(healthReport?.schema.hasOrganization) },
+    { label: "NAP", value: napReady ? napSource : "Missing", ok: napReady },
+    { label: "Open tasks", value: formatNumber(openTasks.length), ok: openTasks.length === 0 },
+  ];
+
   return (
     <>
-      <MetricGrid items={[
-        ["AI Readiness", healthReport ? `${healthReport.aiSearch.score} /100` : healthLoading ? "Loading" : "Not checked", healthReport ? "latest crawl" : "run site analysis"],
-        ["Entity Schema", healthReport?.schema.hasOrganization ? "Found" : "Missing", `${schemaTypeCount(healthReport, "Organization", true)} org items`],
-        ["NAP Profile", localProfile ? "Found" : "Missing", localProfile?.businessName ?? "local profile missing"],
-        ["AI Access Files", healthReport?.aiSearch.llmsTxtPresent ? "Ready" : "Needs work", `llms.txt ${healthReport?.aiSearch.llmsTxtPresent ? "found" : "missing"}`],
-        ["Answer Schema", healthReport?.faq.hasFAQSchema ? "Found" : "Missing", `FAQ ${schemaTypeCount(healthReport, "FAQPage")}`],
-        ["Open Tasks", formatNumber(openTasks.length), `${citationTasks.length} total citation tasks`],
-      ]} />
+      <Card className="overflow-hidden border-brand-100 p-0 shadow-sm">
+        <div className="bg-gradient-to-r from-brand-50 via-white to-emerald-50 px-5 py-4">
+          <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+            <div><div className="text-xs font-black uppercase tracking-[0.12em] text-brand-700">Entity & NAP</div><h2 className="mt-1 text-xl font-black text-charcoal-950">AI citation identity and readiness</h2><p className="mt-1 text-sm text-charcoal-500">Brand identity signals AI systems need before citing the business. Current source: <span className="font-bold text-charcoal-700">{napSource}</span>.</p></div>
+            <div className="w-full max-w-sm rounded-xl border border-white bg-white/90 px-4 py-3 shadow-sm"><div className="flex items-end justify-between gap-3"><div><div className="text-3xl font-black text-brand-700">{healthLoading ? "—" : readinessScore}<span className="text-sm text-charcoal-400">/100</span></div><div className="text-xs font-bold uppercase tracking-wide text-charcoal-400">Readiness score</div></div><div className="text-right text-xs font-semibold text-charcoal-500">{healthReport ? "Latest crawl" : healthLoading ? "Loading…" : "Site analysis needed"}</div></div><div className="mt-3 h-2 overflow-hidden rounded-full bg-slate-100"><div className="h-full rounded-full bg-gradient-to-r from-brand-500 to-emerald-500" style={{ width: `${readinessScore}%` }} /></div></div>
+          </div>
+        </div>
+        <div className="grid divide-y divide-slate-100 lg:grid-cols-4 lg:divide-x lg:divide-y-0">
+          {identityRows.map((row) => <div key={row.label} className="flex min-w-0 flex-col justify-between gap-3 p-4"><div><div className="flex items-center justify-between gap-2"><div className="text-xs font-black uppercase tracking-wide text-charcoal-400">{row.label}</div><span className={`rounded-full px-2 py-0.5 text-[10px] font-black ${row.ok ? "bg-emerald-50 text-emerald-700" : "bg-amber-50 text-amber-700"}`}>{row.ok ? "Found" : "Needs work"}</span></div><div className="mt-2 break-words text-sm font-bold leading-5 text-charcoal-900">{row.value}</div></div><Link to={row.href} className="w-fit text-xs font-black text-brand-700 hover:text-brand-800">{row.action} →</Link></div>)}
+        </div>
+        <div className="grid border-t border-slate-100 bg-slate-50/60 sm:grid-cols-2 lg:grid-cols-5">
+          {readinessSignals.map((signal) => <div key={signal.label} className="flex items-center justify-between gap-2 border-b border-slate-100 px-4 py-3 sm:border-r lg:border-b-0"><div className="min-w-0"><div className="text-[10px] font-black uppercase tracking-wide text-charcoal-400">{signal.label}</div><div className="mt-0.5 truncate text-xs font-bold text-charcoal-700">{signal.value}</div></div><span className={`h-2.5 w-2.5 shrink-0 rounded-full ${signal.ok ? "bg-emerald-500" : "bg-amber-400"}`} /></div>)}
+        </div>
+      </Card>
 
       {!citationTasks.length && (
         <Card className="border-amber-100 bg-amber-50 p-4">
@@ -2793,94 +2859,41 @@ function CitationScreen({ data }: { data: ModuleData }) {
         </Card>
       )}
 
-      <div className="grid gap-5 xl:grid-cols-[1fr_360px]">
-        <div className="grid gap-5 lg:grid-cols-2">
-          <CitationPanel
-            title="Entity & NAP"
-            subtitle="Brand identity signals AI systems need before citing the business."
-            rows={[
-              { label: "Business name", value: localProfile?.businessName || project?.businessName || "Not configured", ok: Boolean(localProfile?.businessName || project?.businessName), action: "Edit profile" },
-              { label: "Phone", value: localProfile?.phone || "Not configured", ok: Boolean(localProfile?.phone), action: "Add phone" },
-              { label: "Address", value: [localProfile?.address, localProfile?.city, localProfile?.region].filter(Boolean).join(", ") || "Not configured", ok: Boolean(localProfile?.address), action: "Add address" },
-              { label: "Organization schema", value: `${schemaTypeCount(healthReport, "Organization", true)} detected`, ok: Boolean(healthReport?.schema.hasOrganization), action: "Generate schema" },
-            ]}
-          />
+      <div className="space-y-5">
+        <div className="grid gap-5 lg:grid-cols-3">
           <CitationPanel
             title="AI Discoverability"
             subtitle="Files and crawl signals that help search and AI systems discover authoritative pages."
             rows={[
-              { label: "llms.txt", value: healthReport?.aiSearch.llmsTxtPresent ? `Found · score ${healthReport.aiSearch.llmsTxtScore ?? 0}` : "Not found", ok: Boolean(healthReport?.aiSearch.llmsTxtPresent), action: "Generate" },
-              { label: "Sitemap", value: `${formatNumber(healthReport?.siteFiles.sitemapUrls)} URLs`, ok: (healthReport?.siteFiles.sitemapUrls ?? 0) > 0, action: "Review" },
-              { label: "Robots", value: healthReport?.siteFiles.robotsStatus ? `Status ${healthReport.siteFiles.robotsStatus}` : "Not checked", ok: healthReport?.siteFiles.robotsStatus === 200, action: "Review" },
+              { label: "llms.txt", value: healthReport?.aiSearch.llmsTxtPresent ? `Found · score ${healthReport.aiSearch.llmsTxtScore ?? 0}` : "Not found", ok: Boolean(healthReport?.aiSearch.llmsTxtPresent), action: "Generate", href: generateUrl("domain_llms_txt", "Generate domain llms.txt for AI citation readiness") },
+              { label: "Sitemap", value: `${formatNumber(healthReport?.siteFiles.sitemapUrls)} URLs`, ok: (healthReport?.siteFiles.sitemapUrls ?? 0) > 0, action: "Review", href: crawlUrl },
+              { label: "Robots", value: healthReport?.siteFiles.robotsStatus ? `Status ${healthReport.siteFiles.robotsStatus}` : "Not checked", ok: healthReport?.siteFiles.robotsStatus === 200, action: "Review", href: crawlUrl },
             ]}
           />
           <CitationPanel
             title="Answer & Schema Coverage"
             subtitle="Structured data and answer blocks that improve citation eligibility."
             rows={[
-              { label: "WebSite schema", value: `${schemaTypeCount(healthReport, "WebSite")} detected`, ok: Boolean(healthReport?.schema.hasWebsite), action: "Generate" },
-              { label: "FAQPage schema", value: `${schemaTypeCount(healthReport, "FAQPage")} detected`, ok: Boolean(healthReport?.faq.hasFAQSchema), action: "Generate" },
-              { label: "BreadcrumbList schema", value: `${schemaTypeCount(healthReport, "BreadcrumbList")} detected`, ok: Boolean(healthReport?.breadcrumb.hasBreadcrumbSchema), action: "Generate" },
-              { label: "Invalid schema", value: `${formatNumber(healthReport?.schema.invalid)} issues`, ok: (healthReport?.schema.invalid ?? 0) === 0, action: "Fix" },
+              { label: "WebSite schema", value: `${schemaTypeCount(healthReport, "WebSite")} detected`, ok: Boolean(healthReport?.schema.hasWebsite), action: "Generate", href: generateUrl("domain_schema", "Generate WebSite schema for AI citation readiness") },
+              { label: "FAQPage schema", value: `${schemaTypeCount(healthReport, "FAQPage")} detected`, ok: Boolean(healthReport?.faq.hasFAQSchema), action: "Generate", href: generateUrl("page_schema", "Generate FAQPage schema and answer-first FAQ content") },
+              { label: "BreadcrumbList schema", value: `${schemaTypeCount(healthReport, "BreadcrumbList")} detected`, ok: Boolean(healthReport?.breadcrumb.hasBreadcrumbSchema), action: "Generate", href: generateUrl("page_schema", "Generate BreadcrumbList schema") },
+              { label: "Invalid schema", value: `${formatNumber(healthReport?.schema.invalid)} issues`, ok: (healthReport?.schema.invalid ?? 0) === 0, action: "Fix", href: crawlUrl },
             ]}
           />
           <CitationPanel
             title="Citation Task Focus"
             subtitle="What SEnuke AI should work on next from the current project state."
-            rows={smartCitationNextRows(data, healthReport, localProfile)}
+            rows={smartCitationNextRows(data, healthReport, localProfile, { ready: napReady, profileUrl })}
           />
         </div>
-        <div className="space-y-5">
-          <CitationStatusPanel
-            score={healthReport?.aiSearch.score ?? latestCrawl?.siteScore ?? 0}
-            rows={[
-              { label: "Website", value: website?.domain ?? project?.websiteUrl ?? "Not connected", ok: Boolean(website?.domain || project?.websiteUrl) },
-              { label: "Strategy context", value: strategyStatus, ok: latestStrategy?.status === "approved" },
-              { label: "Entity schema", value: healthReport?.schema.hasOrganization ? "Found" : "Missing", ok: Boolean(healthReport?.schema.hasOrganization) },
-              { label: "NAP profile", value: localProfile ? "Configured" : "Missing", ok: Boolean(localProfile) },
-              { label: "Open citation tasks", value: formatNumber(openTasks.length), ok: openTasks.length === 0 },
-            ]}
-          />
-          <DataTable
-            title="Citation Tasks"
-            columns={["Task", "Impact", "Current Status", "Priority", "Action"]}
-            rows={citationTableRows(citationTasks, healthReport, localProfile)}
-            footerAction={<span className="text-sm font-semibold text-charcoal-500">Saved tasks appear first. If none exist, this table shows recommended tasks from the latest crawl and profile data.</span>}
-          />
-        </div>
+        <DataTable
+          title="Citation Tasks"
+          columns={["Task", "Impact", "Current Status", "Priority", "Action"]}
+          rows={citationTableRows(data, citationTasks, healthReport, localProfile, napReady, profileUrl)}
+          footerAction={<span className="text-sm font-semibold text-charcoal-500">Saved tasks appear first. If none exist, this table shows recommended tasks from the latest crawl and profile data.</span>}
+        />
       </div>
     </>
-  );
-}
-
-function CitationStatusPanel({ score, rows }: { score: number; rows: { label: string; value: string; ok: boolean }[] }) {
-  const safeScore = Math.max(0, Math.min(100, score));
-  const chart = [{ name: "score", value: safeScore, color: "#0f9f87" }, { name: "rest", value: 100 - safeScore, color: "#e8eef8" }];
-  return (
-    <Card className="p-5">
-      <h2 className="font-bold text-charcoal-950">AI Citation Dashboard</h2>
-      <div className="my-5 flex justify-center">
-        <div className="relative h-36 w-36">
-          <ResponsiveContainer width="100%" height="100%">
-            <PieChart><Pie data={chart} dataKey="value" innerRadius={48} outerRadius={64} startAngle={90} endAngle={-270}>{chart.map((item) => <Cell key={item.name} fill={item.color} />)}</Pie></PieChart>
-          </ResponsiveContainer>
-          <div className="absolute inset-0 grid place-items-center text-center"><div><div className="text-3xl font-bold text-charcoal-950">{safeScore}</div><div className="text-xs text-charcoal-500">Readiness Score</div></div></div>
-        </div>
-      </div>
-      <div className="space-y-3">
-        {rows.map((row) => (
-          <div key={row.label} className="flex items-center justify-between gap-3 rounded-lg border border-slate-100 bg-slate-50/60 px-3 py-2 text-sm">
-            <div className="min-w-0">
-              <div className="font-bold text-charcoal-800">{row.label}</div>
-              <div className="truncate text-xs text-charcoal-500">{row.value}</div>
-            </div>
-            <span className={`shrink-0 rounded-full px-2.5 py-1 text-xs font-bold ${row.ok ? "bg-emerald-50 text-emerald-700" : "bg-amber-50 text-amber-700"}`}>
-              {row.ok ? "Ready" : "Needs work"}
-            </span>
-          </div>
-        ))}
-      </div>
-    </Card>
   );
 }
 
@@ -2891,7 +2904,7 @@ function CitationPanel({
 }: {
   title: string;
   subtitle: string;
-  rows: { label: string; value: string; ok: boolean; action: string }[];
+  rows: { label: string; value: string; ok: boolean; action: string; href?: string }[];
 }) {
   return (
     <Card className="overflow-hidden">
@@ -2910,7 +2923,7 @@ function CitationPanel({
               <span className={`rounded-full px-2 py-1 text-xs font-bold ${row.ok ? "bg-emerald-50 text-emerald-700" : "bg-amber-50 text-amber-700"}`}>
                 {row.ok ? "Found" : "Needs work"}
               </span>
-              <span className="text-xs font-bold text-brand-600">{row.action}</span>
+              {row.href ? <Link to={row.href} className="rounded-md border border-brand-200 bg-white px-2.5 py-1.5 text-xs font-bold text-brand-700 transition hover:bg-brand-50">{row.action}</Link> : <span className="text-xs font-bold text-charcoal-400">{row.action}</span>}
             </div>
           </div>
         ))}
@@ -2919,133 +2932,66 @@ function CitationPanel({
   );
 }
 
+type SavedArchitecturePage = { id: string; pageKey: string; parentPageKey?: string | null; title: string; suggestedUrl: string; pageType: string; navigationGroup: string; category?: string | null; searchIntent: string; purpose: string; recommendationWhy: string; targetKeywordsJson: unknown; status: string; sortOrder: number; executionTaskId?: string | null };
+type SavedArchitectureLink = { id: string; sourcePageKey: string; targetPageKey: string; anchorText: string; linkType: string; rationale: string; executionTaskId?: string | null };
+type SavedArchitecture = { id: string; version: number; status: string; title: string; executiveSummary: string; rationale: string; createdAt: string; approvedAt?: string | null; rejectionReason?: string | null; pages: SavedArchitecturePage[]; links: SavedArchitectureLink[]; decisions: { id: string; decision: string; comments?: string | null; createdAt: string }[] };
+
 function ArchitectScreen({ data }: { data: ModuleData }) {
   const project = data.projects[0];
   const website = data.websites[0];
   const latestCrawl = website?.crawlJobs?.find((crawl) => crawl.status === "completed");
-  const latestStrategy = (project?.strategyPlans?.[0] ?? null) as {
-    status?: string;
-    strategySummary?: string | null;
-    seoStrategy?: string | null;
-    contentStrategy?: string | null;
-    publishingStrategy?: string | null;
-    aiCitationStrategy?: string | null;
-  } | null;
-  const strategyApproved = latestStrategy?.status === "approved";
-  const architectureTasks = data.tasks.filter((task) => /site|architect|sitemap|page|homepage|internal link|publish/i.test(`${task.moduleName} ${task.title} ${task.description}`));
-  const pages = architecturePageBlueprint(data);
-  const selectedPage = pages[0];
-  const readinessSignals = [
-    Boolean(project?.businessProfile || project?.intakeAnswers?.length),
-    strategyApproved,
-    Boolean(website || project?.websiteUrl),
-    Boolean(latestCrawl),
-    data.keywordRuns.length > 0,
-  ];
-  const readinessScore = Math.round((readinessSignals.filter(Boolean).length / readinessSignals.length) * 100);
-  if (!project && !website && !data.tasks.length) {
-    return <EmptyModuleState title="No site architecture yet" detail="Create a project before generating site structure." />;
-  }
-  return (
-    <>
-      <ContextBar
-        items={[
-          `Project: ${project?.businessName || project?.name || "Not selected"}`,
-          `Website: ${website?.domain || project?.websiteUrl || "Not connected"}`,
-          `Strategy: ${strategyApproved ? "Approved" : latestStrategy ? "Draft" : "Missing"}`,
-          `Latest crawl: ${latestCrawl ? `${formatNumber(latestCrawl.pagesCrawled)} pages` : "Not run"}`,
-          `Keywords: ${formatNumber(data.keywordRuns.length)} runs`,
-        ]}
-      />
+  const strategy = project?.strategyPlans?.[0];
+  const [architectures, setArchitectures] = useState<SavedArchitecture[]>([]);
+  const [capabilities, setCapabilities] = useState({ canGenerate: false, canApprove: false, readOnly: true, clientViewer: false });
+  const [selectedPageKey, setSelectedPageKey] = useState("");
+  const [view, setView] = useState<"pages" | "navigation" | "links" | "versions">("pages");
+  const [busy, setBusy] = useState("");
+  const [message, setMessage] = useState("");
+  const current = architectures[0] ?? null;
+  const selectedPage = current?.pages.find((page) => page.pageKey === selectedPageKey) ?? current?.pages[0] ?? null;
 
-      <MetricGrid
-        items={[
-          ["Architecture Readiness", `${readinessScore} /100`, strategyApproved ? "strategy approved" : "strategy needed"],
-          ["Recommended Pages", formatNumber(pages.length), pages.length ? "from project context" : "no blueprint yet"],
-          ["Crawled Pages", formatNumber(latestCrawl?.pagesCrawled), latestCrawl ? "latest scan" : "run site analysis"],
-          ["Keyword Inputs", formatNumber(data.keywordRuns.length), data.keywordRuns.length ? "available for mapping" : "add keywords"],
-          ["Architecture Tasks", formatNumber(architectureTasks.length), "saved task records"],
-          ["Publishing Target", project?.preferredPublishingMethod || "Not selected", "from intake"],
-        ]}
-      />
+  const load = async () => {
+    if (!project) return;
+    const result = await api.get<{ versions: SavedArchitecture[]; capabilities: typeof capabilities }>(`/api/projects/${project.id}/site-architecture`);
+    setArchitectures(result.versions); setCapabilities(result.capabilities);
+    if (!selectedPageKey && result.versions[0]?.pages[0]) setSelectedPageKey(result.versions[0].pages[0].pageKey);
+  };
+  useEffect(() => { setArchitectures([]); setSelectedPageKey(""); setMessage(""); if (project?.id) void load().catch((error) => setMessage(error instanceof Error ? error.message : "Architecture could not be loaded.")); }, [project?.id]);
 
-      <div className="grid gap-5 xl:grid-cols-[360px_minmax(0,1fr)_340px]">
-        <Card className="overflow-hidden">
-          <div className="border-b border-slate-100 p-4">
-            <h2 className="font-bold text-charcoal-950">Site Structure Blueprint</h2>
-            <p className="mt-1 text-sm text-charcoal-500">Recommended pages from intake, strategy, crawl, and keyword signals.</p>
-          </div>
-          <div className="divide-y divide-slate-100">
-            {pages.length ? pages.map((page, index) => (
-              <div key={`${page.title}-${index}`} className={`p-4 ${index === 0 ? "bg-brand-50/60" : "bg-white"}`}>
-                <div className="flex items-start justify-between gap-3">
-                  <div>
-                    <div className="text-sm font-bold text-charcoal-950">{page.title}</div>
-                    <div className="mt-1 text-xs leading-5 text-charcoal-500">{page.purpose}</div>
-                  </div>
-                  <span className={`shrink-0 rounded-full px-2 py-1 text-xs font-bold ${page.status === "Existing" ? "bg-emerald-50 text-emerald-700" : page.status === "Ready" ? "bg-blue-50 text-brand-700" : "bg-slate-100 text-charcoal-600"}`}>
-                    {page.status}
-                  </span>
-                </div>
-                <div className="mt-2 text-xs font-semibold text-charcoal-400">{page.source}</div>
-              </div>
-            )) : <EmptyModuleState title="No blueprint yet" detail="Complete intake and approve a strategy to generate page recommendations." compact />}
-          </div>
-        </Card>
+  const action = async (name: string, request: () => Promise<unknown>, success: string) => {
+    setBusy(name); setMessage("");
+    try { await request(); await load(); setMessage(success); }
+    catch (error) { setMessage(error instanceof Error ? error.message : "Architecture action failed."); }
+    finally { setBusy(""); }
+  };
+  const generate = () => action("generate", () => api.post(`/api/projects/${project!.id}/site-architecture/generate`, {}), "A new architecture version is ready for review.");
+  const approve = () => action("approve", () => api.post(`/api/projects/${project!.id}/site-architecture/${current!.id}/approve`, { comments: "Approved from Site Architect" }), "Architecture approved and added to the Execution Plan.");
+  const reject = () => { const comments = window.prompt("What should change in this architecture?"); if (comments?.trim()) void action("reject", () => api.post(`/api/projects/${project!.id}/site-architecture/${current!.id}/reject`, { comments }), "Architecture rejected with revision guidance."); };
 
-        <div className="space-y-5">
-          <Card className="p-5">
-            <div className="flex items-start justify-between gap-4 border-b border-slate-100 pb-4">
-              <div>
-                <div className="text-xs font-bold uppercase tracking-wide text-brand-600">Selected Page Blueprint</div>
-                <h2 className="mt-1 text-xl font-bold text-charcoal-950">{selectedPage?.title || "Page blueprint pending"}</h2>
-                <p className="mt-1 text-sm leading-6 text-charcoal-500">{selectedPage?.purpose || "SEnuke AI needs approved strategy and project context before it can recommend page details."}</p>
-              </div>
-              <span className="rounded-full bg-brand-50 px-3 py-1 text-xs font-bold text-brand-700">{selectedPage?.status || "Pending"}</span>
-            </div>
-            <div className="mt-5 grid gap-4 md:grid-cols-2">
-              <ArchitectureDetail title="Suggested URL" value={selectedPage?.slug || "/"} />
-              <ArchitectureDetail title="Primary CTA" value={architecturePrimaryCta(project, latestStrategy)} />
-              <ArchitectureDetail title="SEO Focus" value={architectureSeoFocus(project, data)} />
-              <ArchitectureDetail title="Internal Links" value={latestCrawl ? "Use crawl data to connect service, blog, and conversion pages." : "Run site analysis to calculate internal link opportunities."} />
-            </div>
-          </Card>
+  if (!project) return <EmptyModuleState title="No site architecture yet" detail="Create or select a project before generating site structure." />;
+  const approvedKeywords = project.keywordGroups?.filter((group) => group.status === "approved").length ?? 0;
+  const ready = Boolean(project.businessProfile && project.primaryGoal && approvedKeywords && strategy?.status === "approved" && (!(project.websiteStatus === "existing_website" || project.projectType === "existing_website") || latestCrawl));
+  const missing = [!project.businessProfile && "Project Intake", !project.primaryGoal && "Primary Goal", !approvedKeywords && "approved Keyword Intelligence", strategy?.status !== "approved" && "approved Strategy", (project.websiteStatus === "existing_website" || project.projectType === "existing_website") && !latestCrawl && "completed Site Analysis"].filter(Boolean);
+  return <div className="space-y-5">
+    <ContextBar items={[`Project: ${project.businessName || project.name}`, `Website: ${website?.domain || project.websiteUrl || "New website"}`, `Strategy: ${strategy?.status || "missing"}`, `Approved keyword groups: ${approvedKeywords}`, `Site Analysis: ${latestCrawl ? `${formatNumber(latestCrawl.pagesCrawled)} pages` : project.websiteStatus === "existing_website" ? "required" : "not required"}`]} />
+    {message && <div className={`rounded-lg border px-4 py-3 text-sm font-semibold ${/failed|could not|complete|approve/i.test(message) && !/approved|completed/i.test(message) ? "border-rose-200 bg-rose-50 text-rose-800" : "border-brand-100 bg-brand-50 text-brand-700"}`}>{message}</div>}
+    {!current ? <div className="grid min-h-[420px] place-items-center rounded-xl border border-slate-200 bg-white p-8 text-center shadow-sm"><div className="max-w-2xl"><div className="mx-auto grid h-16 w-16 place-items-center rounded-2xl bg-gradient-to-br from-brand-100 to-emerald-100 text-3xl">⌘</div><div className="mt-5 text-xs font-black uppercase tracking-[0.16em] text-brand-700">DEV-011B · Site Architecture</div><h2 className="mt-2 text-2xl font-black text-charcoal-950">Plan the website before structural work begins</h2><p className="mx-auto mt-3 max-w-xl text-sm leading-6 text-charcoal-500">Generate pages, URLs, navigation, pillar/supporting relationships, categories, search intent, and internal links from approved project evidence.</p>{missing.length > 0 && <div className="mx-auto mt-5 max-w-lg rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">Complete first: {missing.join(", ")}.</div>}{capabilities.canGenerate && <button type="button" onClick={() => void generate()} disabled={!ready || busy === "generate"} className="mt-6 rounded-lg bg-gradient-to-r from-brand-600 to-emerald-500 px-6 py-3 text-sm font-black text-white shadow-sm disabled:cursor-not-allowed disabled:from-slate-300 disabled:to-slate-300">{busy === "generate" ? "Building architecture…" : "Generate Site Architecture"}</button>}</div></div> : <>
+      <Card className="overflow-hidden p-0"><div className="flex flex-col gap-4 border-b border-brand-100 bg-gradient-to-r from-brand-50 via-white to-emerald-50 px-5 py-4 lg:flex-row lg:items-center lg:justify-between"><div><div className="flex flex-wrap items-center gap-2"><span className="text-xs font-black uppercase tracking-wide text-brand-700">Architecture v{current.version}</span><span className={`rounded-full px-2.5 py-1 text-[10px] font-black uppercase ${current.status === "approved" ? "bg-emerald-100 text-emerald-700" : current.status === "rejected" ? "bg-rose-100 text-rose-700" : "bg-amber-100 text-amber-700"}`}>{current.status}</span></div><h2 className="mt-2 text-xl font-black text-charcoal-950">{current.title}</h2><p className="mt-1 max-w-4xl text-sm leading-6 text-charcoal-600">{current.executiveSummary}</p></div><div className="flex flex-wrap gap-2">{capabilities.canGenerate && <button type="button" onClick={() => void generate()} disabled={busy === "generate"} className="rounded-lg border border-brand-200 bg-white px-4 py-2 text-xs font-black text-brand-700">{busy === "generate" ? "Generating…" : "Generate New Version"}</button>}{current.status === "draft" && capabilities.canApprove && <><button type="button" onClick={reject} disabled={Boolean(busy)} className="rounded-lg border border-rose-200 bg-white px-4 py-2 text-xs font-black text-rose-700">Reject</button><button type="button" onClick={() => void approve()} disabled={Boolean(busy)} className="rounded-lg bg-brand-600 px-4 py-2 text-xs font-black text-white">{busy === "approve" ? "Approving…" : "Approve Structure"}</button></>}</div></div><div className="grid grid-cols-2 divide-x divide-slate-100 sm:grid-cols-4"><ArchitectureMetric label="Pages" value={current.pages.length} /><ArchitectureMetric label="Internal links" value={current.links.length} /><ArchitectureMetric label="Main navigation" value={current.pages.filter((page) => page.navigationGroup === "main").length} /><ArchitectureMetric label="Pillar pages" value={current.pages.filter((page) => page.pageType === "pillar").length} /></div></Card>
+      <div className="flex gap-2 overflow-x-auto rounded-xl border border-slate-200 bg-white p-2">{([['pages','Pages & URLs'],['navigation','Navigation'],['links','Internal Linking'],['versions','Version History']] as const).map(([key, labelText]) => <button key={key} type="button" onClick={() => setView(key)} className={`shrink-0 rounded-lg px-4 py-2 text-sm font-black ${view === key ? "bg-brand-600 text-white" : "text-slate-600 hover:bg-slate-50"}`}>{labelText}</button>)}</div>
+      {view === "pages" && <div className="grid gap-5 xl:grid-cols-[360px_minmax(0,1fr)]"><Card className="overflow-hidden p-0"><div className="border-b px-4 py-3"><h3 className="font-black text-charcoal-950">Page hierarchy</h3><p className="mt-1 text-xs text-charcoal-500">Select a page to review why it belongs.</p></div><div className="max-h-[650px] divide-y divide-slate-100 overflow-y-auto">{current.pages.map((page) => <button key={page.id} type="button" onClick={() => setSelectedPageKey(page.pageKey)} className={`block w-full p-4 text-left ${selectedPage?.id === page.id ? "bg-brand-50" : "bg-white hover:bg-slate-50"}`}><div className="flex items-start justify-between gap-3"><div><div className="text-sm font-black text-charcoal-900">{page.title}</div><div className="mt-1 text-xs font-semibold text-brand-700">{page.suggestedUrl}</div></div><span className="rounded-full bg-slate-100 px-2 py-1 text-[9px] font-black uppercase text-slate-600">{page.pageType}</span></div>{page.parentPageKey && <div className="mt-2 text-[10px] text-charcoal-400">Parent: {page.parentPageKey.replaceAll("_", " ")}</div>}</button>)}</div></Card>{selectedPage && <Card className="p-5"><div className="flex flex-wrap items-start justify-between gap-3"><div><div className="text-xs font-black uppercase tracking-wide text-brand-700">{selectedPage.pageType} · {selectedPage.searchIntent} intent</div><h3 className="mt-1 text-2xl font-black text-charcoal-950">{selectedPage.title}</h3><div className="mt-1 font-mono text-sm font-bold text-brand-700">{selectedPage.suggestedUrl}</div></div><span className={`rounded-full px-3 py-1 text-xs font-black ${selectedPage.status === "existing" ? "bg-emerald-50 text-emerald-700" : "bg-blue-50 text-blue-700"}`}>{selectedPage.status}</span></div><div className="mt-5 grid gap-4 md:grid-cols-2"><ArchitectureDetail title="Page purpose" value={selectedPage.purpose} /><ArchitectureDetail title="Why recommended" value={selectedPage.recommendationWhy} /><ArchitectureDetail title="Navigation group" value={label(selectedPage.navigationGroup)} /><ArchitectureDetail title="Category" value={selectedPage.category || "Core website"} /></div><div className="mt-5"><div className="text-xs font-black uppercase tracking-wide text-charcoal-400">Target keywords</div><div className="mt-2 flex flex-wrap gap-2">{(Array.isArray(selectedPage.targetKeywordsJson) ? selectedPage.targetKeywordsJson.map(String) : []).map((keyword) => <span key={keyword} className="rounded-full border border-brand-100 bg-brand-50 px-3 py-1.5 text-xs font-bold text-brand-700">{keyword}</span>)}{!Array.isArray(selectedPage.targetKeywordsJson) || !selectedPage.targetKeywordsJson.length ? <span className="text-sm text-charcoal-400">Intent and navigation page—no dedicated keyword target required.</span> : null}</div></div><div className="mt-5"><div className="text-xs font-black uppercase tracking-wide text-charcoal-400">Planned links</div><div className="mt-2 space-y-2">{current.links.filter((link) => link.sourcePageKey === selectedPage.pageKey || link.targetPageKey === selectedPage.pageKey).map((link) => <div key={link.id} className="rounded-lg border border-slate-100 bg-slate-50 p-3 text-sm"><b>{link.sourcePageKey.replaceAll("_", " ")} → {link.targetPageKey.replaceAll("_", " ")}</b><span className="ml-2 text-charcoal-500">“{link.anchorText}”</span></div>)}</div></div></Card>}</div>}
+      {view === "navigation" && <ArchitectureNavigation pages={current.pages} />}
+      {view === "links" && <Card className="overflow-hidden p-0"><div className="border-b px-5 py-4"><h3 className="font-black text-charcoal-950">Internal linking plan</h3><p className="mt-1 text-sm text-charcoal-500">Every link has a source, target, suggested anchor, type, and reason.</p></div><div className="divide-y divide-slate-100">{current.links.map((link) => <div key={link.id} className="grid gap-3 p-4 md:grid-cols-[minmax(0,1fr)_180px_minmax(0,1fr)]"><div><div className="text-xs font-black uppercase text-slate-400">Route</div><div className="mt-1 text-sm font-black text-slate-900">{link.sourcePageKey.replaceAll("_", " ")} <span className="text-brand-600">→</span> {link.targetPageKey.replaceAll("_", " ")}</div></div><div><div className="text-xs font-black uppercase text-slate-400">Anchor</div><div className="mt-1 text-sm font-semibold">{link.anchorText}</div></div><div><div className="text-xs font-black uppercase text-slate-400">Why</div><div className="mt-1 text-sm leading-6 text-slate-600">{link.rationale}</div></div></div>)}</div></Card>}
+      {view === "versions" && <Card className="overflow-hidden p-0"><div className="border-b px-5 py-4"><h3 className="font-black text-charcoal-950">Architecture versions</h3><p className="mt-1 text-sm text-charcoal-500">Previous versions remain available for comparison and audit history.</p></div><div className="divide-y divide-slate-100">{architectures.map((architecture) => <div key={architecture.id} className="flex flex-col gap-3 p-4 sm:flex-row sm:items-center sm:justify-between"><div><div className="font-black text-charcoal-900">Version {architecture.version} · {architecture.title}</div><div className="mt-1 text-xs text-charcoal-500">{new Date(architecture.createdAt).toLocaleString()} · {architecture.pages.length} pages · {architecture.links.length} links</div>{architecture.rejectionReason && <div className="mt-1 text-xs font-semibold text-rose-700">Changes requested: {architecture.rejectionReason}</div>}</div><span className={`self-start rounded-full px-3 py-1 text-xs font-black uppercase ${architecture.status === "approved" ? "bg-emerald-50 text-emerald-700" : architecture.status === "rejected" ? "bg-rose-50 text-rose-700" : "bg-amber-50 text-amber-700"}`}>{architecture.status}</span></div>)}</div></Card>}
+      <div className="rounded-lg border border-amber-100 bg-amber-50 px-4 py-3 text-xs leading-5 text-amber-900"><b>No structural changes are made from a draft.</b> Approval creates or updates Execution Plan tasks for recommended pages and internal links; publishing and live-site changes remain separately protected.</div>
+    </>}
+  </div>;
+}
 
-          <Card className="p-5">
-            <div className="mb-4 flex items-center gap-2 border-b border-slate-100 pb-3">
-              <IconBadge icon="▤" />
-              <h2 className="font-bold text-brand-700">Website & Funnel Sections</h2>
-            </div>
-            <div className="grid gap-5 lg:grid-cols-4">
-              <PlanList title="Core Pages" items={pages.slice(0, 5).map((page) => page.title)} />
-              <PlanList title="SEO Inputs" items={architectureSeoInputs(project, data)} />
-              <PlanList title="Conversion Flow" items={architectureConversionFlow(project, latestStrategy)} />
-              <PlanList title="Publishing Checks" items={architecturePublishingChecks(project, latestCrawl)} />
-            </div>
-          </Card>
-        </div>
+function ArchitectureMetric({ label: labelText, value }: { label: string; value: number }) { return <div className="px-4 py-3 text-center"><div className="text-2xl font-black text-charcoal-950">{value}</div><div className="text-[10px] font-black uppercase tracking-wide text-charcoal-400">{labelText}</div></div>; }
 
-        <div className="space-y-5">
-          <ArchitectureReadinessPanel
-            score={readinessScore}
-            rows={[
-              { label: "Project profile", ok: Boolean(project?.businessProfile || project?.intakeAnswers?.length), value: project?.businessProfile ? "Complete" : "Needs intake" },
-              { label: "Approved strategy", ok: strategyApproved, value: strategyApproved ? "Approved" : latestStrategy ? "Draft" : "Missing" },
-              { label: "Connected website", ok: Boolean(website || project?.websiteUrl), value: website?.domain || project?.websiteUrl || "Missing" },
-              { label: "Site crawl", ok: Boolean(latestCrawl), value: latestCrawl ? `${formatNumber(latestCrawl.pagesCrawled)} pages` : "Not run" },
-              { label: "Keyword data", ok: data.keywordRuns.length > 0, value: `${formatNumber(data.keywordRuns.length)} runs` },
-            ]}
-          />
-          <DataTable
-            title="Next Architecture Actions"
-            columns={["Task", "Impact", "Current Status", "Priority", "Action"]}
-            rows={architectureActionRows(project, latestStrategy, latestCrawl, data, architectureTasks)}
-            footerAction={<span className="text-sm font-semibold text-charcoal-500">Actions are derived from project profile, strategy, crawl, keyword runs, and saved architecture tasks.</span>}
-          />
-        </div>
-      </div>
-    </>
-  );
+function ArchitectureNavigation({ pages }: { pages: SavedArchitecturePage[] }) {
+  const groups = [...new Set(pages.map((page) => page.navigationGroup))];
+  return <div className="grid gap-4 lg:grid-cols-2 xl:grid-cols-3">{groups.map((group) => <Card key={group} className="p-5"><div className="text-xs font-black uppercase tracking-wide text-brand-700">{label(group)} navigation</div><div className="mt-4 space-y-2">{pages.filter((page) => page.navigationGroup === group).map((page) => <div key={page.id} className="rounded-lg border border-slate-100 bg-slate-50 p-3"><div className="text-sm font-black text-charcoal-900">{page.title}</div><div className="mt-1 text-xs font-semibold text-brand-700">{page.suggestedUrl}</div>{page.parentPageKey && <div className="mt-1 text-[10px] text-charcoal-400">Under {page.parentPageKey.replaceAll("_", " ")}</div>}</div>)}</div></Card>)}</div>;
 }
 
 function ArchitectureDetail({ title, value }: { title: string; value: string }) {
@@ -4441,29 +4387,35 @@ function schemaTypeCount(report: HealthReport | null, type: string, includes = f
   return Object.entries(report.schema.types).reduce((sum, [schemaType, count]) => schemaType.toLowerCase().includes(type.toLowerCase()) ? sum + count : sum, 0);
 }
 
-function smartCitationNextRows(data: ModuleData, report: HealthReport | null, localProfile: NonNullable<Website["localBusinessProfiles"]>[number] | null) {
-  const rows: { label: string; value: string; ok: boolean; action: string }[] = [];
-  if (!localProfile) {
-    rows.push({ label: "Set up NAP profile", value: "Business name, phone, and address are needed for entity confidence.", ok: false, action: "Create profile" });
+function smartCitationNextRows(data: ModuleData, report: HealthReport | null, localProfile: NonNullable<Website["localBusinessProfiles"]>[number] | null, napContext?: { ready: boolean; profileUrl: string }) {
+  const project = data.projects[0];
+  const website = data.websites[0];
+  const latestCrawl = website?.crawlJobs?.find((crawl) => crawl.status === "completed");
+  const profileUrl = napContext?.profileUrl ?? (project && website ? `/local-seo?projectId=${encodeURIComponent(project.id)}&project=${encodeURIComponent(website.id)}&editProfile=1` : project ? `/guided-projects/${encodeURIComponent(project.id)}/intake` : "/projects");
+  const generatorUrl = (type: string, topic: string) => `/ai-content?${new URLSearchParams({ ...(project?.id ? { projectId: project.id } : {}), type, topic, open: "1", ...(website?.rootUrl ? { targetUrl: website.rootUrl } : {}) }).toString()}`;
+  const crawlUrl = latestCrawl?.id ? `/crawls/${encodeURIComponent(latestCrawl.id)}` : project ? `/site-analysis?projectId=${encodeURIComponent(project.id)}` : "/site-analysis";
+  const rows: { label: string; value: string; ok: boolean; action: string; href?: string }[] = [];
+  if (!(napContext?.ready ?? Boolean(localProfile))) {
+    rows.push({ label: "Set up NAP profile", value: "Business name, phone, and address are needed for entity confidence.", ok: false, action: "Create profile", href: profileUrl });
   }
   if (!report?.schema.hasOrganization) {
-    rows.push({ label: "Add Organization schema", value: "Entity schema is the highest-impact AI citation foundation.", ok: false, action: "Generate" });
+    rows.push({ label: "Add Organization schema", value: "Entity schema is the highest-impact AI citation foundation.", ok: false, action: "Generate", href: generatorUrl("domain_schema", "Generate Organization schema for AI citation readiness") });
   }
   if (!report?.aiSearch.llmsTxtPresent) {
-    rows.push({ label: "Create llms.txt", value: "Guide AI crawlers to priority pages and brand facts.", ok: false, action: "Generate" });
+    rows.push({ label: "Create llms.txt", value: "Guide AI crawlers to priority pages and brand facts.", ok: false, action: "Generate", href: generatorUrl("domain_llms_txt", "Generate domain llms.txt for AI citation readiness") });
   }
   if (!report?.faq.hasFAQSchema) {
-    rows.push({ label: "Add FAQ schema", value: "Answer-first FAQ sections improve extractability.", ok: false, action: "Generate" });
+    rows.push({ label: "Add FAQ schema", value: "Answer-first FAQ sections improve extractability.", ok: false, action: "Generate", href: generatorUrl("page_schema", "Generate FAQPage schema and answer-first FAQ content") });
   }
   if ((report?.schema.invalid ?? 0) > 0) {
-    rows.push({ label: "Fix invalid schema", value: `${report?.schema.invalid ?? 0} structured-data issue(s) need cleanup.`, ok: false, action: "Fix" });
+    rows.push({ label: "Fix invalid schema", value: `${report?.schema.invalid ?? 0} structured-data issue(s) need cleanup.`, ok: false, action: "Fix", href: crawlUrl });
   }
   const openCitationTasks = data.tasks.filter((task) => {
     const text = `${task.moduleName} ${task.title} ${task.description}`.toLowerCase();
     return !["completed", "skipped"].includes(task.status) && /citation|schema|structured data|faqpage/.test(text);
   }).length;
   if (openCitationTasks > 0) {
-    rows.push({ label: "Review open citation tasks", value: `${openCitationTasks} task(s) are waiting for action.`, ok: false, action: "Review" });
+    rows.push({ label: "Review open citation tasks", value: `${openCitationTasks} task(s) are waiting for action.`, ok: false, action: "Review", href: project ? `/guided-projects/${encodeURIComponent(project.id)}?tab=execution#execution-tasks` : "/projects" });
   }
   if (!rows.length) {
     rows.push({ label: "Citation foundation", value: "Core AI citation signals are present from the latest crawl.", ok: true, action: "Monitor" });
@@ -4471,38 +4423,46 @@ function smartCitationNextRows(data: ModuleData, report: HealthReport | null, lo
   return rows.slice(0, 5);
 }
 
-function citationTableRows(tasks: GuidedExecutionTask[], report: HealthReport | null, localProfile: NonNullable<Website["localBusinessProfiles"]>[number] | null) {
-  if (tasks.length) return taskRows(tasks);
-  const rows: string[][] = [];
-  if (!localProfile) {
-    rows.push(["Set up NAP profile", "High", "Recommended from profile", "High", "Create profile"]);
+function citationTableRows(data: ModuleData, tasks: GuidedExecutionTask[], report: HealthReport | null, localProfile: NonNullable<Website["localBusinessProfiles"]>[number] | null, napReady = Boolean(localProfile), inheritedProfileUrl?: string): ReactNode[][] {
+  const project = data.projects[0];
+  const website = data.websites[0];
+  const latestCrawl = website?.crawlJobs?.find((crawl) => crawl.status === "completed");
+  const profileUrl = inheritedProfileUrl ?? (project && website ? `/local-seo?projectId=${encodeURIComponent(project.id)}&project=${encodeURIComponent(website.id)}&editProfile=1` : project ? `/guided-projects/${encodeURIComponent(project.id)}/intake` : "/projects");
+  const siteAnalysisUrl = project ? `/site-analysis?projectId=${encodeURIComponent(project.id)}` : "/site-analysis";
+  const crawlUrl = latestCrawl?.id ? `/crawls/${encodeURIComponent(latestCrawl.id)}` : siteAnalysisUrl;
+  const generatorUrl = (type: string, topic: string) => `/ai-content?${new URLSearchParams({ ...(project?.id ? { projectId: project.id } : {}), type, topic, open: "1", ...(website?.rootUrl ? { targetUrl: website.rootUrl } : {}) }).toString()}`;
+  const action = (labelText: string, href: string) => <Link to={href} className="inline-flex rounded-md border border-brand-200 bg-white px-2.5 py-1.5 text-xs font-bold text-brand-700 hover:bg-brand-50">{labelText}</Link>;
+  if (tasks.length) return tasks.slice(0, 8).map((task) => [task.title, label(task.priority), label(task.status), label(task.priority), action(task.actionButtonLabel || "Open", task.relatedUrl && task.relatedUrl !== "/ai-citations" ? task.relatedUrl : project ? `/guided-projects/${encodeURIComponent(project.id)}?tab=execution&actionTask=${encodeURIComponent(task.id)}#execution-tasks` : "/projects")]);
+  const rows: ReactNode[][] = [];
+  if (!napReady) {
+    rows.push(["Set up NAP profile", "High", "Recommended from profile", "High", action("Create profile", profileUrl)]);
   }
   if (!report) {
-    rows.push(["Run site analysis for AI citation data", "High", "Missing crawl data", "High", "Analyze Site"]);
+    rows.push(["Run site analysis for AI citation data", "High", "Missing crawl data", "High", action("Analyze Site", siteAnalysisUrl)]);
     return rows;
   }
   if (!report.schema.hasOrganization) {
-    rows.push(["Add Organization schema", "High", "Missing from latest scan", "High", "Generate"]);
+    rows.push(["Add Organization schema", "High", "Missing from latest scan", "High", action("Generate", generatorUrl("domain_schema", "Generate Organization schema for AI citation readiness"))]);
   }
   if (!report.aiSearch.llmsTxtPresent) {
-    rows.push(["Create llms.txt", "Medium", "Missing from latest scan", "Medium", "Generate"]);
+    rows.push(["Create llms.txt", "Medium", "Missing from latest scan", "Medium", action("Generate", generatorUrl("domain_llms_txt", "Generate domain llms.txt for AI citation readiness"))]);
   }
   if (!report.faq.hasFAQSchema) {
-    rows.push(["Add FAQPage schema", "Medium", "Missing from latest scan", "Medium", "Generate"]);
+    rows.push(["Add FAQPage schema", "Medium", "Missing from latest scan", "Medium", action("Generate", generatorUrl("page_schema", "Generate FAQPage schema and answer-first FAQ content"))]);
   }
   if (!report.breadcrumb.hasBreadcrumbSchema) {
-    rows.push(["Add BreadcrumbList schema", "Medium", "Missing from latest scan", "Medium", "Generate"]);
+    rows.push(["Add BreadcrumbList schema", "Medium", "Missing from latest scan", "Medium", action("Generate", generatorUrl("page_schema", "Generate BreadcrumbList schema"))]);
   }
   if ((report.schema.invalid ?? 0) > 0) {
-    rows.push(["Fix invalid structured data", "High", `${formatNumber(report.schema.invalid)} issue(s) found`, "High", "Fix"]);
+    rows.push(["Fix invalid structured data", "High", `${formatNumber(report.schema.invalid)} issue(s) found`, "High", action("Fix", crawlUrl)]);
   }
   if ((report.siteFiles.sitemapUrls ?? 0) === 0) {
-    rows.push(["Review sitemap availability", "Medium", "No sitemap URLs found", "Medium", "Review"]);
+    rows.push(["Review sitemap availability", "Medium", "No sitemap URLs found", "Medium", action("Review", crawlUrl)]);
   }
   if (report.siteFiles.robotsStatus !== 200) {
-    rows.push(["Review robots.txt access", "Medium", report.siteFiles.robotsStatus ? `Status ${report.siteFiles.robotsStatus}` : "Not checked", "Medium", "Review"]);
+    rows.push(["Review robots.txt access", "Medium", report.siteFiles.robotsStatus ? `Status ${report.siteFiles.robotsStatus}` : "Not checked", "Medium", action("Review", crawlUrl)]);
   }
-  return rows.length ? rows.slice(0, 8) : [["Monitor AI citation readiness", "Low", "Core scan signals look ready", "Low", "Monitor"]];
+  return rows.length ? rows.slice(0, 8) : [["Monitor AI citation readiness", "Low", "Core scan signals look ready", "Low", action("Review crawl", crawlUrl)]];
 }
 
 function citationReadinessRows(data: ModuleData) {

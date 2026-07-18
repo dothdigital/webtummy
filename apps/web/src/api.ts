@@ -3,10 +3,32 @@ let token: string | null = localStorage.getItem("wt_token");
 let activeClientId: string | null = localStorage.getItem("wt_active_client_id");
 let currentRole: AppUser["role"] | null = localStorage.getItem("wt_role") as AppUser["role"] | null;
 let impersonationLabel: string | null = localStorage.getItem("wt_impersonation_label");
+const LAST_ACTIVITY_KEY = "wt_last_user_activity_at";
+const ACTIVE_RENEWAL_WINDOW_MS = 5 * 60 * 1000;
+let lastUserActivityAt = Number(localStorage.getItem(LAST_ACTIVITY_KEY)) || Date.now();
 export const SESSION_EXPIRED_EVENT = "senuke-ai:session-expired";
 export const ACTIVE_CLIENT_EVENT = "senuke-ai:active-client-changed";
 const WELCOME_USER_KEY = "wt_welcome_user_id";
 const WELCOME_WORKSPACE_PREFIX = "wt_welcome_completed_workspace:";
+
+function markUserActivity() {
+  lastUserActivityAt = Date.now();
+  localStorage.setItem(LAST_ACTIVITY_KEY, String(lastUserActivityAt));
+}
+
+// Loading or returning to the application is itself deliberate activity.
+markUserActivity();
+for (const eventName of ["pointerdown", "keydown", "touchstart"] as const) {
+  window.addEventListener(eventName, markUserActivity, { passive: true });
+}
+window.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") markUserActivity(); });
+
+function captureRenewedSession(res: Response) {
+  const renewed = res.headers.get("X-SEnuke-Session-Token");
+  if (!renewed || Date.now() - lastUserActivityAt > ACTIVE_RENEWAL_WINDOW_MS) return;
+  token = renewed;
+  localStorage.setItem("wt_token", renewed);
+}
 
 async function readJson(res: Response) {
   const text = await res.text();
@@ -114,6 +136,7 @@ export async function login(email: string, password: string): Promise<AppUser> {
   const data = await res.json();
   token = data.token;
   localStorage.setItem("wt_token", token!);
+  markUserActivity();
   const authenticatedUser = data.user as AppUser;
   if (authenticatedUser.role === "super_admin") endImpersonation();
   if (authenticatedUser.firstLogin && authenticatedUser.workspace?.primaryOwner) localStorage.setItem(WELCOME_USER_KEY, authenticatedUser.id);
@@ -208,6 +231,7 @@ export function logout() {
   localStorage.removeItem("wt_token");
   localStorage.removeItem("wt_active_client_id");
   localStorage.removeItem("wt_impersonation_label");
+  localStorage.removeItem(LAST_ACTIVITY_KEY);
   impersonationLabel = null;
   clearRememberedUser();
 }
@@ -222,9 +246,13 @@ function expireSession() {
 export async function fetchMe(): Promise<AppUser | null> {
   if (!token) return null;
   const res = await fetch("/api/auth/me", { headers: authHeaders() });
+  captureRenewedSession(res);
   if (!res.ok) {
-    expireSession();
-    return null;
+    if (res.status === 401) {
+      expireSession();
+      return null;
+    }
+    throw new Error("Session validation is temporarily unavailable.");
   }
   const user = (await res.json()).user as AppUser;
   rememberUser(user);
@@ -243,6 +271,7 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
     ...init,
     headers: { "Content-Type": "application/json", ...authHeaders(), ...(init.headers ?? {}) },
   });
+  captureRenewedSession(res);
   if (!res.ok) {
     const data = await readJson(res).catch(() => ({}));
     if (res.status === 401) expireSession();
@@ -256,6 +285,7 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
 
 async function download(path: string) {
   const res = await fetch(path, { headers: authHeaders() });
+  captureRenewedSession(res);
   if (!res.ok) {
     const data = await readJson(res).catch(() => ({}));
     if (res.status === 401) expireSession();
@@ -270,7 +300,7 @@ async function download(path: string) {
 
 export const api = {
   get: <T>(p: string) => request<T>(p),
-  post: <T>(p: string, body: unknown) => request<T>(p, { method: "POST", body: JSON.stringify(body) }),
+  post: <T>(p: string, body: unknown, init: RequestInit = {}) => request<T>(p, { ...init, method: "POST", body: JSON.stringify(body) }),
   put: <T>(p: string, body: unknown) => request<T>(p, { method: "PUT", body: JSON.stringify(body) }),
   patch: <T>(p: string, body: unknown) => request<T>(p, { method: "PATCH", body: JSON.stringify(body) }),
   delete: <T>(p: string, body?: unknown) => request<T>(p, { method: "DELETE", ...(body === undefined ? {} : { body: JSON.stringify(body) }) }),

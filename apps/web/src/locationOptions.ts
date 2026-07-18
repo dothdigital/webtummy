@@ -17,7 +17,7 @@ export const COUNTRY_OPTIONS = [
   { value: "Myanmar (Burma)", locationCode: 2104, isoCode: "MM", locationType: "Country", label: "🇲🇲 Myanmar (Burma) (MM)", defaultRegion: "", defaultCity: "" },
   { value: "Cambodia", locationCode: 2116, isoCode: "KH", locationType: "Country", label: "🇰🇭 Cambodia (KH)", defaultRegion: "", defaultCity: "" },
   { value: "Cameroon", locationCode: 2120, isoCode: "CM", locationType: "Country", label: "🇨🇲 Cameroon (CM)", defaultRegion: "", defaultCity: "" },
-  { value: "Canada", locationCode: 2124, isoCode: "CA", locationType: "Country", label: "🇨🇦 Canada (CA)", defaultRegion: "Ontario", defaultCity: "Mississauga" },
+  { value: "Canada", locationCode: 2124, isoCode: "CA", locationType: "Country", label: "🇨🇦 Canada (CA)", defaultRegion: "", defaultCity: "" },
   { value: "Sri Lanka", locationCode: 2144, isoCode: "LK", locationType: "Country", label: "🇱🇰 Sri Lanka (LK)", defaultRegion: "", defaultCity: "" },
   { value: "Chile", locationCode: 2152, isoCode: "CL", locationType: "Country", label: "🇨🇱 Chile (CL)", defaultRegion: "", defaultCity: "" },
   { value: "Taiwan", locationCode: 2158, isoCode: "TW", locationType: "Region", label: "🇹🇼 Taiwan (TW)", defaultRegion: "", defaultCity: "" },
@@ -124,5 +124,5 @@ export function buildLocationNames(cities: string, region: string, country: stri
 }
 
 export function defaultLocationParts() {
-  return { country: "Canada", region: "Ontario", city: "Mississauga" };
+  return { country: "", region: "", city: "" };
 }

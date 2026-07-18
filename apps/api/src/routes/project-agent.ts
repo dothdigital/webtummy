@@ -34,6 +34,11 @@ async function activeThread(context: Awaited<ReturnType<typeof workspaceContext>
   });
 }
 
+// Project creation has a resumable conversational intake stored in the same
+// project thread for audit/history. Ask SEnuke is a separate page-guidance
+// channel and must never restore or use intake turns as its chat history.
+const pageAgentMessages = (threadId: string) => ({ threadId, NOT: { pageContext: "project-intake" } });
+
 function agentAccess(context: Awaited<ReturnType<typeof workspaceContext>>) {
   return { canExecute: hasWorkspacePermission(context, "execute_tasks"), canApprove: hasWorkspacePermission(context, "approve") };
 }
@@ -50,16 +55,18 @@ projectAgentRouter.get("/projects/:projectId/agent/thread", async (req, res) => 
   if (!(await canAccessProject(context, req.params.projectId))) return res.status(404).json({ error: "Project not found or unavailable." });
   const thread = await activeThread(context, req.params.projectId);
   const limit = z.coerce.number().int().min(1).max(200).catch(100).parse(req.query.limit);
-  const messages = await prisma.projectAgentMessage.findMany({ where: { threadId: thread.id }, orderBy: { createdAt: "desc" }, take: limit });
-  res.json({ thread: { id: thread.id, title: thread.title, updatedAt: thread.updatedAt }, messages: messages.reverse().map((message) => ({ id: message.id, role: message.role, text: message.content, page: message.pageContext, createdAt: message.createdAt })) });
+  const messages = await prisma.projectAgentMessage.findMany({ where: pageAgentMessages(thread.id), orderBy: { createdAt: "desc" }, take: limit });
+  res.json({ thread: { id: thread.id, title: thread.title, updatedAt: thread.updatedAt }, messages: messages.reverse().map((message) => {
+    const metadata = message.metadata && typeof message.metadata === "object" && !Array.isArray(message.metadata) ? message.metadata as Record<string, unknown> : {};
+    return { id: message.id, role: message.role, text: message.content, page: message.pageContext, createdAt: message.createdAt, plan: metadata.plan ?? null };
+  }) });
 });
 
 projectAgentRouter.delete("/projects/:projectId/agent/thread", async (req, res) => {
   const context = await workspaceContext(req);
   if (!(await canAccessProject(context, req.params.projectId))) return res.status(404).json({ error: "Project not found or unavailable." });
   const thread = await activeThread(context, req.params.projectId);
-  await prisma.projectAgentMessage.deleteMany({ where: { threadId: thread.id } });
-  await prisma.projectAgentThread.update({ where: { id: thread.id }, data: { title: "Project conversation" } });
+  await prisma.projectAgentMessage.deleteMany({ where: pageAgentMessages(thread.id) });
   res.json({ cleared: true, threadId: thread.id });
 });
 
@@ -71,7 +78,7 @@ projectAgentRouter.post("/projects/:projectId/agent/plan", async (req, res) => {
   const access = agentAccess(context);
   const decision = rankNextBestAction(evidence.project.executionTasks, nextBestActionContext(evidence, access));
   const thread = await activeThread(context, req.params.projectId);
-  const savedMessages = await prisma.projectAgentMessage.findMany({ where: { threadId: thread.id }, orderBy: { createdAt: "desc" }, take: 12 });
+  const savedMessages = await prisma.projectAgentMessage.findMany({ where: pageAgentMessages(thread.id), orderBy: { createdAt: "desc" }, take: 12 });
   const conversation = savedMessages.length
     ? savedMessages.reverse().map((message) => ({ role: message.role === "assistant" ? "assistant" as const : "user" as const, text: message.content }))
     : input.conversation;
@@ -79,8 +86,8 @@ projectAgentRouter.post("/projects/:projectId/agent/plan", async (req, res) => {
   const output = await runProjectAgent(evidence, input.page, input.question, conversation, access);
   if (input.question) {
     await prisma.$transaction([
-      prisma.projectAgentMessage.create({ data: { threadId: thread.id, pageContext: input.page, role: "assistant", content: output.answer, metadata: { generatedBy: output.generatedBy, retrievalMode: output.retrieval.mode } } }),
-      prisma.projectAgentThread.update({ where: { id: thread.id }, data: { title: thread.title === "Project conversation" ? input.question.slice(0, 180) : thread.title } }),
+      prisma.projectAgentMessage.create({ data: { threadId: thread.id, pageContext: input.page, role: "assistant", content: output.answer, metadata: { generatedBy: output.generatedBy, retrievalMode: output.retrieval.mode, plan: { readinessChecklist: output.readinessChecklist, nextPlannedActivity: output.nextPlannedActivity, support: output.support, presentation: output.presentation, followUpQuestions: output.followUpQuestions } } } }),
+      prisma.projectAgentThread.update({ where: { id: thread.id }, data: { title: savedMessages.length ? thread.title : input.question.slice(0, 180) } }),
     ]);
   }
   await recordDecision(context, evidence, decision);

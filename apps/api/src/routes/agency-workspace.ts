@@ -41,11 +41,11 @@ const clientFields = {
   internalNotes: z.string().max(20000).optional().nullable(),
   clientVisibleNotes: z.string().max(20000).optional().nullable(),
   defaultSettings: z.record(z.unknown()).default({}),
+  aiIntakeSessionId: z.string().optional().nullable(),
 };
 const createClientSchema = z.object(clientFields).superRefine((data, ctx) => {
   if (!data.contactName?.trim()) ctx.addIssue({ code: "custom", path: ["contactName"], message: "Contact name is required." });
   if (!data.contactEmail) ctx.addIssue({ code: "custom", path: ["contactEmail"], message: "Email address is required." });
-  if (!data.websites.length) ctx.addIssue({ code: "custom", path: ["websites"], message: "Website URL is required." });
   if (!data.businessLocations.length) ctx.addIssue({ code: "custom", path: ["businessLocations"], message: "Business location is required." });
   if (!data.targetMarkets.length) ctx.addIssue({ code: "custom", path: ["targetMarkets"], message: "At least one target market is required." });
   if (typeof data.defaultSettings.industryNiche !== "string" || !data.defaultSettings.industryNiche.trim()) ctx.addIssue({ code: "custom", path: ["defaultSettings", "industryNiche"], message: "Industry or niche is required." });
@@ -540,6 +540,11 @@ agencyWorkspaceRouter.post("/agency/clients", (req, res) => handle(res, async ()
   const normalizedLocations = normalizeRequiredLocations(parsed.businessLocations, parsed.targetMarkets);
   const clientPrimaryGoal = normalizeProjectGoals(String(parsed.defaultSettings.primaryBusinessGoal ?? ""), [], "agency").primaryGoal;
   const data = { ...parsed, ...normalizedLocations, defaultSettings: { ...parsed.defaultSettings, primaryBusinessGoal: clientPrimaryGoal } };
+  const aiSession = data.aiIntakeSessionId ? await prisma.workspaceAiIntakeSession.findFirst({ where: { id: data.aiIntakeSessionId, workspaceId: context.workspace.id, userId: context.membership.userId, contextType: "client", status: "reviewed" } }) : null;
+  if (data.aiIntakeSessionId && !aiSession) throw Object.assign(new Error("Review the AI suggestions again before creating this client."), { statusCode: 400 });
+  const reviewedAi = aiSession?.reviewJson && typeof aiSession.reviewJson === "object" && !Array.isArray(aiSession.reviewJson) ? aiSession.reviewJson as Record<string, { action?: string; value?: unknown }> : {};
+  const acceptedAi = Object.fromEntries(Object.entries(reviewedAi).filter(([, item]) => item.action === "accepted" || item.action === "edited").map(([field, item]) => [field, item.value]));
+  if (aiSession) data.defaultSettings = { ...data.defaultSettings, aiBusinessIntelligence: acceptedAi };
   const normalizedName = normalizeName(data.name);
   const duplicate = await prisma.agencyClient.findUnique({ where: { workspaceId_normalizedName: { workspaceId: context.workspace.id, normalizedName } } });
   if (duplicate) throw Object.assign(new Error("A client with this name already exists."), { statusCode: 409 });
@@ -557,6 +562,7 @@ agencyWorkspaceRouter.post("/agency/clients", (req, res) => handle(res, async ()
       });
     }
     await recordWorkspaceActivity(tx, { context, action: "client.created", entityType: "agency_client", entityId: client.id, agencyClientId: client.id, nextJson: { name: client.name, status: client.status, businessLocations: client.businessLocations, targetMarkets: client.targetMarkets } });
+    if (aiSession) { await tx.workspaceAiIntakeSession.update({ where: { id: aiSession.id }, data: { appliedAgencyClientId: client.id, status: "applied" } }); await recordWorkspaceActivity(tx, { context, action: "ai_intake.applied_to_client", entityType: "agency_client", entityId: client.id, agencyClientId: client.id, nextJson: { sessionId: aiSession.id, acceptedFields: Object.keys(acceptedAi) } }); }
     await createWorkspaceNotification(tx, { context, userId: context.membership.userId, type: "client_created", title: "Client created", body: `${client.name} was added to the workspace.`, actionUrl: `/agency/clients/${client.id}`, agencyClientId: client.id, emailEligible: false });
     return { client };
   });

@@ -1,10 +1,10 @@
-import { agencyPrimaryGoal, canonicalPrimaryGoal, primaryGoalsForWorkspace, standardSecondaryGoals } from "@webtummy/core/project-goals";
+import { agencyPrimaryGoal, canonicalPrimaryGoal, canonicalSecondaryGoal, primaryGoalsForWorkspace, standardSecondaryGoals } from "@webtummy/core/project-goals";
 export { agencyPrimaryGoal, primaryGoalsForWorkspace, standardPrimaryGoals, standardSecondaryGoals } from "@webtummy/core/project-goals";
 
 export function cleanSecondaryGoals(values: string[]) {
   const allowed = new Map(standardSecondaryGoals.map((goal) => [goal.toLocaleLowerCase(), goal]));
   const seen = new Set<string>();
-  return values.map((value) => value.trim()).filter(Boolean).map((value) => allowed.get(value.toLocaleLowerCase()) ?? value).filter((value) => {
+  return values.map((value) => value.trim()).filter(Boolean).map((value) => allowed.get(value.toLocaleLowerCase()) ?? canonicalSecondaryGoal(value)).filter((value) => {
     const key = value.toLocaleLowerCase();
     if (seen.has(key)) return false;
     seen.add(key);

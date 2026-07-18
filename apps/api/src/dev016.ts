@@ -24,6 +24,8 @@ export type NextBestActionContext = {
   competitorCount?: number;
   technicalIssueCount?: number;
   contentDecayCount?: number;
+  intelligenceOpportunityTerms?: string[];
+  aiReadinessScore?: number | null;
   canExecute: boolean;
   canApprove: boolean;
 };
@@ -70,6 +72,9 @@ export function rankNextBestAction(tasks: NextBestActionTask[], context: NextBes
     if ((context.technicalIssueCount ?? 0) > 0 && /crawl|technical|404|broken|index|canonical|redirect|sitemap|robots|internal link/.test(text)) signals.push(signal("technical", "Technical issues", 15, `${context.technicalIssueCount} open technical findings`));
     if ((context.contentDecayCount ?? 0) > 0 && /fresh|decay|outdated|stale|refresh|old content/.test(text)) signals.push(signal("decay", "Content decay", 12, `${context.contentDecayCount} freshness signals`));
     if ((context.targetMarkets?.length ?? 0) > 0 && /local|location|market|google business|citation|nap/.test(text)) signals.push(signal("local", "Local SEO opportunity", 11, `Targets ${context.targetMarkets!.slice(0, 3).join(", ")}`));
+    const intelligenceMatches = (context.intelligenceOpportunityTerms ?? []).filter((term) => term.split(/\W+/).some((word) => word.length > 4 && text.includes(word.toLowerCase())));
+    if (intelligenceMatches.length) signals.push(signal("approved_ai_intelligence", "Approved AI Business Intelligence", Math.min(14, 6 + intelligenceMatches.length * 2), intelligenceMatches.slice(0, 3).join(" · ")));
+    if ((context.aiReadinessScore ?? 100) < 60 && /ai citation|entity|schema|structured data|answer-first|automation/.test(text)) signals.push(signal("ai_readiness", "AI readiness gap", 10, `Approved AI Readiness estimate: ${context.aiReadinessScore}/100`));
     const impact = text.match(/impact\s+(\d{1,3})(?:\/100|%)/)?.[1];
     if (impact) signals.push(signal("measured_impact", "Measured strategy impact", Math.round(Number(impact) / 10), `${impact}/100 estimated impact`));
     if (task.dueAt) {

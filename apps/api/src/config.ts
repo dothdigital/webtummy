@@ -1,5 +1,5 @@
-import { config as dotenvConfig } from "dotenv";
-import { existsSync } from "node:fs";
+import { config as dotenvConfig, parse as dotenvParse } from "dotenv";
+import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 
 function loadEnv() {
@@ -7,7 +7,14 @@ function loadEnv() {
   for (let i = 0; i < 6; i++) {
     const candidate = join(dir, ".env");
     if (existsSync(candidate)) {
+      const inheritedOpenAiKey = process.env.OPENAI_API_KEY?.trim();
       dotenvConfig({ path: candidate });
+      // Local shells and IDEs sometimes inject a redacted placeholder. Do not let
+      // that placeholder mask a valid key in the project's .env file.
+      if (!usableOpenAiKey(inheritedOpenAiKey)) {
+        const fileOpenAiKey = dotenvParse(readFileSync(candidate)).OPENAI_API_KEY?.trim();
+        if (usableOpenAiKey(fileOpenAiKey)) process.env.OPENAI_API_KEY = fileOpenAiKey;
+      }
       return;
     }
     const parent = dirname(dir);
@@ -16,13 +23,20 @@ function loadEnv() {
   }
 }
 
+function usableOpenAiKey(value: string | undefined) {
+  if (!value || value.length < 20) return false;
+  return !/redacted|replace[_ -]?me|your[_ -]?(openai|api)[_ -]?key|placeholder/i.test(value);
+}
+
 loadEnv();
 
 export const config = {
   port: process.env.API_PORT ? parseInt(process.env.API_PORT, 10) : 4000,
   redisUrl: process.env.REDIS_URL ?? "redis://localhost:6379",
   jwtSecret: process.env.JWT_SECRET ?? "dev-only-change-me",
-  jwtExpiresIn: "1h",
+  // Sliding idle window. Authenticated activity renews the access token; a
+  // client that stops using the application naturally expires after this TTL.
+  jwtExpiresIn: process.env.JWT_IDLE_TIMEOUT ?? "8h",
   webAppUrl: process.env.WEB_APP_URL ?? "http://localhost:5173",
   emailProvider: (process.env.EMAIL_PROVIDER ?? "").toLowerCase(),
   emailFrom: process.env.EMAIL_FROM ?? "SEnuke AI <no-reply@senuke.com>",

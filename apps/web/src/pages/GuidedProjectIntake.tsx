@@ -23,7 +23,19 @@ type IntakeMode = "quick" | "advanced" | "agency";
 const wizardSteps = ["Project Info", "Goals & Audience", "Content Focus", "Integrations", "Review & Launch"];
 const projectInfoKeys = new Set(["project_name", "business_name", "website_url", "industry_niche", "business_location", "target_location"]);
 const goalKeys = new Set(["primary_goal", "target_launch_timeline", "target_audience", "preferred_output", "publishing_preference", "skill_level"]);
-const contextKeys = new Set(["products_services", "current_offer_cta", "budget_level", "time_available_weekly", "skill_level", "tone_preference"]);
+const contextKeys = new Set([
+  "products_services",
+  "current_offer_cta",
+  "budget_level",
+  "time_available_weekly",
+  "tone_preference",
+  "current_target_keywords",
+  "known_competitors",
+  "known_problem_areas",
+  "client_goals",
+  "services_to_propose",
+  "proposal_package_preference",
+]);
 const commaSeparatedInputKeys = new Set(["industry_niche", "target_location", "current_target_keywords", "known_competitors"]);
 const quickFieldKeys = new Set(["project_name", "business_name", "website_url", "industry_niche", "target_audience", "primary_goal", "products_services", "skill_level", "preferred_output", "publishing_preference"]);
 const quickRequiredKeys = new Set(["project_name", "business_name", "industry_niche", "target_audience", "primary_goal", "products_services", "skill_level"]);
@@ -52,7 +64,34 @@ const aiEligibleKeys = new Set([
   "target_buyer",
   "fulfillment_model",
 ]);
-const agencyCoreKeys = new Set(["project_name", "business_name", "website_url", "industry_niche", "target_audience", "primary_goal", "skill_level", "client_name", "client_company", "client_email", "client_goals", "services_to_propose", "proposal_package_preference"]);
+const agencyCoreKeys = new Set([
+  "project_name",
+  "business_name",
+  "website_url",
+  "industry_niche",
+  "target_audience",
+  "primary_goal",
+  "target_launch_timeline",
+  "preferred_output",
+  "publishing_preference",
+  "skill_level",
+  "products_services",
+  "current_offer_cta",
+  "budget_level",
+  "time_available_weekly",
+  "tone_preference",
+  "current_target_keywords",
+  "known_competitors",
+  "known_problem_areas",
+  "cms_platform",
+  "access_available",
+  "client_name",
+  "client_company",
+  "client_email",
+  "client_goals",
+  "services_to_propose",
+  "proposal_package_preference",
+]);
 const genericAiDefaults = new Set([
   "people actively looking for SEO and online growth solutions and ready to take action",
   "Website development, CRM automation, AI consulting",
@@ -436,6 +475,7 @@ export default function GuidedProjectIntake() {
   const [started, setStarted] = useState(false);
   const [busy, setBusy] = useState(false);
   const [savedMessage, setSavedMessage] = useState<string | null>(null);
+  const [hasSavedConversation, setHasSavedConversation] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [activeQuestionKey, setActiveQuestionKey] = useState<string | null>(null);
   const autoPositionedProject = useRef<string | null>(null);
@@ -445,9 +485,11 @@ export default function GuidedProjectIntake() {
     Promise.all([
       api.get<{ project: GuidedProject }>(`/api/projects-v2/${id}`),
       api.get<{ questions: IntakeQuestion[] }>("/api/projects-v2/intake-questions"),
-    ]).then(([projectResult, questionResult]) => {
+      api.get<{ sessionId: string }>(`/api/ai-intake/conversation/${id}`).catch(() => null),
+    ]).then(([projectResult, questionResult, conversationResult]) => {
       setProject(projectResult.project);
       setQuestions(questionResult.questions);
+      setHasSavedConversation(Boolean(conversationResult?.sessionId));
       const existing: Record<string, string> = {};
       for (const answer of projectResult.project.intakeAnswers ?? []) {
         existing[answer.questionKey] = Array.isArray(answer.answerValue)
@@ -456,7 +498,7 @@ export default function GuidedProjectIntake() {
             ? answer.answerValue
             : JSON.stringify(answer.answerValue ?? "");
       }
-      setAnswers({
+      const savedAnswers: Record<string, string> = {
         project_name: existing.project_name || projectResult.project.name || "",
         setup_mode: existing.setup_mode || "Quick Guided Setup",
         business_name: projectResult.project.businessName || projectResult.project.name || "",
@@ -469,7 +511,11 @@ export default function GuidedProjectIntake() {
         preferred_output: Array.isArray(projectResult.project.preferredOutputs) ? projectResult.project.preferredOutputs.filter((item): item is string => typeof item === "string").join(", ") : "",
         publishing_preference: projectResult.project.preferredPublishingMethod || "",
         ...existing,
-      });
+        target_audience: existing.target_audience || projectResult.project.businessProfile?.targetAudience || "",
+        products_services: existing.products_services || projectResult.project.businessProfile?.offerSummary || "",
+        tone_preference: existing.tone_preference || projectResult.project.businessProfile?.tonePreference || "",
+      };
+      setAnswers(savedAnswers);
       const setupMode = existing.setup_mode?.toLowerCase().includes("agency")
         ? "agency"
         : existing.setup_mode?.toLowerCase().includes("advanced")
@@ -478,7 +524,14 @@ export default function GuidedProjectIntake() {
       setMode(setupMode);
       try {
         const draft = JSON.parse(localStorage.getItem("guided-intake-draft:" + id) ?? "null") as { answers?: Record<string, string>; mode?: IntakeMode } | null;
-        if (draft?.answers) setAnswers((current) => ({ ...current, ...draft.answers }));
+        if (draft?.answers) {
+          // A stale, empty browser draft must never erase information that was
+          // already confirmed and saved in the project or Business Profile.
+          setAnswers((current) => ({
+            ...current,
+            ...Object.fromEntries(Object.entries(draft.answers ?? {}).filter(([key, value]) => value.trim() || !current[key]?.trim())),
+          }));
+        }
         if (draft?.mode) setMode(draft.mode);
       } catch {
         localStorage.removeItem("guided-intake-draft:" + id);
@@ -523,9 +576,15 @@ export default function GuidedProjectIntake() {
       step,
       questions: visibleQuestions.filter((question) => questionGroup(question) === step),
     }));
-    if (mode === "quick") return groups.filter((group) => group.questions.length > 0 || group.step === "Review & Launch");
-    return groups;
-  }, [mode, visibleQuestions]);
+    // Never leave a user on a named wizard step with no fields to review.
+    // Different project/workspace modes intentionally expose different fields,
+    // so empty groups must be removed after those filters have been applied.
+    return groups.filter((group) => group.questions.length > 0 || group.step === "Review & Launch");
+  }, [visibleQuestions]);
+
+  useEffect(() => {
+    setCurrentStep((step) => Math.min(step, Math.max(0, groupedQuestions.length - 1)));
+  }, [groupedQuestions.length]);
 
   useEffect(() => {
     if (!project || !started || !groupedQuestions.length || autoPositionedProject.current === project.id) return;
@@ -668,7 +727,10 @@ export default function GuidedProjectIntake() {
           <h1 className="mt-2 text-[28px] font-bold leading-tight text-charcoal-950">{project.businessName || project.name}</h1>
           <p className="text-sm text-charcoal-500">Quick setup is enough to create your first strategy. Advanced details can be added later when a module needs them.</p>
         </div>
-        <button type="button" onClick={() => void save(true)} disabled={busy} className="inline-flex items-center justify-center rounded-lg border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-700 shadow-sm hover:bg-slate-50 disabled:opacity-50">Save & Exit</button>
+        <div className="flex flex-wrap items-center gap-2">
+          {hasSavedConversation && <Link to={`/projects/new?resumeConversation=${project.id}`} className="inline-flex items-center justify-center rounded-lg bg-gradient-to-r from-brand-600 to-violet-600 px-4 py-2 text-sm font-bold text-white shadow-sm hover:brightness-105">Continue AI conversation</Link>}
+          <button type="button" onClick={() => void save(true)} disabled={busy} className="inline-flex items-center justify-center rounded-lg border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-700 shadow-sm hover:bg-slate-50 disabled:opacity-50">Save & Exit</button>
+        </div>
       </div>
 
       {!started ? (
@@ -803,12 +865,13 @@ export default function GuidedProjectIntake() {
             const aiFilled = aiRecommended.has(question.key);
             const askLaterMarked = askLater.has(question.key);
             const canAskLater = !question.required && mode !== "quick";
-            const suggestions = project ? aiSuggestionOptions(question, answers, project) : [];
+            const canShowAiSuggestions = question.type !== "select" && question.type !== "multiselect";
+            const suggestions = project && canShowAiSuggestions ? aiSuggestionOptions(question, answers, project) : [];
             return (
             <div key={question.key} onFocusCapture={() => setActiveQuestionKey(question.key)} onClickCapture={() => setActiveQuestionKey(question.key)} className={question.type === "textarea" ? "block lg:col-span-2" : "block"}>
               <span className="mb-1 flex flex-wrap items-center gap-2 text-sm font-bold text-slate-800">
                 <span>{question.text} {question.required && <span className="text-rose-600">*</span>}</span>
-                {aiFilled && <span className="rounded-full bg-brand-50 px-2 py-0.5 text-[11px] font-bold text-brand-700">AI recommended</span>}
+                {aiFilled && canShowAiSuggestions && <span className="rounded-full bg-brand-50 px-2 py-0.5 text-[11px] font-bold text-brand-700">AI recommended</span>}
                 {askLaterMarked && <span className="rounded-full bg-amber-50 px-2 py-0.5 text-[11px] font-bold text-amber-700">Ask later</span>}
               </span>
               {commaSeparatedInputKeys.has(question.key) ? (

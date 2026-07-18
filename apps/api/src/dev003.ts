@@ -21,6 +21,5 @@ export function validateProjectCreation(input: ProjectCreationInput, workspaceTy
   if (!input.businessLocation?.trim()) errors.push("Business Location is required.");
   if (!input.targetLocations?.some((value) => value.trim())) errors.push("At least one Target Market is required.");
   if (workspaceType === "agency" && !input.agencyClientId) errors.push("Agency Workspace projects require a Client.");
-  if (input.websiteStatus === "existing_website" && !input.websiteUrl?.trim()) errors.push("Website URL is required for Existing Website.");
   return errors;
 }

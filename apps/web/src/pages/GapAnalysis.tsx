@@ -3,6 +3,7 @@ import { Link, useSearchParams } from "react-router-dom";
 import { api } from "../api.js";
 import { Button, Card } from "../components/ui.js";
 import type { GuidedProject } from "../types.js";
+import { getActiveProjectId, resolveActiveProjectId, setActiveProjectId } from "../active-project.js";
 
 type WorkflowTab = "overview" | "fixes" | "wordpress" | "local" | "visibility" | "authority" | "reports" | "commerce";
 
@@ -16,6 +17,22 @@ type FixItem = {
   recommendedFix: string;
   approvalStatus: string;
   creditCostEstimate: number;
+};
+
+type GapRecommendation = {
+  id: string;
+  category: string;
+  title: string;
+  explanation: string;
+  recommendedAction: string;
+  expectedImpact: string;
+  evidenceJson: unknown;
+  competitorEvidence: unknown;
+  priority: string;
+  impactScore: number;
+  confidenceScore: number;
+  status: string;
+  executionTaskId?: string | null;
 };
 
 type LaunchOverview = {
@@ -43,6 +60,9 @@ type LaunchOverview = {
   adSuggestions: { id: string; campaignGoal: string; suggestionType: string }[];
   ecommerceGuides: { id: string; storePlatform: string; targetName?: string | null }[];
   tasks: { id: string; title: string; status: string; priority: string }[];
+  latestGapRun?: { id: string; status: string; createdAt: string; completedAt?: string | null; summaryJson: unknown } | null;
+  recommendations: GapRecommendation[];
+  capabilities?: { canRun: boolean; canApprove: boolean; readOnly: boolean; clientViewer: boolean };
 };
 
 const gapApi = (projectId: string, path = "") => `/api/projects/${projectId}/gap-analysis${path}`;
@@ -70,6 +90,15 @@ function listText(value: unknown) {
   if (Array.isArray(value)) return value.map(String).filter(Boolean).join(", ");
   if (typeof value === "string") return value;
   return "";
+}
+
+function listItems(value: unknown) {
+  return Array.isArray(value) ? value.map(String).filter(Boolean) : [];
+}
+
+function gapCategoryLabel(value: string) {
+  const labels: Record<string, string> = { keyword: "Keywords", topic: "Topics", content: "Content", backlink: "Backlinks", entity: "Entities & EEAT", ai_citation: "AI Citations", technical: "Technical", local: "Local SEO", site_structure: "Site Structure", validation: "Validation" };
+  return labels[value] ?? readinessLabel(value);
 }
 
 function intakeAnswer(project: GuidedProject, key: string) {
@@ -183,7 +212,7 @@ function severityTone(value: string): "blue" | "green" | "orange" | "red" | "gra
 export default function GapAnalysis() {
   const [searchParams, setSearchParams] = useSearchParams();
   const [projects, setProjects] = useState<GuidedProject[]>([]);
-  const [selectedProjectId, setSelectedProjectId] = useState(searchParams.get("projectId") ?? "");
+  const [selectedProjectId, setSelectedProjectId] = useState(searchParams.get("projectId") ?? getActiveProjectId());
   const [overview, setOverview] = useState<LaunchOverview | null>(null);
   const [localForm, setLocalForm] = useState(defaultLocal);
   const [aiQueries, setAiQueries] = useState("");
@@ -191,15 +220,18 @@ export default function GapAnalysis() {
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [activeTab, setActiveTab] = useState<WorkflowTab>("overview");
+  const [gapFilter, setGapFilter] = useState("all");
 
   const selectedProject = useMemo(() => projects.find((project) => project.id === selectedProjectId) ?? null, [projects, selectedProjectId]);
 
   async function loadProjects() {
     const result = await api.get<{ projects: GuidedProject[] }>("/api/projects-v2");
     setProjects(result.projects);
-    if (!selectedProjectId && result.projects[0]) {
-      setSelectedProjectId(result.projects[0].id);
-      setSearchParams({ projectId: result.projects[0].id });
+    const resolved = resolveActiveProjectId(result.projects, searchParams.get("projectId"), selectedProjectId);
+    if (resolved) {
+      setSelectedProjectId(resolved);
+      setActiveProjectId(resolved);
+      if (searchParams.get("projectId") !== resolved) setSearchParams({ projectId: resolved }, { replace: true });
     }
   }
 
@@ -215,6 +247,7 @@ export default function GapAnalysis() {
 
   function selectProject(id: string) {
     setSelectedProjectId(id);
+    setActiveProjectId(id);
     setSearchParams({ projectId: id });
   }
 
@@ -246,6 +279,11 @@ export default function GapAnalysis() {
   const needsSiteAnalysis = Boolean(selectedProject && hasWebsite && overview && !overview.readiness.siteAnalysis);
   const needsWebsite = Boolean(selectedProject && overview && !overview.readiness.website);
   const readyForCrawlData = Boolean(overview?.readiness.siteAnalysis);
+  const gapRecommendations = overview?.recommendations ?? [];
+  const gapCategories = [...new Set(gapRecommendations.map((item) => item.category))];
+  const filteredGapRecommendations = gapRecommendations.filter((item) => gapFilter === "all" || item.category === gapFilter);
+  const highImpactGapCount = gapRecommendations.filter((item) => item.impactScore >= 78).length;
+  const approvedGapCount = gapRecommendations.filter((item) => item.status === "approved").length;
   const nextAction = needsWebsite
     ? { label: "Generate Launch Strategy", to: "", action: "launch-strategy", body: "No website or domain is connected yet. Build the launch plan first: domain path, site architecture, keyword seeds, GBP/local setup, content, publishing, and measurement tasks." }
     : needsSiteAnalysis
@@ -279,14 +317,14 @@ export default function GapAnalysis() {
           <h1 className="text-[30px] font-semibold leading-tight text-[#14264a]">Gap Analysis</h1>
           <p className="text-sm text-slate-600">Launch readiness screen. Competitive-gap capabilities stay behind the guided workflow instead of becoming top-level clutter.</p>
         </div>
-        <select
+        <div className="flex flex-wrap items-center gap-2"><select
           value={selectedProjectId}
           onChange={(event) => selectProject(event.target.value)}
           className="h-10 rounded-lg border border-slate-200 bg-white px-3 text-sm font-semibold text-slate-800 outline-none focus:border-brand-400 focus:ring-2 focus:ring-brand-100"
         >
           <option value="">Select project</option>
           {projects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}
-        </select>
+        </select>{selectedProjectId && overview?.capabilities?.canRun && <button type="button" disabled={busyAction === "gap-run"} onClick={() => runAction("gap-run", () => api.post(gapApi(selectedProjectId, "/run"), {}))} className="h-10 rounded-lg bg-gradient-to-r from-brand-600 to-emerald-500 px-4 text-sm font-black text-white shadow-sm disabled:opacity-50">{busyAction === "gap-run" ? "Analyzing evidence…" : overview?.latestGapRun ? "Refresh Gap Analysis" : "Run Gap Analysis"}</button>}</div>
       </div>
 
       {!selectedProject ? (
@@ -320,6 +358,19 @@ export default function GapAnalysis() {
               </div>
             </Card>
           )}
+
+          <Card className="overflow-hidden border-brand-100 p-0">
+            <div className="flex flex-col gap-4 border-b border-brand-100 bg-gradient-to-r from-brand-50 via-white to-emerald-50 px-5 py-4 lg:flex-row lg:items-center lg:justify-between">
+              <div><div className="text-xs font-black uppercase tracking-[0.12em] text-brand-700">Competitive Gap Intelligence</div><h2 className="mt-1 text-xl font-black text-slate-950">Prioritized, explainable opportunities</h2><p className="mt-1 text-sm text-slate-600">Compares saved project, keyword, competitor, crawl, authority, local, entity, and AI visibility evidence. Only applicable gaps are recommended.</p></div>
+              <div className="grid grid-cols-3 gap-2 text-center"><div className="rounded-lg bg-white px-3 py-2 shadow-sm"><div className="text-xl font-black text-slate-950">{gapRecommendations.length}</div><div className="text-[10px] font-bold uppercase text-slate-400">gaps</div></div><div className="rounded-lg bg-white px-3 py-2 shadow-sm"><div className="text-xl font-black text-rose-600">{highImpactGapCount}</div><div className="text-[10px] font-bold uppercase text-slate-400">high impact</div></div><div className="rounded-lg bg-white px-3 py-2 shadow-sm"><div className="text-xl font-black text-emerald-600">{approvedGapCount}</div><div className="text-[10px] font-bold uppercase text-slate-400">approved</div></div></div>
+            </div>
+            {!overview?.latestGapRun ? <div className="grid min-h-56 place-items-center p-6 text-center"><div><div className="mx-auto grid h-14 w-14 place-items-center rounded-2xl bg-brand-50 text-2xl">◇</div><h3 className="mt-4 font-black text-slate-950">Find the most important gaps first</h3><p className="mx-auto mt-2 max-w-xl text-sm leading-6 text-slate-500">Run one analysis across keywords, topics, content, backlinks, entities, AI citations, technical SEO, Local SEO, and site structure.</p>{overview?.capabilities?.canRun && <button type="button" disabled={busyAction === "gap-run"} onClick={() => runAction("gap-run", () => api.post(gapApi(selectedProjectId, "/run"), {}))} className="mt-5 rounded-lg bg-brand-600 px-5 py-2.5 text-sm font-black text-white disabled:opacity-50">{busyAction === "gap-run" ? "Analyzing evidence…" : "Run Gap Analysis"}</button>}</div></div> : <div className="p-5">
+              <div className="flex gap-2 overflow-x-auto pb-3"><button type="button" onClick={() => setGapFilter("all")} className={`shrink-0 rounded-full border px-3 py-1.5 text-xs font-bold ${gapFilter === "all" ? "border-brand-600 bg-brand-600 text-white" : "border-slate-200 bg-white text-slate-600"}`}>All ({gapRecommendations.length})</button>{gapCategories.map((category) => <button key={category} type="button" onClick={() => setGapFilter(category)} className={`shrink-0 rounded-full border px-3 py-1.5 text-xs font-bold ${gapFilter === category ? "border-brand-600 bg-brand-600 text-white" : "border-slate-200 bg-white text-slate-600"}`}>{gapCategoryLabel(category)}</button>)}</div>
+              <div className="grid gap-4 xl:grid-cols-2">{filteredGapRecommendations.map((gap) => { const evidence = listItems(gap.evidenceJson); const competitorEvidence = listItems(gap.competitorEvidence); return <article key={gap.id} className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm"><div className="flex flex-wrap items-start justify-between gap-3"><div><span className="rounded-full bg-brand-50 px-2.5 py-1 text-[10px] font-black uppercase tracking-wide text-brand-700">{gapCategoryLabel(gap.category)}</span><h3 className="mt-2 font-black text-slate-950">{gap.title}</h3></div><div className="flex gap-2"><span className={`rounded-full px-2.5 py-1 text-[10px] font-black uppercase ${gap.priority === "critical" ? "bg-rose-600 text-white" : gap.priority === "high" ? "bg-orange-100 text-orange-800" : "bg-slate-100 text-slate-700"}`}>{gap.priority}</span><span className="rounded-full bg-slate-100 px-2.5 py-1 text-[10px] font-black text-slate-700">{gap.impactScore} impact</span></div></div><p className="mt-3 text-sm leading-6 text-slate-600">{gap.explanation}</p><div className="mt-3 rounded-lg border border-brand-100 bg-brand-50/60 p-3"><div className="text-[10px] font-black uppercase tracking-wide text-brand-700">Recommended action</div><p className="mt-1 text-sm font-semibold leading-6 text-slate-800">{gap.recommendedAction}</p></div><div className="mt-3 text-xs leading-5 text-slate-500"><b className="text-slate-700">Expected impact:</b> {gap.expectedImpact}</div>{evidence.length > 0 && <div className="mt-3"><div className="text-[10px] font-black uppercase tracking-wide text-slate-400">Evidence</div><div className="mt-1 flex flex-wrap gap-1.5">{evidence.slice(0, 4).map((item) => <span key={item} className="max-w-full truncate rounded-md bg-slate-100 px-2 py-1 text-[10px] text-slate-600" title={item}>{item}</span>)}</div></div>}{competitorEvidence.length > 0 && <div className="mt-2 text-[11px] text-slate-500"><b>Competitor evidence:</b> {competitorEvidence.slice(0, 4).join(", ")}</div>}<div className="mt-4 flex items-center justify-between gap-3 border-t border-slate-100 pt-3"><span className="text-[11px] font-bold text-slate-400">{gap.confidenceScore}% evidence confidence</span><div className="flex gap-2">{gap.status === "approved" ? <span className="rounded-lg bg-emerald-50 px-3 py-2 text-xs font-black text-emerald-700">Approved · Execution task created</span> : <>{overview?.capabilities?.canRun && <button type="button" disabled={busyAction === `gap-ignore-${gap.id}`} onClick={() => runAction(`gap-ignore-${gap.id}`, () => api.post(gapApi(selectedProjectId, `/recommendations/${gap.id}/ignore`), {}))} className="rounded-lg border border-slate-200 px-3 py-2 text-xs font-bold text-slate-600">Ignore</button>}{overview?.capabilities?.canApprove && <button type="button" disabled={busyAction === `gap-approve-${gap.id}`} onClick={() => runAction(`gap-approve-${gap.id}`, () => api.post(gapApi(selectedProjectId, `/recommendations/${gap.id}/approve`), {}))} className="rounded-lg bg-brand-600 px-3 py-2 text-xs font-black text-white">Approve & Add to Plan</button>}</>}</div></div></article>; })}</div>
+              {filteredGapRecommendations.length === 0 && <div className="p-8 text-center text-sm text-slate-500">No recommendations match this category.</div>}
+              <div className="mt-4 text-xs text-slate-400">Latest analysis: {new Date(overview.latestGapRun.completedAt || overview.latestGapRun.createdAt).toLocaleString()} · Approved gaps feed the next Strategy generation, Execution Plan, and Next Best Action ranking.</div>
+            </div>}
+          </Card>
 
           <div className="grid gap-5 xl:grid-cols-[360px_minmax(0,1fr)]">
             <Card className="border-[#9fc7d6] bg-white p-5">

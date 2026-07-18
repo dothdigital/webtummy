@@ -725,7 +725,7 @@ crawlsRouter.get("/crawls/:id/issues", async (req, res) => {
 crawlsRouter.patch("/crawls/:id/issues/:issueId", async (req, res) => {
   const job = await getScopedCrawl(req, req.params.id);
   if (!job) return res.status(404).json({ error: "crawl not found" });
-  const parsed = z.object({ status: z.enum(["open", "ignored"]) }).safeParse(req.body ?? {});
+  const parsed = z.object({ status: z.enum(["open", "ignored", "fixed"]) }).safeParse(req.body ?? {});
   if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() });
   const issue = await prisma.issue.findFirst({ where: { id: req.params.issueId, crawlJobId: job.id } });
   if (!issue) return res.status(404).json({ error: "issue not found" });
@@ -735,6 +735,7 @@ crawlsRouter.patch("/crawls/:id/issues/:issueId", async (req, res) => {
     if (task && task.status !== "completed") {
       if (parsed.data.status === "ignored" && task.status !== "skipped") await tx.executionTask.update({ where: { id: task.id }, data: { status: "skipped", skippedAt: new Date() } });
       if (parsed.data.status === "open" && task.status === "skipped") await tx.executionTask.update({ where: { id: task.id }, data: { status: "ready", skippedAt: null } });
+      if (parsed.data.status === "fixed") await tx.executionTask.update({ where: { id: task.id }, data: { status: "completed", completedAt: new Date() } });
     }
     return next;
   });

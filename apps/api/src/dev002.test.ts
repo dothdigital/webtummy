@@ -7,7 +7,7 @@ describe("DEV-002 Agency → Clients → Projects", () => {
       websites: ["https://example.com", "https://shop.example.com"],
       businessLocations: ["Toronto, Canada"],
       targetMarkets: ["Toronto", "Ontario"],
-      defaultSettings: { niche: "Roofing", primaryBusinessGoal: "Leads", brandVoice: "Friendly expert", businessDescription: "Residential roofer", targetAudience: "Toronto homeowners", mainProductsServices: "Roof repair", primaryKeywords: ["roof repair"], preferredLanguage: "English", timeZone: "America/Toronto" },
+      defaultSettings: { niche: "Roofing", primaryBusinessGoal: "Leads", brandVoice: "Friendly expert", businessDescription: "Residential roofer", targetAudience: "Toronto homeowners", mainProductsServices: "Roof repair", primaryKeywords: ["roof repair"], preferredLanguage: "English", timeZone: "America/Toronto", aiBusinessIntelligence: { aiReadinessScore: 72 } },
     })).toEqual({
       websiteUrl: "https://example.com",
       businessLocation: "Toronto, Canada",
@@ -22,12 +22,13 @@ describe("DEV-002 Agency → Clients → Projects", () => {
       primaryKeywords: ["roof repair"],
       preferredLanguage: "English",
       timeZone: "America/Toronto",
+      aiBusinessIntelligence: { aiReadinessScore: 72 },
     });
   });
 
   it("returns safe empty defaults for incomplete client records", () => {
     expect(clientDefaults({ websites: null, businessLocations: {}, targetMarkets: null, defaultSettings: null })).toEqual({
-      websiteUrl: "", businessLocation: "", businessLocationDetails: null, targetLocations: [], niche: "", primaryGoal: "", brandVoice: "", businessDescription: "", targetAudience: "", mainProductsServices: "", primaryKeywords: [], preferredLanguage: "", timeZone: "",
+      websiteUrl: "", businessLocation: "", businessLocationDetails: null, targetLocations: [], niche: "", primaryGoal: "", brandVoice: "", businessDescription: "", targetAudience: "", mainProductsServices: "", primaryKeywords: [], preferredLanguage: "", timeZone: "", aiBusinessIntelligence: {},
     });
   });
 

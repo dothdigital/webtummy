@@ -62,7 +62,10 @@ export interface Website {
 
 export interface GuidedExecutionTask {
   id: string;
+  projectId?: string | null;
   moduleName: string;
+  sourceType: string;
+  sourceId?: string | null;
   title: string;
   description: string;
   expectedOutcome?: string | null;
@@ -75,6 +78,7 @@ export interface GuidedExecutionTask {
   safetyCategory?: string;
   relatedModule?: string | null;
   approvedAt?: string | null;
+  approvalSnapshotJson?: Record<string, unknown> | null;
   blockedReason?: string | null;
   actionButtonLabel: string | null;
   relatedUrl: string | null;
@@ -151,6 +155,21 @@ export interface GuidedProject {
   createdAt: string;
   updatedAt: string;
   website?: { id: string; domain: string; rootUrl: string; status: string } | null;
+  agencyClient?: {
+    id: string;
+    name: string;
+    contactPhone?: string | null;
+    businessLocations?: unknown;
+    defaultSettings?: unknown;
+  } | null;
+  sourceActivitySummaries?: Array<{
+    key: string;
+    label: string;
+    total: number;
+    metrics: Array<{ label: string; value: number; tone?: string }>;
+    items: Array<{ id: string; title: string; detail?: string | null; status?: string; priority?: string }>;
+    actionUrl: string;
+  }>;
   businessProfile?: {
     id: string;
     businessSummary: string | null;

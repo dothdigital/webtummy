@@ -38,6 +38,7 @@ import AgencyClientDashboard from "./pages/AgencyClientDashboard.js";
 import Welcome from "./pages/Welcome.js";
 import ProjectReports from "./pages/ProjectReports.js";
 import Approvals from "./pages/Approvals.js";
+import PublicLeadFunnel from "./pages/PublicLeadFunnel.js";
 
 function KeywordAnalyticsDetailRedirect() {
   const { id } = useParams();
@@ -90,6 +91,7 @@ function Shell() {
       </div>
     );
   }
+  if (location.pathname.startsWith("/lead/")) return <PublicLeadFunnel slug={decodeURIComponent(location.pathname.slice("/lead/".length))} />;
   if (!user) {
     if (location.pathname === "/terms") return <Legal kind="terms" />;
     if (location.pathname === "/privacy") return <Legal kind="privacy" />;
@@ -104,7 +106,7 @@ function Shell() {
   const landingPath = platformOnlySuperAdmin ? "/admin" : user.workspace?.landingPath ?? "/";
   if (location.pathname === "/login") return <Navigate to={landingPath} replace />;
   if (platformOnlySuperAdmin && location.pathname !== "/users" && !location.pathname.startsWith("/admin")) return <Navigate to="/admin" replace />;
-  if (workspaceRole === "client_viewer" && location.pathname !== "/workspace" && location.pathname !== "/reports" && !location.pathname.startsWith("/agency/clients/")) return <Navigate to="/workspace" replace />;
+  if (workspaceRole === "client_viewer" && location.pathname !== "/workspace" && location.pathname !== "/reports" && location.pathname !== "/site-architect" && location.pathname !== "/lead-magnets" && !location.pathname.startsWith("/agency/clients/")) return <Navigate to="/workspace" replace />;
 
   const welcomeEligible = Boolean(user.workspace && user.workspace.primaryRole === "admin" && user.workspace.onboardingRequired);
   const showWelcome = welcomeEligible && welcomePending(user.id, user.workspace?.id);
@@ -130,8 +132,8 @@ function Shell() {
         <Route path="/site-analysis" element={<PermissionRoute permission="run_ai_analysis"><ExecutionModule kind="site-analysis" /></PermissionRoute>} />
         <Route path="/backlinks" element={<PermissionRoute permission="run_ai_analysis"><ExecutionModule kind="backlinks" /></PermissionRoute>} />
         <Route path="/ai-citations" element={<PermissionRoute permission="run_ai_analysis"><ExecutionModule kind="ai-citations" /></PermissionRoute>} />
-        <Route path="/site-architect" element={<PermissionRoute permission="run_ai_analysis"><ExecutionModule kind="site-architect" /></PermissionRoute>} />
-        <Route path="/lead-magnets" element={<PermissionRoute permission="run_ai_analysis"><ExecutionModule kind="lead-magnets" /></PermissionRoute>} />
+        <Route path="/site-architect" element={<PermissionRoute anyOf={["run_ai_analysis", "read_internal", "read_shared_client_data"]}><ExecutionModule kind="site-architect" /></PermissionRoute>} />
+        <Route path="/lead-magnets" element={<PermissionRoute anyOf={["run_ai_analysis", "read_internal", "read_shared_client_data"]}><ExecutionModule kind="lead-magnets" /></PermissionRoute>} />
         <Route path="/website-projects" element={<Websites />} />
         <Route path="/website-projects/:id" element={<WebsiteHealth />} />
         <Route path="/websites" element={<WebsiteRedirect />} />

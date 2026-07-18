@@ -3,7 +3,8 @@ import { Link, useSearchParams } from "react-router-dom";
 import { api } from "../api.js";
 import { Button, Card, Input, StatusPill } from "../components/ui.js";
 import { COUNTRY_OPTIONS, defaultLocationParts } from "../locationOptions.js";
-import type { LocalBusinessProfile, LocalKeyword, LocalRankSnapshot, LocalSeoDashboardResponse, LocalScore, Website } from "../types.js";
+import type { GuidedProject, LocalBusinessProfile, LocalKeyword, LocalRankSnapshot, LocalSeoDashboardResponse, LocalScore, Website } from "../types.js";
+import { getActiveProjectId, resolveActiveProjectId, setActiveProjectId } from "../active-project.js";
 
 type KeywordSuggestion = {
   keyword: string;
@@ -262,6 +263,7 @@ function ScorePart({ label, value, max, actionHref, actionLabel, children }: { l
 export default function LocalSeo() {
   const [searchParams, setSearchParams] = useSearchParams();
   const [websites, setWebsites] = useState<Website[]>([]);
+  const [projects, setProjects] = useState<GuidedProject[]>([]);
   const [businesses, setBusinesses] = useState<LocalBusinessProfile[]>([]);
   const [websiteId, setWebsiteId] = useState(searchParams.get("project") ?? "");
   const [selectedId, setSelectedId] = useState("");
@@ -351,7 +353,9 @@ export default function LocalSeo() {
 
   const applyProjectSelection = async (nextWebsiteId: string, availableWebsites: Website[], availableBusinesses: LocalBusinessProfile[]) => {
     setWebsiteId(nextWebsiteId);
-    if (nextWebsiteId) setSearchParams({ project: nextWebsiteId });
+    const mappedProject = projects.find((project) => project.websiteId === nextWebsiteId);
+    if (mappedProject) setActiveProjectId(mappedProject.id);
+    if (nextWebsiteId) setSearchParams({ project: nextWebsiteId, ...(mappedProject?.id || getActiveProjectId() ? { projectId: mappedProject?.id || getActiveProjectId() } : {}) });
     const nextWebsite = availableWebsites.find((website) => website.id === nextWebsiteId) ?? null;
     const nextBusiness = availableBusinesses.find((item) => item.websiteId === nextWebsiteId) ?? null;
     if (nextBusiness) {
@@ -372,7 +376,7 @@ export default function LocalSeo() {
       setSelectedId(selected.id);
       if (selected.websiteId) {
         setWebsiteId(selected.websiteId);
-        setSearchParams({ project: selected.websiteId });
+        setSearchParams({ project: selected.websiteId, ...(getActiveProjectId() ? { projectId: getActiveProjectId() } : {}) });
       }
       setForm(toForm(selected));
       await loadDashboard(selected.id);
@@ -386,14 +390,35 @@ export default function LocalSeo() {
   const load = async () => {
     setLoading(true);
     try {
-      const websiteResult = await api.get<{ websites: Website[] }>("/api/websites");
+      const openProfileRequested = searchParams.get("editProfile") === "1";
+      const [websiteResult, projectResult] = await Promise.all([api.get<{ websites: Website[] }>("/api/websites"), api.get<{ projects: GuidedProject[] }>("/api/projects-v2")]);
       setWebsites(websiteResult.websites);
+      setProjects(projectResult.projects);
       const businessResult = await api.get<{ businesses: LocalBusinessProfile[] }>("/api/local/business");
       setBusinesses(businessResult.businesses);
       const requestedProject = searchParams.get("project");
-      const preferredWebsiteId = websiteResult.websites.find((website) => website.id === requestedProject)?.id ?? websiteResult.websites[0]?.id ?? "";
+      const activeGuidedProjectId = resolveActiveProjectId(projectResult.projects, searchParams.get("projectId"), getActiveProjectId());
+      const activeGuidedProject = projectResult.projects.find((project) => project.id === activeGuidedProjectId);
+      if (activeGuidedProjectId) setActiveProjectId(activeGuidedProjectId);
+      const preferredWebsiteId = activeGuidedProject?.websiteId ?? websiteResult.websites.find((website) => website.id === requestedProject)?.id ?? websiteResult.websites[0]?.id ?? "";
       if (preferredWebsiteId) {
         await applyProjectSelection(preferredWebsiteId, websiteResult.websites, businessResult.businesses);
+        if (openProfileRequested) {
+          setForm((current) => ({
+            ...current,
+            businessName: current.businessName || searchParams.get("businessName") || "",
+            phone: current.phone || searchParams.get("phone") || "",
+            address: current.address || searchParams.get("address") || "",
+            city: current.city || searchParams.get("city") || "",
+            region: current.region || searchParams.get("region") || "",
+            country: current.id ? current.country : searchParams.get("country") || current.country,
+            postalCode: current.postalCode || searchParams.get("postalCode") || "",
+            mainCategory: current.mainCategory || searchParams.get("mainCategory") || "",
+            services: current.services || searchParams.get("services") || "",
+            targetLocations: current.targetLocations || searchParams.get("targetLocations") || "",
+          }));
+          setProfileOpen(true);
+        }
       } else {
         setSelectedId("");
         setDashboard(null);

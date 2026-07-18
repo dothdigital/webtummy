@@ -37,6 +37,7 @@ export type CampaignProjectContext = {
     businessSummary?: string | null;
     targetAudience?: string | null;
     offerSummary?: string | null;
+    intelligenceJson?: unknown;
   } | null;
 };
 
@@ -139,6 +140,7 @@ export function campaignSignals(project: CampaignProjectContext) {
     project.businessProfile?.businessSummary,
     project.businessProfile?.targetAudience,
     project.businessProfile?.offerSummary,
+    project.businessProfile?.intelligenceJson ? JSON.stringify(project.businessProfile.intelligenceJson) : null,
     outputText,
   ].filter(Boolean).join(" ").toLowerCase();
   const hasOutput = (pattern: RegExp) => preferredOutputs.some((output) => pattern.test(output.toLowerCase()));

@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { api } from "../api.js";
 import type { GuidedProject, KeywordResearchRun, Website } from "../types.js";
+import { getActiveProjectId, setActiveProjectId } from "../active-project.js";
 import { ActionIconButton, ActionIconLink, Button, Card, Input, StatusPill } from "../components/ui.js";
 import { COUNTRY_OPTIONS, buildLocationNames, defaultLocationParts } from "../locationOptions.js";
 import { isBackgroundJobFinished, registerBackgroundJob } from "../background-jobs.js";
@@ -199,7 +200,7 @@ export default function KeywordReports() {
       setRuns(runResult.runs);
       setWebsites(websiteResult.websites);
       const requestedProject = searchParams.get("project");
-      const requestedGuidedProject = searchParams.get("projectId");
+      const requestedGuidedProject = searchParams.get("projectId") || getActiveProjectId();
       const requestedGroup = searchParams.get("groupId");
       const requestedGroups = new Set((searchParams.get("groupIds") ?? requestedGroup ?? "").split(",").map((id) => id.trim()).filter(Boolean));
       if (searchParams.get("add") === "1") setShowAddKeyword(true);
@@ -212,7 +213,14 @@ export default function KeywordReports() {
       }
       if (requestedGuidedProject) {
         const guided = await api.get<{ project: GuidedProject }>(`/api/projects-v2/${requestedGuidedProject}`);
+        setActiveProjectId(guided.project.id);
         setGuidedProject(guided.project);
+        if (searchParams.get("projectId") !== guided.project.id) {
+          const next = new URLSearchParams(searchParams);
+          next.set("projectId", guided.project.id);
+          setSearchParams(next, { replace: true });
+        }
+        if (guided.project.websiteId && websiteResult.websites.some((website) => website.id === guided.project.websiteId)) setWebsiteId(guided.project.websiteId);
         const eligibleGroups = (guided.project.keywordGroups ?? []).filter((group) => group.status === "approved");
         const selectedGroups = requestedGroups.size ? eligibleGroups.filter((group) => requestedGroups.has(group.id)) : eligibleGroups;
         const suggestions = selectedGroups.flatMap((group) => (Array.isArray(group.keywords) ? group.keywords : [])
@@ -289,7 +297,7 @@ export default function KeywordReports() {
           firstRun = firstRun ?? result.run;
         }
       }
-      if (firstRun) navigate(reportUrl(firstRun.id));
+      if (firstRun) navigate(backToKeywords);
     } catch (e) {
       const message = e instanceof Error ? e.message : "Keyword research could not be completed.";
       const context = [activeKeyword ? `Keyword: ${activeKeyword}` : "", activeLocation ? `Location: ${activeLocation}` : ""].filter(Boolean).join(" • ");
@@ -311,6 +319,10 @@ export default function KeywordReports() {
     const keyword = keywordValue.trim();
     if (!keyword) return;
     const locationNames = buildLocationNames(locationCity, locationRegion, locationCountry);
+    if (!locationNames.length) {
+      setMessage("Enter a city, state/province, or country before adding this keyword.");
+      return;
+    }
     const locationKey = locationNames.join("|").toLowerCase();
     if (queuedKeywords.some((item) => item.keyword.toLowerCase() === keyword.toLowerCase() && item.locationNames.join("|").toLowerCase() === locationKey)) {
       setMessage(`“${keyword}” is already queued with the same location settings.`);
@@ -537,7 +549,7 @@ export default function KeywordReports() {
 
               {keywordStep === "select" && <>
               {showManualKeywordForm && (
-              <div className="rounded-xl border border-slate-200 bg-slate-50/60 p-4">
+              <div id="manual-keyword-form" className="rounded-xl border border-slate-200 bg-slate-50/60 p-4">
                 <div className="mb-3 flex flex-col gap-1 sm:flex-row sm:items-end sm:justify-between">
                   <div>
                     <div className="text-sm font-bold text-charcoal-900">Start Keyword Research</div>
@@ -586,22 +598,20 @@ export default function KeywordReports() {
                   <select
                     value={locationCountry}
                     onChange={(e) => {
-                      const next = COUNTRY_OPTIONS.find((country) => country.value === e.target.value);
                       setLocationCountry(e.target.value);
-                      if (next) {
-                        setLocationRegion(next.defaultRegion);
-                        setLocationCity(next.defaultCity);
-                      }
+                      setLocationRegion("");
+                      setLocationCity("");
                     }}
                     className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-100"
                   >
+                    <option value="">Select country</option>
                     {COUNTRY_OPTIONS.map((country) => (
                       <option key={country.value} value={country.value}>{country.label}</option>
                     ))}
                   </select>
                 </label>
-                <Input label="Cities" value={locationCity} onChange={setLocationCity} placeholder="Mississauga, Brampton, Toronto" />
-                <Input label="State / province" value={locationRegion} onChange={setLocationRegion} placeholder="Ontario" />
+                <Input label="Cities" value={locationCity} onChange={setLocationCity} placeholder="Enter cities or service areas" />
+                <Input label="State / province" value={locationRegion} onChange={setLocationRegion} placeholder="Enter state or province" />
                 <label className="block">
                   <span className="mb-1 block text-sm font-medium text-slate-600">Language</span>
                   <select
@@ -646,28 +656,7 @@ export default function KeywordReports() {
               </div>
               )}
 
-              <div className="rounded-xl border border-emerald-100 bg-emerald-50/40 p-4">
-                <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-                  <div>
-                    <div className="text-sm font-bold text-emerald-950">{intakeNeedsMoreInfo ? "More information needed" : "Recommended Keyword Themes"}</div>
-                    <p className="mt-1 text-xs leading-5 text-emerald-800">{intakeNeedsMoreInfo ? "Add project details or a manual seed keyword before keyword research can run." : "Based on your project intake, SEnuke AI found these starting keyword ideas."}</p>
-                  </div>
-                  <div className="flex flex-wrap gap-2">
-                  <Button type="button" variant="ghost" onClick={() => setShowManualKeywordForm(true)}>Add Keyword</Button>
-                  <Button
-                    type="button"
-                    onClick={() => void suggestKeywords()}
-                    disabled={!websiteId || suggestingKeywords || intakeNeedsMoreInfo}
-                    className="border border-emerald-500 bg-emerald-500 text-white shadow-sm shadow-emerald-100 hover:bg-emerald-600"
-                  >
-                    <svg viewBox="0 0 24 24" aria-hidden="true" className="h-4 w-4">
-                      <path d="M12 3l1.7 4.8L18.5 9.5l-4.8 1.7L12 16l-1.7-4.8-4.8-1.7 4.8-1.7L12 3Z" fill="currentColor" />
-                      <path d="M18 14l.9 2.6 2.6.9-2.6.9L18 21l-.9-2.6-2.6-.9 2.6-.9L18 14Z" fill="currentColor" />
-                    </svg>
-                    {suggestingKeywords ? "Suggesting..." : keywordSuggestions.length ? "Suggest More" : "Generate Recommendations"}
-                  </Button>
-                  </div>
-                </div>
+              <div className="space-y-4">
                 {suggestingKeywords && (
                   <div className="mt-4 flex items-center gap-3 rounded-lg border border-emerald-200 bg-white px-4 py-4 text-sm text-emerald-900 shadow-sm" role="status" aria-live="polite">
                     <span className="h-5 w-5 shrink-0 animate-spin rounded-full border-2 border-emerald-200 border-t-emerald-600" aria-hidden="true" />
@@ -685,13 +674,17 @@ export default function KeywordReports() {
                   </div>
                 )}
                 {!intakeNeedsMoreInfo && keywordSuggestions.length > 0 && (
-                  <div className="mt-4 rounded-lg border border-blue-100 bg-white p-3">
+                  <div className="rounded-lg border border-blue-100 bg-white p-3">
                     <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                     <div>
                       <div className="text-sm font-semibold text-blue-950">Recommended seed keywords</div>
                       <p className="mt-1 text-xs leading-5 text-blue-800">Approve the useful themes, remove irrelevant ones, and add them with the current settings.</p>
                     </div>
                     <div className="flex flex-wrap gap-2">
+                      <Button type="button" variant="ghost" onClick={() => {
+                        setShowManualKeywordForm(true);
+                        window.setTimeout(() => document.getElementById("manual-keyword-form")?.scrollIntoView({ behavior: "smooth", block: "center" }), 0);
+                      }}>Add Keyword</Button>
                       <Button type="button" variant="ghost" onClick={() => void suggestKeywords("more")} disabled={suggestingKeywords}>{suggestingKeywords ? "Loading..." : "Suggest more"}</Button>
                       <Button type="button" variant="ghost" onClick={toggleAllKeywordSuggestions}>{selectedKeywordSuggestions.length === keywordSuggestions.length ? "Clear all" : "Select all"}</Button>
                       <Button type="button" onClick={useSelectedSuggestions} disabled={selectedKeywordSuggestions.length === 0}>Use Selected Keywords</Button>
@@ -731,7 +724,7 @@ export default function KeywordReports() {
                 )}
               </div>
 
-              <div className="flex justify-end">
+              <div className="flex flex-col justify-end gap-2 border-t border-slate-100 pt-4 sm:flex-row">
                 <Button type="button" onClick={() => {
                   if (selectedKeywordSuggestions.length) useSelectedSuggestions();
                   setKeywordStep("review");
@@ -802,9 +795,6 @@ export default function KeywordReports() {
                 </Button>
               </div>
               </>}
-              <div className="flex justify-center border-t border-slate-100 pt-4 sm:justify-end">
-                <Link to={backToKeywords} className="inline-flex w-full items-center justify-center rounded-lg border border-brand-200 bg-white px-5 py-2.5 text-sm font-bold text-brand-700 shadow-sm hover:bg-brand-50 sm:w-auto">← Back to Keyword Intelligence</Link>
-              </div>
             </form>
           </div>
         )}

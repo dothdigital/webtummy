@@ -33,6 +33,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     window.addEventListener(SESSION_EXPIRED_EVENT, onSessionExpired);
     fetchMe()
       .then(setUser)
+      .catch(() => undefined)
       .finally(() => setLoading(false));
     return () => window.removeEventListener(SESSION_EXPIRED_EVENT, onSessionExpired);
   }, []);
