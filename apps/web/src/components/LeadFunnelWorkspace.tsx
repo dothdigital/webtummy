@@ -1,10 +1,11 @@
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { Fragment, useEffect, useMemo, useState, type ReactNode } from "react";
 import { api } from "../api.js";
 
 type JsonMap = Record<string, unknown>;
 type Recommendation = {
   type: string; title: string; score: number; buyerStage: "awareness" | "consideration" | "decision"; signal: string; why: string; expectedOutcome: string;
   newKeywordAngle?: string | null; differenceFromPrevious?: string | null;
+  researchRunId?: string; recommendationSet?: "current" | "previous"; researchCreatedAt?: string;
   estimatedImpact: { low: number; high: number; metric: string; confidence: "directional" | "medium"; label: string; disclaimer: string };
   evidence: string[]; actionLabel: string;
 };
@@ -49,6 +50,7 @@ export default function LeadFunnelWorkspace({ projectId, suggestedIdeas }: { pro
   const [activeId, setActiveId] = useState<string | null>(null);
   const [tab, setTab] = useState<(typeof tabs)[number]>(tabs[0]);
   const [selectedIdea, setSelectedIdea] = useState("");
+  const [selectedResearchRunId, setSelectedResearchRunId] = useState<string | null>(null);
   const [customType, setCustomType] = useState("");
   const [instructions, setInstructions] = useState("");
   const [objective, setObjective] = useState("");
@@ -73,7 +75,7 @@ export default function LeadFunnelWorkspace({ projectId, suggestedIdeas }: { pro
   const [editOpen, setEditOpen] = useState(false);
   const [edit, setEdit] = useState({ title: "", landingHeadline: "", landingSubheadline: "", ctaText: "", deliverySubject: "", deliveryBody: "", conversionTarget: "5", comments: "" });
 
-  const load = async () => {
+  const load = async (preferNewestRecommendation = false) => {
     const [workspace, ideas] = await Promise.all([
       api.get<Response>(`/api/projects/${projectId}/lead-magnets`),
       api.get<ResearchResponse>(`/api/projects/${projectId}/lead-magnets/recommendations`),
@@ -87,9 +89,11 @@ export default function LeadFunnelWorkspace({ projectId, suggestedIdeas }: { pro
       setInstructions(ideas.researchRun.objective.notes ?? "");
     }
     setActiveId((current) => current && workspace.funnels.some((item) => item.id === current) ? current : workspace.current?.id ?? null);
-    setSelectedIdea((current) => ideas.recommendations.some((item) => item.title === current) ? current : ideas.recommendations[0]?.title || "");
+    const retainedSelection = preferNewestRecommendation ? ideas.recommendations[0] : ideas.recommendations.find((item) => item.title === selectedIdea && item.researchRunId === selectedResearchRunId) ?? ideas.recommendations[0];
+    setSelectedIdea(retainedSelection?.title ?? "");
+    setSelectedResearchRunId(retainedSelection?.researchRunId ?? null);
   };
-  useEffect(() => { setData(null); setNotice(null); setObjective(""); setSuccessDefinition(""); setInstructions(""); setSetupStep(0); setGenerationAudience(""); setGenerationCta(""); setGenerationDetails(""); setTargetWordCount(""); setGenerationVisuals({ charts: true, images: true, diagrams: true }); setGenerationSeriesId(null); setAutoResearchAttempted(false); setResearchData({ recommendations: [], research: null, followUpQuestions: [], evidence: null, researchRun: null }); void load().catch((error) => setNotice({ tone: "error", text: error instanceof Error ? error.message : "Could not load lead funnels." })); }, [projectId]);
+  useEffect(() => { setData(null); setNotice(null); setObjective(""); setSuccessDefinition(""); setInstructions(""); setSetupStep(0); setGenerationAudience(""); setGenerationCta(""); setGenerationDetails(""); setTargetWordCount(""); setGenerationVisuals({ charts: true, images: true, diagrams: true }); setGenerationSeriesId(null); setSelectedResearchRunId(null); setAutoResearchAttempted(false); setResearchData({ recommendations: [], research: null, followUpQuestions: [], evidence: null, researchRun: null }); void load().catch((error) => setNotice({ tone: "error", text: error instanceof Error ? error.message : "Could not load lead funnels." })); }, [projectId]);
   const funnel = useMemo(() => data?.funnels.find((item) => item.id === activeId) ?? data?.current ?? null, [data, activeId]);
   const leadMagnets = useMemo(() => {
     const latestBySeries = new Map<string, Funnel>();
@@ -110,13 +114,14 @@ export default function LeadFunnelWorkspace({ projectId, suggestedIdeas }: { pro
   const refreshDiscovery = object(researchData.evidence?.liveRefreshDiscovery);
   const refreshSources = list(refreshDiscovery.sources).map(object);
   const measuredKeywords = list(keywordEvidence.measuredKeywords).map(object);
+  const currentRecommendationCount = recommendations.filter((item) => item.recommendationSet !== "previous").length;
   const targetWordCountNumber = Number(targetWordCount);
   const hasValidTargetWordCount = targetWordCount.trim().length > 0 && Number.isInteger(targetWordCountNumber) && targetWordCountNumber >= 250 && targetWordCountNumber <= 10_000;
   const exportUrl = (kind: string, preview = false) => funnel ? `/api/projects/${projectId}/lead-magnets/${funnel.id}/export/${kind}${preview ? "?preview=1" : ""}` : "#";
 
-  const run = async (key: string, action: () => Promise<unknown>, success: string) => {
+  const run = async (key: string, action: () => Promise<unknown>, success: string, preferNewestRecommendation = false) => {
     setBusy(key); setNotice(null);
-    try { await action(); await load(); setNotice({ tone: "success", text: success }); return true; }
+    try { await action(); await load(preferNewestRecommendation); setNotice({ tone: "success", text: success }); return true; }
     catch (error) { setNotice({ tone: "error", text: error instanceof Error ? error.message : "The action could not be completed." }); return false; }
     finally { setBusy(""); }
   };
@@ -128,11 +133,12 @@ export default function LeadFunnelWorkspace({ projectId, suggestedIdeas }: { pro
   const generate = (recommendation?: Recommendation, setupInstructions?: string, visuals = generationVisuals) => {
     if (!researchData.researchRun) { setNotice({ tone: "error", text: "Run the AI research step before generating a lead magnet." }); return Promise.resolve(false); }
     const idea = recommendation?.title || selectedIdea || null;
-    if (recommendation) { setCustomType(""); setSelectedIdea(recommendation.title); }
+    const selectedRecommendation = recommendation ?? recommendations.find((item) => item.title === idea && (!selectedResearchRunId || item.researchRunId === selectedResearchRunId));
+    if (recommendation) { setCustomType(""); setSelectedIdea(recommendation.title); setSelectedResearchRunId(recommendation.researchRunId ?? null); }
     let generatedFunnelId = "";
     return run("generate", async () => {
       const requestedWords = Number(targetWordCount);
-      const result = await api.post<{ funnel: { id: string } }>(`/api/projects-v2/${projectId}/lead-magnet/generate`, { researchRunId: researchData.researchRun?.id, seriesId: generationSeriesId, selectedIdea: idea, instructions: setupInstructions || instructions || null, recommendation: recommendation ?? recommendations.find((item) => item.title === idea) ?? null, targetWordCount: Number.isFinite(requestedWords) && requestedWords >= 250 ? requestedWords : null, visuals });
+      const result = await api.post<{ funnel: { id: string } }>(`/api/projects-v2/${projectId}/lead-magnet/generate`, { researchRunId: selectedRecommendation?.researchRunId ?? researchData.researchRun?.id, seriesId: generationSeriesId, selectedIdea: idea, instructions: setupInstructions || instructions || null, recommendation: selectedRecommendation ?? null, targetWordCount: Number.isFinite(requestedWords) && requestedWords >= 250 ? requestedWords : null, visuals });
       generatedFunnelId = result.funnel.id;
     }, "A new lead magnet and its complete funnel were generated for this project.").then((completed) => {
       if (completed && generatedFunnelId) setActiveId(generatedFunnelId);
@@ -140,14 +146,14 @@ export default function LeadFunnelWorkspace({ projectId, suggestedIdeas }: { pro
     });
   };
   const startSetup = (recommendation?: Recommendation, step: 1 | 2 = 1) => {
-    if (recommendation) { setCustomType(""); setSelectedIdea(recommendation.title); }
+    if (recommendation) { setCustomType(""); setSelectedIdea(recommendation.title); setSelectedResearchRunId(recommendation.researchRunId ?? null); }
     setGenerationAudience((current) => current || text(businessEvidence.targetAudience, ""));
     setGenerationCta((current) => current || (desiredAction === "increase_quotes_or_bookings" ? "Request a quote or booking" : desiredAction === "grow_email_list" ? "Join the email list" : "Take the next recommended action"));
     setSetupStep(step);
     setNotice(null);
   };
   const beginGeneration = async () => {
-    const recommendation = recommendations.find((item) => item.title === selectedIdea);
+    const recommendation = recommendations.find((item) => item.title === selectedIdea && (!selectedResearchRunId || item.researchRunId === selectedResearchRunId));
     const setupInstructions = [
       objective && `Goal: ${objective}`,
       desiredAction && `Desired result: ${label(desiredAction)}`,
@@ -171,6 +177,7 @@ export default function LeadFunnelWorkspace({ projectId, suggestedIdeas }: { pro
     setGenerationVisuals({ charts: true, images: true, diagrams: true });
     setCustomType("");
     setSelectedIdea(recommendations[0]?.title || "");
+    setSelectedResearchRunId(recommendations[0]?.researchRunId ?? null);
     setSetupStep(1);
     setNotice(null);
   };
@@ -183,6 +190,7 @@ export default function LeadFunnelWorkspace({ projectId, suggestedIdeas }: { pro
   const refreshResearch = () => {
     setCustomType("");
     setSelectedIdea("");
+    setSelectedResearchRunId(null);
     void run("research", () => api.post(`/api/projects-v2/${projectId}/lead-magnet/research`, {
       objective: objective || null,
       desiredAction,
@@ -191,7 +199,7 @@ export default function LeadFunnelWorkspace({ projectId, suggestedIdeas }: { pro
       notes: instructions || null,
       researchMode: "refresh",
       excludedRecommendationTitles: recommendations.map((item) => item.title).slice(0, 5),
-    }), "Fresh discovery is complete. AI explored different keywords, buyer questions, source evidence, and lead-magnet angles.");
+    }), "Fresh discovery is complete. AI explored different keywords, buyer questions, source evidence, and lead-magnet angles. Your previous suggestions remain available for comparison.", true);
   };
   const openLeadMagnet = (item: Funnel) => {
     setActiveId(item.id);
@@ -239,7 +247,7 @@ export default function LeadFunnelWorkspace({ projectId, suggestedIdeas }: { pro
             <div className="space-y-3">
               <label className="block"><span className="text-xs font-bold text-slate-600">Desired customer action</span><select value={desiredAction} onChange={(event) => setDesiredAction(event.target.value)} className="mt-1 w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm"><option value="grow_email_list">Join the email list</option><option value="generate_qualified_leads">Become a qualified lead</option><option value="increase_quotes_or_bookings">Request a quote or booking</option><option value="promote_an_offer">Consider an offer</option><option value="educate_prospects">Understand the problem or solution</option><option value="other">Another outcome</option></select></label>
               <label className="block"><span className="text-xs font-bold text-slate-600">How will success be recognized?</span><input value={successDefinition} onChange={(event) => setSuccessDefinition(event.target.value)} maxLength={500} placeholder="Example: More qualified quote requests from Ontario visitors" className="mt-1 w-full rounded-xl border border-slate-300 px-3 py-2 text-sm outline-none focus:border-brand-500" /></label>
-              <label className="block"><span className="text-xs font-bold text-slate-600">Choose another supported format</span><select value={customType} onChange={(event) => { const value = event.target.value; setCustomType(value); setTargetWordCount(""); setSelectedIdea(value ? `Create a project-specific ${value} using the completed lead-magnet research and the strongest conversion angle.` : recommendations[0]?.title ?? ""); }} className="mt-1 w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm"><option value="">Let AI recommend the best format</option>{supportedTypes.map((item) => <option key={item}>{item}</option>)}</select></label>
+              <label className="block"><span className="text-xs font-bold text-slate-600">Choose another supported format</span><select value={customType} onChange={(event) => { const value = event.target.value; setCustomType(value); setTargetWordCount(""); setSelectedIdea(value ? `Create a project-specific ${value} using the completed lead-magnet research and the strongest conversion angle.` : recommendations[0]?.title ?? ""); setSelectedResearchRunId(value ? null : recommendations[0]?.researchRunId ?? null); }} className="mt-1 w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm"><option value="">Let AI recommend the best format</option>{supportedTypes.map((item) => <option key={item}>{item}</option>)}</select></label>
               <label className="block"><span className="text-xs font-bold text-slate-600">Target number of words{customType ? " *" : ""}</span><input type="number" min={250} max={10000} step={250} required={Boolean(customType)} value={targetWordCount} onChange={(event) => setTargetWordCount(event.target.value)} placeholder={customType ? `Enter the length for ${customType}` : "Let AI choose the best length"} className="mt-1 w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm outline-none focus:border-brand-500" /><span className="mt-1 block text-xs leading-5 text-slate-500">Applies to the lead-magnet body for every format. AI aims to stay within approximately 10% of your target.</span></label>
             </div>
           </div>
@@ -269,9 +277,9 @@ export default function LeadFunnelWorkspace({ projectId, suggestedIdeas }: { pro
 
         {setupStep === 1 && researchData.research && <section className="order-1">
           <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between"><div><div className="text-xs font-bold uppercase tracking-wide text-brand-600">Step 1 · Primary AI suggestion</div><h3 className="mt-1 text-lg font-bold text-slate-950">Best options from the completed research</h3></div><button type="button" onClick={refreshResearch} disabled={Boolean(busy)} className="w-fit rounded-lg border border-brand-200 bg-white px-4 py-2 text-sm font-bold text-brand-700 hover:bg-brand-50 disabled:opacity-50">{busy === "research" ? "Finding different angles…" : "Find different AI options"}</button></div>
-          <div className="mt-3 grid gap-3 lg:grid-cols-2">{recommendations.map((item, index) => <div key={`${item.type}-${item.title}`} className={`rounded-xl border p-4 ${selectedIdea === item.title && !customType ? "border-brand-500 bg-brand-50 ring-2 ring-brand-100" : "border-slate-200 bg-white"}`}><button type="button" onClick={() => { setCustomType(""); setSelectedIdea(item.title); }} className="w-full text-left"><div className="flex flex-wrap items-start justify-between gap-2"><div><span className="text-xs font-bold uppercase tracking-wide text-brand-600">{index === 0 ? "Best researched option" : `${label(item.buyerStage)} alternative`}</span><h3 className="mt-1 text-sm font-bold text-slate-950">{item.title}</h3></div><div className="flex gap-2"><span className="rounded-full bg-slate-100 px-2 py-1 text-xs font-bold text-slate-600">{item.type}</span><span className="rounded-full bg-emerald-100 px-2 py-1 text-xs font-bold text-emerald-700">{item.score}% fit</span></div></div><p className="mt-2 text-xs leading-5 text-slate-600"><b>Research signal:</b> {item.signal}</p>{item.newKeywordAngle && <p className="mt-1 text-xs leading-5 text-violet-700"><b>New keyword angle:</b> {item.newKeywordAngle}</p>}{item.differenceFromPrevious && <p className="mt-1 text-xs leading-5 text-brand-700"><b>What changed:</b> {item.differenceFromPrevious}</p>}<p className="mt-1 text-xs leading-5 text-slate-600"><b>Why this fits:</b> {item.why}</p><div className="mt-2 text-xs font-bold text-emerald-700">{item.estimatedImpact.label} <span className="font-medium text-slate-400">· {label(item.estimatedImpact.confidence)}</span></div></button><details className="mt-2 text-xs text-slate-500"><summary className="cursor-pointer font-bold text-brand-700">Evidence and reasoning</summary><div className="mt-2 space-y-1">{item.evidence.map((evidence) => <div key={evidence}>• {evidence}</div>)}</div><p className="mt-2 italic">{item.estimatedImpact.disclaimer}</p></details><button type="button" onClick={() => startSetup(item, 2)} disabled={Boolean(busy)} className="mt-3 rounded-lg bg-slate-950 px-4 py-2 text-xs font-bold text-white disabled:opacity-50">Select option and continue →</button></div>)}</div>
+          <div className="mt-3 grid gap-3 lg:grid-cols-2">{recommendations.map((item, index) => <Fragment key={`${item.researchRunId ?? "research"}-${item.type}-${item.title}`}><div className={`${index === 0 || index === currentRecommendationCount ? "block" : "hidden"} lg:col-span-2`}>{index === 0 && <div className="rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3"><div className="text-xs font-black uppercase tracking-wide text-emerald-700">Newest AI suggestions</div><p className="mt-1 text-xs text-emerald-900">These are the latest evidence-backed options. Your earlier suggestions remain available below.</p></div>}{index === currentRecommendationCount && <div className="mt-2 rounded-xl border border-slate-200 bg-slate-50 px-4 py-3"><div className="text-xs font-black uppercase tracking-wide text-slate-600">Previous suggestions retained</div><p className="mt-1 text-xs text-slate-500">Choose an earlier direction if it still fits better. It will use the research evidence from that suggestion.</p></div>}</div><div className={`rounded-xl border p-4 ${selectedIdea === item.title && selectedResearchRunId === item.researchRunId && !customType ? "border-brand-500 bg-brand-50 ring-2 ring-brand-100" : item.recommendationSet === "previous" ? "border-slate-200 bg-slate-50/70" : "border-slate-200 bg-white"}`}><button type="button" onClick={() => { setCustomType(""); setSelectedIdea(item.title); setSelectedResearchRunId(item.researchRunId ?? null); }} className="w-full text-left"><div className="flex flex-wrap items-start justify-between gap-2"><div><span className={`text-xs font-bold uppercase tracking-wide ${item.recommendationSet === "previous" ? "text-slate-500" : "text-brand-600"}`}>{item.recommendationSet === "previous" ? "Previous option" : index === 0 ? "Best new researched option" : `${label(item.buyerStage)} new alternative`}</span><h3 className="mt-1 text-sm font-bold text-slate-950">{item.title}</h3></div><div className="flex gap-2"><span className="rounded-full bg-slate-100 px-2 py-1 text-xs font-bold text-slate-600">{item.type}</span><span className="rounded-full bg-emerald-100 px-2 py-1 text-xs font-bold text-emerald-700">{item.score}% fit</span></div></div><p className="mt-2 text-xs leading-5 text-slate-600"><b>Research signal:</b> {item.signal}</p>{item.newKeywordAngle && <p className="mt-1 text-xs leading-5 text-violet-700"><b>New keyword angle:</b> {item.newKeywordAngle}</p>}{item.differenceFromPrevious && <p className="mt-1 text-xs leading-5 text-brand-700"><b>What changed:</b> {item.differenceFromPrevious}</p>}<p className="mt-1 text-xs leading-5 text-slate-600"><b>Why this fits:</b> {item.why}</p><div className="mt-2 text-xs font-bold text-emerald-700">{item.estimatedImpact.label} <span className="font-medium text-slate-400">· {label(item.estimatedImpact.confidence)}</span></div></button><details className="mt-2 text-xs text-slate-500"><summary className="cursor-pointer font-bold text-brand-700">Evidence and reasoning</summary><div className="mt-2 space-y-1">{item.evidence.map((evidence) => <div key={evidence}>• {evidence}</div>)}</div><p className="mt-2 italic">{item.estimatedImpact.disclaimer}</p></details><button type="button" onClick={() => startSetup(item, 2)} disabled={Boolean(busy)} className="mt-3 rounded-lg bg-slate-950 px-4 py-2 text-xs font-bold text-white disabled:opacity-50">Select option and continue →</button></div></Fragment>)}</div>
           <div className="mt-4 rounded-xl border border-slate-200 bg-white p-4">
-            <label className="block"><span className="text-xs font-bold text-slate-600">Choose another supported format</span><select value={customType} onChange={(event) => { const value = event.target.value; setCustomType(value); setTargetWordCount(""); setSelectedIdea(value ? `Create a project-specific ${value} using the completed lead-magnet research and the strongest conversion angle.` : recommendations[0]?.title ?? ""); }} className="mt-1 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm"><option value="">Use one of the AI recommendations above</option>{supportedTypes.map((item) => <option key={item}>{item}</option>)}</select></label>
+            <label className="block"><span className="text-xs font-bold text-slate-600">Choose another supported format</span><select value={customType} onChange={(event) => { const value = event.target.value; setCustomType(value); setTargetWordCount(""); setSelectedIdea(value ? `Create a project-specific ${value} using the completed lead-magnet research and the strongest conversion angle.` : recommendations[0]?.title ?? ""); setSelectedResearchRunId(value ? null : recommendations[0]?.researchRunId ?? null); }} className="mt-1 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm"><option value="">Use one of the AI recommendations above</option>{supportedTypes.map((item) => <option key={item}>{item}</option>)}</select></label>
             {customType && <div className="mt-4 rounded-xl border border-brand-200 bg-brand-50 p-4"><label className="block"><span className="text-xs font-bold text-brand-900">Target number of words for {customType} *</span><input autoFocus type="number" min={250} max={10000} step={250} required value={targetWordCount} onChange={(event) => setTargetWordCount(event.target.value)} placeholder="Example: 1500" className="mt-1 w-full rounded-lg border border-brand-300 bg-white px-3 py-2 text-sm outline-none focus:border-brand-600" /><span className="mt-1 block text-xs leading-5 text-brand-800">AI will generate within approximately 10% of this target. Choose 250–10,000 words.</span></label><div className="mt-3 flex flex-wrap gap-2">{[1000, 1500, 2000, 3000].map((words) => <button key={words} type="button" onClick={() => setTargetWordCount(String(words))} className={`rounded-lg border px-3 py-1.5 text-xs font-bold ${targetWordCount === String(words) ? "border-brand-600 bg-brand-600 text-white" : "border-brand-200 bg-white text-brand-700"}`}>{words.toLocaleString()} words</button>)}</div><button type="button" onClick={() => startSetup(undefined, 2)} disabled={Boolean(busy) || !hasValidTargetWordCount} className="mt-4 rounded-lg bg-slate-950 px-4 py-2 text-xs font-bold text-white disabled:cursor-not-allowed disabled:opacity-50">Continue with {customType} →</button></div>}
           </div>
         </section>}

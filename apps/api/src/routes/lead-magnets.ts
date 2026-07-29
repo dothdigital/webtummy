@@ -530,12 +530,17 @@ leadMagnetsRouter.get("/projects/:projectId/lead-magnets", async (req, res, next
 
 leadMagnetsRouter.get("/projects/:projectId/lead-magnets/recommendations", async (req, res, next) => { try {
   const { context, project } = await contextProject(req); if (context.roles.size === 1 && context.roles.has("client_viewer")) return res.json({ recommendations: [] });
-  const run = await prisma.aiRun.findFirst({ where: { projectId: project.id, moduleName: "lead_magnet_research", status: "completed" }, orderBy: { createdAt: "desc" } });
+  const runs = await prisma.aiRun.findMany({ where: { projectId: project.id, moduleName: "lead_magnet_research", status: "completed" }, orderBy: { createdAt: "desc" }, take: 2 });
+  const [run, previousRun] = runs;
   if (!run) return res.json({ recommendations: [], research: null, evidence: null, researchRun: null });
   const output = jsonObject(run.outputJson);
   const input = jsonObject(run.inputSnapshotJson);
+  const recommendations = jsonList(output.recommendations).map((item) => ({ ...jsonObject(item), researchRunId: run.id, recommendationSet: "current", researchCreatedAt: run.createdAt }));
+  const previousRecommendations = previousRun
+    ? jsonList(jsonObject(previousRun.outputJson).recommendations).map((item) => ({ ...jsonObject(item), researchRunId: previousRun.id, recommendationSet: "previous", researchCreatedAt: previousRun.createdAt }))
+    : [];
   res.json({
-    recommendations: jsonList(output.recommendations),
+    recommendations: [...recommendations, ...previousRecommendations],
     research: jsonObject(output.research),
     followUpQuestions: jsonList(output.followUpQuestions),
     evidence: jsonObject(output.evidence),
