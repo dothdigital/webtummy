@@ -1325,6 +1325,7 @@ function buildLeadMagnetPrompt(input: {
     selectedIdea ? `The user selected this lead magnet concept. Preserve its core intent and improve it: ${selectedIdea}` : "Choose the strongest concept from the project evidence.",
     instructions ? `User requirements and constraints (follow unless unsafe or contradicted by project facts): ${instructions}` : "No additional user requirements were supplied.",
     "The title, promise, format, outline, CTA, and follow-up must align with the selected concept, target audience, offer, primary goal, market, and available keyword intent.",
+    "Keep the opt-in form minimal. formFields may contain only First name, Last name, and Email; Email is always required.",
     JSON.stringify({
       leadMagnet: {
         title: "string",
