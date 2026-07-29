@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { emailSequenceHtml, emailSequenceText, leadCaptureWidgetHtml, leadFunnelOptimizationRecommendations, leadOpportunityRecommendations, renderLeadMagnetPdf, validateLeadFunnelForPublish } from "./routes/lead-magnets.js";
-import { leadMagnetBodyWordCount, openAiWebCitations } from "./routes/projects-v2.js";
+import { leadMagnetBodyWordCount, leadMagnetRecommendationIsFresh, openAiWebCitations } from "./routes/projects-v2.js";
 
 const completeFunnel = {
   status: "approved",
@@ -131,6 +131,27 @@ describe("DEV-011C lead funnel optimization", () => {
         }],
       }],
     })).toEqual([{ title: "Statistics Canada", url: "https://www.statcan.gc.ca/example" }]);
+  });
+
+  it("rejects renamed refresh recommendations that repeat the same core concept", () => {
+    const previous = [{
+      title: "Canadian Visitor Insurance Checklist",
+      signal: "Visitors need help comparing medical coverage requirements.",
+      why: "A checklist simplifies visitor insurance preparation.",
+      newKeywordAngle: "visitor insurance Canada",
+    }];
+    expect(leadMagnetRecommendationIsFresh({
+      title: "Visitor Insurance Preparation Checklist for Canada",
+      signal: "Help visitors compare medical coverage requirements.",
+      why: "A preparation checklist simplifies visitor insurance decisions.",
+      newKeywordAngle: "Canada visitor insurance",
+    }, previous)).toBe(false);
+    expect(leadMagnetRecommendationIsFresh({
+      title: "Super Visa Waiting-Period Cost Calculator",
+      signal: "Applicants ask how waiting periods change expected out-of-pocket cost.",
+      why: "A calculator addresses decision-stage cost planning.",
+      newKeywordAngle: "super visa insurance waiting period cost",
+    }, previous)).toBe(true);
   });
 
   it("requires visible HTTPS sources for factual visuals in every lead magnet format", () => {

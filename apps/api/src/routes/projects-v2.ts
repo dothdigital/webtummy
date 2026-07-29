@@ -150,6 +150,8 @@ const leadRecommendationValueSchema = z.object({
   signal: z.string().trim().min(3).max(1000),
   why: z.string().trim().min(3).max(1000),
   expectedOutcome: z.string().trim().min(3).max(500),
+  newKeywordAngle: z.string().trim().min(3).max(500).optional().nullable(),
+  differenceFromPrevious: z.string().trim().min(3).max(700).optional().nullable(),
   estimatedImpact: z.object({ low: z.number().min(0).max(100), high: z.number().min(0).max(100), metric: z.string().trim().max(120), confidence: z.enum(["directional", "medium"]), label: z.string().trim().max(240), disclaimer: z.string().trim().max(500) }),
   evidence: z.array(z.string().trim().min(3).max(1000)).max(10),
 });
@@ -1479,9 +1481,19 @@ function buildLeadMagnetResearchPrompt(input: {
     "This is a research and recommendation step only. Do not generate the lead magnet, landing page, or email sequence yet.",
     "Base every finding on the supplied business intake, keyword evidence, target geography, website analysis, selected Opportunity, approved Strategy, and SEO plan.",
     "Present the strongest recommendation from the existing evidence first. Follow-up questions must only refine genuine uncertainties; never make the initial recommendation depend on answering them.",
+    input.objective.researchMode === "refresh"
+      ? [
+        "This is a REFRESH pass. Return genuinely different opportunities, not renamed versions of previous recommendations.",
+        "Use the refreshHistory, alternativeKeywords, approved gap keywords, and liveRefreshDiscovery evidence supplied below.",
+        "Change the underlying keyword cluster, audience question, problem solved, buyer stage, or offer angle. Changing only the title or format is not sufficient.",
+        "Do not use the same core promise, topic, or recommendation logic as any prior recommendation.",
+        "Prefer underused and adjacent search-intent signals over the same highest-volume seed keyword. Do not invent search volume.",
+        "For every recommendation, fill newKeywordAngle and differenceFromPrevious with specific evidence.",
+      ].join(" ")
+      : "This is the primary research pass. Rank the strongest evidence-backed options.",
     input.objective.excludedRecommendationTitles?.length
-      ? `The user requested fresh alternatives. Do not repeat these previous recommendation titles or merely reword the same concepts: ${input.objective.excludedRecommendationTitles.join(" | ")}`
-      : "No previous recommendation titles need to be excluded.",
+      ? `Never repeat these prior titles: ${input.objective.excludedRecommendationTitles.join(" | ")}`
+      : "No client-supplied titles need to be excluded.",
     "Do not claim live web research, measured visitor behaviour, or conversion performance that is absent from the evidence.",
     "When evidence is missing, state the limitation. Estimated impact must be directional and must never be presented as guaranteed.",
     "Rank options by audience usefulness, search intent, geographic relevance, website lead-capture gap, business-goal alignment, and proximity to the requested action.",
@@ -1506,6 +1518,8 @@ function buildLeadMagnetResearchPrompt(input: {
         signal: "specific evidence signal",
         why: "why this option fits the requested outcome",
         expectedOutcome: "directional expected outcome",
+        newKeywordAngle: "the different keyword cluster, audience question, or search intent used",
+        differenceFromPrevious: "why this is substantively different from earlier recommendations",
         estimatedImpact: {
           low: 8,
           high: 20,
@@ -1521,6 +1535,78 @@ function buildLeadMagnetResearchPrompt(input: {
     `What the user plans to achieve: ${JSON.stringify(input.objective)}`,
     `Project evidence: ${JSON.stringify(input.evidence)}`,
   ].join("\n");
+}
+
+const leadMagnetConceptStopWords = new Set(["a", "an", "and", "best", "book", "buyers", "case", "checklist", "course", "discount", "ebook", "email", "free", "guide", "lead", "magnet", "pdf", "report", "resource", "sheet", "study", "template", "the", "toolkit", "worksheet"]);
+function leadMagnetConceptTokens(value: unknown) {
+  return new Set(String(value ?? "").toLowerCase().replace(/[^a-z0-9]+/g, " ").split(/\s+/).filter((token) => token.length > 2 && !leadMagnetConceptStopWords.has(token)));
+}
+function tokenOverlap(left: Set<string>, right: Set<string>) {
+  if (!left.size || !right.size) return 0;
+  const intersection = [...left].filter((token) => right.has(token)).length;
+  return intersection / Math.min(left.size, right.size);
+}
+export function leadMagnetRecommendationIsFresh(current: unknown, previous: unknown[]) {
+  const item = current && typeof current === "object" && !Array.isArray(current) ? current as Record<string, unknown> : {};
+  const titleTokens = leadMagnetConceptTokens(item.title);
+  const conceptTokens = leadMagnetConceptTokens([item.title, item.signal, item.why, item.newKeywordAngle].join(" "));
+  return !previous.some((raw) => {
+    const prior = raw && typeof raw === "object" && !Array.isArray(raw) ? raw as Record<string, unknown> : {};
+    const priorTitle = leadMagnetConceptTokens(prior.title);
+    const priorConcept = leadMagnetConceptTokens([prior.title, prior.signal, prior.why, prior.newKeywordAngle].join(" "));
+    return tokenOverlap(titleTokens, priorTitle) >= .66 || tokenOverlap(conceptTokens, priorConcept) >= .72;
+  });
+}
+
+async function researchFreshLeadMagnetAngles(input: {
+  projectName: string;
+  businessName: string;
+  niche: string | null;
+  goal: string;
+  audience: unknown;
+  offer: unknown;
+  geography: unknown;
+  currentKeywords: unknown;
+  alternativeKeywords: unknown;
+  previousConcepts: unknown;
+}, fetcher: typeof fetch = fetch) {
+  const response = await fetcher("https://api.openai.com/v1/responses", {
+    method: "POST",
+    signal: AbortSignal.timeout(120_000),
+    headers: { Authorization: `Bearer ${config.openaiApiKey}`, "Content-Type": "application/json" },
+    body: JSON.stringify({
+      model: config.openaiSearchModel,
+      tools: [{ type: "web_search", search_context_size: "medium" }],
+      tool_choice: "auto",
+      include: ["web_search_call.action.sources"],
+      input: [
+        "Use live web search to discover genuinely different lead-magnet opportunities for this business.",
+        "Research adjacent keyword themes, buyer questions, pain points, comparison intent, geographic concerns, regulatory or seasonal topics, and competitor content patterns that are not represented by the previous concepts.",
+        "Do not repeat or merely rename an earlier recommendation. Do not invent keyword volume, traffic, conversion data, or customer behaviour.",
+        "Prefer credible primary, regulator, government, standards, trade, or authoritative industry sources. Treat discovered keywords as qualitative themes unless measured data is supplied.",
+        `Project: ${input.projectName}`,
+        `Business: ${input.businessName}`,
+        `Niche: ${input.niche ?? "not provided"}`,
+        `Goal: ${input.goal}`,
+        `Audience: ${JSON.stringify(input.audience)}`,
+        `Offer: ${JSON.stringify(input.offer)}`,
+        `Geography: ${JSON.stringify(input.geography)}`,
+        `Existing high-priority keywords: ${JSON.stringify(input.currentKeywords)}`,
+        `Unused, gap, or lower-ranked keywords to explore: ${JSON.stringify(input.alternativeKeywords)}`,
+        `Previous concepts that must not be repeated: ${JSON.stringify(input.previousConcepts)}`,
+        "Return a concise research memo with 6–10 alternative keyword/question angles and explain the evidence for each with inline citations.",
+      ].join("\n"),
+    }),
+  });
+  const data = await response.json().catch(() => ({})) as unknown;
+  if (!response.ok) {
+    const root = data && typeof data === "object" && !Array.isArray(data) ? data as Record<string, unknown> : {};
+    const error = root.error && typeof root.error === "object" && !Array.isArray(root.error) ? root.error as Record<string, unknown> : {};
+    throw new Error(typeof error.message === "string" ? error.message : "Fresh lead-magnet discovery failed.");
+  }
+  const sources = openAiWebCitations(data);
+  if (!sources.length) throw new Error("Fresh AI discovery returned no verifiable web sources.");
+  return { summary: openAiResponseText(data).slice(0, 12_000), sources, model: config.openaiSearchModel };
 }
 
 function leadMagnetCoverImage(input: { title: string; businessName: string; branding: Record<string, unknown>; imagePlan: unknown }) {
@@ -3639,7 +3725,7 @@ guidedProjectsRouter.post("/projects-v2/:projectId/lead-magnet/research", async 
 
   let usageEventId: string | null = null;
   try {
-    const [client, keywordRuns, crawl] = await Promise.all([
+    const [client, keywordRuns, crawl, previousResearchRuns] = await Promise.all([
       prisma.client.findUnique({ where: { id: project.clientId }, select: { plan: true } }),
       prisma.keywordResearchRun.findMany({
         where: { projectId: project.id },
@@ -3666,15 +3752,21 @@ guidedProjectsRouter.post("/projects-v2/:projectId/lead-magnet/research", async 
           },
         },
       }) : Promise.resolve(null),
+      prisma.aiRun.findMany({
+        where: { projectId: project.id, moduleName: "lead_magnet_research", status: "completed" },
+        orderBy: { createdAt: "desc" },
+        take: 5,
+        select: { id: true, createdAt: true, outputJson: true },
+      }),
     ]);
     const targetMarkets = cleanLocations(Array.isArray(project.targetLocations) ? project.targetLocations.filter((item): item is string => typeof item === "string") : [], project.targetLocation);
     const keywordEvidence = keywordRuns.flatMap((run) => [
       { keyword: run.seedKeyword, monthlySearches: run.averageVolume ?? 0, intent: "Seed topic", geography: run.locationName, source: "keyword research seed" },
       ...run.ideas.map((idea) => ({ keyword: idea.keyword, monthlySearches: idea.avgMonthlySearches ?? 0, intent: idea.competition ?? "Research", geography: run.locationName, source: "keyword research idea" })),
     ]);
-    const dedupedKeywords = [...new Map(keywordEvidence.map((item) => [item.keyword.trim().toLowerCase(), item])).values()]
-      .sort((a, b) => b.monthlySearches - a.monthlySearches)
-      .slice(0, 40);
+    const allDedupedKeywords = [...new Map(keywordEvidence.map((item) => [item.keyword.trim().toLowerCase(), item])).values()]
+      .sort((a, b) => b.monthlySearches - a.monthlySearches);
+    const dedupedKeywords = allDedupedKeywords.slice(0, 40);
     const approvedKeywordGroups = project.keywordGroups.filter((group) => group.status === "approved").map((group) => ({
       category: group.category,
       title: group.title,
@@ -3684,12 +3776,25 @@ guidedProjectsRouter.post("/projects-v2/:projectId/lead-magnet/research", async 
     }));
     const selectedOpportunity = project.opportunities.find((opportunity) => opportunityDecisionStatus(opportunity.status)) ?? null;
     const approvedStrategy = project.strategyPlans.find((strategy) => strategy.status === "approved") ?? project.strategyPlans[0] ?? null;
+    const previousConcepts = previousResearchRuns.flatMap((run) => {
+      const output = run.outputJson && typeof run.outputJson === "object" && !Array.isArray(run.outputJson) ? run.outputJson as Record<string, unknown> : {};
+      return (Array.isArray(output.recommendations) ? output.recommendations : []).map((raw) => {
+        const item = raw && typeof raw === "object" && !Array.isArray(raw) ? raw as Record<string, unknown> : {};
+        return {
+          title: String(item.title ?? ""),
+          type: String(item.type ?? ""),
+          signal: String(item.signal ?? ""),
+          why: String(item.why ?? ""),
+          newKeywordAngle: String(item.newKeywordAngle ?? ""),
+        };
+      });
+    }).filter((item) => item.title);
     const researchText = (value: unknown, max = 1800) => {
       if (value == null) return null;
       const source = typeof value === "string" ? value : JSON.stringify(value);
       return source.length > max ? `${source.slice(0, max)}…` : source;
     };
-    const evidence = {
+    const evidence: Record<string, unknown> = {
       businessIntake: {
         businessName: project.businessName ?? project.name,
         niche: project.niche,
@@ -3711,8 +3816,18 @@ guidedProjectsRouter.post("/projects-v2/:projectId/lead-magnet/research", async 
       keywords: {
         approvedGroups: approvedKeywordGroups,
         measuredKeywords: dedupedKeywords,
+        alternativeKeywords: researchInput.researchMode === "refresh"
+          ? [
+            ...allDedupedKeywords.slice(40, 100),
+            ...approvedKeywordGroups.flatMap((group) => group.gapKeywords.map((keyword) => ({ keyword, monthlySearches: 0, intent: `Gap keyword · ${group.category}`, geography: targetMarkets.join(", "), source: "approved keyword group gap" }))),
+          ].slice(0, 80)
+          : [],
         hasMeasuredDemand: dedupedKeywords.some((item) => item.monthlySearches > 0),
       },
+      refreshHistory: researchInput.researchMode === "refresh" ? {
+        previousRunCount: previousResearchRuns.length,
+        previousConcepts,
+      } : null,
       siteAnalysis: crawl ? {
         crawlId: crawl.id,
         completedAt: crawl.completedAt,
@@ -3755,21 +3870,70 @@ guidedProjectsRouter.post("/projects-v2/:projectId/lead-magnet/research", async 
       metadata: { objective: researchInput.objective, desiredAction: researchInput.desiredAction, researchMode: researchInput.researchMode },
     });
     usageEventId = preflight.usageEventId;
-    const generated = await openaiJson(buildLeadMagnetResearchPrompt({ objective: researchInput, evidence }), routedModel);
-    const validated = leadMagnetResearchOutputSchema.safeParse(generated.result);
-    if (!validated.success) throw new Error("AI research returned an incomplete evidence or recommendation structure. Please run the research again.");
+    if (researchInput.researchMode === "refresh") {
+      evidence.liveRefreshDiscovery = await researchFreshLeadMagnetAngles({
+        projectName: project.name,
+        businessName: project.businessName ?? project.name,
+        niche: project.niche,
+        goal: project.primaryGoal,
+        audience: project.businessProfile.targetAudience,
+        offer: project.businessProfile.offerSummary,
+        geography: evidence.geography,
+        currentKeywords: dedupedKeywords.slice(0, 20),
+        alternativeKeywords: (evidence.keywords as { alternativeKeywords: unknown }).alternativeKeywords,
+        previousConcepts,
+      });
+    }
+    let researchResult: z.infer<typeof leadMagnetResearchOutputSchema> | null = null;
+    let generatedModel = routedModel;
+    let generatedInputTokens = 0;
+    let generatedOutputTokens = 0;
+    for (let attempt = 0; attempt < (researchInput.researchMode === "refresh" ? 2 : 1); attempt++) {
+      const generated = await openaiJson(buildLeadMagnetResearchPrompt({ objective: researchInput, evidence }), routedModel);
+      generatedModel = generated.model;
+      generatedInputTokens += generated.inputTokens;
+      generatedOutputTokens += generated.outputTokens;
+      const validated = leadMagnetResearchOutputSchema.safeParse(generated.result);
+      if (!validated.success) {
+        if (attempt === 0 && researchInput.researchMode === "refresh") {
+          evidence.refreshRetryReason = "The first refresh response did not satisfy the required recommendation structure.";
+          continue;
+        }
+        throw new Error("AI research returned an incomplete evidence or recommendation structure. Please run the research again.");
+      }
+      const recommendations = researchInput.researchMode === "refresh"
+        ? validated.data.recommendations.filter(
+          (recommendation) =>
+            typeof recommendation.newKeywordAngle === "string" &&
+            recommendation.newKeywordAngle.trim().length > 0 &&
+            typeof recommendation.differenceFromPrevious === "string" &&
+            recommendation.differenceFromPrevious.trim().length > 0 &&
+            leadMagnetRecommendationIsFresh(recommendation, previousConcepts),
+        )
+        : validated.data.recommendations;
+      if (researchInput.researchMode === "refresh" && recommendations.length < 2) {
+        evidence.refreshRejectedCandidates = validated.data.recommendations.map((item) => ({ title: item.title, type: item.type, signal: item.signal, why: item.why }));
+        evidence.refreshRetryReason = "The first refresh repeated earlier concepts. Search different keyword clusters, audience questions, and buyer-stage problems.";
+        if (attempt === 0) continue;
+        throw new Error("AI could not find at least two genuinely different lead-magnet angles. Add or approve more keyword groups, then refresh again.");
+      }
+      researchResult = { ...validated.data, recommendations };
+      break;
+    }
+    if (!researchResult) throw new Error("AI could not complete fresh lead-magnet research.");
+    const completedResearch = researchResult;
     const researchRun = await prisma.$transaction(async (tx) => {
       const run = await tx.aiRun.create({
         data: {
           projectId: project.id,
           clientId: project.clientId,
           moduleName: "lead_magnet_research",
-          promptVersion: "lead-magnet-research-v1",
+          promptVersion: "lead-magnet-research-v2",
           inputSnapshotJson: { objective: researchInput, evidence } as Prisma.InputJsonValue,
-          outputJson: { research: validated.data.research, followUpQuestions: validated.data.followUpQuestions, recommendations: validated.data.recommendations, evidence } as Prisma.InputJsonValue,
-          outputText: validated.data.research.recommendedStrategy,
+          outputJson: { research: completedResearch.research, followUpQuestions: completedResearch.followUpQuestions, recommendations: completedResearch.recommendations, evidence } as Prisma.InputJsonValue,
+          outputText: completedResearch.research.recommendedStrategy,
           status: "completed",
-          tokenUsage: { inputTokens: generated.inputTokens, outputTokens: generated.outputTokens, model: generated.model },
+          tokenUsage: { inputTokens: generatedInputTokens, outputTokens: generatedOutputTokens, model: generatedModel },
         },
       });
       await recordWorkspaceActivity(tx, {
@@ -3779,13 +3943,13 @@ guidedProjectsRouter.post("/projects-v2/:projectId/lead-magnet/research", async 
         entityId: run.id,
         agencyClientId: project.agencyClientId,
         projectId: project.id,
-        nextJson: { objective: researchInput, recommendationCount: validated.data.recommendations.length, topRecommendation: validated.data.recommendations[0]?.title ?? null },
+        nextJson: { objective: researchInput, recommendationCount: completedResearch.recommendations.length, topRecommendation: completedResearch.recommendations[0]?.title ?? null, freshDiscovery: researchInput.researchMode === "refresh" },
       });
       return run;
     });
-    await commitUsage({ usageEventId, provider: "openai", model: generated.model, inputTokens: generated.inputTokens, outputTokens: generated.outputTokens, metadata: { aiRunId: researchRun.id } });
+    await commitUsage({ usageEventId, provider: "openai", model: generatedModel, inputTokens: generatedInputTokens, outputTokens: generatedOutputTokens, metadata: { aiRunId: researchRun.id, freshDiscovery: researchInput.researchMode === "refresh" } });
     usageEventId = null;
-    res.status(201).json({ researchRun: { id: researchRun.id, createdAt: researchRun.createdAt, objective: researchInput }, evidence, ...validated.data });
+    res.status(201).json({ researchRun: { id: researchRun.id, createdAt: researchRun.createdAt, objective: researchInput }, evidence, ...completedResearch });
   } catch (error) {
     if (usageEventId) await refundUsage({ usageEventId, reason: error instanceof Error ? error.message : "Lead-magnet research failed" }).catch(() => undefined);
     throw error;
