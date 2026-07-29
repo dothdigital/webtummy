@@ -23,6 +23,7 @@ export type WebsiteRenderOptions = {
   mediaAssets?: WebsiteModel["mediaAssets"];
   assetUrls?: Record<string, string>;
   internalUrlMap?: Record<string, string>;
+  formAction?: string;
 };
 
 const escapeHtml = (value: unknown) =>
@@ -130,6 +131,12 @@ const renderCardItems = (component: WebsiteComponentInstance, className: string)
     })
     .join("");
 
+const managedFormAttributes = (options: WebsiteRenderOptions, formId: string) =>
+  `method="post"${options.formAction ? ` action="${escapeHtml(options.formAction)}" data-senuke-managed-form` : ""} data-senuke-form-id="${escapeHtml(formId)}"`;
+
+const formHoneypot = () =>
+  `<label class="senuke-visually-hidden" aria-hidden="true">Company website<input type="text" name="_senuke_company_website" tabindex="-1" autocomplete="off"></label>`;
+
 /**
  * Render one registry-approved component. The renderer never accepts arbitrary
  * HTML or code from the Website Model.
@@ -200,7 +207,7 @@ export function renderWebsiteComponentHtml(
           const inputType = ["email", "tel", "text"].includes(type) ? type : /email/i.test(name) ? "email" : /phone|tel/i.test(name) ? "tel" : "text";
           return `<label>${escapeHtml(label)}<input type="${inputType}" name="${escapeHtml(name)}"${required ? " required" : ""}></label>`;
         }).join("");
-        return `<section class="senuke-component senuke-contact-form"><div><h2>${heading}</h2><p>${escapeHtml(propString(component, "introduction"))}</p></div><form method="post" data-senuke-form-id="${escapeHtml(propString(component, "formId"))}">${controls}<button class="senuke-button" type="submit">${escapeHtml(propString(component, "submitLabel"))}</button><p class="senuke-form-success" hidden>${escapeHtml(propString(component, "successMessage"))}</p></form></section>`;
+        return `<section class="senuke-component senuke-contact-form"><div><h2>${heading}</h2><p>${escapeHtml(propString(component, "introduction"))}</p></div><form ${managedFormAttributes(options, propString(component, "formId"))}>${formHoneypot()}${controls}<button class="senuke-button" type="submit">${escapeHtml(propString(component, "submitLabel"))}</button><p class="senuke-form-status" role="status" aria-live="polite" hidden>${escapeHtml(propString(component, "successMessage"))}</p></form></section>`;
       }
     case "global.footer":
       return `<footer class="senuke-component senuke-footer"><strong>${escapeHtml(propString(component, "businessName"))}</strong>${propString(component, "summary") ? `<p>${escapeHtml(propString(component, "summary"))}</p>` : ""}</footer>`;
@@ -215,10 +222,11 @@ export function renderWebsitePageBodyHtml(
   options: WebsiteRenderOptions = {},
 ) {
   const contactPage = model.pages.find((candidate) => candidate.pageType === "contact" || candidate.pageType === "conversion" || /\b(contact|get in touch|request a quote)\b/i.test(candidate.name));
+  const contactPath = contactPage ? normalizedPath(contactPage.slug) : "";
   const internalUrlMap = {
-    ...options.internalUrlMap,
     ...Object.fromEntries(model.pages.map((candidate) => [normalizedPath(candidate.slug), normalizedPath(candidate.slug)])),
-    ...(contactPage ? { "/contact/": normalizedPath(contactPage.slug) } : {}),
+    ...(contactPage ? { "/contact/": options.internalUrlMap?.[contactPath] || contactPath } : {}),
+    ...options.internalUrlMap,
   };
   const componentOptions = { ...options, internalUrlMap };
   const renderedSections = page.sections.map((component) => renderWebsiteComponentHtml(component, componentOptions));
@@ -230,8 +238,18 @@ export function renderWebsitePageBodyHtml(
   const conversionLinks = renderInternalLinkList(model, page, ["cta"], componentOptions, "senuke-link-cta", "Next step");
   const form = model.forms[0];
   const hasRegisteredForm = page.sections.some((section) => section.componentId === "conversion.contact_form");
-  const formHtml = page.pageType === "conversion" && form && !hasRegisteredForm
-    ? options.formShortcode || `<section class="senuke-component senuke-form"><h2>Contact us</h2><form method="post">${form.fields.map((field) => `<p><label>${escapeHtml(field)}<input name="${escapeHtml(field.toLowerCase().replace(/[^a-z0-9]+/g, "-"))}"></label></p>`).join("")}<button class="senuke-button" type="submit">Submit</button></form></section>`
+  const isContactPage = page.pageType === "contact"
+    || page.pageType === "conversion"
+    || /\b(contact|get in touch|enquir|request (?:a )?quote)\b/i.test(`${page.name} ${page.slug}`);
+  const formHtml = isContactPage && form && !hasRegisteredForm
+    ? options.formShortcode || `<section class="senuke-component senuke-contact-form"><div><h2>Contact us</h2><p>Tell us how we can help and the team will follow up using the contact details you provide.</p></div><form ${managedFormAttributes(options, form.formId)}>${formHoneypot()}${form.fields.map((field) => {
+        const name = field.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "field";
+        const required = /name|email|message|details|consent/i.test(field);
+        if (/message|details|question/i.test(field)) return `<label>${escapeHtml(field)}<textarea name="${escapeHtml(name)}"${required ? " required" : ""} rows="5"></textarea></label>`;
+        if (/consent/i.test(field)) return `<label class="senuke-form-consent"><input type="checkbox" name="${escapeHtml(name)}"${required ? " required" : ""}> <span>${escapeHtml(field)}</span></label>`;
+        const type = /email/i.test(field) ? "email" : /phone|tel/i.test(field) ? "tel" : "text";
+        return `<label>${escapeHtml(field)}<input type="${type}" name="${escapeHtml(name)}"${required ? " required" : ""}></label>`;
+      }).join("")}<button class="senuke-button" type="submit">Send enquiry</button><p class="senuke-form-status" role="status" aria-live="polite" hidden></p></form></section>`
     : "";
   return `${breadcrumbHtml(model, page, componentOptions)}${sections}${relatedLinks}${conversionLinks}${formHtml}`;
 }
@@ -240,7 +258,7 @@ const pageIsLocalRender = (page: WebsitePageModel) =>
   Boolean(page.seo.location?.city || page.seo.location?.province || page.seo.location?.country || page.seo.location?.market)
   || /(?:local|location|city|province|service.area)/i.test(`${page.pageType} ${page.seo.dominantIntent}`);
 
-const navigationHtml = (model: WebsiteModel) => {
+const navigationHtml = (model: WebsiteModel, options: WebsiteRenderOptions = {}) => {
   const navigation = model.navigationModel?.primaryMenu ?? model.navigation;
   const items = navigation.filter((item) => !item.parentPageId);
   const nested = (item: WebsiteModel["navigation"][number], visited = new Set<string>()): string => {
@@ -249,7 +267,10 @@ const navigationHtml = (model: WebsiteModel) => {
     if (!page && !item.custom) return "";
     const nextVisited = new Set(visited).add(item.pageId);
     const children = navigation.filter((candidate) => candidate.parentPageId === item.pageId);
-    const destination = page ? normalizedPath(page.slug) : item.url || "";
+    const path = page ? normalizedPath(page.slug) : item.url || "";
+    const destination = page
+      ? options.internalUrlMap?.[path] || path
+      : resolvedComponentUrl(path, options);
     const label = destination
       ? `<a href="${escapeHtml(destination)}">${escapeHtml(item.label)}</a>`
       : `<span>${escapeHtml(item.label)}</span>`;
@@ -258,22 +279,24 @@ const navigationHtml = (model: WebsiteModel) => {
   return `<nav aria-label="Primary navigation"><ul>${items.map((item) => nested(item)).join("")}</ul></nav>`;
 };
 
-const utilityNavigationHtml = (model: WebsiteModel) => {
+const utilityNavigationHtml = (model: WebsiteModel, options: WebsiteRenderOptions = {}) => {
   const items = model.navigationModel?.utilityMenu ?? [];
   if (!items.length) return "";
   return `<nav class="senuke-utility-nav" aria-label="Utility navigation"><ul>${items.map((item) => {
     const page = pageById(model, item.pageId);
-    const href = page ? normalizedPath(page.slug) : item.url || "";
+    const path = page ? normalizedPath(page.slug) : item.url || "";
+    const href = page ? options.internalUrlMap?.[path] || path : resolvedComponentUrl(path, options);
     return href ? `<li><a href="${escapeHtml(href)}">${escapeHtml(item.label)}</a></li>` : "";
   }).join("")}</ul></nav>`;
 };
 
-const footerNavigationHtml = (model: WebsiteModel) => {
+const footerNavigationHtml = (model: WebsiteModel, options: WebsiteRenderOptions = {}) => {
   const groups = model.navigationModel?.footerMenus ?? [];
   if (!groups.length) return "";
   return `<nav class="senuke-footer-navigation" aria-label="Footer navigation">${groups.map((group) => `<section><h2>${escapeHtml(group.label)}</h2><ul>${group.items.map((item) => {
     const page = pageById(model, item.pageId);
-    const href = page ? normalizedPath(page.slug) : item.url || "";
+    const path = page ? normalizedPath(page.slug) : item.url || "";
+    const href = page ? options.internalUrlMap?.[path] || path : resolvedComponentUrl(path, options);
     return href ? `<li><a href="${escapeHtml(href)}">${escapeHtml(item.label)}</a></li>` : "";
   }).join("")}</ul></section>`).join("")}</nav>`;
 };
@@ -321,6 +344,33 @@ export function renderWebsitePageDocument(
     model.identity?.businessAddress ? `<span>${escapeHtml(model.identity.businessAddress)}</span>` : "",
   ].filter(Boolean);
   const copyrightText = model.identity?.copyrightText || `© ${new Date().getFullYear()} ${brandName}. All rights reserved.`;
+  const homeHref = options.internalUrlMap?.["/"] || "/";
+  const formDeliveryScript = options.formAction
+    ? `<script>
+document.querySelectorAll("[data-senuke-managed-form]").forEach(function(form){
+  form.addEventListener("submit",async function(event){
+    event.preventDefault();
+    var button=form.querySelector('button[type="submit"]');
+    var status=form.querySelector(".senuke-form-status");
+    if(button)button.disabled=true;
+    if(status){status.hidden=false;status.classList.remove("senuke-form-error");status.textContent="Sending…";}
+    try{
+      var payload={};
+      new FormData(form).forEach(function(value,key){payload[key]=String(value);});
+      var response=await fetch(form.action,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)});
+      var result=await response.json().catch(function(){return {};});
+      if(!response.ok)throw new Error(result.error||"We could not send your enquiry. Please try again.");
+      form.reset();
+      if(status)status.textContent=result.message||"Thank you. Your enquiry has been received.";
+    }catch(error){
+      if(status){status.classList.add("senuke-form-error");status.textContent=error instanceof Error?error.message:"We could not send your enquiry. Please try again.";}
+    }finally{
+      if(button)button.disabled=false;
+    }
+  });
+});
+</script>`
+    : "";
   return `<!doctype html>
 <html lang="en" style="${cssVariables}">
 <head>
@@ -334,9 +384,10 @@ export function renderWebsitePageDocument(
 <script type="application/ld+json">${safeJsonLd(page.seo.schemaJsonLd)}</script>
 </head>
 <body>
-<header class="senuke-site-header"><a class="senuke-brand" href="/">${brandMarkup}</a><div class="senuke-header-navigation">${utilityNavigationHtml(model)}${navigationHtml(model)}</div><details class="senuke-mobile-menu"><summary aria-label="Open navigation menu"><span class="senuke-menu-icon" aria-hidden="true"><i></i><i></i><i></i></span><span class="senuke-visually-hidden">Menu</span></summary><div class="senuke-mobile-menu-panel">${utilityNavigationHtml(model)}${navigationHtml(model)}</div></details></header>
+<header class="senuke-site-header"><a class="senuke-brand" href="${escapeHtml(homeHref)}">${brandMarkup}</a><div class="senuke-header-navigation">${utilityNavigationHtml(model, options)}${navigationHtml(model, options)}</div><details class="senuke-mobile-menu"><summary aria-label="Open navigation menu"><span class="senuke-menu-icon" aria-hidden="true"><i></i><i></i><i></i></span><span class="senuke-visually-hidden">Menu</span></summary><div class="senuke-mobile-menu-panel">${utilityNavigationHtml(model, options)}${navigationHtml(model, options)}</div></details></header>
 <main>${renderWebsitePageBodyHtml(model, page, { ...options, mediaAssets: options.mediaAssets || model.mediaAssets })}</main>
-<footer class="senuke-site-footer"><strong>${escapeHtml(brandName)}</strong>${contactItems.length ? `<div class="senuke-footer-contact">${contactItems.join("<span aria-hidden=\"true\"> · </span>")}</div>` : ""}${socialNavigationHtml(model)}${footerNavigationHtml(model)}<p class="senuke-footer-copyright">${escapeHtml(copyrightText)}</p></footer>
+<footer class="senuke-site-footer"><strong>${escapeHtml(brandName)}</strong>${contactItems.length ? `<div class="senuke-footer-contact">${contactItems.join("<span aria-hidden=\"true\"> · </span>")}</div>` : ""}${socialNavigationHtml(model)}${footerNavigationHtml(model, options)}<p class="senuke-footer-copyright">${escapeHtml(copyrightText)}</p></footer>
+${formDeliveryScript}
 </body>
 </html>`;
 }
@@ -390,9 +441,11 @@ h1{max-width:18ch;font-size:clamp(2.2rem,6vw,4.8rem)}
 .senuke-contact-form form{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:1rem;padding:clamp(1.25rem,4vw,2.25rem);border-radius:1.25rem;background:var(--senuke-surface);box-shadow:0 20px 60px rgba(15,23,42,.1)}
 .senuke-contact-form label{display:grid;gap:.45rem;font-weight:750}
 .senuke-contact-form input,.senuke-contact-form textarea{width:100%;border:1px solid color-mix(in srgb,var(--senuke-muted) 30%,transparent);border-radius:.75rem;background:var(--senuke-background);padding:.8rem;font:inherit}
-.senuke-contact-form label:has(textarea),.senuke-form-consent,.senuke-contact-form .senuke-button,.senuke-form-success{grid-column:1/-1}
+.senuke-contact-form label:has(textarea),.senuke-form-consent,.senuke-contact-form .senuke-button,.senuke-form-status{grid-column:1/-1}
 .senuke-form-consent{display:flex!important;align-items:flex-start}
 .senuke-form-consent input{width:auto;margin-top:.35rem}
+.senuke-form-status{margin:0;font-weight:750;color:var(--senuke-primary)}
+.senuke-form-error{color:#b91c1c}
 .senuke-faq details+details{margin-top:.75rem}
 .senuke-faq summary{cursor:pointer;font-weight:800}
 .senuke-site-footer{margin-top:4rem;background:var(--senuke-text);padding:3rem max(1rem,calc((100% - 1120px)/2));color:#cbd5e1;font-size:.85rem}
@@ -490,6 +543,13 @@ export function createStaticWebsiteFiles(
     const path = normalizedPath(page.slug);
     const directoryDepth = path === "/" ? 0 : path.replace(/^\/|\/$/g, "").split("/").filter(Boolean).length;
     const relativeRoot = directoryDepth ? "../".repeat(directoryDepth) : "";
+    const internalUrlMap = Object.fromEntries(model.pages.map((targetPage) => {
+      const targetPath = normalizedPath(targetPage.slug);
+      const targetFile = targetPath === "/"
+        ? "index.html"
+        : `${targetPath.replace(/^\/|\/$/g, "")}/index.html`;
+      return [targetPath, `${relativeRoot}${targetFile}`];
+    }));
     const pageAssetUrls = Object.fromEntries(Object.entries(assetUrls).map(([assetId, url]) => [
       assetId,
       url.startsWith("/") ? `${relativeRoot}${url.slice(1)}` : url,
@@ -501,6 +561,7 @@ export function createStaticWebsiteFiles(
         stylesheetHref: `${relativeRoot}assets/senuke.css`,
         mediaAssets: model.mediaAssets,
         assetUrls: pageAssetUrls,
+        internalUrlMap,
       }),
       mimeType: "text/html",
     };

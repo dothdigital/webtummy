@@ -44,6 +44,7 @@ import { config } from "../config.js";
 import { centralAiJson } from "../central-ai-service.js";
 import { submitTaskApproval } from "../approval-workflow.js";
 import { websiteBuilderQueue } from "../queue.js";
+import { staticWebsiteFormAction } from "./website-public-forms.js";
 import { canAccessProject, hasWorkspacePermission, recordWorkspaceActivity, workspaceContext } from "../workspace-access.js";
 
 export const websiteBuilderRouter = Router();
@@ -417,7 +418,6 @@ function qualityWebsiteModel(project: { id: string; businessLocationJson?: Prism
       generationStatus: page.status,
       ...(Number.isFinite(Number(content.modelVersion)) ? { websiteModelVersion: Number(content.modelVersion) } : {}),
       componentRegistryVersion: String(content.componentRegistryVersion || SENUKE_COMPONENT_REGISTRY_V1.version),
-      ...(settings.currentApprovedReleaseId ? { releaseId: String(settings.currentApprovedReleaseId) } : {}),
       ...(page.parentPageId ? { parentPageId: page.parentPageId } : {}),
       ...(["service", "product"].includes(page.pageType) && page.parentPageId ? { categoryPageId: page.parentPageId } : {}),
       ...(mappedRequiredLinks.find((reference) => reference.includes("location-hub")) ? { locationHubId: mappedRequiredLinks.find((reference) => reference.includes("location-hub")) } : {}),
@@ -827,7 +827,17 @@ async function wpUploadMedia(integration: { siteUrl: string; username: string | 
 async function scopedProject(projectId: string, req: Parameters<typeof workspaceContext>[0]) {
   const context = await workspaceContext(req);
   if (!await canAccessProject(context, projectId)) throw Object.assign(new Error("Project not found."), { statusCode: 404 });
-  const project = await prisma.project.findUnique({ where: { id: projectId }, include: { agencyClient: true, businessProfile: true, keywordGroups: { where: { status: "approved" } }, siteArchitectureVersions: { where: { status: "approved" }, orderBy: { version: "desc" }, take: 1, include: { pages: { orderBy: { sortOrder: "asc" } }, links: true } }, executionTasks: { orderBy: { updatedAt: "desc" }, take: 100 }, websiteBuilds: { orderBy: { updatedAt: "desc" }, take: 1, include: { pages: { orderBy: { sortOrder: "asc" }, include: { versions: { orderBy: { version: "desc" }, take: 10 }, mediaAssets: true } }, mediaAssets: true, generationCheckpoints: { orderBy: { updatedAt: "desc" }, take: 1000 }, jobs: { orderBy: { createdAt: "desc" }, take: 10 }, deployments: { orderBy: { createdAt: "desc" }, take: 10, include: { qaResults: true } } } }, websiteModelVersions: { orderBy: { version: "desc" }, take: 1, include: { validationResults: { orderBy: { validatedAt: "desc" }, take: 1 } } }, websiteApprovedReleases: { orderBy: { approvedAt: "desc" }, take: 1 }, websitePublications: { orderBy: { createdAt: "desc" }, take: 5 }, wordpressIntegrations: { orderBy: { updatedAt: "desc" }, take: 5 }, wordpressPublishJobs: { orderBy: { updatedAt: "desc" }, take: 50 } } });
+  const workflowBuild = await prisma.websiteBuild.findFirst({
+    where: { projectId },
+    orderBy: { updatedAt: "desc" },
+    select: { settingsJson: true },
+  });
+  const workflowSettings = jsonRecord(workflowBuild?.settingsJson);
+  const hasActiveWorkflowSnapshot = Boolean(workflowSettings.currentValidationResultId || workflowSettings.currentApprovedReleaseId);
+  const activeModelId = hasActiveWorkflowSnapshot ? String(workflowSettings.currentWebsiteModelVersionId || "") : "";
+  const activeValidationId = hasActiveWorkflowSnapshot ? String(workflowSettings.currentValidationResultId || "") : "";
+  const activeReleaseId = String(workflowSettings.currentApprovedReleaseId || "");
+  const project = await prisma.project.findUnique({ where: { id: projectId }, include: { agencyClient: true, businessProfile: true, keywordGroups: { where: { status: "approved" } }, siteArchitectureVersions: { where: { status: "approved" }, orderBy: { version: "desc" }, take: 1, include: { pages: { orderBy: { sortOrder: "asc" } }, links: true } }, executionTasks: { orderBy: { updatedAt: "desc" }, take: 100 }, websiteBuilds: { orderBy: { updatedAt: "desc" }, take: 1, include: { pages: { orderBy: { sortOrder: "asc" }, include: { versions: { orderBy: { version: "desc" }, take: 10 }, mediaAssets: true } }, mediaAssets: true, generationCheckpoints: { orderBy: { updatedAt: "desc" }, take: 1000 }, jobs: { orderBy: { createdAt: "desc" }, take: 10 }, deployments: { orderBy: { createdAt: "desc" }, take: 10, include: { qaResults: true } } } }, websiteModelVersions: activeModelId ? { where: { id: activeModelId }, take: 1, include: { validationResults: activeValidationId ? { where: { id: activeValidationId }, take: 1 } : { orderBy: { validatedAt: "desc" }, take: 1 } } } : { orderBy: { version: "desc" }, take: 1, include: { validationResults: { orderBy: { validatedAt: "desc" }, take: 1 } } }, websiteApprovedReleases: activeReleaseId ? { where: { id: activeReleaseId }, take: 1 } : { orderBy: { approvedAt: "desc" }, take: 1 }, websitePublications: { orderBy: { createdAt: "desc" }, take: 5 }, wordpressIntegrations: { orderBy: { updatedAt: "desc" }, take: 5 }, wordpressPublishJobs: { orderBy: { updatedAt: "desc" }, take: 50 } } });
   if (!project) throw Object.assign(new Error("Project not found."), { statusCode: 404 });
   if (!project.businessName && project.agencyClient?.name) project.businessName = project.agencyClient.name;
   return { context, project };
@@ -972,14 +982,26 @@ export function builderView(project: Awaited<ReturnType<typeof scopedProject>>["
       }),
     };
   }
-  const latestModel = project.websiteModelVersions[0] ?? null;
-  const latestValidation = latestModel?.validationResults[0] ?? null;
-  const activeValidation = latestValidation
-    && currentWorkflowSettings.currentValidationResultId === latestValidation.id
+  const configuredModelId = currentWorkflowSettings.currentValidationResultId || currentWorkflowSettings.currentApprovedReleaseId
+    ? String(currentWorkflowSettings.currentWebsiteModelVersionId || "")
+    : "";
+  // Prefer the explicitly active workflow model over a newer unreferenced
+  // model. This recovers safely from interrupted read-only artifact checks
+  // that may have persisted a canonical row without changing the draft.
+  const latestModel = project.websiteModelVersions.find((model) => model.id === configuredModelId)
+    ?? project.websiteModelVersions[0]
+    ?? null;
+  const activeValidation = latestModel?.validationResults.find(
+    (validation) => validation.id === currentWorkflowSettings.currentValidationResultId,
+  ) ?? null;
+  const currentValidation = activeValidation
     && currentWorkflowSettings.currentWebsiteModelVersionId === latestModel?.id
-    ? latestValidation
+    && activeValidation.validatedSnapshotHash === latestModel?.snapshotHash
+    ? activeValidation
     : null;
-  const latestReleaseRecord = project.websiteApprovedReleases[0] ?? null;
+  const latestReleaseRecord = project.websiteApprovedReleases.find(
+    (release) => release.id === currentWorkflowSettings.currentApprovedReleaseId,
+  ) ?? project.websiteApprovedReleases[0] ?? null;
   // A release is useful to the active workflow only while it represents the
   // exact current Website Model snapshot. Historical releases remain in the
   // database for audit and rollback, but must not unlock a changed draft.
@@ -1002,24 +1024,24 @@ export function builderView(project: Awaited<ReturnType<typeof scopedProject>>["
     build: buildWithQuality ? { ...buildWithQuality, generationCheckpoints: undefined } : null,
     websiteWorkflow: {
       model: latestModel ? { id: latestModel.id, version: latestModel.version, status: latestModel.status, snapshotHash: latestModel.snapshotHash, createdAt: latestModel.createdAt } : null,
-      validation: activeValidation ? {
-        id: activeValidation.id,
-        status: activeValidation.status,
-        overallScore: activeValidation.overallScore,
-        blockingCount: activeValidation.blockingCount,
-        warningCount: activeValidation.warningCount,
-        validatedAt: activeValidation.validatedAt,
-        snapshotHash: activeValidation.validatedSnapshotHash,
-        findings: Array.isArray(activeValidation.findingsJson) ? activeValidation.findingsJson : [],
-        pageScores: Array.isArray(activeValidation.pageScoresJson) ? activeValidation.pageScoresJson : [],
+      validation: currentValidation ? {
+        id: currentValidation.id,
+        status: currentValidation.status,
+        overallScore: currentValidation.overallScore,
+        blockingCount: currentValidation.blockingCount,
+        warningCount: currentValidation.warningCount,
+        validatedAt: currentValidation.validatedAt,
+        snapshotHash: currentValidation.validatedSnapshotHash,
+        findings: Array.isArray(currentValidation.findingsJson) ? currentValidation.findingsJson : [],
+        pageScores: Array.isArray(currentValidation.pageScoresJson) ? currentValidation.pageScoresJson : [],
       } : null,
       release: latestRelease ? { id: latestRelease.id, status: latestRelease.approvalStatus, modelVersionId: latestRelease.modelVersionId, snapshotHash: latestRelease.snapshotHash, approvedAt: latestRelease.approvedAt, approverId: latestRelease.approverId } : null,
       launchReadiness,
       changeHandoff: Object.keys(jsonRecord(currentWorkflowSettings.pendingWebsiteChange)).length
         ? {
           ...jsonRecord(currentWorkflowSettings.pendingWebsiteChange),
-          status: activeValidation
-            ? activeValidation.blockingCount > 0
+          status: currentValidation
+            ? currentValidation.blockingCount > 0
               ? "quality_blocked"
               : "approval_required"
             : "validation_required",
@@ -4459,6 +4481,22 @@ function savedLaunchReadinessFor(
     : null;
 }
 
+async function activeApprovedReleaseForBuild(build: { id: string; settingsJson: Prisma.JsonValue }) {
+  const settings = jsonRecord(build.settingsJson);
+  const releaseId = String(settings.currentApprovedReleaseId || "");
+  const modelVersionId = String(settings.currentWebsiteModelVersionId || "");
+  if (!releaseId || !modelVersionId) return null;
+  return prisma.websiteApprovedRelease.findFirst({
+    where: {
+      id: releaseId,
+      buildId: build.id,
+      modelVersionId,
+      approvalStatus: "approved",
+      revokedAt: null,
+    },
+  });
+}
+
 function requireLaunchReadiness(
   build: { settingsJson: Prisma.JsonValue },
   release: { id: string; snapshotHash: string },
@@ -4486,17 +4524,7 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/launch-readiness
   if (!hasWorkspacePermission(context, "execute_tasks")) return res.status(403).json({ error: "Task execution permission is required." });
   const build = project.websiteBuilds[0];
   if (!build) return res.status(409).json({ error: "Create the website build first." });
-  const canonical = await persistCanonicalWebsiteModel(project, build, context.membership.userId);
-  const release = await prisma.websiteApprovedRelease.findFirst({
-    where: {
-      buildId: build.id,
-      modelVersionId: canonical.record.id,
-      snapshotHash: canonical.record.snapshotHash,
-      approvalStatus: "approved",
-      revokedAt: null,
-    },
-    orderBy: { approvedAt: "desc" },
-  });
+  const release = await activeApprovedReleaseForBuild(build);
   if (!release) return res.status(409).json({ error: "Approve the current website version before running Launch Readiness." });
   const model = approvedReleaseWebsiteModel(release);
   const rawWebsiteUrl = String(project.websiteUrl || "").trim();
@@ -4570,8 +4598,7 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/deploy", async (
   if (input.mode === "publish" && !input.confirmed) return res.status(409).json({ error: "Confirm the live publishing action before continuing." });
   const build = project.websiteBuilds[0];
   if (!build) return res.status(409).json({ error: "Create the website build first." });
-  const canonical = await persistCanonicalWebsiteModel(project, build, context.membership.userId);
-  const release = await prisma.websiteApprovedRelease.findFirst({ where: { buildId: build.id, modelVersionId: canonical.record.id, snapshotHash: canonical.record.snapshotHash, approvalStatus: "approved", revokedAt: null }, orderBy: { approvedAt: "desc" } });
+  const release = await activeApprovedReleaseForBuild(build);
   if (!release) return res.status(409).json({ error: "Approve the current validated website version before creating WordPress output. The editable website has changed or has no Approved Release." });
   const releaseModel = approvedReleaseWebsiteModel(release);
   requireLaunchReadiness(build, release);
@@ -5103,17 +5130,7 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/static-export", 
   if (!hasWorkspacePermission(context, "publish")) return res.status(403).json({ error: "Publishing permission is required." });
   const build = project.websiteBuilds[0];
   if (!build) return res.status(409).json({ error: "Create the website build first." });
-  const canonical = await persistCanonicalWebsiteModel(project, build, context.membership.userId);
-  const release = await prisma.websiteApprovedRelease.findFirst({
-    where: {
-      buildId: build.id,
-      modelVersionId: canonical.record.id,
-      snapshotHash: canonical.record.snapshotHash,
-      approvalStatus: "approved",
-      revokedAt: null,
-    },
-    orderBy: { approvedAt: "desc" },
-  });
+  const release = await activeApprovedReleaseForBuild(build);
   if (!release) return res.status(409).json({ error: "Approve the current validated website version before exporting Static HTML. The editable website has changed or has no Approved Release." });
   const releaseModel = approvedReleaseWebsiteModel(release);
   requireLaunchReadiness(build, release);
@@ -5126,6 +5143,7 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/static-export", 
   const files = createStaticWebsiteFiles(releaseModel, {
     approvedReleaseId: release.id,
     snapshotHash: release.snapshotHash,
+    formAction: staticWebsiteFormAction(release),
     ...(baseUrl ? { baseUrl } : {}),
   });
   const zip = new JSZip();

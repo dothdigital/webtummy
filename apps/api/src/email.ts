@@ -6,6 +6,7 @@ interface MailInput {
   subject: string;
   html: string;
   text: string;
+  replyTo?: string;
 }
 
 function hash(value: string) {
@@ -35,6 +36,7 @@ async function sendWithSes(input: MailInput) {
   const body = JSON.stringify({
     FromEmailAddress: config.emailFrom,
     Destination: { ToAddresses: [input.to] },
+    ...(input.replyTo ? { ReplyToAddresses: [input.replyTo] } : {}),
     Content: {
       Simple: {
         Subject: { Data: input.subject, Charset: "UTF-8" },
@@ -97,6 +99,7 @@ async function sendWithResend(input: MailInput) {
       subject: input.subject,
       html: input.html,
       text: input.text,
+      ...(input.replyTo ? { reply_to: input.replyTo } : {}),
     }),
   });
 

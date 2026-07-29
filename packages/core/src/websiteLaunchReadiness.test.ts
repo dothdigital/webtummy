@@ -97,4 +97,28 @@ describe("website launch readiness", () => {
     expect(result.checks.find((check) => check.key === "unique_urls")?.status).toBe("blocking");
     expect(result.checks.find((check) => check.key === "unique_metadata")?.status).toBe("blocking");
   });
+
+  it("reports large generated media without blocking its own release", () => {
+    const generatedMedia: WebsiteModel = {
+      ...validModel,
+      mediaAssets: [{
+        assetId: "generated-hero",
+        status: "approved",
+        altText: "Generated website hero",
+        sourceUrl: `data:image/png;base64,${"A".repeat(12_000_000)}`,
+      }],
+    };
+    const result = evaluateWebsiteLaunchReadiness(generatedMedia, {
+      approvedReleaseId: "release-large-media",
+      snapshotHash: "large-media-snapshot",
+    });
+
+    expect(result.output.mediaBytes).toBeGreaterThan(8_000_000);
+    expect(result.checks.find((check) => check.key === "performance_budget")).toMatchObject({
+      status: "passed",
+      label: "Static output size",
+    });
+    expect(result.checks.find((check) => check.key === "rendered_pages")?.status).toBe("passed");
+    expect(result.blockingCount).toBe(0);
+  });
 });

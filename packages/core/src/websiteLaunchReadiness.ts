@@ -37,9 +37,6 @@ export type WebsiteLaunchReadinessOptions = {
   baseUrl?: string;
   existingWebsite?: boolean;
   redirectCount?: number;
-  maxPageHtmlBytes?: number;
-  maxCssBytes?: number;
-  maxPackagedMediaBytes?: number;
 };
 
 const byteLength = (value: string, base64 = false) =>
@@ -185,9 +182,9 @@ export function evaluateWebsiteLaunchReadiness(
     add("redirect_inventory", "operations", "Existing URL redirects", "passed", "New website: a legacy redirect inventory is not required.");
   }
 
-  const maxPageHtmlBytes = options.maxPageHtmlBytes ?? 200_000;
-  const pageResults = model.pages.map((page) => {
-    const html = renderWebsitePageDocument(model, page, {
+  const renderedPageFiles = files.filter((file) => file.mimeType === "text/html");
+  const pageResults = model.pages.map((page, pageIndex) => {
+    const html = renderedPageFiles[pageIndex]?.content ?? renderWebsitePageDocument(model, page, {
       approvedReleaseId: options.approvedReleaseId,
       snapshotHash: options.snapshotHash,
       ...(options.baseUrl ? { baseUrl: options.baseUrl } : {}),
@@ -199,7 +196,6 @@ export function evaluateWebsiteLaunchReadiness(
     if (!/<html[^>]+\blang=/i.test(html)) findings.push("HTML language is missing.");
     if (!/<meta[^>]+name="description"/i.test(html)) findings.push("Meta description is missing.");
     if (!/<script[^>]+application\/ld\+json/i.test(html)) findings.push("JSON-LD schema is missing.");
-    if (htmlBytes > maxPageHtmlBytes) findings.push(`HTML exceeds the ${Math.round(maxPageHtmlBytes / 1000)} KB budget.`);
     return {
       pageId: page.pageId,
       name: page.name,
@@ -220,16 +216,12 @@ export function evaluateWebsiteLaunchReadiness(
   const htmlBytes = files.filter((file) => file.mimeType === "text/html").reduce((sum, file) => sum + byteLength(file.content), 0);
   const cssBytes = files.filter((file) => file.mimeType === "text/css").reduce((sum, file) => sum + byteLength(file.content), 0);
   const mediaBytes = files.filter((file) => file.mimeType.startsWith("image/")).reduce((sum, file) => sum + byteLength(file.content, file.base64), 0);
-  const cssOverBudget = cssBytes > (options.maxCssBytes ?? 100_000);
-  const mediaOverBudget = mediaBytes > (options.maxPackagedMediaBytes ?? 8_000_000);
   add(
     "performance_budget",
     "performance",
-    "Static output budget",
-    cssOverBudget || mediaOverBudget ? "blocking" : "passed",
-    cssOverBudget || mediaOverBudget
-      ? `Output exceeds a launch budget: CSS ${Math.round(cssBytes / 1000)} KB; media ${Math.round(mediaBytes / 1_000_000)} MB.`
-      : `CSS ${Math.round(cssBytes / 1000)} KB; packaged media ${Math.round(mediaBytes / 1_000_000 * 10) / 10} MB.`,
+    "Static output size",
+    "passed",
+    `CSS ${Math.round(cssBytes / 1000)} KB; packaged media ${Math.round(mediaBytes / 1_000_000 * 10) / 10} MB. Sizes are reported for visibility and do not block publishing.`,
   );
 
   const blockingCount = checks.filter((check) => check.status === "blocking").length;

@@ -31,6 +31,7 @@ import { siteArchitectureRouter } from "./routes/site-architecture.js";
 import { leadMagnetsRouter, publicLeadMagnetsRouter } from "./routes/lead-magnets.js";
 import { aiIntakeRouter } from "./routes/ai-intake.js";
 import { websiteBuilderRouter } from "./routes/website-builder.js";
+import { publicWebsiteFormsRouter } from "./routes/website-public-forms.js";
 import { rawBodySaver } from "./billing.js";
 import { enforceArchivedReadOnly, enforceWorkspacePermissions, requireAuth } from "./middleware.js";
 
@@ -51,6 +52,15 @@ app.use((req, res, next) => {
   res.setHeader("X-Robots-Tag", "noindex, nofollow, noarchive, nosnippet, noimageindex");
 
   const origin = req.headers.origin;
+  const isPublicWebsiteForm = req.path.startsWith("/api/public/website-forms/");
+  if (isPublicWebsiteForm) {
+    res.setHeader("Access-Control-Allow-Origin", "*");
+    res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+    res.setHeader("Access-Control-Allow-Methods", "POST,OPTIONS");
+    if (req.method === "OPTIONS") return res.sendStatus(204);
+    return next();
+  }
+
   if (origin && allowedOrigins.has(origin)) {
     res.setHeader("Access-Control-Allow-Origin", origin);
     res.setHeader("Vary", "Origin");
@@ -71,6 +81,7 @@ app.use((req, res, next) => {
   next();
 });
 app.use(express.json({ limit: "1mb", verify: rawBodySaver }));
+app.use(express.urlencoded({ extended: false, limit: "32kb" }));
 
 app.get("/health", (_req, res) => res.json({ ok: true, service: "senuke-ai-api" }));
 app.get("/api/health", (_req, res) => res.json({ ok: true, service: "senuke-ai-api" }));
@@ -116,6 +127,7 @@ app.get("/", (_req, res) =>
 app.use("/api/billing", billingRouter);
 app.use("/api/auth", authRouter);
 app.use("/api/public", publicLeadMagnetsRouter);
+app.use("/api/public", publicWebsiteFormsRouter);
 app.use("/api", requireAuth, enforceArchivedReadOnly, enforceWorkspacePermissions);
 app.use("/api/clients", clientsRouter);
 app.use("/api/users", usersRouter);

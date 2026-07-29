@@ -39,6 +39,7 @@ export const config = {
   // client that stops using the application naturally expires after this TTL.
   jwtExpiresIn: process.env.JWT_IDLE_TIMEOUT ?? "8h",
   webAppUrl: process.env.WEB_APP_URL ?? "http://localhost:5173",
+  publicApiUrl: process.env.PUBLIC_API_URL ?? process.env.WEB_APP_URL ?? "http://localhost:4000",
   emailProvider: (process.env.EMAIL_PROVIDER ?? "").toLowerCase(),
   emailFrom: process.env.EMAIL_FROM ?? "SEnuke AI <no-reply@senuke.com>",
   signupNotifyEmail: process.env.SIGNUP_NOTIFY_EMAIL ?? "inf@dothdigital.com",

@@ -170,13 +170,50 @@ describe("Approved Release website renderer", () => {
         successMessage: "Thank you. Your enquiry has been received.",
       },
     };
-    const html = renderWebsiteComponentHtml(contactForm);
+    const html = renderWebsiteComponentHtml(contactForm, {
+      formAction: "https://app.example.com/api/public/website-forms/release-1/signed-token",
+    });
     expect(html).toContain('data-senuke-form-id="primary-contact"');
+    expect(html).toContain('action="https://app.example.com/api/public/website-forms/release-1/signed-token"');
+    expect(html).toContain("data-senuke-managed-form");
+    expect(html).toContain('name="_senuke_company_website"');
     expect(html).toContain('type="email"');
     expect(html).toContain("<textarea");
     expect(html).toContain('type="checkbox"');
     expect(html).toContain('type="submit"');
     expect(renderWebsiteComponentHtml(contactForm, { formShortcode: "[contact-form-7 id=\"12\"]" })).toContain("[contact-form-7");
+  });
+
+  it("adds a managed fallback form to a contact page even when no form component was registered", () => {
+    const contactPage = {
+      ...model.pages[0],
+      pageId: "contact-page",
+      name: "Contact Us",
+      slug: "/contact-us/",
+      pageType: "contact",
+      sections: [hero],
+      seo: { ...model.pages[0].seo, title: "Contact Us", canonicalUrl: "/contact-us/" },
+    };
+    const contactModel: WebsiteModel = {
+      ...model,
+      pages: [contactPage],
+      navigation: [{ pageId: "contact-page", label: "Contact" }],
+      forms: [{
+        formId: "primary-contact",
+        type: "lead",
+        destination: "hello@example.com",
+        fields: ["Name", "Email", "Phone", "Message", "Consent"],
+      }],
+    };
+    const html = renderWebsitePageDocument(contactModel, contactPage, {
+      formAction: "https://app.example.com/api/public/website-forms/release-1/signed-token",
+    });
+    expect(html).toContain('class="senuke-component senuke-contact-form"');
+    expect(html).toContain('name="email"');
+    expect(html).toContain('type="email"');
+    expect(html).toContain("<textarea");
+    expect(html).toContain('data-senuke-managed-form');
+    expect(html).toContain('document.querySelectorAll("[data-senuke-managed-form]")');
   });
 
   it("routes the standard contact CTA to the generated Contact page slug", () => {
@@ -258,6 +295,53 @@ describe("Approved Release website renderer", () => {
     expect(files.some((file) => file.path === "index.html")).toBe(true);
     expect(files.find((file) => file.path === "sitemap.xml")?.content).toContain("<loc>/</loc>");
     expect(files.find((file) => file.path === "llms.txt")?.content).toContain("[Home](/)");
+  });
+
+  it("uses file-compatible relative links throughout the downloaded static website", () => {
+    const homePage = {
+      ...model.pages[0],
+      pageId: "home-page",
+      name: "Home",
+      slug: "/",
+      pageType: "home",
+      seo: { ...model.pages[0].seo, title: "Home", canonicalUrl: "/" },
+    };
+    const nestedPage = {
+      ...model.pages[0],
+      pageId: "nested-page",
+      name: "Insurance Services",
+      slug: "/services/insurance/",
+      pageType: "service",
+      seo: { ...model.pages[0].seo, title: "Insurance Services", canonicalUrl: "/services/insurance/" },
+    };
+    const contactPage = {
+      ...model.pages[0],
+      pageId: "contact-page",
+      name: "Contact Us",
+      slug: "/contact-us/",
+      pageType: "conversion",
+      seo: { ...model.pages[0].seo, title: "Contact Us", canonicalUrl: "/contact-us/" },
+    };
+    const fileModel: WebsiteModel = {
+      ...model,
+      pages: [homePage, nestedPage, contactPage],
+      navigation: [
+        { pageId: "home-page", label: "Home" },
+        { pageId: "nested-page", label: "Services" },
+        { pageId: "contact-page", label: "Contact" },
+      ],
+    };
+
+    const files = createStaticWebsiteFiles(fileModel, { approvedReleaseId: "release-file-preview" });
+    const homeHtml = files.find((file) => file.path === "index.html")?.content || "";
+    const nestedHtml = files.find((file) => file.path === "services/insurance/index.html")?.content || "";
+
+    expect(homeHtml).toContain('href="index.html"');
+    expect(homeHtml).toContain('href="services/insurance/index.html"');
+    expect(homeHtml).toContain('href="contact-us/index.html"');
+    expect(nestedHtml).toContain('href="../../index.html"');
+    expect(nestedHtml).toContain('href="../../contact-us/index.html"');
+    expect(nestedHtml).toContain('href="../../assets/senuke.css"');
   });
 
   it("packages release-owned media and renders its approved asset reference", () => {
