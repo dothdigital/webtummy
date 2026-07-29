@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { api } from "../api.js";
 import { Card } from "./ui.js";
+import { useApprovalRouting } from "./ApprovalRoutingDialog.js";
 
 type Member = { id: string; user: { id: string; name: string | null; email: string }; roles: { role: string }[] };
 type Team = { id: string; name: string };
@@ -26,6 +27,7 @@ const label = (value: string) => value.replace(/_/g, " ").replace(/\b\w/g, (char
 const dateInput = (value: string | null) => value ? new Date(value).toISOString().slice(0, 16) : "";
 
 function TaskControl({ task, data, refresh }: { task: Task; data: Operations; refresh: () => Promise<void> }) {
+  const { chooseApprovalRoute, approvalRouteDialog } = useApprovalRouting();
   const [form, setForm] = useState({
     assigneeMembershipId: task.assigneeMembershipId ?? "", assignedTeamId: task.assignedTeamId ?? "",
     managerMembershipId: task.managerMembershipId ?? "", approverMembershipId: task.approverMembershipId ?? "",
@@ -38,6 +40,7 @@ function TaskControl({ task, data, refresh }: { task: Task; data: Operations; re
     try { await action(); await refresh(); } catch (err) { setError(err instanceof Error ? err.message : "Action failed."); } finally { setBusy(""); }
   }
   return <div className="rounded-lg border border-slate-200 p-4">
+    {approvalRouteDialog}
     <div className="flex flex-wrap items-start justify-between gap-3"><div><div className="font-bold text-slate-950">{task.title}</div><div className="mt-1 text-xs text-slate-500">{label(task.status)} · {label(task.priority)} priority · {label(task.approvalRisk)} risk</div></div>{task.dueAt && <span className={`rounded-full px-2.5 py-1 text-xs font-bold ${new Date(task.dueAt) < new Date() && !terminal.has(task.status) ? "bg-red-50 text-red-700" : "bg-slate-100 text-slate-600"}`}>{new Date(task.dueAt).toLocaleDateString()}</span>}</div>
     {data.permissions.canAssignTasks && <div className="mt-4 grid gap-2 md:grid-cols-3 xl:grid-cols-6">
       <select value={form.assigneeMembershipId} onChange={(event) => setForm({ ...form, assigneeMembershipId: event.target.value })} className="h-9 rounded-lg border bg-white px-2 text-xs"><option value="">Assignee</option>{data.members.map((member) => <option key={member.id} value={member.id}>{member.user.name || member.user.email}</option>)}</select>
@@ -48,7 +51,7 @@ function TaskControl({ task, data, refresh }: { task: Task; data: Operations; re
       <button disabled={Boolean(busy)} onClick={() => run("save", () => api.patch(`/api/agency/tasks/${task.id}/assignment`, { ...form, assigneeMembershipId: form.assigneeMembershipId || null, assignedTeamId: form.assignedTeamId || null, managerMembershipId: form.managerMembershipId || null, approverMembershipId: form.approverMembershipId || null, dueAt: form.dueAt ? new Date(form.dueAt).toISOString() : null }))} className="h-9 rounded-lg bg-brand-600 px-3 text-xs font-bold text-white hover:bg-brand-700">Save assignment</button>
     </div>}
     <div className="mt-3 flex flex-wrap gap-2">
-      {data.permissions.canSubmit && ["draft", "in_progress", "changes_requested", "needs_review", "ready"].includes(task.status) && <button disabled={Boolean(busy)} onClick={() => { const solo = data.permissions.approvalMode === "solo"; if (!solo || window.confirm(`Are you sure you want to approve “${task.title}”?\n\nThe action will be approved immediately and can proceed to execution.`)) void run("submit", () => api.post(`/api/agency/tasks/${task.id}/submit`, { confirmed: solo })); }} className="rounded-lg bg-brand-600 px-3 py-2 text-xs font-bold text-white hover:bg-brand-700">{data.permissions.approvalMode === "solo" ? "Approve" : "Submit for approval"}</button>}
+      {data.permissions.canSubmit && ["draft", "in_progress", "changes_requested", "needs_review", "ready"].includes(task.status) && <button disabled={Boolean(busy)} onClick={() => void (async () => { const approvalRoute = await chooseApprovalRoute(data.project.id, task.title); if (approvalRoute) await run("submit", () => api.post(`/api/agency/tasks/${task.id}/submit`, { approvalRoute })); })()} className="rounded-lg bg-brand-600 px-3 py-2 text-xs font-bold text-white hover:bg-brand-700">{data.permissions.approvalMode === "solo" ? "Review & approve" : "Submit for approval"}</button>}
       {data.permissions.canApprove && task.status === "submitted_for_approval" && <><button disabled={Boolean(busy)} onClick={() => run("approve", () => api.post(`/api/approvals/${task.id}/decision`, { decision: "approved", snapshotJson: {} }))} className="rounded-lg bg-brand-600 px-3 py-2 text-xs font-bold text-white hover:bg-brand-700">Approve</button><button disabled={Boolean(busy)} onClick={() => run("changes", () => api.post(`/api/approvals/${task.id}/decision`, { decision: "changes_requested", notes: "Changes requested from Project Dashboard.", snapshotJson: {} }))} className="rounded-lg bg-brand-600 px-3 py-2 text-xs font-bold text-white hover:bg-brand-700">Request changes</button></>}
       {data.permissions.canPublish && task.status === "ready_to_publish" && <button disabled={Boolean(busy)} onClick={() => run("publish", () => api.post(`/api/execution-tasks/${task.id}/publish`, {}))} className="rounded-lg bg-brand-600 px-3 py-2 text-xs font-bold text-white hover:bg-brand-700">Publish approved work</button>}
     </div>

@@ -5,11 +5,13 @@ export type BusinessLocationTargetMarketsValue = {
   country: string; stateProvince: string; city: string; streetAddress: string; postalCode: string; targetMarkets: string[];
 };
 
-export default function BusinessLocationTargetMarkets({ value, onChange, inheritedLocation, local = false }: {
+export default function BusinessLocationTargetMarkets({ value, onChange, inheritedLocation, inheritedLocationDetails, local = false, showSameAsClientLocation = false }: {
   value: BusinessLocationTargetMarketsValue;
   onChange: (value: BusinessLocationTargetMarketsValue) => void;
   inheritedLocation?: string;
+  inheritedLocationDetails?: Partial<Omit<BusinessLocationTargetMarketsValue, "targetMarkets">>;
   local?: boolean;
+  showSameAsClientLocation?: boolean;
 }) {
   const [draft, setDraft] = useState("");
   const [overrideEnabled, setOverrideEnabled] = useState(() => !inheritedLocation || Boolean(value.country || value.stateProvince || value.city || value.streetAddress || value.postalCode));
@@ -26,19 +28,37 @@ export default function BusinessLocationTargetMarkets({ value, onChange, inherit
     setDraft("");
   };
   const override = Boolean(inheritedLocation);
+  const showInheritedOption = showSameAsClientLocation || override;
   useEffect(() => {
-    if (!inheritedLocation) setOverrideEnabled(true);
-    else setOverrideEnabled(Boolean(value.country || value.stateProvince || value.city || value.streetAddress || value.postalCode));
+    if (!inheritedLocation) { setOverrideEnabled(true); return; }
+    const hasEnteredLocation = Boolean(value.country || value.stateProvince || value.city || value.streetAddress || value.postalCode);
+    if (!hasEnteredLocation) {
+      setOverrideEnabled(false);
+      onChange({
+        ...value,
+        country: inheritedLocationDetails?.country ?? "",
+        stateProvince: inheritedLocationDetails?.stateProvince ?? "",
+        city: inheritedLocationDetails?.city ?? "",
+        streetAddress: inheritedLocationDetails?.streetAddress ?? "",
+        postalCode: inheritedLocationDetails?.postalCode ?? "",
+      });
+      return;
+    }
+    const comparable = (item: string | undefined) => (item ?? "").trim().toLocaleLowerCase().replace(/[^a-z0-9]/g, "");
+    const matchesInherited = comparable(value.country) === comparable(inheritedLocationDetails?.country)
+      && comparable(value.stateProvince) === comparable(inheritedLocationDetails?.stateProvince)
+      && comparable(value.city) === comparable(inheritedLocationDetails?.city);
+    setOverrideEnabled(!matchesInherited);
   }, [inheritedLocation]);
   const required = !override || overrideEnabled;
   const toggleOverride = (enabled: boolean) => {
     setOverrideEnabled(enabled);
-    if (!enabled) patch({ country: "", stateProvince: "", city: "", streetAddress: "", postalCode: "" });
+    if (!enabled) patch({ country: inheritedLocationDetails?.country ?? "", stateProvince: inheritedLocationDetails?.stateProvince ?? "", city: inheritedLocationDetails?.city ?? "", streetAddress: inheritedLocationDetails?.streetAddress ?? "", postalCode: inheritedLocationDetails?.postalCode ?? "" });
   };
   return <div className="space-y-4 md:col-span-2">
     <section className="overflow-hidden rounded-xl border border-slate-200 bg-white">
       <div className="flex flex-wrap items-start justify-between gap-3 border-b border-slate-100 bg-slate-50/70 px-4 py-3"><div><h3 className="text-sm font-black text-slate-950">Business location</h3><p className="mt-0.5 text-xs text-slate-500">Where the business is physically based. This is separate from where it wants to target customers.</p></div>{override && <span className="rounded-full bg-brand-100 px-3 py-1 text-[10px] font-black uppercase tracking-wide text-brand-700">Project override optional</span>}</div>
-      {inheritedLocation && <div className="mx-4 mt-4 space-y-3"><div className="flex items-start gap-3 rounded-lg border border-brand-100 bg-brand-50 p-3"><span className="grid h-7 w-7 shrink-0 place-items-center rounded-full bg-brand-600 text-xs font-black text-white">✓</span><div><div className="text-xs font-black uppercase tracking-wide text-brand-700">Using client location</div><div className="mt-0.5 text-sm font-bold text-slate-900">{inheritedLocation}</div><p className="mt-1 text-xs leading-5 text-slate-600">This project will use the client address unless you enable a project-specific address below.</p></div></div><button type="button" role="switch" aria-checked={overrideEnabled} onClick={() => toggleOverride(!overrideEnabled)} className={`flex w-full items-start gap-3 rounded-lg border p-3 text-left transition ${overrideEnabled ? "border-amber-300 bg-amber-50" : "border-slate-200 bg-white hover:border-brand-200"}`}><span className={`relative mt-0.5 h-5 w-9 shrink-0 rounded-full transition ${overrideEnabled ? "bg-amber-500" : "bg-slate-300"}`}><span className={`absolute top-0.5 h-4 w-4 rounded-full bg-white shadow-sm transition-all ${overrideEnabled ? "left-[18px]" : "left-0.5"}`} /></span><span><span className="block text-sm font-black text-slate-900">{overrideEnabled ? "Using a different project address" : "Use a different address for this project"}</span><span className="mt-1 block text-xs leading-5 text-slate-500">{overrideEnabled ? "Turn this off to discard the override and return to the client address." : "Turn this on only when the project location differs from the saved client location."}</span></span></button></div>}
+      {showInheritedOption && <div className="mx-4 mt-4"><label className={`flex items-start gap-3 rounded-lg border p-3 ${!override ? "cursor-not-allowed border-slate-200 bg-slate-50" : !overrideEnabled ? "cursor-pointer border-brand-300 bg-brand-50" : "cursor-pointer border-slate-200 bg-white"}`}><input type="checkbox" disabled={!override} checked={override && !overrideEnabled} onChange={(event)=>toggleOverride(!event.target.checked)} className="mt-1 h-4 w-4 rounded border-slate-300 text-brand-600 disabled:cursor-not-allowed disabled:opacity-50"/><span><span className="block text-sm font-black text-slate-900">Same as client location</span>{inheritedLocation && <span className="mt-1 block text-xs leading-5 text-slate-600">{inheritedLocation}</span>}<span className="mt-1 block text-xs text-slate-500">{!override ? "Select a client with a saved address to enable this option." : !overrideEnabled ? "Client address copied to this project. Uncheck to enter a different address." : "Check this to copy the client’s saved address into the project."}</span></span></label></div>}
       {(!override || overrideEnabled) && <div className="grid gap-4 p-4 md:grid-cols-6">
         <label className="block md:col-span-2"><span className="mb-1.5 block text-xs font-black text-slate-700">Country {required && <span className="text-rose-500">*</span>}</span><select required={required} value={value.country} onChange={(event) => patch({ country: event.target.value })} className="h-11 w-full rounded-lg border border-slate-200 bg-white px-3 text-sm outline-none focus:border-brand-400 focus:ring-2 focus:ring-brand-100"><option value="">Select country</option>{value.country && !COUNTRY_OPTIONS.some((item) => item.value === value.country) && <option value={value.country}>{value.country}</option>}{COUNTRY_OPTIONS.map((country) => <option key={country.value} value={country.value}>{country.label}</option>)}</select></label>
         <LocationInput className="md:col-span-2" label="State / Province" required={required} value={value.stateProvince} onChange={(stateProvince) => patch({ stateProvince })} placeholder="Enter your details" />

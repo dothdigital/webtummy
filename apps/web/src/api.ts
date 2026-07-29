@@ -65,6 +65,7 @@ export interface AppUser {
       manageWorkspace: boolean; manageProjects: boolean; assignTasks: boolean; approve: boolean;
       edit: boolean; publish: boolean; billing: boolean; viewInternal: boolean;
       permissions: Record<string, boolean>;
+      approvalMode?: "solo" | "team";
     };
   } | null;
 }
@@ -277,14 +278,39 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
     if (res.status === 401) expireSession();
     const error = (data as { error?: unknown }).error;
     if (typeof error === "string") throw new Error(error);
-    const firstFieldError = error && typeof error === "object" ? Object.values(error).flat().find((item): item is string => typeof item === "string") : null;
+    const firstErrorText = (value: unknown, depth = 0): string | null => {
+      if (typeof value === "string" && value.trim()) return value;
+      if (depth > 5) return null;
+      if (Array.isArray(value)) {
+        for (const item of value) {
+          const found = firstErrorText(item, depth + 1);
+          if (found) return found;
+        }
+        return null;
+      }
+      if (value && typeof value === "object") {
+        for (const item of Object.values(value)) {
+          const found = firstErrorText(item, depth + 1);
+          if (found) return found;
+        }
+      }
+      return null;
+    };
+    const firstFieldError = firstErrorText(error);
     throw new Error(firstFieldError ?? "Request failed. Please try again.");
   }
   return res.json() as Promise<T>;
 }
 
-async function download(path: string) {
-  const res = await fetch(path, { headers: authHeaders() });
+async function download(path: string, init: RequestInit = {}) {
+  const res = await fetch(path, {
+    ...init,
+    headers: {
+      ...authHeaders(),
+      ...(init.body ? { "Content-Type": "application/json" } : {}),
+      ...(init.headers ?? {}),
+    },
+  });
   captureRenewedSession(res);
   if (!res.ok) {
     const data = await readJson(res).catch(() => ({}));

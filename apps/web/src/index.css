@@ -7,18 +7,126 @@ body,
 #root {
   height: 100%;
 }
-body {
-  @apply bg-[#f7f7ff] text-charcoal-700 antialiased;
+
+:root {
+  --senuke-green: #2bdc8b;
+  --senuke-cyan: #12bfc9;
+  --senuke-blue: #177fd3;
+  --senuke-accent-text: #0b627b;
+  --senuke-navy: #101820;
+  --senuke-border: #d6f8f8;
+  --senuke-action-gradient: linear-gradient(120deg, var(--senuke-cyan) 0%, var(--senuke-blue) 100%);
+  --senuke-action-gradient-hover: linear-gradient(120deg, #0daab7 0%, #1767ad 100%);
 }
 
-/* Keep existing primary actions aligned with the Projects-page gradient.
-   This targets interactive actions only, leaving badges and charts semantic. */
+body {
+  @apply bg-[#f4fbfd] text-charcoal-700 antialiased;
+}
+
+::selection {
+  background: #acf0f1;
+  color: #082f3f;
+}
+
+/* Remove the former Tailwind indigo/purple action colour (#4338ca).
+   Keeping this explicit also updates an already-running Vite session without
+   requiring its generated utility cache to be rebuilt first. */
+.bg-indigo-700,
+.bg-violet-700 {
+  background-color: var(--senuke-blue) !important;
+}
+
+/* Retire the former indigo/violet text utilities (#3730a3 and related
+   purples). A single deep cyan-blue keeps labels readable and consistent. */
+.text-indigo-600,
+.text-indigo-700,
+.text-indigo-800,
+.text-indigo-900,
+.text-indigo-950,
+.text-violet-600,
+.text-violet-700,
+.text-violet-800,
+.text-violet-900,
+.text-violet-950 {
+  color: var(--senuke-accent-text) !important;
+}
+
+/* Apply the SENuke logo spectrum to product actions. This targets interactive
+   controls only; red and amber remain available for destructive, error,
+   blocking, and warning states. */
 button[class~="bg-brand-600"],
-a[class~="bg-brand-600"] {
-  background-image: linear-gradient(to right, #2dd4bf, #0d9488);
+a[class~="bg-brand-600"],
+button[class~="bg-brand-700"],
+a[class~="bg-brand-700"],
+button[class~="bg-brand-800"],
+a[class~="bg-brand-800"],
+button[class~="bg-indigo-600"],
+a[class~="bg-indigo-600"],
+button[class~="bg-indigo-700"],
+a[class~="bg-indigo-700"],
+button[class~="bg-violet-600"],
+a[class~="bg-violet-600"],
+button[class~="bg-violet-700"],
+a[class~="bg-violet-700"],
+button[class~="bg-teal-600"],
+a[class~="bg-teal-600"],
+button[class~="bg-teal-700"],
+a[class~="bg-teal-700"],
+button[class~="bg-blue-600"],
+a[class~="bg-blue-600"],
+button[class~="bg-blue-700"],
+a[class~="bg-blue-700"] {
+  background-color: var(--senuke-blue);
+  background-image: var(--senuke-action-gradient);
+  box-shadow: 0 8px 18px rgb(23 127 211 / 16%);
 }
 
 button[class~="hover:bg-brand-700"]:hover,
-a[class~="hover:bg-brand-700"]:hover {
-  background-image: linear-gradient(to right, #14b8a6, #0f766e);
+a[class~="hover:bg-brand-700"]:hover,
+button[class~="hover:bg-brand-800"]:hover,
+a[class~="hover:bg-brand-800"]:hover,
+button[class~="hover:bg-indigo-700"]:hover,
+a[class~="hover:bg-indigo-700"]:hover,
+button[class~="hover:bg-indigo-800"]:hover,
+a[class~="hover:bg-indigo-800"]:hover,
+button[class~="hover:bg-violet-700"]:hover,
+a[class~="hover:bg-violet-700"]:hover,
+button[class~="hover:bg-teal-700"]:hover,
+a[class~="hover:bg-teal-700"]:hover,
+button[class~="hover:bg-blue-700"]:hover,
+a[class~="hover:bg-blue-700"]:hover {
+  background-image: var(--senuke-action-gradient-hover);
+}
+
+button[class*="bg-brand-"]:focus-visible,
+a[class*="bg-brand-"]:focus-visible,
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible {
+  outline-color: var(--senuke-blue);
+}
+
+/* The SEO Content Plan is a review workspace, not a dense dashboard. Keep its
+   explanations and editable plan evidence readable; the dialog itself scrolls
+   when the larger typography needs more room. */
+.seo-content-plan-dialog .text-\[8px\],
+.seo-content-plan-dialog .text-\[9px\] {
+  font-size: 0.75rem;
+  line-height: 1rem;
+}
+
+.seo-content-plan-dialog .text-\[10px\] {
+  font-size: 0.8125rem;
+  line-height: 1.125rem;
+}
+
+.seo-content-plan-dialog .text-\[11px\] {
+  font-size: 0.875rem;
+  line-height: 1.375rem;
+}
+
+.seo-content-plan-dialog section p.text-xs,
+.seo-content-plan-dialog details p.text-xs {
+  font-size: 0.875rem;
+  line-height: 1.375rem;
 }

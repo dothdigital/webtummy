@@ -285,7 +285,7 @@ async function gapEvidence(projectId: string) {
     prisma.authorityOpportunity.findMany({ where: { projectId }, orderBy: { createdAt: "desc" }, take: 30 }),
     prisma.pageGrowthScore.findMany({ where: { projectId }, orderBy: [{ overallScore: "desc" }, { createdAt: "desc" }], take: 30 }),
     prisma.gapLocalSeoProfile.findUnique({ where: { projectId } }),
-    project.websiteId ? prisma.keywordResearchRun.findMany({ where: { websiteId: project.websiteId, status: "completed" }, orderBy: { createdAt: "desc" }, take: 12, include: { competitors: { take: 15 }, ideas: { take: 30 } } }) : [],
+    prisma.keywordResearchRun.findMany({ where: { projectId, status: "completed" }, orderBy: { createdAt: "desc" }, take: 12, include: { competitors: { take: 15 }, ideas: { take: 30 } } }),
   ]);
   return { project, crawl, competitiveRuns, citationGaps, authority, pageScores, localProfile, keywordRuns };
 }

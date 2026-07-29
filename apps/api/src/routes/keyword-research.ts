@@ -4,7 +4,13 @@ import type { Request } from "express";
 import { Worker } from "bullmq";
 import { z } from "zod";
 import { Prisma, prisma } from "@webtummy/db";
-import { parseHtml } from "@webtummy/core";
+import {
+  detectKeywordLocations,
+  keywordResearchRequestIdentity,
+  normalizeKeywordPhrase,
+  parseHtml,
+  stripKeywordLocations,
+} from "@webtummy/core";
 import { requireAuth } from "../middleware.js";
 import { projectClientIdForRequest } from "../project-scope.js";
 import { config, KEYWORD_RESEARCH_QUEUE } from "../config.js";
@@ -20,6 +26,7 @@ const UNRESTRICTED_REFRESH_EMAILS = new Set(["manishjetly@gmail.com"]);
 const refreshableStatuses = ["queued", "running", "completed"];
 
 const createSchema = z.object({
+  projectId: z.string().optional().nullable(),
   websiteId: z.string().optional().nullable(),
   clientId: z.string().optional().nullable(),
   seedKeyword: z.string().min(2),
@@ -638,9 +645,10 @@ async function keywordWebsiteForRequest(req: Request, websiteId: string, clientI
 
 async function scopedRun(req: Request, id: string) {
   const clientId = await projectClientIdForRequest(req);
+  const projectId = typeof req.query.projectId === "string" ? req.query.projectId.trim() : "";
   const bypassRefreshLimit = await canBypassKeywordRefreshLimit(req);
   const run = await prisma.keywordResearchRun.findFirst({
-    where: { id, ...(clientId ? { clientId } : {}) },
+    where: { id, ...(clientId ? { clientId } : {}), ...(projectId ? { projectId } : {}) },
     include: {
       website: { select: { id: true, domain: true, rootUrl: true } },
       ideas: { orderBy: [{ avgMonthlySearches: "desc" }, { keyword: "asc" }], take: 100 },
@@ -671,9 +679,19 @@ keywordResearchRouter.post("/keyword-research", async (req, res) => {
   const bypassRefreshLimit = await canBypassKeywordRefreshLimit(req);
 
   let clientId = await projectClientIdForRequest(req, input.clientId);
+  let project: { id: string; clientId: string; websiteId: string | null; targetLocations: Prisma.JsonValue } | null = null;
+  if (input.projectId) {
+    project = await prisma.project.findFirst({
+      where: { id: input.projectId, status: { not: "deleted" }, ...(clientId ? { clientId } : {}) },
+      select: { id: true, clientId: true, websiteId: true, targetLocations: true },
+    });
+    if (!project) return res.status(404).json({ error: "project not found" });
+    clientId = project.clientId;
+  }
   let website: ScopedKeywordWebsite | null = null;
-  if (input.websiteId) {
-    const scoped = await keywordWebsiteForRequest(req, input.websiteId, clientId);
+  const requestedWebsiteId = input.websiteId || project?.websiteId || null;
+  if (requestedWebsiteId) {
+    const scoped = await keywordWebsiteForRequest(req, requestedWebsiteId, clientId);
     website = scoped.website;
     if (!website) {
       if (scoped.mismatch) {
@@ -687,16 +705,58 @@ keywordResearchRouter.post("/keyword-research", async (req, res) => {
     }
     clientId = website.clientId;
   }
+  if (project && website && project.websiteId !== website.id) {
+    return res.status(400).json({ error: "website does not belong to the selected project" });
+  }
   if (!clientId) return res.status(400).json({ error: "clientId required" });
-  const targetDomain = normalizeDomain(input.targetDomain) || domainFromUrl(input.targetUrl) || normalizeDomain(website?.domain) || domainFromUrl(website?.rootUrl);
+  const connectedDomain = normalizeDomain(website?.domain) || domainFromUrl(website?.rootUrl);
+  // Guided projects may only send ranking targets belonging to their connected website.
+  // A manually supplied or stale workspace domain must never leak into a no-website project.
+  const targetDomain = project
+    ? connectedDomain
+    : normalizeDomain(input.targetDomain) || domainFromUrl(input.targetUrl) || connectedDomain;
+  const inputTargetUrlDomain = domainFromUrl(input.targetUrl);
+  const targetUrl = project
+    ? targetDomain && input.targetUrl && inputTargetUrlDomain === targetDomain ? input.targetUrl : null
+    : input.targetUrl || null;
   const location = resolveSearchLocation(input.locationName, input.seedKeyword);
+  const projectMarkets = project && Array.isArray(project.targetLocations)
+    ? project.targetLocations.map(String).flatMap((item) => item.split(",")).map((item) => item.trim()).filter(Boolean)
+    : [];
+  const explicitSeedMarkets = detectKeywordLocations(input.seedKeyword, projectMarkets);
+  const requestedMarket = normalizeKeywordPhrase(location.displayName.split(",")[0] ?? location.displayName);
+  if (explicitSeedMarkets.length && !explicitSeedMarkets.some((market) => normalizeKeywordPhrase(market) === requestedMarket)) {
+    return res.status(400).json({ error: `The localized seed “${input.seedKeyword}” can only be analyzed in its matching market (${explicitSeedMarkets.join(", ")}). Remove the location from the seed to analyze it across multiple markets.` });
+  }
+  const researchIdentity = keywordResearchRequestIdentity({
+    keyword: input.seedKeyword,
+    location: location.displayName,
+    languageCode: input.languageCode,
+    device: input.device,
+  });
+  const requestKey = createHash("sha256").update(JSON.stringify({
+    projectId: project?.id ?? null,
+    websiteId: website?.id ?? null,
+    clientId,
+    researchIdentity,
+    serpDepth: input.serpDepth,
+    keywordLimit: input.keywordLimit,
+    targetDomain,
+  })).digest("hex");
+
+  const existingRun = await prisma.keywordResearchRun.findFirst({ where: { requestKey }, orderBy: { createdAt: "desc" } });
+  if (existingRun) {
+    return res.status(existingRun.status === "completed" ? 200 : 202).json({ run: withRefreshState(existingRun, bypassRefreshLimit), reused: true });
+  }
 
   const run = await prisma.keywordResearchRun.create({
     data: {
+      requestKey,
       clientId,
+      projectId: project?.id ?? null,
       websiteId: website?.id ?? null,
-      seedKeyword: input.seedKeyword,
-      targetUrl: input.targetUrl || null,
+      seedKeyword: input.seedKeyword.trim().replace(/\s+/g, " "),
+      targetUrl,
       targetDomain,
       locationName: location.displayName,
       languageCode: input.languageCode,
@@ -707,7 +767,7 @@ keywordResearchRouter.post("/keyword-research", async (req, res) => {
   });
   const executionInput: KeywordResearchExecutionInput = {
     seedKeyword: input.seedKeyword,
-    targetUrl: input.targetUrl || null,
+    targetUrl,
     targetDomain,
     location,
     languageCode: input.languageCode,
@@ -751,16 +811,21 @@ keywordResearchRouter.post("/keyword-research/suggestions", async (req, res) => 
 
 keywordResearchRouter.get("/keyword-research", async (req, res) => {
   const clientId = await projectClientIdForRequest(req);
+  const projectId = typeof req.query.projectId === "string" ? req.query.projectId.trim() : "";
+  if (projectId) {
+    const project = await prisma.project.findFirst({ where: { id: projectId, status: { not: "deleted" }, ...(clientId ? { clientId } : {}) }, select: { id: true } });
+    if (!project) return res.status(404).json({ error: "project not found" });
+  }
   const bypassRefreshLimit = await canBypassKeywordRefreshLimit(req);
   const runs = await prisma.keywordResearchRun.findMany({
-    where: clientId ? { clientId } : {},
+    where: { ...(clientId ? { clientId } : {}), ...(projectId ? { projectId } : {}) },
     orderBy: { createdAt: "desc" },
     include: {
       website: { select: { id: true, domain: true, rootUrl: true } },
       ideas: { orderBy: [{ avgMonthlySearches: "desc" }, { keyword: "asc" }], take: 3 },
       competitors: { orderBy: { rank: "asc" }, take: 3 },
     },
-    take: 100,
+    take: 500,
   });
   const rankedRuns = withRankChanges(runs);
   res.json({ runs: rankedRuns.map((run) => withRefreshState(withRelevantIdeas(run, 3), bypassRefreshLimit)) });
@@ -1584,7 +1649,31 @@ function parseBacklinkSummary(target: string, payload: unknown): Omit<BacklinkSu
   };
 }
 
+const inFlightSearchDataRequests = new Map<string, Promise<SearchDataPayload>>();
+
 async function searchDataRequest(path: string, body: unknown): Promise<SearchDataPayload> {
+  const cacheKey = createHash("sha256").update(JSON.stringify({ path, body })).digest("hex");
+  const now = new Date();
+  const cached = await prisma.externalApiCache.findUnique({ where: { cacheKey } });
+  if (cached && cached.expiresAt > now && cached.status === "ok") return cached.responseJson as unknown as SearchDataPayload;
+
+  const activeRequest = inFlightSearchDataRequests.get(cacheKey);
+  if (activeRequest) return activeRequest;
+
+  const request = requestSearchDataProvider(path, body).then(async (payload) => {
+    const expiresAt = new Date(Date.now() + KEYWORD_REFRESH_COOLDOWN_MS);
+    await prisma.externalApiCache.upsert({
+      where: { cacheKey },
+      create: { provider: "search_data", endpoint: path.slice(0, 180), cacheKey, requestJson: body as Prisma.InputJsonValue, responseJson: payload as unknown as Prisma.InputJsonValue, status: "ok", expiresAt },
+      update: { requestJson: body as Prisma.InputJsonValue, responseJson: payload as unknown as Prisma.InputJsonValue, status: "ok", fetchedAt: new Date(), expiresAt },
+    });
+    return payload;
+  }).finally(() => inFlightSearchDataRequests.delete(cacheKey));
+  inFlightSearchDataRequests.set(cacheKey, request);
+  return request;
+}
+
+async function requestSearchDataProvider(path: string, body: unknown): Promise<SearchDataPayload> {
   const legacyPrefix = "DATA" + "FOR" + "SEO";
   const login = process.env.SEARCH_DATA_PROVIDER_LOGIN || process.env[`${legacyPrefix}_LOGIN`];
   const password = process.env.SEARCH_DATA_PROVIDER_PASSWORD || process.env[`${legacyPrefix}_PASSWORD`];
@@ -1624,7 +1713,7 @@ export function retryableSearchProviderError(message: string) {
 }
 
 async function fetchKeywordIdeas(keyword: string, location: SearchLocation, languageCode: string, limit: number): Promise<KeywordIdeaInput[]> {
-  const seeds = keywordIdeaSeeds(keyword);
+  const seeds = keywordIdeaSeeds(keyword, [location.displayName]);
   const payload = await searchDataRequest(`/v3/${SEARCH_PROVIDER_KEY}_labs/google/keyword_ideas/live`, [{
     keywords: seeds,
     ...location.labs,
@@ -1638,8 +1727,8 @@ async function fetchKeywordIdeas(keyword: string, location: SearchLocation, lang
   return relevant.length ? relevant : [{ keyword, avgMonthlySearches: null, competition: null, competitionIndex: null, cpc: null, lowTopOfPageBid: null, highTopOfPageBid: null, currency: null, rawJson: {} }];
 }
 
-function keywordIdeaSeeds(keyword: string): string[] {
-  const canonical = canonicalSeedKeyword(keyword);
+function keywordIdeaSeeds(keyword: string, locations: string[] = []): string[] {
+  const canonical = canonicalSeedKeyword(keyword, locations);
   const normalized = normalizeKeywordForRelevance(canonical);
   const seeds = new Set([keyword.trim(), canonical].filter(Boolean));
   if (normalized.includes("super visa")) {
@@ -1761,12 +1850,8 @@ function ensureSeedKeywordIdea<T extends { keyword: string }>(seedKeyword: strin
   } as unknown as T, ...ideas];
 }
 
-function canonicalSeedKeyword(value: string): string {
-  const locationWords = new Set(["mississauga", "mississagua", "mississaunga", "ontario", "canada", "brampton", "toronto"]);
-  const tokens = normalizeKeywordForRelevance(value)
-    .split(" ")
-    .filter((token) => token && !locationWords.has(token));
-  const keyword = tokens.join(" ").trim() || normalizeKeywordForRelevance(value);
+function canonicalSeedKeyword(value: string, locations: string[] = []): string {
+  const keyword = stripKeywordLocations(value, locations);
   return keyword.replace(/\b\w/g, (letter) => letter.toUpperCase());
 }
 

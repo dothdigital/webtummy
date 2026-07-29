@@ -197,15 +197,14 @@ export function buildCampaignExecutionTasks(project: CampaignProjectContext): Ca
   const tasks: CampaignExecutionTaskInput[] = [
     {
       key: isLocalSeo ? "local-keyword-plan" : "seo-keyword-plan",
-      moduleName: "keyword_research",
-      title: isLocalSeo ? "Map local keyword opportunities" : "Map SEO keyword opportunities",
-      description: isLocalSeo
-        ? "Map city, service-area, buyer-intent, and local competitor keyword opportunities to pages and tasks."
-        : "Map buyer-intent keywords, topical clusters, target pages, metadata, schema, and content briefs from discovery data.",
-      actionButtonLabel: isLocalSeo ? "Review Local Keywords" : "Review Keywords",
-      relatedUrl: "/keywords",
+      moduleName: "content",
+      title: "SEO Page Map & Content Plan",
+      description: "Group approved keywords by intent, assign one owner page, prepare URLs and SEO briefs, then review FAQs, proof, Local SEO, internal links, and publishing requirements in one governed workflow.",
+      actionButtonLabel: "Create SEO Plan",
+      relatedUrl: "/guided-projects",
       priority: "high",
-      automationLevel: "prepare",
+      automationLevel: "generate",
+      requiresApproval: true,
     },
     ...(hasWebsite ? [{
       key: "optimize-existing-site",
@@ -241,7 +240,7 @@ export function buildCampaignExecutionTasks(project: CampaignProjectContext): Ca
       description: isLocalSeo
         ? "Create city, service-area, service, FAQ, trust, and conversion page structure from local keyword and competitor data."
         : "Create the recommended site structure, page plan, metadata, and internal linking plan from the approved strategy.",
-      actionButtonLabel: isLocalSeo ? "Plan Local Pages" : "Generate Sitemap",
+      actionButtonLabel: isLocalSeo ? "Plan Local Pages" : "Generate Site Architecture",
       relatedUrl: "/site-architect",
       priority: "high",
       automationLevel: "generate",
@@ -259,19 +258,6 @@ export function buildCampaignExecutionTasks(project: CampaignProjectContext): Ca
       priority: "high",
       automationLevel: "manual_guided",
     } as const] : []),
-    {
-      key: "content-optimization-plan",
-      moduleName: "content",
-      title: isLocalSeo ? "Create local SEO content plan" : "Create SEO content plan",
-      description: isLocalSeo
-        ? "Generate local service-page, FAQ, trust-proof, and city-page content tasks tied to keyword demand and conversion intent."
-        : "Generate page updates, supporting content, FAQs, proof blocks, and briefs tied to keyword clusters and the approved strategy.",
-      actionButtonLabel: "Create Content Plan",
-      relatedUrl: "/ai-content",
-      priority: /publish more content|content authority/.test(contextText) ? "high" : "medium",
-      automationLevel: "generate",
-      requiresApproval: true,
-    },
     ...(shouldCreateLeadMagnet ? [{
       key: "build-lead-magnet",
       moduleName: "lead_magnet",

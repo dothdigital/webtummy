@@ -1,6 +1,6 @@
 // API-side BullMQ producer. Enqueues crawl jobs for the worker to consume.
 import { Queue } from "bullmq";
-import { config, CRAWL_QUEUE, KEYWORD_RESEARCH_QUEUE } from "./config.js";
+import { config, CRAWL_QUEUE, KEYWORD_RESEARCH_QUEUE, WEBSITE_BUILDER_QUEUE } from "./config.js";
 
 function redisConnectionOptions() {
   const url = new URL(config.redisUrl);
@@ -24,3 +24,6 @@ export type KeywordResearchQueueJobData = {
 };
 
 export const keywordResearchQueue = new Queue<KeywordResearchQueueJobData, unknown, "keyword:run">(KEYWORD_RESEARCH_QUEUE, { connection: queueConnection });
+
+export type WebsiteBuilderQueueJobData = { jobId: string };
+export const websiteBuilderQueue = new Queue<WebsiteBuilderQueueJobData, unknown, "website:develop">(WEBSITE_BUILDER_QUEUE, { connection: queueConnection });

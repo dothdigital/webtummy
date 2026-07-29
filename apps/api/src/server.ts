@@ -15,6 +15,7 @@ import { socialStrategyRouter } from "./routes/social-strategy.js";
 import { socialConnectRouter } from "./routes/social-connect.js";
 import { localSeoRouter } from "./routes/local-seo.js";
 import { executionTasksRouter } from "./routes/execution-tasks.js";
+import { optimizationWorkflowRouter } from "./routes/optimization-workflow.js";
 import { billingRouter } from "./routes/billing.js";
 import { guidedProjectsRouter } from "./routes/projects-v2.js";
 import { growthRouter } from "./routes/growth.js";
@@ -29,6 +30,7 @@ import { projectAgentRouter } from "./routes/project-agent.js";
 import { siteArchitectureRouter } from "./routes/site-architecture.js";
 import { leadMagnetsRouter, publicLeadMagnetsRouter } from "./routes/lead-magnets.js";
 import { aiIntakeRouter } from "./routes/ai-intake.js";
+import { websiteBuilderRouter } from "./routes/website-builder.js";
 import { rawBodySaver } from "./billing.js";
 import { enforceArchivedReadOnly, enforceWorkspacePermissions, requireAuth } from "./middleware.js";
 
@@ -130,6 +132,7 @@ app.use("/api", projectAgentRouter);
 app.use("/api", siteArchitectureRouter);
 app.use("/api", leadMagnetsRouter);
 app.use("/api", aiIntakeRouter);
+app.use("/api", websiteBuilderRouter);
 app.use("/api/websites", websitesRouter);
 app.use("/api", crawlsRouter); // crawls routes carry their own full paths
 app.use("/api", overviewRouter);
@@ -140,6 +143,7 @@ app.use("/api", socialStrategyRouter);
 app.use("/api", socialConnectRouter);
 app.use("/api", localSeoRouter);
 app.use("/api", executionTasksRouter);
+app.use("/api", optimizationWorkflowRouter);
 
 // Centralized error handler.
 app.use((err: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => {

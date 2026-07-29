@@ -3,10 +3,28 @@ import { crawlQueue } from "./queue.js";
 import { config } from "./config.js";
 import { sendMail } from "./email.js";
 import { approvalEscalationStage } from "@webtummy/core/approvals";
+import { lookup } from "node:dns/promises";
+import { isIP } from "node:net";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const PAYMENT_BLOCKED = new Set(["past_due", "incomplete", "incomplete_expired", "unpaid", "canceled"]);
 const STALE_RUNNING_CRAWL_MS = 2 * 60 * 1000;
+
+function privateDiscoveryAddress(address: string) {
+  if (address === "::1" || address === "::" || /^f[cd]/i.test(address) || /^fe[89ab]/i.test(address)) return true;
+  if (!isIP(address)) return true;
+  if (address.includes(":")) return false;
+  const [a, b] = address.split(".").map(Number);
+  return a === 10 || a === 127 || a === 0 || (a === 169 && b === 254) || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168) || (a === 100 && b >= 64 && b <= 127);
+}
+
+async function safeDiscoveryUrl(raw: string) {
+  const url = new URL(raw);
+  if (!/^https?:$/.test(url.protocol) || ["localhost", "localhost.localdomain"].includes(url.hostname.toLowerCase())) throw new Error("URL is not publicly verifiable.");
+  const addresses = await lookup(url.hostname, { all: true });
+  if (!addresses.length || addresses.some((entry) => privateDiscoveryAddress(entry.address))) throw new Error("URL resolves to a private or unsafe address.");
+  return url;
+}
 
 function monthStart(date = new Date()) {
   return new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), 1));
@@ -549,6 +567,80 @@ export async function workspaceNotificationEmailDelivery(now = new Date()) {
   });
 }
 
+export async function measurementCheckpointNotifications(now = new Date()) {
+  return runLogged("measurement_checkpoint_notifications", async () => {
+    const checkpoints = await prisma.measurementCheckpoint.findMany({ where: { status: "scheduled", dueAt: { lte: now } }, take: 500, include: { project: { include: { agencyClient: { include: { workspace: true } }, client: { include: { workspace: true } } } }, task: { select: { title: true } } } });
+    let notified = 0;
+    for (const checkpoint of checkpoints) {
+      const workspace = checkpoint.project.agencyClient?.workspace ?? checkpoint.project.client.workspace;
+      if (!workspace) continue;
+      const actionUrl = `/guided-projects/${checkpoint.projectId}?tab=execution#optimization-workflow`;
+      const exists = await prisma.workspaceNotification.findFirst({ where: { workspaceId: workspace.id, type: "measurement_checkpoint_due", actionUrl, body: { contains: checkpoint.id } }, select: { id: true } });
+      if (exists) continue;
+      await prisma.workspaceNotification.create({ data: { workspaceId: workspace.id, userId: workspace.ownerUserId, agencyClientId: checkpoint.project.agencyClientId, projectId: checkpoint.projectId, type: "measurement_checkpoint_due", title: `${checkpoint.checkpointType.replaceAll("_", " ")} review due`, body: `${checkpoint.task.title} is ready for its measurement review. Checkpoint ${checkpoint.id}.`, actionUrl, emailEligible: true, emailStatus: "pending" } });
+      await prisma.measurementCheckpoint.update({ where: { id: checkpoint.id }, data: { status: "due" } });
+      notified += 1;
+    }
+    return { checked: checkpoints.length, notified };
+  });
+}
+
+export async function pendingContentDiscoveryChecks(now = new Date()) {
+  return runLogged("pending_content_discovery_checks", async () => {
+    const checks = await prisma.contentDiscoveryCheck.findMany({ where: { status: "pending" }, take: 100, include: { project: { include: { agencyClient: { include: { workspace: true } }, client: { include: { workspace: true } } } }, task: true } });
+    let verified = 0; let issues = 0;
+    for (const check of checks) {
+      let data: { status: string; httpStatus?: number; canonicalUrl?: string; canonicalMatches?: boolean; indexable?: boolean; robotsAllowed?: boolean; sitemapPresent?: boolean; analyticsDetected?: boolean; evidenceJson: Prisma.InputJsonValue; errorMessage?: string; checkedAt: Date; firstDiscoveredAt?: Date };
+      try {
+        const url = await safeDiscoveryUrl(check.liveUrl);
+        const response = await fetch(url, { redirect: "follow", signal: AbortSignal.timeout(15_000), headers: { "User-Agent": "SEnukeAI-DiscoveryCheck/1.0" } });
+        const html = (await response.text()).slice(0, 2_000_000);
+        const canonicalRaw = html.match(/<link[^>]+rel=["'][^"']*canonical[^"']*["'][^>]+href=["']([^"']+)/i)?.[1] ?? html.match(/<link[^>]+href=["']([^"']+)["'][^>]+rel=["'][^"']*canonical/i)?.[1];
+        const canonicalUrl = canonicalRaw ? new URL(canonicalRaw, url).toString() : response.url;
+        const normalized = (value: string) => value.replace(/\/$/, "").toLowerCase();
+        const robotsMeta = html.match(/<meta[^>]+name=["']robots["'][^>]+content=["']([^"']+)/i)?.[1]?.toLowerCase() ?? "";
+        const indexable = response.ok && !robotsMeta.includes("noindex") && response.headers.get("x-robots-tag")?.toLowerCase().includes("noindex") !== true;
+        const sitemapUrl = new URL("/sitemap.xml", url.origin);
+        const sitemapResponse = await fetch(sitemapUrl, { signal: AbortSignal.timeout(10_000), headers: { "User-Agent": "SEnukeAI-DiscoveryCheck/1.0" } });
+        const sitemapText = sitemapResponse.ok ? (await sitemapResponse.text()).slice(0, 5_000_000) : "";
+        const canonicalMatches = normalized(canonicalUrl) === normalized(check.liveUrl) || normalized(canonicalUrl) === normalized(response.url);
+        const sitemapPresent = sitemapResponse.ok && [check.liveUrl, response.url, canonicalUrl].some((candidate) => sitemapText.includes(candidate.replace(/&/g, "&amp;")) || sitemapText.includes(candidate));
+        const analyticsDetected = /googletagmanager|google-analytics|gtag\(|plausible\.io|matomo/i.test(html);
+        const healthy = response.ok && canonicalMatches && indexable && sitemapPresent;
+        data = { status: healthy ? "verified" : "issue", httpStatus: response.status, canonicalUrl, canonicalMatches, indexable, robotsAllowed: indexable, sitemapPresent, analyticsDetected, evidenceJson: { finalUrl: response.url, robotsMeta, sitemapUrl: sitemapUrl.toString() }, checkedAt: now, ...(healthy ? { firstDiscoveredAt: now } : { errorMessage: "Live URL failed availability, canonical, indexability, or sitemap verification." }) };
+      } catch (error) { data = { status: "issue", evidenceJson: {}, errorMessage: error instanceof Error ? error.message : "Discovery verification failed.", checkedAt: now }; }
+      await prisma.$transaction(async (tx) => {
+        await tx.contentDiscoveryCheck.update({ where: { id: check.id }, data });
+        const snapshot = check.task.approvalSnapshotJson && typeof check.task.approvalSnapshotJson === "object" && !Array.isArray(check.task.approvalSnapshotJson) ? check.task.approvalSnapshotJson as Record<string, unknown> : {};
+        await tx.executionTask.update({ where: { id: check.taskId }, data: { status: data.status === "verified" ? "published" : "discovery_issue", blockedReason: data.status === "verified" ? null : data.errorMessage, approvalSnapshotJson: { ...snapshot, latestDiscoveryCheckId: check.id, contentWorkflow: { ...((snapshot.contentWorkflow as object) ?? {}), currentStage: data.status === "verified" ? "performance_monitoring" : "discovery_check" } } as Prisma.InputJsonValue } });
+        const workspace = check.project.agencyClient?.workspace ?? check.project.client.workspace;
+        if (workspace && data.status !== "verified") await tx.workspaceNotification.create({ data: { workspaceId: workspace.id, userId: workspace.ownerUserId, agencyClientId: check.project.agencyClientId, projectId: check.projectId, type: "content_discovery_issue", title: "Discovery issue detected", body: `${check.task.title}: ${data.errorMessage}`, actionUrl: `/guided-projects/${check.projectId}?tab=execution#optimization-workflow`, emailEligible: true, emailStatus: "pending" } });
+      });
+      if (data.status === "verified") verified += 1; else issues += 1;
+    }
+    return { checked: checks.length, verified, issues };
+  });
+}
+
+export async function scheduledLocalGridScans(now = new Date()) {
+  return runLogged("scheduled_local_grid_scans", async () => {
+    const configs = await prisma.localGridConfiguration.findMany({ where: { active: true, schedule: { not: "manual" } }, include: { scans: { orderBy: { scanDate: "desc" }, take: 1 }, keyword: { include: { business: true } } } });
+    let queued = 0;
+    for (const item of configs) {
+      const days = item.schedule === "weekly" ? 7 : item.schedule === "biweekly" ? 14 : 30;
+      const latest = item.scans[0];
+      if (latest && now.getTime() - latest.scanDate.getTime() < days * DAY_MS) continue;
+      const half = (item.gridSize - 1) / 2;
+      const latStep = item.radiusKm / 111 / Math.max(1, half);
+      const lonStep = item.radiusKm / (111 * Math.max(.2, Math.cos(item.centerLatitude * Math.PI / 180))) / Math.max(1, half);
+      const requestedPoints = Array.from({ length: item.gridSize ** 2 }, (_, index) => { const rowIndex = Math.floor(index / item.gridSize); const columnIndex = index % item.gridSize; return { rowIndex, columnIndex, latitude: item.centerLatitude + (half - rowIndex) * latStep, longitude: item.centerLongitude + (columnIndex - half) * lonStep }; });
+      await prisma.localGridScan.create({ data: { configurationId: item.id, status: "queued", scanDate: now, summaryJson: { requestedPoints, scheduled: true, keyword: item.keyword.keyword, city: item.keyword.city, engine: item.engine, resultDepth: item.resultDepth } } });
+      queued += 1;
+    }
+    return { checked: configs.length, queued };
+  });
+}
+
 export async function scheduledProjectReportGeneration(now = new Date()) {
   return runLogged("scheduled_project_report_generation", async () => {
     const workspaces = await prisma.workspace.findMany({ where: { status: "active" }, select: { id: true, workspaceType: true, ownerUserId: true, settingsJson: true } });
@@ -599,6 +691,9 @@ export async function runMaintenanceSuite() {
     await monthlyClientReportGeneration();
     await taskDeadlineNotifications();
     await approvalReminderEscalations();
+    await pendingContentDiscoveryChecks();
+    await measurementCheckpointNotifications();
+    await scheduledLocalGridScans();
     await scheduledProjectReportGeneration();
     await workspaceNotificationEmailDelivery();
   } finally {

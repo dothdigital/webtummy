@@ -34,7 +34,8 @@ async function scopedProject(context: Awaited<ReturnType<typeof workspaceContext
   const project = await prisma.project.findFirst({
     where: { id: projectId, ...(context.workspace.legacyClientId ? { clientId: context.workspace.legacyClientId } : {}) },
     include: {
-      agencyClient: { select: { id: true, name: true } }, website: { select: { id: true, domain: true, crawlJobs: { where: { status: "completed" }, orderBy: { completedAt: "desc" }, take: 1, select: { siteScore: true, pagesCrawled: true, completedAt: true, _count: { select: { issues: true } } } }, keywordResearchRuns: { where: { status: "completed" }, orderBy: { createdAt: "desc" }, take: 100, select: { seedKeyword: true, locationName: true, targetRank: true, manualRank: true, averageVolume: true, competitorCount: true, createdAt: true } } } },
+      agencyClient: { select: { id: true, name: true } }, website: { select: { id: true, domain: true, crawlJobs: { where: { status: "completed" }, orderBy: { completedAt: "desc" }, take: 1, select: { siteScore: true, pagesCrawled: true, completedAt: true, _count: { select: { issues: true } } } } } },
+      keywordResearchRuns: { where: { status: "completed" }, orderBy: { createdAt: "desc" }, take: 100, select: { seedKeyword: true, locationName: true, targetRank: true, manualRank: true, averageVolume: true, competitorCount: true, createdAt: true } },
       opportunities: { where: { status: { in: ["selected", "confirmed"] } }, orderBy: { createdAt: "desc" }, take: 1 },
       keywordGroups: { select: { id: true, title: true, status: true, keywords: true } },
       strategyPlans: { orderBy: { updatedAt: "desc" }, take: 1 },
@@ -60,7 +61,7 @@ function reportContent(project: Awaited<ReturnType<typeof scopedProject>>, repor
   const strategy = project.strategyPlans[0];
   const crawl = project.website?.crawlJobs[0];
   const selectedOpportunity = project.opportunities[0];
-  const rankingRuns = project.website?.keywordResearchRuns ?? [];
+  const rankingRuns = project.keywordResearchRuns;
   const latestRankings = new Map<string, typeof rankingRuns[number]>();
   const previousRankings = new Map<string, typeof rankingRuns[number]>();
   for (const run of rankingRuns) {

@@ -135,8 +135,17 @@ siteArchitectureRouter.post("/projects/:projectId/site-architecture/generate", a
     const strategy = project.strategyPlans[0];
     if (!strategy || strategy.status !== "approved") return res.status(409).json({ error: "Approve the Strategy before generating Site Architecture." });
     const evidence = await architectureEvidence(project);
-    const existingWebsite = project.websiteStatus === "existing_website" || project.projectType === "existing_website";
+    // Project type can retain an older “existing website” intake choice even
+    // after the approved workflow changes to a new website build. A crawl is
+    // required only when a website is actually connected and marked existing.
+    const existingWebsite = Boolean(project.websiteId) && project.websiteStatus === "existing_website";
     if (existingWebsite && !evidence.crawl) return res.status(409).json({ error: "Complete Site Analysis before generating architecture for an existing website." });
+    const existingDraft = await prisma.siteArchitectureVersion.findFirst({
+      where: { projectId: project.id, status: "draft" },
+      orderBy: { version: "desc" },
+      include: { pages: { orderBy: { sortOrder: "asc" } }, links: true, decisions: { orderBy: { createdAt: "desc" } } },
+    });
+    if (existingDraft) return res.json({ architecture: existingDraft, existing: true });
     const generated = buildArchitecture(project, evidence);
     const latest = await prisma.siteArchitectureVersion.findFirst({ where: { projectId: project.id }, orderBy: { version: "desc" }, select: { version: true } });
     const version = (latest?.version ?? 0) + 1;
@@ -150,6 +159,7 @@ siteArchitectureRouter.post("/projects/:projectId/site-architecture/generate", a
         decisions: { create: { actorUserId: context.membership.userId, decision: "generated", snapshotJson: { pageCount: generated.pages.length, linkCount: generated.links.length } } },
       }, include: { pages: { orderBy: { sortOrder: "asc" } }, links: true, decisions: true } });
       await tx.aiRun.create({ data: { projectId: project.id, clientId: project.clientId, moduleName: "site_architect", promptVersion: "dev-011b-evidence-v1", inputSnapshotJson: architecture.evidenceJson, outputJson: { architectureId: architecture.id, version, pageCount: architecture.pages.length, linkCount: architecture.links.length }, outputText: architecture.executiveSummary, status: "completed" } });
+      await tx.executionTask.updateMany({ where: { projectId: project.id, moduleName: "site_architect", sourceType: { notIn: ["website_builder_request", "site_architecture_page", "site_architecture_link"] }, title: { contains: "Generate site architecture", mode: "insensitive" }, status: { in: ["ready", "in_progress"] } }, data: { status: "needs_review", actionButtonLabel: "Review & Approve Site Architecture", relatedUrl: `/site-architect?projectId=${project.id}`, manualInstructions: `Review Site Architecture v${version}, its ${architecture.pages.length} planned pages, URL structure, keyword mapping, navigation, and ${architecture.links.length} internal links. Approve it before website development.`, expectedOutcome: "An approved site structure becomes the page and internal-link specification used by content and website development." } });
       await recordWorkspaceActivity(tx, { context, action: "site_architecture.generated", entityType: "site_architecture", entityId: architecture.id, agencyClientId: project.agencyClientId, projectId: project.id, nextJson: { version, status: "draft", pageCount: architecture.pages.length, linkCount: architecture.links.length } });
       const approvers = await tx.workspaceMembership.findMany({ where: { workspaceId: context.workspace.id, status: "active", roles: { some: { role: { in: ["owner", "admin", "manager", "approver"] } } } }, select: { userId: true } });
       for (const userId of [...new Set([context.workspace.ownerUserId, ...approvers.map((item) => item.userId)])]) await createWorkspaceNotification(tx, { context, userId, type: "site_architecture_ready", title: "Architecture ready for review", body: `${project.name} Site Architecture v${version} recommends ${architecture.pages.length} pages and ${architecture.links.length} internal links.`, actionUrl: `/site-architect?projectId=${project.id}`, agencyClientId: project.agencyClientId, projectId: project.id });
@@ -184,6 +194,7 @@ siteArchitectureRouter.post("/projects/:projectId/site-architecture/:architectur
         await tx.siteArchitectureLink.update({ where: { id: link.id }, data: { executionTaskId: task.id } });
       }
       const approved = await tx.siteArchitectureVersion.update({ where: { id: architecture.id }, data: { status: "approved", approvedByUserId: context.membership.userId, approvedAt: new Date(), rejectedAt: null, rejectionReason: null }, include: { pages: { orderBy: { sortOrder: "asc" } }, links: true, decisions: true } });
+      await tx.executionTask.updateMany({ where: { projectId: project.id, moduleName: "site_architect", sourceType: { notIn: ["website_builder_request", "site_architecture_page", "site_architecture_link"] }, title: { contains: "Generate site architecture", mode: "insensitive" }, status: { in: ["ready", "in_progress", "needs_review"] } }, data: { status: "completed", completedAt: new Date(), actionButtonLabel: "View Approved Site Architecture", relatedUrl: `/site-architect?projectId=${project.id}`, blockedReason: null } });
       await tx.siteArchitectureDecision.create({ data: { architectureId: architecture.id, actorUserId: context.membership.userId, decision: "approved", comments: input.comments, snapshotJson: { pageCount: architecture.pages.length, linkCount: architecture.links.length, executionPlanId: planId } } });
       await recordWorkspaceActivity(tx, { context, action: "site_architecture.approved", entityType: "site_architecture", entityId: architecture.id, agencyClientId: project.agencyClientId, projectId: project.id, previousJson: { status: architecture.status }, nextJson: { status: "approved", version: architecture.version, pageTasks: architecture.pages.length, linkTasks: architecture.links.length } });
       for (const userId of [...new Set([architecture.createdByUserId, context.workspace.ownerUserId].filter((item): item is string => Boolean(item)))]) await createWorkspaceNotification(tx, { context, userId, type: "site_architecture_approved", title: "Site Architecture approved", body: `${project.name} Site Architecture v${architecture.version} was approved and added to the Execution Plan.`, actionUrl: `/site-architect?projectId=${project.id}`, agencyClientId: project.agencyClientId, projectId: project.id });

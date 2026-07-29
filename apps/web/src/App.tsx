@@ -1,5 +1,5 @@
 import { Routes, Route, Navigate, useLocation, useParams, useNavigate } from "react-router-dom";
-import { useEffect, type ReactNode } from "react";
+import { lazy, Suspense, useEffect, type ReactNode } from "react";
 import { AuthProvider, useAuth } from "./auth.js";
 import { api, welcomePending } from "./api.js";
 import type { BillingStatus } from "./types.js";
@@ -39,6 +39,8 @@ import Welcome from "./pages/Welcome.js";
 import ProjectReports from "./pages/ProjectReports.js";
 import Approvals from "./pages/Approvals.js";
 import PublicLeadFunnel from "./pages/PublicLeadFunnel.js";
+
+const WebsiteVisualEditor = lazy(() => import("./pages/WebsiteVisualEditor.js"));
 
 function KeywordAnalyticsDetailRedirect() {
   const { id } = useParams();
@@ -106,13 +108,16 @@ function Shell() {
   const landingPath = platformOnlySuperAdmin ? "/admin" : user.workspace?.landingPath ?? "/";
   if (location.pathname === "/login") return <Navigate to={landingPath} replace />;
   if (platformOnlySuperAdmin && location.pathname !== "/users" && !location.pathname.startsWith("/admin")) return <Navigate to="/admin" replace />;
-  if (workspaceRole === "client_viewer" && location.pathname !== "/workspace" && location.pathname !== "/reports" && location.pathname !== "/site-architect" && location.pathname !== "/lead-magnets" && !location.pathname.startsWith("/agency/clients/")) return <Navigate to="/workspace" replace />;
+  if (workspaceRole === "client_viewer" && location.pathname !== "/workspace" && location.pathname !== "/reports" && !location.pathname.startsWith("/site-architect") && location.pathname !== "/lead-magnets" && !location.pathname.startsWith("/agency/clients/")) return <Navigate to="/workspace" replace />;
 
   const welcomeEligible = Boolean(user.workspace && user.workspace.primaryRole === "admin" && user.workspace.onboardingRequired);
   const showWelcome = welcomeEligible && welcomePending(user.id, user.workspace?.id);
   if (showWelcome && location.pathname !== "/welcome") return <Navigate to="/welcome" replace />;
   if (!showWelcome && location.pathname === "/welcome") return <Navigate to="/" replace />;
   if (showWelcome) return <Welcome />;
+  if (location.pathname === "/site-architect/visual-editor") return <PermissionRoute permission="execute_tasks"><Suspense fallback={<div className="grid min-h-screen place-items-center bg-slate-950 text-sm font-bold text-white">Opening the SENuke Visual Editor…</div>}><WebsiteVisualEditor mode="editor" /></Suspense></PermissionRoute>;
+  if (location.pathname === "/site-architect/preview") return <PermissionRoute anyOf={["run_ai_analysis", "read_internal", "read_shared_client_data"]}><Suspense fallback={<div className="grid min-h-screen place-items-center bg-slate-950 text-sm font-bold text-white">Preparing the responsive preview…</div>}><WebsiteVisualEditor mode="preview" /></Suspense></PermissionRoute>;
+  if (location.pathname === "/ai-content" && new URLSearchParams(location.search).get("embedded") === "1") return <PermissionRoute permission="publish"><div className="min-h-screen bg-slate-50"><AiContentStudio /></div></PermissionRoute>;
 
   return (
     <Layout>

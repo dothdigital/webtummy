@@ -5,6 +5,7 @@ import { Button, Card, Input, StatusPill } from "../components/ui.js";
 import { COUNTRY_OPTIONS, defaultLocationParts } from "../locationOptions.js";
 import type { GuidedProject, LocalBusinessProfile, LocalKeyword, LocalRankSnapshot, LocalSeoDashboardResponse, LocalScore, Website } from "../types.js";
 import { getActiveProjectId, resolveActiveProjectId, setActiveProjectId } from "../active-project.js";
+import LocalGridPanel from "../components/LocalGridPanel.js";
 
 type KeywordSuggestion = {
   keyword: string;
@@ -285,6 +286,9 @@ export default function LocalSeo() {
   const [auditSummary, setAuditSummary] = useState<{ reviewed: number; avgRating: number | null; ranked: number; checked: number } | null>(null);
   const [profileOpen, setProfileOpen] = useState(false);
 
+  const selectedGuidedProject = projects.find((project) => project.id === searchParams.get("projectId"))
+    ?? projects.find((project) => project.id === getActiveProjectId())
+    ?? null;
   const selectedProject = websites.find((website) => website.id === websiteId) ?? null;
   const business = dashboard?.business ?? businesses.find((item) => item.id === selectedId) ?? null;
   const latestTargetScores = useMemo(() => latestScoresByTarget(business), [business]);
@@ -400,7 +404,11 @@ export default function LocalSeo() {
       const activeGuidedProjectId = resolveActiveProjectId(projectResult.projects, searchParams.get("projectId"), getActiveProjectId());
       const activeGuidedProject = projectResult.projects.find((project) => project.id === activeGuidedProjectId);
       if (activeGuidedProjectId) setActiveProjectId(activeGuidedProjectId);
-      const preferredWebsiteId = activeGuidedProject?.websiteId ?? websiteResult.websites.find((website) => website.id === requestedProject)?.id ?? websiteResult.websites[0]?.id ?? "";
+      // An explicitly selected guided project is authoritative. A pre-website
+      // project must not silently inherit the first website in the workspace.
+      const preferredWebsiteId = activeGuidedProjectId
+        ? activeGuidedProject?.websiteId ?? ""
+        : websiteResult.websites.find((website) => website.id === requestedProject)?.id ?? websiteResult.websites[0]?.id ?? "";
       if (preferredWebsiteId) {
         await applyProjectSelection(preferredWebsiteId, websiteResult.websites, businessResult.businesses);
         if (openProfileRequested) {
@@ -420,9 +428,23 @@ export default function LocalSeo() {
           setProfileOpen(true);
         }
       } else {
+        if (activeGuidedProjectId) setSearchParams({ projectId: activeGuidedProjectId }, { replace: true });
         setSelectedId("");
         setDashboard(null);
-        setForm(emptyForm);
+        const businessLocation = activeGuidedProject?.businessLocationJson;
+        setWebsiteId("");
+        setForm(activeGuidedProject ? {
+          ...emptyForm,
+          businessName: activeGuidedProject.businessName || activeGuidedProject.name,
+          address: businessLocation?.streetAddress || activeGuidedProject.businessLocation || "",
+          city: businessLocation?.city || "",
+          region: businessLocation?.stateProvince || "",
+          country: businessLocation?.country || emptyForm.country,
+          postalCode: businessLocation?.postalCode || "",
+          mainCategory: activeGuidedProject.niche || "",
+          services: activeGuidedProject.businessProfile?.offerSummary || activeGuidedProject.niche || "",
+          targetLocations: Array.isArray(activeGuidedProject.targetLocations) ? activeGuidedProject.targetLocations.map(String).join(", ") : activeGuidedProject.targetLocation || "",
+        } : emptyForm);
       }
     } finally {
       setLoading(false);
@@ -644,7 +666,7 @@ export default function LocalSeo() {
           <div>
             <div className="text-xs font-semibold uppercase tracking-wide text-brand-600">Local Presence</div>
             <div className="mt-1 flex items-center gap-2">
-              <h1 className="text-3xl font-bold tracking-tight text-charcoal-900">{selectedProject?.domain ?? "Select a project"}</h1>
+              <h1 className="text-3xl font-bold tracking-tight text-charcoal-900">{selectedProject?.domain ?? selectedGuidedProject?.businessName ?? selectedGuidedProject?.name ?? "Select a project"}</h1>
               <GoogleDataTooltip />
             </div>
             <p className="mt-2 max-w-3xl text-sm leading-6 text-charcoal-500">Project-level Local SEO for organic search, Maps, local pack, reviews, citations, website basics, and content coverage.</p>
@@ -652,7 +674,8 @@ export default function LocalSeo() {
           <label className="block min-w-[280px]">
             <span className="mb-1 block text-sm font-medium text-slate-600">Project</span>
             <select value={websiteId} onChange={(event) => void selectProject(event.target.value)} className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-100">
-              {websites.length === 0 && <option value="">No projects yet</option>}
+              {!selectedProject && selectedGuidedProject && <option value="">{selectedGuidedProject.businessName || selectedGuidedProject.name} · no website connected</option>}
+              {websites.length === 0 && !selectedGuidedProject && <option value="">No projects yet</option>}
               {websites.map((website) => <option key={website.id} value={website.id}>{website.domain}</option>)}
             </select>
           </label>
@@ -661,11 +684,19 @@ export default function LocalSeo() {
 
       {message && <div className="rounded-lg border border-brand-100 bg-brand-50 px-4 py-3 text-sm text-brand-700">{message}</div>}
 
-      {websites.length === 0 && (
+      {websites.length === 0 && !selectedGuidedProject && (
         <Card className="border-dashed border-brand-200 bg-brand-50 p-6 text-center">
           <div className="font-bold text-charcoal-900">Create a project first</div>
           <p className="mx-auto mt-2 max-w-2xl text-sm leading-6 text-charcoal-600">Local SEO is tied to a website project so ranking data, crawl data, and business profile data stay together.</p>
           <Link to="/projects" className="mt-4 inline-flex items-center justify-center rounded-lg bg-brand-600 px-4 py-2 text-sm font-bold text-white hover:bg-brand-700">Create new project</Link>
+        </Card>
+      )}
+
+      {selectedGuidedProject && !selectedProject && (
+        <Card className="border-brand-200 bg-brand-50 p-5">
+          <div className="font-bold text-charcoal-900">Pre-website project selected</div>
+          <p className="mt-2 text-sm leading-6 text-charcoal-600">Domain and local-market planning will use this project's business, services, location, and target markets from intake. Website crawling and website-based ranking signals remain unavailable until a domain is connected.</p>
+          <div className="mt-3 flex flex-wrap gap-2">{Array.isArray(selectedGuidedProject.targetLocations) && selectedGuidedProject.targetLocations.map(String).map((location) => <span key={location} className="rounded-full bg-white px-3 py-1 text-xs font-bold text-brand-700">{location}</span>)}</div>
         </Card>
       )}
 
@@ -1123,6 +1154,8 @@ export default function LocalSeo() {
           </div>
         </Card>
       )}
+
+      {business && <LocalGridPanel business={business} />}
 
       <div className="grid gap-6 lg:grid-cols-2">
         <Card id="nap-audit" className="p-5">

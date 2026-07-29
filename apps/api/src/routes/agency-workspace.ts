@@ -91,7 +91,7 @@ const taskAssignmentSchema = z.object({
   clientVisibleNotes: z.string().max(20000).optional().nullable(),
   dependencyTaskIds: z.array(z.string()).max(100).optional(),
 });
-const taskSubmitSchema = z.object({ notes: z.string().max(10000).optional().nullable(), confirmed: z.boolean().default(false) });
+const taskSubmitSchema = z.object({ notes: z.string().max(10000).optional().nullable(), confirmed: z.boolean().default(false), approvalRoute: z.enum(["self_approve", "send_to_team"]).optional() });
 const taskDecisionSchema = z.object({
   decision: z.enum(["approved", "rejected", "changes_requested"]),
   notes: z.string().max(10000).optional().nullable(),

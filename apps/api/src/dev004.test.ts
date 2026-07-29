@@ -12,6 +12,7 @@ describe("DEV-004 shared location defaults", () => {
 
   it("normalizes Agency client locations and prevents required values being cleared", () => {
     expect(normalizeRequiredLocations(["Toronto, Ontario, Canada"], ["Canada", "canada", " Ontario "])).toEqual({ businessLocations: ["Toronto, Ontario, Canada"], targetMarkets: ["Canada", "Ontario"] });
+    expect(() => normalizeRequiredLocations(["Dehradun, Uttarakhand, India"], ["Tech startups", "Enterprises looking for AI integration"])).toThrow(/target market/);
     expect(() => normalizeRequiredLocations([], ["Canada"])).toThrow(/Business location/);
     expect(() => normalizeRequiredLocations(["Toronto"], [])).toThrow(/target market/);
   });

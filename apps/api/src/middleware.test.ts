@@ -5,6 +5,7 @@ describe("workspace activity permission mapping", () => {
   it.each([
     ["POST", "/projects-v2", "create_projects"],
     ["PATCH", "/projects-v2/project-1/locations", "edit_project_settings"],
+    ["PATCH", "/projects-v2/project-1/target-markets", "edit_project_settings"],
     ["POST", "/projects-v2/project-1/opportunities/generate", "run_ai_analysis"],
     ["POST", "/projects-v2/project-1/keyword-groups/generate", "run_ai_analysis"],
     ["POST", "/projects-v2/project-1/strategy/generate", "edit_strategy"],

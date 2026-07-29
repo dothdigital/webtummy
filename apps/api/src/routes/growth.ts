@@ -31,10 +31,10 @@ async function scopedProject(req: Request, projectId: string) {
             take: 1,
             include: { issues: { where: { status: "open" }, take: 50 } },
           },
-          keywordResearchRuns: { orderBy: { createdAt: "desc" }, take: 3, include: { ideas: { take: 10 } } },
           socialStrategies: { orderBy: { createdAt: "desc" }, take: 1, include: { posts: { take: 10 } } },
         },
       },
+      keywordResearchRuns: { orderBy: { createdAt: "desc" }, take: 3, include: { ideas: { take: 10 } } },
       businessProfile: true,
       intakeAnswers: true,
       opportunities: { orderBy: { createdAt: "desc" }, take: 5 },
@@ -142,7 +142,7 @@ function scoreProject(project: NonNullable<Awaited<ReturnType<typeof scopedProje
   const latestCrawl = project.website?.crawlJobs[0] ?? null;
   const openTasks = project.executionTasks.filter((task) => !terminalStatuses.has(task.status));
   const highIssues = latestCrawl?.issues.filter((issue) => issue.severity === "high").length ?? 0;
-  const keywordRuns = project.website?.keywordResearchRuns.length ?? 0;
+  const keywordRuns = project.keywordResearchRuns.length;
   const socialPosts = project.website?.socialStrategies[0]?.posts.length ?? 0;
   const hasLeadMagnetTask = project.executionTasks.some((task) => task.moduleName.includes("lead") || task.title.toLowerCase().includes("lead magnet"));
   const strategyApproved = Boolean(project.strategyPlans.find((strategy) => strategy.status === "approved"));

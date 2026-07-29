@@ -1,7 +1,8 @@
 import { Router } from "express";
 import type { Request } from "express";
+import PDFDocument from "pdfkit";
 import { z } from "zod";
-import { prisma } from "@webtummy/db";
+import { Prisma, prisma } from "@webtummy/db";
 import { requireAuth } from "../middleware.js";
 import { projectClientIdForRequest } from "../project-scope.js";
 import { config } from "../config.js";
@@ -14,6 +15,7 @@ type GenerationType = "article" | "h1" | "title" | "meta_description" | "faq" | 
 
 
 const generationSchema = z.object({
+  executionTaskId: z.string().optional().nullable(),
   websiteId: z.string().optional().nullable(),
   type: z.enum(["article", "h1", "title", "meta_description", "faq", "page_schema", "domain_schema", "page_llms_txt", "domain_llms_txt", "sitemap", "ai_search"]),
   topic: z.string().min(2).max(500),
@@ -21,7 +23,11 @@ const generationSchema = z.object({
   targetUrl: z.string().max(512).optional().nullable(),
   languageCode: z.string().min(2).max(16).default("en"),
   tone: z.string().max(80).optional().nullable(),
-  notes: z.string().max(3000).optional().nullable(),
+  // A planned website page includes its approved brief, FAQ/proof requirements,
+  // internal-link direction, and reviewer instruction. Keep this bounded for a
+  // single asset, but do not reject legitimate approved plans at the old 3k
+  // limit before generation begins.
+  notes: z.string().max(20_000).optional().nullable(),
 });
 
 function currentMonthStart() {
@@ -74,7 +80,7 @@ async function incrementUsage(clientId: string, type: GenerationType, tokens: nu
 
 function schemaInstruction(type: GenerationType) {
   if (type === "article") {
-    return "Return JSON with keys: title, slug, metaTitle, metaDescription, outline, articleHtml, faqs, schemaJsonLd, aiSearchNotes. articleHtml must be clean HTML using h2/h3/p/ul/li only.";
+    return "Return JSON with keys: title, slug, metaTitle, metaDescription, outline, articleHtml, faqs, schemaJsonLd, aiSearchNotes. Create a complete 900–1,600 word page, not a summary or outline. articleHtml must contain a useful introduction and fully written H2/H3 sections using h2/h3/p/ul/li only. The meta description must be a unique 120–160 character search snippet explaining this page's specific value and next step. Cover the approved buyer problem, service or topic details, decision factors, process, proof only where supported, FAQs, internal-link opportunities, and conversion action. Avoid generic filler and never use the template “Explore ... Review capabilities, process, proof, FAQs, and next steps.”";
   }
   if (type === "h1") return "Return JSON with key h1Options: an array of 8 concise H1 options aligned to the target keyword, page intent, and local context where relevant.";
   if (type === "title") return "Return JSON with key titles: an array of 10 SEO title options under 60 characters where possible.";
@@ -102,6 +108,14 @@ function buildPrompt(input: z.infer<typeof generationSchema>, domain?: string) {
     `Tone: ${input.tone ?? "professional"}`,
     input.notes ? `Extra notes: ${input.notes}` : "",
   ].filter(Boolean).join("\n");
+}
+
+function exportHtmlValue(value: unknown): string {
+  const escape = (text: string) => text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+  if (value == null || value === "") return "<p>Not provided</p>";
+  if (Array.isArray(value)) return `<ul>${value.map((item) => `<li>${typeof item === "object" && item !== null ? exportHtmlValue(item) : escape(String(item))}</li>`).join("")}</ul>`;
+  if (typeof value === "object") return `<dl>${Object.entries(value as Record<string, unknown>).map(([key, entry]) => `<dt>${escape(key.replace(/([A-Z])/g, " $1"))}</dt><dd>${exportHtmlValue(entry)}</dd>`).join("")}</dl>`;
+  return `<p>${escape(String(value)).replace(/\n/g, "<br>")}</p>`;
 }
 
 async function openaiJson(prompt: string) {
@@ -184,9 +198,59 @@ aiContentRouter.get("/ai-content/history", async (req, res) => {
   }
 });
 
+aiContentRouter.get("/ai-content/:generationId/export", async (req, res) => {
+  try {
+    const client = await getClientForRequest(req);
+    const generation = await prisma.aiContentGeneration.findFirst({ where: { id: req.params.generationId, clientId: client.id } });
+    if (!generation) return res.status(404).json({ error: "Generated content was not found." });
+    const format = String(req.query.format ?? "html").toLowerCase();
+    if (!["html", "word", "pdf"].includes(format)) return res.status(400).json({ error: "Choose HTML, Word, or PDF." });
+    const result = generation.resultJson && typeof generation.resultJson === "object" && !Array.isArray(generation.resultJson) ? generation.resultJson as Record<string, unknown> : {};
+    const articleHtml = typeof result.articleHtml === "string" ? result.articleHtml : exportHtmlValue(result);
+    const title = String(result.title ?? generation.topic);
+    const safeName = title.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 80) || "generated-content";
+    const detailSections: Array<[string, unknown]> = [
+      ["Generation details", { topic: generation.topic, contentType: generation.type, targetKeyword: generation.targetKeyword, targetPage: generation.targetUrl, language: generation.languageCode, tone: generation.tone, generatedAt: generation.createdAt.toISOString(), model: generation.model }],
+      ["SEO title and description", { title: result.title, slug: result.slug, metaTitle: result.metaTitle, metaDescription: result.metaDescription }],
+      ["Outline", result.outline],
+      ["Content", articleHtml],
+      ["FAQs", result.faqs],
+      ["Schema", result.schemaJsonLd],
+      ["AI-search notes", result.aiSearchNotes ?? result.aiSearchRecommendations],
+    ];
+    const sectionHtml = detailSections.map(([heading, value]) => `<section><h2>${heading}</h2>${heading === "Content" ? String(value) : exportHtmlValue(value)}</section>`).join("");
+    const documentHtml = `<!doctype html><html><head><meta charset="utf-8"><title>${title.replace(/[<>&"]/g, "")}</title><style>body{font-family:Arial,sans-serif;max-width:820px;margin:40px auto;line-height:1.6;color:#172033}h1,h2,h3{line-height:1.25}h1{border-bottom:2px solid #dbeafe;padding-bottom:16px}h2{margin-top:32px;color:#166534;border-bottom:1px solid #d1fae5;padding-bottom:8px}dt{font-weight:bold;text-transform:capitalize;margin-top:10px}dd{margin:3px 0 10px}pre{white-space:pre-wrap}section{page-break-inside:auto}code{overflow-wrap:anywhere}</style></head><body><h1>${title.replace(/[<>&]/g, "")}</h1>${sectionHtml}</body></html>`;
+    if (format === "html" || format === "word") {
+      const extension = format === "word" ? "doc" : "html";
+      res.setHeader("Content-Type", format === "word" ? "application/msword; charset=utf-8" : "text/html; charset=utf-8");
+      res.setHeader("Content-Disposition", `attachment; filename="${safeName}.${extension}"`);
+      return res.send(documentHtml);
+    }
+    res.setHeader("Content-Type", "application/pdf");
+    res.setHeader("Content-Disposition", `attachment; filename="${safeName}.pdf"`);
+    const doc = new PDFDocument({ size: "A4", margins: { top: 54, bottom: 54, left: 54, right: 54 }, info: { Title: title } });
+    doc.pipe(res);
+    doc.fontSize(20).fillColor("#172033").text(title).moveDown();
+    const plainText = sectionHtml.replace(/<h2[^>]*>/gi, "\n\n").replace(/<\/h2>/gi, "\n").replace(/<\/(p|h1|h3|li|div|dd|dt)>/gi, "\n").replace(/<li[^>]*>/gi, "• ").replace(/<dt[^>]*>/gi, "\n").replace(/<[^>]+>/g, " ").replace(/&nbsp;/g, " ").replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, "\"").replace(/\n{3,}/g, "\n\n").trim();
+    doc.fontSize(11).fillColor("#334155").text(plainText, { lineGap: 3 });
+    doc.end();
+  } catch (error) {
+    if (!res.headersSent) res.status(400).json({ error: error instanceof Error ? error.message : "Could not export content." });
+  }
+});
+
 aiContentRouter.post("/ai-content/generate", async (req, res) => {
   const parsed = generationSchema.safeParse(req.body);
-  if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() });
+  if (!parsed.success) {
+    const flattened = parsed.error.flatten();
+    const fieldMessage = Object.entries(flattened.fieldErrors)
+      .flatMap(([field, errors]) => (errors ?? []).map((message) => `${field}: ${message}`))
+      .join(" · ");
+    return res.status(400).json({
+      error: fieldMessage || flattened.formErrors.join(" · ") || "The content request contains invalid or incomplete fields.",
+      fieldErrors: flattened.fieldErrors,
+    });
+  }
   const input = parsed.data;
 
   try {
@@ -194,6 +258,25 @@ aiContentRouter.post("/ai-content/generate", async (req, res) => {
     requireBillingAccess(client);
     const plan = await billingPlanForClient(client.plan);
     await assertQuota(client.id, plan?.articleLimit ?? 5, input.type);
+    const linkedTask = input.executionTaskId
+      ? await prisma.executionTask.findFirst({ where: { id: input.executionTaskId, clientId: client.id, moduleName: "content" } })
+      : null;
+    if (input.executionTaskId && !linkedTask) return res.status(404).json({ error: "The linked content task was not found." });
+    if (linkedTask?.sourceType === "content_plan_action") {
+      const taskSnapshot = linkedTask.approvalSnapshotJson && typeof linkedTask.approvalSnapshotJson === "object" && !Array.isArray(linkedTask.approvalSnapshotJson) ? linkedTask.approvalSnapshotJson as Record<string, unknown> : {};
+      const planning = taskSnapshot.contentPlanning && typeof taskSnapshot.contentPlanning === "object" && !Array.isArray(taskSnapshot.contentPlanning) ? taskSnapshot.contentPlanning as Record<string, unknown> : {};
+      const keyword = typeof planning.keyword === "string" && planning.keyword.trim() ? planning.keyword.trim() : input.targetKeyword?.trim() || input.topic.trim();
+      const suggestedPath = `/${keyword.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "planned-page"}`;
+      const effectiveTargetUrl = typeof planning.targetUrl === "string" && planning.targetUrl.trim() ? planning.targetUrl.trim() : input.targetUrl?.trim() || suggestedPath;
+      const missing = [
+        !(typeof planning.searchIntent === "string" && planning.searchIntent.trim()) && "search intent",
+        !effectiveTargetUrl && "target page",
+        !(typeof planning.gapAnalysis === "string" && planning.gapAnalysis.trim()) && "gap analysis",
+        !(typeof planning.brief === "string" && planning.brief.trim()) && "content brief",
+      ].filter((value): value is string => Boolean(value));
+      if (missing.length) return res.status(409).json({ error: `This asset is not ready for AI drafting. Review ${missing.join(", ")} in the SEO Page Map, then approve the plan again.` });
+      if (!input.targetUrl) input.targetUrl = effectiveTargetUrl;
+    }
 
     let website: { id: string; domain: string } | null = null;
     if (input.websiteId) {
@@ -221,6 +304,22 @@ aiContentRouter.post("/ai-content/generate", async (req, res) => {
         outputTokens: generated.outputTokens,
       },
     });
+    if (linkedTask) {
+      const snapshot = linkedTask.approvalSnapshotJson && typeof linkedTask.approvalSnapshotJson === "object" && !Array.isArray(linkedTask.approvalSnapshotJson)
+        ? linkedTask.approvalSnapshotJson as Record<string, unknown>
+        : {};
+      const contentWorkflow = snapshot.contentWorkflow && typeof snapshot.contentWorkflow === "object" && !Array.isArray(snapshot.contentWorkflow) ? snapshot.contentWorkflow as Record<string, unknown> : {};
+      await prisma.executionTask.update({
+        where: { id: linkedTask.id },
+        data: {
+          status: linkedTask.requiresApproval ? "needs_review" : "ready_to_publish",
+          actionButtonLabel: linkedTask.requiresApproval ? "Review & Approve Content" : "Publish Content",
+          relatedAssetId: record.id,
+          relatedUrl: `/ai-content?projectId=${linkedTask.projectId}&taskId=${linkedTask.id}&open=1`,
+          approvalSnapshotJson: { ...snapshot, proposed: generated.result as object, contentVersion: { generationId: record.id, immutable: true, createdAt: record.createdAt.toISOString(), supersedesGenerationId: linkedTask.relatedAssetId ?? null }, contentWorkflow: { ...contentWorkflow, currentStage: linkedTask.requiresApproval ? "seo_review" : "publishing" }, generatedContent: { generationId: record.id, type: record.type, topic: record.topic, targetKeyword: record.targetKeyword, targetUrl: record.targetUrl, createdAt: record.createdAt.toISOString() } } as Prisma.InputJsonValue,
+        },
+      });
+    }
     await incrementUsage(client.id, input.type, tokens);
     res.status(201).json({ generation: record });
   } catch (error) {

@@ -25,7 +25,7 @@ export function workflowStepComplete(project: GuidedProject, key: string) {
 export function nextProjectFlowStep(project: GuidedProject) {
   const latestStrategy = project.strategyPlans?.[0] as { status?: string } | undefined;
   const hasStrategy = Boolean(latestStrategy || project._count?.strategyPlans);
-  const strategyApproved = latestStrategy?.status === "approved" || workflowStepComplete(project, "strategy_approval");
+  const strategyApproved = (project.strategyPlans?.some((strategy) => strategy.status === "approved") ?? false) || workflowStepComplete(project, "strategy_approval");
   const siteAnalysisRequired = requiresSiteAnalysisBeforeStrategy(project);
   const hasWebsite = projectHasWebsite(project);
 
@@ -64,6 +64,23 @@ export function nextProjectFlowStep(project: GuidedProject) {
       to: `/strategy?projectId=${project.id}`,
       badge: "Step 5: Strategy Review",
     };
+  }
+  if (workflowStepComplete(project, "execution_plan")) {
+    return isExistingWebsiteFlow(project)
+      ? {
+          title: "Continue Execution",
+          description: "Keyword analysis, Strategy, and the Execution Plan are complete. Continue with the next ready project task.",
+          actionLabel: "Open Execution Plan",
+          to: `/guided-projects/${project.id}?tab=execution#execution-tasks`,
+          badge: "Execution ready",
+        }
+      : {
+          title: "Build the Approved Website",
+          description: "Keyword analysis, Strategy, and the Execution Plan are complete. Continue with the approved page map, content, and website build.",
+          actionLabel: "Open Site Architect",
+          to: `/site-architect?projectId=${project.id}`,
+          badge: "Website build ready",
+        };
   }
   return {
     title: "Create Execution Plan",

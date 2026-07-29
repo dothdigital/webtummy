@@ -12,6 +12,7 @@ import { registerBackgroundJob } from "../background-jobs.js";
 import { keywordMarketKey, keywordMarketOptions, latestSuccessfulKeywordRuns, uniqueSerpDomains } from "../keyword-runs.js";
 import { getActiveProjectId, resolveActiveProjectId, setActiveProjectId } from "../active-project.js";
 import LeadFunnelWorkspace from "../components/LeadFunnelWorkspace.js";
+import SiteBuilderWorkflow from "../components/SiteBuilderWorkflow.js";
 import type { AiContentGeneration, DomainBacklinkLinks, DomainBacklinkSummary, ExecutionTask, GuidedExecutionTask, GuidedProject, HealthReport, IssueRow, KeywordResearchRun, Opportunity, ProjectNotification, Website, WorkspaceIntelligence, WorkspaceIntelligenceResponse } from "../types.js";
 
 type ModuleKind = "opportunities" | "strategy" | "keywords" | "site-analysis" | "backlinks" | "ai-citations" | "site-architect" | "lead-magnets";
@@ -137,6 +138,10 @@ function normalizeDomainForMatch(value: string | null | undefined) {
 }
 
 function keywordRunBelongsToProject(run: KeywordResearchRun, project: GuidedProject, website?: Website) {
+  if (run.projectId === project.id) return true;
+  // An explicit project association is authoritative. Never recover a run from
+  // another project merely because both projects reference the same website.
+  if (run.projectId) return false;
   if (project.websiteId && run.websiteId === project.websiteId) return true;
   if (website?.id && run.websiteId === website.id) return true;
 
@@ -540,12 +545,9 @@ export default function ExecutionModule({ kind }: { kind: ModuleKind }) {
       const request = api.post<{ project: GuidedProject }>(endpoint, action === "generate" ? options ?? {} : {});
       const [result] = await Promise.all([
         request,
-        action === "generate" && options?.revisionComment ? new Promise((resolve) => window.setTimeout(resolve, 3200)) : Promise.resolve(),
+        action === "generate" || action === "execution" ? new Promise((resolve) => window.setTimeout(resolve, 2500)) : Promise.resolve(),
       ]);
       updateActiveProject(result.project);
-      if (action === "execution") {
-        navigate(`/guided-projects/${result.project.id}#execution-tasks`);
-      }
       setStrategyMessage(action === "generate"
         ? "Strategy regenerated as a new draft. Review and approve this version before creating or updating the execution plan."
         : action === "analyze"
@@ -578,7 +580,10 @@ export default function ExecutionModule({ kind }: { kind: ModuleKind }) {
     setOpportunityBusy("generate");
     setOpportunityMessage("");
     try {
-      const result = await api.post<{ project: GuidedProject }>(`/api/projects-v2/${activeProject.id}/opportunities/generate`, {});
+      const [result] = await Promise.all([
+        api.post<{ project: GuidedProject }>(`/api/projects-v2/${activeProject.id}/opportunities/generate`, {}),
+        new Promise<void>((resolve) => window.setTimeout(resolve, 2500)),
+      ]);
       updateActiveProject(result.project);
       setOpportunityMessage(creatingFirstOpportunity
         ? "Opportunities created from the current project intake. Review and select the best direction."
@@ -591,7 +596,7 @@ export default function ExecutionModule({ kind }: { kind: ModuleKind }) {
   };
 
   const selectOpportunity = async (opportunityId: string) => {
-    if (!activeProject || opportunityBusy) return;
+    if (!activeProject || opportunityBusy) return false;
     setOpportunityBusy(opportunityId);
     setOpportunityMessage("");
     try {
@@ -600,13 +605,15 @@ export default function ExecutionModule({ kind }: { kind: ModuleKind }) {
         result = await api.post<{ project: GuidedProject }>(`/api/projects-v2/${activeProject.id}/opportunities/${opportunityId}/select`, {});
       } catch (error) {
         if (!(error instanceof Error) || !/confirm changing/i.test(error.message)) throw error;
-        if (!window.confirm("Strategy is already approved. Change the active opportunity and refresh downstream work?")) return;
+        if (!window.confirm("Strategy is already approved. Change the active opportunity and refresh downstream work?")) return false;
         result = await api.post<{ project: GuidedProject }>(`/api/projects-v2/${activeProject.id}/opportunities/${opportunityId}/select`, { confirmation: true, reason: "Confirmed from Opportunity Finder" });
       }
       updateActiveProject(result.project);
       setOpportunityMessage("");
+      return true;
     } catch (error) {
       setOpportunityMessage(error instanceof Error ? error.message : "Opportunity selection failed.");
+      return false;
     } finally {
       setOpportunityBusy(null);
     }
@@ -725,12 +732,17 @@ export default function ExecutionModule({ kind }: { kind: ModuleKind }) {
     siteScanRemaining: siteScanCooldown.remainingLabel,
     keywordRuns: scopedKeywordRuns,
   }) : null;
-  const milestoneNextAction = activeProject && kind === "opportunities"
-    ? (() => { const flow = nextProjectFlowStep(activeProject); const selected = activeProject.opportunities?.find((item) => ["selected", "confirmed"].includes(item.status)); return { title: flow.title, detail: selected ? `Selected opportunity: ${selected.name}` : flow.description, label: flow.actionLabel, to: flow.to }; })()
-    : activeProject && kind === "strategy" && moduleNextStep
+  const completedOpportunity = activeProject?.opportunities?.find((item) => ["selected", "confirmed"].includes(item.status));
+  const completedKeywordAnalysis = scopedKeywordRuns.some((run) => run.status === "completed" || run.keywordCount > 0 || (run.ideas?.length ?? 0) > 0);
+  const approvedStrategy = activeProject?.strategyPlans?.some((strategy) => strategy.status === "approved") ?? false;
+  const milestoneNextAction = activeProject && kind === "opportunities" && completedOpportunity
+    ? (() => { const flow = nextProjectFlowStep(activeProject); return { title: flow.title, detail: `Selected opportunity: ${completedOpportunity.name}`, label: flow.actionLabel, to: flow.to }; })()
+    : activeProject && kind === "strategy" && approvedStrategy && moduleNextStep
       ? { title: moduleNextStep.title, detail: moduleNextStep.helper || moduleNextStep.detail, label: moduleNextStep.actionLabel, to: moduleNextStep.actionTo, onAction: moduleNextStep.action === "generate-strategy" ? () => { setStrategyMessage("Generating strategy from the latest project data..."); void runStrategyAction("generate"); } : undefined }
-      : activeProject && kind === "keywords" && scopedKeywordRuns.some((run) => run.status === "completed" || run.keywordCount > 0 || (run.ideas?.length ?? 0) > 0)
-        ? isExistingWebsiteFlow(activeProject, activeWebsite) && !latestSiteCrawl
+      : activeProject && kind === "keywords" && completedKeywordAnalysis
+        ? approvedStrategy
+          ? (() => { const flow = nextProjectFlowStep(activeProject); return { title: flow.title, detail: "Keyword analysis and Strategy are already approved. Continue with the next incomplete project step.", label: flow.actionLabel, to: flow.to }; })()
+          : isExistingWebsiteFlow(activeProject, activeWebsite) && !latestSiteCrawl
           ? { title: "Continue to Site Analysis", detail: "Compare the approved keyword direction with the existing website before generating Strategy.", label: "Open Site Analysis", to: `/site-analysis?projectId=${activeProject.id}` }
           : { title: "Continue to Strategy", detail: "Keyword analysis is available and ready to guide the project strategy.", label: "Generate Strategy", to: `/strategy?projectId=${activeProject.id}` }
       : activeProject && kind === "site-analysis" && latestSiteCrawl
@@ -771,6 +783,8 @@ export default function ExecutionModule({ kind }: { kind: ModuleKind }) {
 
   return (
     <div className="space-y-5">
+      {kind === "strategy" && strategyBusy === "generate" && <StrategyCookingOverlay />}
+      {kind === "strategy" && strategyBusy === "execution" && <ExecutionPlanCookingOverlay />}
       <ProjectModuleHeader eyebrow={copy.title} title={moduleTitle} subtitle={copy.subtitle} project={hasActiveProject ? activeProject : null} projects={data.projects} tasks={scopedData.tasks} notifications={scopedData.notifications} onProjectChange={changeProject} actions={headerActions} showExecution />
       {hasActiveProject && activeProject && (kind === "opportunities" || kind === "strategy" || kind === "keywords" || kind === "site-analysis") && <ProjectMilestoneLine project={activeProject} showDependency nextAction={milestoneNextAction} />}
       {hasActiveProject && kind === "backlinks" && (
@@ -807,7 +821,7 @@ export default function ExecutionModule({ kind }: { kind: ModuleKind }) {
           {opportunityMessage}
         </div>
       )}
-      {hasActiveProject && hasWorkspaceRecords && canRunModule && kind !== "opportunities" && kind !== "strategy" && kind !== "site-analysis" && kind !== "lead-magnets" && kind !== "ai-citations" && !(kind === "keywords" && scopedKeywordRuns.length === 0) && moduleNextStep && (
+      {hasActiveProject && hasWorkspaceRecords && canRunModule && kind !== "opportunities" && kind !== "strategy" && kind !== "site-analysis" && kind !== "site-architect" && kind !== "lead-magnets" && kind !== "ai-citations" && kind !== "keywords" && moduleNextStep && (
         <ModuleNextStepCallout
           step={moduleNextStep}
           onAction={moduleNextStep.action === "generate-strategy"
@@ -833,7 +847,7 @@ export default function ExecutionModule({ kind }: { kind: ModuleKind }) {
       {!loading && !workspaceLoadError && !hasActiveProject && data.projects.length > 0 && searchParams.get("projectId") && <Card className="border-amber-200 bg-amber-50 p-5"><h2 className="font-bold text-amber-900">Project unavailable</h2><p className="mt-2 text-sm text-amber-800">This project was not found or is not assigned to your workspace account.</p><Link to="/projects" className="mt-4 inline-flex rounded-lg border border-amber-200 bg-white px-4 py-2 text-sm font-bold text-amber-900">Back to projects</Link></Card>}
       {!loading && hasActiveProject && !hasWorkspaceRecords && <EmptyModuleState title="No data available" detail="Project data will appear here after intake, crawls, tasks, or generation runs exist." />}
       {!loading && hasActiveProject && hasWorkspaceRecords && !canRunModule && kind !== "site-architect" && <ModuleReadinessChecklist moduleTitle={copy.title} items={readiness.items} />}
-      {!loading && hasActiveProject && hasWorkspaceRecords && canRunModule && kind === "opportunities" && <OpportunityScreen data={scopedData} selectingId={opportunityBusy} onSelect={selectOpportunity} onClearSelection={clearOpportunitySelection} onRefine={refineOpportunities} onSkip={skipOpportunityFinder} />}
+      {!loading && hasActiveProject && hasWorkspaceRecords && canRunModule && kind === "opportunities" && <OpportunityScreen data={scopedData} selectingId={opportunityBusy} onGenerate={generateOpportunities} onSelect={selectOpportunity} onClearSelection={clearOpportunitySelection} onRefine={refineOpportunities} onSkip={skipOpportunityFinder} />}
       {!loading && hasActiveProject && hasWorkspaceRecords && canRunModule && kind === "strategy" && <StrategyScreen data={scopedData} busy={strategyBusy} onAction={runStrategyAction} />}
       {!loading && hasActiveProject && hasWorkspaceRecords && canRunModule && kind === "keywords" && <KeywordScreen data={scopedData} />}
       {!loading && hasActiveProject && hasWorkspaceRecords && canRunModule && kind === "site-analysis" && !latestSiteCrawl && !activeSiteCrawl && !siteAnalysisBusy && (
@@ -1195,6 +1209,7 @@ function ModuleReadinessChecklist({ moduleTitle, items }: { moduleTitle: string;
 function OpportunityScreen({
   data,
   selectingId,
+  onGenerate,
   onSelect,
   onClearSelection,
   onRefine,
@@ -1202,7 +1217,8 @@ function OpportunityScreen({
 }: {
   data: ModuleData;
   selectingId: string | null;
-  onSelect: (opportunityId: string) => Promise<void>;
+  onGenerate: () => Promise<void>;
+  onSelect: (opportunityId: string) => Promise<boolean>;
   onClearSelection: () => Promise<void>;
   onRefine: (instructions: string) => Promise<void>;
   onSkip: () => Promise<void>;
@@ -1221,6 +1237,7 @@ function OpportunityScreen({
   const [compareOpen, setCompareOpen] = useState(false);
   const [reportOpen, setReportOpen] = useState(false);
   const [refineOpen, setRefineOpen] = useState(false);
+  const [mappedOpportunityName, setMappedOpportunityName] = useState("");
   useEffect(() => {
     if (selectedOpportunity?.id) setFocusedId(selectedOpportunity.id);
   }, [selectedOpportunity?.id]);
@@ -1230,12 +1247,18 @@ function OpportunityScreen({
   const taskCount = data.tasks.filter((task) => task.moduleName.includes("opportun")).length;
   const niche = project?.niche || project?.businessProfile?.businessModel || "Not provided";
   const intakeComplete = Boolean(project?.businessProfile || project?._count?.intakeAnswers);
+  const selectAndConfirm = async (opportunityId: string) => {
+    const opportunityName = opportunities.find((item) => item.id === opportunityId)?.name || "Selected opportunity";
+    const selected = await onSelect(opportunityId);
+    if (selected) setMappedOpportunityName(opportunityName);
+  };
   if (!project) {
     return <EmptyModuleState title="No project available" detail="Create a project before generating opportunity recommendations." />;
   }
   if (!opportunities.length) {
     return (
       <>
+        {selectingId === "generate" && <OpportunityCookingOverlay />}
         <OpportunitySummaryStrip project={project} niche={niche} />
         <EmptyModuleState
           title={intakeComplete ? "No opportunity recommendations yet" : "Complete intake first"}
@@ -1243,13 +1266,17 @@ function OpportunityScreen({
             ? "The project profile is ready. Use Create Opportunity to generate scored options from this project's intake, audience, offer, and constraints."
             : "Opportunity generation needs the intake profile first, including business context, audience, offer, goals, budget, and publishing method."}
           actionTo={intakeComplete ? null : `/guided-projects/${project.id}/intake`}
-          actionLabel={intakeComplete ? null : "Open Intake"}
+          actionLabel={intakeComplete ? (selectingId === "generate" ? "Creating Opportunities..." : "Create Opportunity") : "Open Intake"}
+          onAction={intakeComplete ? () => { void onGenerate(); } : undefined}
+          actionDisabled={selectingId === "generate"}
         />
       </>
     );
   }
   return (
     <>
+      {selectingId === "generate" && <OpportunityCookingOverlay />}
+      {selectingId && !["generate", "refine", "skip", "clear"].includes(selectingId) && <OpportunityMappingOverlay />}
       <OpportunityInsights project={project} niche={niche} opportunity={focusedOpportunity} opportunityCount={opportunityCount} taskCount={taskCount} onReport={() => {
         setReportOpen(true);
       }} />
@@ -1298,7 +1325,7 @@ function OpportunityScreen({
                   setDetailsOpen(true);
                 }}
                 onSelect={() => {
-                  void onSelect(opportunity.id);
+                  void selectAndConfirm(opportunity.id);
                 }}
                 onClearSelection={() => {
                   void onClearSelection();
@@ -1323,11 +1350,128 @@ function OpportunityScreen({
           </div>
         </div>
       </div>
-      <OpportunityDetailsDrawer opportunity={focusedOpportunity} open={detailsOpen} onClose={() => setDetailsOpen(false)} onSelect={focusedOpportunity ? () => { void onSelect(focusedOpportunity.id); } : undefined} selected={Boolean(focusedOpportunity && ["selected", "confirmed"].includes(focusedOpportunity.status))} />
-      <OpportunityCompareDrawer opportunities={visibleOpportunities} open={compareOpen} onClose={() => setCompareOpen(false)} onFocus={(id) => { setFocusedId(id); setDetailsOpen(true); }} onSelect={(id) => { void onSelect(id); }} />
+      <OpportunityDetailsDrawer opportunity={focusedOpportunity} open={detailsOpen} onClose={() => setDetailsOpen(false)} onSelect={focusedOpportunity ? () => { void selectAndConfirm(focusedOpportunity.id); } : undefined} selected={Boolean(focusedOpportunity && ["selected", "confirmed"].includes(focusedOpportunity.status))} />
+      <OpportunityCompareDrawer opportunities={visibleOpportunities} open={compareOpen} onClose={() => setCompareOpen(false)} onFocus={(id) => { setFocusedId(id); setDetailsOpen(true); }} onSelect={(id) => { void selectAndConfirm(id); }} />
       <OpportunityReportDrawer opportunity={focusedOpportunity} open={reportOpen} onClose={() => setReportOpen(false)} projectId={project.id} />
       <OpportunityRefineModal open={refineOpen} busy={selectingId === "refine"} onClose={() => setRefineOpen(false)} onSubmit={async (instructions) => { await onRefine(instructions); setRefineOpen(false); }} />
+      {mappedOpportunityName && <OpportunityMappedModal projectId={project.id} opportunityName={mappedOpportunityName} onReview={() => setMappedOpportunityName("")} />}
     </>
+  );
+}
+
+function OpportunityCookingOverlay() {
+  return (
+    <div className="fixed inset-0 z-[80] grid place-items-center bg-white/95 p-6 backdrop-blur-sm" role="status" aria-live="polite" aria-label="Creating opportunity recommendations">
+      <div className="max-w-md text-center">
+        <div className="relative mx-auto h-20 w-20">
+          <div className="absolute inset-0 rounded-full border-4 border-brand-100" />
+          <div className="absolute inset-0 animate-spin rounded-full border-4 border-transparent border-r-brand-400 border-t-brand-600" />
+          <div className="absolute inset-[18px] grid place-items-center rounded-full bg-brand-50 text-2xl">✦</div>
+        </div>
+        <h3 className="mt-6 text-xl font-bold text-charcoal-950">Hang on — we’re cooking for you!</h3>
+        <p className="mt-2 text-sm leading-6 text-charcoal-600">AI is reviewing the project intake, audience, offer, goals, market, and constraints to find the strongest opportunities.</p>
+        <div className="mx-auto mt-5 h-2 max-w-xs overflow-hidden rounded-full bg-slate-100"><div className="h-full w-2/3 animate-pulse rounded-full bg-gradient-to-r from-brand-400 to-brand-600" /></div>
+        <p className="mt-3 text-xs font-bold uppercase tracking-wide text-brand-700">Creating scored opportunity recommendations…</p>
+      </div>
+    </div>
+  );
+}
+
+function StrategyCookingOverlay() {
+  return (
+    <div className="fixed inset-0 z-[80] grid place-items-center bg-white/95 p-6 backdrop-blur-sm" role="status" aria-live="polite" aria-label="Creating project strategy">
+      <div className="max-w-md text-center">
+        <div className="relative mx-auto h-20 w-20">
+          <div className="absolute inset-0 rounded-full border-4 border-brand-100" />
+          <div className="absolute inset-0 animate-spin rounded-full border-4 border-transparent border-r-brand-400 border-t-brand-600" />
+          <div className="absolute inset-[18px] grid place-items-center rounded-full bg-brand-50 text-2xl">✦</div>
+        </div>
+        <h3 className="mt-6 text-xl font-bold text-charcoal-950">Hang on — we’re cooking your strategy!</h3>
+        <p className="mt-2 text-sm leading-6 text-charcoal-600">AI is connecting the selected opportunity, approved keywords, target markets, project goals, audience, offer, and available site evidence.</p>
+        <div className="mx-auto mt-5 h-2 max-w-xs overflow-hidden rounded-full bg-slate-100"><div className="h-full w-2/3 animate-pulse rounded-full bg-gradient-to-r from-brand-400 to-brand-600" /></div>
+        <p className="mt-3 text-xs font-bold uppercase tracking-wide text-brand-700">Creating your project strategy…</p>
+      </div>
+    </div>
+  );
+}
+
+function ExecutionPlanCookingOverlay() {
+  return (
+    <div className="fixed inset-0 z-[80] grid place-items-center bg-white/95 p-6 backdrop-blur-sm" role="status" aria-live="polite" aria-label="Creating execution plan">
+      <div className="w-full max-w-xl text-center">
+        <div className="relative mx-auto h-20 w-20">
+          <div className="absolute inset-0 rounded-full border-4 border-brand-100" />
+          <div className="absolute inset-0 animate-spin rounded-full border-4 border-transparent border-r-violet-400 border-t-brand-600" />
+          <div className="absolute inset-[18px] grid place-items-center rounded-full bg-brand-50 text-2xl">✦</div>
+        </div>
+        <h3 className="mt-6 text-2xl font-black text-charcoal-950">We’re building your Execution Plan</h3>
+        <p className="mx-auto mt-2 max-w-lg text-sm leading-6 text-charcoal-600">SENuke AI is turning the approved Strategy into ordered, actionable work—not running another analysis.</p>
+        <div className="mt-5 grid gap-2 text-left sm:grid-cols-3">
+          {[
+            ["1", "Review evidence", "Strategy, keywords, markets and project readiness"],
+            ["2", "Create tasks", "SEO, content, site, local, authority and publishing work"],
+            ["3", "Set workflow", "Priority, automation, dependencies and approval stages"],
+          ].map(([step, title, detail]) => <div key={step} className="rounded-xl border border-slate-200 bg-white p-3 shadow-sm"><div className="grid h-7 w-7 place-items-center rounded-lg bg-brand-600 text-xs font-black text-white">{step}</div><div className="mt-2 text-sm font-bold text-charcoal-900">{title}</div><div className="mt-1 text-xs leading-5 text-charcoal-500">{detail}</div></div>)}
+        </div>
+        <div className="mx-auto mt-5 h-2 max-w-sm overflow-hidden rounded-full bg-slate-100"><div className="h-full w-2/3 animate-pulse rounded-full bg-gradient-to-r from-brand-400 via-violet-500 to-brand-600" /></div>
+        <p className="mt-3 text-xs font-black uppercase tracking-wide text-brand-700">Prioritizing the next work…</p>
+      </div>
+    </div>
+  );
+}
+
+function OpportunityMappingOverlay() {
+  return (
+    <div className="fixed inset-0 z-[80] grid place-items-center bg-charcoal-950/45 p-6 backdrop-blur-sm" role="status" aria-live="polite">
+      <div className="w-full max-w-sm rounded-2xl bg-white p-7 text-center shadow-2xl">
+        <div className="mx-auto h-12 w-12 animate-spin rounded-full border-4 border-brand-100 border-t-brand-600" />
+        <h3 className="mt-5 text-lg font-bold text-charcoal-950">Mapping your opportunity…</h3>
+        <p className="mt-2 text-sm leading-6 text-charcoal-600">Saving this direction to the project and preparing it for Keyword Analysis and Strategy.</p>
+      </div>
+    </div>
+  );
+}
+
+function OpportunityMappedModal({ projectId, opportunityName, onReview }: { projectId: string; opportunityName: string; onReview: () => void }) {
+  return (
+    <div className="fixed inset-0 z-[80] grid place-items-center bg-charcoal-950/60 p-4 backdrop-blur-sm" role="dialog" aria-modal="true" aria-labelledby="opportunity-mapped-title">
+      <div className="relative w-full max-w-xl overflow-hidden rounded-3xl border border-white/70 bg-white shadow-[0_28px_90px_rgba(15,23,42,0.32)]">
+        <div className="absolute inset-x-0 top-0 h-32 bg-gradient-to-br from-emerald-100 via-brand-50 to-sky-100" />
+        <div className="absolute -right-10 -top-14 h-36 w-36 rounded-full border-[22px] border-white/40" />
+        <button type="button" onClick={onReview} aria-label="Close confirmation" className="absolute right-4 top-4 z-10 grid h-9 w-9 place-items-center rounded-full border border-white/80 bg-white/75 text-xl text-charcoal-500 shadow-sm backdrop-blur hover:bg-white hover:text-charcoal-900">×</button>
+        <div className="relative px-6 pb-6 pt-8 sm:px-8 sm:pb-8">
+          <div className="grid h-16 w-16 place-items-center rounded-2xl border-4 border-white bg-emerald-500 text-3xl font-black text-white shadow-lg shadow-emerald-200">✓</div>
+          <div className="mt-5 inline-flex rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1 text-[11px] font-black uppercase tracking-[0.14em] text-emerald-700">Opportunity mapped successfully</div>
+          <h2 id="opportunity-mapped-title" className="mt-3 text-2xl font-black tracking-tight text-charcoal-950 sm:text-3xl">Your project direction is ready</h2>
+          <p className="mt-2 text-sm leading-6 text-charcoal-600">This opportunity is now the approved context for the next research and strategy steps.</p>
+
+          <div className="mt-5 rounded-2xl border border-brand-100 bg-gradient-to-r from-brand-50 to-white p-4 shadow-sm">
+            <div className="text-[10px] font-black uppercase tracking-[0.14em] text-brand-600">Selected opportunity</div>
+            <div className="mt-1 text-base font-bold leading-6 text-charcoal-950">{opportunityName}</div>
+          </div>
+
+          <div className="mt-5 rounded-2xl border border-slate-200 bg-slate-50/80 p-4">
+            <div className="flex items-center">
+              {[{ label: "Opportunity", state: "done", icon: "✓" }, { label: "Keywords", state: "current", icon: "2" }, { label: "Strategy", state: "next", icon: "3" }].map((step, index) => (
+                <div key={step.label} className={`flex min-w-0 items-center ${index < 2 ? "flex-1" : ""}`}>
+                  <div className="flex min-w-0 flex-col items-center">
+                    <span className={`grid h-8 w-8 place-items-center rounded-full text-xs font-black ${step.state === "done" ? "bg-emerald-500 text-white" : step.state === "current" ? "bg-brand-600 text-white ring-4 ring-brand-100" : "border-2 border-slate-300 bg-white text-slate-400"}`}>{step.icon}</span>
+                    <span className={`mt-2 text-[10px] font-bold ${step.state === "current" ? "text-brand-700" : step.state === "done" ? "text-emerald-700" : "text-slate-400"}`}>{step.label}</span>
+                  </div>
+                  {index < 2 && <div className={`mx-2 mb-5 h-0.5 flex-1 ${index === 0 ? "bg-gradient-to-r from-emerald-400 to-brand-400" : "bg-slate-200"}`} />}
+                </div>
+              ))}
+            </div>
+            <p className="mt-3 text-center text-xs leading-5 text-charcoal-500">Next, research demand, buyer intent, topical clusters, competition, and revenue potential.</p>
+          </div>
+
+          <div className="mt-6 flex flex-col-reverse gap-3 sm:flex-row sm:justify-end">
+            <button type="button" onClick={onReview} className="rounded-xl border border-slate-200 bg-white px-5 py-3 text-sm font-bold text-charcoal-700 shadow-sm hover:border-brand-200 hover:bg-brand-50 hover:text-brand-700">Review Opportunity</button>
+            <Link to={`/keywords?projectId=${encodeURIComponent(projectId)}`} className="rounded-xl bg-gradient-to-r from-brand-600 to-brand-700 px-5 py-3 text-center text-sm font-bold text-white shadow-lg shadow-brand-200 transition hover:-translate-y-0.5 hover:shadow-xl">Continue to Keyword Analysis <span aria-hidden="true">→</span></Link>
+          </div>
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -1432,6 +1576,9 @@ function StrategyScreen({ data, busy, onAction }: { data: ModuleData; busy: "gen
   const [inlineNotice, setInlineNotice] = useState<{ tone: "info" | "success" | "error"; message: string } | null>(null);
   const [compareVersionId, setCompareVersionId] = useState<string | null>(null);
   const [revisionOpen, setRevisionOpen] = useState(false);
+  const [approvalCompleteOpen, setApprovalCompleteOpen] = useState(false);
+  const [executionCompleteOpen, setExecutionCompleteOpen] = useState(false);
+  const [regenerateConfirmOpen, setRegenerateConfirmOpen] = useState(false);
   const [reportBusy, setReportBusy] = useState(false);
   const project = data.projects[0];
   const strategyCount = project?._count?.strategyPlans ?? 0;
@@ -1485,15 +1632,34 @@ function StrategyScreen({ data, busy, onAction }: { data: ModuleData; busy: "gen
     { key: "confidence", label: "Confidence", value: savedScore("confidence") ?? opportunityRows[4]?.value ?? 0, tone: "green" },
   ].map((row, index) => ({ ...row, previousValue: previousSavedScore(row.key, opportunityRows[index]?.value ?? row.value) }));
   const audience = latestStrategy?.audienceProfile || project?.businessProfile?.targetAudience || "Not provided";
+  const offer = latestStrategy?.offerRecommendation || project?.businessProfile?.offerSummary || "Offer recommendation pending.";
   const approvedGroups = project?.keywordGroups?.filter((group) => group.status === "approved") ?? [];
   const approvedKeywordCount = approvedGroups.reduce((total, group) => total + (Array.isArray(group.keywords) ? group.keywords.length : 0), 0);
   const targetMarketCount = Array.isArray(project?.targetLocations) ? project.targetLocations.length : 0;
   const completedCrawl = data.websites.flatMap((website) => website.crawlJobs ?? []).find((crawl) => crawl.status === "completed");
+  const siteDerivedTasks = data.tasks.filter((task) => /site|crawl|page|content|conversion|funnel|cta|internal link|schema/i.test(`${task.moduleName} ${task.sourceType} ${task.title} ${task.description}`));
+  const sitePageRecommendations = completedCrawl
+    ? [...new Set(siteDerivedTasks.filter((task) => /page|content|keyword|internal link|schema/i.test(`${task.title} ${task.description}`)).map((task) => task.title))].slice(0, 6)
+    : websitePlanItems(data);
+  const recommendedPages = sitePageRecommendations.length ? sitePageRecommendations : completedCrawl ? [
+    `Prioritize improvements across ${completedCrawl.pagesCrawled} crawled pages`,
+    "Map approved keywords to the best existing URLs",
+    "Create new pages only for verified content gaps",
+  ] : websitePlanItems(data);
+  const conversionRecommendations = [...new Set(siteDerivedTasks.filter((task) => /conversion|funnel|cta|lead|form|booking/i.test(`${task.title} ${task.description}`)).map((task) => task.title))];
+  const leadMagnetRecommendations = completedCrawl
+    ? conversionRecommendations.slice(0, 3).length ? conversionRecommendations.slice(0, 3) : ["Validate the lead offer against conversion gaps found in Site Analysis", "Add capture points to the highest-intent existing pages", "Measure form and booking completions before expanding the funnel"]
+    : [offer, "Email capture via dedicated landing page", "Deliver via automated email sequence"];
+  const ctaRecommendations = completedCrawl
+    ? conversionRecommendations.slice(0, 4).length ? conversionRecommendations.slice(0, 4) : ["Add a clear primary CTA to high-intent pages", "Connect supporting content to the best-matched service page", "Strengthen proof beside forms and booking actions", "Track CTA and form completion by landing page"]
+    : ["Blog content to lead magnet", "Product/service page to consultation", "Comparison page to primary offer", "Exit intent to email opt-in"];
+  const publishingRecommendations = completedCrawl
+    ? [siteDerivedTasks.length ? `Resolve the highest-priority Site Analysis tasks before publishing (${siteDerivedTasks.length} relevant actions found).` : "Validate proposed changes against the completed Site Analysis before publishing.", latestStrategy?.publishingStrategy || project?.preferredPublishingMethod || "Publishing method pending", latestStrategy?.aiCitationStrategy || "Apply schema and answer-first improvements where the crawl found gaps"]
+    : [latestStrategy?.publishingStrategy || project?.preferredPublishingMethod || "Publishing method pending", latestStrategy?.aiCitationStrategy || "Add answer-first sections and schema", "Run Site Analysis after the first approved pages are published"];
   const audienceSegments = splitAudience(audience);
   const audienceSummary = audienceSegments.length
     ? `${audienceSegments.length} target segments`
     : audience;
-  const offer = latestStrategy?.offerRecommendation || project?.businessProfile?.offerSummary || "Offer recommendation pending.";
   const websiteType = projectTypeLabel(project);
   const businessModel = latestStrategy?.businessModel || project?.businessProfile?.businessModel || "Not provided";
   const roadmap = data.intelligence?.roadmap?.length ? data.intelligence.roadmap : strategyRoadmap(data, strategyApproved);
@@ -1531,7 +1697,11 @@ function StrategyScreen({ data, busy, onAction }: { data: ModuleData; busy: "gen
         setCompareVersionId(latestStrategy?.id ?? null);
         setActiveTab("core");
       }
-      if (result.ok && action === "execution") setActiveTab("roadmap");
+      if (result.ok && action === "approve") setApprovalCompleteOpen(true);
+      if (result.ok && action === "execution") {
+        setActiveTab("roadmap");
+        setExecutionCompleteOpen(true);
+      }
       return result;
     } catch (error) {
       setInlineNotice({ tone: "error", message: error instanceof Error ? error.message : `${actionLabels[action]} failed.` });
@@ -1566,7 +1736,7 @@ function StrategyScreen({ data, busy, onAction }: { data: ModuleData; busy: "gen
 
   return (
     <>
-      <Card className="overflow-hidden">
+      {activeTab !== "advanced" && <Card className="overflow-hidden">
         <div className="border-b border-slate-100 bg-gradient-to-r from-brand-50 via-white to-emerald-50 p-5">
           <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_220px] xl:items-start">
             <div className="min-w-0">
@@ -1584,13 +1754,7 @@ function StrategyScreen({ data, busy, onAction }: { data: ModuleData; busy: "gen
             <StrategyConfidenceBlock score={score} />
           </div>
         </div>
-        <div className="grid gap-0 sm:grid-cols-2 xl:grid-cols-4">
-          <StrategySummaryFact icon="♙" label="Target Audience" value={audienceSummary} detail={audienceSegments.slice(0, 2).join(" · ")} />
-          <StrategySummaryFact icon="◎" label="Primary Goal" value={project.primaryGoal ?? "Not provided"} />
-          <StrategySummaryFact icon="▣" label="Business Model" value={businessModel} />
-          <StrategySummaryFact icon="▤" label="Website Type" value={websiteType} />
-        </div>
-      </Card>
+      </Card>}
 
       {!latestStrategy ? (
         <Card className="border-brand-100 bg-brand-50/60 p-6">
@@ -1616,7 +1780,7 @@ function StrategyScreen({ data, busy, onAction }: { data: ModuleData; busy: "gen
           <StrategyTabs activeTab={activeTab} onChange={setActiveTab} />
 
           <Card className="px-4 py-3">
-            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between"><div><div className="text-xs font-bold uppercase tracking-wide text-charcoal-400">Strategy versions</div><div className="mt-1 text-sm font-semibold text-charcoal-700">Version {latestStrategy.version ?? strategyVersions.length} · {label(latestStrategy.status ?? "draft")} {latestStrategy.createdAt ? `· ${formatDateTime(latestStrategy.createdAt)}` : ""}</div></div><div className="flex flex-wrap items-center gap-2"><button type="button" onClick={() => void generateStrategyReport()} disabled={reportBusy} className="rounded-lg bg-brand-600 px-3 py-2 text-xs font-bold text-white shadow-sm disabled:bg-slate-300">{reportBusy ? "Generating PDF…" : "Generate Strategy Report ↓"}</button>{strategyVersions.map((version, index) => <button type="button" key={version?.id ?? index} onClick={() => setCompareVersionId(index === 0 || compareVersionId === version?.id ? null : version?.id ?? null)} className={`rounded-full border px-3 py-1 text-xs font-bold ${index === 0 ? "border-brand-300 bg-brand-50 text-brand-700" : compareVersionId === version?.id ? "border-violet-300 bg-violet-50 text-violet-700" : "border-slate-200 bg-white text-charcoal-500"}`}>v{version?.version ?? strategyVersions.length - index} · {index === 0 ? label(version?.status ?? "draft") : compareVersionId === version?.id ? "Comparing" : "Compare"}</button>)}</div></div>
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between"><div><div className="text-xs font-bold uppercase tracking-wide text-charcoal-400">Strategy versions</div><div className="mt-1 text-sm font-semibold text-charcoal-700">Version {latestStrategy.version ?? strategyVersions.length} · {label(latestStrategy.status ?? "draft")} {latestStrategy.createdAt ? `· ${formatDateTime(latestStrategy.createdAt)}` : ""}</div></div><div className="flex flex-wrap items-center gap-2"><button type="button" onClick={() => void runInlineAction("analyze")} disabled={Boolean(busy)} className="rounded-lg border border-violet-200 bg-violet-50 px-3 py-2 text-xs font-bold text-violet-700 hover:bg-violet-100 disabled:opacity-50">{busy === "analyze" ? "Analyzing…" : advancedAnalyses.length ? "Refresh Analysis" : "Run Advanced Analysis"}</button><button type="button" onClick={() => void generateStrategyReport()} disabled={reportBusy} className="rounded-lg bg-brand-600 px-3 py-2 text-xs font-bold text-white shadow-sm disabled:bg-slate-300">{reportBusy ? "Generating PDF…" : "Generate Strategy Report ↓"}</button>{strategyVersions.map((version, index) => <button type="button" key={version?.id ?? index} onClick={() => setCompareVersionId(index === 0 || compareVersionId === version?.id ? null : version?.id ?? null)} className={`rounded-full border px-3 py-1 text-xs font-bold ${index === 0 ? "border-brand-300 bg-brand-50 text-brand-700" : compareVersionId === version?.id ? "border-violet-300 bg-violet-50 text-violet-700" : "border-slate-200 bg-white text-charcoal-500"}`}>v{version?.version ?? strategyVersions.length - index} · {index === 0 ? label(version?.status ?? "draft") : compareVersionId === version?.id ? "Comparing" : "Compare"}</button>)}</div></div>
             {compareVersionId && (() => {
               const compared = strategyVersions.find((version) => version?.id === compareVersionId);
               if (!compared) return null;
@@ -1666,7 +1830,7 @@ function StrategyScreen({ data, busy, onAction }: { data: ModuleData; busy: "gen
                   <button type="button" onClick={() => setRevisionOpen(true)} disabled={Boolean(busy)} className="rounded-lg border border-brand-200 bg-white px-4 py-2.5 text-sm font-bold text-brand-700 disabled:cursor-not-allowed disabled:border-slate-200 disabled:text-slate-400">
                     {busy === "generate" ? "Revising..." : "Revise with AI"}
                   </button>
-                  <button type="button" onClick={() => { if (window.confirm("Regenerate Strategy from the latest approved project information? The current version will remain in history.")) void runInlineAction("generate", { revisionComment: "Regenerated from the latest approved project information." }); }} disabled={Boolean(busy)} className="rounded-lg border border-brand-200 bg-white px-4 py-2.5 text-sm font-bold text-brand-700 disabled:cursor-not-allowed disabled:border-slate-200 disabled:text-slate-400">
+                  <button type="button" onClick={() => setRegenerateConfirmOpen(true)} disabled={Boolean(busy)} className="rounded-lg border border-brand-200 bg-white px-4 py-2.5 text-sm font-bold text-brand-700 disabled:cursor-not-allowed disabled:border-slate-200 disabled:text-slate-400">
                     {busy === "generate" ? "Regenerating..." : "Regenerate"}
                   </button>
                   {strategyApproved && <button type="button" onClick={() => { void runInlineAction("execution"); }} disabled={Boolean(busy)} className="rounded-lg border border-brand-200 bg-white px-4 py-2.5 text-sm font-bold text-brand-700 disabled:cursor-not-allowed disabled:border-slate-200 disabled:text-slate-400">
@@ -1793,11 +1957,15 @@ function StrategyScreen({ data, busy, onAction }: { data: ModuleData; busy: "gen
                 <IconBadge icon="◎" />
                 <h2 className="font-bold text-brand-700">Website & Funnel Plan</h2>
               </div>
+              <div className={`mb-5 rounded-xl border px-4 py-3 text-sm ${completedCrawl ? "border-emerald-200 bg-emerald-50 text-emerald-900" : "border-amber-200 bg-amber-50 text-amber-900"}`}>
+                <b>{completedCrawl ? "Based on completed Site Analysis" : "Proposed pre-crawl plan"}</b>
+                <span className="ml-1">{completedCrawl ? `${completedCrawl.pagesCrawled} pages crawled${completedCrawl.siteScore != null ? ` · site score ${completedCrawl.siteScore}` : ""}${completedCrawl.errorCount ? ` · ${completedCrawl.errorCount} errors found` : ""}. Recommendations below prioritize site-derived tasks and approved keyword evidence.` : "No completed crawl is available. These items are launch recommendations and should be validated by Site Analysis after the website is available."}</span>
+              </div>
               <div className="grid gap-5 lg:grid-cols-4">
-                <PlanList title="Recommended Pages" items={websitePlanItems(data).slice(0, 6)} />
-                <PlanList title="Lead Magnet Recommendation" items={[offer, "Email capture via dedicated landing page", "Deliver via automated email sequence"]} />
-                <PlanList title="CTA Flow" items={["Blog content to lead magnet", "Product/service page to consultation", "Comparison page to primary offer", "Exit intent to email opt-in"]} />
-                <PlanList title="Publishing Recommendation" items={[latestStrategy.publishingStrategy || project.preferredPublishingMethod || "Publishing method pending", latestStrategy.aiCitationStrategy || "Add answer-first sections and schema", "Refresh approved content monthly"]} />
+                <PlanList title={completedCrawl ? "Page Priorities from Site Analysis" : "Recommended Pages"} items={recommendedPages} />
+                <PlanList title="Lead Magnet Recommendation" items={leadMagnetRecommendations} />
+                <PlanList title="CTA Flow" items={ctaRecommendations} />
+                <PlanList title="Publishing Recommendation" items={publishingRecommendations} />
               </div>
             </Card>
           )}
@@ -1819,27 +1987,64 @@ function StrategyScreen({ data, busy, onAction }: { data: ModuleData; busy: "gen
               </div>
             </Card>
           )}
-          {activeTab === "advanced" && <StrategyIntelligencePanel analyses={advancedAnalyses} applicable={applicableAdvancedAnalyses} busy={busy === "analyze"} onAnalyze={() => void runInlineAction("analyze")} />}
+          {activeTab === "advanced" && <StrategyIntelligencePanel analyses={advancedAnalyses} applicable={applicableAdvancedAnalyses} busy={busy === "analyze"} onAnalyze={() => void runInlineAction("analyze")} score={score} />}
         </div>
       )}
       {latestStrategy && <StrategyRevisionModal open={revisionOpen} busy={busy === "generate"} project={project} strategy={latestStrategy} opportunityName={selectedOpportunity?.name} onClose={() => setRevisionOpen(false)} onSubmit={async (revisionComment) => { const result = await runInlineAction("generate", { revisionComment }); if (result?.ok !== false) setRevisionOpen(false); }} />}
+      {regenerateConfirmOpen && <StrategyRegenerateConfirmModal currentVersion={latestStrategy?.version ?? strategyVersions.length} busy={busy === "generate"} onClose={() => setRegenerateConfirmOpen(false)} onNeedAiHelp={() => { setRegenerateConfirmOpen(false); setRevisionOpen(true); }} onConfirm={() => { setRegenerateConfirmOpen(false); void runInlineAction("generate", { revisionComment: "Regenerated from the latest approved project information." }); }} />}
+      {approvalCompleteOpen && <StrategyApprovalCompleteModal projectId={project.id} strategyVersion={latestStrategy?.version ?? strategyVersions.length} onReview={() => setApprovalCompleteOpen(false)} />}
+      {executionCompleteOpen && <ExecutionPlanCompleteModal projectId={project.id} taskCount={(project.executionPlans ?? []).flatMap((plan) => plan.tasks ?? []).length} onClose={() => setExecutionCompleteOpen(false)} />}
     </>
   );
 }
 
+function StrategyRegenerateConfirmModal({ currentVersion, busy, onClose, onNeedAiHelp, onConfirm }: { currentVersion: number; busy: boolean; onClose: () => void; onNeedAiHelp: () => void; onConfirm: () => void }) {
+  return <div className="fixed inset-0 z-[80] grid place-items-center bg-charcoal-950/55 p-4 backdrop-blur-sm" role="dialog" aria-modal="true" aria-labelledby="regenerate-strategy-title"><button type="button" className="absolute inset-0" aria-label="Cancel Strategy regeneration" onClick={busy ? undefined : onClose}/><div className="relative w-full max-w-lg overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl"><div className="border-b border-slate-100 bg-gradient-to-r from-brand-50 via-white to-violet-50 px-6 py-5"><div className="grid h-11 w-11 place-items-center rounded-xl bg-brand-100 text-xl text-brand-700">✦</div><div className="mt-4 text-xs font-black uppercase tracking-[0.14em] text-brand-700">Create Strategy v{currentVersion + 1}</div><h2 id="regenerate-strategy-title" className="mt-1 text-xl font-black text-charcoal-950">Would you like help from AI before regenerating?</h2><p className="mt-2 text-sm leading-6 text-charcoal-600">Choose guided revision if you want to tell AI what should change, or regenerate directly from the latest approved project evidence.</p></div><div className="space-y-3 px-6 py-5"><button type="button" onClick={onNeedAiHelp} disabled={busy} className="flex w-full items-start gap-3 rounded-xl border border-brand-300 bg-brand-50 p-4 text-left transition hover:border-brand-500 hover:bg-brand-100 disabled:opacity-50"><span className="grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-brand-600 text-lg text-white">✦</span><span><span className="block text-sm font-bold text-charcoal-950">Yes, help me revise with AI</span><span className="mt-1 block text-xs leading-5 text-charcoal-600">Choose suggested improvements and add your own instructions before creating the new draft.</span></span></button><button type="button" onClick={onConfirm} disabled={busy} className="flex w-full items-start gap-3 rounded-xl border border-slate-200 bg-white p-4 text-left transition hover:border-emerald-300 hover:bg-emerald-50 disabled:opacity-50"><span className="grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-emerald-100 text-lg font-bold text-emerald-700">↻</span><span><span className="block text-sm font-bold text-charcoal-950">No, regenerate from latest evidence</span><span className="mt-1 block text-xs leading-5 text-charcoal-600">Use the latest approved opportunity, keywords, Site Analysis, markets, and project profile without extra instructions.</span></span></button><div className="rounded-xl border border-emerald-200 bg-emerald-50 p-4"><div className="text-sm font-bold text-emerald-900">Your current version remains safe</div><p className="mt-1 text-xs leading-5 text-emerald-800">Strategy v{currentVersion} stays in version history. The new version is created as a draft and must be approved before changing the active Execution Plan.</p></div></div><div className="flex justify-end border-t border-slate-100 bg-slate-50 px-6 py-4"><button type="button" onClick={onClose} disabled={busy} className="rounded-lg border border-slate-200 bg-white px-4 py-2.5 text-sm font-bold text-charcoal-700 disabled:opacity-50">Cancel</button></div></div></div>;
+}
+
+function StrategyApprovalCompleteModal({ projectId, strategyVersion, onReview }: { projectId: string; strategyVersion: number; onReview: () => void }) {
+  return <div className="fixed inset-0 z-[80] grid place-items-center bg-charcoal-950/55 p-4 backdrop-blur-sm" role="dialog" aria-modal="true" aria-labelledby="strategy-approved-title"><div className="relative w-full max-w-xl overflow-hidden rounded-3xl border border-white/70 bg-white shadow-[0_28px_90px_rgba(15,23,42,0.32)]"><div className="absolute inset-x-0 top-0 h-32 bg-gradient-to-br from-emerald-100 via-brand-50 to-sky-100"/><div className="absolute -right-10 -top-14 h-36 w-36 rounded-full border-[22px] border-white/40"/><button type="button" onClick={onReview} aria-label="Close confirmation" className="absolute right-4 top-4 z-10 grid h-9 w-9 place-items-center rounded-full border border-white/80 bg-white/75 text-xl text-charcoal-500 shadow-sm backdrop-blur hover:bg-white hover:text-charcoal-900">×</button><div className="relative px-6 pb-6 pt-8 sm:px-8 sm:pb-8"><div className="grid h-16 w-16 place-items-center rounded-2xl border-4 border-white bg-emerald-500 text-3xl font-black text-white shadow-lg shadow-emerald-200">✓</div><div className="mt-5 inline-flex rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1 text-[11px] font-black uppercase tracking-[0.14em] text-emerald-700">Strategy approved successfully</div><h2 id="strategy-approved-title" className="mt-3 text-2xl font-black tracking-tight text-charcoal-950 sm:text-3xl">Your execution direction is ready</h2><p className="mt-2 text-sm leading-6 text-charcoal-600">Strategy v{strategyVersion} is now the official project direction. Its approved recommendations and Advanced Analysis priorities can now guide the Execution Plan.</p><div className="mt-5 rounded-2xl border border-slate-200 bg-slate-50/80 p-4"><div className="flex items-center"><div className="flex min-w-0 flex-1 items-center"><div className="flex flex-col items-center"><span className="grid h-8 w-8 place-items-center rounded-full bg-emerald-500 text-xs font-black text-white">✓</span><span className="mt-2 text-[10px] font-bold text-emerald-700">Strategy</span></div><div className="mx-2 mb-5 h-0.5 flex-1 bg-gradient-to-r from-emerald-400 to-brand-400"/></div><div className="flex flex-col items-center"><span className="grid h-8 w-8 place-items-center rounded-full bg-brand-600 text-xs font-black text-white ring-4 ring-brand-100">2</span><span className="mt-2 text-[10px] font-bold text-brand-700">Execution Plan</span></div></div><p className="mt-3 text-center text-xs leading-5 text-charcoal-500">Next, review the prioritized tasks, owners, approvals, automation level, and publishing sequence.</p></div><div className="mt-6 flex flex-col-reverse gap-3 sm:flex-row sm:justify-end"><button type="button" onClick={onReview} className="rounded-xl border border-slate-200 bg-white px-5 py-3 text-sm font-bold text-charcoal-700 shadow-sm hover:border-brand-200 hover:bg-brand-50 hover:text-brand-700">Review Strategy</button><Link to={`/guided-projects/${encodeURIComponent(projectId)}?tab=execution#execution-tasks`} className="rounded-xl bg-gradient-to-r from-brand-600 to-brand-700 px-5 py-3 text-center text-sm font-bold text-white shadow-lg shadow-brand-200 transition hover:-translate-y-0.5 hover:shadow-xl">Continue to Execution Plan <span aria-hidden="true">→</span></Link></div></div></div></div>;
+}
+
+function ExecutionPlanCompleteModal({ projectId, taskCount, onClose }: { projectId: string; taskCount: number; onClose: () => void }) {
+  return <div className="fixed inset-0 z-[80] grid place-items-center bg-charcoal-950/55 p-4 backdrop-blur-sm" role="dialog" aria-modal="true" aria-labelledby="execution-plan-ready-title"><div className="relative w-full max-w-xl overflow-hidden rounded-3xl border border-white/70 bg-white shadow-[0_28px_90px_rgba(15,23,42,0.32)]"><div className="absolute inset-x-0 top-0 h-32 bg-gradient-to-br from-emerald-100 via-brand-50 to-violet-100"/><button type="button" onClick={onClose} aria-label="Close confirmation" className="absolute right-4 top-4 z-10 grid h-9 w-9 place-items-center rounded-full border border-white/80 bg-white/80 text-xl text-charcoal-500 shadow-sm">×</button><div className="relative px-6 pb-6 pt-8 sm:px-8 sm:pb-8"><div className="grid h-16 w-16 place-items-center rounded-2xl border-4 border-white bg-emerald-500 text-3xl font-black text-white shadow-lg shadow-emerald-200">✓</div><div className="mt-5 inline-flex rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1 text-[11px] font-black uppercase tracking-[0.14em] text-emerald-700">Execution Plan created</div><h2 id="execution-plan-ready-title" className="mt-3 text-2xl font-black tracking-tight text-charcoal-950">Your prioritized work is ready</h2><p className="mt-2 text-sm leading-6 text-charcoal-600">{taskCount > 0 ? `${taskCount} tasks were created` : "Your tasks were created"} from the approved Strategy and organized by priority, dependency, automation level, and approval requirement.</p><div className="mt-5 rounded-2xl border border-slate-200 bg-slate-50 p-4"><div className="text-xs font-black uppercase tracking-wide text-charcoal-500">What happens next</div><div className="mt-3 space-y-3">{[["1", "Review the first ready task", "Confirm the recommendation, expected outcome and destination."],["2", "Complete or generate the work", "AI-assisted tasks prepare drafts; protected actions wait for approval."],["3", "Move approved work forward", "Content and website work proceeds to review, Publishing and measurement."]].map(([number,title,detail])=><div key={number} className="flex gap-3"><span className="grid h-7 w-7 shrink-0 place-items-center rounded-lg bg-brand-100 text-xs font-black text-brand-700">{number}</span><div><div className="text-sm font-bold text-charcoal-900">{title}</div><div className="mt-0.5 text-xs leading-5 text-charcoal-500">{detail}</div></div></div>)}</div></div><div className="mt-6 flex flex-col-reverse gap-3 sm:flex-row sm:justify-end"><button type="button" onClick={onClose} className="rounded-xl border border-slate-200 bg-white px-5 py-3 text-sm font-bold text-charcoal-700">Stay on Strategy</button><Link to={`/guided-projects/${encodeURIComponent(projectId)}?tab=execution#execution-tasks`} className="rounded-xl bg-brand-600 px-5 py-3 text-center text-sm font-bold text-white shadow-lg shadow-brand-200 hover:bg-brand-700">Review Execution Plan <span aria-hidden="true">→</span></Link></div></div></div></div>;
+}
+
 type StrategyAnalysisItem = { key: string; title: string; applicable: boolean; priority: string; impact: number; confidence: number; why: string; evidence: string[]; actions: string[] };
 
-function StrategyIntelligencePanel({ analyses, applicable, busy, onAnalyze }: { analyses: StrategyAnalysisItem[]; applicable: StrategyAnalysisItem[]; busy: boolean; onAnalyze: () => void }) {
+function StrategyIntelligencePanel({ analyses, applicable, busy, onAnalyze, score }: { analyses: StrategyAnalysisItem[]; applicable: StrategyAnalysisItem[]; busy: boolean; onAnalyze: () => void; score: number }) {
   const hasAnalysis = analyses.length > 0;
-  return <Card className="p-5">
-    <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
-      <div><div className="text-xs font-bold uppercase tracking-wide text-violet-700">Strategy Intelligence</div><h2 className="mt-1 text-lg font-bold text-charcoal-950">Optimization opportunities backed by project evidence</h2><p className="mt-1 text-sm leading-6 text-charcoal-500">Reviews search intent, entities, topical gaps, trust, freshness, crawl efficiency, cannibalization, internal links, SERP features and competitor changes.</p></div>
-      {hasAnalysis && <span className="self-start rounded-full bg-violet-100 px-3 py-1.5 text-xs font-bold text-violet-700">{applicable.length} priorit{applicable.length === 1 ? "y" : "ies"}</span>}
+  const highPriorities = applicable.filter((item) => item.priority === "critical" || item.priority === "high").length;
+  const averageImpact = applicable.length ? Math.round(applicable.reduce((sum, item) => sum + item.impact, 0) / applicable.length) : 0;
+  const averageConfidence = applicable.length ? Math.round(applicable.reduce((sum, item) => sum + item.confidence, 0) / applicable.length) : 0;
+  const evidenceCount = new Set(applicable.flatMap((item) => item.evidence)).size;
+  return <Card className="overflow-hidden [&>div:has(.space-y-4)]:hidden">
+    <div className="border-b border-slate-200 bg-gradient-to-r from-slate-50 via-white to-violet-50/40 px-5 py-6 sm:px-6">
+      <div className="flex flex-col gap-5 sm:flex-row sm:items-center sm:justify-between"><div className="max-w-3xl"><div className="text-xs font-black uppercase tracking-[0.14em] text-violet-700">Advanced Analysis · Strategy Intelligence</div><h2 className="mt-2 text-2xl font-black tracking-tight text-charcoal-950">What the evidence says—and what the project should do next</h2><p className="mt-2 text-sm leading-6 text-charcoal-600">This analysis turns keywords, Site Analysis, project intake, competitors and the current Strategy into a ranked optimization plan. It identifies work that can improve visibility, relevance, trust and conversion—not just produce another score.</p></div><div className="shrink-0 text-center"><div className="relative grid h-24 w-24 place-items-center rounded-full" style={{ background: `conic-gradient(#10b981 ${Math.min(100, Math.max(0, score)) * 3.6}deg, #e2e8f0 0deg)` }}><div className="grid h-[76px] w-[76px] place-items-center rounded-full bg-white shadow-sm"><div><div className="text-xl font-black leading-none text-charcoal-950">{score}</div><div className="mt-1 text-[9px] font-bold uppercase text-charcoal-400">of 100</div></div></div></div><div className="mt-2 text-[10px] font-black uppercase tracking-wide text-emerald-700">Confidence</div></div></div>
+      {hasAnalysis && <div className="mt-6 grid grid-cols-2 gap-2 sm:grid-cols-4"><AnalysisSummaryMetric value={applicable.length} label="actionable priorities" /><AnalysisSummaryMetric value={highPriorities} label="high priority" /><AnalysisSummaryMetric value={`${averageImpact}/100`} label="average impact" /><AnalysisSummaryMetric value={`${averageConfidence}%`} label="evidence confidence" /></div>}
+      {hasAnalysis && applicable.length > 0 && <div className="mt-5 rounded-2xl border border-slate-200 bg-white/90 px-4 py-5 shadow-sm sm:px-5"><div className="mb-5 flex flex-col gap-1 sm:flex-row sm:items-end sm:justify-between"><div><div className="text-[10px] font-black uppercase tracking-[0.14em] text-violet-700">From evidence to execution</div><div className="mt-1 text-sm font-bold text-charcoal-900">How Advanced Analysis becomes project work</div></div><div className="text-xs text-charcoal-500">Analysis complete · review and approval next</div></div><div className="relative"><div className="absolute left-[12.5%] right-[12.5%] top-5 hidden h-0.5 bg-slate-200 md:block"><div className="h-full w-1/2 bg-gradient-to-r from-emerald-500 to-violet-500" /></div><div className="relative grid gap-4 md:grid-cols-4">{[{ marker: "✓", title: "Evidence reviewed", detail: `${evidenceCount} project signals`, state: "done" }, { marker: "✓", title: "Priorities ranked", detail: "Impact · confidence · urgency", state: "done" }, { marker: "3", title: "Review actions", detail: "Confirm through Strategy approval", state: "current" }, { marker: "4", title: "Create tasks", detail: "Send approved actions to execution", state: "pending" }].map((step, index) => <div key={step.title} className="flex items-center gap-3 md:flex-col md:text-center"><div className={`relative z-[1] grid h-10 w-10 shrink-0 place-items-center rounded-full border-4 border-white text-xs font-black shadow-sm ${step.state === "done" ? "bg-emerald-500 text-white" : step.state === "current" ? "bg-violet-600 text-white ring-4 ring-violet-100" : "border-slate-300 bg-white text-slate-400"}`}>{step.marker}</div><div className="min-w-0 md:mt-2"><div className={`text-sm font-bold ${step.state === "current" ? "text-violet-800" : step.state === "done" ? "text-emerald-800" : "text-charcoal-500"}`}>{step.title}</div><div className="mt-0.5 text-xs leading-5 text-charcoal-500">{step.detail}</div></div>{index < 3 && <span className="ml-auto text-lg text-slate-300 md:hidden">↓</span>}</div>)}</div></div></div>}
     </div>
-    {hasAnalysis && applicable.length > 0 && <div className="mt-5 grid gap-4 lg:grid-cols-2">{applicable.map((analysis, index) => <div key={analysis.key} className="rounded-xl border border-slate-200 bg-white p-4"><div className="flex items-start justify-between gap-3"><div className="flex min-w-0 items-start gap-3"><span className="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-violet-50 text-xs font-bold text-violet-700">{index + 1}</span><div><h3 className="font-bold text-charcoal-950">{analysis.title}</h3><p className="mt-1 text-xs leading-5 text-charcoal-500">{analysis.why}</p></div></div><span className={`rounded-full px-2 py-1 text-[10px] font-bold uppercase ${analysis.priority === "critical" || analysis.priority === "high" ? "bg-red-100 text-red-700" : analysis.priority === "medium" ? "bg-amber-100 text-amber-700" : "bg-slate-100 text-charcoal-600"}`}>{analysis.priority}</span></div><div className="mt-4 grid grid-cols-2 gap-2"><div className="rounded-lg bg-emerald-50 p-3"><div className="text-[10px] font-bold uppercase text-emerald-700">Impact</div><div className="mt-1 text-lg font-bold text-emerald-800">{analysis.impact}/100</div></div><div className="rounded-lg bg-brand-50 p-3"><div className="text-[10px] font-bold uppercase text-brand-700">Confidence</div><div className="mt-1 text-lg font-bold text-brand-800">{analysis.confidence}%</div></div></div><div className="mt-3"><div className="text-[11px] font-bold uppercase text-charcoal-400">Evidence</div><div className="mt-2 flex flex-wrap gap-1.5">{analysis.evidence.slice(0, 6).map((item) => <span key={item} className="rounded-full bg-slate-100 px-2.5 py-1 text-[11px] font-semibold text-charcoal-600">{item}</span>)}</div></div><div className="mt-3"><div className="text-[11px] font-bold uppercase text-charcoal-400">Recommended actions</div><ul className="mt-2 space-y-1.5">{analysis.actions.map((action) => <li key={action} className="flex gap-2 text-xs leading-5 text-charcoal-700"><span className="font-bold text-brand-600">→</span><span>{action}</span></li>)}</ul></div></div>)}</div>}
-    {hasAnalysis && applicable.length === 0 && <div className="mt-5 rounded-xl border border-emerald-200 bg-emerald-50 p-5 text-sm text-emerald-800"><b>No additional optimization priorities were detected.</b><span className="mt-1 block">The current project evidence was reviewed successfully. Run the analysis again after keywords, crawl findings, competitors, goals or target markets change.</span></div>}
-    {!hasAnalysis && <div className="mt-5 rounded-xl border border-violet-200 bg-violet-50 p-5"><h3 className="font-bold text-charcoal-950">Analyze this Strategy version</h3><p className="mt-1 text-sm leading-6 text-charcoal-600">This version was created before Strategy Intelligence was available. Analyze it in place without changing its content, version or approval status.</p><button type="button" onClick={onAnalyze} disabled={busy} className="mt-4 rounded-lg bg-brand-600 px-4 py-2.5 text-sm font-bold text-white disabled:bg-slate-300">{busy ? "Analyzing project evidence…" : "Run Strategy Intelligence"}</button></div>}
+
+    {hasAnalysis && applicable.length > 0 && <>
+      <AdvancedDecisionMasterDetail analyses={applicable} />
+      <div className="px-5 py-6 sm:px-6"><div className="mb-4"><div className="text-xs font-black uppercase tracking-wide text-violet-700">Ranked decision report</div><h3 className="mt-1 text-xl font-bold text-charcoal-950">Focus on these opportunities first</h3><p className="mt-1 text-sm leading-6 text-charcoal-500">Each recommendation explains the finding, its business value, the evidence behind it, and the action that should enter execution.</p></div><div className="space-y-4">{applicable.map((analysis, index) => { const urgent = analysis.priority === "critical" || analysis.priority === "high"; return <article key={analysis.key} className={`overflow-hidden rounded-2xl border ${urgent ? "border-red-200" : analysis.priority === "medium" ? "border-amber-200" : "border-slate-200"}`}><div className={`flex flex-col gap-4 px-5 py-4 sm:flex-row sm:items-start sm:justify-between ${urgent ? "bg-red-50/70" : analysis.priority === "medium" ? "bg-amber-50/70" : "bg-slate-50"}`}><div className="flex min-w-0 gap-3"><span className={`grid h-10 w-10 shrink-0 place-items-center rounded-xl text-sm font-black ${urgent ? "bg-red-600 text-white" : analysis.priority === "medium" ? "bg-amber-500 text-white" : "bg-slate-600 text-white"}`}>{index + 1}</span><div><div className="flex flex-wrap items-center gap-2"><h4 className="text-base font-bold text-charcoal-950">{analysis.title}</h4><span className={`rounded-full px-2.5 py-1 text-[10px] font-black uppercase ${urgent ? "bg-red-100 text-red-700" : analysis.priority === "medium" ? "bg-amber-100 text-amber-800" : "bg-slate-200 text-slate-700"}`}>{analysis.priority} priority</span></div><p className="mt-2 text-sm leading-6 text-charcoal-700"><b>What we found:</b> {analysis.why}</p></div></div><div className="flex shrink-0 gap-2"><span className="rounded-lg border border-emerald-200 bg-white px-3 py-2 text-center"><span className="block text-lg font-black text-emerald-700">{analysis.impact}</span><span className="block text-[9px] font-bold uppercase text-charcoal-400">Impact</span></span><span className="rounded-lg border border-brand-200 bg-white px-3 py-2 text-center"><span className="block text-lg font-black text-brand-700">{analysis.confidence}%</span><span className="block text-[9px] font-bold uppercase text-charcoal-400">Confidence</span></span></div></div><div className="grid gap-5 px-5 py-5 lg:grid-cols-[minmax(0,0.8fr)_minmax(0,1.2fr)]"><div><div className="text-xs font-black uppercase tracking-wide text-charcoal-400">Why this matters</div><p className="mt-2 text-sm leading-6 text-charcoal-600">Addressing this priority can strengthen the project’s ability to match search intent, earn visibility and move qualified visitors toward the approved business goal.</p><div className="mt-4 text-xs font-black uppercase tracking-wide text-charcoal-400">Evidence used</div><div className="mt-2 flex flex-wrap gap-2">{analysis.evidence.length ? analysis.evidence.slice(0, 8).map((item) => <span key={item} className="rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1 text-[11px] font-semibold text-charcoal-600">{item}</span>) : <span className="text-xs text-charcoal-500">Project evidence matched this analysis rule.</span>}</div></div><div className="rounded-xl border border-brand-100 bg-brand-50/50 p-4"><div className="text-xs font-black uppercase tracking-wide text-brand-700">Recommended execution</div><ol className="mt-3 space-y-3">{analysis.actions.map((action, actionIndex) => <li key={action} className="flex gap-3 text-sm leading-6 text-charcoal-800"><span className="grid h-6 w-6 shrink-0 place-items-center rounded-md bg-brand-600 text-[10px] font-black text-white">{actionIndex + 1}</span><span>{action}</span></li>)}</ol></div></div></article>; })}</div></div>
+      <div className="border-t border-emerald-200 bg-emerald-50 px-5 py-4 text-sm leading-6 text-emerald-900 sm:px-6"><b>How this creates value:</b> approving the Strategy converts applicable recommendations into traceable execution tasks. Every task keeps its evidence and priority context, so the team knows why it exists and what outcome it supports.</div>
+    </>}
+    {hasAnalysis && applicable.length === 0 && <div className="p-6"><div className="rounded-xl border border-emerald-200 bg-emerald-50 p-5 text-sm leading-6 text-emerald-800"><b>No additional optimization priorities were detected.</b><span className="mt-1 block">The current project evidence was reviewed successfully. Refresh the analysis after keywords, crawl findings, competitors, goals or target markets change.</span></div></div>}
+    {!hasAnalysis && <div className="p-6"><div className="rounded-xl border border-violet-200 bg-violet-50 p-5"><h3 className="font-bold text-charcoal-950">Turn the current Strategy into an evidence-backed action plan</h3><p className="mt-2 text-sm leading-6 text-charcoal-600">Run Advanced Analysis to evaluate this Strategy against the latest keywords, site findings, competitors and project goals. It does not change the Strategy version or approval status until a reviewer approves the resulting direction.</p><button type="button" onClick={onAnalyze} disabled={busy} className="mt-4 rounded-lg bg-brand-600 px-4 py-2.5 text-sm font-bold text-white disabled:bg-slate-300">{busy ? "Analyzing project evidence…" : "Run Advanced Analysis"}</button></div></div>}
   </Card>;
+}
+
+function AnalysisSummaryMetric({ value, label }: { value: string | number; label: string }) {
+  return <div className="rounded-xl border border-slate-200 bg-white px-4 py-3 shadow-sm"><div className="text-2xl font-black text-charcoal-950">{value}</div><div className="mt-1 text-[10px] font-bold uppercase tracking-wide text-charcoal-400">{label}</div></div>;
+}
+
+function AdvancedDecisionMasterDetail({ analyses }: { analyses: StrategyAnalysisItem[] }) {
+  const [selectedKey, setSelectedKey] = useState(analyses[0]?.key ?? "");
+  const selected = analyses.find((analysis) => analysis.key === selectedKey) ?? analyses[0];
+  if (!selected) return null;
+  const urgent = selected.priority === "critical" || selected.priority === "high";
+  return <div className="border-b border-slate-200 px-5 py-6 sm:px-6"><div className="mb-5"><div className="text-xs font-black uppercase tracking-wide text-violet-700">Ranked decision report</div><h3 className="mt-1 text-xl font-bold text-charcoal-950">Focus on these opportunities first</h3><p className="mt-1 text-sm leading-6 text-charcoal-500">Select a priority on the left to review its business value, supporting evidence, and recommended execution on the right.</p></div><div className="grid gap-5 lg:grid-cols-[minmax(280px,0.8fr)_minmax(0,1.7fr)]"><div className="overflow-hidden rounded-2xl border border-slate-200 bg-slate-50"><div className="border-b border-slate-200 bg-white px-4 py-3"><div className="text-xs font-black uppercase tracking-wide text-charcoal-400">All priorities</div><div className="mt-1 text-xs text-charcoal-500">{analyses.length} evidence-backed opportunities</div></div><div className="divide-y divide-slate-200">{analyses.map((analysis, index) => { const active = analysis.key === selected.key; const high = analysis.priority === "critical" || analysis.priority === "high"; return <button key={analysis.key} type="button" onClick={() => setSelectedKey(analysis.key)} className={`flex w-full items-center gap-3 px-4 py-3 text-left transition ${active ? "bg-violet-600 text-white" : "bg-white hover:bg-violet-50"}`}><span className={`grid h-8 w-8 shrink-0 place-items-center rounded-lg text-xs font-black ${active ? "bg-white/20 text-white" : high ? "bg-red-100 text-red-700" : "bg-slate-100 text-charcoal-600"}`}>{index + 1}</span><span className="min-w-0 flex-1"><span className="block truncate text-sm font-bold">{analysis.title}</span><span className={`mt-0.5 block text-[10px] font-bold uppercase ${active ? "text-violet-100" : high ? "text-red-600" : "text-charcoal-400"}`}>{analysis.priority} priority · impact {analysis.impact}</span></span><span className={`text-lg ${active ? "text-white" : "text-charcoal-300"}`}>›</span></button>; })}</div></div><div className="overflow-hidden rounded-2xl border border-violet-200 bg-white shadow-sm"><div className={`px-5 py-5 ${urgent ? "bg-gradient-to-r from-red-50 to-white" : "bg-gradient-to-r from-violet-50 to-white"}`}><div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between"><div><div className="flex flex-wrap items-center gap-2"><span className={`rounded-full px-2.5 py-1 text-[10px] font-black uppercase ${urgent ? "bg-red-100 text-red-700" : "bg-amber-100 text-amber-800"}`}>{selected.priority} priority</span><span className="text-xs font-bold text-charcoal-400">Selected analysis</span></div><h4 className="mt-3 text-xl font-black text-charcoal-950">{selected.title}</h4><p className="mt-2 text-sm leading-6 text-charcoal-700"><b>What we found:</b> {selected.why}</p></div><div className="flex shrink-0 gap-2"><span className="rounded-xl border border-emerald-200 bg-white px-4 py-2 text-center"><span className="block text-xl font-black text-emerald-700">{selected.impact}</span><span className="block text-[9px] font-bold uppercase text-charcoal-400">Impact</span></span><span className="rounded-xl border border-brand-200 bg-white px-4 py-2 text-center"><span className="block text-xl font-black text-brand-700">{selected.confidence}%</span><span className="block text-[9px] font-bold uppercase text-charcoal-400">Confidence</span></span></div></div></div><div className="grid gap-5 p-5 xl:grid-cols-[0.8fr_1.2fr]"><div><div className="text-xs font-black uppercase tracking-wide text-charcoal-400">Why this matters</div><p className="mt-2 text-sm leading-6 text-charcoal-600">Addressing this priority can improve intent alignment, search visibility and the path from qualified traffic to the approved business goal.</p><div className="mt-5 text-xs font-black uppercase tracking-wide text-charcoal-400">Evidence used</div><div className="mt-2 flex flex-wrap gap-2">{selected.evidence.length ? selected.evidence.slice(0, 10).map((item) => <span key={item} className="rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1 text-[11px] font-semibold text-charcoal-600">{item}</span>) : <span className="text-xs text-charcoal-500">Project evidence matched this analysis rule.</span>}</div></div><div className="rounded-xl border border-brand-100 bg-brand-50/50 p-4"><div className="text-xs font-black uppercase tracking-wide text-brand-700">Recommended execution</div><ol className="mt-3 space-y-3">{selected.actions.map((action, index) => <li key={action} className="flex gap-3 text-sm leading-6 text-charcoal-800"><span className="grid h-6 w-6 shrink-0 place-items-center rounded-md bg-brand-600 text-[10px] font-black text-white">{index + 1}</span><span>{action}</span></li>)}</ol></div></div></div></div></div>;
 }
 
 function IconBadge({ icon }: { icon: string }) {
@@ -2163,6 +2368,8 @@ function KeywordScreen({ data }: { data: ModuleData }) {
   const project = data.projects[0];
   const website = data.websites[0];
   const successfulRuns = latestSuccessfulKeywordRuns(data.keywordRuns);
+  const processingRuns = data.keywordRuns.filter((run) => ["queued", "pending", "running", "processing", "in_progress"].includes(run.status.toLowerCase()));
+  const keywordAnalysisProcessing = processingRuns.length > 0;
   const [groups, setGroups] = useState(project?.keywordGroups ?? []);
   const [busy, setBusy] = useState<string | null>(null);
   const [message, setMessage] = useState("");
@@ -2175,11 +2382,34 @@ function KeywordScreen({ data }: { data: ModuleData }) {
   const [aiKeywordPreview, setAiKeywordPreview] = useState<{ category: string; title: string; keywords: string[] }[]>([]);
   const [selectedAiKeywords, setSelectedAiKeywords] = useState<string[]>([]);
   const [aiPreviewBusy, setAiPreviewBusy] = useState(false);
+  const [manualKeywords, setManualKeywords] = useState("");
+  const [keywordGeographies, setKeywordGeographies] = useState<string[]>([]);
+  const [manualCategory, setManualCategory] = useState("supporting");
+  const [manualGroupTitle, setManualGroupTitle] = useState("Supporting Topics");
+  const [manualGroupId, setManualGroupId] = useState<string | null>(null);
+  const [addingKeywordGeography, setAddingKeywordGeography] = useState(false);
+  const [customKeywordGeography, setCustomKeywordGeography] = useState("");
+  const [editingGroup, setEditingGroup] = useState<NonNullable<GuidedProject["keywordGroups"]>[number] | null>(null);
+  const [editingKeywords, setEditingKeywords] = useState("");
   const automaticGenerationProjectId = useRef<string | null>(null);
   const [refreshingId, setRefreshingId] = useState<string | null>(null);
   const marketOptions = keywordMarketOptions(successfulRuns);
+  const projectGeographies = [...new Set([
+    ...(Array.isArray(project?.targetLocations) ? project.targetLocations : []),
+    project?.targetLocation,
+  ].filter((item): item is string => typeof item === "string").flatMap((item) => item.split(/[,;\n]/).map((part) => part.trim()).filter(Boolean)))];
   const runs = marketFilter ? successfulRuns.filter((run) => keywordMarketKey(run.locationName) === marketFilter) : successfulRuns;
-  const groupKeywords = (value: unknown) => Array.isArray(value) ? [...new Set(value.filter((item): item is string => typeof item === "string").flatMap((item) => item.split(/[,;\n]/).map((part) => part.trim()).filter((part) => part && !(/^(find|explore|create|suggest|expand|generate)\b/i.test(part) && /\b(keywords?|topics?|ideas?)\b/i.test(part) && part.split(/\s+/).length > 6))))] : [];
+  const groupKeywords = (value: unknown) => {
+    if (!Array.isArray(value)) return [];
+    const locations = new Set((Array.isArray(project?.targetLocations) ? project.targetLocations : []).map(String).map((item) => item.trim().toLocaleLowerCase()));
+    return [...new Set(value.filter((item): item is string => typeof item === "string").flatMap((item) => item.split(/[;\n]/).map((part) => part.trim()).filter((part) => {
+      const normalized = part.toLocaleLowerCase().replace(/[.!]+$/, "").trim();
+      if (!normalized || locations.has(normalized)) return false;
+      if (/^(?:and|or)\b|^(?:and\s+)?others?\b/.test(normalized)) return false;
+      if (/\bincluding\s+\S+$/.test(normalized)) return false;
+      return !(/^(find|explore|create|suggest|expand|generate)\b/i.test(part) && /\b(keywords?|topics?|ideas?)\b/i.test(part) && part.split(/\s+/).length > 6);
+    })))] ;
+  };
   const updateFromProject = (next: GuidedProject) => setGroups(next.keywordGroups ?? []);
   const generate = async (regenerate = false, seed?: string, append = false, expansion = false) => {
     if (!project || busy) return;
@@ -2222,28 +2452,63 @@ function KeywordScreen({ data }: { data: ModuleData }) {
       window.scrollTo({ top: 0, behavior: "smooth" });
     } catch (error) { setMessage(error instanceof Error ? error.message : "Approval failed."); } finally { setBusy(null); }
   };
-  const editGroup = async (group: NonNullable<GuidedProject["keywordGroups"]>[number]) => {
-    if (!project) return;
-    const value = window.prompt(`Edit ${group.title}. Enter comma-separated keywords:`, groupKeywords(group.keywords).join(", "));
-    if (value === null) return;
-    const keywords = value.split(",").map((item) => item.trim()).filter(Boolean);
+  const editGroup = (group: NonNullable<GuidedProject["keywordGroups"]>[number]) => {
+    setEditingGroup(group);
+    setEditingKeywords(groupKeywords(group.keywords).join("\n"));
+  };
+  const saveGroupEdits = async () => {
+    if (!project || !editingGroup) return;
+    const keywords = editingKeywords.split(/[,;\n]/).map((item) => item.trim()).filter(Boolean);
     if (!keywords.length) return setMessage("Keep at least one keyword in the group.");
-    setBusy(group.id);
+    setBusy(editingGroup.id);
     try {
-      const result = await api.patch<{ project: GuidedProject }>(`/api/projects-v2/${project.id}/keyword-groups/${group.id}`, { keywords });
+      const result = await api.patch<{ project: GuidedProject }>(`/api/projects-v2/${project.id}/keyword-groups/${editingGroup.id}`, { keywords });
       updateFromProject(result.project);
+      setEditingGroup(null);
       setMessage("Keyword edits saved and recorded in Activity History.");
     } catch (error) { setMessage(error instanceof Error ? error.message : "Changes could not be saved."); } finally { setBusy(null); }
   };
-  const addManual = async (category = "supporting", groupTitle = "Supporting Topics") => {
+  const removeKeyword = async (group: NonNullable<GuidedProject["keywordGroups"]>[number], keyword: string) => {
+    if (!project || busy) return;
+    const storedKeywords = Array.isArray(group.keywords) ? group.keywords.filter((item): item is string => typeof item === "string") : [];
+    const exactIndex = storedKeywords.findIndex((item) => item.trim().toLocaleLowerCase() === keyword.trim().toLocaleLowerCase());
+    const keywords = exactIndex >= 0
+      ? storedKeywords.filter((_, index) => index !== exactIndex)
+      : storedKeywords.filter((item) => !item.split(/[;\n]/).map((part) => part.trim().toLocaleLowerCase()).includes(keyword.trim().toLocaleLowerCase()));
+    if (!groupKeywords(keywords).length) { setMessage("A keyword group must keep at least one keyword. Delete or replace the group through Edit Group instead."); return; }
+    setBusy(group.id);
+    setMessage("");
+    try {
+      const result = await api.patch<{ project: GuidedProject }>(`/api/projects-v2/${project.id}/keyword-groups/${group.id}`, { keywords });
+      updateFromProject(result.project);
+      setMessage(`Removed “${keyword}” from ${group.title}.`);
+    } catch (error) { setMessage(error instanceof Error ? error.message : "The keyword could not be removed."); }
+    finally { setBusy(null); }
+  };
+  const openAddKeywords = (category = "supporting", groupTitle = "Supporting Topics", groupId: string | null = null) => {
+    setManualCategory(category);
+    setManualGroupTitle(groupTitle);
+    setManualGroupId(groupId);
+    setManualKeywords("");
+    setAiIdeaPrompt("");
+    setAiKeywordPreview([]);
+    setSelectedAiKeywords([]);
+    setKeywordGeographies(groupId ? [] : projectGeographies.length ? [projectGeographies[0]] : []);
+    setAddingKeywordGeography(false);
+    setCustomKeywordGeography("");
+    setAiIdeasOpen(true);
+  };
+  const addManual = async () => {
     if (!project) return;
-    const value = window.prompt(`Add manual keywords to ${groupTitle}, separated by commas:`);
-    if (!value) return;
+    const baseKeywords = manualKeywords.split(/[,;\n]/).map((item) => item.trim()).filter(Boolean);
+    const keywords = [...new Set(baseKeywords)];
+    if (!keywords.length) return;
     setBusy("manual");
     try {
-      const result = await api.post<{ project: GuidedProject }>(`/api/projects-v2/${project.id}/keyword-groups/manual`, { keywords: value.split(",").map((item) => item.trim()).filter(Boolean), category });
+      const result = await api.post<{ project: GuidedProject }>(`/api/projects-v2/${project.id}/keyword-groups/manual`, { keywords, category: manualCategory, groupId: manualGroupId });
       updateFromProject(result.project);
-      setMessage(`Manual keywords added to ${groupTitle}.`);
+      setAiIdeasOpen(false);
+      setMessage(`${keywords.length} keyword${keywords.length === 1 ? "" : "s"} added to ${manualGroupTitle}${keywordGeographies.length ? `. ${keywordGeographies.join(", ")} will be used as analysis locations without changing the keyword text` : ""}.`);
     } catch (error) { setMessage(error instanceof Error ? error.message : "Manual keywords could not be added."); } finally { setBusy(null); }
   };
   const refreshRun = async (run: KeywordResearchRun) => {
@@ -2295,9 +2560,12 @@ function KeywordScreen({ data }: { data: ModuleData }) {
   const keywordAnalysisTo = analysisWebsiteId
     ? `/keyword-insights?project=${encodeURIComponent(analysisWebsiteId)}&projectId=${encodeURIComponent(project?.id ?? "")}${analysisGroupIds.length ? `&groupIds=${encodeURIComponent(analysisGroupIds.join(","))}` : analysisGroupId ? `&groupId=${encodeURIComponent(analysisGroupId)}` : ""}&add=1`
     : `/keyword-insights?projectId=${encodeURIComponent(project?.id ?? "")}${analysisGroupIds.length ? `&groupIds=${encodeURIComponent(analysisGroupIds.join(","))}` : analysisGroupId ? `&groupId=${encodeURIComponent(analysisGroupId)}` : ""}&add=1`;
+  const keywordReportsTo = keywordAnalysisTo.replace("&add=1", "");
+  const keywordReportsReady = runs.length > 0 && !keywordAnalysisProcessing;
   const audience = project?.businessProfile?.targetAudience || "the project audience";
   const offer = project?.businessProfile?.offerSummary || project?.niche || project?.businessName || project?.name || "the project offer";
-  const markets = Array.isArray(project?.targetLocations) ? project.targetLocations.map(String).filter(Boolean) : [];
+  const markets = projectGeographies;
+  const manualKeywordCombinations = [...new Set(manualKeywords.split(/[,;\n]/).map((item) => item.trim()).filter(Boolean))];
   const selectedOpportunity = project?.opportunities?.find((item) => ["selected", "confirmed"].includes(item.status))?.name;
   const aiPromptIdeas = [
     `Find high-intent service and purchase keywords for ${offer}.`,
@@ -2306,13 +2574,20 @@ function KeywordScreen({ data }: { data: ModuleData }) {
     selectedOpportunity ? `Expand keyword themes supporting the selected opportunity: ${selectedOpportunity}.` : `Find keyword gaps that support the primary goal: ${project?.primaryGoal || "business growth"}.`,
     `Suggest related topics that are not already covered by the existing keyword groups.`,
   ];
-  const openAiIdeas = () => { setAiIdeaPrompt(aiPromptIdeas[0]); setAiKeywordPreview([]); setSelectedAiKeywords([]); setAiIdeasOpen(true); };
+  const openAiIdeas = () => { openAddKeywords(); setAiIdeaPrompt(aiPromptIdeas[0]); };
   const aiSelectionKey = (category: string, keyword: string) => `${category}::${keyword}`;
   const previewAiKeywords = async () => {
-    if (!project || aiIdeaPrompt.trim().length < 3) return;
+    if (!project) return;
     setAiPreviewBusy(true);
     try {
-      const result = await api.post<{ groups: { category: string; title: string; keywords: string[] }[] }>(`/api/projects-v2/${project.id}/keyword-groups/preview`, { instruction: aiIdeaPrompt.trim() });
+      const baseInstruction = aiIdeaPrompt.trim() || "Generate relevant buyer-intent, service, topical, and long-tail keyword opportunities for this project.";
+      const instruction = `${baseInstruction}${keywordGeographies.length ? ` Use ${keywordGeographies.join(", ")} only as analysis-market context. Do not append city, province, or country names to the seed keyword text.` : ""}`;
+      const result = await api.post<{ groups: { category: string; title: string; keywords: string[] }[] }>(`/api/projects-v2/${project.id}/keyword-groups/preview`, {
+        instruction,
+        topic: aiIdeaPrompt.trim() || undefined,
+        geographies: keywordGeographies.length ? keywordGeographies : undefined,
+        supportingOnly: true,
+      });
       const existing = new Set(groups.flatMap((group) => groupKeywords(group.keywords)).map((keyword) => keyword.toLowerCase()));
       const preview = result.groups.map((group) => ({ ...group, keywords: group.keywords.filter((keyword) => !existing.has(keyword.toLowerCase())) })).filter((group) => group.keywords.length);
       setAiKeywordPreview(preview);
@@ -2324,43 +2599,52 @@ function KeywordScreen({ data }: { data: ModuleData }) {
     if (!project || !selectedAiKeywords.length) return;
     setAiPreviewBusy(true);
     try {
-      let latest: GuidedProject | null = null;
-      for (const group of aiKeywordPreview) {
-        const keywords = group.keywords.filter((keyword) => selectedAiKeywords.includes(aiSelectionKey(group.category, keyword)));
-        if (!keywords.length) continue;
-        const result = await api.post<{ project: GuidedProject }>(`/api/projects-v2/${project.id}/keyword-groups/manual`, { category: group.category, keywords });
-        latest = result.project;
-      }
-      if (latest) updateFromProject(latest);
+      const keywords = [...new Set(aiKeywordPreview.flatMap((group) => group.keywords.filter((keyword) => selectedAiKeywords.includes(aiSelectionKey(group.category, keyword)))))].slice(0, 50);
+      if (!keywords.length) throw new Error("Select at least one keyword to add.");
+      const result = await api.post<{ project: GuidedProject }>(`/api/projects-v2/${project.id}/keyword-groups/manual`, { category: manualCategory, groupId: manualGroupId, keywords });
+      updateFromProject(result.project);
       setAiIdeasOpen(false);
-      setMessage(`${selectedAiKeywords.length} selected AI keyword idea${selectedAiKeywords.length === 1 ? " was" : "s were"} added to the relevant groups.`);
+      setMessage(`${keywords.length} selected supporting keyword${keywords.length === 1 ? " was" : "s were"} added to ${manualGroupTitle}.`);
     } catch (error) { setMessage(error instanceof Error ? error.message : "Selected keywords could not be added."); }
     finally { setAiPreviewBusy(false); }
   };
   return (
     <>
+      <Card className={`${keywordAnalysisProcessing ? "border-amber-300 bg-gradient-to-r from-amber-50 via-white to-brand-50" : keywordReportsReady ? "border-emerald-300 bg-gradient-to-r from-emerald-50 via-white to-brand-50" : approvedCount > 0 ? "border-brand-200 bg-gradient-to-r from-brand-50 via-white to-emerald-50" : ""} p-5`}>
+        <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+          <div>
+            <div className={`text-xs font-bold uppercase tracking-wide ${keywordAnalysisProcessing ? "text-amber-700" : keywordReportsReady ? "text-emerald-700" : "text-brand-600"}`}>Keyword Intelligence Groups</div>
+            <h2 className="mt-1 text-lg font-bold text-charcoal-950">{keywordAnalysisProcessing ? "Keyword analysis is in progress" : keywordReportsReady ? "Keyword reports are ready" : approvedCount > 0 ? "Approved direction ready for analysis" : "Approve and manage keyword direction"}</h2>
+            <p className="mt-1 text-sm leading-6 text-charcoal-600">{keywordAnalysisProcessing ? "SEnuke AI is collecting demand, competition, CPC, intent and SERP competitor signals. You can leave this page and return to review completed reports." : keywordReportsReady ? "The approved keyword direction has been analyzed. Open the reports to review market demand, competition, CPC, intent and SERP opportunities." : approvedCount > 0 ? "Use the approved groups to collect demand, competition, CPC, intent, rankings, and page-target data." : "Review, approve, edit, or add keywords before continuing."}</p>
+            <p className="mt-1 text-xs font-semibold text-charcoal-500">{groups.length} groups · {approvedCount} approved · {totalRecommendations} recommendations · {keywordAnalysisProcessing ? `${processingRuns.length} analysis run${processingRuns.length === 1 ? "" : "s"} processing` : keywordReportsReady ? `${runs.length} completed analysis run${runs.length === 1 ? "" : "s"}` : isExistingWebsiteFlow(project, website) ? "existing website context" : "crawl not required"}</p>
+          </div>
+          {keywordAnalysisProcessing ? <Link to={keywordReportsTo} className="inline-flex shrink-0 items-center justify-center gap-2 rounded-lg border border-amber-200 bg-white px-5 py-2.5 text-sm font-bold text-amber-800 shadow-sm hover:bg-amber-50"><span className="h-4 w-4 animate-spin rounded-full border-2 border-amber-200 border-t-amber-600" />View analysis status →</Link> : keywordReportsReady ? <Link to={keywordReportsTo} className="inline-flex shrink-0 items-center justify-center rounded-lg bg-emerald-600 px-5 py-2.5 text-sm font-bold text-white shadow-sm hover:bg-emerald-700">View Keyword Reports →</Link> : approvedCount > 0 ? <Link to={keywordAnalysisTo} className="inline-flex shrink-0 items-center justify-center rounded-lg bg-brand-600 px-5 py-2.5 text-sm font-bold text-white shadow-sm hover:bg-brand-700">Start Keyword Analysis →</Link> : null}
+        </div>
+      </Card>
       {runs.length > 0 && <>
-        <Card className="overflow-x-auto"><div className="grid min-w-[860px] grid-cols-[180px_repeat(5,minmax(130px,1fr))] divide-x divide-slate-200"><div className="flex items-center px-5 py-4"><div><div className="font-bold text-charcoal-950">Research Coverage</div><div className="mt-1 text-xs text-charcoal-500">Current campaign scope</div></div></div>{[["Keywords analyzed", analyzedKeywords.length], ["Analysis runs", runs.length], ["Locations", analyzedLocations.length <= 3 ? analyzedLocations.join(", ") : `${analyzedLocations.length} markets`], ["Language", topRun?.languageCode?.toUpperCase() || "EN"], ["Search engine", "Google"]].map(([labelText, value]) => <div key={labelText} className="px-5 py-4"><div className="text-xs font-semibold uppercase tracking-wide text-charcoal-400">{labelText}</div><div className="mt-1 text-base font-bold text-charcoal-950">{value}</div></div>)}</div></Card>
-        <KeywordInsightsBanner data={data} />
-        <Card className="p-2"><div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between"><div className="flex items-center gap-2"><button type="button" onClick={() => setResultsTab("keywords")} className={`rounded-lg px-4 py-2 text-sm font-bold transition ${resultsTab === "keywords" ? "bg-brand-600 text-white shadow-sm" : "text-charcoal-600 hover:bg-slate-50"}`}>Analyzed Keywords <span className={resultsTab === "keywords" ? "text-brand-100" : "text-charcoal-400"}>{analyzedKeywords.length}</span></button><button type="button" onClick={() => setResultsTab("competitors")} className={`rounded-lg px-4 py-2 text-sm font-bold transition ${resultsTab === "competitors" ? "bg-brand-600 text-white shadow-sm" : "text-charcoal-600 hover:bg-slate-50"}`}>SERP Domains <span className={resultsTab === "competitors" ? "text-brand-100" : "text-charcoal-400"}>{uniqueSerpDomains(runs, website?.domain ?? project?.website?.domain).size}</span></button></div><label className="flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 py-1.5"><span className="text-[11px] font-bold uppercase tracking-wide text-charcoal-400">Market</span><select value={marketFilter} onChange={(event) => setMarketFilter(event.target.value)} className="min-w-[150px] bg-transparent text-sm font-bold text-charcoal-700 outline-none"><option value="">All markets</option>{marketOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select></label></div></Card>
-        {resultsTab === "keywords" ? <DataTable title="Keywords" columns={["Keyword", "Location", "Search Volume", "Difficulty", "CPC", "Opportunity Score", "Rank", "Change", "Avg volume", "Ideas", "Competitors", "Actions"]} rows={rows} /> : <KeywordCompetitorAnalysis runs={runs} projectCompetitors={Array.isArray(project?.competitors) ? project.competitors.map(String).filter((item) => item && item !== "[object Object]") : []} ownDomain={website?.domain ?? project?.website?.domain ?? null} />}
+        <KeywordInsightsBanner data={data} runs={runs} analyzedKeywords={analyzedKeywords} analyzedLocations={analyzedLocations} language={topRun?.languageCode?.toUpperCase() || "EN"} />
+        <Card className="p-2"><div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between"><div className="flex items-center gap-2"><button type="button" onClick={() => setResultsTab("keywords")} className={`rounded-lg px-4 py-2 text-sm font-bold transition ${resultsTab === "keywords" ? "bg-brand-600 text-white shadow-sm" : "text-charcoal-600 hover:bg-slate-50"}`}>Analyzed seeds <span className={resultsTab === "keywords" ? "text-brand-100" : "text-charcoal-400"}>{analyzedKeywords.length}</span></button><button type="button" onClick={() => setResultsTab("competitors")} className={`rounded-lg px-4 py-2 text-sm font-bold transition ${resultsTab === "competitors" ? "bg-brand-600 text-white shadow-sm" : "text-charcoal-600 hover:bg-slate-50"}`}>SERP Domains <span className={resultsTab === "competitors" ? "text-brand-100" : "text-charcoal-400"}>{uniqueSerpDomains(runs, website?.domain ?? project?.website?.domain).size}</span></button></div><label className="flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 py-1.5"><span className="text-[11px] font-bold uppercase tracking-wide text-charcoal-400">Market</span><select value={marketFilter} onChange={(event) => setMarketFilter(event.target.value)} className="min-w-[150px] bg-transparent text-sm font-bold text-charcoal-700 outline-none"><option value="">All markets</option>{marketOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select></label></div></Card>
+        {resultsTab === "keywords" ? <DataTable title="Related keyword ideas returned for the analyzed seeds" columns={["Related keyword idea", "Source seed", "Location", "Search Volume", "Difficulty", "CPC", "Opportunity Score", "Rank", "Change", "Avg volume", "Ideas", "Competitors", "Actions"]} rows={rows} /> : <KeywordCompetitorAnalysis runs={runs} projectCompetitors={Array.isArray(project?.competitors) ? project.competitors.map(String).filter((item) => item && item !== "[object Object]") : []} ownDomain={website?.domain ?? project?.website?.domain ?? null} />}
       </>}
       {message && <div className="rounded-lg border border-brand-100 bg-brand-50 px-4 py-3 text-sm font-semibold text-brand-700">{message}</div>}
-      {runs.length === 0 && <Card className={`${approvedCount > 0 ? "border-brand-200 bg-gradient-to-r from-brand-50 via-white to-emerald-50" : ""} p-5`}><div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between"><div><div className="text-xs font-bold uppercase tracking-wide text-brand-600">Keyword Intelligence Groups</div><h2 className="mt-1 text-lg font-bold text-charcoal-950">{approvedCount > 0 ? "Approved direction ready for analysis" : "Approve and manage keyword direction"}</h2><p className="mt-1 text-sm leading-6 text-charcoal-600">{approvedCount > 0 ? "Use the approved groups to collect demand, competition, CPC, intent, rankings, and page-target data." : "Review, approve, edit, or add keywords before continuing."}</p><p className="mt-1 text-xs font-semibold text-charcoal-500">{groups.length} groups · {approvedCount} approved · {totalRecommendations} recommendations · {isExistingWebsiteFlow(project, website) ? "existing website context" : "crawl not required"}</p></div>{approvedCount > 0 && <Link to={keywordAnalysisTo} className="inline-flex shrink-0 items-center justify-center rounded-lg bg-brand-600 px-5 py-2.5 text-sm font-bold text-white shadow-sm hover:bg-brand-700">Start Keyword Analysis →</Link>}</div></Card>}
       {runs.length > 0 && showGroupManagement && <div id="keyword-group-management" className="flex scroll-mt-4 items-center justify-between rounded-xl border border-slate-200 bg-slate-50 px-5 py-4"><div><div className="text-sm font-bold text-charcoal-900">Keyword group management</div><div className="mt-1 text-xs text-charcoal-500">Add keywords, request more ideas, edit approvals, or regenerate recommendations.</div></div><button type="button" onClick={() => { setShowGroupManagement(false); const next = new URLSearchParams(searchParams); next.delete("manageKeywords"); navigate({ search: next.toString() }, { replace: true }); }} className="ml-4 rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-bold text-charcoal-600">Close</button></div>}
       {(runs.length === 0 || showGroupManagement) && <>
-      <div className="flex flex-wrap gap-2"><button type="button" onClick={() => void addManual()} disabled={busy !== null} className="rounded-lg border border-slate-200 bg-white px-4 py-2 text-sm font-bold">Add Manual Keywords</button><button type="button" onClick={openAiIdeas} disabled={busy !== null} className="rounded-lg border border-brand-200 bg-white px-4 py-2 text-sm font-bold text-brand-700">Ask AI for More Ideas</button><button type="button" onClick={() => { if (window.confirm("Regenerate recommendations from the latest intake? Existing approvals will be reset.")) void generate(true); }} disabled={busy !== null} className="rounded-lg bg-brand-600 px-4 py-2 text-sm font-bold text-white">{busy === "regenerate" ? "Regenerating…" : "Regenerate"}</button></div>
-      <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">{groups.map((group) => { const keywords = groupKeywords(group.keywords); const gaps = groupKeywords(group.gapKeywords); const focused = focusedGroupId === group.id; return <Card id={`keyword-group-${group.id}`} key={group.id} className={`flex flex-col p-5 transition ${focused ? "border-brand-500 ring-2 ring-brand-200" : group.status === "approved" ? "border-emerald-300 bg-emerald-50/30" : ""}`}><div className="flex items-start justify-between gap-3"><div><div className="text-xs font-bold uppercase tracking-wide text-brand-600">{group.status === "approved" ? "Approved · Manage group" : "Recommended"}</div><h3 className="mt-1 text-lg font-bold text-charcoal-950">{group.title}</h3></div><span className="rounded-full bg-white px-2 py-1 text-xs font-bold text-charcoal-600">{keywords.length}</span></div><p className="mt-3 text-sm leading-6 text-charcoal-600">{group.explanation}</p><div className="mt-3 rounded-lg bg-white p-3 text-xs leading-5 text-charcoal-600"><b>Expected value:</b> {group.expectedValue}<br/><b>Goal:</b> {group.goalSupport}</div><div className="mt-4 flex flex-wrap gap-2">{keywords.map((keyword) => <span key={keyword} className={`rounded-full px-3 py-1 text-xs font-semibold ${gaps.includes(keyword) ? "bg-amber-100 text-amber-800" : "bg-slate-100 text-charcoal-700"}`}>{keyword}{gaps.includes(keyword) ? " · gap" : ""}</span>)}</div><div className="mt-auto grid grid-cols-2 gap-2 pt-5"><button type="button" onClick={() => void editGroup(group)} disabled={busy !== null} className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm font-bold">Edit Group</button><button type="button" onClick={() => void addManual(group.category, group.title)} disabled={busy !== null} className="rounded-lg border border-brand-200 bg-white px-3 py-2 text-sm font-bold text-brand-700">Add Keyword</button><button type="button" onClick={() => void approve(group.id)} disabled={busy !== null || group.status === "approved"} className="col-span-2 rounded-lg bg-emerald-600 px-3 py-2 text-sm font-bold text-white disabled:bg-slate-300">{group.status === "approved" ? "Approved — Continue Managing" : busy === group.id ? "Approving…" : "Approve & Manage Group"}</button></div></Card>; })}</div>
+      <div className="flex flex-wrap gap-2"><button type="button" onClick={() => openAddKeywords()} disabled={busy !== null} className="rounded-lg border border-brand-200 bg-white px-4 py-2 text-sm font-bold text-brand-700">Add Keywords</button><button type="button" onClick={openAiIdeas} disabled={busy !== null} className="rounded-lg border border-brand-200 bg-white px-4 py-2 text-sm font-bold text-brand-700">Ask AI for More Ideas</button><button type="button" onClick={() => { if (window.confirm("Regenerate recommendations from the latest intake? Existing approvals will be reset.")) void generate(true); }} disabled={busy !== null} className="rounded-lg bg-brand-600 px-4 py-2 text-sm font-bold text-white">{busy === "regenerate" ? "Regenerating…" : "Regenerate"}</button></div>
+      <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">{groups.map((group) => { const keywords = groupKeywords(group.keywords); const gaps = groupKeywords(group.gapKeywords); const focused = focusedGroupId === group.id; return <Card id={`keyword-group-${group.id}`} key={group.id} className={`flex flex-col p-5 transition ${focused ? "border-brand-500 ring-2 ring-brand-200" : group.status === "approved" ? "border-emerald-300 bg-emerald-50/30" : ""}`}><div className="flex items-start justify-between gap-3"><div><div className="text-xs font-bold uppercase tracking-wide text-brand-600">{group.status === "approved" ? "Approved · Manage group" : "Recommended"}</div><h3 className="mt-1 text-lg font-bold text-charcoal-950">{group.title}</h3></div><span className="rounded-full bg-white px-2 py-1 text-xs font-bold text-charcoal-600">{keywords.length}</span></div><p className="mt-3 text-sm leading-6 text-charcoal-600">{group.explanation}</p><div className="mt-3 rounded-lg bg-white p-3 text-xs leading-5 text-charcoal-600"><b>Expected value:</b> {group.expectedValue}<br/><b>Goal:</b> {group.goalSupport}</div><div className="mt-4 flex flex-wrap gap-2">{keywords.map((keyword) => <span key={keyword} className={`inline-flex items-center gap-1 rounded-full py-1 pl-3 pr-1 text-xs font-semibold ${gaps.includes(keyword) ? "bg-amber-100 text-amber-800" : "bg-slate-100 text-charcoal-700"}`}><span>{keyword}{gaps.includes(keyword) ? " · gap" : ""}</span><button type="button" onClick={() => void removeKeyword(group, keyword)} disabled={busy !== null} aria-label={`Remove ${keyword}`} title="Remove keyword" className="grid h-5 w-5 shrink-0 place-items-center rounded-full text-sm font-black leading-none hover:bg-white hover:text-rose-600 disabled:opacity-40">×</button></span>)}</div><div className="mt-auto grid grid-cols-2 gap-2 pt-5"><button type="button" onClick={() => editGroup(group)} disabled={busy !== null} className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm font-bold">Edit Group</button><button type="button" onClick={() => openAddKeywords(group.category, group.title, group.id)} disabled={busy !== null} className="rounded-lg border border-brand-200 bg-white px-3 py-2 text-sm font-bold text-brand-700">Add Keywords</button><button type="button" onClick={() => void approve(group.id)} disabled={busy !== null || group.status === "approved"} className="col-span-2 rounded-lg bg-emerald-600 px-3 py-2 text-sm font-bold text-white disabled:bg-slate-300">{group.status === "approved" ? "Approved — Continue Managing" : busy === group.id ? "Approving…" : "Approve & Manage Group"}</button></div></Card>; })}</div>
       </>}
       {aiIdeasOpen && <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/55 p-4" role="dialog" aria-modal="true" aria-labelledby="keyword-ai-ideas-title"><div className="max-h-[90vh] w-full max-w-3xl overflow-y-auto rounded-2xl bg-white shadow-2xl">
         <div className="border-b border-slate-100 px-6 py-5"><div className="text-xs font-bold uppercase tracking-wide text-brand-600">Project-aware keyword expansion</div><h2 id="keyword-ai-ideas-title" className="mt-1 text-xl font-bold text-charcoal-950">Ask AI for more keyword ideas</h2><p className="mt-2 text-sm leading-6 text-charcoal-600">Preview actual keywords, select the useful phrases, and add only those selections to their relevant groups.</p></div>
         <div className="space-y-5 px-6 py-5">
-          <div><div className="text-xs font-bold uppercase tracking-wide text-charcoal-400">Context AI will use</div><div className="mt-3 grid gap-2 sm:grid-cols-2">{[["Audience", audience], ["Offer", offer], ["Goals", [project?.primaryGoal, ...(Array.isArray(project?.secondaryGoals) ? project.secondaryGoals.map(String) : [])].filter(Boolean).join(", ") || "Not set"], ["Markets", markets.join(", ") || project?.businessLocation || "Not set"], ["Opportunity", selectedOpportunity || "Existing project direction"], ["Existing groups", `${groups.length} groups · ${totalRecommendations} keywords`]].map(([labelText, value]) => <div key={labelText} className="rounded-lg border border-slate-100 bg-slate-50 p-3"><div className="text-[11px] font-bold uppercase text-charcoal-400">{labelText}</div><div className="mt-1 line-clamp-2 text-sm font-semibold text-charcoal-800">{value}</div></div>)}</div></div>
-          {!aiKeywordPreview.length && <><div><div className="text-xs font-bold uppercase tracking-wide text-charcoal-400">Suggested AI instructions</div><div className="mt-3 grid gap-2">{aiPromptIdeas.map((idea) => <button key={idea} type="button" onClick={() => { setAiIdeaPrompt(idea); setAiKeywordPreview([]); setSelectedAiKeywords([]); }} className={`rounded-lg border px-4 py-3 text-left text-sm leading-5 ${aiIdeaPrompt === idea ? "border-brand-500 bg-brand-50 font-semibold text-brand-800 ring-1 ring-brand-200" : "border-slate-200 text-charcoal-700 hover:border-brand-200 hover:bg-brand-50/40"}`}>{idea}</button>)}</div></div><label className="block"><span className="mb-2 block text-xs font-bold uppercase tracking-wide text-charcoal-400">AI instruction—not a keyword</span><textarea value={aiIdeaPrompt} onChange={(event) => { setAiIdeaPrompt(event.target.value); setAiKeywordPreview([]); setSelectedAiKeywords([]); }} rows={3} className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm outline-none focus:border-brand-400 focus:ring-2 focus:ring-brand-100" placeholder="Describe the keyword direction to explore…" /><span className="mt-1 block text-xs text-charcoal-500">Previewing does not save anything.</span></label></>}
-          {aiKeywordPreview.length > 0 && <div><div className="flex items-center justify-between gap-3"><div><div className="text-xs font-bold uppercase tracking-wide text-charcoal-400">Select keywords to add</div><div className="mt-1 text-sm text-charcoal-600">{selectedAiKeywords.length} selected · grouped automatically by search intent</div></div><button type="button" onClick={() => { setAiKeywordPreview([]); setSelectedAiKeywords([]); }} className="text-sm font-bold text-brand-700">Change instruction</button></div><div className="mt-4 grid gap-4 sm:grid-cols-2">{aiKeywordPreview.map((group) => <div key={group.category} className="rounded-xl border border-slate-200 p-4"><div className="font-bold text-charcoal-900">{group.title}</div><div className="mt-3 space-y-2">{group.keywords.map((keyword) => { const key = aiSelectionKey(group.category, keyword); const selected = selectedAiKeywords.includes(key); return <label key={key} className={`flex cursor-pointer items-start gap-3 rounded-lg border px-3 py-2 text-sm ${selected ? "border-brand-300 bg-brand-50" : "border-slate-100 bg-white"}`}><input type="checkbox" checked={selected} onChange={() => setSelectedAiKeywords((current) => current.includes(key) ? current.filter((item) => item !== key) : [...current, key])} className="mt-0.5"/><span className="font-semibold text-charcoal-800">{keyword}</span></label>; })}</div></div>)}</div></div>}
+          <div className="grid gap-4 rounded-xl border border-brand-100 bg-brand-50/40 p-4 sm:grid-cols-2">
+            <div><div className="flex items-center justify-between gap-3"><div className="text-xs font-bold uppercase tracking-wide text-charcoal-500">Target cities or geographies</div>{projectGeographies.length > 1 && <div className="flex gap-2"><button type="button" onClick={() => { setKeywordGeographies(projectGeographies); setAiKeywordPreview([]); setSelectedAiKeywords([]); }} className="text-[10px] font-bold text-brand-700">Select all</button><button type="button" onClick={() => { setKeywordGeographies([]); setAiKeywordPreview([]); setSelectedAiKeywords([]); }} className="text-[10px] font-bold text-charcoal-500">Clear</button></div>}</div><div className="mt-2 max-h-40 space-y-2 overflow-y-auto rounded-lg border border-brand-200 bg-white p-3">{projectGeographies.length ? projectGeographies.map((market) => <label key={market} className="flex cursor-pointer items-center gap-2 text-sm font-semibold text-charcoal-700"><input type="checkbox" checked={keywordGeographies.includes(market)} onChange={() => { setKeywordGeographies((current) => current.includes(market) ? current.filter((item) => item !== market) : [...current, market]); setAiKeywordPreview([]); setSelectedAiKeywords([]); }} />{market}</label>) : <div className="text-xs text-charcoal-500">No target cities were added in project intake.</div>}{keywordGeographies.filter((market) => !projectGeographies.includes(market)).map((market) => <label key={market} className="flex cursor-pointer items-center gap-2 text-sm font-semibold text-charcoal-700"><input type="checkbox" checked onChange={() => { setKeywordGeographies((current) => current.filter((item) => item !== market)); setAiKeywordPreview([]); setSelectedAiKeywords([]); }} />{market} <span className="text-xs font-normal text-brand-600">added here</span></label>)}</div><div className="mt-2 flex items-center justify-between gap-2"><span className="text-xs font-semibold text-charcoal-600">{keywordGeographies.length ? `${keywordGeographies.length} selected: ${keywordGeographies.join(", ")}` : "No geography selected · keyword will be added without a city"}</span><button type="button" onClick={() => setAddingKeywordGeography((current) => !current)} className="shrink-0 text-xs font-bold text-brand-700 hover:underline">{addingKeywordGeography ? "Cancel" : "+ Add another city"}</button></div>{addingKeywordGeography && <div className="mt-3 flex gap-2"><input value={customKeywordGeography} onChange={(event) => setCustomKeywordGeography(event.target.value)} placeholder="Enter city, e.g. Oakville" className="min-w-0 flex-1 rounded-lg border border-brand-200 bg-white px-3 py-2 text-sm outline-none focus:border-brand-500"/><button type="button" disabled={!customKeywordGeography.trim()} onClick={() => { const city = customKeywordGeography.trim(); setKeywordGeographies((current) => current.includes(city) ? current : [...current, city]); setCustomKeywordGeography(""); setAddingKeywordGeography(false); setAiKeywordPreview([]); setSelectedAiKeywords([]); }} className="rounded-lg bg-brand-600 px-3 py-2 text-xs font-bold text-white disabled:bg-slate-300">Add</button></div>}</div>
+            <label><span className="text-xs font-bold uppercase tracking-wide text-charcoal-500">Enter base keywords</span><textarea value={manualKeywords} onChange={(event) => setManualKeywords(event.target.value)} rows={3} placeholder={"custom software development\nCRM implementation"} className="mt-2 w-full rounded-lg border border-brand-200 bg-white px-3 py-2 text-sm outline-none focus:border-brand-500"/><span className="mt-1 block text-xs text-charcoal-500">Type one per line or separate them with commas.</span>{manualKeywordCombinations.length > 0 && <div className="mt-3 rounded-lg border border-emerald-200 bg-white p-3"><div className="text-[10px] font-black uppercase tracking-wide text-emerald-700">Live combined preview</div><div className="mt-2 flex flex-wrap gap-2">{manualKeywordCombinations.map((keyword) => <span key={keyword} className="rounded-full bg-emerald-100 px-3 py-1.5 text-xs font-bold text-emerald-900">{keyword}</span>)}</div></div>}</label>
+          </div>
+          {!aiKeywordPreview.length && <label className="block"><span className="mb-2 block text-xs font-bold uppercase tracking-wide text-charcoal-400">AI keyword direction</span><textarea value={aiIdeaPrompt} onChange={(event) => { setAiIdeaPrompt(event.target.value); setAiKeywordPreview([]); setSelectedAiKeywords([]); }} rows={3} className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm outline-none focus:border-brand-400 focus:ring-2 focus:ring-brand-100" placeholder="Example: website development" /><span className="mt-1 block text-xs text-charcoal-500">Enter a supporting keyword direction, choose the target cities, then click Generate AI Keyword List.</span>{aiPreviewBusy && <span className="mt-3 flex items-center gap-2 text-xs font-bold text-brand-700"><span className="h-4 w-4 animate-spin rounded-full border-2 border-brand-200 border-t-brand-600" />Generating keyword suggestions…</span>}</label>}
+          {aiKeywordPreview.length > 0 && <div><div className="flex flex-col justify-between gap-3 sm:flex-row sm:items-center"><div><div className="text-xs font-bold uppercase tracking-wide text-charcoal-400">Select supporting keywords to add</div><div className="mt-1 text-sm text-charcoal-600">{selectedAiKeywords.length} selected · the approved primary keyword direction remains unchanged</div></div><div className="flex flex-wrap items-center gap-2"><button type="button" onClick={() => setSelectedAiKeywords(aiKeywordPreview.flatMap((group) => group.keywords.map((keyword) => aiSelectionKey(group.category, keyword))))} className="rounded-lg border border-brand-200 bg-white px-3 py-2 text-xs font-bold text-brand-700 hover:bg-brand-50">Check all</button><button type="button" onClick={() => setSelectedAiKeywords([])} className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-bold text-charcoal-600 hover:bg-slate-50">Uncheck all</button><button type="button" onClick={() => { setAiIdeaPrompt(""); setAiKeywordPreview([]); setSelectedAiKeywords([]); }} className="px-2 py-2 text-sm font-bold text-brand-700">Change direction</button></div></div><div className="mt-4 grid gap-4 sm:grid-cols-2">{aiKeywordPreview.map((group) => <div key={group.category} className="rounded-xl border border-slate-200 p-4"><div className="font-bold text-charcoal-900">{group.title}</div><div className="mt-3 space-y-2">{group.keywords.map((keyword) => { const key = aiSelectionKey(group.category, keyword); const selected = selectedAiKeywords.includes(key); return <label key={key} className={`flex cursor-pointer items-start gap-3 rounded-lg border px-3 py-2 text-sm ${selected ? "border-brand-300 bg-brand-50" : "border-slate-100 bg-white"}`}><input type="checkbox" checked={selected} onChange={() => setSelectedAiKeywords((current) => current.includes(key) ? current.filter((item) => item !== key) : [...current, key])} className="mt-0.5"/><span className="font-semibold text-charcoal-800">{keyword}</span></label>; })}</div></div>)}</div></div>}
         </div>
-        <div className="flex flex-col-reverse gap-2 border-t border-slate-100 bg-slate-50 px-6 py-4 sm:flex-row sm:justify-end"><button type="button" onClick={() => setAiIdeasOpen(false)} className="rounded-lg border border-slate-200 bg-white px-4 py-2.5 text-sm font-bold text-charcoal-700">Cancel</button>{aiKeywordPreview.length ? <button type="button" disabled={!selectedAiKeywords.length || aiPreviewBusy} onClick={() => void addSelectedAiKeywords()} className="rounded-lg bg-brand-600 px-5 py-2.5 text-sm font-bold text-white disabled:bg-slate-300">{aiPreviewBusy ? "Adding…" : `Add Selected Keywords (${selectedAiKeywords.length})`}</button> : <button type="button" disabled={aiIdeaPrompt.trim().length < 3 || aiPreviewBusy} onClick={() => void previewAiKeywords()} className="rounded-lg bg-brand-600 px-5 py-2.5 text-sm font-bold text-white disabled:bg-slate-300">{aiPreviewBusy ? "Generating preview…" : "Preview Actual Keywords"}</button>}</div>
+        <div className="flex flex-col-reverse gap-2 border-t border-slate-100 bg-slate-50 px-6 py-4 sm:flex-row sm:justify-end"><button type="button" onClick={() => setAiIdeasOpen(false)} className="rounded-lg border border-slate-200 bg-white px-4 py-2.5 text-sm font-bold text-charcoal-700">Cancel</button>{manualKeywords.trim() && !aiKeywordPreview.length ? <button type="button" disabled={busy === "manual"} onClick={() => void addManual()} className="rounded-lg border border-brand-200 bg-white px-5 py-2.5 text-sm font-bold text-brand-700 disabled:opacity-50">{busy === "manual" ? "Adding…" : "Add My Keywords"}</button> : null}{aiKeywordPreview.length ? <button type="button" disabled={!selectedAiKeywords.length || aiPreviewBusy} onClick={() => void addSelectedAiKeywords()} className="rounded-lg bg-brand-600 px-5 py-2.5 text-sm font-bold text-white disabled:bg-slate-300">{aiPreviewBusy ? "Adding…" : `Add Selected Keywords (${selectedAiKeywords.length})`}</button> : <button type="button" disabled={aiPreviewBusy} onClick={() => void previewAiKeywords()} className="rounded-lg bg-brand-600 px-5 py-2.5 text-sm font-bold text-white disabled:bg-slate-300">{aiPreviewBusy ? "Generating preview…" : "Generate AI Keyword List"}</button>}</div>
       </div></div>}
+      {editingGroup && <div className="fixed inset-0 z-50 grid place-items-center bg-slate-950/55 p-4 backdrop-blur-sm" role="dialog" aria-modal="true" aria-labelledby="edit-keyword-group-title"><div className="w-full max-w-xl overflow-hidden rounded-2xl bg-white shadow-2xl"><div className="flex items-start justify-between border-b border-slate-100 px-6 py-5"><div><div className="text-xs font-bold uppercase tracking-wide text-brand-600">Keyword group editor</div><h2 id="edit-keyword-group-title" className="mt-1 text-xl font-bold text-charcoal-950">Edit {editingGroup.title}</h2><p className="mt-1 text-sm text-charcoal-500">Add, remove, or revise keywords before approval.</p></div><button type="button" onClick={() => setEditingGroup(null)} disabled={busy === editingGroup.id} className="grid h-9 w-9 place-items-center rounded-lg border border-slate-200 text-xl text-charcoal-500">×</button></div><div className="px-6 py-5"><label className="text-xs font-bold uppercase tracking-wide text-charcoal-500">Keywords</label><textarea value={editingKeywords} onChange={(event) => setEditingKeywords(event.target.value)} rows={12} className="mt-2 w-full rounded-xl border border-slate-200 px-4 py-3 text-sm leading-6 outline-none focus:border-brand-400 focus:ring-2 focus:ring-brand-100"/><div className="mt-2 flex justify-between text-xs text-charcoal-500"><span>One keyword per line, or separate with commas.</span><span>{editingKeywords.split(/[,;\n]/).filter((item) => item.trim()).length} keywords</span></div></div><div className="flex justify-end gap-2 border-t border-slate-100 bg-slate-50 px-6 py-4"><button type="button" onClick={() => setEditingGroup(null)} disabled={busy === editingGroup.id} className="rounded-lg border border-slate-200 bg-white px-4 py-2.5 text-sm font-bold">Cancel</button><button type="button" onClick={() => void saveGroupEdits()} disabled={busy === editingGroup.id || !editingKeywords.trim()} className="rounded-lg bg-brand-600 px-5 py-2.5 text-sm font-bold text-white disabled:bg-slate-300">{busy === editingGroup.id ? "Saving…" : "Save Group"}</button></div></div></div>}
     </>
   );
 }
@@ -2970,12 +3254,10 @@ function ArchitectScreen({ data }: { data: ModuleData }) {
 
   if (!project) return <EmptyModuleState title="No site architecture yet" detail="Create or select a project before generating site structure." />;
   const approvedKeywords = project.keywordGroups?.filter((group) => group.status === "approved").length ?? 0;
-  const ready = Boolean(project.businessProfile && project.primaryGoal && approvedKeywords && strategy?.status === "approved" && (!(project.websiteStatus === "existing_website" || project.projectType === "existing_website") || latestCrawl));
-  const missing = [!project.businessProfile && "Project Intake", !project.primaryGoal && "Primary Goal", !approvedKeywords && "approved Keyword Intelligence", strategy?.status !== "approved" && "approved Strategy", (project.websiteStatus === "existing_website" || project.projectType === "existing_website") && !latestCrawl && "completed Site Analysis"].filter(Boolean);
   return <div className="space-y-5">
-    <ContextBar items={[`Project: ${project.businessName || project.name}`, `Website: ${website?.domain || project.websiteUrl || "New website"}`, `Strategy: ${strategy?.status || "missing"}`, `Approved keyword groups: ${approvedKeywords}`, `Site Analysis: ${latestCrawl ? `${formatNumber(latestCrawl.pagesCrawled)} pages` : project.websiteStatus === "existing_website" ? "required" : "not required"}`]} />
     {message && <div className={`rounded-lg border px-4 py-3 text-sm font-semibold ${/failed|could not|complete|approve/i.test(message) && !/approved|completed/i.test(message) ? "border-rose-200 bg-rose-50 text-rose-800" : "border-brand-100 bg-brand-50 text-brand-700"}`}>{message}</div>}
-    {!current ? <div className="grid min-h-[420px] place-items-center rounded-xl border border-slate-200 bg-white p-8 text-center shadow-sm"><div className="max-w-2xl"><div className="mx-auto grid h-16 w-16 place-items-center rounded-2xl bg-gradient-to-br from-brand-100 to-emerald-100 text-3xl">⌘</div><div className="mt-5 text-xs font-black uppercase tracking-[0.16em] text-brand-700">DEV-011B · Site Architecture</div><h2 className="mt-2 text-2xl font-black text-charcoal-950">Plan the website before structural work begins</h2><p className="mx-auto mt-3 max-w-xl text-sm leading-6 text-charcoal-500">Generate pages, URLs, navigation, pillar/supporting relationships, categories, search intent, and internal links from approved project evidence.</p>{missing.length > 0 && <div className="mx-auto mt-5 max-w-lg rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">Complete first: {missing.join(", ")}.</div>}{capabilities.canGenerate && <button type="button" onClick={() => void generate()} disabled={!ready || busy === "generate"} className="mt-6 rounded-lg bg-gradient-to-r from-brand-600 to-emerald-500 px-6 py-3 text-sm font-black text-white shadow-sm disabled:cursor-not-allowed disabled:from-slate-300 disabled:to-slate-300">{busy === "generate" ? "Building architecture…" : "Generate Site Architecture"}</button>}</div></div> : <>
+    <SiteBuilderWorkflow projectId={project.id} architectureId={current?.id} architectureStatus={current?.status} onArchitectureChanged={load} />
+    {!current ? null : <>
       <Card className="overflow-hidden p-0"><div className="flex flex-col gap-4 border-b border-brand-100 bg-gradient-to-r from-brand-50 via-white to-emerald-50 px-5 py-4 lg:flex-row lg:items-center lg:justify-between"><div><div className="flex flex-wrap items-center gap-2"><span className="text-xs font-black uppercase tracking-wide text-brand-700">Architecture v{current.version}</span><span className={`rounded-full px-2.5 py-1 text-[10px] font-black uppercase ${current.status === "approved" ? "bg-emerald-100 text-emerald-700" : current.status === "rejected" ? "bg-rose-100 text-rose-700" : "bg-amber-100 text-amber-700"}`}>{current.status}</span></div><h2 className="mt-2 text-xl font-black text-charcoal-950">{current.title}</h2><p className="mt-1 max-w-4xl text-sm leading-6 text-charcoal-600">{current.executiveSummary}</p></div><div className="flex flex-wrap gap-2">{capabilities.canGenerate && <button type="button" onClick={() => void generate()} disabled={busy === "generate"} className="rounded-lg border border-brand-200 bg-white px-4 py-2 text-xs font-black text-brand-700">{busy === "generate" ? "Generating…" : "Generate New Version"}</button>}{current.status === "draft" && capabilities.canApprove && <><button type="button" onClick={reject} disabled={Boolean(busy)} className="rounded-lg border border-rose-200 bg-white px-4 py-2 text-xs font-black text-rose-700">Reject</button><button type="button" onClick={() => void approve()} disabled={Boolean(busy)} className="rounded-lg bg-brand-600 px-4 py-2 text-xs font-black text-white">{busy === "approve" ? "Approving…" : "Approve Structure"}</button></>}</div></div><div className="grid grid-cols-2 divide-x divide-slate-100 sm:grid-cols-4"><ArchitectureMetric label="Pages" value={current.pages.length} /><ArchitectureMetric label="Internal links" value={current.links.length} /><ArchitectureMetric label="Main navigation" value={current.pages.filter((page) => page.navigationGroup === "main").length} /><ArchitectureMetric label="Pillar pages" value={current.pages.filter((page) => page.pageType === "pillar").length} /></div></Card>
       <div className="flex gap-2 overflow-x-auto rounded-xl border border-slate-200 bg-white p-2">{([['pages','Pages & URLs'],['navigation','Navigation'],['links','Internal Linking'],['versions','Version History']] as const).map(([key, labelText]) => <button key={key} type="button" onClick={() => setView(key)} className={`shrink-0 rounded-lg px-4 py-2 text-sm font-black ${view === key ? "bg-brand-600 text-white" : "text-slate-600 hover:bg-slate-50"}`}>{labelText}</button>)}</div>
       {view === "pages" && <div className="grid gap-5 xl:grid-cols-[360px_minmax(0,1fr)]"><Card className="overflow-hidden p-0"><div className="border-b px-4 py-3"><h3 className="font-black text-charcoal-950">Page hierarchy</h3><p className="mt-1 text-xs text-charcoal-500">Select a page to review why it belongs.</p></div><div className="max-h-[650px] divide-y divide-slate-100 overflow-y-auto">{current.pages.map((page) => <button key={page.id} type="button" onClick={() => setSelectedPageKey(page.pageKey)} className={`block w-full p-4 text-left ${selectedPage?.id === page.id ? "bg-brand-50" : "bg-white hover:bg-slate-50"}`}><div className="flex items-start justify-between gap-3"><div><div className="text-sm font-black text-charcoal-900">{page.title}</div><div className="mt-1 text-xs font-semibold text-brand-700">{page.suggestedUrl}</div></div><span className="rounded-full bg-slate-100 px-2 py-1 text-[9px] font-black uppercase text-slate-600">{page.pageType}</span></div>{page.parentPageKey && <div className="mt-2 text-[10px] text-charcoal-400">Parent: {page.parentPageKey.replaceAll("_", " ")}</div>}</button>)}</div></Card>{selectedPage && <Card className="p-5"><div className="flex flex-wrap items-start justify-between gap-3"><div><div className="text-xs font-black uppercase tracking-wide text-brand-700">{selectedPage.pageType} · {selectedPage.searchIntent} intent</div><h3 className="mt-1 text-2xl font-black text-charcoal-950">{selectedPage.title}</h3><div className="mt-1 font-mono text-sm font-bold text-brand-700">{selectedPage.suggestedUrl}</div></div><span className={`rounded-full px-3 py-1 text-xs font-black ${selectedPage.status === "existing" ? "bg-emerald-50 text-emerald-700" : "bg-blue-50 text-blue-700"}`}>{selectedPage.status}</span></div><div className="mt-5 grid gap-4 md:grid-cols-2"><ArchitectureDetail title="Page purpose" value={selectedPage.purpose} /><ArchitectureDetail title="Why recommended" value={selectedPage.recommendationWhy} /><ArchitectureDetail title="Navigation group" value={label(selectedPage.navigationGroup)} /><ArchitectureDetail title="Category" value={selectedPage.category || "Core website"} /></div><div className="mt-5"><div className="text-xs font-black uppercase tracking-wide text-charcoal-400">Target keywords</div><div className="mt-2 flex flex-wrap gap-2">{(Array.isArray(selectedPage.targetKeywordsJson) ? selectedPage.targetKeywordsJson.map(String) : []).map((keyword) => <span key={keyword} className="rounded-full border border-brand-100 bg-brand-50 px-3 py-1.5 text-xs font-bold text-brand-700">{keyword}</span>)}{!Array.isArray(selectedPage.targetKeywordsJson) || !selectedPage.targetKeywordsJson.length ? <span className="text-sm text-charcoal-400">Intent and navigation page—no dedicated keyword target required.</span> : null}</div></div><div className="mt-5"><div className="text-xs font-black uppercase tracking-wide text-charcoal-400">Planned links</div><div className="mt-2 space-y-2">{current.links.filter((link) => link.sourcePageKey === selectedPage.pageKey || link.targetPageKey === selectedPage.pageKey).map((link) => <div key={link.id} className="rounded-lg border border-slate-100 bg-slate-50 p-3 text-sm"><b>{link.sourcePageKey.replaceAll("_", " ")} → {link.targetPageKey.replaceAll("_", " ")}</b><span className="ml-2 text-charcoal-500">“{link.anchorText}”</span></div>)}</div></div></Card>}</div>}
@@ -3256,18 +3538,23 @@ function EmptyModuleState({
   compact = false,
   actionTo = "/projects/new",
   actionLabel = "Create Project",
+  onAction,
+  actionDisabled = false,
 }: {
   title: string;
   detail: string;
   compact?: boolean;
   actionTo?: string | null;
   actionLabel?: string | null;
+  onAction?: () => void;
+  actionDisabled?: boolean;
 }) {
   return (
     <Card className={`border-dashed border-slate-200 bg-white ${compact ? "p-4" : "p-6"}`}>
       <h2 className="text-base font-bold text-charcoal-950">{title}</h2>
       <p className="mt-2 text-sm leading-6 text-charcoal-500">{detail}</p>
-      {!compact && actionTo && actionLabel ? <Link to={actionTo} className="mt-4 inline-flex rounded-lg bg-brand-600 px-4 py-2 text-sm font-bold text-white hover:bg-brand-700">{actionLabel}</Link> : null}
+      {!compact && actionLabel && onAction ? <button type="button" onClick={onAction} disabled={actionDisabled} className="mt-4 inline-flex rounded-lg bg-brand-600 px-4 py-2 text-sm font-bold text-white hover:bg-brand-700 disabled:cursor-not-allowed disabled:bg-slate-300">{actionLabel}</button> : null}
+      {!compact && actionTo && actionLabel && !onAction ? <Link to={actionTo} className="mt-4 inline-flex rounded-lg bg-brand-600 px-4 py-2 text-sm font-bold text-white hover:bg-brand-700">{actionLabel}</Link> : null}
     </Card>
   );
 }
@@ -4135,19 +4422,27 @@ function SideStack({ title = "Keyword Insights", data }: { title?: string; data:
   );
 }
 
-function KeywordInsightsBanner({ data }: { data: ModuleData }) {
+function KeywordInsightsBanner({ data, runs, analyzedKeywords, analyzedLocations, language }: { data: ModuleData; runs: KeywordResearchRun[]; analyzedKeywords: string[]; analyzedLocations: string[]; language: string }) {
   const score = averageOpportunityScore(data);
   const chart = [{ name: "score", value: score, color: "#0f9f87" }, { name: "rest", value: 100 - score, color: "#e8eef8" }];
   const metrics = [
+    ["Keywords analyzed", formatNumber(analyzedKeywords.length)],
+    ["Completed analysis runs", formatNumber(runs.length)],
+    ["Locations", analyzedLocations.length <= 3 ? analyzedLocations.join(", ") : `${analyzedLocations.length} markets`],
+    ["Language", language],
+    ["Search engine", "Google"],
     ["Average Search Volume", formatNumber(avg(data.keywordRuns.map((run) => run.avgSearchVolume ?? null)))],
     ["Average CPC", "$" + money(avg(data.keywordRuns.map((run) => run.avgCpc ?? null)))],
-    ["Keyword runs", formatNumber(data.keywordRuns.length)],
     ["Open tasks", formatNumber(data.tasks.length)],
   ];
   return (
-    <Card className="overflow-x-auto"><div className="grid min-w-[1040px] grid-cols-[260px_minmax(250px,1fr)_repeat(4,145px)] divide-x divide-slate-200"><div className="flex items-center gap-4 px-5 py-4"><div><div className="font-bold text-charcoal-950">Keyword Insights</div><div className="mt-1 text-xs text-charcoal-500">Research health</div></div><div className="relative h-20 w-20 shrink-0"><ResponsiveContainer width="100%" height="100%"><PieChart><Pie data={chart} dataKey="value" innerRadius={26} outerRadius={36} startAngle={90} endAngle={-270} stroke="none">{chart.map((item) => <Cell key={item.name} fill={item.color} />)}</Pie></PieChart></ResponsiveContainer><div className="absolute inset-0 grid place-items-center text-center"><div><div className="text-lg font-bold leading-none text-charcoal-950">{score}</div><div className="mt-0.5 text-[9px] font-semibold uppercase text-charcoal-400">Score</div></div></div></div></div><div className="flex flex-col justify-center px-5 py-4"><div className="text-sm font-bold text-charcoal-900">Overall keyword health</div><div className="mt-1 text-xs leading-5 text-charcoal-500">Demand, cost, and workflow signals for this keyword set.</div></div>{metrics.map(([labelText, value]) => <div key={labelText} className="flex flex-col justify-center px-5 py-4"><div className="text-xs font-semibold text-charcoal-500">{labelText}</div><div className="mt-1 text-lg font-bold text-charcoal-950">{value}</div></div>)}</div>
+    <Card className="overflow-hidden"><div className="grid bg-gradient-to-r from-white via-brand-50/40 to-emerald-50/40 lg:grid-cols-[300px_1fr]"><div className="flex items-center gap-4 border-b border-slate-200 px-5 py-5 lg:border-b-0 lg:border-r"><div className="relative h-20 w-20 shrink-0"><ResponsiveContainer width="100%" height="100%"><PieChart><Pie data={chart} dataKey="value" innerRadius={26} outerRadius={36} startAngle={90} endAngle={-270} stroke="none">{chart.map((item) => <Cell key={item.name} fill={item.color} />)}</Pie></PieChart></ResponsiveContainer><div className="absolute inset-0 grid place-items-center text-center"><div><div className="text-lg font-bold leading-none text-charcoal-950">{score}</div><div className="mt-0.5 text-[9px] font-semibold uppercase text-charcoal-400">Score</div></div></div></div><div><div className="text-xs font-bold uppercase tracking-wide text-brand-600">Keyword Intelligence</div><div className="mt-1 font-bold text-charcoal-950">Research coverage & health</div><div className="mt-1 text-xs leading-5 text-charcoal-500">Campaign scope, demand, cost, and workflow signals.</div></div></div><div><div className="grid grid-cols-2 sm:grid-cols-4">{metrics.slice(4).map(([labelText, value]) => <KeywordOverviewMetric key={labelText} label={labelText} value={value} />)}</div><div className="grid grid-cols-2 border-t border-slate-200 sm:grid-cols-4">{metrics.slice(0, 4).map(([labelText, value]) => <KeywordOverviewMetric key={labelText} label={labelText} value={value} />)}</div></div></div>
     </Card>
   );
+}
+
+function KeywordOverviewMetric({ label, value }: { label: string; value: string }) {
+  return <div className="min-w-0 border-l border-t border-slate-100 px-4 py-4 first:border-l-0 sm:border-t-0"><div className="text-[10px] font-bold uppercase tracking-wide text-charcoal-400">{label}</div><div className="mt-1 truncate text-base font-bold text-charcoal-950" title={value}>{value || "—"}</div></div>;
 }
 
 function TreePanel({ data }: { data: ModuleData }) {
@@ -4532,18 +4827,151 @@ function opportunityCards(data: ModuleData) {
   return [{ title: project.niche || project.name, score: averageOpportunityScore(data), tag: "Recommended" }];
 }
 
+type WebsiteKeywordCandidate = {
+  keyword: string;
+  volume: number;
+  difficulty: number | null;
+  opportunity: number;
+  competitorCount: number;
+  approved: boolean;
+};
+
+const PAGE_QUERY_MODIFIERS = new Set(["best", "top", "rated", "leading", "affordable", "cheap", "cheapest", "budget", "economical", "trusted", "reputable", "recommended", "local", "near", "nearby", "closest", "around", "me", "my", "area", "review", "reviews", "rating", "ratings"]);
+const PAGE_PROVIDER_ALIASES: Record<string, string> = {
+  agent: "provider", agents: "provider", broker: "provider", brokers: "provider",
+  advisor: "provider", advisors: "provider", adviser: "provider", advisers: "provider",
+  professional: "provider", professionals: "provider", specialist: "provider", specialists: "provider",
+  company: "provider", companies: "provider", agency: "provider", agencies: "provider",
+  provider: "provider", providers: "provider",
+};
+const QUESTION_PREFIX = /^(what|why|when|where|who|how|can|does|do|is|are|should)\b/i;
+const COMPARISON_SIGNAL = /\b(vs\.?|versus|compare|comparison|alternative|alternatives)\b/i;
+
+function normalizedKeyword(value: string) {
+  return value.toLowerCase().replace(/[^a-z0-9]+/g, " ").replace(/\s+/g, " ").trim();
+}
+
+function pageKeywordTokens(value: string) {
+  return normalizedKeyword(value).split(" ")
+    .map((token) => PAGE_PROVIDER_ALIASES[token] ?? token)
+    .filter((token) => token && !PAGE_QUERY_MODIFIERS.has(token));
+}
+
+function keywordSimilarity(left: string, right: string) {
+  const leftTokens = new Set(pageKeywordTokens(left));
+  const rightTokens = new Set(pageKeywordTokens(right));
+  if (!leftTokens.size || !rightTokens.size) return 0;
+  const intersection = [...leftTokens].filter((token) => rightTokens.has(token)).length;
+  return intersection / Math.max(leftTokens.size, rightTokens.size);
+}
+
+function keywordPageIntent(keyword: string, geographicTerms: string[]) {
+  const normalized = normalizedKeyword(keyword);
+  if (COMPARISON_SIGNAL.test(normalized)) return "comparison";
+  if (QUESTION_PREFIX.test(normalized) || /\b(cost|price|pricing|guide|benefits|process|timeline|checklist)\b/.test(normalized)) return "informational";
+  if (geographicTerms.some((term) => normalized.includes(term))) return "local";
+  return "commercial";
+}
+
+function keywordGeography(keyword: string, geographicTerms: string[]) {
+  const normalized = normalizedKeyword(keyword);
+  return geographicTerms.filter((term) => normalized.includes(term)).sort().join("|");
+}
+
+function displayPageTitle(keyword: string, intent: string) {
+  const cleaned = normalizedKeyword(keyword)
+    .replace(/\b(near me|around me|close to me|in my area)\b/g, "")
+    .replace(/^\s*(best|top rated|top|leading|affordable|cheap|cheapest|budget|economical|trusted|reputable|recommended|local|closest|nearby)\s+/, "")
+    .replace(/\s+(reviews?|ratings?)\s*$/, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  const title = (cleaned || normalizedKeyword(keyword)).replace(/\b\w/g, (letter) => letter.toUpperCase());
+  if (intent === "comparison" && !/Comparison$/i.test(title)) return `${title} Comparison`;
+  return title;
+}
+
 function websitePlanItems(data: ModuleData) {
   const website = data.websites[0];
   const project = data.projects[0];
-  const ideas = data.keywordRuns.flatMap((run) => run.ideas?.map((idea) => idea.keyword) ?? []).slice(0, 5);
-  if (!project && !website && !ideas.length) return [];
-  return [
-    ...(project || website ? ["Home"] : []),
-    ...(project?.businessName ? [`About ${project.businessName}`] : []),
-    ...(project?.niche ? [project.niche] : []),
-    ...ideas,
-    ...(website?.domain ? [`Contact ${website.domain}`] : []),
-  ].slice(0, 10);
+  if (!project && !website) return [];
+
+  const approvedKeywords = (project?.keywordGroups ?? [])
+    .filter((group) => group.status === "approved")
+    .flatMap((group) => Array.isArray(group.keywords) ? group.keywords.map(String) : []);
+  const approvedSet = new Set(approvedKeywords.map(normalizedKeyword).filter(Boolean));
+  const analyzedByKeyword = new Map<string, WebsiteKeywordCandidate>();
+  for (const run of data.keywordRuns.filter((item) => item.status === "completed" || (item.ideas?.length ?? 0) > 0)) {
+    const runCandidates = [{ keyword: run.seedKeyword, volume: run.avgSearchVolume ?? run.averageVolume ?? 0, difficulty: run.avgDifficulty ?? null }, ...(run.ideas ?? []).map((idea) => ({ keyword: idea.keyword, volume: idea.avgMonthlySearches ?? 0, difficulty: idea.competitionIndex }))];
+    for (const item of runCandidates) {
+      const key = normalizedKeyword(item.keyword);
+      if (!key) continue;
+      const existing = analyzedByKeyword.get(key);
+      const candidate: WebsiteKeywordCandidate = {
+        keyword: item.keyword.trim(),
+        volume: item.volume,
+        difficulty: item.difficulty,
+        opportunity: run.opportunityScore ?? 0,
+        competitorCount: Math.max(run.competitorCount ?? 0, run.competitorsAboveJson?.length ?? 0, run.competitors?.length ?? 0),
+        approved: approvedSet.has(key),
+      };
+      if (!existing || candidate.volume > existing.volume || candidate.opportunity > existing.opportunity) analyzedByKeyword.set(key, candidate);
+    }
+  }
+
+  // Approved groups define scope. Analyzed related terms may support those
+  // clusters, but cannot create unrelated pages merely because an API returned them.
+  const candidates = [...new Set(approvedKeywords.map((keyword) => keyword.trim()).filter(Boolean))].map((keyword) => {
+    const analyzed = analyzedByKeyword.get(normalizedKeyword(keyword));
+    return analyzed ?? { keyword, volume: 0, difficulty: null, opportunity: 0, competitorCount: 0, approved: true };
+  });
+  if (!candidates.length) {
+    for (const run of data.keywordRuns) {
+      const analyzed = analyzedByKeyword.get(normalizedKeyword(run.seedKeyword));
+      if (analyzed) candidates.push(analyzed);
+    }
+  }
+  if (!candidates.length && project?.niche) candidates.push({ keyword: project.niche, volume: 0, difficulty: null, opportunity: 0, competitorCount: 0, approved: false });
+
+  const geographicTerms = [...new Set([
+    ...(Array.isArray(project?.targetLocations) ? project.targetLocations.map(String) : []),
+    project?.targetLocation,
+    project?.businessLocationJson?.city,
+    project?.businessLocationJson?.stateProvince,
+    project?.businessLocationJson?.country,
+  ].filter((value): value is string => Boolean(value)).flatMap((value) => value.split(/[,|]/)).map(normalizedKeyword).filter((value) => value.length > 2))];
+
+  const clusters: Array<{ intent: string; primary: WebsiteKeywordCandidate; keywords: WebsiteKeywordCandidate[] }> = [];
+  const rankedCandidates = candidates.sort((left, right) => Number(right.approved) - Number(left.approved) || right.opportunity - left.opportunity || right.volume - left.volume || right.competitorCount - left.competitorCount);
+  for (const candidate of rankedCandidates) {
+    const intent = keywordPageIntent(candidate.keyword, geographicTerms);
+    const geography = keywordGeography(candidate.keyword, geographicTerms);
+    const cluster = clusters.find((item) => item.intent === intent
+      && (intent !== "local" || keywordGeography(item.primary.keyword, geographicTerms) === geography)
+      && keywordSimilarity(item.primary.keyword, candidate.keyword) >= 0.66);
+    if (cluster) {
+      cluster.keywords.push(candidate);
+      if (candidate.opportunity + Math.log10(candidate.volume + 1) * 5 > cluster.primary.opportunity + Math.log10(cluster.primary.volume + 1) * 5) cluster.primary = candidate;
+    } else {
+      clusters.push({ intent, primary: candidate, keywords: [candidate] });
+    }
+  }
+
+  const pageTitles = clusters
+    .sort((left, right) => {
+      const intentOrder: Record<string, number> = { commercial: 0, local: 1, comparison: 2, informational: 3 };
+      const leftScore = left.primary.opportunity + Math.log10(left.primary.volume + 1) * 5 + Math.min(10, left.primary.competitorCount);
+      const rightScore = right.primary.opportunity + Math.log10(right.primary.volume + 1) * 5 + Math.min(10, right.primary.competitorCount);
+      return (intentOrder[left.intent] ?? 9) - (intentOrder[right.intent] ?? 9) || rightScore - leftScore;
+    })
+    .map((cluster) => displayPageTitle(cluster.primary.keyword, cluster.intent));
+
+  return [...new Set([
+    "Home",
+    ...pageTitles,
+    project?.businessName ? `About ${project.businessName}` : "About",
+    "Resources / Blog",
+    "Contact",
+  ])];
 }
 
 type ArchitecturePage = { title: string; purpose: string; source: string; status: "Existing" | "Ready" | "Recommended"; slug: string };
@@ -4697,6 +5125,7 @@ function keywordRows(runs: KeywordResearchRun[], renderActions?: (run: KeywordRe
       const score = Math.max(0, Math.min(100, Math.round(run.opportunityScore ?? 100 - difficulty / 1.4)));
       rows.push([
         idea.keyword,
+        run.seedKeyword,
         run.locationName,
         formatNumber(idea.avgMonthlySearches),
         `${Math.round(difficulty)} ${idea.competitionLevel || difficultyLabel(difficulty)}`,

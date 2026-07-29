@@ -25,4 +25,15 @@ describe("DEV-005 primary and secondary goals", () => {
     expect(tasks.find((task) => task.moduleName === "ai_citations")?.priority).toBe("high");
     expect(tasks.find((task) => task.moduleName === "reports")?.description).toContain("Build Backlinks");
   });
+  it("creates one governed SEO page-map and content-plan action", () => {
+    const tasks = buildCampaignExecutionTasks({ projectType: "new_website", primaryGoal: "Build New Website", secondaryGoals: ["Publish More Content"], targetLocations: ["Toronto"] });
+    const planningTasks = tasks.filter((task) => /(?:content plan|page map)/i.test(`${task.title} ${task.actionButtonLabel}`));
+    expect(planningTasks).toHaveLength(1);
+    expect(planningTasks[0]).toMatchObject({
+      moduleName: "content",
+      title: "SEO Page Map & Content Plan",
+      actionButtonLabel: "Create SEO Plan",
+      requiresApproval: true,
+    });
+  });
 });

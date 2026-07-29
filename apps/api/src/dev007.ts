@@ -58,5 +58,5 @@ export function buildKeywordGroups(project: KeywordProjectInput, extraTopic?: st
 }
 
 export function normalizeKeywordList(value: unknown) {
-  return unique(list(value).flatMap((item) => item.split(/[,;\n]/).map((part) => part.trim()).filter(Boolean)));
+  return unique(list(value).flatMap((item) => item.split(/[;\n]/).map((part) => part.trim()).filter(Boolean)));
 }

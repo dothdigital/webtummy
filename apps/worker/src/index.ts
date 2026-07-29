@@ -6,6 +6,7 @@ import { connection, type CrawlJobData } from "./queue.js";
 import { runCrawl } from "./crawl.js";
 import { recoverQueuedCrawlJobs, startMaintenanceScheduler } from "./maintenance.js";
 import type { CrawlOptions } from "@webtummy/core";
+import { startWebsiteBuilderWorker } from "./website-builder.js";
 
 async function markCrawlFailed(crawlJobId: string, error: unknown) {
   const message = error instanceof Error ? error.message : String(error);
@@ -84,6 +85,7 @@ worker.on("failed", (job, err) => {
 });
 
 const maintenanceTimer = startMaintenanceScheduler();
+const websiteBuilderWorker = startWebsiteBuilderWorker();
 
 console.log(`[worker] SEnuke AI crawler up. UA="${config.userAgent}". Listening on "${CRAWL_QUEUE}".`);
 console.log(`[worker] Maintenance scheduler active every ${config.maintenanceIntervalMs}ms.`);
@@ -92,6 +94,7 @@ const shutdown = async () => {
   console.log("[worker] shutting down…");
   clearInterval(maintenanceTimer);
   await worker.close();
+  await websiteBuilderWorker.close();
   await prisma.$disconnect();
   process.exit(0);
 };

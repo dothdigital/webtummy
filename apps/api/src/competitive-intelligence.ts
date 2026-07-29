@@ -140,9 +140,9 @@ async function loadProject(projectId: string, clientId: string | null) {
 
 async function readinessForProject(project: IntelligenceProject) {
   const crawl = await latestCrawl(project.websiteId);
-  const keywordRuns = await prisma.keywordResearchRun.count({ where: { clientId: project.clientId, ...(project.websiteId ? { websiteId: project.websiteId } : {}) } });
+  const keywordRuns = await prisma.keywordResearchRun.count({ where: { projectId: project.id } });
   const competitors = await prisma.keywordSerpCompetitor.count({
-    where: { run: { clientId: project.clientId, ...(project.websiteId ? { websiteId: project.websiteId } : {}) } },
+    where: { run: { projectId: project.id } },
   });
   return {
     crawl,

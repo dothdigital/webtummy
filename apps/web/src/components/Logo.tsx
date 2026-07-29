@@ -3,7 +3,7 @@ const logoSrc = "/senuke-logo.png";
 export function LogoMark({ size = 32 }: { size?: number }) {
   return (
     <span
-      className="inline-flex shrink-0 items-center justify-start overflow-hidden rounded-lg bg-brand-600"
+      className="inline-flex shrink-0 items-center justify-start overflow-hidden rounded-lg bg-charcoal-900 ring-1 ring-white/10"
       style={{ width: size, height: size }}
       aria-hidden="true"
     >

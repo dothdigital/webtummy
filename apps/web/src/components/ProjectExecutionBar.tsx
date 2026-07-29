@@ -2,6 +2,8 @@ import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import type { GuidedExecutionTask, GuidedProject, ProjectNotification } from "../types.js";
 import { api } from "../api.js";
+import ContentPlanDialog from "./ContentPlanDialog.js";
+import { contentPlanActionLabel, contentPlanDescription, contentPlanTitle, isContentPlanTask, preferredContentPlanTask } from "../utils/contentPlan.js";
 
 type NextBestAction = { taskId: string; title: string; reason: string; expectedOutcome: string; priority: string; score: number; confidence: number; signals: { key: string; label: string; contribution: number; evidence: string }[]; actionUrl: string | null; actionLabel: string; actionable: boolean; requiresApproval: boolean };
 type RankingPlan = {
@@ -27,18 +29,6 @@ type PageOptimization = {
   internalLinkActions: string[];
   implementationChecklist: string[];
 };
-type SeoPlan = {
-  summary: string;
-  objectives: string[];
-  keywordPriorities: string[];
-  technicalPriorities: string[];
-  contentRoadmap: string[];
-  localSeoActions: string[];
-  authorityActions: string[];
-  kpis: string[];
-  phases: { now: string[]; next: string[]; later: string[] };
-};
-
 const finishedStatuses = new Set(["completed", "skipped", "published", "approved"]);
 const closedStatuses = new Set([...finishedStatuses, "cancelled", "canceled"]);
 const priorityRank: Record<string, number> = { critical: 0, high: 1, medium: 2, low: 3 };
@@ -52,6 +42,22 @@ function automationLabel(value: string) {
   if (["one_click_approval", "one_click", "execute_with_approval", "approval_required"].includes(value)) return "One-Click Approval";
   if (value === "manual_guided") return "Manual Guided Step";
   return "Manual Task";
+}
+
+function projectScopedHref(value: string | null | undefined, projectId: string) {
+  if (!value) return null;
+  if (/^(https?:)?\/\//i.test(value) || value.startsWith("mailto:") || value.startsWith("tel:")) return value;
+  const [pathAndQuery, hash = ""] = value.split("#", 2);
+  const [rawPath, rawQuery = ""] = pathAndQuery.split("?", 2);
+  if (/^\/guided-projects(?:\/[^/?#]+)?$/.test(rawPath)) {
+    const query = new URLSearchParams(rawQuery);
+    query.delete("project");
+    return `/guided-projects/${projectId}${query.size ? `?${query.toString()}` : ""}${hash ? `#${hash}` : ""}`;
+  }
+  const query = new URLSearchParams(rawQuery);
+  query.delete("project");
+  query.set("projectId", projectId);
+  return `${rawPath}?${query.toString()}${hash ? `#${hash}` : ""}`;
 }
 
 function taskPhase(task: GuidedExecutionTask) {
@@ -92,27 +98,22 @@ function savedPageOptimization(task: GuidedExecutionTask): PageOptimization | nu
   return typeof optimization.keyword === "string" && optimization.proposed && typeof optimization.proposed === "object" && Array.isArray(optimization.sections) ? optimization as PageOptimization : null;
 }
 
-function isSeoPlanTask(task: GuidedExecutionTask) {
-  return /create seo plan/i.test(`${task.title} ${task.actionButtonLabel ?? ""}`);
+function executionTaskTitle(task: GuidedExecutionTask) {
+  return contentPlanTitle(task);
 }
 
-function savedSeoPlan(task: GuidedExecutionTask): SeoPlan | null {
-  const value = task.approvalSnapshotJson?.seoPlan;
-  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
-  const plan = value as Partial<SeoPlan>;
-  return typeof plan.summary === "string" && Array.isArray(plan.objectives) && Array.isArray(plan.keywordPriorities) && plan.phases && typeof plan.phases === "object" ? plan as SeoPlan : null;
-}
-
-function lines(value: string) {
-  return value.split("\n").map((item) => item.trim()).filter(Boolean);
+function executionTaskDescription(task: GuidedExecutionTask) {
+  return contentPlanDescription(task);
 }
 
 function taskDisplayKey(task: GuidedExecutionTask) {
+  if (isContentPlanTask(task)) return `${task.projectId ?? "project"}:seo-page-map-content-plan`;
   const generatedRankingWork = task.sourceType === "keyword_research_run" && /ranking plan/i.test(task.title) || task.sourceType.startsWith("ranking_plan_");
   return generatedRankingWork ? `${task.projectId ?? "project"}:${task.sourceType}:${task.title.toLowerCase().replace(/\s+/g, " ").trim()}` : task.id;
 }
 
 function preferredTask(left: GuidedExecutionTask, right: GuidedExecutionTask) {
+  if (isContentPlanTask(left) && isContentPlanTask(right)) return preferredContentPlanTask(left, right);
   const rank = (task: GuidedExecutionTask) => closedStatuses.has(task.status) ? 4 : task.status === "in_progress" ? 3 : task.status === "needs_review" ? 2 : 1;
   return rank(right) > rank(left) ? right : left;
 }
@@ -140,14 +141,18 @@ export default function ProjectExecutionBar({ project, tasks: suppliedTasks, not
   const [pageOptimizationError, setPageOptimizationError] = useState("");
   const [pageOptimizationEvidence, setPageOptimizationEvidence] = useState("");
   const pageOptimizationReadOnly = Boolean(pageOptimizationTask && closedStatuses.has(pageOptimizationTask.status));
-  const [seoPlanTask, setSeoPlanTask] = useState<GuidedExecutionTask | null>(null);
-  const [seoPlanDraft, setSeoPlanDraft] = useState<SeoPlan | null>(null);
-  const [seoPlanBusy, setSeoPlanBusy] = useState(false);
-  const [seoPlanError, setSeoPlanError] = useState("");
-  const seoPlanReadOnly = Boolean(seoPlanTask && closedStatuses.has(seoPlanTask.status));
+  const [contentPlanTask, setContentPlanTask] = useState<GuidedExecutionTask | null>(null);
   const planTasks = project.executionPlans?.flatMap((plan) => plan.tasks ?? []) ?? [];
   const tasks = Array.from([...(suppliedTasks ?? planTasks), ...inboxTasks].reduce((map, rawTask) => {
-    const task = taskOverrides[rawTask.id] ? { ...rawTask, ...taskOverrides[rawTask.id] } : rawTask;
+    const storedTask = taskOverrides[rawTask.id] ? { ...rawTask, ...taskOverrides[rawTask.id] } : rawTask;
+    const task = isContentPlanTask(storedTask) ? {
+      ...storedTask,
+      title: "SEO Page Map & Content Plan",
+      description: executionTaskDescription(storedTask),
+      expectedOutcome: "A reviewed page map with one owner per intent, build-ready SEO briefs, and a clear handoff to AI content creation.",
+      actionButtonLabel: contentPlanActionLabel(storedTask),
+      relatedUrl: projectScopedHref(storedTask.relatedUrl, project.id),
+    } : { ...storedTask, relatedUrl: projectScopedHref(storedTask.relatedUrl, project.id) };
     const key = taskDisplayKey(task);
     const existing = map.get(key);
     map.set(key, existing ? preferredTask(existing, task) : task);
@@ -274,35 +279,14 @@ export default function ProjectExecutionBar({ project, tasks: suppliedTasks, not
       setPageOptimizationBusy(false);
     }
   };
-  const prepareSeoPlan = async (task: GuidedExecutionTask) => {
-    setSeoPlanBusy(true);
-    setSeoPlanError("");
+  const openContentPlan = async (task: GuidedExecutionTask) => {
+    setOpen(false);
     try {
-      const result = await api.post<{ task: GuidedExecutionTask; plan: SeoPlan }>(`/api/execution-tasks/${task.id}/seo-plan/prepare`, {});
-      setTaskOverrides((current) => ({ ...current, [task.id]: { ...task, ...result.task } }));
-      setSeoPlanTask({ ...task, ...result.task });
-      setSeoPlanDraft(result.plan);
-    } catch (error) {
-      setTaskMessage(error instanceof Error ? error.message : "The SEO plan could not be prepared.");
-    } finally {
-      setSeoPlanBusy(false);
-    }
-  };
-  const confirmSeoPlan = async () => {
-    if (!seoPlanTask || !seoPlanDraft) return;
-    setSeoPlanBusy(true);
-    setSeoPlanError("");
-    try {
-      const result = await api.post<{ task: GuidedExecutionTask; tasks: GuidedExecutionTask[]; childTaskCount: number }>(`/api/execution-tasks/${seoPlanTask.id}/seo-plan/confirm`, { plan: seoPlanDraft });
-      setTaskOverrides((current) => ({ ...current, [seoPlanTask.id]: { ...seoPlanTask, ...result.task } }));
-      setInboxTasks(result.tasks);
-      setTaskMessage(`SEO plan saved. ${result.childTaskCount} execution tasks are ready.`);
-      setSeoPlanTask(null);
-      setSeoPlanDraft(null);
-    } catch (error) {
-      setSeoPlanError(error instanceof Error ? error.message : "The SEO plan could not be saved.");
-    } finally {
-      setSeoPlanBusy(false);
+      const result = await api.post<{ task: GuidedExecutionTask; created: boolean }>(`/api/projects/${project.id}/seo-plan/task`, {});
+      setTaskOverrides((current) => ({ ...current, [result.task.id]: result.task }));
+      setContentPlanTask(result.task);
+    } catch {
+      setContentPlanTask(task);
     }
   };
   useEffect(() => { setTaskPage(1); }, [filter, taskSearch]);
@@ -356,47 +340,34 @@ export default function ProjectExecutionBar({ project, tasks: suppliedTasks, not
             <div className="flex flex-wrap items-end justify-between gap-3"><div><div className="text-xs font-black uppercase tracking-wide text-charcoal-400">Project action progress</div><div className="mt-1 text-lg font-black text-charcoal-950">{completionPercent}% complete</div></div><div className="flex flex-wrap gap-3 text-xs"><span className="font-bold text-charcoal-700">{tasks.length} total</span><span className="font-bold text-emerald-700">{finished.length} finished</span><span className="font-bold text-amber-700">{pending.length} pending</span>{blocked.length > 0 && <span className="font-bold text-red-700">{blocked.length} blocked</span>}</div></div>
             <div className="mt-3 h-2.5 overflow-hidden rounded-full bg-slate-200"><div className="h-full rounded-full bg-gradient-to-r from-brand-500 to-emerald-500 transition-all" style={{ width: `${completionPercent}%` }} /></div>
           </div>
-          {(decision || next) && filter === "all" && <div className="rounded-xl border border-brand-200 bg-brand-50 p-4"><div className="flex items-start justify-between gap-3"><div><div className="text-xs font-bold uppercase tracking-wide text-brand-700">Next Best Action</div><h3 className="mt-2 text-lg font-bold text-charcoal-950">{decision?.title || next?.title}</h3></div>{decision && <div className="shrink-0 rounded-lg bg-white px-3 py-2 text-center shadow-sm"><b className="text-lg text-brand-700">{decision.score}</b><span className="block text-[10px] font-bold uppercase text-charcoal-400">Decision score</span></div>}</div><p className="mt-2 text-sm leading-6 text-charcoal-600">{decision?.reason || next?.description}</p><p className="mt-2 text-sm font-semibold text-brand-800">Expected outcome: {decision?.expectedOutcome || next?.expectedOutcome || next?.impact || next?.description}</p>{decision?.signals?.length ? <div className="mt-3 flex flex-wrap gap-2">{decision.signals.filter((item) => item.key !== "priority").slice(0, 4).map((item) => <span key={item.key} title={item.evidence} className="rounded-full bg-white px-2.5 py-1 text-[11px] font-bold text-charcoal-600">{item.label} +{item.contribution}</span>)}</div> : null}{nextActionTask && isSeoPlanTask(nextActionTask) ? <button type="button" disabled={seoPlanBusy} onClick={() => void prepareSeoPlan(nextActionTask)} className="mt-4 inline-flex rounded-lg bg-brand-600 px-4 py-2.5 text-sm font-bold text-white disabled:bg-slate-300">{seoPlanBusy ? "Building plan…" : "Create SEO Plan →"}</button> : (decision?.actionUrl || next?.relatedUrl) && <Link to={decision?.actionUrl || next!.relatedUrl!} onClick={() => setOpen(false)} className="mt-4 inline-flex rounded-lg bg-brand-600 px-4 py-2.5 text-sm font-bold text-white">{decision?.actionLabel || next?.actionButtonLabel || "Open Task"} →</Link>}</div>}
+          {(decision || next) && filter === "all" && <div className="rounded-xl border border-brand-200 bg-brand-50 p-4"><div className="flex items-start justify-between gap-3"><div><div className="text-xs font-bold uppercase tracking-wide text-brand-700">Next Best Action</div><h3 className="mt-2 text-lg font-bold text-charcoal-950">{nextActionTask ? executionTaskTitle(nextActionTask) : decision?.title || next?.title}</h3></div>{decision && <div className="shrink-0 rounded-lg bg-white px-3 py-2 text-center shadow-sm"><b className="text-lg text-brand-700">{decision.score}</b><span className="block text-[10px] font-bold uppercase text-charcoal-400">Decision score</span></div>}</div><p className="mt-2 text-sm leading-6 text-charcoal-600">{nextActionTask && isContentPlanTask(nextActionTask) ? executionTaskDescription(nextActionTask) : decision?.reason || next?.description}</p><p className="mt-2 text-sm font-semibold text-brand-800">Expected outcome: {nextActionTask?.expectedOutcome || decision?.expectedOutcome || next?.expectedOutcome || next?.impact || next?.description}</p>{decision?.signals?.length ? <div className="mt-3 flex flex-wrap gap-2">{decision.signals.filter((item) => item.key !== "priority").slice(0, 4).map((item) => <span key={item.key} title={item.evidence} className="rounded-full bg-white px-2.5 py-1 text-[11px] font-bold text-charcoal-600">{item.label} +{item.contribution}</span>)}</div> : null}{nextActionTask && isContentPlanTask(nextActionTask) ? <button type="button" onClick={() => openContentPlan(nextActionTask)} className="mt-4 inline-flex rounded-lg bg-brand-600 px-4 py-2.5 text-sm font-bold text-white">{contentPlanActionLabel(nextActionTask)} →</button> : (decision?.actionUrl || next?.relatedUrl) && <Link to={projectScopedHref(decision?.actionUrl || next!.relatedUrl!, project.id)!} onClick={() => setOpen(false)} className="mt-4 inline-flex rounded-lg bg-brand-600 px-4 py-2.5 text-sm font-bold text-white">{decision?.actionLabel || next?.actionButtonLabel || "Open Task"} →</Link>}</div>}
           <div className="mt-4 flex gap-1 overflow-x-auto rounded-lg border border-slate-200 bg-slate-50 p-1" aria-label="Pending tasks by execution group">{primaryFilterOptions.map(([key, label, count]) => <button key={key} type="button" onClick={() => setFilter(key)} className={`inline-flex shrink-0 items-center rounded-md px-3 py-2 text-xs font-bold transition ${filter === key ? "bg-brand-600 text-white shadow-sm" : count > 0 ? "text-charcoal-700 hover:bg-white hover:text-brand-700" : "text-charcoal-400"}`}>{label} <span className="ml-1">{count}</span></button>)}</div>
           <div className="mt-4 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between"><div><div className="text-sm font-black text-charcoal-900">Actual action items</div><div className="text-xs text-charcoal-500">Showing {matchingTasks.length} task{matchingTasks.length === 1 ? "" : "s"} in this view{loadingInbox ? " · loading project sources…" : ""}</div></div><input value={taskSearch} onChange={(event) => setTaskSearch(event.target.value)} placeholder="Search tasks, pages, keywords…" className="h-9 w-full rounded-lg border border-slate-200 bg-white px-3 text-sm outline-none focus:border-brand-400 focus:ring-2 focus:ring-brand-100 sm:w-64" /></div>
           {filter === "all" && sourceSummaries.length > 0 && <div className="mt-5 space-y-3">
-            {sourceSummaries.filter((summary) => ["site_analysis", "keyword_research", "domain", "site_architect"].includes(summary.key)).map((summary) => <div key={summary.key} className="rounded-xl border border-slate-200 bg-white p-4"><div className="flex items-center justify-between gap-3"><div><div className="font-bold text-charcoal-900">{summary.label}</div><div className="mt-0.5 text-xs text-charcoal-500">Combined source activity behind the Execution Plan</div></div><Link to={summary.actionUrl} onClick={() => setOpen(false)} className="shrink-0 text-xs font-bold text-brand-700">Review all {summary.total} →</Link></div><div className="mt-3 grid grid-cols-3 gap-2 sm:grid-cols-5">{summary.metrics.map((metric) => <div key={metric.label} className="rounded-md border border-slate-200 bg-slate-50 px-2.5 py-2"><div className="text-[9px] font-black uppercase tracking-wide text-charcoal-400">{metric.label}</div><div className="mt-0.5 text-lg font-black text-charcoal-800">{metric.value}</div></div>)}</div></div>)}
+            {sourceSummaries.filter((summary) => ["site_analysis", "keyword_research", "domain", "site_architect"].includes(summary.key)).map((summary) => <div key={summary.key} className="rounded-xl border border-slate-200 bg-white p-4"><div className="flex items-center justify-between gap-3"><div><div className="font-bold text-charcoal-900">{summary.label}</div><div className="mt-0.5 text-xs text-charcoal-500">Combined source activity behind the Execution Plan</div></div><Link to={projectScopedHref(summary.actionUrl, project.id)!} onClick={() => setOpen(false)} className="shrink-0 text-xs font-bold text-brand-700">Review all {summary.total} →</Link></div><div className="mt-3 grid grid-cols-3 gap-2 sm:grid-cols-5">{summary.metrics.map((metric) => <div key={metric.label} className="rounded-md border border-slate-200 bg-slate-50 px-2.5 py-2"><div className="text-[9px] font-black uppercase tracking-wide text-charcoal-400">{metric.label}</div><div className="mt-0.5 text-lg font-black text-charcoal-800">{metric.value}</div></div>)}</div></div>)}
           </div>}
-          {filter === "notifications" || filter === "all" ? <div className="mt-5 space-y-3">{notifications.map((notification) => <div key={notification.id} className={`rounded-xl border p-4 ${notification.readAt ? "border-slate-200 bg-white" : "border-blue-200 bg-blue-50/60"}`}><div className="flex items-start gap-3"><span className={`mt-1 h-2.5 w-2.5 shrink-0 rounded-full ${notification.readAt ? "bg-slate-300" : "bg-blue-500"}`} /><div className="min-w-0 flex-1"><div className="font-bold text-charcoal-900">{notification.title}</div><p className="mt-1 text-sm leading-5 text-charcoal-500">{notification.body}</p><div className="mt-2 flex items-center gap-3 text-xs"><span className="font-semibold text-charcoal-400">{notification.type.replace(/_/g, " ")}</span>{notification.actionUrl && <Link to={notification.actionUrl} onClick={() => setOpen(false)} className="font-bold text-brand-700">Open →</Link>}</div></div></div></div>)}</div> : null}
+          {filter === "notifications" || filter === "all" ? <div className="mt-5 space-y-3">{notifications.map((notification) => <div key={notification.id} className={`rounded-xl border p-4 ${notification.readAt ? "border-slate-200 bg-white" : "border-blue-200 bg-blue-50/60"}`}><div className="flex items-start gap-3"><span className={`mt-1 h-2.5 w-2.5 shrink-0 rounded-full ${notification.readAt ? "bg-slate-300" : "bg-blue-500"}`} /><div className="min-w-0 flex-1"><div className="font-bold text-charcoal-900">{notification.title}</div><p className="mt-1 text-sm leading-5 text-charcoal-500">{notification.body}</p><div className="mt-2 flex items-center gap-3 text-xs"><span className="font-semibold text-charcoal-400">{notification.type.replace(/_/g, " ")}</span>{notification.actionUrl && <Link to={projectScopedHref(notification.actionUrl, project.id)!} onClick={() => setOpen(false)} className="font-bold text-brand-700">Open →</Link>}</div></div></div></div>)}</div> : null}
           {filter !== "notifications" && <div className="mt-3 space-y-3">{pagedTasks.map((task) => {
             const dependencies = unresolved(task);
             const needsApproval = task.requiresApproval && !task.approvedAt;
             const completeDisabled = busyTaskId === task.id || dependencies.length > 0;
-            return <div key={task.id} className="rounded-xl border border-slate-200 p-4"><div className="flex items-start justify-between gap-3"><div>{task.moduleName === "strategy_intelligence" && <div className="mb-1 text-[10px] font-bold uppercase tracking-wide text-violet-700">Strategy Intelligence</div>}<div className="font-bold text-charcoal-900">{task.title}</div><p className="mt-1 text-sm leading-5 text-charcoal-500">{task.description}</p>{task.expectedOutcome && <p className="mt-2 text-xs font-semibold leading-5 text-brand-800">Expected outcome: {task.expectedOutcome}</p>}{task.manualInstructions && <div className="mt-2 rounded-lg bg-slate-50 px-3 py-2"><div className="text-[10px] font-black uppercase tracking-wide text-charcoal-400">How to complete it</div><p className="mt-1 text-xs leading-5 text-charcoal-600">{task.manualInstructions}</p></div>}</div><span className={`rounded-full px-2.5 py-1 text-[11px] font-bold ${task.priority === "critical" ? "bg-red-100 text-red-700" : task.priority === "high" ? "bg-amber-100 text-amber-700" : "bg-slate-100 text-charcoal-600"}`}>{task.priority}</span></div><div className="mt-3 flex flex-wrap gap-2 text-xs"><span className="rounded-full bg-slate-50 px-2 py-1 font-semibold">{task.status.replace(/_/g, " ")}</span><span className="rounded-full bg-slate-50 px-2 py-1 font-semibold">{automationLabel(task.automationLevel)}</span>{task.requiresApproval && <span className="rounded-full bg-violet-50 px-2 py-1 font-semibold text-violet-700">Approval required</span>}{dependencies.length > 0 && <span className="rounded-full bg-amber-50 px-2 py-1 font-semibold text-amber-700">Blocked by {dependencies.length}</span>}</div>{!closedStatuses.has(task.status) && <div className="mt-4 flex flex-wrap justify-end gap-2 border-t border-slate-100 pt-3">{task.relatedUrl && !isRankingPlanTask(task) && !isPageOptimizationTask(task) && !isSeoPlanTask(task) && <Link to={task.relatedUrl} onClick={() => setOpen(false)} className="inline-flex items-center rounded-lg border border-brand-200 bg-white px-3 py-2 text-xs font-bold text-brand-700 hover:bg-brand-50">View details</Link>}{needsApproval ? <Link to={`/approvals?projectId=${project.id}`} onClick={() => setOpen(false)} className="inline-flex items-center rounded-lg bg-violet-600 px-3 py-2 text-xs font-bold text-white hover:bg-violet-700">Review approval</Link> : isSeoPlanTask(task) ? <button type="button" disabled={seoPlanBusy || dependencies.length > 0} onClick={() => void prepareSeoPlan(task)} className="inline-flex items-center rounded-lg bg-brand-600 px-3 py-2 text-xs font-bold text-white hover:bg-brand-700 disabled:cursor-not-allowed disabled:bg-slate-300">{seoPlanBusy && seoPlanTask?.id === task.id ? "Building plan…" : task.status === "in_progress" ? "Review SEO Plan" : "Create SEO Plan"}</button> : isRankingPlanTask(task) ? <button type="button" disabled={rankingPlanBusy || dependencies.length > 0} onClick={() => void prepareRankingPlan(task)} className="inline-flex items-center rounded-lg bg-brand-600 px-3 py-2 text-xs font-bold text-white hover:bg-brand-700 disabled:cursor-not-allowed disabled:bg-slate-300">{rankingPlanBusy && rankingPlanTask?.id === task.id ? "Building plan…" : task.status === "in_progress" ? "Review Ranking Plan" : "Build Ranking Plan"}</button> : isPageOptimizationTask(task) ? <button type="button" disabled={pageOptimizationBusy || dependencies.length > 0} onClick={() => void preparePageOptimization(task)} className="inline-flex items-center rounded-lg bg-brand-600 px-3 py-2 text-xs font-bold text-white hover:bg-brand-700 disabled:cursor-not-allowed disabled:bg-slate-300">{task.status === "in_progress" ? "Review & Apply" : "Prepare Page Optimization"}</button> : <button type="button" disabled={completeDisabled} onClick={() => void completeTask(task)} title={dependencies.length ? `Complete first: ${dependencies.map((item) => item.requiredTask.title).join(", ")}` : "Mark this task complete"} className="inline-flex items-center rounded-lg bg-brand-600 px-3 py-2 text-xs font-bold text-white hover:bg-brand-700 disabled:cursor-not-allowed disabled:bg-slate-300">{busyTaskId === task.id ? "Completing…" : dependencies.length ? "Dependency required" : "Mark complete"}</button>}</div>}{closedStatuses.has(task.status) && isSeoPlanTask(task) && savedSeoPlan(task) && <div className="mt-4 flex justify-end border-t border-slate-100 pt-3"><button type="button" onClick={() => { setSeoPlanTask(task); setSeoPlanDraft(savedSeoPlan(task)); setSeoPlanError(""); }} className="rounded-lg border border-brand-200 bg-white px-3 py-2 text-xs font-bold text-brand-700 hover:bg-brand-50">View SEO Plan</button></div>}{closedStatuses.has(task.status) && isRankingPlanTask(task) && savedRankingPlan(task) && <div className="mt-4 flex justify-end border-t border-slate-100 pt-3"><button type="button" onClick={() => { setRankingPlanTask(task); setRankingPlanDraft(savedRankingPlan(task)); setRankingPlanError(""); }} className="rounded-lg border border-brand-200 bg-white px-3 py-2 text-xs font-bold text-brand-700 hover:bg-brand-50">View Ranking Plan</button></div>}{closedStatuses.has(task.status) && isPageOptimizationTask(task) && savedPageOptimization(task) && <div className="mt-4 flex justify-end border-t border-slate-100 pt-3"><button type="button" onClick={() => { setPageOptimizationTask(task); setPageOptimizationDraft(savedPageOptimization(task)); setPageOptimizationError(""); }} className="rounded-lg border border-brand-200 bg-white px-3 py-2 text-xs font-bold text-brand-700 hover:bg-brand-50">View Page Optimization</button></div>}</div>;
+            return <div key={task.id} className="rounded-xl border border-slate-200 p-4"><div className="flex items-start justify-between gap-3"><div>{task.moduleName === "strategy_intelligence" && <div className="mb-1 text-[10px] font-bold uppercase tracking-wide text-violet-700">Strategy Intelligence</div>}<div className="font-bold text-charcoal-900">{executionTaskTitle(task)}</div><p className="mt-1 text-sm leading-5 text-charcoal-500">{executionTaskDescription(task)}</p>{task.expectedOutcome && <p className="mt-2 text-xs font-semibold text-brand-800">Expected outcome: {task.expectedOutcome}</p>}{task.manualInstructions && <div className="mt-2 rounded-lg bg-slate-50 px-3 py-2"><div className="text-[10px] font-black uppercase tracking-wide text-charcoal-400">How to complete it</div><p className="mt-1 text-xs leading-5 text-charcoal-600">{task.manualInstructions}</p></div>}</div><span className={`rounded-full px-2.5 py-1 text-[11px] font-bold ${task.priority === "critical" ? "bg-red-100 text-red-700" : task.priority === "high" ? "bg-amber-100 text-amber-700" : "bg-slate-100 text-charcoal-600"}`}>{task.priority}</span></div><div className="mt-3 flex flex-wrap gap-2 text-xs"><span className="rounded-full bg-slate-50 px-2 py-1 font-semibold">{task.status.replace(/_/g, " ")}</span><span className="rounded-full bg-slate-50 px-2 py-1 font-semibold">{automationLabel(task.automationLevel)}</span>{task.requiresApproval && <span className="rounded-full bg-violet-50 px-2 py-1 font-semibold text-violet-700">Approval required</span>}{dependencies.length > 0 && <span className="rounded-full bg-amber-50 px-2 py-1 font-semibold text-amber-700">Blocked by {dependencies.length}</span>}</div>{!closedStatuses.has(task.status) && <div className="mt-4 flex flex-wrap justify-end gap-2 border-t border-slate-100 pt-3">{task.relatedUrl && !isRankingPlanTask(task) && !isPageOptimizationTask(task) && !isContentPlanTask(task) && <Link to={task.relatedUrl} onClick={() => setOpen(false)} className="inline-flex items-center rounded-lg border border-brand-200 bg-white px-3 py-2 text-xs font-bold text-brand-700 hover:bg-brand-50">View details</Link>}{needsApproval ? <Link to={`/approvals?projectId=${project.id}`} onClick={() => setOpen(false)} className="inline-flex items-center rounded-lg bg-violet-600 px-3 py-2 text-xs font-bold text-white hover:bg-violet-700">Review approval</Link> : isContentPlanTask(task) ? <button type="button" disabled={dependencies.length > 0} onClick={() => openContentPlan(task)} className="inline-flex items-center rounded-lg bg-brand-600 px-3 py-2 text-xs font-bold text-white hover:bg-brand-700 disabled:cursor-not-allowed disabled:bg-slate-300">{contentPlanActionLabel(task)}</button> : isRankingPlanTask(task) ? <button type="button" disabled={rankingPlanBusy || dependencies.length > 0} onClick={() => void prepareRankingPlan(task)} className="inline-flex items-center rounded-lg bg-brand-600 px-3 py-2 text-xs font-bold text-white hover:bg-brand-700 disabled:cursor-not-allowed disabled:bg-slate-300">{rankingPlanBusy && rankingPlanTask?.id === task.id ? "Building plan…" : task.status === "in_progress" ? "Review Ranking Plan" : "Build Ranking Plan"}</button> : isPageOptimizationTask(task) ? <button type="button" disabled={pageOptimizationBusy || dependencies.length > 0} onClick={() => void preparePageOptimization(task)} className="inline-flex items-center rounded-lg bg-brand-600 px-3 py-2 text-xs font-bold text-white hover:bg-brand-700 disabled:cursor-not-allowed disabled:bg-slate-300">{task.status === "in_progress" ? "Review & Apply" : "Prepare Page Optimization"}</button> : <button type="button" disabled={completeDisabled} onClick={() => void completeTask(task)} title={dependencies.length ? `Complete first: ${dependencies.map((item) => item.requiredTask.title).join(", ")}` : "Mark this task complete"} className="inline-flex items-center rounded-lg bg-brand-600 px-3 py-2 text-xs font-bold text-white hover:bg-brand-700 disabled:cursor-not-allowed disabled:bg-slate-300">{busyTaskId === task.id ? "Completing…" : dependencies.length ? "Dependency required" : "Mark complete"}</button>}</div>}{closedStatuses.has(task.status) && isContentPlanTask(task) && <div className="mt-4 flex justify-end border-t border-slate-100 pt-3"><button type="button" onClick={() => openContentPlan(task)} className="rounded-lg border border-brand-200 bg-white px-3 py-2 text-xs font-bold text-brand-700 hover:bg-brand-50">{contentPlanActionLabel(task)}</button></div>}{closedStatuses.has(task.status) && isRankingPlanTask(task) && savedRankingPlan(task) && <div className="mt-4 flex justify-end border-t border-slate-100 pt-3"><button type="button" onClick={() => { setRankingPlanTask(task); setRankingPlanDraft(savedRankingPlan(task)); setRankingPlanError(""); }} className="rounded-lg border border-brand-200 bg-white px-3 py-2 text-xs font-bold text-brand-700 hover:bg-brand-50">View Ranking Plan</button></div>}{closedStatuses.has(task.status) && isPageOptimizationTask(task) && savedPageOptimization(task) && <div className="mt-4 flex justify-end border-t border-slate-100 pt-3"><button type="button" onClick={() => { setPageOptimizationTask(task); setPageOptimizationDraft(savedPageOptimization(task)); setPageOptimizationError(""); }} className="rounded-lg border border-brand-200 bg-white px-3 py-2 text-xs font-bold text-brand-700 hover:bg-brand-50">View Page Optimization</button></div>}</div>;
           })}{matchingTasks.length === 0 && <div className="rounded-xl border border-dashed border-emerald-200 bg-emerald-50 px-5 py-8 text-center"><div className="font-bold text-emerald-800">No tasks in this view</div><p className="mt-1 text-sm text-emerald-700">Try another group or clear the task search.</p></div>}{matchingTasks.length > taskPageSize && <div className="flex items-center justify-between rounded-lg border border-slate-200 bg-slate-50 px-3 py-2"><button type="button" disabled={effectiveTaskPage <= 1} onClick={() => setTaskPage((page) => Math.max(1, page - 1))} className="rounded-md border border-slate-200 bg-white px-3 py-1.5 text-xs font-bold text-charcoal-700 disabled:opacity-40">Previous</button><span className="text-xs font-bold text-charcoal-500">Page {effectiveTaskPage} of {taskPageCount}</span><button type="button" disabled={effectiveTaskPage >= taskPageCount} onClick={() => setTaskPage((page) => Math.min(taskPageCount, page + 1))} className="rounded-md border border-slate-200 bg-white px-3 py-1.5 text-xs font-bold text-charcoal-700 disabled:opacity-40">Next</button></div>}</div>}
           <details className="mt-5 border-t border-slate-200 pt-4"><summary className="cursor-pointer text-xs font-bold text-charcoal-500 hover:text-brand-700">More task views</summary><div className="mt-3 flex flex-wrap gap-2">{secondaryFilterOptions.map(([key, label, count]) => <button key={key} type="button" onClick={() => setFilter(key)} className={`inline-flex items-center rounded-full border px-3 py-1.5 text-xs font-bold ${filter === key ? "border-brand-600 bg-brand-600 text-white" : "border-slate-200 bg-white text-charcoal-600"}`}>{label} <span className="ml-1">{count}</span></button>)}</div></details>
         </div>
         <div className="border-t border-slate-200 bg-slate-50 px-5 py-4"><Link to={`/guided-projects/${project.id}?tab=execution#execution-tasks`} onClick={() => setOpen(false)} className="inline-flex w-full items-center justify-center rounded-lg bg-brand-600 px-4 py-2.5 text-sm font-bold text-white">Open Full Execution Workspace</Link></div>
       </aside>
     </div>}
-    {seoPlanTask && seoPlanDraft && <div className="fixed inset-0 z-[90] grid place-items-center bg-slate-950/55 p-3 sm:p-6" role="dialog" aria-modal="true" aria-label="Create SEO plan">
-      <div className="flex max-h-[92vh] w-full max-w-6xl flex-col overflow-hidden rounded-2xl bg-white shadow-2xl">
-        <div className="flex items-start justify-between gap-4 border-b border-slate-200 bg-gradient-to-r from-brand-50 via-white to-emerald-50 px-5 py-4"><div><div className="text-xs font-black uppercase tracking-wide text-brand-700">Project-wide guided plan</div><h2 className="mt-1 text-xl font-black text-charcoal-950">Create SEO Plan</h2><p className="mt-1 text-sm text-charcoal-500">Built from intake, approved keywords, Strategy, target markets, and the latest crawl evidence.</p></div><button type="button" onClick={() => { setSeoPlanTask(null); setSeoPlanDraft(null); setSeoPlanError(""); }} className="grid h-9 w-9 place-items-center rounded-lg border border-slate-200 bg-white text-lg text-slate-500">×</button></div>
-        <fieldset disabled={seoPlanReadOnly} className="flex-1 overflow-y-auto p-5 disabled:opacity-90">
-          {seoPlanError && <div className="mb-4 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm font-semibold text-red-700">{seoPlanError}</div>}
-          <div className="grid gap-4 lg:grid-cols-[1.15fr_.85fr]">
-            <div className="space-y-4">
-              <label className="block text-xs font-bold text-charcoal-600">Executive SEO direction<textarea value={seoPlanDraft.summary} onChange={(event) => setSeoPlanDraft({ ...seoPlanDraft, summary: event.target.value })} rows={5} className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm leading-6 outline-none focus:border-brand-400" /></label>
-              <div className="grid gap-4 sm:grid-cols-2"><label className="block text-xs font-bold text-charcoal-600">Business objectives · one per line<textarea value={seoPlanDraft.objectives.join("\n")} onChange={(event) => setSeoPlanDraft({ ...seoPlanDraft, objectives: lines(event.target.value) })} rows={5} className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm leading-6" /></label><label className="block text-xs font-bold text-charcoal-600">Priority keywords · one per line<textarea value={seoPlanDraft.keywordPriorities.join("\n")} onChange={(event) => setSeoPlanDraft({ ...seoPlanDraft, keywordPriorities: lines(event.target.value) })} rows={5} className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm leading-6" /></label></div>
-              <label className="block text-xs font-bold text-charcoal-600">Technical SEO priorities<textarea value={seoPlanDraft.technicalPriorities.join("\n")} onChange={(event) => setSeoPlanDraft({ ...seoPlanDraft, technicalPriorities: lines(event.target.value) })} rows={6} className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm leading-6" /></label>
-              <label className="block text-xs font-bold text-charcoal-600">Content and page roadmap<textarea value={seoPlanDraft.contentRoadmap.join("\n")} onChange={(event) => setSeoPlanDraft({ ...seoPlanDraft, contentRoadmap: lines(event.target.value) })} rows={7} className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm leading-6" /></label>
-            </div>
-            <div className="space-y-4">
-              <div className="rounded-xl border border-brand-200 bg-brand-50/60 p-4"><div className="text-xs font-black uppercase tracking-wide text-brand-700">90-day execution order</div><div className="mt-3 space-y-3"><label className="block text-xs font-bold text-charcoal-600">Now · highest priority<textarea value={seoPlanDraft.phases.now.join("\n")} onChange={(event) => setSeoPlanDraft({ ...seoPlanDraft, phases: { ...seoPlanDraft.phases, now: lines(event.target.value) } })} rows={4} className="mt-1 w-full rounded-lg border border-brand-100 bg-white px-3 py-2 text-sm leading-5" /></label><label className="block text-xs font-bold text-charcoal-600">Next<textarea value={seoPlanDraft.phases.next.join("\n")} onChange={(event) => setSeoPlanDraft({ ...seoPlanDraft, phases: { ...seoPlanDraft.phases, next: lines(event.target.value) } })} rows={4} className="mt-1 w-full rounded-lg border border-brand-100 bg-white px-3 py-2 text-sm leading-5" /></label><label className="block text-xs font-bold text-charcoal-600">Later<textarea value={seoPlanDraft.phases.later.join("\n")} onChange={(event) => setSeoPlanDraft({ ...seoPlanDraft, phases: { ...seoPlanDraft.phases, later: lines(event.target.value) } })} rows={4} className="mt-1 w-full rounded-lg border border-brand-100 bg-white px-3 py-2 text-sm leading-5" /></label></div></div>
-              <label className="block text-xs font-bold text-charcoal-600">Local SEO actions<textarea value={seoPlanDraft.localSeoActions.join("\n")} onChange={(event) => setSeoPlanDraft({ ...seoPlanDraft, localSeoActions: lines(event.target.value) })} rows={4} placeholder="Not applicable when the project has no local-market requirement." className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm leading-5" /></label>
-              <label className="block text-xs font-bold text-charcoal-600">Authority and AI visibility<textarea value={seoPlanDraft.authorityActions.join("\n")} onChange={(event) => setSeoPlanDraft({ ...seoPlanDraft, authorityActions: lines(event.target.value) })} rows={4} className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm leading-5" /></label>
-              <label className="block text-xs font-bold text-charcoal-600">Success metrics<textarea value={seoPlanDraft.kpis.join("\n")} onChange={(event) => setSeoPlanDraft({ ...seoPlanDraft, kpis: lines(event.target.value) })} rows={5} className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm leading-5" /></label>
-            </div>
-          </div>
-        </fieldset>
-        <div className="flex flex-wrap items-center justify-between gap-3 border-t border-slate-200 bg-white px-5 py-4"><p className="max-w-2xl text-xs text-charcoal-500">{seoPlanReadOnly ? "This confirmed plan remains available from Completed tasks. Its execution items are tracked in the Action Inbox." : "Review and edit the plan. Saving confirms it and creates five deduplicated execution tasks for technical SEO, keyword mapping, content, authority, and measurement."}</p><div className="flex gap-2"><button type="button" onClick={() => { setSeoPlanTask(null); setSeoPlanDraft(null); }} className="rounded-lg border border-slate-200 bg-white px-4 py-2.5 text-sm font-bold text-charcoal-700">{seoPlanReadOnly ? "Close" : "Cancel"}</button>{!seoPlanReadOnly && <button type="button" disabled={seoPlanBusy} onClick={() => void confirmSeoPlan()} className="rounded-lg bg-brand-600 px-4 py-2.5 text-sm font-bold text-white hover:bg-brand-700 disabled:bg-slate-300">{seoPlanBusy ? "Creating tasks…" : "Save SEO Plan & Create Tasks"}</button>}</div></div>
-      </div>
-    </div>}
+    {contentPlanTask && <ContentPlanDialog
+      task={contentPlanTask}
+      onClose={() => setContentPlanTask(null)}
+      onSaved={(savedTask) => {
+        setTaskOverrides((current) => ({ ...current, [savedTask.id]: savedTask }));
+        setInboxTasks((current) => current.map((task) => task.id === savedTask.id ? savedTask : task));
+        setContentPlanTask(savedTask);
+        setTaskMessage("SEO Page Map & Content Plan saved.");
+      }}
+    />}
     {rankingPlanTask && rankingPlanDraft && <div className="fixed inset-0 z-[90] grid place-items-center bg-slate-950/55 p-3 sm:p-6" role="dialog" aria-modal="true" aria-label="Build ranking plan">
       <div className="flex max-h-[92vh] w-full max-w-5xl flex-col overflow-hidden rounded-2xl bg-white shadow-2xl">
         <div className="flex items-start justify-between gap-4 border-b border-slate-200 bg-gradient-to-r from-brand-50 to-white px-5 py-4"><div><div className="text-xs font-black uppercase tracking-wide text-brand-700">SEnuke guided execution</div><h2 className="mt-1 text-xl font-black text-charcoal-950">Build Ranking Plan</h2><p className="mt-1 text-sm text-charcoal-500">Review the evidence and plan before SEnuke creates the actionable child tasks.</p></div><button type="button" onClick={() => { setRankingPlanTask(null); setRankingPlanDraft(null); setRankingPlanError(""); }} className="grid h-9 w-9 place-items-center rounded-lg border border-slate-200 bg-white text-lg text-slate-500">×</button></div>

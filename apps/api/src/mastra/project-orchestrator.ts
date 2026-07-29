@@ -93,8 +93,8 @@ export async function loadProjectAgentEvidence(projectId: string) {
     issues: { where: { status: "open" }, orderBy: [{ severity: "asc" }, { weightImpact: "desc" }], take: 30, select: { id: true, issueType: true, category: true, severity: true, message: true, recommendation: true, status: true, page: { select: { url: true, statusCode: true } } } },
     pages: { where: { OR: [{ statusCode: { gte: 400 } }, { fetchError: { not: null } }] }, take: 20, select: { id: true, url: true, statusCode: true, fetchError: true } },
   } }) : null;
-  const keywordResearchRuns = project.websiteId ? await prisma.keywordResearchRun.findMany({
-    where: { websiteId: project.websiteId },
+  const keywordResearchRuns = await prisma.keywordResearchRun.findMany({
+    where: { projectId: project.id },
     orderBy: { createdAt: "desc" },
     take: 50,
     select: {
@@ -116,7 +116,7 @@ export async function loadProjectAgentEvidence(projectId: string) {
       ideas: { orderBy: [{ avgMonthlySearches: "desc" }, { keyword: "asc" }], take: 12, select: { keyword: true, avgMonthlySearches: true, competition: true, competitionIndex: true, cpc: true } },
       competitors: { orderBy: { rank: "asc" }, take: 8, select: { rank: true, domain: true, title: true, contentScore: true } },
     },
-  }) : [];
+  });
   const activities = await prisma.workspaceActivity.findMany({ where: { projectId }, orderBy: { createdAt: "desc" }, take: 30, select: { id: true, action: true, entityType: true, previousJson: true, nextJson: true, metadataJson: true, createdAt: true } });
   return { project, latestCrawl, keywordResearchRuns, activities };
 }

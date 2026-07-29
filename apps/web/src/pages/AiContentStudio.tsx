@@ -1,9 +1,12 @@
 import { Fragment, useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { api } from "../api.js";
-import type { AiContentGeneration, AiContentStatus, AiGenerationType, GuidedProject, Website } from "../types.js";
+import type { AiContentGeneration, AiContentStatus, AiGenerationType, GuidedExecutionTask, GuidedProject, Website } from "../types.js";
 import { Button, Card, Input } from "../components/ui.js";
 import { getActiveProjectId, resolveActiveProjectId, setActiveProjectId } from "../active-project.js";
+import ContentGenerationControls from "../components/ContentGenerationControls.js";
+import { contentGenerationPrompt, type ContentGenerationMode } from "../content-generation.js";
+import { useApprovalRouting } from "../components/ApprovalRoutingDialog.js";
 
 const GENERATION_TYPES: { value: AiGenerationType; label: string; detail: string }[] = [
   { value: "article", label: "Article", detail: "Full article with SEO fields, FAQ, schema, and AI-search notes." },
@@ -28,6 +31,30 @@ function formatDate(value: string) {
 
 function groupedTopic(topic: string) {
   return topic.replace(/ - (H1|SEO title|FAQ|Page schema|SEO titles|Meta descriptions|FAQ section|Page schema) improvements$/i, "");
+}
+
+function suggestedTargetUrl(rootUrl: string | null | undefined, keyword: string) {
+  if (!rootUrl || !keyword) return "";
+  const slug = keyword.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+  return slug ? `${rootUrl.replace(/\/$/, "")}/${slug}` : "";
+}
+
+function contentTaskTitle(task: GuidedExecutionTask) {
+  return task.title
+    .replace(/^Update page content:\s*/i, "")
+    .replace(/^Create primary page:\s*/i, "Create page: ");
+}
+
+function scopedTaskInstructions(task: GuidedExecutionTask) {
+  const instructions = task.manualInstructions ?? "";
+  if (!instructions.includes("Approved brief context:")) return instructions;
+  const snapshot = task.approvalSnapshotJson && typeof task.approvalSnapshotJson === "object" ? task.approvalSnapshotJson as Record<string, unknown> : {};
+  const planning = snapshot.contentPlanning && typeof snapshot.contentPlanning === "object" ? snapshot.contentPlanning as Record<string, unknown> : {};
+  const keyword = typeof planning.keyword === "string" ? planning.keyword : task.title.match(/[“\"]([^”\"]+)[”\"]/)?.[1] ?? "";
+  const [beforeBriefs, afterBriefMarker] = instructions.split("Approved brief context:", 2);
+  const [briefBlock, afterBriefs = ""] = afterBriefMarker.split("\n\nFAQ requirements:", 2);
+  const matchingBriefs = briefBlock.split("\n").map((line) => line.trim()).filter((line) => line && keyword && line.toLowerCase().includes(keyword.toLowerCase()));
+  return `${beforeBriefs.trim()}\n\nApproved brief for this asset:\n${(matchingBriefs.length ? matchingBriefs : [task.description]).join("\n")}${afterBriefs ? `\n\nFAQ requirements:${afterBriefs}` : ""}`;
 }
 
 type GenerationGroup = {
@@ -79,7 +106,7 @@ function ResultViewer({ value }: { value: unknown }) {
       <div className="space-y-4">
         {articleHtml && (
           <div className="rounded-lg border border-charcoal-100 bg-white p-4">
-            <div className="mb-2 text-sm font-semibold text-charcoal-800">Article preview</div>
+            <div className="mb-2 text-sm font-semibold text-charcoal-800">Content preview</div>
             <div className="prose prose-sm max-w-none text-charcoal-700" dangerouslySetInnerHTML={{ __html: articleHtml }} />
           </div>
         )}
@@ -121,12 +148,36 @@ function TabbedResultViewer({
   onActiveChange: (id: string) => void;
 }) {
   const [copied, setCopied] = useState(false);
+  const [sectionTab, setSectionTab] = useState("preview");
+  const [exporting, setExporting] = useState<string | null>(null);
+  const [exportError, setExportError] = useState<string | null>(null);
   if (items.length === 0) return <ResultViewer value={null} />;
   const active = items.find((item) => item.id === activeId) ?? items[0];
+  const result = active.resultJson && typeof active.resultJson === "object" && !Array.isArray(active.resultJson) ? active.resultJson as Record<string, unknown> : null;
+  const sections = result ? [
+    { key: "preview", label: "Content preview", value: result.articleHtml ? { articleHtml: result.articleHtml } : result },
+    { key: "seo", label: "Title & description", value: { title: result.title, slug: result.slug, metaTitle: result.metaTitle, metaDescription: result.metaDescription } },
+    { key: "outline", label: "Outline", value: result.outline },
+    { key: "faqs", label: "FAQs", value: result.faqs },
+    { key: "schema", label: "Schema", value: result.schemaJsonLd },
+    { key: "ai-search", label: "AI-search notes", value: result.aiSearchNotes ?? result.aiSearchRecommendations },
+  ].filter((section) => section.key === "preview" || (section.value && (typeof section.value !== "object" || Object.values(section.value as Record<string, unknown>).some(Boolean)))) : [{ key: "preview", label: "Generated result", value: active.resultJson }];
+  const selectedSection = sections.find((section) => section.key === sectionTab) ?? sections[0];
   const copyActive = async () => {
     await navigator.clipboard.writeText(resultText(active.resultJson));
     setCopied(true);
     window.setTimeout(() => setCopied(false), 1800);
+  };
+  const downloadActive = async (format: "word" | "pdf" | "html") => {
+    setExporting(format);
+    setExportError(null);
+    try {
+      await api.download(`/api/ai-content/${active.id}/export?format=${format}`);
+    } catch (error) {
+      setExportError(error instanceof Error ? error.message : "Download failed.");
+    } finally {
+      setExporting(null);
+    }
   };
   return (
     <div className="overflow-hidden rounded-xl border border-charcoal-100 bg-white">
@@ -136,10 +187,11 @@ function TabbedResultViewer({
             <div className="font-semibold text-charcoal-800">Generated content</div>
             <div className="mt-0.5 text-xs text-charcoal-400">Switch tabs to review each stored output.</div>
           </div>
-          <Button variant="ghost" onClick={copyActive}>{copied ? "Copied" : "Copy"}</Button>
+          <div className="flex flex-wrap gap-2">{(["word", "pdf", "html"] as const).map((format) => <button key={format} type="button" disabled={Boolean(exporting)} onClick={() => void downloadActive(format)} className="rounded-lg border border-charcoal-200 bg-white px-3 py-2 text-xs font-bold uppercase text-charcoal-700 hover:bg-charcoal-50 disabled:opacity-50">{exporting === format ? "Preparing…" : format}</button>)}<Button variant="ghost" onClick={copyActive}>{copied ? "Copied" : "Copy all"}</Button></div>
         </div>
+        {exportError && <div className="mt-2 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs font-semibold text-red-700">{exportError}</div>}
       </div>
-      <div className="border-b border-charcoal-100 bg-white px-4 pt-3">
+      {items.length > 1 && <div className="border-b border-charcoal-100 bg-white px-4 pt-3">
         <div className="flex flex-wrap gap-2">
           {items.map((item) => (
             <button
@@ -152,13 +204,14 @@ function TabbedResultViewer({
             </button>
           ))}
         </div>
-      </div>
+      </div>}
       <div className="p-4">
         <div className="mb-3">
-          <div className="text-sm font-semibold text-charcoal-800">{prettyType(active.type)}</div>
+          <div className="text-sm font-semibold text-charcoal-800">{active.topic}</div>
           <div className="mt-0.5 text-xs text-charcoal-400">{active.topic} · {formatDate(active.createdAt)}</div>
         </div>
-        <ResultViewer value={active.resultJson} />
+        <div className="mb-4 flex gap-2 overflow-x-auto border-b border-charcoal-100" role="tablist" aria-label="Generated content sections">{sections.map((section) => <button key={section.key} type="button" role="tab" aria-selected={selectedSection.key === section.key} onClick={() => setSectionTab(section.key)} className={`shrink-0 border-b-2 px-3 py-2 text-sm font-bold ${selectedSection.key === section.key ? "border-fuchsia-600 text-fuchsia-700" : "border-transparent text-charcoal-500 hover:text-charcoal-800"}`}>{section.label}</button>)}</div>
+        <ResultViewer value={selectedSection.value} />
       </div>
     </div>
   );
@@ -179,6 +232,7 @@ function WizardStep({ number, title, active, complete }: { number: number; title
 }
 
 export default function AiContentStudio() {
+  const { chooseApprovalRoute, approvalRouteDialog } = useApprovalRouting();
   const [searchParams, setSearchParams] = useSearchParams();
   const [status, setStatus] = useState<AiContentStatus | null>(null);
   const [history, setHistory] = useState<AiContentGeneration[]>([]);
@@ -189,6 +243,7 @@ export default function AiContentStudio() {
   const [topic, setTopic] = useState("");
   const [targetKeyword, setTargetKeyword] = useState("");
   const [targetUrl, setTargetUrl] = useState("");
+  const [targetUrlSuggested, setTargetUrlSuggested] = useState(false);
   const [languageCode, setLanguageCode] = useState("en");
   const [tone, setTone] = useState("professional");
   const [notes, setNotes] = useState("");
@@ -200,12 +255,30 @@ export default function AiContentStudio() {
   const [wizardOpen, setWizardOpen] = useState(false);
   const [wizardStep, setWizardStep] = useState(1);
   const [expandedHistoryGroup, setExpandedHistoryGroup] = useState<string | null>(null);
+  const [linkedTask, setLinkedTask] = useState<GuidedExecutionTask | null>(null);
+  const [projectContentTasks, setProjectContentTasks] = useState<GuidedExecutionTask[]>([]);
+  const [publishingTaskId, setPublishingTaskId] = useState<string | null>(null);
+  const [publishingError, setPublishingError] = useState<string | null>(null);
+  const [recreationComment, setRecreationComment] = useState("");
+  const [revisionFocus, setRevisionFocus] = useState<string[]>([]);
+  const [revisionCompleted, setRevisionCompleted] = useState(false);
+  const [contentMode, setContentMode] = useState<ContentGenerationMode>("seo");
+  const [generationInstruction, setGenerationInstruction] = useState("");
+  const [generationError, setGenerationError] = useState("");
+  const embeddedDialog = searchParams.get("embedded") === "1" && searchParams.get("dialog") === "1";
+  const revisionFlow = searchParams.get("action") === "revise";
+  const closeWizard = () => {
+    if (generating) return;
+    setWizardOpen(false);
+    if (embeddedDialog && window.parent !== window) window.parent.postMessage({ type: "senuke:close-content-asset-modal" }, window.location.origin);
+  };
 
   const selectedType = useMemo(() => GENERATION_TYPES.find((item) => item.value === type)!, [type]);
   const articlePercent = status ? Math.min(100, Math.round((status.usage.articlesUsed / Math.max(1, status.usage.articleLimit)) * 100)) : 0;
   const helperPercent = status ? Math.min(100, Math.round((status.usage.helpersUsed / Math.max(1, status.usage.helperDailyLimit)) * 100)) : 0;
   const articlesRemaining = status ? Math.max(0, status.usage.articleLimit - status.usage.articlesUsed) : 0;
   const helpersRemaining = status ? Math.max(0, status.usage.helperDailyLimit - status.usage.helpersUsed) : 0;
+  const quotaBlocked = Boolean(status && (type === "article" ? articlesRemaining <= 0 : helpersRemaining <= 0));
   const currentMonthLabel = new Intl.DateTimeFormat(undefined, { month: "long", year: "numeric" }).format(new Date());
   const historyGroups = useMemo<GenerationGroup[]>(() => {
     const grouped = new Map<string, GenerationGroup>();
@@ -232,35 +305,90 @@ export default function AiContentStudio() {
     return [...grouped.values()].sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
   }, [history]);
   const canReview = topic.trim().length > 0;
+  const revisionChoices = [
+    { label: "Improve SEO", value: "Improve the SEO title, meta description, headings, keyword coverage, internal links, FAQs, schema, and search-intent alignment" },
+    { label: "Improve clarity", value: "Make the page clearer, easier to scan, less repetitive, and more useful to the intended audience" },
+    { label: "Add depth and trust", value: "Add useful detail, process, objections, verified proof placeholders, and trust signals without inventing claims" },
+    { label: "Improve conversion", value: "Strengthen the value proposition, calls to action, next steps, and conversion flow" },
+  ];
+  const revisionInstruction = [...revisionFocus, recreationComment.trim()].filter(Boolean).join(". ");
+  const boundedGenerationNotes = (...parts: Array<string | null | undefined>) => {
+    const combined = parts.filter((part): part is string => Boolean(part?.trim())).map((part) => part.trim()).join("\n\n");
+    if (combined.length <= 19_500) return combined || null;
+    return `${combined.slice(0, 14_000)}\n\n[Approved context shortened to fit the single-page generation request.]\n\n${combined.slice(-5_000)}`;
+  };
 
   const load = async () => {
     setLoading(true);
     try {
-      const [statusResult, historyResult, websiteResult, projectResult] = await Promise.all([
+      const requestedProjectId = searchParams.get("projectId");
+      const [statusResult, historyResult, websiteResult, projectResult, projectDetailResult] = await Promise.all([
         api.get<AiContentStatus>("/api/ai-content/status"),
         api.get<{ generations: AiContentGeneration[] }>("/api/ai-content/history"),
         api.get<{ websites: Website[] }>("/api/websites"),
         api.get<{ projects: GuidedProject[] }>("/api/projects-v2"),
+        requestedProjectId ? api.get<{ project: GuidedProject }>(`/api/projects-v2/${encodeURIComponent(requestedProjectId)}`) : Promise.resolve(null),
       ]);
       setStatus(statusResult);
       setHistory(historyResult.generations);
       setWebsites(websiteResult.websites);
       setProjects(projectResult.projects);
       const activeId = resolveActiveProjectId(projectResult.projects, searchParams.get("projectId"), getActiveProjectId());
-      const activeProject = projectResult.projects.find((project) => project.id === activeId);
+      const activeProject = projectDetailResult?.project ?? projectResult.projects.find((project) => project.id === activeId);
+      const activeProjectTasks = Array.from(new Map([
+        ...(activeProject?.executionTasks ?? []),
+        ...(activeProject?.executionPlans?.flatMap((plan) => plan.tasks ?? []) ?? []),
+      ].map((task) => [task.id, task])).values());
+      setProjectContentTasks(activeProjectTasks.filter((task) => task.moduleName === "publishing" || (task.moduleName === "content" && (task.sourceType === "content_plan_action" || Boolean(task.relatedAssetId) || Boolean(task.approvalSnapshotJson?.generatedContent)))));
+      const requestedTaskId = searchParams.get("taskId");
+      const requestedMode = searchParams.get("contentMode");
+      const requestedInstruction = searchParams.get("instruction");
+      if (requestedMode === "seo" || requestedMode === "general" || requestedMode === "custom") setContentMode(requestedMode);
+      if (requestedInstruction) setGenerationInstruction(requestedInstruction);
+      const requestedTask = activeProject?.executionTasks?.find((task) => task.id === requestedTaskId)
+        ?? activeProject?.executionPlans?.flatMap((plan) => plan.tasks ?? []).find((task) => task.id === requestedTaskId);
       if (activeId) setActiveProjectId(activeId);
-      if (!websiteId && websiteResult.websites[0]) setWebsiteId(activeProject?.websiteId ?? websiteResult.websites[0].id);
+      if (!websiteId) {
+        if (activeProject?.websiteId) setWebsiteId(activeProject.websiteId);
+        else if (!activeProject && websiteResult.websites[0]) setWebsiteId(websiteResult.websites[0].id);
+      }
       const requestedType = searchParams.get("type");
       if (requestedType && GENERATION_TYPES.some((item) => item.value === requestedType)) setType(requestedType as AiGenerationType);
       const requestedTopic = searchParams.get("topic");
       const requestedTargetUrl = searchParams.get("targetUrl");
+      if (requestedTask?.moduleName === "content") {
+        const keyword = requestedTask.title.match(/[“\"]([^”\"]+)[”\"]/)?.[1] ?? "";
+        const snapshot = requestedTask.approvalSnapshotJson && typeof requestedTask.approvalSnapshotJson === "object" ? requestedTask.approvalSnapshotJson : {};
+        const plannedTargetUrl = [snapshot.targetUrl, snapshot.pageUrl, snapshot.url, requestedTask.sourceId].find((value) => typeof value === "string" && /^https?:\/\//i.test(value)) as string | undefined;
+        const inferredTargetUrl = plannedTargetUrl ?? suggestedTargetUrl(activeProject?.website?.rootUrl ?? activeProject?.websiteUrl, keyword);
+        setLinkedTask(requestedTask);
+        setType("article");
+        setTopic(contentTaskTitle(requestedTask).replace(/^create\s+/i, ""));
+        setTargetKeyword(keyword);
+        setTargetUrl(inferredTargetUrl);
+        setTargetUrlSuggested(!plannedTargetUrl && Boolean(inferredTargetUrl));
+        setNotes([`Execution task: ${requestedTask.id}`, inferredTargetUrl ? `Target page to support and link to: ${inferredTargetUrl}${plannedTargetUrl ? "" : " (suggested from the approved keyword and project domain)"}` : "", requestedTask.description, scopedTaskInstructions(requestedTask), requestedTask.expectedOutcome].filter(Boolean).join("\n\n"));
+        if (requestedTask.status === "ready") {
+          setSelectedResult(null);
+          setSelectedResultItems([]);
+          setSelectedResultTabId(null);
+        } else {
+          const generatedContent = snapshot.generatedContent && typeof snapshot.generatedContent === "object" ? snapshot.generatedContent as Record<string, unknown> : {};
+          const savedGeneration = historyResult.generations.find((generation) => generation.id === generatedContent.generationId);
+          if (savedGeneration) {
+            setSelectedResult(savedGeneration);
+            setSelectedResultItems([savedGeneration]);
+            setSelectedResultTabId(savedGeneration.id);
+          }
+        }
+      }
       if (requestedTopic) setTopic(requestedTopic);
       if (requestedTargetUrl) setTargetUrl(requestedTargetUrl);
       if (searchParams.get("open") === "1") {
-        setWizardStep(requestedTopic ? 2 : 1);
+        setWizardStep(requestedTask ? 3 : requestedTopic ? 2 : 1);
         setWizardOpen(true);
       }
-      if (!selectedResult && historyResult.generations[0]) {
+      if (!requestedTask && !selectedResult && historyResult.generations[0]) {
         setSelectedResult(historyResult.generations[0]);
         setSelectedResultItems([historyResult.generations[0]]);
         setSelectedResultTabId(historyResult.generations[0].id);
@@ -275,12 +403,35 @@ export default function AiContentStudio() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  useEffect(() => {
+    if (embeddedDialog && wizardOpen && window.parent !== window) {
+      window.parent.postMessage({ type: "senuke:content-asset-ready" }, window.location.origin);
+    }
+  }, [embeddedDialog, wizardOpen]);
+
   const generate = async (event: React.FormEvent) => {
     event.preventDefault();
     if (!canReview) return;
+    if (quotaBlocked) {
+      setGenerationError(type === "article"
+        ? "The monthly full-content allowance has been used. Increase the workspace content allowance or wait for the next billing period before generating another full page."
+        : "The daily AI helper allowance has been used. Try again after the daily allowance resets.");
+      return;
+    }
+    if ((revisionFlow || (selectedResult && linkedTask)) && !revisionInstruction) {
+      setGenerationError("Choose at least one improvement or add a short instruction so SENuke AI knows what to revise.");
+      window.setTimeout(() => {
+        const input = document.getElementById("content-recreation-comment");
+        input?.scrollIntoView({ behavior: "smooth", block: "center" });
+        (input as HTMLTextAreaElement | null)?.focus();
+      }, 0);
+      return;
+    }
     setGenerating(true);
+    setGenerationError("");
     try {
       const result = await api.post<{ generation: AiContentGeneration }>("/api/ai-content/generate", {
+        executionTaskId: linkedTask?.id ?? null,
         websiteId: websiteId || null,
         type,
         topic,
@@ -288,23 +439,74 @@ export default function AiContentStudio() {
         targetUrl: targetUrl || null,
         languageCode,
         tone,
-        notes: notes || null,
+        notes: boundedGenerationNotes(
+          revisionInstruction && (revisionFlow || (selectedResult && linkedTask)) ? `Re-creation change request: ${revisionInstruction}` : "",
+          contentGenerationPrompt(contentMode, generationInstruction),
+          notes,
+        ),
       });
       setSelectedResult(result.generation);
       setSelectedResultItems([result.generation]);
       setSelectedResultTabId(result.generation.id);
       setHistory((prev) => [result.generation, ...prev]);
+      setRevisionCompleted(revisionFlow);
+      setRecreationComment("");
       setWizardStep(3);
+      if (embeddedDialog && window.parent !== window) {
+        window.parent.postMessage({
+          type: "senuke:content-asset-saved",
+          taskId: linkedTask?.id ?? null,
+          generationId: result.generation.id,
+        }, window.location.origin);
+      }
       await load();
     } catch (error) {
-      alert(error instanceof Error ? error.message : "AI generation failed");
+      setGenerationError(error instanceof Error ? error.message : "AI generation failed");
     } finally {
       setGenerating(false);
     }
   };
 
+  const publishTask = async (task: GuidedExecutionTask) => {
+    setPublishingTaskId(task.id);
+    setPublishingError(null);
+    try {
+      await api.post(`/api/execution-tasks/${task.id}/publish`, {});
+      await load();
+    } catch (error) {
+      setPublishingError(error instanceof Error ? error.message : "Could not start publishing.");
+    } finally {
+      setPublishingTaskId(null);
+    }
+  };
+
+  const submitForApproval = async (task: GuidedExecutionTask) => {
+    const confirmed = window.confirm("Confirm that you reviewed search intent, title/meta and headings, factual evidence, internal links and CTA, cannibalization/duplication, and AEO/GEO answer quality for this exact content version.");
+    if (!confirmed) return;
+    const reviewerComment = window.prompt("Add the SEO reviewer comment that the company approver should see:", "SEO, AEO, and GEO checks completed for this generated version.")?.trim();
+    if (!reviewerComment) return;
+    const approvalRoute = task.projectId ? await chooseApprovalRoute(task.projectId, task.title) : null;
+    if (!approvalRoute) return;
+    setPublishingTaskId(task.id);
+    setPublishingError(null);
+    try {
+      await api.post(`/api/execution-tasks/${task.id}/submit-for-approval`, { approvalRoute, notes: reviewerComment, seoReview: { intent: true, metadata: true, evidence: true, internalLinks: true, duplication: true, aeoGeo: true } });
+      await load();
+    } catch (error) {
+      setPublishingError(error instanceof Error ? error.message : "Could not submit content for approval.");
+    } finally {
+      setPublishingTaskId(null);
+    }
+  };
+
+  const approvedPendingTasks = projectContentTasks.filter((task) => ["approved", "ready_to_publish"].includes(task.status));
+  const publishingInProgressTasks = projectContentTasks.filter((task) => task.status === "publishing");
+  const contentReadyTasks = projectContentTasks.filter((task) => task.status === "ready");
+  const contentApprovalTasks = projectContentTasks.filter((task) => ["needs_review", "submitted_for_approval", "changes_requested"].includes(task.status));
+
   return (
-    <div className="space-y-6">
+    <div className={embeddedDialog ? "h-screen overflow-hidden bg-white [&>:not([role=dialog])]:hidden" : "space-y-6"}>
+      {approvalRouteDialog}
       <div className="overflow-hidden rounded-2xl border border-fuchsia-100 bg-[linear-gradient(135deg,#fdf2f8_0%,#ecfeff_52%,#f0fdf4_100%)] p-6 shadow-sm">
         <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
           <div>
@@ -404,6 +606,26 @@ export default function AiContentStudio() {
         </div>
       </Card>
 
+      <Card className="overflow-hidden" id="publishing">
+        <div className="flex flex-col gap-3 border-b border-emerald-200 bg-emerald-50 px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
+          <div><div className="text-xs font-bold uppercase tracking-wide text-emerald-700">Publishing</div><div className="mt-1 text-lg font-bold text-charcoal-900">Approved content pending publication</div><p className="mt-1 text-sm text-charcoal-600">Approved assets for this project that are waiting to be published to the selected destination.</p></div>
+          <div className="flex gap-2"><span className="rounded-full bg-white px-3 py-1 text-xs font-bold text-emerald-700 shadow-sm">{approvedPendingTasks.length} pending</span>{publishingInProgressTasks.length > 0 && <span className="rounded-full bg-amber-100 px-3 py-1 text-xs font-bold text-amber-800">{publishingInProgressTasks.length} publishing</span>}</div>
+        </div>
+        <div className="space-y-3 p-5">
+          {publishingError && <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm font-semibold text-red-700">{publishingError}</div>}
+          {approvedPendingTasks.map((task) => <div key={task.id} className="flex flex-col gap-3 rounded-xl border border-emerald-200 bg-white p-4 sm:flex-row sm:items-center sm:justify-between">
+            <div className="min-w-0"><div className="flex flex-wrap items-center gap-2"><div className="font-bold text-charcoal-900">{task.title}</div><span className="rounded-full bg-emerald-100 px-2 py-0.5 text-xs font-bold text-emerald-800">{task.status.replaceAll("_", " ")}</span></div><p className="mt-1 line-clamp-2 text-sm text-charcoal-500">{task.description}</p><div className="mt-2 text-xs font-semibold text-charcoal-500">Asset reference: {String((task.approvalSnapshotJson?.generatedContent as Record<string, unknown> | undefined)?.generationId ?? task.sourceId ?? "Attached content")}</div></div>
+            <div className="flex shrink-0 flex-wrap gap-2"><a href={`/ai-content?projectId=${encodeURIComponent(searchParams.get("projectId") || task.projectId || "")}&taskId=${encodeURIComponent(task.id)}&open=1`} className="rounded-lg border border-emerald-300 bg-white px-4 py-2.5 text-center text-sm font-bold text-emerald-700 hover:bg-emerald-50">Review / re-create</a><button type="button" disabled={publishingTaskId === task.id} onClick={() => void publishTask(task)} className="rounded-lg bg-emerald-600 px-4 py-2.5 text-sm font-bold text-white hover:bg-emerald-700 disabled:bg-slate-300">{publishingTaskId === task.id ? "Starting…" : "Publish approved work"}</button></div>
+          </div>)}
+          {publishingInProgressTasks.map((task) => <div key={task.id} className="flex items-center justify-between gap-3 rounded-xl border border-amber-200 bg-amber-50 p-4"><div><div className="font-bold text-charcoal-900">{task.title}</div><p className="mt-1 text-sm text-charcoal-500">The publishing request has started and is awaiting verification.</p></div><span className="shrink-0 rounded-full bg-amber-100 px-3 py-1 text-xs font-bold text-amber-800">Publishing</span></div>)}
+          {approvedPendingTasks.length === 0 && publishingInProgressTasks.length === 0 && <div className="rounded-xl border border-dashed border-emerald-200 bg-emerald-50/40 px-5 py-8 text-center"><div className="font-bold text-charcoal-800">No approved content is waiting to publish</div><p className="mt-1 text-sm text-charcoal-500">Create content with the wizard and approve it. It will then appear in this list.</p></div>}
+          {(contentReadyTasks.length > 0 || contentApprovalTasks.length > 0) && <div className="mt-5 border-t border-charcoal-100 pt-5"><div className="mb-3"><div className="text-xs font-bold uppercase tracking-wide text-charcoal-500">Earlier workflow stages</div><p className="mt-1 text-sm text-charcoal-500">Complete these actions to move content into the approved pending list above.</p></div><div className="space-y-2">
+            {contentReadyTasks.map((task) => <div key={task.id} className="flex flex-col gap-3 rounded-xl border border-brand-100 bg-brand-50/40 p-4 sm:flex-row sm:items-center sm:justify-between"><div><div className="font-bold text-charcoal-900">{task.title}</div><p className="mt-1 text-sm text-charcoal-500">Content has not been generated yet.</p></div><a href={`/ai-content?projectId=${encodeURIComponent(searchParams.get("projectId") || task.projectId || "")}&taskId=${encodeURIComponent(task.id)}&open=1`} className="shrink-0 rounded-lg bg-brand-600 px-4 py-2 text-center text-sm font-bold text-white hover:bg-brand-700">Create content →</a></div>)}
+            {contentApprovalTasks.map((task) => <div key={task.id} className="flex flex-col gap-3 rounded-xl border border-amber-200 bg-amber-50/50 p-4 sm:flex-row sm:items-center sm:justify-between"><div><div className="flex flex-wrap items-center gap-2"><div className="font-bold text-charcoal-900">{task.title}</div><span className="rounded-full bg-white px-2 py-0.5 text-xs font-bold text-amber-700">{task.status.replaceAll("_", " ")}</span></div><p className="mt-1 text-sm text-charcoal-500">{task.status === "needs_review" ? "AI created or updated the asset. An SEO reviewer must check intent, metadata, evidence, internal links, duplication, and the CTA before sending it for company approval." : task.status === "changes_requested" ? "The company approver requested changes. Review the feedback and ask AI to re-create the content." : "SEO review is complete. The asset is waiting for an authorized company approver."}</p></div><div className="flex shrink-0 flex-wrap gap-2">{task.status === "needs_review" && <><a href={`/ai-content?projectId=${encodeURIComponent(searchParams.get("projectId") || task.projectId || "")}&taskId=${encodeURIComponent(task.id)}&open=1`} className="rounded-lg border border-amber-300 bg-white px-4 py-2 text-center text-sm font-bold text-amber-700">Perform SEO review</a><button type="button" disabled={publishingTaskId === task.id} onClick={() => void submitForApproval(task)} className="rounded-lg bg-amber-600 px-4 py-2 text-sm font-bold text-white hover:bg-amber-700 disabled:bg-slate-300">{publishingTaskId === task.id ? "Submitting…" : "SEO reviewed · Send for company approval"}</button></>}{task.status === "submitted_for_approval" && <a href={`/approvals?projectId=${encodeURIComponent(searchParams.get("projectId") || task.projectId || "")}`} className="rounded-lg bg-amber-600 px-4 py-2 text-center text-sm font-bold text-white hover:bg-amber-700">Open Company Approval →</a>}{task.status === "changes_requested" && <a href={`/ai-content?projectId=${encodeURIComponent(searchParams.get("projectId") || task.projectId || "")}&taskId=${encodeURIComponent(task.id)}&open=1`} className="rounded-lg bg-brand-600 px-4 py-2 text-center text-sm font-bold text-white hover:bg-brand-700">Review feedback &amp; ask AI to re-create →</a>}</div></div>)}
+          </div></div>}
+        </div>
+      </Card>
+
       <Card className="overflow-hidden">
         <div className="flex items-center justify-between gap-4 border-b border-charcoal-100 px-5 py-4">
           <div>
@@ -499,25 +721,33 @@ export default function AiContentStudio() {
       </Card>
 
       {wizardOpen && (
-        <div className="fixed inset-0 z-50" role="dialog" aria-modal="true" aria-label="Create AI content asset">
-          <div className="absolute inset-0 bg-charcoal-900/55" onClick={() => !generating && setWizardOpen(false)} />
-          <div className="absolute inset-x-3 top-4 mx-auto flex max-h-[calc(100vh-2rem)] max-w-5xl flex-col overflow-hidden rounded-2xl bg-white shadow-2xl sm:top-8 sm:max-h-[calc(100vh-4rem)]">
+        <div className={embeddedDialog ? "absolute inset-0 z-50 bg-white" : "fixed inset-0 z-50"} role="dialog" aria-modal="true" aria-label="Create AI content asset">
+          {!embeddedDialog && <div className="absolute inset-0 bg-charcoal-900/55" onClick={closeWizard} />}
+          <div className={embeddedDialog ? "absolute inset-0 flex flex-col overflow-hidden bg-white" : "absolute inset-x-3 top-4 mx-auto flex max-h-[calc(100vh-2rem)] max-w-5xl flex-col overflow-hidden rounded-2xl bg-white shadow-2xl sm:top-8 sm:max-h-[calc(100vh-4rem)]"}>
             <div className="border-b border-charcoal-100 bg-[linear-gradient(135deg,#fdf2f8_0%,#ecfeff_100%)] px-5 py-4">
               <div className="flex items-start justify-between gap-4">
                 <div>
-                  <div className="text-xs font-semibold uppercase tracking-wide text-fuchsia-700">3-step wizard</div>
-                  <div className="mt-1 text-xl font-bold text-charcoal-900">Create content asset</div>
+                  <div className="text-xs font-semibold uppercase tracking-wide text-fuchsia-700">{revisionFlow ? "AI content revision" : "3-step wizard"}</div>
+                  <div className="mt-1 text-xl font-bold text-charcoal-900">{revisionFlow ? `Revise ${topic || "page content"}` : "Create content asset"}</div>
+                  {linkedTask && <div className="mt-1 text-xs font-semibold text-emerald-700">Linked to project task: {contentTaskTitle(linkedTask)}</div>}
                 </div>
-                <button type="button" disabled={generating} onClick={() => setWizardOpen(false)} className="rounded-lg border border-charcoal-200 bg-white px-3 py-1.5 text-sm font-medium text-charcoal-600 hover:bg-charcoal-50 disabled:opacity-50">Close</button>
+                <button type="button" disabled={generating} onClick={closeWizard} className="rounded-lg border border-charcoal-200 bg-white px-3 py-1.5 text-sm font-medium text-charcoal-600 hover:bg-charcoal-50 disabled:opacity-50">Close</button>
               </div>
-              <div className="mt-4 grid gap-3 sm:grid-cols-3">
+              {!revisionFlow && <div className="mt-4 grid gap-3 sm:grid-cols-3">
                 <WizardStep number={1} title="Choose type" active={wizardStep === 1} complete={wizardStep > 1} />
                 <WizardStep number={2} title="Add context" active={wizardStep === 2} complete={wizardStep > 2} />
                 <WizardStep number={3} title="Review" active={wizardStep === 3} complete={false} />
-              </div>
+              </div>}
             </div>
 
-            <form onSubmit={generate} className="flex min-h-0 flex-1 flex-col">
+            <form onSubmit={generate} className="relative flex min-h-0 flex-1 flex-col">
+              {generating && <div className="absolute inset-0 z-30 grid place-items-center bg-white/95 p-6 backdrop-blur-sm" role="status" aria-live="polite">
+                <div className="max-w-md text-center">
+                  <div className="mx-auto h-12 w-12 animate-spin rounded-full border-4 border-fuchsia-100 border-t-fuchsia-600" />
+                  <h3 className="mt-4 text-lg font-black text-slate-950">{revisionFlow ? "Revising the complete page…" : "Creating the complete page…"}</h3>
+                  <p className="mt-2 text-sm leading-6 text-slate-600">SENuke AI is writing the structured page content, SEO title, meta description, headings, FAQs, schema, CTA, and internal-link guidance. Keep this window open; the result will return here automatically.</p>
+                </div>
+              </div>}
               <div className="min-h-0 flex-1 overflow-y-auto p-5">
                 {wizardStep === 1 && (
                   <div className="space-y-4">
@@ -525,6 +755,7 @@ export default function AiContentStudio() {
                       <h2 className="text-lg font-bold text-charcoal-900">Choose what you want to create</h2>
                       <p className="mt-1 text-sm text-charcoal-500">Select one AI tool. You can change this before generating.</p>
                     </div>
+                    {linkedTask && <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-4"><div className="text-xs font-bold uppercase tracking-wide text-emerald-700">AI recommendation</div><div className="mt-1 font-bold text-charcoal-900">Create a full supporting article</div><p className="mt-1 text-sm leading-6 text-charcoal-600">The execution brief calls for supporting topical coverage, services, proof, and internal linking, so Article is selected. You can choose a different asset below.</p></div>}
                     <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
                       {GENERATION_TYPES.map((item) => (
                         <button
@@ -557,7 +788,7 @@ export default function AiContentStudio() {
                       </label>
                       <div className="lg:col-span-2"><Input label="Topic" value={topic} onChange={setTopic} placeholder="CRM automation for service businesses" /></div>
                       <Input label="Target keyword" value={targetKeyword} onChange={setTargetKeyword} placeholder="crm automation" />
-                      <Input label="Target URL" value={targetUrl} onChange={setTargetUrl} placeholder="https://example.com/service-page" />
+                      <Input label="Target URL" value={targetUrl} onChange={(value) => { setTargetUrl(value); setTargetUrlSuggested(false); }} placeholder="https://example.com/service-page" />
                       <Input label="Language" value={languageCode} onChange={setLanguageCode} placeholder="en" />
                       <Input label="Tone" value={tone} onChange={setTone} placeholder="professional" />
                       <label className="block lg:col-span-2">
@@ -568,7 +799,73 @@ export default function AiContentStudio() {
                   </div>
                 )}
 
-                {wizardStep === 3 && (
+                {wizardStep === 3 && (revisionFlow ? (
+                  <div className="mx-auto w-full max-w-2xl space-y-5">
+                    <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <div>
+                          <div className="text-xs font-bold uppercase tracking-wide text-slate-500">Current page</div>
+                          <div className="mt-1 font-bold text-slate-950">{topic || linkedTask?.title || "Page content"}</div>
+                        </div>
+                        <span className="rounded-full bg-white px-3 py-1 text-xs font-bold text-slate-600 shadow-sm">Current version preserved</span>
+                      </div>
+                      <div className="mt-3 grid gap-2 text-xs text-slate-600 sm:grid-cols-2">
+                        <div><span className="font-bold text-slate-800">Primary keyword:</span> {targetKeyword || "From approved plan"}</div>
+                        <div className="truncate"><span className="font-bold text-slate-800">Target page:</span> {targetUrl || "From approved page map"}</div>
+                      </div>
+                    </div>
+
+                    {revisionCompleted ? (
+                      <div className="space-y-4">
+                        <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-4">
+                          <div className="font-bold text-emerald-900">Revised content is ready to review</div>
+                          <p className="mt-1 text-sm text-emerald-800">The new version is attached to the same page and approved plan. Review it below before approval or publishing.</p>
+                        </div>
+                        <TabbedResultViewer
+                          items={selectedResultItems.length > 0 ? selectedResultItems : selectedResult ? [selectedResult] : []}
+                          activeId={selectedResultTabId}
+                          onActiveChange={setSelectedResultTabId}
+                        />
+                      </div>
+                    ) : (
+                      <>
+                        <div>
+                          <h2 className="text-lg font-bold text-slate-950">What should SENuke AI improve?</h2>
+                          <p className="mt-1 text-sm text-slate-500">Choose one or more areas. The approved keyword, URL, business facts, and SEO plan remain attached automatically.</p>
+                        </div>
+                        <div className="grid gap-3 sm:grid-cols-2">
+                          {revisionChoices.map((choice) => {
+                            const selected = revisionFocus.includes(choice.value);
+                            return (
+                              <button
+                                key={choice.label}
+                                type="button"
+                                onClick={() => {
+                                  setRevisionFocus(selected ? revisionFocus.filter((item) => item !== choice.value) : [...revisionFocus, choice.value]);
+                                  if (generationError) setGenerationError("");
+                                }}
+                                className={`rounded-xl border p-4 text-left transition ${selected ? "border-fuchsia-400 bg-fuchsia-50 ring-2 ring-fuchsia-100" : "border-slate-200 bg-white hover:border-fuchsia-200 hover:bg-fuchsia-50/40"}`}
+                              >
+                                <div className="flex items-center gap-2">
+                                  <span className={`grid h-5 w-5 place-items-center rounded border text-xs font-black ${selected ? "border-fuchsia-600 bg-fuchsia-600 text-white" : "border-slate-300 bg-white text-transparent"}`}>✓</span>
+                                  <span className="font-bold text-slate-900">{choice.label}</span>
+                                </div>
+                                <p className="mt-2 text-xs leading-5 text-slate-500">{choice.value}</p>
+                              </button>
+                            );
+                          })}
+                        </div>
+                        <label className="block" htmlFor="content-recreation-comment">
+                          <span className="text-sm font-bold text-slate-900">Anything specific you want changed?</span>
+                          <span className="mt-1 block text-xs text-slate-500">Optional when an improvement above is selected.</span>
+                          <textarea id="content-recreation-comment" value={recreationComment} onChange={(event) => { setRecreationComment(event.target.value); if (generationError) setGenerationError(""); }} rows={4} placeholder="Example: Make the opening more direct, add Brampton-specific buyer questions, and use a stronger consultation CTA." className="mt-2 w-full rounded-xl border border-slate-300 bg-white px-3 py-3 text-sm outline-none focus:border-fuchsia-500 focus:ring-2 focus:ring-fuchsia-100" />
+                        </label>
+                        {generationError && <div className="rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm font-semibold text-rose-700">{generationError}</div>}
+                        {selectedResult && <details className="rounded-xl border border-slate-200 bg-white"><summary className="cursor-pointer px-4 py-3 text-sm font-bold text-slate-700">View the current content version</summary><div className="border-t border-slate-100 p-4"><TabbedResultViewer items={selectedResultItems.length > 0 ? selectedResultItems : [selectedResult]} activeId={selectedResultTabId} onActiveChange={setSelectedResultTabId} /></div></details>}
+                      </>
+                    )}
+                  </div>
+                ) : (
                   <div className="space-y-3">
                     <div className="rounded-xl border border-charcoal-100 bg-charcoal-50 px-4 py-3">
                       <div className="mb-2 flex items-center justify-between gap-3">
@@ -580,30 +877,42 @@ export default function AiContentStudio() {
                         </div>
                       </div>
                       <div className="grid gap-2 text-xs text-charcoal-600 lg:grid-cols-[0.8fr_1.4fr_1fr_0.8fr]">
-                        <div className="truncate"><span className="font-semibold text-charcoal-800">Type:</span> {selectedType.label}</div>
+                        <div className="truncate"><span className="font-semibold text-charcoal-800">Asset:</span> {linkedTask ? "Planned content asset" : selectedType.label}</div>
                         <div className="truncate"><span className="font-semibold text-charcoal-800">Topic:</span> {topic || "Missing topic"}</div>
-                        <div className="truncate"><span className="font-semibold text-charcoal-800">Project:</span> {websites.find((website) => website.id === websiteId)?.domain ?? "No project context"}</div>
+                        <div className="truncate"><span className="font-semibold text-charcoal-800">Project:</span> {projects.find((project) => project.id === (searchParams.get("projectId") || getActiveProjectId()))?.name ?? websites.find((website) => website.id === websiteId)?.domain ?? "No project context"}</div>
                         <div className="truncate"><span className="font-semibold text-charcoal-800">Tone:</span> {languageCode || "en"} · {tone || "professional"}</div>
                       </div>
-                      <div className="mt-1 truncate text-xs text-charcoal-500">Keyword: {targetKeyword || "Not provided"} · URL: {targetUrl || "Not provided"}</div>
+                      <div className="mt-1 truncate text-xs text-charcoal-500">Keyword: {targetKeyword || "Not provided"} · Target page: {targetUrl || "Not provided"}{targetUrlSuggested ? " (suggested)" : ""}</div>
                     </div>
+
+                    {linkedTask && <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-4"><div className="text-xs font-bold uppercase tracking-wide text-emerald-700">Approved plan context</div><div className="mt-1 font-bold text-charcoal-900">{contentTaskTitle(linkedTask)}</div><p className="mt-2 text-sm leading-6 text-charcoal-600">{linkedTask.description}</p>{linkedTask.manualInstructions && <p className="mt-2 whitespace-pre-line text-sm leading-6 text-charcoal-600"><span className="font-bold">Instructions:</span> {` ${scopedTaskInstructions(linkedTask)}`}</p>}{linkedTask.expectedOutcome && <p className="mt-2 text-sm leading-6 text-charcoal-600"><span className="font-bold">Expected outcome:</span> {linkedTask.expectedOutcome}</p>}<p className="mt-3 text-xs font-semibold text-emerald-800">This plan remains attached to the asset. {selectedResult ? "Review the generated result below or re-create it from the same plan." : "Click Generate to create this planned asset."}</p></div>}
+
+                    <ContentGenerationControls mode={contentMode} instruction={generationInstruction} onModeChange={setContentMode} onInstructionChange={setGenerationInstruction} compact />
+                    {generationError && <div className="rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm font-semibold text-rose-700">{generationError}</div>}
+
+                    {linkedTask && selectedResult && <label className="block rounded-xl border border-amber-200 bg-amber-50 p-4" htmlFor="content-recreation-comment"><span className="text-xs font-bold uppercase tracking-wide text-amber-700">Revision instructions required</span><span className="mt-1 block text-sm font-bold text-charcoal-900">What should SENuke AI change in the current version?</span><textarea id="content-recreation-comment" value={recreationComment} onChange={(event) => { setRecreationComment(event.target.value); if (generationError) setGenerationError(""); }} rows={4} placeholder="Example: Make the introduction more direct, add a Brampton-specific example, improve the SEO title, and reduce repetition." className="mt-3 w-full rounded-lg border border-amber-300 bg-white px-3 py-2 text-sm outline-none focus:border-amber-500 focus:ring-2 focus:ring-amber-100" /><span className="mt-1 block text-xs text-charcoal-500">The current content remains unchanged until the new version is generated and reviewed.</span></label>}
 
                     <TabbedResultViewer
                       items={selectedResultItems.length > 0 ? selectedResultItems : selectedResult ? [selectedResult] : []}
                       activeId={selectedResultTabId}
                       onActiveChange={setSelectedResultTabId}
                     />
+                    {linkedTask && selectedResult && <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-4"><div className="font-bold text-emerald-900">Content created and returned to the project</div><p className="mt-1 text-sm text-emerald-800">This asset is attached to the execution task and has moved to {linkedTask.requiresApproval ? "content review and approval" : "ready to publish"}.</p><a href={`/guided-projects/${encodeURIComponent(linkedTask.projectId || searchParams.get("projectId") || "")}?tab=execution#execution-tasks`} className="mt-3 inline-flex rounded-lg bg-emerald-600 px-4 py-2 text-sm font-bold text-white hover:bg-emerald-700">Continue to publishing →</a></div>}
                   </div>
-                )}
+                ))}
               </div>
 
               <div className="flex flex-col-reverse gap-3 border-t border-charcoal-100 bg-white px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
-                <Button type="button" variant="ghost" disabled={wizardStep === 1 || generating} onClick={() => setWizardStep((step) => Math.max(1, step - 1))}>Back</Button>
+                <div className="min-w-0 flex-1">{generationError ? <div className="rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs font-bold leading-5 text-rose-700">{generationError}</div> : quotaBlocked ? <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-bold leading-5 text-amber-800">{type === "article" ? "Monthly full-content allowance reached." : "Daily AI helper allowance reached."}</div> : revisionFlow ? <div className="text-xs font-semibold text-slate-500">{revisionCompleted ? "Review the revised version, then close this window to return to Site Architect." : "Your current content is preserved until the revised version is generated."}</div> : linkedTask ? selectedResult && !revisionInstruction ? <button type="button" onClick={() => { const input = document.getElementById("content-recreation-comment"); input?.scrollIntoView({ behavior: "smooth", block: "center" }); (input as HTMLTextAreaElement | null)?.focus(); }} className="text-left text-xs font-bold text-amber-700 hover:text-amber-900">Add revision instructions before re-creating ↑</button> : <div className="text-xs font-semibold text-emerald-700">Content type and brief supplied by the approved plan.</div> : <Button type="button" variant="ghost" disabled={wizardStep === 1 || generating} onClick={() => setWizardStep((step) => Math.max(1, step - 1))}>Back</Button>}</div>
                 <div className="flex gap-3 sm:justify-end">
-                  {wizardStep < 3 ? (
+                  {revisionFlow ? revisionCompleted ? (
+                    <Button type="button" onClick={closeWizard}>Done</Button>
+                  ) : (
+                    <Button type="submit" disabled={generating || !canReview || quotaBlocked}>{generating ? "Generating revised content…" : quotaBlocked ? "Allowance reached" : "Generate Revised Content"}</Button>
+                  ) : wizardStep < 3 ? (
                     <Button type="button" onClick={() => setWizardStep((step) => Math.min(3, step + 1))} disabled={wizardStep === 2 && !canReview}>Next</Button>
                   ) : (
-                    <Button type="submit" disabled={generating || !canReview}>{generating ? "Generating..." : "Generate"}</Button>
+                    <Button type="submit" disabled={generating || !canReview || quotaBlocked}>{generating ? "Generating..." : quotaBlocked ? "Allowance reached" : selectedResult && linkedTask ? "Re-create content" : "Generate"}</Button>
                   )}
                 </div>
               </div>

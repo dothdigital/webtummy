@@ -20,4 +20,17 @@ describe("project workflow navigation", () => {
     expect(isExistingWebsiteFlow(project())).toBe(false);
     expect(isExistingWebsiteFlow(project({ websiteStatus: "existing_website", projectType: "existing_website" }))).toBe(true);
   });
+
+  it("recognizes an approved strategy even when a newer draft is first", () => {
+    const next = nextProjectFlowStep(project({
+      workflowSteps: [
+        { ...project().workflowSteps![0], status: "completed" },
+        { ...project().workflowSteps![0], id: "execution", stepKey: "execution_plan", status: "completed" },
+      ],
+      strategyPlans: [{ status: "draft" }, { status: "approved" }] as GuidedProject["strategyPlans"],
+      _count: { intakeAnswers: 1, strategyPlans: 2, opportunities: 1 },
+    }));
+    expect(next.actionLabel).toBe("Open Site Architect");
+    expect(next.to).toContain("projectId=project-1");
+  });
 });

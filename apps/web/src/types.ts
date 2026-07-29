@@ -710,6 +710,7 @@ export interface OrganicGrowthPlan {
 
 export interface KeywordResearchRun {
   id: string;
+  projectId: string | null;
   websiteId: string | null;
   seedKeyword: string;
   targetUrl: string | null;

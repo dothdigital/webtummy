@@ -3,15 +3,38 @@ import { Link } from "react-router-dom";
 import { api } from "../api.js";
 import { Card } from "../components/ui.js";
 import { useAuth } from "../auth.js";
-import type { GuidedProject } from "../types.js";
+import type { GuidedExecutionTask, GuidedProject } from "../types.js";
 
 type ProjectFilter = "all" | "in_progress" | "needs_review" | "completed" | "archived";
 
 const completedStatuses = new Set(["completed", "skipped", "published"]);
 const reviewStatuses = new Set(["submitted_for_approval", "needs_review", "changes_requested"]);
 
+const priorityRank: Record<string, number> = { critical: 0, high: 1, medium: 2, low: 3 };
+const taskStatusRank: Record<string, number> = { changes_requested: 0, needs_review: 1, submitted_for_approval: 2, ready_to_publish: 3, ready: 4, in_progress: 5, pending: 6, blocked: 7 };
+
+function taskDependenciesReady(task: GuidedExecutionTask) {
+  return (task.dependencies ?? []).every((dependency) => completedStatuses.has(dependency.requiredTask.status) || dependency.requiredTask.status === "approved");
+}
+
 function nextTask(project: GuidedProject) {
-  return project.executionPlans?.[0]?.tasks?.find((task) => !completedStatuses.has(task.status)) ?? null;
+  const tasks = Array.from(new Map([...(project.executionTasks ?? []), ...(project.executionPlans?.flatMap((plan) => plan.tasks ?? []) ?? [])].map((task) => [task.id, task])).values());
+  return tasks.filter((task) => !completedStatuses.has(task.status) && !["cancelled", "canceled"].includes(task.status)).sort((a, b) => {
+    const aReady = taskDependenciesReady(a) && a.status !== "blocked" ? 0 : 1;
+    const bReady = taskDependenciesReady(b) && b.status !== "blocked" ? 0 : 1;
+    return aReady - bReady || (taskStatusRank[a.status] ?? 8) - (taskStatusRank[b.status] ?? 8) || (priorityRank[a.priority] ?? 2) - (priorityRank[b.priority] ?? 2) || new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime();
+  })[0] ?? null;
+}
+
+function nextActionHref(project: GuidedProject, task: GuidedExecutionTask | null, workflowStep: ReturnType<typeof nextWorkflowStep>) {
+  if (!task) return workflowStep ? milestoneHref(project, workflowStep.actionUrl, workflowStep.stepKey) : `/guided-projects/${project.id}`;
+  if (["submitted_for_approval", "waiting_for_approval", "pending_approval", "needs_approval"].includes(task.status)) return `/approvals?projectId=${encodeURIComponent(project.id)}&taskId=${encodeURIComponent(task.id)}`;
+  if (task.moduleName === "opportunity") return `/opportunities?projectId=${encodeURIComponent(project.id)}`;
+  if (task.relatedUrl) return task.relatedUrl.startsWith(`/guided-projects/${project.id}`) ? task.relatedUrl : `${task.relatedUrl}${task.relatedUrl.includes("?") ? "&" : "?"}projectId=${encodeURIComponent(project.id)}`;
+  if (task.moduleName === "content") return task.status === "ready" ? `/ai-content?projectId=${encodeURIComponent(project.id)}&taskId=${encodeURIComponent(task.id)}&open=1` : `/ai-content?projectId=${encodeURIComponent(project.id)}#publishing`;
+  const routes: Record<string, string> = { opportunity: "/opportunities", keyword_research: "/keywords", site_analysis: "/site-analysis", strategy: "/strategy", strategy_approval: "/strategy", site_architect: "/site-architect", local_seo: "/local-seo", publishing: "/ai-content", backlinks: "/backlinks", social: "/social-strategy", growth: "/growth", reports: "/reports" };
+  const route = routes[task.moduleName];
+  return route ? `${route}?projectId=${encodeURIComponent(project.id)}` : `/guided-projects/${project.id}?tab=execution#execution-tasks`;
 }
 
 function nextWorkflowStep(project: GuidedProject) {
@@ -59,8 +82,9 @@ function workflowState(project: GuidedProject, index: number): "completed" | "sk
   return index === firstIncomplete ? "current" : "pending";
 }
 
-function milestoneHref(project: GuidedProject, actionUrl: string | null) {
-  const base = actionUrl || `/guided-projects/${project.id}`;
+function milestoneHref(project: GuidedProject, actionUrl: string | null, stepKey?: string) {
+  const routeByStep: Record<string, string> = { opportunities: "/opportunities", keyword_analysis: "/keywords", site_analysis: "/site-analysis", strategy: "/strategy", strategy_approval: "/strategy", execution_plan: `/guided-projects/${project.id}?tab=execution#execution-tasks` };
+  const base = stepKey && routeByStep[stepKey] ? routeByStep[stepKey] : actionUrl || `/guided-projects/${project.id}`;
   if (base.startsWith(`/guided-projects/${project.id}`)) return base;
   return `${base}${base.includes("?") ? "&" : "?"}projectId=${encodeURIComponent(project.id)}`;
 }
@@ -74,7 +98,17 @@ function WorkflowMilestones({ project }: { project: GuidedProject }) {
   const currentIndex = activeIndex < 0 ? steps.length - 1 : activeIndex;
   const lineProgress = steps.length > 1 ? (currentIndex / (steps.length - 1)) * 100 : 100;
   const edgeInset = `${50 / steps.length}%`;
-  return <div className="mt-5"><div className="mb-3 flex items-center justify-between gap-3"><div className="text-xs font-bold uppercase tracking-wide text-slate-500">Milestones</div><div className="text-right text-[11px] text-slate-400">{completed} achieved · {skipped} skipped · {steps.length} total</div></div><div className="relative w-full pt-1"><div className="absolute top-3.5 h-0.5 bg-slate-200" style={{ left: edgeInset, right: edgeInset }}><div className="h-full bg-emerald-400" style={{ width: `${lineProgress}%` }} /></div><div className="relative grid w-full" style={{ gridTemplateColumns: `repeat(${steps.length}, minmax(0, 1fr))` }}>{steps.map((step, index) => { const state = workflowState(project, index); return <Link key={step.id} to={milestoneHref(project, step.actionUrl)} title={`Open ${step.title}`} className="group flex min-w-0 flex-col items-center rounded-lg text-center outline-none focus-visible:ring-2 focus-visible:ring-teal-400"><span className={`relative z-[1] flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-[9px] font-black shadow-[0_0_0_3px_white] transition group-hover:scale-110 ${state === "completed" ? "bg-emerald-500 text-white" : state === "skipped" ? "bg-slate-300 text-slate-700" : state === "current" ? "bg-teal-500 text-white ring-4 ring-teal-100" : state === "review" ? "bg-amber-500 text-white" : state === "blocked" ? "bg-rose-500 text-white" : "border-2 border-slate-300 bg-white text-slate-400"}`}>{state === "completed" ? "✓" : state === "skipped" ? "–" : state === "current" ? "●" : state === "review" ? "!" : state === "blocked" ? "×" : index + 1}</span><div className={`mt-2 max-w-[104px] text-[10px] font-bold leading-3.5 group-hover:underline ${state === "completed" ? "text-emerald-700" : state === "current" ? "text-teal-800" : state === "review" ? "text-amber-800" : state === "blocked" ? "text-rose-700" : "text-slate-500"}`}>{step.title}</div><div className="mt-0.5 text-[8px] font-bold uppercase tracking-wide text-slate-400">{state === "completed" ? "Achieved" : state === "review" ? "Review" : state}</div></Link>; })}</div></div></div>;
+  const markerLeft = `${((currentIndex + 0.5) / steps.length) * 100}%`;
+  return (
+    <div className="mt-5">
+      <div className="mb-3 flex items-center justify-between gap-3"><div className="text-xs font-bold uppercase tracking-wide text-slate-500">Milestones</div><div className="text-right text-[11px] text-slate-400">{completed} achieved · {skipped} skipped · {steps.length} total</div></div>
+      <div className="relative w-full pb-14 pt-1">
+        <div className="absolute top-3.5 h-0.5 bg-slate-200" style={{ left: edgeInset, right: edgeInset }}><div className="h-full bg-emerald-400" style={{ width: `${lineProgress}%` }} /></div>
+        <div className="relative grid w-full" style={{ gridTemplateColumns: `repeat(${steps.length}, minmax(0, 1fr))` }}>{steps.map((step, index) => { const state = workflowState(project, index); return <Link key={step.id} to={milestoneHref(project, step.actionUrl, step.stepKey)} title={`Open ${step.title}`} className="group flex min-w-0 flex-col items-center rounded-lg text-center outline-none focus-visible:ring-2 focus-visible:ring-teal-400"><span className={`relative z-[1] flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-[9px] font-black shadow-[0_0_0_3px_white] transition group-hover:scale-110 ${state === "completed" ? "bg-emerald-500 text-white" : state === "skipped" ? "bg-slate-300 text-slate-700" : state === "current" ? "bg-teal-500 text-white ring-4 ring-teal-100" : state === "review" ? "bg-amber-500 text-white" : state === "blocked" ? "bg-rose-500 text-white" : "border-2 border-slate-300 bg-white text-slate-400"}`}>{state === "completed" ? "✓" : state === "skipped" ? "–" : state === "current" ? "●" : state === "review" ? "!" : state === "blocked" ? "×" : index + 1}</span><div className={`mt-2 max-w-[104px] text-[10px] font-bold leading-3.5 group-hover:underline ${state === "completed" ? "text-emerald-700" : state === "current" ? "text-teal-800" : state === "review" ? "text-amber-800" : state === "blocked" ? "text-rose-700" : "text-slate-500"}`}>{step.title}</div><div className="mt-0.5 text-[8px] font-bold uppercase tracking-wide text-slate-400">{state === "completed" ? "Achieved" : state === "review" ? "Review" : state}</div></Link>; })}</div>
+        {project.status !== "completed" && project.status !== "archived" && <div className="pointer-events-none absolute bottom-0 z-10 -translate-x-1/2 text-center" style={{ left: markerLeft }} aria-hidden="true"><span className="mx-auto block h-0 w-0 border-x-[7px] border-b-[9px] border-x-transparent border-b-teal-600 motion-safe:animate-pulse" /><span className="inline-flex max-w-44 items-center rounded-full bg-teal-600 px-3 py-1.5 text-[10px] font-black uppercase tracking-wide text-white shadow-lg"><span className="truncate">↑ Next task</span></span></div>}
+      </div>
+    </div>
+  );
 }
 
 function projectTypeLabel(project: GuidedProject) {
@@ -218,6 +252,10 @@ export default function GuidedProjects() {
             const breakdown = projectProgressBreakdown(project);
             const needsReview = projectNeedsReview(project);
             const nextTitle = task?.title ?? workflowStep?.title ?? (project.status === "completed" ? "Project complete" : "Review project overview");
+            // The project list is an overview. Open the project first so the
+            // user can review its evidence, milestones, and task context before
+            // following the task's module action from the detail page.
+            const nextHref = `/guided-projects/${project.id}`;
             return <article key={project.id} className="rounded-2xl border border-violet-100 bg-white px-5 py-5 shadow-sm transition hover:border-teal-200 hover:shadow-md sm:px-6">
               <div className="flex items-start justify-between gap-4">
                 <div className="flex min-w-0 items-center gap-4">
@@ -240,6 +278,7 @@ export default function GuidedProjects() {
                 <span className={`shrink-0 rounded-full px-4 py-1.5 text-xs font-bold ${project.status === "archived" ? "bg-slate-200 text-slate-700" : project.status === "intake_draft" ? "bg-violet-100 text-violet-800" : needsReview ? "bg-amber-100 text-amber-800" : project.status === "completed" ? "bg-emerald-100 text-emerald-800" : "bg-teal-100 text-teal-800"}`}>{project.status === "archived" ? "Archived · View only" : project.status === "intake_draft" ? "Intake draft" : needsReview ? "Needs Review" : stageLabel(project)}</span>
               </div>
 
+
               <div className="mt-6 rounded-xl border border-violet-100 bg-slate-50/60 px-4 py-3">
                 <div className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_1px_minmax(0,1fr)_auto] sm:items-center sm:gap-5">
                   <div>
@@ -260,8 +299,8 @@ export default function GuidedProjects() {
               <WorkflowMilestones project={project} />
 
               <div className="mt-5 flex flex-col gap-3 border-t border-violet-50 pt-4 md:flex-row md:items-center md:justify-between">
-                <div className="flex min-w-0 flex-col gap-2 text-sm text-slate-500 sm:flex-row sm:items-center sm:gap-7"><div className="min-w-0 truncate">Next: <span className="font-bold text-slate-900">{nextTitle}</span></div><div className="shrink-0">Updated <span className="font-bold text-slate-800">{relativeUpdated(project.updatedAt)}</span></div></div>
-                <div className="flex shrink-0 items-center gap-4">{canEditProjects && !["archived", "intake_draft"].includes(project.status) && <Link to={`/projects/new?edit=${project.id}`} className="text-xs font-bold text-teal-700 hover:text-teal-900">Edit</Link>}{canManageProjects && project.status !== "archived" && <button disabled={statusBusy === project.id} type="button" onClick={() => void changeArchiveStatus(project, "archive")} className="text-xs font-bold text-slate-500 hover:text-amber-700 disabled:opacity-50">Archive</button>}{canManageProjects && project.status === "archived" && <><button disabled={statusBusy === project.id} type="button" onClick={() => void changeArchiveStatus(project, "restore")} className="text-xs font-bold text-teal-700 disabled:opacity-50">Restore</button><button type="button" onClick={() => setDeleteTarget(project)} className="text-xs font-bold text-rose-600 hover:text-rose-800">Permanently delete</button></>}<Link to={project.status === "intake_draft" ? `/projects/new?resumeConversation=${project.id}` : project.status !== "archived" && nextWorkflowStep(project)?.stepKey === "intake" && canEditProjects ? `/guided-projects/${project.id}/intake` : `/guided-projects/${project.id}`} className="text-sm font-bold text-teal-700 hover:text-teal-900">{project.status === "archived" ? "View project →" : project.status === "intake_draft" ? "Continue intake →" : "Open project →"}</Link></div>
+                <div className="flex min-w-0 flex-col gap-2 text-sm text-slate-500 sm:flex-row sm:items-center sm:gap-7"><Link to={nextHref} className="group inline-flex min-w-0 items-center gap-2 rounded-lg border border-teal-200 bg-teal-50 px-3 py-2 text-teal-800 transition hover:border-teal-400 hover:bg-teal-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-300"><span className="shrink-0 text-[10px] font-black uppercase tracking-wide text-teal-600">Next task</span><span className="truncate font-black">{nextTitle}</span><span aria-hidden="true" className="shrink-0 font-black transition-transform group-hover:translate-x-1">→</span></Link><div className="shrink-0">Updated <span className="font-bold text-slate-800">{relativeUpdated(project.updatedAt)}</span></div></div>
+                <div className="flex shrink-0 items-center gap-4">{canEditProjects && !["archived", "intake_draft"].includes(project.status) && <Link to={`/projects/new?edit=${project.id}`} className="text-xs font-bold text-teal-700 hover:text-teal-900">Edit</Link>}{canManageProjects && project.status !== "archived" && <button disabled={statusBusy === project.id} type="button" onClick={() => void changeArchiveStatus(project, "archive")} className="text-xs font-bold text-slate-500 hover:text-amber-700 disabled:opacity-50">Archive</button>}{canManageProjects && project.status === "archived" && <><button disabled={statusBusy === project.id} type="button" onClick={() => void changeArchiveStatus(project, "restore")} className="text-xs font-bold text-teal-700 disabled:opacity-50">Restore</button><button type="button" onClick={() => setDeleteTarget(project)} className="text-xs font-bold text-rose-600 hover:text-rose-800">Permanently delete</button></>}<Link to={project.status === "intake_draft" ? `/projects/new?resumeConversation=${project.id}` : nextHref} className="text-sm font-bold text-teal-700 hover:text-teal-900">{project.status === "archived" ? "View project →" : project.status === "intake_draft" ? "Continue intake →" : "Open project →"}</Link></div>
               </div>
             </article>;
           })}

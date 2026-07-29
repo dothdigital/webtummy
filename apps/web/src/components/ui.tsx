@@ -28,7 +28,7 @@ export function Button({
   className?: string;
 }) {
   const styles = {
-    primary: "bg-gradient-to-r from-brand-400 to-brand-600 text-white shadow-sm shadow-brand-100 hover:from-brand-500 hover:to-brand-700 focus-visible:ring-brand-200",
+    primary: "bg-gradient-to-r from-senuke-cyan to-senuke-blue text-white shadow-sm shadow-brand-100 hover:from-brand-600 hover:to-indigo-700 focus-visible:ring-brand-200",
     ghost: "border border-slate-200 bg-white text-slate-700 shadow-sm hover:border-brand-200 hover:bg-brand-50 hover:text-brand-800 focus-visible:ring-brand-100",
     danger: "bg-rose-600 text-white shadow-sm shadow-rose-100 hover:bg-rose-700 focus-visible:ring-rose-200",
   }[variant];

@@ -34,6 +34,7 @@ export const config = {
   port: process.env.API_PORT ? parseInt(process.env.API_PORT, 10) : 4000,
   redisUrl: process.env.REDIS_URL ?? "redis://localhost:6379",
   jwtSecret: process.env.JWT_SECRET ?? "dev-only-change-me",
+  appEncryptionKey: process.env.APP_ENCRYPTION_KEY ?? process.env.JWT_SECRET ?? "dev-only-change-me",
   // Sliding idle window. Authenticated activity renews the access token; a
   // client that stops using the application naturally expires after this TTL.
   jwtExpiresIn: process.env.JWT_IDLE_TIMEOUT ?? "8h",
@@ -68,3 +69,4 @@ export const config = {
 
 export const CRAWL_QUEUE = "crawl";
 export const KEYWORD_RESEARCH_QUEUE = "keyword-research";
+export const WEBSITE_BUILDER_QUEUE = "website-builder";

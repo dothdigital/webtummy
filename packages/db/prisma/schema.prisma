@@ -157,13 +157,13 @@ model Workspace {
   createdAt               DateTime @default(now())
   updatedAt               DateTime @updatedAt
 
-  memberships   WorkspaceMembership[]
-  teams         WorkspaceTeam[]
-  agencyClients AgencyClient[]
-  notifications WorkspaceNotification[]
-  activity      WorkspaceActivity[]
-  invitations   WorkspaceInvitation[]
-  agentThreads  ProjectAgentThread[]
+  memberships      WorkspaceMembership[]
+  teams            WorkspaceTeam[]
+  agencyClients    AgencyClient[]
+  notifications    WorkspaceNotification[]
+  activity         WorkspaceActivity[]
+  invitations      WorkspaceInvitation[]
+  agentThreads     ProjectAgentThread[]
   aiIntakeSessions WorkspaceAiIntakeSession[]
 
   @@index([ownerUserId])
@@ -171,29 +171,29 @@ model Workspace {
 }
 
 model WorkspaceAiIntakeSession {
-  id              String    @id @default(cuid())
-  workspaceId     String
-  workspace       Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  userId          String
-  contextType     String    @db.VarChar(40)
-  mode            String    @db.VarChar(30)
-  websiteUrl      String?   @db.VarChar(512)
-  websiteDomain   String?   @db.VarChar(255)
-  status          String    @default("running") @db.VarChar(40)
-  pagesAnalyzed   Json      @default("[]")
-  inputJson       Json      @default("{}")
-  suggestionsJson Json      @default("{}")
-  evidenceJson    Json      @default("{}")
-  reviewJson      Json      @default("{}")
-  appliedProjectId String?
+  id                    String    @id @default(cuid())
+  workspaceId           String
+  workspace             Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  userId                String
+  contextType           String    @db.VarChar(40)
+  mode                  String    @db.VarChar(30)
+  websiteUrl            String?   @db.VarChar(512)
+  websiteDomain         String?   @db.VarChar(255)
+  status                String    @default("running") @db.VarChar(40)
+  pagesAnalyzed         Json      @default("[]")
+  inputJson             Json      @default("{}")
+  suggestionsJson       Json      @default("{}")
+  evidenceJson          Json      @default("{}")
+  reviewJson            Json      @default("{}")
+  appliedProjectId      String?
   appliedAgencyClientId String?
-  model           String?   @db.VarChar(120)
-  errorCode       String?   @db.VarChar(80)
-  errorMessage    String?   @db.Text
-  startedAt       DateTime  @default(now())
-  completedAt     DateTime?
-  createdAt       DateTime  @default(now())
-  updatedAt       DateTime  @updatedAt
+  model                 String?   @db.VarChar(120)
+  errorCode             String?   @db.VarChar(80)
+  errorMessage          String?   @db.Text
+  startedAt             DateTime  @default(now())
+  completedAt           DateTime?
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime  @updatedAt
 
   @@index([workspaceId, createdAt])
   @@index([userId, createdAt])
@@ -803,6 +803,7 @@ model Project {
   executionPlans              ExecutionPlan[]
   opportunities               Opportunity[]
   keywordGroups               ProjectKeywordGroup[]
+  keywordResearchRuns         KeywordResearchRun[]
   strategyPlans               StrategyPlan[]
   executionTasks              ExecutionTask[]
   workflowSteps               ProjectWorkflowStep[]
@@ -842,6 +843,15 @@ model Project {
   siteArchitectureVersions    SiteArchitectureVersion[]
   leadMagnetFunnels           LeadMagnetFunnel[]
   leadMagnetEspConnections    LeadMagnetEspConnection[]
+  discoveryChecks             ContentDiscoveryCheck[]
+  websiteBuilds               WebsiteBuild[]
+  websiteModelVersions        WebsiteModelVersion[]
+  websiteApprovedReleases     WebsiteApprovedRelease[]
+  websitePublications         WebsitePublication[]
+  websiteDeployments          WebsiteDeployment[]
+  websiteSftpIntegrations     WebsiteSftpIntegration[]
+  measurementCheckpoints      MeasurementCheckpoint[]
+  nextBestActions             NextBestAction[]
 
   @@index([clientId, status])
   @@index([agencyClientId, status])
@@ -850,44 +860,44 @@ model Project {
 }
 
 model LeadMagnetFunnel {
-  id                       String   @id @default(cuid())
-  projectId                String
-  project                  Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  clientId                 String
-  version                  Int      @default(1)
-  status                   String   @default("draft") @db.VarChar(40)
-  title                    String   @db.VarChar(255)
-  magnetType               String   @db.VarChar(60)
-  recommendationScore      Int?
-  recommendationReason     String?  @db.Text
-  audience                 String?  @db.Text
-  primaryGoal              String?  @db.VarChar(255)
-  brandVoice               String?  @db.VarChar(120)
-  assetJson                Json     @default("{}")
-  landingPageJson          Json     @default("{}")
-  optInFormJson            Json     @default("{}")
-  thankYouPageJson         Json     @default("{}")
-  deliveryEmailJson        Json     @default("{}")
-  followUpSequenceJson     Json     @default("[]")
-  abTestsJson              Json     @default("[]")
-  seoMetadataJson          Json     @default("{}")
-  trackingPlanJson         Json     @default("[]")
-  validationJson           Json     @default("{}")
-  aiContentGenerationId    String?  @db.VarChar(191)
-  espConnectionId          String?
-  espConnection            LeadMagnetEspConnection? @relation(fields: [espConnectionId], references: [id], onDelete: SetNull)
-  publicSlug               String?  @unique @db.VarChar(191)
-  publicUrl                String?  @db.VarChar(512)
-  sharedWithClient         Boolean  @default(false)
-  createdByUserId          String?
-  approvedByUserId         String?
-  approvedAt               DateTime?
-  publishedAt              DateTime?
-  conversionTarget         Float    @default(5)
-  lastOptimizationAt       DateTime?
-  lastPerformanceAlertAt   DateTime?
-  createdAt                DateTime @default(now())
-  updatedAt                DateTime @updatedAt
+  id                     String                   @id @default(cuid())
+  projectId              String
+  project                Project                  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  clientId               String
+  version                Int                      @default(1)
+  status                 String                   @default("draft") @db.VarChar(40)
+  title                  String                   @db.VarChar(255)
+  magnetType             String                   @db.VarChar(60)
+  recommendationScore    Int?
+  recommendationReason   String?                  @db.Text
+  audience               String?                  @db.Text
+  primaryGoal            String?                  @db.VarChar(255)
+  brandVoice             String?                  @db.VarChar(120)
+  assetJson              Json                     @default("{}")
+  landingPageJson        Json                     @default("{}")
+  optInFormJson          Json                     @default("{}")
+  thankYouPageJson       Json                     @default("{}")
+  deliveryEmailJson      Json                     @default("{}")
+  followUpSequenceJson   Json                     @default("[]")
+  abTestsJson            Json                     @default("[]")
+  seoMetadataJson        Json                     @default("{}")
+  trackingPlanJson       Json                     @default("[]")
+  validationJson         Json                     @default("{}")
+  aiContentGenerationId  String?                  @db.VarChar(191)
+  espConnectionId        String?
+  espConnection          LeadMagnetEspConnection? @relation(fields: [espConnectionId], references: [id], onDelete: SetNull)
+  publicSlug             String?                  @unique @db.VarChar(191)
+  publicUrl              String?                  @db.VarChar(512)
+  sharedWithClient       Boolean                  @default(false)
+  createdByUserId        String?
+  approvedByUserId       String?
+  approvedAt             DateTime?
+  publishedAt            DateTime?
+  conversionTarget       Float                    @default(5)
+  lastOptimizationAt     DateTime?
+  lastPerformanceAlertAt DateTime?
+  createdAt              DateTime                 @default(now())
+  updatedAt              DateTime                 @updatedAt
 
   decisions LeadMagnetDecision[]
   metrics   LeadMagnetMetricSnapshot[]
@@ -899,24 +909,24 @@ model LeadMagnetFunnel {
 }
 
 model LeadMagnetEspConnection {
-  id                   String   @id @default(cuid())
+  id                   String    @id @default(cuid())
   projectId            String
-  project              Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  project              Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
   clientId             String
-  provider             String   @db.VarChar(60)
-  status               String   @default("not_connected") @db.VarChar(40)
-  accountId            String?  @db.VarChar(191)
-  listId               String?  @db.VarChar(191)
-  listName             String?  @db.VarChar(180)
-  endpointUrl          String?  @db.VarChar(512)
-  fieldMappingsJson    Json     @default("{}")
-  credentialCiphertext String?  @db.Text
-  credentialHint       String?  @db.VarChar(80)
+  provider             String    @db.VarChar(60)
+  status               String    @default("not_connected") @db.VarChar(40)
+  accountId            String?   @db.VarChar(191)
+  listId               String?   @db.VarChar(191)
+  listName             String?   @db.VarChar(180)
+  endpointUrl          String?   @db.VarChar(512)
+  fieldMappingsJson    Json      @default("{}")
+  credentialCiphertext String?   @db.Text
+  credentialHint       String?   @db.VarChar(80)
   lastVerifiedAt       DateTime?
-  errorMessage         String?  @db.Text
+  errorMessage         String?   @db.Text
   createdByUserId      String?
-  createdAt            DateTime @default(now())
-  updatedAt            DateTime @updatedAt
+  createdAt            DateTime  @default(now())
+  updatedAt            DateTime  @updatedAt
 
   funnels LeadMagnetFunnel[]
 
@@ -926,37 +936,37 @@ model LeadMagnetEspConnection {
 }
 
 model LeadMagnetDecision {
-  id          String   @id @default(cuid())
-  funnelId    String
-  funnel      LeadMagnetFunnel @relation(fields: [funnelId], references: [id], onDelete: Cascade)
-  actorUserId String?
-  decision    String   @db.VarChar(40)
-  comments    String?  @db.Text
-  snapshotJson Json    @default("{}")
-  createdAt   DateTime @default(now())
+  id           String           @id @default(cuid())
+  funnelId     String
+  funnel       LeadMagnetFunnel @relation(fields: [funnelId], references: [id], onDelete: Cascade)
+  actorUserId  String?
+  decision     String           @db.VarChar(40)
+  comments     String?          @db.Text
+  snapshotJson Json             @default("{}")
+  createdAt    DateTime         @default(now())
 
   @@index([funnelId, createdAt])
   @@index([actorUserId, createdAt])
 }
 
 model LeadMagnetMetricSnapshot {
-  id             String   @id @default(cuid())
-  funnelId       String
-  funnel         LeadMagnetFunnel @relation(fields: [funnelId], references: [id], onDelete: Cascade)
-  source         String   @default("system") @db.VarChar(40)
-  views          Int      @default(0)
-  optIns         Int      @default(0)
-  downloads      Int      @default(0)
-  emailsDelivered Int    @default(0)
-  emailOpens     Int      @default(0)
-  emailClicks    Int      @default(0)
-  conversionRate Float   @default(0)
-  openRate       Float    @default(0)
-  clickRate      Float    @default(0)
-  metadataJson   Json     @default("{}")
-  periodStart    DateTime?
-  periodEnd      DateTime?
-  createdAt      DateTime @default(now())
+  id              String           @id @default(cuid())
+  funnelId        String
+  funnel          LeadMagnetFunnel @relation(fields: [funnelId], references: [id], onDelete: Cascade)
+  source          String           @default("system") @db.VarChar(40)
+  views           Int              @default(0)
+  optIns          Int              @default(0)
+  downloads       Int              @default(0)
+  emailsDelivered Int              @default(0)
+  emailOpens      Int              @default(0)
+  emailClicks     Int              @default(0)
+  conversionRate  Float            @default(0)
+  openRate        Float            @default(0)
+  clickRate       Float            @default(0)
+  metadataJson    Json             @default("{}")
+  periodStart     DateTime?
+  periodEnd       DateTime?
+  createdAt       DateTime         @default(now())
 
   @@index([funnelId, createdAt])
 }
@@ -1079,21 +1089,21 @@ model ProjectIntakeAnswer {
 }
 
 model BusinessProfile {
-  id              String   @id @default(cuid())
-  projectId       String   @unique
-  project         Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  businessSummary String?  @db.Text
-  targetAudience  String?  @db.Text
-  offerSummary    String?  @db.Text
-  businessModel   String?  @db.VarChar(120)
-  strengths       Json     @default("[]")
-  constraints     Json     @default("[]")
-  budgetLevel     String?  @db.VarChar(80)
-  skillLevel      String?  @db.VarChar(80)
-  tonePreference  String?  @db.VarChar(80)
-  intelligenceJson Json    @default("{}")
-  createdAt       DateTime @default(now())
-  updatedAt       DateTime @updatedAt
+  id               String   @id @default(cuid())
+  projectId        String   @unique
+  project          Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  businessSummary  String?  @db.Text
+  targetAudience   String?  @db.Text
+  offerSummary     String?  @db.Text
+  businessModel    String?  @db.VarChar(120)
+  strengths        Json     @default("[]")
+  constraints      Json     @default("[]")
+  budgetLevel      String?  @db.VarChar(80)
+  skillLevel       String?  @db.VarChar(80)
+  tonePreference   String?  @db.VarChar(80)
+  intelligenceJson Json     @default("{}")
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
 }
 
 model AiRun {
@@ -1502,9 +1512,13 @@ model ExecutionTask {
   createdAt                     DateTime             @default(now())
   updatedAt                     DateTime             @updatedAt
 
-  dependencies    ExecutionTaskDependency[] @relation("DependentTask")
-  requiredBy      ExecutionTaskDependency[] @relation("RequiredTask")
-  approvalHistory ExecutionTaskApproval[]
+  dependencies            ExecutionTaskDependency[] @relation("DependentTask")
+  requiredBy              ExecutionTaskDependency[] @relation("RequiredTask")
+  approvalHistory         ExecutionTaskApproval[]
+  discoveryChecks         ContentDiscoveryCheck[]
+  measurementCheckpoints  MeasurementCheckpoint[]
+  sourceNextBestActions   NextBestAction[]          @relation("NextBestActionSourceTask")
+  followupNextBestActions NextBestAction[]          @relation("NextBestActionFollowupTask")
 
   @@index([clientId, status])
   @@index([projectId, status])
@@ -1545,6 +1559,88 @@ model ExecutionTaskApproval {
 
   @@index([taskId, createdAt])
   @@index([actorMembershipId, createdAt])
+}
+
+model ContentDiscoveryCheck {
+  id                  String        @id @default(cuid())
+  projectId           String
+  project             Project       @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  taskId              String
+  task                ExecutionTask @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  liveUrl             String        @db.VarChar(1024)
+  status              String        @default("pending") @db.VarChar(40)
+  httpStatus          Int?
+  canonicalUrl        String?       @db.VarChar(1024)
+  canonicalMatches    Boolean?
+  indexable           Boolean?
+  robotsAllowed       Boolean?
+  sitemapPresent      Boolean?
+  analyticsDetected   Boolean?
+  crawlRequestedAt    DateTime?
+  indexingRequestedAt DateTime?
+  firstDiscoveredAt   DateTime?
+  evidenceJson        Json          @default("{}")
+  errorMessage        String?       @db.Text
+  checkedAt           DateTime?
+  createdAt           DateTime      @default(now())
+  updatedAt           DateTime      @updatedAt
+
+  @@index([projectId, status])
+  @@index([taskId, createdAt])
+  @@index([checkedAt])
+}
+
+model MeasurementCheckpoint {
+  id             String        @id @default(cuid())
+  projectId      String
+  project        Project       @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  taskId         String
+  task           ExecutionTask @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  checkpointType String        @db.VarChar(40)
+  dueAt          DateTime
+  status         String        @default("scheduled") @db.VarChar(40)
+  baselineJson   Json          @default("{}")
+  metricsJson    Json          @default("{}")
+  diagnosis      String?       @db.Text
+  completedAt    DateTime?
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
+
+  @@unique([taskId, checkpointType])
+  @@index([projectId, status, dueAt])
+  @@index([dueAt, status])
+}
+
+model NextBestAction {
+  id               String         @id @default(cuid())
+  projectId        String
+  project          Project        @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  sourceTaskId     String?
+  sourceTask       ExecutionTask? @relation("NextBestActionSourceTask", fields: [sourceTaskId], references: [id], onDelete: SetNull)
+  followupTaskId   String?
+  followupTask     ExecutionTask? @relation("NextBestActionFollowupTask", fields: [followupTaskId], references: [id], onDelete: SetNull)
+  sourceType       String         @db.VarChar(80)
+  sourceId         String?        @db.VarChar(191)
+  title            String         @db.VarChar(255)
+  recommendation   String         @db.Text
+  reasoningSummary String         @db.Text
+  expectedImpact   String         @db.Text
+  confidence       Int
+  estimatedEffort  String         @db.VarChar(40)
+  route            String         @db.VarChar(80)
+  priorityScore    Int
+  evidenceJson     Json           @default("{}")
+  status           String         @default("proposed") @db.VarChar(40)
+  decision         String?        @db.VarChar(40)
+  decisionComment  String?        @db.Text
+  decidedByUserId  String?
+  decidedAt        DateTime?
+  createdAt        DateTime       @default(now())
+  updatedAt        DateTime       @updatedAt
+
+  @@index([projectId, status, priorityScore])
+  @@index([sourceType, sourceId])
+  @@index([followupTaskId])
 }
 
 // ─── Competitive SEO & Growth Intelligence ─────────────────────────────────
@@ -1894,38 +1990,431 @@ model WordPressIntegration {
   permissionScope       Json      @default("[]")
   defaultPublishMode    String    @default("draft") @db.VarChar(60)
   secretRef             String?   @db.VarChar(255)
+  credentialCiphertext  String?   @db.Text
+  credentialHint        String?   @db.VarChar(80)
+  username              String?   @db.VarChar(191)
+  lastError             String?   @db.Text
   lastConnectionCheckAt DateTime?
   createdAt             DateTime  @default(now())
   updatedAt             DateTime  @updatedAt
 
-  publishJobs WordPressPublishJob[]
+  publishJobs        WordPressPublishJob[]
+  websiteDeployments WebsiteDeployment[]
+
+  @@index([projectId, connectionStatus])
+  @@index([clientId])
+}
+
+model WebsiteBuild {
+  id                String    @id @default(cuid())
+  projectId         String
+  project           Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  clientId          String
+  status            String    @default("planning") @db.VarChar(60)
+  name              String    @db.VarChar(180)
+  templateKey       String    @default("service_modern") @db.VarChar(80)
+  brandJson         Json      @default("{}")
+  settingsJson      Json      @default("{}")
+  sitemapApprovedAt DateTime?
+  createdByUserId   String?
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  pages                 WebsiteBuildPage[]
+  mediaAssets           WebsiteBuildMediaAsset[]
+  deployments           WebsiteDeployment[]
+  jobs                  WebsiteBuildJob[]
+  generationCheckpoints WebsiteBuildPageCheckpoint[]
+  modelVersions         WebsiteModelVersion[]
+  approvedReleases      WebsiteApprovedRelease[]
+
+  @@index([projectId, status])
+  @@index([clientId, createdAt])
+}
+
+model WebsiteComponentRegistryVersion {
+  id           String    @id @default(cuid())
+  registryKey  String    @db.VarChar(120)
+  version      String    @db.VarChar(60)
+  status       String    @default("draft") @db.VarChar(40)
+  schemaJson   Json
+  schemaHash   String    @db.VarChar(128)
+  activatedAt  DateTime?
+  deprecatedAt DateTime?
+  createdById  String?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  websiteModels WebsiteModelVersion[]
+
+  @@unique([registryKey, version])
+  @@index([status, activatedAt])
+  @@index([schemaHash])
+}
+
+model WebsiteModelVersion {
+  id                 String                          @id @default(cuid())
+  buildId            String
+  build              WebsiteBuild                    @relation(fields: [buildId], references: [id], onDelete: Cascade)
+  projectId          String
+  project            Project                         @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  clientId           String
+  version            Int
+  status             String                          @default("draft") @db.VarChar(60)
+  registryVersionId  String
+  registryVersion    WebsiteComponentRegistryVersion @relation(fields: [registryVersionId], references: [id], onDelete: Restrict)
+  parentVersionId    String?
+  parentVersion      WebsiteModelVersion?            @relation("WebsiteModelVersionParent", fields: [parentVersionId], references: [id], onDelete: SetNull)
+  childVersions      WebsiteModelVersion[]           @relation("WebsiteModelVersionParent")
+  sourceEvidenceJson Json                            @default("{}")
+  snapshotJson       Json
+  snapshotHash       String                          @db.VarChar(128)
+  generationJson     Json                            @default("{}")
+  createdById        String?
+  createdAt          DateTime                        @default(now())
+
+  validationResults WebsiteValidationResult[]
+  approvedReleases  WebsiteApprovedRelease[]
+
+  @@unique([buildId, version])
+  @@index([projectId, status, createdAt])
+  @@index([clientId, createdAt])
+  @@index([registryVersionId])
+  @@index([parentVersionId])
+  @@index([snapshotHash])
+}
+
+model WebsiteValidationResult {
+  id                    String              @id @default(cuid())
+  modelVersionId        String
+  modelVersion          WebsiteModelVersion @relation(fields: [modelVersionId], references: [id], onDelete: Cascade)
+  validatorVersion      String              @db.VarChar(60)
+  status                String              @db.VarChar(40)
+  overallScore          Int
+  blockingCount         Int                 @default(0)
+  warningCount          Int                 @default(0)
+  findingsJson          Json                @default("[]")
+  pageScoresJson        Json                @default("[]")
+  validatedSnapshotHash String              @db.VarChar(128)
+  validatedAt           DateTime            @default(now())
+  createdAt             DateTime            @default(now())
+
+  approvedReleases WebsiteApprovedRelease[]
+
+  @@index([modelVersionId, validatedAt])
+  @@index([status, blockingCount])
+  @@index([validatedSnapshotHash])
+}
+
+model WebsiteApprovedRelease {
+  id                 String                   @id @default(cuid())
+  buildId            String
+  build              WebsiteBuild             @relation(fields: [buildId], references: [id], onDelete: Cascade)
+  projectId          String
+  project            Project                  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  clientId           String
+  modelVersionId     String
+  modelVersion       WebsiteModelVersion      @relation(fields: [modelVersionId], references: [id], onDelete: Restrict)
+  validationResultId String
+  validationResult   WebsiteValidationResult  @relation(fields: [validationResultId], references: [id], onDelete: Restrict)
+  previousReleaseId  String?
+  previousRelease    WebsiteApprovedRelease?  @relation("WebsiteReleasePrevious", fields: [previousReleaseId], references: [id], onDelete: SetNull)
+  nextReleases       WebsiteApprovedRelease[] @relation("WebsiteReleasePrevious")
+  approvalStatus     String                   @default("approved") @db.VarChar(40)
+  approverId         String
+  approvedAt         DateTime                 @default(now())
+  immutableSnapshot  Json
+  snapshotHash       String                   @unique @db.VarChar(128)
+  revokedAt          DateTime?
+  revokedById        String?
+  revocationReason   String?                  @db.Text
+  createdAt          DateTime                 @default(now())
+
+  publications WebsitePublication[]
+
+  @@index([projectId, approvalStatus, approvedAt])
+  @@index([buildId, approvedAt])
+  @@index([clientId, approvedAt])
+  @@index([modelVersionId])
+  @@index([validationResultId])
+  @@index([previousReleaseId])
+}
+
+model WebsitePublication {
+  id                    String                 @id @default(cuid())
+  releaseId             String
+  release               WebsiteApprovedRelease @relation(fields: [releaseId], references: [id], onDelete: Restrict)
+  projectId             String
+  project               Project                @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  clientId              String
+  target                String                 @db.VarChar(40)
+  mode                  String                 @default("draft") @db.VarChar(40)
+  status                String                 @default("queued") @db.VarChar(60)
+  rendererVersion       String                 @db.VarChar(60)
+  destinationId         String?                @db.VarChar(255)
+  idempotencyKey        String                 @unique @db.VarChar(255)
+  remoteMappingsJson    Json                   @default("{}")
+  deploymentLogsJson    Json                   @default("[]")
+  verificationJson      Json                   @default("{}")
+  requestedById         String?
+  queuedAt              DateTime?
+  startedAt             DateTime?
+  publishedAt           DateTime?
+  completedAt           DateTime?
+  errorMessage          String?                @db.Text
+  rollbackPublicationId String?
+  rollbackPublication   WebsitePublication?    @relation("WebsitePublicationRollback", fields: [rollbackPublicationId], references: [id], onDelete: SetNull)
+  rollbackChildren      WebsitePublication[]   @relation("WebsitePublicationRollback")
+  createdAt             DateTime               @default(now())
+  updatedAt             DateTime               @updatedAt
+
+  @@index([releaseId, target, createdAt])
+  @@index([projectId, status, createdAt])
+  @@index([clientId, createdAt])
+  @@index([rollbackPublicationId])
+}
+
+model WebsiteBuildJob {
+  id                String       @id @default(cuid())
+  buildId           String
+  build             WebsiteBuild @relation(fields: [buildId], references: [id], onDelete: Cascade)
+  projectId         String
+  clientId          String
+  workspaceId       String
+  requestedByUserId String?
+  approvalTaskId    String?      @unique
+  status            String       @default("waiting_approval") @db.VarChar(60)
+  stage             String       @default("approval") @db.VarChar(80)
+  progress          Int          @default(0)
+  inputJson         Json         @default("{}")
+  resultJson        Json         @default("{}")
+  errorMessage      String?      @db.Text
+  attempts          Int          @default(0)
+  queuedAt          DateTime?
+  startedAt         DateTime?
+  completedAt       DateTime?
+  createdAt         DateTime     @default(now())
+  updatedAt         DateTime     @updatedAt
+
+  @@index([buildId, status])
+  @@index([projectId, createdAt])
+  @@index([status, queuedAt])
+}
+
+model WebsiteBuildPage {
+  id                String       @id @default(cuid())
+  buildId           String
+  build             WebsiteBuild @relation(fields: [buildId], references: [id], onDelete: Cascade)
+  parentPageId      String?
+  pageType          String       @default("service") @db.VarChar(60)
+  title             String       @db.VarChar(255)
+  slug              String       @db.VarChar(255)
+  primaryKeyword    String       @db.VarChar(255)
+  secondaryKeywords Json         @default("[]")
+  searchIntent      String       @default("commercial") @db.VarChar(60)
+  targetUrl         String?      @db.VarChar(512)
+  targetCta         String?      @db.VarChar(255)
+  status            String       @default("planned") @db.VarChar(60)
+  sortOrder         Int          @default(0)
+  briefJson         Json         @default("{}")
+  contentJson       Json         @default("{}")
+  seoJson           Json         @default("{}")
+  layoutJson        Json         @default("{}")
+  version           Int          @default(1)
+  approvedAt        DateTime?
+  remotePostId      String?      @db.VarChar(191)
+  remoteUrl         String?      @db.VarChar(512)
+  createdAt         DateTime     @default(now())
+  updatedAt         DateTime     @updatedAt
+
+  versions              WebsiteBuildPageVersion[]
+  mediaAssets           WebsiteBuildMediaAsset[]
+  generationCheckpoints WebsiteBuildPageCheckpoint[]
+
+  @@unique([buildId, slug])
+  @@index([buildId, status, sortOrder])
+}
+
+/// Private, resumable worker state for one page-generation run. These records
+/// never become Website Model content and are removed after the page is saved.
+model WebsiteBuildPageCheckpoint {
+  id          String           @id @default(cuid())
+  runId       String
+  jobId       String
+  buildId     String
+  build       WebsiteBuild     @relation(fields: [buildId], references: [id], onDelete: Cascade)
+  pageId      String
+  page        WebsiteBuildPage @relation(fields: [pageId], references: [id], onDelete: Cascade)
+  mode        String           @db.VarChar(60)
+  unitKey     String           @db.VarChar(180)
+  unitType    String           @db.VarChar(60)
+  status      String           @default("completed") @db.VarChar(40)
+  payloadJson Json             @default("{}")
+  artifactUrl String?          @db.Text
+  completedAt DateTime?
+  createdAt   DateTime         @default(now())
+  updatedAt   DateTime         @updatedAt
+
+  @@unique([runId, pageId, unitKey])
+  @@index([buildId, mode, status])
+  @@index([pageId, updatedAt])
+  @@index([jobId])
+}
+
+model WebsiteBuildPageVersion {
+  id          String           @id @default(cuid())
+  pageId      String
+  page        WebsiteBuildPage @relation(fields: [pageId], references: [id], onDelete: Cascade)
+  version     Int
+  source      String           @default("ai") @db.VarChar(40)
+  briefJson   Json             @default("{}")
+  contentJson Json             @default("{}")
+  seoJson     Json             @default("{}")
+  layoutJson  Json             @default("{}")
+  comment     String?          @db.Text
+  createdById String?
+  createdAt   DateTime         @default(now())
+
+  @@unique([pageId, version])
+  @@index([pageId, createdAt])
+}
+
+model WebsiteBuildMediaAsset {
+  id            String            @id @default(cuid())
+  buildId       String
+  build         WebsiteBuild      @relation(fields: [buildId], references: [id], onDelete: Cascade)
+  pageId        String?
+  page          WebsiteBuildPage? @relation(fields: [pageId], references: [id], onDelete: Cascade)
+  role          String            @default("hero") @db.VarChar(60)
+  status        String            @default("planned") @db.VarChar(60)
+  prompt        String            @db.Text
+  sourceUrl     String?           @db.Text
+  storageKey    String?           @db.VarChar(512)
+  fileName      String?           @db.VarChar(255)
+  altText       String?           @db.VarChar(500)
+  mimeType      String?           @db.VarChar(120)
+  width         Int?
+  height        Int?
+  remoteMediaId String?           @db.VarChar(191)
+  remoteUrl     String?           @db.Text
+  approvedAt    DateTime?
+  createdAt     DateTime          @default(now())
+  updatedAt     DateTime          @updatedAt
+
+  @@index([buildId, status])
+  @@index([pageId])
+}
+
+model WebsiteDeployment {
+  id                     String                @id @default(cuid())
+  projectId              String
+  project                Project               @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  buildId                String
+  build                  WebsiteBuild          @relation(fields: [buildId], references: [id], onDelete: Cascade)
+  wordpressIntegrationId String?
+  wordpressIntegration   WordPressIntegration? @relation(fields: [wordpressIntegrationId], references: [id], onDelete: SetNull)
+  clientId               String
+  mode                   String                @default("draft") @db.VarChar(40)
+  status                 String                @default("queued") @db.VarChar(60)
+  idempotencyKey         String                @unique @db.VarChar(255)
+  logsJson               Json                  @default("[]")
+  snapshotsJson          Json                  @default("[]")
+  errorMessage           String?               @db.Text
+  requestedByUserId      String?
+  startedAt              DateTime?
+  completedAt            DateTime?
+  createdAt              DateTime              @default(now())
+  updatedAt              DateTime              @updatedAt
+
+  qaResults WebsiteQaResult[]
+
+  @@index([projectId, status])
+  @@index([buildId, createdAt])
+}
+
+model WebsiteQaResult {
+  id           String            @id @default(cuid())
+  deploymentId String
+  deployment   WebsiteDeployment @relation(fields: [deploymentId], references: [id], onDelete: Cascade)
+  pageId       String?
+  liveUrl      String            @db.VarChar(512)
+  status       String            @default("completed") @db.VarChar(40)
+  score        Int               @default(0)
+  checksJson   Json              @default("[]")
+  createdAt    DateTime          @default(now())
+
+  @@index([deploymentId, status])
+}
+
+model WebsiteSftpIntegration {
+  id                    String    @id @default(cuid())
+  projectId             String
+  project               Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  clientId              String
+  protocol              String    @default("sftp") @db.VarChar(20)
+  host                  String    @db.VarChar(255)
+  port                  Int       @default(22)
+  username              String    @db.VarChar(191)
+  rootPath              String    @default("/") @db.VarChar(512)
+  credentialCiphertext  String    @db.Text
+  credentialHint        String?   @db.VarChar(80)
+  connectionStatus      String    @default("not_connected") @db.VarChar(60)
+  lastConnectionCheckAt DateTime?
+  lastError             String?   @db.Text
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime  @updatedAt
 
   @@index([projectId, connectionStatus])
   @@index([clientId])
 }
 
 model WordPressPublishJob {
-  id             String                @id @default(cuid())
-  projectId      String
-  project        Project               @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  clientId       String
-  integrationId  String?
-  integration    WordPressIntegration? @relation(fields: [integrationId], references: [id], onDelete: SetNull)
-  aiOutputId     String?
-  targetType     String                @db.VarChar(60)
-  publishMode    String                @db.VarChar(60)
-  title          String?               @db.VarChar(255)
-  htmlContent    String?               @db.Text
-  externalPostId String?               @db.VarChar(191)
-  status         String                @default("queued") @db.VarChar(60)
-  rollbackNote   String?               @db.Text
-  errorMessage   String?               @db.Text
-  createdAt      DateTime              @default(now())
-  completedAt    DateTime?
+  id                String                @id @default(cuid())
+  projectId         String
+  project           Project               @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  clientId          String
+  integrationId     String?
+  integration       WordPressIntegration? @relation(fields: [integrationId], references: [id], onDelete: SetNull)
+  aiOutputId        String?
+  targetType        String                @db.VarChar(60)
+  actionType        String                @default("create_content") @db.VarChar(60)
+  targetPostType    String                @default("page") @db.VarChar(40)
+  targetPageId      String?               @db.VarChar(191)
+  publishMode       String                @default("draft") @db.VarChar(60)
+  title             String?               @db.VarChar(255)
+  slug              String?               @db.VarChar(255)
+  excerpt           String?               @db.Text
+  htmlContent       String?               @db.Text
+  requestJson       Json                  @default("{}")
+  contentJson       Json                  @default("{}")
+  seoJson           Json                  @default("{}")
+  mediaJson         Json                  @default("{}")
+  internalLinksJson Json                  @default("[]")
+  previewJson       Json                  @default("{}")
+  validationJson    Json                  @default("{}")
+  approvalStatus    String                @default("not_submitted") @db.VarChar(60)
+  approvedAt        DateTime?
+  approvedByUserId  String?
+  version           Int                   @default(1)
+  externalPostId    String?               @db.VarChar(191)
+  remoteUrl         String?               @db.Text
+  releaseId         String?               @db.VarChar(191)
+  snapshotsJson     Json                  @default("[]")
+  logsJson          Json                  @default("[]")
+  status            String                @default("requested") @db.VarChar(60)
+  rollbackNote      String?               @db.Text
+  errorMessage      String?               @db.Text
+  requestedByUserId String?
+  createdAt         DateTime              @default(now())
+  updatedAt         DateTime              @updatedAt
+  publishedAt       DateTime?
+  completedAt       DateTime?
 
   @@index([projectId, status])
+  @@index([projectId, targetPageId, createdAt])
   @@index([integrationId])
   @@index([clientId, createdAt])
+  @@index([releaseId])
 }
 
 model GapLocalSeoProfile {
@@ -2364,9 +2853,10 @@ model LocalKeyword {
   createdAt  DateTime             @default(now())
   updatedAt  DateTime             @updatedAt
 
-  snapshots   LocalRankSnapshot[]
-  scores      LocalScore[]
-  competitors LocalCompetitor[]
+  snapshots          LocalRankSnapshot[]
+  scores             LocalScore[]
+  competitors        LocalCompetitor[]
+  gridConfigurations LocalGridConfiguration[]
 
   @@index([businessId])
   @@index([keyword, city])
@@ -2388,6 +2878,84 @@ model LocalRankSnapshot {
   evidenceJson        Json         @default("{}")
 
   @@index([keywordId, scanDate])
+}
+
+model LocalGridConfiguration {
+  id                String       @id @default(cuid())
+  keywordId         String
+  keyword           LocalKeyword @relation(fields: [keywordId], references: [id], onDelete: Cascade)
+  name              String       @db.VarChar(180)
+  gridSize          Int          @default(7)
+  radiusKm          Float        @default(5)
+  centerLatitude    Float
+  centerLongitude   Float
+  device            String       @default("mobile") @db.VarChar(32)
+  language          String       @default("en") @db.VarChar(16)
+  engine            String       @default("google_maps") @db.VarChar(40)
+  resultDepth       Int          @default(20)
+  schedule          String       @default("monthly") @db.VarChar(40)
+  movementThreshold Float        @default(10)
+  active            Boolean      @default(true)
+  createdAt         DateTime     @default(now())
+  updatedAt         DateTime     @updatedAt
+
+  scans LocalGridScan[]
+
+  @@index([keywordId, active])
+}
+
+model LocalGridScan {
+  id              String                 @id @default(cuid())
+  configurationId String
+  configuration   LocalGridConfiguration @relation(fields: [configurationId], references: [id], onDelete: Cascade)
+  status          String                 @default("queued") @db.VarChar(40)
+  scanDate        DateTime               @default(now())
+  averageRank     Float?
+  top3Share       Float?
+  top10Share      Float?
+  weakAreaCount   Int                    @default(0)
+  summaryJson     Json                   @default("{}")
+  errorMessage    String?                @db.Text
+  completedAt     DateTime?
+  createdAt       DateTime               @default(now())
+
+  points      LocalGridPoint[]
+  competitors LocalGridCompetitor[]
+
+  @@index([configurationId, scanDate])
+  @@index([status, scanDate])
+}
+
+model LocalGridPoint {
+  id           String        @id @default(cuid())
+  scanId       String
+  scan         LocalGridScan @relation(fields: [scanId], references: [id], onDelete: Cascade)
+  rowIndex     Int
+  columnIndex  Int
+  latitude     Float
+  longitude    Float
+  rank         Int?
+  found        Boolean       @default(false)
+  matchedName  String?       @db.VarChar(180)
+  confidence   Int           @default(0)
+  evidenceJson Json          @default("{}")
+
+  @@unique([scanId, rowIndex, columnIndex])
+  @@index([scanId, rank])
+}
+
+model LocalGridCompetitor {
+  id           String        @id @default(cuid())
+  scanId       String
+  scan         LocalGridScan @relation(fields: [scanId], references: [id], onDelete: Cascade)
+  businessName String        @db.VarChar(180)
+  domain       String?       @db.VarChar(255)
+  averageRank  Float?
+  top3Share    Float?
+  top10Share   Float?
+  evidenceJson Json          @default("{}")
+
+  @@index([scanId, averageRank])
 }
 
 model LocalCompetitor {
@@ -2509,10 +3077,13 @@ model ExternalApiCache {
 
 model KeywordResearchRun {
   id                   String    @id @default(cuid())
+  requestKey           String?   @db.VarChar(64)
   clientId             String
   client               Client    @relation(fields: [clientId], references: [id], onDelete: Cascade)
   websiteId            String?
   website              Website?  @relation(fields: [websiteId], references: [id], onDelete: SetNull)
+  projectId            String?
+  project              Project?  @relation(fields: [projectId], references: [id], onDelete: SetNull)
   seedKeyword          String    @db.VarChar(255)
   targetUrl            String?   @db.VarChar(512)
   targetDomain         String?   @db.VarChar(255)
@@ -2543,7 +3114,9 @@ model KeywordResearchRun {
   competitors KeywordSerpCompetitor[]
 
   @@index([clientId])
+  @@index([requestKey])
   @@index([websiteId])
+  @@index([projectId])
   @@index([createdAt])
 }
 

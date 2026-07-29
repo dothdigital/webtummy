@@ -6,6 +6,7 @@ import { config } from "./config.js";
 export const TRIAL_DAYS = 14;
 
 export const DEFAULT_BILLING_PLANS = [
+  { code: "internal", name: "Internal", description: "Internal product development and platform testing.", priceMonthlyCents: 0, articleLimit: 10_000, helperMonthlyLimit: 100_000, sortOrder: -100, isActive: false },
   { code: "mini", name: "Mini", description: "Dip your toes into SEO content.", priceMonthlyCents: 900, articleLimit: 5, helperMonthlyLimit: 100, sortOrder: 10 },
   { code: "starter", name: "Starter", description: "For solo marketers getting going.", priceMonthlyCents: 1900, articleLimit: 10, helperMonthlyLimit: 250, sortOrder: 20 },
   { code: "basic", name: "Basic", description: "For steady, consistent publishing.", priceMonthlyCents: 3900, articleLimit: 25, helperMonthlyLimit: 500, sortOrder: 30 },

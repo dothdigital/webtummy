@@ -4,6 +4,7 @@ import { api } from "../api.js";
 import { Button, Card, Input } from "./ui.js";
 import { canonicalPrimaryGoal, canonicalSecondaryGoal, primaryGoalsForWorkspace, standardSecondaryGoals } from "@webtummy/core/project-goals";
 import BusinessLocationTargetMarkets from "./BusinessLocationTargetMarkets.js";
+import { geographicTargetMarkets } from "../utils/projectLocations.js";
 
 type Message = { role: "user" | "assistant"; text: string };
 const PROJECT_CONVERSATION_LIMIT = 100;
@@ -11,7 +12,7 @@ type FieldUpdate = { field: string; value: unknown; confidence: "high" | "medium
 type ConversationResponse = { message: string; fieldUpdates: FieldUpdate[]; keywordSuggestions: { primary: string[]; secondary: string[] }; missingFields: string[]; readyForReview: boolean; sessionId: string; usage: { used: number; limit: number } };
 
 export type ConversationalProjectDraft = {
-  agencyClientId: string; name: string; clientProjectType: string; websiteStatus: string; websiteUrl: string; businessName: string; niche: string;
+  agencyClientId: string; name: string; clientProjectType: string; websiteStatus: string; websiteUrl: string; hasDomain: "" | "yes" | "no"; businessName: string; niche: string;
   businessDescription: string; targetAudience: string; productsServices: string; businessLocation: string; locationCountry: string; locationStateProvince: string;
   locationCity: string; locationStreetAddress: string; locationPostalCode: string; targetLocations: string[]; primaryGoal: string; secondaryGoals: string[];
   primaryKeywords: string[]; secondaryKeywords: string[]; competitorsText: string; brandVoice: string; preferredOutputs: string[]; targetLaunchTimeline: string;
@@ -33,6 +34,8 @@ type Props = {
   onCreate: (event: React.FormEvent) => void;
   onStart: () => Promise<string>;
   onUseClassic: () => void;
+  inheritedLocation?: string;
+  inheritedLocationDetails?: { country: string; stateProvince: string; city: string; streetAddress?: string; postalCode?: string };
 };
 
 const labels: Record<string, string> = {
@@ -44,7 +47,7 @@ const labels: Record<string, string> = {
 
 const advancedIntakeLabels: Record<string, string> = {
   current_offer_cta: "Current offer or call to action", budget_level: "Budget level", time_available_weekly: "Time available each week", skill_level: "Skill level",
-  tone_preference: "Tone and style preference", skills_experience: "Skills and experience", interests_niches: "Interests or niches to consider", niches_to_avoid: "Niches to avoid",
+  tone_preference: "Tone and style preference", skills_experience: "Skills and experience", interests_niches: "Interests or niches to consider", niches_to_avoid: "Niches to avoid", new_website_content_priorities: "New website build priorities",
   income_goal: "Income goal", preferred_business_model: "Preferred business model", starting_resources: "Starting resources", risk_tolerance: "Risk tolerance",
   site_conversion_goal: "Main conversion goal", known_problem_areas: "Known problem areas", current_target_keywords: "Current target keywords", known_competitors: "Known competitors",
   cms_platform: "Current website CMS or platform", access_available: "Access available", client_name: "Client name", client_company: "Client company", client_email: "Client email",
@@ -67,6 +70,17 @@ function text(value: unknown) {
 
 function unique(values: string[]) {
   return [...new Map(values.map((value) => [value.toLowerCase(), value])).values()];
+}
+
+function normalizedKeywords(value: unknown, targetMarkets: string[]) {
+  const locations = new Set(geographicTargetMarkets(targetMarkets).map((item) => item.trim().toLocaleLowerCase()));
+  return unique(list(value).filter((item) => {
+    const normalized = item.toLocaleLowerCase().replace(/[.!]+$/, "").trim();
+    if (locations.has(normalized)) return false;
+    if (/^(?:and|or)\b|^(?:and\s+)?others?\b/.test(normalized)) return false;
+    if (!normalized.includes(" ") && !/^(?:seo|crm|rrsp|resp|saas)$/i.test(normalized)) return false;
+    return normalized.length >= 4;
+  }));
 }
 
 function dedupeConsecutiveMessages(items: Message[]) {
@@ -100,8 +114,14 @@ export default function ConversationalProjectIntake(props: Props) {
   useEffect(() => { if (draft.savedProjectId && draft.conversationTranscript.length) { setMessages(dedupeConsecutiveMessages(draft.conversationTranscript)); setStarted(true); } }, [draft.savedProjectId, draft.conversationTranscript]);
   useEffect(() => setReadyForReview(draft.conversationReadyForReview), [draft.conversationReadyForReview]);
   useEffect(() => () => { keepListeningRef.current = false; try { recognitionRef.current?.stop(); } catch { /* already stopped */ } }, []);
+  useEffect(() => {
+    const safeMarkets = geographicTargetMarkets(draft.targetLocations);
+    if (JSON.stringify(safeMarkets) !== JSON.stringify(draft.targetLocations)) patch({ targetLocations: safeMarkets });
+  }, [draft.targetLocations, patch]);
 
-  const basicsReady = Boolean(draft.name.trim() && draft.clientProjectType && draft.niche.trim() && (props.isAgency ? draft.agencyClientId : draft.businessName.trim()) && draft.websiteStatus && (draft.websiteStatus !== "existing_website" || draft.websiteUrl.trim()) && draft.locationCountry.trim() && draft.locationStateProvince.trim() && draft.locationCity.trim() && draft.targetLocations.length && draft.primaryGoal);
+  const needsDomainAnswer = draft.websiteStatus === "new_website_required" || draft.websiteStatus === "website_planned";
+  const domainReady = !needsDomainAnswer || Boolean(draft.hasDomain && (draft.hasDomain !== "yes" || draft.websiteUrl.trim()));
+  const basicsReady = Boolean(draft.name.trim() && draft.clientProjectType && draft.niche.trim() && (props.isAgency ? draft.agencyClientId : draft.businessName.trim()) && draft.websiteStatus && (draft.websiteStatus !== "existing_website" || draft.websiteUrl.trim()) && domainReady && draft.locationCountry.trim() && draft.locationStateProvince.trim() && draft.locationCity.trim() && draft.targetLocations.length && draft.primaryGoal);
   const selectedType = props.projectTypes.find((item) => item.value === draft.clientProjectType);
   const selectedClientName = props.isAgency ? props.clients.find((client) => client.id === draft.agencyClientId)?.name ?? "" : draft.businessName;
   const usedAiRequests = serverUsageCount ?? messages.filter((message) => message.role === "user").length;
@@ -130,11 +150,11 @@ export default function ConversationalProjectIntake(props: Props) {
       if (update.field === "businessDescription") next.businessDescription = text(update.value);
       if (update.field === "targetAudience") next.targetAudience = text(update.value);
       if (update.field === "productsServices") next.productsServices = text(update.value);
-      if (update.field === "targetMarkets") next.targetLocations = unique(list(update.value));
+      if (update.field === "targetMarkets") next.targetLocations = geographicTargetMarkets(update.value);
       if (update.field === "primaryGoal") { const goal = canonicalPrimaryGoal(text(update.value)); if (primaryGoalsForWorkspace(props.workspaceType).includes(goal as never)) next.primaryGoal = goal; }
       if (update.field === "secondaryGoals") { const allowed = new Set<string>(standardSecondaryGoals); next.secondaryGoals = unique(list(update.value).map(canonicalSecondaryGoal).filter((goal) => allowed.has(goal))); }
-      if (update.field === "primaryKeywords") next.primaryKeywords = unique(list(update.value));
-      if (update.field === "secondaryKeywords") next.secondaryKeywords = unique(list(update.value));
+      if (update.field === "primaryKeywords") next.primaryKeywords = normalizedKeywords(update.value, draft.targetLocations);
+      if (update.field === "secondaryKeywords") next.secondaryKeywords = normalizedKeywords(update.value, draft.targetLocations);
       if (update.field === "competitors") next.competitorsText = unique(list(update.value)).join("\n");
       if (update.field === "brandVoice") next.brandVoice = text(update.value);
       if (update.field === "preferredOutputs") next.preferredOutputs = unique(list(update.value));
@@ -158,11 +178,11 @@ export default function ConversationalProjectIntake(props: Props) {
 
   function currentDraft() {
     return {
-      projectName: draft.name, businessName: draft.businessName, serviceType: draft.niche, projectType: selectedType?.label, websiteStatus: draft.websiteStatus,
+      projectName: draft.name, businessName: draft.businessName, serviceType: draft.niche, projectType: selectedType?.label, clientProjectType: draft.clientProjectType, websiteStatus: draft.websiteStatus, hasDomain: draft.hasDomain,
       websiteUrl: draft.websiteUrl, businessDescription: draft.businessDescription, targetAudience: draft.targetAudience, productsServices: draft.productsServices,
       businessLocation: { country: draft.locationCountry, stateProvince: draft.locationStateProvince, city: draft.locationCity, streetAddress: draft.locationStreetAddress, postalCode: draft.locationPostalCode },
-      targetMarkets: draft.targetLocations, primaryGoal: draft.primaryGoal, secondaryGoals: draft.secondaryGoals, primaryKeywords: draft.primaryKeywords,
-      secondaryKeywords: draft.secondaryKeywords, competitors: list(draft.competitorsText), brandVoice: draft.brandVoice, preferredOutputs: draft.preferredOutputs,
+      targetMarkets: geographicTargetMarkets(draft.targetLocations), primaryGoal: draft.primaryGoal, secondaryGoals: draft.secondaryGoals, primaryKeywords: normalizedKeywords(draft.primaryKeywords, draft.targetLocations),
+      secondaryKeywords: normalizedKeywords(draft.secondaryKeywords, draft.targetLocations), competitors: list(draft.competitorsText), brandVoice: draft.brandVoice, preferredOutputs: draft.preferredOutputs,
       targetLaunchTimeline: draft.targetLaunchTimeline, advancedIntake: draft.advancedIntake,
     };
   }
@@ -258,11 +278,12 @@ export default function ConversationalProjectIntake(props: Props) {
       <Input label="Project name *" value={draft.name} onChange={(name) => patch({ name })} placeholder="Enter your details" />
       <label className="block"><span className="mb-1 block text-sm font-bold">Project type *</span><select value={draft.clientProjectType} onChange={(event) => patch({ clientProjectType: event.target.value })} className="h-11 w-full rounded-lg border bg-white px-3 text-sm">{props.projectTypes.map((type) => <option key={type.value} value={type.value}>{type.label}</option>)}</select></label>
       <Input label="Type of service / niche *" value={draft.niche} onChange={(niche) => patch({ niche })} placeholder="Enter your details" />
-      <label className="block"><span className="mb-1 block text-sm font-bold">Website status *</span><select value={draft.websiteStatus} onChange={(event) => patch({ websiteStatus: event.target.value, ...(event.target.value !== "existing_website" ? { websiteUrl: "" } : {}) })} className="h-11 w-full rounded-lg border bg-white px-3 text-sm">{Object.entries(props.websiteStatuses).map(([value, option]) => <option key={value} value={value}>{option.label}</option>)}</select><span className="mt-1 block text-xs text-slate-500">{props.websiteStatuses[draft.websiteStatus]?.meaning}</span></label>
+      <label className="block"><span className="mb-1 block text-sm font-bold">Website status *</span><select value={draft.websiteStatus} onChange={(event) => patch({ websiteStatus: event.target.value, websiteUrl: "", hasDomain: "" })} className="h-11 w-full rounded-lg border bg-white px-3 text-sm">{Object.entries(props.websiteStatuses).map(([value, option]) => <option key={value} value={value}>{option.label}</option>)}</select><span className="mt-1 block text-xs text-slate-500">{props.websiteStatuses[draft.websiteStatus]?.meaning}</span></label>
       {draft.websiteStatus === "existing_website" && <Input label="Website URL *" value={draft.websiteUrl} onChange={(websiteUrl) => patch({ websiteUrl })} placeholder="https://www.example.com" />}
-      <div className="md:col-span-2"><BusinessLocationTargetMarkets value={{ country: draft.locationCountry, stateProvince: draft.locationStateProvince, city: draft.locationCity, streetAddress: draft.locationStreetAddress, postalCode: draft.locationPostalCode, targetMarkets: draft.targetLocations }} onChange={(value) => patch({ locationCountry: value.country, locationStateProvince: value.stateProvince, locationCity: value.city, locationStreetAddress: value.streetAddress, locationPostalCode: value.postalCode, targetLocations: value.targetMarkets })} local={draft.clientProjectType === "local_business"} /></div>
+      {needsDomainAnswer && <fieldset className="rounded-xl border border-slate-200 bg-slate-50 p-4 md:col-span-2"><legend className="px-1 text-sm font-black text-slate-900">Do you already have a domain? *</legend><p className="mt-1 text-xs text-slate-500">Tell SEnuke whether a domain has already been registered for this new website.</p><div className="mt-3 flex flex-wrap gap-3">{[["yes", "Yes, I have a domain"], ["no", "No, I need a domain"]].map(([value, label]) => <button key={value} type="button" onClick={() => patch({ hasDomain: value as "yes" | "no", ...(value === "no" ? { websiteUrl: "" } : {}) })} className={`rounded-lg border px-4 py-2.5 text-sm font-bold ${draft.hasDomain === value ? "border-brand-500 bg-brand-50 text-brand-800 ring-2 ring-brand-100" : "border-slate-200 bg-white text-slate-700"}`}>{draft.hasDomain === value ? "✓ " : ""}{label}</button>)}</div>{draft.hasDomain === "yes" && <div className="mt-4 max-w-lg"><Input label="Domain name *" value={draft.websiteUrl} onChange={(websiteUrl) => patch({ websiteUrl })} placeholder="example.com" /></div>}</fieldset>}
+      <div className="md:col-span-2"><BusinessLocationTargetMarkets value={{ country: draft.locationCountry, stateProvince: draft.locationStateProvince, city: draft.locationCity, streetAddress: draft.locationStreetAddress, postalCode: draft.locationPostalCode, targetMarkets: draft.targetLocations }} onChange={(value) => patch({ locationCountry: value.country, locationStateProvince: value.stateProvince, locationCity: value.city, locationStreetAddress: value.streetAddress, locationPostalCode: value.postalCode, targetLocations: value.targetMarkets })} inheritedLocation={props.inheritedLocation} inheritedLocationDetails={props.inheritedLocationDetails} showSameAsClientLocation local={draft.clientProjectType === "local_business"} /></div>
       <label className="block md:col-span-2"><span className="mb-1 block text-sm font-bold">Primary Goal *</span><select required value={draft.primaryGoal} onChange={(event) => patch({ primaryGoal: event.target.value, secondaryGoals: draft.secondaryGoals.filter((goal) => goal !== event.target.value) })} className="h-11 w-full rounded-lg border bg-white px-3 text-sm"><option value="">Select one Primary Goal</option>{primaryGoalsForWorkspace(props.workspaceType).map((goal) => <option key={goal} value={goal}>{goal}</option>)}</select><span className="mt-1 block text-xs text-slate-500">This is the main objective used to prioritize AI recommendations, Strategy and Execution.</span></label>
-    </div><div className="mt-7 flex flex-wrap items-center justify-between gap-3 border-t pt-5"><p className="max-w-xl text-xs leading-5 text-slate-500">Continue saves these essentials as a project draft without using an AI request. The chat and captured data are then saved to that project after every successful response.{draft.websiteStatus === "existing_website" && draft.websiteUrl.trim() ? " The first response will also use a safe, limited review of the public website." : ""}</p><Button type="submit" disabled={!basicsReady || starting}>{starting ? "Saving project…" : "Continue with SEnuke AI →"}</Button></div></Card>
+    </div><div className="mt-7 flex flex-wrap items-center justify-between gap-3 border-t pt-5"><p className="max-w-xl text-xs leading-5 text-slate-500">Continue saves these essentials as a project draft without using an AI request. The chat and captured data are then saved to that project after every successful response.{draft.websiteStatus === "existing_website" && draft.websiteUrl.trim() ? " The first response will also use a safe, limited review of the public website." : ""}</p><div className="flex flex-wrap items-center gap-3"><button type="button" onClick={props.onUseClassic} className="h-11 rounded-lg border-2 border-slate-300 bg-white px-4 text-sm font-black text-slate-800 transition hover:border-brand-300 hover:bg-brand-50">Continue with Classic Form</button><Button type="submit" disabled={!basicsReady || starting}>{starting ? "Saving project…" : "Continue with SEnuke AI →"}</Button></div></div></Card>
   </form>;
 
   return <form onSubmit={props.onCreate} className="space-y-4">
@@ -288,8 +309,8 @@ export default function ConversationalProjectIntake(props: Props) {
         <Captured label="Target markets" value={draft.targetLocations} source={captured.targetMarkets} required />
         <Captured label="Primary goal" value={draft.primaryGoal} source={captured.primaryGoal} required />
         <Captured label="Secondary goals" value={draft.secondaryGoals} source={captured.secondaryGoals} onRemove={(item) => removeCaptured("secondaryGoals", item)} />
-        <Captured label="Primary keywords" value={draft.primaryKeywords} source={captured.primaryKeywords} tone="brand" onRemove={(item) => removeCaptured("primaryKeywords", item)} />
-        <Captured label="Secondary keywords" value={draft.secondaryKeywords} source={captured.secondaryKeywords} tone="violet" onRemove={(item) => removeCaptured("secondaryKeywords", item)} />
+        <Captured label="Primary keywords" value={normalizedKeywords(draft.primaryKeywords, draft.targetLocations)} source={captured.primaryKeywords} tone="brand" onRemove={(item) => removeCaptured("primaryKeywords", item)} />
+        <Captured label="Secondary keywords" value={normalizedKeywords(draft.secondaryKeywords, draft.targetLocations)} source={captured.secondaryKeywords} tone="violet" onRemove={(item) => removeCaptured("secondaryKeywords", item)} />
         <Captured label="Competitors" value={list(draft.competitorsText)} source={captured.competitors} onRemove={(item) => removeCaptured("competitors", item)} />
         <Captured label="Brand voice" value={draft.brandVoice} source={captured.brandVoice} onRemove={(item) => removeCaptured("brandVoice", item)} />
         <Captured label="Project deliverables" value={draft.preferredOutputs} source={captured.preferredOutputs} onRemove={(item) => removeCaptured("preferredOutputs", item)} />
@@ -337,7 +358,7 @@ function currentAdvancedQuestion(message: string) {
 }
 
 function allowsMultipleChoices(message: string) {
-  return /target markets?|secondary goals?|primary keywords?|secondary keywords?|current target keywords?|known problem areas?|known competitors?|access available|services to propose|preferred business model|project deliverables|preferred outputs|product list|interests or niches|niches to avoid/i.test(message);
+  return /target markets?|secondary goals?|primary keywords?|secondary keywords?|core search phrases?|supporting or longer-tail search phrases?|current target keywords?|known problem areas?|known competitors?|access available|services to propose|preferred business model|tone and style preference|new website build priorities|project deliverables|preferred outputs|product list|interests or niches|niches to avoid|select more than one/i.test(message);
 }
 
 function choiceFieldFromMessage(message: string) {
@@ -345,7 +366,8 @@ function choiceFieldFromMessage(message: string) {
   const advanced = Object.entries(advancedIntakeLabels).find(([, label]) => normalized.includes(label.toLocaleLowerCase()));
   if (advanced) return advanced[0];
   const coreFields: Array<[string, string[]]> = [
-    ["secondaryKeywords", ["secondary keywords"]], ["primaryKeywords", ["primary keywords"]], ["secondaryGoals", ["secondary goals"]],
+    ["secondaryKeywords", ["secondary keywords", "supporting or longer-tail search phrases", "supporting search phrases", "longer-tail search phrases"]],
+    ["primaryKeywords", ["primary keywords", "core search phrases"]], ["secondaryGoals", ["secondary goals"]],
     ["targetMarkets", ["target markets", "locations should this project target"]], ["primaryGoal", ["primary goal", "single most important goal"]],
     ["preferredOutputs", ["project deliverables", "what should senuke create"]], ["productsServices", ["products or services", "products/services"]],
     ["targetAudience", ["target audience", "main audience"]], ["businessDescription", ["business description", "what does the business do"]],

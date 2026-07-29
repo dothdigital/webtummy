@@ -168,6 +168,18 @@ export async function verifyTaskPublishing(context: Context, taskId: string, inp
       blockedReason: input.status === "failed" ? input.error || "Publishing failed verification; the previous version remains active." : null,
       approvalSnapshotJson: { ...currentSnapshot, publishing: nextPublishing } as Prisma.InputJsonValue,
     } });
+    if (input.status === "verified" && task.projectId && ["content", "publishing", "local_seo"].includes(task.moduleName)) {
+      const addDays = (days: number) => new Date(now.getTime() + days * 86_400_000);
+      const baseline = { publishedAt: now.toISOString(), liveUrl: input.liveUrl ?? null, externalId: input.externalId ?? null, checksum: input.checksum ?? null, sourceTaskId: task.id };
+      await tx.measurementCheckpoint.createMany({ data: [
+        { projectId: task.projectId, taskId: task.id, checkpointType: "post_publish", dueAt: now, baselineJson: baseline },
+        { projectId: task.projectId, taskId: task.id, checkpointType: "day_30", dueAt: addDays(30), baselineJson: baseline },
+        { projectId: task.projectId, taskId: task.id, checkpointType: "day_60", dueAt: addDays(60), baselineJson: baseline },
+        { projectId: task.projectId, taskId: task.id, checkpointType: "day_90", dueAt: addDays(90), baselineJson: baseline },
+        { projectId: task.projectId, taskId: task.id, checkpointType: "recurring_180", dueAt: addDays(180), baselineJson: baseline },
+      ], skipDuplicates: true });
+      if (input.liveUrl) await tx.contentDiscoveryCheck.create({ data: { projectId: task.projectId, taskId: task.id, liveUrl: input.liveUrl, status: "pending", evidenceJson: { publishingAttemptId: input.attemptId, target } } });
+    }
     await recordWorkspaceActivity(tx, {
       context, action: input.status === "verified" ? "publishing.completed" : input.status === "failed" ? "publishing.failed" : "publishing.verification_pending",
       entityType: "execution_task", entityId: task.id, agencyClientId: task.project?.agencyClientId, projectId: task.projectId,
@@ -182,6 +194,7 @@ export async function verifyTaskPublishing(context: Context, taskId: string, inp
       body: failed ? `${task.title} was not published. The previous version remains active. ${input.error ?? "Review the publishing log and retry."}` : input.status === "verified" ? `${task.title} was published and verified.` : `${task.title} was sent to ${target} and is awaiting verification.`,
       actionUrl: task.relatedUrl ?? `/guided-projects/${task.projectId}#execution-tasks`, agencyClientId: task.project?.agencyClientId, projectId: task.projectId,
     });
+    if (input.status === "verified" && task.projectId && ["content", "publishing", "local_seo"].includes(task.moduleName)) await createWorkspaceNotification(tx, { context, userId: context.workspace.ownerUserId, type: "measurement_checkpoints_scheduled", title: "Measurement checkpoints scheduled", body: `${task.title} is live. Discovery and post-publish, 30-day, 60-day, 90-day, and recurring reviews are scheduled.`, actionUrl: `/guided-projects/${task.projectId}?tab=execution#optimization-workflow`, agencyClientId: task.project?.agencyClientId, projectId: task.projectId });
     return { task: updated, publishing: nextPublishing, idempotent: false };
   });
 }

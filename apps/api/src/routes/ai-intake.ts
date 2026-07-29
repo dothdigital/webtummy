@@ -10,6 +10,7 @@ import { commitUsage, modelForFeature, preflightUsage, refundUsage } from "../us
 import { canAccessProject, createWorkspaceNotification, hasWorkspacePermission, recordWorkspaceActivity, workspaceContext } from "../workspace-access.js";
 import { config } from "../config.js";
 import { canonicalPrimaryGoal, canonicalSecondaryGoal, primaryGoalsForWorkspace, standardSecondaryGoals } from "@webtummy/core/project-goals";
+import { cleanGeographicTargetMarkets, explicitlyTargetsGeographicMarket } from "../project-location.js";
 
 export const aiIntakeRouter = Router();
 aiIntakeRouter.use(requireAuth);
@@ -45,13 +46,13 @@ const conversationOutputSchema = z.object({
   missingFields: z.array(z.string().trim().min(1).max(80)).max(20).default([]),
   readyForReview: z.boolean().default(false),
 });
-type ConversationAdvancedField = { key: string; label: string; type: "text" | "textarea" | "select" | "multiselect" | "email"; required?: boolean; options?: string[]; projectTypes?: string[] };
+type ConversationAdvancedField = { key: string; label: string; type: "text" | "textarea" | "select" | "multiselect" | "email"; required?: boolean; options?: string[]; projectTypes?: string[]; websiteStatuses?: string[] };
 const conversationAdvancedFields: ConversationAdvancedField[] = [
   { key: "current_offer_cta", label: "Current offer or call to action", type: "textarea" },
-  { key: "budget_level", label: "Budget level", type: "select", options: ["No budget", "Under $100", "$100-$500", "$500-$2,000", "$2,000+"] },
-  { key: "time_available_weekly", label: "Time available each week", type: "select", options: ["1-3 hours", "4-7 hours", "8-15 hours", "15+ hours"] },
-  { key: "skill_level", label: "Skill level", type: "select", options: ["Beginner", "Intermediate", "Advanced", "Agency/professional"] },
-  { key: "tone_preference", label: "Tone and style preference", type: "select", options: ["Professional", "Direct", "Friendly", "Technical", "Luxury", "Bold", "Plain language"] },
+  { key: "budget_level", label: "Budget level", type: "select", options: ["No budget", "Under $100", "$100-$500", "$500-$2,000", "$2,000+"], projectTypes: ["new_business"] },
+  { key: "time_available_weekly", label: "Time available each week", type: "select", options: ["1-3 hours", "4-7 hours", "8-15 hours", "15+ hours"], projectTypes: ["new_business"] },
+  { key: "skill_level", label: "Skill level", type: "select", options: ["Beginner", "Intermediate", "Advanced", "Agency/professional"], projectTypes: ["new_business"] },
+  { key: "tone_preference", label: "Tone and style preference", type: "multiselect", options: ["Professional", "Direct", "Friendly", "Technical", "Luxury", "Bold", "Plain language"] },
   { key: "skills_experience", label: "Skills and experience", type: "textarea", required: true, projectTypes: ["new_business"] },
   { key: "interests_niches", label: "Interests or niches to consider", type: "textarea", projectTypes: ["new_business"] },
   { key: "niches_to_avoid", label: "Niches to avoid", type: "textarea", projectTypes: ["new_business"] },
@@ -60,11 +61,12 @@ const conversationAdvancedFields: ConversationAdvancedField[] = [
   { key: "starting_resources", label: "Starting resources", type: "textarea", projectTypes: ["new_business"] },
   { key: "risk_tolerance", label: "Risk tolerance", type: "select", options: ["Very conservative", "Balanced", "Aggressive but safe"], projectTypes: ["new_business"] },
   { key: "site_conversion_goal", label: "Main conversion goal", type: "select", required: true, options: ["Phone calls", "Form submissions", "Bookings", "Purchases", "Downloads", "Email signups"], projectTypes: ["existing_website", "local_seo"] },
-  { key: "known_problem_areas", label: "Known problem areas", type: "multiselect", options: ["Low traffic", "Poor rankings", "Low conversions", "Weak copy", "Slow site", "Poor mobile experience"], projectTypes: ["existing_website", "local_seo"] },
-  { key: "current_target_keywords", label: "Current target keywords", type: "textarea", projectTypes: ["existing_website", "local_seo"] },
+  { key: "known_problem_areas", label: "Known problem areas", type: "multiselect", options: ["Low traffic", "Poor rankings", "Low conversions", "Weak copy", "Slow site", "Poor mobile experience"], projectTypes: ["existing_website", "local_seo"], websiteStatuses: ["existing_website"] },
+  { key: "new_website_content_priorities", label: "New website build priorities", type: "multiselect", options: ["Website design and layout", "Website page content", "SEO plan and keyword mapping", "Site architecture and navigation", "Lead forms and conversion actions", "Local SEO and service-area content", "Images and visual direction"], websiteStatuses: ["new_website_required", "website_planned"] },
+  { key: "current_target_keywords", label: "Current target keywords", type: "textarea", projectTypes: ["existing_website", "local_seo"], websiteStatuses: ["existing_website"] },
   { key: "known_competitors", label: "Known competitors", type: "textarea", projectTypes: ["existing_website", "local_seo"] },
-  { key: "cms_platform", label: "Current website CMS or platform", type: "select", options: ["WordPress", "Shopify", "Wix", "Squarespace", "Custom HTML", "Other", "Unknown"], projectTypes: ["existing_website", "local_seo"] },
-  { key: "access_available", label: "Access available", type: "multiselect", options: ["Google Search Console", "Google Analytics", "WordPress", "Shopify", "Domain registrar", "Social accounts"], projectTypes: ["existing_website", "local_seo"] },
+  { key: "cms_platform", label: "Current website CMS or platform", type: "select", options: ["WordPress", "Shopify", "Wix", "Squarespace", "Custom HTML", "Other", "Unknown"], projectTypes: ["existing_website", "local_seo"], websiteStatuses: ["existing_website"] },
+  { key: "access_available", label: "Access available", type: "multiselect", options: ["Google Search Console", "Google Analytics", "WordPress", "Shopify", "Domain registrar", "Social accounts"], projectTypes: ["existing_website", "local_seo"], websiteStatuses: ["existing_website"] },
   { key: "client_name", label: "Client name", type: "text", required: true, projectTypes: ["agency_client"] },
   { key: "client_company", label: "Client company", type: "text", required: true, projectTypes: ["agency_client"] },
   { key: "client_email", label: "Client email", type: "email", projectTypes: ["agency_client"] },
@@ -81,14 +83,87 @@ const conversationAdvancedFields: ConversationAdvancedField[] = [
   { key: "publishing_preference", label: "Publishing destination for approved work", type: "select", options: ["SEnuke-hosted site", "HTML ZIP", "WordPress", "Shopify", "Own hosting", "Developer handoff"] },
 ];
 const conversationAdvancedByKey = new Map(conversationAdvancedFields.map((field) => [field.key, field]));
+
+function applicableConversationFields(projectType: string, websiteStatus: string, agencyWorkspace: boolean) {
+  const contexts = new Set([projectType, websiteStatus, agencyWorkspace ? "agency_client" : ""].filter(Boolean));
+  return conversationAdvancedFields.filter((field) => (!field.projectTypes?.length || field.projectTypes.some((context) => contexts.has(context)))
+    && (!field.websiteStatuses?.length || field.websiteStatuses.includes(websiteStatus)));
+}
+
+function questionnaireProjectType(draft: Record<string, unknown>, storedProjectType = "") {
+  const selectedBusinessType = String(draft.clientProjectType ?? "");
+  if (selectedBusinessType === "local_business") return "local_seo";
+  if (selectedBusinessType === "ecommerce") return "ecommerce";
+  if (selectedBusinessType) return "existing_website";
+  return storedProjectType;
+}
+
+function coreFieldAskedBy(message: string) {
+  const normalized = message.toLocaleLowerCase();
+  if (normalized.includes("who is the main audience this project should attract")) return "targetAudience";
+  if (normalized.includes("what does the business do and what problem does it solve")) return "businessDescription";
+  if (normalized.includes("which main products or services should this project promote")) return "productsServices";
+  if (normalized.includes("what are the business country, state or province, and city")) return "businessLocation";
+  if (normalized.includes("which locations should this project target for customers or search visibility")) return "targetMarkets";
+  if (normalized.includes("what is the single most important goal for this project")) return "primaryGoal";
+  if (normalized.includes("select any supporting outcomes")) return "secondaryGoals";
+  if (normalized.includes("what should senuke create for this project")) return "preferredOutputs";
+  if (normalized.includes("which core search phrases should this project prioritize")) return "primaryKeywords";
+  if (normalized.includes("which supporting or longer-tail search phrases")) return "secondaryKeywords";
+  return "";
+}
+
+function normalizedTargetMarkets(value: unknown) {
+  const values = (Array.isArray(value) ? value : String(value ?? "").split(/[,;\n]/))
+    .map(String)
+    .map((item) => item.trim().replace(/^["']|["']$/g, ""))
+    .filter(Boolean);
+  return cleanGeographicTargetMarkets(values);
+}
+
+function typedAnswerForCoreField(field: string, answer: string) {
+  let cleaned = answer.trim()
+    .replace(/\b(\w+)(?:\s+\1\b)+/gi, "$1")
+    .replace(/^(?:regarding|about)\s+(?:the\s+)?(?:audience|question)[,:;\s-]*/i, "")
+    .trim();
+  if (cleaned.length < 3 || /^(?:help|suggest|show|explain|what do you mean|i don'?t know)\b/i.test(cleaned)) return undefined;
+  if (field === "targetMarkets") {
+    const markets = normalizedTargetMarkets(cleaned);
+    return markets.length ? markets : undefined;
+  }
+  if (["primaryKeywords", "secondaryKeywords"].includes(field)) return cleaned.split(/[,;\n]/).map((item) => item.trim()).filter(Boolean);
+  if (field === "targetAudience") {
+    cleaned = cleaned
+      .replace(/^(?:we (?:are )?target(?:ing)?|our (?:main )?audience (?:is|includes?))\s*/i, "")
+      .replace(/^anyone who is (?:looking for|seeking)\s+(?:the\s+)?(?:services?\s+)?(?:related to\s+)?/i, "People seeking ")
+      .replace(/\s+(?:we (?:will|would|can) be happy to help|and we (?:will|would|can) help).*$/i, "")
+      .replace(/\b(?:any|all) services? related to insurance\b/gi, "other insurance services")
+      .trim();
+  }
+  cleaned = cleaned.replace(/\s+/g, " ").replace(/\s+([,.])/g, "$1").trim();
+  if (cleaned && !/[.!?]$/.test(cleaned)) cleaned += ".";
+  return cleaned.length > 280 ? `${cleaned.slice(0, 277).replace(/\s+\S*$/, "")}…` : cleaned;
+}
+
+function normalizedKeywordValues(value: unknown, draft: Record<string, unknown>) {
+  const values = (Array.isArray(value) ? value : String(value ?? "").split(/[,;\n]/)).map(String).map((item) => item.trim().replace(/^["']|["']$/g, "")).filter(Boolean);
+  const locations = new Set(normalizedTargetMarkets(draft.targetMarkets).map((item) => item.toLocaleLowerCase()));
+  return [...new Map(values.filter((item) => {
+    const normalized = item.toLocaleLowerCase().replace(/[.!]+$/, "").trim();
+    if (locations.has(normalized)) return false;
+    if (/^(?:and|or)\b|^(?:and\s+)?others?\b/.test(normalized)) return false;
+    if (!normalized.includes(" ") && !/^(?:seo|crm|rrsp|resp|saas)$/i.test(normalized)) return false;
+    return normalized.length >= 4;
+  }).map((item) => [item.toLocaleLowerCase(), item])).values()].slice(0, 30);
+}
 const mandatoryCoreQuestions: Record<string, { label: string; question: string }> = {
   businessDescription: { label: "business description", question: "In one or two sentences, what does the business do and what problem does it solve?" },
   targetAudience: { label: "target audience", question: "Who is the main audience this project should attract?" },
-  productsServices: { label: "products or services", question: "Which main products or services should this project promote?" },
+  productsServices: { label: "products or services", question: "Which actual products or services should this project promote? Enter the customer-facing service or product names the business truly provides." },
   businessLocation: { label: "business location", question: "What are the business country, state or province, and city?" },
   targetMarkets: { label: "target markets", question: "Which locations should this project target for customers or search visibility?" },
   primaryGoal: { label: "primary goal", question: "What is the single most important goal for this project?" },
-  secondaryGoals: { label: "secondary goals", question: "Which additional goals should influence Strategy and Execution? You may select more than one." },
+  secondaryGoals: { label: "Secondary Goals (optional)", question: "Select any supporting outcomes. They influence Strategy and Execution but never replace the Primary Goal. You may select more than one, or choose No secondary goals." },
   preferredOutputs: { label: "project deliverables", question: "What should SEnuke create for this project?" },
   primaryKeywords: { label: "primary keywords", question: "Which core search phrases should this project prioritize? You may select more than one." },
   secondaryKeywords: { label: "secondary keywords", question: "Which supporting or longer-tail search phrases should this project consider? You may select more than one." },
@@ -97,7 +172,7 @@ const mandatoryCoreQuestions: Record<string, { label: string; question: string }
 function coreQuestionSuggestions(key: string, draft: Record<string, unknown>, allowedPrimaryGoals: readonly string[] = []) {
   const niche = String(draft.industryNiche ?? draft.serviceType ?? "the business's services").trim();
   const offer = String(draft.productsServices ?? niche).trim();
-  const markets = Array.isArray(draft.targetMarkets) ? draft.targetMarkets.map(String).filter(Boolean) : [];
+  const markets = normalizedTargetMarkets(draft.targetMarkets);
   const location = draft.businessLocation && typeof draft.businessLocation === "object" && !Array.isArray(draft.businessLocation) ? draft.businessLocation as Record<string, unknown> : {};
   const marketText = markets.length ? markets.join(", ") : [location.city, location.stateProvince, location.country].map(String).filter(Boolean).join(", ") || "the selected markets";
   if (key === "businessDescription") return [
@@ -112,10 +187,9 @@ function coreQuestionSuggestions(key: string, draft: Record<string, unknown>, al
     `Organizations comparing providers before investing in ${offer}`,
   ];
   if (key === "productsServices") return [
-    `Lead with the core ${niche} service`,
-    `List the three highest-value services offered to the target audience`,
-    `Group the offer into primary service, supporting services, and ongoing support`,
-  ];
+    ...(Array.isArray(draft.primaryKeywords) ? draft.primaryKeywords.map(String) : []),
+    ...(Array.isArray(draft.secondaryKeywords) ? draft.secondaryKeywords.map(String) : []),
+  ].map((item) => item.trim()).filter((item) => item && item.toLocaleLowerCase() !== niche.toLocaleLowerCase()).slice(0, 5);
   if (key === "targetMarkets") return [
     ...[location.city, location.stateProvince, location.country].map(String).filter(Boolean),
     "Choose a custom combination of cities, regions, or countries",
@@ -123,8 +197,15 @@ function coreQuestionSuggestions(key: string, draft: Record<string, unknown>, al
   if (key === "primaryGoal") return [...allowedPrimaryGoals];
   if (key === "secondaryGoals") return [...standardSecondaryGoals, "No secondary goals"];
   if (key === "preferredOutputs") return ["Website", "Landing page", "SEO plan", "Lead magnet", "Report", "Proposal"];
-  if (key === "primaryKeywords") return uniqueSuggestions([niche, offer, `${niche} services`, `${offer} company`]);
-  if (key === "secondaryKeywords") return uniqueSuggestions([`${niche} in ${marketText}`, `best ${niche}`, `${offer} for small businesses`, `${offer} provider in ${marketText}`, "Handle keyword suggestions later"]);
+  const serviceDirections = normalizedKeywordValues([niche, ...offer.split(/[,;\n]/)], draft);
+  if (key === "primaryKeywords") return uniqueSuggestions(serviceDirections.length ? serviceDirections : [`${niche} services`]);
+  if (key === "secondaryKeywords") {
+    const primaryMarket = markets[0] || String(location.city ?? "").trim();
+    return uniqueSuggestions(normalizedKeywordValues([
+      `best ${niche}`,
+      ...serviceDirections.flatMap((service) => [primaryMarket ? `${service} in ${primaryMarket}` : "", `${service} services`]),
+    ], draft));
+  }
   return [];
 }
 
@@ -139,7 +220,7 @@ function dedupeConversationMessages<T extends { role?: unknown; text?: unknown }
 function advancedQuestionSuggestions(field: ConversationAdvancedField, draft: Record<string, unknown>) {
   const nicheItems = String(draft.industryNiche ?? draft.serviceType ?? "business services").split(/[,;\n]/).map((item) => item.trim()).filter(Boolean).slice(0, 3);
   const offerItems = String(draft.productsServices ?? nicheItems.join(", ")).split(/[,;\n]/).map((item) => item.trim()).filter(Boolean).slice(0, 4);
-  const marketItems = Array.isArray(draft.targetMarkets) ? draft.targetMarkets.map(String).filter(Boolean).slice(0, 3) : [];
+  const marketItems = normalizedTargetMarkets(draft.targetMarkets).slice(0, 3);
   const primaryOffer = offerItems[0] || nicheItems[0] || "the primary service";
   const primaryNiche = nicheItems[0] || primaryOffer;
   const primaryMarket = marketItems[0] || "the target market";
@@ -161,11 +242,12 @@ function advancedQuestionSuggestions(field: ConversationAdvancedField, draft: Re
   return suggestions[field.key] ?? [];
 }
 
-function mandatoryFollowUp(key: string, remaining: number, advanced: Map<string, ConversationAdvancedField>, draft: Record<string, unknown>, allowedPrimaryGoals: readonly string[] = []) {
+function mandatoryFollowUp(key: string, remaining: number, advanced: Map<string, ConversationAdvancedField>, draft: Record<string, unknown>, allowedPrimaryGoals: readonly string[] = [], semanticKeywordSuggestions?: { primary: string[]; secondary: string[] }) {
   const advancedField = advanced.get(key);
   const core = mandatoryCoreQuestions[key];
   const label = advancedField?.label.toLocaleLowerCase() || core?.label || key.replace(/_/g, " ");
-  const suggestedChoices = advancedField?.options?.length ? advancedField.options : advancedField ? advancedQuestionSuggestions(advancedField, draft) : coreQuestionSuggestions(key, draft, allowedPrimaryGoals);
+  const semanticChoices = key === "primaryKeywords" ? semanticKeywordSuggestions?.primary : key === "secondaryKeywords" ? semanticKeywordSuggestions?.secondary : undefined;
+  const suggestedChoices = advancedField?.options?.length ? advancedField.options : advancedField ? advancedQuestionSuggestions(advancedField, draft) : semanticChoices?.length ? semanticChoices : coreQuestionSuggestions(key, draft, allowedPrimaryGoals);
   const choices = suggestedChoices.length ? `\n${suggestedChoices.map((option, index) => `${index + 1}. ${option}`).join("\n")}` : "";
   const question = core?.question || `Please provide the ${advancedField?.label || label}.`;
   const encouragement = remaining <= 1
@@ -197,6 +279,35 @@ export const aiIntakeSuggestionFields = [
 const outputSchema: z.ZodTypeAny = z.object({ suggestions: z.record(suggestionSchema).superRefine((suggestions, ctx) => { for (const field of aiIntakeSuggestionFields) if (!(field in suggestions)) ctx.addIssue({ code: "custom", message: `Missing ${field}` }); }), additionalQuestions: z.array(z.string().max(500)).max(5).default([]) });
 const jsonInput = (value: unknown) => JSON.parse(JSON.stringify(value)) as Prisma.InputJsonValue;
 
+function sanitizeReviewSuggestions(suggestions: Record<string, unknown>) {
+  const targetSuggestion = suggestions.targetMarkets;
+  if (!targetSuggestion || typeof targetSuggestion !== "object" || Array.isArray(targetSuggestion)) return suggestions;
+  const targetRecord = targetSuggestion as Record<string, unknown>;
+  const markets = normalizedTargetMarkets(targetRecord.value);
+  return {
+    ...suggestions,
+    targetMarkets: {
+      ...targetRecord,
+      value: markets.length ? markets : null,
+      ...(markets.length ? {} : {
+        confidence: "unresolved",
+        inferred: false,
+        reason: "No confirmed geographic target market was found. Audience, service, and keyword phrases were excluded.",
+      }),
+    },
+  };
+}
+
+function canonicalReviewQuestions(suggestions: Record<string, unknown>) {
+  const fields = ["businessDescription", "targetAudience", "productsServices", "businessLocation", "targetMarkets", "primaryGoal"] as const;
+  return fields.flatMap((field) => {
+    const suggestion = suggestions[field];
+    const value = suggestion && typeof suggestion === "object" && !Array.isArray(suggestion) ? (suggestion as Record<string, unknown>).value : null;
+    const populated = Array.isArray(value) ? value.length > 0 : value && typeof value === "object" ? Object.values(value as Record<string, unknown>).some(Boolean) : typeof value === "string" ? Boolean(value.trim()) : value != null;
+    return populated ? [] : [mandatoryCoreQuestions[field]?.question];
+  }).filter((question): question is string => Boolean(question)).slice(0, 5);
+}
+
 function privateAddress(address: string) { if (address === "::1" || address === "::" || /^f[cd]/i.test(address) || /^fe[89ab]/i.test(address)) return true; if (!isIP(address)) return true; if (address.includes(":")) return false; const [a, b] = address.split(".").map(Number); return a === 10 || a === 127 || a === 0 || (a === 169 && b === 254) || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168) || (a === 100 && b >= 64 && b <= 127); }
 function canonicalWebsiteHost(hostname: string) { return hostname.toLowerCase().replace(/^www\./, ""); }
 async function safeUrl(raw: string, expectedHost?: string) { const input = /^https?:\/\//i.test(raw) ? raw : `https://${raw}`; const url = new URL(input); if (!/^https?:$/.test(url.protocol) || url.username || url.password || (url.port && !["80", "443"].includes(url.port))) throw Object.assign(new Error("Enter a safe HTTP or HTTPS website URL."), { code: "unsafe_url", statusCode: 400 }); if (expectedHost && canonicalWebsiteHost(url.hostname) !== canonicalWebsiteHost(expectedHost)) throw Object.assign(new Error("Website analysis stopped because the site redirected to a different domain."), { code: "cross_domain", statusCode: 400 }); const addresses = await lookup(url.hostname, { all: true }); if (!addresses.length || addresses.some((item) => privateAddress(item.address))) throw Object.assign(new Error("This website destination is private, unsafe, or unavailable."), { code: "unsafe_destination", statusCode: 400 }); return url; }
@@ -205,7 +316,7 @@ function readable(html: string) { return html.replace(/<script\b[^>]*>[\s\S]*?<\
 function links(html: string, base: URL) { const results: URL[] = []; for (const match of html.matchAll(/<a\s[^>]*href=["']([^"'#]+)["']/gi)) { try { const url = new URL(match[1], base); if (url.hostname === base.hostname && /^https?:$/.test(url.protocol)) results.push(url); } catch { /* ignore malformed public links */ } } const score = (url: URL) => /about|service|product|collection|contact|location/i.test(url.pathname) ? 0 : 1; const rootPath = base.pathname.replace(/\/$/, "") || "/"; return [...new Map(results.map((url) => [url.pathname.replace(/\/$/, "") || "/", url])).values()].filter((url) => (url.pathname.replace(/\/$/, "") || "/") !== rootPath).sort((a, b) => score(a) - score(b)).slice(0, 9); }
 async function limitedCrawl(raw: string) { const requestedRoot = await safeUrl(raw); const robotsUrl = new URL("/robots.txt", requestedRoot); let robots = parseRobots("", USER_AGENT); try { const response = await fetchLimited(robotsUrl); robots = parseRobots(response.html.slice(0, 250_000), USER_AGENT); } catch { /* unavailable robots means no declared restrictions */ } if (!isAllowed(robots, requestedRoot.pathname)) throw Object.assign(new Error("This website blocks SEnuke AI from analyzing the requested page."), { code: "crawl_blocked", statusCode: 409 }); const home = await fetchLimited(requestedRoot); const root = await safeUrl(home.url, requestedRoot.hostname); if (!isAllowed(robots, root.pathname)) throw Object.assign(new Error("This website blocks SEnuke AI from analyzing the requested page."), { code: "crawl_blocked", statusCode: 409 }); const candidates = links(home.html, root); const pages = [{ url: home.url, text: readable(home.html) }]; for (const candidate of candidates) { if (!isAllowed(robots, candidate.pathname)) continue; try { const page = await fetchLimited(candidate); pages.push({ url: page.url, text: readable(page.html) }); } catch { /* one failed internal page must not discard reliable pages */ } if (pages.length >= 10) break; } return { root, pages }; }
 const fieldShape = `For every field return {"value": string|string[]|object|number|null, "confidence":"high|medium|low|unresolved", "reason":string, "evidence":string[], "inferred":boolean}. Score fields must be 0-100 AI estimates, never measured facts. Fields: ${aiIntakeSuggestionFields.join(", ")}.`;
-async function generate(input: { mode: string; workspaceType: string; contextType: string; source: unknown; model: string }) { const prompt = `Prepare review-only business intake suggestions for a ${input.workspaceType} workspace ${input.contextType}. ${fieldShape}\nRules: never invent claims, credentials, products, locations, technologies or competitors; mark inference; unresolved values must be null; concise language; target markets and competitors are suggestions, not facts; preserve confirmed known values instead of replacing them. Return {suggestions:{...},additionalQuestions:string[]}\nMode: ${input.mode}\nEvidence/input:\n${JSON.stringify(input.source).slice(0, 100_000)}`; let last: unknown; for (let attempt = 0; attempt < 2; attempt++) { try { const generated = await centralAiJson({ system: "You are the Central SEnuke AI Intake Service. Produce evidence-grounded, reviewable suggestions only.", prompt: attempt ? `${prompt}\nThe prior output failed validation. Return every required field exactly.` : prompt, model: input.model }); return { ...generated, result: outputSchema.parse(generated.result) }; } catch (error) { last = error; } } throw last; }
+async function generate(input: { mode: string; workspaceType: string; contextType: string; source: unknown; model: string }) { const prompt = `Prepare review-only business intake suggestions for a ${input.workspaceType} workspace ${input.contextType}. ${fieldShape}\nRules: never invent claims, credentials, products, locations, technologies or competitors; mark inference; unresolved values must be null; concise language; target markets are geographic countries, provinces/states, regions, cities, or neighbourhoods only—never audiences, industries, services, or keywords; a business base is not automatically a target market; preserve confirmed known values instead of replacing them. Return {suggestions:{...},additionalQuestions:string[]}\nMode: ${input.mode}\nEvidence/input:\n${JSON.stringify(input.source).slice(0, 100_000)}`; let last: unknown; for (let attempt = 0; attempt < 2; attempt++) { try { const generated = await centralAiJson({ system: "You are the Central SEnuke AI Intake Service. Produce evidence-grounded, reviewable suggestions only.", prompt: attempt ? `${prompt}\nThe prior output failed validation. Return every required field exactly.` : prompt, model: input.model }); const parsed = outputSchema.parse(generated.result); const suggestions = sanitizeReviewSuggestions(parsed.suggestions); return { ...generated, result: { suggestions, additionalQuestions: canonicalReviewQuestions(suggestions) } }; } catch (error) { last = error; } } throw last; }
 
 async function runAnalysis(req: Parameters<typeof aiIntakeRouter.post>[1] extends never ? never : any, res: any, mode: "website" | "guided") { const parsed = requestSchema.parse(req.body ?? {}); const context = await workspaceContext(req); if (!hasWorkspacePermission(context, "run_ai_analysis")) throw Object.assign(new Error("AI assistance is unavailable for this role."), { statusCode: 403 }); if (context.roles.has("client_viewer")) throw Object.assign(new Error("Client Viewers cannot generate intake suggestions."), { statusCode: 403 }); if (mode === "website" && !parsed.websiteUrl) throw Object.assign(new Error("Enter a website URL before analysis."), { statusCode: 400 }); if (mode === "guided" && !Object.values(parsed.answers).some(Boolean) && !Object.values(parsed.knownInfo).some(Boolean)) throw Object.assign(new Error("Tell SEnuke AI a little about the business idea, offer, audience, location, or goal first."), { statusCode: 400 }); const clientId = context.workspace.legacyClientId; if (!clientId) throw Object.assign(new Error("Workspace billing context is required for AI assistance."), { statusCode: 409 });
   let crawl: Awaited<ReturnType<typeof limitedCrawl>> | null = null; if (mode === "website") crawl = await limitedCrawl(parsed.websiteUrl!); const domain = crawl?.root.hostname.toLowerCase() ?? null; if (domain && parsed.contextType === "client") { const clients = await prisma.agencyClient.findMany({ where: { workspaceId: context.workspace.id }, select: { id: true, name: true, websites: true } }); const match = clients.find((item) => Array.isArray(item.websites) && item.websites.some((site) => { try { return new URL(String(site)).hostname.toLowerCase() === domain; } catch { return false; } })); if (match) return res.status(409).json({ error: `${match.name} already uses ${domain}. Open the existing client instead of creating a duplicate.`, duplicateClient: match }); }
@@ -265,9 +376,10 @@ aiIntakeRouter.post("/ai-intake/converse", async (req, res, next) => {
         try { const crawl = await limitedCrawl(input.websiteUrl); websiteEvidence = { analyzedUrl: crawl.root.toString(), pages: crawl.pages }; }
         catch (crawlError) { websiteEvidence = { analyzedUrl: input.websiteUrl, unavailable: true, reason: crawlError instanceof Error ? crawlError.message : "Website analysis was unavailable." }; }
       }
-      const activeProjectType = project?.projectType || String(input.draft.projectType ?? "");
+      const activeProjectType = questionnaireProjectType(input.draft, project?.projectType || String(input.draft.projectType ?? ""));
+      const activeWebsiteStatus = project?.websiteStatus || String(input.draft.websiteStatus ?? "");
       const agencyWorkspace = (input.workspaceType || context.workspace.workspaceType) === "agency";
-      const applicableAdvancedFields = conversationAdvancedFields.filter((field) => !field.projectTypes?.length || field.projectTypes.includes(activeProjectType) || (agencyWorkspace && field.projectTypes.includes("agency_client")));
+      const applicableAdvancedFields = applicableConversationFields(activeProjectType, activeWebsiteStatus, agencyWorkspace);
       const savedAdvancedAnswers = {
         ...Object.fromEntries((project?.intakeAnswers ?? []).filter((answer) => conversationAdvancedByKey.has(answer.questionKey)).map((answer) => [answer.questionKey, answer.answerValue])),
         ...(project?.cmsPlatform ? { cms_platform: project.cmsPlatform } : {}),
@@ -285,8 +397,10 @@ aiIntakeRouter.post("/ai-intake/converse", async (req, res, next) => {
         prompt: `Continue this project intake conversation for a ${input.workspaceType || context.workspace.workspaceType} workspace.
 Rules:
 - Extract only information the user stated or clearly confirmed into fieldUpdates. Do not overwrite a populated draft field unless the user explicitly changed it.
+- Rewrite each confirmed answer as a concise, professional project fact in fieldUpdates rather than copying the user's full conversational wording. Preserve the client's intended meaning and important services, audiences, locations, constraints, and intent; correct obvious grammar or speech-to-text errors, remove repetition and filler, and never invent facts the client did not provide.
 - Suggestions must remain suggestions. Put proposed search phrases in keywordSuggestions, not fieldUpdates, unless the user explicitly selected or supplied those keywords.
-- Populate keywordSuggestions only when the current user request or the current follow-up question is specifically about keywords. Return empty primary and secondary keywordSuggestions for every unrelated intake or Advanced Setup question.
+- Every keyword must be a complete, natural search phrase. Never return a standalone city, province, conjunction, sentence fragment, or generic word. When geography matters, combine it with a relevant service (for example, “life insurance broker in Brampton”). Parse comma-heavy service descriptions into meaningful service phrases rather than fragments.
+- Whenever the structured draft contains a niche or confirmed products/services, maintain semantic keywordSuggestions for the next keyword review: identify distinct real services or products, correct obvious terminology, and return 3-8 primary service phrases plus 5-15 supporting or geographic phrases. These are unvalidated directions, not search-volume claims.
 - Do not repeat a keyword suggestion already present in the structured draft or previously confirmed conversation data.
 - Ask one concise follow-up question that closes the most important missing dependency.
 - Business Location is the physical business address object {country,stateProvince,city,streetAddress,postalCode}; Target Markets are locations where it wants customers.
@@ -295,6 +409,7 @@ Rules:
 - Secondary Goals may use only: ${standardSecondaryGoals.join("; ")}.
 - Cover the complete Advanced Setup as a conversation. Applicable fields are listed in Advanced Setup field guide below.
 - Ask every applicable required Advanced Setup question before optional questions. Ask only one concise question per response.
+- Questions are restricted to the core fields and exact Advanced Setup field guide supplied below. Never ask for any field outside those lists.
 - Do not ask an optional question while any core or applicable Advanced Setup required field is still missing.
 - When the user asks for suggestions, examples, ideas, recommendations, or help answering the current required field, answer that request with 3-5 project-specific choices. Do not merely repeat the required question. Keep suggestions unconfirmed until the user selects or edits one.
 - Proactively include 3-5 concise, project-specific suggested answers whenever asking an open-ended question; the user should not need to request suggestions separately.
@@ -311,6 +426,9 @@ Rules:
 - Do not stop after only the high-priority optional questions. Ask all applicable Advanced Setup questions in the supplied field-guide order.
 - Do not say the full intake is complete while any applicable Advanced Setup question remains unanswered. Questions about keywords, competitors, conversion planning, Strategy, reporting, and execution are especially important, but the remaining applicable fields must also be covered.
 - Whenever the user would benefit from choices, suggest 3-5 context-specific options in the conversational message and ask them to select, edit, or reject them.
+- Ask only questions represented by the supplied core field names or the applicable Advanced Setup field guide. Never invent a new intake question, field, or choice set.
+- targetAudience is a description of people or organizations. targetMarkets is geographic only: countries, provinces/states, regions, cities, or neighbourhoods. Never store an audience, industry, service, keyword, customer segment, or phrase such as "startups" or "enterprises looking for..." in targetMarkets.
+- A Business Location is not automatically a Target Market. Add a place to targetMarkets only when the user explicitly says the business targets, serves, markets to, or wants search visibility in that place, or when answering the Target Markets question.
 - Never say that a summary follows unless the message actually lists the current project details. A project summary must show labeled values for the available identity, niche, website, audience, offer, location, target markets, goals, competitors, and selected keywords.
 - Use these core field names whenever applicable: projectName, businessName, industryNiche, businessDescription, targetAudience, productsServices, businessLocation, streetAddress, targetMarkets, primaryGoal, secondaryGoals, primaryKeywords, secondaryKeywords, competitors, brandVoice, preferredOutputs, targetLaunchTimeline, websiteUrl, websiteStatus, clientProjectType.
 - Use the exact snake_case key from the Advanced Setup field guide for advanced fieldUpdates.
@@ -328,6 +446,28 @@ Recent conversation window: ${JSON.stringify(input.messages.slice(-30)).slice(0,
       const allowedSecondaryGoals = new Set<string>(standardSecondaryGoals);
       const coreConversationFields = new Set(["projectName", "businessName", "industryNiche", "businessDescription", "targetAudience", "productsServices", "businessLocation", "streetAddress", "targetMarkets", "primaryGoal", "secondaryGoals", "primaryKeywords", "secondaryKeywords", "competitors", "brandVoice", "preferredOutputs", "targetLaunchTimeline", "websiteUrl", "websiteStatus", "clientProjectType"]);
       const applicableAdvancedByKey = new Map(applicableAdvancedFields.map((field) => [field.key, field]));
+      for (let index = input.messages.length - 2; index >= 0; index -= 1) {
+        const question = input.messages[index];
+        const answer = input.messages[index + 1];
+        if (question?.role !== "assistant" || answer?.role !== "user") continue;
+        const historicalField = coreFieldAskedBy(question.text);
+        if (!historicalField || output.fieldUpdates.some((update) => update.field === historicalField)) continue;
+        const existingValue = input.draft[historicalField];
+        if (Array.isArray(existingValue) ? existingValue.length : typeof existingValue === "string" ? existingValue.trim() : existingValue) continue;
+        const historicalValue = typedAnswerForCoreField(historicalField, answer.text);
+        if (historicalValue !== undefined) output = { ...output, fieldUpdates: [{ field: historicalField, value: historicalValue, confidence: "high", reason: "Recovered from the user's direct answer to this project questionnaire field." }, ...output.fieldUpdates] };
+      }
+      if (!input.directSelection) {
+        const latestUser = [...input.messages].reverse().find((message) => message.role === "user")?.text ?? "";
+        const previousAssistant = [...input.messages].reverse().find((message, index, items) => message.role === "assistant" && items.slice(0, index).some((item) => item.role === "user"))?.text
+          ?? [...input.messages].reverse().find((message) => message.role === "assistant")?.text
+          ?? "";
+        const askedCoreField = coreFieldAskedBy(previousAssistant);
+        const typedValue = askedCoreField ? typedAnswerForCoreField(askedCoreField, latestUser) : undefined;
+        if (askedCoreField && typedValue !== undefined && !output.fieldUpdates.some((update) => update.field === askedCoreField)) {
+          output = { ...output, fieldUpdates: [{ field: askedCoreField, value: typedValue, confidence: "high", reason: "Entered directly in response to the active project questionnaire field." }, ...output.fieldUpdates] };
+        }
+      }
       if (input.directSelection) {
         const advanced = applicableAdvancedByKey.get(input.directSelection.field);
         const coreMultiValue = new Set(["targetMarkets", "secondaryGoals", "primaryKeywords", "secondaryKeywords", "competitors", "preferredOutputs"]);
@@ -342,9 +482,17 @@ Recent conversation window: ${JSON.stringify(input.messages.slice(-30)).slice(0,
       const suppliedPrimaryGoal = output.fieldUpdates.find((update) => update.field === "primaryGoal");
       const normalizedSuppliedPrimaryGoal = suppliedPrimaryGoal ? canonicalPrimaryGoal(String(suppliedPrimaryGoal.value ?? "")) : null;
       const unsupportedPrimaryGoal = Boolean(normalizedSuppliedPrimaryGoal && !allowedPrimaryGoals.has(normalizedSuppliedPrimaryGoal));
+      const latestUserText = [...input.messages].reverse().find((message) => message.role === "user")?.text ?? "";
+      const latestAssistantText = [...input.messages].reverse().find((message) => message.role === "assistant")?.text ?? "";
+      const answeringTargetMarkets = input.directSelection?.field === "targetMarkets" || coreFieldAskedBy(latestAssistantText) === "targetMarkets";
       output = { ...output, fieldUpdates: output.fieldUpdates.flatMap((update) => {
         if (update.field === "primaryGoal") { const goal = canonicalPrimaryGoal(String(update.value ?? "")); return allowedPrimaryGoals.has(goal) ? [{ ...update, value: goal }] : []; }
         if (update.field === "secondaryGoals") { const values = (Array.isArray(update.value) ? update.value : [update.value]).map((value) => canonicalSecondaryGoal(String(value ?? ""))).filter((goal) => allowedSecondaryGoals.has(goal)); return [{ ...update, value: [...new Set(values)] }]; }
+        if (update.field === "targetMarkets") {
+          const values = normalizedTargetMarkets(update.value).filter((market) => answeringTargetMarkets || explicitlyTargetsGeographicMarket(latestUserText, market));
+          return values.length ? [{ ...update, value: values }] : [];
+        }
+        if (update.field === "primaryKeywords" || update.field === "secondaryKeywords") return [{ ...update, value: normalizedKeywordValues(update.value, input.draft) }];
         const advanced = applicableAdvancedByKey.get(update.field);
         if (!advanced) return coreConversationFields.has(update.field) ? [update] : [];
         if (advanced.type === "select") {
@@ -368,8 +516,11 @@ Recent conversation window: ${JSON.stringify(input.messages.slice(-30)).slice(0,
       if (!nextAdvancedIntake.publishing_preference && ["WordPress", "Shopify"].includes(String(nextAdvancedIntake.cms_platform ?? ""))) nextAdvancedIntake.publishing_preference = nextAdvancedIntake.cms_platform;
       const hasValue = (value: unknown) => Array.isArray(value) ? value.length > 0 : typeof value === "string" ? Boolean(value.trim()) : value != null;
       const coreUpdates = new Map(output.fieldUpdates.map((update) => [update.field, update.value]));
-      const nextCoreDraft = { ...input.draft, ...Object.fromEntries([...coreUpdates.entries()].filter(([field]) => coreConversationFields.has(field))) };
-      const coreValue = (field: string) => coreUpdates.get(field) ?? input.draft[field];
+      const safeDraftMarkets = normalizedTargetMarkets(input.draft.targetMarkets);
+      const nextCoreDraft = { ...input.draft, targetMarkets: safeDraftMarkets, ...Object.fromEntries([...coreUpdates.entries()].filter(([field]) => coreConversationFields.has(field))) };
+      const coreValue = (field: string) => field === "targetMarkets"
+        ? normalizedTargetMarkets(coreUpdates.get(field) ?? safeDraftMarkets)
+        : coreUpdates.get(field) ?? input.draft[field];
       const coreLocation = coreValue("businessLocation");
       const completeLocation = Boolean(coreLocation && typeof coreLocation === "object" && !Array.isArray(coreLocation) && String((coreLocation as Record<string, unknown>).country ?? "").trim() && String((coreLocation as Record<string, unknown>).stateProvince ?? "").trim() && String((coreLocation as Record<string, unknown>).city ?? "").trim());
       const requiredCoreFields = [
@@ -379,19 +530,24 @@ Recent conversation window: ${JSON.stringify(input.messages.slice(-30)).slice(0,
       const missingRequiredCore = requiredCoreFields.filter(([, complete]) => !complete).map(([field]) => field);
       const missingRequiredAdvanced = applicableAdvancedFields.filter((field) => field.required && !hasValue(advancedUpdates.get(field.key) ?? draftAdvanced[field.key] ?? savedAdvancedAnswers[field.key])).map((field) => field.key);
       const missingAdvancedSetup = applicableAdvancedFields.filter((field) => !hasValue(nextAdvancedIntake[field.key]));
+      const semanticKeywordSuggestions = {
+        primary: normalizedKeywordValues(output.keywordSuggestions.primary, nextCoreDraft).slice(0, 8),
+        secondary: normalizedKeywordValues(output.keywordSuggestions.secondary, nextCoreDraft).slice(0, 15),
+      };
+      output = { ...output, keywordSuggestions: semanticKeywordSuggestions };
       const conversationText = input.messages.map((message) => message.text).join(" ");
       const secondaryGoalsConsidered = hasValue(coreValue("secondaryGoals")) || /(?:no|none|skip|not applicable).{0,30}secondary goals?|secondary goals?.{0,30}(?:no|none|skip|not applicable)/i.test(conversationText);
       const primaryKeywordsConsidered = hasValue(coreValue("primaryKeywords")) || /(?:no|none|skip|later|not applicable).{0,30}(?:primary )?keywords?|(?:primary )?keywords?.{0,30}(?:no|none|skip|later|not applicable)/i.test(conversationText);
       const secondaryKeywordsConsidered = hasValue(coreValue("secondaryKeywords")) || /(?:no|none|skip|later|not applicable).{0,30}secondary keywords?|secondary keywords?.{0,30}(?:no|none|skip|later|not applicable)/i.test(conversationText);
       const missingMandatory = [...missingRequiredCore, ...(!secondaryGoalsConsidered ? ["secondaryGoals"] : []), ...(!primaryKeywordsConsidered ? ["primaryKeywords"] : []), ...(!secondaryKeywordsConsidered ? ["secondaryKeywords"] : []), ...missingRequiredAdvanced];
-      output = { ...output, readyForReview: missingMandatory.length === 0, missingFields: [...new Set([...output.missingFields, ...missingMandatory, ...missingAdvancedSetup.map((field) => field.key)])] };
+      output = { ...output, readyForReview: missingMandatory.length === 0, missingFields: [...new Set([...missingMandatory, ...missingAdvancedSetup.map((field) => field.key)])] };
       if (missingMandatory.length) {
         const nextMandatory = missingMandatory[0];
         output = {
           ...output,
           // Use the server-derived field and options so the label, question,
           // and choice mode cannot drift into two different intake topics.
-          message: mandatoryFollowUp(nextMandatory, missingMandatory.length, applicableAdvancedByKey, nextCoreDraft, [...allowedPrimaryGoals]),
+          message: mandatoryFollowUp(nextMandatory, missingMandatory.length, applicableAdvancedByKey, nextCoreDraft, [...allowedPrimaryGoals], semanticKeywordSuggestions),
         };
       }
       if (unsupportedPrimaryGoal) output = { ...output, message: `${output.message}\n\nPlease choose one supported Primary Goal below. Selecting it updates the project without using another AI request.`, missingFields: [...new Set([...output.missingFields, "primaryGoal"])] };
@@ -412,7 +568,7 @@ Recent conversation window: ${JSON.stringify(input.messages.slice(-30)).slice(0,
         const expectedField = missingAdvancedSetup[0];
         output = {
           ...output,
-          missingFields: [...new Set([...output.missingFields, ...missingAdvancedSetup.map((field) => field.key)])],
+          missingFields: missingAdvancedSetup.map((field) => field.key),
           // The model may repeat the question that was just answered. Always
           // render the server-derived next field so one response has one set
           // of choices and the Advanced Setup order remains deterministic.
@@ -432,7 +588,7 @@ Recent conversation window: ${JSON.stringify(input.messages.slice(-30)).slice(0,
       const latestUserMessage = { ...input.messages.at(-1)!, requestNumber, usageEventId: usage.usageEventId };
       const transcript = dedupeConversationMessages([...storedMessages, latestUserMessage, { role: "assistant" as const, text: output.message, requestNumber, usageEventId: usage.usageEventId }]).slice(-250);
       const storedCoreUpdates = Object.fromEntries(output.fieldUpdates.filter((update) => coreConversationFields.has(update.field)).map((update) => [update.field, update.value]));
-      const nextStoredDraft = { ...input.draft, ...storedCoreUpdates, ...(storedCoreUpdates.industryNiche ? { serviceType: storedCoreUpdates.industryNiche } : {}), advancedIntake: nextAdvancedIntake };
+      const nextStoredDraft = { ...input.draft, targetMarkets: safeDraftMarkets, ...storedCoreUpdates, ...(storedCoreUpdates.industryNiche ? { serviceType: storedCoreUpdates.industryNiche } : {}), advancedIntake: nextAdvancedIntake };
       await prisma.$transaction(async (tx) => {
         await tx.workspaceAiIntakeSession.update({ where: { id: conversationSession.id }, data: { status: "active", appliedProjectId: project?.id ?? conversationSession.appliedProjectId, inputJson: jsonInput({ messages: transcript, draft: nextStoredDraft }), suggestionsJson: jsonInput(output), evidenceJson: { requestCount: requestNumber, requestLimit: 100, lastUsageEventId: usage.usageEventId, lastRequestAt: new Date().toISOString(), readyForReview: output.readyForReview, advancedQuestionsRemaining: missingAdvancedSetup.length, advancedQuestionsTotal: applicableAdvancedFields.length }, model: generated.model } });
         if (project) {
@@ -480,12 +636,14 @@ aiIntakeRouter.get("/ai-intake/conversation/:projectId", async (req, res, next) 
     const evidence = session.evidenceJson && typeof session.evidenceJson === "object" && !Array.isArray(session.evidenceJson) ? session.evidenceJson as Record<string, unknown> : {};
     const savedDraft = input.draft && typeof input.draft === "object" && !Array.isArray(input.draft) ? input.draft as Record<string, unknown> : {};
     const project = await prisma.project.findUnique({ where: { id: req.params.projectId }, include: { businessProfile: true, intakeAnswers: true, agencyClient: { select: { name: true, contactName: true, contactEmail: true } } } });
+    const savedTargetMarkets = cleanGeographicTargetMarkets(Array.isArray(savedDraft.targetMarkets) ? savedDraft.targetMarkets.map(String) : []);
+    const projectTargetMarkets = cleanGeographicTargetMarkets(Array.isArray(project?.targetLocations) ? project.targetLocations.map(String) : []);
     const draft = {
       ...savedDraft,
       businessDescription: savedDraft.businessDescription || project?.businessProfile?.businessSummary || "",
       targetAudience: savedDraft.targetAudience || project?.businessProfile?.targetAudience || "",
       productsServices: savedDraft.productsServices || project?.businessProfile?.offerSummary || "",
-      targetMarkets: Array.isArray(savedDraft.targetMarkets) && savedDraft.targetMarkets.length ? savedDraft.targetMarkets : project?.targetLocations ?? [],
+      targetMarkets: savedTargetMarkets.length ? savedTargetMarkets : projectTargetMarkets,
       primaryGoal: savedDraft.primaryGoal || project?.primaryGoal || "",
       secondaryGoals: Array.isArray(savedDraft.secondaryGoals) ? savedDraft.secondaryGoals : project?.secondaryGoals ?? [],
       preferredOutputs: Array.isArray(savedDraft.preferredOutputs) && savedDraft.preferredOutputs.length ? savedDraft.preferredOutputs : project?.preferredOutputs ?? [],
@@ -494,7 +652,7 @@ aiIntakeRouter.get("/ai-intake/conversation/:projectId", async (req, res, next) 
       secondaryKeywords: Array.isArray(savedDraft.secondaryKeywords) ? savedDraft.secondaryKeywords : [],
     } as Record<string, unknown>;
     const draftAdvanced = draft.advancedIntake && typeof draft.advancedIntake === "object" && !Array.isArray(draft.advancedIntake) ? draft.advancedIntake as Record<string, unknown> : {};
-    const applicableAdvancedFields = conversationAdvancedFields.filter((field) => !field.projectTypes?.length || field.projectTypes.includes(project?.projectType ?? "") || (context.workspace.workspaceType === "agency" && field.projectTypes.includes("agency_client")));
+    const applicableAdvancedFields = applicableConversationFields(questionnaireProjectType(draft, project?.projectType ?? String(draft.projectType ?? "")), project?.websiteStatus ?? String(draft.websiteStatus ?? ""), context.workspace.workspaceType === "agency");
     const savedAdvancedAnswers = {
       ...Object.fromEntries((project?.intakeAnswers ?? []).filter((answer) => conversationAdvancedByKey.has(answer.questionKey)).map((answer) => [answer.questionKey, answer.answerValue])),
       ...(project?.cmsPlatform ? { cms_platform: project.cmsPlatform } : {}),
@@ -550,7 +708,7 @@ aiIntakeRouter.get("/ai-intake/conversation/:projectId", async (req, res, next) 
 });
 aiIntakeRouter.get("/ai-intake/latest", async (req, res, next) => {
   try {
-    const query = z.object({ contextType: z.enum(["project", "client"]), mode: z.enum(["website", "guided"]), websiteUrl: z.string().trim().max(512).optional() }).parse(req.query);
+    const query = z.object({ contextType: z.enum(["project", "client"]), mode: z.enum(["website", "guided"]), websiteUrl: z.string().trim().max(512).optional(), startedAfter: z.string().datetime().optional() }).parse(req.query);
     const context = await workspaceContext(req);
     if (!hasWorkspacePermission(context, "run_ai_analysis") || context.roles.has("client_viewer")) return res.status(403).json({ error: "AI assistance is unavailable for this role." });
     let websiteDomain: string | undefined;
@@ -558,15 +716,24 @@ aiIntakeRouter.get("/ai-intake/latest", async (req, res, next) => {
       const input = /^https?:\/\//i.test(query.websiteUrl) ? query.websiteUrl : `https://${query.websiteUrl}`;
       websiteDomain = canonicalWebsiteHost(new URL(input).hostname);
     }
+    const recoveryWindow = new Date(Date.now() - 15 * 60_000);
+    const requestedStart = query.startedAfter ? new Date(query.startedAfter) : recoveryWindow;
     const session = await prisma.workspaceAiIntakeSession.findFirst({
-      where: { workspaceId: context.workspace.id, userId: context.membership.userId, contextType: query.contextType, mode: query.mode, status: "completed", createdAt: { gte: new Date(Date.now() - 15 * 60_000) }, ...(websiteDomain ? { websiteDomain } : {}) },
+      where: { workspaceId: context.workspace.id, userId: context.membership.userId, contextType: query.contextType, mode: query.mode, status: "completed", createdAt: { gte: requestedStart > recoveryWindow ? requestedStart : recoveryWindow }, ...(websiteDomain ? { websiteDomain } : {}) },
       orderBy: { createdAt: "desc" },
     });
-    if (!session) return res.status(404).json({ error: "No recently completed AI intake analysis was found." });
-    res.json({ session, suggestions: session.suggestionsJson, recovered: true });
+    if (!session) {
+      const running = await prisma.workspaceAiIntakeSession.findFirst({
+        where: { workspaceId: context.workspace.id, userId: context.membership.userId, contextType: query.contextType, mode: query.mode, status: "running", createdAt: { gte: requestedStart > recoveryWindow ? requestedStart : recoveryWindow }, ...(websiteDomain ? { websiteDomain } : {}) },
+        orderBy: { createdAt: "desc" },
+        select: { id: true, status: true, startedAt: true },
+      });
+      return res.json({ ready: false, status: running ? "running" : "not_found", session: running });
+    }
+    res.json({ ready: true, session, suggestions: session.suggestionsJson, recovered: true });
   } catch (error) { next(error); }
 });
-aiIntakeRouter.post("/ai-intake/:sessionId/regenerate", async (req, res, next) => { try { const input = regenerateSchema.parse(req.body ?? {}); const context = await workspaceContext(req); if (!hasWorkspacePermission(context, "run_ai_analysis") || context.roles.has("client_viewer")) return res.status(403).json({ error: "AI assistance is unavailable for this role." }); const session = await prisma.workspaceAiIntakeSession.findFirst({ where: { id: req.params.sessionId, workspaceId: context.workspace.id, userId: context.membership.userId } }); if (!session) return res.status(404).json({ error: "AI intake session not found." }); const current = session.suggestionsJson && typeof session.suggestionsJson === "object" && !Array.isArray(session.suggestionsJson) ? session.suggestionsJson as Record<string, unknown> : {}; if (!(input.field in current)) return res.status(400).json({ error: "Unknown suggestion field." }); const generated = await centralAiJson({ system: "You are the Central SEnuke AI Intake Service. Revise one intake suggestion without inventing facts.", prompt: `Regenerate only ${input.field}. Return {"suggestion":{"value":unknown,"confidence":"high|medium|low|unresolved","reason":string,"evidence":string[],"inferred":boolean}}. Existing review-only suggestions: ${JSON.stringify(current)}. Original inputs: ${JSON.stringify(session.inputJson)}. User instruction: ${input.instruction || "Provide a clearer reliable alternative."}`, model: session.model || config.openaiModel }); const parsed = z.object({ suggestion: suggestionSchema }).parse(generated.result); const nextSuggestions = { ...current, [input.field]: parsed.suggestion }; const updated = await prisma.$transaction(async (tx) => { const row = await tx.workspaceAiIntakeSession.update({ where: { id: session.id }, data: { suggestionsJson: nextSuggestions as Prisma.InputJsonValue, model: generated.model } }); await recordWorkspaceActivity(tx, { context, action: "ai_intake.suggestion_regenerated", entityType: "ai_intake_session", entityId: session.id, nextJson: { field: input.field, confidence: parsed.suggestion.confidence } }); return row; }); res.json({ session: updated, field: input.field, suggestion: parsed.suggestion }); } catch (error) { next(error); } });
+aiIntakeRouter.post("/ai-intake/:sessionId/regenerate", async (req, res, next) => { try { const input = regenerateSchema.parse(req.body ?? {}); const context = await workspaceContext(req); if (!hasWorkspacePermission(context, "run_ai_analysis") || context.roles.has("client_viewer")) return res.status(403).json({ error: "AI assistance is unavailable for this role." }); const session = await prisma.workspaceAiIntakeSession.findFirst({ where: { id: req.params.sessionId, workspaceId: context.workspace.id, userId: context.membership.userId } }); if (!session) return res.status(404).json({ error: "AI intake session not found." }); const current = session.suggestionsJson && typeof session.suggestionsJson === "object" && !Array.isArray(session.suggestionsJson) ? session.suggestionsJson as Record<string, unknown> : {}; if (!(input.field in current)) return res.status(400).json({ error: "Unknown suggestion field." }); const generated = await centralAiJson({ system: "You are the Central SEnuke AI Intake Service. Revise one intake suggestion without inventing facts.", prompt: `Regenerate only ${input.field}. Return {"suggestion":{"value":unknown,"confidence":"high|medium|low|unresolved","reason":string,"evidence":string[],"inferred":boolean}}. Existing review-only suggestions: ${JSON.stringify(current)}. Original inputs: ${JSON.stringify(session.inputJson)}. User instruction: ${input.instruction || "Provide a clearer reliable alternative."}`, model: session.model || config.openaiModel }); const parsed = z.object({ suggestion: suggestionSchema }).parse(generated.result); const sanitized = input.field === "targetMarkets" ? sanitizeReviewSuggestions({ targetMarkets: parsed.suggestion }).targetMarkets as typeof parsed.suggestion : parsed.suggestion; const nextSuggestions = { ...current, [input.field]: sanitized }; const updated = await prisma.$transaction(async (tx) => { const row = await tx.workspaceAiIntakeSession.update({ where: { id: session.id }, data: { suggestionsJson: nextSuggestions as Prisma.InputJsonValue, model: generated.model } }); await recordWorkspaceActivity(tx, { context, action: "ai_intake.suggestion_regenerated", entityType: "ai_intake_session", entityId: session.id, nextJson: { field: input.field, confidence: sanitized.confidence } }); return row; }); res.json({ session: updated, field: input.field, suggestion: sanitized }); } catch (error) { next(error); } });
 aiIntakeRouter.post("/ai-intake/:sessionId/review", async (req, res, next) => {
   try {
     const input = reviewSchema.parse(req.body ?? {}) as { actions: Record<string, { action: "accepted" | "edited" | "ignored"; value?: unknown }> };

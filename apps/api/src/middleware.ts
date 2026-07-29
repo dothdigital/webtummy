@@ -76,7 +76,7 @@ export function permissionForWorkspaceRequest(method: string, rawPath: string) {
   if (/approve|decision/.test(path)) return "approve";
   if (/\/archive\/?$|\/restore\/?$/.test(path) || (method.toUpperCase() === "DELETE" && /^\/projects-v2\/[^/]+\/?$/.test(path))) return "manage_projects";
   if (method.toUpperCase() === "POST" && /^\/projects-v2\/?$/.test(path)) return "create_projects";
-  if (/\/projects-v2\/[^/]+\/(locations|goals|intake|settings)\/?$/.test(path)) return "edit_project_settings";
+  if (/\/projects-v2\/[^/]+\/(locations|target-markets|goals|intake|settings)\/?$/.test(path)) return "edit_project_settings";
   if (/strategy/.test(path)) return "edit_strategy";
   if (/execution-plan|execution-tasks?|\/tasks?\//.test(path)) return "execute_tasks";
   if (/reports?/.test(path)) return "export_reports";

@@ -4,6 +4,7 @@ import { api } from "../api.js";
 type Suggestion = { value: unknown; confidence: "high" | "medium" | "low" | "unresolved"; reason: string; evidence: string[]; inferred: boolean };
 type Review = { action: "pending" | "accepted" | "edited" | "ignored"; value: unknown };
 type IntakeResult = { session: { id: string }; suggestions: Record<string, Suggestion> };
+type IntakeLookup = IntakeResult & { ready?: true } | { ready: false; status: "running" | "not_found"; session?: { id: string } | null };
 
 const humanize = (value: string) => value.replace(/([a-z0-9])([A-Z])/g, "$1 $2").replace(/^./, (char) => char.toUpperCase()).replace(/Ai\b/g, "AI").replace(/Seo\b/g, "SEO").replace(/Serp\b/g, "SERP").replace(/Cms\b/g, "CMS").replace(/Crm\b/g, "CRM");
 const labels: Record<string, string> = new Proxy({ businessDescription: "Business Description", industryNiche: "Industry / Niche", targetAudience: "Target Audience", productsServices: "Main Products / Services", primaryGoal: "Primary Business Goal", businessLocation: "Business Location", targetMarkets: "Target Markets", competitors: "Primary Competitors", seedKeywords: "Suggested Seed Keywords", brandVoice: "Brand Voice / Tone", cms: "Detected CMS", technologyStack: "Technology Stack", thirtyDayPlan: "30-Day Action Plan", sixtyDayPlan: "60-Day Action Plan", ninetyDayPlan: "90-Day Action Plan" }, { get: (target, property: string) => target[property as keyof typeof target] || humanize(property) });
@@ -29,7 +30,7 @@ const stageFor = (progress: number, hasUrl: boolean) => progress < 22
     ? { title: hasUrl ? "Reading important pages" : "Building the business context", detail: hasUrl ? "Reviewing the homepage and up to nine useful same-domain pages." : "Connecting your answers into one reusable project profile." }
     : progress < 82
       ? { title: "Generating business intelligence", detail: "Preparing editable suggestions, opportunities, readiness estimates, and action plans." }
-      : { title: "Preparing your review", detail: "Validating the structured response before showing every suggestion for approval." };
+      : { title: "Preparing your review", detail: "The server is finishing and validating the structured response. This can take several minutes; the review will open automatically when it is ready." };
 
 export default function AiAssistedIntake({ contextType, websiteUrl, knownInfo, onApply }: { contextType: "client" | "project"; websiteUrl: string; knownInfo: Record<string, unknown>; onApply: (values: Record<string, unknown>, sessionId: string) => void }) {
   const [open, setOpen] = useState(false);
@@ -61,21 +62,35 @@ export default function AiAssistedIntake({ contextType, websiteUrl, knownInfo, o
     setReviews(Object.fromEntries(Object.entries(result.suggestions).map(([key, value]) => [key, { action: "pending", value: value.value }])));
     setReviewPage(false);
   };
-  const recoverLatest = async () => {
+  const completedResult = async (startedAfter?: string) => {
+    const query = new URLSearchParams({ contextType, mode: hasUrl ? "website" : "guided", ...(hasUrl ? { websiteUrl } : {}), ...(startedAfter ? { startedAfter } : {}) });
+    const result = await api.get<IntakeLookup>(`/api/ai-intake/latest?${query}`);
+    if (result.ready === false || !("suggestions" in result)) throw new Error(result.status === "running" ? "Analysis is still running." : "No completed analysis is available yet.");
+    return result;
+  };
+  const recoverLatest = async (startedAfter?: string) => {
     try {
-      const query = new URLSearchParams({ contextType, mode: hasUrl ? "website" : "guided", ...(hasUrl ? { websiteUrl } : {}) });
-      receive(await api.get<IntakeResult>(`/api/ai-intake/latest?${query}`));
+      receive(await completedResult(startedAfter));
       return true;
     } catch { return false; }
   };
+  const pollForCompletedResult = async (startedAfter: string) => {
+    for (let attempt = 0; attempt < 90; attempt++) {
+      await new Promise((resolve) => window.setTimeout(resolve, 4_000));
+      try { return await completedResult(startedAfter); } catch { /* analysis is still running */ }
+    }
+    return new Promise<IntakeResult>(() => undefined);
+  };
   const start = async () => {
     setBusy("analyze"); setError("");
+    const startedAfter = new Date(Date.now() - 2_000).toISOString();
     try {
-      receive(hasUrl
-        ? await api.post<IntakeResult>("/api/ai-intake/analyze", { contextType, websiteUrl, knownInfo })
-        : await api.post<IntakeResult>("/api/ai-intake/define", { contextType, knownInfo, answers }));
+      const request = hasUrl
+        ? api.post<IntakeResult>("/api/ai-intake/analyze", { contextType, websiteUrl, knownInfo })
+        : api.post<IntakeResult>("/api/ai-intake/define", { contextType, knownInfo, answers });
+      receive(await Promise.race([request, pollForCompletedResult(startedAfter)]));
     } catch (cause) {
-      if (!await recoverLatest()) setError(cause instanceof Error ? cause.message : "SEnuke AI could not prepare suggestions. Continue manually or retry.");
+      if (!await recoverLatest(startedAfter)) setError(cause instanceof Error ? cause.message : "SEnuke AI could not prepare suggestions. Continue manually or retry.");
     } finally { setBusy(""); }
   };
   const decide = (field: string, action: Review["action"]) => {

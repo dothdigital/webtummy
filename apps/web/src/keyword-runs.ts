@@ -1,4 +1,5 @@
 type SuccessfulKeywordRun = {
+  projectId?: string | null;
   websiteId?: string | null;
   seedKeyword: string;
   locationName: string;
@@ -11,7 +12,11 @@ export function latestSuccessfulKeywordRuns<T extends SuccessfulKeywordRun>(runs
   const latest = new Map<string, T>();
   for (const run of runs) {
     if (run.status !== "completed") continue;
-    const key = [run.websiteId ?? "", run.seedKeyword.trim().toLowerCase(), run.locationName.trim().toLowerCase(), run.device].join("|");
+    // DataForSEO-normalized and legacy locations may represent the same market
+    // as "Toronto, ON, Canada" and "Toronto,Ontario,Canada". The first segment
+    // is the selected project market, so use it as the stable display identity.
+    const market = run.locationName.split(",")[0]?.replace(/\s+/g, " ").trim().toLowerCase() ?? "";
+    const key = [run.projectId ?? "", run.websiteId ?? "", run.seedKeyword.trim().toLowerCase(), market, run.device].join("|");
     const existing = latest.get(key);
     if (!existing || new Date(run.createdAt).getTime() > new Date(existing.createdAt).getTime()) latest.set(key, run);
   }

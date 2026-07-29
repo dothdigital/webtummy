@@ -3,6 +3,7 @@ export const BACKGROUND_JOBS_EVENT = "senuke-ai:background-jobs-changed";
 
 export type BackgroundJob = {
   id: string;
+  projectId?: string | null;
   type: string;
   title: string;
   subject: string;

@@ -15,7 +15,7 @@ const standardModuleTasks = [
     description: "Create the recommended site structure, page hierarchy, and internal linking plan from the approved strategy.",
     priority: "high",
     status: "ready",
-    actionButtonLabel: "Generate Sitemap",
+    actionButtonLabel: "Generate Site Architecture",
     relatedUrl: "/site-architect",
     manualInstructions: "Review project niche, selected opportunity, crawl data, and keyword clusters before generating the sitemap.",
     requiresApproval: true,

@@ -1,4 +1,4 @@
-import { cleanTargetMarkets, formatBusinessLocation, locationIsComplete, type BusinessLocation } from "./project-location.js";
+import { cleanGeographicTargetMarkets, cleanTargetMarkets, formatBusinessLocation, locationIsComplete, type BusinessLocation } from "./project-location.js";
 
 export type LocationDefaults = {
   businessLocation: string;
@@ -20,7 +20,7 @@ export function locationDefaultsFromSettings(settingsJson: unknown): LocationDef
   return {
     businessLocation: businessLocationDetails ? formatBusinessLocation(businessLocationDetails) : typeof saved.businessLocation === "string" ? saved.businessLocation.trim() : "",
     businessLocationDetails,
-    targetMarkets: cleanTargetMarkets(Array.isArray(saved.targetMarkets) ? saved.targetMarkets.map(String) : []),
+    targetMarkets: cleanGeographicTargetMarkets(Array.isArray(saved.targetMarkets) ? saved.targetMarkets.map(String) : []),
   };
 }
 
@@ -30,14 +30,14 @@ export function withLocationDefaults(settingsJson: unknown, defaults: LocationDe
     locationDefaults: {
       businessLocation: defaults.businessLocation.trim(),
       businessLocationDetails: defaults.businessLocationDetails,
-      targetMarkets: cleanTargetMarkets(defaults.targetMarkets),
+      targetMarkets: cleanGeographicTargetMarkets(defaults.targetMarkets),
     },
   };
 }
 
 export function normalizeRequiredLocations(businessLocations: string[], targetMarkets: string[]) {
   const locations = cleanTargetMarkets(businessLocations);
-  const markets = cleanTargetMarkets(targetMarkets);
+  const markets = cleanGeographicTargetMarkets(targetMarkets);
   if (!locations.length) throw Object.assign(new Error("Business location is required."), { statusCode: 400 });
   if (!markets.length) throw Object.assign(new Error("At least one target market is required."), { statusCode: 400 });
   return { businessLocations: locations, targetMarkets: markets };
@@ -49,6 +49,6 @@ export function resolveProjectLocations(input: {
 }) {
   const details = locationIsComplete(input.businessLocationDetails) ? input.businessLocationDetails as BusinessLocation : input.defaults.businessLocationDetails;
   const businessLocation = details ? formatBusinessLocation(details) : input.businessLocation?.trim() || input.defaults.businessLocation;
-  const targetMarkets = cleanTargetMarkets(input.targetMarkets?.length ? input.targetMarkets : input.defaults.targetMarkets);
+  const targetMarkets = cleanGeographicTargetMarkets(input.targetMarkets?.length ? input.targetMarkets : input.defaults.targetMarkets);
   return { businessLocation, businessLocationDetails: details, targetMarkets };
 }

@@ -10,6 +10,10 @@
     "./workspace-permissions": "./src/workspacePermissions.ts",
     "./reporting": "./src/reporting.ts",
     "./approvals": "./src/approvals.ts",
+    "./website-model": "./src/websiteModel.ts",
+    "./website-generation": "./src/websiteGeneration.ts",
+    "./website-renderer": "./src/websiteRenderer.ts",
+    "./website-launch-readiness": "./src/websiteLaunchReadiness.ts",
     "./publishing": "./src/publishing.ts",
     "./agency-documents": "./src/agency-documents.ts"
   },

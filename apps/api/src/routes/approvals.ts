@@ -2,18 +2,27 @@ import { Router } from "express";
 import { Prisma, prisma } from "@webtummy/db";
 import { z } from "zod";
 import { approvalRequired, automationLevels, classifyApproval, type AutomationLevel } from "@webtummy/core/approvals";
-import { canAccessProject, hasWorkspacePermission, recordWorkspaceActivity, workspaceContext } from "../workspace-access.js";
+import { canAccessProject, hasWorkspacePermission, recordWorkspaceActivity, workspaceApprovalMode, workspaceContext } from "../workspace-access.js";
 import { decideTaskApproval } from "../approval-workflow.js";
 
 export const approvalsRouter = Router();
 const decisionSchema = z.object({ decision: z.enum(["approved", "rejected", "changes_requested", "edit_first", "regenerate"]), notes: z.string().trim().max(10000).optional(), snapshotJson: z.record(z.unknown()).default({}) });
 const bulkSchema = z.object({ taskIds: z.array(z.string()).min(1).max(200), decision: z.enum(["approved", "rejected"]), notes: z.string().trim().max(10000).optional() });
 const policySchema = z.object({ automationLevel: z.enum(automationLevels) });
+const approvalRouteSchema = z.object({ preference: z.enum(["self_approve", "send_to_team"]) });
 
 const projectPolicy = (settings: unknown, projectId: string): AutomationLevel => {
   const value = settings && typeof settings === "object" && !Array.isArray(settings) ? (settings as { projectAutomationLevels?: Record<string, unknown> }).projectAutomationLevels?.[projectId] : null;
   return automationLevels.includes(value as AutomationLevel) ? value as AutomationLevel : "manual";
 };
+
+function projectApprovalPreference(settings: unknown, projectId: string) {
+  if (!settings || typeof settings !== "object" || Array.isArray(settings)) return null;
+  const routes = (settings as { projectApprovalRoutes?: unknown }).projectApprovalRoutes;
+  if (!routes || typeof routes !== "object" || Array.isArray(routes)) return null;
+  const value = (routes as Record<string, unknown>)[projectId];
+  return value === "self_approve" || value === "send_to_team" ? value : null;
+}
 
 async function accessibleTask(context: Awaited<ReturnType<typeof workspaceContext>>, taskId: string) {
   const task = await prisma.executionTask.findUnique({ where: { id: taskId }, include: { project: { include: { agencyClient: true } }, assignee: { include: { user: true } }, manager: { include: { user: true } }, approver: { include: { user: true } }, approvalHistory: { orderBy: { createdAt: "desc" } } } });
@@ -43,6 +52,34 @@ approvalsRouter.get("/projects-v2/:projectId/approval-policy", async (req, res) 
   const context = await workspaceContext(req);
   if (!await canAccessProject(context, req.params.projectId)) return res.status(404).json({ error: "Project not found." });
   res.json({ automationLevel: projectPolicy(context.workspace.settingsJson, req.params.projectId) });
+});
+
+approvalsRouter.get("/projects-v2/:projectId/approval-route", async (req, res) => {
+  const context = await workspaceContext(req);
+  if (!await canAccessProject(context, req.params.projectId)) return res.status(404).json({ error: "Project not found." });
+  const approvalMode = await workspaceApprovalMode(context);
+  const preference = projectApprovalPreference(context.workspace.settingsJson, req.params.projectId);
+  res.json({
+    approvalMode,
+    preference,
+    needsChoice: context.workspace.workspaceType === "agency" && (context.roles.has("owner") || context.roles.has("admin")) && !preference,
+    canSelfApprove: context.roles.has("owner") || context.roles.has("admin"),
+    workspaceType: context.workspace.workspaceType,
+  });
+});
+
+approvalsRouter.patch("/projects-v2/:projectId/approval-route", async (req, res) => {
+  const context = await workspaceContext(req);
+  if (!await canAccessProject(context, req.params.projectId) || (!context.roles.has("owner") && !context.roles.has("admin"))) return res.status(403).json({ error: "Owner/Admin permission is required to choose the project approval route." });
+  const data = approvalRouteSchema.parse(req.body);
+  const previous = context.workspace.settingsJson && typeof context.workspace.settingsJson === "object" && !Array.isArray(context.workspace.settingsJson) ? context.workspace.settingsJson as Record<string, unknown> : {};
+  const routes = previous.projectApprovalRoutes && typeof previous.projectApprovalRoutes === "object" && !Array.isArray(previous.projectApprovalRoutes) ? previous.projectApprovalRoutes as Record<string, unknown> : {};
+  const previousPreference = projectApprovalPreference(previous, req.params.projectId);
+  await prisma.$transaction(async (tx) => {
+    await tx.workspace.update({ where: { id: context.workspace.id }, data: { settingsJson: { ...previous, projectApprovalRoutes: { ...routes, [req.params.projectId]: data.preference } } as Prisma.InputJsonValue } });
+    await recordWorkspaceActivity(tx, { context, action: "project.approval_route_selected", entityType: "project", entityId: req.params.projectId, projectId: req.params.projectId, previousJson: { preference: previousPreference }, nextJson: data });
+  });
+  res.json(data);
 });
 
 approvalsRouter.patch("/projects-v2/:projectId/approval-policy", async (req, res) => {
