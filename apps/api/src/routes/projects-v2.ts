@@ -3320,7 +3320,7 @@ guidedProjectsRouter.post("/projects-v2/:projectId/execution-tasks", async (req,
 });
 
 guidedProjectsRouter.post("/projects-v2/:projectId/lead-magnet/generate", async (req, res) => {
-  await requireRequestPermission(req, "edit_assigned_work");
+  const context = await requireRequestPermission(req, "edit_assigned_work");
   const project = await scopedProject(req, req.params.projectId);
   if (!project) return res.status(404).json({ error: "project not found" });
   if (!project.businessProfile) return res.status(409).json({ error: "complete intake before generating a lead magnet" });
