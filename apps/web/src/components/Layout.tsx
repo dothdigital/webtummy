@@ -6,7 +6,8 @@ import { ACTIVE_CLIENT_EVENT, api, endImpersonation, getImpersonationLabel } fro
 import { Logo, LogoMark } from "./Logo.js";
 import type { BillingPlan, BillingStatus } from "../types.js";
 import BackgroundJobCenter from "./BackgroundJobCenter.js";
-import { ACTIVE_PROJECT_CHANGED_EVENT, getActiveProjectId, projectScopedPath, setActiveProjectId } from "../active-project.js";
+import ProjectScopeGate from "./ProjectScopeGate.js";
+import { ACTIVE_PROJECT_CHANGED_EVENT, getActiveProjectId, isProjectScopedPath, projectScopedPath, setActiveProjectId } from "../active-project.js";
 
 type NavIcon = "overview" | "projects" | "audits" | "keywords" | "local" | "social" | "content" | "billing" | "users" | "plans" | "notifications";
 type HelpSection = { title: string; body?: string; bullets?: string[] };
@@ -853,8 +854,7 @@ export default function Layout({ children }: { children: ReactNode }) {
         <nav className="flex-1 overflow-y-auto px-4 pb-4">
           <div className={`mb-2 px-3 text-[10px] font-bold uppercase tracking-[0.16em] text-slate-400 ${sidebarCollapsed ? "lg:hidden" : ""}`}>Workspace</div>
           <div className="space-y-1">{workspaceItems.map((n) => {
-            const scopedModules = new Set(["/opportunities", "/strategy", "/keywords", "/site-analysis", "/backlinks", "/ai-citations", "/site-architect", "/lead-magnets", "/growth", "/gap-analysis", "/local-seo", "/ai-content", "/social-strategy", "/reports"]);
-            const target = activeProjectId && scopedModules.has(n.to) ? projectScopedPath(n.to, activeProjectId) : n.to;
+            const target = activeProjectId && isProjectScopedPath(n.to) ? projectScopedPath(n.to, activeProjectId) : n.to;
             return (
             <NavLink
               key={n.to}
@@ -962,7 +962,20 @@ export default function Layout({ children }: { children: ReactNode }) {
             </div>
           </section>
         )}
-        <main className="min-w-0 flex-1 overflow-x-hidden px-4 pb-4 pt-16 lg:p-8">{children}</main>
+        <main className="min-w-0 flex-1 overflow-x-hidden px-4 pb-4 pt-16 lg:p-8">
+          <ProjectScopeGate
+            required={isProjectScopedPath(location.pathname)}
+            projectId={new URLSearchParams(location.search).get("projectId") || activeProjectId}
+            moduleLabel={nav.find((item) => item.to === location.pathname)?.label ?? "this module"}
+            canCreateProject={user?.role === "super_admin" || workspacePermissions.create_projects === true}
+            onSelect={(projectId) => {
+              setActiveProjectId(projectId);
+              navigate(projectScopedPath(`${location.pathname}${location.search}`, projectId), { replace: true });
+            }}
+          >
+            {children}
+          </ProjectScopeGate>
+        </main>
         <Footer />
       </div>
       {!helpOpen && <button type="button" onClick={() => setHelpOpen(true)} className="fixed bottom-5 right-5 z-[70] inline-flex items-center gap-2 rounded-full bg-gradient-to-r from-brand-600 to-emerald-500 px-5 py-3 text-sm font-black text-white shadow-[0_14px_35px_rgba(13,148,136,0.32)] transition hover:-translate-y-0.5 hover:shadow-[0_18px_40px_rgba(13,148,136,0.38)] focus:outline-none focus:ring-4 focus:ring-brand-100" aria-label="Ask SEnuke AI"><span className="grid h-6 w-6 place-items-center rounded-full bg-white/20 text-base" aria-hidden="true">✦</span><span>Ask SEnuke</span></button>}

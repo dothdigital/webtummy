@@ -1,5 +1,26 @@
 export const ACTIVE_PROJECT_STORAGE_KEY = "senuke:active-project-id";
 export const ACTIVE_PROJECT_CHANGED_EVENT = "senuke:active-project-changed";
+export const PROJECT_SCOPED_PATHS = new Set([
+  "/opportunities",
+  "/strategy",
+  "/keywords",
+  "/site-analysis",
+  "/backlinks",
+  "/ai-citations",
+  "/site-architect",
+  "/lead-magnets",
+  "/growth",
+  "/gap-analysis",
+  "/local-seo",
+  "/ai-content",
+  "/social-strategy",
+  "/reports",
+  "/approvals",
+]);
+
+export function isProjectScopedPath(pathname: string) {
+  return PROJECT_SCOPED_PATHS.has(pathname);
+}
 
 export function getActiveProjectId() {
   try { return window.localStorage.getItem(ACTIVE_PROJECT_STORAGE_KEY) ?? ""; }
