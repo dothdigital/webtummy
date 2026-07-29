@@ -190,6 +190,15 @@ const leadMagnetGenerateSchema = z.object({
   instructions: z.string().trim().max(2000).optional().nullable(),
   recommendation: leadRecommendationSchema,
   targetWordCount: z.number().int().min(250).max(10_000).optional().nullable(),
+  funnelSetup: z.object({
+    leadMagnetTitle: z.string().trim().min(3).max(255).optional().nullable(),
+    landingHeadline: z.string().trim().min(3).max(240).optional().nullable(),
+    landingDescription: z.string().trim().min(3).max(600).optional().nullable(),
+    ctaText: z.string().trim().min(2).max(120).optional().nullable(),
+    deliveryEmailSubject: z.string().trim().min(2).max(240).optional().nullable(),
+    deliveryEmailContent: z.string().trim().min(3).max(10_000).optional().nullable(),
+    conversionTarget: z.number().min(.1).max(100).optional().nullable(),
+  }).optional(),
   visuals: z.object({ charts: z.boolean(), images: z.boolean(), diagrams: z.boolean() }).default({ charts: true, images: true, diagrams: true }),
 });
 
@@ -1358,8 +1367,9 @@ function buildLeadMagnetPrompt(input: {
   research: Record<string, unknown>;
   visuals: { charts: boolean; images: boolean; diagrams: boolean };
   targetWordCount?: number | null;
+  funnelSetup?: z.infer<typeof leadMagnetGenerateSchema>["funnelSetup"];
 }) {
-  const { project, strategy, keywordRuns, selectedIdea, instructions, recommendation, branding, research, visuals, targetWordCount } = input;
+  const { project, strategy, keywordRuns, selectedIdea, instructions, recommendation, branding, research, visuals, targetWordCount, funnelSetup } = input;
   const ctx = projectContext(project);
   const selectedOpportunity = project.opportunities.find((opportunity) => opportunityDecisionStatus(opportunity.status)) ?? null;
   const keywords = keywordRuns.slice(0, 8).map((run) => ({
@@ -1386,6 +1396,7 @@ function buildLeadMagnetPrompt(input: {
     recommendation ? `Evidence-backed recommendation selected by the user: ${JSON.stringify(recommendation)}` : "No structured recommendation was supplied; use the strongest available project evidence.",
     `Required research run completed before generation: ${JSON.stringify(research)}`,
     instructions ? `User requirements and constraints (follow unless unsafe or contradicted by project facts): ${instructions}` : "No additional user requirements were supplied.",
+    funnelSetup ? `User-approved funnel content setup. Use these exact values wherever supplied and create any omitted values with AI: ${JSON.stringify(funnelSetup)}` : "No funnel content values were supplied; generate all funnel copy with AI.",
     "The title, promise, format, outline, CTA, and follow-up must align with the selected concept, target audience, offer, primary goal, market, and available keyword intent.",
     "Keep the opt-in form minimal. formFields may contain only First name, Last name, and Email; Email is always required.",
     JSON.stringify({
@@ -4027,19 +4038,30 @@ guidedProjectsRouter.post("/projects-v2/:projectId/lead-magnet/generate", async 
       research: { researchRunId: researchRun.id, objective: (researchRun.inputSnapshotJson as Record<string, unknown>)?.objective ?? null, findings: researchOutput.research ?? null },
       visuals: parsed.data.visuals,
       targetWordCount: parsed.data.targetWordCount,
+      funnelSetup: parsed.data.funnelSetup,
     });
     const generated = await openaiJson(prompt, routedModel);
     const result = generated.result as { leadMagnet?: { title?: unknown; assetType?: unknown } };
-    const title = typeof result.leadMagnet?.title === "string" && result.leadMagnet.title.trim()
+    const title = parsed.data.funnelSetup?.leadMagnetTitle || (typeof result.leadMagnet?.title === "string" && result.leadMagnet.title.trim()
       ? result.leadMagnet.title.trim()
-      : `${project.businessName ?? project.name} Lead Magnet`;
+      : `${project.businessName ?? project.name} Lead Magnet`);
     const assetType = typeof result.leadMagnet?.assetType === "string" ? result.leadMagnet.assetType : "lead magnet";
 
     const generatedPackage = generated.result && typeof generated.result === "object" && !Array.isArray(generated.result)
       ? generated.result as Record<string, unknown> : {};
     const packageObject = (value: unknown) => value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
     const leadMagnet = packageObject(generatedPackage.leadMagnet);
-    const landingPage = packageObject(generatedPackage.landingPage);
+    const landingPage = {
+      ...packageObject(generatedPackage.landingPage),
+      ...(parsed.data.funnelSetup?.landingHeadline ? { headline: parsed.data.funnelSetup.landingHeadline } : {}),
+      ...(parsed.data.funnelSetup?.landingDescription ? { subheadline: parsed.data.funnelSetup.landingDescription } : {}),
+      ...(parsed.data.funnelSetup?.ctaText ? { ctaText: parsed.data.funnelSetup.ctaText } : {}),
+    };
+    const deliveryEmail = {
+      ...packageObject(generatedPackage.deliveryEmail),
+      ...(parsed.data.funnelSetup?.deliveryEmailSubject ? { subject: parsed.data.funnelSetup.deliveryEmailSubject } : {}),
+      ...(parsed.data.funnelSetup?.deliveryEmailContent ? { body: parsed.data.funnelSetup.deliveryEmailContent } : {}),
+    };
     const businessAnalysis = packageObject(generatedPackage.businessAnalysis);
     const generatedBrand = { ...branding, ...packageObject(generatedPackage.branding) };
     const rawImagePlan = (Array.isArray(generatedPackage.imagePlan) ? generatedPackage.imagePlan : []).map(packageObject);
@@ -4106,10 +4128,10 @@ guidedProjectsRouter.post("/projects-v2/:projectId/lead-magnet/generate", async 
           recommendationReason: parsed.data.recommendation ? `${parsed.data.recommendation.why} ${parsed.data.recommendation.signal} ${parsed.data.recommendation.estimatedImpact.label}. ${parsed.data.recommendation.estimatedImpact.disclaimer}` : `Selected from the approved Strategy, audience, offer, Primary Goal, target markets, approved keyword evidence, and current website context.`,
           audience: project.businessProfile?.targetAudience, primaryGoal: project.primaryGoal,
           brandVoice: project.brandVoice || project.businessProfile?.tonePreference,
-          assetJson: { ...leadMagnet, title, targetWordCount: parsed.data.targetWordCount ?? null, generatedWordCount, businessAnalysis, branding: generatedBrand, imagePlan, coverImage, generatedImages, leadMagnetResearch: researchOutput.research ?? null, researchRunId: researchRun.id, opportunityEvidence: parsed.data.recommendation?.evidence ?? [], estimatedImpact: parsed.data.recommendation?.estimatedImpact ?? null, setupInstructions: parsed.data.instructions ?? null }, landingPageJson: { ...landingPage, coverImage } as Prisma.InputJsonValue,
+          assetJson: { ...leadMagnet, title, targetWordCount: parsed.data.targetWordCount ?? null, generatedWordCount, businessAnalysis, branding: generatedBrand, imagePlan, coverImage, generatedImages, leadMagnetResearch: researchOutput.research ?? null, researchRunId: researchRun.id, opportunityEvidence: parsed.data.recommendation?.evidence ?? [], estimatedImpact: parsed.data.recommendation?.estimatedImpact ?? null, setupInstructions: parsed.data.instructions ?? null, funnelSetup: parsed.data.funnelSetup ?? null }, landingPageJson: { ...landingPage, coverImage } as Prisma.InputJsonValue,
           optInFormJson: { fields: formFields.map((field) => ({ name: field.toLowerCase().replace(/[^a-z0-9]+/g, "_"), label: field, type: /email/i.test(field) ? "email" : "text", required: /email/i.test(field) })), submitLabel: String(landingPage.ctaText ?? "Get the resource"), consentText: "I agree to receive this resource and relevant follow-up email. I can unsubscribe at any time." },
           thankYouPageJson: packageObject(generatedPackage.thankYouPage) as Prisma.InputJsonValue,
-          deliveryEmailJson: packageObject(generatedPackage.deliveryEmail) as Prisma.InputJsonValue,
+          deliveryEmailJson: deliveryEmail as Prisma.InputJsonValue,
           followUpSequenceJson: (Array.isArray(generatedPackage.followUpSequence) ? generatedPackage.followUpSequence : []) as Prisma.InputJsonValue,
           abTestsJson: [
             { element: "headline", control: String(landingPage.headline ?? title), variation: `${String(leadMagnet.promise ?? title)} — get the practical plan`, hypothesis: "A specific outcome-led headline will increase qualified opt-ins." },
@@ -4118,6 +4140,7 @@ guidedProjectsRouter.post("/projects-v2/:projectId/lead-magnet/generate", async 
           ],
           seoMetadataJson: { title: String(landingPage.headline ?? title).slice(0, 60), description: String(landingPage.subheadline ?? leadMagnet.promise ?? title).slice(0, 160), robots: "index,follow", aiSummary: String(leadMagnet.promise ?? "") },
           trackingPlanJson: (Array.isArray(generatedPackage.trackingPlan) ? generatedPackage.trackingPlan : ["Landing page views", "Form submissions", "Downloads", "Delivery email opens", "Email clicks"]) as Prisma.InputJsonValue,
+          conversionTarget: parsed.data.funnelSetup?.conversionTarget ?? 5,
           aiContentGenerationId: record.id, createdByUserId: context.membership.userId,
           validationJson: { valid: false, state: "draft", requiredBeforePublish: ["approval", "verified_esp", "business_evidence", "brand_snapshot", "visual_asset", "link_check", "form_check", "download_check"] },
           decisions: { create: { actorUserId: context.membership.userId, decision: "generated", snapshotJson: { version, title, magnetType: assetType, recommendation: parsed.data.recommendation ?? null } } },
@@ -4168,6 +4191,7 @@ guidedProjectsRouter.post("/projects-v2/:projectId/lead-magnet/generate", async 
             recommendation: parsed.data.recommendation ?? null,
             branding,
             targetWordCount: parsed.data.targetWordCount ?? null,
+            funnelSetup: parsed.data.funnelSetup ?? null,
             visuals: parsed.data.visuals,
           },
           outputJson: { generationId: record.id, funnelId: funnel.id, seriesId: funnel.seriesId, version, title, generatedWordCount, visualCount: generatedImages.length },
