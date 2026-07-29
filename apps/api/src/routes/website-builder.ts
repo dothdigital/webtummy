@@ -2326,6 +2326,165 @@ websiteBuilderRouter.patch("/projects/:projectId/website-builder/build", async (
   res.json({ build: updated });
 });
 
+websiteBuilderRouter.put("/projects/:projectId/website-builder/hosting-handoff", async (req, res) => {
+  const { context, project } = await scopedProject(req.params.projectId, req);
+  if (!hasWorkspacePermission(context, "publish")) return res.status(403).json({ error: "Publishing permission is required." });
+  const build = project.websiteBuilds[0];
+  if (!build) return res.status(404).json({ error: "Website build not found." });
+  const optionalEmail = z.string().trim().max(254).refine(
+    (value) => !value || z.string().email().safeParse(value).success,
+    "Enter a valid technical contact email.",
+  );
+  const input = z.object({
+    destination: z.enum(["wordpress", "existing_host", "new_host", "developer_handoff"]),
+    provider: z.string().trim().min(2).max(180),
+    domain: z.string().trim().min(3).max(255).regex(/^[a-z0-9.-]+(?::\d+)?$/i, "Enter a domain without a path."),
+    accessMethod: z.enum(["wordpress", "sftp", "ftp", "control_panel", "developer", "manual"]),
+    migrationMode: z.enum(["new_site", "replace_existing", "move_domain"]),
+    currentSiteUrl: z.string().trim().url().max(512).or(z.literal("")),
+    dnsProvider: z.string().trim().min(2).max(180),
+    dnsAccess: z.enum(["available", "invite_required", "client_managed", "unknown"]).refine((value) => value !== "unknown", "Confirm how DNS changes will be made."),
+    domainEmailActive: z.boolean(),
+    preserveDomainEmail: z.boolean(),
+    backupConfirmed: z.boolean(),
+    sslManagement: z.enum(["hosting_provider", "cloudflare", "manual", "unknown"]),
+    maintenanceWindow: z.string().trim().max(240),
+    technicalContactName: z.string().trim().max(180),
+    technicalContactEmail: optionalEmail.refine(Boolean, "A technical contact email is required."),
+    notes: z.string().trim().max(4000),
+    sftp: z.object({
+      protocol: z.enum(["sftp", "ftp"]),
+      host: z.string().trim().max(255),
+      port: z.number().int().min(1).max(65535),
+      username: z.string().trim().max(191),
+      rootPath: z.string().trim().max(512),
+      password: z.string().max(4000),
+      credentialStored: z.boolean().optional(),
+      credentialHint: z.string().max(80).optional(),
+    }),
+  }).superRefine((value, ctx) => {
+    if (value.destination === "wordpress" && value.accessMethod !== "wordpress") {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["accessMethod"], message: "WordPress publishing requires the managed WordPress connection." });
+    }
+    if (value.destination !== "wordpress" && value.accessMethod === "wordpress") {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["accessMethod"], message: "Choose a hosting transfer method for this destination." });
+    }
+    if (value.migrationMode !== "new_site" && !value.currentSiteUrl) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["currentSiteUrl"], message: "Enter the current website URL for this migration." });
+    }
+    if (value.migrationMode !== "new_site" && !value.backupConfirmed) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["backupConfirmed"], message: "Confirm a backup or rollback point before replacing or moving the current website." });
+    }
+    if (value.domainEmailActive && !value.preserveDomainEmail) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["preserveDomainEmail"], message: "Confirm that existing business-email DNS records will be preserved." });
+    }
+    if (["sftp", "ftp"].includes(value.accessMethod)) {
+      if (!value.sftp.host) ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["sftp", "host"], message: "Server host is required." });
+      if (!value.sftp.username) ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["sftp", "username"], message: "Server username is required." });
+      if (!value.sftp.rootPath) ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["sftp", "rootPath"], message: "Web root path is required." });
+    }
+  }).parse(req.body ?? {});
+
+  const needsTransferCredential = ["sftp", "ftp"].includes(input.accessMethod);
+  const existingTransfer = needsTransferCredential
+    ? await prisma.websiteSftpIntegration.findFirst({ where: { projectId: project.id }, orderBy: { updatedAt: "desc" } })
+    : null;
+  if (needsTransferCredential && !input.sftp.password && !existingTransfer) {
+    return res.status(422).json({ error: "Enter the server password or access token for the hosting transfer." });
+  }
+
+  const transfer = needsTransferCredential
+    ? existingTransfer
+      ? await prisma.websiteSftpIntegration.update({
+          where: { id: existingTransfer.id },
+          data: {
+            protocol: input.sftp.protocol,
+            host: input.sftp.host,
+            port: input.sftp.port,
+            username: input.sftp.username,
+            rootPath: input.sftp.rootPath,
+            ...(input.sftp.password ? {
+              credentialCiphertext: encryptCredential(input.sftp.password),
+              credentialHint: credentialHint(input.sftp.password),
+            } : {}),
+            connectionStatus: "credentials_saved",
+            lastError: null,
+          },
+        })
+      : await prisma.websiteSftpIntegration.create({
+          data: {
+            projectId: project.id,
+            clientId: project.clientId,
+            protocol: input.sftp.protocol,
+            host: input.sftp.host,
+            port: input.sftp.port,
+            username: input.sftp.username,
+            rootPath: input.sftp.rootPath,
+            credentialCiphertext: encryptCredential(input.sftp.password),
+            credentialHint: credentialHint(input.sftp.password),
+            connectionStatus: "credentials_saved",
+          },
+        })
+    : null;
+
+  const savedAt = new Date().toISOString();
+  const hostingHandoff = {
+    destination: input.destination,
+    provider: input.provider,
+    domain: input.domain.toLowerCase(),
+    accessMethod: input.accessMethod,
+    migrationMode: input.migrationMode,
+    currentSiteUrl: input.currentSiteUrl,
+    dnsProvider: input.dnsProvider,
+    dnsAccess: input.dnsAccess,
+    domainEmailActive: input.domainEmailActive,
+    preserveDomainEmail: input.preserveDomainEmail,
+    backupConfirmed: input.backupConfirmed,
+    sslManagement: input.sslManagement,
+    maintenanceWindow: input.maintenanceWindow,
+    technicalContactName: input.technicalContactName,
+    technicalContactEmail: input.technicalContactEmail,
+    notes: input.notes,
+    sftp: transfer ? {
+      protocol: transfer.protocol,
+      host: transfer.host,
+      port: transfer.port,
+      username: transfer.username,
+      rootPath: transfer.rootPath,
+      credentialStored: true,
+      credentialHint: transfer.credentialHint || "",
+    } : {
+      protocol: input.sftp.protocol,
+      host: "",
+      port: input.sftp.port,
+      username: "",
+      rootPath: input.sftp.rootPath,
+      credentialStored: false,
+      credentialHint: "",
+    },
+    savedAt,
+    savedByUserId: context.membership.userId,
+  };
+  const [updated] = await prisma.$transaction([
+    prisma.websiteBuild.update({
+      where: { id: build.id },
+      data: {
+        settingsJson: {
+          ...jsonRecord(build.settingsJson),
+          hostingHandoff,
+        } as Prisma.InputJsonValue,
+      },
+    }),
+    prisma.project.update({
+      where: { id: project.id },
+      data: {
+        preferredPublishingMethod: input.destination === "wordpress" ? "WordPress" : "Own hosting",
+      },
+    }),
+  ]);
+  res.json({ build: updated, hostingHandoff });
+});
+
 websiteBuilderRouter.put("/projects/:projectId/website-builder/contact-form", async (req, res) => {
   const { context, project } = await scopedProject(req.params.projectId, req);
   if (!hasWorkspacePermission(context, "execute_tasks")) return res.status(403).json({ error: "Website editing permission is required." });
