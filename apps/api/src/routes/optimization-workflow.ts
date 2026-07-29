@@ -69,6 +69,41 @@ optimizationWorkflowRouter.post("/measurement-checkpoints/:checkpointId/complete
     const result = await prisma.$transaction(async (tx) => {
       const completed = await tx.measurementCheckpoint.update({ where: { id: checkpoint.id }, data: { status: "completed", metricsJson: input.metrics as Prisma.InputJsonValue, diagnosis: input.diagnosis, completedAt: new Date() } });
       const nba = input.nextBestAction ? await tx.nextBestAction.create({ data: { projectId: checkpoint.projectId, sourceTaskId: checkpoint.taskId, sourceType: "measurement_checkpoint", sourceId: checkpoint.id, title: input.nextBestAction.title, recommendation: input.nextBestAction.recommendation, reasoningSummary: input.nextBestAction.reasoningSummary, expectedImpact: input.nextBestAction.expectedImpact, confidence: input.nextBestAction.confidence, estimatedEffort: input.nextBestAction.estimatedEffort, route: input.nextBestAction.route, priorityScore: input.nextBestAction.priorityScore, evidenceJson: { checkpointType: checkpoint.checkpointType, baseline: checkpoint.baselineJson, metrics: input.metrics, ...input.nextBestAction.evidence } as Prisma.InputJsonValue } }) : null;
+      await tx.growthSignal.upsert({
+        where: { fingerprint: `${checkpoint.projectId}:performance:measurement:${checkpoint.id}` },
+        create: {
+          projectId: checkpoint.projectId,
+          fingerprint: `${checkpoint.projectId}:performance:measurement:${checkpoint.id}`,
+          category: "performance",
+          signalKey: checkpoint.checkpointType,
+          sourceType: "measurement_checkpoint",
+          sourceId: checkpoint.id,
+          valueJson: { baseline: checkpoint.baselineJson, metrics: input.metrics, diagnosis: input.diagnosis } as Prisma.InputJsonValue,
+          confidence: 95,
+          collectedAt: new Date(),
+          effectiveDate: new Date(),
+          freshnessStatus: "fresh",
+          expiresAt: new Date(Date.now() + 90 * 24 * 60 * 60 * 1000),
+        },
+        update: {
+          valueJson: { baseline: checkpoint.baselineJson, metrics: input.metrics, diagnosis: input.diagnosis } as Prisma.InputJsonValue,
+          confidence: 95,
+          collectedAt: new Date(),
+          effectiveDate: new Date(),
+          freshnessStatus: "fresh",
+          expiresAt: new Date(Date.now() + 90 * 24 * 60 * 60 * 1000),
+        },
+      });
+      await tx.projectGrowthLearning.create({
+        data: {
+          projectId: checkpoint.projectId,
+          sourceType: "measurement_checkpoint",
+          sourceId: checkpoint.id,
+          outcome: "measurement",
+          summary: input.diagnosis,
+          learningJson: { checkpointType: checkpoint.checkpointType, baseline: checkpoint.baselineJson, metrics: input.metrics } as Prisma.InputJsonValue,
+        },
+      });
       await recordWorkspaceActivity(tx, { context, action: "measurement.checkpoint_completed", entityType: "measurement_checkpoint", entityId: checkpoint.id, agencyClientId: checkpoint.project.agencyClientId, projectId: checkpoint.projectId, nextJson: { checkpointType: checkpoint.checkpointType, nextBestActionId: nba?.id ?? null } });
       if (nba) await createWorkspaceNotification(tx, { context, userId: context.workspace.ownerUserId, type: "next_best_action_ready", title: "Next Best Action ready", body: `${checkpoint.project.name}: ${nba.title}`, actionUrl: `/guided-projects/${checkpoint.projectId}?tab=execution#optimization-workflow`, agencyClientId: checkpoint.project.agencyClientId, projectId: checkpoint.projectId });
       return { checkpoint: completed, nextBestAction: nba };

@@ -812,6 +812,9 @@ model Project {
   growthExperiments           GrowthExperiment[]
   growthChannelTests          GrowthChannelTest[]
   growthReports               GrowthReport[]
+  growthBlueprint             GrowthBlueprint?
+  growthSignals               GrowthSignal[]
+  growthLearnings             ProjectGrowthLearning[]
   competitiveIntelligenceRuns CompetitiveIntelligenceRun[]
   keywordRevenueScores        KeywordRevenueScore[]
   pageGrowthScores            PageGrowthScore[]
@@ -1632,6 +1635,19 @@ model NextBestAction {
   route            String         @db.VarChar(80)
   priorityScore    Int
   evidenceJson     Json           @default("{}")
+  actionType       String         @default("growth") @db.VarChar(80)
+  businessGoal     String?        @db.VarChar(255)
+  targetEntitiesJson Json         @default("[]")
+  estimatedImpactJson Json        @default("{}")
+  scoreJson        Json           @default("{}")
+  dependencyIdsJson Json          @default("[]")
+  approvalType     String         @default("user_approval") @db.VarChar(60)
+  riskLevel        String         @default("low") @db.VarChar(40)
+  urgency          Int            @default(0)
+  reviewAfter      DateTime?
+  engineVersion    String         @default("growth-engine-v1") @db.VarChar(80)
+  dedupeKey        String?        @db.VarChar(191)
+  selectedAt       DateTime?
   status           String         @default("proposed") @db.VarChar(40)
   decision         String?        @db.VarChar(40)
   decisionComment  String?        @db.Text
@@ -1643,6 +1659,7 @@ model NextBestAction {
   @@index([projectId, status, priorityScore])
   @@index([sourceType, sourceId])
   @@index([followupTaskId])
+  @@index([projectId, dedupeKey])
 }
 
 // ─── Competitive SEO & Growth Intelligence ─────────────────────────────────
@@ -2624,6 +2641,91 @@ model EcommerceExportGuide {
 
 // ─── Growth Marketing Engine ────────────────────────────────────────────────
 
+model GrowthBlueprint {
+  id                 String   @id @default(cuid())
+  projectId          String   @unique
+  project            Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  title              String   @db.VarChar(220)
+  status             String   @default("draft") @db.VarChar(40)
+  currentVersion     Int      @default(1)
+  primaryGoal        String?  @db.VarChar(255)
+  currentPhase       String   @default("now") @db.VarChar(40)
+  approvedStrategyId String?  @db.VarChar(191)
+  approvedByUserId   String?
+  approvedAt         DateTime?
+  nextReviewAt       DateTime?
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  versions GrowthBlueprintVersion[]
+
+  @@index([status, nextReviewAt])
+}
+
+model GrowthBlueprintVersion {
+  id               String          @id @default(cuid())
+  blueprintId      String
+  blueprint        GrowthBlueprint @relation(fields: [blueprintId], references: [id], onDelete: Cascade)
+  version          Int
+  status           String          @default("draft") @db.VarChar(40)
+  goalsJson        Json            @default("[]")
+  nowJson          Json            @default("[]")
+  nextJson         Json            @default("[]")
+  laterJson        Json            @default("[]")
+  conditionalJson  Json            @default("[]")
+  evidenceJson     Json            @default("{}")
+  reason           String?         @db.Text
+  engineVersion    String          @default("growth-engine-v1") @db.VarChar(80)
+  createdByUserId  String?
+  approvedByUserId String?
+  approvedAt       DateTime?
+  createdAt        DateTime        @default(now())
+
+  @@unique([blueprintId, version])
+  @@index([blueprintId, status])
+}
+
+model GrowthSignal {
+  id              String   @id @default(cuid())
+  projectId       String
+  project         Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  fingerprint     String   @unique @db.VarChar(191)
+  category        String   @db.VarChar(80)
+  signalKey       String   @db.VarChar(120)
+  sourceType      String   @db.VarChar(80)
+  sourceId        String?  @db.VarChar(191)
+  valueJson       Json     @default("{}")
+  confidence      Int      @default(0)
+  collectedAt     DateTime
+  effectiveDate   DateTime
+  freshnessStatus String   @default("fresh") @db.VarChar(40)
+  expiresAt       DateTime?
+  engineVersion   String   @default("growth-engine-v1") @db.VarChar(80)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@index([projectId, category, freshnessStatus])
+  @@index([projectId, signalKey])
+  @@index([effectiveDate])
+}
+
+model ProjectGrowthLearning {
+  id              String   @id @default(cuid())
+  projectId       String
+  project         Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  sourceType      String   @db.VarChar(80)
+  sourceId        String?  @db.VarChar(191)
+  outcome         String   @db.VarChar(40)
+  summary         String   @db.Text
+  learningJson    Json     @default("{}")
+  appliedToFuture Boolean  @default(true)
+  createdAt       DateTime @default(now())
+
+  @@index([projectId, createdAt])
+  @@index([projectId, outcome])
+  @@index([sourceType, sourceId])
+}
+
 model GrowthDiagnosis {
   id             String   @id @default(cuid())
   projectId      String
@@ -2632,6 +2734,11 @@ model GrowthDiagnosis {
   scoreJson      Json     @default("{}")
   summary        String   @db.Text
   dataSnapshot   Json     @default("{}")
+  findingsJson   Json     @default("[]")
+  evidenceJson   Json     @default("{}")
+  confidence     Int      @default(0)
+  engineVersion  String   @default("growth-engine-v1") @db.VarChar(80)
+  runType        String   @default("manual") @db.VarChar(40)
   createdAt      DateTime @default(now())
 
   @@index([projectId, createdAt])
@@ -2677,6 +2784,10 @@ model GrowthExperiment {
   automationLevel  String    @default("prepare") @db.VarChar(60)
   requiresApproval Boolean   @default(true)
   safetyCategory   String    @default("review_required") @db.VarChar(60)
+  guardrailMetrics Json      @default("[]")
+  baselineJson     Json      @default("{}")
+  sourceActionId   String?   @db.VarChar(191)
+  reviewAt         DateTime?
   startedAt        DateTime?
   completedAt      DateTime?
   createdAt        DateTime  @default(now())
@@ -2714,6 +2825,9 @@ model GrowthExperimentResult {
   currentValue  Float?
   resultStatus  String           @default("tracking") @db.VarChar(60)
   notes         String?          @db.Text
+  learningJson  Json             @default("{}")
+  followUpAction String?          @db.Text
+  evaluatedAt   DateTime?
   recordedAt    DateTime         @default(now())
 
   @@index([experimentId, recordedAt])

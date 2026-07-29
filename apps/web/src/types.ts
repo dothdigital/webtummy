@@ -248,7 +248,83 @@ export interface GrowthDiagnosis {
   scoreJson: Record<string, number>;
   summary: string;
   dataSnapshot: unknown;
+  findingsJson: unknown;
+  evidenceJson: unknown;
+  confidence: number;
+  engineVersion: string;
+  runType: string;
   createdAt: string;
+}
+
+export interface GrowthBlueprintVersion {
+  id: string;
+  version: number;
+  status: string;
+  goalsJson: unknown;
+  nowJson: unknown;
+  nextJson: unknown;
+  laterJson: unknown;
+  conditionalJson: unknown;
+  evidenceJson: unknown;
+  reason: string | null;
+  engineVersion: string;
+  createdAt: string;
+}
+
+export interface GrowthBlueprint {
+  id: string;
+  projectId: string;
+  title: string;
+  status: string;
+  currentVersion: number;
+  primaryGoal: string | null;
+  currentPhase: string;
+  nextReviewAt: string | null;
+  updatedAt: string;
+  versions: GrowthBlueprintVersion[];
+}
+
+export interface GrowthEvidenceSignal {
+  id: string;
+  category: string;
+  signalKey: string;
+  sourceType: string;
+  sourceId: string | null;
+  valueJson: unknown;
+  confidence: number;
+  collectedAt: string;
+  effectiveDate: string;
+  freshnessStatus: string;
+  expiresAt: string | null;
+}
+
+export interface GrowthCandidateAction {
+  id: string;
+  title: string;
+  recommendation: string;
+  reasoningSummary: string;
+  expectedImpact: string;
+  confidence: number;
+  estimatedEffort: string;
+  route: string;
+  priorityScore: number;
+  evidenceJson: unknown;
+  actionType: string;
+  businessGoal: string | null;
+  targetEntitiesJson: unknown;
+  estimatedImpactJson: unknown;
+  scoreJson: unknown;
+  dependencyIdsJson: unknown;
+  approvalType: string;
+  riskLevel: string;
+  urgency: number;
+  status: string;
+  decision: string | null;
+  decisionComment: string | null;
+  reviewAfter: string | null;
+  selectedAt: string | null;
+  createdAt: string;
+  followupTask: { id: string; title: string; status: string; relatedUrl: string | null } | null;
 }
 
 export interface GrowthFunnelStage {
@@ -313,6 +389,12 @@ export interface GrowthOverviewResponse {
     experiments: GrowthExperiment[];
     channelTests: { id: string; channel: string; cadence: string; metric: string; durationDays: number; status: string; assetsNeeded: unknown }[];
     reports: { id: string; reportType: string; status: string; htmlContent: string | null; pdfUrl: string | null; createdAt: string }[];
+    blueprint: GrowthBlueprint | null;
+    evidenceSignals: GrowthEvidenceSignal[];
+    candidateActions: GrowthCandidateAction[];
+    selectedAction: GrowthCandidateAction | null;
+    learnings: { id: string; outcome: string; summary: string; learningJson: unknown; createdAt: string }[];
+    recentRuns: { id: string; status: string; promptVersion: string; inputSnapshotJson: unknown; outputJson: unknown; createdAt: string }[];
   };
   automationPolicy: AutomationPolicy;
 }

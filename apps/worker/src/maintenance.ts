@@ -585,6 +585,62 @@ export async function measurementCheckpointNotifications(now = new Date()) {
   });
 }
 
+export async function scheduledGrowthBlueprintReviews(now = new Date()) {
+  return runLogged("scheduled_growth_blueprint_reviews", async () => {
+    const blueprints = await prisma.growthBlueprint.findMany({
+      where: { status: "active", nextReviewAt: { lte: now } },
+      take: 500,
+      include: {
+        project: {
+          include: {
+            agencyClient: { include: { workspace: true } },
+            client: { include: { workspace: true } },
+          },
+        },
+      },
+    });
+    let notified = 0;
+    for (const blueprint of blueprints) {
+      const workspace = blueprint.project.agencyClient?.workspace ?? blueprint.project.client.workspace;
+      const actionUrl = `/growth?projectId=${blueprint.projectId}&tab=recommendations`;
+      if (workspace) {
+        const existing = await prisma.workspaceNotification.findFirst({
+          where: {
+            workspaceId: workspace.id,
+            projectId: blueprint.projectId,
+            type: "growth_review_due",
+            actionUrl,
+            createdAt: { gte: new Date(now.getTime() - 7 * DAY_MS) },
+          },
+          select: { id: true },
+        });
+        if (!existing) {
+          await prisma.workspaceNotification.create({
+            data: {
+              workspaceId: workspace.id,
+              userId: workspace.ownerUserId,
+              agencyClientId: blueprint.project.agencyClientId,
+              projectId: blueprint.projectId,
+              type: "growth_review_due",
+              title: "Growth Blueprint review due",
+              body: `${blueprint.project.name} is ready for a fresh evidence, diagnosis, and Next Best Action review.`,
+              actionUrl,
+              emailEligible: true,
+              emailStatus: "pending",
+            },
+          });
+          notified += 1;
+        }
+      }
+      await prisma.growthBlueprint.update({
+        where: { id: blueprint.id },
+        data: { nextReviewAt: new Date(now.getTime() + 7 * DAY_MS) },
+      });
+    }
+    return { checked: blueprints.length, notified };
+  });
+}
+
 export async function pendingContentDiscoveryChecks(now = new Date()) {
   return runLogged("pending_content_discovery_checks", async () => {
     const checks = await prisma.contentDiscoveryCheck.findMany({ where: { status: "pending" }, take: 100, include: { project: { include: { agencyClient: { include: { workspace: true } }, client: { include: { workspace: true } } } }, task: true } });
@@ -662,7 +718,7 @@ export async function scheduledProjectReportGeneration(now = new Date()) {
         const completed = project.executionTasks.filter((task) => task.completedAt || task.status === "completed");
         const published = project.executionTasks.filter((task) => task.publishedAt || task.status === "published");
         const awaitingApproval = project.executionTasks.filter((task) => !task.approvedAt && /approval/.test(task.status));
-        const report = await prisma.gapReportExport.create({ data: { projectId: project.id, clientId: project.clientId, reportType: schedule.reportType, clientName: project.agencyClient?.name ?? project.businessName ?? project.name, approvalStatus: workspace.workspaceType === "agency" && !automatic ? "needs_review" : "approved", exportFormat: "secure_link", status: "ready", completedAt: now, clientVisible: automatic, sentToClientAt: automatic ? now : null, contentJson: { title: `${project.name} ${String(schedule.reportType).replace(/_/g, " ")}`, generatedAt: now.toISOString(), frequency: schedule.frequency, project: { id: project.id, name: project.name }, execution: { completed: completed.map((task) => task.title), published: published.map((task) => task.title), awaitingApproval: awaitingApproval.map((task) => task.title) }, clientSafe: automatic } } });
+        const report = await prisma.gapReportExport.create({ data: { projectId: project.id, clientId: project.clientId, reportType: schedule.reportType, clientName: project.agencyClient?.name ?? project.businessName ?? project.name, approvalStatus: workspace.workspaceType === "agency" && !automatic ? "needs_review" : "approved", exportFormat: "secure_link", status: "ready", completedAt: now, clientVisible: automatic, sentToClientAt: automatic ? now : null, contentJson: { title: `${project.name} ${String(schedule.reportType).replace(/_/g, " ")}`, generatedAt: now.toISOString(), frequency: String(schedule.frequency), project: { id: project.id, name: project.name }, execution: { completed: completed.map((task) => task.title), published: published.map((task) => task.title), awaitingApproval: awaitingApproval.map((task) => task.title) }, clientSafe: automatic } } });
         await prisma.workspaceNotification.create({ data: { workspaceId: workspace.id, userId: workspace.ownerUserId, agencyClientId: project.agencyClientId, projectId: project.id, type: "report_ready", title: "Scheduled report ready", body: `${project.name}'s ${String(schedule.reportType).replace(/_/g, " ")} is ready${automatic ? " and was shared automatically" : " for review"}.`, actionUrl: `/reports?projectId=${project.id}`, emailEligible: true, emailStatus: "pending" } });
         if (automatic && project.agencyClient) {
           const clientViewers = project.agencyClient.memberAssignments.filter((assignment) => assignment.membership.roles.length === 1 && assignment.membership.roles[0].role === "client_viewer");
@@ -693,6 +749,7 @@ export async function runMaintenanceSuite() {
     await approvalReminderEscalations();
     await pendingContentDiscoveryChecks();
     await measurementCheckpointNotifications();
+    await scheduledGrowthBlueprintReviews();
     await scheduledLocalGridScans();
     await scheduledProjectReportGeneration();
     await workspaceNotificationEmailDelivery();
