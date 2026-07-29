@@ -53,6 +53,8 @@ export const config = {
   recaptchaMinScore: process.env.RECAPTCHA_MIN_SCORE ? parseFloat(process.env.RECAPTCHA_MIN_SCORE) : 0.5,
   openaiApiKey: process.env.OPENAI_API_KEY ?? "",
   openaiModel: process.env.OPENAI_MODEL ?? "gpt-4o-mini",
+  openaiSearchModel: process.env.OPENAI_SEARCH_MODEL ?? "gpt-5.6-luna",
+  openaiImageModel: process.env.OPENAI_IMAGE_MODEL ?? "gpt-image-2",
   openaiEmbeddingModel: process.env.OPENAI_EMBEDDING_MODEL ?? "text-embedding-3-small",
   socialConnectBaseUrl: process.env.SOCIAL_CONNECT_BASE_URL ?? "https://api.dothdigital.com",
   socialConnectApiKey: process.env.SOCIAL_CONNECT_API_KEY ?? "",

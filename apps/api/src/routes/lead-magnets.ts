@@ -132,7 +132,7 @@ export function validateLeadFunnelForPublish(funnel: PublishValidationFunnel, co
   if (jsonList(asset.sections).map(jsonObject).some((section) => !nonEmpty(section.summary) || !jsonList(section.paragraphs).length || !jsonList(section.bullets).length || !nonEmpty(section.actionStep))) errors.push("Every lead magnet section requires substantive copy, practical bullets, and an action step.");
   if (!nonEmpty(businessAnalysis.business) || !nonEmpty(businessAnalysis.audience) || !nonEmpty(businessAnalysis.offer) || !nonEmpty(businessAnalysis.goal)) errors.push("Business, audience, offer, and goal analysis is incomplete.");
   if (!nonEmpty(branding.businessName) || !nonEmpty(branding.brandVoice)) errors.push("Brand identity and voice snapshot is incomplete.");
-  if (!nonEmpty(asset.coverImage) || !/^data:image\/svg\+xml;base64,/i.test(String(asset.coverImage)) || !imagePlan.length || !generatedImages.some((item) => /^data:image\/svg\+xml;base64,/i.test(String(item.dataUrl ?? "")))) errors.push("Branded cover image or supporting generated visuals are missing.");
+  if (!nonEmpty(asset.coverImage) || !/^data:image\/svg\+xml;base64,/i.test(String(asset.coverImage)) || (imagePlan.length > 0 && !generatedImages.some((item) => /^data:image\/(svg\+xml|png|jpeg|webp);base64,/i.test(String(item.dataUrl ?? ""))))) errors.push("Branded cover image or supporting generated visuals are missing.");
   if (generatedImages.some((item) => !nonEmpty(item.sourceLabel))) errors.push("Every generated visual requires a visible source label.");
   const unsourcedFactualVisuals = generatedImages.filter((item) => {
     const sourceLabel = String(item.sourceLabel ?? "").trim();
@@ -216,7 +216,8 @@ function assetHtml(funnel: { title: string; magnetType: string; assetJson: unkno
   const visualSource = (image: Record<string, unknown>) => {
     const sourceLabel = nonEmpty(image.sourceLabel) ? String(image.sourceLabel) : "Source required before publishing";
     const sourceUrl = nonEmpty(image.sourceUrl) ? String(image.sourceUrl) : "";
-    return `<div class="source"><b>Source:</b> ${sourceUrl ? `<a href="${escapeHtml(sourceUrl)}" rel="noreferrer">${escapeHtml(sourceLabel)}</a><br><span>${escapeHtml(sourceUrl)}</span>` : escapeHtml(sourceLabel)}</div>`;
+    const attribution = nonEmpty(image.attribution) ? `<div>${escapeHtml(image.attribution)}</div>` : "";
+    return `<div class="source"><b>Evidence source:</b> ${sourceUrl ? `<a href="${escapeHtml(sourceUrl)}" rel="noreferrer">${escapeHtml(sourceLabel)}</a><br><span>${escapeHtml(sourceUrl)}</span>` : escapeHtml(sourceLabel)}${attribution}</div>`;
   };
   const body = sections.length
     ? sections.map((section, index) => {
@@ -303,37 +304,46 @@ export function renderLeadMagnetPdf(funnel: { title: string; magnetType: string;
       doc.fillColor("#172033").font("Helvetica-Bold").fontSize(20).text("Visuals and sources");
       doc.moveDown(.3).fillColor("#64748b").font("Helvetica").fontSize(10).text("Every factual visual includes the evidence source used to create it.");
       for (const [index, image] of generatedImages.entries()) {
-        if (doc.y > doc.page.height - 225) doc.addPage();
+        if (doc.y > doc.page.height - 340) doc.addPage();
         const top = doc.y + 16;
         const left = doc.page.margins.left;
         const width = doc.page.width - doc.page.margins.left - doc.page.margins.right;
         const role = String(image.role ?? "visual").toLowerCase();
-        doc.roundedRect(left, top, width, 125, 10).fillAndStroke("#f8fafc", "#dbe4ef");
+        doc.roundedRect(left, top, width, 265, 10).fillAndStroke("#f8fafc", "#dbe4ef");
         doc.fillColor(secondary).font("Helvetica-Bold").fontSize(8).text(role.toUpperCase(), left + 16, top + 13, { characterSpacing: 1 });
         doc.fillColor("#172033").font("Helvetica-Bold").fontSize(11).text(String(image.altText ?? `Supporting visual ${index + 1}`), left + 16, top + 29, { width: width - 32, height: 28 });
-        if (role.includes("chart")) {
+        const dataUrl = typeof image.dataUrl === "string" ? image.dataUrl : "";
+        const rasterMatch = dataUrl.match(/^data:image\/(png|jpeg);base64,(.+)$/i);
+        if (rasterMatch) {
+          try {
+            doc.image(Buffer.from(rasterMatch[2], "base64"), left + 16, top + 60, { fit: [width - 32, 155], align: "center", valign: "center" });
+          } catch {
+            doc.roundedRect(left + 16, top + 67, width - 32, 135, 8).fillOpacity(.12).fill(primary).fillOpacity(1);
+          }
+        } else if (role.includes("chart")) {
           const points = jsonList(image.dataPoints).map(jsonObject).filter((point) => typeof point.value === "number").slice(0, 5);
           const rows = points.length ? points : [{ label: "Source data required", value: 1 }];
           const max = Math.max(...rows.map((point) => Math.abs(Number(point.value)) || 1));
           rows.forEach((point, pointIndex) => {
             const barWidth = 54;
-            const barHeight = 15 + (Math.abs(Number(point.value)) / max) * 35;
+            const barHeight = 25 + (Math.abs(Number(point.value)) / max) * 95;
             const x = left + 20 + pointIndex * 75;
-            doc.roundedRect(x, top + 99 - barHeight, barWidth, barHeight, 4).fill(pointIndex % 2 ? secondary : primary);
+            doc.roundedRect(x, top + 200 - barHeight, barWidth, barHeight, 4).fill(pointIndex % 2 ? secondary : primary);
           });
         } else if (role.includes("diagram")) {
-          const y = top + 82;
+          const y = top + 135;
           [left + 62, left + width / 2, left + width - 62].forEach((x, nodeIndex, nodes) => {
             if (nodeIndex < nodes.length - 1) doc.moveTo(x + 25, y).lineTo(nodes[nodeIndex + 1] - 25, y).strokeColor(primary).lineWidth(3).stroke();
             doc.circle(x, y, 23).fill(nodeIndex % 2 ? secondary : primary);
           });
         } else {
-          doc.roundedRect(left + 16, top + 67, width - 32, 34, 8).fillOpacity(.12).fill(primary).fillOpacity(1);
+          doc.roundedRect(left + 16, top + 67, width - 32, 135, 8).fillOpacity(.12).fill(primary).fillOpacity(1);
         }
         const sourceLabel = nonEmpty(image.sourceLabel) ? String(image.sourceLabel) : "Source required before publishing";
         const sourceUrl = nonEmpty(image.sourceUrl) ? ` · ${String(image.sourceUrl)}` : "";
-        doc.fillColor("#475569").font("Helvetica").fontSize(8).text(`Source: ${sourceLabel}${sourceUrl}`, left + 16, top + 136, { width: width - 32, lineGap: 2 });
-        doc.y = top + 165;
+        const attribution = nonEmpty(image.attribution) ? `\n${String(image.attribution)}` : "";
+        doc.fillColor("#475569").font("Helvetica").fontSize(8).text(`Evidence source: ${sourceLabel}${sourceUrl}${attribution}`, left + 16, top + 225, { width: width - 32, lineGap: 2 });
+        doc.y = top + 295;
       }
     }
     doc.end();

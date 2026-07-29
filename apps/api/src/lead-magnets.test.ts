@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { emailSequenceHtml, emailSequenceText, leadCaptureWidgetHtml, leadFunnelOptimizationRecommendations, leadOpportunityRecommendations, renderLeadMagnetPdf, validateLeadFunnelForPublish } from "./routes/lead-magnets.js";
+import { leadMagnetBodyWordCount, openAiWebCitations } from "./routes/projects-v2.js";
 
 const completeFunnel = {
   status: "approved",
@@ -104,6 +105,32 @@ describe("DEV-011C lead funnel optimization", () => {
     expect(validateLeadFunnelForPublish(miniEbook, connectedEsp).valid).toBe(true);
     const pdf = await renderLeadMagnetPdf(miniEbook);
     expect(pdf.subarray(0, 5).toString()).toBe("%PDF-");
+  });
+
+  it("counts only generated lead-magnet body copy for the requested word target", () => {
+    expect(leadMagnetBodyWordCount({
+      title: "Excluded title",
+      sections: [{
+        title: "Excluded section title",
+        summary: "Four useful words here",
+        paragraphs: ["Another practical paragraph appears now"],
+        bullets: ["Check every important detail"],
+        actionStep: "Record the result",
+      }],
+    })).toBe(16);
+  });
+
+  it("extracts clickable evidence citations returned by OpenAI web research", () => {
+    expect(openAiWebCitations({
+      output: [{
+        type: "message",
+        content: [{
+          type: "output_text",
+          text: "Evidence",
+          annotations: [{ type: "url_citation", title: "Statistics Canada", url: "https://www.statcan.gc.ca/example" }],
+        }],
+      }],
+    })).toEqual([{ title: "Statistics Canada", url: "https://www.statcan.gc.ca/example" }]);
   });
 
   it("requires visible HTTPS sources for factual visuals in every lead magnet format", () => {
