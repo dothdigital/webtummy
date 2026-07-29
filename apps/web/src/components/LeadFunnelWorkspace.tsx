@@ -217,6 +217,12 @@ export default function LeadFunnelWorkspace({ projectId, suggestedIdeas }: { pro
     }));
     setSetupStep(4);
   };
+  const navigateSetupStep = (step: 1 | 2 | 3 | 4) => {
+    if (!generationSeriesId || !researchData.research) return;
+    if (step === 4) continueToFunnelSetup();
+    else setSetupStep(step);
+    setNotice(null);
+  };
   const openLeadMagnet = (item: Funnel) => {
     setActiveId(item.id);
     setSetupStep(0);
@@ -246,7 +252,8 @@ export default function LeadFunnelWorkspace({ projectId, suggestedIdeas }: { pro
       </div>
       {data.capabilities.canGenerate && setupStep > 0 && <div className="flex flex-col gap-6 border-b border-slate-100 bg-slate-50/60 p-5">
         {setupStep > 0 && <section className="rounded-2xl border border-brand-200 bg-white p-5 shadow-sm">
-          <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4">{[["1", "Primary AI suggestion"], ["2", "Exhaustive primary research"], ["3", "Refine the recommendation"], ["4", "Funnel content setup"]].map(([number, title], index) => { const stepNumber = index + 1; const active = setupStep === stepNumber; const complete = setupStep > stepNumber; return <div key={number} className={`rounded-xl border px-4 py-3 ${active ? "border-brand-500 bg-brand-50" : complete ? "border-emerald-200 bg-emerald-50" : "border-slate-200 bg-slate-50"}`}><div className={`grid h-7 w-7 place-items-center rounded-full text-xs font-black ${active ? "bg-brand-600 text-white" : complete ? "bg-emerald-600 text-white" : "bg-slate-200 text-slate-600"}`}>{complete ? "✓" : number}</div><div className="mt-2 text-sm font-bold text-slate-900">{title}</div></div>; })}</div>
+          <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4">{[["1", "Primary AI suggestion"], ["2", "Exhaustive primary research"], ["3", "Refine the recommendation"], ["4", "Funnel content setup"]].map(([number, title], index) => { const stepNumber = (index + 1) as 1 | 2 | 3 | 4; const active = setupStep === stepNumber; const complete = setupStep > stepNumber; const editableNavigation = Boolean(generationSeriesId && researchData.research); return <button type="button" key={number} onClick={() => navigateSetupStep(stepNumber)} disabled={!editableNavigation} aria-current={active ? "step" : undefined} className={`rounded-xl border px-4 py-3 text-left transition ${active ? "border-brand-500 bg-brand-50" : complete ? "border-emerald-200 bg-emerald-50" : "border-slate-200 bg-slate-50"} ${editableNavigation ? "cursor-pointer hover:border-brand-400 hover:shadow-sm" : "cursor-default"}`}><div className={`grid h-7 w-7 place-items-center rounded-full text-xs font-black ${active ? "bg-brand-600 text-white" : complete ? "bg-emerald-600 text-white" : "bg-slate-200 text-slate-600"}`}>{complete ? "✓" : number}</div><div className="mt-2 text-sm font-bold text-slate-900">{title}</div>{editableNavigation && <div className="mt-1 text-xs font-semibold text-brand-600">{active ? "Current step" : "Open step"}</div>}</button>; })}</div>
+          {generationSeriesId && <p className="mt-3 text-xs font-semibold text-brand-700">Editing setup: select any step above to review or change it.</p>}
           <div className="mt-3 flex justify-end"><button type="button" onClick={() => setSetupStep(0)} className="rounded-lg border border-slate-200 px-3 py-2 text-xs font-bold text-slate-600">{funnel ? "Return to results" : "Cancel setup"}</button></div>
         </section>}
         {setupStep > 0 && !researchData.research && <section className="order-1 rounded-2xl border border-brand-200 bg-white p-8 text-center">{busy === "research" && <div className="mx-auto h-10 w-10 animate-spin rounded-full border-4 border-brand-100 border-t-brand-600" />}<div className="mt-4 text-xs font-bold uppercase tracking-wide text-brand-600">Primary AI research</div><h3 className="mt-1 text-lg font-bold text-slate-950">{busy === "research" ? "Researching the strongest lead opportunity" : "Primary research needs to be run"}</h3><p className="mx-auto mt-2 max-w-2xl text-sm leading-6 text-slate-500">Reviewing Business Intake, keywords, geography, Site Analysis, selected Opportunity, approved Strategy, and SEO plan before asking you to refine anything.</p>{busy !== "research" && <button type="button" onClick={() => setAutoResearchAttempted(false)} className="mt-4 rounded-lg bg-brand-600 px-5 py-2.5 text-sm font-bold text-white">Retry primary AI research</button>}</section>}
