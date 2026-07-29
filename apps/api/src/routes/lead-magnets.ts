@@ -460,7 +460,7 @@ async function addSubscriber(connection: { provider: string; credentialCiphertex
 leadMagnetsRouter.get("/projects/:projectId/lead-magnets", async (req, res, next) => { try {
   const { context, project } = await contextProject(req); const clientViewer = context.roles.size === 1 && context.roles.has("client_viewer");
   const [funnels, connections, activities] = await Promise.all([
-    prisma.leadMagnetFunnel.findMany({ where: { projectId: project.id, ...(clientViewer ? { status: "published", sharedWithClient: true } : {}) }, orderBy: { version: "desc" }, include: includeFunnel }),
+    prisma.leadMagnetFunnel.findMany({ where: { projectId: project.id, ...(clientViewer ? { status: "published", sharedWithClient: true } : {}) }, orderBy: [{ createdAt: "desc" }, { version: "desc" }], include: includeFunnel }),
     clientViewer ? Promise.resolve([]) : prisma.leadMagnetEspConnection.findMany({ where: { projectId: project.id }, orderBy: { updatedAt: "desc" } }),
     clientViewer ? Promise.resolve([]) : prisma.workspaceActivity.findMany({ where: { projectId: project.id, action: { startsWith: "lead_magnet." } }, orderBy: { createdAt: "desc" }, take: 100, include: { actor: { select: { name: true, email: true } } } }),
   ]);
@@ -524,11 +524,11 @@ leadMagnetsRouter.patch("/projects/:projectId/lead-magnets/:funnelId", async (re
   const landing = { ...jsonObject(funnel.landingPageJson), ...(input.landingHeadline ? { headline: input.landingHeadline } : {}), ...(input.landingSubheadline ? { subheadline: input.landingSubheadline } : {}), ...(input.ctaText ? { ctaText: input.ctaText } : {}) };
   const form = { ...jsonObject(funnel.optInFormJson), ...(input.ctaText ? { submitLabel: input.ctaText } : {}) };
   const delivery = { ...jsonObject(funnel.deliveryEmailJson), ...(input.deliverySubject ? { subject: input.deliverySubject } : {}), ...(input.deliveryBody ? { body: input.deliveryBody } : {}) };
-  const protectedVersion = ["approved", "published", "superseded"].includes(funnel.status); const latest = protectedVersion ? await prisma.leadMagnetFunnel.findFirst({ where: { projectId: project.id }, orderBy: { version: "desc" }, select: { version: true } }) : null;
+  const protectedVersion = ["approved", "published", "superseded"].includes(funnel.status); const latest = protectedVersion ? await prisma.leadMagnetFunnel.findFirst({ where: { projectId: project.id, seriesId: funnel.seriesId }, orderBy: { version: "desc" }, select: { version: true } }) : null;
   const result = await prisma.$transaction(async (tx) => {
     const data = { title: input.title ?? funnel.title, magnetType: input.magnetType ?? funnel.magnetType, landingPageJson: landing as Prisma.InputJsonValue, optInFormJson: form as Prisma.InputJsonValue, deliveryEmailJson: delivery as Prisma.InputJsonValue, conversionTarget: input.conversionTarget ?? funnel.conversionTarget, sharedWithClient: input.sharedWithClient ?? funnel.sharedWithClient, status: "draft", approvedAt: null, approvedByUserId: null, validationJson: { valid: false, state: "edited", requiredBeforePublish: ["approval", "verified_esp", "link_check", "form_check", "download_check"] } as Prisma.InputJsonValue };
     const row = protectedVersion
-      ? await tx.leadMagnetFunnel.create({ data: { projectId: project.id, clientId: project.clientId, version: (latest?.version ?? funnel.version) + 1, ...data, recommendationScore: funnel.recommendationScore, recommendationReason: funnel.recommendationReason, audience: funnel.audience, primaryGoal: funnel.primaryGoal, brandVoice: funnel.brandVoice, assetJson: funnel.assetJson as Prisma.InputJsonValue, thankYouPageJson: funnel.thankYouPageJson as Prisma.InputJsonValue, followUpSequenceJson: funnel.followUpSequenceJson as Prisma.InputJsonValue, abTestsJson: funnel.abTestsJson as Prisma.InputJsonValue, seoMetadataJson: funnel.seoMetadataJson as Prisma.InputJsonValue, trackingPlanJson: funnel.trackingPlanJson as Prisma.InputJsonValue, aiContentGenerationId: funnel.aiContentGenerationId, espConnectionId: funnel.espConnectionId, createdByUserId: context.membership.userId }, include: includeFunnel })
+      ? await tx.leadMagnetFunnel.create({ data: { projectId: project.id, clientId: project.clientId, seriesId: funnel.seriesId, version: (latest?.version ?? funnel.version) + 1, ...data, recommendationScore: funnel.recommendationScore, recommendationReason: funnel.recommendationReason, audience: funnel.audience, primaryGoal: funnel.primaryGoal, brandVoice: funnel.brandVoice, assetJson: funnel.assetJson as Prisma.InputJsonValue, thankYouPageJson: funnel.thankYouPageJson as Prisma.InputJsonValue, followUpSequenceJson: funnel.followUpSequenceJson as Prisma.InputJsonValue, abTestsJson: funnel.abTestsJson as Prisma.InputJsonValue, seoMetadataJson: funnel.seoMetadataJson as Prisma.InputJsonValue, trackingPlanJson: funnel.trackingPlanJson as Prisma.InputJsonValue, aiContentGenerationId: funnel.aiContentGenerationId, espConnectionId: funnel.espConnectionId, createdByUserId: context.membership.userId }, include: includeFunnel })
       : await tx.leadMagnetFunnel.update({ where: { id: funnel.id }, data, include: includeFunnel });
     await tx.leadMagnetDecision.create({ data: { funnelId: row.id, actorUserId: context.membership.userId, decision: protectedVersion ? "revised_as_new_version" : "edited", comments: input.comments, snapshotJson: { sourceVersion: funnel.version, version: row.version, changedFields: Object.keys(input) } } });
     await tx.executionTask.updateMany({ where: { projectId: project.id, moduleName: "lead_magnet", relatedAssetId: funnel.id, status: { notIn: ["published", "completed"] } }, data: { relatedAssetId: row.id, status: "needs_review", approvedAt: null, approvalDecision: null, actionButtonLabel: "Review Lead Funnel", relatedUrl: `/lead-magnets?projectId=${project.id}` } });
@@ -537,8 +537,68 @@ leadMagnetsRouter.patch("/projects/:projectId/lead-magnets/:funnelId", async (re
 } catch (error) { next(error); } });
 
 leadMagnetsRouter.post("/projects/:projectId/lead-magnets/:funnelId/approve", async (req, res, next) => { try {
-  const input = decisionSchema.parse(req.body ?? {}); const { context, project } = await contextProject(req, "approve"); const funnel = await prisma.leadMagnetFunnel.findFirst({ where: { id: req.params.funnelId, projectId: project.id } }); if (!funnel) return res.status(404).json({ error: "Lead funnel not found." });
-  const result = await prisma.$transaction(async (tx) => { await tx.leadMagnetFunnel.updateMany({ where: { projectId: project.id, status: "approved", id: { not: funnel.id } }, data: { status: "superseded" } }); const row = await tx.leadMagnetFunnel.update({ where: { id: funnel.id }, data: { status: "approved", approvedAt: new Date(), approvedByUserId: context.membership.userId, sharedWithClient: input.shareWithClient ?? funnel.sharedWithClient, validationJson: { valid: false, state: "approved", message: "Connect or select a verified ESP, then run publish validation." } }, include: includeFunnel }); await tx.leadMagnetDecision.create({ data: { funnelId: row.id, actorUserId: context.membership.userId, decision: "approved", comments: input.comments, snapshotJson: { version: row.version, type: row.magnetType } } }); await tx.executionTask.updateMany({ where: { projectId: project.id, moduleName: "lead_magnet", relatedAssetId: funnel.id, status: { notIn: ["completed", "published"] } }, data: { status: "ready_to_publish", approvedAt: new Date(), approvalDecision: "approved", approvalNotes: input.comments ?? null, approverMembershipId: context.membership.id, actionButtonLabel: "Publish Lead Funnel", relatedUrl: `/lead-magnets?projectId=${project.id}` } }); await recordWorkspaceActivity(tx, { context, action: "lead_magnet.approved", entityType: "lead_magnet_funnel", entityId: row.id, agencyClientId: project.agencyClientId, projectId: project.id, previousJson: { status: funnel.status }, nextJson: { status: "approved", version: row.version, executionTaskStatus: "ready_to_publish" } }); const recipients = await tx.workspaceMembership.findMany({ where: { workspaceId: context.workspace.id, status: "active", roles: { some: { role: { in: ["owner", "admin", "manager", "approver", "editor"] } } } }, select: { userId: true } }); for (const userId of [...new Set(recipients.map((item) => item.userId))]) await createWorkspaceNotification(tx, { context, userId, type: "lead_magnet_approved", title: "Lead funnel approved", body: `${project.name}: ${row.title} was approved and is ready for ESP validation and publishing.`, actionUrl: `/lead-magnets?projectId=${project.id}`, agencyClientId: project.agencyClientId, projectId: project.id }); return row; }); res.json({ funnel: publicFunnel(result) });
+  const input = decisionSchema.parse(req.body ?? {});
+  const { context, project } = await contextProject(req, "approve");
+  const funnel = await prisma.leadMagnetFunnel.findFirst({ where: { id: req.params.funnelId, projectId: project.id } });
+  if (!funnel) return res.status(404).json({ error: "Lead funnel not found." });
+  const result = await prisma.$transaction(async (tx) => {
+    await tx.leadMagnetFunnel.updateMany({
+      where: { projectId: project.id, seriesId: funnel.seriesId, status: "approved", id: { not: funnel.id } },
+      data: { status: "superseded" },
+    });
+    const row = await tx.leadMagnetFunnel.update({
+      where: { id: funnel.id },
+      data: {
+        status: "approved",
+        approvedAt: new Date(),
+        approvedByUserId: context.membership.userId,
+        sharedWithClient: input.shareWithClient ?? funnel.sharedWithClient,
+        validationJson: { valid: false, state: "approved", message: "Connect or select a verified ESP, then run publish validation." },
+      },
+      include: includeFunnel,
+    });
+    await tx.leadMagnetDecision.create({
+      data: {
+        funnelId: row.id,
+        actorUserId: context.membership.userId,
+        decision: "approved",
+        comments: input.comments,
+        snapshotJson: { seriesId: row.seriesId, version: row.version, type: row.magnetType },
+      },
+    });
+    await tx.executionTask.updateMany({
+      where: { projectId: project.id, moduleName: "lead_magnet", relatedAssetId: funnel.id, status: { notIn: ["completed", "published"] } },
+      data: { status: "ready_to_publish", approvedAt: new Date(), approvalDecision: "approved", approvalNotes: input.comments ?? null, approverMembershipId: context.membership.id, actionButtonLabel: "Publish Lead Funnel", relatedUrl: `/lead-magnets?projectId=${project.id}` },
+    });
+    await recordWorkspaceActivity(tx, {
+      context,
+      action: "lead_magnet.approved",
+      entityType: "lead_magnet_funnel",
+      entityId: row.id,
+      agencyClientId: project.agencyClientId,
+      projectId: project.id,
+      previousJson: { status: funnel.status },
+      nextJson: { seriesId: row.seriesId, status: "approved", version: row.version, executionTaskStatus: "ready_to_publish" },
+    });
+    const recipients = await tx.workspaceMembership.findMany({
+      where: { workspaceId: context.workspace.id, status: "active", roles: { some: { role: { in: ["owner", "admin", "manager", "approver", "editor"] } } } },
+      select: { userId: true },
+    });
+    for (const userId of [...new Set(recipients.map((item) => item.userId))]) {
+      await createWorkspaceNotification(tx, {
+        context,
+        userId,
+        type: "lead_magnet_approved",
+        title: "Lead funnel approved",
+        body: `${project.name}: ${row.title} was approved and is ready for ESP validation and publishing.`,
+        actionUrl: `/lead-magnets?projectId=${project.id}`,
+        agencyClientId: project.agencyClientId,
+        projectId: project.id,
+      });
+    }
+    return row;
+  });
+  res.json({ funnel: publicFunnel(result) });
 } catch (error) { next(error); } });
 
 leadMagnetsRouter.post("/projects/:projectId/lead-magnets/:funnelId/reject", async (req, res, next) => { try {
@@ -558,7 +618,7 @@ leadMagnetsRouter.post("/projects/:projectId/lead-magnets/:funnelId/publish", as
   const validation = validateLeadFunnelForPublish(funnel, connection);
   if (!validation.valid) { await prisma.$transaction(async (tx) => { await tx.leadMagnetFunnel.update({ where: { id: funnel.id }, data: { validationJson: { valid: false, state: "blocked", checkedAt: new Date().toISOString(), checks: validation.checks, errors: validation.errors } } }); await recordWorkspaceActivity(tx, { context, action: "lead_magnet.publish_validation_failed", entityType: "lead_magnet_funnel", entityId: funnel.id, agencyClientId: project.agencyClientId, projectId: project.id, nextJson: { checks: validation.checks, errors: validation.errors } }); }); return res.status(409).json({ error: validation.errors.join(" "), errors: validation.errors, checks: validation.checks }); }
   const publicSlug = funnel.publicSlug || `${slug(project.name)}-${slug(funnel.title)}-${randomBytes(4).toString("hex")}`; const publicUrl = `${config.webAppUrl.replace(/\/$/, "")}/lead/${publicSlug}`;
-  const row = await prisma.$transaction(async (tx) => { const updated = await tx.leadMagnetFunnel.update({ where: { id: funnel.id }, data: { status: "published", espConnectionId: connection!.id, publicSlug, publicUrl, publishedAt: new Date(), sharedWithClient: connectionId.shareWithClient ?? funnel.sharedWithClient, validationJson: { valid: true, state: "passed", checkedAt: new Date().toISOString(), checks: validation.checks, errors: [] } }, include: includeFunnel }); await tx.leadMagnetDecision.create({ data: { funnelId: funnel.id, actorUserId: context.membership.userId, decision: "published", snapshotJson: { publicUrl, espProvider: connection!.provider, checks: validation.checks } } }); await tx.executionTask.updateMany({ where: { projectId: project.id, moduleName: "lead_magnet", relatedAssetId: funnel.id }, data: { status: "published", publishedAt: new Date(), completedAt: new Date(), actionButtonLabel: "Open Live Funnel", relatedUrl: publicUrl } }); await recordWorkspaceActivity(tx, { context, action: "lead_magnet.published", entityType: "lead_magnet_funnel", entityId: funnel.id, agencyClientId: project.agencyClientId, projectId: project.id, nextJson: { publicUrl, provider: connection!.provider, validationChecks: validation.checks, executionTaskStatus: "published" } }); await createWorkspaceNotification(tx, { context, userId: context.workspace.ownerUserId, type: "lead_magnet_published", title: "Lead funnel published", body: `${project.name}'s ${funnel.title} is published and connected to ${connection!.provider}.`, actionUrl: `/lead-magnets?projectId=${project.id}`, agencyClientId: project.agencyClientId, projectId: project.id }); return updated; }); res.json({ funnel: publicFunnel(row) });
+  const row = await prisma.$transaction(async (tx) => { await tx.leadMagnetFunnel.updateMany({ where: { projectId: project.id, seriesId: funnel.seriesId, status: "published", id: { not: funnel.id } }, data: { status: "superseded" } }); const updated = await tx.leadMagnetFunnel.update({ where: { id: funnel.id }, data: { status: "published", espConnectionId: connection!.id, publicSlug, publicUrl, publishedAt: new Date(), sharedWithClient: connectionId.shareWithClient ?? funnel.sharedWithClient, validationJson: { valid: true, state: "passed", checkedAt: new Date().toISOString(), checks: validation.checks, errors: [] } }, include: includeFunnel }); await tx.leadMagnetDecision.create({ data: { funnelId: funnel.id, actorUserId: context.membership.userId, decision: "published", snapshotJson: { seriesId: funnel.seriesId, version: funnel.version, publicUrl, espProvider: connection!.provider, checks: validation.checks } } }); await tx.executionTask.updateMany({ where: { projectId: project.id, moduleName: "lead_magnet", relatedAssetId: funnel.id }, data: { status: "published", publishedAt: new Date(), completedAt: new Date(), actionButtonLabel: "Open Live Funnel", relatedUrl: publicUrl } }); await recordWorkspaceActivity(tx, { context, action: "lead_magnet.published", entityType: "lead_magnet_funnel", entityId: funnel.id, agencyClientId: project.agencyClientId, projectId: project.id, nextJson: { seriesId: funnel.seriesId, version: funnel.version, publicUrl, provider: connection!.provider, validationChecks: validation.checks, executionTaskStatus: "published" } }); await createWorkspaceNotification(tx, { context, userId: context.workspace.ownerUserId, type: "lead_magnet_published", title: "Lead funnel published", body: `${project.name}'s ${funnel.title} is published and connected to ${connection!.provider}.`, actionUrl: `/lead-magnets?projectId=${project.id}`, agencyClientId: project.agencyClientId, projectId: project.id }); return updated; }); res.json({ funnel: publicFunnel(row) });
 } catch (error) { next(error); } });
 
 leadMagnetsRouter.post("/projects/:projectId/lead-magnets/:funnelId/metrics", async (req, res, next) => { try {

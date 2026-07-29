@@ -864,6 +864,7 @@ model LeadMagnetFunnel {
   projectId              String
   project                Project                  @relation(fields: [projectId], references: [id], onDelete: Cascade)
   clientId               String
+  seriesId               String                   @default(dbgenerated("(gen_random_uuid())::text")) @db.VarChar(191)
   version                Int                      @default(1)
   status                 String                   @default("draft") @db.VarChar(40)
   title                  String                   @db.VarChar(255)
@@ -902,8 +903,9 @@ model LeadMagnetFunnel {
   decisions LeadMagnetDecision[]
   metrics   LeadMagnetMetricSnapshot[]
 
-  @@unique([projectId, version])
+  @@unique([projectId, seriesId, version])
   @@index([projectId, status])
+  @@index([projectId, seriesId, createdAt])
   @@index([clientId, createdAt])
   @@index([espConnectionId])
 }

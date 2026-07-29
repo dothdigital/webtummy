@@ -183,6 +183,7 @@ const leadMagnetResearchOutputSchema = z.object({
 });
 const leadMagnetGenerateSchema = z.object({
   researchRunId: z.string().trim().min(1),
+  seriesId: z.string().trim().min(1).optional().nullable(),
   selectedIdea: z.string().trim().min(3).max(240).optional().nullable(),
   instructions: z.string().trim().max(2000).optional().nullable(),
   recommendation: leadRecommendationSchema,
@@ -3649,6 +3650,8 @@ guidedProjectsRouter.post("/projects-v2/:projectId/lead-magnet/generate", async 
   if (!approvedStrategy) return res.status(409).json({ error: "approve strategy before generating a lead magnet" });
   const researchRun = await prisma.aiRun.findFirst({ where: { id: parsed.data.researchRunId, projectId: project.id, moduleName: "lead_magnet_research", status: "completed" } });
   if (!researchRun) return res.status(409).json({ error: "Run the AI lead-magnet research step before choosing a format and generating the funnel." });
+  const sourceSeries = parsed.data.seriesId ? await prisma.leadMagnetFunnel.findFirst({ where: { projectId: project.id, seriesId: parsed.data.seriesId }, orderBy: { version: "desc" }, select: { seriesId: true } }) : null;
+  if (parsed.data.seriesId && !sourceSeries) return res.status(404).json({ error: "The lead magnet selected for refinement was not found." });
   const researchOutput = researchRun.outputJson && typeof researchRun.outputJson === "object" && !Array.isArray(researchRun.outputJson) ? researchRun.outputJson as Record<string, unknown> : {};
 
   let usageEventId: string | null = null;
@@ -3736,8 +3739,8 @@ guidedProjectsRouter.post("/projects-v2/:projectId/lead-magnet/generate", async 
           outputTokens: generated.outputTokens,
         },
       });
-      const latestFunnel = await tx.leadMagnetFunnel.findFirst({ where: { projectId: project.id }, orderBy: { version: "desc" }, select: { version: true } });
-      const version = (latestFunnel?.version ?? 0) + 1;
+      const latestSeriesVersion = sourceSeries ? await tx.leadMagnetFunnel.findFirst({ where: { projectId: project.id, seriesId: sourceSeries.seriesId }, orderBy: { version: "desc" }, select: { version: true } }) : null;
+      const version = (latestSeriesVersion?.version ?? 0) + 1;
       const leadMagnet = packageObject(generatedPackage.leadMagnet);
       const landingPage = packageObject(generatedPackage.landingPage);
       const businessAnalysis = packageObject(generatedPackage.businessAnalysis);
@@ -3748,12 +3751,12 @@ guidedProjectsRouter.post("/projects-v2/:projectId/lead-magnet/generate", async 
       const formFields = Array.isArray(landingPage.formFields) ? landingPage.formFields.map(String) : ["First name", "Email"];
       const funnel = await tx.leadMagnetFunnel.create({
         data: {
-          projectId: project.id, clientId: project.clientId, version, status: "draft", title,
+          projectId: project.id, clientId: project.clientId, ...(sourceSeries ? { seriesId: sourceSeries.seriesId } : {}), version, status: "draft", title,
           magnetType: assetType, recommendationScore: parsed.data.recommendation?.score ?? 88,
           recommendationReason: parsed.data.recommendation ? `${parsed.data.recommendation.why} ${parsed.data.recommendation.signal} ${parsed.data.recommendation.estimatedImpact.label}. ${parsed.data.recommendation.estimatedImpact.disclaimer}` : `Selected from the approved Strategy, audience, offer, Primary Goal, target markets, approved keyword evidence, and current website context.`,
           audience: project.businessProfile?.targetAudience, primaryGoal: project.primaryGoal,
           brandVoice: project.brandVoice || project.businessProfile?.tonePreference,
-          assetJson: { ...leadMagnet, title, businessAnalysis, branding: generatedBrand, imagePlan, coverImage, generatedImages, leadMagnetResearch: researchOutput.research ?? null, researchRunId: researchRun.id, opportunityEvidence: parsed.data.recommendation?.evidence ?? [], estimatedImpact: parsed.data.recommendation?.estimatedImpact ?? null }, landingPageJson: { ...landingPage, coverImage } as Prisma.InputJsonValue,
+          assetJson: { ...leadMagnet, title, businessAnalysis, branding: generatedBrand, imagePlan, coverImage, generatedImages, leadMagnetResearch: researchOutput.research ?? null, researchRunId: researchRun.id, opportunityEvidence: parsed.data.recommendation?.evidence ?? [], estimatedImpact: parsed.data.recommendation?.estimatedImpact ?? null, setupInstructions: parsed.data.instructions ?? null }, landingPageJson: { ...landingPage, coverImage } as Prisma.InputJsonValue,
           optInFormJson: { fields: formFields.map((field) => ({ name: field.toLowerCase().replace(/[^a-z0-9]+/g, "_"), label: field, type: /email/i.test(field) ? "email" : "text", required: /email/i.test(field) })), submitLabel: String(landingPage.ctaText ?? "Get the resource"), consentText: "I agree to receive this resource and relevant follow-up email. I can unsubscribe at any time." },
           thankYouPageJson: packageObject(generatedPackage.thankYouPage) as Prisma.InputJsonValue,
           deliveryEmailJson: packageObject(generatedPackage.deliveryEmail) as Prisma.InputJsonValue,
@@ -3770,13 +3773,15 @@ guidedProjectsRouter.post("/projects-v2/:projectId/lead-magnet/generate", async 
           decisions: { create: { actorUserId: context.membership.userId, decision: "generated", snapshotJson: { version, title, magnetType: assetType, recommendation: parsed.data.recommendation ?? null } } },
         },
       });
-      await ensureNextTask(tx, {
+      const leadMagnetTask = await ensureNextTask(tx, {
         clientId: project.clientId,
         websiteId: project.websiteId,
         projectId: project.id,
         executionPlanId: planId,
-        key: `project:${project.id}:execution:build-lead-magnet`,
+        key: `project:${project.id}:execution:lead-magnet:${funnel.seriesId}`,
         moduleName: "lead_magnet",
+        sourceType: "lead_magnet_funnel",
+        sourceId: funnel.seriesId,
         title: `Review lead magnet: ${title}`,
         description: `Review the AI-generated ${assetType} package, landing page, delivery email, thank-you copy, CTA flow, and tracking plan before publishing or sending.`,
         actionButtonLabel: "Review Lead Magnet",
@@ -3786,7 +3791,7 @@ guidedProjectsRouter.post("/projects-v2/:projectId/lead-magnet/generate", async 
         requiresApproval: true,
       });
       await tx.executionTask.updateMany({
-        where: { projectId: project.id, moduleName: "lead_magnet", status: { notIn: ["completed", "skipped", "cancelled", "canceled"] } },
+        where: { id: leadMagnetTask.id },
         data: {
           relatedAssetId: funnel.id,
           status: "needs_review",
@@ -3813,12 +3818,12 @@ guidedProjectsRouter.post("/projects-v2/:projectId/lead-magnet/generate", async 
             recommendation: parsed.data.recommendation ?? null,
             branding,
           },
-          outputJson: { generationId: record.id, funnelId: funnel.id, version, title },
+          outputJson: { generationId: record.id, funnelId: funnel.id, seriesId: funnel.seriesId, version, title },
           outputText: title,
           status: "completed",
         },
       });
-      await recordWorkspaceActivity(tx, { context, action: "lead_magnet.generated", entityType: "lead_magnet_funnel", entityId: funnel.id, agencyClientId: project.agencyClientId, projectId: project.id, nextJson: { version, status: "draft", title, magnetType: assetType, researchRunId: researchRun.id, buyerStage: parsed.data.recommendation?.buyerStage ?? businessAnalysis.buyerStage ?? null, estimatedImpact: parsed.data.recommendation?.estimatedImpact ?? null, evidence: parsed.data.recommendation?.evidence ?? [], generatedAssets: ["lead_magnet_research", "business_analysis", "lead_magnet", "brand_snapshot", "cover_image", "image_plan", "landing_page", "opt_in_form", "thank_you_page", "delivery_email", "follow_up_sequence", "ab_tests"] } });
+      await recordWorkspaceActivity(tx, { context, action: "lead_magnet.generated", entityType: "lead_magnet_funnel", entityId: funnel.id, agencyClientId: project.agencyClientId, projectId: project.id, nextJson: { seriesId: funnel.seriesId, version, status: "draft", title, magnetType: assetType, researchRunId: researchRun.id, buyerStage: parsed.data.recommendation?.buyerStage ?? businessAnalysis.buyerStage ?? null, estimatedImpact: parsed.data.recommendation?.estimatedImpact ?? null, evidence: parsed.data.recommendation?.evidence ?? [], generatedAssets: ["lead_magnet_research", "business_analysis", "lead_magnet", "brand_snapshot", "cover_image", "image_plan", "landing_page", "opt_in_form", "thank_you_page", "delivery_email", "follow_up_sequence", "ab_tests"] } });
       const approvers = await tx.workspaceMembership.findMany({ where: { workspaceId: context.workspace.id, status: "active", roles: { some: { role: { in: ["owner", "admin", "manager", "approver"] } } } }, select: { userId: true } });
       for (const userId of [...new Set([context.workspace.ownerUserId, ...approvers.map((item) => item.userId)])]) await createWorkspaceNotification(tx, { context, userId, type: "lead_magnet_ready_for_approval", title: "Lead magnet ready for approval", body: `${project.name}: ${title} and its complete lead-capture funnel are ready to review.`, actionUrl: `/lead-magnets?projectId=${project.id}`, agencyClientId: project.agencyClientId, projectId: project.id });
       await syncProjectWorkflow(tx, project.id);
