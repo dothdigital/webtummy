@@ -2545,6 +2545,12 @@ guidedProjectsRouter.post("/projects-v2/:projectId/reset-after-strategy", async 
       localSeoTasks: localSeoTasks.count,
       publishingRecords: publications.count + publishingJobs.count,
     };
+  }, {
+    // Resetting a mature project intentionally clears several dependent record
+    // groups and rebuilds its workflow atomically. Prisma's five-second default
+    // is too short for projects with published website versions and assets.
+    maxWait: 10_000,
+    timeout: 30_000,
   });
 
   res.json({ project: await scopedProject(req, project.id), cleared });
