@@ -819,6 +819,14 @@ model Project {
   keywordRevenueScores        KeywordRevenueScore[]
   pageGrowthScores            PageGrowthScore[]
   authorityAssets             AuthorityAsset[]
+  backlinkProfileSnapshots    BacklinkProfileSnapshot[]
+  projectBacklinks            ProjectBacklink[]
+  authorityRiskFindings       AuthorityRiskFinding[]
+  outreachContacts            OutreachContact[]
+  outreachCampaigns           OutreachCampaign[]
+  outreachMessages            OutreachMessage[]
+  earnedMentions              EarnedMention[]
+  authorityPerformanceMetrics AuthorityPerformanceMetric[]
   aiCitationGaps              AiCitationGap[]
   communityInsights           CommunityInsight[]
   intentDriftSnapshots        IntentDriftSnapshot[]
@@ -1617,44 +1625,44 @@ model MeasurementCheckpoint {
 }
 
 model NextBestAction {
-  id               String         @id @default(cuid())
-  projectId        String
-  project          Project        @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  sourceTaskId     String?
-  sourceTask       ExecutionTask? @relation("NextBestActionSourceTask", fields: [sourceTaskId], references: [id], onDelete: SetNull)
-  followupTaskId   String?
-  followupTask     ExecutionTask? @relation("NextBestActionFollowupTask", fields: [followupTaskId], references: [id], onDelete: SetNull)
-  sourceType       String         @db.VarChar(80)
-  sourceId         String?        @db.VarChar(191)
-  title            String         @db.VarChar(255)
-  recommendation   String         @db.Text
-  reasoningSummary String         @db.Text
-  expectedImpact   String         @db.Text
-  confidence       Int
-  estimatedEffort  String         @db.VarChar(40)
-  route            String         @db.VarChar(80)
-  priorityScore    Int
-  evidenceJson     Json           @default("{}")
-  actionType       String         @default("growth") @db.VarChar(80)
-  businessGoal     String?        @db.VarChar(255)
-  targetEntitiesJson Json         @default("[]")
-  estimatedImpactJson Json        @default("{}")
-  scoreJson        Json           @default("{}")
-  dependencyIdsJson Json          @default("[]")
-  approvalType     String         @default("user_approval") @db.VarChar(60)
-  riskLevel        String         @default("low") @db.VarChar(40)
-  urgency          Int            @default(0)
-  reviewAfter      DateTime?
-  engineVersion    String         @default("growth-engine-v1") @db.VarChar(80)
-  dedupeKey        String?        @db.VarChar(191)
-  selectedAt       DateTime?
-  status           String         @default("proposed") @db.VarChar(40)
-  decision         String?        @db.VarChar(40)
-  decisionComment  String?        @db.Text
-  decidedByUserId  String?
-  decidedAt        DateTime?
-  createdAt        DateTime       @default(now())
-  updatedAt        DateTime       @updatedAt
+  id                  String         @id @default(cuid())
+  projectId           String
+  project             Project        @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  sourceTaskId        String?
+  sourceTask          ExecutionTask? @relation("NextBestActionSourceTask", fields: [sourceTaskId], references: [id], onDelete: SetNull)
+  followupTaskId      String?
+  followupTask        ExecutionTask? @relation("NextBestActionFollowupTask", fields: [followupTaskId], references: [id], onDelete: SetNull)
+  sourceType          String         @db.VarChar(80)
+  sourceId            String?        @db.VarChar(191)
+  title               String         @db.VarChar(255)
+  recommendation      String         @db.Text
+  reasoningSummary    String         @db.Text
+  expectedImpact      String         @db.Text
+  confidence          Int
+  estimatedEffort     String         @db.VarChar(40)
+  route               String         @db.VarChar(80)
+  priorityScore       Int
+  evidenceJson        Json           @default("{}")
+  actionType          String         @default("growth") @db.VarChar(80)
+  businessGoal        String?        @db.VarChar(255)
+  targetEntitiesJson  Json           @default("[]")
+  estimatedImpactJson Json           @default("{}")
+  scoreJson           Json           @default("{}")
+  dependencyIdsJson   Json           @default("[]")
+  approvalType        String         @default("user_approval") @db.VarChar(60)
+  riskLevel           String         @default("low") @db.VarChar(40)
+  urgency             Int            @default(0)
+  reviewAfter         DateTime?
+  engineVersion       String         @default("growth-engine-v1") @db.VarChar(80)
+  dedupeKey           String?        @db.VarChar(191)
+  selectedAt          DateTime?
+  status              String         @default("proposed") @db.VarChar(40)
+  decision            String?        @db.VarChar(40)
+  decisionComment     String?        @db.Text
+  decidedByUserId     String?
+  decidedAt           DateTime?
+  createdAt           DateTime       @default(now())
+  updatedAt           DateTime       @updatedAt
 
   @@index([projectId, status, priorityScore])
   @@index([sourceType, sourceId])
@@ -1730,20 +1738,25 @@ model PageGrowthScore {
 }
 
 model AuthorityAsset {
-  id              String   @id @default(cuid())
-  projectId       String
-  project         Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  assetType       String   @db.VarChar(80)
-  title           String   @db.VarChar(220)
-  rationale       String?  @db.Text
-  status          String   @default("idea") @db.VarChar(60)
-  riskScore       Int      @default(0)
-  priorityScore   Int      @default(0)
-  executionTaskId String?  @db.VarChar(191)
-  createdAt       DateTime @default(now())
-  updatedAt       DateTime @updatedAt
+  id               String                @id @default(cuid())
+  projectId        String
+  project          Project               @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  opportunityId    String?
+  opportunity      AuthorityOpportunity? @relation(fields: [opportunityId], references: [id], onDelete: SetNull)
+  assetType        String                @db.VarChar(80)
+  title            String                @db.VarChar(220)
+  rationale        String?               @db.Text
+  contentBriefJson Json                  @default("{}")
+  status           String                @default("idea") @db.VarChar(60)
+  approvalStatus   String                @default("draft") @db.VarChar(40)
+  riskScore        Int                   @default(0)
+  priorityScore    Int                   @default(0)
+  executionTaskId  String?               @db.VarChar(191)
+  createdAt        DateTime              @default(now())
+  updatedAt        DateTime              @updatedAt
 
   @@index([projectId, status])
+  @@index([opportunityId])
   @@index([priorityScore])
 }
 
@@ -2519,26 +2532,229 @@ model AiVisibilitySnapshot {
 }
 
 model AuthorityOpportunity {
-  id                      String   @id @default(cuid())
+  id                      String             @id @default(cuid())
   projectId               String
-  project                 Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  project                 Project            @relation(fields: [projectId], references: [id], onDelete: Cascade)
   clientId                String
-  opportunityType         String   @db.VarChar(80)
-  opportunityUrl          String?  @db.VarChar(512)
-  targetPageUrl           String?  @db.VarChar(512)
-  description             String   @db.Text
-  riskScore               Int      @default(0)
-  riskLabel               String   @db.VarChar(40)
-  estimatedValue          String   @default("medium") @db.VarChar(40)
-  outreachRequired        Boolean  @default(false)
-  outreachDraftAiOutputId String?  @db.VarChar(191)
-  executionTaskId         String?  @db.VarChar(191)
-  createdAt               DateTime @default(now())
-  updatedAt               DateTime @updatedAt
+  opportunityType         String             @db.VarChar(80)
+  title                   String?            @db.VarChar(255)
+  opportunityUrl          String?            @db.VarChar(512)
+  targetPageUrl           String?            @db.VarChar(512)
+  sourceType              String             @default("ai_research") @db.VarChar(80)
+  sourceName              String?            @db.VarChar(180)
+  description             String             @db.Text
+  valueExchange           String?            @db.Text
+  status                  String             @default("discovered") @db.VarChar(40)
+  topicalRelevanceScore   Int                @default(0)
+  businessRelevanceScore  Int                @default(0)
+  sourceQualityScore      Int                @default(0)
+  earningLikelihoodScore  Int                @default(0)
+  businessValueScore      Int                @default(0)
+  effortScore             Int                @default(0)
+  priorityScore           Int                @default(0)
+  scoreReason             String?            @db.Text
+  riskScore               Int                @default(0)
+  riskLabel               String             @db.VarChar(40)
+  estimatedValue          String             @default("medium") @db.VarChar(40)
+  evidenceJson            Json               @default("{}")
+  outreachRequired        Boolean            @default(false)
+  outreachDraftAiOutputId String?            @db.VarChar(191)
+  executionTaskId         String?            @db.VarChar(191)
+  approvedByUserId        String?            @db.VarChar(191)
+  approvedAt              DateTime?
+  dismissedAt             DateTime?
+  assets                  AuthorityAsset[]
+  outreachCampaigns       OutreachCampaign[]
+  earnedMentions          EarnedMention[]
+  createdAt               DateTime           @default(now())
+  updatedAt               DateTime           @updatedAt
 
   @@index([projectId, createdAt])
+  @@index([projectId, status, priorityScore])
   @@index([clientId])
   @@index([riskLabel])
+}
+
+model BacklinkProfileSnapshot {
+  id                 String                 @id @default(cuid())
+  projectId          String
+  project            Project                @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  provider           String                 @default("searchdata") @db.VarChar(80)
+  target             String                 @db.VarChar(512)
+  totalBacklinks     Int                    @default(0)
+  referringDomains   Int                    @default(0)
+  newBacklinks       Int                    @default(0)
+  lostBacklinks      Int                    @default(0)
+  dofollowBacklinks  Int                    @default(0)
+  nofollowBacklinks  Int                    @default(0)
+  brokenBacklinks    Int                    @default(0)
+  providerRiskSignal Int?
+  rawSummaryJson     Json                   @default("{}")
+  capturedAt         DateTime               @default(now())
+  backlinks          ProjectBacklink[]
+  riskFindings       AuthorityRiskFinding[]
+
+  @@index([projectId, capturedAt])
+}
+
+model ProjectBacklink {
+  id                String                  @id @default(cuid())
+  projectId         String
+  project           Project                 @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  snapshotId        String
+  snapshot          BacklinkProfileSnapshot @relation(fields: [snapshotId], references: [id], onDelete: Cascade)
+  sourceUrl         String                  @db.Text
+  sourceDomain      String                  @db.VarChar(255)
+  targetUrl         String                  @db.Text
+  anchorText        String?                 @db.Text
+  linkType          String                  @default("unknown") @db.VarChar(40)
+  domainRank        Int?
+  providerRiskScore Int?
+  firstSeenAt       DateTime?
+  lastSeenAt        DateTime?
+  status            String                  @default("active") @db.VarChar(40)
+  evidenceJson      Json                    @default("{}")
+  riskFindings      AuthorityRiskFinding[]
+  createdAt         DateTime                @default(now())
+
+  @@unique([snapshotId, sourceUrl, targetUrl])
+  @@index([projectId, sourceDomain])
+  @@index([projectId, status])
+}
+
+model AuthorityRiskFinding {
+  id                String                   @id @default(cuid())
+  projectId         String
+  project           Project                  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  snapshotId        String?
+  snapshot          BacklinkProfileSnapshot? @relation(fields: [snapshotId], references: [id], onDelete: SetNull)
+  backlinkId        String?
+  backlink          ProjectBacklink?         @relation(fields: [backlinkId], references: [id], onDelete: SetNull)
+  findingType       String                   @db.VarChar(80)
+  severity          String                   @db.VarChar(40)
+  confidence        Int                      @default(0)
+  summary           String                   @db.Text
+  evidenceJson      Json                     @default("{}")
+  recommendedAction String                   @db.Text
+  status            String                   @default("needs_review") @db.VarChar(40)
+  reviewedByUserId  String?                  @db.VarChar(191)
+  reviewedAt        DateTime?
+  createdAt         DateTime                 @default(now())
+  updatedAt         DateTime                 @updatedAt
+
+  @@index([projectId, status, severity])
+  @@index([snapshotId])
+  @@index([backlinkId])
+}
+
+model OutreachContact {
+  id               String             @id @default(cuid())
+  projectId        String
+  project          Project            @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  organizationName String             @db.VarChar(180)
+  contactName      String?            @db.VarChar(180)
+  email            String?            @db.VarChar(255)
+  websiteUrl       String?            @db.VarChar(512)
+  sourceUrl        String?            @db.VarChar(512)
+  relationshipNote String?            @db.Text
+  optOut           Boolean            @default(false)
+  lastContactedAt  DateTime?
+  campaigns        OutreachCampaign[]
+  createdAt        DateTime           @default(now())
+  updatedAt        DateTime           @updatedAt
+
+  @@index([projectId, organizationName])
+  @@index([projectId, optOut])
+}
+
+model OutreachCampaign {
+  id               String               @id @default(cuid())
+  projectId        String
+  project          Project              @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  opportunityId    String
+  opportunity      AuthorityOpportunity @relation(fields: [opportunityId], references: [id], onDelete: Cascade)
+  contactId        String?
+  contact          OutreachContact?     @relation(fields: [contactId], references: [id], onDelete: SetNull)
+  title            String               @db.VarChar(255)
+  valueProposition String               @db.Text
+  status           String               @default("draft") @db.VarChar(40)
+  approvalStatus   String               @default("draft") @db.VarChar(40)
+  approvedByUserId String?              @db.VarChar(191)
+  approvedAt       DateTime?
+  sendingLimit     Int                  @default(0)
+  messages         OutreachMessage[]
+  createdAt        DateTime             @default(now())
+  updatedAt        DateTime             @updatedAt
+
+  @@index([projectId, status])
+  @@index([opportunityId])
+  @@index([contactId])
+}
+
+model OutreachMessage {
+  id                  String           @id @default(cuid())
+  projectId           String
+  project             Project          @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  campaignId          String
+  campaign            OutreachCampaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  sequenceOrder       Int              @default(1)
+  messageType         String           @default("initial") @db.VarChar(40)
+  subject             String           @db.VarChar(255)
+  bodyText            String           @db.Text
+  personalizationJson Json             @default("{}")
+  status              String           @default("draft") @db.VarChar(40)
+  approvalStatus      String           @default("draft") @db.VarChar(40)
+  approvedByUserId    String?          @db.VarChar(191)
+  approvedAt          DateTime?
+  sentAt              DateTime?
+  createdAt           DateTime         @default(now())
+  updatedAt           DateTime         @updatedAt
+
+  @@unique([campaignId, sequenceOrder])
+  @@index([projectId, status])
+}
+
+model EarnedMention {
+  id             String                @id @default(cuid())
+  projectId      String
+  project        Project               @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  opportunityId  String?
+  opportunity    AuthorityOpportunity? @relation(fields: [opportunityId], references: [id], onDelete: SetNull)
+  sourceUrl      String                @db.VarChar(1024)
+  sourceDomain   String                @db.VarChar(255)
+  targetUrl      String?               @db.VarChar(1024)
+  mentionType    String                @default("backlink") @db.VarChar(60)
+  linkAttribute  String?               @db.VarChar(40)
+  status         String                @default("earned") @db.VarChar(40)
+  referralVisits Int                   @default(0)
+  referralLeads  Int                   @default(0)
+  evidenceJson   Json                  @default("{}")
+  earnedAt       DateTime?
+  lostAt         DateTime?
+  createdAt      DateTime              @default(now())
+  updatedAt      DateTime              @updatedAt
+
+  @@index([projectId, status, createdAt])
+  @@index([opportunityId])
+  @@index([sourceDomain])
+}
+
+model AuthorityPerformanceMetric {
+  id           String   @id @default(cuid())
+  projectId    String
+  project      Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  metricKey    String   @db.VarChar(100)
+  value        Float
+  unit         String   @default("count") @db.VarChar(40)
+  sourceType   String   @db.VarChar(80)
+  sourceId     String?  @db.VarChar(191)
+  periodStart  DateTime
+  periodEnd    DateTime
+  evidenceJson Json     @default("{}")
+  recordedAt   DateTime @default(now())
+
+  @@index([projectId, metricKey, periodEnd])
+  @@index([sourceType, sourceId])
 }
 
 model WhiteLabelProfile {
@@ -2642,20 +2858,20 @@ model EcommerceExportGuide {
 // ─── Growth Marketing Engine ────────────────────────────────────────────────
 
 model GrowthBlueprint {
-  id                 String   @id @default(cuid())
-  projectId          String   @unique
-  project            Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  title              String   @db.VarChar(220)
-  status             String   @default("draft") @db.VarChar(40)
-  currentVersion     Int      @default(1)
-  primaryGoal        String?  @db.VarChar(255)
-  currentPhase       String   @default("now") @db.VarChar(40)
-  approvedStrategyId String?  @db.VarChar(191)
+  id                 String    @id @default(cuid())
+  projectId          String    @unique
+  project            Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  title              String    @db.VarChar(220)
+  status             String    @default("draft") @db.VarChar(40)
+  currentVersion     Int       @default(1)
+  primaryGoal        String?   @db.VarChar(255)
+  currentPhase       String    @default("now") @db.VarChar(40)
+  approvedStrategyId String?   @db.VarChar(191)
   approvedByUserId   String?
   approvedAt         DateTime?
   nextReviewAt       DateTime?
-  createdAt          DateTime @default(now())
-  updatedAt          DateTime @updatedAt
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
 
   versions GrowthBlueprintVersion[]
 
@@ -2686,23 +2902,23 @@ model GrowthBlueprintVersion {
 }
 
 model GrowthSignal {
-  id              String   @id @default(cuid())
+  id              String    @id @default(cuid())
   projectId       String
-  project         Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  fingerprint     String   @unique @db.VarChar(191)
-  category        String   @db.VarChar(80)
-  signalKey       String   @db.VarChar(120)
-  sourceType      String   @db.VarChar(80)
-  sourceId        String?  @db.VarChar(191)
-  valueJson       Json     @default("{}")
-  confidence      Int      @default(0)
+  project         Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  fingerprint     String    @unique @db.VarChar(191)
+  category        String    @db.VarChar(80)
+  signalKey       String    @db.VarChar(120)
+  sourceType      String    @db.VarChar(80)
+  sourceId        String?   @db.VarChar(191)
+  valueJson       Json      @default("{}")
+  confidence      Int       @default(0)
   collectedAt     DateTime
   effectiveDate   DateTime
-  freshnessStatus String   @default("fresh") @db.VarChar(40)
+  freshnessStatus String    @default("fresh") @db.VarChar(40)
   expiresAt       DateTime?
-  engineVersion   String   @default("growth-engine-v1") @db.VarChar(80)
-  createdAt       DateTime @default(now())
-  updatedAt       DateTime @updatedAt
+  engineVersion   String    @default("growth-engine-v1") @db.VarChar(80)
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
 
   @@index([projectId, category, freshnessStatus])
   @@index([projectId, signalKey])
@@ -2818,17 +3034,17 @@ model GrowthExperimentAsset {
 }
 
 model GrowthExperimentResult {
-  id            String           @id @default(cuid())
-  experimentId  String
-  experiment    GrowthExperiment @relation(fields: [experimentId], references: [id], onDelete: Cascade)
-  baselineValue Float?
-  currentValue  Float?
-  resultStatus  String           @default("tracking") @db.VarChar(60)
-  notes         String?          @db.Text
-  learningJson  Json             @default("{}")
+  id             String           @id @default(cuid())
+  experimentId   String
+  experiment     GrowthExperiment @relation(fields: [experimentId], references: [id], onDelete: Cascade)
+  baselineValue  Float?
+  currentValue   Float?
+  resultStatus   String           @default("tracking") @db.VarChar(60)
+  notes          String?          @db.Text
+  learningJson   Json             @default("{}")
   followUpAction String?          @db.Text
-  evaluatedAt   DateTime?
-  recordedAt    DateTime         @default(now())
+  evaluatedAt    DateTime?
+  recordedAt     DateTime         @default(now())
 
   @@index([experimentId, recordedAt])
   @@index([resultStatus])

@@ -31,6 +31,7 @@ import { siteArchitectureRouter } from "./routes/site-architecture.js";
 import { leadMagnetsRouter, publicLeadMagnetsRouter } from "./routes/lead-magnets.js";
 import { aiIntakeRouter } from "./routes/ai-intake.js";
 import { websiteBuilderRouter } from "./routes/website-builder.js";
+import { authorityGrowthRouter } from "./routes/authority-growth.js";
 import { publicWebsiteFormsRouter } from "./routes/website-public-forms.js";
 import { rawBodySaver } from "./billing.js";
 import { enforceArchivedReadOnly, enforceWorkspacePermissions, requireAuth } from "./middleware.js";
@@ -120,6 +121,7 @@ app.get("/", (_req, res) =>
       usage: "GET|POST /api/usage",
       competitiveIntelligence: "GET|POST /api/projects/:projectId/intelligence",
       gapAnalysis: "GET|POST /api/projects/:projectId/gap-analysis",
+      authorityGrowth: "GET|POST /api/projects/:projectId/authority-growth",
       siteArchitecture: "GET|POST /api/projects/:projectId/site-architecture",
     },
   }),
@@ -138,6 +140,7 @@ app.use("/api", automationRouter);
 app.use("/api", usageRouter);
 app.use("/api", competitiveIntelligenceRouter);
 app.use("/api", gapAnalysisRouter);
+app.use("/api", authorityGrowthRouter);
 app.use("/api", agencyWorkspaceRouter);
 app.use("/api", projectReportsRouter);
 app.use("/api", approvalsRouter);

@@ -39,6 +39,11 @@ async function scopedProject(context: Awaited<ReturnType<typeof workspaceContext
       opportunities: { where: { status: { in: ["selected", "confirmed"] } }, orderBy: { createdAt: "desc" }, take: 1 },
       keywordGroups: { select: { id: true, title: true, status: true, keywords: true } },
       strategyPlans: { orderBy: { updatedAt: "desc" }, take: 1 },
+      backlinkProfileSnapshots: { orderBy: { capturedAt: "desc" }, take: 2 },
+      authorityOpportunities: { where: { status: { not: "superseded" } }, orderBy: [{ priorityScore: "desc" }, { createdAt: "desc" }] },
+      authorityAssets: { orderBy: { createdAt: "desc" } },
+      earnedMentions: { orderBy: [{ earnedAt: "desc" }, { createdAt: "desc" }] },
+      authorityPerformanceMetrics: { orderBy: { periodEnd: "desc" }, take: 100 },
       executionTasks: { orderBy: { createdAt: "desc" }, select: { id: true, title: true, moduleName: true, status: true, priority: true, requiresApproval: true, approvedAt: true, publishedAt: true, completedAt: true, dueAt: true, assignee: { select: { user: { select: { name: true, email: true } } } }, approver: { select: { user: { select: { name: true, email: true } } } } } },
       memberAssignments: { select: { membershipId: true } },
       teamAssignments: { select: { team: { select: { members: { select: { membershipId: true } } } } } },
@@ -69,6 +74,21 @@ function reportContent(project: Awaited<ReturnType<typeof scopedProject>>, repor
     if (!latestRankings.has(key)) latestRankings.set(key, run); else if (!previousRankings.has(key)) previousRankings.set(key, run);
   }
   const rankingChanges = [...latestRankings.entries()].map(([key, run]) => { const rank = run.manualRank ?? run.targetRank; const previous = previousRankings.get(key); const previousRank = previous?.manualRank ?? previous?.targetRank; return { keyword: run.seedKeyword, location: run.locationName, rank, previousRank, change: rank != null && previousRank != null ? previousRank - rank : null, averageVolume: run.averageVolume, competitors: run.competitorCount }; }).slice(0, 30);
+  const latestBacklinkSnapshot = project.backlinkProfileSnapshots[0];
+  const previousBacklinkSnapshot = project.backlinkProfileSnapshots[1];
+  const earnedReferralVisits = project.earnedMentions.reduce((sum, mention) => sum + mention.referralVisits, 0);
+  const earnedReferralLeads = project.earnedMentions.reduce((sum, mention) => sum + mention.referralLeads, 0);
+  const backlinkProgress = latestBacklinkSnapshot ? {
+    capturedAt: latestBacklinkSnapshot.capturedAt,
+    totalBacklinks: latestBacklinkSnapshot.totalBacklinks,
+    referringDomains: latestBacklinkSnapshot.referringDomains,
+    referringDomainChange: previousBacklinkSnapshot ? latestBacklinkSnapshot.referringDomains - previousBacklinkSnapshot.referringDomains : null,
+    newBacklinks: latestBacklinkSnapshot.newBacklinks,
+    lostBacklinks: latestBacklinkSnapshot.lostBacklinks,
+    earnedMentions: project.earnedMentions.length,
+    referralVisits: earnedReferralVisits,
+    referralLeads: earnedReferralLeads,
+  } : null;
   const storedScoreBreakdown = strategy?.scoreBreakdown && typeof strategy.scoreBreakdown === "object" ? strategy.scoreBreakdown as Record<string, unknown> : {};
   const strategyScore = strategy?.strategyScore ?? selectedOpportunity?.opportunityScore ?? null;
   const strategyScoreBreakdown = {
@@ -83,7 +103,20 @@ function reportContent(project: Awaited<ReturnType<typeof scopedProject>>, repor
     branding,
     generatedAt: new Date().toISOString(), health: { workflowStep: project.currentStep, strategyStatus: project.strategyPlans[0]?.status ?? "not_started", completedTasks: completed.length, totalTasks: project.executionTasks.length, blockedTasks: blocked.length },
     seo: { approvedKeywordGroups: approvedKeywordGroups.length, approvedKeywords: approvedKeywordGroups.flatMap((group) => Array.isArray(group.keywords) ? group.keywords.map(String) : []).length, websiteConnected: Boolean(project.websiteId) },
-    performance: { keywordRankingChanges: rankingChanges, trackedKeywords: rankingChanges.length, rankingLocations: [...new Set(rankingChanges.map((item) => item.location))], averageSearchVolume: rankingRuns.length ? Math.round(rankingRuns.reduce((sum, run) => sum + (run.averageVolume ?? 0), 0) / rankingRuns.length) : null, serpCompetitors: Math.max(0, ...rankingRuns.map((run) => run.competitorCount)), organicTraffic: null, searchImpressions: null, searchClicks: null, indexedPages: crawl?.pagesCrawled ?? null, backlinkProgress: null, competitorVisibilityChanges: null, unavailableReason: unavailable },
+    performance: { keywordRankingChanges: rankingChanges, trackedKeywords: rankingChanges.length, rankingLocations: [...new Set(rankingChanges.map((item) => item.location))], averageSearchVolume: rankingRuns.length ? Math.round(rankingRuns.reduce((sum, run) => sum + (run.averageVolume ?? 0), 0) / rankingRuns.length) : null, serpCompetitors: Math.max(0, ...rankingRuns.map((run) => run.competitorCount)), organicTraffic: null, searchImpressions: null, searchClicks: null, indexedPages: crawl?.pagesCrawled ?? null, backlinkProgress, competitorVisibilityChanges: null, unavailableReason: unavailable },
+    authorityGrowth: {
+      profile: backlinkProgress,
+      opportunities: {
+        discovered: project.authorityOpportunities.filter((item) => item.status === "discovered").length,
+        shortlisted: project.authorityOpportunities.filter((item) => ["shortlisted", "researching"].includes(item.status)).length,
+        approved: project.authorityOpportunities.filter((item) => item.status === "approved").length,
+      },
+      assets: {
+        planned: project.authorityAssets.filter((item) => item.status === "planned").length,
+        completed: project.authorityAssets.filter((item) => item.status === "completed").length,
+      },
+      earnedMentions: project.earnedMentions.map((mention) => ({ sourceDomain: mention.sourceDomain, mentionType: mention.mentionType, linkAttribute: mention.linkAttribute, referralVisits: mention.referralVisits, referralLeads: mention.referralLeads, earnedAt: mention.earnedAt })),
+    },
     localSeo: { googleBusinessProfilePerformance: null, localGridRankings: null, citationsAndNapIssues: null, recommendations: ["Connect Google Business Profile and Local SEO tracking to populate local performance."] },
     reputation: { newReviews: null, negativeReviewsNeedingAttention: null, averageRating: null, ratingChange: null, responseStatus: null, trends: null, unavailableReason: unavailable },
     execution: { completed: completed.map((task) => ({ title: task.title, module: task.moduleName, completedBy: task.assignee?.user.name || task.assignee?.user.email || "Unassigned", approvedBy: task.approver?.user.name || task.approver?.user.email || null })), published: published.map((task) => task.title), awaitingApproval: awaitingApproval.map((task) => task.title), blocked: blocked.map((task) => task.title), scheduledNext: scheduled.slice(0, 20).map((task) => ({ title: task.title, dueAt: task.dueAt })) },

@@ -387,7 +387,7 @@ function MiniBacklinkStat({ label, value, tone }: { label: string; value: React.
   );
 }
 
-function ToxicityPill({ score }: { score: number | null }) {
+function RiskSignalPill({ score }: { score: number | null }) {
   const tone = score == null ? "bg-charcoal-100 text-charcoal-500" : score >= 50 ? "bg-red-50 text-red-700" : score >= 35 ? "bg-amber-50 text-amber-700" : "bg-green-50 text-green-700";
   return <span className={`inline-flex min-w-10 justify-center rounded-full px-2 py-1 text-xs font-bold ${tone}`}>{score ?? "-"}</span>;
 }
@@ -742,7 +742,7 @@ function BacklinkLinksDrawer({
                       <th className="px-4 py-3 font-semibold">Target page</th>
                       <th className="px-4 py-3 font-semibold">Anchor</th>
                       <th className="px-4 py-3 font-semibold">Type</th>
-                      <th className="px-4 py-3 font-semibold">Toxicity</th>
+                      <th className="px-4 py-3 font-semibold">Provider risk signal</th>
                       <th className="px-4 py-3 font-semibold">Seen</th>
                     </tr>
                   </thead>
@@ -770,7 +770,7 @@ function BacklinkLinksDrawer({
                             {link.dofollow === false ? "Nofollow" : link.dofollow === true ? "Dofollow" : "Unknown"}
                           </span>
                         </td>
-                        <td className="px-4 py-3"><ToxicityPill score={link.toxicityScore} /></td>
+                        <td className="px-4 py-3"><RiskSignalPill score={link.toxicityScore} /></td>
                         <td className="whitespace-nowrap px-4 py-3 text-charcoal-500">
                           <div>{formatShortDate(link.firstSeen)}</div>
                           <div className="text-xs text-charcoal-400">Last {formatShortDate(link.lastSeen)}</div>
@@ -1076,7 +1076,7 @@ export default function KeywordResearch() {
     .sort((a, b) => a.page.totalScore - b.page.totalScore)
     .slice(0, 5);
   const onPageUpdatedAt = projectAudits[0]?.completedAt ?? projectAudits[0]?.createdAt ?? crawl?.completedAt ?? crawl?.createdAt ?? null;
-  const toxicBacklinks = (backlinkLinks?.links ?? [])
+  const backlinksForReview = (backlinkLinks?.links ?? [])
     .filter((link) => link.toxicityScore != null)
     .slice()
     .sort((a, b) => (b.toxicityScore ?? -1) - (a.toxicityScore ?? -1))
@@ -1314,8 +1314,8 @@ export default function KeywordResearch() {
               <div className="overflow-hidden rounded-lg border border-charcoal-100 bg-white shadow-sm">
                 <div className="flex flex-col gap-3 border-b border-charcoal-100 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
                   <div>
-                    <div className="text-sm font-semibold text-charcoal-800">Most Toxic Backlinks</div>
-                    <div className="text-xs text-charcoal-400">Sorted by parsed spam/toxicity score from stored backlink rows.</div>
+                    <div className="text-sm font-semibold text-charcoal-800">Backlinks with elevated provider risk signals</div>
+                    <div className="text-xs text-charcoal-400">These signals require human review and do not establish that a link is harmful.</div>
                   </div>
                   <div className="flex items-center gap-3">
                     <span className="text-xs text-charcoal-400">{backlinkLinks?.cached ? "Cached" : backlinkLinks ? "Fresh" : ""}</span>
@@ -1327,22 +1327,22 @@ export default function KeywordResearch() {
                     <thead className="bg-charcoal-50 text-left text-xs uppercase text-charcoal-400">
                       <tr>
                         <th className="px-4 py-2">Source URL</th>
-                        <th className="px-4 py-2 text-right">Toxicity Score</th>
+                        <th className="px-4 py-2 text-right">Provider risk signal</th>
                       </tr>
                     </thead>
                     <tbody>
                       {loadingBacklinks ? (
                         <tr><td colSpan={2} className="px-4 py-5 text-center text-charcoal-400">Loading stored backlink rows...</td></tr>
-                      ) : toxicBacklinks.length ? toxicBacklinks.map((link, index) => (
-                        <tr key={(link.sourceUrl ?? "toxic") + index} className="border-t border-charcoal-50">
+                      ) : backlinksForReview.length ? backlinksForReview.map((link, index) => (
+                        <tr key={(link.sourceUrl ?? "risk-review") + index} className="border-t border-charcoal-50">
                           <td className="max-w-[520px] px-4 py-3">
                             {link.sourceUrl ? <a href={link.sourceUrl} target="_blank" rel="noreferrer" className="block truncate font-medium text-brand-600 hover:underline">{displayUrl(link.sourceUrl)}</a> : <span className="text-charcoal-400">Unknown source</span>}
                             <div className="mt-1 text-xs text-charcoal-400">{link.sourceDomain ?? "Unknown domain"}</div>
                           </td>
-                          <td className="px-4 py-3 text-right"><ToxicityPill score={link.toxicityScore} /></td>
+                          <td className="px-4 py-3 text-right"><RiskSignalPill score={link.toxicityScore} /></td>
                         </tr>
                       )) : (
-                        <tr><td colSpan={2} className="px-4 py-5 text-center text-charcoal-400">No toxicity scores are stored for this domain yet.</td></tr>
+                        <tr><td colSpan={2} className="px-4 py-5 text-center text-charcoal-400">No provider risk signals are stored for this domain yet.</td></tr>
                       )}
                     </tbody>
                   </table>

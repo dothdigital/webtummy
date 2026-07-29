@@ -14,6 +14,7 @@ import { getActiveProjectId, resolveActiveProjectId, setActiveProjectId } from "
 import LeadFunnelWorkspace from "../components/LeadFunnelWorkspace.js";
 import SiteBuilderWorkflow from "../components/SiteBuilderWorkflow.js";
 import type { AiContentGeneration, DomainBacklinkLinks, DomainBacklinkSummary, ExecutionTask, GuidedExecutionTask, GuidedProject, HealthReport, IssueRow, KeywordResearchRun, Opportunity, ProjectNotification, Website, WorkspaceIntelligence, WorkspaceIntelligenceResponse } from "../types.js";
+import { AuthorityGrowthWorkspace } from "../components/AuthorityGrowthWorkspace.js";
 
 type ModuleKind = "opportunities" | "strategy" | "keywords" | "site-analysis" | "backlinks" | "ai-citations" | "site-architect" | "lead-magnets";
 type CrawlSummary = NonNullable<Website["crawlJobs"]>[number];
@@ -307,7 +308,7 @@ export default function ExecutionModule({ kind }: { kind: ModuleKind }) {
       const [backlinkSummaryResult, backlinkLinksResult] = activeWebsiteId
         ? await Promise.all([
             api.get<{ summary: DomainBacklinkSummary }>(`/api/keyword-research/domain-backlinks?websiteId=${encodeURIComponent(activeWebsiteId)}&cacheOnly=true`).catch(() => ({ summary: null })),
-            api.get<{ backlinks: DomainBacklinkLinks }>(`/api/keyword-research/domain-backlink-links?websiteId=${encodeURIComponent(activeWebsiteId)}&limit=10&cacheOnly=true`).catch(() => ({ backlinks: null })),
+            api.get<{ backlinks: DomainBacklinkLinks }>(`/api/keyword-research/domain-backlink-links?websiteId=${encodeURIComponent(activeWebsiteId)}&limit=${kind === "backlinks" ? 100 : 10}&cacheOnly=true`).catch(() => ({ backlinks: null })),
           ])
         : [{ summary: null }, { backlinks: null }];
       if (!cancelled) {
@@ -441,14 +442,20 @@ export default function ExecutionModule({ kind }: { kind: ModuleKind }) {
     try {
       const [summaryResult, linksResult] = await Promise.all([
         api.get<{ summary: DomainBacklinkSummary }>(`/api/keyword-research/domain-backlinks?websiteId=${encodeURIComponent(activeWebsite.id)}&refresh=true`),
-        api.get<{ backlinks: DomainBacklinkLinks }>(`/api/keyword-research/domain-backlink-links?websiteId=${encodeURIComponent(activeWebsite.id)}&limit=10&refresh=true`),
+        api.get<{ backlinks: DomainBacklinkLinks }>(`/api/keyword-research/domain-backlink-links?websiteId=${encodeURIComponent(activeWebsite.id)}&limit=100&refresh=true`),
       ]);
+      if (activeProject && summaryResult.summary) {
+        await api.post(`/api/projects/${encodeURIComponent(activeProject.id)}/authority-growth/snapshots`, {
+          summary: summaryResult.summary,
+          links: linksResult.backlinks?.links ?? [],
+        });
+      }
       setData((current) => ({
         ...current,
         backlinkSummary: summaryResult.summary,
         backlinkLinks: linksResult.backlinks,
       }));
-      setBacklinkMessage(summaryResult.summary?.cached ? "Backlinks were already refreshed recently. Showing cached data." : "Backlink data refreshed.");
+      setBacklinkMessage(summaryResult.summary?.cached ? "Backlinks were already refreshed recently. The current evidence was saved to the authority profile." : "Backlink data refreshed and saved to the authority profile.");
     } catch (error) {
       setBacklinkMessage(error instanceof Error ? error.message : "Backlink refresh failed.");
     } finally {
@@ -2997,35 +3004,9 @@ function ScanDetailDrawer({ active, report, onClose }: { active: ScanDetailKey; 
 }
 
 function BacklinkScreen({ data }: { data: ModuleData }) {
-  const summary = data.backlinkSummary;
-  const [showAllLinks, setShowAllLinks] = useState(false);
-  if (!data.websites.length && !summary && !data.backlinkLinks?.links?.length) {
-    return <EmptyModuleState title="No backlink data yet" detail="Connect a website before refreshing backlink intelligence." />;
-  }
-  const rows = backlinkRows(data, showAllLinks ? 100 : 10);
-  const totalLinks = data.backlinkLinks?.links?.length ?? rows.length;
-  return (
-    <>
-      <MetricGrid items={[["Referring Domains", formatNumber(summary?.referringDomains), `${formatNumber(summary?.referringDomainsNew)} new`], ["Active Backlinks", formatNumber(summary?.backlinks), "cached snapshot"], ["New Links", formatNumber(summary?.backlinksNew), "latest data"], ["Lost Links", formatNumber(summary?.backlinksLost), "latest data"], ["Dofollow Links", formatNumber(summary?.dofollow), "link type"], ["Outreach Opportunities", formatNumber(data.tasks.filter((task) => task.moduleName.includes("backlink")).length), "task queue"]]} />
-      <div className="grid gap-5 xl:grid-cols-[1fr_320px]">
-        <DataTable
-          title={showAllLinks ? `All Links (${formatNumber(totalLinks)})` : "Recent Links"}
-          columns={["Source Domain", "Target Page", "Anchor Text", "Authority Score", "Status", "Link Type"]}
-          rows={rows}
-          footerAction={
-            totalLinks > 10 ? (
-              <button type="button" onClick={() => setShowAllLinks((value) => !value)} className="text-sm font-bold text-brand-600 hover:text-brand-700">
-                {showAllLinks ? "Show fewer" : `View all ${formatNumber(totalLinks)} links`}
-              </button>
-            ) : (
-              <span className="text-sm text-charcoal-500">Showing all available backlink links</span>
-            )
-          }
-        />
-        <AuthorityInsights data={data} />
-      </div>
-    </>
-  );
+  const project = data.projects[0];
+  if (!project) return <EmptyModuleState title="Select a project" detail="Choose a project before opening authority research." />;
+  return <AuthorityGrowthWorkspace projectId={project.id} backlinkSummary={data.backlinkSummary} backlinkLinks={data.backlinkLinks} />;
 }
 
 function CitationScreen({ data }: { data: ModuleData }) {

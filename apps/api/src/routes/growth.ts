@@ -51,6 +51,11 @@ async function scopedProject(req: Request, projectId: string) {
       opportunities: { orderBy: { createdAt: "desc" }, take: 5 },
       strategyPlans: { orderBy: { createdAt: "desc" }, take: 3 },
       executionTasks: { orderBy: { createdAt: "desc" }, take: 80 },
+      backlinkProfileSnapshots: { orderBy: { capturedAt: "desc" }, take: 2 },
+      authorityOpportunities: { where: { status: { not: "superseded" } }, orderBy: [{ priorityScore: "desc" }, { createdAt: "desc" }] },
+      authorityAssets: { orderBy: { createdAt: "desc" }, take: 50 },
+      earnedMentions: { orderBy: [{ earnedAt: "desc" }, { createdAt: "desc" }] },
+      authorityPerformanceMetrics: { orderBy: { periodEnd: "desc" }, take: 100 },
     },
   });
 }
@@ -175,13 +180,24 @@ function scoreProject(project: NonNullable<Awaited<ReturnType<typeof scopedProje
   const conversion = Math.min(100, 30 + (strategyApproved ? 18 : 0) + (hasLeadMagnetTask ? 14 : 0) + (project.businessProfile?.offerSummary ? 12 : 0));
   const leadCapture = Math.min(100, 25 + (hasLeadMagnetTask ? 24 : 0) + (project.preferredOutputs && jsonList(project.preferredOutputs).some((item) => /lead/i.test(item)) ? 20 : 0));
   const followUp = Math.min(100, 22 + socialPosts * 3 + (project.preferredPublishingMethod ? 10 : 0));
-  const authority = Math.min(100, 35 + openTasks.filter((task) => /backlink|citation|authority/i.test(`${task.moduleName} ${task.title}`)).length * 6);
+  const latestAuthoritySnapshot = project.backlinkProfileSnapshots[0];
+  const approvedAuthorityOpportunities = project.authorityOpportunities.filter((item) => item.status === "approved").length;
+  const completedAuthorityAssets = project.authorityAssets.filter((item) => item.status === "completed").length;
+  const earnedReferralLeads = project.earnedMentions.reduce((sum, mention) => sum + mention.referralLeads, 0);
+  const authority = Math.min(100,
+    20
+    + (latestAuthoritySnapshot ? 12 : 0)
+    + Math.min(16, approvedAuthorityOpportunities * 4)
+    + Math.min(16, completedAuthorityAssets * 5)
+    + Math.min(24, project.earnedMentions.length * 6)
+    + Math.min(12, earnedReferralLeads * 3)
+    + Math.min(10, openTasks.filter((task) => /backlink|citation|authority/i.test(`${task.moduleName} ${task.title}`)).length * 2));
   const offer = Math.min(100, 35 + (project.businessProfile?.offerSummary ? 22 : 0) + (project.businessProfile?.targetAudience ? 14 : 0) + (project.strategyPlans[0]?.offerRecommendation ? 12 : 0));
   const retention = Math.min(100, 25 + socialPosts * 2 + (project.strategyPlans[0]?.socialStrategy ? 12 : 0));
   const scoreJson = { traffic, conversion, leadCapture, followUp, authority, offer, retention };
   const bottleneckType = Object.entries(scoreJson).sort((a, b) => a[1] - b[1])[0]?.[0] ?? "conversion";
   const growthScore = Math.round(Object.values(scoreJson).reduce((sum, value) => sum + value, 0) / Object.values(scoreJson).length);
-  return { scoreJson, bottleneckType, growthScore, latestCrawl, openTasks, keywordRuns, socialPosts, hasLeadMagnetTask, strategyApproved };
+  return { scoreJson, bottleneckType, growthScore, latestCrawl, openTasks, keywordRuns, socialPosts, hasLeadMagnetTask, strategyApproved, latestAuthoritySnapshot, approvedAuthorityOpportunities, completedAuthorityAssets, earnedReferralLeads };
 }
 
 function diagnosisSummary(bottleneckType: string, ctx: ReturnType<typeof projectContext>) {
@@ -227,6 +243,25 @@ function normalizedGrowthSignals(project: NonNullable<Awaited<ReturnType<typeof 
       collectedAt: now,
       effectiveDate: score.latestCrawl?.createdAt ?? now,
       expiresAt: new Date((score.latestCrawl?.createdAt ?? now).getTime() + 30 * 86_400_000),
+    },
+    {
+      category: "authority",
+      signalKey: "authority_growth_outcomes",
+      sourceType: score.latestAuthoritySnapshot ? "backlink_profile_snapshot" : "project_snapshot",
+      sourceId: score.latestAuthoritySnapshot?.id ?? project.id,
+      value: {
+        authorityScore: score.scoreJson.authority,
+        referringDomains: score.latestAuthoritySnapshot?.referringDomains ?? null,
+        totalBacklinks: score.latestAuthoritySnapshot?.totalBacklinks ?? null,
+        approvedOpportunities: score.approvedAuthorityOpportunities,
+        completedAssets: score.completedAuthorityAssets,
+        earnedMentions: project.earnedMentions.length,
+        referralLeads: score.earnedReferralLeads,
+      },
+      confidence: score.latestAuthoritySnapshot || project.earnedMentions.length ? 92 : 35,
+      collectedAt: now,
+      effectiveDate: score.latestAuthoritySnapshot?.capturedAt ?? now,
+      expiresAt: new Date((score.latestAuthoritySnapshot?.capturedAt ?? now).getTime() + 45 * 86_400_000),
     },
     {
       category: "demand",
