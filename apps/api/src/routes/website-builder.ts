@@ -45,6 +45,7 @@ import { centralAiJson } from "../central-ai-service.js";
 import { submitTaskApproval } from "../approval-workflow.js";
 import { websiteBuilderQueue } from "../queue.js";
 import { staticWebsiteFormAction } from "./website-public-forms.js";
+import { deployStaticFilesOverSftp } from "../static-sftp-deployment.js";
 import { canAccessProject, hasWorkspacePermission, recordWorkspaceActivity, workspaceContext } from "../workspace-access.js";
 
 export const websiteBuilderRouter = Router();
@@ -771,7 +772,7 @@ function encryptCredential(value: string) {
 }
 function decryptCredential(value: string) {
   const [, iv, tag, encrypted] = value.split(".");
-  if (!iv || !tag || !encrypted) throw new Error("Stored WordPress credential is invalid.");
+  if (!iv || !tag || !encrypted) throw new Error("Stored publishing credential is invalid.");
   const decipher = createDecipheriv("aes-256-gcm", encryptionKey(), Buffer.from(iv, "base64url"));
   decipher.setAuthTag(Buffer.from(tag, "base64url"));
   return Buffer.concat([decipher.update(Buffer.from(encrypted, "base64url")), decipher.final()]).toString("utf8");
@@ -2337,20 +2338,20 @@ websiteBuilderRouter.put("/projects/:projectId/website-builder/hosting-handoff",
   );
   const input = z.object({
     destination: z.enum(["wordpress", "existing_host", "new_host", "developer_handoff"]),
-    provider: z.string().trim().min(2).max(180),
-    domain: z.string().trim().min(3).max(255).regex(/^[a-z0-9.-]+(?::\d+)?$/i, "Enter a domain without a path."),
+    provider: z.string().trim().max(180),
+    domain: z.string().trim().max(255).refine((value) => !value || /^[a-z0-9.-]+(?::\d+)?$/i.test(value), "Enter a domain without a path."),
     accessMethod: z.enum(["wordpress", "sftp", "ftp", "control_panel", "developer", "manual"]),
     migrationMode: z.enum(["new_site", "replace_existing", "move_domain"]),
     currentSiteUrl: z.string().trim().url().max(512).or(z.literal("")),
-    dnsProvider: z.string().trim().min(2).max(180),
-    dnsAccess: z.enum(["available", "invite_required", "client_managed", "unknown"]).refine((value) => value !== "unknown", "Confirm how DNS changes will be made."),
+    dnsProvider: z.string().trim().max(180),
+    dnsAccess: z.enum(["available", "invite_required", "client_managed", "unknown"]),
     domainEmailActive: z.boolean(),
     preserveDomainEmail: z.boolean(),
     backupConfirmed: z.boolean(),
     sslManagement: z.enum(["hosting_provider", "cloudflare", "manual", "unknown"]),
     maintenanceWindow: z.string().trim().max(240),
     technicalContactName: z.string().trim().max(180),
-    technicalContactEmail: optionalEmail.refine(Boolean, "A technical contact email is required."),
+    technicalContactEmail: optionalEmail,
     notes: z.string().trim().max(4000),
     sftp: z.object({
       protocol: z.enum(["sftp", "ftp"]),
@@ -2369,14 +2370,15 @@ websiteBuilderRouter.put("/projects/:projectId/website-builder/hosting-handoff",
     if (value.destination !== "wordpress" && value.accessMethod === "wordpress") {
       ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["accessMethod"], message: "Choose a hosting transfer method for this destination." });
     }
-    if (value.migrationMode !== "new_site" && !value.currentSiteUrl) {
-      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["currentSiteUrl"], message: "Enter the current website URL for this migration." });
+    if (["existing_host", "new_host"].includes(value.destination) && (value.accessMethod !== "sftp" || value.sftp.protocol !== "sftp")) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["accessMethod"], message: "Direct server deployment currently requires SFTP." });
     }
-    if (value.migrationMode !== "new_site" && !value.backupConfirmed) {
+    if (value.destination !== "wordpress" && value.migrationMode !== "new_site" && !value.backupConfirmed) {
       ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["backupConfirmed"], message: "Confirm a backup or rollback point before replacing or moving the current website." });
     }
-    if (value.domainEmailActive && !value.preserveDomainEmail) {
-      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["preserveDomainEmail"], message: "Confirm that existing business-email DNS records will be preserved." });
+    if (value.destination === "developer_handoff") {
+      if (!value.technicalContactName) ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["technicalContactName"], message: "Enter the receiving person or team." });
+      if (!value.technicalContactEmail) ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["technicalContactEmail"], message: "Enter the receiving email." });
     }
     if (["sftp", "ftp"].includes(value.accessMethod)) {
       if (!value.sftp.host) ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["sftp", "host"], message: "Server host is required." });
@@ -5362,6 +5364,143 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/static-export", 
   res.setHeader("X-SEnuke-Release-Id", release.id);
   res.setHeader("X-SEnuke-Snapshot-Hash", release.snapshotHash);
   res.send(archive);
+});
+
+websiteBuilderRouter.post("/projects/:projectId/website-builder/static-deploy", async (req, res) => {
+  const { context, project } = await scopedProject(req.params.projectId, req);
+  if (!hasWorkspacePermission(context, "publish")) return res.status(403).json({ error: "Publishing permission is required." });
+  z.object({ confirmed: z.literal(true) }).parse(req.body ?? {});
+  const build = project.websiteBuilds[0];
+  if (!build) return res.status(409).json({ error: "Create the website build first." });
+  const release = await activeApprovedReleaseForBuild(build);
+  if (!release) return res.status(409).json({ error: "Approve the current validated website version before deploying it." });
+  requireLaunchReadiness(build, release);
+  const handoff = jsonRecord(jsonRecord(build.settingsJson).hostingHandoff);
+  if (!["existing_host", "new_host"].includes(String(handoff.destination)) || handoff.accessMethod !== "sftp") {
+    return res.status(409).json({ error: "Select Static server path with SFTP and save the destination first." });
+  }
+  const transfer = await prisma.websiteSftpIntegration.findFirst({
+    where: { projectId: project.id, protocol: "sftp" },
+    orderBy: { updatedAt: "desc" },
+  });
+  if (!transfer) return res.status(409).json({ error: "Save the SFTP server connection before deploying." });
+  const addresses = await lookup(transfer.host, { all: true }).catch(() => []);
+  if (!addresses.length || addresses.some((entry) => privateAddress(entry.address))) {
+    return res.status(409).json({ error: "The SFTP host must resolve to a public server address." });
+  }
+
+  const releaseModel = approvedReleaseWebsiteModel(release);
+  const rawWebsiteUrl = String(project.websiteUrl || "").trim();
+  const baseUrl = /^https:\/\//i.test(rawWebsiteUrl)
+    ? rawWebsiteUrl
+    : rawWebsiteUrl
+      ? `https://${rawWebsiteUrl.replace(/^https?:\/\//i, "")}`
+      : "";
+  const files = createStaticWebsiteFiles(releaseModel, {
+    approvedReleaseId: release.id,
+    snapshotHash: release.snapshotHash,
+    formAction: staticWebsiteFormAction(release),
+    ...(baseUrl ? { baseUrl } : {}),
+  });
+  const rendererVersion = "senuke-static-sftp-1.0.0";
+  const destinationSignature = createHash("sha256")
+    .update(`${transfer.host}:${transfer.port}:${transfer.rootPath}`)
+    .digest("hex")
+    .slice(0, 16);
+  const idempotencyKey = `release:${release.id}:static_html:sftp:${transfer.id}:${destinationSignature}:${rendererVersion}`;
+  const prior = await prisma.websitePublication.findUnique({ where: { idempotencyKey } });
+  if (prior?.status === "completed") return res.json({ publication: prior, release, idempotent: true });
+  const publication = prior
+    ? await prisma.websitePublication.update({
+        where: { id: prior.id },
+        data: {
+          status: "publishing",
+          errorMessage: null,
+          requestedById: context.membership.userId,
+          startedAt: new Date(),
+          completedAt: null,
+        },
+      })
+    : await prisma.websitePublication.create({
+        data: {
+          releaseId: release.id,
+          projectId: project.id,
+          clientId: project.clientId,
+          target: "static_html",
+          mode: "sftp",
+          status: "publishing",
+          rendererVersion,
+          destinationId: transfer.id,
+          idempotencyKey,
+          requestedById: context.membership.userId,
+          queuedAt: new Date(),
+          startedAt: new Date(),
+        },
+      });
+
+  try {
+    const result = await deployStaticFilesOverSftp({
+      connection: {
+        host: transfer.host,
+        port: transfer.port,
+        username: transfer.username,
+        password: decryptCredential(transfer.credentialCiphertext),
+        rootPath: transfer.rootPath,
+      },
+      files,
+      releaseId: release.id,
+    });
+    const completedAt = new Date();
+    const updated = await prisma.websitePublication.update({
+      where: { id: publication.id },
+      data: {
+        status: "completed",
+        remoteMappingsJson: {
+          protocol: "sftp",
+          host: transfer.host,
+          rootPath: result.rootPath,
+          files: result.files,
+        } as Prisma.InputJsonValue,
+        deploymentLogsJson: [{
+          action: "static_sftp_release_deployed",
+          status: "success",
+          approvedReleaseId: release.id,
+          snapshotHash: release.snapshotHash,
+          fileCount: result.fileCount,
+          uploadedBytes: result.uploadedBytes,
+          backupPath: result.backupPath,
+          at: completedAt.toISOString(),
+        }] as Prisma.InputJsonValue,
+        verificationJson: {
+          status: "verified",
+          method: "remote_sha256",
+          verifiedFileCount: result.fileCount,
+          snapshotHash: release.snapshotHash,
+          backupPath: result.backupPath,
+        } as Prisma.InputJsonValue,
+        completedAt,
+        errorMessage: null,
+      },
+    });
+    await prisma.websiteSftpIntegration.update({
+      where: { id: transfer.id },
+      data: { connectionStatus: "connected", lastConnectionCheckAt: completedAt, lastError: null },
+    });
+    res.json({ publication: updated, release, deployment: result, idempotent: false });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Static SFTP deployment failed.";
+    await Promise.all([
+      prisma.websitePublication.update({
+        where: { id: publication.id },
+        data: { status: "failed", errorMessage: message, completedAt: new Date() },
+      }),
+      prisma.websiteSftpIntegration.update({
+        where: { id: transfer.id },
+        data: { connectionStatus: "error", lastConnectionCheckAt: new Date(), lastError: message },
+      }),
+    ]);
+    throw Object.assign(new Error(message), { statusCode: 409, publicMessage: true });
+  }
 });
 
 websiteBuilderRouter.post("/projects/:projectId/website-builder/quality-export", async (req, res) => {

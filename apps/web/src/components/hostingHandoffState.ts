@@ -62,26 +62,21 @@ export const emptyHostingHandoff = (): HostingHandoffDraft => ({
 export function hostingHandoffMissing(draft: HostingHandoffDraft) {
   const missing: string[] = [];
   if (!draft.destination) missing.push("hosting destination");
-  if (!draft.provider.trim()) missing.push("hosting provider or receiving developer");
-  if (!draft.domain.trim()) missing.push("production domain");
-  if (!draft.dnsProvider.trim()) missing.push("DNS provider");
-  if (draft.dnsAccess === "unknown") missing.push("DNS access plan");
-  if (draft.sslManagement === "unknown") missing.push("SSL plan");
-  if (!draft.technicalContactName.trim()) missing.push("technical contact name");
-  if (!draft.technicalContactEmail.trim()) missing.push("technical contact");
-  if (draft.migrationMode !== "new_site" && !draft.currentSiteUrl.trim()) missing.push("current website URL");
-  if (draft.migrationMode !== "new_site" && !draft.backupConfirmed) missing.push("backup or rollback confirmation");
-  if (draft.domainEmailActive && !draft.preserveDomainEmail) missing.push("email-preservation confirmation");
-  if (["sftp", "ftp"].includes(draft.accessMethod)) {
+  if (draft.destination === "developer_handoff") {
+    if (!draft.technicalContactName.trim()) missing.push("receiving contact name");
+    if (!draft.technicalContactEmail.trim()) missing.push("receiving contact email");
+  }
+  if (draft.destination === "existing_host" || draft.destination === "new_host") {
     if (!draft.sftp.host.trim()) missing.push("server host");
     if (!draft.sftp.username.trim()) missing.push("server username");
     if (!draft.sftp.rootPath.trim()) missing.push("web root path");
     if (!draft.sftp.password && !draft.sftp.credentialStored) missing.push("server credential");
+    if (draft.migrationMode !== "new_site" && !draft.backupConfirmed) missing.push("backup or rollback confirmation");
   }
   return missing;
 }
 
 export function hostingHandoffReady(draft: HostingHandoffDraft) {
   return hostingHandoffMissing(draft).length === 0
-    && /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(draft.technicalContactEmail);
+    && (draft.destination !== "developer_handoff" || /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(draft.technicalContactEmail));
 }

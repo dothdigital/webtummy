@@ -6,25 +6,24 @@ import {
 } from "./hostingHandoffState.js";
 
 describe("hosting handoff readiness", () => {
-  it("requires a destination, domain, DNS plan, and technical contact", () => {
-    expect(hostingHandoffMissing(emptyHostingHandoff())).toEqual(expect.arrayContaining([
-      "hosting destination",
-      "production domain",
-      "DNS provider",
-      "DNS access plan",
-      "technical contact",
-    ]));
+  it("requires only a deployment destination before the path is selected", () => {
+    expect(hostingHandoffMissing(emptyHostingHandoff())).toEqual(["hosting destination"]);
   });
 
-  it("accepts a complete developer handoff without requesting a server password", () => {
+  it("does not request hosting-provider or DNS details for WordPress", () => {
+    const draft = {
+      ...emptyHostingHandoff(),
+      destination: "wordpress" as const,
+      accessMethod: "wordpress" as const,
+    };
+    expect(hostingHandoffReady(draft)).toBe(true);
+  });
+
+  it("accepts a developer handoff without requesting hosting or DNS details", () => {
     const draft = {
       ...emptyHostingHandoff(),
       destination: "developer_handoff" as const,
-      provider: "Client development team",
-      domain: "example.com",
       accessMethod: "developer" as const,
-      dnsProvider: "Cloudflare",
-      dnsAccess: "client_managed" as const,
       technicalContactName: "Client development team",
       technicalContactEmail: "developer@example.com",
     };
@@ -35,13 +34,7 @@ describe("hosting handoff readiness", () => {
     const draft = {
       ...emptyHostingHandoff(),
       destination: "existing_host" as const,
-      provider: "Example Host",
-      domain: "example.com",
       accessMethod: "sftp" as const,
-      dnsProvider: "Cloudflare",
-      dnsAccess: "available" as const,
-      technicalContactName: "Operations",
-      technicalContactEmail: "ops@example.com",
       sftp: {
         ...emptyHostingHandoff().sftp,
         host: "sftp.example.com",
