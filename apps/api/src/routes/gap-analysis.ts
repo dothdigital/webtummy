@@ -741,20 +741,20 @@ gapAnalysisRouter.post(gapRoutes("/ai-visibility/run-scan"), (req, res) => route
   const project = await scopedProject(req, req.params.projectId);
   const queries = await prisma.aiVisibilityQuery.findMany({ where: { projectId: project.id }, orderBy: { createdAt: "desc" }, take: 10 });
   if (!queries.length) return { ready: false, missing: ["ai_visibility_queries"], nextAction: "Create 5-10 priority AI visibility questions first." };
-  return withUsage(req, project, "ai_visibility_scan", "run_scan", queries.length, async () => {
-    const snapshots = await prisma.$transaction(async (tx) => {
-      const created = [];
-      for (const query of queries) {
-        const recommendedActions = ["Create stronger proof section", "Add FAQ block", "Build comparison page", "Improve entity profile"];
-        const snapshot = await tx.aiVisibilitySnapshot.create({ data: { projectId: project.id, queryId: query.id, visibilityStatus: "citation_gap", recommendedActions, creditCost: 5, competitorsVisible: query.competitors, citedUrls: [] } });
-        await tx.aiVisibilityQuery.update({ where: { id: query.id }, data: { lastScanStatus: "complete", visibilityStatus: "citation_gap", recommendedAction: recommendedActions[0] } });
-        await upsertExecutionTask(tx, { clientId: project.clientId, websiteId: project.websiteId, projectId: project.id, dedupeKey: `gap-analysis:ai-visibility:${query.id}`, moduleName: "gap_analysis", sourceType: "ai_visibility_query", sourceId: query.id, title: `Improve AI visibility for "${query.queryText}"`, description: recommendedActions.join("; "), priority: "medium", automationLevel: "prepare", safetyCategory: "safe", actionButtonLabel: "Open AI Visibility Task" });
-        created.push(snapshot);
-      }
-      return created;
-    });
-    return { ready: true, snapshots };
+  await prisma.aiVisibilityQuery.updateMany({
+    where: { id: { in: queries.map((query) => query.id) } },
+    data: {
+      lastScanStatus: "provider_required",
+      visibilityStatus: "not_assessed",
+      recommendedAction: "Open AI Citation Optimization and record a permitted provider result or documented manual observation.",
+    },
   });
+  return {
+    ready: false,
+    missing: ["monitoring_provider_or_manual_observation"],
+    nextAction: `/ai-citations?projectId=${project.id}`,
+    message: "No result was fabricated and no usage was charged. Record an observed AI answer in the citation workspace before creating a visibility finding or execution task.",
+  };
 }));
 
 gapAnalysisRouter.post(gapRoutes("/authority/opportunities"), (req, res) => routeAction(res, async () => {

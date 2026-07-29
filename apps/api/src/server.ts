@@ -32,6 +32,7 @@ import { leadMagnetsRouter, publicLeadMagnetsRouter } from "./routes/lead-magnet
 import { aiIntakeRouter } from "./routes/ai-intake.js";
 import { websiteBuilderRouter } from "./routes/website-builder.js";
 import { authorityGrowthRouter } from "./routes/authority-growth.js";
+import { aiCitationVisibilityRouter } from "./routes/ai-citation-visibility.js";
 import { publicWebsiteFormsRouter } from "./routes/website-public-forms.js";
 import { rawBodySaver } from "./billing.js";
 import { enforceArchivedReadOnly, enforceWorkspacePermissions, requireAuth } from "./middleware.js";
@@ -122,6 +123,7 @@ app.get("/", (_req, res) =>
       competitiveIntelligence: "GET|POST /api/projects/:projectId/intelligence",
       gapAnalysis: "GET|POST /api/projects/:projectId/gap-analysis",
       authorityGrowth: "GET|POST /api/projects/:projectId/authority-growth",
+      aiCitationVisibility: "GET|POST /api/projects/:projectId/ai-citation-visibility",
       siteArchitecture: "GET|POST /api/projects/:projectId/site-architecture",
     },
   }),
@@ -141,6 +143,7 @@ app.use("/api", usageRouter);
 app.use("/api", competitiveIntelligenceRouter);
 app.use("/api", gapAnalysisRouter);
 app.use("/api", authorityGrowthRouter);
+app.use("/api", aiCitationVisibilityRouter);
 app.use("/api", agencyWorkspaceRouter);
 app.use("/api", projectReportsRouter);
 app.use("/api", approvalsRouter);

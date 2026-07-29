@@ -828,6 +828,13 @@ model Project {
   earnedMentions              EarnedMention[]
   authorityPerformanceMetrics AuthorityPerformanceMetric[]
   aiCitationGaps              AiCitationGap[]
+  businessEntities            BusinessEntity[]
+  entityClaims                EntityClaim[]
+  topicEntities               TopicEntity[]
+  citationReadinessFindings   CitationReadinessFinding[]
+  aiSourceMentions            SourceMention[]
+  trustSignals                TrustSignal[]
+  citationRecommendations     CitationRecommendation[]
   communityInsights           CommunityInsight[]
   intentDriftSnapshots        IntentDriftSnapshot[]
   moatScores                  MoatScore[]
@@ -1761,18 +1768,210 @@ model AuthorityAsset {
 }
 
 model AiCitationGap {
-  id               String   @id @default(cuid())
-  projectId        String
-  project          Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  query            String   @db.VarChar(512)
-  competitorUrl    String?  @db.VarChar(512)
-  citedPageUrl     String?  @db.VarChar(512)
-  gapSummary       String?  @db.Text
-  recommendedFixes Json     @default("[]")
-  createdAt        DateTime @default(now())
+  id                      String    @id @default(cuid())
+  projectId               String
+  project                 Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  query                   String    @db.VarChar(512)
+  topic                   String?   @db.VarChar(255)
+  searchIntent            String    @default("informational") @db.VarChar(60)
+  targetPageUrl           String?   @db.VarChar(512)
+  competitorUrl           String?   @db.VarChar(512)
+  citedPageUrl            String?   @db.VarChar(512)
+  gapSummary              String?   @db.Text
+  recommendedFixes        Json      @default("[]")
+  evidenceJson            Json      @default("{}")
+  isInference             Boolean   @default(true)
+  entityFitScore          Int       @default(0)
+  answerValueScore        Int       @default(0)
+  authorityPotentialScore Int       @default(0)
+  effortScore             Int       @default(0)
+  priorityScore           Int       @default(0)
+  status                  String    @default("discovered") @db.VarChar(40)
+  approvedByUserId        String?   @db.VarChar(191)
+  approvedAt              DateTime?
+  executionTaskId         String?   @db.VarChar(191)
+  createdAt               DateTime  @default(now())
+  updatedAt               DateTime  @updatedAt
 
   @@index([projectId, createdAt])
+  @@index([projectId, status, priorityScore])
   @@index([query])
+}
+
+model BusinessEntity {
+  id                 String        @id @default(cuid())
+  projectId          String
+  project            Project       @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  entityKey          String        @db.VarChar(120)
+  entityType         String        @db.VarChar(80)
+  canonicalName      String        @db.VarChar(255)
+  description        String?       @db.Text
+  canonicalUrl       String?       @db.VarChar(512)
+  propertiesJson     Json          @default("{}")
+  sameAsJson         Json          @default("[]")
+  confidence         Int           @default(0)
+  verificationStatus String        @default("needs_review") @db.VarChar(40)
+  claims             EntityClaim[]
+  topics             TopicEntity[]
+  createdAt          DateTime      @default(now())
+  updatedAt          DateTime      @updatedAt
+
+  @@unique([projectId, entityKey])
+  @@index([projectId, entityType])
+  @@index([projectId, verificationStatus])
+}
+
+model EntityClaim {
+  id                 String         @id @default(cuid())
+  projectId          String
+  project            Project        @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  entityId           String
+  entity             BusinessEntity @relation(fields: [entityId], references: [id], onDelete: Cascade)
+  fingerprint        String         @db.VarChar(191)
+  claimType          String         @db.VarChar(100)
+  statement          String         @db.Text
+  valueJson          Json           @default("{}")
+  classification     String         @db.VarChar(40)
+  verificationStatus String         @default("needs_review") @db.VarChar(40)
+  confidence         Int            @default(0)
+  approvedByUserId   String?        @db.VarChar(191)
+  approvedAt         DateTime?
+  sources            ClaimSource[]
+  createdAt          DateTime       @default(now())
+  updatedAt          DateTime       @updatedAt
+
+  @@unique([entityId, fingerprint])
+  @@index([projectId, classification])
+  @@index([projectId, verificationStatus])
+}
+
+model ClaimSource {
+  id             String      @id @default(cuid())
+  claimId        String
+  claim          EntityClaim @relation(fields: [claimId], references: [id], onDelete: Cascade)
+  sourceType     String      @db.VarChar(80)
+  sourceLabel    String      @db.VarChar(255)
+  sourceUrl      String?     @db.VarChar(1024)
+  sourceRecordId String?     @db.VarChar(191)
+  evidenceText   String?     @db.Text
+  isPrimary      Boolean     @default(false)
+  observedAt     DateTime    @default(now())
+  createdAt      DateTime    @default(now())
+
+  @@unique([claimId, sourceType, sourceLabel])
+  @@index([claimId, sourceType])
+}
+
+model TopicEntity {
+  id             String          @id @default(cuid())
+  projectId      String
+  project        Project         @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  entityId       String?
+  entity         BusinessEntity? @relation(fields: [entityId], references: [id], onDelete: SetNull)
+  topicKey       String          @db.VarChar(191)
+  topicName      String          @db.VarChar(255)
+  relevanceScore Int             @default(0)
+  authorityScore Int             @default(0)
+  evidenceJson   Json            @default("{}")
+  status         String          @default("active") @db.VarChar(40)
+  createdAt      DateTime        @default(now())
+  updatedAt      DateTime        @updatedAt
+
+  @@unique([projectId, topicKey])
+  @@index([projectId, relevanceScore])
+  @@index([entityId])
+}
+
+model CitationReadinessFinding {
+  id                String    @id @default(cuid())
+  projectId         String
+  project           Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  category          String    @db.VarChar(80)
+  findingKey        String    @db.VarChar(191)
+  title             String    @db.VarChar(255)
+  summary           String    @db.Text
+  affectedUrl       String?   @db.VarChar(1024)
+  severity          String    @db.VarChar(40)
+  confidence        Int       @default(0)
+  scoreImpact       Int       @default(0)
+  evidenceJson      Json      @default("{}")
+  isInference       Boolean   @default(false)
+  recommendedAction String    @db.Text
+  status            String    @default("open") @db.VarChar(40)
+  reviewedByUserId  String?   @db.VarChar(191)
+  reviewedAt        DateTime?
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  @@unique([projectId, findingKey])
+  @@index([projectId, status, severity])
+  @@index([projectId, category])
+}
+
+model SourceMention {
+  id                 String               @id @default(cuid())
+  projectId          String
+  project            Project              @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  observationId      String
+  observation        AiVisibilitySnapshot @relation(fields: [observationId], references: [id], onDelete: Cascade)
+  sourceUrl          String               @db.VarChar(1024)
+  sourceDomain       String               @db.VarChar(255)
+  citedTargetUrl     String?              @db.VarChar(1024)
+  mentionType        String               @default("citation") @db.VarChar(60)
+  supportsBrand      Boolean              @default(false)
+  sourceQualityScore Int                  @default(0)
+  createdAt          DateTime             @default(now())
+
+  @@unique([observationId, sourceUrl])
+  @@index([projectId, sourceDomain])
+  @@index([observationId])
+}
+
+model TrustSignal {
+  id             String   @id @default(cuid())
+  projectId      String
+  project        Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  signalKey      String   @db.VarChar(191)
+  signalType     String   @db.VarChar(80)
+  title          String   @db.VarChar(255)
+  status         String   @db.VarChar(40)
+  confidence     Int      @default(0)
+  sourceUrl      String?  @db.VarChar(1024)
+  evidenceJson   Json     @default("{}")
+  recommendation String?  @db.Text
+  observedAt     DateTime @default(now())
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  @@unique([projectId, signalKey])
+  @@index([projectId, status])
+  @@index([projectId, signalType])
+}
+
+model CitationRecommendation {
+  id                 String    @id @default(cuid())
+  projectId          String
+  project            Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  findingId          String?   @db.VarChar(191)
+  opportunityId      String?   @db.VarChar(191)
+  recommendationType String    @db.VarChar(80)
+  title              String    @db.VarChar(255)
+  rationale          String    @db.Text
+  recommendedAction  String    @db.Text
+  contentDraftJson   Json      @default("{}")
+  schemaDraftJson    Json      @default("{}")
+  priorityScore      Int       @default(0)
+  riskLevel          String    @default("low") @db.VarChar(40)
+  status             String    @default("proposed") @db.VarChar(40)
+  approvedByUserId   String?   @db.VarChar(191)
+  approvedAt         DateTime?
+  executionTaskId    String?   @db.VarChar(191)
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
+
+  @@index([projectId, status, priorityScore])
+  @@index([findingId])
+  @@index([opportunityId])
 }
 
 model CommunityInsight {
@@ -2492,20 +2691,27 @@ model GapLocalSeoTask {
 }
 
 model AiVisibilityQuery {
-  id                String   @id @default(cuid())
+  id                String    @id @default(cuid())
   projectId         String
-  project           Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  project           Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
   clientId          String
-  queryText         String   @db.VarChar(512)
-  targetBrand       String   @db.VarChar(180)
-  targetUrl         String?  @db.VarChar(512)
-  competitors       Json     @default("[]")
-  scanFrequency     String   @default("manual") @db.VarChar(40)
-  lastScanStatus    String   @default("queued") @db.VarChar(40)
-  visibilityStatus  String?  @db.VarChar(60)
-  recommendedAction String?  @db.Text
-  createdAt         DateTime @default(now())
-  updatedAt         DateTime @updatedAt
+  queryText         String    @db.VarChar(512)
+  topic             String?   @db.VarChar(255)
+  searchIntent      String    @default("informational") @db.VarChar(60)
+  targetBrand       String    @db.VarChar(180)
+  targetUrl         String?   @db.VarChar(512)
+  competitors       Json      @default("[]")
+  engineTargets     Json      @default("[]")
+  priorityScore     Int       @default(0)
+  promptSource      String    @default("user") @db.VarChar(60)
+  status            String    @default("active") @db.VarChar(40)
+  scanFrequency     String    @default("manual") @db.VarChar(40)
+  lastScanStatus    String    @default("queued") @db.VarChar(40)
+  visibilityStatus  String?   @db.VarChar(60)
+  recommendedAction String?   @db.Text
+  lastObservedAt    DateTime?
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
 
   snapshots AiVisibilitySnapshot[]
 
@@ -2521,14 +2727,20 @@ model AiVisibilitySnapshot {
   query              AiVisibilityQuery @relation(fields: [queryId], references: [id], onDelete: Cascade)
   scanProvider       String            @default("manual_v1") @db.VarChar(80)
   visibilityStatus   String            @db.VarChar(60)
+  mentionDetected    Boolean           @default(false)
+  sentiment          String?           @db.VarChar(40)
+  accuracyStatus     String?           @db.VarChar(60)
+  answerExcerpt      String?           @db.Text
   citedUrls          Json              @default("[]")
   competitorsVisible Json              @default("[]")
   recommendedActions Json              @default("[]")
   creditCost         Int               @default(0)
   createdAt          DateTime          @default(now())
+  sourceMentions     SourceMention[]
 
   @@index([projectId, createdAt])
   @@index([queryId])
+  @@index([projectId, scanProvider, createdAt])
 }
 
 model AuthorityOpportunity {

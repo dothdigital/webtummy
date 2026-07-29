@@ -15,6 +15,7 @@ import LeadFunnelWorkspace from "../components/LeadFunnelWorkspace.js";
 import SiteBuilderWorkflow from "../components/SiteBuilderWorkflow.js";
 import type { AiContentGeneration, DomainBacklinkLinks, DomainBacklinkSummary, ExecutionTask, GuidedExecutionTask, GuidedProject, HealthReport, IssueRow, KeywordResearchRun, Opportunity, ProjectNotification, Website, WorkspaceIntelligence, WorkspaceIntelligenceResponse } from "../types.js";
 import { AuthorityGrowthWorkspace } from "../components/AuthorityGrowthWorkspace.js";
+import AiCitationVisibilityWorkspace from "../components/AiCitationVisibilityWorkspace.js";
 
 type ModuleKind = "opportunities" | "strategy" | "keywords" | "site-analysis" | "backlinks" | "ai-citations" | "site-architect" | "lead-magnets";
 type CrawlSummary = NonNullable<Website["crawlJobs"]>[number];
@@ -785,7 +786,7 @@ export default function ExecutionModule({ kind }: { kind: ModuleKind }) {
 
   const headerActions: ProjectHeaderAction[] = [];
   if (kind === "keywords" && scopedKeywordRuns.length > 0) headerActions.push({ key: "manage-keywords", label: "Manage keyword groups", variant: "secondary", onClick: () => { const next = new URLSearchParams(searchParams); next.set("manageKeywords", "1"); setSearchParams(next, { replace: true }); } });
-  if (kind === "ai-citations") headerActions.push({ key: "live-snapshot", label: "Live snapshot from latest crawl", variant: "status" });
+  if (kind === "ai-citations") headerActions.push({ key: "evidence-workspace", label: "Evidence-led workspace", variant: "status" });
   else if (kind !== "site-architect" && kind !== "lead-magnets" && !(kind === "keywords" && scopedKeywordRuns.length === 0) && !(kind === "site-analysis" && !latestSiteCrawl)) headerActions.push({ key: "primary", label: primaryLabel, disabled: primaryDisabled, onClick: runHeaderPrimaryAction });
 
   return (
@@ -3011,155 +3012,8 @@ function BacklinkScreen({ data }: { data: ModuleData }) {
 
 function CitationScreen({ data }: { data: ModuleData }) {
   const project = data.projects[0];
-  const website = data.websites[0];
-  const citationTasks = data.tasks.filter((task) => {
-    const haystack = `${task.moduleName} ${task.title} ${task.description}`.toLowerCase();
-    return haystack.includes("citation") || haystack.includes("schema") || haystack.includes("structured data") || haystack.includes("faqpage");
-  });
-  const openTasks = citationTasks.filter((task) => !["completed", "skipped"].includes(task.status));
-  const latestCrawl = website?.crawlJobs?.find((crawl) => crawl.status === "completed") ?? null;
-  const latestStrategy = project?.strategyPlans?.[0];
-  const strategyStatus = latestStrategy?.status ? label(latestStrategy.status) : "Not generated";
-  const localProfile = website?.localBusinessProfiles?.[0] ?? null;
-  const [healthReport, setHealthReport] = useState<HealthReport | null>(null);
-  const [healthLoading, setHealthLoading] = useState(false);
-  const clientSettings = objectValue(project?.agencyClient?.defaultSettings);
-  const clientLocation = objectValue(clientSettings?.businessLocationDetails);
-  const projectLocation = objectValue(project?.businessLocationJson);
-  const locationValue = (record: Record<string, unknown> | null, key: string) => typeof record?.[key] === "string" ? String(record[key]).trim() : "";
-  const fallbackClientLocation = stringArray(project?.agencyClient?.businessLocations)[0] ?? "";
-  const effectiveName = localProfile?.businessName || project?.businessName || project?.agencyClient?.name || project?.name || "";
-  const effectivePhone = localProfile?.phone || project?.agencyClient?.contactPhone || "";
-  const inheritedStreet = locationValue(projectLocation, "streetAddress") || locationValue(clientLocation, "streetAddress");
-  const inheritedCity = locationValue(projectLocation, "city") || locationValue(clientLocation, "city");
-  const inheritedRegion = locationValue(projectLocation, "stateProvince") || locationValue(clientLocation, "stateProvince");
-  const inheritedCountry = locationValue(projectLocation, "country") || locationValue(clientLocation, "country");
-  const inheritedPostalCode = locationValue(projectLocation, "postalCode") || locationValue(clientLocation, "postalCode");
-  const localAddress = [localProfile?.address, localProfile?.city, localProfile?.region, localProfile?.postalCode, localProfile?.country].filter(Boolean).join(", ");
-  const inheritedAddress = [inheritedStreet, inheritedCity, inheritedRegion, inheritedPostalCode, inheritedCountry].filter(Boolean).join(", ") || project?.businessLocation || fallbackClientLocation;
-  const effectiveAddress = localAddress || inheritedAddress || "";
-  const napReady = Boolean(effectiveName && effectivePhone && effectiveAddress);
-  const napSource = localProfile ? "Local SEO profile" : projectLocation || project?.businessLocation ? "Project intake" : project?.agencyClient ? "Agency Client defaults" : "Project profile";
-  const profileUrl = (() => {
-    if (!project || !website) return project ? `/guided-projects/${encodeURIComponent(project.id)}/intake` : "/projects";
-    const params = new URLSearchParams({ projectId: project.id, project: website.id, editProfile: "1" });
-    if (effectiveName) params.set("businessName", effectiveName);
-    if (effectivePhone) params.set("phone", effectivePhone);
-    if (localProfile?.address || inheritedStreet) params.set("address", localProfile?.address || inheritedStreet);
-    if (localProfile?.city || inheritedCity) params.set("city", localProfile?.city || inheritedCity);
-    if (localProfile?.region || inheritedRegion) params.set("region", localProfile?.region || inheritedRegion);
-    if (localProfile?.country || inheritedCountry) params.set("country", localProfile?.country || inheritedCountry);
-    if (localProfile?.postalCode || inheritedPostalCode) params.set("postalCode", localProfile?.postalCode || inheritedPostalCode);
-    if (project.niche) params.set("mainCategory", project.niche);
-    const inheritedTargets = stringArray(project.targetLocations).join(", ");
-    if (inheritedTargets) params.set("targetLocations", inheritedTargets);
-    if (project.businessProfile?.offerSummary) params.set("services", project.businessProfile.offerSummary);
-    return `/local-seo?${params.toString()}`;
-  })();
-  const siteAnalysisUrl = project ? `/site-analysis?projectId=${encodeURIComponent(project.id)}` : "/site-analysis";
-  const crawlUrl = latestCrawl?.id ? `/crawls/${encodeURIComponent(latestCrawl.id)}` : siteAnalysisUrl;
-  const generateUrl = (type: string, topic: string) => {
-    const params = new URLSearchParams({ type, topic, open: "1" });
-    if (project?.id) params.set("projectId", project.id);
-    if (website?.rootUrl) params.set("targetUrl", website.rootUrl);
-    return `/ai-content?${params.toString()}`;
-  };
-
-  useEffect(() => {
-    let cancelled = false;
-    async function loadHealth(crawlId: string) {
-      setHealthLoading(true);
-      try {
-        const report = await api.get<HealthReport>(`/api/crawls/${crawlId}/health-report`);
-        if (!cancelled) setHealthReport(report);
-      } catch {
-        if (!cancelled) setHealthReport(null);
-      } finally {
-        if (!cancelled) setHealthLoading(false);
-      }
-    }
-    if (latestCrawl?.id) void loadHealth(latestCrawl.id);
-    else setHealthReport(null);
-    return () => { cancelled = true; };
-  }, [latestCrawl?.id]);
-
-  const readinessScore = Math.max(0, Math.min(100, healthReport?.aiSearch.score ?? latestCrawl?.siteScore ?? 0));
-  const identityRows = [
-    { label: "Business name", value: effectiveName || "Not configured", ok: Boolean(effectiveName), action: "Edit profile", href: profileUrl },
-    { label: "Phone", value: effectivePhone || "Not configured", ok: Boolean(effectivePhone), action: effectivePhone ? "Edit phone" : "Add phone", href: profileUrl },
-    { label: "Address", value: effectiveAddress || "Not configured", ok: Boolean(effectiveAddress), action: effectiveAddress ? "Edit address" : "Add address", href: profileUrl },
-    { label: "Organization schema", value: `${schemaTypeCount(healthReport, "Organization", true)} detected`, ok: Boolean(healthReport?.schema.hasOrganization), action: "Generate schema", href: generateUrl("domain_schema", "Generate Organization schema for AI citation readiness") },
-  ];
-  const readinessSignals = [
-    { label: "Website", value: website?.domain ?? project?.websiteUrl ?? "Not connected", ok: Boolean(website?.domain || project?.websiteUrl) },
-    { label: "Strategy", value: strategyStatus, ok: latestStrategy?.status === "approved" },
-    { label: "Entity schema", value: healthReport?.schema.hasOrganization ? "Found" : "Missing", ok: Boolean(healthReport?.schema.hasOrganization) },
-    { label: "NAP", value: napReady ? napSource : "Missing", ok: napReady },
-    { label: "Open tasks", value: formatNumber(openTasks.length), ok: openTasks.length === 0 },
-  ];
-
-  return (
-    <>
-      <Card className="overflow-hidden border-brand-100 p-0 shadow-sm">
-        <div className="bg-gradient-to-r from-brand-50 via-white to-emerald-50 px-5 py-4">
-          <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
-            <div><div className="text-xs font-black uppercase tracking-[0.12em] text-brand-700">Entity & NAP</div><h2 className="mt-1 text-xl font-black text-charcoal-950">AI citation identity and readiness</h2><p className="mt-1 text-sm text-charcoal-500">Brand identity signals AI systems need before citing the business. Current source: <span className="font-bold text-charcoal-700">{napSource}</span>.</p></div>
-            <div className="w-full max-w-sm rounded-xl border border-white bg-white/90 px-4 py-3 shadow-sm"><div className="flex items-end justify-between gap-3"><div><div className="text-3xl font-black text-brand-700">{healthLoading ? "—" : readinessScore}<span className="text-sm text-charcoal-400">/100</span></div><div className="text-xs font-bold uppercase tracking-wide text-charcoal-400">Readiness score</div></div><div className="text-right text-xs font-semibold text-charcoal-500">{healthReport ? "Latest crawl" : healthLoading ? "Loading…" : "Site analysis needed"}</div></div><div className="mt-3 h-2 overflow-hidden rounded-full bg-slate-100"><div className="h-full rounded-full bg-gradient-to-r from-brand-500 to-emerald-500" style={{ width: `${readinessScore}%` }} /></div></div>
-          </div>
-        </div>
-        <div className="grid divide-y divide-slate-100 lg:grid-cols-4 lg:divide-x lg:divide-y-0">
-          {identityRows.map((row) => <div key={row.label} className="flex min-w-0 flex-col justify-between gap-3 p-4"><div><div className="flex items-center justify-between gap-2"><div className="text-xs font-black uppercase tracking-wide text-charcoal-400">{row.label}</div><span className={`rounded-full px-2 py-0.5 text-[10px] font-black ${row.ok ? "bg-emerald-50 text-emerald-700" : "bg-amber-50 text-amber-700"}`}>{row.ok ? "Found" : "Needs work"}</span></div><div className="mt-2 break-words text-sm font-bold leading-5 text-charcoal-900">{row.value}</div></div><Link to={row.href} className="w-fit text-xs font-black text-brand-700 hover:text-brand-800">{row.action} →</Link></div>)}
-        </div>
-        <div className="grid border-t border-slate-100 bg-slate-50/60 sm:grid-cols-2 lg:grid-cols-5">
-          {readinessSignals.map((signal) => <div key={signal.label} className="flex items-center justify-between gap-2 border-b border-slate-100 px-4 py-3 sm:border-r lg:border-b-0"><div className="min-w-0"><div className="text-[10px] font-black uppercase tracking-wide text-charcoal-400">{signal.label}</div><div className="mt-0.5 truncate text-xs font-bold text-charcoal-700">{signal.value}</div></div><span className={`h-2.5 w-2.5 shrink-0 rounded-full ${signal.ok ? "bg-emerald-500" : "bg-amber-400"}`} /></div>)}
-        </div>
-      </Card>
-
-      {!citationTasks.length && (
-        <Card className="border-amber-100 bg-amber-50 p-4">
-          <div className="text-sm font-bold text-amber-950">No saved AI citation tasks yet.</div>
-          <p className="mt-1 text-sm leading-6 text-amber-900">
-            This dashboard is using the latest crawl, local profile, and project context to show recommended citation tasks until saved execution tasks are created.
-          </p>
-        </Card>
-      )}
-
-      <div className="space-y-5">
-        <div className="grid gap-5 lg:grid-cols-3">
-          <CitationPanel
-            title="AI Discoverability"
-            subtitle="Files and crawl signals that help search and AI systems discover authoritative pages."
-            rows={[
-              { label: "llms.txt", value: healthReport?.aiSearch.llmsTxtPresent ? `Found · score ${healthReport.aiSearch.llmsTxtScore ?? 0}` : "Not found", ok: Boolean(healthReport?.aiSearch.llmsTxtPresent), action: "Generate", href: generateUrl("domain_llms_txt", "Generate domain llms.txt for AI citation readiness") },
-              { label: "Sitemap", value: `${formatNumber(healthReport?.siteFiles.sitemapUrls)} URLs`, ok: (healthReport?.siteFiles.sitemapUrls ?? 0) > 0, action: "Review", href: crawlUrl },
-              { label: "Robots", value: healthReport?.siteFiles.robotsStatus ? `Status ${healthReport.siteFiles.robotsStatus}` : "Not checked", ok: healthReport?.siteFiles.robotsStatus === 200, action: "Review", href: crawlUrl },
-            ]}
-          />
-          <CitationPanel
-            title="Answer & Schema Coverage"
-            subtitle="Structured data and answer blocks that improve citation eligibility."
-            rows={[
-              { label: "WebSite schema", value: `${schemaTypeCount(healthReport, "WebSite")} detected`, ok: Boolean(healthReport?.schema.hasWebsite), action: "Generate", href: generateUrl("domain_schema", "Generate WebSite schema for AI citation readiness") },
-              { label: "FAQPage schema", value: `${schemaTypeCount(healthReport, "FAQPage")} detected`, ok: Boolean(healthReport?.faq.hasFAQSchema), action: "Generate", href: generateUrl("page_schema", "Generate FAQPage schema and answer-first FAQ content") },
-              { label: "BreadcrumbList schema", value: `${schemaTypeCount(healthReport, "BreadcrumbList")} detected`, ok: Boolean(healthReport?.breadcrumb.hasBreadcrumbSchema), action: "Generate", href: generateUrl("page_schema", "Generate BreadcrumbList schema") },
-              { label: "Invalid schema", value: `${formatNumber(healthReport?.schema.invalid)} issues`, ok: (healthReport?.schema.invalid ?? 0) === 0, action: "Fix", href: crawlUrl },
-            ]}
-          />
-          <CitationPanel
-            title="Citation Task Focus"
-            subtitle="What SEnuke AI should work on next from the current project state."
-            rows={smartCitationNextRows(data, healthReport, localProfile, { ready: napReady, profileUrl })}
-          />
-        </div>
-        <DataTable
-          title="Citation Tasks"
-          columns={["Task", "Impact", "Current Status", "Priority", "Action"]}
-          rows={citationTableRows(data, citationTasks, healthReport, localProfile, napReady, profileUrl)}
-          footerAction={<span className="text-sm font-semibold text-charcoal-500">Saved tasks appear first. If none exist, this table shows recommended tasks from the latest crawl and profile data.</span>}
-        />
-      </div>
-    </>
-  );
+  if (!project) return <EmptyModuleState title="Select a project" detail="Choose a project before opening AI citation research and monitoring." />;
+  return <AiCitationVisibilityWorkspace projectId={project.id} />;
 }
 
 function CitationPanel({

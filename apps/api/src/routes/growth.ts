@@ -56,6 +56,9 @@ async function scopedProject(req: Request, projectId: string) {
       authorityAssets: { orderBy: { createdAt: "desc" }, take: 50 },
       earnedMentions: { orderBy: [{ earnedAt: "desc" }, { createdAt: "desc" }] },
       authorityPerformanceMetrics: { orderBy: { periodEnd: "desc" }, take: 100 },
+      aiRuns: { where: { moduleName: "ai_citation_visibility", status: "completed" }, orderBy: { createdAt: "desc" }, take: 1 },
+      aiVisibilityQueries: { where: { status: "active" }, include: { snapshots: { orderBy: { createdAt: "desc" }, take: 1 } } },
+      citationRecommendations: { where: { status: { not: "superseded" } }, orderBy: [{ priorityScore: "desc" }, { createdAt: "desc" }], take: 50 },
     },
   });
 }
@@ -181,6 +184,15 @@ function scoreProject(project: NonNullable<Awaited<ReturnType<typeof scopedProje
   const leadCapture = Math.min(100, 25 + (hasLeadMagnetTask ? 24 : 0) + (project.preferredOutputs && jsonList(project.preferredOutputs).some((item) => /lead/i.test(item)) ? 20 : 0));
   const followUp = Math.min(100, 22 + socialPosts * 3 + (project.preferredPublishingMethod ? 10 : 0));
   const latestAuthoritySnapshot = project.backlinkProfileSnapshots[0];
+  const citationOutput = project.aiRuns[0]?.outputJson && typeof project.aiRuns[0].outputJson === "object" && !Array.isArray(project.aiRuns[0].outputJson)
+    ? project.aiRuns[0].outputJson as Record<string, unknown>
+    : {};
+  const citationScores = citationOutput.scores && typeof citationOutput.scores === "object" && !Array.isArray(citationOutput.scores)
+    ? citationOutput.scores as Record<string, unknown>
+    : {};
+  const citationReadiness = typeof citationScores.overallScore === "number" ? citationScores.overallScore : null;
+  const observedCitationMentions = project.aiVisibilityQueries.filter((query) => query.snapshots[0]?.mentionDetected).length;
+  const approvedCitationRecommendations = project.citationRecommendations.filter((item) => item.status === "approved").length;
   const approvedAuthorityOpportunities = project.authorityOpportunities.filter((item) => item.status === "approved").length;
   const completedAuthorityAssets = project.authorityAssets.filter((item) => item.status === "completed").length;
   const earnedReferralLeads = project.earnedMentions.reduce((sum, mention) => sum + mention.referralLeads, 0);
@@ -191,13 +203,16 @@ function scoreProject(project: NonNullable<Awaited<ReturnType<typeof scopedProje
     + Math.min(16, completedAuthorityAssets * 5)
     + Math.min(24, project.earnedMentions.length * 6)
     + Math.min(12, earnedReferralLeads * 3)
+    + Math.min(8, observedCitationMentions * 2)
+    + Math.min(8, approvedCitationRecommendations * 2)
+    + (citationReadiness == null ? 0 : Math.round(citationReadiness * .08))
     + Math.min(10, openTasks.filter((task) => /backlink|citation|authority/i.test(`${task.moduleName} ${task.title}`)).length * 2));
   const offer = Math.min(100, 35 + (project.businessProfile?.offerSummary ? 22 : 0) + (project.businessProfile?.targetAudience ? 14 : 0) + (project.strategyPlans[0]?.offerRecommendation ? 12 : 0));
   const retention = Math.min(100, 25 + socialPosts * 2 + (project.strategyPlans[0]?.socialStrategy ? 12 : 0));
   const scoreJson = { traffic, conversion, leadCapture, followUp, authority, offer, retention };
   const bottleneckType = Object.entries(scoreJson).sort((a, b) => a[1] - b[1])[0]?.[0] ?? "conversion";
   const growthScore = Math.round(Object.values(scoreJson).reduce((sum, value) => sum + value, 0) / Object.values(scoreJson).length);
-  return { scoreJson, bottleneckType, growthScore, latestCrawl, openTasks, keywordRuns, socialPosts, hasLeadMagnetTask, strategyApproved, latestAuthoritySnapshot, approvedAuthorityOpportunities, completedAuthorityAssets, earnedReferralLeads };
+  return { scoreJson, bottleneckType, growthScore, latestCrawl, openTasks, keywordRuns, socialPosts, hasLeadMagnetTask, strategyApproved, latestAuthoritySnapshot, approvedAuthorityOpportunities, completedAuthorityAssets, earnedReferralLeads, citationReadiness, observedCitationMentions, approvedCitationRecommendations };
 }
 
 function diagnosisSummary(bottleneckType: string, ctx: ReturnType<typeof projectContext>) {
@@ -262,6 +277,23 @@ function normalizedGrowthSignals(project: NonNullable<Awaited<ReturnType<typeof 
       collectedAt: now,
       effectiveDate: score.latestAuthoritySnapshot?.capturedAt ?? now,
       expiresAt: new Date((score.latestAuthoritySnapshot?.capturedAt ?? now).getTime() + 45 * 86_400_000),
+    },
+    {
+      category: "ai_visibility",
+      signalKey: "citation_readiness",
+      sourceType: project.aiRuns[0] ? "ai_run" : "project_snapshot",
+      sourceId: project.aiRuns[0]?.id ?? project.id,
+      value: {
+        overallScore: score.citationReadiness,
+        monitoredPrompts: project.aiVisibilityQueries.length,
+        observedMentions: score.observedCitationMentions,
+        approvedRecommendations: score.approvedCitationRecommendations,
+        status: score.citationReadiness == null ? "not_assessed" : "assessed",
+      },
+      confidence: score.citationReadiness == null ? 20 : 92,
+      collectedAt: now,
+      effectiveDate: project.aiRuns[0]?.createdAt ?? now,
+      expiresAt: new Date((project.aiRuns[0]?.createdAt ?? now).getTime() + 30 * 86_400_000),
     },
     {
       category: "demand",
@@ -679,7 +711,7 @@ async function loadGrowthOverview(projectId: string) {
     prisma.growthBlueprint.findUnique({ where: { projectId }, include: { versions: { orderBy: { version: "desc" }, take: 10 } } }),
     prisma.growthSignal.findMany({ where: { projectId }, orderBy: [{ category: "asc" }, { effectiveDate: "desc" }] }),
     prisma.nextBestAction.findMany({
-      where: { projectId, sourceType: "growth_engine" },
+      where: { projectId, sourceType: { in: ["growth_engine", "citation_recommendation"] } },
       orderBy: [{ status: "asc" }, { priorityScore: "desc" }, { createdAt: "desc" }],
       include: { followupTask: { select: { id: true, title: true, status: true, relatedUrl: true } } },
     }),

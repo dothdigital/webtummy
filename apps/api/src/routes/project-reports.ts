@@ -44,6 +44,12 @@ async function scopedProject(context: Awaited<ReturnType<typeof workspaceContext
       authorityAssets: { orderBy: { createdAt: "desc" } },
       earnedMentions: { orderBy: [{ earnedAt: "desc" }, { createdAt: "desc" }] },
       authorityPerformanceMetrics: { orderBy: { periodEnd: "desc" }, take: 100 },
+      aiRuns: { where: { moduleName: "ai_citation_visibility", status: "completed" }, orderBy: { createdAt: "desc" }, take: 1 },
+      entityClaims: { where: { verificationStatus: "approved" }, include: { sources: true, entity: { select: { canonicalName: true, entityType: true } } }, orderBy: { createdAt: "asc" } },
+      citationReadinessFindings: { where: { status: { not: "superseded" } }, orderBy: [{ scoreImpact: "desc" }, { createdAt: "desc" }] },
+      aiVisibilityQueries: { where: { status: "active" }, include: { snapshots: { include: { sourceMentions: true }, orderBy: { createdAt: "desc" }, take: 3 } }, orderBy: { priorityScore: "desc" } },
+      citationRecommendations: { where: { status: { not: "superseded" } }, orderBy: [{ priorityScore: "desc" }, { createdAt: "desc" }] },
+      trustSignals: { orderBy: [{ status: "asc" }, { signalType: "asc" }] },
       executionTasks: { orderBy: { createdAt: "desc" }, select: { id: true, title: true, moduleName: true, status: true, priority: true, requiresApproval: true, approvedAt: true, publishedAt: true, completedAt: true, dueAt: true, assignee: { select: { user: { select: { name: true, email: true } } } }, approver: { select: { user: { select: { name: true, email: true } } } } } },
       memberAssignments: { select: { membershipId: true } },
       teamAssignments: { select: { team: { select: { members: { select: { membershipId: true } } } } } },
@@ -89,6 +95,22 @@ function reportContent(project: Awaited<ReturnType<typeof scopedProject>>, repor
     referralVisits: earnedReferralVisits,
     referralLeads: earnedReferralLeads,
   } : null;
+  const citationOutput = project.aiRuns[0]?.outputJson && typeof project.aiRuns[0].outputJson === "object" && !Array.isArray(project.aiRuns[0].outputJson)
+    ? project.aiRuns[0].outputJson as Record<string, unknown>
+    : {};
+  const citationScores = citationOutput.scores && typeof citationOutput.scores === "object" && !Array.isArray(citationOutput.scores)
+    ? citationOutput.scores as Record<string, unknown>
+    : null;
+  const citationObservations = project.aiVisibilityQueries.flatMap((query) => query.snapshots.map((snapshot) => ({
+    prompt: query.queryText,
+    provider: snapshot.scanProvider,
+    status: snapshot.visibilityStatus,
+    mentionDetected: snapshot.mentionDetected,
+    sentiment: snapshot.sentiment,
+    accuracyStatus: snapshot.accuracyStatus,
+    observedAt: snapshot.createdAt,
+    sources: snapshot.sourceMentions.map((source) => ({ domain: source.sourceDomain, url: source.sourceUrl, mentionType: source.mentionType })),
+  })));
   const storedScoreBreakdown = strategy?.scoreBreakdown && typeof strategy.scoreBreakdown === "object" ? strategy.scoreBreakdown as Record<string, unknown> : {};
   const strategyScore = strategy?.strategyScore ?? selectedOpportunity?.opportunityScore ?? null;
   const strategyScoreBreakdown = {
@@ -116,6 +138,43 @@ function reportContent(project: Awaited<ReturnType<typeof scopedProject>>, repor
         completed: project.authorityAssets.filter((item) => item.status === "completed").length,
       },
       earnedMentions: project.earnedMentions.map((mention) => ({ sourceDomain: mention.sourceDomain, mentionType: mention.mentionType, linkAttribute: mention.linkAttribute, referralVisits: mention.referralVisits, referralLeads: mention.referralLeads, earnedAt: mention.earnedAt })),
+    },
+    aiCitationVisibility: {
+      assessmentStatus: citationScores ? "assessed" : "not_assessed",
+      scores: citationScores,
+      latestAuditAt: project.aiRuns[0]?.createdAt ?? null,
+      approvedClaims: project.entityClaims.map((claim) => ({
+        entity: claim.entity.canonicalName,
+        entityType: claim.entity.entityType,
+        claimType: claim.claimType,
+        statement: claim.statement,
+        classification: claim.classification,
+        sources: claim.sources.map((source) => ({ label: source.sourceLabel, type: source.sourceType, url: source.sourceUrl })),
+      })),
+      openFindings: project.citationReadinessFindings.filter((finding) => finding.status === "open").map((finding) => ({
+        category: finding.category,
+        title: finding.title,
+        severity: finding.severity,
+        confidence: finding.confidence,
+        isInference: finding.isInference,
+        recommendedAction: finding.recommendedAction,
+      })),
+      monitoring: {
+        prompts: project.aiVisibilityQueries.length,
+        observations: citationObservations,
+        observedMentions: citationObservations.filter((item) => item.mentionDetected).length,
+        inaccurateMentions: citationObservations.filter((item) => item.accuracyStatus === "inaccurate").length,
+      },
+      trustSignals: project.trustSignals.map((signal) => ({ title: signal.title, type: signal.signalType, status: signal.status, confidence: signal.confidence })),
+      recommendations: project.citationRecommendations.map((recommendation) => ({
+        title: recommendation.title,
+        type: recommendation.recommendationType,
+        status: recommendation.status,
+        priorityScore: recommendation.priorityScore,
+        rationale: recommendation.rationale,
+        recommendedAction: recommendation.recommendedAction,
+      })),
+      disclaimer: "Citation readiness and observed visibility do not guarantee inclusion in an AI-generated answer. Observations reflect only the recorded provider, prompt, time, and sources.",
     },
     localSeo: { googleBusinessProfilePerformance: null, localGridRankings: null, citationsAndNapIssues: null, recommendations: ["Connect Google Business Profile and Local SEO tracking to populate local performance."] },
     reputation: { newReviews: null, negativeReviewsNeedingAttention: null, averageRating: null, ratingChange: null, responseStatus: null, trends: null, unavailableReason: unavailable },
