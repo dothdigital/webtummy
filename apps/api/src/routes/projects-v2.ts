@@ -160,7 +160,8 @@ const leadMagnetResearchSchema = z.object({
   preferredFormat: leadMagnetTypeSchema.optional().nullable(),
   successDefinition: z.string().trim().max(500).optional().nullable(),
   notes: z.string().trim().max(2000).optional().nullable(),
-  researchMode: z.enum(["primary", "refined"]).default("primary"),
+  researchMode: z.enum(["primary", "refined", "refresh"]).default("primary"),
+  excludedRecommendationTitles: z.array(z.string().trim().min(3).max(240)).max(5).default([]),
 });
 const leadMagnetResearchOutputSchema = z.object({
   research: z.object({
@@ -1459,6 +1460,9 @@ function buildLeadMagnetResearchPrompt(input: {
     "This is a research and recommendation step only. Do not generate the lead magnet, landing page, or email sequence yet.",
     "Base every finding on the supplied business intake, keyword evidence, target geography, website analysis, selected Opportunity, approved Strategy, and SEO plan.",
     "Present the strongest recommendation from the existing evidence first. Follow-up questions must only refine genuine uncertainties; never make the initial recommendation depend on answering them.",
+    input.objective.excludedRecommendationTitles?.length
+      ? `The user requested fresh alternatives. Do not repeat these previous recommendation titles or merely reword the same concepts: ${input.objective.excludedRecommendationTitles.join(" | ")}`
+      : "No previous recommendation titles need to be excluded.",
     "Do not claim live web research, measured visitor behaviour, or conversion performance that is absent from the evidence.",
     "When evidence is missing, state the limitation. Estimated impact must be directional and must never be presented as guaranteed.",
     "Rank options by audience usefulness, search intent, geographic relevance, website lead-capture gap, business-goal alignment, and proximity to the requested action.",
