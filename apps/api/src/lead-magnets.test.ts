@@ -11,8 +11,8 @@ const completeFunnel = {
     sections: [{ title: "Profile", summary: "Start with identity accuracy.", paragraphs: ["Review every saved business detail before editing listings."], bullets: ["Confirm the business name."], actionStep: "Record inconsistencies." }],
     businessAnalysis: { business: "North Star SEO", audience: "Local business owners", offer: "Local SEO services", goal: "Qualified leads" },
     branding: { businessName: "North Star SEO", brandVoice: "Clear and practical", primaryColor: "#2563EB", secondaryColor: "#0F766E" },
-    imagePlan: [{ role: "cover", altText: "Local SEO checklist cover" }],
-    generatedImages: [{ role: "section", altText: "Profile review", dataUrl: "data:image/svg+xml;base64,PHN2Zy8+" }],
+    imagePlan: [{ role: "diagram", altText: "Local SEO profile review flow", sourceLabel: "Google Business Profile Help", sourceUrl: "https://support.google.com/business/" }],
+    generatedImages: [{ role: "diagram", altText: "Profile review", sourceLabel: "Google Business Profile Help", sourceUrl: "https://support.google.com/business/", dataUrl: "data:image/svg+xml;base64,PHN2Zy8+" }],
     coverImage: "data:image/svg+xml;base64,PHN2Zy8+",
   },
   landingPageJson: { headline: "Fix local visibility gaps", subheadline: "Use a practical checklist before your next campaign.", benefitBullets: ["Prioritize the highest-impact fixes"], ctaText: "Send my checklist" },
@@ -97,6 +97,32 @@ describe("DEV-011C lead funnel optimization", () => {
     const pdf = await renderLeadMagnetPdf({ title: completeFunnel.title, magnetType: completeFunnel.magnetType, assetJson: completeFunnel.assetJson });
     expect(pdf.subarray(0, 5).toString()).toBe("%PDF-");
     expect(pdf.length).toBeGreaterThan(1_000);
+  });
+
+  it("supports a 1,000–2,000 word mini eBook as a downloadable lead magnet", async () => {
+    const miniEbook = { ...completeFunnel, magnetType: "Mini eBook (1,000–2,000 words)" };
+    expect(validateLeadFunnelForPublish(miniEbook, connectedEsp).valid).toBe(true);
+    const pdf = await renderLeadMagnetPdf(miniEbook);
+    expect(pdf.subarray(0, 5).toString()).toBe("%PDF-");
+  });
+
+  it("requires visible HTTPS sources for factual visuals in every lead magnet format", () => {
+    const assetJson = {
+      ...completeFunnel.assetJson,
+      generatedImages: [{ role: "chart", altText: "Lead conversion comparison", sourceLabel: "Internal conversion report", sourceUrl: "", dataUrl: "data:image/svg+xml;base64,PHN2Zy8+" }],
+    };
+    const result = validateLeadFunnelForPublish({ ...completeFunnel, assetJson }, connectedEsp);
+    expect(result.valid).toBe(false);
+    expect(result.errors).toContain("Every factual chart, image, and diagram requires a visible source label and HTTPS source URL.");
+    expect(result.checks.brandAndImages).toBe(false);
+  });
+
+  it("allows clearly labelled decorative AI-generated illustrations without an external URL", () => {
+    const assetJson = {
+      ...completeFunnel.assetJson,
+      generatedImages: [{ role: "image", altText: "Decorative local map", sourceLabel: "AI-generated illustration based on project evidence", sourceUrl: null, dataUrl: "data:image/svg+xml;base64,PHN2Zy8+" }],
+    };
+    expect(validateLeadFunnelForPublish({ ...completeFunnel, assetJson }, connectedEsp).valid).toBe(true);
   });
 
   it("detects a visitor-insurance lead opportunity from business and page evidence", () => {

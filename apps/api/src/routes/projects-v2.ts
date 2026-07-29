@@ -141,7 +141,7 @@ const keywordExpansionPreviewSchema = z.object({
 });
 const keywordGroupUpdateSchema = z.object({ keywords: z.array(z.string().trim().min(2).max(255)).min(1).max(100), reason: z.string().trim().max(1000).optional().nullable() });
 const keywordManualSchema = z.object({ keywords: z.array(z.string().trim().min(2).max(255)).min(1).max(50), category: z.string().trim().min(2).max(60).default("supporting"), groupId: z.string().trim().min(1).optional().nullable() });
-const leadMagnetTypeSchema = z.enum(["Checklist", "Guide", "Comparison", "Buyer's Guide", "eBook", "PDF Report", "Template", "Worksheet", "Cheat Sheet", "Email Course", "Toolkit", "Resource List", "Case Study", "Free Trial", "Coupon or Discount", "Quiz", "Calculator"]);
+const leadMagnetTypeSchema = z.enum(["Checklist", "Guide", "Comparison", "Buyer's Guide", "Mini eBook (1,000–2,000 words)", "eBook", "PDF Report", "Template", "Worksheet", "Cheat Sheet", "Email Course", "Toolkit", "Resource List", "Case Study", "Free Trial", "Coupon or Discount", "Quiz", "Calculator"]);
 const leadRecommendationValueSchema = z.object({
   type: leadMagnetTypeSchema,
   title: z.string().trim().min(3).max(240),
@@ -1369,6 +1369,10 @@ function buildLeadMagnetPrompt(input: {
     "Do not use generic placeholder advice. If data is missing, use the best available project context and mark assumptions clearly.",
     "Do not claim measured traffic, conversion, or customer behaviour unless it appears in the supplied evidence. Treat estimated impact as directional.",
     "Generate the complete useful asset—not merely an outline. Each section needs substantive paragraphs, practical bullets, and an action step.",
+    "If the selected format is Mini eBook (1,000–2,000 words), generate 1,000–2,000 words of substantive lead-magnet body content across the sections, excluding landing-page and email copy.",
+    "The visual requirements apply to every lead-magnet format. When the user requests charts, images, or diagrams, include up to three useful supporting visuals in imagePlan.",
+    "Every factual chart, sourced image, or evidence-based diagram must have a visible sourceLabel and a verifiable HTTPS sourceUrl from the supplied project evidence or user-provided sources. Never invent data, citations, source names, or URLs.",
+    "For a decorative AI-generated visual, set sourceLabel to 'AI-generated illustration based on project evidence', sourceUrl to null, and explain the evidence basis in sourceNote.",
     "Return JSON with this exact top-level shape:",
     selectedIdea ? `The user selected this lead magnet concept. Preserve its core intent and improve it: ${selectedIdea}` : "Choose the strongest concept from the project evidence.",
     recommendation ? `Evidence-backed recommendation selected by the user: ${JSON.stringify(recommendation)}` : "No structured recommendation was supplied; use the strongest available project evidence.",
@@ -1379,7 +1383,7 @@ function buildLeadMagnetPrompt(input: {
     JSON.stringify({
       leadMagnet: {
         title: "string",
-        assetType: "Checklist | Guide | Comparison | Buyer's Guide | eBook | PDF Report | Template | Worksheet | Cheat Sheet | Email Course | Toolkit | Resource List | Case Study | Free Trial | Coupon or Discount | Quiz | Calculator",
+        assetType: "Checklist | Guide | Comparison | Buyer's Guide | Mini eBook (1,000–2,000 words) | eBook | PDF Report | Template | Worksheet | Cheat Sheet | Email Course | Toolkit | Resource List | Case Study | Free Trial | Coupon or Discount | Quiz | Calculator",
         promise: "string",
         targetAudience: "string",
         problemSolved: "string",
@@ -1390,7 +1394,16 @@ function buildLeadMagnetPrompt(input: {
       },
       businessAnalysis: { business: "string", audience: "string", offer: "string", goal: "string", buyerStage: "awareness | consideration | decision", leadCaptureGap: "string", evidence: ["string"], assumptions: ["string"] },
       branding: { businessName: "string", brandVoice: "string", primaryColor: "#RRGGBB", secondaryColor: "#RRGGBB", logoUsage: "string", visualStyle: "string" },
-      imagePlan: [{ role: "cover | section | diagram", prompt: "string", altText: "string", placement: "string" }],
+      imagePlan: [{
+        role: "image | chart | diagram",
+        prompt: "string",
+        altText: "string",
+        placement: "string",
+        sourceLabel: "visible source name or AI-generated illustration based on project evidence",
+        sourceUrl: "verifiable https URL or null for a decorative AI-generated illustration",
+        sourceNote: "what evidence, data, or project context supports the visual",
+        dataPoints: [{ label: "string", value: 0 }],
+      }],
       landingPage: {
         headline: "string",
         subheadline: "string",
@@ -1481,7 +1494,7 @@ function buildLeadMagnetResearchPrompt(input: {
       },
       followUpQuestions: [{ question: "string", why: "string", suggestedAnswer: "string or null" }],
       recommendations: [{
-        type: "Checklist | Guide | Comparison | Buyer's Guide | eBook | PDF Report | Template | Worksheet | Cheat Sheet | Email Course | Toolkit | Resource List | Case Study | Free Trial | Coupon or Discount | Quiz | Calculator",
+        type: "Checklist | Guide | Comparison | Buyer's Guide | Mini eBook (1,000–2,000 words) | eBook | PDF Report | Template | Worksheet | Cheat Sheet | Email Course | Toolkit | Resource List | Case Study | Free Trial | Coupon or Discount | Quiz | Calculator",
         title: "string",
         score: 90,
         buyerStage: "awareness | consideration | decision",
@@ -1537,10 +1550,36 @@ function leadMagnetSupportingImages(input: { branding: Record<string, unknown>; 
   return (Array.isArray(input.imagePlan) ? input.imagePlan : []).slice(0, 3).map((raw, index) => {
     const item = raw && typeof raw === "object" && !Array.isArray(raw) ? raw as Record<string, unknown> : {};
     const role = String(item.role ?? `section-${index + 1}`);
+    const normalizedRole = role.toLowerCase();
     const altText = String(item.altText ?? item.prompt ?? `Supporting visual ${index + 1}`).slice(0, 180);
     const label = escape(altText.slice(0, 72));
-    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="900" height="420" viewBox="0 0 900 420" role="img" aria-label="${escape(altText)}"><defs><linearGradient id="v${index}" x1="0" y1="0" x2="1" y2="1"><stop stop-color="${primary}" stop-opacity=".18"/><stop offset="1" stop-color="${secondary}" stop-opacity=".08"/></linearGradient></defs><rect width="900" height="420" rx="28" fill="#f8fafc"/><rect x="32" y="32" width="836" height="356" rx="22" fill="url(#v${index})" stroke="${primary}" stroke-opacity=".22"/><circle cx="${150 + index * 70}" cy="160" r="78" fill="${primary}" opacity=".9"/><path d="M110 160l28 28 58-68" fill="none" stroke="#fff" stroke-width="18" stroke-linecap="round" stroke-linejoin="round"/><text x="270" y="160" font-family="Arial,sans-serif" font-size="20" font-weight="700" fill="${secondary}">${escape(role.toUpperCase())}</text><text x="270" y="215" font-family="Arial,sans-serif" font-size="34" font-weight="800" fill="#0f172a">${label}</text><rect x="270" y="252" width="430" height="10" rx="5" fill="${primary}" opacity=".45"/><rect x="270" y="282" width="340" height="10" rx="5" fill="${secondary}" opacity=".32"/></svg>`;
-    return { role, altText, placement: String(item.placement ?? `After section ${index + 1}`), prompt: String(item.prompt ?? ""), dataUrl: `data:image/svg+xml;base64,${Buffer.from(svg, "utf8").toString("base64")}` };
+    const dataPoints = (Array.isArray(item.dataPoints) ? item.dataPoints : []).slice(0, 5).map((point) => {
+      const row = point && typeof point === "object" && !Array.isArray(point) ? point as Record<string, unknown> : {};
+      return { label: String(row.label ?? ""), value: typeof row.value === "number" && Number.isFinite(row.value) ? row.value : null };
+    }).filter((point) => point.label && point.value !== null);
+    const chart = normalizedRole.includes("chart")
+      ? `<g transform="translate(72 118)">${(dataPoints.length ? dataPoints : [{ label: "Source data required", value: 1 }]).map((point, pointIndex, points) => {
+        const max = Math.max(...points.map((row) => Math.abs(Number(row.value)) || 1));
+        const height = 38 + (Math.abs(Number(point.value)) / max) * 145;
+        const width = Math.min(110, 590 / points.length);
+        const x = pointIndex * (width + 24);
+        return `<rect x="${x}" y="${190 - height}" width="${width}" height="${height}" rx="10" fill="${pointIndex % 2 ? secondary : primary}" opacity=".86"/><text x="${x + width / 2}" y="218" text-anchor="middle" font-family="Arial,sans-serif" font-size="14" fill="#475569">${escape(point.label.slice(0, 18))}</text>`;
+      }).join("")}</g>`
+      : normalizedRole.includes("diagram")
+        ? `<g stroke="${primary}" stroke-width="8" stroke-linecap="round"><path d="M220 210H430M545 210H735" opacity=".45"/></g><g font-family="Arial,sans-serif" font-size="17" font-weight="700" text-anchor="middle"><circle cx="150" cy="210" r="68" fill="${primary}"/><circle cx="485" cy="210" r="68" fill="${secondary}"/><circle cx="805" cy="210" r="68" fill="${primary}"/><text x="150" y="216" fill="#fff">INPUT</text><text x="485" y="216" fill="#fff">PROCESS</text><text x="805" y="216" fill="#fff">RESULT</text></g>`
+        : `<circle cx="${150 + index * 45}" cy="210" r="78" fill="${primary}" opacity=".9"/><path d="M110 210l28 28 58-68" fill="none" stroke="#fff" stroke-width="18" stroke-linecap="round" stroke-linejoin="round"/><rect x="270" y="178" width="430" height="12" rx="6" fill="${primary}" opacity=".45"/><rect x="270" y="214" width="340" height="12" rx="6" fill="${secondary}" opacity=".32"/>`;
+    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="900" height="420" viewBox="0 0 900 420" role="img" aria-label="${escape(altText)}"><defs><linearGradient id="v${index}" x1="0" y1="0" x2="1" y2="1"><stop stop-color="${primary}" stop-opacity=".18"/><stop offset="1" stop-color="${secondary}" stop-opacity=".08"/></linearGradient></defs><rect width="900" height="420" rx="28" fill="#f8fafc"/><rect x="32" y="32" width="836" height="356" rx="22" fill="url(#v${index})" stroke="${primary}" stroke-opacity=".22"/><text x="64" y="79" font-family="Arial,sans-serif" font-size="17" font-weight="700" fill="${secondary}">${escape(role.toUpperCase())}</text><text x="64" y="108" font-family="Arial,sans-serif" font-size="22" font-weight="800" fill="#0f172a">${label}</text>${chart}</svg>`;
+    return {
+      role,
+      altText,
+      placement: String(item.placement ?? `After section ${index + 1}`),
+      prompt: String(item.prompt ?? ""),
+      sourceLabel: String(item.sourceLabel ?? "Source required before publishing").slice(0, 240),
+      sourceUrl: typeof item.sourceUrl === "string" ? item.sourceUrl.trim() : null,
+      sourceNote: String(item.sourceNote ?? "").slice(0, 1000),
+      dataPoints,
+      dataUrl: `data:image/svg+xml;base64,${Buffer.from(svg, "utf8").toString("base64")}`,
+    };
   });
 }
 

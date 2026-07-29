@@ -43,8 +43,8 @@ const includeFunnel = { espConnection: true, decisions: { orderBy: { createdAt: 
 const jsonObject = (value: unknown) => value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
 const jsonList = (value: unknown) => Array.isArray(value) ? value : [];
 const slug = (value: string) => value.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 80);
-const supportedMagnetTypes = new Set(["Checklist", "Guide", "Comparison", "Buyer's Guide", "eBook", "PDF Report", "Template", "Worksheet", "Cheat Sheet", "Email Course", "Toolkit", "Resource List", "Case Study", "Free Trial", "Coupon or Discount", "Quiz", "Calculator"]);
-const pdfMagnetTypes = new Set(["Checklist", "Guide", "Comparison", "Buyer's Guide", "eBook", "PDF Report", "Template", "Worksheet", "Cheat Sheet", "Toolkit", "Resource List", "Case Study"]);
+const supportedMagnetTypes = new Set(["Checklist", "Guide", "Comparison", "Buyer's Guide", "Mini eBook (1,000–2,000 words)", "eBook", "PDF Report", "Template", "Worksheet", "Cheat Sheet", "Email Course", "Toolkit", "Resource List", "Case Study", "Free Trial", "Coupon or Discount", "Quiz", "Calculator"]);
+const pdfMagnetTypes = new Set(["Checklist", "Guide", "Comparison", "Buyer's Guide", "Mini eBook (1,000–2,000 words)", "eBook", "PDF Report", "Template", "Worksheet", "Cheat Sheet", "Toolkit", "Resource List", "Case Study"]);
 const trackingPixel = Buffer.from("R0lGODlhAQABAAD/ACwAAAAAAQABAAACADs=", "base64");
 
 type PublishValidationFunnel = {
@@ -105,7 +105,7 @@ export function validateLeadFunnelForPublish(funnel: PublishValidationFunnel, co
   const businessAnalysis = jsonObject(asset.businessAnalysis);
   const branding = jsonObject(asset.branding);
   const imagePlan = jsonList(asset.imagePlan);
-  const generatedImages = jsonList(asset.generatedImages);
+  const generatedImages = jsonList(asset.generatedImages).map(jsonObject);
   const landing = jsonObject(funnel.landingPageJson);
   const form = jsonObject(funnel.optInFormJson);
   const thankYou = jsonObject(funnel.thankYouPageJson);
@@ -132,7 +132,14 @@ export function validateLeadFunnelForPublish(funnel: PublishValidationFunnel, co
   if (jsonList(asset.sections).map(jsonObject).some((section) => !nonEmpty(section.summary) || !jsonList(section.paragraphs).length || !jsonList(section.bullets).length || !nonEmpty(section.actionStep))) errors.push("Every lead magnet section requires substantive copy, practical bullets, and an action step.");
   if (!nonEmpty(businessAnalysis.business) || !nonEmpty(businessAnalysis.audience) || !nonEmpty(businessAnalysis.offer) || !nonEmpty(businessAnalysis.goal)) errors.push("Business, audience, offer, and goal analysis is incomplete.");
   if (!nonEmpty(branding.businessName) || !nonEmpty(branding.brandVoice)) errors.push("Brand identity and voice snapshot is incomplete.");
-  if (!nonEmpty(asset.coverImage) || !/^data:image\/svg\+xml;base64,/i.test(String(asset.coverImage)) || !imagePlan.length || !generatedImages.some((item) => /^data:image\/svg\+xml;base64,/i.test(String(jsonObject(item).dataUrl ?? "")))) errors.push("Branded cover image or supporting generated visuals are missing.");
+  if (!nonEmpty(asset.coverImage) || !/^data:image\/svg\+xml;base64,/i.test(String(asset.coverImage)) || !imagePlan.length || !generatedImages.some((item) => /^data:image\/svg\+xml;base64,/i.test(String(item.dataUrl ?? "")))) errors.push("Branded cover image or supporting generated visuals are missing.");
+  if (generatedImages.some((item) => !nonEmpty(item.sourceLabel))) errors.push("Every generated visual requires a visible source label.");
+  const unsourcedFactualVisuals = generatedImages.filter((item) => {
+    const sourceLabel = String(item.sourceLabel ?? "").trim();
+    if (/^AI-generated illustration based on project evidence$/i.test(sourceLabel)) return false;
+    return !nonEmpty(item.sourceUrl) || !/^https:\/\//i.test(String(item.sourceUrl));
+  });
+  if (unsourcedFactualVisuals.length) errors.push("Every factual chart, image, and diagram requires a visible source label and HTTPS source URL.");
   if (!nonEmpty(landing.headline)) errors.push("Landing-page headline is missing.");
   if (!nonEmpty(landing.subheadline)) errors.push("Landing-page value proposition is missing.");
   if (!jsonList(landing.benefitBullets).length) errors.push("Landing-page benefits are missing.");
@@ -160,7 +167,7 @@ export function validateLeadFunnelForPublish(funnel: PublishValidationFunnel, co
     esp: !errors.some((error) => /email service|destination list|webhook|Map the opt-in/.test(error)),
     assetAndDownload: !errors.some((error) => /lead magnet|downloadable content/i.test(error)),
     businessEvidence: !errors.some((error) => /Business, audience/.test(error)),
-    brandAndImages: !errors.some((error) => /Brand identity|cover image/.test(error)),
+    brandAndImages: !errors.some((error) => /Brand identity|cover image|generated visual|factual chart/.test(error)),
     landingPage: !errors.some((error) => /Landing-page/.test(error)),
     form: !errors.some((error) => /opt-in/.test(error)),
     thankYouPage: !errors.some((error) => /Thank-you/.test(error)),
@@ -206,14 +213,19 @@ function assetHtml(funnel: { title: string; magnetType: string; assetJson: unkno
   const outline = jsonList(asset.outline);
   const coverImage = typeof asset.coverImage === "string" && /^(data:image\/(svg\+xml|png|jpeg|webp);base64,|https:\/\/)/i.test(asset.coverImage) ? asset.coverImage : "";
   const generatedImages = jsonList(asset.generatedImages).map(jsonObject);
+  const visualSource = (image: Record<string, unknown>) => {
+    const sourceLabel = nonEmpty(image.sourceLabel) ? String(image.sourceLabel) : "Source required before publishing";
+    const sourceUrl = nonEmpty(image.sourceUrl) ? String(image.sourceUrl) : "";
+    return `<div class="source"><b>Source:</b> ${sourceUrl ? `<a href="${escapeHtml(sourceUrl)}" rel="noreferrer">${escapeHtml(sourceLabel)}</a><br><span>${escapeHtml(sourceUrl)}</span>` : escapeHtml(sourceLabel)}</div>`;
+  };
   const body = sections.length
     ? sections.map((section, index) => {
       const image = generatedImages[index];
       const dataUrl = typeof image?.dataUrl === "string" && /^data:image\/(svg\+xml|png|jpeg|webp);base64,/i.test(image.dataUrl) ? image.dataUrl : "";
-      return `<section><h2>${escapeHtml(section.title)}</h2>${dataUrl ? `<img class="visual" src="${escapeHtml(dataUrl)}" alt="${escapeHtml(image.altText || `Supporting visual ${index + 1}`)}">` : ""}${nonEmpty(section.summary) ? `<p class="summary">${escapeHtml(section.summary)}</p>` : ""}${jsonList(section.paragraphs).map((item) => `<p>${escapeHtml(item)}</p>`).join("")}<ul>${jsonList(section.bullets).map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul>${nonEmpty(section.actionStep) ? `<div class="action"><b>Action step:</b> ${escapeHtml(section.actionStep)}</div>` : ""}</section>`;
+      return `<section><h2>${escapeHtml(section.title)}</h2>${dataUrl ? `<figure><img class="visual" src="${escapeHtml(dataUrl)}" alt="${escapeHtml(image.altText || `Supporting visual ${index + 1}`)}">${visualSource(image)}</figure>` : ""}${nonEmpty(section.summary) ? `<p class="summary">${escapeHtml(section.summary)}</p>` : ""}${jsonList(section.paragraphs).map((item) => `<p>${escapeHtml(item)}</p>`).join("")}<ul>${jsonList(section.bullets).map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul>${nonEmpty(section.actionStep) ? `<div class="action"><b>Action step:</b> ${escapeHtml(section.actionStep)}</div>` : ""}</section>`;
     }).join("")
     : `<ul>${outline.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul>`;
-  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escapeHtml(asset.title || funnel.title)}</title><style>body{font:16px/1.65 system-ui,sans-serif;color:#172033;max-width:760px;margin:0 auto;padding:48px 24px}img.cover,img.visual{display:block;width:100%;height:auto;border-radius:20px;margin:0 0 32px}img.visual{margin:16px 0 22px;border:1px solid #e2e8f0}h1{font-size:2.4rem;line-height:1.15}h2{margin-top:2rem}li{margin:.55rem 0}.type{color:#087f5b;font-weight:700;text-transform:uppercase;letter-spacing:.08em;font-size:.75rem}.promise,.summary{font-size:1.15rem;color:#475569}.action{margin-top:18px;padding:14px 16px;border-left:4px solid #0f766e;background:#f1f5f9}</style></head><body>${coverImage ? `<img class="cover" src="${escapeHtml(coverImage)}" alt="${escapeHtml(`${asset.title || funnel.title} cover`)}">` : ""}<div class="type">${escapeHtml(funnel.magnetType)}</div><h1>${escapeHtml(asset.title || funnel.title)}</h1><p class="promise">${escapeHtml(asset.promise)}</p>${body}</body></html>`;
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escapeHtml(asset.title || funnel.title)}</title><style>body{font:16px/1.65 system-ui,sans-serif;color:#172033;max-width:760px;margin:0 auto;padding:48px 24px}img.cover,img.visual{display:block;width:100%;height:auto;border-radius:20px;margin:0 0 32px}figure{margin:16px 0 24px}img.visual{margin:0;border:1px solid #e2e8f0}.source{padding:9px 2px 0;color:#64748b;font-size:.75rem;line-height:1.45;overflow-wrap:anywhere}.source a{color:#0f766e}h1{font-size:2.4rem;line-height:1.15}h2{margin-top:2rem}li{margin:.55rem 0}.type{color:#087f5b;font-weight:700;text-transform:uppercase;letter-spacing:.08em;font-size:.75rem}.promise,.summary{font-size:1.15rem;color:#475569}.action{margin-top:18px;padding:14px 16px;border-left:4px solid #0f766e;background:#f1f5f9}</style></head><body>${coverImage ? `<img class="cover" src="${escapeHtml(coverImage)}" alt="${escapeHtml(`${asset.title || funnel.title} cover`)}">` : ""}<div class="type">${escapeHtml(funnel.magnetType)}</div><h1>${escapeHtml(asset.title || funnel.title)}</h1><p class="promise">${escapeHtml(asset.promise)}</p>${body}</body></html>`;
 }
 
 export function emailSequenceText(funnel: { title: string; deliveryEmailJson: unknown; followUpSequenceJson: unknown }) {
@@ -284,6 +296,45 @@ export function renderLeadMagnetPdf(funnel: { title: string; magnetType: string;
     } else {
       doc.moveDown(1.2).fillColor("#334155").font("Helvetica").fontSize(11);
       for (const bullet of jsonList(asset.outline)) doc.text(`•  ${String(bullet)}`, { indent: 8, lineGap: 4 });
+    }
+    const generatedImages = jsonList(asset.generatedImages).map(jsonObject);
+    if (generatedImages.length) {
+      doc.addPage();
+      doc.fillColor("#172033").font("Helvetica-Bold").fontSize(20).text("Visuals and sources");
+      doc.moveDown(.3).fillColor("#64748b").font("Helvetica").fontSize(10).text("Every factual visual includes the evidence source used to create it.");
+      for (const [index, image] of generatedImages.entries()) {
+        if (doc.y > doc.page.height - 225) doc.addPage();
+        const top = doc.y + 16;
+        const left = doc.page.margins.left;
+        const width = doc.page.width - doc.page.margins.left - doc.page.margins.right;
+        const role = String(image.role ?? "visual").toLowerCase();
+        doc.roundedRect(left, top, width, 125, 10).fillAndStroke("#f8fafc", "#dbe4ef");
+        doc.fillColor(secondary).font("Helvetica-Bold").fontSize(8).text(role.toUpperCase(), left + 16, top + 13, { characterSpacing: 1 });
+        doc.fillColor("#172033").font("Helvetica-Bold").fontSize(11).text(String(image.altText ?? `Supporting visual ${index + 1}`), left + 16, top + 29, { width: width - 32, height: 28 });
+        if (role.includes("chart")) {
+          const points = jsonList(image.dataPoints).map(jsonObject).filter((point) => typeof point.value === "number").slice(0, 5);
+          const rows = points.length ? points : [{ label: "Source data required", value: 1 }];
+          const max = Math.max(...rows.map((point) => Math.abs(Number(point.value)) || 1));
+          rows.forEach((point, pointIndex) => {
+            const barWidth = 54;
+            const barHeight = 15 + (Math.abs(Number(point.value)) / max) * 35;
+            const x = left + 20 + pointIndex * 75;
+            doc.roundedRect(x, top + 99 - barHeight, barWidth, barHeight, 4).fill(pointIndex % 2 ? secondary : primary);
+          });
+        } else if (role.includes("diagram")) {
+          const y = top + 82;
+          [left + 62, left + width / 2, left + width - 62].forEach((x, nodeIndex, nodes) => {
+            if (nodeIndex < nodes.length - 1) doc.moveTo(x + 25, y).lineTo(nodes[nodeIndex + 1] - 25, y).strokeColor(primary).lineWidth(3).stroke();
+            doc.circle(x, y, 23).fill(nodeIndex % 2 ? secondary : primary);
+          });
+        } else {
+          doc.roundedRect(left + 16, top + 67, width - 32, 34, 8).fillOpacity(.12).fill(primary).fillOpacity(1);
+        }
+        const sourceLabel = nonEmpty(image.sourceLabel) ? String(image.sourceLabel) : "Source required before publishing";
+        const sourceUrl = nonEmpty(image.sourceUrl) ? ` · ${String(image.sourceUrl)}` : "";
+        doc.fillColor("#475569").font("Helvetica").fontSize(8).text(`Source: ${sourceLabel}${sourceUrl}`, left + 16, top + 136, { width: width - 32, lineGap: 2 });
+        doc.y = top + 165;
+      }
     }
     doc.end();
   });
