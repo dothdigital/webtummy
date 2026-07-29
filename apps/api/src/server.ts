@@ -53,10 +53,11 @@ app.use((req, res, next) => {
 
   const origin = req.headers.origin;
   const isPublicWebsiteForm = req.path.startsWith("/api/public/website-forms/");
-  if (isPublicWebsiteForm) {
+  const isPublicLeadMagnet = req.path.startsWith("/api/public/lead-magnets/");
+  if (isPublicWebsiteForm || isPublicLeadMagnet) {
     res.setHeader("Access-Control-Allow-Origin", "*");
     res.setHeader("Access-Control-Allow-Headers", "Content-Type");
-    res.setHeader("Access-Control-Allow-Methods", "POST,OPTIONS");
+    res.setHeader("Access-Control-Allow-Methods", isPublicLeadMagnet ? "GET,POST,OPTIONS" : "POST,OPTIONS");
     if (req.method === "OPTIONS") return res.sendStatus(204);
     return next();
   }

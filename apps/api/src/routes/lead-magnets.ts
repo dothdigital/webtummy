@@ -37,6 +37,7 @@ const editSchema = z.object({
   conversionTarget: z.number().min(.1).max(100).optional(), sharedWithClient: z.boolean().optional(), comments: z.string().trim().max(2000).optional(),
 });
 const subscribeSchema = z.object({ email: z.string().email().max(254), firstName: z.string().trim().max(100).optional(), lastName: z.string().trim().max(100).optional(), consent: z.literal(true), website: z.string().max(0).optional() });
+const exportKindSchema = z.enum(["pdf", "email-text", "email-html", "widget"]);
 
 const includeFunnel = { espConnection: true, decisions: { orderBy: { createdAt: "desc" as const } }, metrics: { orderBy: { createdAt: "desc" as const }, take: 100 } };
 const jsonObject = (value: unknown) => value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
@@ -213,6 +214,42 @@ function assetHtml(funnel: { title: string; magnetType: string; assetJson: unkno
     }).join("")
     : `<ul>${outline.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul>`;
   return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escapeHtml(asset.title || funnel.title)}</title><style>body{font:16px/1.65 system-ui,sans-serif;color:#172033;max-width:760px;margin:0 auto;padding:48px 24px}img.cover,img.visual{display:block;width:100%;height:auto;border-radius:20px;margin:0 0 32px}img.visual{margin:16px 0 22px;border:1px solid #e2e8f0}h1{font-size:2.4rem;line-height:1.15}h2{margin-top:2rem}li{margin:.55rem 0}.type{color:#087f5b;font-weight:700;text-transform:uppercase;letter-spacing:.08em;font-size:.75rem}.promise,.summary{font-size:1.15rem;color:#475569}.action{margin-top:18px;padding:14px 16px;border-left:4px solid #0f766e;background:#f1f5f9}</style></head><body>${coverImage ? `<img class="cover" src="${escapeHtml(coverImage)}" alt="${escapeHtml(`${asset.title || funnel.title} cover`)}">` : ""}<div class="type">${escapeHtml(funnel.magnetType)}</div><h1>${escapeHtml(asset.title || funnel.title)}</h1><p class="promise">${escapeHtml(asset.promise)}</p>${body}</body></html>`;
+}
+
+export function emailSequenceText(funnel: { title: string; deliveryEmailJson: unknown; followUpSequenceJson: unknown }) {
+  const delivery = jsonObject(funnel.deliveryEmailJson);
+  const followUps = jsonList(funnel.followUpSequenceJson).map(jsonObject);
+  return [
+    `DELIVERY EMAIL — ${funnel.title}`,
+    `Subject: ${String(delivery.subject ?? "")}`,
+    `Preview text: ${String(delivery.previewText ?? "")}`,
+    "",
+    String(delivery.body ?? ""),
+    ...followUps.flatMap((email, index) => [
+      "",
+      "────────────────────────────────────────",
+      `FOLLOW-UP ${index + 1} — ${String(email.day ?? "")}`,
+      `Subject: ${String(email.subject ?? "")}`,
+      `Goal: ${String(email.goal ?? "")}`,
+      "",
+      String(email.body ?? ""),
+    ]),
+  ].join("\n");
+}
+
+export function emailSequenceHtml(funnel: { title: string; deliveryEmailJson: unknown; followUpSequenceJson: unknown }) {
+  const delivery = jsonObject(funnel.deliveryEmailJson);
+  const followUps = jsonList(funnel.followUpSequenceJson).map(jsonObject);
+  const emailBlock = (label: string, subject: unknown, preview: unknown, body: unknown) => `<section style="margin:0 0 28px;padding:24px;border:1px solid #e2e8f0;border-radius:16px;background:#fff"><div style="font-size:12px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:#0f766e">${escapeHtml(label)}</div><h2 style="margin:8px 0 4px;font-size:20px;color:#0f172a">${escapeHtml(subject)}</h2>${preview ? `<div style="font-size:13px;color:#64748b">${escapeHtml(preview)}</div>` : ""}<div style="margin-top:18px;white-space:pre-wrap;color:#334155;line-height:1.65">${escapeHtml(body)}</div></section>`;
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escapeHtml(`${funnel.title} email sequence`)}</title></head><body style="margin:0;background:#f8fafc;font-family:Arial,sans-serif"><main style="max-width:720px;margin:auto;padding:32px 20px"><h1 style="color:#0f172a">${escapeHtml(funnel.title)} — Email sequence</h1>${emailBlock("Delivery email", delivery.subject, delivery.previewText, delivery.body)}${followUps.map((email, index) => emailBlock(`Follow-up ${index + 1} · ${String(email.day ?? "")}`, email.subject, email.goal ? `Goal: ${String(email.goal)}` : "", email.body)).join("")}</main></body></html>`;
+}
+
+export function leadCaptureWidgetHtml(funnel: { title: string; magnetType: string; publicSlug: string | null; landingPageJson: unknown; optInFormJson: unknown }) {
+  const landing = jsonObject(funnel.landingPageJson);
+  const form = jsonObject(funnel.optInFormJson);
+  const fields = jsonList(form.fields).map(jsonObject).filter((field) => ["email", "first_name", "last_name"].includes(String(field.name ?? "")));
+  const endpoint = funnel.publicSlug ? `${config.publicApiUrl.replace(/\/$/, "")}/api/public/lead-magnets/${encodeURIComponent(funnel.publicSlug)}/subscribe` : "";
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escapeHtml(funnel.title)} lead widget</title><style>body{margin:0;background:transparent;font:16px/1.5 Arial,sans-serif;color:#0f172a}.senuke-lead-widget{box-sizing:border-box;max-width:680px;margin:auto;padding:28px;border:1px solid #dbe4ef;border-radius:22px;background:#fff;box-shadow:0 18px 45px rgba(15,23,42,.12)}.senuke-lead-widget *{box-sizing:border-box}.senuke-lead-widget .type{font-size:12px;font-weight:800;letter-spacing:.1em;text-transform:uppercase;color:#0f766e}.senuke-lead-widget h2{margin:8px 0;font-size:30px;line-height:1.15}.senuke-lead-widget p{color:#475569}.senuke-lead-widget ul{padding-left:20px;color:#334155}.senuke-lead-widget label{display:block;margin-top:12px;font-size:12px;font-weight:700;color:#334155}.senuke-lead-widget input{width:100%;margin-top:5px;padding:12px;border:1px solid #cbd5e1;border-radius:10px}.senuke-lead-widget button{width:100%;margin-top:16px;padding:13px;border:0;border-radius:10px;background:#1769e0;color:#fff;font-weight:800;cursor:pointer}.senuke-lead-widget button:disabled{opacity:.55;cursor:not-allowed}.senuke-lead-widget .message{margin-top:12px;font-size:13px;font-weight:700}</style></head><body><section class="senuke-lead-widget" data-senuke-lead-widget><div class="type">Free ${escapeHtml(funnel.magnetType)}</div><h2>${escapeHtml(landing.headline ?? funnel.title)}</h2><p>${escapeHtml(landing.subheadline)}</p><ul>${jsonList(landing.benefitBullets).slice(0, 4).map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul><form>${fields.map((field) => `<label>${escapeHtml(field.label ?? field.name)}${field.required ? " *" : ""}<input name="${escapeHtml(field.name)}" type="${String(field.type) === "email" ? "email" : "text"}" ${field.required ? "required" : ""}></label>`).join("")}<label style="display:flex;gap:8px;align-items:flex-start;font-weight:400"><input name="consent" type="checkbox" required style="width:auto;margin-top:4px"><span>${escapeHtml(form.consentText ?? "I agree to receive this resource and relevant follow-up email.")}</span></label><button type="submit" ${endpoint ? "" : "disabled"}>${escapeHtml(form.submitLabel ?? "Get the resource")}</button><div class="message" role="status">${endpoint ? "" : "Preview only — publish the funnel, then download this widget again to activate submissions."}</div></form></section><script>(()=>{const endpoint=${JSON.stringify(endpoint)};const root=document.querySelector("[data-senuke-lead-widget]");const form=root?.querySelector("form");const message=root?.querySelector(".message");if(!form||!endpoint)return;form.addEventListener("submit",async(event)=>{event.preventDefault();const button=form.querySelector("button");button.disabled=true;message.textContent="Sending…";const values=Object.fromEntries(new FormData(form).entries());try{const response=await fetch(endpoint,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({email:String(values.email||""),firstName:String(values.first_name||""),lastName:String(values.last_name||""),consent:Boolean(values.consent)})});const body=await response.json();if(!response.ok)throw new Error(body.error||"Could not submit the form.");message.textContent="Thank you — check your inbox for the resource.";form.reset()}catch(error){message.textContent=error instanceof Error?error.message:"Could not submit the form."}finally{button.disabled=false}})})();</script></body></html>`;
 }
 
 export function renderLeadMagnetPdf(funnel: { title: string; magnetType: string; assetJson: unknown }) {
@@ -432,44 +469,54 @@ leadMagnetsRouter.get("/projects/:projectId/lead-magnets", async (req, res, next
 
 leadMagnetsRouter.get("/projects/:projectId/lead-magnets/recommendations", async (req, res, next) => { try {
   const { context, project } = await contextProject(req); if (context.roles.size === 1 && context.roles.has("client_viewer")) return res.json({ recommendations: [] });
-  const [crawl, keywordRuns, publishedFunnels] = await Promise.all([
-    project.websiteId ? prisma.crawlJob.findFirst({
-      where: { websiteId: project.websiteId, status: "completed" },
-      orderBy: [{ completedAt: "desc" }, { createdAt: "desc" }],
-      select: { pages: { where: { statusCode: { gte: 200, lt: 400 } }, take: 100, select: { url: true, seo: { select: { title: true } }, links: { where: { isInternal: true }, take: 100, select: { anchorText: true, targetUrl: true } } } } },
-    }) : Promise.resolve(null),
-    prisma.keywordResearchRun.findMany({ where: { projectId: project.id }, orderBy: { createdAt: "desc" }, take: 5, include: { ideas: { orderBy: { avgMonthlySearches: "desc" }, take: 20 } } }),
-    prisma.leadMagnetFunnel.count({ where: { projectId: project.id, status: "published" } }),
-  ]);
-  const pages = (crawl?.pages ?? []).map((page) => {
-    const pageText = `${page.url} ${page.seo?.title ?? ""}`.toLowerCase();
-    const linkText = page.links.map((link) => `${link.anchorText ?? ""} ${link.targetUrl}`).join(" ").toLowerCase();
-    return {
-      url: page.url,
-      title: page.seo?.title ?? page.url,
-      commercial: /service|product|insurance|coverage|pricing|quote|solution|consult|book|buy|shop/.test(pageText),
-      hasLeadCapture: /download|checklist|guide|ebook|template|calculator|quiz|subscribe|newsletter|free trial|coupon|get the|request a quote|book/.test(linkText),
-    };
+  const run = await prisma.aiRun.findFirst({ where: { projectId: project.id, moduleName: "lead_magnet_research", status: "completed" }, orderBy: { createdAt: "desc" } });
+  if (!run) return res.json({ recommendations: [], research: null, evidence: null, researchRun: null });
+  const output = jsonObject(run.outputJson);
+  const input = jsonObject(run.inputSnapshotJson);
+  res.json({
+    recommendations: jsonList(output.recommendations),
+    research: jsonObject(output.research),
+    followUpQuestions: jsonList(output.followUpQuestions),
+    evidence: jsonObject(output.evidence),
+    researchRun: { id: run.id, createdAt: run.createdAt, objective: jsonObject(input.objective) },
   });
-  const keywordDemand = new Map<string, { keyword: string; monthlySearches: number }>();
-  for (const keyword of keywordRuns.flatMap((run) => [{ keyword: run.seedKeyword, monthlySearches: run.avgSearchVolume ?? 0 }, ...run.ideas.map((idea) => ({ keyword: idea.keyword, monthlySearches: idea.avgMonthlySearches ?? 0 }))])) {
-    const key = keyword.keyword.trim().toLowerCase();
-    if (key && (keywordDemand.get(key)?.monthlySearches ?? -1) < keyword.monthlySearches) keywordDemand.set(key, keyword);
+} catch (error) { next(error); } });
+
+leadMagnetsRouter.get("/projects/:projectId/lead-magnets/:funnelId/export/:kind", async (req, res, next) => { try {
+  const kind = exportKindSchema.parse(req.params.kind);
+  const { context, project } = await contextProject(req);
+  const clientViewer = context.roles.size === 1 && context.roles.has("client_viewer");
+  const funnel = await prisma.leadMagnetFunnel.findFirst({ where: { id: req.params.funnelId, projectId: project.id, ...(clientViewer ? { status: "published", sharedWithClient: true } : {}) } });
+  if (!funnel) return res.status(404).json({ error: "Lead funnel not found or unavailable." });
+  const baseName = slug(funnel.title) || "lead-magnet";
+  let body: Buffer | string;
+  let contentType: string;
+  let extension: string;
+  if (kind === "pdf") {
+    body = await renderLeadMagnetPdf(funnel);
+    contentType = "application/pdf";
+    extension = "pdf";
+  } else if (kind === "email-text") {
+    body = emailSequenceText(funnel);
+    contentType = "text/plain; charset=utf-8";
+    extension = "txt";
+  } else if (kind === "email-html") {
+    body = emailSequenceHtml(funnel);
+    contentType = "text/html; charset=utf-8";
+    extension = "html";
+  } else {
+    body = leadCaptureWidgetHtml(funnel);
+    contentType = "text/html; charset=utf-8";
+    extension = "html";
   }
-  const keywords = [...keywordDemand.values()];
-  const targetMarkets = Array.isArray(project.targetLocations) ? project.targetLocations.filter((item): item is string => typeof item === "string") : [];
-  const recommendations = leadOpportunityRecommendations({
-    businessName: project.businessName || project.name,
-    niche: project.niche || project.businessProfile?.businessSummary || "",
-    audience: project.businessProfile?.targetAudience || "",
-    offer: project.businessProfile?.offerSummary || "",
-    goal: project.primaryGoal || "",
-    market: targetMarkets.join(", ") || project.targetLocation || project.businessLocation || "",
-    pages,
-    keywords,
-    hasPublishedFunnel: publishedFunnels > 0,
+  const preview = req.query.preview === "1";
+  res.set({
+    "Content-Type": contentType,
+    "Content-Disposition": `${preview ? "inline" : "attachment"}; filename="${baseName}-${kind}.${extension}"`,
+    "Cache-Control": "private, no-store",
+    "X-Content-Type-Options": "nosniff",
   });
-  res.json({ recommendations, evidenceSummary: { crawlPagesReviewed: pages.length, commercialPages: pages.filter((page) => page.commercial).length, leadCapturePages: pages.filter((page) => page.hasLeadCapture).length, recordedMonthlySearches: keywords.reduce((sum, keyword) => sum + keyword.monthlySearches, 0), hasPublishedFunnel: publishedFunnels > 0 } });
+  res.send(body);
 } catch (error) { next(error); } });
 
 leadMagnetsRouter.patch("/projects/:projectId/lead-magnets/:funnelId", async (req, res, next) => { try {

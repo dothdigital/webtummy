@@ -141,8 +141,9 @@ const keywordExpansionPreviewSchema = z.object({
 });
 const keywordGroupUpdateSchema = z.object({ keywords: z.array(z.string().trim().min(2).max(255)).min(1).max(100), reason: z.string().trim().max(1000).optional().nullable() });
 const keywordManualSchema = z.object({ keywords: z.array(z.string().trim().min(2).max(255)).min(1).max(50), category: z.string().trim().min(2).max(60).default("supporting"), groupId: z.string().trim().min(1).optional().nullable() });
-const leadRecommendationSchema = z.object({
-  type: z.string().trim().min(2).max(60),
+const leadMagnetTypeSchema = z.enum(["Checklist", "Guide", "Comparison", "Buyer's Guide", "eBook", "PDF Report", "Template", "Worksheet", "Cheat Sheet", "Email Course", "Toolkit", "Resource List", "Case Study", "Free Trial", "Coupon or Discount", "Quiz", "Calculator"]);
+const leadRecommendationValueSchema = z.object({
+  type: leadMagnetTypeSchema,
   title: z.string().trim().min(3).max(240),
   score: z.number().int().min(0).max(100),
   buyerStage: z.enum(["awareness", "consideration", "decision"]),
@@ -151,8 +152,36 @@ const leadRecommendationSchema = z.object({
   expectedOutcome: z.string().trim().min(3).max(500),
   estimatedImpact: z.object({ low: z.number().min(0).max(100), high: z.number().min(0).max(100), metric: z.string().trim().max(120), confidence: z.enum(["directional", "medium"]), label: z.string().trim().max(240), disclaimer: z.string().trim().max(500) }),
   evidence: z.array(z.string().trim().min(3).max(1000)).max(10),
-}).optional().nullable();
+});
+const leadRecommendationSchema = leadRecommendationValueSchema.optional().nullable();
+const leadMagnetResearchSchema = z.object({
+  objective: z.string().trim().min(10).max(1000).optional().nullable(),
+  desiredAction: z.enum(["grow_email_list", "generate_qualified_leads", "increase_quotes_or_bookings", "promote_an_offer", "educate_prospects", "other"]).default("generate_qualified_leads"),
+  preferredFormat: leadMagnetTypeSchema.optional().nullable(),
+  successDefinition: z.string().trim().max(500).optional().nullable(),
+  notes: z.string().trim().max(2000).optional().nullable(),
+  researchMode: z.enum(["primary", "refined"]).default("primary"),
+});
+const leadMagnetResearchOutputSchema = z.object({
+  research: z.object({
+    objectiveSummary: z.string().trim().min(3).max(1000),
+    audienceNeeds: z.array(z.string().trim().min(3).max(500)).min(1).max(8),
+    keywordInsights: z.array(z.string().trim().min(3).max(500)).min(1).max(8),
+    geographicInsights: z.array(z.string().trim().min(3).max(500)).min(1).max(8),
+    siteInsights: z.array(z.string().trim().min(3).max(500)).min(1).max(8),
+    opportunityGaps: z.array(z.string().trim().min(3).max(500)).min(1).max(8),
+    recommendedStrategy: z.string().trim().min(3).max(1500),
+    researchLimits: z.array(z.string().trim().min(3).max(500)).min(1).max(8),
+  }),
+  followUpQuestions: z.array(z.object({
+    question: z.string().trim().min(3).max(500),
+    why: z.string().trim().min(3).max(500),
+    suggestedAnswer: z.string().trim().max(500).optional().nullable(),
+  })).min(2).max(6),
+  recommendations: z.array(leadRecommendationValueSchema.extend({ actionLabel: z.literal("Generate with AI") })).min(2).max(5),
+});
 const leadMagnetGenerateSchema = z.object({
+  researchRunId: z.string().trim().min(1),
   selectedIdea: z.string().trim().min(3).max(240).optional().nullable(),
   instructions: z.string().trim().max(2000).optional().nullable(),
   recommendation: leadRecommendationSchema,
@@ -1320,8 +1349,9 @@ function buildLeadMagnetPrompt(input: {
   instructions?: string | null;
   recommendation?: z.infer<typeof leadRecommendationSchema>;
   branding: Record<string, unknown>;
+  research: Record<string, unknown>;
 }) {
-  const { project, strategy, keywordRuns, selectedIdea, instructions, recommendation, branding } = input;
+  const { project, strategy, keywordRuns, selectedIdea, instructions, recommendation, branding, research } = input;
   const ctx = projectContext(project);
   const selectedOpportunity = project.opportunities.find((opportunity) => opportunityDecisionStatus(opportunity.status)) ?? null;
   const keywords = keywordRuns.slice(0, 8).map((run) => ({
@@ -1340,13 +1370,14 @@ function buildLeadMagnetPrompt(input: {
     "Return JSON with this exact top-level shape:",
     selectedIdea ? `The user selected this lead magnet concept. Preserve its core intent and improve it: ${selectedIdea}` : "Choose the strongest concept from the project evidence.",
     recommendation ? `Evidence-backed recommendation selected by the user: ${JSON.stringify(recommendation)}` : "No structured recommendation was supplied; use the strongest available project evidence.",
+    `Required research run completed before generation: ${JSON.stringify(research)}`,
     instructions ? `User requirements and constraints (follow unless unsafe or contradicted by project facts): ${instructions}` : "No additional user requirements were supplied.",
     "The title, promise, format, outline, CTA, and follow-up must align with the selected concept, target audience, offer, primary goal, market, and available keyword intent.",
     "Keep the opt-in form minimal. formFields may contain only First name, Last name, and Email; Email is always required.",
     JSON.stringify({
       leadMagnet: {
         title: "string",
-        assetType: "Checklist | Guide | eBook | PDF Report | Template | Worksheet | Cheat Sheet | Email Course | Toolkit | Resource List | Case Study | Free Trial | Coupon or Discount | Quiz | Calculator",
+        assetType: "Checklist | Guide | Comparison | Buyer's Guide | eBook | PDF Report | Template | Worksheet | Cheat Sheet | Email Course | Toolkit | Resource List | Case Study | Free Trial | Coupon or Discount | Quiz | Calculator",
         promise: "string",
         targetAudience: "string",
         problemSolved: "string",
@@ -1416,6 +1447,56 @@ function buildLeadMagnetPrompt(input: {
     "",
     "Keyword intelligence:",
     keywords.length ? JSON.stringify(keywords) : "No keyword runs yet. Avoid pretending keyword data exists.",
+  ].join("\n");
+}
+
+function buildLeadMagnetResearchPrompt(input: {
+  objective: z.infer<typeof leadMagnetResearchSchema>;
+  evidence: Record<string, unknown>;
+}) {
+  return [
+    "Research the strongest lead-magnet opportunities for this specific SEnuke AI project.",
+    "This is a research and recommendation step only. Do not generate the lead magnet, landing page, or email sequence yet.",
+    "Base every finding on the supplied business intake, keyword evidence, target geography, website analysis, selected Opportunity, approved Strategy, and SEO plan.",
+    "Present the strongest recommendation from the existing evidence first. Follow-up questions must only refine genuine uncertainties; never make the initial recommendation depend on answering them.",
+    "Do not claim live web research, measured visitor behaviour, or conversion performance that is absent from the evidence.",
+    "When evidence is missing, state the limitation. Estimated impact must be directional and must never be presented as guaranteed.",
+    "Rank options by audience usefulness, search intent, geographic relevance, website lead-capture gap, business-goal alignment, and proximity to the requested action.",
+    "Return valid JSON with exactly this shape:",
+    JSON.stringify({
+      research: {
+        objectiveSummary: "string",
+        audienceNeeds: ["string"],
+        keywordInsights: ["string"],
+        geographicInsights: ["string"],
+        siteInsights: ["string"],
+        opportunityGaps: ["string"],
+        recommendedStrategy: "string",
+        researchLimits: ["string"],
+      },
+      followUpQuestions: [{ question: "string", why: "string", suggestedAnswer: "string or null" }],
+      recommendations: [{
+        type: "Checklist | Guide | Comparison | Buyer's Guide | eBook | PDF Report | Template | Worksheet | Cheat Sheet | Email Course | Toolkit | Resource List | Case Study | Free Trial | Coupon or Discount | Quiz | Calculator",
+        title: "string",
+        score: 90,
+        buyerStage: "awareness | consideration | decision",
+        signal: "specific evidence signal",
+        why: "why this option fits the requested outcome",
+        expectedOutcome: "directional expected outcome",
+        estimatedImpact: {
+          low: 8,
+          high: 20,
+          metric: "email sign-ups",
+          confidence: "directional | medium",
+          label: "Estimated +8–20% email sign-ups",
+          disclaimer: "Directional projection based on available project evidence; not a guaranteed result.",
+        },
+        evidence: ["specific evidence item"],
+        actionLabel: "Generate with AI",
+      }],
+    }),
+    `What the user plans to achieve: ${JSON.stringify(input.objective)}`,
+    `Project evidence: ${JSON.stringify(input.evidence)}`,
   ].join("\n");
 }
 
@@ -3386,6 +3467,173 @@ guidedProjectsRouter.post("/projects-v2/:projectId/execution-tasks", async (req,
   res.status(201).json({ task: result, project: await scopedProject(req, project.id) });
 });
 
+guidedProjectsRouter.post("/projects-v2/:projectId/lead-magnet/research", async (req, res) => {
+  const context = await requireRequestPermission(req, "run_ai_analysis");
+  const parsed = leadMagnetResearchSchema.safeParse(req.body ?? {});
+  if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() });
+  const project = await scopedProject(req, req.params.projectId);
+  if (!project) return res.status(404).json({ error: "project not found" });
+  if (!project.businessProfile) return res.status(409).json({ error: "Complete Business Intake before researching lead-magnet opportunities." });
+  const researchInput = {
+    ...parsed.data,
+    objective: parsed.data.objective ?? `Identify the strongest lead-magnet opportunity to support ${project.primaryGoal || "qualified lead generation"} for ${project.businessName ?? project.name}.`,
+  };
+
+  let usageEventId: string | null = null;
+  try {
+    const [client, keywordRuns, crawl] = await Promise.all([
+      prisma.client.findUnique({ where: { id: project.clientId }, select: { plan: true } }),
+      prisma.keywordResearchRun.findMany({
+        where: { projectId: project.id },
+        orderBy: { createdAt: "desc" },
+        take: 8,
+        include: { ideas: { orderBy: [{ avgMonthlySearches: "desc" }, { keyword: "asc" }], take: 15 } },
+      }),
+      project.websiteId ? prisma.crawlJob.findFirst({
+        where: { websiteId: project.websiteId, status: "completed" },
+        orderBy: [{ completedAt: "desc" }, { createdAt: "desc" }],
+        select: {
+          id: true, siteScore: true, pagesCrawled: true, errorCount: true, completedAt: true,
+          pages: {
+            where: { statusCode: { gte: 200, lt: 400 } },
+            orderBy: [{ score: "asc" }, { createdAt: "desc" }],
+            take: 40,
+            select: { url: true, wordCount: true, score: true, inlinkCount: true, seo: { select: { title: true, metaDescription: true, h1Count: true, h1Text: true } } },
+          },
+          issues: {
+            where: { status: "open" },
+            orderBy: [{ severity: "asc" }, { weightImpact: "desc" }],
+            take: 30,
+            select: { issueType: true, category: true, severity: true, message: true, recommendation: true },
+          },
+        },
+      }) : Promise.resolve(null),
+    ]);
+    const targetMarkets = cleanLocations(Array.isArray(project.targetLocations) ? project.targetLocations.filter((item): item is string => typeof item === "string") : [], project.targetLocation);
+    const keywordEvidence = keywordRuns.flatMap((run) => [
+      { keyword: run.seedKeyword, monthlySearches: run.averageVolume ?? 0, intent: "Seed topic", geography: run.locationName, source: "keyword research seed" },
+      ...run.ideas.map((idea) => ({ keyword: idea.keyword, monthlySearches: idea.avgMonthlySearches ?? 0, intent: idea.competition ?? "Research", geography: run.locationName, source: "keyword research idea" })),
+    ]);
+    const dedupedKeywords = [...new Map(keywordEvidence.map((item) => [item.keyword.trim().toLowerCase(), item])).values()]
+      .sort((a, b) => b.monthlySearches - a.monthlySearches)
+      .slice(0, 40);
+    const approvedKeywordGroups = project.keywordGroups.filter((group) => group.status === "approved").map((group) => ({
+      category: group.category,
+      title: group.title,
+      keywords: Array.isArray(group.keywords) ? group.keywords.map(String).slice(0, 20) : [],
+      gapKeywords: Array.isArray(group.gapKeywords) ? group.gapKeywords.map(String).slice(0, 20) : [],
+      goalSupport: group.goalSupport,
+    }));
+    const selectedOpportunity = project.opportunities.find((opportunity) => opportunityDecisionStatus(opportunity.status)) ?? null;
+    const approvedStrategy = project.strategyPlans.find((strategy) => strategy.status === "approved") ?? project.strategyPlans[0] ?? null;
+    const researchText = (value: unknown, max = 1800) => {
+      if (value == null) return null;
+      const source = typeof value === "string" ? value : JSON.stringify(value);
+      return source.length > max ? `${source.slice(0, max)}…` : source;
+    };
+    const evidence = {
+      businessIntake: {
+        businessName: project.businessName ?? project.name,
+        niche: project.niche,
+        primaryGoal: project.primaryGoal,
+        secondaryGoals: Array.isArray(project.secondaryGoals) ? project.secondaryGoals.map(String) : [],
+        targetAudience: researchText(project.businessProfile.targetAudience),
+        offer: researchText(project.businessProfile.offerSummary),
+        businessModel: project.businessProfile.businessModel,
+        strengths: Array.isArray(project.businessProfile.strengths) ? project.businessProfile.strengths.map(String) : [],
+        constraints: Array.isArray(project.businessProfile.constraints) ? project.businessProfile.constraints.map(String) : [],
+        tonePreference: project.businessProfile.tonePreference,
+        intakeAnswers: project.intakeAnswers.slice(0, 40).map((answer) => ({ question: researchText(answer.questionText, 500), answer: researchText(answer.answerValue, 1200) })),
+      },
+      geography: {
+        businessLocation: project.businessLocation,
+        targetMarkets,
+        keywordResearchLocations: [...new Set(keywordRuns.map((run) => run.locationName).filter(Boolean))],
+      },
+      keywords: {
+        approvedGroups: approvedKeywordGroups,
+        measuredKeywords: dedupedKeywords,
+        hasMeasuredDemand: dedupedKeywords.some((item) => item.monthlySearches > 0),
+      },
+      siteAnalysis: crawl ? {
+        crawlId: crawl.id,
+        completedAt: crawl.completedAt,
+        siteScore: crawl.siteScore,
+        pagesCrawled: crawl.pagesCrawled,
+        errorCount: crawl.errorCount,
+        pages: crawl.pages.map((page) => ({ url: page.url, wordCount: page.wordCount, score: page.score, inlinkCount: page.inlinkCount, title: researchText(page.seo?.title, 500), metaDescription: researchText(page.seo?.metaDescription, 700), h1Count: page.seo?.h1Count, h1Text: researchText(page.seo?.h1Text, 700) })),
+        openIssues: crawl.issues.map((issue) => ({ issueType: issue.issueType, category: issue.category, severity: issue.severity, message: researchText(issue.message, 700), recommendation: researchText(issue.recommendation, 700) })),
+      } : {
+        available: false,
+        reason: project.websiteId ? "No completed crawl is available." : "No website is connected to this project.",
+      },
+      selectedOpportunity: selectedOpportunity ? {
+        name: selectedOpportunity.name,
+        summary: researchText(selectedOpportunity.summary),
+        targetAudience: researchText(selectedOpportunity.targetAudience),
+        problemSolved: researchText(selectedOpportunity.problemSolved),
+        recommendedOffer: researchText(selectedOpportunity.recommendedOffer),
+        opportunityScore: selectedOpportunity.opportunityScore,
+      } : { available: false, reason: "No Opportunity has been selected or confirmed." },
+      strategyAndSeoPlan: approvedStrategy ? {
+        status: approvedStrategy.status,
+        strategySummary: researchText(approvedStrategy.strategySummary, 3000),
+        positioningStatement: researchText(approvedStrategy.positioningStatement, 2000),
+        offerRecommendation: researchText(approvedStrategy.offerRecommendation, 2000),
+        contentStrategy: researchText(approvedStrategy.contentStrategy, 3000),
+        seoStrategy: researchText(approvedStrategy.seoStrategy, 3000),
+        socialStrategy: researchText(approvedStrategy.socialStrategy, 2000),
+      } : { available: false, reason: "No approved or draft Strategy is available." },
+    };
+    const routedModel = await modelForFeature("lead_magnet_research", client?.plan, config.openaiModel);
+    const preflight = await preflightUsage({
+      clientId: project.clientId,
+      userId: req.user?.userId,
+      projectId: project.id,
+      websiteId: project.websiteId,
+      featureKey: "lead_magnet_research",
+      actionKey: "Research lead magnet opportunities",
+      idempotencyKey: `lead-magnet-research:${project.id}:${Date.now()}`,
+      metadata: { objective: researchInput.objective, desiredAction: researchInput.desiredAction, researchMode: researchInput.researchMode },
+    });
+    usageEventId = preflight.usageEventId;
+    const generated = await openaiJson(buildLeadMagnetResearchPrompt({ objective: researchInput, evidence }), routedModel);
+    const validated = leadMagnetResearchOutputSchema.safeParse(generated.result);
+    if (!validated.success) throw new Error("AI research returned an incomplete evidence or recommendation structure. Please run the research again.");
+    const researchRun = await prisma.$transaction(async (tx) => {
+      const run = await tx.aiRun.create({
+        data: {
+          projectId: project.id,
+          clientId: project.clientId,
+          moduleName: "lead_magnet_research",
+          promptVersion: "lead-magnet-research-v1",
+          inputSnapshotJson: { objective: researchInput, evidence } as Prisma.InputJsonValue,
+          outputJson: { research: validated.data.research, followUpQuestions: validated.data.followUpQuestions, recommendations: validated.data.recommendations, evidence } as Prisma.InputJsonValue,
+          outputText: validated.data.research.recommendedStrategy,
+          status: "completed",
+          tokenUsage: { inputTokens: generated.inputTokens, outputTokens: generated.outputTokens, model: generated.model },
+        },
+      });
+      await recordWorkspaceActivity(tx, {
+        context,
+        action: "lead_magnet.research_completed",
+        entityType: "ai_run",
+        entityId: run.id,
+        agencyClientId: project.agencyClientId,
+        projectId: project.id,
+        nextJson: { objective: researchInput, recommendationCount: validated.data.recommendations.length, topRecommendation: validated.data.recommendations[0]?.title ?? null },
+      });
+      return run;
+    });
+    await commitUsage({ usageEventId, provider: "openai", model: generated.model, inputTokens: generated.inputTokens, outputTokens: generated.outputTokens, metadata: { aiRunId: researchRun.id } });
+    usageEventId = null;
+    res.status(201).json({ researchRun: { id: researchRun.id, createdAt: researchRun.createdAt, objective: researchInput }, evidence, ...validated.data });
+  } catch (error) {
+    if (usageEventId) await refundUsage({ usageEventId, reason: error instanceof Error ? error.message : "Lead-magnet research failed" }).catch(() => undefined);
+    throw error;
+  }
+});
+
 guidedProjectsRouter.post("/projects-v2/:projectId/lead-magnet/generate", async (req, res) => {
   const context = await requireRequestPermission(req, "edit_assigned_work");
   const project = await scopedProject(req, req.params.projectId);
@@ -3395,6 +3643,9 @@ guidedProjectsRouter.post("/projects-v2/:projectId/lead-magnet/generate", async 
   const parsed = leadMagnetGenerateSchema.safeParse(req.body ?? {});
   if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() });
   if (!approvedStrategy) return res.status(409).json({ error: "approve strategy before generating a lead magnet" });
+  const researchRun = await prisma.aiRun.findFirst({ where: { id: parsed.data.researchRunId, projectId: project.id, moduleName: "lead_magnet_research", status: "completed" } });
+  if (!researchRun) return res.status(409).json({ error: "Run the AI lead-magnet research step before choosing a format and generating the funnel." });
+  const researchOutput = researchRun.outputJson && typeof researchRun.outputJson === "object" && !Array.isArray(researchRun.outputJson) ? researchRun.outputJson as Record<string, unknown> : {};
 
   let usageEventId: string | null = null;
   try {
@@ -3434,14 +3685,22 @@ guidedProjectsRouter.post("/projects-v2/:projectId/lead-magnet/generate", async 
       logoUrl: typeof combinedBrand.logoUrl === "string" && combinedBrand.logoUrl.startsWith("https://") ? combinedBrand.logoUrl : null,
       logoMode: combinedBrand.logoMode ?? null,
     };
+    const keywordContext = keywordRuns.map((run) => ({
+      seedKeyword: run.seedKeyword,
+      intent: run.ideas.some((idea) => (idea.competition ?? "").toLowerCase().includes("high")) ? "Commercial" : "Research",
+      avgSearchVolume: avgNumber(run.ideas.map((idea) => idea.avgMonthlySearches)) ?? run.averageVolume,
+      opportunityScore: null,
+      ideas: run.ideas,
+    }));
     const prompt = buildLeadMagnetPrompt({
       project,
       strategy: approvedStrategy,
-      keywordRuns,
+      keywordRuns: keywordContext,
       selectedIdea: parsed.data.selectedIdea,
       instructions: parsed.data.instructions,
       recommendation: parsed.data.recommendation,
       branding,
+      research: { researchRunId: researchRun.id, objective: (researchRun.inputSnapshotJson as Record<string, unknown>)?.objective ?? null, findings: researchOutput.research ?? null },
     });
     const generated = await openaiJson(prompt, routedModel);
     const result = generated.result as { leadMagnet?: { title?: unknown; assetType?: unknown } };
@@ -3490,7 +3749,7 @@ guidedProjectsRouter.post("/projects-v2/:projectId/lead-magnet/generate", async 
           recommendationReason: parsed.data.recommendation ? `${parsed.data.recommendation.why} ${parsed.data.recommendation.signal} ${parsed.data.recommendation.estimatedImpact.label}. ${parsed.data.recommendation.estimatedImpact.disclaimer}` : `Selected from the approved Strategy, audience, offer, Primary Goal, target markets, approved keyword evidence, and current website context.`,
           audience: project.businessProfile?.targetAudience, primaryGoal: project.primaryGoal,
           brandVoice: project.brandVoice || project.businessProfile?.tonePreference,
-          assetJson: { ...leadMagnet, title, businessAnalysis, branding: generatedBrand, imagePlan, coverImage, generatedImages, opportunityEvidence: parsed.data.recommendation?.evidence ?? [], estimatedImpact: parsed.data.recommendation?.estimatedImpact ?? null }, landingPageJson: { ...landingPage, coverImage } as Prisma.InputJsonValue,
+          assetJson: { ...leadMagnet, title, businessAnalysis, branding: generatedBrand, imagePlan, coverImage, generatedImages, leadMagnetResearch: researchOutput.research ?? null, researchRunId: researchRun.id, opportunityEvidence: parsed.data.recommendation?.evidence ?? [], estimatedImpact: parsed.data.recommendation?.estimatedImpact ?? null }, landingPageJson: { ...landingPage, coverImage } as Prisma.InputJsonValue,
           optInFormJson: { fields: formFields.map((field) => ({ name: field.toLowerCase().replace(/[^a-z0-9]+/g, "_"), label: field, type: /email/i.test(field) ? "email" : "text", required: /email/i.test(field) })), submitLabel: String(landingPage.ctaText ?? "Get the resource"), consentText: "I agree to receive this resource and relevant follow-up email. I can unsubscribe at any time." },
           thankYouPageJson: packageObject(generatedPackage.thankYouPage) as Prisma.InputJsonValue,
           deliveryEmailJson: packageObject(generatedPackage.deliveryEmail) as Prisma.InputJsonValue,
@@ -3544,6 +3803,7 @@ guidedProjectsRouter.post("/projects-v2/:projectId/lead-magnet/generate", async 
             projectId: project.id,
             strategyId: approvedStrategy.id,
             keywordRunCount: keywordRuns.length,
+            researchRunId: researchRun.id,
             selectedIdea: parsed.data.selectedIdea ?? null,
             instructions: parsed.data.instructions ?? null,
             recommendation: parsed.data.recommendation ?? null,
@@ -3554,7 +3814,7 @@ guidedProjectsRouter.post("/projects-v2/:projectId/lead-magnet/generate", async 
           status: "completed",
         },
       });
-      await recordWorkspaceActivity(tx, { context, action: "lead_magnet.generated", entityType: "lead_magnet_funnel", entityId: funnel.id, agencyClientId: project.agencyClientId, projectId: project.id, nextJson: { version, status: "draft", title, magnetType: assetType, buyerStage: parsed.data.recommendation?.buyerStage ?? businessAnalysis.buyerStage ?? null, estimatedImpact: parsed.data.recommendation?.estimatedImpact ?? null, evidence: parsed.data.recommendation?.evidence ?? [], generatedAssets: ["business_analysis", "lead_magnet", "brand_snapshot", "cover_image", "image_plan", "landing_page", "opt_in_form", "thank_you_page", "delivery_email", "follow_up_sequence", "ab_tests"] } });
+      await recordWorkspaceActivity(tx, { context, action: "lead_magnet.generated", entityType: "lead_magnet_funnel", entityId: funnel.id, agencyClientId: project.agencyClientId, projectId: project.id, nextJson: { version, status: "draft", title, magnetType: assetType, researchRunId: researchRun.id, buyerStage: parsed.data.recommendation?.buyerStage ?? businessAnalysis.buyerStage ?? null, estimatedImpact: parsed.data.recommendation?.estimatedImpact ?? null, evidence: parsed.data.recommendation?.evidence ?? [], generatedAssets: ["lead_magnet_research", "business_analysis", "lead_magnet", "brand_snapshot", "cover_image", "image_plan", "landing_page", "opt_in_form", "thank_you_page", "delivery_email", "follow_up_sequence", "ab_tests"] } });
       const approvers = await tx.workspaceMembership.findMany({ where: { workspaceId: context.workspace.id, status: "active", roles: { some: { role: { in: ["owner", "admin", "manager", "approver"] } } } }, select: { userId: true } });
       for (const userId of [...new Set([context.workspace.ownerUserId, ...approvers.map((item) => item.userId)])]) await createWorkspaceNotification(tx, { context, userId, type: "lead_magnet_ready_for_approval", title: "Lead magnet ready for approval", body: `${project.name}: ${title} and its complete lead-capture funnel are ready to review.`, actionUrl: `/lead-magnets?projectId=${project.id}`, agencyClientId: project.agencyClientId, projectId: project.id });
       await syncProjectWorkflow(tx, project.id);

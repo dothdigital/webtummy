@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { leadFunnelOptimizationRecommendations, leadOpportunityRecommendations, renderLeadMagnetPdf, validateLeadFunnelForPublish } from "./routes/lead-magnets.js";
+import { emailSequenceHtml, emailSequenceText, leadCaptureWidgetHtml, leadFunnelOptimizationRecommendations, leadOpportunityRecommendations, renderLeadMagnetPdf, validateLeadFunnelForPublish } from "./routes/lead-magnets.js";
 
 const completeFunnel = {
   status: "approved",
@@ -125,5 +125,17 @@ describe("DEV-011C lead funnel optimization", () => {
     expect(row.estimatedImpact.confidence).toBe("directional");
     expect(row.estimatedImpact.disclaimer).toContain("not a guaranteed result");
     expect(row.evidence.some((item) => item.includes("No completed crawl evidence"))).toBe(true);
+  });
+
+  it("exports portable email and website-widget handoff files", () => {
+    const text = emailSequenceText(completeFunnel);
+    const html = emailSequenceHtml(completeFunnel);
+    const widget = leadCaptureWidgetHtml({ ...completeFunnel, publicSlug: "local-seo-checklist" });
+    expect(text).toContain("DELIVERY EMAIL");
+    expect(text).toContain("FOLLOW-UP 1");
+    expect(html).toContain("<!doctype html>");
+    expect(html).toContain("Email sequence");
+    expect(widget).toContain("data-senuke-lead-widget");
+    expect(widget).toContain("/local-seo-checklist/subscribe");
   });
 });

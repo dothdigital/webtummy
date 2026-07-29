@@ -324,6 +324,26 @@ async function download(path: string, init: RequestInit = {}) {
   setTimeout(() => URL.revokeObjectURL(href), 1000);
 }
 
+async function preview(path: string) {
+  const previewWindow = window.open("", "_blank");
+  try {
+    const res = await fetch(path, { headers: authHeaders() });
+    captureRenewedSession(res);
+    if (!res.ok) {
+      const data = await readJson(res).catch(() => ({}));
+      if (res.status === 401) expireSession();
+      throw new Error(typeof data.error === "string" ? data.error : "Preview failed. Please try again.");
+    }
+    const href = URL.createObjectURL(await res.blob());
+    if (previewWindow) previewWindow.location.href = href;
+    else window.open(href, "_blank", "noopener,noreferrer");
+    setTimeout(() => URL.revokeObjectURL(href), 60_000);
+  } catch (error) {
+    previewWindow?.close();
+    throw error;
+  }
+}
+
 export const api = {
   get: <T>(p: string) => request<T>(p),
   post: <T>(p: string, body: unknown, init: RequestInit = {}) => request<T>(p, { ...init, method: "POST", body: JSON.stringify(body) }),
@@ -331,4 +351,5 @@ export const api = {
   patch: <T>(p: string, body: unknown) => request<T>(p, { method: "PATCH", body: JSON.stringify(body) }),
   delete: <T>(p: string, body?: unknown) => request<T>(p, { method: "DELETE", ...(body === undefined ? {} : { body: JSON.stringify(body) }) }),
   download,
+  preview,
 };
