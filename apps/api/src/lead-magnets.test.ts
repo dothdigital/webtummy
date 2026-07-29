@@ -1,11 +1,20 @@
 import { describe, expect, it } from "vitest";
-import { leadFunnelOptimizationRecommendations, renderLeadMagnetPdf, validateLeadFunnelForPublish } from "./routes/lead-magnets.js";
+import { leadFunnelOptimizationRecommendations, leadOpportunityRecommendations, renderLeadMagnetPdf, validateLeadFunnelForPublish } from "./routes/lead-magnets.js";
 
 const completeFunnel = {
   status: "approved",
   title: "Local SEO Checklist",
   magnetType: "Checklist",
-  assetJson: { title: "Local SEO Checklist", promise: "Find and fix local visibility gaps.", sections: [{ title: "Profile", bullets: ["Confirm the business name."] }] },
+  assetJson: {
+    title: "Local SEO Checklist",
+    promise: "Find and fix local visibility gaps.",
+    sections: [{ title: "Profile", summary: "Start with identity accuracy.", paragraphs: ["Review every saved business detail before editing listings."], bullets: ["Confirm the business name."], actionStep: "Record inconsistencies." }],
+    businessAnalysis: { business: "North Star SEO", audience: "Local business owners", offer: "Local SEO services", goal: "Qualified leads" },
+    branding: { businessName: "North Star SEO", brandVoice: "Clear and practical", primaryColor: "#2563EB", secondaryColor: "#0F766E" },
+    imagePlan: [{ role: "cover", altText: "Local SEO checklist cover" }],
+    generatedImages: [{ role: "section", altText: "Profile review", dataUrl: "data:image/svg+xml;base64,PHN2Zy8+" }],
+    coverImage: "data:image/svg+xml;base64,PHN2Zy8+",
+  },
   landingPageJson: { headline: "Fix local visibility gaps", subheadline: "Use a practical checklist before your next campaign.", benefitBullets: ["Prioritize the highest-impact fixes"], ctaText: "Send my checklist" },
   optInFormJson: { fields: [{ name: "email", label: "Email", type: "email", required: true }], submitLabel: "Send my checklist", consentText: "I agree to receive this resource and relevant follow-up email." },
   thankYouPageJson: { headline: "Your checklist is ready", body: "Download it now or check your inbox." },
@@ -41,6 +50,11 @@ describe("DEV-011C lead funnel optimization", () => {
     const rows = leadFunnelOptimizationRecommendations({ views: 500, optIns: 45, conversionRate: 9, openRate: 48, clickRate: 8 }, 5);
     expect(rows).toHaveLength(1);
     expect(rows[0].action).toContain("one headline, CTA, or form variation");
+  });
+
+  it("recommends a new buyer-stage or format opportunity after sustained low conversion", () => {
+    const rows = leadFunnelOptimizationRecommendations({ views: 600, optIns: 6, conversionRate: 1, openRate: 35, clickRate: 5 }, 5);
+    expect(rows.map((row) => row.title)).toContain("Test a new lead magnet opportunity");
   });
 
   it("passes a complete approved funnel with a recently verified ESP", () => {
@@ -83,5 +97,33 @@ describe("DEV-011C lead funnel optimization", () => {
     const pdf = await renderLeadMagnetPdf({ title: completeFunnel.title, magnetType: completeFunnel.magnetType, assetJson: completeFunnel.assetJson });
     expect(pdf.subarray(0, 5).toString()).toBe("%PDF-");
     expect(pdf.length).toBeGreaterThan(1_000);
+  });
+
+  it("detects a visitor-insurance lead opportunity from business and page evidence", () => {
+    const rows = leadOpportunityRecommendations({
+      businessName: "Maple Cover",
+      niche: "Canadian visitor insurance",
+      audience: "Visitors to Canada and Super Visa applicants",
+      offer: "Visitor medical insurance coverage",
+      goal: "Increase qualified quote requests",
+      market: "Canada",
+      pages: [
+        { url: "https://example.com/visitor-insurance", title: "Visitor Insurance Canada", commercial: true, hasLeadCapture: false },
+        { url: "https://example.com/super-visa", title: "Super Visa Insurance", commercial: true, hasLeadCapture: false },
+      ],
+      keywords: [{ keyword: "visitor insurance canada", monthlySearches: 1_200 }],
+      hasPublishedFunnel: false,
+    });
+    expect(rows[0]).toMatchObject({ type: "Checklist", title: "Canadian Visitor Insurance Checklist", buyerStage: "consideration", actionLabel: "Generate with AI" });
+    expect(rows[0].estimatedImpact.high).toBeGreaterThan(rows[0].estimatedImpact.low);
+    expect(rows[0].signal).toContain("no explicit downloadable capture CTA");
+    expect(rows[0].evidence.join(" ")).toContain("1,200 combined monthly searches");
+  });
+
+  it("labels impact as directional when measured demand or crawl evidence is unavailable", () => {
+    const [row] = leadOpportunityRecommendations({ businessName: "Acme Advisory", niche: "consulting", audience: "Small businesses", offer: "Advisory", goal: "Consultations", market: "", pages: [], keywords: [], hasPublishedFunnel: false });
+    expect(row.estimatedImpact.confidence).toBe("directional");
+    expect(row.estimatedImpact.disclaimer).toContain("not a guaranteed result");
+    expect(row.evidence.some((item) => item.includes("No completed crawl evidence"))).toBe(true);
   });
 });

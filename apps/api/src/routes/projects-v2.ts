@@ -141,9 +141,21 @@ const keywordExpansionPreviewSchema = z.object({
 });
 const keywordGroupUpdateSchema = z.object({ keywords: z.array(z.string().trim().min(2).max(255)).min(1).max(100), reason: z.string().trim().max(1000).optional().nullable() });
 const keywordManualSchema = z.object({ keywords: z.array(z.string().trim().min(2).max(255)).min(1).max(50), category: z.string().trim().min(2).max(60).default("supporting"), groupId: z.string().trim().min(1).optional().nullable() });
+const leadRecommendationSchema = z.object({
+  type: z.string().trim().min(2).max(60),
+  title: z.string().trim().min(3).max(240),
+  score: z.number().int().min(0).max(100),
+  buyerStage: z.enum(["awareness", "consideration", "decision"]),
+  signal: z.string().trim().min(3).max(1000),
+  why: z.string().trim().min(3).max(1000),
+  expectedOutcome: z.string().trim().min(3).max(500),
+  estimatedImpact: z.object({ low: z.number().min(0).max(100), high: z.number().min(0).max(100), metric: z.string().trim().max(120), confidence: z.enum(["directional", "medium"]), label: z.string().trim().max(240), disclaimer: z.string().trim().max(500) }),
+  evidence: z.array(z.string().trim().min(3).max(1000)).max(10),
+}).optional().nullable();
 const leadMagnetGenerateSchema = z.object({
   selectedIdea: z.string().trim().min(3).max(240).optional().nullable(),
   instructions: z.string().trim().max(2000).optional().nullable(),
+  recommendation: leadRecommendationSchema,
 });
 
 function workspaceProjectAssignmentFilter(context: Awaited<ReturnType<typeof workspaceContext>>): Prisma.ProjectWhereInput {
@@ -292,7 +304,7 @@ async function scopedProject(req: Request, projectId: string) {
     where: { id: projectId, ...(clientId ? { clientId } : {}) },
     include: {
       website: { select: { id: true, domain: true, rootUrl: true, status: true } },
-      agencyClient: { select: { id: true, name: true, contactPhone: true, businessLocations: true, defaultSettings: true } },
+      agencyClient: { select: { id: true, name: true, contactPhone: true, businessLocations: true, defaultSettings: true, brandingJson: true } },
       businessProfile: true,
       workflowSteps: { orderBy: { sortOrder: "asc" } },
       intakeAnswers: { orderBy: { createdAt: "asc" } },
@@ -1306,8 +1318,10 @@ function buildLeadMagnetPrompt(input: {
   keywordRuns: Array<{ seedKeyword: string; intent: string | null; avgSearchVolume: number | null; opportunityScore: number | null; ideas: Array<{ keyword: string; avgMonthlySearches: number | null }> }>;
   selectedIdea?: string | null;
   instructions?: string | null;
+  recommendation?: z.infer<typeof leadRecommendationSchema>;
+  branding: Record<string, unknown>;
 }) {
-  const { project, strategy, keywordRuns, selectedIdea, instructions } = input;
+  const { project, strategy, keywordRuns, selectedIdea, instructions, recommendation, branding } = input;
   const ctx = projectContext(project);
   const selectedOpportunity = project.opportunities.find((opportunity) => opportunityDecisionStatus(opportunity.status)) ?? null;
   const keywords = keywordRuns.slice(0, 8).map((run) => ({
@@ -1321,8 +1335,11 @@ function buildLeadMagnetPrompt(input: {
     "Create a project-specific lead magnet package for SEnuke AI.",
     "The output must be practical, specific to the provided business, and suitable for review before publishing or sending.",
     "Do not use generic placeholder advice. If data is missing, use the best available project context and mark assumptions clearly.",
+    "Do not claim measured traffic, conversion, or customer behaviour unless it appears in the supplied evidence. Treat estimated impact as directional.",
+    "Generate the complete useful asset—not merely an outline. Each section needs substantive paragraphs, practical bullets, and an action step.",
     "Return JSON with this exact top-level shape:",
     selectedIdea ? `The user selected this lead magnet concept. Preserve its core intent and improve it: ${selectedIdea}` : "Choose the strongest concept from the project evidence.",
+    recommendation ? `Evidence-backed recommendation selected by the user: ${JSON.stringify(recommendation)}` : "No structured recommendation was supplied; use the strongest available project evidence.",
     instructions ? `User requirements and constraints (follow unless unsafe or contradicted by project facts): ${instructions}` : "No additional user requirements were supplied.",
     "The title, promise, format, outline, CTA, and follow-up must align with the selected concept, target audience, offer, primary goal, market, and available keyword intent.",
     "Keep the opt-in form minimal. formFields may contain only First name, Last name, and Email; Email is always required.",
@@ -1335,8 +1352,12 @@ function buildLeadMagnetPrompt(input: {
         problemSolved: "string",
         whyThisFits: ["string"],
         outline: ["string"],
-        sections: [{ title: "string", bullets: ["string"] }],
+        sections: [{ title: "string", summary: "string", paragraphs: ["string"], bullets: ["string"], actionStep: "string" }],
+        interactiveDefinition: { inputs: ["string"], resultLogic: ["string"], outcomeCopy: ["string"] },
       },
+      businessAnalysis: { business: "string", audience: "string", offer: "string", goal: "string", buyerStage: "awareness | consideration | decision", leadCaptureGap: "string", evidence: ["string"], assumptions: ["string"] },
+      branding: { businessName: "string", brandVoice: "string", primaryColor: "#RRGGBB", secondaryColor: "#RRGGBB", logoUsage: "string", visualStyle: "string" },
+      imagePlan: [{ role: "cover | section | diagram", prompt: "string", altText: "string", placement: "string" }],
       landingPage: {
         headline: "string",
         subheadline: "string",
@@ -1373,6 +1394,7 @@ function buildLeadMagnetPrompt(input: {
     `Offer/services: ${ctx.offer}`,
     `Project deliverables: ${ctx.outputs.join(", ") || "not provided"}`,
     `Publishing method: ${project.preferredPublishingMethod ?? "not provided"}`,
+    `Saved brand snapshot: ${JSON.stringify(branding)}`,
     "",
     "Approved strategy:",
     `Summary: ${strategy.strategySummary ?? "not provided"}`,
@@ -1395,6 +1417,45 @@ function buildLeadMagnetPrompt(input: {
     "Keyword intelligence:",
     keywords.length ? JSON.stringify(keywords) : "No keyword runs yet. Avoid pretending keyword data exists.",
   ].join("\n");
+}
+
+function leadMagnetCoverImage(input: { title: string; businessName: string; branding: Record<string, unknown>; imagePlan: unknown }) {
+  const generatedBrand = input.branding;
+  const color = (value: unknown, fallback: string) => typeof value === "string" && /^#[0-9a-f]{6}$/i.test(value) ? value : fallback;
+  const primary = color(generatedBrand.primaryColor, "#2563EB");
+  const secondary = color(generatedBrand.secondaryColor, "#0F766E");
+  const escape = (value: string) => value.replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&apos;" })[char]!);
+  const titleWords = input.title.slice(0, 90).split(/\s+/);
+  const titleLines = titleWords.reduce<string[]>((lines, word) => {
+    const index = Math.min(lines.length - 1, 1);
+    if (!lines.length) return [word];
+    if (lines[index].length + word.length + 1 <= 35) lines[index] += ` ${word}`;
+    else if (lines.length < 2) lines.push(word);
+    else lines[1] += ` ${word}`;
+    return lines;
+  }, []);
+  const title = titleLines.map(escape);
+  const business = escape(input.businessName.slice(0, 80));
+  const visual = Array.isArray(input.imagePlan) && input.imagePlan[0] && typeof input.imagePlan[0] === "object"
+    ? String((input.imagePlan[0] as Record<string, unknown>).altText ?? "Practical lead resource")
+    : "Practical lead resource";
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="630" viewBox="0 0 1200 630" role="img" aria-label="${escape(visual.slice(0, 160))}"><defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop stop-color="${primary}"/><stop offset="1" stop-color="${secondary}"/></linearGradient></defs><rect width="1200" height="630" rx="36" fill="#f8fafc"/><path d="M0 0h1200v190C970 278 780 92 560 184 342 274 176 224 0 116Z" fill="url(#g)"/><circle cx="1030" cy="455" r="210" fill="${primary}" opacity=".1"/><circle cx="990" cy="430" r="126" fill="${secondary}" opacity=".14"/><rect x="72" y="86" width="250" height="44" rx="22" fill="#fff" opacity=".92"/><text x="197" y="115" text-anchor="middle" font-family="Arial,sans-serif" font-size="18" font-weight="700" fill="${primary}">FREE RESOURCE</text><text x="72" y="285" font-family="Arial,sans-serif" font-size="56" font-weight="800" fill="#0f172a">${title.map((line, index) => `<tspan x="72" dy="${index ? 68 : 0}">${line}</tspan>`).join("")}</text><text x="72" y="430" font-family="Arial,sans-serif" font-size="26" fill="#475569">Prepared for ${business}</text><rect x="72" y="480" width="360" height="12" rx="6" fill="${secondary}"/><rect x="72" y="514" width="500" height="10" rx="5" fill="#cbd5e1"/><rect x="72" y="548" width="430" height="10" rx="5" fill="#e2e8f0"/></svg>`;
+  return `data:image/svg+xml;base64,${Buffer.from(svg, "utf8").toString("base64")}`;
+}
+
+function leadMagnetSupportingImages(input: { branding: Record<string, unknown>; imagePlan: unknown }) {
+  const color = (value: unknown, fallback: string) => typeof value === "string" && /^#[0-9a-f]{6}$/i.test(value) ? value : fallback;
+  const primary = color(input.branding.primaryColor, "#2563EB");
+  const secondary = color(input.branding.secondaryColor, "#0F766E");
+  const escape = (value: string) => value.replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&apos;" })[char]!);
+  return (Array.isArray(input.imagePlan) ? input.imagePlan : []).slice(0, 3).map((raw, index) => {
+    const item = raw && typeof raw === "object" && !Array.isArray(raw) ? raw as Record<string, unknown> : {};
+    const role = String(item.role ?? `section-${index + 1}`);
+    const altText = String(item.altText ?? item.prompt ?? `Supporting visual ${index + 1}`).slice(0, 180);
+    const label = escape(altText.slice(0, 72));
+    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="900" height="420" viewBox="0 0 900 420" role="img" aria-label="${escape(altText)}"><defs><linearGradient id="v${index}" x1="0" y1="0" x2="1" y2="1"><stop stop-color="${primary}" stop-opacity=".18"/><stop offset="1" stop-color="${secondary}" stop-opacity=".08"/></linearGradient></defs><rect width="900" height="420" rx="28" fill="#f8fafc"/><rect x="32" y="32" width="836" height="356" rx="22" fill="url(#v${index})" stroke="${primary}" stroke-opacity=".22"/><circle cx="${150 + index * 70}" cy="160" r="78" fill="${primary}" opacity=".9"/><path d="M110 160l28 28 58-68" fill="none" stroke="#fff" stroke-width="18" stroke-linecap="round" stroke-linejoin="round"/><text x="270" y="160" font-family="Arial,sans-serif" font-size="20" font-weight="700" fill="${secondary}">${escape(role.toUpperCase())}</text><text x="270" y="215" font-family="Arial,sans-serif" font-size="34" font-weight="800" fill="#0f172a">${label}</text><rect x="270" y="252" width="430" height="10" rx="5" fill="${primary}" opacity=".45"/><rect x="270" y="282" width="340" height="10" rx="5" fill="${secondary}" opacity=".32"/></svg>`;
+    return { role, altText, placement: String(item.placement ?? `After section ${index + 1}`), prompt: String(item.prompt ?? ""), dataUrl: `data:image/svg+xml;base64,${Buffer.from(svg, "utf8").toString("base64")}` };
+  });
 }
 
 async function activePlanId(tx: Prisma.TransactionClient, projectId: string) {
@@ -3345,18 +3406,36 @@ guidedProjectsRouter.post("/projects-v2/:projectId/lead-magnet/generate", async 
     });
     usageEventId = preflight.usageEventId;
 
-    const keywordRuns = await prisma.keywordResearchRun.findMany({
-          where: { projectId: project.id },
-          orderBy: { createdAt: "desc" },
-          include: { ideas: { orderBy: [{ avgMonthlySearches: "desc" }, { keyword: "asc" }], take: 10 } },
-          take: 10,
-        });
+    const [keywordRuns, websiteBrand] = await Promise.all([
+      prisma.keywordResearchRun.findMany({
+        where: { projectId: project.id },
+        orderBy: { createdAt: "desc" },
+        include: { ideas: { orderBy: [{ avgMonthlySearches: "desc" }, { keyword: "asc" }], take: 10 } },
+        take: 10,
+      }),
+      prisma.websiteBuild.findFirst({ where: { projectId: project.id }, orderBy: { updatedAt: "desc" }, select: { brandJson: true } }),
+    ]);
+    const recordObject = (value: unknown) => value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
+    const combinedBrand = { ...recordObject(context.workspace.brandingJson), ...recordObject(project.agencyClient?.brandingJson), ...recordObject(websiteBrand?.brandJson) };
+    const branding = {
+      businessName: project.businessName ?? project.agencyClient?.name ?? project.name,
+      brandVoice: project.brandVoice || project.businessProfile?.tonePreference || null,
+      primaryColor: combinedBrand.primaryColor ?? combinedBrand.colorPreference ?? null,
+      secondaryColor: combinedBrand.secondaryColor ?? null,
+      accentColor: combinedBrand.accentColor ?? null,
+      headingFont: combinedBrand.headingFont ?? null,
+      bodyFont: combinedBrand.bodyFont ?? null,
+      logoUrl: typeof combinedBrand.logoUrl === "string" && combinedBrand.logoUrl.startsWith("https://") ? combinedBrand.logoUrl : null,
+      logoMode: combinedBrand.logoMode ?? null,
+    };
     const prompt = buildLeadMagnetPrompt({
       project,
       strategy: approvedStrategy,
       keywordRuns,
       selectedIdea: parsed.data.selectedIdea,
       instructions: parsed.data.instructions,
+      recommendation: parsed.data.recommendation,
+      branding,
     });
     const generated = await openaiJson(prompt, routedModel);
     const result = generated.result as { leadMagnet?: { title?: unknown; assetType?: unknown } };
@@ -3392,15 +3471,20 @@ guidedProjectsRouter.post("/projects-v2/:projectId/lead-magnet/generate", async 
       const version = (latestFunnel?.version ?? 0) + 1;
       const leadMagnet = packageObject(generatedPackage.leadMagnet);
       const landingPage = packageObject(generatedPackage.landingPage);
+      const businessAnalysis = packageObject(generatedPackage.businessAnalysis);
+      const generatedBrand = { ...branding, ...packageObject(generatedPackage.branding) };
+      const imagePlan = Array.isArray(generatedPackage.imagePlan) ? generatedPackage.imagePlan : [];
+      const coverImage = leadMagnetCoverImage({ title, businessName: String(generatedBrand.businessName ?? project.businessName ?? project.name), branding: generatedBrand, imagePlan });
+      const generatedImages = leadMagnetSupportingImages({ branding: generatedBrand, imagePlan });
       const formFields = Array.isArray(landingPage.formFields) ? landingPage.formFields.map(String) : ["First name", "Email"];
       const funnel = await tx.leadMagnetFunnel.create({
         data: {
           projectId: project.id, clientId: project.clientId, version, status: "draft", title,
-          magnetType: assetType, recommendationScore: 88,
-          recommendationReason: `Selected from the approved Strategy, audience, offer, Primary Goal, target markets, approved keyword evidence, and current website context.`,
+          magnetType: assetType, recommendationScore: parsed.data.recommendation?.score ?? 88,
+          recommendationReason: parsed.data.recommendation ? `${parsed.data.recommendation.why} ${parsed.data.recommendation.signal} ${parsed.data.recommendation.estimatedImpact.label}. ${parsed.data.recommendation.estimatedImpact.disclaimer}` : `Selected from the approved Strategy, audience, offer, Primary Goal, target markets, approved keyword evidence, and current website context.`,
           audience: project.businessProfile?.targetAudience, primaryGoal: project.primaryGoal,
           brandVoice: project.brandVoice || project.businessProfile?.tonePreference,
-          assetJson: { ...leadMagnet, title }, landingPageJson: landingPage as Prisma.InputJsonValue,
+          assetJson: { ...leadMagnet, title, businessAnalysis, branding: generatedBrand, imagePlan, coverImage, generatedImages, opportunityEvidence: parsed.data.recommendation?.evidence ?? [], estimatedImpact: parsed.data.recommendation?.estimatedImpact ?? null }, landingPageJson: { ...landingPage, coverImage } as Prisma.InputJsonValue,
           optInFormJson: { fields: formFields.map((field) => ({ name: field.toLowerCase().replace(/[^a-z0-9]+/g, "_"), label: field, type: /email/i.test(field) ? "email" : "text", required: /email/i.test(field) })), submitLabel: String(landingPage.ctaText ?? "Get the resource"), consentText: "I agree to receive this resource and relevant follow-up email. I can unsubscribe at any time." },
           thankYouPageJson: packageObject(generatedPackage.thankYouPage) as Prisma.InputJsonValue,
           deliveryEmailJson: packageObject(generatedPackage.deliveryEmail) as Prisma.InputJsonValue,
@@ -3413,8 +3497,8 @@ guidedProjectsRouter.post("/projects-v2/:projectId/lead-magnet/generate", async 
           seoMetadataJson: { title: String(landingPage.headline ?? title).slice(0, 60), description: String(landingPage.subheadline ?? leadMagnet.promise ?? title).slice(0, 160), robots: "index,follow", aiSummary: String(leadMagnet.promise ?? "") },
           trackingPlanJson: (Array.isArray(generatedPackage.trackingPlan) ? generatedPackage.trackingPlan : ["Landing page views", "Form submissions", "Downloads", "Delivery email opens", "Email clicks"]) as Prisma.InputJsonValue,
           aiContentGenerationId: record.id, createdByUserId: context.membership.userId,
-          validationJson: { valid: false, state: "draft", requiredBeforePublish: ["approval", "verified_esp", "link_check", "form_check", "download_check"] },
-          decisions: { create: { actorUserId: context.membership.userId, decision: "generated", snapshotJson: { version, title, magnetType: assetType } } },
+          validationJson: { valid: false, state: "draft", requiredBeforePublish: ["approval", "verified_esp", "business_evidence", "brand_snapshot", "visual_asset", "link_check", "form_check", "download_check"] },
+          decisions: { create: { actorUserId: context.membership.userId, decision: "generated", snapshotJson: { version, title, magnetType: assetType, recommendation: parsed.data.recommendation ?? null } } },
         },
       });
       await ensureNextTask(tx, {
@@ -3456,13 +3540,15 @@ guidedProjectsRouter.post("/projects-v2/:projectId/lead-magnet/generate", async 
             keywordRunCount: keywordRuns.length,
             selectedIdea: parsed.data.selectedIdea ?? null,
             instructions: parsed.data.instructions ?? null,
+            recommendation: parsed.data.recommendation ?? null,
+            branding,
           },
           outputJson: { generationId: record.id, funnelId: funnel.id, version, title },
           outputText: title,
           status: "completed",
         },
       });
-      await recordWorkspaceActivity(tx, { context, action: "lead_magnet.generated", entityType: "lead_magnet_funnel", entityId: funnel.id, agencyClientId: project.agencyClientId, projectId: project.id, nextJson: { version, status: "draft", title, magnetType: assetType, generatedAssets: ["lead_magnet", "landing_page", "opt_in_form", "thank_you_page", "delivery_email", "follow_up_sequence", "ab_tests"] } });
+      await recordWorkspaceActivity(tx, { context, action: "lead_magnet.generated", entityType: "lead_magnet_funnel", entityId: funnel.id, agencyClientId: project.agencyClientId, projectId: project.id, nextJson: { version, status: "draft", title, magnetType: assetType, buyerStage: parsed.data.recommendation?.buyerStage ?? businessAnalysis.buyerStage ?? null, estimatedImpact: parsed.data.recommendation?.estimatedImpact ?? null, evidence: parsed.data.recommendation?.evidence ?? [], generatedAssets: ["business_analysis", "lead_magnet", "brand_snapshot", "cover_image", "image_plan", "landing_page", "opt_in_form", "thank_you_page", "delivery_email", "follow_up_sequence", "ab_tests"] } });
       const approvers = await tx.workspaceMembership.findMany({ where: { workspaceId: context.workspace.id, status: "active", roles: { some: { role: { in: ["owner", "admin", "manager", "approver"] } } } }, select: { userId: true } });
       for (const userId of [...new Set([context.workspace.ownerUserId, ...approvers.map((item) => item.userId)])]) await createWorkspaceNotification(tx, { context, userId, type: "lead_magnet_ready_for_approval", title: "Lead magnet ready for approval", body: `${project.name}: ${title} and its complete lead-capture funnel are ready to review.`, actionUrl: `/lead-magnets?projectId=${project.id}`, agencyClientId: project.agencyClientId, projectId: project.id });
       await syncProjectWorkflow(tx, project.id);

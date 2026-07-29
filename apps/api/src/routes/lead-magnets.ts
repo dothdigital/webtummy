@@ -42,8 +42,8 @@ const includeFunnel = { espConnection: true, decisions: { orderBy: { createdAt: 
 const jsonObject = (value: unknown) => value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
 const jsonList = (value: unknown) => Array.isArray(value) ? value : [];
 const slug = (value: string) => value.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 80);
-const supportedMagnetTypes = new Set(["Checklist", "Guide", "eBook", "PDF Report", "Template", "Worksheet", "Cheat Sheet", "Email Course", "Toolkit", "Resource List", "Case Study", "Free Trial", "Coupon or Discount", "Quiz", "Calculator"]);
-const pdfMagnetTypes = new Set(["Checklist", "Guide", "eBook", "PDF Report", "Template", "Worksheet", "Cheat Sheet", "Toolkit", "Resource List", "Case Study"]);
+const supportedMagnetTypes = new Set(["Checklist", "Guide", "Comparison", "Buyer's Guide", "eBook", "PDF Report", "Template", "Worksheet", "Cheat Sheet", "Email Course", "Toolkit", "Resource List", "Case Study", "Free Trial", "Coupon or Discount", "Quiz", "Calculator"]);
+const pdfMagnetTypes = new Set(["Checklist", "Guide", "Comparison", "Buyer's Guide", "eBook", "PDF Report", "Template", "Worksheet", "Cheat Sheet", "Toolkit", "Resource List", "Case Study"]);
 const trackingPixel = Buffer.from("R0lGODlhAQABAAD/ACwAAAAAAQABAAACADs=", "base64");
 
 type PublishValidationFunnel = {
@@ -88,6 +88,7 @@ function collectLinkFields(value: unknown, path = "funnel", rows: Array<{ path: 
 
 function validPublicLink(value: string) {
   if (/^(mailto:|tel:)/i.test(value)) return true;
+  if (/^data:image\/(png|jpeg|webp|svg\+xml);base64,[a-z0-9+/=_-]+$/i.test(value)) return true;
   if (value.startsWith("/") && !value.startsWith("//")) return true;
   try {
     const url = new URL(value);
@@ -100,6 +101,10 @@ function validPublicLink(value: string) {
 export function validateLeadFunnelForPublish(funnel: PublishValidationFunnel, connection: PublishValidationConnection | null) {
   const errors: string[] = [];
   const asset = jsonObject(funnel.assetJson);
+  const businessAnalysis = jsonObject(asset.businessAnalysis);
+  const branding = jsonObject(asset.branding);
+  const imagePlan = jsonList(asset.imagePlan);
+  const generatedImages = jsonList(asset.generatedImages);
   const landing = jsonObject(funnel.landingPageJson);
   const form = jsonObject(funnel.optInFormJson);
   const thankYou = jsonObject(funnel.thankYouPageJson);
@@ -122,7 +127,11 @@ export function validateLeadFunnelForPublish(funnel: PublishValidationFunnel, co
   if (!supportedMagnetTypes.has(funnel.magnetType)) errors.push("Choose one of the supported lead magnet formats.");
   if (!nonEmpty(funnel.title) || !nonEmpty(asset.title)) errors.push("Lead magnet title is missing.");
   if (!nonEmpty(asset.promise)) errors.push("Lead magnet value promise is missing.");
-  if (!jsonList(asset.sections).length && !jsonList(asset.outline).length) errors.push("Lead magnet downloadable content is missing.");
+  if (!jsonList(asset.sections).length) errors.push("Complete lead magnet section content is missing.");
+  if (jsonList(asset.sections).map(jsonObject).some((section) => !nonEmpty(section.summary) || !jsonList(section.paragraphs).length || !jsonList(section.bullets).length || !nonEmpty(section.actionStep))) errors.push("Every lead magnet section requires substantive copy, practical bullets, and an action step.");
+  if (!nonEmpty(businessAnalysis.business) || !nonEmpty(businessAnalysis.audience) || !nonEmpty(businessAnalysis.offer) || !nonEmpty(businessAnalysis.goal)) errors.push("Business, audience, offer, and goal analysis is incomplete.");
+  if (!nonEmpty(branding.businessName) || !nonEmpty(branding.brandVoice)) errors.push("Brand identity and voice snapshot is incomplete.");
+  if (!nonEmpty(asset.coverImage) || !/^data:image\/svg\+xml;base64,/i.test(String(asset.coverImage)) || !imagePlan.length || !generatedImages.some((item) => /^data:image\/svg\+xml;base64,/i.test(String(jsonObject(item).dataUrl ?? "")))) errors.push("Branded cover image or supporting generated visuals are missing.");
   if (!nonEmpty(landing.headline)) errors.push("Landing-page headline is missing.");
   if (!nonEmpty(landing.subheadline)) errors.push("Landing-page value proposition is missing.");
   if (!jsonList(landing.benefitBullets).length) errors.push("Landing-page benefits are missing.");
@@ -148,7 +157,9 @@ export function validateLeadFunnelForPublish(funnel: PublishValidationFunnel, co
   const checks = {
     approval: funnel.status === "approved",
     esp: !errors.some((error) => /email service|destination list|webhook|Map the opt-in/.test(error)),
-    assetAndDownload: !errors.some((error) => /Lead magnet|downloadable content/.test(error)),
+    assetAndDownload: !errors.some((error) => /lead magnet|downloadable content/i.test(error)),
+    businessEvidence: !errors.some((error) => /Business, audience/.test(error)),
+    brandAndImages: !errors.some((error) => /Brand identity|cover image/.test(error)),
     landingPage: !errors.some((error) => /Landing-page/.test(error)),
     form: !errors.some((error) => /opt-in/.test(error)),
     thankYouPage: !errors.some((error) => /Thank-you/.test(error)),
@@ -192,14 +203,21 @@ function assetHtml(funnel: { title: string; magnetType: string; assetJson: unkno
   const asset = jsonObject(funnel.assetJson);
   const sections = jsonList(asset.sections).map(jsonObject);
   const outline = jsonList(asset.outline);
+  const coverImage = typeof asset.coverImage === "string" && /^(data:image\/(svg\+xml|png|jpeg|webp);base64,|https:\/\/)/i.test(asset.coverImage) ? asset.coverImage : "";
+  const generatedImages = jsonList(asset.generatedImages).map(jsonObject);
   const body = sections.length
-    ? sections.map((section) => `<section><h2>${escapeHtml(section.title)}</h2><ul>${jsonList(section.bullets).map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul></section>`).join("")
+    ? sections.map((section, index) => {
+      const image = generatedImages[index];
+      const dataUrl = typeof image?.dataUrl === "string" && /^data:image\/(svg\+xml|png|jpeg|webp);base64,/i.test(image.dataUrl) ? image.dataUrl : "";
+      return `<section><h2>${escapeHtml(section.title)}</h2>${dataUrl ? `<img class="visual" src="${escapeHtml(dataUrl)}" alt="${escapeHtml(image.altText || `Supporting visual ${index + 1}`)}">` : ""}${nonEmpty(section.summary) ? `<p class="summary">${escapeHtml(section.summary)}</p>` : ""}${jsonList(section.paragraphs).map((item) => `<p>${escapeHtml(item)}</p>`).join("")}<ul>${jsonList(section.bullets).map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul>${nonEmpty(section.actionStep) ? `<div class="action"><b>Action step:</b> ${escapeHtml(section.actionStep)}</div>` : ""}</section>`;
+    }).join("")
     : `<ul>${outline.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul>`;
-  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escapeHtml(asset.title || funnel.title)}</title><style>body{font:16px/1.65 system-ui,sans-serif;color:#172033;max-width:760px;margin:0 auto;padding:48px 24px}h1{font-size:2.4rem;line-height:1.15}h2{margin-top:2rem}li{margin:.55rem 0}.type{color:#087f5b;font-weight:700;text-transform:uppercase;letter-spacing:.08em;font-size:.75rem}.promise{font-size:1.15rem;color:#475569}</style></head><body><div class="type">${escapeHtml(funnel.magnetType)}</div><h1>${escapeHtml(asset.title || funnel.title)}</h1><p class="promise">${escapeHtml(asset.promise)}</p>${body}</body></html>`;
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escapeHtml(asset.title || funnel.title)}</title><style>body{font:16px/1.65 system-ui,sans-serif;color:#172033;max-width:760px;margin:0 auto;padding:48px 24px}img.cover,img.visual{display:block;width:100%;height:auto;border-radius:20px;margin:0 0 32px}img.visual{margin:16px 0 22px;border:1px solid #e2e8f0}h1{font-size:2.4rem;line-height:1.15}h2{margin-top:2rem}li{margin:.55rem 0}.type{color:#087f5b;font-weight:700;text-transform:uppercase;letter-spacing:.08em;font-size:.75rem}.promise,.summary{font-size:1.15rem;color:#475569}.action{margin-top:18px;padding:14px 16px;border-left:4px solid #0f766e;background:#f1f5f9}</style></head><body>${coverImage ? `<img class="cover" src="${escapeHtml(coverImage)}" alt="${escapeHtml(`${asset.title || funnel.title} cover`)}">` : ""}<div class="type">${escapeHtml(funnel.magnetType)}</div><h1>${escapeHtml(asset.title || funnel.title)}</h1><p class="promise">${escapeHtml(asset.promise)}</p>${body}</body></html>`;
 }
 
 export function renderLeadMagnetPdf(funnel: { title: string; magnetType: string; assetJson: unknown }) {
   const asset = jsonObject(funnel.assetJson);
+  const branding = jsonObject(asset.branding);
   const title = String(asset.title || funnel.title);
   return new Promise<Buffer>((resolve, reject) => {
     const doc = new PDFDocument({ size: "A4", margins: { top: 58, bottom: 58, left: 58, right: 58 }, info: { Title: title, Subject: funnel.magnetType } });
@@ -207,15 +225,24 @@ export function renderLeadMagnetPdf(funnel: { title: string; magnetType: string;
     doc.on("data", (chunk) => chunks.push(Buffer.from(chunk)));
     doc.on("end", () => resolve(Buffer.concat(chunks)));
     doc.on("error", reject);
-    doc.fillColor("#087f5b").font("Helvetica-Bold").fontSize(10).text(funnel.magnetType.toUpperCase(), { characterSpacing: 1.2 });
-    doc.moveDown(.8).fillColor("#172033").font("Helvetica-Bold").fontSize(26).text(title, { lineGap: 4 });
+    const primary = typeof branding.primaryColor === "string" && /^#[0-9a-f]{6}$/i.test(branding.primaryColor) ? branding.primaryColor : "#087f5b";
+    const secondary = typeof branding.secondaryColor === "string" && /^#[0-9a-f]{6}$/i.test(branding.secondaryColor) ? branding.secondaryColor : "#2563eb";
+    doc.roundedRect(0, 0, doc.page.width, 176, 0).fill(primary);
+    doc.circle(doc.page.width - 50, 74, 110).fillOpacity(.18).fill(secondary).fillOpacity(1);
+    doc.fillColor("#ffffff").font("Helvetica-Bold").fontSize(10).text(funnel.magnetType.toUpperCase(), { characterSpacing: 1.2 });
+    doc.moveDown(.8).fillColor("#ffffff").font("Helvetica-Bold").fontSize(26).text(title, { lineGap: 4, width: doc.page.width - 150 });
+    if (nonEmpty(branding.businessName)) doc.moveDown(.35).fillColor("#ffffff").font("Helvetica-Bold").fontSize(11).text(`Prepared for ${String(branding.businessName)}`);
+    doc.y = 205;
     if (nonEmpty(asset.promise)) doc.moveDown(.6).fillColor("#475569").font("Helvetica").fontSize(13).text(String(asset.promise), { lineGap: 5 });
     const sections = jsonList(asset.sections).map(jsonObject);
     if (sections.length) {
       for (const [index, section] of sections.entries()) {
         doc.moveDown(1.2).fillColor("#172033").font("Helvetica-Bold").fontSize(17).text(String(section.title || `Section ${index + 1}`), { lineGap: 3 });
+        if (nonEmpty(section.summary)) doc.moveDown(.35).fillColor("#475569").font("Helvetica-Oblique").fontSize(11).text(String(section.summary), { lineGap: 4 });
         doc.moveDown(.35).fillColor("#334155").font("Helvetica").fontSize(11);
+        for (const paragraph of jsonList(section.paragraphs)) doc.text(String(paragraph), { lineGap: 4 }).moveDown(.45);
         for (const bullet of jsonList(section.bullets)) doc.text(`•  ${String(bullet)}`, { indent: 8, lineGap: 4 });
+        if (nonEmpty(section.actionStep)) doc.moveDown(.5).fillColor(primary).font("Helvetica-Bold").text(`Action step: ${String(section.actionStep)}`, { lineGap: 4 });
       }
     } else {
       doc.moveDown(1.2).fillColor("#334155").font("Helvetica").fontSize(11);
@@ -248,10 +275,102 @@ export function leadFunnelOptimizationRecommendations(performance: { views: numb
   const rows: Array<{ priority: string; title: string; why: string; action: string }> = [];
   if (performance.views < 100) rows.push({ priority: "medium", title: "Collect a reliable traffic sample", why: `Only ${performance.views} views are recorded, so conversion conclusions are premature.`, action: "Drive at least 100 qualified visits before choosing a winning variation." });
   if (performance.views >= 30 && performance.conversionRate < target) rows.push({ priority: "high", title: "Test the headline and form friction", why: `${performance.conversionRate}% conversion is below the ${target}% target.`, action: "Run the strongest saved headline variation and remove non-essential form fields." });
+  if (performance.views >= 250 && performance.conversionRate < target * .6) rows.push({ priority: "high", title: "Test a new lead magnet opportunity", why: "The funnel has enough traffic to show that copy changes alone may not resolve the offer-to-audience mismatch.", action: "Ask the Growth Engine for the next buyer-stage or format recommendation, then generate it as a separate controlled funnel." });
   if (performance.openRate > 0 && performance.openRate < 30) rows.push({ priority: "medium", title: "Improve delivery-email opens", why: `${performance.openRate}% of delivered emails were opened.`, action: "Test a benefit-led subject line and confirm sender recognition." });
   if (performance.openRate >= 30 && performance.clickRate < 3) rows.push({ priority: "medium", title: "Strengthen the email next step", why: "People open the email but rarely click.", action: "Move one clear CTA above the fold and align it with the lead magnet promise." });
   if (!rows.length) rows.push({ priority: "low", title: "Keep the current funnel and test one variable", why: "No high-confidence performance problem is visible yet.", action: "Test only one headline, CTA, or form variation at a time." });
   return rows;
+}
+
+export type LeadOpportunityEvidence = {
+  businessName: string;
+  niche: string;
+  audience: string;
+  offer: string;
+  goal: string;
+  market: string;
+  pages: Array<{ url: string; title: string; hasLeadCapture: boolean; commercial: boolean }>;
+  keywords: Array<{ keyword: string; monthlySearches: number }>;
+  hasPublishedFunnel: boolean;
+};
+
+export type LeadOpportunityRecommendation = {
+  type: string;
+  title: string;
+  score: number;
+  buyerStage: "awareness" | "consideration" | "decision";
+  signal: string;
+  why: string;
+  expectedOutcome: string;
+  estimatedImpact: { low: number; high: number; metric: string; confidence: "directional" | "medium"; label: string; disclaimer: string };
+  evidence: string[];
+  actionLabel: "Generate with AI";
+};
+
+export function leadOpportunityRecommendations(input: LeadOpportunityEvidence): LeadOpportunityRecommendation[] {
+  const text = `${input.businessName} ${input.niche} ${input.audience} ${input.offer} ${input.goal} ${input.market}`.toLowerCase();
+  const visitorInsurance = /visitor|super visa|travel/.test(text) && /insurance|coverage|policy/.test(text);
+  const insurance = /insurance|coverage|policy|broker/.test(text);
+  const software = /saas|software|platform|automation|app/.test(text);
+  const ecommerce = /ecommerce|shopify|online store|retail|product/.test(text);
+  const property = /real estate|realtor|mortgage|home buyer|property/.test(text);
+  const commercialPages = input.pages.filter((page) => page.commercial).length;
+  const capturePages = input.pages.filter((page) => page.hasLeadCapture).length;
+  const monthlyDemand = input.keywords.reduce((sum, item) => sum + Math.max(0, item.monthlySearches), 0);
+  const leadCaptureGap = input.pages.length > 0 && capturePages === 0;
+  const impactBase = 10 + Math.min(9, commercialPages * 2) + (leadCaptureGap ? 6 : 0) + (monthlyDemand >= 1_000 ? 8 : monthlyDemand > 0 ? 4 : 0) - (input.hasPublishedFunnel ? 3 : 0);
+  const low = Math.max(8, Math.min(28, impactBase - 4));
+  const high = Math.max(low + 5, Math.min(40, impactBase + 7));
+  const confidence = input.pages.length > 0 && monthlyDemand > 0 ? "medium" as const : "directional" as const;
+  const evidence = [
+    input.pages.length ? `${input.pages.length} crawled page${input.pages.length === 1 ? "" : "s"} reviewed for offer and lead-capture signals.` : "No completed crawl evidence is available; the recommendation relies on approved business and strategy data.",
+    commercialPages ? `${commercialPages} commercial or service page${commercialPages === 1 ? "" : "s"} indicate visitor intent around the offer.` : "The saved offer and project goal provide the primary conversion signal.",
+    leadCaptureGap ? "No explicit downloadable lead-capture CTA was found in the reviewed page links." : capturePages ? `${capturePages} page${capturePages === 1 ? "" : "s"} already show a lead-capture action that can be improved or extended.` : "Lead-capture coverage could not be confirmed from page links.",
+    monthlyDemand ? `${monthlyDemand.toLocaleString("en-US")} combined monthly searches are recorded across available keyword evidence.` : "No measured keyword volume is available, so impact remains directional.",
+  ];
+  const signal = leadCaptureGap
+    ? `${commercialPages || input.pages.length} relevant website page${(commercialPages || input.pages.length) === 1 ? "" : "s"} found, but no explicit downloadable capture CTA was detected.`
+    : input.hasPublishedFunnel
+      ? "A lead funnel already exists; this opportunity is a new buyer-stage or format test."
+      : "The business has a defined audience and offer but no published lead funnel is recorded.";
+  const impact = { low, high, metric: "email sign-ups", confidence, label: `Estimated +${low}–${high}% email sign-ups`, disclaimer: "Directional projection based on available project evidence; not a guaranteed result." };
+
+  const candidates: Array<{ type: string; title: string; buyerStage: LeadOpportunityRecommendation["buyerStage"]; fit: number; reason: string }> = visitorInsurance ? [
+    { type: "Checklist", title: `${/canada|canadian/.test(text) ? "Canadian " : ""}Visitor Insurance Checklist`, buyerStage: "consideration", fit: 96, reason: "A checklist reduces policy-selection uncertainty for visitors who are actively evaluating coverage." },
+    { type: "Comparison", title: "Visitor Insurance Coverage Comparison", buyerStage: "decision", fit: 91, reason: "A comparison helps policy-ready visitors evaluate coverage choices and move toward a quote." },
+    { type: "Buyer's Guide", title: "Visitor Insurance Buyer’s Guide", buyerStage: "awareness", fit: 86, reason: "A buyer’s guide educates earlier-stage visitors and creates a natural path to a consultation or quote." },
+  ] : insurance ? [
+    { type: "Checklist", title: `${input.businessName} Insurance Checklist`, buyerStage: "consideration", fit: 92, reason: "A checklist makes a complex coverage decision easier and creates a clear value exchange." },
+    { type: "Comparison", title: "Insurance Coverage Comparison", buyerStage: "decision", fit: 88, reason: "A comparison supports prospects who are evaluating policy and provider differences." },
+    { type: "Guide", title: "Insurance Buyer’s Guide", buyerStage: "awareness", fit: 83, reason: "A practical guide captures prospects before they are ready to request a quote." },
+  ] : software ? [
+    { type: "Calculator", title: `${input.businessName} ROI Calculator`, buyerStage: "consideration", fit: 93, reason: "A calculator turns the software value proposition into a personalized business case." },
+    { type: "Free Trial", title: `${input.businessName} Guided Free Trial`, buyerStage: "decision", fit: 89, reason: "A guided trial reduces decision risk for product-aware prospects." },
+    { type: "Template", title: `${input.businessName} Workflow Template`, buyerStage: "awareness", fit: 84, reason: "A reusable template demonstrates the workflow before asking for a product commitment." },
+  ] : ecommerce ? [
+    { type: "Buyer's Guide", title: `${input.niche || input.businessName} Buyer’s Guide`, buyerStage: "consideration", fit: 92, reason: "A buyer’s guide helps product researchers choose while keeping the brand in the decision path." },
+    { type: "Coupon or Discount", title: `${input.businessName} Welcome Offer`, buyerStage: "decision", fit: 88, reason: "A timely offer can convert product-aware visitors who need a final purchase incentive." },
+    { type: "Comparison", title: `${input.niche || "Product"} Comparison Guide`, buyerStage: "consideration", fit: 84, reason: "A comparison organizes product differences around customer needs." },
+  ] : property ? [
+    { type: "Checklist", title: `${input.market || "Local"} Home Buyer Checklist`, buyerStage: "consideration", fit: 93, reason: "A location-aware checklist gives active buyers a useful planning tool." },
+    { type: "Calculator", title: "Home Buying Budget Calculator", buyerStage: "decision", fit: 88, reason: "A calculator helps prospects understand readiness before requesting help." },
+    { type: "Buyer's Guide", title: `${input.market || "Local"} Home Buyer’s Guide`, buyerStage: "awareness", fit: 84, reason: "A buyer’s guide captures early research intent and builds trust." },
+  ] : [
+    { type: "Checklist", title: `${input.businessName} Practical Checklist`, buyerStage: "consideration", fit: 90, reason: "A focused checklist gives the audience a quick, useful win tied to the main offer." },
+    { type: "Guide", title: `${input.businessName} Expert Guide`, buyerStage: "awareness", fit: 85, reason: "A guide builds authority and captures prospects still researching the problem." },
+    { type: "Template", title: `${input.businessName} Action Template`, buyerStage: "consideration", fit: 81, reason: "A template provides reusable value and naturally leads to the paid solution." },
+  ];
+
+  return candidates.map((candidate, index) => ({
+    ...candidate,
+    score: Math.min(97, candidate.fit + (input.pages.length ? 1 : 0) + (monthlyDemand ? 1 : 0)),
+    signal,
+    why: candidate.reason,
+    expectedOutcome: index === 0 ? impact.label : `Alternative ${candidate.buyerStage}-stage format for controlled testing.`,
+    estimatedImpact: index === 0 ? impact : { ...impact, low: Math.max(5, low - index * 3), high: Math.max(10, high - index * 3), label: `Estimated +${Math.max(5, low - index * 3)}–${Math.max(10, high - index * 3)}% email sign-ups` },
+    evidence,
+    actionLabel: "Generate with AI",
+  }));
 }
 
 async function contextProject(req: Request, permission?: string) {
@@ -312,13 +431,45 @@ leadMagnetsRouter.get("/projects/:projectId/lead-magnets", async (req, res, next
 } catch (error) { next(error); } });
 
 leadMagnetsRouter.get("/projects/:projectId/lead-magnets/recommendations", async (req, res, next) => { try {
-  const { context, project } = await contextProject(req); if (context.roles.size === 1 && context.roles.has("client_viewer")) return res.json({ recommendations: [] }); const text = `${project.projectType} ${project.niche} ${project.primaryGoal} ${project.businessProfile?.offerSummary} ${project.businessProfile?.targetAudience}`.toLowerCase();
-  const candidates = [
-    { type: /ecommerce|shopify|store|sale/.test(text) ? "Coupon or Discount" : /saas|software|calculator|automation/.test(text) ? "Calculator" : "Checklist", base: 91 },
-    { type: /audit|proposal|agency/.test(text) ? "PDF Report" : /template|workflow|process/.test(text) ? "Template" : "Guide", base: 86 },
-    { type: /trial|saas|software/.test(text) ? "Free Trial" : /authority|content|education/.test(text) ? "Email Course" : "Case Study", base: 81 },
-  ];
-  res.json({ recommendations: candidates.map((item, index) => ({ ...item, score: Math.min(97, item.base + (project.primaryGoal ? 2 : 0)), title: `${project.businessName || project.name} ${item.type}`, why: `${item.type} matches the saved offer, audience, ${project.primaryGoal || "business goal"}, brand context, and conversion path.`, expectedOutcome: index === 0 ? "Highest predicted opt-in fit from the current project evidence." : "A useful alternative for testing format and intent." })) });
+  const { context, project } = await contextProject(req); if (context.roles.size === 1 && context.roles.has("client_viewer")) return res.json({ recommendations: [] });
+  const [crawl, keywordRuns, publishedFunnels] = await Promise.all([
+    project.websiteId ? prisma.crawlJob.findFirst({
+      where: { websiteId: project.websiteId, status: "completed" },
+      orderBy: [{ completedAt: "desc" }, { createdAt: "desc" }],
+      select: { pages: { where: { statusCode: { gte: 200, lt: 400 } }, take: 100, select: { url: true, seo: { select: { title: true } }, links: { where: { isInternal: true }, take: 100, select: { anchorText: true, targetUrl: true } } } } },
+    }) : Promise.resolve(null),
+    prisma.keywordResearchRun.findMany({ where: { projectId: project.id }, orderBy: { createdAt: "desc" }, take: 5, include: { ideas: { orderBy: { avgMonthlySearches: "desc" }, take: 20 } } }),
+    prisma.leadMagnetFunnel.count({ where: { projectId: project.id, status: "published" } }),
+  ]);
+  const pages = (crawl?.pages ?? []).map((page) => {
+    const pageText = `${page.url} ${page.seo?.title ?? ""}`.toLowerCase();
+    const linkText = page.links.map((link) => `${link.anchorText ?? ""} ${link.targetUrl}`).join(" ").toLowerCase();
+    return {
+      url: page.url,
+      title: page.seo?.title ?? page.url,
+      commercial: /service|product|insurance|coverage|pricing|quote|solution|consult|book|buy|shop/.test(pageText),
+      hasLeadCapture: /download|checklist|guide|ebook|template|calculator|quiz|subscribe|newsletter|free trial|coupon|get the|request a quote|book/.test(linkText),
+    };
+  });
+  const keywordDemand = new Map<string, { keyword: string; monthlySearches: number }>();
+  for (const keyword of keywordRuns.flatMap((run) => [{ keyword: run.seedKeyword, monthlySearches: run.avgSearchVolume ?? 0 }, ...run.ideas.map((idea) => ({ keyword: idea.keyword, monthlySearches: idea.avgMonthlySearches ?? 0 }))])) {
+    const key = keyword.keyword.trim().toLowerCase();
+    if (key && (keywordDemand.get(key)?.monthlySearches ?? -1) < keyword.monthlySearches) keywordDemand.set(key, keyword);
+  }
+  const keywords = [...keywordDemand.values()];
+  const targetMarkets = Array.isArray(project.targetLocations) ? project.targetLocations.filter((item): item is string => typeof item === "string") : [];
+  const recommendations = leadOpportunityRecommendations({
+    businessName: project.businessName || project.name,
+    niche: project.niche || project.businessProfile?.businessSummary || "",
+    audience: project.businessProfile?.targetAudience || "",
+    offer: project.businessProfile?.offerSummary || "",
+    goal: project.primaryGoal || "",
+    market: targetMarkets.join(", ") || project.targetLocation || project.businessLocation || "",
+    pages,
+    keywords,
+    hasPublishedFunnel: publishedFunnels > 0,
+  });
+  res.json({ recommendations, evidenceSummary: { crawlPagesReviewed: pages.length, commercialPages: pages.filter((page) => page.commercial).length, leadCapturePages: pages.filter((page) => page.hasLeadCapture).length, recordedMonthlySearches: keywords.reduce((sum, keyword) => sum + keyword.monthlySearches, 0), hasPublishedFunnel: publishedFunnels > 0 } });
 } catch (error) { next(error); } });
 
 leadMagnetsRouter.patch("/projects/:projectId/lead-magnets/:funnelId", async (req, res, next) => { try {
