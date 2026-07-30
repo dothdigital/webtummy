@@ -227,6 +227,70 @@ function verifiedContactProfile(project: Awaited<ReturnType<typeof scopedCitatio
   };
 }
 
+function verifiedOrganizationSchema(project: Awaited<ReturnType<typeof scopedCitationProject>>["project"]) {
+  const context = citationContext(project);
+  const contactProfile = verifiedContactProfile(project);
+  const contacts = new Map(contactProfile.fields.map((field) => [field.key, field]));
+  const local = project.website?.localBusinessProfiles[0];
+  const location = jsonRecord(project.businessLocationJson);
+  const streetAddress = local?.address || (typeof location.streetAddress === "string" ? location.streetAddress : null);
+  const addressLocality = local?.city || (typeof location.city === "string" ? location.city : null);
+  const addressRegion = local?.region || (typeof location.stateProvince === "string" ? location.stateProvince : null);
+  const postalCode = local?.postalCode || (typeof location.postalCode === "string" ? location.postalCode : null);
+  const addressCountry = local?.country || (typeof location.country === "string" ? location.country : null);
+  const fallbackAddress = contacts.get("address")?.value ?? null;
+  const address = streetAddress || addressLocality || addressRegion || postalCode || addressCountry || fallbackAddress ? {
+    "@type": "PostalAddress",
+    ...(streetAddress ? { streetAddress } : fallbackAddress ? { streetAddress: fallbackAddress } : {}),
+    ...(addressLocality ? { addressLocality } : {}),
+    ...(addressRegion ? { addressRegion } : {}),
+    ...(postalCode ? { postalCode } : {}),
+    ...(addressCountry ? { addressCountry } : {}),
+  } : null;
+  const areaServed = [...new Set([
+    ...stringList(project.targetLocations),
+    ...stringList(local?.targetLocations),
+  ])];
+  const services = [...new Set([
+    ...stringList(local?.services),
+    ...(project.businessProfile?.offerSummary ? [project.businessProfile.offerSummary] : []),
+    ...(local?.mainCategory ? [local.mainCategory] : []),
+  ])];
+  const email = contacts.get("email")?.value ?? null;
+  const telephone = contacts.get("phone")?.value ?? null;
+  const url = contacts.get("website")?.value ?? context.websiteUrl;
+  const schema = {
+    "@context": "https://schema.org",
+    "@type": local ? ["Organization", "LocalBusiness"] : "Organization",
+    ...(url ? { "@id": `${url.replace(/\/$/, "")}/#organization` } : {}),
+    name: context.businessName,
+    ...(url ? { url } : {}),
+    ...(project.businessProfile?.businessSummary ? { description: project.businessProfile.businessSummary } : {}),
+    ...(email ? { email } : {}),
+    ...(telephone ? { telephone } : {}),
+    ...(address ? { address } : {}),
+    ...(areaServed.length ? { areaServed: areaServed.map((name) => ({ "@type": "Place", name })) } : {}),
+    ...(services.length ? { knowsAbout: services } : {}),
+    ...(local?.googleBusinessProfileUrl ? { sameAs: [local.googleBusinessProfileUrl] } : {}),
+    ...(email || telephone ? { contactPoint: [{ "@type": "ContactPoint", ...(telephone ? { telephone } : {}), ...(email ? { email } : {}), contactType: "customer service" }] } : {}),
+  };
+  const sources = [...new Set([
+    ...contactProfile.fields.filter((field) => field.value && field.source).map((field) => field.source as string),
+    ...(project.businessProfile?.businessSummary || project.businessProfile?.offerSummary ? ["Business intake"] : []),
+    ...(areaServed.length ? ["Project localization"] : []),
+    ...(local ? ["Local business profile"] : []),
+  ])];
+  const missingFields = [
+    !context.businessName && "Business name",
+    !url && "Website URL",
+    !telephone && "Phone",
+    !email && "Email",
+    !address && "Business address",
+    !areaServed.length && "Service areas",
+  ].filter((value): value is string => Boolean(value));
+  return { schema, sources, missingFields };
+}
+
 aiCitationVisibilityRouter.get("/projects/:projectId/ai-citation-visibility", async (req, res) => {
   const { context, project } = await scopedCitationProject(req, req.params.projectId);
   const clientViewer = context.roles.size === 1 && context.roles.has("client_viewer");
@@ -303,6 +367,7 @@ aiCitationVisibilityRouter.get("/projects/:projectId/ai-citation-visibility", as
   res.json({
     project: { id: project.id, name: citationContext(project).businessName, websiteUrl: citationContext(project).websiteUrl },
     contactProfile: verifiedContactProfile(project),
+    organizationSchema: verifiedOrganizationSchema(project),
     capabilities: {
       canAudit: hasWorkspacePermission(context, "run_ai_analysis"),
       canApprove: hasWorkspacePermission(context, "approve"),

@@ -14,6 +14,7 @@ type CitationContentAsset = {
 type CitationWorkspace = {
   project: { id: string; name: string; websiteUrl: string | null };
   contactProfile: { fields: Array<{ key: string; label: string; value: string | null; source: string | null }> };
+  organizationSchema: { schema: Record<string, unknown>; sources: string[]; missingFields: string[] };
   capabilities: { canAudit: boolean; canApprove: boolean; canExecute: boolean; readOnly: boolean };
   scores: Record<string, number | null> | null;
   audit: { id: string; createdAt: string } | null;
@@ -183,6 +184,7 @@ export default function AiCitationVisibilityWorkspace({ projectId }: { projectId
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
   const [contactDetailsOpen, setContactDetailsOpen] = useState(false);
+  const [organizationSchemaOpen, setOrganizationSchemaOpen] = useState(false);
   const [contentRequest, setContentRequest] = useState<CitationContentRequest | null>(null);
   const [contentNotice, setContentNotice] = useState<{
     request: CitationContentRequest;
@@ -235,6 +237,20 @@ export default function AiCitationVisibilityWorkspace({ projectId }: { projectId
     }
     await navigator.clipboard.writeText(contactText);
     setMessage("Verified contact details copied from Project Intake and Client Details.");
+  };
+  const copyOrganizationSchema = async () => {
+    if (!workspace) return;
+    await navigator.clipboard.writeText(JSON.stringify(workspace.organizationSchema.schema, null, 2));
+    setMessage("Verified Organization schema copied.");
+  };
+  const downloadOrganizationSchema = () => {
+    if (!workspace) return;
+    const href = URL.createObjectURL(new Blob([JSON.stringify(workspace.organizationSchema.schema, null, 2)], { type: "application/ld+json" }));
+    const anchor = document.createElement("a");
+    anchor.href = href;
+    anchor.download = "organization-schema.json";
+    anchor.click();
+    window.setTimeout(() => URL.revokeObjectURL(href), 1000);
   };
   const openCitationContent = (
     launch: ContentLaunch,
@@ -340,6 +356,7 @@ export default function AiCitationVisibilityWorkspace({ projectId }: { projectId
           {workspace.trustSignals.length ? <div className="grid gap-px bg-slate-100 sm:grid-cols-2 xl:grid-cols-3">{workspace.trustSignals.map((signal) => {
             const contentLaunch = trustSignalContentLaunch(signal);
             const isContactInformation = signal.signalKey === "contact-page";
+            const isOrganizationSchema = signal.signalKey === "organization-schema";
             return <div key={signal.id} className="flex min-h-44 flex-col bg-white p-4">
               <div className="flex items-start justify-between gap-3">
                 <div>
@@ -357,6 +374,19 @@ export default function AiCitationVisibilityWorkspace({ projectId }: { projectId
                       <button type="button" onClick={() => void copyContactDetails()} className="flex-1 rounded-md bg-emerald-600 px-2.5 py-2 text-[10px] font-black text-white hover:bg-emerald-700">Copy verified details</button>
                       <a href={`/guided-projects/${encodeURIComponent(projectId)}/intake`} className="flex-1 rounded-md border border-brand-200 bg-white px-2.5 py-2 text-center text-[10px] font-black text-brand-700 hover:bg-brand-50">Update intake</a>
                     </div>
+                  </div>}
+                </> : isOrganizationSchema ? <>
+                  <button type="button" onClick={() => setOrganizationSchemaOpen((open) => !open)} className="block w-full rounded-lg bg-brand-600 px-3 py-2 text-center text-xs font-black text-white hover:bg-brand-700">{organizationSchemaOpen ? "Hide Organization schema" : "Review generated schema"} →</button>
+                  {organizationSchemaOpen && <div className="space-y-2 rounded-lg border border-slate-200 bg-slate-50 p-3">
+                    <div className="rounded-md border border-emerald-100 bg-emerald-50 px-2.5 py-2 text-[10px] font-bold leading-4 text-emerald-800">Built deterministically from verified intake, contact, website, and localization records. AI is not used.</div>
+                    <pre className="max-h-72 overflow-auto whitespace-pre-wrap break-words rounded-md bg-slate-950 p-3 text-[10px] leading-4 text-slate-100">{JSON.stringify(workspace.organizationSchema.schema, null, 2)}</pre>
+                    {workspace.organizationSchema.sources.length > 0 && <div><div className="text-[9px] font-black uppercase tracking-wide text-slate-400">Sources used</div><div className="mt-1 flex flex-wrap gap-1">{workspace.organizationSchema.sources.map((source) => <span key={source} className="rounded-full bg-white px-2 py-1 text-[9px] font-bold text-slate-600">{source}</span>)}</div></div>}
+                    {workspace.organizationSchema.missingFields.length > 0 && <div className="rounded-md border border-amber-200 bg-amber-50 px-2.5 py-2 text-[10px] font-semibold leading-4 text-amber-800"><b>Missing from verified records:</b> {workspace.organizationSchema.missingFields.join(", ")}. Add these in Intake or Client Details before publishing the schema.</div>}
+                    <div className="grid grid-cols-2 gap-2 pt-1">
+                      <button type="button" onClick={() => void copyOrganizationSchema()} className="rounded-md bg-emerald-600 px-2.5 py-2 text-[10px] font-black text-white hover:bg-emerald-700">Copy JSON-LD</button>
+                      <button type="button" onClick={downloadOrganizationSchema} className="rounded-md border border-brand-200 bg-white px-2.5 py-2 text-[10px] font-black text-brand-700 hover:bg-brand-50">Download JSON</button>
+                    </div>
+                    <a href={`/guided-projects/${encodeURIComponent(projectId)}/intake`} className="block rounded-md border border-slate-200 bg-white px-2.5 py-2 text-center text-[10px] font-black text-slate-700 hover:bg-slate-100">Update intake or localization</a>
                   </div>}
                 </> : <>
                   <button type="button" onClick={() => openCitationContent(contentLaunch, signal.title, "trust_signal", signal.id, signal.contentAsset?.id)} className={`block w-full rounded-lg px-3 py-2 text-center text-xs font-black ${signal.contentAsset ? "bg-brand-600 text-white hover:bg-brand-700" : signal.status === "present" ? "border border-brand-200 bg-white text-brand-700 hover:bg-brand-50" : "bg-brand-600 text-white hover:bg-brand-700"}`}>{signal.contentAsset ? "View generated content" : contentLaunch.label} →</button>
