@@ -3914,6 +3914,7 @@ model SocialStrategy {
   campaignName                String?   @db.VarChar(180)
   campaignStartAt             DateTime?
   campaignEndAt               DateTime?
+  campaignTimezone            String?   @db.VarChar(80)
   goalMetric                  String?   @db.VarChar(80)
   goalTarget                  Float?
   goal                        String    @db.VarChar(160)
@@ -3977,6 +3978,9 @@ model SocialCalendarPost {
   cta               String?        @db.VarChar(180)
   hashtagsJson      Json           @default("[]")
   imageSuggestion   String?        @db.Text
+  imageUrl          String?        @db.Text
+  imageAltText      String?        @db.VarChar(500)
+  imageStatus       String         @default("planned") @db.VarChar(40)
   targetKeyword     String?        @db.VarChar(255)
   targetUrl         String?        @db.VarChar(512)
   sourceType        String?        @db.VarChar(80)

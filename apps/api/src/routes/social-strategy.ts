@@ -63,15 +63,36 @@ const saveSetupSchema = z.object({
 const generateSchema = z.object({
   websiteId: z.string(),
   projectId: z.string().optional().nullable(),
+  campaignId: z.string().optional().nullable(),
   campaignName: z.string().max(180).optional().nullable(),
   campaignStartAt: z.string().date().optional().nullable(),
   campaignEndAt: z.string().date().optional().nullable(),
+  campaignTimezone: z.string().max(80).optional().nullable(),
   goalMetric: z.enum(["reach", "impressions", "engagement_rate", "website_clicks", "leads", "conversions"]).optional().nullable(),
   goalTarget: z.number().nonnegative().optional().nullable(),
   goal: z.string().max(160).optional().nullable(),
   audience: z.string().max(255).optional().nullable(),
   platforms: z.array(z.string().max(40)).default([]),
   postingFrequency: z.string().max(120).optional().nullable(),
+  tone: z.string().max(80).optional().nullable(),
+  targetKeywords: z.array(z.string().max(255)).default([]),
+  targetUrls: z.array(z.string().max(512)).default([]),
+});
+
+const campaignSetupSchema = z.object({
+  websiteId: z.string(),
+  projectId: z.string(),
+  campaignId: z.string().optional().nullable(),
+  campaignName: z.string().trim().min(1).max(180),
+  campaignStartAt: z.string().date(),
+  campaignEndAt: z.string().date(),
+  campaignTimezone: z.string().max(80),
+  goalMetric: z.enum(["reach", "impressions", "engagement_rate", "website_clicks", "leads", "conversions"]),
+  goalTarget: z.number().nonnegative().optional().nullable(),
+  goal: z.string().trim().min(3).max(160),
+  audience: z.string().max(255).optional().nullable(),
+  platforms: z.array(z.string().max(40)).min(1),
+  postingFrequency: z.string().max(120),
   tone: z.string().max(80).optional().nullable(),
   targetKeywords: z.array(z.string().max(255)).default([]),
   targetUrls: z.array(z.string().max(512)).default([]),
@@ -154,6 +175,9 @@ type PlannedPost = {
   cta: string;
   hashtags: string[];
   imageSuggestion: string;
+  imageUrl: string;
+  imageAltText: string;
+  imageStatus: string;
   targetKeyword: string | null;
   targetUrl: string | null;
   sourceType: string | null;
@@ -188,6 +212,82 @@ function sentence(value: string, maximum = 220) {
   const clean = value.replace(/\s+/g, " ").trim();
   if (clean.length <= maximum) return clean;
   return `${clean.slice(0, maximum - 1).trimEnd()}…`;
+}
+
+function escapeSvgText(value: string) {
+  return value.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;").replaceAll("'", "&apos;");
+}
+
+function visualLines(value: string, maximumLength = 31, maximumLines = 3) {
+  const words = value.replace(/\s+/g, " ").trim().split(" ").filter(Boolean);
+  const lines: string[] = [];
+  for (const word of words) {
+    const current = lines.at(-1) ?? "";
+    if (!current || `${current} ${word}`.length > maximumLength) {
+      if (lines.length >= maximumLines) break;
+      lines.push(word);
+    } else {
+      lines[lines.length - 1] = `${current} ${word}`;
+    }
+  }
+  if (words.join(" ").length > lines.join(" ").length && lines.length) lines[lines.length - 1] = `${lines[lines.length - 1].replace(/[.…]+$/, "")}…`;
+  return lines;
+}
+
+function generatedSocialVisual(platform: string, topic: string, businessName: string) {
+  const palette: Record<string, [string, string]> = {
+    facebook: ["#1877F2", "#0B4FA8"],
+    instagram: ["#833AB4", "#FD1D1D"],
+    linkedin: ["#0A66C2", "#063F78"],
+    x: ["#111827", "#000000"],
+    google_business: ["#4285F4", "#34A853"],
+    youtube: ["#FF0000", "#9B0000"],
+    tiktok: ["#111827", "#25F4EE"],
+    pinterest: ["#E60023", "#8F0016"],
+  };
+  const [start, end] = palette[platform] ?? ["#6D28D9", "#312E81"];
+  const lines = visualLines(topic);
+  const lineMarkup = lines.map((line, index) => `<text x="76" y="${245 + index * 70}" fill="white" font-family="Arial, Helvetica, sans-serif" font-size="54" font-weight="700">${escapeSvgText(line)}</text>`).join("");
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="628" viewBox="0 0 1200 628"><defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop stop-color="${start}"/><stop offset="1" stop-color="${end}"/></linearGradient><filter id="s"><feDropShadow dx="0" dy="10" stdDeviation="18" flood-opacity=".22"/></filter></defs><rect width="1200" height="628" rx="32" fill="url(#g)"/><circle cx="1060" cy="85" r="210" fill="white" opacity=".08"/><circle cx="1120" cy="575" r="260" fill="white" opacity=".06"/><rect x="58" y="54" width="1084" height="520" rx="28" fill="none" stroke="white" stroke-opacity=".18"/><text x="76" y="112" fill="white" opacity=".82" font-family="Arial, Helvetica, sans-serif" font-size="24" font-weight="700" letter-spacing="3">${escapeSvgText(platform.replaceAll("_", " ").toUpperCase())}</text>${lineMarkup}<g filter="url(#s)"><rect x="76" y="500" width="520" height="58" rx="29" fill="white" opacity=".96"/><text x="106" y="538" fill="${start}" font-family="Arial, Helvetica, sans-serif" font-size="24" font-weight="700">${escapeSvgText(sentence(businessName, 34))}</text></g></svg>`;
+  return `data:image/svg+xml;base64,${Buffer.from(svg).toString("base64")}`;
+}
+
+function validTimeZone(value: string | null | undefined) {
+  const timeZone = value?.trim() || "UTC";
+  try {
+    new Intl.DateTimeFormat("en-US", { timeZone }).format(new Date());
+    return timeZone;
+  } catch {
+    return null;
+  }
+}
+
+function platformPublishingHour(platform: string) {
+  return ({
+    facebook: 10,
+    instagram: 12,
+    linkedin: 9,
+    x: 9,
+    google_business: 10,
+    youtube: 15,
+    tiktok: 18,
+    pinterest: 20,
+  } as Record<string, number>)[platform] ?? 11;
+}
+
+function scheduledDateInTimeZone(day: Date, hour: number, minute: number, timeZone: string) {
+  const guess = new Date(Date.UTC(day.getUTCFullYear(), day.getUTCMonth(), day.getUTCDate(), hour, minute));
+  const parts = Object.fromEntries(new Intl.DateTimeFormat("en-CA", {
+    timeZone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hourCycle: "h23",
+  }).formatToParts(guess).filter((part) => part.type !== "literal").map((part) => [part.type, Number(part.value)]));
+  const representedAsUtc = Date.UTC(parts.year, parts.month - 1, parts.day, parts.hour, parts.minute);
+  return new Date(guess.getTime() - (representedAsUtc - guess.getTime()));
 }
 
 function frequencyScore(value: string | null | undefined) {
@@ -419,25 +519,32 @@ function buildCalendar(input: GenerateInput, snapshot: ReturnType<typeof intelli
   const durationDays = Math.max(1, Math.ceil((end.getTime() - start.getTime()) / 86_400_000));
   const baseCount = plannedPostCount(input.postingFrequency);
   const count = Math.max(4, Math.min(60, Math.round(baseCount * durationDays / 30)));
+  const campaignTimezone = validTimeZone(input.campaignTimezone) || "UTC";
   return Array.from({ length: count }, (_, index): PlannedPost => {
     const source = availableSources[index % availableSources.length];
     const platform = selectedPlatforms[index % selectedPlatforms.length];
     const pillar = pillars[index % pillars.length];
-    const publishDate = new Date(start);
-    publishDate.setUTCDate(start.getUTCDate() + Math.floor(index * durationDays / count));
+    const publishDay = new Date(start);
+    publishDay.setUTCDate(start.getUTCDate() + Math.floor(index * durationDays / count));
+    const publishDate = scheduledDateInTimeZone(publishDay, platformPublishingHour(platform), (index % 3) * 10, campaignTimezone);
     const targetUrl = source.url || input.targetUrls[index % Math.max(1, input.targetUrls.length)] || null;
     const cta = targetUrl ? "Read the complete resource" : "Contact us for the next step";
     const keyword = source.keyword || input.targetKeywords[index % Math.max(1, input.targetKeywords.length)] || null;
     const tags = uniqueStrings([slugTag(snapshot.businessName), keyword ? slugTag(keyword) : "", slugTag(pillar.title)]).filter(Boolean).slice(0, platform === "instagram" ? 8 : 4);
+    const topic = `${pillar.title}: ${source.title}`.slice(0, 255);
+    const imageAltText = `${snapshot.businessName}: ${topic}`.slice(0, 500);
     return {
       platform,
       publishDate,
-      topic: `${pillar.title}: ${source.title}`.slice(0, 255),
+      topic,
       caption: platformCaption(platform, source, snapshot.businessName, snapshot.audience, input.tone || snapshot.brandVoice, cta),
       creativeDirection: `Create a ${pillar.formatsJson[0] || "branded post"} using one key message from “${source.title}”. Keep facts and claims aligned with the source.`,
       cta,
       hashtags: tags,
       imageSuggestion: `Branded ${platform.replaceAll("_", " ")} visual illustrating ${source.title}; use verified project imagery or an original diagram, not unsupported stock claims.`,
+      imageUrl: generatedSocialVisual(platform, topic, snapshot.businessName),
+      imageAltText,
+      imageStatus: "generated",
       targetKeyword: keyword,
       targetUrl,
       sourceType: source.type,
@@ -456,14 +563,14 @@ const aiStrategySchema = z.object({
     cta: z.string().max(255),
     hashtags: z.array(z.string().max(80)).max(12),
     visualSuggestion: z.string().max(2000),
-  })).max(24),
+  })).max(60),
 });
 
 async function enhanceStrategyWithAi(
   snapshot: ReturnType<typeof intelligenceSnapshot>,
   posts: PlannedPost[],
   platformPlans: PlatformPlan[],
-  campaign: { name: string; startAt: string; endAt: string; objective: string; metric: string | null; target: number | null },
+  campaign: { name: string; startAt: string; endAt: string; timezone: string; objective: string; metric: string | null; target: number | null },
 ) {
   if (!config.openaiApiKey) return null;
   const generated = await centralAiJson({
@@ -640,6 +747,61 @@ socialStrategyRouter.post("/social-strategy/setup", async (req, res) => {
   res.json(await socialResponse(req, websiteId, projectId));
 });
 
+socialStrategyRouter.post("/social-strategy/campaigns", async (req, res) => {
+  const parsed = campaignSetupSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() });
+  const input = parsed.data;
+  const context = await workspaceContext(req);
+  if (!hasWorkspacePermission(context, "execute_tasks")) return res.status(403).json({ error: "Campaign editing permission is required." });
+  const website = await getScopedWebsite(req, input.websiteId);
+  if (!website) return res.status(404).json({ error: "website not found" });
+  const intelligence = await getProjectIntelligence(req, website.id, input.projectId);
+  if (!intelligence.project) return res.status(404).json({ error: "project not found" });
+  const campaignStartAt = new Date(`${input.campaignStartAt}T00:00:00.000Z`);
+  const campaignEndAt = new Date(`${input.campaignEndAt}T23:59:59.999Z`);
+  const campaignTimezone = validTimeZone(input.campaignTimezone);
+  if (!campaignTimezone) return res.status(400).json({ error: "Enter a valid IANA publishing timezone, such as America/Toronto." });
+  if (campaignEndAt <= campaignStartAt) return res.status(400).json({ error: "Campaign end date must be after its start date." });
+  if (campaignEndAt.getTime() - campaignStartAt.getTime() > 366 * 86_400_000) return res.status(400).json({ error: "Campaign duration cannot exceed one year." });
+  const existingDraft = input.campaignId ? await prisma.socialStrategy.findFirst({
+    where: { id: input.campaignId, websiteId: website.id, projectId: intelligence.project.id, status: "draft" },
+  }) : null;
+  const data = {
+    websiteId: website.id,
+    projectId: intelligence.project.id,
+    campaignName: input.campaignName,
+    campaignStartAt,
+    campaignEndAt,
+    campaignTimezone,
+    goalMetric: input.goalMetric,
+    goalTarget: input.goalTarget ?? null,
+    goal: input.goal,
+    audience: input.audience || null,
+    platforms: uniqueStrings(input.platforms.map(normalizePlatform)),
+    targetKeywordsJson: uniqueStrings(input.targetKeywords),
+    targetUrlsJson: uniqueStrings(input.targetUrls),
+    postingFrequency: input.postingFrequency,
+    tone: input.tone || null,
+    monthlyTheme: null,
+    status: "draft",
+    generationMode: "campaign_setup",
+    strategySummary: null,
+  };
+  const campaign = existingDraft
+    ? await prisma.socialStrategy.update({ where: { id: existingDraft.id }, data })
+    : await prisma.socialStrategy.create({ data });
+  await recordWorkspaceActivity(prisma, {
+    context,
+    action: existingDraft ? "social_campaign.updated" : "social_campaign.created",
+    entityType: "social_strategy",
+    entityId: campaign.id,
+    agencyClientId: intelligence.project.agencyClientId,
+    projectId: intelligence.project.id,
+    nextJson: { status: "draft", campaignName: campaign.campaignName, campaignStartAt: campaign.campaignStartAt, campaignEndAt: campaign.campaignEndAt },
+  });
+  res.status(existingDraft ? 200 : 201).json({ campaign, ...(await socialResponse(req, website.id, intelligence.project.id)) });
+});
+
 socialStrategyRouter.post("/social-strategy/generate", async (req, res) => {
   const parsed = generateSchema.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() });
@@ -673,6 +835,8 @@ socialStrategyRouter.post("/social-strategy/generate", async (req, res) => {
   };
   const campaignStartAt = input.campaignStartAt ? new Date(`${input.campaignStartAt}T00:00:00.000Z`) : new Date();
   const campaignEndAt = input.campaignEndAt ? new Date(`${input.campaignEndAt}T23:59:59.999Z`) : new Date(campaignStartAt.getTime() + 29 * 86_400_000);
+  const campaignTimezone = validTimeZone(input.campaignTimezone);
+  if (!campaignTimezone) return res.status(400).json({ error: "Enter a valid IANA publishing timezone, such as America/Toronto." });
   if (campaignEndAt <= campaignStartAt) return res.status(400).json({ error: "Campaign end date must be after its start date." });
   if (campaignEndAt.getTime() - campaignStartAt.getTime() > 366 * 86_400_000) return res.status(400).json({ error: "Campaign duration cannot exceed one year." });
   if (input.goalTarget != null && !input.goalMetric) return res.status(400).json({ error: "Choose the success metric for the campaign target." });
@@ -693,6 +857,7 @@ socialStrategyRouter.post("/social-strategy/generate", async (req, res) => {
       name: campaignName,
       startAt: campaignStartAt.toISOString(),
       endAt: campaignEndAt.toISOString(),
+      timezone: campaignTimezone,
       objective: goal,
       metric: input.goalMetric || null,
       target: input.goalTarget ?? null,
@@ -717,6 +882,9 @@ socialStrategyRouter.post("/social-strategy/generate", async (req, res) => {
   const socialScore = Math.round(profileScore * 0.2 + consistencyScore * 0.15 + activityScore * 0.15 + competitorScore * 0.15 + seoAlignmentScore * 0.2 + Math.min(100, intelligence.sources.length * 8) * 0.15);
   const recommendations = buildRecommendations(enrichedInput, profileInputs, competitorInputs, intelligence.sources, platformPlans);
   const strategy = await prisma.$transaction(async (tx) => {
+    if (input.campaignId) {
+      await tx.socialStrategy.deleteMany({ where: { id: input.campaignId, projectId: project.id, status: "draft" } });
+    }
     await tx.socialStrategy.updateMany({ where: { projectId: project.id, status: "active" }, data: { status: "superseded" } });
     const row = await tx.socialStrategy.create({
       data: {
@@ -725,6 +893,7 @@ socialStrategyRouter.post("/social-strategy/generate", async (req, res) => {
         campaignName,
         campaignStartAt,
         campaignEndAt,
+        campaignTimezone,
         goalMetric: input.goalMetric || null,
         goalTarget: input.goalTarget ?? null,
         goal,
@@ -760,6 +929,9 @@ socialStrategyRouter.post("/social-strategy/generate", async (req, res) => {
           cta: post.cta,
           hashtagsJson: post.hashtags,
           imageSuggestion: post.imageSuggestion,
+          imageUrl: post.imageUrl,
+          imageAltText: post.imageAltText,
+          imageStatus: post.imageStatus,
           targetKeyword: post.targetKeyword,
           targetUrl: post.targetUrl,
           sourceType: post.sourceType,
@@ -809,6 +981,7 @@ socialStrategyRouter.post("/social-strategy/generate", async (req, res) => {
           campaignName: row.campaignName,
           campaignStartAt: row.campaignStartAt?.toISOString() ?? null,
           campaignEndAt: row.campaignEndAt?.toISOString() ?? null,
+          campaignTimezone: row.campaignTimezone,
           goalMetric: row.goalMetric,
           goalTarget: row.goalTarget,
           platforms: activePlatforms,
@@ -1020,6 +1193,7 @@ socialStrategyRouter.post("/social-strategy/repurposing/:batchId/approve", async
       }
       const publishDate = new Date(start.getTime() + socialIndex * 2 * 86_400_000);
       socialIndex += 1;
+      const imageAltText = `${batch.project.businessName || batch.project.name}: ${asset.title}`.slice(0, 500);
       const post = await tx.socialCalendarPost.create({
         data: {
           strategyId: destinationStrategy!.id,
@@ -1031,6 +1205,9 @@ socialStrategyRouter.post("/social-strategy/repurposing/:batchId/approve", async
           cta: asset.cta,
           hashtagsJson: asset.hashtagsJson ?? [],
           imageSuggestion: asset.visualSuggestion,
+          imageUrl: generatedSocialVisual(asset.channel, asset.title, batch.project.businessName || batch.project.name),
+          imageAltText,
+          imageStatus: "generated",
           targetUrl: batch.sourceUrl,
           sourceType: "social_repurposed_asset",
           sourceId: asset.id,

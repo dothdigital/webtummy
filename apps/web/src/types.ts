@@ -464,6 +464,7 @@ export interface GrowthOverviewResponse {
       campaignName: string | null;
       campaignStartAt: string | null;
       campaignEndAt: string | null;
+      campaignTimezone: string | null;
       goalMetric: string | null;
       goalTarget: number | null;
       strategySummary: string | null;
@@ -1164,6 +1165,9 @@ export interface SocialCalendarPost {
   cta: string | null;
   hashtagsJson: string[];
   imageSuggestion: string | null;
+  imageUrl: string | null;
+  imageAltText: string | null;
+  imageStatus: string;
   targetKeyword: string | null;
   targetUrl: string | null;
   sourceType: string | null;
@@ -1182,6 +1186,7 @@ export interface SocialStrategy {
   campaignName: string | null;
   campaignStartAt: string | null;
   campaignEndAt: string | null;
+  campaignTimezone: string | null;
   goalMetric: string | null;
   goalTarget: number | null;
   goal: string;

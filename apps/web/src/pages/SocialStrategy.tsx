@@ -105,6 +105,18 @@ function formatDate(value: string): string {
   return new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric" }).format(new Date(value));
 }
 
+function formatPublishDate(value: string, timeZone?: string | null): string {
+  return new Intl.DateTimeFormat(undefined, {
+    timeZone: timeZone || undefined,
+    weekday: "short",
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+    timeZoneName: "short",
+  }).format(new Date(value));
+}
+
 function campaignDate(daysFromToday: number): string {
   const date = new Date();
   date.setHours(12, 0, 0, 0);
@@ -263,7 +275,7 @@ function SocialPublisher({ websiteId, strategy }: SocialPublisherProps) {
   const [publisherTab, setPublisherTab] = useState<"post" | "schedule" | "manage">("post");
   const [title, setTitle] = useState(defaultPost?.topic ?? strategy?.monthlyTheme ?? "Social post");
   const [caption, setCaption] = useState(defaultPost?.caption ?? "");
-  const [imageUrl, setImageUrl] = useState("");
+  const [imageUrl, setImageUrl] = useState(defaultPost?.imageUrl ?? "");
   const [scheduledAt, setScheduledAt] = useState(toDateInputValue(defaultPost?.publishDate));
   const [timezone, setTimezone] = useState(Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC");
   const [createdPostId, setCreatedPostId] = useState("");
@@ -314,6 +326,7 @@ function SocialPublisher({ websiteId, strategy }: SocialPublisherProps) {
     if (!post) return;
     setTitle(post.topic);
     setCaption(post.caption);
+    setImageUrl(post.imageUrl ?? "");
     setScheduledAt(toDateInputValue(post.publishDate));
   };
 
@@ -548,7 +561,8 @@ function SocialPublisher({ websiteId, strategy }: SocialPublisherProps) {
                 <span className="mb-1 block text-sm font-medium text-slate-600">Caption</span>
                 <textarea value={caption} onChange={(event) => setCaption(event.target.value)} rows={6} className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-100" />
               </label>
-              <Input label="Public image URL" value={imageUrl} onChange={setImageUrl} placeholder="https://cdn.example.com/post.jpg" />
+              {imageUrl && <img src={imageUrl} alt={selectedPost?.imageAltText || title} className="aspect-[1.91/1] w-full rounded-xl border border-slate-200 object-cover" />}
+              <Input label="Replace with another public image URL (optional)" value={imageUrl.startsWith("data:") ? "" : imageUrl} onChange={setImageUrl} placeholder="https://cdn.example.com/post.jpg" />
               {publisherTab === "schedule" && (
                 <div className="grid gap-3 md:grid-cols-2">
                   <label className="block">
@@ -650,9 +664,11 @@ export default function SocialStrategy() {
   const [intelligence, setIntelligence] = useState<SocialStrategyResponse["intelligence"]>(null);
   const [campaignEditorOpen, setCampaignEditorOpen] = useState(false);
   const [campaignConfigured, setCampaignConfigured] = useState(false);
+  const [editingCampaignId, setEditingCampaignId] = useState<string | null>(null);
   const [campaignName, setCampaignName] = useState("");
   const [campaignStartAt, setCampaignStartAt] = useState(() => campaignDate(1));
   const [campaignEndAt, setCampaignEndAt] = useState(() => campaignDate(30));
+  const [campaignTimezone, setCampaignTimezone] = useState(() => Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC");
   const [goal, setGoal] = useState("Grow search-connected brand visibility and qualified leads");
   const [goalMetric, setGoalMetric] = useState("leads");
   const [goalTarget, setGoalTarget] = useState("");
@@ -676,7 +692,9 @@ export default function SocialStrategy() {
   const [workflowMessage, setWorkflowMessage] = useState("");
   const [performanceForm, setPerformanceForm] = useState({ platform: "linkedin", impressions: "0", reach: "0", engagements: "0", clicks: "0", leads: "0", conversions: "0" });
 
-  const activeStrategy = strategies[0] ?? null;
+  const activeStrategy = strategies.find((strategy) => strategy.status === "active")
+    ?? strategies.find((strategy) => strategy.status !== "draft" && strategy.status !== "superseded")
+    ?? null;
   const selectedWebsite = websites.find((website) => website.id === websiteId) ?? websites[0] ?? null;
   const activeStepIndex = WIZARD_STEPS.findIndex((item) => item.id === step);
   const selectedProject = projects.find((project) => project.websiteId === websiteId) ?? null;
@@ -894,9 +912,11 @@ export default function SocialStrategy() {
   };
 
   const openNewCampaign = () => {
+    setEditingCampaignId(null);
     setCampaignName("");
     setCampaignStartAt(campaignDate(1));
     setCampaignEndAt(campaignDate(30));
+    setCampaignTimezone(Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC");
     setGoal("Grow search-connected brand visibility and qualified leads");
     setGoalMetric("leads");
     setGoalTarget("");
@@ -911,9 +931,11 @@ export default function SocialStrategy() {
   };
 
   const openExistingCampaign = (strategy: SocialStrategyType) => {
+    setEditingCampaignId(strategy.id);
     setCampaignName(strategy.campaignName ?? "");
     setCampaignStartAt(strategy.campaignStartAt?.slice(0, 10) ?? campaignDate(1));
     setCampaignEndAt(strategy.campaignEndAt?.slice(0, 10) ?? campaignDate(30));
+    setCampaignTimezone(strategy.campaignTimezone ?? Intl.DateTimeFormat().resolvedOptions().timeZone ?? "UTC");
     setGoal(strategy.goal);
     setGoalMetric(strategy.goalMetric ?? "leads");
     setGoalTarget(strategy.goalTarget?.toString() ?? "");
@@ -927,7 +949,7 @@ export default function SocialStrategy() {
     setCampaignEditorOpen(true);
   };
 
-  const saveCampaignSetup = () => {
+  const saveCampaignSetup = async () => {
     if (!campaignStartAt || !campaignEndAt) {
       setPageError("Choose the campaign start and end dates.");
       return;
@@ -948,26 +970,61 @@ export default function SocialStrategy() {
       setPageError("Choose at least one focus platform for this campaign.");
       return;
     }
+    if (!selectedProject?.id) {
+      setPageError("Select a guided project before saving the campaign.");
+      return;
+    }
+    setSaving(true);
     setPageError("");
-    setCampaignConfigured(true);
-    setCampaignEditorOpen(false);
+    try {
+      const result = await api.post<SocialStrategyResponse & { campaign: SocialStrategyType }>("/api/social-strategy/campaigns", {
+        websiteId,
+        projectId: selectedProject.id,
+        campaignId: editingCampaignId,
+        campaignName: campaignName.trim() || `${intelligence?.businessName || "Project"} social campaign`,
+        campaignStartAt,
+        campaignEndAt,
+        campaignTimezone,
+        goal,
+        goalMetric,
+        goalTarget: goalTarget.trim() ? Number(goalTarget) : null,
+        audience: audience || null,
+        platforms: selectedPlatforms,
+        postingFrequency,
+        tone: tone || null,
+        targetKeywords: targetKeywords.split(",").map((item) => item.trim()).filter(Boolean),
+        targetUrls: targetUrls.split(",").map((item) => item.trim()).filter(Boolean),
+      });
+      applySocialResponse(result);
+      setEditingCampaignId(result.campaign.id);
+      setCampaignConfigured(false);
+      setCampaignEditorOpen(false);
+      setWorkflowMessage("Campaign setup saved. Generate its strategy when you are ready.");
+    } catch (err) {
+      setPageError(String(err).replace(/^Error:\s*/, ""));
+    } finally {
+      setSaving(false);
+    }
   };
 
-  const generateStrategy = async () => {
+  const generateStrategy = async (savedCampaign?: SocialStrategyType) => {
     if (!websiteId) return;
-    if (!campaignConfigured) {
+    if (!savedCampaign && !campaignConfigured) {
       setPageError("Add the campaign period and measurable goal before generating the strategy.");
       return;
     }
-    if (!campaignStartAt || !campaignEndAt) {
+    const generationStartAt = savedCampaign?.campaignStartAt?.slice(0, 10) ?? campaignStartAt;
+    const generationEndAt = savedCampaign?.campaignEndAt?.slice(0, 10) ?? campaignEndAt;
+    if (!generationStartAt || !generationEndAt) {
       setPageError("Choose the campaign start and end dates.");
       return;
     }
-    if (campaignEndAt <= campaignStartAt) {
+    if (generationEndAt <= generationStartAt) {
       setPageError("Campaign end date must be after its start date.");
       return;
     }
-    if (!goal.trim()) {
+    const generationGoal = savedCampaign?.goal ?? goal;
+    if (!generationGoal.trim()) {
       setPageError("Describe the business outcome this campaign should achieve.");
       return;
     }
@@ -977,21 +1034,24 @@ export default function SocialStrategy() {
       const result = await api.post<SocialStrategyResponse>("/api/social-strategy/generate", {
         websiteId,
         projectId: selectedProject?.id ?? null,
-        campaignName: campaignName.trim() || null,
-        campaignStartAt,
-        campaignEndAt,
-        goal,
-        goalMetric,
-        goalTarget: goalTarget.trim() ? Number(goalTarget) : null,
-        audience: audience || null,
-        platforms: selectedPlatforms,
-        postingFrequency: postingFrequency || null,
-        tone: tone || null,
-        targetKeywords: targetKeywords.split(",").map((item) => item.trim()).filter(Boolean),
-        targetUrls: targetUrls.split(",").map((item) => item.trim()).filter(Boolean),
+        campaignId: savedCampaign?.id ?? editingCampaignId,
+        campaignName: savedCampaign?.campaignName ?? (campaignName.trim() || null),
+        campaignStartAt: generationStartAt,
+        campaignEndAt: generationEndAt,
+        campaignTimezone: savedCampaign?.campaignTimezone ?? campaignTimezone,
+        goal: generationGoal,
+        goalMetric: savedCampaign?.goalMetric ?? goalMetric,
+        goalTarget: savedCampaign ? savedCampaign.goalTarget : goalTarget.trim() ? Number(goalTarget) : null,
+        audience: savedCampaign?.audience ?? (audience || null),
+        platforms: savedCampaign?.platforms ?? selectedPlatforms,
+        postingFrequency: savedCampaign?.postingFrequency ?? (postingFrequency || null),
+        tone: savedCampaign?.tone ?? (tone || null),
+        targetKeywords: savedCampaign?.targetKeywordsJson ?? targetKeywords.split(",").map((item) => item.trim()).filter(Boolean),
+        targetUrls: savedCampaign?.targetUrlsJson ?? targetUrls.split(",").map((item) => item.trim()).filter(Boolean),
       });
       applySocialResponse(result);
       setCampaignConfigured(false);
+      setEditingCampaignId(null);
       setStep("review");
     } catch (err) {
       setPageError(String(err).replace(/^Error:\s*/, ""));
@@ -1371,6 +1431,7 @@ export default function SocialStrategy() {
                     <button type="button" onClick={() => setProfileEditorOpen(false)} className="rounded-lg px-3 py-2 text-xl text-slate-400 hover:bg-slate-100 hover:text-slate-700" aria-label="Close">×</button>
                   </div>
                   <div className="space-y-5 p-5">
+                    {pageError && <div className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">{pageError}</div>}
                     <div className="grid gap-4 md:grid-cols-2">
                       <SelectField label="Platform" value={profileDraft.platform} options={platformOptions} onChange={(value) => setProfileDraft((current) => ({ ...current, platform: value }))} />
                       <Input label="Public profile URL" value={profileDraft.profileUrl} onChange={(value) => { const inferred = inferPlatformFromUrl(value); setProfileDraft((current) => ({ ...current, profileUrl: value, ...(inferred ? { platform: inferred } : {}) })); }} placeholder="https://instagram.com/brand" />
@@ -1453,6 +1514,7 @@ export default function SocialStrategy() {
                     <button type="button" onClick={() => setCompetitorEditorOpen(false)} className="rounded-lg px-3 py-2 text-xl text-slate-400 hover:bg-slate-100 hover:text-slate-700" aria-label="Close">×</button>
                   </div>
                   <div className="space-y-5 p-5">
+                    {pageError && <div className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">{pageError}</div>}
                     <div className="grid gap-4 md:grid-cols-2">
                       <Input label="Competitor name" value={competitorDraft.competitorName} onChange={(value) => setCompetitorDraft((current) => ({ ...current, competitorName: value }))} placeholder="Competitor name" />
                       <Input label="Competitor domain (optional)" value={competitorDraft.competitorDomain ?? ""} onChange={(value) => setCompetitorDraft((current) => ({ ...current, competitorDomain: value }))} placeholder="competitor.com" />
@@ -1541,6 +1603,7 @@ export default function SocialStrategy() {
                       </div>
                       <div className="flex shrink-0 flex-wrap gap-2">
                         <Button variant="ghost" onClick={() => openExistingCampaign(strategy)}>Edit setup</Button>
+                        {strategy.status === "draft" && <Button onClick={() => void generateStrategy(strategy)} disabled={generating}>{generating ? "Generating…" : "Generate strategy with AI"}</Button>}
                         {strategy.id === activeStrategy?.id && <Button onClick={() => setStep("review")}>View strategy</Button>}
                       </div>
                     </div>
@@ -1556,11 +1619,13 @@ export default function SocialStrategy() {
                     <button type="button" onClick={() => setCampaignEditorOpen(false)} className="rounded-lg px-3 py-2 text-xl text-slate-400 hover:bg-slate-100 hover:text-slate-700" aria-label="Close">×</button>
                   </div>
                   <div className="space-y-5 p-5">
+                    {pageError && <div className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">{pageError}</div>}
                     <p className="rounded-lg border border-violet-200 bg-violet-50 px-3 py-2 text-xs leading-5 text-violet-800">Example: Generate 50 qualified leads between August 1 and September 30.</p>
                     <div className="grid gap-4 md:grid-cols-2">
                       <div className="md:col-span-2"><Input label="Campaign name" value={campaignName} onChange={setCampaignName} placeholder="Fall lead generation campaign" /></div>
                       <label className="block"><span className="mb-1 block text-sm font-medium text-slate-600">Start date</span><input type="date" value={campaignStartAt} onChange={(event) => setCampaignStartAt(event.target.value)} className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-100" /></label>
                       <label className="block"><span className="mb-1 block text-sm font-medium text-slate-600">End date</span><input type="date" min={campaignStartAt} value={campaignEndAt} onChange={(event) => setCampaignEndAt(event.target.value)} className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-100" /></label>
+                      <div className="md:col-span-2"><Input label="Publishing timezone" value={campaignTimezone} onChange={setCampaignTimezone} placeholder="America/Toronto" /></div>
                       <div className="md:col-span-2"><Input label="Campaign objective" value={goal} onChange={setGoal} placeholder="Generate qualified leads for the core service" /></div>
                       <label className="block"><span className="mb-1 block text-sm font-medium text-slate-600">Success metric</span><select value={goalMetric} onChange={(event) => setGoalMetric(event.target.value)} className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-100">{CAMPAIGN_GOAL_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select></label>
                       <label className="block"><span className="mb-1 block text-sm font-medium text-slate-600">Target value</span><input type="number" min="0" step={goalMetric === "engagement_rate" ? "0.1" : "1"} value={goalTarget} onChange={(event) => setGoalTarget(event.target.value)} placeholder={goalMetric === "engagement_rate" ? "5" : "50"} className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-100" /></label>
@@ -1598,7 +1663,7 @@ export default function SocialStrategy() {
                   </div>
                   <div className="flex flex-col-reverse gap-2 border-t border-slate-200 px-5 py-4 sm:flex-row sm:justify-end">
                     <Button variant="ghost" onClick={() => setCampaignEditorOpen(false)}>Cancel</Button>
-                    <Button onClick={saveCampaignSetup}>{campaignConfigured ? "Save Campaign Setup" : "Add Campaign"}</Button>
+                    <Button onClick={() => void saveCampaignSetup()} disabled={saving}>{saving ? "Saving…" : campaignConfigured ? "Save Campaign Setup" : "Add Campaign"}</Button>
                   </div>
                 </div>
               </div>
@@ -1682,38 +1747,45 @@ export default function SocialStrategy() {
 
       {activeStrategy && step === "review" && (
         <Card className="overflow-hidden">
-          <div className="border-b border-charcoal-100 px-5 py-3 font-semibold text-charcoal-700">Campaign social calendar</div>
-          <div className="overflow-x-auto">
-            <table className="w-full min-w-[960px] text-sm">
-              <thead className="bg-charcoal-50 text-left text-xs uppercase text-charcoal-400">
-                <tr>
-                  <th className="px-5 py-2">Date</th>
-                  <th className="px-5 py-2">Platform</th>
-                  <th className="px-5 py-2">Topic</th>
-                  <th className="px-5 py-2">Keyword</th>
-                  <th className="px-5 py-2">CTA</th>
-                  <th className="px-5 py-2">Stage</th>
-                </tr>
-              </thead>
-              <tbody>
-                {activeStrategy.posts.map((post) => (
-                  <tr key={post.id} className="border-t border-charcoal-50 align-top">
-                    <td className="px-5 py-3 text-charcoal-500">{formatDate(post.publishDate)}</td>
-                    <td className="px-5 py-3 font-medium text-charcoal-700">{platformLabel(post.platform)}</td>
-                    <td className="px-5 py-3">
-                      <div className="font-medium text-charcoal-800">{post.topic}</div>
-                      <div className="mt-1 max-w-xl text-xs leading-5 text-charcoal-500">{post.caption}</div>
-                      {post.sourceType && <div className="mt-2 text-[10px] font-bold uppercase tracking-wide text-violet-600">Repurposed from {post.sourceType.replaceAll("_", " ")}</div>}
-                      {post.hashtagsJson?.length > 0 && <div className="mt-1 text-xs text-brand-600">{post.hashtagsJson.join(" ")}</div>}
-                      {post.imageSuggestion && <div className="mt-1 max-w-xl text-[11px] leading-5 text-slate-400">Visual: {post.imageSuggestion}</div>}
-                    </td>
-                    <td className="px-5 py-3 text-charcoal-600">{post.targetKeyword ?? "-"}</td>
-                    <td className="px-5 py-3 text-charcoal-600">{post.cta ?? "-"}</td>
-                    <td className="px-5 py-3"><span className="rounded-full bg-brand-50 px-2 py-0.5 text-xs font-medium text-brand-700">{post.funnelStage}</span></td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+          <div className="flex flex-wrap items-center justify-between gap-3 border-b border-charcoal-100 px-5 py-4">
+            <div>
+              <div className="font-semibold text-charcoal-800">Campaign content and publishing calendar</div>
+              <p className="mt-1 text-xs text-charcoal-500">{activeStrategy.posts.length} complete posts with generated visuals, copy, platform, and planned publishing time.</p>
+            </div>
+            <span className="rounded-full bg-violet-50 px-3 py-1 text-xs font-bold text-violet-700">{activeStrategy.campaignTimezone || "UTC"}</span>
+          </div>
+          <div className="divide-y divide-slate-100">
+            {activeStrategy.posts.map((post, index) => (
+              <article key={post.id} className="grid gap-4 p-4 sm:grid-cols-[150px_minmax(0,1fr)] xl:grid-cols-[150px_minmax(0,1fr)_230px] xl:items-start">
+                <div className="overflow-hidden rounded-xl border border-slate-200 bg-slate-100">
+                  {post.imageUrl ? <img src={post.imageUrl} alt={post.imageAltText || post.topic} className="aspect-[1.91/1] h-full w-full object-cover" /> : <div className="flex aspect-[1.91/1] items-center justify-center p-3 text-center text-[10px] font-semibold text-slate-500">Image awaiting generation</div>}
+                </div>
+                <div className="min-w-0">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="rounded-full bg-brand-50 px-2 py-1 text-[10px] font-bold text-brand-700">{platformLabel(post.platform)}</span>
+                    <span className="rounded-full bg-slate-100 px-2 py-1 text-[10px] font-bold text-slate-600">{post.funnelStage}</span>
+                    <span className="rounded-full bg-emerald-50 px-2 py-1 text-[10px] font-bold text-emerald-700">Image {post.imageStatus}</span>
+                    <span className="text-[10px] font-semibold text-slate-400">Post {index + 1}</span>
+                  </div>
+                  <h3 className="mt-2 font-bold text-charcoal-900">{post.topic}</h3>
+                  <p className="mt-1 whitespace-pre-line text-xs leading-5 text-charcoal-600">{post.caption}</p>
+                  {post.hashtagsJson.length > 0 && <div className="mt-2 text-xs font-medium text-brand-600">{post.hashtagsJson.join(" ")}</div>}
+                  <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-slate-500">
+                    {post.cta && <span><b>CTA:</b> {post.cta}</span>}
+                    {post.targetKeyword && <span><b>Keyword:</b> {post.targetKeyword}</span>}
+                    {post.targetUrl && <span className="truncate"><b>Destination:</b> {post.targetUrl}</span>}
+                  </div>
+                </div>
+                <div className="rounded-xl border border-violet-100 bg-violet-50/60 p-3 sm:col-start-2 xl:col-start-auto">
+                  <div className="text-[10px] font-bold uppercase tracking-wide text-violet-600">Planned publishing time</div>
+                  <div className="mt-1 text-sm font-bold text-violet-950">{formatPublishDate(post.publishDate, activeStrategy.campaignTimezone)}</div>
+                  <div className="mt-2 flex items-center justify-between gap-2 text-[11px]">
+                    <span className="text-violet-700">{activeStrategy.postingFrequency || "Campaign cadence"}</span>
+                    <span className="rounded-full bg-white px-2 py-1 font-bold text-slate-600">{post.status}</span>
+                  </div>
+                </div>
+              </article>
+            ))}
           </div>
         </Card>
       )}
