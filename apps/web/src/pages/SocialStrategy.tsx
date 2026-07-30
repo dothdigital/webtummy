@@ -613,7 +613,10 @@ export default function SocialStrategy() {
   const [profileEditorOpen, setProfileEditorOpen] = useState(false);
   const [editingProfileIndex, setEditingProfileIndex] = useState<number | null>(null);
   const [profileDraft, setProfileDraft] = useState<SocialProfile>(emptyProfile());
-  const [competitors, setCompetitors] = useState<SocialCompetitorProfile[]>([emptyCompetitor()]);
+  const [competitors, setCompetitors] = useState<SocialCompetitorProfile[]>([]);
+  const [competitorEditorOpen, setCompetitorEditorOpen] = useState(false);
+  const [editingCompetitorIndex, setEditingCompetitorIndex] = useState<number | null>(null);
+  const [competitorDraft, setCompetitorDraft] = useState<SocialCompetitorProfile>(emptyCompetitor());
   const [strategies, setStrategies] = useState<SocialStrategyType[]>([]);
   const [contentSources, setContentSources] = useState<SocialContentSource[]>([]);
   const [repurposingBatches, setRepurposingBatches] = useState<SocialRepurposingBatch[]>([]);
@@ -649,7 +652,7 @@ export default function SocialStrategy() {
 
   const applySocialResponse = (result: SocialStrategyResponse) => {
     setProfiles(result.profiles);
-    setCompetitors(result.competitors.length ? result.competitors : [emptyCompetitor()]);
+    setCompetitors(result.competitors);
     setStrategies(result.strategies);
     setContentSources(result.contentSources ?? []);
     setRepurposingBatches(result.repurposingBatches ?? []);
@@ -722,8 +725,28 @@ export default function SocialStrategy() {
     setPageError("");
   };
 
-  const updateCompetitor = (index: number, patch: Partial<SocialCompetitorProfile>) => {
-    setCompetitors((items) => items.map((item, i) => i === index ? { ...item, ...patch } : item));
+  const openCompetitorEditor = (index?: number) => {
+    if (typeof index === "number") {
+      setEditingCompetitorIndex(index);
+      setCompetitorDraft({ ...emptyCompetitor(), ...competitors[index] });
+    } else {
+      setEditingCompetitorIndex(null);
+      setCompetitorDraft(emptyCompetitor());
+    }
+    setCompetitorEditorOpen(true);
+  };
+
+  const saveCompetitorDraft = () => {
+    if (!competitorDraft.competitorName.trim() || !competitorDraft.platform) {
+      setPageError("Enter the competitor name and choose a platform.");
+      return;
+    }
+    setCompetitors((items) => editingCompetitorIndex === null
+      ? [...items, competitorDraft]
+      : items.map((item, index) => index === editingCompetitorIndex ? competitorDraft : item));
+    setCompetitorEditorOpen(false);
+    setEditingCompetitorIndex(null);
+    setPageError("");
   };
 
   const changeWebsite = async (id: string) => {
@@ -1172,36 +1195,85 @@ export default function SocialStrategy() {
           <div className="p-5">
             <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
               <div>
-                <h2 className="text-lg font-semibold text-charcoal-800">Add competitor social examples</h2>
-                <p className="mt-1 text-sm leading-6 text-charcoal-500">Capture practical examples from competitors so the generated strategy can find content gaps and realistic posting opportunities.</p>
+                <div className="text-xs font-bold uppercase tracking-wide text-brand-600">Optional competitor record</div>
+                <h2 className="mt-1 text-lg font-semibold text-charcoal-800">Competitor social profiles</h2>
+                <p className="mt-1 text-sm leading-6 text-charcoal-500">Record relevant public competitor examples so AI can compare platforms, visible publishing cadence, engagement, and recurring content themes. This step can be skipped.</p>
               </div>
-              <Button variant="ghost" onClick={() => setCompetitors((items) => [...items, emptyCompetitor()])}>Add competitor</Button>
+              <Button className="shrink-0" onClick={() => openCompetitorEditor()}>+ Add Competitor</Button>
             </div>
-            <div className="mt-5 space-y-4">
-              {competitors.map((competitor, index) => (
-                <div key={index} className="rounded-lg border border-charcoal-100 bg-charcoal-50 p-4">
-                  <div className="grid gap-4 lg:grid-cols-[1fr_280px]">
-                    <div className="grid gap-3 md:grid-cols-2">
-                      <Input label="Competitor name" value={competitor.competitorName} onChange={(value) => updateCompetitor(index, { competitorName: value })} placeholder="Competitor name" />
-                      <Input label="Competitor domain" value={competitor.competitorDomain ?? ""} onChange={(value) => updateCompetitor(index, { competitorDomain: value })} placeholder="competitor.com" />
-                      <SelectField label="Platform" value={competitor.platform} options={platformOptions} onChange={(value) => updateCompetitor(index, { platform: value })} help="Where this competitor example was found." />
-                      <Input label="Posting rhythm" value={competitor.postingFrequency ?? ""} onChange={(value) => updateCompetitor(index, { postingFrequency: value })} placeholder="daily, weekly, monthly" />
-                      <Input label="Engagement level" value={competitor.engagementLevel ?? ""} onChange={(value) => updateCompetitor(index, { engagementLevel: value })} placeholder="low, medium, high" />
-                      <Input label="Content themes" value={competitor.contentThemes.join(", ")} onChange={(value) => updateCompetitor(index, { contentThemes: value.split(",").map((item) => item.trim()).filter(Boolean) })} placeholder="tips, reviews, offers" />
+
+            <div className="mt-6 overflow-hidden rounded-xl border border-slate-200">
+              <div className="flex items-center justify-between gap-3 border-b border-slate-200 bg-slate-50 px-4 py-3">
+                <div>
+                  <div className="font-bold text-charcoal-900">Saved competitors</div>
+                  <div className="text-xs text-slate-500">{competitors.length} competitor profile{competitors.length === 1 ? "" : "s"} recorded</div>
+                </div>
+                {competitors.length > 0 && <Button variant="ghost" onClick={() => openCompetitorEditor()}>+ Add Competitor</Button>}
+              </div>
+              {competitors.length === 0 && (
+                <div className="p-8 text-center">
+                  <div className="text-lg font-bold text-charcoal-900">No competitors recorded</div>
+                  <p className="mx-auto mt-2 max-w-xl text-sm leading-6 text-charcoal-500">Skip this optional step or add public competitor profiles that are genuinely relevant to the project’s market and audience.</p>
+                  <Button className="mt-4" onClick={() => openCompetitorEditor()}>+ Add Competitor</Button>
+                </div>
+              )}
+              {competitors.length > 0 && <div className="divide-y divide-slate-100">
+                {competitors.map((competitor, index) => (
+                  <div key={`${competitor.competitorName}-${competitor.platform}-${index}`} className="flex flex-col gap-3 bg-white px-4 py-4 sm:flex-row sm:items-center sm:justify-between">
+                    <div className="min-w-0">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className="rounded-full bg-brand-50 px-2.5 py-1 text-xs font-bold text-brand-700">{platformLabel(competitor.platform)}</span>
+                        {competitor.engagementLevel && <span className="rounded-full bg-violet-50 px-2 py-1 text-[10px] font-bold text-violet-700">{competitor.engagementLevel} visible engagement</span>}
+                      </div>
+                      <div className="mt-2 truncate text-sm font-semibold text-charcoal-900">{competitor.competitorName}</div>
+                      <div className="mt-1 truncate text-xs text-slate-500">{competitor.competitorDomain || competitor.profileUrl || "No domain recorded"}{competitor.postingFrequency ? ` · ${competitor.postingFrequency}` : ""}</div>
+                      {competitor.contentThemes.length > 0 && <div className="mt-2 flex flex-wrap gap-1">{competitor.contentThemes.map((theme) => <span key={theme} className="rounded-full bg-slate-100 px-2 py-1 text-[10px] text-slate-600">{theme}</span>)}</div>}
                     </div>
-                    <div className="space-y-2">
-                      <FieldHelp title="Name/domain">Identify who the example belongs to, so reports can compare against a known competitor.</FieldHelp>
-                      <FieldHelp title="Posting rhythm">How often they appear to publish on this channel.</FieldHelp>
-                      <FieldHelp title="Engagement level">A simple observed level based on comments, likes, shares, and visible interaction.</FieldHelp>
-                      <FieldHelp title="Content themes">Comma-separated topics they repeat, such as tips, case studies, offers, or FAQs.</FieldHelp>
+                    <div className="flex shrink-0 gap-2">
+                      <Button variant="ghost" onClick={() => openCompetitorEditor(index)}>Edit</Button>
+                      <Button variant="ghost" onClick={() => setCompetitors((items) => items.filter((_, itemIndex) => itemIndex !== index))}>Remove</Button>
                     </div>
                   </div>
-                  <div className="mt-3 flex justify-end">
-                    <Button variant="ghost" onClick={() => setCompetitors((items) => items.filter((_, i) => i !== index))}>Remove</Button>
+                ))}
+              </div>}
+            </div>
+
+            {competitorEditorOpen && (
+              <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/50 p-4" role="dialog" aria-modal="true" aria-label={editingCompetitorIndex === null ? "Add competitor" : "Edit competitor"}>
+                <div className="max-h-[90vh] w-full max-w-3xl overflow-y-auto rounded-2xl bg-white shadow-2xl">
+                  <div className="flex items-start justify-between gap-3 border-b border-slate-200 px-5 py-4">
+                    <div><div className="text-xs font-bold uppercase tracking-wide text-brand-600">{editingCompetitorIndex === null ? "New competitor" : "Update competitor"}</div><h3 className="mt-1 text-xl font-bold text-charcoal-900">{editingCompetitorIndex === null ? "Add Competitor" : `Edit ${competitorDraft.competitorName}`}</h3></div>
+                    <button type="button" onClick={() => setCompetitorEditorOpen(false)} className="rounded-lg px-3 py-2 text-xl text-slate-400 hover:bg-slate-100 hover:text-slate-700" aria-label="Close">×</button>
+                  </div>
+                  <div className="space-y-5 p-5">
+                    <div className="grid gap-4 md:grid-cols-2">
+                      <Input label="Competitor name" value={competitorDraft.competitorName} onChange={(value) => setCompetitorDraft((current) => ({ ...current, competitorName: value }))} placeholder="Competitor name" />
+                      <Input label="Competitor domain (optional)" value={competitorDraft.competitorDomain ?? ""} onChange={(value) => setCompetitorDraft((current) => ({ ...current, competitorDomain: value }))} placeholder="competitor.com" />
+                      <SelectField label="Platform" value={competitorDraft.platform} options={platformOptions} onChange={(value) => setCompetitorDraft((current) => ({ ...current, platform: value }))} />
+                      <Input label="Public profile URL (optional)" value={competitorDraft.profileUrl ?? ""} onChange={(value) => { const inferred = inferPlatformFromUrl(value); setCompetitorDraft((current) => ({ ...current, profileUrl: value, ...(inferred ? { platform: inferred } : {}) })); }} placeholder="https://linkedin.com/company/competitor" />
+                      <label className="block">
+                        <span className="mb-1 block text-sm font-medium text-slate-600">Current posting frequency (optional)</span>
+                        <select value={competitorDraft.postingFrequency ?? ""} onChange={(event) => setCompetitorDraft((current) => ({ ...current, postingFrequency: event.target.value || null }))} className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-100">
+                          <option value="">Not assessed</option>
+                          {PROFILE_FREQUENCY_OPTIONS.map((frequency) => <option key={frequency} value={frequency}>{frequency}</option>)}
+                        </select>
+                      </label>
+                      <label className="block">
+                        <span className="mb-1 block text-sm font-medium text-slate-600">Visible engagement (optional)</span>
+                        <select value={competitorDraft.engagementLevel ?? ""} onChange={(event) => setCompetitorDraft((current) => ({ ...current, engagementLevel: event.target.value || null }))} className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-100">
+                          <option value="">Not assessed</option><option value="Low">Low</option><option value="Medium">Medium</option><option value="High">High</option>
+                        </select>
+                      </label>
+                    </div>
+                    <Input label="Observed content themes (optional)" value={competitorDraft.contentThemes.join(", ")} onChange={(value) => setCompetitorDraft((current) => ({ ...current, contentThemes: value.split(",").map((item) => item.trim()).filter(Boolean) }))} placeholder="buyer tips, case studies, offers" />
+                  </div>
+                  <div className="flex flex-col-reverse gap-2 border-t border-slate-200 px-5 py-4 sm:flex-row sm:justify-end">
+                    <Button variant="ghost" onClick={() => setCompetitorEditorOpen(false)}>Cancel</Button>
+                    <Button onClick={saveCompetitorDraft}>{editingCompetitorIndex === null ? "Add Competitor" : "Save Competitor"}</Button>
                   </div>
                 </div>
-              ))}
-            </div>
+              </div>
+            )}
             <StepFooter back={() => setStep("profiles")} next={() => void saveSetupAndContinue()} nextLabel={saving ? "Saving..." : "Save setup and continue"} nextDisabled={saving || !websiteId} />
           </div>
         )}
