@@ -1521,7 +1521,10 @@ export default function SocialStrategy() {
                     <div className="mt-2 truncate text-sm font-semibold text-charcoal-900">{campaignName || `${intelligence?.businessName || "Project"} social campaign`}</div>
                     <div className="mt-1 text-xs text-slate-500">{goal} · Target: {goalTarget || "Baseline"} {goalMetricLabel(goalMetric)}</div>
                   </div>
-                  <Button variant="ghost" onClick={() => setCampaignEditorOpen(true)}>Edit</Button>
+                  <div className="flex shrink-0 flex-wrap gap-2">
+                    <Button variant="ghost" onClick={() => setCampaignEditorOpen(true)}>Edit setup</Button>
+                    <Button onClick={() => void generateStrategy()} disabled={generating}>{generating ? "Generating strategy…" : "Generate strategy with AI"}</Button>
+                  </div>
                 </div>
               )}
               {strategies.length > 0 && (
@@ -1536,7 +1539,10 @@ export default function SocialStrategy() {
                         <div className="mt-2 truncate text-sm font-semibold text-charcoal-900">{strategy.campaignName || "Social campaign"}</div>
                         <div className="mt-1 truncate text-xs text-slate-500">{strategy.goal} · Target: {strategy.goalTarget ?? "Baseline"} {goalMetricLabel(strategy.goalMetric)}</div>
                       </div>
-                      <Button variant="ghost" onClick={() => openExistingCampaign(strategy)}>Edit setup</Button>
+                      <div className="flex shrink-0 flex-wrap gap-2">
+                        <Button variant="ghost" onClick={() => openExistingCampaign(strategy)}>Edit setup</Button>
+                        {strategy.id === activeStrategy?.id && <Button onClick={() => setStep("review")}>View strategy</Button>}
+                      </div>
                     </div>
                   ))}
                 </div>
