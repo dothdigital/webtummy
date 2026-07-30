@@ -1773,11 +1773,14 @@ export default function SocialStrategy() {
                             )}
                           </div>
                           <div className="flex shrink-0 flex-wrap gap-2">
-                            <Button variant="ghost" onClick={() => openExistingCampaign(strategy)}>{strategy.status === "draft" ? "Edit setup" : "Edit campaign planning"}</Button>
+                            <Button variant="ghost" onClick={() => openExistingCampaign(strategy)}>{strategy.status === "draft" ? "Edit setup" : "Edit campaign"}</Button>
                             {strategy.status === "draft" ? (
                               <Button onClick={() => void generateStrategy(strategy)} disabled={generating}>{generating ? "Generating…" : "Generate strategy with AI"}</Button>
                             ) : (
-                              <Button onClick={() => setSelectedCampaignId(strategy.id)} disabled={selected}>{selected ? "Viewing campaign" : "View campaign"}</Button>
+                              <>
+                                <Button onClick={() => setSelectedCampaignId(strategy.id)} disabled={selected}>{selected ? "Viewing campaign" : "View campaign"}</Button>
+                                <Button variant="ghost" onClick={() => { setSelectedCampaignId(strategy.id); setMode("posting"); }}>Continue to publishing</Button>
+                              </>
                             )}
                           </div>
                         </div>
@@ -1799,9 +1802,6 @@ export default function SocialStrategy() {
                               <StatBox label="Activity" value={strategy.activityScore ?? 0} tone={scoreTone(strategy.activityScore ?? 0)} />
                               <StatBox label="Competitors" value={strategy.competitorScore ?? 0} tone={scoreTone(strategy.competitorScore ?? 0)} />
                               <StatBox label="SEO aligned" value={strategy.seoAlignmentScore ?? 0} tone={scoreTone(strategy.seoAlignmentScore ?? 0)} />
-                            </div>
-                            <div className="mt-4 flex flex-wrap gap-2">
-                              <Button onClick={() => setMode("posting")}>Continue to publishing</Button>
                             </div>
                           </div>
                         )}
