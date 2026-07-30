@@ -76,6 +76,12 @@ function jsonList(value: unknown): string[] {
   return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string" && item.trim().length > 0) : [];
 }
 
+function boundedText(value: unknown, maximumLength: number) {
+  const text = String(value ?? "").trim();
+  if (text.length <= maximumLength) return text;
+  return `${text.slice(0, Math.max(0, maximumLength - 1)).trimEnd()}…`;
+}
+
 function escapeHtml(value: unknown) {
   return String(value ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#039;");
 }
@@ -83,13 +89,15 @@ function escapeHtml(value: unknown) {
 function projectContext(project: NonNullable<Awaited<ReturnType<typeof scopedProject>>>) {
   const targetMarkets = jsonList(project.targetLocations);
   const secondaryGoals = jsonList(project.secondaryGoals);
+  const primaryGoal = project.primaryGoal?.trim() || "growth";
   return {
     name: project.businessName ?? project.name,
     website: project.website?.rootUrl ?? project.websiteUrl ?? null,
     niche: project.niche ?? project.businessProfile?.businessSummary ?? "this market",
     audience: project.businessProfile?.targetAudience ?? "the target audience",
     offer: project.businessProfile?.offerSummary ?? project.primaryGoal ?? "the main offer",
-    goal: [project.primaryGoal, ...secondaryGoals].filter(Boolean).join("; ") || "growth",
+    primaryGoal,
+    goal: [primaryGoal, ...secondaryGoals].filter(Boolean).join("; "),
     secondaryGoals,
     businessLocation: project.businessLocation,
     targetMarkets,
@@ -347,7 +355,7 @@ async function runGrowthEngine(input: {
   const candidates = generateGrowthCandidates({
     projectId: project.id,
     businessName: ctx.name,
-    primaryGoal: ctx.goal,
+    primaryGoal: ctx.primaryGoal,
     audience: ctx.audience,
     offer: ctx.offer,
     market: ctx.market,
@@ -434,8 +442,8 @@ async function runGrowthEngine(input: {
     for (const stage of stages) {
       await tx.growthFunnelStage.upsert({
         where: { projectId_stageKey: { projectId: project.id, stageKey: stage.stageKey } },
-        update: { title: stage.title, status: stage.status, conversionMetric: stage.metric, issueSummary: stage.issue, automationStatus: stage.automation, sortOrder: stage.sortOrder },
-        create: { projectId: project.id, stageKey: stage.stageKey, title: stage.title, status: stage.status, conversionMetric: stage.metric, issueSummary: stage.issue, automationStatus: stage.automation, sortOrder: stage.sortOrder },
+        update: { title: boundedText(stage.title, 180), status: boundedText(stage.status, 60), conversionMetric: boundedText(stage.metric, 120), issueSummary: stage.issue, automationStatus: boundedText(stage.automation, 60), sortOrder: stage.sortOrder },
+        create: { projectId: project.id, stageKey: boundedText(stage.stageKey, 80), title: boundedText(stage.title, 180), status: boundedText(stage.status, 60), conversionMetric: boundedText(stage.metric, 120), issueSummary: stage.issue, automationStatus: boundedText(stage.automation, 60), sortOrder: stage.sortOrder },
       });
     }
 
@@ -513,7 +521,7 @@ async function runGrowthEngine(input: {
           title: `${ctx.name} Growth Blueprint`,
           status: "active",
           currentVersion: 1,
-          primaryGoal: ctx.goal,
+          primaryGoal: boundedText(ctx.primaryGoal, 255),
           approvedStrategyId: ctx.approvedStrategy?.id,
           nextReviewAt: new Date(Date.now() + 7 * 86_400_000),
           versions: {
@@ -553,7 +561,7 @@ async function runGrowthEngine(input: {
       });
       await tx.growthBlueprint.update({
         where: { id: existingBlueprint.id },
-        data: { currentVersion: version, primaryGoal: ctx.goal, approvedStrategyId: ctx.approvedStrategy?.id, nextReviewAt: new Date(Date.now() + 7 * 86_400_000) },
+        data: { currentVersion: version, primaryGoal: boundedText(ctx.primaryGoal, 255), approvedStrategyId: ctx.approvedStrategy?.id, nextReviewAt: new Date(Date.now() + 7 * 86_400_000) },
       });
     } else {
       await tx.growthBlueprint.update({
@@ -593,7 +601,7 @@ function funnelDefinitions(project: NonNullable<Awaited<ReturnType<typeof scoped
     { stageKey: "landing_page", title: "Landing page", metric: score.latestCrawl ? `${score.latestCrawl.siteScore ?? 0}/100 site score` : "No crawl", health: score.latestCrawl?.siteScore ?? 35, issue: score.latestCrawl ? "Use crawl findings to improve clarity and page health." : "Run site analysis before conversion work.", automation: "execute_through_integration" },
     { stageKey: "lead_capture", title: "Lead capture", metric: score.hasLeadMagnetTask ? "Lead magnet task exists" : "No lead capture asset", health: score.scoreJson.leadCapture, issue: score.hasLeadMagnetTask ? "Lead capture is planned. Review landing page and form flow." : "Create a lead magnet or capture offer.", automation: "generate" },
     { stageKey: "follow_up", title: "Follow-up", metric: `${score.socialPosts} planned social posts`, health: score.scoreJson.followUp, issue: "Email and nurture follow-up should be reviewed before sending.", automation: "prepare" },
-    { stageKey: "conversion", title: "Conversion", metric: ctx.goal, health: score.scoreJson.conversion, issue: "CTA clarity, proof, objections, and form friction need measurable checks.", automation: "generate" },
+    { stageKey: "conversion", title: "Conversion", metric: ctx.primaryGoal, health: score.scoreJson.conversion, issue: "CTA clarity, proof, objections, and form friction need measurable checks.", automation: "generate" },
     { stageKey: "retention_referral", title: "Retention / referral", metric: "Manual tracking", health: score.scoreJson.retention, issue: "Add retention, referral, or review prompts after lead capture is stable.", automation: "manual_guided" },
   ].map((stage, index) => ({
     ...stage,
@@ -770,8 +778,8 @@ growthRouter.post("/projects-v2/:projectId/growth/funnel-map", async (req, res) 
     for (const stage of stages) {
       await tx.growthFunnelStage.upsert({
         where: { projectId_stageKey: { projectId: project.id, stageKey: stage.stageKey } },
-        update: { title: stage.title, status: stage.status, conversionMetric: stage.metric, issueSummary: stage.issue, automationStatus: stage.automation, sortOrder: stage.sortOrder },
-        create: { projectId: project.id, stageKey: stage.stageKey, title: stage.title, status: stage.status, conversionMetric: stage.metric, issueSummary: stage.issue, automationStatus: stage.automation, sortOrder: stage.sortOrder },
+        update: { title: boundedText(stage.title, 180), status: boundedText(stage.status, 60), conversionMetric: boundedText(stage.metric, 120), issueSummary: stage.issue, automationStatus: boundedText(stage.automation, 60), sortOrder: stage.sortOrder },
+        create: { projectId: project.id, stageKey: boundedText(stage.stageKey, 80), title: boundedText(stage.title, 180), status: boundedText(stage.status, 60), conversionMetric: boundedText(stage.metric, 120), issueSummary: stage.issue, automationStatus: boundedText(stage.automation, 60), sortOrder: stage.sortOrder },
       });
     }
   });
