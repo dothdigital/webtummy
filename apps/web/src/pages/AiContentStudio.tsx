@@ -925,7 +925,7 @@ export default function AiContentStudio() {
                   <div className="mt-1 text-xl font-bold text-charcoal-900">{revisionFlow ? `Revise ${topic || "page content"}` : citationFlow ? (citationReviewOnly ? "Review generated citation content" : "Create citation content") : "Create content asset"}</div>
                   {linkedTask && <div className="mt-1 text-xs font-semibold text-emerald-700">Linked to project task: {contentTaskTitle(linkedTask)}</div>}
                 </div>
-                <button type="button" disabled={generating} onClick={closeWizard} className="rounded-lg border border-charcoal-200 bg-white px-3 py-1.5 text-sm font-medium text-charcoal-600 hover:bg-charcoal-50 disabled:opacity-50">Close</button>
+                {!(embeddedDialog && citationFlow) && <button type="button" disabled={generating} onClick={closeWizard} className="rounded-lg border border-charcoal-200 bg-white px-3 py-1.5 text-sm font-medium text-charcoal-600 hover:bg-charcoal-50 disabled:opacity-50">Close</button>}
               </div>
               {!revisionFlow && !citationFlow && <div className="mt-4 grid gap-3 sm:grid-cols-3">
                 <WizardStep number={1} title="Choose type" active={wizardStep === 1} complete={wizardStep > 1} />
@@ -1100,9 +1100,7 @@ export default function AiContentStudio() {
               <div className="flex flex-col-reverse gap-3 border-t border-charcoal-100 bg-white px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
                 <div className="min-w-0 flex-1">{generationError ? <div className="rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs font-bold leading-5 text-rose-700">{generationError}</div> : quotaBlocked && !citationReviewOnly ? <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-bold leading-5 text-amber-800">{type === "article" ? "Monthly full-content allowance reached." : "Daily AI helper allowance reached."}</div> : revisionFlow ? <div className="text-xs font-semibold text-slate-500">{revisionCompleted ? "Review the revised version, then close this window to return to Site Architect." : "Your current content is preserved until the revised version is generated."}</div> : citationFlow ? <div className="text-xs font-semibold text-indigo-700">{selectedResult ? "Review the exact saved asset and its citation validation status." : "The originating citation block controls this asset request."}</div> : linkedTask ? selectedResult && !revisionInstruction ? <button type="button" onClick={() => { const input = document.getElementById("content-recreation-comment"); input?.scrollIntoView({ behavior: "smooth", block: "center" }); (input as HTMLTextAreaElement | null)?.focus(); }} className="text-left text-xs font-bold text-amber-700 hover:text-amber-900">Add revision instructions before re-creating ↑</button> : <div className="text-xs font-semibold text-emerald-700">Content type and brief supplied by the approved plan.</div> : <Button type="button" variant="ghost" disabled={wizardStep === 1 || generating} onClick={() => setWizardStep((step) => Math.max(1, step - 1))}>Back</Button>}</div>
                 <div className="flex gap-3 sm:justify-end">
-                  {citationReviewOnly ? (
-                    <Button type="button" onClick={closeWizard}>Close Review</Button>
-                  ) : revisionFlow ? revisionCompleted ? (
+                  {citationReviewOnly ? null : revisionFlow ? revisionCompleted ? (
                     <Button type="button" onClick={closeWizard}>Done</Button>
                   ) : (
                     <Button type="submit" disabled={generating || !canReview || quotaBlocked}>{generating ? "Generating revised content…" : quotaBlocked ? "Allowance reached" : "Generate Revised Content"}</Button>
