@@ -1961,18 +1961,31 @@ export default function SocialStrategy() {
 
       {selectedStrategy && selectedStrategy.status !== "draft" && step === "strategy" && (
         <Card className="overflow-hidden">
-          <div className="flex flex-wrap items-center justify-between gap-3 border-b border-charcoal-100 px-5 py-4">
-            <div>
-              <div className="font-semibold text-charcoal-800">Campaign content and publishing calendar</div>
-              <p className="mt-1 text-xs text-charcoal-500">{selectedStrategy.posts.length} complete posts with generated visuals, copy, platform, and planned publishing time.</p>
+          <details className="group">
+            <summary className="flex cursor-pointer list-none flex-col gap-3 px-4 py-3 marker:content-none lg:flex-row lg:items-center lg:justify-between">
+              <div className="min-w-0">
+                <div className="font-semibold text-charcoal-800">Campaign content and publishing calendar</div>
+                <p className="mt-0.5 text-xs text-charcoal-500">{selectedStrategy.posts.length} complete posts with generated visuals, copy, platform, and planned publishing time.</p>
+              </div>
+              <div className="flex flex-wrap items-center gap-1.5">
+                {(() => {
+                  const progress = campaignProgress(selectedStrategy);
+                  return (
+                    <>
+                      <span className="rounded-md border border-sky-200 bg-sky-50 px-2.5 py-1 text-[11px] font-bold text-sky-800">{progress.created} created</span>
+                      <span className="rounded-md border border-emerald-200 bg-emerald-50 px-2.5 py-1 text-[11px] font-bold text-emerald-800">{progress.posted} posted</span>
+                      <span className="rounded-md border border-violet-200 bg-violet-50 px-2.5 py-1 text-[11px] font-bold text-violet-800">{progress.upcoming} upcoming</span>
+                    </>
+                  );
+                })()}
+                <span className="ml-1 rounded-md bg-slate-800 px-2.5 py-1 text-[11px] font-bold text-white"><span className="group-open:hidden">View calendar ▾</span><span className="hidden group-open:inline">Hide calendar ▴</span></span>
+              </div>
+            </summary>
+            <div className="border-t border-sky-100 bg-sky-50 px-5 py-3 text-xs leading-5 text-sky-900">
+              Initial visuals are lightweight design previews. Use <b>Generate AI image</b> on a post to create a richer original image from the campaign image direction, then review it before approval.
             </div>
-            <span className="rounded-full bg-violet-50 px-3 py-1 text-xs font-bold text-violet-700">{selectedStrategy.campaignTimezone || "UTC"}</span>
-          </div>
-          <div className="border-b border-sky-100 bg-sky-50 px-5 py-3 text-xs leading-5 text-sky-900">
-            Initial visuals are lightweight design previews. Use <b>Generate AI image</b> on a post to create a richer original image from the campaign image direction, then review it before approval.
-          </div>
-          <div className="divide-y divide-slate-100">
-            {selectedStrategy.posts.map((post, index) => (
+            <div className="divide-y divide-slate-100 border-t border-slate-100">
+              {selectedStrategy.posts.map((post, index) => (
               <article key={post.id} className="grid gap-4 p-4 sm:grid-cols-[150px_minmax(0,1fr)] xl:grid-cols-[150px_minmax(0,1fr)_230px] xl:items-start">
                 <div className="overflow-hidden rounded-xl border border-slate-200 bg-slate-100">
                   {post.imageUrl ? <img src={post.imageUrl} alt={post.imageAltText || post.topic} className="aspect-[1.91/1] h-full w-full object-cover" /> : <div className="flex aspect-[1.91/1] items-center justify-center p-3 text-center text-[10px] font-semibold text-slate-500">Image awaiting generation</div>}
@@ -2013,8 +2026,9 @@ export default function SocialStrategy() {
                   </div>
                 </div>
               </article>
-            ))}
-          </div>
+              ))}
+            </div>
+          </details>
         </Card>
       )}
 
