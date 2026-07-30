@@ -701,6 +701,18 @@ export default function SocialStrategy() {
 
   const platformSummary = useMemo(() => profiles.filter((profile) => profile.profileUrl).map((profile) => platformLabel(profile.platform)).join(", ") || "No profiles connected yet", [profiles]);
 
+  const persistSocialSetup = async (nextProfiles: SocialProfile[], nextCompetitors: SocialCompetitorProfile[]) => {
+    if (!websiteId) throw new Error("Select a project before saving social records.");
+    const result = await api.post<SocialStrategyResponse>("/api/social-strategy/setup", {
+      websiteId,
+      projectId: selectedProject?.id ?? null,
+      profiles: normalizeProfiles(nextProfiles),
+      competitors: normalizeCompetitors(nextCompetitors),
+    });
+    applySocialResponse(result);
+    return result;
+  };
+
   const openProfileEditor = (index?: number) => {
     if (typeof index === "number") {
       setEditingProfileIndex(index);
@@ -712,17 +724,38 @@ export default function SocialStrategy() {
     setProfileEditorOpen(true);
   };
 
-  const saveProfileDraft = () => {
+  const saveProfileDraft = async () => {
     if (!profileDraft.platform || !profileDraft.profileUrl.trim()) {
       setPageError("Choose a platform and enter its public profile URL.");
       return;
     }
-    setProfiles((items) => editingProfileIndex === null
-      ? [...items, profileDraft]
-      : items.map((item, index) => index === editingProfileIndex ? profileDraft : item));
-    setProfileEditorOpen(false);
-    setEditingProfileIndex(null);
-    setPageError("");
+    const nextProfiles = editingProfileIndex === null
+      ? [...profiles, profileDraft]
+      : profiles.map((item, index) => index === editingProfileIndex ? profileDraft : item);
+    setSaving(true);
+    try {
+      await persistSocialSetup(nextProfiles, competitors);
+      setProfileEditorOpen(false);
+      setEditingProfileIndex(null);
+      setPageError("");
+      setWorkflowMessage(editingProfileIndex === null ? "Profile added and saved." : "Profile updated and saved.");
+    } catch (err) {
+      setPageError(String(err).replace(/^Error:\s*/, ""));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const removeProfile = async (index: number) => {
+    setSaving(true);
+    try {
+      await persistSocialSetup(profiles.filter((_, itemIndex) => itemIndex !== index), competitors);
+      setWorkflowMessage("Profile removed.");
+    } catch (err) {
+      setPageError(String(err).replace(/^Error:\s*/, ""));
+    } finally {
+      setSaving(false);
+    }
   };
 
   const openCompetitorEditor = (index?: number) => {
@@ -736,17 +769,38 @@ export default function SocialStrategy() {
     setCompetitorEditorOpen(true);
   };
 
-  const saveCompetitorDraft = () => {
+  const saveCompetitorDraft = async () => {
     if (!competitorDraft.competitorName.trim() || !competitorDraft.platform) {
       setPageError("Enter the competitor name and choose a platform.");
       return;
     }
-    setCompetitors((items) => editingCompetitorIndex === null
-      ? [...items, competitorDraft]
-      : items.map((item, index) => index === editingCompetitorIndex ? competitorDraft : item));
-    setCompetitorEditorOpen(false);
-    setEditingCompetitorIndex(null);
-    setPageError("");
+    const nextCompetitors = editingCompetitorIndex === null
+      ? [...competitors, competitorDraft]
+      : competitors.map((item, index) => index === editingCompetitorIndex ? competitorDraft : item);
+    setSaving(true);
+    try {
+      await persistSocialSetup(profiles, nextCompetitors);
+      setCompetitorEditorOpen(false);
+      setEditingCompetitorIndex(null);
+      setPageError("");
+      setWorkflowMessage(editingCompetitorIndex === null ? "Competitor added and saved." : "Competitor updated and saved.");
+    } catch (err) {
+      setPageError(String(err).replace(/^Error:\s*/, ""));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const removeCompetitor = async (index: number) => {
+    setSaving(true);
+    try {
+      await persistSocialSetup(profiles, competitors.filter((_, itemIndex) => itemIndex !== index));
+      setWorkflowMessage("Competitor removed.");
+    } catch (err) {
+      setPageError(String(err).replace(/^Error:\s*/, ""));
+    } finally {
+      setSaving(false);
+    }
   };
 
   const changeWebsite = async (id: string) => {
@@ -774,13 +828,7 @@ export default function SocialStrategy() {
     if (!websiteId) return;
     setSaving(true);
     try {
-      const result = await api.post<SocialStrategyResponse>("/api/social-strategy/setup", {
-        websiteId,
-        projectId: selectedProject?.id ?? null,
-        profiles: normalizeProfiles(profiles),
-        competitors: normalizeCompetitors(competitors),
-      });
-      applySocialResponse(result);
+      await persistSocialSetup(profiles, competitors);
     } finally {
       setSaving(false);
     }
@@ -1149,7 +1197,7 @@ export default function SocialStrategy() {
                     </div>
                     <div className="flex shrink-0 gap-2">
                       <Button variant="ghost" onClick={() => openProfileEditor(index)}>Edit</Button>
-                      <Button variant="ghost" onClick={() => setProfiles((items) => items.filter((_, itemIndex) => itemIndex !== index))}>Remove</Button>
+                      <Button variant="ghost" onClick={() => void removeProfile(index)} disabled={saving}>Remove</Button>
                     </div>
                   </div>
                 ))}
@@ -1182,7 +1230,7 @@ export default function SocialStrategy() {
                   </div>
                   <div className="flex flex-col-reverse gap-2 border-t border-slate-200 px-5 py-4 sm:flex-row sm:justify-end">
                     <Button variant="ghost" onClick={() => setProfileEditorOpen(false)}>Cancel</Button>
-                    <Button onClick={saveProfileDraft}>{editingProfileIndex === null ? "Add Profile" : "Save Profile"}</Button>
+                    <Button onClick={() => void saveProfileDraft()} disabled={saving}>{saving ? "Saving…" : editingProfileIndex === null ? "Add Profile" : "Save Profile"}</Button>
                   </div>
                 </div>
               </div>
@@ -1231,7 +1279,7 @@ export default function SocialStrategy() {
                     </div>
                     <div className="flex shrink-0 gap-2">
                       <Button variant="ghost" onClick={() => openCompetitorEditor(index)}>Edit</Button>
-                      <Button variant="ghost" onClick={() => setCompetitors((items) => items.filter((_, itemIndex) => itemIndex !== index))}>Remove</Button>
+                      <Button variant="ghost" onClick={() => void removeCompetitor(index)} disabled={saving}>Remove</Button>
                     </div>
                   </div>
                 ))}
@@ -1269,7 +1317,7 @@ export default function SocialStrategy() {
                   </div>
                   <div className="flex flex-col-reverse gap-2 border-t border-slate-200 px-5 py-4 sm:flex-row sm:justify-end">
                     <Button variant="ghost" onClick={() => setCompetitorEditorOpen(false)}>Cancel</Button>
-                    <Button onClick={saveCompetitorDraft}>{editingCompetitorIndex === null ? "Add Competitor" : "Save Competitor"}</Button>
+                    <Button onClick={() => void saveCompetitorDraft()} disabled={saving}>{saving ? "Saving…" : editingCompetitorIndex === null ? "Add Competitor" : "Save Competitor"}</Button>
                   </div>
                 </div>
               </div>
