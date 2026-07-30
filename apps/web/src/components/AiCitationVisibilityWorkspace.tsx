@@ -402,15 +402,7 @@ export default function AiCitationVisibilityWorkspace({ projectId }: { projectId
               </div>
               {workspace.capabilities.canAudit && <div className="mt-auto space-y-2">
                 {isContactInformation ? <>
-                  <button type="button" onClick={() => setContactDetailsOpen((open) => !open)} className="block w-full rounded-lg bg-brand-600 px-3 py-2 text-center text-xs font-black text-white hover:bg-brand-700">{contactDetailsOpen ? "Hide contact details" : "Review existing contact details"} →</button>
-                  {contactDetailsOpen && <div className="space-y-2 rounded-lg border border-slate-200 bg-slate-50 p-3">
-                    {workspace.contactProfile.fields.map((field) => <div key={field.key} className="rounded-md bg-white px-2.5 py-2"><div className="text-[9px] font-black uppercase tracking-wide text-slate-400">{field.label}</div><div className={`mt-0.5 break-words text-xs font-bold ${field.value ? "text-slate-800" : "text-amber-700"}`}>{field.value || "Not available"}</div><div className="mt-0.5 text-[9px] font-semibold text-slate-400">{field.source ?? "Add in Project Intake or Client Details"}</div></div>)}
-                    <div className="flex flex-col gap-2 pt-1 sm:flex-row">
-                      <button type="button" onClick={() => void copyContactDetails()} className="flex-1 rounded-md bg-emerald-600 px-2.5 py-2 text-[10px] font-black text-white hover:bg-emerald-700">Copy verified details</button>
-                      <a href={`/guided-projects/${encodeURIComponent(projectId)}/intake`} className="flex-1 rounded-md border border-brand-200 bg-white px-2.5 py-2 text-center text-[10px] font-black text-brand-700 hover:bg-brand-50">Update intake</a>
-                    </div>
-                    {signal.websiteAsset?.kind === "page" && <a href={`/site-architect?projectId=${encodeURIComponent(projectId)}`} className="block rounded-md border border-slate-200 bg-white px-2.5 py-2 text-center text-[10px] font-black text-slate-700 hover:bg-slate-100">Open contact page in Website Development</a>}
-                  </div>}
+                  <button type="button" onClick={() => setContactDetailsOpen(true)} className="block w-full rounded-lg bg-brand-600 px-3 py-2 text-center text-xs font-black text-white hover:bg-brand-700">Review contact information →</button>
                 </> : isOrganizationSchema ? <>
                   <button type="button" onClick={() => setOrganizationSchemaOpen((open) => !open)} className="block w-full rounded-lg bg-brand-600 px-3 py-2 text-center text-xs font-black text-white hover:bg-brand-700">{organizationSchemaOpen ? "Hide Organization schema" : "Review generated schema"} →</button>
                   {organizationSchemaOpen && <div className="space-y-2 rounded-lg border border-slate-200 bg-slate-50 p-3">
@@ -506,6 +498,32 @@ export default function AiCitationVisibilityWorkspace({ projectId }: { projectId
       }) : <Empty title="No proposed recommendations" detail="Run citation research to generate evidence-backed content, schema, trust, and correction recommendations." />}</div>}
     </>}
   </div>
+  {workspace && contactDetailsOpen && <div className="fixed inset-0 z-[105] grid place-items-center bg-slate-950/65 p-3 backdrop-blur-sm sm:p-6" role="dialog" aria-modal="true" aria-labelledby="citation-contact-title">
+    <section className="flex max-h-[calc(100vh-2rem)] w-full max-w-2xl flex-col overflow-hidden rounded-2xl border border-white/20 bg-white shadow-2xl">
+      <header className="flex shrink-0 items-start justify-between gap-4 border-b border-slate-200 px-5 py-4">
+        <div>
+          <div className="text-[10px] font-black uppercase tracking-[0.13em] text-brand-700">Verified project information</div>
+          <h2 id="citation-contact-title" className="mt-1 text-lg font-black text-slate-950">Contact information</h2>
+          <p className="mt-1 text-xs leading-5 text-slate-500">Pulled from Project Intake, Client Details, the local business profile, and the connected website. AI does not generate these details.</p>
+        </div>
+        <button type="button" onClick={() => setContactDetailsOpen(false)} className="shrink-0 rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-black text-slate-700 hover:bg-slate-50">Close</button>
+      </header>
+      <div className="min-h-0 overflow-y-auto p-5">
+        <div className="grid gap-3 sm:grid-cols-2">
+          {workspace.contactProfile.fields.map((field) => <div key={field.key} className="rounded-xl border border-slate-200 bg-slate-50 px-3.5 py-3">
+            <div className="text-[9px] font-black uppercase tracking-wide text-slate-400">{field.label}</div>
+            <div className={`mt-1 break-words text-sm font-bold ${field.value ? "text-slate-900" : "text-amber-700"}`}>{field.value || "Not available"}</div>
+            <div className="mt-1 text-[10px] font-semibold text-slate-400">{field.source ?? "Add in Project Intake or Client Details"}</div>
+          </div>)}
+        </div>
+        <div className="mt-5 grid gap-2 sm:grid-cols-2">
+          <button type="button" onClick={() => void copyContactDetails()} className="rounded-lg bg-emerald-600 px-4 py-2.5 text-xs font-black text-white hover:bg-emerald-700">Copy verified details</button>
+          <a href={`/guided-projects/${encodeURIComponent(projectId)}/intake`} onClick={() => setContactDetailsOpen(false)} className="rounded-lg border border-brand-200 bg-white px-4 py-2.5 text-center text-xs font-black text-brand-700 hover:bg-brand-50">Update Project Intake</a>
+        </div>
+        {workspace.trustSignals.find((signal) => signal.signalKey === "contact-page")?.websiteAsset?.kind === "page" && <a href={`/site-architect?projectId=${encodeURIComponent(projectId)}`} onClick={() => setContactDetailsOpen(false)} className="mt-2 block rounded-lg border border-slate-200 bg-white px-4 py-2.5 text-center text-xs font-black text-slate-700 hover:bg-slate-50">Open contact page in Website Development</a>}
+      </div>
+    </section>
+  </div>}
   <CitationContentModal
     request={contentRequest}
     onClose={() => setContentRequest(null)}
