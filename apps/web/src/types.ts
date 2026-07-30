@@ -978,7 +978,7 @@ export interface BillingStatus {
   rankingChangeEmailEnabled: boolean;
 }
 
-export type AiGenerationType = "article" | "h1" | "title" | "meta_description" | "faq" | "page_schema" | "domain_schema" | "page_llms_txt" | "domain_llms_txt" | "sitemap" | "ai_search" | "lead_magnet";
+export type AiGenerationType = "article" | "h1" | "title" | "meta_description" | "faq" | "page_schema" | "domain_schema" | "page_llms_txt" | "domain_llms_txt" | "robots_txt" | "sitemap" | "ai_search" | "lead_magnet";
 
 export interface AiContentGeneration {
   id: string;

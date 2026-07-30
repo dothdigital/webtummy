@@ -13,7 +13,7 @@ type CitationWorkspace = {
   findings: Array<{ id: string; category: string; findingKey: string; title: string; summary: string; severity: string; confidence: number; scoreImpact: number; evidenceJson: unknown; isInference: boolean; recommendedAction: string; status: string }>;
   opportunities: Array<{ id: string; query: string; topic: string | null; searchIntent: string | null; gapSummary: string; recommendedFixes: unknown; evidenceJson: unknown; isInference: boolean; entityFitScore: number; answerValueScore: number; authorityPotentialScore: number; effortScore: number; priorityScore: number; status: string }>;
   prompts: Array<{ id: string; queryText: string; topic: string | null; searchIntent: string | null; targetUrl: string | null; scanFrequency: string; engineTargets: unknown; priorityScore: number; promptSource: string; visibilityStatus: string | null; lastScanStatus: string | null; snapshots: Array<{ id: string; scanProvider: string; visibilityStatus: string; mentionDetected: boolean; sentiment: string | null; accuracyStatus: string | null; answerExcerpt: string | null; createdAt: string; sourceMentions: Array<{ id: string; sourceUrl: string; sourceDomain: string; mentionType: string; supportsBrand: boolean; sourceQualityScore: number }> }> }>;
-  trustSignals: Array<{ id: string; signalType: string; title: string; status: string; confidence: number; sourceUrl: string | null; recommendation: string | null }>;
+  trustSignals: Array<{ id: string; signalKey: string; signalType: string; title: string; status: string; confidence: number; sourceUrl: string | null; recommendation: string | null }>;
   recommendations: Array<{ id: string; recommendationType: string; title: string; rationale: string; recommendedAction: string; contentDraftJson: unknown; schemaDraftJson: unknown; priorityScore: number; riskLevel: string; status: string; executionTaskId: string | null }>;
 };
 
@@ -33,7 +33,7 @@ const display = (value: string) => value.replace(/_/g, " ").replace(/\b\w/g, (ch
 const list = (value: unknown) => Array.isArray(value) ? value.map(String) : [];
 const record = (value: unknown) => value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
 
-type ContentLaunch = { label: string; type: "article" | "faq" | "page_schema" | "domain_schema"; topic: string; instruction: string };
+type ContentLaunch = { label: string; type: "article" | "faq" | "page_schema" | "domain_schema" | "domain_llms_txt" | "robots_txt" | "sitemap" | "ai_search"; topic: string; instruction: string };
 
 function citationContentUrl(projectId: string, websiteUrl: string | null, launch: ContentLaunch) {
   const params = new URLSearchParams({
@@ -75,6 +75,23 @@ function recommendationContentLaunch(recommendation: CitationWorkspace["recommen
   const instruction = `Create content for this approved-project citation recommendation: ${recommendation.title}. ${recommendation.recommendedAction} Use the citation content brief and only approved entity claims. Verify sources and do not promise AI citation inclusion.`;
   if (recommendation.recommendationType === "schema") return { label: "Generate with AI Content", type: "domain_schema", topic: recommendation.title, instruction };
   return { label: "Create with AI Content", type: "article", topic: recommendation.title, instruction };
+}
+
+function trustSignalContentLaunch(signal: CitationWorkspace["trustSignals"][number]): ContentLaunch {
+  const verb = signal.status === "present" ? "Review and improve" : "Create";
+  const instruction = `${verb} this trust and AI-discoverability asset: ${signal.title}. ${signal.recommendation ?? "Use the current project, website, and approved entity evidence."} Use only verified business facts and sources. Do not invent people, credentials, policies, paths, URLs, statistics, or claims.`;
+  const label = signal.status === "present" ? "Review or Improve with AI" : "Create with AI";
+  if (signal.signalKey === "llms-txt") return { label, type: "domain_llms_txt", topic: "Domain llms.txt for AI discoverability", instruction };
+  if (signal.signalKey === "sitemap") return { label, type: "sitemap", topic: "XML sitemap from verified website URLs", instruction };
+  if (signal.signalKey === "robots-access") return { label, type: "robots_txt", topic: "Accessible robots.txt with verified sitemap reference", instruction };
+  if (signal.signalKey === "organization-schema" || signal.signalKey === "website-schema") return { label, type: "domain_schema", topic: signal.title, instruction };
+  if (signal.signalKey === "about-page") return { label, type: "article", topic: "About and organization identity page", instruction };
+  if (signal.signalKey === "contact-page") return { label, type: "article", topic: "Contact page with verified business information", instruction };
+  if (signal.signalKey === "privacy-page") return { label, type: "article", topic: "Privacy policy page", instruction };
+  if (signal.signalKey === "terms-page") return { label, type: "article", topic: "Terms or service policy page", instruction };
+  if (signal.signalKey === "author-evidence") return { label, type: "article", topic: "Verified author and expertise profile", instruction };
+  if (signal.signalKey === "source-evidence") return { label, type: "article", topic: "Source-backed reference and evidence content", instruction };
+  return { label, type: "ai_search", topic: signal.title, instruction };
 }
 
 function statusTone(value: string) {
@@ -243,7 +260,25 @@ export default function AiCitationVisibilityWorkspace({ projectId }: { projectId
           <ScoreCard label="Topic authority" value={workspace.scores.topicAuthority} helper="Relevant topical depth from current evidence." />
           <ScoreCard label="Observed AI visibility" value={workspace.scores.observedAiVisibility} helper="Measured only from saved observations." />
         </div>}
-        <div className="rounded-xl border border-slate-200 bg-white shadow-sm"><div className="border-b border-slate-100 px-5 py-4"><h3 className="font-black text-charcoal-950">Trust and discoverability signals</h3><p className="mt-1 text-sm text-charcoal-500">Observed from the latest crawl; missing evidence is not treated as a fabricated failure.</p></div>{workspace.trustSignals.length ? <div className="grid gap-px bg-slate-100 sm:grid-cols-2 xl:grid-cols-3">{workspace.trustSignals.map((signal) => <div key={signal.id} className="bg-white p-4"><div className="flex items-start justify-between gap-3"><div><div className="text-sm font-black text-charcoal-900">{signal.title}</div><div className="mt-1 text-xs text-charcoal-500">{signal.recommendation ?? "Evidence detected in the current snapshot."}</div></div><Pill value={signal.status} /></div></div>)}</div> : <Empty title="No trust snapshot" detail="Run citation research to evaluate current trust and discoverability evidence." />}</div>
+        <div className="rounded-xl border border-slate-200 bg-white shadow-sm">
+          <div className="border-b border-slate-100 px-5 py-4">
+            <h3 className="font-black text-charcoal-950">Trust and discoverability signals</h3>
+            <p className="mt-1 text-sm text-charcoal-500">Observed from the latest crawl; missing evidence is not treated as a fabricated failure. Create a missing asset—or review and improve a present one—with the existing AI Content workflow.</p>
+          </div>
+          {workspace.trustSignals.length ? <div className="grid gap-px bg-slate-100 sm:grid-cols-2 xl:grid-cols-3">{workspace.trustSignals.map((signal) => {
+            const contentLaunch = trustSignalContentLaunch(signal);
+            return <div key={signal.id} className="flex min-h-44 flex-col bg-white p-4">
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <div className="text-sm font-black text-charcoal-900">{signal.title}</div>
+                  <div className="mt-1 text-xs leading-5 text-charcoal-500">{signal.recommendation ?? "Evidence detected in the current snapshot."}</div>
+                </div>
+                <Pill value={signal.status} />
+              </div>
+              {workspace.capabilities.canAudit && <Link to={citationContentUrl(projectId, workspace.project.websiteUrl, contentLaunch)} className={`mt-auto block rounded-lg px-3 py-2 text-center text-xs font-black ${signal.status === "present" ? "border border-brand-200 bg-white text-brand-700 hover:bg-brand-50" : "bg-brand-600 text-white hover:bg-brand-700"}`}>{contentLaunch.label} →</Link>}
+            </div>;
+          })}</div> : <Empty title="No trust snapshot" detail="Run citation research to evaluate current trust and discoverability evidence." />}
+        </div>
       </div>}
 
       {tab === "entities" && <div className="space-y-5">

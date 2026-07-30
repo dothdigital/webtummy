@@ -11,13 +11,13 @@ import { billingPlanForClient, hasBillingAccess, normalizePlanCode, planView, re
 export const aiContentRouter = Router();
 aiContentRouter.use(requireAuth);
 
-type GenerationType = "article" | "h1" | "title" | "meta_description" | "faq" | "page_schema" | "domain_schema" | "page_llms_txt" | "domain_llms_txt" | "sitemap" | "ai_search";
+type GenerationType = "article" | "h1" | "title" | "meta_description" | "faq" | "page_schema" | "domain_schema" | "page_llms_txt" | "domain_llms_txt" | "robots_txt" | "sitemap" | "ai_search";
 
 
 const generationSchema = z.object({
   executionTaskId: z.string().optional().nullable(),
   websiteId: z.string().optional().nullable(),
-  type: z.enum(["article", "h1", "title", "meta_description", "faq", "page_schema", "domain_schema", "page_llms_txt", "domain_llms_txt", "sitemap", "ai_search"]),
+  type: z.enum(["article", "h1", "title", "meta_description", "faq", "page_schema", "domain_schema", "page_llms_txt", "domain_llms_txt", "robots_txt", "sitemap", "ai_search"]),
   topic: z.string().min(2).max(500),
   targetKeyword: z.string().max(255).optional().nullable(),
   targetUrl: z.string().max(512).optional().nullable(),
@@ -90,6 +90,7 @@ function schemaInstruction(type: GenerationType) {
   if (type === "domain_schema") return "Return JSON with key schemaJsonLd containing valid domain-level JSON-LD. Prefer Organization, WebSite, LocalBusiness, ProfessionalService, SearchAction, sameAs, contactPoint, and service catalog where appropriate. Do not wrap it in script tags.";
   if (type === "page_llms_txt") return "Return JSON with keys llmsSection, pageSummary, keyFacts, recommendedLinks, and markdown. markdown should be a page-specific llms.txt style section for this target URL.";
   if (type === "domain_llms_txt") return "Return JSON with keys llmsTxt, sections, priorityPages, sitemapNotes, and maintenanceNotes. llmsTxt should be a complete domain-level llms.txt markdown file.";
+  if (type === "robots_txt") return "Return JSON with keys robotsTxt, sitemapUrl, directives, cautions, and implementationSteps. robotsTxt must be a conservative, valid robots.txt file that keeps intended public pages crawlable, does not invent private paths, and includes the verified sitemap URL when available.";
   if (type === "sitemap") return "Return JSON with keys sitemapXml, urls, urlCount, notes, and implementationSteps. sitemapXml must be a valid XML sitemap built from the provided crawled page URLs only.";
   return "Return JSON with keys aiSearchRecommendations, entityCoverage, llmsTxtSuggestions, contentGaps, schemaSuggestions. Each key should be an array of concise recommendations.";
 }

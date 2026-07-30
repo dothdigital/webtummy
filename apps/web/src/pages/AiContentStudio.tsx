@@ -18,6 +18,8 @@ const GENERATION_TYPES: { value: AiGenerationType; label: string; detail: string
   { value: "domain_schema", label: "Domain schema", detail: "Generate Organization/WebSite/domain-level JSON-LD." },
   { value: "page_llms_txt", label: "Page llms.txt", detail: "Generate an llms.txt section for a specific page." },
   { value: "domain_llms_txt", label: "Domain llms.txt", detail: "Generate a complete llms.txt file for the domain." },
+  { value: "robots_txt", label: "Robots.txt", detail: "Generate a conservative robots.txt file with sitemap guidance." },
+  { value: "sitemap", label: "XML sitemap", detail: "Generate a valid XML sitemap from available website URLs." },
   { value: "ai_search", label: "AI-search suggestions", detail: "Generate entity, LLM, and content-readiness recommendations." },
 ];
 
