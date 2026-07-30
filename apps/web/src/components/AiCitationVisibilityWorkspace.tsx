@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { useSearchParams } from "react-router-dom";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import { api } from "../api.js";
 import CitationContentModal, { type CitationContentRequest } from "./CitationContentModal.js";
 
@@ -24,6 +24,7 @@ type WebsiteTrustAsset = {
 
 type CitationWorkspace = {
   project: { id: string; name: string; websiteUrl: string | null };
+  websiteWorkflow: { buildStatus: string | null; hasApprovedRelease: boolean };
   contactProfile: { fields: Array<{ key: string; label: string; value: string | null; source: string | null }> };
   organizationSchema: { schema: Record<string, unknown>; sources: string[]; missingFields: string[] };
   capabilities: { canAudit: boolean; canApprove: boolean; canExecute: boolean; readOnly: boolean };
@@ -35,7 +36,7 @@ type CitationWorkspace = {
   findings: Array<{ id: string; category: string; findingKey: string; title: string; summary: string; severity: string; confidence: number; scoreImpact: number; evidenceJson: unknown; isInference: boolean; recommendedAction: string; status: string; contentAsset: CitationContentAsset | null }>;
   opportunities: Array<{ id: string; query: string; topic: string | null; searchIntent: string | null; gapSummary: string; recommendedFixes: unknown; evidenceJson: unknown; isInference: boolean; entityFitScore: number; answerValueScore: number; authorityPotentialScore: number; effortScore: number; priorityScore: number; status: string; contentAsset: CitationContentAsset | null }>;
   prompts: Array<{ id: string; queryText: string; topic: string | null; searchIntent: string | null; targetUrl: string | null; scanFrequency: string; engineTargets: unknown; priorityScore: number; promptSource: string; visibilityStatus: string | null; lastScanStatus: string | null; snapshots: Array<{ id: string; scanProvider: string; visibilityStatus: string; mentionDetected: boolean; sentiment: string | null; accuracyStatus: string | null; answerExcerpt: string | null; createdAt: string; sourceMentions: Array<{ id: string; sourceUrl: string; sourceDomain: string; mentionType: string; supportsBrand: boolean; sourceQualityScore: number }> }> }>;
-  trustSignals: Array<{ id: string; signalKey: string; signalType: string; title: string; status: string; observedStatus: string; confidence: number; sourceUrl: string | null; recommendation: string | null; contentAsset: CitationContentAsset | null; websiteAsset: WebsiteTrustAsset | null }>;
+  trustSignals: Array<{ id: string; signalKey: string; signalType: string; title: string; status: string; observedStatus: string; confidence: number; sourceUrl: string | null; recommendation: string | null; contentAsset: CitationContentAsset | null; websiteAsset: WebsiteTrustAsset | null; websiteUpdate: { status: "queued"; generationId: string | null; queuedAt: string; queuedByUserId: string | null } | null }>;
   recommendations: Array<{ id: string; recommendationType: string; title: string; rationale: string; recommendedAction: string; contentDraftJson: unknown; schemaDraftJson: unknown; priorityScore: number; riskLevel: string; status: string; executionTaskId: string | null; contentAsset: CitationContentAsset | null }>;
 };
 
@@ -126,6 +127,13 @@ function trustSignalContentLaunch(signal: CitationWorkspace["trustSignals"][numb
   return { label, type: "ai_search", topic: signal.title, instruction };
 }
 
+function websiteUpdateDestination(signalKey: string) {
+  if (["sitemap", "robots-access", "llms-txt"].includes(signalKey)) return { step: "Pages & website files", impact: "Review the synchronized technical file before continuing." };
+  if (["organization-schema", "website-schema"].includes(signalKey)) return { step: "Website Quality", impact: "Review the shared structured data and rerun the quality check." };
+  if (signalKey === "contact-page") return { step: "Website Foundation", impact: "Review the verified contact details used across the website." };
+  return { step: "Website Content", impact: "Review and approve the new or updated website page." };
+}
+
 function statusTone(value: string) {
   if (/approved|resolved|present|accurate|with_sources|complete/.test(value)) return "bg-emerald-50 text-emerald-700";
   if (/rejected|dismissed|inaccurate|missing|high/.test(value)) return "bg-rose-50 text-rose-700";
@@ -188,6 +196,7 @@ function FindingActions({
 }
 
 export default function AiCitationVisibilityWorkspace({ projectId }: { projectId: string }) {
+  const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const [workspace, setWorkspace] = useState<CitationWorkspace | null>(null);
   const [tab, setTab] = useState<Tab>("overview");
@@ -197,6 +206,7 @@ export default function AiCitationVisibilityWorkspace({ projectId }: { projectId
   const [contactDetailsOpen, setContactDetailsOpen] = useState(false);
   const [organizationSchemaOpen, setOrganizationSchemaOpen] = useState(false);
   const [websiteAssetOpen, setWebsiteAssetOpen] = useState("");
+  const [websiteUpdateListOpen, setWebsiteUpdateListOpen] = useState(false);
   const [contentRequest, setContentRequest] = useState<CitationContentRequest | null>(null);
   const [contentNotice, setContentNotice] = useState<{
     request: CitationContentRequest;
@@ -279,13 +289,38 @@ export default function AiCitationVisibilityWorkspace({ projectId }: { projectId
     anchor.click();
     window.setTimeout(() => URL.revokeObjectURL(href), 1000);
   };
-  const syncCitationAssets = (generationId?: string) => run(
-    generationId ? `citation-sync:${generationId}` : "citation-sync:shared",
-    () => api.post(`/api/projects/${encodeURIComponent(projectId)}/website-builder/sync-citation-assets`, generationId ? { generationId } : {}),
-    generationId
-      ? "The citation asset is now part of Website Development and the current Website Model."
-      : "Sitemap, robots.txt, llms.txt, Organization schema, and WebSite schema are now synchronized with Website Development.",
+  const updateWebsiteList = (signal: CitationWorkspace["trustSignals"][number], action: "add" | "remove", generationId?: string | null) => run(
+    `website-list:${signal.id}`,
+    () => api.patch(`/api/projects/${encodeURIComponent(projectId)}/ai-citation-visibility/trust-signals/${encodeURIComponent(signal.id)}/website-update`, {
+      action,
+      generationId: action === "add" ? generationId ?? signal.contentAsset?.id ?? null : null,
+    }),
+    action === "add"
+      ? `${signal.title} added to the Website Update List. Nothing has changed in Website Development yet.`
+      : `${signal.title} removed from the Website Update List.`,
   );
+  const sendWebsiteUpdate = async (signal: CitationWorkspace["trustSignals"][number]) => {
+    setBusy(`website-send:${signal.id}`);
+    setError("");
+    setMessage("");
+    try {
+      const result = await api.post<{ importedPage: { id: string } | null; nextStep: "foundation" | "structure" | "content" | "optimization" }>(
+        `/api/projects/${encodeURIComponent(projectId)}/website-builder/sync-citation-assets`,
+        { signalId: signal.id, generationId: signal.websiteUpdate?.generationId ?? signal.contentAsset?.id ?? null },
+      );
+      const params = new URLSearchParams({ projectId, step: result.nextStep, source: "ai-citation" });
+      if (result.importedPage?.id) params.set("pageId", result.importedPage.id);
+      if (["sitemap", "robots-access", "llms-txt"].includes(signal.signalKey)) params.set("focus", signal.signalKey);
+      navigate(`/site-architect?${params.toString()}`);
+    } catch (actionError) {
+      setError(actionError instanceof Error ? actionError.message : "The website update could not be sent to Website Development.");
+      setBusy("");
+    }
+  };
+  const showWebsiteUpdateList = () => {
+    setWebsiteUpdateListOpen(true);
+    window.setTimeout(() => document.getElementById("website-update-list")?.scrollIntoView({ behavior: "smooth", block: "start" }), 20);
+  };
   const openCitationContent = (
     launch: ContentLaunch,
     contextLabel: string,
@@ -331,6 +366,7 @@ export default function AiCitationVisibilityWorkspace({ projectId }: { projectId
   };
 
   const latestObservations = useMemo(() => workspace?.prompts.flatMap((prompt) => prompt.snapshots.map((snapshot) => ({ ...snapshot, prompt: prompt.queryText }))) ?? [], [workspace]);
+  const websiteUpdates = useMemo(() => workspace?.trustSignals.filter((signal) => signal.websiteUpdate && !signal.websiteAsset) ?? [], [workspace]);
   const validatedAssetId = searchParams.get("generatedAssetId");
   const validatedAssetType = searchParams.get("generatedAssetType");
 
@@ -342,9 +378,11 @@ export default function AiCitationVisibilityWorkspace({ projectId }: { projectId
     {contentNotice && <div className={`sticky top-3 z-40 flex flex-col gap-3 rounded-xl border px-4 py-3 shadow-lg sm:flex-row sm:items-center sm:justify-between ${contentNotice.validated ? "border-emerald-200 bg-emerald-50 text-emerald-900" : "border-amber-200 bg-amber-50 text-amber-900"}`} role="status" aria-live="polite">
       <div className="text-sm">
         <b>{contentNotice.validated ? "Citation asset validated." : "Citation asset saved; validation is still required."}</b>{" "}
-        {contentNotice.validated
-          ? `${contentNotice.request.contextLabel} is ready for implementation through the appropriate approval workflow.`
-          : "The draft is safe in AI Content history. Reopen it here to review the result and complete the checklist."}
+        {contentNotice.request.sourceType === "trust_signal"
+          ? `${contentNotice.request.contextLabel} is staged in the Website Update List. Send it only when you are ready to continue in Website Development.`
+          : contentNotice.validated
+            ? `${contentNotice.request.contextLabel} is ready for implementation through the appropriate approval workflow.`
+            : "The draft is safe in AI Content history. Reopen it here to review the result and complete the checklist."}
       </div>
       <button type="button" onClick={() => setContentRequest({ ...contentNotice.request, generationId: contentNotice.generationId })} className={`shrink-0 rounded-lg px-4 py-2 text-xs font-black ${contentNotice.validated ? "bg-emerald-700 text-white hover:bg-emerald-800" : "bg-amber-700 text-white hover:bg-amber-800"}`}>Review generated content →</button>
     </div>}
@@ -382,6 +420,32 @@ export default function AiCitationVisibilityWorkspace({ projectId }: { projectId
           <ScoreCard label="Topic authority" value={workspace.scores.topicAuthority} helper="Relevant topical depth from current evidence." />
           <ScoreCard label="Observed AI visibility" value={workspace.scores.observedAiVisibility} helper="Measured only from saved observations." />
         </div>}
+        {websiteUpdates.length > 0 && <div id="website-update-list" className="scroll-mt-4 overflow-hidden rounded-xl border border-violet-200 bg-violet-50 shadow-sm">
+          <div className="flex flex-col gap-3 px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
+            <div>
+              <div className="text-[10px] font-black uppercase tracking-[0.13em] text-violet-700">Website Update List</div>
+              <h3 className="mt-1 font-black text-violet-950">{websiteUpdates.length} website {websiteUpdates.length === 1 ? "update is" : "updates are"} ready</h3>
+              <p className="mt-1 text-xs leading-5 text-violet-800">Nothing has changed in Website Development yet. Review the list and send each update when you are ready to continue its website workflow.</p>
+            </div>
+            <button type="button" onClick={() => setWebsiteUpdateListOpen((open) => !open)} className="shrink-0 rounded-lg bg-violet-700 px-4 py-2.5 text-xs font-black text-white hover:bg-violet-800">{websiteUpdateListOpen ? "Hide update list" : `View update list (${websiteUpdates.length})`}</button>
+          </div>
+          {workspace.websiteWorkflow.hasApprovedRelease && <div className="border-t border-violet-200 bg-amber-50 px-5 py-3 text-xs font-semibold leading-5 text-amber-900"><b>An approved release is ready to publish.</b> Items remain staged until you send them. Sending an item opens the relevant Website Development step for the next version.</div>}
+          {websiteUpdateListOpen && <div className="divide-y divide-violet-100 border-t border-violet-200 bg-white">
+            {websiteUpdates.map((signal) => {
+              const destination = websiteUpdateDestination(signal.signalKey);
+              return <div key={signal.id} className="flex flex-col gap-3 p-4 lg:flex-row lg:items-center lg:justify-between">
+                <div className="min-w-0">
+                  <div className="flex flex-wrap items-center gap-2"><span className="text-sm font-black text-slate-950">{signal.title}</span><span className="rounded-full bg-violet-100 px-2 py-1 text-[9px] font-black uppercase text-violet-700">{destination.step}</span></div>
+                  <p className="mt-1 text-xs leading-5 text-slate-500">{destination.impact}</p>
+                </div>
+                <div className="flex shrink-0 flex-wrap gap-2">
+                  <button type="button" disabled={Boolean(busy)} onClick={() => updateWebsiteList(signal, "remove")} className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-black text-slate-600 hover:bg-slate-50 disabled:opacity-50">{busy === `website-list:${signal.id}` ? "Removing…" : "Remove"}</button>
+                  <button type="button" disabled={Boolean(busy)} onClick={() => void sendWebsiteUpdate(signal)} className="rounded-lg bg-brand-600 px-4 py-2 text-xs font-black text-white hover:bg-brand-700 disabled:opacity-50">{busy === `website-send:${signal.id}` ? "Sending…" : "Send to Website Development →"}</button>
+                </div>
+              </div>;
+            })}
+          </div>}
+        </div>}
         <div className="rounded-xl border border-slate-200 bg-white shadow-sm">
           <div className="border-b border-slate-100 px-5 py-4">
             <h3 className="font-black text-charcoal-950">Trust and discoverability signals</h3>
@@ -416,7 +480,9 @@ export default function AiCitationVisibilityWorkspace({ projectId }: { projectId
                     </div>
                     {signal.websiteAsset
                       ? <a href={`/site-architect?projectId=${encodeURIComponent(projectId)}`} className="block rounded-md border border-brand-200 bg-white px-2.5 py-2 text-center text-[10px] font-black text-brand-700 hover:bg-brand-50">Open shared schema in Website Development</a>
-                      : <button type="button" disabled={Boolean(busy)} onClick={() => syncCitationAssets()} className="w-full rounded-md bg-brand-600 px-2.5 py-2 text-[10px] font-black text-white disabled:opacity-50">{busy === "citation-sync:shared" ? "Synchronizing…" : "Add to Website Development"}</button>}
+                      : signal.websiteUpdate
+                        ? <button type="button" onClick={showWebsiteUpdateList} className="w-full rounded-md bg-violet-100 px-2.5 py-2 text-[10px] font-black text-violet-800">Added to Website Update List ✓</button>
+                        : <button type="button" disabled={Boolean(busy)} onClick={() => updateWebsiteList(signal, "add")} className="w-full rounded-md bg-brand-600 px-2.5 py-2 text-[10px] font-black text-white disabled:opacity-50">{busy === `website-list:${signal.id}` ? "Adding…" : "Add to Website Update List"}</button>}
                     <a href={`/guided-projects/${encodeURIComponent(projectId)}/intake`} className="block rounded-md border border-slate-200 bg-white px-2.5 py-2 text-center text-[10px] font-black text-slate-700 hover:bg-slate-100">Update intake or localization</a>
                   </div>}
                 </> : signal.websiteAsset ? <>
@@ -433,11 +499,15 @@ export default function AiCitationVisibilityWorkspace({ projectId }: { projectId
                     <a href={`/site-architect?projectId=${encodeURIComponent(projectId)}`} className="block rounded-md border border-brand-200 bg-white px-2.5 py-2 text-center text-[10px] font-black text-brand-700 hover:bg-brand-50">Open in Website Development</a>
                   </div>}
                 </> : isManagedInfrastructure ? <>
-                  <button type="button" disabled={Boolean(busy)} onClick={() => syncCitationAssets()} className="block w-full rounded-lg bg-brand-600 px-3 py-2 text-center text-xs font-black text-white disabled:opacity-50">{busy === "citation-sync:shared" ? "Synchronizing…" : "Prepare in Website Development"} →</button>
-                  <p className="text-[10px] leading-4 text-slate-500">Generated from the current website page map and verified project data—not as a separate AI draft.</p>
+                  {signal.websiteUpdate
+                    ? <button type="button" onClick={showWebsiteUpdateList} className="block w-full rounded-lg bg-violet-100 px-3 py-2 text-center text-xs font-black text-violet-800">Added to Website Update List ✓</button>
+                    : <button type="button" disabled={Boolean(busy)} onClick={() => updateWebsiteList(signal, "add")} className="block w-full rounded-lg bg-brand-600 px-3 py-2 text-center text-xs font-black text-white disabled:opacity-50">{busy === `website-list:${signal.id}` ? "Adding…" : "Add to Website Update List"} →</button>}
+                  <p className="text-[10px] leading-4 text-slate-500">Staged first. The website page map and verified project data are used only after you send the update.</p>
                 </> : <>
                   <button type="button" onClick={() => openCitationContent(contentLaunch, signal.title, "trust_signal", signal.id, signal.contentAsset?.id)} className={`block w-full rounded-lg px-3 py-2 text-center text-xs font-black ${signal.contentAsset ? "bg-brand-600 text-white hover:bg-brand-700" : signal.status === "present" ? "border border-brand-200 bg-white text-brand-700 hover:bg-brand-50" : "bg-brand-600 text-white hover:bg-brand-700"}`}>{signal.contentAsset ? "View generated content" : contentLaunch.label} →</button>
-                  {signal.contentAsset && <button type="button" disabled={Boolean(busy)} onClick={() => syncCitationAssets(signal.contentAsset?.id)} className="w-full rounded-lg border border-emerald-200 bg-white px-3 py-2 text-center text-[11px] font-black text-emerald-700 hover:bg-emerald-50 disabled:opacity-50">{busy === `citation-sync:${signal.contentAsset.id}` ? "Synchronizing…" : "Add to Website Development"}</button>}
+                  {signal.contentAsset && (signal.websiteUpdate
+                    ? <button type="button" onClick={showWebsiteUpdateList} className="w-full rounded-lg bg-violet-100 px-3 py-2 text-center text-[11px] font-black text-violet-800">Added to Website Update List ✓</button>
+                    : <button type="button" disabled={Boolean(busy)} onClick={() => updateWebsiteList(signal, "add", signal.contentAsset?.id)} className="w-full rounded-lg border border-violet-200 bg-white px-3 py-2 text-center text-[11px] font-black text-violet-700 hover:bg-violet-50 disabled:opacity-50">{busy === `website-list:${signal.id}` ? "Adding…" : "Add to Website Update List"}</button>)}
                 </>}
               </div>}
             </div>;
@@ -529,14 +599,16 @@ export default function AiCitationVisibilityWorkspace({ projectId }: { projectId
     onClose={() => setContentRequest(null)}
     onSaved={(generationId) => {
       if (!contentRequest) return;
-      const shouldSynchronize = contentRequest.sourceType === "trust_signal" && workspace?.capabilities.canExecute;
+      const trustSignal = contentRequest.sourceType === "trust_signal"
+        ? workspace?.trustSignals.find((signal) => signal.id === contentRequest.sourceRecordId)
+        : null;
       setContentNotice({
         request: { ...contentRequest, generationId },
         generationId,
         generationType: contentRequest.type,
         validated: false,
       });
-      if (shouldSynchronize) syncCitationAssets(generationId);
+      if (trustSignal && workspace?.capabilities.canExecute) updateWebsiteList(trustSignal, "add", generationId);
       else void load();
     }}
     onValidated={(generationId, generationType) => {

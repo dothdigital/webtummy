@@ -17,6 +17,11 @@ const findingReviewSchema = z.object({
   notes: z.string().trim().max(5000).optional(),
 });
 
+const websiteUpdateListSchema = z.object({
+  action: z.enum(["add", "remove"]),
+  generationId: z.string().trim().min(1).optional().nullable(),
+});
+
 const promptSchema = z.object({
   queryText: z.string().trim().min(5).max(512),
   topic: z.string().trim().max(255).optional().nullable(),
@@ -507,12 +512,16 @@ aiCitationVisibilityRouter.get("/projects/:projectId/ai-citation-visibility", as
     contentAsset: latestAssetBySource.get(`${sourceType}:${item.id}`) ?? null,
   });
   const websiteAssets = websiteTrustAssets(project);
+  const websiteBuild = project.websiteBuilds[0] ?? null;
+  const websiteBuildSettings = jsonRecord(websiteBuild?.settingsJson);
   const attachTrustAssets = (item: typeof trustSignals[number]) => {
     const websiteAsset = websiteAssets[item.signalKey] ?? null;
+    const websiteUpdate = jsonRecord(jsonRecord(item.evidenceJson).websiteUpdate);
     return {
       ...attachContentAsset("trust_signal", item),
       observedStatus: item.status,
       websiteAsset,
+      websiteUpdate: websiteUpdate.status === "queued" ? websiteUpdate : null,
       ...(websiteAsset ? {
         status: "present",
         recommendation: `${websiteAsset.title} is already available in Website Development. Review and update the shared asset instead of creating a duplicate.`,
@@ -521,6 +530,10 @@ aiCitationVisibilityRouter.get("/projects/:projectId/ai-citation-visibility", as
   };
   res.json({
     project: { id: project.id, name: citationContext(project).businessName, websiteUrl: citationContext(project).websiteUrl },
+    websiteWorkflow: {
+      buildStatus: websiteBuild?.status ?? null,
+      hasApprovedRelease: Boolean(websiteBuildSettings.currentApprovedReleaseId),
+    },
     contactProfile: verifiedContactProfile(project),
     organizationSchema: verifiedOrganizationSchema(project),
     capabilities: {
@@ -589,11 +602,24 @@ aiCitationVisibilityRouter.post("/projects/:projectId/ai-citation-visibility/aud
       update: { category: item.category, title: item.title, summary: item.summary, severity: item.severity, confidence: item.confidence, scoreImpact: item.scoreImpact, evidenceJson: item.evidence as Prisma.InputJsonValue, isInference: item.isInference, recommendedAction: item.recommendedAction, status: "open", reviewedAt: null, reviewedByUserId: null },
       create: { projectId: project.id, category: item.category, findingKey: item.findingKey, title: item.title, summary: item.summary, severity: item.severity, confidence: item.confidence, scoreImpact: item.scoreImpact, evidenceJson: item.evidence as Prisma.InputJsonValue, isInference: item.isInference, recommendedAction: item.recommendedAction },
     });
-    for (const signal of audit.trustSignals) await tx.trustSignal.upsert({
-      where: { projectId_signalKey: { projectId: project.id, signalKey: signal.signalKey } },
-      update: { signalType: signal.signalType, title: signal.title, status: signal.status, confidence: signal.confidence, sourceUrl: signal.sourceUrl, evidenceJson: signal.evidence as Prisma.InputJsonValue, recommendation: signal.recommendation, observedAt: new Date() },
-      create: { projectId: project.id, signalKey: signal.signalKey, signalType: signal.signalType, title: signal.title, status: signal.status, confidence: signal.confidence, sourceUrl: signal.sourceUrl, evidenceJson: signal.evidence as Prisma.InputJsonValue, recommendation: signal.recommendation },
+    const existingTrustSignals = await tx.trustSignal.findMany({
+      where: { projectId: project.id },
+      select: { signalKey: true, evidenceJson: true },
     });
+    const existingTrustEvidence = new Map(existingTrustSignals.map((signal) => [signal.signalKey, jsonRecord(signal.evidenceJson)]));
+    for (const signal of audit.trustSignals) {
+      const existingEvidence = existingTrustEvidence.get(signal.signalKey) ?? {};
+      const websiteUpdate = jsonRecord(existingEvidence.websiteUpdate);
+      const evidenceJson = {
+        ...jsonRecord(signal.evidence),
+        ...(websiteUpdate.status === "queued" ? { websiteUpdate } : {}),
+      } as Prisma.InputJsonValue;
+      await tx.trustSignal.upsert({
+        where: { projectId_signalKey: { projectId: project.id, signalKey: signal.signalKey } },
+        update: { signalType: signal.signalType, title: signal.title, status: signal.status, confidence: signal.confidence, sourceUrl: signal.sourceUrl, evidenceJson, recommendation: signal.recommendation, observedAt: new Date() },
+        create: { projectId: project.id, signalKey: signal.signalKey, signalType: signal.signalType, title: signal.title, status: signal.status, confidence: signal.confidence, sourceUrl: signal.sourceUrl, evidenceJson, recommendation: signal.recommendation },
+      });
+    }
     await tx.aiCitationGap.updateMany({ where: { projectId: project.id, status: { in: ["discovered", "shortlisted"] } }, data: { status: "superseded" } });
     const opportunities = [];
     for (const item of audit.opportunities) opportunities.push(await tx.aiCitationGap.create({ data: {
@@ -647,6 +673,55 @@ aiCitationVisibilityRouter.post("/projects/:projectId/ai-citation-visibility/aud
     return { run, scores: audit.scores, entity, opportunities, recommendations };
   }, { timeout: 15_000 });
   res.status(201).json(result);
+});
+
+aiCitationVisibilityRouter.patch("/projects/:projectId/ai-citation-visibility/trust-signals/:signalId/website-update", async (req, res) => {
+  const { context, project } = await scopedCitationProject(req, req.params.projectId, "execute_tasks");
+  const input = websiteUpdateListSchema.parse(req.body);
+  const signal = await prisma.trustSignal.findFirst({ where: { id: req.params.signalId, projectId: project.id } });
+  if (!signal) fail("Trust signal not found.", 404);
+  if (input.generationId) {
+    const generation = await prisma.aiContentGeneration.findFirst({
+      where: {
+        id: input.generationId,
+        clientId: project.clientId,
+        projectId: project.id,
+        sourceContext: "ai_citation",
+        sourceType: "trust_signal",
+        sourceRecordId: signal.id,
+        status: "completed",
+      },
+      select: { id: true },
+    });
+    if (!generation) fail("The selected citation content is not available for this trust signal.", 404);
+  }
+  const previousEvidence = jsonRecord(signal.evidenceJson);
+  const nextEvidence = { ...previousEvidence };
+  if (input.action === "add") {
+    nextEvidence.websiteUpdate = {
+      status: "queued",
+      generationId: input.generationId ?? null,
+      queuedAt: new Date().toISOString(),
+      queuedByUserId: context.membership.userId,
+    };
+  } else {
+    delete nextEvidence.websiteUpdate;
+  }
+  const updated = await prisma.trustSignal.update({
+    where: { id: signal.id },
+    data: { evidenceJson: nextEvidence as Prisma.InputJsonValue },
+  });
+  await recordWorkspaceActivity(prisma, {
+    context,
+    action: input.action === "add" ? "ai_citation.website_update_queued" : "ai_citation.website_update_removed",
+    entityType: "trust_signal",
+    entityId: signal.id,
+    agencyClientId: project.agencyClientId,
+    projectId: project.id,
+    previousJson: { websiteUpdate: previousEvidence.websiteUpdate ?? null } as Prisma.InputJsonValue,
+    nextJson: { websiteUpdate: nextEvidence.websiteUpdate ?? null, signalKey: signal.signalKey } as Prisma.InputJsonValue,
+  });
+  res.json({ signal: updated, websiteUpdate: nextEvidence.websiteUpdate ?? null });
 });
 
 aiCitationVisibilityRouter.patch("/projects/:projectId/ai-citation-visibility/claims/:claimId", async (req, res) => {

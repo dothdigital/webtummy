@@ -2295,6 +2295,7 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/sync-citation-as
   if (["queued", "processing"].includes(build.status)) return res.status(409).json({ error: "Wait for the active website job to finish before synchronizing citation assets." });
 
   const generationId = String(req.body?.generationId || "").trim();
+  const signalId = String(req.body?.signalId || "").trim();
   const generation = generationId ? await prisma.aiContentGeneration.findFirst({
     where: {
       id: generationId,
@@ -2306,16 +2307,19 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/sync-citation-as
     },
   }) : null;
   if (generationId && !generation) return res.status(404).json({ error: "Citation content asset not found for this project." });
-  const signal = generation?.sourceRecordId ? await prisma.trustSignal.findFirst({
-    where: { id: generation.sourceRecordId, projectId: project.id },
+  const requestedSignalId = generation?.sourceRecordId || signalId;
+  const signal = requestedSignalId ? await prisma.trustSignal.findFirst({
+    where: { id: requestedSignalId, projectId: project.id },
     select: { id: true, signalKey: true, title: true },
   }) : null;
+  if (signalId && !signal) return res.status(404).json({ error: "Citation website update not found for this project." });
   const previousCitationContent = jsonRecord(jsonRecord(jsonRecord(build.settingsJson).trustAssets).citationContent);
   const previouslySynchronized = signal && generation
     ? String(jsonRecord(previousCitationContent[signal.signalKey]).generationId || "") === generation.id
     : false;
 
   let importedPage: { id: string; title: string; slug: string } | null = null;
+  let pageCreated = false;
   const pageConfig = signal ? citationTrustPageConfig[signal.signalKey] : null;
   if (generation && pageConfig && generation.type === "article" && !previouslySynchronized) {
     const pagePattern = signal?.signalKey === "privacy-page"
@@ -2345,6 +2349,7 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/sync-citation-as
         },
         include: { versions: true, mediaAssets: true },
       });
+      pageCreated = true;
     }
     const generated = importedArticle(jsonRecord(generation.resultJson), page, businessIdentity(project) || "the business");
     const saved = await saveGeneratedPage(page, generated, context, build.templateKey, `Synchronized from AI Citation: ${signal?.title || generation.topic}.`);
@@ -2357,18 +2362,51 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/sync-citation-as
   const latestBuild = await prisma.websiteBuild.findUnique({ where: { id: build.id }, select: { settingsJson: true } });
   const currentSettings = jsonRecord(latestBuild?.settingsJson ?? build.settingsJson);
   const previousTrustAssets = jsonRecord(currentSettings.trustAssets);
+  const previousSchemas = jsonRecord(previousTrustAssets.schemas);
+  const schemasChanged = !signal || ["organization-schema", "website-schema"].includes(signal.signalKey);
+  const synchronizedSchemas = {
+    ...previousSchemas,
+    ...(!signal || signal.signalKey === "organization-schema" ? { organization: schemas.organization } : {}),
+    ...(!signal || signal.signalKey === "website-schema" ? { website: schemas.website } : {}),
+  };
+  const siteFilesChanged = !signal || pageCreated || ["sitemap", "robots-access", "llms-txt"].includes(signal.signalKey);
+  const previousSiteFiles = jsonRecord(currentSettings.siteFiles);
+  const targetSiteFileKey = signal?.signalKey === "sitemap" ? "sitemap" : signal?.signalKey === "robots-access" ? "robots" : signal?.signalKey === "llms-txt" ? "llms" : null;
+  const synchronizedSiteFiles = pageCreated || !signal
+    ? siteFiles
+    : targetSiteFileKey
+      ? { ...previousSiteFiles, [targetSiteFileKey]: siteFiles[targetSiteFileKey] }
+      : previousSiteFiles;
+  const synchronizedSchemaNames = signal?.signalKey === "organization-schema"
+    ? ["Organization"]
+    : signal?.signalKey === "website-schema"
+      ? ["WebSite"]
+      : !signal
+        ? ["Organization", "WebSite"]
+        : [];
+  const synchronizedSiteFileNames = signal?.signalKey === "sitemap"
+    ? ["sitemap.xml"]
+    : signal?.signalKey === "robots-access"
+      ? ["robots.txt"]
+      : signal?.signalKey === "llms-txt"
+        ? ["llms.txt"]
+        : pageCreated || !signal
+          ? ["sitemap.xml", "robots.txt", "llms.txt"]
+          : [];
   const synchronizedSettings = {
     ...currentSettings,
-    siteFiles: {
-      ...siteFiles,
-      syncedAt: new Date().toISOString(),
-      approvedAt: null,
-      approvedByUserId: null,
-      source: "Shared Website Development and AI Citation workflow",
-    },
+    ...(siteFilesChanged ? {
+      siteFiles: {
+        ...synchronizedSiteFiles,
+        syncedAt: new Date().toISOString(),
+        approvedAt: null,
+        approvedByUserId: null,
+        source: "Shared Website Development and AI Citation workflow",
+      },
+    } : {}),
     trustAssets: {
       ...previousTrustAssets,
-      schemas,
+      ...(schemasChanged ? { schemas: synchronizedSchemas } : {}),
       syncedAt: new Date().toISOString(),
       source: "Verified project intake, localization, and Website Development",
       ...(generation ? {
@@ -2386,13 +2424,15 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/sync-citation-as
   const updated = await prisma.websiteBuild.update({
     where: { id: build.id },
     data: {
-      sitemapApprovedAt: null,
+      sitemapApprovedAt: siteFilesChanged ? null : build.sitemapApprovedAt,
       settingsJson: websiteChangedSettings(synchronizedSettings, {
-        category: importedPage ? "page_content" : "trust_assets",
-        summary: importedPage
-          ? `${importedPage.title} was synchronized from AI Citation into Website Development.`
-          : "Website trust files and structured data were synchronized with AI Citation.",
-        section: importedPage ? "content" : "optimization",
+        category: pageCreated ? "page_added" : importedPage ? "page_content" : "trust_assets",
+        summary: pageCreated
+          ? `${importedPage?.title || signal?.title || "A website page"} was added from AI Citation.`
+          : importedPage
+            ? `${importedPage.title} was synchronized from AI Citation into Website Development.`
+            : `${signal?.title || "Website trust files and structured data"} was synchronized with AI Citation.`,
+        section: pageCreated ? "structure" : importedPage ? "content" : siteFilesChanged ? "structure" : "optimization",
         pageId: importedPage?.id,
         pageTitle: importedPage?.title,
         changedByUserId: context.membership.userId,
@@ -2410,11 +2450,26 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/sync-citation-as
       generationId: generation?.id ?? null,
       signalKey: signal?.signalKey ?? null,
       pageId: importedPage?.id ?? null,
-      schemas: ["Organization", "WebSite"],
-      siteFiles: ["sitemap.xml", "robots.txt", "llms.txt"],
+      schemas: synchronizedSchemaNames,
+      siteFiles: synchronizedSiteFileNames,
     },
   });
-  res.json({ build: updated, siteFiles, schemas, importedPage });
+  if (signal) {
+    const storedSignal = await prisma.trustSignal.findUnique({ where: { id: signal.id }, select: { evidenceJson: true } });
+    const signalEvidence = jsonRecord(storedSignal?.evidenceJson);
+    delete signalEvidence.websiteUpdate;
+    await prisma.trustSignal.update({ where: { id: signal.id }, data: { evidenceJson: signalEvidence as Prisma.InputJsonValue } });
+  }
+  const nextStep = pageCreated || signal && ["sitemap", "robots-access", "llms-txt"].includes(signal.signalKey)
+    ? "structure"
+    : importedPage
+      ? "content"
+      : signal && ["organization-schema", "website-schema"].includes(signal.signalKey)
+        ? "optimization"
+        : signal?.signalKey === "contact-page"
+          ? "foundation"
+          : "content";
+  res.json({ build: updated, siteFiles, schemas: synchronizedSchemas, importedPage, nextStep, signalKey: signal?.signalKey ?? null });
 });
 
 websiteBuilderRouter.post("/projects/:projectId/website-builder/approve-site-files", async (req, res) => {
