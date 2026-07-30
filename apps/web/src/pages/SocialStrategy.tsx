@@ -317,19 +317,6 @@ function SocialPublisher({ websiteId, strategy }: SocialPublisherProps) {
     setScheduledAt(toDateInputValue(post.publishDate));
   };
 
-  const connectProvider = async (provider: "facebook" | "instagram") => {
-    setBusy(true);
-    setError("");
-    try {
-      const redirectUrl = `${window.location.origin}${window.location.pathname}?project=${encodeURIComponent(websiteId)}`;
-      const result = await api.post<{ authorization_url: string }>(`/api/social-connect/accounts/connect/${provider}`, { redirectUrl });
-      window.location.href = result.authorization_url;
-    } catch (err) {
-      setError(String(err).replace(/^Error:\s*/, ""));
-      setBusy(false);
-    }
-  };
-
   const buildPlatforms = (): SocialPostPlatform[] => {
     const selectedIds = [selectedFacebookAccountId, selectedInstagramAccountId].filter(Boolean);
     return connectedAccounts
@@ -505,8 +492,6 @@ function SocialPublisher({ websiteId, strategy }: SocialPublisherProps) {
           </div>
           <div className="flex w-full flex-col gap-2 sm:flex-row sm:items-center lg:w-auto lg:shrink-0 lg:justify-end">
             <Button className="min-w-[150px] border-slate-400 bg-slate-100 text-slate-800 shadow-sm hover:bg-slate-200 sm:w-auto" variant="ghost" onClick={() => void loadAccounts()} disabled={busy}>Refresh accounts</Button>
-            <Button className={`min-w-[150px] shadow-sm sm:w-auto ${facebookAccounts.length ? "!border-emerald-200 !bg-emerald-50 !text-emerald-700" : "!border-blue-600 !bg-blue-600 !text-white hover:!bg-blue-700"}`} variant="ghost" onClick={() => void connectProvider("facebook")} disabled={busy || facebookAccounts.length > 0}>{facebookAccounts.length ? "✓ Facebook Connected" : "Connect Facebook"}</Button>
-            <Button className={`min-w-[150px] shadow-sm sm:w-auto ${instagramAccounts.length ? "!border-emerald-200 !bg-emerald-50 !text-emerald-700" : "!bg-pink-600 !text-white hover:!bg-pink-700"}`} onClick={() => void connectProvider("instagram")} disabled={busy || instagramAccounts.length > 0}>{instagramAccounts.length ? "✓ Instagram Connected" : "Connect Instagram"}</Button>
           </div>
         </div>
       </div>
