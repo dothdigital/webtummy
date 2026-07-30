@@ -356,6 +356,14 @@ export default function AiContentStudio() {
     return requested?.startsWith("/ai-citations") ? requested : `/ai-citations?projectId=${encodeURIComponent(searchParams.get("projectId") || "")}`;
   })();
   const returnToCitation = (generation: AiContentGeneration) => {
+    if (embeddedDialog && window.parent !== window) {
+      window.parent.postMessage({
+        type: "senuke:citation-content-validated",
+        generationId: generation.id,
+        generationType: generation.type,
+      }, window.location.origin);
+      return;
+    }
     const separator = citationReturnPath.includes("?") ? "&" : "?";
     navigate(`${citationReturnPath}${separator}generatedAssetId=${encodeURIComponent(generation.id)}&generatedAssetType=${encodeURIComponent(generation.type)}`);
   };
@@ -448,10 +456,23 @@ export default function AiContentStudio() {
       if (requestedType && GENERATION_TYPES.some((item) => item.value === requestedType)) setType(requestedType as AiGenerationType);
       const requestedTopic = searchParams.get("topic");
       const requestedTargetUrl = searchParams.get("targetUrl");
+      const requestedGenerationId = searchParams.get("generationId");
       if (citationFlow && !options.preserveCitationResult) {
         setSelectedResult(null);
         setSelectedResultItems([]);
         setSelectedResultTabId(null);
+      }
+      if (citationFlow && requestedGenerationId) {
+        const requestedGeneration = historyResult.generations.find((generation) => generation.id === requestedGenerationId);
+        if (requestedGeneration) {
+          setSelectedResult(requestedGeneration);
+          setSelectedResultItems([requestedGeneration]);
+          setSelectedResultTabId(requestedGeneration.id);
+          setType(requestedGeneration.type);
+          setTopic(requestedGeneration.topic);
+          setTargetKeyword(requestedGeneration.targetKeyword ?? "");
+          setTargetUrl(requestedGeneration.targetUrl ?? "");
+        }
       }
       if (requestedTask?.moduleName === "content") {
         const keyword = requestedTask.title.match(/[“\"]([^”\"]+)[”\"]/)?.[1] ?? "";
@@ -526,6 +547,9 @@ export default function AiContentStudio() {
     }
     setGenerating(true);
     setGenerationError("");
+    if (embeddedDialog && window.parent !== window) {
+      window.parent.postMessage({ type: "senuke:content-asset-generating" }, window.location.origin);
+    }
     try {
       const result = await api.post<{ generation: AiContentGeneration }>("/api/ai-content/generate", {
         executionTaskId: linkedTask?.id ?? null,
@@ -558,7 +582,11 @@ export default function AiContentStudio() {
       }
       await load({ preserveCitationResult: citationFlow });
     } catch (error) {
-      setGenerationError(error instanceof Error ? error.message : "AI generation failed");
+      const message = error instanceof Error ? error.message : "AI generation failed";
+      setGenerationError(message);
+      if (embeddedDialog && window.parent !== window) {
+        window.parent.postMessage({ type: "senuke:content-asset-generation-failed", message }, window.location.origin);
+      }
     } finally {
       setGenerating(false);
     }
