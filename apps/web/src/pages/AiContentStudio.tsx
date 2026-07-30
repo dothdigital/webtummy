@@ -488,7 +488,7 @@ export default function AiContentStudio() {
         ...(activeProject?.executionTasks ?? []),
         ...(activeProject?.executionPlans?.flatMap((plan) => plan.tasks ?? []) ?? []),
       ].map((task) => [task.id, task])).values());
-      setProjectContentTasks(activeProjectTasks.filter((task) => task.moduleName === "publishing" || (task.moduleName === "content" && (task.sourceType === "content_plan_action" || Boolean(task.relatedAssetId) || Boolean(task.approvalSnapshotJson?.generatedContent)))));
+      setProjectContentTasks(activeProjectTasks.filter((task) => task.moduleName === "publishing" || (task.moduleName === "content" && (task.sourceType === "content_plan_action" || task.sourceType === "growth_content_opportunity" || Boolean(task.relatedAssetId) || Boolean(task.approvalSnapshotJson?.generatedContent)))));
       const requestedTaskId = searchParams.get("taskId");
       const requestedMode = searchParams.get("contentMode");
       const requestedInstruction = searchParams.get("instruction");

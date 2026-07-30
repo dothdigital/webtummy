@@ -3,9 +3,9 @@ import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { api } from "../api.js";
 import { getActiveProjectId, resolveActiveProjectId, setActiveProjectId } from "../active-project.js";
 import { Button, Card } from "../components/ui.js";
-import type { GrowthCandidateAction, GrowthExperiment, GrowthOverviewResponse, GrowthReadinessItem, GuidedProject } from "../types.js";
+import type { GrowthCandidateAction, GrowthContentOpportunity, GrowthExperiment, GrowthOverviewResponse, GrowthReadinessItem, GuidedProject } from "../types.js";
 
-type Tab = "overview" | "blueprint" | "recommendations" | "diagnosis" | "evidence" | "funnel" | "experiments" | "tracker" | "history" | "report";
+type Tab = "overview" | "blueprint" | "content" | "recommendations" | "diagnosis" | "evidence" | "funnel" | "experiments" | "tracker" | "history" | "report";
 
 type BlueprintItem = { dedupeKey?: string; title?: string; route?: string; score?: number; rationale?: string; conditions?: string[] };
 
@@ -220,6 +220,8 @@ export default function GrowthEngine() {
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [contentQueue, setContentQueue] = useState<"now" | "next" | "later" | "conditional" | "all">("now");
+  const [selectedContentIds, setSelectedContentIds] = useState<string[]>([]);
   const projectId = resolveActiveProjectId(projects, params.get("projectId"), getActiveProjectId());
 
   useEffect(() => {
@@ -242,6 +244,11 @@ export default function GrowthEngine() {
       })
       .catch((err) => setError(err instanceof Error ? err.message : "Could not load growth engine"))
       .finally(() => setLoading(false));
+  }, [projectId]);
+
+  useEffect(() => {
+    setSelectedContentIds([]);
+    setContentQueue("now");
   }, [projectId]);
 
   const scoreEntries = useMemo(() => Object.entries(data?.signals.scoreJson ?? {}), [data]);
@@ -318,6 +325,37 @@ export default function GrowthEngine() {
     }
   }
 
+  async function updateContentOpportunity(opportunity: GrowthContentOpportunity, input: { queue?: "now" | "next" | "later" | "conditional"; lifecycleStatus?: "proposed" | "deferred" | "rejected" }) {
+    setBusy(true);
+    setError(null);
+    try {
+      await api.patch(`/api/projects-v2/${projectId}/growth/content-roadmap/opportunities/${opportunity.id}`, input);
+      const fresh = await api.get<GrowthOverviewResponse>(`/api/projects-v2/${projectId}/growth/overview`);
+      setData(fresh);
+      setSelectedContentIds((current) => current.filter((id) => id !== opportunity.id));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not update the content opportunity");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function approveContentBatch() {
+    if (!selectedContentIds.length) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await api.post(`/api/projects-v2/${projectId}/growth/content-roadmap/batches/approve`, { opportunityIds: selectedContentIds });
+      const fresh = await api.get<GrowthOverviewResponse>(`/api/projects-v2/${projectId}/growth/overview`);
+      setData(fresh);
+      setSelectedContentIds([]);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not approve the selected content batch");
+    } finally {
+      setBusy(false);
+    }
+  }
+
   if (loading) return <div className="text-charcoal-400">Loading Growth Engine...</div>;
   if (!projects.length) {
     return (
@@ -331,6 +369,12 @@ export default function GrowthEngine() {
   if (!data) return <Card className="p-4 text-sm text-red-700">{error || "Growth data unavailable"}</Card>;
   const canRunGrowth = data.readiness.canRun;
   const blueprintVersion = data.growth.blueprint?.versions[0] ?? null;
+  const contentRoadmap = data.growth.contentRoadmap;
+  const contentQueueOrder = { now: 0, next: 1, later: 2, conditional: 3 };
+  const visibleContentOpportunities = (contentRoadmap?.opportunities ?? []).filter((item) =>
+    contentQueue === "all" ? item.lifecycleStatus !== "superseded" : item.queue === contentQueue && item.lifecycleStatus !== "superseded",
+  ).sort((left, right) => contentQueueOrder[left.queue] - contentQueueOrder[right.queue] || right.priorityScore - left.priorityScore);
+  const selectableContentOpportunities = visibleContentOpportunities.filter((item) => ["proposed", "deferred"].includes(item.lifecycleStatus) && !item.executionTaskId);
   const findings = findingItems(data.growth.diagnosis?.findingsJson);
 
   return (
@@ -369,7 +413,7 @@ export default function GrowthEngine() {
 
       <Card className="p-2">
         <div className="flex flex-wrap gap-2">
-          {(["overview", "blueprint", "recommendations", "diagnosis", "evidence", "funnel", "experiments", "tracker", "history", "report"] as Tab[]).map((item) => (
+          {(["overview", "blueprint", "content", "recommendations", "diagnosis", "evidence", "funnel", "experiments", "tracker", "history", "report"] as Tab[]).map((item) => (
             <button
               key={item}
               type="button"
@@ -450,6 +494,113 @@ export default function GrowthEngine() {
               <p className="text-sm text-slate-500">No Blueprint exists yet.</p>
               <Button className="mt-4" onClick={() => runAction(`/api/projects-v2/${projectId}/growth/analyze`, "blueprint")} disabled={busy}>Generate Blueprint</Button>
             </Card>
+          )}
+          <Card className="overflow-hidden">
+            <div className="flex flex-wrap items-start justify-between gap-4 border-b border-slate-100 bg-gradient-to-r from-violet-50 to-white p-5">
+              <div>
+                <div className="text-xs font-bold uppercase tracking-wide text-violet-700">Plan within the Growth Blueprint</div>
+                <h2 className="mt-2 text-xl font-bold text-charcoal-950">Supporting Content Distribution Plan</h2>
+                <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-600">{contentRoadmap?.recommendationRationale || "Map the complete supporting-content opportunity, then generate only the current approved phase."}</p>
+              </div>
+              <Button onClick={() => contentRoadmap ? (setTab("content"), setParams({ projectId, tab: "content" })) : runAction(`/api/projects-v2/${projectId}/growth/content-roadmap/refresh`, "content")} disabled={busy || !canRunGrowth}>{contentRoadmap ? "Open Content Plan" : "Generate Content Plan"}</Button>
+            </div>
+            {contentRoadmap && <div className="grid gap-3 p-5 sm:grid-cols-2 xl:grid-cols-5">
+              <Stat label="Total opportunity" value={contentRoadmap.opportunityCount} />
+              <Stat label="Now" value={contentRoadmap.nowCount} detail="Current approved phase" />
+              <Stat label="Next" value={contentRoadmap.nextCount} detail="Next 30–90 days" />
+              <Stat label="Later" value={contentRoadmap.laterCount} detail="Long-term backlog" />
+              <Stat label="Conditional" value={contentRoadmap.conditionalCount} detail="Evidence-triggered" />
+            </div>}
+          </Card>
+        </div>
+      )}
+
+      {tab === "content" && (
+        <div className="space-y-5">
+          {!contentRoadmap ? (
+            <Card className="p-8 text-center">
+              <div className="text-xs font-bold uppercase tracking-wide text-violet-700">Growth Blueprint</div>
+              <h2 className="mt-2 text-xl font-bold text-charcoal-950">Generate the Supporting Content Plan</h2>
+              <p className="mx-auto mt-2 max-w-2xl text-sm leading-6 text-slate-500">SEnuke AI will use approved strategy, keyword research, website pages, target markets and business goals to build a complete opportunity map. It will not generate the articles yet.</p>
+              <Button className="mt-5" onClick={() => runAction(`/api/projects-v2/${projectId}/growth/content-roadmap/refresh`, "content")} disabled={busy || !canRunGrowth}>{busy ? "Researching opportunities…" : "Generate Supporting Content Plan"}</Button>
+            </Card>
+          ) : (
+            <>
+              <Card className="overflow-hidden">
+                <div className="flex flex-wrap items-start justify-between gap-4 border-b border-violet-100 bg-gradient-to-r from-violet-50 via-white to-cyan-50 p-5">
+                  <div>
+                    <div className="text-xs font-bold uppercase tracking-wide text-violet-700">Growth Blueprint · Supporting Content Plan v{contentRoadmap.currentVersion}</div>
+                    <h2 className="mt-2 text-xl font-bold text-charcoal-950">Phased authority and publishing roadmap</h2>
+                    <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-600">{contentRoadmap.recommendationRationale}</p>
+                    <div className="mt-3 text-xs font-semibold text-slate-500">Cadence: {contentRoadmap.recommendedCadence}{contentRoadmap.nextReviewAt ? ` · Reassess ${new Date(contentRoadmap.nextReviewAt).toLocaleDateString()}` : ""}</div>
+                  </div>
+                  <Button variant="ghost" onClick={() => runAction(`/api/projects-v2/${projectId}/growth/content-roadmap/refresh`, "content")} disabled={busy}>{busy ? "Refreshing research…" : "Refresh Research"}</Button>
+                </div>
+                <div className="grid gap-3 p-5 sm:grid-cols-2 xl:grid-cols-5">
+                  <Stat label="Total opportunity" value={contentRoadmap.opportunityCount} />
+                  <Stat label="Now" value={contentRoadmap.nowCount} detail="Generate this phase first" />
+                  <Stat label="Next" value={contentRoadmap.nextCount} detail="30–90 day plan" />
+                  <Stat label="Later" value={contentRoadmap.laterCount} detail="Expansion backlog" />
+                  <Stat label="Conditional" value={contentRoadmap.conditionalCount} detail="Wait for evidence" />
+                </div>
+              </Card>
+
+              <Card className="overflow-hidden">
+                <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-100 p-4">
+                  <div className="flex flex-wrap gap-2">
+                    {([
+                      ["now", `Now · ${contentRoadmap.nowCount}`],
+                      ["next", `Next · ${contentRoadmap.nextCount}`],
+                      ["later", `Later · ${contentRoadmap.laterCount}`],
+                      ["conditional", `Conditional · ${contentRoadmap.conditionalCount}`],
+                      ["all", `All · ${contentRoadmap.opportunityCount}`],
+                    ] as const).map(([queue, label]) => <button key={queue} type="button" onClick={() => { setContentQueue(queue); setSelectedContentIds([]); }} className={`rounded-full px-3 py-2 text-xs font-bold ${contentQueue === queue ? "bg-brand-600 text-white" : "bg-slate-100 text-slate-600 hover:bg-slate-200"}`}>{label}</button>)}
+                  </div>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <button type="button" disabled={!selectableContentOpportunities.length} onClick={() => setSelectedContentIds(selectableContentOpportunities.map((item) => item.id))} className="rounded-lg border border-slate-200 px-3 py-2 text-xs font-bold text-slate-600 disabled:text-slate-300">Select available</button>
+                    <Button onClick={() => void approveContentBatch()} disabled={busy || !selectedContentIds.length}>{busy ? "Approving batch…" : `Approve Selected Batch${selectedContentIds.length ? ` (${selectedContentIds.length})` : ""}`}</Button>
+                  </div>
+                </div>
+                <div className="space-y-3 p-4">
+                  {visibleContentOpportunities.map((opportunity) => {
+                    const selectable = ["proposed", "deferred"].includes(opportunity.lifecycleStatus) && !opportunity.executionTaskId;
+                    const selected = selectedContentIds.includes(opportunity.id);
+                    return <div key={opportunity.id} className={`rounded-xl border p-4 ${selected ? "border-brand-400 bg-brand-50/40 ring-1 ring-brand-100" : "border-slate-200 bg-white"}`}>
+                      <div className="flex flex-wrap items-start gap-3">
+                        <label className={`mt-1 ${selectable ? "cursor-pointer" : "cursor-not-allowed opacity-40"}`}><input type="checkbox" disabled={!selectable} checked={selected} onChange={() => setSelectedContentIds((current) => current.includes(opportunity.id) ? current.filter((id) => id !== opportunity.id) : [...current, opportunity.id])}/></label>
+                        <div className="min-w-0 flex-1">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <span className={`rounded-full px-2.5 py-1 text-[10px] font-bold uppercase ${opportunity.queue === "now" ? "bg-emerald-100 text-emerald-700" : opportunity.queue === "next" ? "bg-cyan-100 text-cyan-700" : opportunity.queue === "conditional" ? "bg-amber-100 text-amber-700" : "bg-slate-100 text-slate-600"}`}>{opportunity.queue}</span>
+                            <span className={`rounded-full px-2.5 py-1 text-[10px] font-bold ${statusBadge(opportunity.lifecycleStatus)}`}>{titleCase(opportunity.lifecycleStatus)}</span>
+                            <span className="rounded-full bg-violet-50 px-2.5 py-1 text-[10px] font-bold text-violet-700">{titleCase(opportunity.plannedPhase)}</span>
+                          </div>
+                          <h3 className="mt-2 text-base font-bold text-charcoal-950">{opportunity.title}</h3>
+                          <div className="mt-1 text-xs font-semibold text-brand-700">{opportunity.primaryKeyword} · {titleCase(opportunity.searchIntent)} · {opportunity.clusterName}</div>
+                          <p className="mt-3 text-sm leading-6 text-slate-600">{opportunity.recommendationReason}</p>
+                          <div className="mt-3 grid gap-3 text-xs md:grid-cols-3">
+                            <div className="rounded-lg bg-slate-50 p-3"><span className="block font-bold uppercase text-slate-400">Business purpose</span><span className="mt-1 block leading-5 text-slate-700">{opportunity.businessPurpose}</span></div>
+                            <div className="rounded-lg bg-slate-50 p-3"><span className="block font-bold uppercase text-slate-400">Target page</span><span className="mt-1 block break-all leading-5 text-slate-700">{opportunity.internalLinkTargetUrl || opportunity.targetUrl || "Assign during content review"}</span></div>
+                            <div className="rounded-lg bg-slate-50 p-3"><span className="block font-bold uppercase text-slate-400">Priority</span><span className="mt-1 block text-lg font-bold text-brand-700">{opportunity.priorityScore}/100</span><span className="text-slate-500">{opportunity.confidence}% confidence</span></div>
+                          </div>
+                        </div>
+                      </div>
+                      <div className="mt-4 flex flex-wrap items-center justify-end gap-2 border-t border-slate-100 pt-3">
+                        {opportunity.executionTaskId && <Link to={`/ai-content?projectId=${projectId}&taskId=${opportunity.executionTaskId}&open=1`} className="rounded-lg bg-emerald-600 px-3 py-2 text-xs font-bold text-white">Open in AI Content →</Link>}
+                        {selectable && opportunity.queue !== "next" && <button type="button" disabled={busy} onClick={() => void updateContentOpportunity(opportunity, { queue: "next" })} className="rounded-lg border border-slate-200 px-3 py-2 text-xs font-bold text-slate-600">Move to Next</button>}
+                        {selectable && opportunity.queue !== "now" && <button type="button" disabled={busy} onClick={() => void updateContentOpportunity(opportunity, { queue: "now" })} className="rounded-lg border border-brand-200 px-3 py-2 text-xs font-bold text-brand-700">Move to Now</button>}
+                        {selectable && <button type="button" disabled={busy} onClick={() => void updateContentOpportunity(opportunity, { lifecycleStatus: "rejected" })} className="rounded-lg border border-rose-200 px-3 py-2 text-xs font-bold text-rose-700">Reject</button>}
+                      </div>
+                    </div>;
+                  })}
+                  {!visibleContentOpportunities.length && <div className="p-8 text-center text-sm text-slate-500">No supporting-content opportunities are assigned to this queue.</div>}
+                </div>
+              </Card>
+
+              {contentRoadmap.batches.length > 0 && <Card className="overflow-hidden">
+                <div className="border-b border-slate-100 p-5"><h2 className="font-bold text-charcoal-950">Approved generation batches</h2><p className="mt-1 text-sm text-slate-500">Only these approved opportunities are available for AI generation.</p></div>
+                <div className="space-y-3 p-5">{contentRoadmap.batches.map((batch) => <div key={batch.id} className="rounded-xl border border-emerald-200 bg-emerald-50/40 p-4"><div className="flex flex-wrap items-center justify-between gap-3"><div><div className="font-bold text-charcoal-950">{batch.title}</div><div className="mt-1 text-xs font-semibold text-emerald-700">{batch.opportunityCount} opportunities · {titleCase(batch.phase)} · {titleCase(batch.status)}</div></div><span className="text-xs text-slate-500">{batch.approvedAt ? `Approved ${new Date(batch.approvedAt).toLocaleDateString()}` : "Approved batch"}</span></div><div className="mt-3 flex flex-wrap gap-2">{batch.opportunities.map((item) => item.executionTaskId ? <Link key={item.id} to={`/ai-content?projectId=${projectId}&taskId=${item.executionTaskId}&open=1`} className="rounded-full border border-emerald-200 bg-white px-3 py-1.5 text-xs font-bold text-emerald-700">{item.title} →</Link> : <span key={item.id} className="rounded-full bg-white px-3 py-1.5 text-xs text-slate-500">{item.title}</span>)}</div></div>)}</div>
+              </Card>}
+            </>
           )}
         </div>
       )}

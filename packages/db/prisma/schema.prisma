@@ -813,6 +813,9 @@ model Project {
   growthChannelTests          GrowthChannelTest[]
   growthReports               GrowthReport[]
   growthBlueprint             GrowthBlueprint?
+  growthContentRoadmap        GrowthContentRoadmap?
+  growthContentOpportunities  GrowthContentOpportunity[]
+  growthContentBatches        GrowthContentBatch[]
   growthSignals               GrowthSignal[]
   growthLearnings             ProjectGrowthLearning[]
   competitiveIntelligenceRuns CompetitiveIntelligenceRun[]
@@ -3113,6 +3116,99 @@ model GrowthBlueprintVersion {
   @@index([blueprintId, status])
 }
 
+model GrowthContentRoadmap {
+  id                      String    @id @default(cuid())
+  projectId               String    @unique
+  project                 Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  status                  String    @default("active") @db.VarChar(40)
+  currentVersion          Int       @default(1)
+  opportunityCount        Int       @default(0)
+  nowCount                Int       @default(0)
+  nextCount               Int       @default(0)
+  laterCount              Int       @default(0)
+  conditionalCount        Int       @default(0)
+  recommendedCadence      String    @default("1–2 approved pieces per week") @db.VarChar(120)
+  recommendationRationale String?   @db.Text
+  lastResearchedAt        DateTime?
+  nextReviewAt            DateTime?
+  createdAt               DateTime  @default(now())
+  updatedAt               DateTime  @updatedAt
+
+  opportunities GrowthContentOpportunity[]
+  batches       GrowthContentBatch[]
+
+  @@index([status, nextReviewAt])
+}
+
+model GrowthContentOpportunity {
+  id                       String               @id @default(cuid())
+  roadmapId                String
+  roadmap                  GrowthContentRoadmap @relation(fields: [roadmapId], references: [id], onDelete: Cascade)
+  projectId                String
+  project                  Project              @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  batchId                  String?
+  batch                    GrowthContentBatch?  @relation(fields: [batchId], references: [id], onDelete: SetNull)
+  dedupeKey                String               @db.VarChar(191)
+  title                    String               @db.VarChar(255)
+  contentType              String               @default("article") @db.VarChar(60)
+  primaryKeyword           String               @db.VarChar(512)
+  searchIntent             String               @default("informational") @db.VarChar(60)
+  clusterName              String               @db.VarChar(255)
+  serviceName              String?              @db.VarChar(255)
+  locationName             String?              @db.VarChar(180)
+  targetPageId             String?              @db.VarChar(191)
+  targetUrl                String?              @db.VarChar(512)
+  internalLinkTargetPageId String?              @db.VarChar(191)
+  internalLinkTargetUrl    String?              @db.VarChar(512)
+  businessPurpose          String               @db.Text
+  recommendationReason     String               @db.Text
+  expectedImpact           String?              @db.Text
+  priorityScore            Int                  @default(0)
+  confidence               Int                  @default(0)
+  queue                    String               @default("later") @db.VarChar(40)
+  lifecycleStatus          String               @default("proposed") @db.VarChar(60)
+  plannedPhase             String               @default("growth_optimization") @db.VarChar(60)
+  plannedPublishAt         DateTime?
+  conditionsJson           Json                 @default("[]")
+  evidenceJson             Json                 @default("{}")
+  executionTaskId          String?              @db.VarChar(191)
+  generationId             String?              @db.VarChar(191)
+  approvedByUserId         String?
+  approvedAt               DateTime?
+  createdAt                DateTime             @default(now())
+  updatedAt                DateTime             @updatedAt
+
+  @@unique([projectId, dedupeKey])
+  @@index([roadmapId, queue, priorityScore])
+  @@index([projectId, lifecycleStatus])
+  @@index([batchId])
+  @@index([executionTaskId])
+  @@index([generationId])
+}
+
+model GrowthContentBatch {
+  id               String               @id @default(cuid())
+  roadmapId        String
+  roadmap          GrowthContentRoadmap @relation(fields: [roadmapId], references: [id], onDelete: Cascade)
+  projectId        String
+  project          Project              @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  title            String               @db.VarChar(220)
+  phase            String               @db.VarChar(60)
+  status           String               @default("approved") @db.VarChar(60)
+  rationale        String               @db.Text
+  opportunityCount Int                  @default(0)
+  approvedByUserId String?
+  approvedAt       DateTime?
+  createdByUserId  String?
+  createdAt        DateTime             @default(now())
+  updatedAt        DateTime             @updatedAt
+
+  opportunities GrowthContentOpportunity[]
+
+  @@index([projectId, status, createdAt])
+  @@index([roadmapId, createdAt])
+}
+
 model GrowthSignal {
   id              String    @id @default(cuid())
   projectId       String
@@ -3715,31 +3811,31 @@ model KeywordSerpCompetitor {
 // ─── AI Content Studio ───────────────────────────────────────────────────────
 
 model AiContentGeneration {
-  id               String   @id @default(cuid())
+  id               String    @id @default(cuid())
   clientId         String
-  client           Client   @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  client           Client    @relation(fields: [clientId], references: [id], onDelete: Cascade)
   userId           String?
-  projectId        String?  @db.VarChar(191)
+  projectId        String?   @db.VarChar(191)
   websiteId        String?
-  sourceContext    String?  @db.VarChar(80)
-  sourceType       String?  @db.VarChar(80)
-  sourceRecordId   String?  @db.VarChar(191)
-  type             String   @db.VarChar(64) // article | title | meta_description | faq | schema | ai_search
-  status           String   @default("completed") @db.VarChar(32)
-  topic            String   @db.VarChar(512)
-  targetKeyword    String?  @db.VarChar(255)
-  targetUrl        String?  @db.VarChar(512)
-  languageCode     String   @default("en") @db.VarChar(16)
-  tone             String?  @db.VarChar(80)
-  prompt           String   @db.Text
-  resultJson       Json     @default("{}")
-  model            String?  @db.VarChar(120)
-  inputTokens      Int      @default(0)
-  outputTokens     Int      @default(0)
+  sourceContext    String?   @db.VarChar(80)
+  sourceType       String?   @db.VarChar(80)
+  sourceRecordId   String?   @db.VarChar(191)
+  type             String    @db.VarChar(64) // article | title | meta_description | faq | schema | ai_search
+  status           String    @default("completed") @db.VarChar(32)
+  topic            String    @db.VarChar(512)
+  targetKeyword    String?   @db.VarChar(255)
+  targetUrl        String?   @db.VarChar(512)
+  languageCode     String    @default("en") @db.VarChar(16)
+  tone             String?   @db.VarChar(80)
+  prompt           String    @db.Text
+  resultJson       Json      @default("{}")
+  model            String?   @db.VarChar(120)
+  inputTokens      Int       @default(0)
+  outputTokens     Int       @default(0)
   estimatedCostUsd Float?
-  error            String?  @db.Text
+  error            String?   @db.Text
   validatedAt      DateTime?
-  createdAt        DateTime @default(now())
+  createdAt        DateTime  @default(now())
 
   @@index([clientId, createdAt])
   @@index([projectId, sourceContext, sourceType, sourceRecordId, createdAt])

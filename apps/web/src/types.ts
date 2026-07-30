@@ -284,6 +284,72 @@ export interface GrowthBlueprint {
   versions: GrowthBlueprintVersion[];
 }
 
+export interface GrowthContentOpportunity {
+  id: string;
+  roadmapId: string;
+  projectId: string;
+  batchId: string | null;
+  title: string;
+  contentType: string;
+  primaryKeyword: string;
+  searchIntent: string;
+  clusterName: string;
+  serviceName: string | null;
+  locationName: string | null;
+  targetPageId: string | null;
+  targetUrl: string | null;
+  internalLinkTargetPageId: string | null;
+  internalLinkTargetUrl: string | null;
+  businessPurpose: string;
+  recommendationReason: string;
+  expectedImpact: string | null;
+  priorityScore: number;
+  confidence: number;
+  queue: "now" | "next" | "later" | "conditional";
+  lifecycleStatus: string;
+  plannedPhase: string;
+  plannedPublishAt: string | null;
+  conditionsJson: unknown;
+  evidenceJson: unknown;
+  executionTaskId: string | null;
+  generationId: string | null;
+  approvedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface GrowthContentBatch {
+  id: string;
+  roadmapId: string;
+  projectId: string;
+  title: string;
+  phase: string;
+  status: string;
+  rationale: string;
+  opportunityCount: number;
+  approvedAt: string | null;
+  createdAt: string;
+  opportunities: Pick<GrowthContentOpportunity, "id" | "title" | "lifecycleStatus" | "executionTaskId" | "generationId">[];
+}
+
+export interface GrowthContentRoadmap {
+  id: string;
+  projectId: string;
+  status: string;
+  currentVersion: number;
+  opportunityCount: number;
+  nowCount: number;
+  nextCount: number;
+  laterCount: number;
+  conditionalCount: number;
+  recommendedCadence: string;
+  recommendationRationale: string | null;
+  lastResearchedAt: string | null;
+  nextReviewAt: string | null;
+  opportunities: GrowthContentOpportunity[];
+  batches: GrowthContentBatch[];
+}
+
 export interface GrowthEvidenceSignal {
   id: string;
   category: string;
@@ -390,6 +456,7 @@ export interface GrowthOverviewResponse {
     channelTests: { id: string; channel: string; cadence: string; metric: string; durationDays: number; status: string; assetsNeeded: unknown }[];
     reports: { id: string; reportType: string; status: string; htmlContent: string | null; pdfUrl: string | null; createdAt: string }[];
     blueprint: GrowthBlueprint | null;
+    contentRoadmap: GrowthContentRoadmap | null;
     evidenceSignals: GrowthEvidenceSignal[];
     candidateActions: GrowthCandidateAction[];
     selectedAction: GrowthCandidateAction | null;

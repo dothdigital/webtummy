@@ -394,6 +394,12 @@ aiContentRouter.post("/ai-content/generate", async (req, res) => {
           approvalSnapshotJson: { ...snapshot, proposed: generated.result as object, contentVersion: { generationId: record.id, immutable: true, createdAt: record.createdAt.toISOString(), supersedesGenerationId: linkedTask.relatedAssetId ?? null }, contentWorkflow: { ...contentWorkflow, currentStage: linkedTask.requiresApproval ? "seo_review" : "publishing" }, generatedContent: { generationId: record.id, type: record.type, topic: record.topic, targetKeyword: record.targetKeyword, targetUrl: record.targetUrl, createdAt: record.createdAt.toISOString() } } as Prisma.InputJsonValue,
         },
       });
+      if (linkedTask.sourceType === "growth_content_opportunity" && linkedTask.sourceId) {
+        await prisma.growthContentOpportunity.updateMany({
+          where: { id: linkedTask.sourceId, ...(linkedTask.projectId ? { projectId: linkedTask.projectId } : {}) },
+          data: { generationId: record.id, lifecycleStatus: linkedTask.requiresApproval ? "needs_review" : "scheduled" },
+        });
+      }
     }
     await incrementUsage(client.id, input.type, tokens);
     res.status(201).json({ generation: record });

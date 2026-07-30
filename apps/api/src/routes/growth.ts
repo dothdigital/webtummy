@@ -45,7 +45,9 @@ async function scopedProject(req: Request, projectId: string) {
           socialStrategies: { orderBy: { createdAt: "desc" }, take: 1, include: { posts: { take: 10 } } },
         },
       },
-      keywordResearchRuns: { orderBy: { createdAt: "desc" }, take: 3, include: { ideas: { take: 10 } } },
+      keywordResearchRuns: { orderBy: { createdAt: "desc" }, take: 5, include: { ideas: { take: 200 } } },
+      keywordGroups: { orderBy: { updatedAt: "desc" }, take: 100 },
+      websiteBuilds: { orderBy: { updatedAt: "desc" }, take: 1, include: { pages: { where: { status: { not: "deferred" } }, orderBy: { sortOrder: "asc" }, take: 500 } } },
       businessProfile: true,
       intakeAnswers: true,
       opportunities: { orderBy: { createdAt: "desc" }, take: 5 },
@@ -81,6 +83,53 @@ function boundedText(value: unknown, maximumLength: number) {
   if (text.length <= maximumLength) return text;
   return `${text.slice(0, Math.max(0, maximumLength - 1)).trimEnd()}…`;
 }
+
+function normalizedTopic(value: unknown) {
+  return String(value ?? "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+}
+
+function topicTokens(value: unknown) {
+  const ignored = new Set(["a", "an", "and", "are", "at", "best", "for", "from", "how", "in", "is", "of", "on", "the", "to", "what", "with"]);
+  return normalizedTopic(value).split(" ").filter((token) => token.length > 2 && !ignored.has(token));
+}
+
+function topicTitle(value: string) {
+  const text = value.trim().replace(/\s+/g, " ");
+  if (!text) return "Supporting content opportunity";
+  return text.split(" ").map((word) => /^[A-Z0-9]{2,}$/.test(word) ? word : `${word.charAt(0).toUpperCase()}${word.slice(1)}`).join(" ");
+}
+
+function contentSearchIntent(keyword: string) {
+  const value = normalizedTopic(keyword);
+  if (/\b(vs|versus|best|compare|comparison|cost|price|pricing|review|alternative)\b/.test(value)) return "commercial_investigation";
+  if (/\b(near me|in [a-z]|local)\b/.test(value)) return "local_informational";
+  if (/\b(buy|book|quote|apply|consultation)\b/.test(value)) return "transactional";
+  return "informational";
+}
+
+type ContentOpportunityDraft = {
+  dedupeKey: string;
+  title: string;
+  primaryKeyword: string;
+  searchIntent: string;
+  clusterName: string;
+  serviceName: string | null;
+  locationName: string | null;
+  targetPageId: string | null;
+  targetUrl: string | null;
+  internalLinkTargetPageId: string | null;
+  internalLinkTargetUrl: string | null;
+  businessPurpose: string;
+  recommendationReason: string;
+  expectedImpact: string;
+  priorityScore: number;
+  confidence: number;
+  queue: "now" | "next" | "later" | "conditional";
+  plannedPhase: "launch_foundation" | "early_authority" | "expansion" | "growth_optimization";
+  plannedPublishAt: Date | null;
+  conditionsJson: string[];
+  evidenceJson: Record<string, unknown>;
+};
 
 function escapeHtml(value: unknown) {
   return String(value ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#039;");
@@ -221,6 +270,175 @@ function scoreProject(project: NonNullable<Awaited<ReturnType<typeof scopedProje
   const bottleneckType = Object.entries(scoreJson).sort((a, b) => a[1] - b[1])[0]?.[0] ?? "conversion";
   const growthScore = Math.round(Object.values(scoreJson).reduce((sum, value) => sum + value, 0) / Object.values(scoreJson).length);
   return { scoreJson, bottleneckType, growthScore, latestCrawl, openTasks, keywordRuns, socialPosts, hasLeadMagnetTask, strategyApproved, latestAuthoritySnapshot, approvedAuthorityOpportunities, completedAuthorityAssets, earnedReferralLeads, citationReadiness, observedCitationMentions, approvedCitationRecommendations };
+}
+
+function buildSupportingContentRoadmap(project: NonNullable<Awaited<ReturnType<typeof scopedProject>>>) {
+  const buildPages = project.websiteBuilds[0]?.pages ?? [];
+  const rootUrl = project.website?.rootUrl?.replace(/\/$/, "") ?? project.websiteUrl?.replace(/\/$/, "") ?? "";
+  const targetLocations = jsonList(project.targetLocations);
+  const inputs: Array<{
+    keyword: string;
+    volume: number | null;
+    competitionIndex: number | null;
+    competition: string | null;
+    sourceType: string;
+    sourceId: string;
+    sourceCluster?: string;
+  }> = [];
+  for (const run of project.keywordResearchRuns) {
+    for (const idea of run.ideas) inputs.push({
+      keyword: idea.keyword,
+      volume: idea.avgMonthlySearches,
+      competitionIndex: idea.competitionIndex,
+      competition: idea.competition,
+      sourceType: "keyword_research",
+      sourceId: idea.id,
+      sourceCluster: run.seedKeyword,
+    });
+  }
+  for (const group of project.keywordGroups) {
+    for (const keyword of [...jsonList(group.keywords), ...jsonList(group.gapKeywords)]) inputs.push({
+      keyword,
+      volume: null,
+      competitionIndex: null,
+      competition: null,
+      sourceType: "approved_keyword_group",
+      sourceId: group.id,
+      sourceCluster: group.title,
+    });
+  }
+  const corePageTopics = new Set(buildPages.flatMap((page) => [normalizedTopic(page.primaryKeyword), normalizedTopic(page.title)]).filter(Boolean));
+  const uniqueInputs = new Map<string, typeof inputs[number]>();
+  for (const input of inputs) {
+    const key = normalizedTopic(input.keyword);
+    if (!key || key.length < 3 || corePageTopics.has(key)) continue;
+    const current = uniqueInputs.get(key);
+    if (!current || (input.volume ?? 0) > (current.volume ?? 0)) uniqueInputs.set(key, input);
+  }
+  if (uniqueInputs.size < 6) {
+    for (const page of buildPages.filter((page) => !["legal", "contact", "privacy", "terms"].includes(page.pageType.toLowerCase()))) {
+      const base = page.primaryKeyword || page.title;
+      for (const angle of [`How ${base} works`, `${base} buyer checklist`, `Questions to ask about ${base}`]) {
+        const key = normalizedTopic(angle);
+        if (!uniqueInputs.has(key)) uniqueInputs.set(key, {
+          keyword: angle,
+          volume: null,
+          competitionIndex: null,
+          competition: null,
+          sourceType: "website_authority_gap",
+          sourceId: page.id,
+          sourceCluster: page.title,
+        });
+      }
+    }
+  }
+  if (!uniqueInputs.size) {
+    const base = project.niche || project.businessProfile?.offerSummary || project.primaryGoal || project.businessName || project.name;
+    for (const angle of [`How ${base} works`, `${base} buyer guide`, `${base} questions and answers`]) uniqueInputs.set(normalizedTopic(angle), {
+      keyword: angle,
+      volume: null,
+      competitionIndex: null,
+      competition: null,
+      sourceType: "project_intake",
+      sourceId: project.id,
+      sourceCluster: String(project.niche || project.businessName || project.name),
+    });
+  }
+  const pageCandidates = buildPages.map((page) => ({
+    page,
+    tokens: new Set(topicTokens(`${page.title} ${page.primaryKeyword} ${jsonList(page.secondaryKeywords).join(" ")}`)),
+  }));
+  const scored = [...uniqueInputs.values()].slice(0, 250).map((input) => {
+    const keywordTokens = topicTokens(input.keyword);
+    const matchedPages = pageCandidates.map((candidate) => ({
+      page: candidate.page,
+      overlap: keywordTokens.filter((token) => candidate.tokens.has(token)).length,
+    })).sort((left, right) => right.overlap - left.overlap || left.page.sortOrder - right.page.sortOrder);
+    const matchedPage = matchedPages[0]?.overlap ? matchedPages[0].page : buildPages.find((page) => page.pageType === "home" || !page.slug) ?? null;
+    const locationName = targetLocations.find((location) => normalizedTopic(input.keyword).includes(normalizedTopic(location))) ?? null;
+    const intent = contentSearchIntent(input.keyword);
+    const volumeScore = input.volume == null ? 8 : Math.min(35, Math.round(Math.log10(input.volume + 1) * 12));
+    const competitionScore = input.competitionIndex != null
+      ? Math.max(4, Math.round((100 - input.competitionIndex) * 0.18))
+      : /low/i.test(input.competition ?? "") ? 18 : /high/i.test(input.competition ?? "") ? 6 : 11;
+    const clusterFit = matchedPages[0]?.overlap ? Math.min(22, 12 + matchedPages[0].overlap * 4) : 8;
+    const intentScore = intent === "commercial_investigation" || intent === "transactional" ? 16 : 10;
+    const evidenceScore = input.sourceType === "keyword_research" ? 10 : input.sourceType === "approved_keyword_group" ? 9 : 6;
+    const priorityScore = Math.min(100, volumeScore + competitionScore + clusterFit + intentScore + evidenceScore + (locationName ? 4 : 0));
+    const targetUrl = matchedPage
+      ? matchedPage.targetUrl || (rootUrl ? `${rootUrl}/${matchedPage.slug}`.replace(/\/$/, matchedPage.slug ? "" : "/") : `/${matchedPage.slug}`)
+      : rootUrl || null;
+    const clusterName = matchedPage?.title || input.sourceCluster || project.niche || "Supporting authority";
+    return {
+      input,
+      matchedPage,
+      locationName,
+      intent,
+      priorityScore,
+      confidence: Math.min(96, 58 + evidenceScore * 3 + (matchedPages[0]?.overlap ? 8 : 0) + (input.volume != null ? 6 : 0)),
+      targetUrl,
+      clusterName,
+    };
+  }).sort((left, right) => right.priorityScore - left.priorityScore || (right.input.volume ?? 0) - (left.input.volume ?? 0) || left.input.keyword.localeCompare(right.input.keyword)).slice(0, 90);
+  const total = scored.length;
+  const nowTarget = total <= 6 ? total : Math.min(12, Math.max(6, Math.ceil(total * 0.12)));
+  const earlyTotalTarget = Math.min(total, Math.max(nowTarget, total >= 60 ? 24 : total >= 18 ? Math.max(12, Math.ceil(total * 0.35)) : Math.ceil(total * 0.5)));
+  const conditionalTarget = total >= 10 ? Math.max(1, Math.round(total * 0.18)) : 0;
+  const conditionalStart = total - conditionalTarget;
+  const publishStart = Date.now() + 2 * 86_400_000;
+  const opportunities: ContentOpportunityDraft[] = scored.map((item, index) => {
+    const queue: ContentOpportunityDraft["queue"] = index < nowTarget ? "now" : index < earlyTotalTarget ? "next" : index >= conditionalStart ? "conditional" : "later";
+    const plannedPhase: ContentOpportunityDraft["plannedPhase"] = queue === "now" ? "launch_foundation" : queue === "next" ? "early_authority" : queue === "later" && index < Math.ceil(total * 0.65) ? "expansion" : "growth_optimization";
+    const plannedPublishAt = queue === "now" || queue === "next" ? new Date(publishStart + index * 4 * 86_400_000) : null;
+    const volumeEvidence = item.input.volume == null ? "available project and website evidence" : `${item.input.volume.toLocaleString()} estimated monthly searches`;
+    const businessPurpose = item.intent === "commercial_investigation"
+      ? `Help prospective buyers compare options before moving to ${item.matchedPage?.title || "the relevant conversion page"}.`
+      : item.intent === "transactional"
+        ? `Answer the final questions that can move qualified visitors toward ${item.matchedPage?.title || "the primary conversion action"}.`
+        : `Build topical authority and answer an audience question that supports ${item.matchedPage?.title || item.clusterName}.`;
+    return {
+      dedupeKey: `supporting-content:${normalizedTopic(item.input.keyword).replace(/\s+/g, "-")}`.slice(0, 191),
+      title: boundedText(topicTitle(item.input.keyword), 255),
+      primaryKeyword: boundedText(item.input.keyword, 512),
+      searchIntent: item.intent,
+      clusterName: boundedText(item.clusterName, 255),
+      serviceName: item.matchedPage?.primaryKeyword ? boundedText(item.matchedPage.primaryKeyword, 255) : null,
+      locationName: item.locationName ? boundedText(item.locationName, 180) : null,
+      targetPageId: item.matchedPage?.id ?? null,
+      targetUrl: item.targetUrl ? boundedText(item.targetUrl, 512) : null,
+      internalLinkTargetPageId: item.matchedPage?.id ?? null,
+      internalLinkTargetUrl: item.targetUrl ? boundedText(item.targetUrl, 512) : null,
+      businessPurpose,
+      recommendationReason: `Prioritized from ${volumeEvidence}, ${item.intent.replaceAll("_", " ")} intent, cluster fit, competition, and business value. It supports ${item.clusterName} without creating a duplicate city page.`,
+      expectedImpact: `Strengthen ${item.clusterName} coverage and route qualified readers to ${item.matchedPage?.title || "the most relevant website destination"}.`,
+      priorityScore: item.priorityScore,
+      confidence: item.confidence,
+      queue,
+      plannedPhase,
+      plannedPublishAt,
+      conditionsJson: queue === "conditional" ? ["Generate only when ranking, demand, seasonality, competitor movement, or business evidence justifies it."] : [],
+      evidenceJson: {
+        sourceType: item.input.sourceType,
+        sourceId: item.input.sourceId,
+        searchVolume: item.input.volume,
+        competitionIndex: item.input.competitionIndex,
+        competition: item.input.competition,
+        matchedPageId: item.matchedPage?.id ?? null,
+        matchedPageTitle: item.matchedPage?.title ?? null,
+      },
+    };
+  });
+  return {
+    opportunities,
+    counts: {
+      now: opportunities.filter((item) => item.queue === "now").length,
+      next: opportunities.filter((item) => item.queue === "next").length,
+      later: opportunities.filter((item) => item.queue === "later").length,
+      conditional: opportunities.filter((item) => item.queue === "conditional").length,
+    },
+    recommendedCadence: total > 24 ? "1–2 approved pieces per week; reassess every 30 days" : "1 approved piece per week; reassess every 30 days",
+    rationale: `SEnuke AI mapped ${total} distinct supporting-content opportunities from approved keywords, search demand, website pages, target markets, and business goals. Only the ${nowTarget} highest-priority items are recommended for the current phase.`,
+  };
 }
 
 function diagnosisSummary(bottleneckType: string, ctx: ReturnType<typeof projectContext>) {
@@ -591,6 +809,7 @@ async function runGrowthEngine(input: {
     });
   }, { timeout: 15_000 });
 
+  await refreshSupportingContentPlan(context, project);
   return { score, signals, findings, candidates, selected, phases };
 }
 
@@ -677,6 +896,9 @@ async function upsertGrowthTask(tx: Prisma.TransactionClient, input: {
   relatedUrl?: string;
   actionButtonLabel?: string;
   manualInstructions?: string;
+  moduleName?: string;
+  relatedModule?: string;
+  approvalSnapshotJson?: Prisma.InputJsonValue;
 }) {
   const policy = policyForModule("growth_marketing");
   const executionPlanId = await activePlanId(tx, input.project.id);
@@ -686,7 +908,7 @@ async function upsertGrowthTask(tx: Prisma.TransactionClient, input: {
     websiteId: input.project.websiteId,
     projectId: input.project.id,
     executionPlanId,
-    moduleName: "growth_marketing",
+    moduleName: input.moduleName ?? "growth_marketing",
     sourceType: input.sourceType ?? "growth_engine",
     sourceId: input.sourceId ?? input.project.id,
     title: input.title,
@@ -698,11 +920,12 @@ async function upsertGrowthTask(tx: Prisma.TransactionClient, input: {
     requiresIntegration: input.automationLevel === "execute_through_integration",
     manualRequired: input.automationLevel === "manual_guided",
     safetyCategory: input.safetyCategory ?? policy.safetyCategory,
-    relatedModule: "growth_marketing",
+    relatedModule: input.relatedModule ?? input.moduleName ?? "growth_marketing",
     actionButtonLabel: input.actionButtonLabel ?? "Review Growth Task",
     relatedUrl: input.relatedUrl ?? "/growth",
     manualInstructions: input.manualInstructions ?? "Review the generated recommendation, approve any live changes, and record the result after the experiment runs.",
     impact: "Connects strategy and execution work to a measurable growth experiment.",
+    ...(input.approvalSnapshotJson ? { approvalSnapshotJson: input.approvalSnapshotJson } : {}),
   };
   if (!existing) return tx.executionTask.create({ data: { ...data, dedupeKey: input.key } });
   if (terminalStatuses.has(existing.status)) return existing;
@@ -710,13 +933,20 @@ async function upsertGrowthTask(tx: Prisma.TransactionClient, input: {
 }
 
 async function loadGrowthOverview(projectId: string) {
-  const [diagnosis, funnelStages, experiments, channelTests, reports, blueprint, evidenceSignals, candidateActions, learnings, recentRuns] = await Promise.all([
+  const [diagnosis, funnelStages, experiments, channelTests, reports, blueprint, contentRoadmap, evidenceSignals, candidateActions, learnings, recentRuns] = await Promise.all([
     prisma.growthDiagnosis.findFirst({ where: { projectId }, orderBy: { createdAt: "desc" } }),
     prisma.growthFunnelStage.findMany({ where: { projectId }, orderBy: { sortOrder: "asc" } }),
     prisma.growthExperiment.findMany({ where: { projectId }, orderBy: [{ status: "asc" }, { iceScore: "desc" }], include: { assets: true, results: { orderBy: { recordedAt: "desc" }, take: 3 } } }),
     prisma.growthChannelTest.findMany({ where: { projectId }, orderBy: { createdAt: "desc" } }),
     prisma.growthReport.findMany({ where: { projectId }, orderBy: { createdAt: "desc" }, take: 5 }),
     prisma.growthBlueprint.findUnique({ where: { projectId }, include: { versions: { orderBy: { version: "desc" }, take: 10 } } }),
+    prisma.growthContentRoadmap.findUnique({
+      where: { projectId },
+      include: {
+        opportunities: { orderBy: [{ queue: "asc" }, { priorityScore: "desc" }, { createdAt: "asc" }] },
+        batches: { orderBy: { createdAt: "desc" }, take: 20, include: { opportunities: { select: { id: true, title: true, lifecycleStatus: true, executionTaskId: true, generationId: true } } } },
+      },
+    }),
     prisma.growthSignal.findMany({ where: { projectId }, orderBy: [{ category: "asc" }, { effectiveDate: "desc" }] }),
     prisma.nextBestAction.findMany({
       where: { projectId, sourceType: { in: ["growth_engine", "citation_recommendation"] } },
@@ -733,6 +963,7 @@ async function loadGrowthOverview(projectId: string) {
     channelTests,
     reports,
     blueprint,
+    contentRoadmap,
     evidenceSignals,
     candidateActions,
     selectedAction: candidateActions.find((action) => action.status === "selected")
@@ -741,6 +972,140 @@ async function loadGrowthOverview(projectId: string) {
     learnings,
     recentRuns,
   };
+}
+
+async function refreshSupportingContentPlan(
+  context: WorkspaceContext,
+  project: NonNullable<Awaited<ReturnType<typeof scopedProject>>>,
+) {
+  const generated = buildSupportingContentRoadmap(project);
+  const existing = await prisma.growthContentRoadmap.findUnique({
+    where: { projectId: project.id },
+    include: { opportunities: true },
+  });
+  const existingByKey = new Map(existing?.opportunities.map((item) => [item.dedupeKey, item]) ?? []);
+  const generatedKeys = generated.opportunities.map((item) => item.dedupeKey);
+  const protectedStatuses = new Set(["approved", "generating", "needs_review", "scheduled", "published", "measuring", "completed", "rejected"]);
+  const roadmap = await prisma.$transaction(async (tx) => {
+    const row = existing
+      ? await tx.growthContentRoadmap.update({
+          where: { id: existing.id },
+          data: {
+            status: "active",
+            currentVersion: { increment: 1 },
+            recommendedCadence: generated.recommendedCadence,
+            recommendationRationale: generated.rationale,
+            lastResearchedAt: new Date(),
+            nextReviewAt: new Date(Date.now() + 30 * 86_400_000),
+          },
+        })
+      : await tx.growthContentRoadmap.create({
+          data: {
+            projectId: project.id,
+            status: "active",
+            currentVersion: 1,
+            recommendedCadence: generated.recommendedCadence,
+            recommendationRationale: generated.rationale,
+            lastResearchedAt: new Date(),
+            nextReviewAt: new Date(Date.now() + 30 * 86_400_000),
+          },
+        });
+    for (const item of generated.opportunities) {
+      const prior = existingByKey.get(item.dedupeKey);
+      const preserveDecision = Boolean(prior && protectedStatuses.has(prior.lifecycleStatus));
+      const data = {
+        title: item.title,
+        contentType: "article",
+        primaryKeyword: item.primaryKeyword,
+        searchIntent: item.searchIntent,
+        clusterName: item.clusterName,
+        serviceName: item.serviceName,
+        locationName: item.locationName,
+        targetPageId: item.targetPageId,
+        targetUrl: item.targetUrl,
+        internalLinkTargetPageId: item.internalLinkTargetPageId,
+        internalLinkTargetUrl: item.internalLinkTargetUrl,
+        businessPurpose: item.businessPurpose,
+        recommendationReason: item.recommendationReason,
+        expectedImpact: item.expectedImpact,
+        priorityScore: item.priorityScore,
+        confidence: item.confidence,
+        queue: preserveDecision ? prior!.queue : item.queue,
+        lifecycleStatus: preserveDecision ? prior!.lifecycleStatus : "proposed",
+        plannedPhase: preserveDecision ? prior!.plannedPhase : item.plannedPhase,
+        plannedPublishAt: preserveDecision ? prior!.plannedPublishAt : item.plannedPublishAt,
+        conditionsJson: item.conditionsJson as Prisma.InputJsonValue,
+        evidenceJson: item.evidenceJson as Prisma.InputJsonValue,
+      };
+      await tx.growthContentOpportunity.upsert({
+        where: { projectId_dedupeKey: { projectId: project.id, dedupeKey: item.dedupeKey } },
+        update: data,
+        create: {
+          roadmapId: row.id,
+          projectId: project.id,
+          dedupeKey: item.dedupeKey,
+          ...data,
+        },
+      });
+    }
+    if (generatedKeys.length) {
+      await tx.growthContentOpportunity.updateMany({
+        where: {
+          roadmapId: row.id,
+          dedupeKey: { notIn: generatedKeys },
+          lifecycleStatus: { in: ["proposed", "queued", "deferred"] },
+        },
+        data: { lifecycleStatus: "superseded" },
+      });
+    }
+    const active = await tx.growthContentOpportunity.findMany({
+      where: { roadmapId: row.id, lifecycleStatus: { notIn: ["rejected", "superseded"] } },
+      select: { queue: true },
+    });
+    const counts = {
+      now: active.filter((item) => item.queue === "now").length,
+      next: active.filter((item) => item.queue === "next").length,
+      later: active.filter((item) => item.queue === "later").length,
+      conditional: active.filter((item) => item.queue === "conditional").length,
+    };
+    await tx.growthContentRoadmap.update({
+      where: { id: row.id },
+      data: {
+        opportunityCount: active.length,
+        nowCount: counts.now,
+        nextCount: counts.next,
+        laterCount: counts.later,
+        conditionalCount: counts.conditional,
+      },
+    });
+    const aiRun = await tx.aiRun.create({
+      data: {
+        projectId: project.id,
+        clientId: project.clientId,
+        moduleName: "growth_content_roadmap",
+        promptVersion: GROWTH_ENGINE_VERSION,
+        inputSnapshotJson: {
+          keywordRuns: project.keywordResearchRuns.length,
+          keywordIdeas: project.keywordResearchRuns.reduce((sum, run) => sum + run.ideas.length, 0),
+          keywordGroups: project.keywordGroups.length,
+          websitePages: project.websiteBuilds[0]?.pages.length ?? 0,
+          targetMarkets: jsonList(project.targetLocations),
+        },
+        outputJson: { roadmapId: row.id, version: existing ? existing.currentVersion + 1 : 1, opportunityCount: active.length, counts, cadence: generated.recommendedCadence },
+      },
+    });
+    await recordWorkspaceActivity(tx, {
+      context,
+      action: "growth_content_roadmap.refreshed",
+      entityType: "growth_content_roadmap",
+      entityId: row.id,
+      agencyClientId: project.agencyClientId,
+      projectId: project.id,
+      nextJson: { aiRunId: aiRun.id, opportunityCount: active.length, counts, cadence: generated.recommendedCadence },
+    });
+    return row;
+  }, { timeout: 30_000 });
+  return roadmap;
 }
 
 growthRouter.get("/projects-v2/:projectId/growth/overview", async (req, res) => {
@@ -764,6 +1129,180 @@ growthRouter.post("/projects-v2/:projectId/growth/analyze", async (req, res) => 
   const score = scoreProject(project);
   const growth = await loadGrowthOverview(project.id);
   res.json({ project, signals: score, readiness, growth, automationPolicy: policyForModule("growth_marketing") });
+});
+
+growthRouter.post("/projects-v2/:projectId/growth/content-roadmap/refresh", async (req, res) => {
+  const context = await authorizeProject(req, req.params.projectId, "run_ai_analysis");
+  let project = await scopedProject(req, req.params.projectId);
+  if (!project) return res.status(404).json({ error: "project not found" });
+  const readiness = growthReadiness(project);
+  if (!readiness.canRun) return res.status(409).json({ error: "growth_readiness_incomplete", readiness });
+  const blueprintExists = Boolean(await prisma.growthBlueprint.findUnique({ where: { projectId: project.id }, select: { id: true } }));
+  if (!blueprintExists) {
+    await runGrowthEngine({ req, context, project, runType: "manual" });
+  } else {
+    await refreshSupportingContentPlan(context, project);
+  }
+  res.json({ growth: await loadGrowthOverview(project.id) });
+});
+
+const contentOpportunityUpdateSchema = z.object({
+  queue: z.enum(["now", "next", "later", "conditional"]).optional(),
+  lifecycleStatus: z.enum(["proposed", "deferred", "rejected"]).optional(),
+}).refine((input) => Boolean(input.queue || input.lifecycleStatus), { message: "Choose a queue or status update." });
+
+growthRouter.patch("/projects-v2/:projectId/growth/content-roadmap/opportunities/:opportunityId", async (req, res) => {
+  const parsed = contentOpportunityUpdateSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() });
+  const context = await authorizeProject(req, req.params.projectId, "execute_tasks");
+  const opportunity = await prisma.growthContentOpportunity.findFirst({
+    where: { id: req.params.opportunityId, projectId: req.params.projectId },
+  });
+  if (!opportunity) return res.status(404).json({ error: "Content opportunity not found." });
+  if (["generating", "needs_review", "scheduled", "published", "measuring", "completed"].includes(opportunity.lifecycleStatus)) {
+    return res.status(409).json({ error: "Generated or published content cannot be moved back into planning. Open its linked task to continue the workflow." });
+  }
+  const updated = await prisma.$transaction(async (tx) => {
+    const row = await tx.growthContentOpportunity.update({
+      where: { id: opportunity.id },
+      data: parsed.data,
+    });
+    const active = await tx.growthContentOpportunity.findMany({
+      where: { roadmapId: opportunity.roadmapId, lifecycleStatus: { notIn: ["rejected", "superseded"] } },
+      select: { queue: true },
+    });
+    await tx.growthContentRoadmap.update({
+      where: { id: opportunity.roadmapId },
+      data: {
+        opportunityCount: active.length,
+        nowCount: active.filter((item) => item.queue === "now").length,
+        nextCount: active.filter((item) => item.queue === "next").length,
+        laterCount: active.filter((item) => item.queue === "later").length,
+        conditionalCount: active.filter((item) => item.queue === "conditional").length,
+      },
+    });
+    await recordWorkspaceActivity(tx, {
+      context,
+      action: "growth_content_opportunity.updated",
+      entityType: "growth_content_opportunity",
+      entityId: row.id,
+      projectId: opportunity.projectId,
+      previousJson: { queue: opportunity.queue, lifecycleStatus: opportunity.lifecycleStatus },
+      nextJson: { queue: row.queue, lifecycleStatus: row.lifecycleStatus },
+    });
+    return row;
+  });
+  res.json({ opportunity: updated, growth: await loadGrowthOverview(opportunity.projectId) });
+});
+
+const contentBatchApprovalSchema = z.object({
+  opportunityIds: z.array(z.string().min(1)).min(1).max(20),
+  title: z.string().trim().min(2).max(220).optional(),
+});
+
+growthRouter.post("/projects-v2/:projectId/growth/content-roadmap/batches/approve", async (req, res) => {
+  const parsed = contentBatchApprovalSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() });
+  const context = await authorizeProject(req, req.params.projectId, "approve");
+  const project = await scopedProject(req, req.params.projectId);
+  if (!project) return res.status(404).json({ error: "project not found" });
+  const opportunities = await prisma.growthContentOpportunity.findMany({
+    where: { id: { in: parsed.data.opportunityIds }, projectId: project.id },
+    orderBy: { priorityScore: "desc" },
+  });
+  if (opportunities.length !== new Set(parsed.data.opportunityIds).size) return res.status(404).json({ error: "One or more selected content opportunities were not found." });
+  const unavailable = opportunities.filter((item) => !["proposed", "deferred"].includes(item.lifecycleStatus) || item.executionTaskId);
+  if (unavailable.length) return res.status(409).json({ error: `${unavailable.length} selected item${unavailable.length === 1 ? " is" : "s are"} already approved, generated, rejected, or unavailable.` });
+  const queues = [...new Set(opportunities.map((item) => item.queue))];
+  const phase = queues.length === 1 ? opportunities[0].plannedPhase : "mixed_approved_batch";
+  const batch = await prisma.$transaction(async (tx) => {
+    const roadmap = await tx.growthContentRoadmap.findUnique({ where: { projectId: project.id } });
+    if (!roadmap) throw Object.assign(new Error("Generate the Supporting Content Plan before approving a batch."), { statusCode: 409 });
+    const row = await tx.growthContentBatch.create({
+      data: {
+        roadmapId: roadmap.id,
+        projectId: project.id,
+        title: parsed.data.title || `${queues.map((queue) => queue.charAt(0).toUpperCase() + queue.slice(1)).join(" + ")} supporting-content batch`,
+        phase,
+        status: "approved",
+        rationale: `Approved ${opportunities.length} prioritized supporting-content opportunities for phased AI generation. Each item retains its keyword, intent, cluster, target page, internal-link role, and business purpose.`,
+        opportunityCount: opportunities.length,
+        approvedByUserId: context.membership.userId,
+        approvedAt: new Date(),
+        createdByUserId: context.membership.userId,
+      },
+    });
+    for (const opportunity of opportunities) {
+      const manualInstructions = [
+        "Approved Supporting Content Plan brief:",
+        `Title: ${opportunity.title}`,
+        `Primary keyword: ${opportunity.primaryKeyword}`,
+        `Search intent: ${opportunity.searchIntent}`,
+        `Authority cluster: ${opportunity.clusterName}`,
+        opportunity.locationName ? `Location: ${opportunity.locationName}` : "",
+        `Business purpose: ${opportunity.businessPurpose}`,
+        `Recommendation reason: ${opportunity.recommendationReason}`,
+        opportunity.expectedImpact ? `Expected impact: ${opportunity.expectedImpact}` : "",
+        opportunity.targetUrl ? `Target supporting destination: ${opportunity.targetUrl}` : "",
+        opportunity.internalLinkTargetUrl ? `Required internal-link destination: ${opportunity.internalLinkTargetUrl}` : "",
+        "Create one original, useful supporting article. Do not create near-duplicate city variants or invent claims, people, credentials, statistics, or sources.",
+      ].filter(Boolean).join("\n");
+      const task = await upsertGrowthTask(tx, {
+        project,
+        sourceType: "growth_content_opportunity",
+        sourceId: opportunity.id,
+        key: `growth-content-opportunity:${opportunity.id}`,
+        title: `Create supporting content: ${opportunity.title}`,
+        description: opportunity.businessPurpose,
+        priority: opportunity.priorityScore >= 80 ? "high" : opportunity.priorityScore >= 55 ? "medium" : "low",
+        automationLevel: "prepare",
+        safetyCategory: "review_required",
+        moduleName: "content",
+        relatedModule: "growth_marketing",
+        actionButtonLabel: "Generate with AI",
+        relatedUrl: `/ai-content?projectId=${project.id}`,
+        manualInstructions,
+        approvalSnapshotJson: {
+          growthContentOpportunityId: opportunity.id,
+          growthContentBatchId: row.id,
+          targetUrl: opportunity.targetUrl,
+          contentPlanning: {
+            keyword: opportunity.primaryKeyword,
+            searchIntent: opportunity.searchIntent,
+            targetUrl: opportunity.targetUrl,
+            gapAnalysis: opportunity.recommendationReason,
+            brief: manualInstructions,
+            clusterName: opportunity.clusterName,
+            internalLinkTargetUrl: opportunity.internalLinkTargetUrl,
+            plannedPhase: opportunity.plannedPhase,
+          },
+        } as Prisma.InputJsonValue,
+      });
+      const relatedUrl = `/ai-content?projectId=${project.id}&taskId=${task.id}&open=1`;
+      await tx.executionTask.update({ where: { id: task.id }, data: { relatedUrl } });
+      await tx.growthContentOpportunity.update({
+        where: { id: opportunity.id },
+        data: {
+          batchId: row.id,
+          lifecycleStatus: "approved",
+          executionTaskId: task.id,
+          approvedByUserId: context.membership.userId,
+          approvedAt: new Date(),
+        },
+      });
+    }
+    await recordWorkspaceActivity(tx, {
+      context,
+      action: "growth_content_batch.approved",
+      entityType: "growth_content_batch",
+      entityId: row.id,
+      agencyClientId: project.agencyClientId,
+      projectId: project.id,
+      nextJson: { opportunityIds: opportunities.map((item) => item.id), opportunityCount: opportunities.length, phase },
+    });
+    return row;
+  }, { timeout: 30_000 });
+  res.json({ batch, growth: await loadGrowthOverview(project.id) });
 });
 
 growthRouter.post("/projects-v2/:projectId/growth/funnel-map", async (req, res) => {
@@ -826,7 +1365,7 @@ growthRouter.post("/projects-v2/:projectId/growth/experiments/generate", async (
           requiresApproval: true,
           safetyCategory: "review_required",
           guardrailMetrics: ["No unapproved live publishing", "Do not weaken privacy, consent, accessibility, or business identity"],
-          baselineJson: { bottleneckType, score: score.scoreJson[bottleneckType] ?? null },
+          baselineJson: { bottleneckType, score: score.scoreJson[bottleneckType as keyof typeof score.scoreJson] ?? null },
           sourceActionId: selectedAction?.id,
           reviewAt: new Date(Date.now() + 14 * 86_400_000),
         },

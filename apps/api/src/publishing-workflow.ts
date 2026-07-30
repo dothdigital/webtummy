@@ -124,6 +124,12 @@ export async function startTaskPublishing(context: Context, taskId: string, inpu
       await tx.wordPressPublishJob.update({ where: { id: job.id }, data: { status: "queued", errorMessage: null, completedAt: null, rollbackNote: job.rollbackNote || `Keep ${input.previousVersionReference ?? "the current live version"} active until verification succeeds.` } });
     }
     const updated = await tx.executionTask.update({ where: { id: task.id }, data: { status: "publishing", blockedReason: null, approvalSnapshotJson: { ...currentSnapshot, publishing } as Prisma.InputJsonValue } });
+    if (task.sourceType === "growth_content_opportunity" && task.sourceId) {
+      await tx.growthContentOpportunity.updateMany({
+        where: { id: task.sourceId, projectId: task.projectId! },
+        data: { lifecycleStatus: "publishing", executionTaskId: task.id },
+      });
+    }
     await recordWorkspaceActivity(tx, {
       context, action: "publishing.started", entityType: "execution_task", entityId: task.id,
       agencyClientId: task.project?.agencyClientId, projectId: task.projectId,
@@ -168,6 +174,19 @@ export async function verifyTaskPublishing(context: Context, taskId: string, inp
       blockedReason: input.status === "failed" ? input.error || "Publishing failed verification; the previous version remains active." : null,
       approvalSnapshotJson: { ...currentSnapshot, publishing: nextPublishing } as Prisma.InputJsonValue,
     } });
+    if (task.sourceType === "growth_content_opportunity" && task.sourceId) {
+      await tx.growthContentOpportunity.updateMany({
+        where: { id: task.sourceId, projectId: task.projectId! },
+        data: {
+          lifecycleStatus: input.status === "verified"
+            ? "measuring"
+            : input.status === "failed"
+              ? "needs_review"
+              : "publishing",
+          executionTaskId: task.id,
+        },
+      });
+    }
     if (input.status === "verified" && task.projectId && ["content", "publishing", "local_seo"].includes(task.moduleName)) {
       const addDays = (days: number) => new Date(now.getTime() + days * 86_400_000);
       const baseline = { publishedAt: now.toISOString(), liveUrl: input.liveUrl ?? null, externalId: input.externalId ?? null, checksum: input.checksum ?? null, sourceTaskId: task.id };
@@ -183,7 +202,7 @@ export async function verifyTaskPublishing(context: Context, taskId: string, inp
     await recordWorkspaceActivity(tx, {
       context, action: input.status === "verified" ? "publishing.completed" : input.status === "failed" ? "publishing.failed" : "publishing.verification_pending",
       entityType: "execution_task", entityId: task.id, agencyClientId: task.project?.agencyClientId, projectId: task.projectId,
-      previousJson: { status: task.status, versionReference: publishing.previousVersionReference },
+      previousJson: { status: task.status, versionReference: publishing.previousVersionReference == null ? null : String(publishing.previousVersionReference) },
       nextJson: { status, attemptId: input.attemptId, externalId: input.externalId, liveUrl: input.liveUrl, checksum: input.checksum, error: input.error },
       metadataJson: { phase: "verify", previousVersionRetained: input.status === "failed" },
     });
