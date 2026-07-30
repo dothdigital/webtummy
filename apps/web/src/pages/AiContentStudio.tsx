@@ -279,11 +279,8 @@ function citationAutomatedChecks(generation: AiContentGeneration): ValidationChe
 }
 
 function CitationValidationPanel({ generation, onReturn }: { generation: AiContentGeneration; onReturn: () => void }) {
-  const [reviewed, setReviewed] = useState({ facts: false, sources: false, implementation: false });
-  useEffect(() => setReviewed({ facts: false, sources: false, implementation: false }), [generation.id]);
   const checks = citationAutomatedChecks(generation);
   const automaticPass = checks.length > 0 && checks.every((check) => check.passed);
-  const complete = automaticPass && Object.values(reviewed).every(Boolean);
   if (generation.validatedAt) {
     return <div className="mt-4 flex flex-col gap-3 rounded-xl border border-emerald-200 bg-emerald-50 p-4 sm:flex-row sm:items-center sm:justify-between">
       <div><div className="text-xs font-black uppercase tracking-wide text-emerald-700">Citation asset validated</div><div className="mt-1 text-sm font-black text-emerald-950">This exact saved version is ready for review and implementation.</div><div className="mt-1 text-xs text-emerald-700">Validated {new Date(generation.validatedAt).toLocaleString()}</div></div>
@@ -292,16 +289,11 @@ function CitationValidationPanel({ generation, onReturn }: { generation: AiConte
   }
   return <div className="mt-4 rounded-xl border border-indigo-200 bg-indigo-50/60 p-4">
     <div className="flex flex-wrap items-start justify-between gap-3">
-      <div><div className="text-xs font-black uppercase tracking-wide text-indigo-700">Citation asset validation</div><h3 className="mt-1 font-black text-slate-950">Validate before returning to AI Citations</h3><p className="mt-1 text-sm leading-6 text-slate-600">Automated checks verify the output structure. You must still confirm the business facts, sources, URLs and implementation details.</p></div>
-      <span className={`rounded-full px-3 py-1 text-xs font-black ${complete ? "bg-emerald-100 text-emerald-700" : automaticPass ? "bg-amber-100 text-amber-800" : "bg-rose-100 text-rose-700"}`}>{complete ? "Validated" : automaticPass ? "Human review required" : "Automated checks failed"}</span>
+      <div><div className="text-xs font-black uppercase tracking-wide text-indigo-700">Citation asset validation</div><h3 className="mt-1 font-black text-slate-950">Validate before returning to AI Citations</h3><p className="mt-1 text-sm leading-6 text-slate-600">Automated checks verify that this generated asset has the required structure and usable output.</p></div>
+      <span className={`rounded-full px-3 py-1 text-xs font-black ${automaticPass ? "bg-emerald-100 text-emerald-700" : "bg-rose-100 text-rose-700"}`}>{automaticPass ? "Checks passed" : "Automated checks failed"}</span>
     </div>
     <div className="mt-4 grid gap-2 md:grid-cols-2">{checks.map((check) => <div key={check.label} className={`rounded-lg border p-3 ${check.passed ? "border-emerald-200 bg-white" : "border-rose-200 bg-rose-50"}`}><div className={`text-sm font-black ${check.passed ? "text-emerald-800" : "text-rose-800"}`}>{check.passed ? "✓" : "×"} {check.label}</div><div className="mt-1 text-xs leading-5 text-slate-500">{check.detail}</div></div>)}</div>
-    <div className="mt-4 space-y-2 rounded-lg border border-indigo-100 bg-white p-3">
-      <label className="flex items-start gap-3 text-sm text-slate-700"><input type="checkbox" checked={reviewed.facts} onChange={(event) => setReviewed({ ...reviewed, facts: event.target.checked })} className="mt-1 h-4 w-4 rounded" /><span><b>Facts verified:</b> names, services, people, credentials, policies and claims match approved project evidence.</span></label>
-      <label className="flex items-start gap-3 text-sm text-slate-700"><input type="checkbox" checked={reviewed.sources} onChange={(event) => setReviewed({ ...reviewed, sources: event.target.checked })} className="mt-1 h-4 w-4 rounded" /><span><b>Sources and URLs verified:</b> every reference, page URL and external source exists and supports the statement.</span></label>
-      <label className="flex items-start gap-3 text-sm text-slate-700"><input type="checkbox" checked={reviewed.implementation} onChange={(event) => setReviewed({ ...reviewed, implementation: event.target.checked })} className="mt-1 h-4 w-4 rounded" /><span><b>Implementation reviewed:</b> the asset is appropriate for the website and will be tested after publishing.</span></label>
-    </div>
-    <div className="mt-4 flex flex-wrap items-center justify-between gap-3"><p className="text-xs font-semibold text-slate-500">{automaticPass ? "Complete all three human checks to continue." : "Revise or regenerate the asset until every automated check passes."}</p><button type="button" onClick={onReturn} disabled={!complete} className="rounded-lg bg-indigo-700 px-4 py-2.5 text-sm font-black text-white disabled:cursor-not-allowed disabled:bg-slate-300">Validation complete · Return to AI Citations →</button></div>
+    <div className="mt-4 flex flex-wrap items-center justify-between gap-3"><p className="text-xs font-semibold text-slate-500">{automaticPass ? "The generated asset passed its automated checks." : "Create a new version until every automated check passes."}</p><button type="button" onClick={onReturn} disabled={!automaticPass} className="rounded-lg bg-indigo-700 px-4 py-2.5 text-sm font-black text-white disabled:cursor-not-allowed disabled:bg-slate-300">Validation complete · Return to AI Citations →</button></div>
   </div>;
 }
 
