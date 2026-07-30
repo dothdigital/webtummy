@@ -18,6 +18,7 @@ type CitationWorkspace = {
 };
 
 type Tab = "overview" | "entities" | "findings" | "opportunities" | "monitoring" | "recommendations";
+type FindingStatus = "open" | "acknowledged" | "resolved" | "dismissed";
 
 const tabs: Array<{ key: Tab; label: string }> = [
   { key: "overview", label: "Overview" },
@@ -102,6 +103,36 @@ function Evidence({ value }: { value: unknown }) {
   return <div className="mt-3 rounded-lg bg-slate-50 p-3"><div className="text-[10px] font-black uppercase tracking-wide text-slate-400">Evidence</div><div className="mt-2 grid gap-1 text-xs text-slate-600 sm:grid-cols-2">{entries.map(([key, value]) => <div key={key}><b>{display(key)}:</b> {Array.isArray(value) ? value.map(String).join(", ") : typeof value === "object" ? JSON.stringify(value) : String(value)}</div>)}</div></div>;
 }
 
+function FindingActions({
+  finding,
+  canAudit,
+  busy,
+  contentUrl,
+  contentLabel,
+  onReview,
+}: {
+  finding: CitationWorkspace["findings"][number];
+  canAudit: boolean;
+  busy: boolean;
+  contentUrl: string;
+  contentLabel: string;
+  onReview: (status: FindingStatus) => void;
+}) {
+  if (!canAudit) return null;
+  const active = finding.status === "open" || finding.status === "acknowledged";
+  const terminal = finding.status === "resolved" || finding.status === "dismissed";
+  return <div className="w-full shrink-0 rounded-xl border border-slate-200 bg-slate-50 p-3 lg:w-64">
+    <div className="text-[10px] font-black uppercase tracking-wide text-charcoal-400">Finding actions</div>
+    <div className="mt-2 space-y-2">
+      {active && <Link to={contentUrl} className="block rounded-lg bg-brand-600 px-3 py-2 text-center text-xs font-black text-white hover:bg-brand-700">{contentLabel} →</Link>}
+      {active && <button type="button" onClick={() => onReview("resolved")} disabled={busy} className="w-full rounded-lg bg-emerald-600 px-3 py-2 text-xs font-black text-white disabled:opacity-50">{busy ? "Saving…" : "Mark as Resolved"}</button>}
+      {finding.status === "open" && <button type="button" onClick={() => onReview("acknowledged")} disabled={busy} className="w-full rounded-lg border border-amber-200 bg-white px-3 py-2 text-xs font-black text-amber-700 disabled:opacity-50">Acknowledge</button>}
+      {active && <button type="button" onClick={() => onReview("dismissed")} disabled={busy} className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-black text-slate-600 disabled:opacity-50">Dismiss</button>}
+      {terminal && <button type="button" onClick={() => onReview("open")} disabled={busy} className="w-full rounded-lg border border-brand-200 bg-white px-3 py-2 text-xs font-black text-brand-700 disabled:opacity-50">{busy ? "Saving…" : "Reopen Finding"}</button>}
+    </div>
+  </div>;
+}
+
 export default function AiCitationVisibilityWorkspace({ projectId }: { projectId: string }) {
   const [workspace, setWorkspace] = useState<CitationWorkspace | null>(null);
   const [tab, setTab] = useState<Tab>("overview");
@@ -139,7 +170,7 @@ export default function AiCitationVisibilityWorkspace({ projectId }: { projectId
 
   const audit = () => void run("audit", () => api.post(`/api/projects/${encodeURIComponent(projectId)}/ai-citation-visibility/audit`, {}), "Citation research completed. Evidence, inferred opportunities, and proposed recommendations are ready for review.");
   const decideClaim = (id: string, decision: "approved" | "rejected") => void run(`claim:${id}`, () => api.patch(`/api/projects/${encodeURIComponent(projectId)}/ai-citation-visibility/claims/${encodeURIComponent(id)}`, { decision }), `Claim ${decision}. Future drafts will use approved claims only.`);
-  const reviewFinding = (id: string, status: "acknowledged" | "resolved" | "dismissed") => void run(`finding:${id}`, () => api.patch(`/api/projects/${encodeURIComponent(projectId)}/ai-citation-visibility/findings/${encodeURIComponent(id)}`, { status }), `Finding marked ${display(status).toLowerCase()}.`);
+  const reviewFinding = (id: string, status: FindingStatus) => void run(`finding:${id}`, () => api.patch(`/api/projects/${encodeURIComponent(projectId)}/ai-citation-visibility/findings/${encodeURIComponent(id)}`, { status }), status === "open" ? "Finding reopened for review." : `Finding marked ${display(status).toLowerCase()}.`);
   const approveRecommendation = (id: string) => void run(`recommendation:${id}`, () => api.post(`/api/projects/${encodeURIComponent(projectId)}/ai-citation-visibility/recommendations/${encodeURIComponent(id)}/approve`, {}), "Recommendation approved and converted into an execution task. Publishing remains separately controlled.");
 
   const createPrompt = (opportunity?: CitationWorkspace["opportunities"][number]) => {
@@ -222,7 +253,30 @@ export default function AiCitationVisibilityWorkspace({ projectId }: { projectId
 
       {tab === "findings" && <div className="space-y-3">{workspace.findings.length ? workspace.findings.map((finding) => {
         const contentLaunch = findingContentLaunch(finding);
-        return <div key={finding.id} className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm"><div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between"><div className="min-w-0"><div className="flex flex-wrap items-center gap-2"><Pill value={finding.severity} /><Pill value={finding.status} /><span className={`rounded-full px-2.5 py-1 text-[11px] font-black ${finding.isInference ? "bg-violet-50 text-violet-700" : "bg-blue-50 text-blue-700"}`}>{finding.isInference ? "Inference" : "Observed evidence"}</span><span className="text-xs font-semibold text-charcoal-400">{finding.confidence}% confidence · {finding.scoreImpact} point impact</span></div><h3 className="mt-3 font-black text-charcoal-950">{finding.title}</h3><p className="mt-1 text-sm leading-6 text-charcoal-600">{finding.summary}</p><div className="mt-3 rounded-lg border border-brand-100 bg-brand-50 p-3 text-sm leading-6 text-brand-900"><b>Recommended:</b> {finding.recommendedAction}</div><Evidence value={finding.evidenceJson} /></div>{workspace.capabilities.canAudit && finding.status !== "dismissed" && <div className="flex shrink-0 flex-col gap-2"><Link to={citationContentUrl(projectId, workspace.project.websiteUrl, contentLaunch)} className="rounded-lg bg-brand-600 px-3 py-2 text-center text-xs font-black text-white hover:bg-brand-700">{contentLaunch.label} →</Link>{finding.status === "open" && <div className="flex flex-wrap gap-2"><button type="button" onClick={() => reviewFinding(finding.id, "dismissed")} disabled={Boolean(busy)} className="rounded-lg border border-slate-200 px-3 py-2 text-xs font-black text-slate-600">Dismiss</button><button type="button" onClick={() => reviewFinding(finding.id, "acknowledged")} disabled={Boolean(busy)} className="rounded-lg border border-amber-200 px-3 py-2 text-xs font-black text-amber-700">Acknowledge</button><button type="button" onClick={() => reviewFinding(finding.id, "resolved")} disabled={Boolean(busy)} className="rounded-lg bg-emerald-600 px-3 py-2 text-xs font-black text-white">Resolve</button></div>}</div>}</div></div>;
+        return <div key={finding.id} className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
+          <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+            <div className="min-w-0">
+              <div className="flex flex-wrap items-center gap-2">
+                <Pill value={finding.severity} />
+                <Pill value={finding.status} />
+                <span className={`rounded-full px-2.5 py-1 text-[11px] font-black ${finding.isInference ? "bg-violet-50 text-violet-700" : "bg-blue-50 text-blue-700"}`}>{finding.isInference ? "Inference" : "Observed evidence"}</span>
+                <span className="text-xs font-semibold text-charcoal-400">{finding.confidence}% confidence · {finding.scoreImpact} point impact</span>
+              </div>
+              <h3 className="mt-3 font-black text-charcoal-950">{finding.title}</h3>
+              <p className="mt-1 text-sm leading-6 text-charcoal-600">{finding.summary}</p>
+              <div className="mt-3 rounded-lg border border-brand-100 bg-brand-50 p-3 text-sm leading-6 text-brand-900"><b>Recommended:</b> {finding.recommendedAction}</div>
+              <Evidence value={finding.evidenceJson} />
+            </div>
+            <FindingActions
+              finding={finding}
+              canAudit={workspace.capabilities.canAudit}
+              busy={busy === `finding:${finding.id}`}
+              contentUrl={citationContentUrl(projectId, workspace.project.websiteUrl, contentLaunch)}
+              contentLabel={contentLaunch.label}
+              onReview={(status) => reviewFinding(finding.id, status)}
+            />
+          </div>
+        </div>;
       }) : <Empty title="No citation findings" detail="Run citation research to inspect the latest project and crawl evidence." />}</div>}
 
       {tab === "opportunities" && <div className="space-y-3">{workspace.opportunities.length ? workspace.opportunities.map((opportunity) => <div key={opportunity.id} className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm"><div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between"><div className="min-w-0"><div className="flex flex-wrap items-center gap-2"><Pill value={opportunity.status} /><Pill value={opportunity.searchIntent ?? "informational"} /><span className="rounded-full bg-violet-50 px-2.5 py-1 text-[11px] font-black text-violet-700">{opportunity.isInference ? "Inferred opportunity" : "Observed gap"}</span></div><h3 className="mt-3 text-lg font-black text-charcoal-950">{opportunity.query}</h3><p className="mt-2 text-sm leading-6 text-charcoal-600">{opportunity.gapSummary}</p><div className="mt-3 flex flex-wrap gap-2">{list(opportunity.recommendedFixes).map((fix) => <span key={fix} className="rounded-lg bg-slate-50 px-2.5 py-1.5 text-xs font-semibold text-slate-600">{fix}</span>)}</div></div><div className="w-full shrink-0 rounded-xl bg-slate-50 p-4 lg:w-64"><div className="grid grid-cols-2 gap-3 text-center"><div><div className="text-lg font-black text-charcoal-950">{opportunity.priorityScore}</div><div className="text-[9px] font-black uppercase text-charcoal-400">Priority</div></div><div><div className="text-lg font-black text-charcoal-950">{opportunity.entityFitScore}</div><div className="text-[9px] font-black uppercase text-charcoal-400">Entity fit</div></div><div><div className="text-lg font-black text-charcoal-950">{opportunity.answerValueScore}</div><div className="text-[9px] font-black uppercase text-charcoal-400">Answer value</div></div><div><div className="text-lg font-black text-charcoal-950">{opportunity.authorityPotentialScore}</div><div className="text-[9px] font-black uppercase text-charcoal-400">Authority</div></div></div>{workspace.capabilities.canAudit && <div className="mt-4 space-y-2"><Link to={citationContentUrl(projectId, workspace.project.websiteUrl, { label: "Create Answer Content", type: "article", topic: opportunity.query, instruction: `Create a citation-ready answer page for this opportunity: ${opportunity.query}. ${opportunity.gapSummary} Use only approved entity claims, answer the question directly, include verifiable sources, and do not guarantee citation inclusion.` })} className="block w-full rounded-lg bg-emerald-600 px-3 py-2 text-center text-xs font-black text-white hover:bg-emerald-700">Create Answer Content →</Link>{opportunity.status !== "monitoring" && <button type="button" onClick={() => createPrompt(opportunity)} disabled={Boolean(busy)} className="w-full rounded-lg border border-brand-200 bg-white px-3 py-2 text-xs font-black text-brand-700">{busy === `prompt:${opportunity.id}` ? "Adding…" : "Add to monitoring"}</button>}</div>}</div></div><Evidence value={opportunity.evidenceJson} /></div>) : <Empty title="No answer opportunities" detail="Run citation research to infer high-value questions from approved keywords and verified project context." />}</div>}

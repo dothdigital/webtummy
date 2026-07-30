@@ -13,7 +13,7 @@ const claimDecisionSchema = z.object({
 });
 
 const findingReviewSchema = z.object({
-  status: z.enum(["acknowledged", "resolved", "dismissed"]),
+  status: z.enum(["open", "acknowledged", "resolved", "dismissed"]),
   notes: z.string().trim().max(5000).optional(),
 });
 
@@ -329,7 +329,7 @@ aiCitationVisibilityRouter.patch("/projects/:projectId/ai-citation-visibility/fi
   const finding = await prisma.citationReadinessFinding.findFirst({ where: { id: req.params.findingId, projectId: project.id } });
   if (!finding) fail("Citation finding not found.", 404);
   const updated = await prisma.$transaction(async (tx) => {
-    const next = await tx.citationReadinessFinding.update({ where: { id: finding.id }, data: { status: input.status, reviewedByUserId: context.membership.userId, reviewedAt: new Date(), evidenceJson: { ...jsonRecord(finding.evidenceJson), reviewNotes: input.notes ?? null } } });
+    const next = await tx.citationReadinessFinding.update({ where: { id: finding.id }, data: { status: input.status, reviewedByUserId: input.status === "open" ? null : context.membership.userId, reviewedAt: input.status === "open" ? null : new Date(), evidenceJson: { ...jsonRecord(finding.evidenceJson), reviewNotes: input.status === "open" ? null : input.notes ?? null } } });
     await recordWorkspaceActivity(tx, { context, action: `ai_citation.finding_${input.status}`, entityType: "citation_readiness_finding", entityId: finding.id, agencyClientId: project.agencyClientId, projectId: project.id, previousJson: { status: finding.status }, nextJson: { status: input.status, notes: input.notes ?? null } });
     return next;
   });
