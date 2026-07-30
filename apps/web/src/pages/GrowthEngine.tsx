@@ -25,6 +25,10 @@ function titleCase(value: string) {
   return value.replace(/_/g, " ").replace(/([A-Z])/g, " $1").replace(/\b\w/g, (char) => char.toUpperCase()).trim();
 }
 
+function formatDate(value: string) {
+  return new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric", year: "numeric" }).format(new Date(value));
+}
+
 function toneClass(value: number) {
   if (value >= 75) return "text-emerald-700";
   if (value >= 55) return "text-amber-700";
@@ -521,6 +525,11 @@ export default function GrowthEngine() {
               </div>
               <Link to={`/social-strategy?projectId=${projectId}`} className="rounded-lg bg-pink-600 px-4 py-2 text-sm font-bold text-white">{data.growth.socialDistribution ? "Open Social Plan" : "Create Social Plan"}</Link>
             </div>
+            {data.growth.socialDistribution && (
+              <div className="border-b border-slate-100 bg-white px-5 py-3 text-xs font-semibold text-slate-600">
+                {data.growth.socialDistribution.campaignName || "Social campaign"} · {data.growth.socialDistribution.campaignStartAt ? formatDate(data.growth.socialDistribution.campaignStartAt) : "Start date not set"} – {data.growth.socialDistribution.campaignEndAt ? formatDate(data.growth.socialDistribution.campaignEndAt) : "End date not set"} · Target: {data.growth.socialDistribution.goalTarget ?? "Baseline"} {(data.growth.socialDistribution.goalMetric || "success metric").replaceAll("_", " ")}
+              </div>
+            )}
             {data.growth.socialDistribution && <div className="grid gap-3 p-5 sm:grid-cols-2 xl:grid-cols-5">
               <Stat label="Platforms" value={data.growth.socialDistribution.platforms.length} detail={data.growth.socialDistribution.platforms.join(", ")} />
               <Stat label="Calendar posts" value={data.growth.socialDistribution.posts.length} detail={data.growth.socialDistribution.postingFrequency || "Rolling calendar"} />

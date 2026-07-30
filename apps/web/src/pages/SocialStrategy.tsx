@@ -28,6 +28,14 @@ const PROFILE_FREQUENCY_OPTIONS = [
   "5 times a week",
   "Daily",
 ];
+const CAMPAIGN_GOAL_OPTIONS = [
+  { value: "reach", label: "Reach" },
+  { value: "impressions", label: "Impressions" },
+  { value: "engagement_rate", label: "Engagement rate (%)" },
+  { value: "website_clicks", label: "Website clicks" },
+  { value: "leads", label: "Qualified leads" },
+  { value: "conversions", label: "Conversions" },
+] as const;
 const REPURPOSING_LABELS: Record<string, string> = {
   facebook: "Facebook post",
   linkedin: "LinkedIn post",
@@ -47,6 +55,7 @@ const WIZARD_STEPS = [
   { id: "competitors", title: "Competitors", description: "Capture examples to compare against." },
   { id: "strategy", title: "Inputs", description: "Set the campaign direction." },
   { id: "review", title: "Strategy", description: "Review the score, recommendations, and calendar." },
+  { id: "repurpose", title: "Repurpose", description: "Turn approved sources into campaign assets." },
 ] as const;
 
 type WizardStep = typeof WIZARD_STEPS[number]["id"];
@@ -84,6 +93,17 @@ function emptyCompetitor(): SocialCompetitorProfile {
 
 function formatDate(value: string): string {
   return new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric" }).format(new Date(value));
+}
+
+function campaignDate(daysFromToday: number): string {
+  const date = new Date();
+  date.setHours(12, 0, 0, 0);
+  date.setDate(date.getDate() + daysFromToday);
+  return date.toISOString().slice(0, 10);
+}
+
+function goalMetricLabel(value: string | null | undefined): string {
+  return CAMPAIGN_GOAL_OPTIONS.find((option) => option.value === value)?.label ?? value?.replaceAll("_", " ") ?? "Success metric";
 }
 
 function platformLabel(platform: string): string {
@@ -624,14 +644,21 @@ export default function SocialStrategy() {
   const [providers, setProviders] = useState<SocialProviderCapability[]>([]);
   const [repurposingChannels, setRepurposingChannels] = useState<string[]>(Object.keys(REPURPOSING_LABELS));
   const [intelligence, setIntelligence] = useState<SocialStrategyResponse["intelligence"]>(null);
+  const [campaignEditorOpen, setCampaignEditorOpen] = useState(false);
+  const [campaignConfigured, setCampaignConfigured] = useState(false);
+  const [campaignName, setCampaignName] = useState("");
+  const [campaignStartAt, setCampaignStartAt] = useState(() => campaignDate(1));
+  const [campaignEndAt, setCampaignEndAt] = useState(() => campaignDate(30));
   const [goal, setGoal] = useState("Grow search-connected brand visibility and qualified leads");
+  const [goalMetric, setGoalMetric] = useState("leads");
+  const [goalTarget, setGoalTarget] = useState("");
   const [audience, setAudience] = useState("");
   const [postingFrequency, setPostingFrequency] = useState("3 posts per week");
   const [tone, setTone] = useState("professional");
   const [targetKeywords, setTargetKeywords] = useState("");
   const [targetUrls, setTargetUrls] = useState("");
   const [selectedPlatforms, setSelectedPlatforms] = useState<string[]>(DEFAULT_PLATFORMS.slice(0, 3));
-  const [mode, setMode] = useState<"posting" | "strategy" | "repurpose" | "performance">("strategy");
+  const [mode, setMode] = useState<"posting" | "strategy" | "performance">("strategy");
   const [step, setStep] = useState<WizardStep>("project");
   const [loading, setLoading] = useState(true);
   const [pageError, setPageError] = useState("");
@@ -839,14 +866,80 @@ export default function SocialStrategy() {
     setStep("strategy");
   };
 
+  const openNewCampaign = () => {
+    setCampaignName("");
+    setCampaignStartAt(campaignDate(1));
+    setCampaignEndAt(campaignDate(30));
+    setGoal("Grow search-connected brand visibility and qualified leads");
+    setGoalMetric("leads");
+    setGoalTarget("");
+    setCampaignConfigured(false);
+    setCampaignEditorOpen(true);
+  };
+
+  const openExistingCampaign = (strategy: SocialStrategyType) => {
+    setCampaignName(strategy.campaignName ?? "");
+    setCampaignStartAt(strategy.campaignStartAt?.slice(0, 10) ?? campaignDate(1));
+    setCampaignEndAt(strategy.campaignEndAt?.slice(0, 10) ?? campaignDate(30));
+    setGoal(strategy.goal);
+    setGoalMetric(strategy.goalMetric ?? "leads");
+    setGoalTarget(strategy.goalTarget?.toString() ?? "");
+    setCampaignConfigured(true);
+    setCampaignEditorOpen(true);
+  };
+
+  const saveCampaignSetup = () => {
+    if (!campaignStartAt || !campaignEndAt) {
+      setPageError("Choose the campaign start and end dates.");
+      return;
+    }
+    if (campaignEndAt <= campaignStartAt) {
+      setPageError("Campaign end date must be after its start date.");
+      return;
+    }
+    if (!goal.trim()) {
+      setPageError("Describe the business outcome this campaign should achieve.");
+      return;
+    }
+    if (goalTarget.trim() && (!Number.isFinite(Number(goalTarget)) || Number(goalTarget) < 0)) {
+      setPageError("Enter a valid campaign target.");
+      return;
+    }
+    setPageError("");
+    setCampaignConfigured(true);
+    setCampaignEditorOpen(false);
+  };
+
   const generateStrategy = async () => {
     if (!websiteId) return;
+    if (!campaignConfigured) {
+      setPageError("Add the campaign period and measurable goal before generating the strategy.");
+      return;
+    }
+    if (!campaignStartAt || !campaignEndAt) {
+      setPageError("Choose the campaign start and end dates.");
+      return;
+    }
+    if (campaignEndAt <= campaignStartAt) {
+      setPageError("Campaign end date must be after its start date.");
+      return;
+    }
+    if (!goal.trim()) {
+      setPageError("Describe the business outcome this campaign should achieve.");
+      return;
+    }
     setGenerating(true);
+    setPageError("");
     try {
       const result = await api.post<SocialStrategyResponse>("/api/social-strategy/generate", {
         websiteId,
         projectId: selectedProject?.id ?? null,
+        campaignName: campaignName.trim() || null,
+        campaignStartAt,
+        campaignEndAt,
         goal,
+        goalMetric,
+        goalTarget: goalTarget.trim() ? Number(goalTarget) : null,
         audience: audience || null,
         platforms: selectedPlatforms,
         postingFrequency: postingFrequency || null,
@@ -856,6 +949,8 @@ export default function SocialStrategy() {
       });
       applySocialResponse(result);
       setStep("review");
+    } catch (err) {
+      setPageError(String(err).replace(/^Error:\s*/, ""));
     } finally {
       setGenerating(false);
     }
@@ -972,24 +1067,19 @@ export default function SocialStrategy() {
       {pageError && <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">{pageError}</div>}
       {workflowMessage && <div className="rounded-lg border border-green-200 bg-green-50 px-4 py-3 text-sm text-green-800">{workflowMessage}</div>}
 
-      <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
-        <button type="button" onClick={() => setMode("strategy")} className={`rounded-xl border p-5 text-left shadow-sm transition ${mode === "strategy" ? "border-brand-300 bg-brand-50" : "border-slate-200 bg-white hover:border-brand-200 hover:bg-slate-50"}`}>
+      <div className="grid gap-4 md:grid-cols-3">
+        <button type="button" onClick={() => { setMode("strategy"); if (step === "repurpose") setStep("review"); }} className={`rounded-xl border p-5 text-left shadow-sm transition ${mode === "strategy" ? "border-brand-300 bg-brand-50" : "border-slate-200 bg-white hover:border-brand-200 hover:bg-slate-50"}`}>
           <div className="text-xs font-semibold uppercase tracking-wide text-brand-600">1 · Strategy</div>
           <div className="mt-2 text-lg font-bold text-charcoal-900">Build the Growth-aligned plan</div>
-          <p className="mt-2 text-sm leading-6 text-charcoal-500">Use intake, SEO, pages, content, competitors, goals, and brand voice.</p>
-        </button>
-        <button type="button" onClick={() => setMode("repurpose")} className={`rounded-xl border p-5 text-left shadow-sm transition ${mode === "repurpose" ? "border-brand-300 bg-brand-50" : "border-slate-200 bg-white hover:border-brand-200 hover:bg-slate-50"}`}>
-          <div className="text-xs font-semibold uppercase tracking-wide text-brand-600">2 · Repurpose</div>
-          <div className="mt-2 text-lg font-bold text-charcoal-900">One source, many assets</div>
-          <p className="mt-2 text-sm leading-6 text-charcoal-500">Generate channel-specific social, email, video, podcast, and lead-magnet assets.</p>
+          <p className="mt-2 text-sm leading-6 text-charcoal-500">Build the campaign, then repurpose approved content into its channel-specific assets.</p>
         </button>
         <button type="button" onClick={() => setMode("posting")} className={`rounded-xl border p-6 text-left shadow-sm transition ${mode === "posting" ? "border-brand-300 bg-brand-50" : "border-slate-200 bg-white hover:border-brand-200 hover:bg-slate-50"}`}>
-          <div className="text-xs font-semibold uppercase tracking-wide text-brand-600">3 · Publish</div>
+          <div className="text-xs font-semibold uppercase tracking-wide text-brand-600">2 · Publish</div>
           <div className="mt-2 text-lg font-bold text-charcoal-900">Approve, schedule and publish</div>
           <p className="mt-2 text-sm leading-6 text-charcoal-500">Publish through connected providers or use a reviewable manual handoff.</p>
         </button>
         <button type="button" onClick={() => setMode("performance")} className={`rounded-xl border p-5 text-left shadow-sm transition ${mode === "performance" ? "border-brand-300 bg-brand-50" : "border-slate-200 bg-white hover:border-brand-200 hover:bg-slate-50"}`}>
-          <div className="text-xs font-semibold uppercase tracking-wide text-brand-600">4 · Learn</div>
+          <div className="text-xs font-semibold uppercase tracking-wide text-brand-600">3 · Learn</div>
           <div className="mt-2 text-lg font-bold text-charcoal-900">Measure and improve</div>
           <p className="mt-2 text-sm leading-6 text-charcoal-500">Feed engagement, clicks, leads, and conversions into Growth and Next Best Action.</p>
         </button>
@@ -1021,16 +1111,19 @@ export default function SocialStrategy() {
         )
       )}
 
-      {mode === "repurpose" && (
+      {mode === "strategy" && step === "repurpose" && (
         <div className="space-y-5">
           <Card className="p-5">
             <div className="flex flex-wrap items-start justify-between gap-3">
               <div>
-                <div className="text-xs font-bold uppercase tracking-wide text-brand-600">DEV-043 · Multi-channel distribution</div>
-                <h2 className="mt-1 text-xl font-bold text-charcoal-900">Repurpose an existing project asset</h2>
-                <p className="mt-1 text-sm leading-6 text-charcoal-500">Select one verified source. SEnuke AI preserves its key message while adapting structure, length, CTA, hashtags, and visual direction for each channel.</p>
+                <div className="text-xs font-bold uppercase tracking-wide text-brand-600">Strategy · Content repurposing</div>
+                <h2 className="mt-1 text-xl font-bold text-charcoal-900">Create campaign assets from approved content</h2>
+                <p className="mt-1 text-sm leading-6 text-charcoal-500">This is part of the active campaign strategy. The source list includes only approved or published project assets. SEnuke AI adapts the selected message, CTA, structure, and visual direction for each channel.</p>
               </div>
-              <span className="rounded-full bg-brand-50 px-3 py-1 text-xs font-bold text-brand-700">{contentSources.length} available sources</span>
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="rounded-full bg-brand-50 px-3 py-1 text-xs font-bold text-brand-700">{contentSources.length} available sources</span>
+                <Button variant="ghost" onClick={() => setStep("review")}>Back to strategy</Button>
+              </div>
             </div>
             {!selectedProject?.id ? <div className="mt-5 rounded-lg border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">Select a guided project connected to this website before repurposing content.</div> : <>
               <div className="mt-5 grid gap-4 lg:grid-cols-[1fr_1fr]">
@@ -1038,7 +1131,7 @@ export default function SocialStrategy() {
                   <span className="mb-1 block text-sm font-bold text-slate-700">Source content</span>
                   <select value={selectedSourceId} onChange={(event) => setSelectedSourceId(event.target.value)} className="w-full rounded-lg border border-slate-300 bg-white px-3 py-3 text-sm outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-100">
                     {contentSources.map((source) => <option key={`${source.type}:${source.id}`} value={source.id}>{source.type.replaceAll("_", " ")} · {source.title}</option>)}
-                    <option value="__custom__">Import founder journal, case study, update, news, or video transcript</option>
+                    <option value="__custom__">Paste another verified source manually</option>
                   </select>
                   {selectedSourceId === "__custom__" ? <div className="mt-3 space-y-3 rounded-lg border border-slate-200 bg-slate-50 p-3">
                     <label className="block"><span className="mb-1 block text-xs font-bold text-slate-600">Source type</span><select value={customSource.type} onChange={(event) => setCustomSource((current) => ({ ...current, type: event.target.value }))} className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm"><option value="founder_journal">Founder Journal</option><option value="blog_post">Blog post</option><option value="landing_page">Landing page</option><option value="case_study">Case study</option><option value="product_update">Product update</option><option value="news">News</option><option value="video_transcript">Video transcript</option></select></label>
@@ -1080,6 +1173,10 @@ export default function SocialStrategy() {
               })}
             </div>
           </Card>)}
+          <div className="flex flex-wrap justify-between gap-3">
+            <Button variant="ghost" onClick={() => setStep("review")}>Back to strategy review</Button>
+            <Button onClick={() => setMode("posting")}>Continue to publishing</Button>
+          </div>
         </div>
       )}
 
@@ -1104,10 +1201,10 @@ export default function SocialStrategy() {
         </div>
       )}
 
-      {mode === "strategy" && (
+      {mode === "strategy" && step !== "repurpose" && (
         <>
       <Card className="overflow-hidden">
-        <div className="grid gap-0 border-b border-charcoal-100 bg-charcoal-50 md:grid-cols-5">
+        <div className="grid gap-0 border-b border-charcoal-100 bg-charcoal-50 md:grid-cols-6">
           {WIZARD_STEPS.map((item, index) => {
             const active = item.id === step;
             const done = index < activeStepIndex;
@@ -1328,25 +1425,102 @@ export default function SocialStrategy() {
 
         {step === "strategy" && (
           <div className="p-5">
-            <div className="mb-5">
-              <h2 className="text-lg font-semibold text-charcoal-800">Review the AI strategy direction</h2>
-              <p className="mt-1 text-sm leading-6 text-charcoal-500">SEnuke AI starts with the project’s saved intelligence. These fields are optional refinements, not a replacement for business intake and research.</p>
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+              <div>
+                <div className="text-xs font-bold uppercase tracking-wide text-brand-600">Time-bound campaign setup</div>
+                <h2 className="mt-1 text-lg font-semibold text-charcoal-800">Social campaigns</h2>
+                <p className="mt-1 text-sm leading-6 text-charcoal-500">Add a campaign with a start date, end date, business objective, success metric, and target. SEnuke AI builds the strategy and calendar within those boundaries.</p>
+              </div>
+              <Button className="shrink-0" onClick={openNewCampaign}>+ Add Campaign</Button>
             </div>
             {intelligence && <div className="mb-5 rounded-xl border border-brand-200 bg-brand-50 p-4"><div className="flex flex-wrap items-center justify-between gap-2"><div className="font-bold text-brand-900">Project intelligence loaded</div><span className="rounded-full bg-white px-2.5 py-1 text-xs font-bold text-brand-700">{intelligence.sourceCount} reusable content sources</span></div><div className="mt-3 grid gap-3 text-xs sm:grid-cols-2 lg:grid-cols-4"><div><b className="block text-brand-800">Business</b><span className="text-brand-700">{intelligence.businessName}</span></div><div><b className="block text-brand-800">Audience</b><span className="text-brand-700">{intelligence.audience || "Review needed"}</span></div><div><b className="block text-brand-800">Markets</b><span className="text-brand-700">{intelligence.targetMarkets.join(", ") || "Not location-dependent"}</span></div><div><b className="block text-brand-800">Evidence</b><span className="text-brand-700">{intelligence.keywords.length} keywords · {intelligence.sourceTypes.length} source types</span></div></div></div>}
+            <div className="mt-6 overflow-hidden rounded-xl border border-slate-200">
+              <div className="flex items-center justify-between gap-3 border-b border-slate-200 bg-slate-50 px-4 py-3">
+                <div>
+                  <div className="font-bold text-charcoal-900">Campaigns</div>
+                  <div className="text-xs text-slate-500">{strategies.length} generated campaign{strategies.length === 1 ? "" : "s"} for this project</div>
+                </div>
+                {(campaignConfigured || strategies.length > 0) && <Button variant="ghost" onClick={openNewCampaign}>+ Add Campaign</Button>}
+              </div>
+              {!campaignConfigured && strategies.length === 0 && (
+                <div className="p-8 text-center">
+                  <div className="text-lg font-bold text-charcoal-900">No campaigns created</div>
+                  <p className="mx-auto mt-2 max-w-xl text-sm leading-6 text-charcoal-500">Create a time-bound campaign before generating its AI strategy and publishing calendar.</p>
+                  <Button className="mt-4" onClick={openNewCampaign}>+ Add Campaign</Button>
+                </div>
+              )}
+              {campaignConfigured && (
+                <div className="flex flex-col gap-3 border-b border-violet-100 bg-violet-50/50 px-4 py-4 sm:flex-row sm:items-center sm:justify-between">
+                  <div className="min-w-0">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="rounded-full bg-violet-100 px-2.5 py-1 text-xs font-bold text-violet-800">Ready to generate</span>
+                      <span className="text-xs font-semibold text-slate-500">{campaignStartAt} – {campaignEndAt}</span>
+                    </div>
+                    <div className="mt-2 truncate text-sm font-semibold text-charcoal-900">{campaignName || `${intelligence?.businessName || "Project"} social campaign`}</div>
+                    <div className="mt-1 text-xs text-slate-500">{goal} · Target: {goalTarget || "Baseline"} {goalMetricLabel(goalMetric)}</div>
+                  </div>
+                  <Button variant="ghost" onClick={() => setCampaignEditorOpen(true)}>Edit</Button>
+                </div>
+              )}
+              {strategies.length > 0 && (
+                <div className="divide-y divide-slate-100">
+                  {strategies.map((strategy) => (
+                    <div key={strategy.id} className="flex flex-col gap-3 bg-white px-4 py-4 sm:flex-row sm:items-center sm:justify-between">
+                      <div className="min-w-0">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <span className={`rounded-full px-2.5 py-1 text-xs font-bold ${strategy.status === "active" ? "bg-green-100 text-green-800" : "bg-slate-100 text-slate-600"}`}>{strategy.status}</span>
+                          <span className="text-xs font-semibold text-slate-500">{strategy.campaignStartAt ? formatDate(strategy.campaignStartAt) : "Start date"} – {strategy.campaignEndAt ? formatDate(strategy.campaignEndAt) : "End date"}</span>
+                        </div>
+                        <div className="mt-2 truncate text-sm font-semibold text-charcoal-900">{strategy.campaignName || "Social campaign"}</div>
+                        <div className="mt-1 truncate text-xs text-slate-500">{strategy.goal} · Target: {strategy.goalTarget ?? "Baseline"} {goalMetricLabel(strategy.goalMetric)}</div>
+                      </div>
+                      <Button variant="ghost" onClick={() => openExistingCampaign(strategy)}>Edit setup</Button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+            {campaignEditorOpen && (
+              <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/50 p-4" role="dialog" aria-modal="true" aria-label={campaignConfigured ? "Edit campaign" : "Add campaign"}>
+                <div className="max-h-[90vh] w-full max-w-3xl overflow-y-auto rounded-2xl bg-white shadow-2xl">
+                  <div className="flex items-start justify-between gap-3 border-b border-slate-200 px-5 py-4">
+                    <div><div className="text-xs font-bold uppercase tracking-wide text-brand-600">{campaignConfigured ? "Update campaign" : "New campaign"}</div><h3 className="mt-1 text-xl font-bold text-charcoal-900">{campaignConfigured ? "Edit Campaign Setup" : "Add Campaign"}</h3></div>
+                    <button type="button" onClick={() => setCampaignEditorOpen(false)} className="rounded-lg px-3 py-2 text-xl text-slate-400 hover:bg-slate-100 hover:text-slate-700" aria-label="Close">×</button>
+                  </div>
+                  <div className="space-y-5 p-5">
+                    <p className="rounded-lg border border-violet-200 bg-violet-50 px-3 py-2 text-xs leading-5 text-violet-800">Example: Generate 50 qualified leads between August 1 and September 30.</p>
+                    <div className="grid gap-4 md:grid-cols-2">
+                      <div className="md:col-span-2"><Input label="Campaign name" value={campaignName} onChange={setCampaignName} placeholder="Fall lead generation campaign" /></div>
+                      <label className="block"><span className="mb-1 block text-sm font-medium text-slate-600">Start date</span><input type="date" value={campaignStartAt} onChange={(event) => setCampaignStartAt(event.target.value)} className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-100" /></label>
+                      <label className="block"><span className="mb-1 block text-sm font-medium text-slate-600">End date</span><input type="date" min={campaignStartAt} value={campaignEndAt} onChange={(event) => setCampaignEndAt(event.target.value)} className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-100" /></label>
+                      <div className="md:col-span-2"><Input label="Campaign objective" value={goal} onChange={setGoal} placeholder="Generate qualified leads for the core service" /></div>
+                      <label className="block"><span className="mb-1 block text-sm font-medium text-slate-600">Success metric</span><select value={goalMetric} onChange={(event) => setGoalMetric(event.target.value)} className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-100">{CAMPAIGN_GOAL_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select></label>
+                      <label className="block"><span className="mb-1 block text-sm font-medium text-slate-600">Target value</span><input type="number" min="0" step={goalMetric === "engagement_rate" ? "0.1" : "1"} value={goalTarget} onChange={(event) => setGoalTarget(event.target.value)} placeholder={goalMetric === "engagement_rate" ? "5" : "50"} className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-100" /></label>
+                    </div>
+                  </div>
+                  <div className="flex flex-col-reverse gap-2 border-t border-slate-200 px-5 py-4 sm:flex-row sm:justify-end">
+                    <Button variant="ghost" onClick={() => setCampaignEditorOpen(false)}>Cancel</Button>
+                    <Button onClick={saveCampaignSetup}>{campaignConfigured ? "Save Campaign Setup" : "Add Campaign"}</Button>
+                  </div>
+                </div>
+              </div>
+            )}
+            <div className="mb-3">
+              <h3 className="font-semibold text-charcoal-800">Optional campaign refinements</h3>
+              <p className="mt-1 text-xs leading-5 text-charcoal-400">Adjust the audience, voice, cadence, keywords, and destinations only when the saved project intelligence needs more direction.</p>
+            </div>
             <div className="grid gap-4 lg:grid-cols-[1fr_300px]">
               <div className="grid gap-4 lg:grid-cols-2">
-                <Input label="Goal" value={goal} onChange={setGoal} />
                 <Input label="Audience" value={audience} onChange={setAudience} placeholder="Homeowners, SaaS buyers, local businesses" />
                 <Input label="Tone" value={tone} onChange={setTone} />
-                <Input label="Posting rhythm" value={postingFrequency} onChange={setPostingFrequency} />
+                <Input label="Planned campaign cadence" value={postingFrequency} onChange={setPostingFrequency} />
                 <Input label="Target keywords" value={targetKeywords} onChange={setTargetKeywords} placeholder="website design, local SEO" />
                 <Input label="Target URLs" value={targetUrls} onChange={setTargetUrls} placeholder="https://example.com/service" />
               </div>
               <div className="space-y-2">
-                <FieldHelp title="Goal">The business result the strategy should support, such as leads, visibility, trust, or local authority.</FieldHelp>
                 <FieldHelp title="Audience">The customer segment the content should speak to.</FieldHelp>
                 <FieldHelp title="Tone">The writing style, for example professional, friendly, expert, local, or educational.</FieldHelp>
-                <FieldHelp title="Posting rhythm">The planned publishing pace for the calendar.</FieldHelp>
+                <FieldHelp title="Campaign cadence">The publishing pace used to calculate posts within the selected campaign period.</FieldHelp>
                 <FieldHelp title="Target keywords">Comma-separated SEO terms to weave into topics and captions.</FieldHelp>
                 <FieldHelp title="Target URLs">Important service, product, or report pages to promote.</FieldHelp>
               </div>
@@ -1365,7 +1539,7 @@ export default function SocialStrategy() {
                 })}
               </div>
             </div>
-            <StepFooter back={() => setStep("competitors")} next={() => void generateStrategy()} nextLabel={generating ? "Analyzing project and building the calendar…" : "Generate Growth-aligned strategy with AI"} nextDisabled={generating || !websiteId} />
+            <StepFooter back={() => setStep("competitors")} next={() => void generateStrategy()} nextLabel={generating ? "Analyzing project and building the calendar…" : "Generate Growth-aligned strategy with AI"} nextDisabled={generating || !websiteId || !campaignConfigured} />
           </div>
         )}
 
@@ -1380,6 +1554,13 @@ export default function SocialStrategy() {
                 </div>
                 <p className="mt-1 text-sm text-charcoal-500">{activeStrategy?.monthlyTheme ?? "Generate a strategy to build a baseline score, recommendations, and 30-day calendar."}</p>
                 {activeStrategy?.strategySummary && <p className="mt-2 max-w-4xl text-sm leading-6 text-charcoal-600">{activeStrategy.strategySummary}</p>}
+                {activeStrategy && (
+                  <div className="mt-3 flex flex-wrap gap-2 text-xs font-semibold">
+                    <span className="rounded-full bg-violet-100 px-3 py-1.5 text-violet-800">{activeStrategy.campaignName || "Social campaign"}</span>
+                    <span className="rounded-full bg-slate-100 px-3 py-1.5 text-slate-700">{activeStrategy.campaignStartAt ? formatDate(activeStrategy.campaignStartAt) : "Start date"} – {activeStrategy.campaignEndAt ? formatDate(activeStrategy.campaignEndAt) : "End date"}</span>
+                    <span className="rounded-full bg-green-100 px-3 py-1.5 text-green-800">Target: {activeStrategy.goalTarget ?? "Baseline"} {goalMetricLabel(activeStrategy.goalMetric)}</span>
+                  </div>
+                )}
                 <p className="mt-2 text-sm text-charcoal-400">Connected platforms: {platformSummary}</p>
                 {activeStrategy && <div className="mt-2 text-xs font-semibold text-violet-700">Generation: {activeStrategy.generationMode.replaceAll("_", " ")} · Review due {activeStrategy.nextReviewAt ? formatDate(activeStrategy.nextReviewAt) : "after performance data"}</div>}
                 <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
@@ -1394,7 +1575,7 @@ export default function SocialStrategy() {
             {!activeStrategy && (
               <div className="mt-5 rounded-lg border border-amber-200 bg-amber-50 p-4 text-sm leading-6 text-amber-900">No strategy has been generated yet. Go back to Inputs and click Generate strategy.</div>
             )}
-            <StepFooter back={() => setStep("strategy")} next={() => setStep("strategy")} nextLabel="Update inputs" />
+            <StepFooter back={() => setStep("strategy")} next={() => setStep("repurpose")} nextLabel="Continue to repurposing" />
           </div>
         )}
       </Card>

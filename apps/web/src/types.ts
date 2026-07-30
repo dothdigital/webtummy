@@ -461,6 +461,11 @@ export interface GrowthOverviewResponse {
       id: string;
       status: string;
       generationMode: string;
+      campaignName: string | null;
+      campaignStartAt: string | null;
+      campaignEndAt: string | null;
+      goalMetric: string | null;
+      goalTarget: number | null;
       strategySummary: string | null;
       platforms: string[];
       postingFrequency: string | null;
@@ -1174,6 +1179,11 @@ export interface SocialStrategy {
   id: string;
   websiteId: string;
   projectId: string | null;
+  campaignName: string | null;
+  campaignStartAt: string | null;
+  campaignEndAt: string | null;
+  goalMetric: string | null;
+  goalTarget: number | null;
   goal: string;
   audience: string | null;
   platforms: string[];

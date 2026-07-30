@@ -63,6 +63,11 @@ const saveSetupSchema = z.object({
 const generateSchema = z.object({
   websiteId: z.string(),
   projectId: z.string().optional().nullable(),
+  campaignName: z.string().max(180).optional().nullable(),
+  campaignStartAt: z.string().date().optional().nullable(),
+  campaignEndAt: z.string().date().optional().nullable(),
+  goalMetric: z.enum(["reach", "impressions", "engagement_rate", "website_clicks", "leads", "conversions"]).optional().nullable(),
+  goalTarget: z.number().nonnegative().optional().nullable(),
   goal: z.string().max(160).optional().nullable(),
   audience: z.string().max(255).optional().nullable(),
   platforms: z.array(z.string().max(40)).default([]),
@@ -232,15 +237,31 @@ async function getProjectIntelligence(req: Request, websiteId: string, projectId
       strategyPlans: { orderBy: { createdAt: "desc" }, take: 1 },
       keywordGroups: { where: { status: "approved" }, orderBy: { updatedAt: "desc" }, take: 20 },
       keywordResearchRuns: { orderBy: { createdAt: "desc" }, take: 3, include: { ideas: { orderBy: { avgMonthlySearches: "desc" }, take: 40 } } },
-      websiteBuilds: { orderBy: { updatedAt: "desc" }, take: 1, include: { pages: { where: { status: { not: "deferred" } }, orderBy: { sortOrder: "asc" }, take: 100 } } },
-      leadMagnetFunnels: { orderBy: { updatedAt: "desc" }, take: 20 },
-      growthContentOpportunities: { where: { lifecycleStatus: { notIn: ["rejected", "superseded"] } }, orderBy: { priorityScore: "desc" }, take: 30 },
+      websiteBuilds: {
+        orderBy: { updatedAt: "desc" },
+        take: 1,
+        include: {
+          pages: {
+            where: {
+              status: { not: "deferred" },
+              OR: [{ status: "approved" }, { approvedAt: { not: null } }, { remoteUrl: { not: null } }],
+            },
+            orderBy: { sortOrder: "asc" },
+            take: 100,
+          },
+        },
+      },
+      leadMagnetFunnels: { where: { status: { in: ["approved", "published"] } }, orderBy: { updatedAt: "desc" }, take: 20 },
       socialPerformanceMetrics: { orderBy: { recordedAt: "desc" }, take: 200 },
     },
   });
   if (!project) return { project: null, sources: [] as ContentSource[] };
   const aiContent = await prisma.aiContentGeneration.findMany({
-    where: { status: "completed", OR: [{ projectId: project.id }, ...(project.websiteId ? [{ websiteId: project.websiteId }] : [])] },
+    where: {
+      status: "completed",
+      validatedAt: { not: null },
+      OR: [{ projectId: project.id }, ...(project.websiteId ? [{ websiteId: project.websiteId }] : [])],
+    },
     orderBy: { createdAt: "desc" },
     take: 30,
   });
@@ -271,15 +292,6 @@ async function getProjectIntelligence(req: Request, websiteId: string, projectId
     summary: textFromJson(funnel.assetJson) || funnel.recommendationReason || "",
     keyword: null,
     status: funnel.status,
-  });
-  for (const opportunity of project.growthContentOpportunities) sources.push({
-    id: opportunity.id,
-    type: "growth_content_opportunity",
-    title: opportunity.title,
-    url: opportunity.targetUrl,
-    summary: opportunity.businessPurpose,
-    keyword: opportunity.primaryKeyword,
-    status: opportunity.lifecycleStatus,
   });
   return { project, sources };
 }
@@ -337,11 +349,14 @@ function recommendPlatforms(snapshot: ReturnType<typeof intelligenceSnapshot>, s
 
 function buildRecommendations(input: GenerateInput, profiles: SocialProfileInput[], competitors: CompetitorInput[], sources: ContentSource[], plans: PlatformPlan[]) {
   const recommendations: string[] = [];
+  const durationDays = input.campaignStartAt && input.campaignEndAt
+    ? Math.max(1, Math.ceil((new Date(`${input.campaignEndAt}T23:59:59.999Z`).getTime() - new Date(`${input.campaignStartAt}T00:00:00.000Z`).getTime()) / 86_400_000))
+    : 30;
   if (!profiles.length) recommendations.push("Connect or record the official profiles before publishing; strategy generation can continue using project evidence.");
   if (competitors.length < 2) recommendations.push("Add two relevant competitors when available so future refreshes can compare themes and publishing rhythm.");
   if (!sources.length) recommendations.push("Create or import at least one approved blog, page, case study, lead magnet, update, transcript, or news item for repurposing.");
   else recommendations.push(`Repurpose the strongest ${Math.min(5, sources.length)} approved project assets before creating disconnected posts.`);
-  recommendations.push(`Focus the first 30 days on ${plans.filter((plan) => plan.recommended).slice(0, 3).map((plan) => plan.platform.replaceAll("_", " ")).join(", ")}; expand only after performance evidence supports it.`);
+  recommendations.push(`Focus this ${durationDays}-day campaign on ${plans.filter((plan) => plan.recommended).slice(0, 3).map((plan) => plan.platform.replaceAll("_", " ")).join(", ")}; expand only after performance evidence supports it.`);
   recommendations.push("Use UTM-tagged target URLs and record impressions, engagement, clicks, leads, and conversions after publishing.");
   return recommendations;
 }
@@ -395,16 +410,19 @@ function buildCalendar(input: GenerateInput, snapshot: ReturnType<typeof intelli
     keyword: input.targetKeywords[0] || null,
     status: "approved_context",
   }];
-  const count = plannedPostCount(input.postingFrequency);
-  const start = new Date();
-  start.setUTCDate(start.getUTCDate() + 1);
+  const start = input.campaignStartAt ? new Date(`${input.campaignStartAt}T14:00:00.000Z`) : new Date();
+  if (!input.campaignStartAt) start.setUTCDate(start.getUTCDate() + 1);
   start.setUTCHours(14, 0, 0, 0);
+  const end = input.campaignEndAt ? new Date(`${input.campaignEndAt}T23:59:59.999Z`) : new Date(start.getTime() + 29 * 86_400_000);
+  const durationDays = Math.max(1, Math.ceil((end.getTime() - start.getTime()) / 86_400_000));
+  const baseCount = plannedPostCount(input.postingFrequency);
+  const count = Math.max(4, Math.min(60, Math.round(baseCount * durationDays / 30)));
   return Array.from({ length: count }, (_, index): PlannedPost => {
     const source = availableSources[index % availableSources.length];
     const platform = selectedPlatforms[index % selectedPlatforms.length];
     const pillar = pillars[index % pillars.length];
     const publishDate = new Date(start);
-    publishDate.setUTCDate(start.getUTCDate() + Math.floor(index * 28 / count));
+    publishDate.setUTCDate(start.getUTCDate() + Math.floor(index * durationDays / count));
     const targetUrl = source.url || input.targetUrls[index % Math.max(1, input.targetUrls.length)] || null;
     const cta = targetUrl ? "Read the complete resource" : "Contact us for the next step";
     const keyword = source.keyword || input.targetKeywords[index % Math.max(1, input.targetKeywords.length)] || null;
@@ -439,7 +457,12 @@ const aiStrategySchema = z.object({
   })).max(24),
 });
 
-async function enhanceStrategyWithAi(snapshot: ReturnType<typeof intelligenceSnapshot>, posts: PlannedPost[], platformPlans: PlatformPlan[]) {
+async function enhanceStrategyWithAi(
+  snapshot: ReturnType<typeof intelligenceSnapshot>,
+  posts: PlannedPost[],
+  platformPlans: PlatformPlan[],
+  campaign: { name: string; startAt: string; endAt: string; objective: string; metric: string | null; target: number | null },
+) {
   if (!config.openaiApiKey) return null;
   const generated = await centralAiJson({
     system: "You are the SEnuke AI Social Strategy and Multi-Channel Distribution Engine. Adapt approved evidence into useful channel-specific marketing content. Never invent people, results, credentials, statistics, offers, prices, locations, customer claims, or source facts.",
@@ -447,6 +470,7 @@ async function enhanceStrategyWithAi(snapshot: ReturnType<typeof intelligenceSna
       "Return {strategySummary, campaignThemes, captions:[{index,caption,cta,hashtags,visualSuggestion}]} for the supplied draft.",
       "Keep each index and platform. Preserve the factual meaning and target URL. Adapt tone, length, structure, CTA, hashtags, and visual direction for each platform.",
       `Business evidence: ${JSON.stringify(snapshot).slice(0, 20_000)}`,
+      `Time-bound campaign: ${JSON.stringify(campaign)}`,
       `Platform plan: ${JSON.stringify(platformPlans.filter((plan) => plan.recommended)).slice(0, 12_000)}`,
       `Draft posts: ${JSON.stringify(posts.map((post, index) => ({ index, platform: post.platform, topic: post.topic, caption: post.caption, cta: post.cta, targetUrl: post.targetUrl, sourceType: post.sourceType }))).slice(0, 50_000)}`,
     ].join("\n"),
@@ -645,15 +669,32 @@ socialStrategyRouter.post("/social-strategy/generate", async (req, res) => {
     targetKeywords: uniqueStrings([...input.targetKeywords, ...snapshot.keywords]).slice(0, 30),
     targetUrls: uniqueStrings([...input.targetUrls, ...intelligence.sources.map((source) => source.url || "")]).slice(0, 30),
   };
+  const campaignStartAt = input.campaignStartAt ? new Date(`${input.campaignStartAt}T00:00:00.000Z`) : new Date();
+  const campaignEndAt = input.campaignEndAt ? new Date(`${input.campaignEndAt}T23:59:59.999Z`) : new Date(campaignStartAt.getTime() + 29 * 86_400_000);
+  if (campaignEndAt <= campaignStartAt) return res.status(400).json({ error: "Campaign end date must be after its start date." });
+  if (campaignEndAt.getTime() - campaignStartAt.getTime() > 366 * 86_400_000) return res.status(400).json({ error: "Campaign duration cannot exceed one year." });
+  if (input.goalTarget != null && !input.goalMetric) return res.status(400).json({ error: "Choose the success metric for the campaign target." });
+  const campaignName = input.campaignName?.trim() || `${snapshot.businessName} social campaign`;
+  const campaignDurationDays = Math.max(1, Math.ceil((campaignEndAt.getTime() - campaignStartAt.getTime()) / 86_400_000));
+  const campaignTarget = input.goalMetric && input.goalTarget != null
+    ? `${input.goalTarget.toLocaleString()} ${input.goalMetric.replaceAll("_", " ")}`
+    : "a measurable baseline for the selected success metric";
   const competitorThemes = uniqueStrings(competitorInputs.flatMap((competitor) => competitor.contentThemes));
   const pillars = buildPillars(goal, website.domain, competitorThemes, intelligence.sources);
   let posts = buildCalendar(enrichedInput, snapshot, activePlatforms, intelligence.sources, pillars);
   let generationMode = "evidence_engine";
-  let strategySummary = `${snapshot.businessName} should focus on ${activePlatforms.map((platform) => platform.replaceAll("_", " ")).join(", ")} and repurpose approved project content into a measured 30-day calendar tied to ${goal}.`;
+  let strategySummary = `${campaignName} is a ${campaignDurationDays}-day campaign focused on ${activePlatforms.map((platform) => platform.replaceAll("_", " ")).join(", ")}. It will repurpose approved project content to support “${goal}” and measure progress against ${campaignTarget}.`;
   let campaignThemes = pillars.slice(0, 5).map((pillar) => pillar.title);
   let aiUsage: { model: string; inputTokens: number; outputTokens: number } | null = null;
   try {
-    const ai = await enhanceStrategyWithAi(snapshot, posts, platformPlans);
+    const ai = await enhanceStrategyWithAi(snapshot, posts, platformPlans, {
+      name: campaignName,
+      startAt: campaignStartAt.toISOString(),
+      endAt: campaignEndAt.toISOString(),
+      objective: goal,
+      metric: input.goalMetric || null,
+      target: input.goalTarget ?? null,
+    });
     if (ai) {
       const byIndex = new Map(ai.result.captions.map((item) => [item.index, item]));
       posts = posts.map((post, index) => {
@@ -679,6 +720,11 @@ socialStrategyRouter.post("/social-strategy/generate", async (req, res) => {
       data: {
         websiteId: website.id,
         projectId: project.id,
+        campaignName,
+        campaignStartAt,
+        campaignEndAt,
+        goalMetric: input.goalMetric || null,
+        goalTarget: input.goalTarget ?? null,
         goal,
         audience: audience || null,
         platforms: activePlatforms,
@@ -699,7 +745,7 @@ socialStrategyRouter.post("/social-strategy/generate", async (req, res) => {
         competitorScore,
         seoAlignmentScore,
         recommendationsJson: recommendations,
-        nextReviewAt: new Date(Date.now() + 30 * 86_400_000),
+        nextReviewAt: new Date(Math.min(campaignEndAt.getTime(), Date.now() + 30 * 86_400_000)),
         pillars: { create: pillars },
         posts: { create: posts.map((post) => ({
           platform: post.platform,
@@ -754,7 +800,17 @@ socialStrategyRouter.post("/social-strategy/generate", async (req, res) => {
         moduleName: "social_strategy",
         promptVersion: "dev-042-v1",
         inputSnapshotJson: snapshot as unknown as Prisma.InputJsonValue,
-        outputJson: { strategyId: row.id, platforms: activePlatforms, posts: posts.length, generationMode } as Prisma.InputJsonValue,
+        outputJson: {
+          strategyId: row.id,
+          campaignName: row.campaignName,
+          campaignStartAt: row.campaignStartAt?.toISOString() ?? null,
+          campaignEndAt: row.campaignEndAt?.toISOString() ?? null,
+          goalMetric: row.goalMetric,
+          goalTarget: row.goalTarget,
+          platforms: activePlatforms,
+          posts: posts.length,
+          generationMode,
+        } as Prisma.InputJsonValue,
         tokenUsage: aiUsage ? { inputTokens: aiUsage.inputTokens, outputTokens: aiUsage.outputTokens, model: aiUsage.model } : {},
       },
     });

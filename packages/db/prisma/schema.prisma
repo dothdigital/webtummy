@@ -3911,6 +3911,11 @@ model SocialStrategy {
   website                     Website   @relation(fields: [websiteId], references: [id], onDelete: Cascade)
   projectId                   String?
   project                     Project?  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  campaignName                String?   @db.VarChar(180)
+  campaignStartAt             DateTime?
+  campaignEndAt               DateTime?
+  goalMetric                  String?   @db.VarChar(80)
+  goalTarget                  Float?
   goal                        String    @db.VarChar(160)
   audience                    String?   @db.VarChar(255)
   platforms                   Json      @default("[]")
