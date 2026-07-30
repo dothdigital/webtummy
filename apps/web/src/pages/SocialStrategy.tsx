@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { api } from "../api.js";
 import type { GuidedProject, SocialCalendarPost, SocialCompetitorProfile, SocialContentSource, SocialPerformanceSummary, SocialProfile, SocialProviderCapability, SocialRepurposedAsset, SocialRepurposingBatch, SocialStrategy as SocialStrategyType, SocialStrategyResponse, Website } from "../types.js";
-import { Button, Card, Input, ScoreGauge, StatusPill } from "../components/ui.js";
+import { Button, Card, Input, StatusPill } from "../components/ui.js";
 import { getActiveProjectId, resolveActiveProjectId, setActiveProjectId } from "../active-project.js";
 
 const PLATFORM_LABELS: Record<string, string> = {
@@ -1753,30 +1753,56 @@ export default function SocialStrategy() {
                     const progress = campaignProgress(strategy);
                     const selected = strategy.id === selectedStrategy?.id;
                     return (
-                      <div key={strategy.id} className={`flex flex-col gap-3 px-4 py-4 sm:flex-row sm:items-center sm:justify-between ${selected ? "bg-brand-50/60 ring-1 ring-inset ring-brand-200" : "bg-white"}`}>
-                        <div className="min-w-0">
-                          <div className="flex flex-wrap items-center gap-2">
-                            <span className={`rounded-full px-2.5 py-1 text-xs font-bold ${strategy.status === "active" ? "bg-green-100 text-green-800" : "bg-slate-100 text-slate-600"}`}>{strategy.status}</span>
-                            <span className="text-xs font-semibold text-slate-500">{strategy.campaignStartAt ? formatDate(strategy.campaignStartAt) : "Start date"} – {strategy.campaignEndAt ? formatDate(strategy.campaignEndAt) : "End date"}</span>
-                          </div>
-                          <div className="mt-2 truncate text-sm font-semibold text-charcoal-900">{strategy.campaignName || "Social campaign"}</div>
-                          <div className="mt-1 truncate text-xs text-slate-500">{strategy.goal} · Target: {strategy.goalTarget ?? "Baseline"} {goalMetricLabel(strategy.goalMetric)}</div>
-                          {strategy.status !== "draft" && (
-                            <div className="mt-2 flex flex-wrap gap-2 text-[11px] font-semibold">
-                              <span className="rounded-full bg-white px-2 py-1 text-slate-700">{progress.created} content created</span>
-                              <span className="rounded-full bg-white px-2 py-1 text-emerald-700">{progress.posted} posted</span>
-                              <span className="rounded-full bg-white px-2 py-1 text-violet-700">{progress.upcoming} upcoming</span>
+                      <div key={strategy.id} className={`px-4 py-4 ${selected ? "bg-brand-50/60 ring-1 ring-inset ring-brand-200" : "bg-white"}`}>
+                        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                          <div className="min-w-0">
+                            <div className="flex flex-wrap items-center gap-2">
+                              <span className={`rounded-full px-2.5 py-1 text-xs font-bold ${strategy.status === "active" ? "bg-green-100 text-green-800" : "bg-slate-100 text-slate-600"}`}>{strategy.status}</span>
+                              <span className="text-xs font-semibold text-slate-500">{strategy.campaignStartAt ? formatDate(strategy.campaignStartAt) : "Start date"} – {strategy.campaignEndAt ? formatDate(strategy.campaignEndAt) : "End date"}</span>
                             </div>
-                          )}
+                            <div className="mt-2 truncate text-sm font-semibold text-charcoal-900">{strategy.campaignName || "Social campaign"}</div>
+                            <div className="mt-1 truncate text-xs text-slate-500">{strategy.goal} · Target: {strategy.goalTarget ?? "Baseline"} {goalMetricLabel(strategy.goalMetric)}</div>
+                            {strategy.status !== "draft" && !selected && (
+                              <div className="mt-2 flex flex-wrap gap-2 text-[11px] font-semibold">
+                                <span className="rounded-full bg-white px-2 py-1 text-slate-700">{progress.created} content created</span>
+                                <span className="rounded-full bg-white px-2 py-1 text-emerald-700">{progress.posted} posted</span>
+                                <span className="rounded-full bg-white px-2 py-1 text-violet-700">{progress.upcoming} upcoming</span>
+                              </div>
+                            )}
+                          </div>
+                          <div className="flex shrink-0 flex-wrap gap-2">
+                            <Button variant="ghost" onClick={() => openExistingCampaign(strategy)}>{strategy.status === "draft" ? "Edit setup" : "Edit campaign planning"}</Button>
+                            {strategy.status === "draft" ? (
+                              <Button onClick={() => void generateStrategy(strategy)} disabled={generating}>{generating ? "Generating…" : "Generate strategy with AI"}</Button>
+                            ) : (
+                              <Button onClick={() => setSelectedCampaignId(strategy.id)} disabled={selected}>{selected ? "Viewing campaign" : "View campaign"}</Button>
+                            )}
+                          </div>
                         </div>
-                        <div className="flex shrink-0 flex-wrap gap-2">
-                          <Button variant="ghost" onClick={() => openExistingCampaign(strategy)}>Edit setup</Button>
-                          {strategy.status === "draft" ? (
-                            <Button onClick={() => void generateStrategy(strategy)} disabled={generating}>{generating ? "Generating…" : "Generate strategy with AI"}</Button>
-                          ) : (
-                            <Button onClick={() => setSelectedCampaignId(strategy.id)}>{selected ? "Campaign open" : "Open campaign"}</Button>
-                          )}
-                        </div>
+                        {selected && strategy.status !== "draft" && (
+                          <div className="mt-4 border-t border-brand-100 pt-4">
+                            {strategy.strategySummary && <p className="max-w-5xl text-sm leading-6 text-charcoal-600">{strategy.strategySummary}</p>}
+                            <div className="mt-3 flex flex-wrap gap-2 text-xs font-semibold">
+                              <span className="rounded-full bg-white px-3 py-1.5 text-slate-700">{strategy.campaignStartAt ? formatDate(strategy.campaignStartAt) : "Start date"} – {strategy.campaignEndAt ? formatDate(strategy.campaignEndAt) : "End date"}</span>
+                              <span className="rounded-full bg-green-100 px-3 py-1.5 text-green-800">Target: {strategy.goalTarget ?? "Baseline"} {goalMetricLabel(strategy.goalMetric)}</span>
+                              <span className="rounded-full bg-sky-100 px-3 py-1.5 text-sky-800">{progress.created} content created</span>
+                              <span className="rounded-full bg-emerald-100 px-3 py-1.5 text-emerald-800">{progress.posted} posted</span>
+                              <span className="rounded-full bg-violet-100 px-3 py-1.5 text-violet-800">{progress.upcoming} upcoming schedule</span>
+                            </div>
+                            <p className="mt-3 text-sm text-charcoal-500">Connected platforms: {platformSummary}</p>
+                            <div className="mt-2 text-xs font-semibold text-violet-700">Generation: {strategy.generationMode.replaceAll("_", " ")} · Review due {strategy.nextReviewAt ? formatDate(strategy.nextReviewAt) : "after performance data"}</div>
+                            <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
+                              <StatBox label="Profiles" value={strategy.profileScore ?? 0} tone={scoreTone(strategy.profileScore ?? 0)} />
+                              <StatBox label="Consistency" value={strategy.consistencyScore ?? 0} tone={scoreTone(strategy.consistencyScore ?? 0)} />
+                              <StatBox label="Activity" value={strategy.activityScore ?? 0} tone={scoreTone(strategy.activityScore ?? 0)} />
+                              <StatBox label="Competitors" value={strategy.competitorScore ?? 0} tone={scoreTone(strategy.competitorScore ?? 0)} />
+                              <StatBox label="SEO aligned" value={strategy.seoAlignmentScore ?? 0} tone={scoreTone(strategy.seoAlignmentScore ?? 0)} />
+                            </div>
+                            <div className="mt-4 flex flex-wrap gap-2">
+                              <Button onClick={() => setMode("posting")}>Continue to publishing</Button>
+                            </div>
+                          </div>
+                        )}
                       </div>
                     );
                   })}
@@ -1861,53 +1887,6 @@ export default function SocialStrategy() {
           </div>
         )}
 
-        {step === "strategy" && selectedStrategy && selectedStrategy.status !== "draft" && (
-          <div className="border-t border-slate-200 p-5">
-            <div className="grid gap-5 lg:grid-cols-[160px_1fr] lg:items-center">
-              <ScoreGauge score={selectedStrategy.socialScore ?? 0} />
-              <div>
-                <div className="flex flex-wrap items-center gap-2">
-                  <h2 className="text-lg font-semibold text-charcoal-800">{selectedStrategy.campaignName || `${selectedWebsite?.domain ?? "Project"} campaign`}</h2>
-                  <StatusPill status={selectedStrategy.status} />
-                </div>
-                <p className="mt-1 text-sm text-charcoal-500">{selectedStrategy.monthlyTheme}</p>
-                {selectedStrategy.strategySummary && <p className="mt-2 max-w-4xl text-sm leading-6 text-charcoal-600">{selectedStrategy.strategySummary}</p>}
-                <div className="mt-3 flex flex-wrap gap-2 text-xs font-semibold">
-                  <span className="rounded-full bg-slate-100 px-3 py-1.5 text-slate-700">{selectedStrategy.campaignStartAt ? formatDate(selectedStrategy.campaignStartAt) : "Start date"} – {selectedStrategy.campaignEndAt ? formatDate(selectedStrategy.campaignEndAt) : "End date"}</span>
-                  <span className="rounded-full bg-green-100 px-3 py-1.5 text-green-800">Target: {selectedStrategy.goalTarget ?? "Baseline"} {goalMetricLabel(selectedStrategy.goalMetric)}</span>
-                  {(() => {
-                    const progress = campaignProgress(selectedStrategy);
-                    return (
-                      <>
-                        <span className="rounded-full bg-sky-100 px-3 py-1.5 text-sky-800">{progress.created} content created</span>
-                        <span className="rounded-full bg-emerald-100 px-3 py-1.5 text-emerald-800">{progress.posted} posted</span>
-                        <span className="rounded-full bg-violet-100 px-3 py-1.5 text-violet-800">{progress.upcoming} upcoming schedule</span>
-                      </>
-                    );
-                  })()}
-                </div>
-                <p className="mt-2 text-sm text-charcoal-400">Connected platforms: {platformSummary}</p>
-                {selectedStrategy.imageDirection && (
-                  <div className="mt-3 rounded-lg border border-violet-100 bg-violet-50/60 px-3 py-2 text-xs leading-5 text-violet-900">
-                    <b>Campaign image direction:</b> {selectedStrategy.imageDirection}
-                  </div>
-                )}
-                <div className="mt-2 text-xs font-semibold text-violet-700">Generation: {selectedStrategy.generationMode.replaceAll("_", " ")} · Review due {selectedStrategy.nextReviewAt ? formatDate(selectedStrategy.nextReviewAt) : "after performance data"}</div>
-                <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
-                  <StatBox label="Profiles" value={selectedStrategy.profileScore ?? 0} tone={scoreTone(selectedStrategy.profileScore ?? 0)} />
-                  <StatBox label="Consistency" value={selectedStrategy.consistencyScore ?? 0} tone={scoreTone(selectedStrategy.consistencyScore ?? 0)} />
-                  <StatBox label="Activity" value={selectedStrategy.activityScore ?? 0} tone={scoreTone(selectedStrategy.activityScore ?? 0)} />
-                  <StatBox label="Competitors" value={selectedStrategy.competitorScore ?? 0} tone={scoreTone(selectedStrategy.competitorScore ?? 0)} />
-                  <StatBox label="SEO aligned" value={selectedStrategy.seoAlignmentScore ?? 0} tone={scoreTone(selectedStrategy.seoAlignmentScore ?? 0)} />
-                </div>
-                <div className="mt-4 flex flex-wrap gap-2">
-                  <Button variant="ghost" onClick={() => openExistingCampaign(selectedStrategy)}>Edit campaign planning</Button>
-                  <Button onClick={() => setMode("posting")}>Continue to publishing</Button>
-                </div>
-              </div>
-            </div>
-          </div>
-        )}
       </Card>
 
       {selectedStrategy && selectedStrategy.status !== "draft" && step === "strategy" && (
