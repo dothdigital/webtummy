@@ -17,6 +17,17 @@ const PLATFORM_LABELS: Record<string, string> = {
 };
 
 const DEFAULT_PLATFORMS = ["instagram", "facebook", "linkedin", "youtube", "google_business"];
+const PROFILE_FREQUENCY_OPTIONS = [
+  "Not currently posting",
+  "Less than once a month",
+  "Once a month",
+  "Twice a month",
+  "Once a week",
+  "Twice a week",
+  "3 times a week",
+  "5 times a week",
+  "Daily",
+];
 const REPURPOSING_LABELS: Record<string, string> = {
   facebook: "Facebook post",
   linkedin: "LinkedIn post",
@@ -1150,7 +1161,14 @@ export default function SocialStrategy() {
                       <Input label="Public profile URL" value={profileDraft.profileUrl} onChange={(value) => { const inferred = inferPlatformFromUrl(value); setProfileDraft((current) => ({ ...current, profileUrl: value, ...(inferred ? { platform: inferred } : {}) })); }} placeholder="https://instagram.com/brand" />
                       <Input label="Handle" value={profileDraft.handle ?? ""} onChange={(value) => setProfileDraft((current) => ({ ...current, handle: value }))} placeholder="@brand" />
                       <Input label="Display name" value={profileDraft.displayName ?? ""} onChange={(value) => setProfileDraft((current) => ({ ...current, displayName: value }))} placeholder="Brand name" />
-                      <Input label="Posting frequency" value={profileDraft.postingFrequency ?? ""} onChange={(value) => setProfileDraft((current) => ({ ...current, postingFrequency: value }))} placeholder="3 posts per week" />
+                      <label className="block">
+                        <span className="mb-1 block text-sm font-medium text-slate-600">Current posting frequency (optional)</span>
+                        <select value={profileDraft.postingFrequency ?? ""} onChange={(event) => setProfileDraft((current) => ({ ...current, postingFrequency: event.target.value || null }))} className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-100">
+                          <option value="">Select current frequency</option>
+                          {PROFILE_FREQUENCY_OPTIONS.map((frequency) => <option key={frequency} value={frequency}>{frequency}</option>)}
+                        </select>
+                        <span className="mt-1 block text-xs leading-5 text-slate-400">This records the profile’s current activity, not the future strategy calendar.</span>
+                      </label>
                       <Input label="Follower count (optional)" value={profileDraft.followerCount?.toString() ?? ""} onChange={(value) => setProfileDraft((current) => ({ ...current, followerCount: value ? Number(value.replace(/\D/g, "")) : null }))} placeholder="0" />
                     </div>
                     <label className="block"><span className="mb-1 block text-sm font-medium text-slate-600">Bio or profile description (optional)</span><textarea rows={4} value={profileDraft.bio ?? ""} onChange={(event) => setProfileDraft((current) => ({ ...current, bio: event.target.value }))} className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-100"/></label>
