@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Link } from "react-router-dom";
+import { Link, useSearchParams } from "react-router-dom";
 import { api } from "../api.js";
 
 type CitationWorkspace = {
@@ -42,6 +42,8 @@ function citationContentUrl(projectId: string, websiteUrl: string | null, launch
     topic: launch.topic,
     contentMode: "seo",
     instruction: launch.instruction,
+    source: "ai_citation",
+    returnTo: `/ai-citations?projectId=${projectId}`,
     open: "1",
   });
   if (websiteUrl) params.set("targetUrl", websiteUrl);
@@ -151,6 +153,7 @@ function FindingActions({
 }
 
 export default function AiCitationVisibilityWorkspace({ projectId }: { projectId: string }) {
+  const [searchParams] = useSearchParams();
   const [workspace, setWorkspace] = useState<CitationWorkspace | null>(null);
   const [tab, setTab] = useState<Tab>("overview");
   const [busy, setBusy] = useState("");
@@ -222,10 +225,13 @@ export default function AiCitationVisibilityWorkspace({ projectId }: { projectId
   };
 
   const latestObservations = useMemo(() => workspace?.prompts.flatMap((prompt) => prompt.snapshots.map((snapshot) => ({ ...snapshot, prompt: prompt.queryText }))) ?? [], [workspace]);
+  const validatedAssetId = searchParams.get("generatedAssetId");
+  const validatedAssetType = searchParams.get("generatedAssetType");
 
   if (!workspace && !error) return <Empty title="Loading citation intelligence…" detail="Assembling entity facts, crawl evidence, answer opportunities, and observed AI visibility." />;
 
   return <div className="space-y-5">
+    {validatedAssetId && <div className="rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-900"><b>{validatedAssetType ? display(validatedAssetType) : "Citation asset"} validated.</b> The generated version is saved in AI Content history. Publish or implement it through the appropriate approval workflow, then refresh the site crawl and Citation Research so this signal can be verified as present.</div>}
     {error && <div className="rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm font-semibold text-rose-800">{error}</div>}
     {message && <div className="rounded-xl border border-brand-100 bg-brand-50 px-4 py-3 text-sm font-semibold text-brand-800">{message}</div>}
     {!workspace ? <Empty title="Citation workspace unavailable" detail="The project data could not be loaded. Check the message above and try again." /> : <>

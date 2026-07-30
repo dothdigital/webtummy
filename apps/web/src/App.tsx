@@ -117,7 +117,7 @@ function Shell() {
   if (showWelcome) return <Welcome />;
   if (location.pathname === "/site-architect/visual-editor") return <PermissionRoute permission="execute_tasks"><Suspense fallback={<div className="grid min-h-screen place-items-center bg-slate-950 text-sm font-bold text-white">Opening the SENuke Visual Editor…</div>}><WebsiteVisualEditor mode="editor" /></Suspense></PermissionRoute>;
   if (location.pathname === "/site-architect/preview") return <PermissionRoute anyOf={["run_ai_analysis", "read_internal", "read_shared_client_data"]}><Suspense fallback={<div className="grid min-h-screen place-items-center bg-slate-950 text-sm font-bold text-white">Preparing the responsive preview…</div>}><WebsiteVisualEditor mode="preview" /></Suspense></PermissionRoute>;
-  if (location.pathname === "/ai-content" && new URLSearchParams(location.search).get("embedded") === "1") return <PermissionRoute permission="publish"><div className="min-h-screen bg-slate-50"><AiContentStudio /></div></PermissionRoute>;
+  if (location.pathname === "/ai-content" && new URLSearchParams(location.search).get("embedded") === "1") return <PermissionRoute anyOf={["run_ai_analysis", "publish"]}><div className="min-h-screen bg-slate-50"><AiContentStudio /></div></PermissionRoute>;
 
   return (
     <Layout>
@@ -159,7 +159,7 @@ function Shell() {
         <Route path="/agency/clients/:clientId" element={<AgencyClientDashboard />} />
         <Route path="/accept-invitation" element={<AcceptInvitation />} />
         <Route path="/local-seo" element={<PermissionRoute permission="run_ai_analysis"><LocalSeo /></PermissionRoute>} />
-        <Route path="/ai-content" element={<PermissionRoute permission="publish"><AiContentStudio /></PermissionRoute>} />
+        <Route path="/ai-content" element={<PermissionRoute anyOf={["run_ai_analysis", "publish"]}><AiContentStudio /></PermissionRoute>} />
         <Route path="/billing" element={<PermissionRoute permission="billing"><Billing /></PermissionRoute>} />
         <Route path="/pricing" element={<Pricing />} />
         <Route path="/terms" element={<Legal kind="terms" />} />

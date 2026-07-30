@@ -1,5 +1,5 @@
 import { Fragment, useEffect, useMemo, useState } from "react";
-import { useSearchParams } from "react-router-dom";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import { api } from "../api.js";
 import type { AiContentGeneration, AiContentStatus, AiGenerationType, GuidedExecutionTask, GuidedProject, Website } from "../types.js";
 import { Button, Card, Input } from "../components/ui.js";
@@ -219,6 +219,86 @@ function TabbedResultViewer({
   );
 }
 
+type ValidationCheck = { label: string; detail: string; passed: boolean };
+
+function citationAutomatedChecks(generation: AiContentGeneration): ValidationCheck[] {
+  const result = generation.resultJson && typeof generation.resultJson === "object" && !Array.isArray(generation.resultJson) ? generation.resultJson as Record<string, unknown> : {};
+  const text = (key: string) => typeof result[key] === "string" ? String(result[key]).trim() : "";
+  const array = (key: string) => Array.isArray(result[key]) ? result[key] as unknown[] : [];
+  if (generation.type === "sitemap") {
+    const xml = text("sitemapXml");
+    const urls = array("urls").map(String).filter(Boolean);
+    const xmlUrls = [...xml.matchAll(/<loc>([^<]+)<\/loc>/gi)].map((match) => match[1].trim());
+    const allUrls = urls.length ? urls : xmlUrls;
+    const targetOrigin = (() => { try { return generation.targetUrl ? new URL(generation.targetUrl).origin : ""; } catch { return ""; } })();
+    return [
+      { label: "Valid sitemap structure", detail: "The result contains an XML urlset and URL entries.", passed: /<urlset[\s>]/i.test(xml) && /<loc>[^<]+<\/loc>/i.test(xml) },
+      { label: "Absolute website URLs", detail: "Every sitemap entry must be an absolute URL.", passed: allUrls.length > 0 && allUrls.every((url) => /^https?:\/\//i.test(url)) },
+      { label: "Same verified domain", detail: "No sitemap entry should point to another domain.", passed: Boolean(targetOrigin) && allUrls.length > 0 && allUrls.every((url) => { try { return new URL(url).origin === targetOrigin; } catch { return false; } }) },
+    ];
+  }
+  if (generation.type === "robots_txt") {
+    const robots = text("robotsTxt");
+    return [
+      { label: "Crawler directive present", detail: "robots.txt must declare at least one User-agent.", passed: /^user-agent:/im.test(robots) },
+      { label: "Website is not blocked", detail: "The generated file must not block the complete public website.", passed: !/^disallow:\s*\/\s*$/im.test(robots) },
+      { label: "Sitemap reference present", detail: "The file should reference the production sitemap URL.", passed: /^sitemap:\s*https?:\/\//im.test(robots) },
+    ];
+  }
+  if (generation.type === "domain_llms_txt" || generation.type === "page_llms_txt") {
+    const content = text("llmsTxt") || text("markdown") || text("llmsSection");
+    return [
+      { label: "Readable llms.txt content", detail: "The generated result contains a usable text asset.", passed: content.length >= 80 },
+      { label: "Useful page references", detail: "At least one website URL is included.", passed: /https?:\/\//i.test(content) || array("priorityPages").length > 0 || array("recommendedLinks").length > 0 },
+    ];
+  }
+  if (generation.type === "domain_schema" || generation.type === "page_schema") {
+    const schema = result.schemaJsonLd;
+    const serialized = JSON.stringify(schema ?? "");
+    return [
+      { label: "JSON-LD generated", detail: "A structured schema object must be present.", passed: Boolean(schema && typeof schema === "object") },
+      { label: "Schema type declared", detail: "Every schema draft needs an @type.", passed: serialized.includes("\"@type\"") },
+      { label: "Schema context declared", detail: "The draft should use the schema.org context.", passed: serialized.includes("schema.org") },
+    ];
+  }
+  if (generation.type === "faq") {
+    const faqs = array("faqs");
+    return [
+      { label: "Questions and answers generated", detail: "At least one complete FAQ is required.", passed: faqs.length > 0 && faqs.every((item) => item && typeof item === "object" && "question" in item && "answer" in item) },
+    ];
+  }
+  if (generation.type === "article") {
+    const html = text("articleHtml");
+    return [
+      { label: "Complete page content", detail: "The result contains substantial visible page copy.", passed: html.replace(/<[^>]+>/g, " ").trim().length >= 500 },
+      { label: "Structured headings", detail: "The content contains useful H2 or H3 sections.", passed: /<h[23][\s>]/i.test(html) },
+      { label: "Search metadata", detail: "SEO title and meta description are present.", passed: Boolean(text("metaTitle") && text("metaDescription")) },
+    ];
+  }
+  return [{ label: "Generated result available", detail: "The AI returned a stored result for review.", passed: Object.keys(result).length > 0 }];
+}
+
+function CitationValidationPanel({ generation, onReturn }: { generation: AiContentGeneration; onReturn: () => void }) {
+  const [reviewed, setReviewed] = useState({ facts: false, sources: false, implementation: false });
+  useEffect(() => setReviewed({ facts: false, sources: false, implementation: false }), [generation.id]);
+  const checks = citationAutomatedChecks(generation);
+  const automaticPass = checks.length > 0 && checks.every((check) => check.passed);
+  const complete = automaticPass && Object.values(reviewed).every(Boolean);
+  return <div className="mt-4 rounded-xl border border-indigo-200 bg-indigo-50/60 p-4">
+    <div className="flex flex-wrap items-start justify-between gap-3">
+      <div><div className="text-xs font-black uppercase tracking-wide text-indigo-700">Citation asset validation</div><h3 className="mt-1 font-black text-slate-950">Validate before returning to AI Citations</h3><p className="mt-1 text-sm leading-6 text-slate-600">Automated checks verify the output structure. You must still confirm the business facts, sources, URLs and implementation details.</p></div>
+      <span className={`rounded-full px-3 py-1 text-xs font-black ${complete ? "bg-emerald-100 text-emerald-700" : automaticPass ? "bg-amber-100 text-amber-800" : "bg-rose-100 text-rose-700"}`}>{complete ? "Validated" : automaticPass ? "Human review required" : "Automated checks failed"}</span>
+    </div>
+    <div className="mt-4 grid gap-2 md:grid-cols-2">{checks.map((check) => <div key={check.label} className={`rounded-lg border p-3 ${check.passed ? "border-emerald-200 bg-white" : "border-rose-200 bg-rose-50"}`}><div className={`text-sm font-black ${check.passed ? "text-emerald-800" : "text-rose-800"}`}>{check.passed ? "✓" : "×"} {check.label}</div><div className="mt-1 text-xs leading-5 text-slate-500">{check.detail}</div></div>)}</div>
+    <div className="mt-4 space-y-2 rounded-lg border border-indigo-100 bg-white p-3">
+      <label className="flex items-start gap-3 text-sm text-slate-700"><input type="checkbox" checked={reviewed.facts} onChange={(event) => setReviewed({ ...reviewed, facts: event.target.checked })} className="mt-1 h-4 w-4 rounded" /><span><b>Facts verified:</b> names, services, people, credentials, policies and claims match approved project evidence.</span></label>
+      <label className="flex items-start gap-3 text-sm text-slate-700"><input type="checkbox" checked={reviewed.sources} onChange={(event) => setReviewed({ ...reviewed, sources: event.target.checked })} className="mt-1 h-4 w-4 rounded" /><span><b>Sources and URLs verified:</b> every reference, page URL and external source exists and supports the statement.</span></label>
+      <label className="flex items-start gap-3 text-sm text-slate-700"><input type="checkbox" checked={reviewed.implementation} onChange={(event) => setReviewed({ ...reviewed, implementation: event.target.checked })} className="mt-1 h-4 w-4 rounded" /><span><b>Implementation reviewed:</b> the asset is appropriate for the website and will be tested after publishing.</span></label>
+    </div>
+    <div className="mt-4 flex flex-wrap items-center justify-between gap-3"><p className="text-xs font-semibold text-slate-500">{automaticPass ? "Complete all three human checks to continue." : "Revise or regenerate the asset until every automated check passes."}</p><button type="button" onClick={onReturn} disabled={!complete} className="rounded-lg bg-indigo-700 px-4 py-2.5 text-sm font-black text-white disabled:cursor-not-allowed disabled:bg-slate-300">Validation complete · Return to AI Citations →</button></div>
+  </div>;
+}
+
 function WizardStep({ number, title, active, complete }: { number: number; title: string; active: boolean; complete: boolean }) {
   return (
     <div className="flex min-w-0 flex-1 items-center gap-3">
@@ -235,6 +315,7 @@ function WizardStep({ number, title, active, complete }: { number: number; title
 
 export default function AiContentStudio() {
   const { chooseApprovalRoute, approvalRouteDialog } = useApprovalRouting();
+  const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
   const [status, setStatus] = useState<AiContentStatus | null>(null);
   const [history, setHistory] = useState<AiContentGeneration[]>([]);
@@ -269,6 +350,15 @@ export default function AiContentStudio() {
   const [generationError, setGenerationError] = useState("");
   const embeddedDialog = searchParams.get("embedded") === "1" && searchParams.get("dialog") === "1";
   const revisionFlow = searchParams.get("action") === "revise";
+  const citationFlow = searchParams.get("source") === "ai_citation";
+  const citationReturnPath = (() => {
+    const requested = searchParams.get("returnTo");
+    return requested?.startsWith("/ai-citations") ? requested : `/ai-citations?projectId=${encodeURIComponent(searchParams.get("projectId") || "")}`;
+  })();
+  const returnToCitation = (generation: AiContentGeneration) => {
+    const separator = citationReturnPath.includes("?") ? "&" : "?";
+    navigate(`${citationReturnPath}${separator}generatedAssetId=${encodeURIComponent(generation.id)}&generatedAssetType=${encodeURIComponent(generation.type)}`);
+  };
   const closeWizard = () => {
     if (generating) return;
     setWizardOpen(false);
@@ -387,7 +477,7 @@ export default function AiContentStudio() {
       if (requestedTopic) setTopic(requestedTopic);
       if (requestedTargetUrl) setTargetUrl(requestedTargetUrl);
       if (searchParams.get("open") === "1") {
-        setWizardStep(requestedTask ? 3 : requestedTopic ? 2 : 1);
+        setWizardStep(requestedTask || citationFlow ? 3 : requestedTopic ? 2 : 1);
         setWizardOpen(true);
       }
       if (!requestedTask && !selectedResult && historyResult.generations[0]) {
@@ -889,6 +979,7 @@ export default function AiContentStudio() {
 
                     {linkedTask && <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-4"><div className="text-xs font-bold uppercase tracking-wide text-emerald-700">Approved plan context</div><div className="mt-1 font-bold text-charcoal-900">{contentTaskTitle(linkedTask)}</div><p className="mt-2 text-sm leading-6 text-charcoal-600">{linkedTask.description}</p>{linkedTask.manualInstructions && <p className="mt-2 whitespace-pre-line text-sm leading-6 text-charcoal-600"><span className="font-bold">Instructions:</span> {` ${scopedTaskInstructions(linkedTask)}`}</p>}{linkedTask.expectedOutcome && <p className="mt-2 text-sm leading-6 text-charcoal-600"><span className="font-bold">Expected outcome:</span> {linkedTask.expectedOutcome}</p>}<p className="mt-3 text-xs font-semibold text-emerald-800">This plan remains attached to the asset. {selectedResult ? "Review the generated result below or re-create it from the same plan." : "Click Generate to create this planned asset."}</p></div>}
 
+                    {citationFlow && <div className="rounded-xl border border-indigo-200 bg-indigo-50 p-4"><div className="text-xs font-black uppercase tracking-wide text-indigo-700">Opened from AI Citations</div><p className="mt-1 text-sm leading-6 text-indigo-900">The project, asset type, website and citation instructions are already attached. Review the request, click Generate, then complete the automated and human validation checklist before returning to the citation workspace.</p></div>}
                     <ContentGenerationControls mode={contentMode} instruction={generationInstruction} onModeChange={setContentMode} onInstructionChange={setGenerationInstruction} compact />
                     {generationError && <div className="rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm font-semibold text-rose-700">{generationError}</div>}
 
@@ -899,6 +990,7 @@ export default function AiContentStudio() {
                       activeId={selectedResultTabId}
                       onActiveChange={setSelectedResultTabId}
                     />
+                    {citationFlow && selectedResult && <CitationValidationPanel generation={selectedResult} onReturn={() => returnToCitation(selectedResult)} />}
                     {linkedTask && selectedResult && <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-4"><div className="font-bold text-emerald-900">Content created and returned to the project</div><p className="mt-1 text-sm text-emerald-800">This asset is attached to the execution task and has moved to {linkedTask.requiresApproval ? "content review and approval" : "ready to publish"}.</p><a href={`/guided-projects/${encodeURIComponent(linkedTask.projectId || searchParams.get("projectId") || "")}?tab=execution#execution-tasks`} className="mt-3 inline-flex rounded-lg bg-emerald-600 px-4 py-2 text-sm font-bold text-white hover:bg-emerald-700">Continue to publishing →</a></div>}
                   </div>
                 ))}

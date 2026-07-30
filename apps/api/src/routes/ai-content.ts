@@ -95,7 +95,7 @@ function schemaInstruction(type: GenerationType) {
   return "Return JSON with keys aiSearchRecommendations, entityCoverage, llmsTxtSuggestions, contentGaps, schemaSuggestions. Each key should be an array of concise recommendations.";
 }
 
-function buildPrompt(input: z.infer<typeof generationSchema>, domain?: string) {
+function buildPrompt(input: z.infer<typeof generationSchema>, domain?: string, verifiedPageUrls: string[] = []) {
   return [
     "You are SEnuke AI Content Studio for SEO and AI-search optimization.",
     schemaInstruction(input.type),
@@ -107,6 +107,7 @@ function buildPrompt(input: z.infer<typeof generationSchema>, domain?: string) {
     `Target URL: ${input.targetUrl ?? "not provided"}`,
     `Language: ${input.languageCode}`,
     `Tone: ${input.tone ?? "professional"}`,
+    verifiedPageUrls.length ? `Verified crawled website URLs (use only these URLs for sitemap entries and internal references):\n${verifiedPageUrls.join("\n")}` : "",
     input.notes ? `Extra notes: ${input.notes}` : "",
   ].filter(Boolean).join("\n");
 }
@@ -279,11 +280,28 @@ aiContentRouter.post("/ai-content/generate", async (req, res) => {
       if (!input.targetUrl) input.targetUrl = effectiveTargetUrl;
     }
 
-    let website: { id: string; domain: string } | null = null;
+    let website: { id: string; domain: string; rootUrl: string; crawlJobs: Array<{ pages: Array<{ url: string; normalizedUrl: string | null; statusCode: number | null }> }> } | null = null;
     if (input.websiteId) {
-      website = await prisma.website.findFirst({ where: { id: input.websiteId, clientId: client.id }, select: { id: true, domain: true } });
+      website = await prisma.website.findFirst({
+        where: { id: input.websiteId, clientId: client.id },
+        select: {
+          id: true,
+          domain: true,
+          rootUrl: true,
+          crawlJobs: {
+            where: { status: "completed" },
+            orderBy: [{ completedAt: "desc" }, { createdAt: "desc" }],
+            take: 1,
+            select: { pages: { where: { statusCode: { gte: 200, lt: 400 } }, take: 500, select: { url: true, normalizedUrl: true, statusCode: true } } },
+          },
+        },
+      });
     }
-    const prompt = buildPrompt(input, website?.domain);
+    const verifiedPageUrls = [...new Set((website?.crawlJobs[0]?.pages ?? []).map((page) => page.normalizedUrl || page.url).filter(Boolean))];
+    if (input.type === "sitemap" && !verifiedPageUrls.length) {
+      return res.status(409).json({ error: "A sitemap cannot be generated safely without verified website URLs. Run Site Analysis first, then return to this citation signal." });
+    }
+    const prompt = buildPrompt(input, website?.domain, verifiedPageUrls);
     const generated = await openaiJson(prompt);
     const tokens = generated.inputTokens + generated.outputTokens;
 
