@@ -512,6 +512,23 @@ export default function GrowthEngine() {
               <Stat label="Conditional" value={contentRoadmap.conditionalCount} detail="Evidence-triggered" />
             </div>}
           </Card>
+          <Card className="overflow-hidden">
+            <div className="flex flex-wrap items-start justify-between gap-4 border-b border-slate-100 bg-gradient-to-r from-pink-50 to-white p-5">
+              <div>
+                <div className="text-xs font-bold uppercase tracking-wide text-pink-700">Plan within the Growth Blueprint</div>
+                <h2 className="mt-2 text-xl font-bold text-charcoal-950">Social Distribution & Repurposing Plan</h2>
+                <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-600">{data.growth.socialDistribution?.strategySummary || "Turn approved project intelligence and existing content into a coordinated, approval-based social calendar, then feed measured results back into Growth."}</p>
+              </div>
+              <Link to={`/social-strategy?projectId=${projectId}`} className="rounded-lg bg-pink-600 px-4 py-2 text-sm font-bold text-white">{data.growth.socialDistribution ? "Open Social Plan" : "Create Social Plan"}</Link>
+            </div>
+            {data.growth.socialDistribution && <div className="grid gap-3 p-5 sm:grid-cols-2 xl:grid-cols-5">
+              <Stat label="Platforms" value={data.growth.socialDistribution.platforms.length} detail={data.growth.socialDistribution.platforms.join(", ")} />
+              <Stat label="Calendar posts" value={data.growth.socialDistribution.posts.length} detail={data.growth.socialDistribution.postingFrequency || "Rolling calendar"} />
+              <Stat label="Repurposing batches" value={data.growth.socialDistribution.repurposingBatches.length} detail="Existing content reused" />
+              <Stat label="Performance records" value={data.growth.socialDistribution.metrics.length} detail="Feeds Growth learning" />
+              <Stat label="Approved assets" value={data.growth.socialDistribution.repurposingBatches.flatMap((batch) => batch.assets).filter((asset) => asset.status === "approved").length} detail="Ready or distributed" />
+            </div>}
+          </Card>
         </div>
       )}
 

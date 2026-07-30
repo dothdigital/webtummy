@@ -816,6 +816,9 @@ model Project {
   growthContentRoadmap        GrowthContentRoadmap?
   growthContentOpportunities  GrowthContentOpportunity[]
   growthContentBatches        GrowthContentBatch[]
+  socialStrategies            SocialStrategy[]
+  socialPerformanceMetrics    SocialPerformanceMetric[]
+  socialRepurposingBatches    SocialRepurposingBatch[]
   growthSignals               GrowthSignal[]
   growthLearnings             ProjectGrowthLearning[]
   competitiveIntelligenceRuns CompetitiveIntelligenceRun[]
@@ -3903,29 +3906,43 @@ model SocialCompetitorProfile {
 }
 
 model SocialStrategy {
-  id                  String   @id @default(cuid())
-  websiteId           String
-  website             Website  @relation(fields: [websiteId], references: [id], onDelete: Cascade)
-  goal                String   @db.VarChar(160)
-  audience            String?  @db.VarChar(255)
-  platforms           Json     @default("[]")
-  postingFrequency    String?  @db.VarChar(120)
-  tone                String?  @db.VarChar(80)
-  monthlyTheme        String?  @db.VarChar(255)
-  socialScore         Int      @default(0)
-  profileScore        Int      @default(0)
-  consistencyScore    Int      @default(0)
-  activityScore       Int      @default(0)
-  competitorScore     Int      @default(0)
-  seoAlignmentScore   Int      @default(0)
-  recommendationsJson Json     @default("[]")
-  createdAt           DateTime @default(now())
-  updatedAt           DateTime @updatedAt
+  id                          String    @id @default(cuid())
+  websiteId                   String
+  website                     Website   @relation(fields: [websiteId], references: [id], onDelete: Cascade)
+  projectId                   String?
+  project                     Project?  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  goal                        String    @db.VarChar(160)
+  audience                    String?   @db.VarChar(255)
+  platforms                   Json      @default("[]")
+  postingFrequency            String?   @db.VarChar(120)
+  tone                        String?   @db.VarChar(80)
+  monthlyTheme                String?   @db.VarChar(255)
+  status                      String    @default("draft") @db.VarChar(40)
+  generationMode              String    @default("evidence_engine") @db.VarChar(60)
+  strategySummary             String?   @db.Text
+  platformRecommendationsJson Json      @default("[]")
+  campaignThemesJson          Json      @default("[]")
+  bestPostingTimesJson        Json      @default("[]")
+  intelligenceSnapshotJson    Json      @default("{}")
+  socialScore                 Int       @default(0)
+  profileScore                Int       @default(0)
+  consistencyScore            Int       @default(0)
+  activityScore               Int       @default(0)
+  competitorScore             Int       @default(0)
+  seoAlignmentScore           Int       @default(0)
+  recommendationsJson         Json      @default("[]")
+  nextReviewAt                DateTime?
+  createdAt                   DateTime  @default(now())
+  updatedAt                   DateTime  @updatedAt
 
-  pillars SocialContentPillar[]
-  posts   SocialCalendarPost[]
+  pillars            SocialContentPillar[]
+  posts              SocialCalendarPost[]
+  metrics            SocialPerformanceMetric[]
+  repurposingBatches SocialRepurposingBatch[]
 
   @@index([websiteId])
+  @@index([projectId, createdAt])
+  @@index([projectId, status])
   @@index([createdAt])
 }
 
@@ -3951,13 +3968,98 @@ model SocialCalendarPost {
   caption           String         @db.Text
   creativeDirection String?        @db.Text
   cta               String?        @db.VarChar(180)
+  hashtagsJson      Json           @default("[]")
+  imageSuggestion   String?        @db.Text
   targetKeyword     String?        @db.VarChar(255)
   targetUrl         String?        @db.VarChar(512)
+  sourceType        String?        @db.VarChar(80)
+  sourceId          String?        @db.VarChar(191)
   funnelStage       String         @default("awareness") @db.VarChar(60)
   status            String         @default("planned") @db.VarChar(40)
   createdAt         DateTime       @default(now())
   updatedAt         DateTime       @updatedAt
 
+  metrics SocialPerformanceMetric[]
+
   @@index([strategyId])
   @@index([publishDate])
+  @@index([sourceType, sourceId])
+}
+
+model SocialPerformanceMetric {
+  id           String              @id @default(cuid())
+  projectId    String
+  project      Project             @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  strategyId   String?
+  strategy     SocialStrategy?     @relation(fields: [strategyId], references: [id], onDelete: SetNull)
+  postId       String?
+  post         SocialCalendarPost? @relation(fields: [postId], references: [id], onDelete: SetNull)
+  platform     String              @db.VarChar(40)
+  sourceType   String              @default("manual") @db.VarChar(60)
+  externalId   String?             @db.VarChar(191)
+  impressions  Int                 @default(0)
+  reach        Int                 @default(0)
+  engagements  Int                 @default(0)
+  clicks       Int                 @default(0)
+  leads        Int                 @default(0)
+  conversions  Int                 @default(0)
+  spend        Float?
+  revenue      Float?
+  evidenceJson Json                @default("{}")
+  recordedAt   DateTime            @default(now())
+  createdAt    DateTime            @default(now())
+
+  @@index([projectId, recordedAt])
+  @@index([strategyId, platform])
+  @@index([postId, recordedAt])
+  @@index([externalId])
+}
+
+model SocialRepurposingBatch {
+  id                 String          @id @default(cuid())
+  projectId          String
+  project            Project         @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  strategyId         String?
+  strategy           SocialStrategy? @relation(fields: [strategyId], references: [id], onDelete: SetNull)
+  sourceType         String          @db.VarChar(80)
+  sourceId           String          @db.VarChar(191)
+  sourceTitle        String          @db.VarChar(255)
+  sourceUrl          String?         @db.VarChar(512)
+  sourceSnapshotJson Json            @default("{}")
+  keyMessagesJson    Json            @default("[]")
+  targetChannelsJson Json            @default("[]")
+  status             String          @default("draft") @db.VarChar(40)
+  generationMode     String          @default("evidence_engine") @db.VarChar(60)
+  createdByUserId    String?
+  approvedByUserId   String?
+  approvedAt         DateTime?
+  createdAt          DateTime        @default(now())
+  updatedAt          DateTime        @updatedAt
+
+  assets SocialRepurposedAsset[]
+
+  @@index([projectId, createdAt])
+  @@index([strategyId, status])
+  @@index([sourceType, sourceId])
+}
+
+model SocialRepurposedAsset {
+  id                   String                 @id @default(cuid())
+  batchId              String
+  batch                SocialRepurposingBatch @relation(fields: [batchId], references: [id], onDelete: Cascade)
+  channel              String                 @db.VarChar(60)
+  assetType            String                 @db.VarChar(80)
+  title                String                 @db.VarChar(255)
+  content              String                 @db.Text
+  cta                  String?                @db.VarChar(255)
+  hashtagsJson         Json                   @default("[]")
+  visualSuggestion     String?                @db.Text
+  status               String                 @default("draft") @db.VarChar(40)
+  socialCalendarPostId String?                @db.VarChar(191)
+  createdAt            DateTime               @default(now())
+  updatedAt            DateTime               @updatedAt
+
+  @@index([batchId, status])
+  @@index([channel])
+  @@index([socialCalendarPostId])
 }

@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { api } from "../api.js";
-import type { GuidedProject, SocialCompetitorProfile, SocialProfile, SocialStrategy as SocialStrategyType, SocialStrategyResponse, Website } from "../types.js";
+import type { GuidedProject, SocialCompetitorProfile, SocialContentSource, SocialPerformanceSummary, SocialProfile, SocialProviderCapability, SocialRepurposedAsset, SocialRepurposingBatch, SocialStrategy as SocialStrategyType, SocialStrategyResponse, Website } from "../types.js";
 import { Button, Card, Input, ScoreGauge, StatusPill } from "../components/ui.js";
 import { getActiveProjectId, resolveActiveProjectId, setActiveProjectId } from "../active-project.js";
 
@@ -17,6 +17,19 @@ const PLATFORM_LABELS: Record<string, string> = {
 };
 
 const DEFAULT_PLATFORMS = ["instagram", "facebook", "linkedin", "youtube", "google_business"];
+const REPURPOSING_LABELS: Record<string, string> = {
+  facebook: "Facebook post",
+  linkedin: "LinkedIn post",
+  x: "X post / thread",
+  threads: "Threads post",
+  instagram: "Instagram caption",
+  google_business: "Google Business update",
+  email_newsletter: "Email newsletter",
+  short_video: "Short-form video script",
+  podcast: "Podcast outline",
+  lead_magnet: "Lead magnet recommendation",
+};
+const EMPTY_PERFORMANCE: SocialPerformanceSummary = { impressions: 0, reach: 0, engagements: 0, clicks: 0, leads: 0, conversions: 0, observations: 0, engagementRate: 0, clickThroughRate: 0, conversionRate: 0 };
 const WIZARD_STEPS = [
   { id: "project", title: "Project", description: "Choose the website this strategy belongs to." },
   { id: "profiles", title: "Profiles", description: "Add your official social channels." },
@@ -224,11 +237,13 @@ function SocialPublisher({ websiteId, strategy }: SocialPublisherProps) {
   const [statusResult, setStatusResult] = useState<unknown>(null);
   const [logsResult, setLogsResult] = useState<unknown>(null);
   const [calendarResult, setCalendarResult] = useState<unknown>(null);
+  const [approvedPostIds, setApprovedPostIds] = useState<string[]>(strategyPosts.filter((post) => post.status === "approved").map((post) => post.id));
 
   const connectedAccounts = accounts.filter((account) => account.status === "connected");
   const facebookAccounts = connectedAccounts.filter((account) => account.platform === "facebook");
   const instagramAccounts = connectedAccounts.filter((account) => account.platform === "instagram");
   const selectedPost = strategyPosts.find((post) => post.id === selectedPostId) ?? defaultPost;
+  const selectedPostApproved = Boolean(selectedPost && (selectedPost.status === "approved" || approvedPostIds.includes(selectedPost.id)));
 
   const loadAccounts = async () => {
     setBusy(true);
@@ -310,6 +325,10 @@ function SocialPublisher({ websiteId, strategy }: SocialPublisherProps) {
       setError("Choose a schedule date and time.");
       return null;
     }
+    if (mode !== "draft" && selectedPost && !selectedPostApproved) {
+      setError("Approve the selected calendar post before scheduling or publishing it.");
+      return null;
+    }
     setBusy(true);
     setError("");
     setMessage("");
@@ -340,6 +359,21 @@ function SocialPublisher({ websiteId, strategy }: SocialPublisherProps) {
     } catch (err) {
       setError(String(err).replace(/^Error:\s*/, ""));
       return null;
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const approveSelectedPost = async () => {
+    if (!selectedPost) return;
+    setBusy(true);
+    setError("");
+    try {
+      await api.post(`/api/social-strategy/posts/${selectedPost.id}/approve`, {});
+      setApprovedPostIds((items) => items.includes(selectedPost.id) ? items : [...items, selectedPost.id]);
+      setMessage("Calendar post approved and ready for publishing.");
+    } catch (err) {
+      setError(String(err).replace(/^Error:\s*/, ""));
     } finally {
       setBusy(false);
     }
@@ -485,6 +519,7 @@ function SocialPublisher({ websiteId, strategy }: SocialPublisherProps) {
                   <select value={selectedPostId} onChange={(event) => applyCalendarPost(event.target.value)} className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-100">
                     {strategyPosts.map((post) => <option key={post.id} value={post.id}>{formatDate(post.publishDate)} - {platformLabel(post.platform)} - {post.topic}</option>)}
                   </select>
+                  {selectedPost && <span className={`mt-2 block rounded-lg px-3 py-2 text-xs font-bold ${selectedPostApproved ? "bg-green-50 text-green-700" : "bg-amber-50 text-amber-800"}`}>{selectedPostApproved ? "Approved for publishing" : "Review and approve this calendar post before external publishing."}</span>}
                 </label>
               )}
               <Input label="Post title" value={title} onChange={setTitle} />
@@ -503,6 +538,7 @@ function SocialPublisher({ websiteId, strategy }: SocialPublisherProps) {
                 </div>
               )}
               <div className="flex flex-wrap gap-2">
+                {selectedPost && !selectedPostApproved && <Button variant="ghost" onClick={() => void approveSelectedPost()} disabled={busy}>Approve selected post</Button>}
                 {publisherTab === "post" ? (
                   <>
                     <Button variant="ghost" onClick={() => void createPost("draft")} disabled={busy}>Create draft</Button>
@@ -577,6 +613,12 @@ export default function SocialStrategy() {
   const [profiles, setProfiles] = useState<SocialProfile[]>([emptyProfile()]);
   const [competitors, setCompetitors] = useState<SocialCompetitorProfile[]>([emptyCompetitor()]);
   const [strategies, setStrategies] = useState<SocialStrategyType[]>([]);
+  const [contentSources, setContentSources] = useState<SocialContentSource[]>([]);
+  const [repurposingBatches, setRepurposingBatches] = useState<SocialRepurposingBatch[]>([]);
+  const [performanceSummary, setPerformanceSummary] = useState<SocialPerformanceSummary>(EMPTY_PERFORMANCE);
+  const [providers, setProviders] = useState<SocialProviderCapability[]>([]);
+  const [repurposingChannels, setRepurposingChannels] = useState<string[]>(Object.keys(REPURPOSING_LABELS));
+  const [intelligence, setIntelligence] = useState<SocialStrategyResponse["intelligence"]>(null);
   const [goal, setGoal] = useState("Grow search-connected brand visibility and qualified leads");
   const [audience, setAudience] = useState("");
   const [postingFrequency, setPostingFrequency] = useState("3 posts per week");
@@ -584,24 +626,43 @@ export default function SocialStrategy() {
   const [targetKeywords, setTargetKeywords] = useState("");
   const [targetUrls, setTargetUrls] = useState("");
   const [selectedPlatforms, setSelectedPlatforms] = useState<string[]>(DEFAULT_PLATFORMS.slice(0, 3));
-  const [mode, setMode] = useState<"posting" | "strategy">("posting");
+  const [mode, setMode] = useState<"posting" | "strategy" | "repurpose" | "performance">("strategy");
   const [step, setStep] = useState<WizardStep>("project");
   const [loading, setLoading] = useState(true);
   const [pageError, setPageError] = useState("");
   const [saving, setSaving] = useState(false);
   const [generating, setGenerating] = useState(false);
+  const [repurposing, setRepurposing] = useState(false);
+  const [selectedSourceId, setSelectedSourceId] = useState("");
+  const [customSource, setCustomSource] = useState({ type: "founder_journal", title: "", url: "", content: "" });
+  const [selectedRepurposeChannels, setSelectedRepurposeChannels] = useState<string[]>(["facebook", "linkedin", "instagram", "email_newsletter"]);
+  const [assetDrafts, setAssetDrafts] = useState<Record<string, Pick<SocialRepurposedAsset, "title" | "content" | "cta" | "visualSuggestion">>>({});
+  const [workflowMessage, setWorkflowMessage] = useState("");
+  const [performanceForm, setPerformanceForm] = useState({ platform: "linkedin", impressions: "0", reach: "0", engagements: "0", clicks: "0", leads: "0", conversions: "0" });
 
   const activeStrategy = strategies[0] ?? null;
   const selectedWebsite = websites.find((website) => website.id === websiteId) ?? websites[0] ?? null;
   const activeStepIndex = WIZARD_STEPS.findIndex((item) => item.id === step);
+  const selectedProject = projects.find((project) => project.websiteId === websiteId) ?? null;
 
-  const loadStrategy = async (id: string) => {
-    const result = await api.get<SocialStrategyResponse>(`/api/social-strategy?websiteId=${encodeURIComponent(id)}`);
+  const applySocialResponse = (result: SocialStrategyResponse) => {
     setProfiles(result.profiles.length ? result.profiles : [emptyProfile()]);
     setCompetitors(result.competitors.length ? result.competitors : [emptyCompetitor()]);
     setStrategies(result.strategies);
+    setContentSources(result.contentSources ?? []);
+    setRepurposingBatches(result.repurposingBatches ?? []);
+    setPerformanceSummary(result.performanceSummary ?? EMPTY_PERFORMANCE);
+    setProviders(result.providers ?? []);
+    setRepurposingChannels(result.repurposingChannels?.length ? result.repurposingChannels : Object.keys(REPURPOSING_LABELS));
+    setIntelligence(result.intelligence ?? null);
+    setSelectedSourceId((current) => current === "__custom__" || result.contentSources?.some((source) => source.id === current) ? current : result.contentSources?.[0]?.id || "__custom__");
     setPlatformOptions(result.platformOptions.length ? result.platformOptions : DEFAULT_PLATFORMS);
     if (!selectedPlatforms.length && result.platformOptions.length) setSelectedPlatforms(result.platformOptions.slice(0, 3));
+  };
+
+  const loadStrategy = async (id: string, projectId?: string | null) => {
+    const result = await api.get<SocialStrategyResponse>(`/api/social-strategy?websiteId=${encodeURIComponent(id)}${projectId ? `&projectId=${encodeURIComponent(projectId)}` : ""}`);
+    applySocialResponse(result);
   };
 
   const load = async () => {
@@ -618,7 +679,7 @@ export default function SocialStrategy() {
       const selected = websiteResult.websites.find((website) => website.id === activeGuided?.websiteId) ?? websiteResult.websites.find((website) => website.id === requestedProject) ?? websiteResult.websites[0];
       if (selected) {
         setWebsiteId(selected.id);
-        await loadStrategy(selected.id);
+        await loadStrategy(selected.id, activeGuided?.id ?? projectResult.projects.find((project) => project.websiteId === selected.id)?.id);
         if (requestedProject && selected.id === requestedProject) setStep("profiles");
       }
     } catch (err) {
@@ -656,7 +717,7 @@ export default function SocialStrategy() {
     setLoading(true);
     setPageError("");
     try {
-      await loadStrategy(id);
+      await loadStrategy(id, mappedProject?.id);
     } catch (err) {
       setPageError(String(err).replace(/^Error:\s*/, ""));
     } finally {
@@ -675,12 +736,11 @@ export default function SocialStrategy() {
     try {
       const result = await api.post<SocialStrategyResponse>("/api/social-strategy/setup", {
         websiteId,
+        projectId: selectedProject?.id ?? null,
         profiles: normalizeProfiles(profiles),
         competitors: normalizeCompetitors(competitors),
       });
-      setProfiles(result.profiles.length ? result.profiles : [emptyProfile()]);
-      setCompetitors(result.competitors.length ? result.competitors : [emptyCompetitor()]);
-      setStrategies(result.strategies);
+      applySocialResponse(result);
     } finally {
       setSaving(false);
     }
@@ -697,6 +757,7 @@ export default function SocialStrategy() {
     try {
       const result = await api.post<SocialStrategyResponse>("/api/social-strategy/generate", {
         websiteId,
+        projectId: selectedProject?.id ?? null,
         goal,
         audience: audience || null,
         platforms: selectedPlatforms,
@@ -705,10 +766,100 @@ export default function SocialStrategy() {
         targetKeywords: targetKeywords.split(",").map((item) => item.trim()).filter(Boolean),
         targetUrls: targetUrls.split(",").map((item) => item.trim()).filter(Boolean),
       });
-      setStrategies(result.strategies);
+      applySocialResponse(result);
       setStep("review");
     } finally {
       setGenerating(false);
+    }
+  };
+
+  const generateRepurposedAssets = async () => {
+    if (!websiteId || !selectedProject?.id || !selectedSourceId || !selectedRepurposeChannels.length) return;
+    const source = selectedSourceId === "__custom__"
+      ? { id: `custom:${Date.now()}`, type: customSource.type, title: customSource.title, url: customSource.url || null, summary: customSource.content, keyword: null, status: "user_supplied" }
+      : contentSources.find((item) => item.id === selectedSourceId);
+    if (!source || !source.title.trim() || !source.summary.trim()) {
+      setPageError("Choose an existing source or provide a title and source content.");
+      return;
+    }
+    setRepurposing(true);
+    setPageError("");
+    setWorkflowMessage("");
+    try {
+      const result = await api.post<SocialStrategyResponse>("/api/social-strategy/repurpose", {
+        websiteId,
+        projectId: selectedProject.id,
+        strategyId: activeStrategy?.id ?? null,
+        sourceType: source.type,
+        sourceId: source.id,
+        sourceTitle: source.title,
+        sourceUrl: source.url,
+        sourceContent: selectedSourceId === "__custom__" ? source.summary : undefined,
+        targetChannels: selectedRepurposeChannels,
+      });
+      applySocialResponse(result);
+      setWorkflowMessage(`${result.batch?.assets.length ?? selectedRepurposeChannels.length} channel-specific assets are ready for review.`);
+    } catch (err) {
+      setPageError(String(err).replace(/^Error:\s*/, ""));
+    } finally {
+      setRepurposing(false);
+    }
+  };
+
+  const saveRepurposedAsset = async (asset: SocialRepurposedAsset) => {
+    const draft = assetDrafts[asset.id] ?? { title: asset.title, content: asset.content, cta: asset.cta, visualSuggestion: asset.visualSuggestion };
+    setRepurposing(true);
+    setPageError("");
+    try {
+      const result = await api.patch<{ asset: SocialRepurposedAsset }>(`/api/social-strategy/repurposed-assets/${asset.id}`, draft);
+      setRepurposingBatches((batches) => batches.map((batch) => ({ ...batch, assets: batch.assets.map((item) => item.id === asset.id ? result.asset : item) })));
+      setWorkflowMessage(`${result.asset.title} saved.`);
+    } catch (err) {
+      setPageError(String(err).replace(/^Error:\s*/, ""));
+    } finally {
+      setRepurposing(false);
+    }
+  };
+
+  const approveRepurposingBatch = async (batch: SocialRepurposingBatch) => {
+    setRepurposing(true);
+    setPageError("");
+    try {
+      const result = await api.post<{ batch: SocialRepurposingBatch }>(`/api/social-strategy/repurposing/${batch.id}/approve`, {
+        assetIds: batch.assets.filter((asset) => asset.status !== "rejected").map((asset) => asset.id),
+      });
+      setRepurposingBatches((batches) => batches.map((item) => item.id === batch.id ? result.batch : item));
+      setWorkflowMessage("Approved social assets were added to the calendar. Email, video, podcast, and lead-magnet assets remain available for their matching workflows.");
+      await loadStrategy(websiteId, selectedProject?.id);
+    } catch (err) {
+      setPageError(String(err).replace(/^Error:\s*/, ""));
+    } finally {
+      setRepurposing(false);
+    }
+  };
+
+  const recordPerformance = async () => {
+    if (!selectedProject?.id) return;
+    setRepurposing(true);
+    setPageError("");
+    try {
+      const result = await api.post<{ performanceSummary: SocialPerformanceSummary }>(`/api/projects-v2/${selectedProject.id}/social/performance`, {
+        strategyId: activeStrategy?.id ?? null,
+        platform: performanceForm.platform,
+        impressions: Number(performanceForm.impressions || 0),
+        reach: Number(performanceForm.reach || 0),
+        engagements: Number(performanceForm.engagements || 0),
+        clicks: Number(performanceForm.clicks || 0),
+        leads: Number(performanceForm.leads || 0),
+        conversions: Number(performanceForm.conversions || 0),
+        sourceType: "manual",
+      });
+      setPerformanceSummary(result.performanceSummary ?? EMPTY_PERFORMANCE);
+      setWorkflowMessage("Performance recorded. Growth Engine signals and the project’s Next Best Action were updated.");
+    } catch (err) {
+      setPageError(String(err).replace(/^Error:\s*/, ""));
+    } finally {
+      setRepurposing(false);
     }
   };
 
@@ -720,7 +871,7 @@ export default function SocialStrategy() {
         <div>
           <div className="text-xs font-semibold uppercase tracking-wide text-brand-600">Brand Visibility</div>
           <h1 className="mt-1 text-2xl font-bold text-charcoal-800">Social</h1>
-          <p className="mt-1 text-sm text-charcoal-400">Schedule posts to Meta and Instagram, or build a search-connected social strategy.</p>
+          <p className="mt-1 text-sm text-charcoal-400">Turn project intelligence and existing content into a measured, approval-based multi-channel distribution plan.</p>
         </div>
         <label className="block min-w-[260px]">
           <span className="mb-1 block text-sm font-medium text-slate-600">Selected project</span>
@@ -731,23 +882,48 @@ export default function SocialStrategy() {
       </div>
 
       {pageError && <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">{pageError}</div>}
+      {workflowMessage && <div className="rounded-lg border border-green-200 bg-green-50 px-4 py-3 text-sm text-green-800">{workflowMessage}</div>}
 
-      <div className="grid gap-4 md:grid-cols-2">
-        <button type="button" onClick={() => setMode("posting")} className={`rounded-xl border p-6 text-left shadow-sm transition ${mode === "posting" ? "border-brand-300 bg-brand-50" : "border-slate-200 bg-white hover:border-brand-200 hover:bg-slate-50"}`}>
-          <div className="text-xs font-semibold uppercase tracking-wide text-brand-600">Scheduling / Posting</div>
-          <div className="mt-2 text-2xl font-bold text-charcoal-900">Post to Meta and Instagram</div>
-          <p className="mt-2 text-sm leading-6 text-charcoal-500">Connect Facebook or Instagram, select accounts, create drafts, publish now, schedule posts, check logs, and cancel scheduled posts.</p>
+      <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+        <button type="button" onClick={() => setMode("strategy")} className={`rounded-xl border p-5 text-left shadow-sm transition ${mode === "strategy" ? "border-brand-300 bg-brand-50" : "border-slate-200 bg-white hover:border-brand-200 hover:bg-slate-50"}`}>
+          <div className="text-xs font-semibold uppercase tracking-wide text-brand-600">1 · Strategy</div>
+          <div className="mt-2 text-lg font-bold text-charcoal-900">Build the Growth-aligned plan</div>
+          <p className="mt-2 text-sm leading-6 text-charcoal-500">Use intake, SEO, pages, content, competitors, goals, and brand voice.</p>
         </button>
-        <button type="button" onClick={() => setMode("strategy")} className={`rounded-xl border p-6 text-left shadow-sm transition ${mode === "strategy" ? "border-brand-300 bg-brand-50" : "border-slate-200 bg-white hover:border-brand-200 hover:bg-slate-50"}`}>
-          <div className="text-xs font-semibold uppercase tracking-wide text-brand-600">Create Strategy</div>
-          <div className="mt-2 text-2xl font-bold text-charcoal-900">Build a social strategy</div>
-          <p className="mt-2 text-sm leading-6 text-charcoal-500">Add profile audit details, competitor examples, campaign inputs, and generate recommendations plus a 30-day content calendar.</p>
+        <button type="button" onClick={() => setMode("repurpose")} className={`rounded-xl border p-5 text-left shadow-sm transition ${mode === "repurpose" ? "border-brand-300 bg-brand-50" : "border-slate-200 bg-white hover:border-brand-200 hover:bg-slate-50"}`}>
+          <div className="text-xs font-semibold uppercase tracking-wide text-brand-600">2 · Repurpose</div>
+          <div className="mt-2 text-lg font-bold text-charcoal-900">One source, many assets</div>
+          <p className="mt-2 text-sm leading-6 text-charcoal-500">Generate channel-specific social, email, video, podcast, and lead-magnet assets.</p>
+        </button>
+        <button type="button" onClick={() => setMode("posting")} className={`rounded-xl border p-6 text-left shadow-sm transition ${mode === "posting" ? "border-brand-300 bg-brand-50" : "border-slate-200 bg-white hover:border-brand-200 hover:bg-slate-50"}`}>
+          <div className="text-xs font-semibold uppercase tracking-wide text-brand-600">3 · Publish</div>
+          <div className="mt-2 text-lg font-bold text-charcoal-900">Approve, schedule and publish</div>
+          <p className="mt-2 text-sm leading-6 text-charcoal-500">Publish through connected providers or use a reviewable manual handoff.</p>
+        </button>
+        <button type="button" onClick={() => setMode("performance")} className={`rounded-xl border p-5 text-left shadow-sm transition ${mode === "performance" ? "border-brand-300 bg-brand-50" : "border-slate-200 bg-white hover:border-brand-200 hover:bg-slate-50"}`}>
+          <div className="text-xs font-semibold uppercase tracking-wide text-brand-600">4 · Learn</div>
+          <div className="mt-2 text-lg font-bold text-charcoal-900">Measure and improve</div>
+          <p className="mt-2 text-sm leading-6 text-charcoal-500">Feed engagement, clicks, leads, and conversions into Growth and Next Best Action.</p>
         </button>
       </div>
 
       {mode === "posting" && (
         websiteId ? (
-          <SocialPublisher websiteId={websiteId} strategy={activeStrategy} />
+          <div className="space-y-5">
+            <Card className="p-5">
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div>
+                  <h2 className="font-bold text-charcoal-900">Publishing providers</h2>
+                  <p className="mt-1 text-sm text-charcoal-500">Connected publishing is used where the provider API is available. Other channels remain approval-based handoffs.</p>
+                </div>
+                <span className="rounded-full bg-amber-100 px-3 py-1 text-xs font-bold text-amber-800">Approval required before external publishing</span>
+              </div>
+              <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+                {providers.map((provider) => <div key={provider.platform} className="rounded-lg border border-slate-200 p-3"><div className="flex items-center justify-between gap-2"><b className="text-sm text-charcoal-800">{provider.label}</b><span className={`rounded-full px-2 py-1 text-[10px] font-bold ${provider.connectionAvailable ? "bg-green-100 text-green-700" : "bg-slate-100 text-slate-500"}`}>{provider.connectionAvailable ? "Connected provider available" : "Manual handoff"}</span></div><p className="mt-2 text-xs leading-5 text-slate-500">{provider.requirements.join(" · ")}</p></div>)}
+              </div>
+            </Card>
+            <SocialPublisher websiteId={websiteId} strategy={activeStrategy} />
+          </div>
         ) : (
           <Card className="p-6 text-center">
             <div className="text-lg font-bold text-charcoal-900">Select a project first</div>
@@ -755,6 +931,89 @@ export default function SocialStrategy() {
             <Link to="/projects" className="mt-4 inline-flex items-center justify-center rounded-lg bg-brand-600 px-4 py-2 text-sm font-bold text-white hover:bg-brand-700">Create or open project</Link>
           </Card>
         )
+      )}
+
+      {mode === "repurpose" && (
+        <div className="space-y-5">
+          <Card className="p-5">
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div>
+                <div className="text-xs font-bold uppercase tracking-wide text-brand-600">DEV-043 · Multi-channel distribution</div>
+                <h2 className="mt-1 text-xl font-bold text-charcoal-900">Repurpose an existing project asset</h2>
+                <p className="mt-1 text-sm leading-6 text-charcoal-500">Select one verified source. SEnuke AI preserves its key message while adapting structure, length, CTA, hashtags, and visual direction for each channel.</p>
+              </div>
+              <span className="rounded-full bg-brand-50 px-3 py-1 text-xs font-bold text-brand-700">{contentSources.length} available sources</span>
+            </div>
+            {!selectedProject?.id ? <div className="mt-5 rounded-lg border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">Select a guided project connected to this website before repurposing content.</div> : <>
+              <div className="mt-5 grid gap-4 lg:grid-cols-[1fr_1fr]">
+                <label className="block">
+                  <span className="mb-1 block text-sm font-bold text-slate-700">Source content</span>
+                  <select value={selectedSourceId} onChange={(event) => setSelectedSourceId(event.target.value)} className="w-full rounded-lg border border-slate-300 bg-white px-3 py-3 text-sm outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-100">
+                    {contentSources.map((source) => <option key={`${source.type}:${source.id}`} value={source.id}>{source.type.replaceAll("_", " ")} · {source.title}</option>)}
+                    <option value="__custom__">Import founder journal, case study, update, news, or video transcript</option>
+                  </select>
+                  {selectedSourceId === "__custom__" ? <div className="mt-3 space-y-3 rounded-lg border border-slate-200 bg-slate-50 p-3">
+                    <label className="block"><span className="mb-1 block text-xs font-bold text-slate-600">Source type</span><select value={customSource.type} onChange={(event) => setCustomSource((current) => ({ ...current, type: event.target.value }))} className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm"><option value="founder_journal">Founder Journal</option><option value="blog_post">Blog post</option><option value="landing_page">Landing page</option><option value="case_study">Case study</option><option value="product_update">Product update</option><option value="news">News</option><option value="video_transcript">Video transcript</option></select></label>
+                    <Input label="Source title" value={customSource.title} onChange={(value) => setCustomSource((current) => ({ ...current, title: value }))}/>
+                    <Input label="Canonical URL (optional)" value={customSource.url} onChange={(value) => setCustomSource((current) => ({ ...current, url: value }))}/>
+                    <label className="block"><span className="mb-1 block text-sm font-medium text-slate-600">Verified source content or transcript</span><textarea rows={8} value={customSource.content} onChange={(event) => setCustomSource((current) => ({ ...current, content: event.target.value }))} className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm leading-6 outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-100"/></label>
+                  </div> : contentSources.find((source) => source.id === selectedSourceId) && <div className="mt-2 rounded-lg bg-slate-50 p-3 text-xs leading-5 text-slate-600">{contentSources.find((source) => source.id === selectedSourceId)?.summary.slice(0, 500)}</div>}
+                </label>
+                <div>
+                  <div className="mb-1 text-sm font-bold text-slate-700">Generate these assets</div>
+                  <div className="grid gap-2 sm:grid-cols-2">
+                    {repurposingChannels.map((channel) => <label key={channel} className={`flex cursor-pointer items-center gap-2 rounded-lg border px-3 py-2 text-sm ${selectedRepurposeChannels.includes(channel) ? "border-brand-300 bg-brand-50 text-brand-800" : "border-slate-200 bg-white text-slate-600"}`}><input type="checkbox" checked={selectedRepurposeChannels.includes(channel)} onChange={() => setSelectedRepurposeChannels((items) => items.includes(channel) ? items.filter((item) => item !== channel) : [...items, channel])}/>{REPURPOSING_LABELS[channel] ?? channel.replaceAll("_", " ")}</label>)}
+                  </div>
+                </div>
+              </div>
+              <div className="mt-5 flex justify-end"><Button onClick={() => void generateRepurposedAssets()} disabled={repurposing || !selectedSourceId || !selectedRepurposeChannels.length}>{repurposing ? "Generating channel assets…" : `Generate ${selectedRepurposeChannels.length} assets with AI`}</Button></div>
+            </>}
+          </Card>
+
+          {repurposingBatches.map((batch) => <Card key={batch.id} className="overflow-hidden">
+            <div className="flex flex-wrap items-start justify-between gap-3 border-b border-slate-100 p-5">
+              <div><div className="flex flex-wrap items-center gap-2"><h2 className="font-bold text-charcoal-900">{batch.sourceTitle}</h2><span className="rounded-full bg-slate-100 px-2 py-1 text-[10px] font-bold uppercase text-slate-600">{batch.status}</span><span className="rounded-full bg-violet-50 px-2 py-1 text-[10px] font-bold text-violet-700">{batch.generationMode.replaceAll("_", " ")}</span></div><p className="mt-1 text-xs text-slate-500">{batch.sourceType.replaceAll("_", " ")} · {batch.assets.length} generated assets</p></div>
+              {batch.status !== "approved" && <Button onClick={() => void approveRepurposingBatch(batch)} disabled={repurposing}>Approve and add to workflows</Button>}
+            </div>
+            <div className="space-y-4 p-5">
+              {batch.assets.map((asset) => {
+                const draft = assetDrafts[asset.id] ?? { title: asset.title, content: asset.content, cta: asset.cta, visualSuggestion: asset.visualSuggestion };
+                const updateDraft = (patch: Partial<typeof draft>) => setAssetDrafts((current) => ({ ...current, [asset.id]: { ...draft, ...patch } }));
+                return <div key={asset.id} className="rounded-xl border border-slate-200 p-4">
+                  <div className="flex flex-wrap items-center justify-between gap-2"><div className="font-bold text-brand-800">{REPURPOSING_LABELS[asset.channel] ?? asset.channel.replaceAll("_", " ")}</div><span className={`rounded-full px-2 py-1 text-[10px] font-bold uppercase ${asset.status === "approved" ? "bg-green-100 text-green-700" : "bg-amber-100 text-amber-700"}`}>{asset.status}</span></div>
+                  <div className="mt-3 grid gap-3">
+                    <Input label="Title" value={draft.title} onChange={(value) => updateDraft({ title: value })} />
+                    <label className="block"><span className="mb-1 block text-sm font-medium text-slate-600">Channel-optimized content</span><textarea rows={asset.channel === "email_newsletter" || asset.channel === "podcast" ? 9 : 5} value={draft.content} onChange={(event) => updateDraft({ content: event.target.value })} className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm leading-6 outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-100"/></label>
+                    <div className="grid gap-3 md:grid-cols-2"><Input label="CTA" value={draft.cta ?? ""} onChange={(value) => updateDraft({ cta: value })}/><Input label="Visual suggestion" value={draft.visualSuggestion ?? ""} onChange={(value) => updateDraft({ visualSuggestion: value })}/></div>
+                    {asset.hashtagsJson.length > 0 && <div className="flex flex-wrap gap-1.5">{asset.hashtagsJson.map((tag) => <span key={tag} className="rounded-full bg-slate-100 px-2 py-1 text-xs text-slate-600">{tag}</span>)}</div>}
+                    {asset.status !== "approved" && <div className="flex justify-end"><Button variant="ghost" onClick={() => void saveRepurposedAsset(asset)} disabled={repurposing}>Save edits</Button></div>}
+                  </div>
+                </div>;
+              })}
+            </div>
+          </Card>)}
+        </div>
+      )}
+
+      {mode === "performance" && (
+        <div className="space-y-5">
+          <Card className="p-5">
+            <div className="flex flex-wrap items-start justify-between gap-3"><div><div className="text-xs font-bold uppercase tracking-wide text-brand-600">Growth intelligence feedback</div><h2 className="mt-1 text-xl font-bold text-charcoal-900">Social performance</h2><p className="mt-1 text-sm text-charcoal-500">Provider or manual observations update Growth signals, learnings, and Next Best Action.</p></div><Link to={selectedProject?.id ? `/growth?projectId=${selectedProject.id}` : "/growth"} className="rounded-lg border border-brand-200 px-3 py-2 text-xs font-bold text-brand-700">Open Growth Engine →</Link></div>
+            <div className="mt-5 grid gap-3 sm:grid-cols-3 xl:grid-cols-6">
+              <StatBox label="Impressions" value={performanceSummary.impressions}/><StatBox label="Engagements" value={performanceSummary.engagements}/><StatBox label="Clicks" value={performanceSummary.clicks}/><StatBox label="Leads" value={performanceSummary.leads}/><StatBox label="Conversions" value={performanceSummary.conversions}/><StatBox label="Observations" value={performanceSummary.observations}/>
+            </div>
+            <div className="mt-3 grid gap-3 sm:grid-cols-3"><div className="rounded-lg bg-brand-50 p-3"><b className="text-xl text-brand-800">{performanceSummary.engagementRate}%</b><div className="text-xs text-brand-600">Engagement rate</div></div><div className="rounded-lg bg-brand-50 p-3"><b className="text-xl text-brand-800">{performanceSummary.clickThroughRate}%</b><div className="text-xs text-brand-600">Click-through rate</div></div><div className="rounded-lg bg-brand-50 p-3"><b className="text-xl text-brand-800">{performanceSummary.conversionRate}%</b><div className="text-xs text-brand-600">Click-to-conversion rate</div></div></div>
+          </Card>
+          <Card className="p-5">
+            <h2 className="font-bold text-charcoal-900">Record an observation</h2>
+            <p className="mt-1 text-sm text-charcoal-500">Use this when connected provider metrics are unavailable. Do not estimate values.</p>
+            <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+              <SelectField label="Platform" value={performanceForm.platform} options={platformOptions} onChange={(value) => setPerformanceForm((current) => ({ ...current, platform: value }))}/>
+              {(["impressions", "reach", "engagements", "clicks", "leads", "conversions"] as const).map((field) => <Input key={field} label={field.charAt(0).toUpperCase() + field.slice(1)} value={performanceForm[field]} onChange={(value) => setPerformanceForm((current) => ({ ...current, [field]: value.replace(/\D/g, "") }))}/>)}
+            </div>
+            <div className="mt-5 flex justify-end"><Button onClick={() => void recordPerformance()} disabled={repurposing || !selectedProject?.id}>{repurposing ? "Recording…" : "Save performance and update Growth"}</Button></div>
+          </Card>
+        </div>
       )}
 
       {mode === "strategy" && (
@@ -900,9 +1159,10 @@ export default function SocialStrategy() {
         {step === "strategy" && (
           <div className="p-5">
             <div className="mb-5">
-              <h2 className="text-lg font-semibold text-charcoal-800">Enter strategy inputs</h2>
-              <p className="mt-1 text-sm leading-6 text-charcoal-500">These inputs guide the calendar, content pillars, recommendations, and AI-search alignment for {selectedWebsite?.domain ?? "this project"}.</p>
+              <h2 className="text-lg font-semibold text-charcoal-800">Review the AI strategy direction</h2>
+              <p className="mt-1 text-sm leading-6 text-charcoal-500">SEnuke AI starts with the project’s saved intelligence. These fields are optional refinements, not a replacement for business intake and research.</p>
             </div>
+            {intelligence && <div className="mb-5 rounded-xl border border-brand-200 bg-brand-50 p-4"><div className="flex flex-wrap items-center justify-between gap-2"><div className="font-bold text-brand-900">Project intelligence loaded</div><span className="rounded-full bg-white px-2.5 py-1 text-xs font-bold text-brand-700">{intelligence.sourceCount} reusable content sources</span></div><div className="mt-3 grid gap-3 text-xs sm:grid-cols-2 lg:grid-cols-4"><div><b className="block text-brand-800">Business</b><span className="text-brand-700">{intelligence.businessName}</span></div><div><b className="block text-brand-800">Audience</b><span className="text-brand-700">{intelligence.audience || "Review needed"}</span></div><div><b className="block text-brand-800">Markets</b><span className="text-brand-700">{intelligence.targetMarkets.join(", ") || "Not location-dependent"}</span></div><div><b className="block text-brand-800">Evidence</b><span className="text-brand-700">{intelligence.keywords.length} keywords · {intelligence.sourceTypes.length} source types</span></div></div></div>}
             <div className="grid gap-4 lg:grid-cols-[1fr_300px]">
               <div className="grid gap-4 lg:grid-cols-2">
                 <Input label="Goal" value={goal} onChange={setGoal} />
@@ -935,7 +1195,7 @@ export default function SocialStrategy() {
                 })}
               </div>
             </div>
-            <StepFooter back={() => setStep("competitors")} next={() => void generateStrategy()} nextLabel={generating ? "Generating..." : "Generate strategy"} nextDisabled={generating || !websiteId || !goal} />
+            <StepFooter back={() => setStep("competitors")} next={() => void generateStrategy()} nextLabel={generating ? "Analyzing project and building the calendar…" : "Generate Growth-aligned strategy with AI"} nextDisabled={generating || !websiteId} />
           </div>
         )}
 
@@ -949,7 +1209,9 @@ export default function SocialStrategy() {
                   {activeStrategy && <StatusPill status="active" />}
                 </div>
                 <p className="mt-1 text-sm text-charcoal-500">{activeStrategy?.monthlyTheme ?? "Generate a strategy to build a baseline score, recommendations, and 30-day calendar."}</p>
+                {activeStrategy?.strategySummary && <p className="mt-2 max-w-4xl text-sm leading-6 text-charcoal-600">{activeStrategy.strategySummary}</p>}
                 <p className="mt-2 text-sm text-charcoal-400">Connected platforms: {platformSummary}</p>
+                {activeStrategy && <div className="mt-2 text-xs font-semibold text-violet-700">Generation: {activeStrategy.generationMode.replaceAll("_", " ")} · Review due {activeStrategy.nextReviewAt ? formatDate(activeStrategy.nextReviewAt) : "after performance data"}</div>}
                 <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
                   <StatBox label="Profiles" value={activeStrategy?.profileScore ?? 0} tone={scoreTone(activeStrategy?.profileScore ?? 0)} />
                   <StatBox label="Consistency" value={activeStrategy?.consistencyScore ?? 0} tone={scoreTone(activeStrategy?.consistencyScore ?? 0)} />
@@ -966,6 +1228,15 @@ export default function SocialStrategy() {
           </div>
         )}
       </Card>
+
+      {activeStrategy && step === "review" && (
+        <Card className="overflow-hidden">
+          <div className="border-b border-charcoal-100 px-5 py-3"><div className="font-semibold text-charcoal-700">Platform strategy</div><p className="mt-1 text-xs text-charcoal-400">Recommended channels, business reasoning, cadence, formats, and starting times. Refine these after measured results.</p></div>
+          <div className="grid gap-3 p-5 md:grid-cols-2 xl:grid-cols-3">
+            {activeStrategy.platformRecommendationsJson.map((plan) => <div key={plan.platform} className={`rounded-xl border p-4 ${plan.recommended ? "border-brand-200 bg-brand-50/40" : "border-slate-200 bg-slate-50 opacity-75"}`}><div className="flex items-center justify-between gap-2"><b className="text-charcoal-900">{platformLabel(plan.platform)}</b><span className={`rounded-full px-2 py-1 text-[10px] font-bold ${plan.recommended ? "bg-green-100 text-green-700" : "bg-slate-200 text-slate-600"}`}>{plan.recommended ? "Recommended" : "Later / conditional"} · {plan.score}/100</span></div><p className="mt-2 text-xs leading-5 text-slate-600">{plan.reason}</p><div className="mt-3 text-xs font-semibold text-brand-700">{plan.frequency}</div><div className="mt-1 text-xs text-slate-500">{plan.bestTimes.join(" · ")}</div><div className="mt-3 flex flex-wrap gap-1">{plan.primaryFormats.map((format) => <span key={format} className="rounded-full bg-white px-2 py-1 text-[10px] text-slate-600">{format}</span>)}</div></div>)}
+          </div>
+        </Card>
+      )}
 
       {activeStrategy && step === "review" && (
         <div className="grid gap-6 xl:grid-cols-[0.8fr_1.2fr]">
@@ -1017,6 +1288,9 @@ export default function SocialStrategy() {
                     <td className="px-5 py-3">
                       <div className="font-medium text-charcoal-800">{post.topic}</div>
                       <div className="mt-1 max-w-xl text-xs leading-5 text-charcoal-500">{post.caption}</div>
+                      {post.sourceType && <div className="mt-2 text-[10px] font-bold uppercase tracking-wide text-violet-600">Repurposed from {post.sourceType.replaceAll("_", " ")}</div>}
+                      {post.hashtagsJson?.length > 0 && <div className="mt-1 text-xs text-brand-600">{post.hashtagsJson.join(" ")}</div>}
+                      {post.imageSuggestion && <div className="mt-1 max-w-xl text-[11px] leading-5 text-slate-400">Visual: {post.imageSuggestion}</div>}
                     </td>
                     <td className="px-5 py-3 text-charcoal-600">{post.targetKeyword ?? "-"}</td>
                     <td className="px-5 py-3 text-charcoal-600">{post.cta ?? "-"}</td>

@@ -457,6 +457,18 @@ export interface GrowthOverviewResponse {
     reports: { id: string; reportType: string; status: string; htmlContent: string | null; pdfUrl: string | null; createdAt: string }[];
     blueprint: GrowthBlueprint | null;
     contentRoadmap: GrowthContentRoadmap | null;
+    socialDistribution: {
+      id: string;
+      status: string;
+      generationMode: string;
+      strategySummary: string | null;
+      platforms: string[];
+      postingFrequency: string | null;
+      nextReviewAt: string | null;
+      posts: Array<{ id: string; platform: string; status: string; publishDate: string }>;
+      metrics: SocialPerformanceMetric[];
+      repurposingBatches: Array<{ id: string; status: string; sourceTitle: string; assets: Array<{ id: string; status: string; channel: string }> }>;
+    } | null;
     evidenceSignals: GrowthEvidenceSignal[];
     candidateActions: GrowthCandidateAction[];
     selectedAction: GrowthCandidateAction | null;
@@ -1145,23 +1157,36 @@ export interface SocialCalendarPost {
   caption: string;
   creativeDirection: string | null;
   cta: string | null;
+  hashtagsJson: string[];
+  imageSuggestion: string | null;
   targetKeyword: string | null;
   targetUrl: string | null;
+  sourceType: string | null;
+  sourceId: string | null;
   funnelStage: string;
   status: string;
   createdAt: string;
   updatedAt: string;
+  metrics?: SocialPerformanceMetric[];
 }
 
 export interface SocialStrategy {
   id: string;
   websiteId: string;
+  projectId: string | null;
   goal: string;
   audience: string | null;
   platforms: string[];
   postingFrequency: string | null;
   tone: string | null;
   monthlyTheme: string | null;
+  status: string;
+  generationMode: string;
+  strategySummary: string | null;
+  platformRecommendationsJson: SocialPlatformRecommendation[];
+  campaignThemesJson: string[];
+  bestPostingTimesJson: Array<{ platform: string; times: string[] }>;
+  intelligenceSnapshotJson: Record<string, unknown>;
   socialScore: number;
   profileScore: number;
   consistencyScore: number;
@@ -1169,19 +1194,137 @@ export interface SocialStrategy {
   competitorScore: number;
   seoAlignmentScore: number;
   recommendationsJson: string[];
+  nextReviewAt: string | null;
   createdAt: string;
   updatedAt: string;
   pillars: SocialContentPillar[];
   posts: SocialCalendarPost[];
 }
 
+export interface SocialPlatformRecommendation {
+  platform: string;
+  score: number;
+  recommended: boolean;
+  reason: string;
+  frequency: string;
+  bestTimes: string[];
+  primaryFormats: string[];
+}
+
+export interface SocialContentSource {
+  id: string;
+  type: string;
+  title: string;
+  url: string | null;
+  summary: string;
+  keyword: string | null;
+  status: string;
+}
+
+export interface SocialRepurposedAsset {
+  id: string;
+  batchId: string;
+  channel: string;
+  assetType: string;
+  title: string;
+  content: string;
+  cta: string | null;
+  hashtagsJson: string[];
+  visualSuggestion: string | null;
+  status: string;
+  socialCalendarPostId: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface SocialRepurposingBatch {
+  id: string;
+  projectId: string;
+  strategyId: string | null;
+  sourceType: string;
+  sourceId: string;
+  sourceTitle: string;
+  sourceUrl: string | null;
+  keyMessagesJson: string[];
+  targetChannelsJson: string[];
+  status: string;
+  generationMode: string;
+  createdAt: string;
+  updatedAt: string;
+  assets: SocialRepurposedAsset[];
+}
+
+export interface SocialPerformanceMetric {
+  id: string;
+  projectId: string;
+  strategyId: string | null;
+  postId: string | null;
+  platform: string;
+  sourceType: string;
+  impressions: number;
+  reach: number;
+  engagements: number;
+  clicks: number;
+  leads: number;
+  conversions: number;
+  recordedAt: string;
+}
+
+export interface SocialPerformanceSummary {
+  impressions: number;
+  reach: number;
+  engagements: number;
+  clicks: number;
+  leads: number;
+  conversions: number;
+  observations: number;
+  engagementRate: number;
+  clickThroughRate: number;
+  conversionRate: number;
+}
+
+export interface SocialProviderCapability {
+  platform: string;
+  label: string;
+  provider: string;
+  connectionAvailable: boolean;
+  draft: boolean;
+  schedule: boolean;
+  publish: boolean;
+  metrics: boolean;
+  requirements: string[];
+}
+
 export interface SocialStrategyResponse {
   website: { id: string; domain: string; rootUrl: string; targetCities?: unknown };
+  project: { id: string; name: string; businessName: string | null } | null;
+  intelligence: {
+    projectId: string;
+    businessName: string;
+    businessSummary: string;
+    audience: string;
+    offer: string;
+    primaryGoal: unknown;
+    brandVoice: string;
+    targetMarkets: string[];
+    competitors: string[];
+    analyticsPlatforms: string[];
+    keywords: string[];
+    sourceCount: number;
+    sourceTypes: string[];
+    approvedStrategyId: string | null;
+  } | null;
+  contentSources: SocialContentSource[];
   profiles: SocialProfile[];
   competitors: SocialCompetitorProfile[];
   strategies: SocialStrategy[];
+  repurposingBatches: SocialRepurposingBatch[];
+  batch?: SocialRepurposingBatch;
+  performanceSummary: SocialPerformanceSummary;
   strategy?: SocialStrategy;
   platformOptions: string[];
+  providers: SocialProviderCapability[];
+  repurposingChannels: string[];
 }
 
 export interface LocalBusinessProfile {

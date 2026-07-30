@@ -1,14 +1,30 @@
-import { Router } from "express";
-import type { Request } from "express";
+import { Router, type Request } from "express";
 import { z } from "zod";
-import { prisma } from "@webtummy/db";
+import { Prisma, prisma } from "@webtummy/db";
+import { config } from "../config.js";
+import { centralAiJson } from "../central-ai-service.js";
 import { requireAuth } from "../middleware.js";
 import { projectClientIdForRequest } from "../project-scope.js";
+import { socialPlatforms, socialProviderCapabilities } from "../social-provider-registry.js";
+import { canAccessProject, hasWorkspacePermission, recordWorkspaceActivity, workspaceContext } from "../workspace-access.js";
 
 export const socialStrategyRouter = Router();
 socialStrategyRouter.use(requireAuth);
 
-const PLATFORMS = ["instagram", "facebook", "linkedin", "youtube", "tiktok", "x", "pinterest", "google_business"] as const;
+const PLATFORMS = [...socialPlatforms] as string[];
+const REPURPOSING_CHANNELS = [
+  "facebook",
+  "linkedin",
+  "x",
+  "threads",
+  "instagram",
+  "google_business",
+  "email_newsletter",
+  "short_video",
+  "podcast",
+  "lead_magnet",
+] as const;
+const SOCIAL_CHANNELS = new Set(["facebook", "linkedin", "x", "threads", "instagram", "google_business"]);
 
 const socialProfileSchema = z.object({
   platform: z.string().min(2).max(40),
@@ -39,13 +55,15 @@ const competitorSchema = z.object({
 
 const saveSetupSchema = z.object({
   websiteId: z.string(),
+  projectId: z.string().optional().nullable(),
   profiles: z.array(socialProfileSchema).default([]),
   competitors: z.array(competitorSchema).default([]),
 });
 
 const generateSchema = z.object({
   websiteId: z.string(),
-  goal: z.string().min(2).max(160),
+  projectId: z.string().optional().nullable(),
+  goal: z.string().max(160).optional().nullable(),
   audience: z.string().max(255).optional().nullable(),
   platforms: z.array(z.string().max(40)).default([]),
   postingFrequency: z.string().max(120).optional().nullable(),
@@ -54,24 +72,117 @@ const generateSchema = z.object({
   targetUrls: z.array(z.string().max(512)).default([]),
 });
 
+const repurposeSchema = z.object({
+  websiteId: z.string(),
+  projectId: z.string(),
+  strategyId: z.string().optional().nullable(),
+  sourceType: z.string().min(2).max(80),
+  sourceId: z.string().min(1).max(191),
+  sourceTitle: z.string().max(255).optional(),
+  sourceUrl: z.string().max(512).optional().nullable(),
+  sourceContent: z.string().max(100_000).optional().nullable(),
+  targetChannels: z.array(z.enum(REPURPOSING_CHANNELS)).min(1),
+});
+
+const repurposedAssetUpdateSchema = z.object({
+  title: z.string().trim().min(1).max(255).optional(),
+  content: z.string().trim().min(1).max(20_000).optional(),
+  cta: z.string().trim().max(255).optional().nullable(),
+  hashtags: z.array(z.string().max(80)).max(30).optional(),
+  visualSuggestion: z.string().max(4000).optional().nullable(),
+  status: z.enum(["draft", "approved", "rejected"]).optional(),
+});
+
+const approveRepurposingSchema = z.object({
+  assetIds: z.array(z.string().min(1)).min(1).max(30).optional(),
+  startAt: z.string().datetime().optional(),
+});
+
+const performanceSchema = z.object({
+  strategyId: z.string().optional().nullable(),
+  postId: z.string().optional().nullable(),
+  platform: z.string().min(2).max(40),
+  sourceType: z.enum(["manual", "provider", "analytics"]).default("manual"),
+  externalId: z.string().max(191).optional().nullable(),
+  impressions: z.number().int().nonnegative().default(0),
+  reach: z.number().int().nonnegative().default(0),
+  engagements: z.number().int().nonnegative().default(0),
+  clicks: z.number().int().nonnegative().default(0),
+  leads: z.number().int().nonnegative().default(0),
+  conversions: z.number().int().nonnegative().default(0),
+  spend: z.number().nonnegative().optional().nullable(),
+  revenue: z.number().nonnegative().optional().nullable(),
+  evidence: z.record(z.unknown()).optional(),
+  recordedAt: z.string().datetime().optional(),
+});
+
 type SocialProfileInput = z.infer<typeof socialProfileSchema>;
 type CompetitorInput = z.infer<typeof competitorSchema>;
 type GenerateInput = z.infer<typeof generateSchema>;
 
-async function getScopedWebsite(req: Request, websiteId: string) {
-  const clientId = await projectClientIdForRequest(req);
-  return prisma.website.findFirst({
-    where: { id: websiteId, ...(clientId ? { clientId } : {}) },
-    select: { id: true, domain: true, rootUrl: true, targetCities: true },
-  });
+type ContentSource = {
+  id: string;
+  type: string;
+  title: string;
+  url: string | null;
+  summary: string;
+  keyword: string | null;
+  status: string;
+};
+
+type PlatformPlan = {
+  platform: string;
+  score: number;
+  recommended: boolean;
+  reason: string;
+  frequency: string;
+  bestTimes: string[];
+  primaryFormats: string[];
+};
+
+type PlannedPost = {
+  platform: string;
+  publishDate: Date;
+  topic: string;
+  caption: string;
+  creativeDirection: string;
+  cta: string;
+  hashtags: string[];
+  imageSuggestion: string;
+  targetKeyword: string | null;
+  targetUrl: string | null;
+  sourceType: string | null;
+  sourceId: string | null;
+  funnelStage: string;
+};
+
+function jsonList(value: unknown) {
+  return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string" && item.trim().length > 0) : [];
+}
+
+function textFromJson(value: unknown, limit = 3000) {
+  if (typeof value === "string") return value.slice(0, limit);
+  if (!value) return "";
+  return JSON.stringify(value).replace(/[{}\[\]"]/g, " ").replace(/\s+/g, " ").trim().slice(0, limit);
+}
+
+function uniqueStrings(values: string[]) {
+  return [...new Set(values.map((value) => value.trim()).filter(Boolean))];
 }
 
 function normalizePlatform(value: string) {
   return value.trim().toLowerCase().replace(/\s+/g, "_").slice(0, 40);
 }
 
-function uniqueStrings(values: string[]) {
-  return [...new Set(values.map((value) => value.trim()).filter(Boolean))];
+function slugTag(value: string) {
+  const tag = value.toLowerCase().replace(/[^a-z0-9]+/g, "").slice(0, 28);
+  return tag ? `#${tag}` : "";
+}
+
+function sentence(value: string, maximum = 220) {
+  const clean = value.replace(/\s+/g, " ").trim();
+  if (clean.length <= maximum) return clean;
+  return `${clean.slice(0, maximum - 1).trimEnd()}…`;
 }
 
 function frequencyScore(value: string | null | undefined) {
@@ -83,8 +194,7 @@ function frequencyScore(value: string | null | undefined) {
 }
 
 function average(values: number[]) {
-  if (!values.length) return 0;
-  return Math.round(values.reduce((sum, value) => sum + value, 0) / values.length);
+  return values.length ? Math.round(values.reduce((sum, value) => sum + value, 0) / values.length) : 0;
 }
 
 function scoreProfiles(profiles: SocialProfileInput[]) {
@@ -100,230 +210,941 @@ function scoreProfiles(profiles: SocialProfileInput[]) {
   };
 }
 
-function buildRecommendations(input: GenerateInput, profiles: SocialProfileInput[], competitors: CompetitorInput[]) {
+async function getScopedWebsite(req: Request, websiteId: string) {
+  const clientId = await projectClientIdForRequest(req);
+  return prisma.website.findFirst({
+    where: { id: websiteId, ...(clientId ? { clientId } : {}) },
+    select: { id: true, clientId: true, domain: true, rootUrl: true, targetCities: true },
+  });
+}
+
+async function getProjectIntelligence(req: Request, websiteId: string, projectId?: string | null) {
+  const clientId = await projectClientIdForRequest(req);
+  const project = await prisma.project.findFirst({
+    where: {
+      ...(projectId ? { id: projectId } : { websiteId }),
+      ...(clientId ? { clientId } : {}),
+    },
+    include: {
+      businessProfile: true,
+      intakeAnswers: true,
+      strategyPlans: { orderBy: { createdAt: "desc" }, take: 1 },
+      keywordGroups: { where: { status: "approved" }, orderBy: { updatedAt: "desc" }, take: 20 },
+      keywordResearchRuns: { orderBy: { createdAt: "desc" }, take: 3, include: { ideas: { orderBy: { avgMonthlySearches: "desc" }, take: 40 } } },
+      websiteBuilds: { orderBy: { updatedAt: "desc" }, take: 1, include: { pages: { where: { status: { not: "deferred" } }, orderBy: { sortOrder: "asc" }, take: 100 } } },
+      leadMagnetFunnels: { orderBy: { updatedAt: "desc" }, take: 20 },
+      growthContentOpportunities: { where: { lifecycleStatus: { notIn: ["rejected", "superseded"] } }, orderBy: { priorityScore: "desc" }, take: 30 },
+      socialPerformanceMetrics: { orderBy: { recordedAt: "desc" }, take: 200 },
+    },
+  });
+  if (!project) return { project: null, sources: [] as ContentSource[] };
+  const aiContent = await prisma.aiContentGeneration.findMany({
+    where: { status: "completed", OR: [{ projectId: project.id }, ...(project.websiteId ? [{ websiteId: project.websiteId }] : [])] },
+    orderBy: { createdAt: "desc" },
+    take: 30,
+  });
+  const sources: ContentSource[] = [];
+  for (const page of project.websiteBuilds[0]?.pages ?? []) sources.push({
+    id: page.id,
+    type: page.pageType === "landing" ? "landing_page" : page.pageType === "case_study" ? "case_study" : "website_page",
+    title: page.title,
+    url: page.remoteUrl || page.targetUrl || (project.websiteUrl ? `${project.websiteUrl.replace(/\/$/, "")}/${page.slug}` : null),
+    summary: textFromJson(page.contentJson) || textFromJson(page.briefJson) || page.primaryKeyword,
+    keyword: page.primaryKeyword,
+    status: page.status,
+  });
+  for (const generation of aiContent) sources.push({
+    id: generation.id,
+    type: generation.type === "article" ? "blog_post" : generation.type,
+    title: generation.topic,
+    url: generation.targetUrl,
+    summary: textFromJson(generation.resultJson),
+    keyword: generation.targetKeyword,
+    status: generation.status,
+  });
+  for (const funnel of project.leadMagnetFunnels) sources.push({
+    id: funnel.id,
+    type: "lead_magnet",
+    title: funnel.title,
+    url: null,
+    summary: textFromJson(funnel.assetJson) || funnel.recommendationReason || "",
+    keyword: null,
+    status: funnel.status,
+  });
+  for (const opportunity of project.growthContentOpportunities) sources.push({
+    id: opportunity.id,
+    type: "growth_content_opportunity",
+    title: opportunity.title,
+    url: opportunity.targetUrl,
+    summary: opportunity.businessPurpose,
+    keyword: opportunity.primaryKeyword,
+    status: opportunity.lifecycleStatus,
+  });
+  return { project, sources };
+}
+
+function intelligenceSnapshot(project: NonNullable<Awaited<ReturnType<typeof getProjectIntelligence>>["project"]>, sources: ContentSource[]) {
+  const approvedStrategy = project.strategyPlans[0];
+  const keywords = uniqueStrings([
+    ...project.keywordGroups.flatMap((group) => [...jsonList(group.keywords), ...jsonList(group.gapKeywords)]),
+    ...project.keywordResearchRuns.flatMap((run) => run.ideas.map((idea) => idea.keyword)),
+  ]).slice(0, 40);
+  return {
+    projectId: project.id,
+    businessName: project.businessName || project.name,
+    businessSummary: project.businessProfile?.businessSummary || project.notes || "",
+    audience: project.businessProfile?.targetAudience || approvedStrategy?.audienceProfile || "",
+    offer: project.businessProfile?.offerSummary || approvedStrategy?.offerRecommendation || "",
+    primaryGoal: project.primaryGoal || approvedStrategy?.businessObjectives || "",
+    brandVoice: project.brandVoice || project.businessProfile?.tonePreference || "professional",
+    targetMarkets: jsonList(project.targetLocations),
+    competitors: jsonList(project.competitors),
+    analyticsPlatforms: jsonList(project.analyticsPlatforms),
+    keywords,
+    sourceCount: sources.length,
+    sourceTypes: uniqueStrings(sources.map((source) => source.type)),
+    approvedStrategyId: approvedStrategy?.id || null,
+  };
+}
+
+function recommendPlatforms(snapshot: ReturnType<typeof intelligenceSnapshot>, selected: string[], profiles: SocialProfileInput[]) {
+  const context = `${snapshot.businessSummary} ${snapshot.audience} ${snapshot.offer} ${snapshot.primaryGoal}`.toLowerCase();
   const profilePlatforms = new Set(profiles.map((profile) => normalizePlatform(profile.platform)));
-  const selectedPlatforms = uniqueStrings(input.platforms.map(normalizePlatform));
-  const missingSelected = selectedPlatforms.filter((platform) => !profilePlatforms.has(platform));
+  const requested = new Set(selected.map(normalizePlatform));
+  const local = snapshot.targetMarkets.length > 0 || /local|near me|appointment|clinic|restaurant|store|service area/.test(context);
+  const b2b = /business|b2b|enterprise|professional|saas|technology|agency|consult|commercial/.test(context);
+  const visual = /design|food|beauty|fashion|fitness|travel|home|real estate|product|retail/.test(context);
+  const plans: Array<Omit<PlatformPlan, "recommended">> = [
+    { platform: "linkedin", score: b2b ? 94 : 62, reason: b2b ? "Strong fit for professional buyers, expertise, case studies, and founder-led authority." : "Useful for expertise, company news, and professional trust.", frequency: "3 posts per week", bestTimes: ["Tuesday 9:00 AM", "Wednesday 11:00 AM", "Thursday 9:00 AM"], primaryFormats: ["expert post", "carousel", "case study"] },
+    { platform: "facebook", score: local ? 90 : 72, reason: local ? "Strong fit for local awareness, community proof, offers, and retargetable engagement." : "Supports broad awareness, proof, community, and offer distribution.", frequency: "3 posts per week", bestTimes: ["Tuesday 10:00 AM", "Thursday 1:00 PM", "Saturday 10:00 AM"], primaryFormats: ["educational post", "testimonial", "offer"] },
+    { platform: "instagram", score: visual ? 94 : 70, reason: visual ? "The offer benefits from visual proof, short demonstrations, and branded education." : "Useful for visual education, team trust, and short-form proof.", frequency: "3 posts per week", bestTimes: ["Monday 12:00 PM", "Wednesday 12:00 PM", "Friday 11:00 AM"], primaryFormats: ["carousel", "reel", "story"] },
+    { platform: "google_business", score: local ? 96 : 45, reason: local ? "Directly supports local discovery, offers, updates, and service visibility." : "Use only when the business has a verified local profile and local intent.", frequency: "1 post per week", bestTimes: ["Wednesday 10:00 AM"], primaryFormats: ["update", "offer", "event"] },
+    { platform: "x", score: /news|technology|software|finance|media/.test(context) ? 82 : 50, reason: "Best for timely insights, commentary, threads, and conversation-led distribution.", frequency: "4 posts per week", bestTimes: ["Monday 9:00 AM", "Wednesday 1:00 PM", "Friday 9:00 AM"], primaryFormats: ["short insight", "thread", "commentary"] },
+    { platform: "threads", score: /creator|consumer|community|lifestyle/.test(context) ? 76 : 46, reason: "Useful for conversational brand voice, community questions, and short insights.", frequency: "3 posts per week", bestTimes: ["Tuesday 12:00 PM", "Thursday 12:00 PM"], primaryFormats: ["conversation", "tip", "question"] },
+    { platform: "youtube", score: /how|education|demo|software|training|complex/.test(context) ? 78 : 55, reason: "Supports durable demonstrations, buyer education, and searchable video authority.", frequency: "2 videos per month", bestTimes: ["Thursday 3:00 PM"], primaryFormats: ["explainer", "demo", "short"] },
+    { platform: "tiktok", score: visual ? 72 : 42, reason: "Use when fast visual demonstrations or audience education fit the brand.", frequency: "3 videos per week", bestTimes: ["Tuesday 6:00 PM", "Thursday 6:00 PM"], primaryFormats: ["short demo", "myth", "quick tip"] },
+    { platform: "pinterest", score: /design|home|food|fashion|wedding|travel|printable/.test(context) ? 78 : 35, reason: "Use for evergreen visual discovery, guides, templates, and planning content.", frequency: "5 pins per week", bestTimes: ["Saturday 8:00 PM"], primaryFormats: ["pin", "guide", "checklist"] },
+  ];
+  return plans
+    .map((plan) => ({
+      ...plan,
+      score: Math.min(100, plan.score + (profilePlatforms.has(plan.platform) ? 5 : 0) + (requested.has(plan.platform) ? 4 : 0)),
+      recommended: requested.size ? requested.has(plan.platform) : plan.score >= 68,
+    }))
+    .sort((left, right) => right.score - left.score);
+}
+
+function buildRecommendations(input: GenerateInput, profiles: SocialProfileInput[], competitors: CompetitorInput[], sources: ContentSource[], plans: PlatformPlan[]) {
+  const recommendations: string[] = [];
   const incomplete = profiles.filter((profile) => !profile.profileComplete).map((profile) => profile.platform);
   const unlinked = profiles.filter((profile) => !profile.websiteLinked).map((profile) => profile.platform);
-  const inconsistent = profiles.filter((profile) => !profile.brandConsistent).map((profile) => profile.platform);
-  const competitorThemes = uniqueStrings(competitors.flatMap((competitor) => competitor.contentThemes));
-  const recommendations: string[] = [];
-
-  if (!profiles.length) recommendations.push("Add the brand's primary social profile URLs so SEnuke AI can score social presence and website connection.");
-  if (missingSelected.length) recommendations.push(`Create or connect profiles for selected platforms not yet tracked: ${missingSelected.join(", ")}.`);
-  if (incomplete.length) recommendations.push(`Complete profile bios, logos, website links, and service descriptions on: ${incomplete.join(", ")}.`);
-  if (unlinked.length) recommendations.push(`Add the website URL to these profiles and add those profile links back to the website footer: ${unlinked.join(", ")}.`);
-  if (inconsistent.length) recommendations.push(`Standardize brand name, phone, address, and description on: ${inconsistent.join(", ")}.`);
-  if (!input.targetKeywords.length) recommendations.push("Attach target keywords to the strategy so social posts support SEO and service-page visibility.");
-  if (!input.targetUrls.length) recommendations.push("Attach priority website pages so each post can drive traffic to a relevant service, location, or offer page.");
-  if (competitors.length < 2) recommendations.push("Add at least two competitor social profiles to compare platform focus, posting rhythm, and content themes.");
-  if (competitorThemes.length) recommendations.push(`Competitor themes to cover or improve: ${competitorThemes.slice(0, 6).join(", ")}.`);
-  recommendations.push("Add official social profile URLs to Organization schema sameAs fields for stronger brand entity consistency.");
-  recommendations.push("Use UTM-tagged links from social posts to measure which platforms drive website visits and leads.");
+  if (!profiles.length) recommendations.push("Connect or record the official profiles before publishing; strategy generation can continue using project evidence.");
+  if (incomplete.length) recommendations.push(`Complete profile identity, bio, services, and imagery on: ${uniqueStrings(incomplete).join(", ")}.`);
+  if (unlinked.length) recommendations.push(`Add a tracked website link to: ${uniqueStrings(unlinked).join(", ")}.`);
+  if (competitors.length < 2) recommendations.push("Add two relevant competitors when available so future refreshes can compare themes and publishing rhythm.");
+  if (!sources.length) recommendations.push("Create or import at least one approved blog, page, case study, lead magnet, update, transcript, or news item for repurposing.");
+  else recommendations.push(`Repurpose the strongest ${Math.min(5, sources.length)} approved project assets before creating disconnected posts.`);
+  recommendations.push(`Focus the first 30 days on ${plans.filter((plan) => plan.recommended).slice(0, 3).map((plan) => plan.platform.replaceAll("_", " ")).join(", ")}; expand only after performance evidence supports it.`);
+  recommendations.push("Use UTM-tagged target URLs and record impressions, engagement, clicks, leads, and conversions after publishing.");
   return recommendations;
 }
 
-function buildPillars(goal: string, domain: string, competitorThemes: string[]) {
+function buildPillars(goal: string, domain: string, competitorThemes: string[], sources: ContentSource[]) {
   const base = [
-    {
-      title: "Educational Search Demand",
-      description: `Answer buyer questions tied to ${domain}'s priority services, turning keyword demand into useful social posts.`,
-      formatsJson: ["carousel", "short video", "how-to post"],
-    },
-    {
-      title: "Proof and Trust",
-      description: "Show reviews, outcomes, before-and-after examples, credentials, and process proof that make the brand easier to trust.",
-      formatsJson: ["testimonial", "case study", "before-after"],
-    },
-    {
-      title: "Local and Brand Authority",
-      description: "Reinforce location, service areas, team expertise, community involvement, and recognizable brand entity signals.",
-      formatsJson: ["local post", "team post", "community update"],
-    },
-    {
-      title: "Service Conversion",
-      description: `Turn ${goal.toLowerCase()} into direct response posts with clear offers, FAQs, objections, and website CTAs.`,
-      formatsJson: ["offer post", "FAQ post", "comparison post"],
-    },
+    { title: "Buyer Education", description: `Answer real buyer questions tied to ${domain}'s services and approved search demand.`, formatsJson: ["carousel", "short video", "how-to post"] },
+    { title: "Proof and Trust", description: "Repurpose verified outcomes, examples, reviews, process evidence, and expertise without inventing claims.", formatsJson: ["case study", "testimonial", "process post"] },
+    { title: "Offers and Conversion", description: `Connect ${goal.toLowerCase()} to a clear next step, relevant page, lead magnet, or campaign.`, formatsJson: ["offer post", "FAQ", "objection response"] },
+    { title: "Brand and Community", description: "Show the people, perspective, values, local relevance, and useful updates behind the business.", formatsJson: ["founder note", "community post", "news update"] },
   ];
-  if (competitorThemes.length) {
-    base.push({
-      title: "Competitor Gap Angles",
-      description: `Respond to visible competitor themes with sharper, more useful posts around: ${competitorThemes.slice(0, 5).join(", ")}.`,
-      formatsJson: ["comparison", "myth-busting post", "expert tip"],
-    });
-  }
+  if (sources.length) base.push({ title: "Content Repurposing", description: `Turn ${sources.length} existing project assets into channel-specific posts while preserving the original message.`, formatsJson: ["key-message post", "thread", "newsletter excerpt"] });
+  if (competitorThemes.length) base.push({ title: "Competitor Content Gaps", description: `Create more useful coverage around: ${competitorThemes.slice(0, 5).join(", ")}.`, formatsJson: ["comparison", "myth", "expert response"] });
   return base;
 }
 
-function buildCalendar(input: GenerateInput, domain: string, platforms: string[], pillars: ReturnType<typeof buildPillars>) {
+function platformCaption(platform: string, source: ContentSource, businessName: string, audience: string, tone: string, cta: string) {
+  const message = sentence(source.summary || source.title, platform === "x" ? 105 : 240);
+  if (platform === "linkedin") return `${source.title}\n\n${message}\n\nFor ${audience || "buyers evaluating their options"}, the practical takeaway is to connect the decision to a clear business outcome.\n\n${cta}`;
+  if (platform === "x") return sentence(`${source.title}: ${message} ${cta}`, 275);
+  if (platform === "threads") return `${source.title}\n\n${message}\n\nWhat would you add from your experience?`;
+  if (platform === "instagram") return `${source.title}\n\n${message}\n\nSave this for your next review, then ${cta.toLowerCase()}.`;
+  if (platform === "google_business") return `${businessName} update: ${source.title}. ${message} ${cta}`;
+  if (platform === "facebook") return `${source.title}\n\n${message}\n\n${cta}`;
+  return `${source.title}\n\n${message}\n\n${cta} (${tone} tone)`;
+}
+
+function plannedPostCount(frequency: string | null | undefined) {
+  const match = String(frequency || "").match(/\d+/);
+  const weekly = match ? Number(match[0]) : 3;
+  return Math.max(8, Math.min(24, weekly * 4));
+}
+
+function buildCalendar(input: GenerateInput, snapshot: ReturnType<typeof intelligenceSnapshot>, platforms: string[], sources: ContentSource[], pillars: ReturnType<typeof buildPillars>) {
   const selectedPlatforms = platforms.length ? platforms : ["linkedin", "instagram", "facebook"];
-  const keywords = input.targetKeywords.length ? input.targetKeywords : [domain, input.goal];
-  const urls = input.targetUrls.length ? input.targetUrls : [null];
+  const fallbackSources: ContentSource[] = snapshot.keywords.slice(0, 8).map((keyword, index) => ({
+    id: `keyword:${index}`,
+    type: "keyword_research",
+    title: keyword,
+    url: input.targetUrls[index % Math.max(1, input.targetUrls.length)] || null,
+    summary: `Answer the practical buyer question behind ${keyword} and connect it to the most relevant verified offer.`,
+    keyword,
+    status: "research",
+  }));
+  const availableSources = sources.length ? sources : fallbackSources.length ? fallbackSources : [{
+    id: "project:intake",
+    type: "project_intake",
+    title: snapshot.offer || snapshot.businessName,
+    url: input.targetUrls[0] || null,
+    summary: snapshot.businessSummary || `Explain how ${snapshot.businessName} helps its audience.`,
+    keyword: input.targetKeywords[0] || null,
+    status: "approved_context",
+  }];
+  const count = plannedPostCount(input.postingFrequency);
   const start = new Date();
-  start.setUTCHours(10, 0, 0, 0);
-  return Array.from({ length: 12 }, (_, index) => {
-    const pillar = pillars[index % pillars.length];
+  start.setUTCDate(start.getUTCDate() + 1);
+  start.setUTCHours(14, 0, 0, 0);
+  return Array.from({ length: count }, (_, index): PlannedPost => {
+    const source = availableSources[index % availableSources.length];
     const platform = selectedPlatforms[index % selectedPlatforms.length];
-    const keyword = keywords[index % keywords.length];
-    const targetUrl = urls[index % urls.length];
-    const date = new Date(start);
-    date.setUTCDate(start.getUTCDate() + index * 2);
-    const topic = `${pillar.title}: ${keyword}`;
+    const pillar = pillars[index % pillars.length];
+    const publishDate = new Date(start);
+    publishDate.setUTCDate(start.getUTCDate() + Math.floor(index * 28 / count));
+    const targetUrl = source.url || input.targetUrls[index % Math.max(1, input.targetUrls.length)] || null;
+    const cta = targetUrl ? "Read the complete resource" : "Contact us for the next step";
+    const keyword = source.keyword || input.targetKeywords[index % Math.max(1, input.targetKeywords.length)] || null;
+    const tags = uniqueStrings([slugTag(snapshot.businessName), keyword ? slugTag(keyword) : "", slugTag(pillar.title)]).filter(Boolean).slice(0, platform === "instagram" ? 8 : 4);
     return {
       platform,
-      publishDate: date,
-      topic,
-      caption: `Talk about ${keyword} in a practical way. Connect the post to ${domain}'s expertise, explain one clear problem, and end with a useful next step.`,
-      creativeDirection: `Use a ${pillar.formatsJson[0] ?? "post"} format. Keep the creative simple, branded, and focused on one takeaway.`,
-      cta: targetUrl ? "Read the full guide" : "Contact us to learn more",
+      publishDate,
+      topic: `${pillar.title}: ${source.title}`.slice(0, 255),
+      caption: platformCaption(platform, source, snapshot.businessName, snapshot.audience, input.tone || snapshot.brandVoice, cta),
+      creativeDirection: `Create a ${pillar.formatsJson[0] || "branded post"} using one key message from “${source.title}”. Keep facts and claims aligned with the source.`,
+      cta,
+      hashtags: tags,
+      imageSuggestion: `Branded ${platform.replaceAll("_", " ")} visual illustrating ${source.title}; use verified project imagery or an original diagram, not unsupported stock claims.`,
       targetKeyword: keyword,
       targetUrl,
+      sourceType: source.type,
+      sourceId: source.id,
       funnelStage: index % 4 === 0 ? "awareness" : index % 4 === 1 ? "consideration" : index % 4 === 2 ? "trust" : "conversion",
     };
   });
 }
 
-async function loadSocialData(websiteId: string) {
-  const [profiles, competitors, strategies] = await Promise.all([
+const aiStrategySchema = z.object({
+  strategySummary: z.string().min(10).max(3000),
+  campaignThemes: z.array(z.string().min(2).max(160)).min(3).max(8),
+  captions: z.array(z.object({
+    index: z.number().int().nonnegative(),
+    caption: z.string().min(10).max(4000),
+    cta: z.string().max(255),
+    hashtags: z.array(z.string().max(80)).max(12),
+    visualSuggestion: z.string().max(2000),
+  })).max(24),
+});
+
+async function enhanceStrategyWithAi(snapshot: ReturnType<typeof intelligenceSnapshot>, posts: PlannedPost[], platformPlans: PlatformPlan[]) {
+  if (!config.openaiApiKey) return null;
+  const generated = await centralAiJson({
+    system: "You are the SEnuke AI Social Strategy and Multi-Channel Distribution Engine. Adapt approved evidence into useful channel-specific marketing content. Never invent people, results, credentials, statistics, offers, prices, locations, customer claims, or source facts.",
+    prompt: [
+      "Return {strategySummary, campaignThemes, captions:[{index,caption,cta,hashtags,visualSuggestion}]} for the supplied draft.",
+      "Keep each index and platform. Preserve the factual meaning and target URL. Adapt tone, length, structure, CTA, hashtags, and visual direction for each platform.",
+      `Business evidence: ${JSON.stringify(snapshot).slice(0, 20_000)}`,
+      `Platform plan: ${JSON.stringify(platformPlans.filter((plan) => plan.recommended)).slice(0, 12_000)}`,
+      `Draft posts: ${JSON.stringify(posts.map((post, index) => ({ index, platform: post.platform, topic: post.topic, caption: post.caption, cta: post.cta, targetUrl: post.targetUrl, sourceType: post.sourceType }))).slice(0, 50_000)}`,
+    ].join("\n"),
+    temperature: 0.35,
+  });
+  return { ...generated, result: aiStrategySchema.parse(generated.result) };
+}
+
+const aiRepurposingSchema = z.object({
+  keyMessages: z.array(z.string().min(3).max(500)).min(1).max(8),
+  assets: z.array(z.object({
+    index: z.number().int().nonnegative(),
+    title: z.string().min(1).max(255),
+    content: z.string().min(10).max(20_000),
+    cta: z.string().max(255).nullable(),
+    hashtags: z.array(z.string().max(80)).max(20),
+    visualSuggestion: z.string().max(3000).nullable(),
+  })).max(30),
+});
+
+async function enhanceRepurposingWithAi(
+  snapshot: ReturnType<typeof intelligenceSnapshot>,
+  source: ContentSource,
+  assets: ReturnType<typeof buildRepurposedAssets>,
+) {
+  if (!config.openaiApiKey) return null;
+  const generated = await centralAiJson({
+    system: "You are the SEnuke AI Content Repurposing Engine. Transform one verified source into channel-specific assets while preserving its message and the project's brand voice. Never invent facts, claims, people, results, statistics, offers, credentials, URLs, or source details.",
+    prompt: [
+      "Return {keyMessages,assets:[{index,title,content,cta,hashtags,visualSuggestion}]}.",
+      "Keep every supplied index. Optimize length, structure, tone, CTA, hashtags, and visual direction for that asset's channel. An X thread may contain numbered posts. Email must include a subject. Short video must be a usable script. Podcast must be a usable outline.",
+      `Business evidence: ${JSON.stringify(snapshot).slice(0, 18_000)}`,
+      `Canonical source: ${JSON.stringify(source).slice(0, 20_000)}`,
+      `Draft assets: ${JSON.stringify(assets.map((asset, index) => ({ index, channel: asset.channel, assetType: asset.assetType, title: asset.title, content: asset.content, cta: asset.cta }))).slice(0, 45_000)}`,
+    ].join("\n"),
+    temperature: 0.35,
+  });
+  return { ...generated, result: aiRepurposingSchema.parse(generated.result) };
+}
+
+function buildRepurposedAssets(source: ContentSource, channels: readonly string[], businessName: string, audience: string) {
+  const keyMessage = sentence(source.summary || source.title, 320);
+  const cta = source.url ? "Read the full resource" : "Contact us to continue";
+  return channels.map((channel) => {
+    const hashtags = uniqueStrings([slugTag(businessName), source.keyword ? slugTag(source.keyword) : "", slugTag(source.title)]).filter(Boolean);
+    if (channel === "email_newsletter") return { channel, assetType: "email_newsletter", title: source.title, content: `Subject: ${source.title}\n\n${keyMessage}\n\nWhy it matters for ${audience || "our audience"}:\n• Understand the core issue\n• Apply the practical takeaway\n• Use the complete resource for the next step\n\n${cta}`, cta, hashtags: [], visualSuggestion: "Use one source-aligned header image and a single clear CTA." };
+    if (channel === "short_video") return { channel, assetType: "short_video_script", title: `60-second guide: ${source.title}`, content: `HOOK: ${source.title}\n\nPROBLEM: ${keyMessage}\n\nKEY TAKEAWAY: Explain the most useful action from the source.\n\nCTA: ${cta}`, cta, hashtags, visualSuggestion: "Use three scenes: hook text, one visual explanation, and the CTA. Use source-backed on-screen text." };
+    if (channel === "podcast") return { channel, assetType: "podcast_outline", title: `Podcast outline: ${source.title}`, content: `1. Why ${source.title} matters\n2. The core message: ${keyMessage}\n3. Common misunderstanding\n4. Practical example grounded in the source\n5. Recommended next step\n6. ${cta}`, cta, hashtags: [], visualSuggestion: "Create a branded episode cover using the source topic." };
+    if (channel === "lead_magnet") return { channel, assetType: "lead_magnet_recommendation", title: `${source.title} checklist`, content: `Recommended lead magnet: turn the source into a practical checklist for ${audience || "the target audience"}. Preserve the source's key message, add actionable steps, and link every claim back to verified project evidence.`, cta: "Create in Lead Magnets", hashtags: [], visualSuggestion: "Use a branded cover and simple checklist diagrams." };
+    const socialSource = { ...source, summary: keyMessage };
+    return {
+      channel,
+      assetType: channel === "x" ? "x_thread" : channel === "google_business" ? "google_business_update" : `${channel}_post`,
+      title: source.title,
+      content: platformCaption(channel, socialSource, businessName, audience, "brand-aligned", cta),
+      cta,
+      hashtags: hashtags.slice(0, channel === "instagram" ? 8 : 4),
+      visualSuggestion: `Create a channel-appropriate branded visual that communicates one verified idea from “${source.title}”.`,
+    };
+  });
+}
+
+async function loadSocialData(websiteId: string, projectId?: string | null) {
+  const [profiles, competitors, strategies, repurposingBatches, performance] = await Promise.all([
     prisma.socialProfile.findMany({ where: { websiteId }, orderBy: { platform: "asc" } }),
     prisma.socialCompetitorProfile.findMany({ where: { websiteId }, orderBy: { createdAt: "desc" } }),
     prisma.socialStrategy.findMany({
-      where: { websiteId },
+      where: { websiteId, ...(projectId ? { projectId } : {}) },
       orderBy: { createdAt: "desc" },
-      take: 5,
-      include: { pillars: true, posts: { orderBy: { publishDate: "asc" } } },
+      take: 10,
+      include: { pillars: true, posts: { orderBy: { publishDate: "asc" }, include: { metrics: { orderBy: { recordedAt: "desc" }, take: 3 } } } },
     }),
+    projectId ? prisma.socialRepurposingBatch.findMany({ where: { projectId }, orderBy: { createdAt: "desc" }, take: 20, include: { assets: { orderBy: { createdAt: "asc" } } } }) : Promise.resolve([]),
+    projectId ? prisma.socialPerformanceMetric.findMany({ where: { projectId }, orderBy: { recordedAt: "desc" }, take: 200 }) : Promise.resolve([]),
   ]);
-  return { profiles, competitors, strategies };
+  const totals = performance.reduce((sum, item) => ({
+    impressions: sum.impressions + item.impressions,
+    reach: sum.reach + item.reach,
+    engagements: sum.engagements + item.engagements,
+    clicks: sum.clicks + item.clicks,
+    leads: sum.leads + item.leads,
+    conversions: sum.conversions + item.conversions,
+  }), { impressions: 0, reach: 0, engagements: 0, clicks: 0, leads: 0, conversions: 0 });
+  return {
+    profiles,
+    competitors,
+    strategies,
+    repurposingBatches,
+    performanceSummary: {
+      ...totals,
+      observations: performance.length,
+      engagementRate: totals.impressions ? Number((totals.engagements / totals.impressions * 100).toFixed(2)) : 0,
+      clickThroughRate: totals.impressions ? Number((totals.clicks / totals.impressions * 100).toFixed(2)) : 0,
+      conversionRate: totals.clicks ? Number((totals.conversions / totals.clicks * 100).toFixed(2)) : 0,
+    },
+  };
+}
+
+async function socialResponse(req: Request, websiteId: string, projectId?: string | null) {
+  const website = await getScopedWebsite(req, websiteId);
+  if (!website) throw Object.assign(new Error("Website not found."), { statusCode: 404 });
+  const intelligence = await getProjectIntelligence(req, website.id, projectId);
+  const resolvedProjectId = intelligence.project?.id || null;
+  return {
+    website,
+    project: intelligence.project ? { id: intelligence.project.id, name: intelligence.project.name, businessName: intelligence.project.businessName } : null,
+    intelligence: intelligence.project ? intelligenceSnapshot(intelligence.project, intelligence.sources) : null,
+    contentSources: intelligence.sources,
+    ...(await loadSocialData(website.id, resolvedProjectId)),
+    platformOptions: PLATFORMS,
+    providers: socialProviderCapabilities(),
+    repurposingChannels: [...REPURPOSING_CHANNELS],
+  };
 }
 
 socialStrategyRouter.get("/social-strategy", async (req, res) => {
   const websiteId = typeof req.query.websiteId === "string" ? req.query.websiteId : "";
+  const projectId = typeof req.query.projectId === "string" ? req.query.projectId : null;
   if (!websiteId) return res.status(400).json({ error: "websiteId required" });
-  const website = await getScopedWebsite(req, websiteId);
-  if (!website) return res.status(404).json({ error: "website not found" });
-  res.json({ website, ...(await loadSocialData(website.id)), platformOptions: PLATFORMS });
+  try {
+    res.json(await socialResponse(req, websiteId, projectId));
+  } catch (error) {
+    const typed = error as { statusCode?: number };
+    res.status(typed.statusCode || 500).json({ error: error instanceof Error ? error.message : "Social strategy could not be loaded." });
+  }
 });
 
 socialStrategyRouter.post("/social-strategy/setup", async (req, res) => {
   const parsed = saveSetupSchema.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() });
-  const { websiteId, profiles, competitors } = parsed.data;
+  const { websiteId, projectId, profiles, competitors } = parsed.data;
   const website = await getScopedWebsite(req, websiteId);
   if (!website) return res.status(404).json({ error: "website not found" });
-
   await prisma.$transaction(async (tx) => {
     await tx.socialProfile.deleteMany({ where: { websiteId } });
     await tx.socialCompetitorProfile.deleteMany({ where: { websiteId } });
-    if (profiles.length) {
-      await tx.socialProfile.createMany({
-        data: profiles.map((profile) => ({
-          websiteId,
-          platform: normalizePlatform(profile.platform),
-          profileUrl: profile.profileUrl,
-          handle: profile.handle ?? null,
-          displayName: profile.displayName ?? null,
-          bio: profile.bio ?? null,
-          followerCount: profile.followerCount ?? null,
-          postingFrequency: profile.postingFrequency ?? null,
-          lastPostAt: profile.lastPostAt ? new Date(profile.lastPostAt) : null,
-          websiteLinked: profile.websiteLinked,
-          profileComplete: profile.profileComplete,
-          brandConsistent: profile.brandConsistent,
-          notes: profile.notes ?? null,
-        })),
-      });
-    }
-    if (competitors.length) {
-      await tx.socialCompetitorProfile.createMany({
-        data: competitors.map((competitor) => ({
-          websiteId,
-          competitorName: competitor.competitorName,
-          competitorDomain: competitor.competitorDomain ?? null,
-          platform: normalizePlatform(competitor.platform),
-          profileUrl: competitor.profileUrl ?? null,
-          followerCount: competitor.followerCount ?? null,
-          postingFrequency: competitor.postingFrequency ?? null,
-          engagementLevel: competitor.engagementLevel ?? null,
-          contentThemes: competitor.contentThemes,
-          notes: competitor.notes ?? null,
-        })),
-      });
-    }
+    if (profiles.length) await tx.socialProfile.createMany({ data: profiles.map((profile) => ({
+      websiteId,
+      platform: normalizePlatform(profile.platform),
+      profileUrl: profile.profileUrl,
+      handle: profile.handle ?? null,
+      displayName: profile.displayName ?? null,
+      bio: profile.bio ?? null,
+      followerCount: profile.followerCount ?? null,
+      postingFrequency: profile.postingFrequency ?? null,
+      lastPostAt: profile.lastPostAt ? new Date(profile.lastPostAt) : null,
+      websiteLinked: profile.websiteLinked,
+      profileComplete: profile.profileComplete,
+      brandConsistent: profile.brandConsistent,
+      notes: profile.notes ?? null,
+    })) });
+    if (competitors.length) await tx.socialCompetitorProfile.createMany({ data: competitors.map((competitor) => ({
+      websiteId,
+      competitorName: competitor.competitorName,
+      competitorDomain: competitor.competitorDomain ?? null,
+      platform: normalizePlatform(competitor.platform),
+      profileUrl: competitor.profileUrl ?? null,
+      followerCount: competitor.followerCount ?? null,
+      postingFrequency: competitor.postingFrequency ?? null,
+      engagementLevel: competitor.engagementLevel ?? null,
+      contentThemes: competitor.contentThemes,
+      notes: competitor.notes ?? null,
+    })) });
   });
-
-  res.json({ website, ...(await loadSocialData(websiteId)), platformOptions: PLATFORMS });
+  res.json(await socialResponse(req, websiteId, projectId));
 });
 
 socialStrategyRouter.post("/social-strategy/generate", async (req, res) => {
   const parsed = generateSchema.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() });
   const input = parsed.data;
+  const context = await workspaceContext(req);
+  if (!hasWorkspacePermission(context, "run_ai_analysis")) return res.status(403).json({ error: "AI analysis permission is required." });
   const website = await getScopedWebsite(req, input.websiteId);
   if (!website) return res.status(404).json({ error: "website not found" });
-
+  const intelligence = await getProjectIntelligence(req, website.id, input.projectId);
+  if (!intelligence.project) return res.status(409).json({ error: "Select a guided project connected to this website before generating its social strategy." });
+  const project = intelligence.project;
+  const snapshot = intelligenceSnapshot(project, intelligence.sources);
   const profiles = await prisma.socialProfile.findMany({ where: { websiteId: website.id } });
   const competitors = await prisma.socialCompetitorProfile.findMany({ where: { websiteId: website.id } });
-  const profileInputs: SocialProfileInput[] = profiles.map((profile) => ({
-    platform: profile.platform,
-    profileUrl: profile.profileUrl,
-    handle: profile.handle,
-    displayName: profile.displayName,
-    bio: profile.bio,
-    followerCount: profile.followerCount,
-    postingFrequency: profile.postingFrequency,
-    lastPostAt: profile.lastPostAt?.toISOString() ?? null,
-    websiteLinked: profile.websiteLinked,
-    profileComplete: profile.profileComplete,
-    brandConsistent: profile.brandConsistent,
-    notes: profile.notes,
-  }));
-  const competitorInputs: CompetitorInput[] = competitors.map((competitor) => ({
-    competitorName: competitor.competitorName,
-    competitorDomain: competitor.competitorDomain,
-    platform: competitor.platform,
-    profileUrl: competitor.profileUrl,
-    followerCount: competitor.followerCount,
-    postingFrequency: competitor.postingFrequency,
-    engagementLevel: competitor.engagementLevel,
-    contentThemes: Array.isArray(competitor.contentThemes) ? competitor.contentThemes.filter((item): item is string => typeof item === "string") : [],
-    notes: competitor.notes,
-  }));
-
-  const selectedPlatforms = uniqueStrings([...input.platforms, ...profiles.map((profile) => profile.platform)].map(normalizePlatform));
+  const profileInputs = profiles.map((profile) => ({ ...profile, lastPostAt: profile.lastPostAt?.toISOString() ?? null })) as SocialProfileInput[];
+  const competitorInputs = competitors.map((competitor) => ({ ...competitor, contentThemes: jsonList(competitor.contentThemes) })) as CompetitorInput[];
+  const selectedPlatforms = uniqueStrings(input.platforms.map(normalizePlatform));
+  const platformPlans = recommendPlatforms(snapshot, selectedPlatforms, profileInputs);
+  const activePlatforms = (selectedPlatforms.length ? selectedPlatforms : platformPlans.filter((plan) => plan.recommended).slice(0, 4).map((plan) => plan.platform));
+  const goal = input.goal || String(snapshot.primaryGoal || "Grow qualified visibility, engagement, and leads");
+  const audience = input.audience || snapshot.audience;
+  const tone = input.tone || snapshot.brandVoice;
+  const enrichedInput = {
+    ...input,
+    goal,
+    audience,
+    tone,
+    postingFrequency: input.postingFrequency || "3 posts per week",
+    targetKeywords: uniqueStrings([...input.targetKeywords, ...snapshot.keywords]).slice(0, 30),
+    targetUrls: uniqueStrings([...input.targetUrls, ...intelligence.sources.map((source) => source.url || "")]).slice(0, 30),
+  };
+  const competitorThemes = uniqueStrings(competitorInputs.flatMap((competitor) => competitor.contentThemes));
+  const pillars = buildPillars(goal, website.domain, competitorThemes, intelligence.sources);
+  let posts = buildCalendar(enrichedInput, snapshot, activePlatforms, intelligence.sources, pillars);
+  let generationMode = "evidence_engine";
+  let strategySummary = `${snapshot.businessName} should focus on ${activePlatforms.map((platform) => platform.replaceAll("_", " ")).join(", ")} and repurpose approved project content into a measured 30-day calendar tied to ${goal}.`;
+  let campaignThemes = pillars.slice(0, 5).map((pillar) => pillar.title);
+  let aiUsage: { model: string; inputTokens: number; outputTokens: number } | null = null;
+  try {
+    const ai = await enhanceStrategyWithAi(snapshot, posts, platformPlans);
+    if (ai) {
+      const byIndex = new Map(ai.result.captions.map((item) => [item.index, item]));
+      posts = posts.map((post, index) => {
+        const enhancement = byIndex.get(index);
+        return enhancement ? { ...post, caption: enhancement.caption, cta: enhancement.cta, hashtags: enhancement.hashtags, imageSuggestion: enhancement.visualSuggestion } : post;
+      });
+      strategySummary = ai.result.strategySummary;
+      campaignThemes = ai.result.campaignThemes;
+      generationMode = "ai";
+      aiUsage = { model: ai.model, inputTokens: ai.inputTokens, outputTokens: ai.outputTokens };
+    }
+  } catch {
+    generationMode = "evidence_engine_fallback";
+  }
   const { profileScore, consistencyScore, activityScore } = scoreProfiles(profileInputs);
   const competitorScore = competitors.length ? Math.min(100, 45 + competitors.length * 15) : 15;
-  const seoAlignmentScore = Math.round((input.targetKeywords.length ? 45 : 15) + (input.targetUrls.length ? 35 : 10) + (profiles.some((profile) => profile.websiteLinked) ? 20 : 0));
-  const socialScore = Math.round(profileScore * 0.25 + consistencyScore * 0.2 + activityScore * 0.2 + competitorScore * 0.15 + seoAlignmentScore * 0.2);
-  const competitorThemes = uniqueStrings(competitorInputs.flatMap((competitor) => competitor.contentThemes));
-  const recommendations = buildRecommendations(input, profileInputs, competitorInputs);
-  const pillars = buildPillars(input.goal, website.domain, competitorThemes);
-  const posts = buildCalendar(input, website.domain, selectedPlatforms, pillars);
-  const monthlyTheme = `${input.goal} through search-connected social visibility`;
+  const seoAlignmentScore = Math.min(100, 35 + (snapshot.keywords.length ? 30 : 0) + (intelligence.sources.some((source) => source.url) ? 20 : 0) + (profiles.some((profile) => profile.websiteLinked) ? 15 : 0));
+  const socialScore = Math.round(profileScore * 0.2 + consistencyScore * 0.15 + activityScore * 0.15 + competitorScore * 0.15 + seoAlignmentScore * 0.2 + Math.min(100, intelligence.sources.length * 8) * 0.15);
+  const recommendations = buildRecommendations(enrichedInput, profileInputs, competitorInputs, intelligence.sources, platformPlans);
+  const strategy = await prisma.$transaction(async (tx) => {
+    await tx.socialStrategy.updateMany({ where: { projectId: project.id, status: "active" }, data: { status: "superseded" } });
+    const row = await tx.socialStrategy.create({
+      data: {
+        websiteId: website.id,
+        projectId: project.id,
+        goal,
+        audience: audience || null,
+        platforms: activePlatforms,
+        postingFrequency: enrichedInput.postingFrequency,
+        tone: tone || null,
+        monthlyTheme: campaignThemes[0] || `${goal} through coordinated social distribution`,
+        status: "active",
+        generationMode,
+        strategySummary,
+        platformRecommendationsJson: platformPlans as unknown as Prisma.InputJsonValue,
+        campaignThemesJson: campaignThemes,
+        bestPostingTimesJson: platformPlans.filter((plan) => activePlatforms.includes(plan.platform)).map((plan) => ({ platform: plan.platform, times: plan.bestTimes })) as Prisma.InputJsonValue,
+        intelligenceSnapshotJson: snapshot as unknown as Prisma.InputJsonValue,
+        socialScore: Math.max(0, Math.min(100, socialScore)),
+        profileScore,
+        consistencyScore,
+        activityScore,
+        competitorScore,
+        seoAlignmentScore,
+        recommendationsJson: recommendations,
+        nextReviewAt: new Date(Date.now() + 30 * 86_400_000),
+        pillars: { create: pillars },
+        posts: { create: posts.map((post) => ({
+          platform: post.platform,
+          publishDate: post.publishDate,
+          topic: post.topic,
+          caption: post.caption,
+          creativeDirection: post.creativeDirection,
+          cta: post.cta,
+          hashtagsJson: post.hashtags,
+          imageSuggestion: post.imageSuggestion,
+          targetKeyword: post.targetKeyword,
+          targetUrl: post.targetUrl,
+          sourceType: post.sourceType,
+          sourceId: post.sourceId,
+          funnelStage: post.funnelStage,
+        })) },
+      },
+      include: { posts: true },
+    });
+    const executionPlan = await activeExecutionPlan(tx, project.id, project.name);
+    for (const post of row.posts) {
+      await tx.executionTask.create({
+        data: {
+          clientId: project.clientId,
+          websiteId: project.websiteId,
+          projectId: project.id,
+          executionPlanId: executionPlan.id,
+          moduleName: "social_strategy",
+          sourceType: "social_calendar_post",
+          sourceId: post.id,
+          dedupeKey: `social-post:${post.id}`,
+          title: `Review ${post.platform.replaceAll("_", " ")} post: ${post.topic}`.slice(0, 255),
+          description: post.caption,
+          priority: post.funnelStage === "conversion" ? "high" : "medium",
+          automationLevel: "execute_with_approval",
+          status: "needs_review",
+          requiresApproval: true,
+          manualRequired: false,
+          safetyCategory: "publishing",
+          actionButtonLabel: "Review and Schedule",
+          relatedUrl: `/social-strategy?project=${website.id}&projectId=${project.id}`,
+          manualInstructions: "Review the source alignment, platform-specific message, CTA, hashtags, and visual direction. Approve before scheduling or publishing.",
+          impact: "Turns the Growth-aligned social calendar into approval-controlled, measurable distribution.",
+          approvalSnapshotJson: { socialStrategyId: row.id, socialCalendarPostId: post.id, sourceType: post.sourceType, sourceId: post.sourceId } as Prisma.InputJsonValue,
+        },
+      });
+    }
+    await tx.aiRun.create({
+      data: {
+        projectId: project.id,
+        clientId: project.clientId,
+        moduleName: "social_strategy",
+        promptVersion: "dev-042-v1",
+        inputSnapshotJson: snapshot as unknown as Prisma.InputJsonValue,
+        outputJson: { strategyId: row.id, platforms: activePlatforms, posts: posts.length, generationMode } as Prisma.InputJsonValue,
+        tokenUsage: aiUsage ? { inputTokens: aiUsage.inputTokens, outputTokens: aiUsage.outputTokens, model: aiUsage.model } : {},
+      },
+    });
+    await recordWorkspaceActivity(tx, {
+      context,
+      action: "social_strategy.generated",
+      entityType: "social_strategy",
+      entityId: row.id,
+      agencyClientId: project.agencyClientId,
+      projectId: project.id,
+      nextJson: { generationMode, platforms: activePlatforms, postCount: posts.length, sourceCount: intelligence.sources.length },
+    });
+    return row;
+  }, { timeout: 30_000 });
+  res.status(201).json({ strategy, ...(await socialResponse(req, website.id, project.id)) });
+});
 
-  const strategy = await prisma.socialStrategy.create({
-    data: {
-      websiteId: website.id,
-      goal: input.goal,
-      audience: input.audience ?? null,
-      platforms: selectedPlatforms,
-      postingFrequency: input.postingFrequency ?? null,
-      tone: input.tone ?? null,
-      monthlyTheme,
-      socialScore: Math.max(0, Math.min(100, socialScore)),
-      profileScore,
-      consistencyScore,
-      activityScore,
-      competitorScore,
-      seoAlignmentScore: Math.max(0, Math.min(100, seoAlignmentScore)),
-      recommendationsJson: recommendations,
-      pillars: { create: pillars },
-      posts: { create: posts },
-    },
-    include: { pillars: true, posts: { orderBy: { publishDate: "asc" } } },
+socialStrategyRouter.post("/social-strategy/repurpose", async (req, res) => {
+  const parsed = repurposeSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() });
+  const input = parsed.data;
+  const context = await workspaceContext(req);
+  if (!hasWorkspacePermission(context, "run_ai_analysis")) return res.status(403).json({ error: "AI generation permission is required." });
+  const website = await getScopedWebsite(req, input.websiteId);
+  if (!website) return res.status(404).json({ error: "website not found" });
+  const intelligence = await getProjectIntelligence(req, website.id, input.projectId);
+  if (!intelligence.project) return res.status(404).json({ error: "project not found" });
+  const source = intelligence.sources.find((item) => item.id === input.sourceId && item.type === input.sourceType) ?? (input.sourceContent ? {
+    id: input.sourceId,
+    type: input.sourceType,
+    title: input.sourceTitle || "Imported source content",
+    url: input.sourceUrl || null,
+    summary: input.sourceContent,
+    keyword: null,
+    status: "user_supplied",
+  } : null);
+  if (!source) return res.status(404).json({ error: "The selected source content is unavailable. Refresh the source list or provide the source text." });
+  const snapshot = intelligenceSnapshot(intelligence.project, intelligence.sources);
+  let keyMessages = [
+    sentence(source.summary || source.title, 320),
+    source.keyword ? `Primary topic: ${source.keyword}` : "",
+    source.url ? `Canonical source: ${source.url}` : "",
+  ].filter(Boolean);
+  let assets = buildRepurposedAssets(source, input.targetChannels, snapshot.businessName, snapshot.audience);
+  let generationMode = "evidence_engine";
+  let aiUsage: { model: string; inputTokens: number; outputTokens: number } | null = null;
+  try {
+    const ai = await enhanceRepurposingWithAi(snapshot, source, assets);
+    if (ai) {
+      const byIndex = new Map(ai.result.assets.map((asset) => [asset.index, asset]));
+      assets = assets.map((asset, index) => {
+        const enhancement = byIndex.get(index);
+        return enhancement ? { ...asset, ...enhancement, cta: enhancement.cta || asset.cta, visualSuggestion: enhancement.visualSuggestion || asset.visualSuggestion } : asset;
+      });
+      keyMessages = ai.result.keyMessages;
+      generationMode = "ai";
+      aiUsage = { model: ai.model, inputTokens: ai.inputTokens, outputTokens: ai.outputTokens };
+    }
+  } catch {
+    generationMode = "evidence_engine_fallback";
+  }
+  const batch = await prisma.$transaction(async (tx) => {
+    const row = await tx.socialRepurposingBatch.create({
+      data: {
+        projectId: intelligence.project!.id,
+        strategyId: input.strategyId || null,
+        sourceType: source.type,
+        sourceId: source.id,
+        sourceTitle: source.title,
+        sourceUrl: source.url,
+        sourceSnapshotJson: source as unknown as Prisma.InputJsonValue,
+        keyMessagesJson: keyMessages,
+        targetChannelsJson: input.targetChannels,
+        status: "draft",
+        generationMode,
+        createdByUserId: context.membership.userId,
+        assets: { create: assets.map((asset) => ({
+          channel: asset.channel,
+          assetType: asset.assetType,
+          title: asset.title,
+          content: asset.content,
+          cta: asset.cta,
+          hashtagsJson: asset.hashtags,
+          visualSuggestion: asset.visualSuggestion,
+        })) },
+      },
+      include: { assets: true },
+    });
+    await tx.aiRun.create({
+      data: {
+        projectId: intelligence.project!.id,
+        clientId: intelligence.project!.clientId,
+        moduleName: "social_repurposing",
+        promptVersion: "dev-043-v1",
+        inputSnapshotJson: { sourceType: source.type, sourceId: source.id, sourceTitle: source.title, channels: input.targetChannels } as Prisma.InputJsonValue,
+        outputJson: { batchId: row.id, keyMessages, assetCount: assets.length, generationMode } as Prisma.InputJsonValue,
+        tokenUsage: aiUsage ? { inputTokens: aiUsage.inputTokens, outputTokens: aiUsage.outputTokens, model: aiUsage.model } : {},
+      },
+    });
+    await recordWorkspaceActivity(tx, {
+      context,
+      action: "social_repurposing.generated",
+      entityType: "social_repurposing_batch",
+      entityId: row.id,
+      agencyClientId: intelligence.project!.agencyClientId,
+      projectId: intelligence.project!.id,
+      nextJson: { sourceType: source.type, sourceId: source.id, channels: input.targetChannels, assetCount: assets.length },
+    });
+    return row;
   });
+  res.status(201).json({ batch, ...(await socialResponse(req, website.id, intelligence.project.id)) });
+});
 
-  res.status(201).json({ strategy, website, ...(await loadSocialData(website.id)), platformOptions: PLATFORMS });
+socialStrategyRouter.post("/social-strategy/posts/:postId/approve", async (req, res) => {
+  const context = await workspaceContext(req);
+  if (!hasWorkspacePermission(context, "approve")) return res.status(403).json({ error: "Approval permission is required." });
+  const post = await prisma.socialCalendarPost.findUnique({
+    where: { id: req.params.postId },
+    include: { strategy: { include: { project: true } } },
+  });
+  if (!post?.strategy.projectId || !post.strategy.project) return res.status(404).json({ error: "Project social post not found." });
+  if (!await canAccessProject(context, post.strategy.projectId)) return res.status(404).json({ error: "Project social post not found." });
+  const task = await prisma.executionTask.findFirst({
+    where: { projectId: post.strategy.projectId, sourceType: "social_calendar_post", sourceId: post.id },
+    orderBy: { createdAt: "desc" },
+  });
+  if (!task) return res.status(409).json({ error: "The post’s publishing task is missing. Regenerate or synchronize the social calendar first." });
+  if (task.status === "ready_to_publish" && task.approvedAt) return res.json({ post, task, idempotent: true });
+  const result = await prisma.$transaction(async (tx) => {
+    const updatedPost = await tx.socialCalendarPost.update({ where: { id: post.id }, data: { status: "approved" } });
+    const updatedTask = await tx.executionTask.update({
+      where: { id: task.id },
+      data: { status: "ready_to_publish", approvedAt: new Date(), approverMembershipId: context.membership.id, blockedReason: null },
+    });
+    await recordWorkspaceActivity(tx, {
+      context,
+      action: "social_post.approved",
+      entityType: "social_calendar_post",
+      entityId: post.id,
+      agencyClientId: post.strategy.project!.agencyClientId,
+      projectId: post.strategy.projectId,
+      previousJson: { postStatus: post.status, taskStatus: task.status },
+      nextJson: { postStatus: "approved", taskStatus: "ready_to_publish" },
+    });
+    return { post: updatedPost, task: updatedTask, idempotent: false };
+  });
+  res.json(result);
+});
+
+socialStrategyRouter.patch("/social-strategy/repurposed-assets/:assetId", async (req, res) => {
+  const parsed = repurposedAssetUpdateSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() });
+  const context = await workspaceContext(req);
+  if (!hasWorkspacePermission(context, "execute_tasks")) return res.status(403).json({ error: "Content editing permission is required." });
+  const asset = await prisma.socialRepurposedAsset.findUnique({ where: { id: req.params.assetId }, include: { batch: true } });
+  if (!asset) return res.status(404).json({ error: "Repurposed asset not found." });
+  if (!await canAccessProject(context, asset.batch.projectId)) return res.status(404).json({ error: "Repurposed asset not found." });
+  const updated = await prisma.socialRepurposedAsset.update({
+    where: { id: asset.id },
+    data: {
+      ...(parsed.data.title ? { title: parsed.data.title } : {}),
+      ...(parsed.data.content ? { content: parsed.data.content } : {}),
+      ...(parsed.data.cta !== undefined ? { cta: parsed.data.cta } : {}),
+      ...(parsed.data.hashtags ? { hashtagsJson: parsed.data.hashtags } : {}),
+      ...(parsed.data.visualSuggestion !== undefined ? { visualSuggestion: parsed.data.visualSuggestion } : {}),
+      ...(parsed.data.status ? { status: parsed.data.status } : {}),
+    },
+  });
+  res.json({ asset: updated });
+});
+
+async function activeExecutionPlan(tx: Prisma.TransactionClient, projectId: string, projectName: string) {
+  const existing = await tx.executionPlan.findFirst({ where: { projectId, status: "active" }, orderBy: { createdAt: "asc" } });
+  return existing || tx.executionPlan.create({ data: { projectId, title: `${projectName} execution plan` } });
+}
+
+socialStrategyRouter.post("/social-strategy/repurposing/:batchId/approve", async (req, res) => {
+  const parsed = approveRepurposingSchema.safeParse(req.body || {});
+  if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() });
+  const context = await workspaceContext(req);
+  if (!hasWorkspacePermission(context, "approve")) return res.status(403).json({ error: "Approval permission is required." });
+  const batch = await prisma.socialRepurposingBatch.findUnique({
+    where: { id: req.params.batchId },
+    include: { assets: true, project: true, strategy: true },
+  });
+  if (!batch) return res.status(404).json({ error: "Repurposing batch not found." });
+  if (!await canAccessProject(context, batch.projectId)) return res.status(404).json({ error: "Repurposing batch not found." });
+  if (batch.status === "approved") return res.json({ batch });
+  const selected = parsed.data.assetIds?.length ? batch.assets.filter((asset) => parsed.data.assetIds!.includes(asset.id)) : batch.assets.filter((asset) => asset.status !== "rejected");
+  if (!selected.length) return res.status(409).json({ error: "Select at least one reviewable asset." });
+  const destinationStrategy = batch.strategy || await prisma.socialStrategy.findFirst({ where: { projectId: batch.projectId, status: "active" }, orderBy: { createdAt: "desc" } });
+  if (selected.some((asset) => SOCIAL_CHANNELS.has(asset.channel)) && !destinationStrategy) {
+    return res.status(409).json({ error: "Generate the project’s Social Strategy before adding repurposed assets to its calendar." });
+  }
+  const start = parsed.data.startAt ? new Date(parsed.data.startAt) : new Date(Date.now() + 86_400_000);
+  await prisma.$transaction(async (tx) => {
+    const executionPlan = await activeExecutionPlan(tx, batch.projectId, batch.project.name);
+    let socialIndex = 0;
+    for (const asset of selected) {
+      if (!SOCIAL_CHANNELS.has(asset.channel)) {
+        await tx.socialRepurposedAsset.update({ where: { id: asset.id }, data: { status: "approved" } });
+        continue;
+      }
+      const publishDate = new Date(start.getTime() + socialIndex * 2 * 86_400_000);
+      socialIndex += 1;
+      const post = await tx.socialCalendarPost.create({
+        data: {
+          strategyId: destinationStrategy!.id,
+          platform: asset.channel,
+          publishDate,
+          topic: asset.title,
+          caption: asset.content,
+          creativeDirection: asset.visualSuggestion,
+          cta: asset.cta,
+          hashtagsJson: asset.hashtagsJson ?? [],
+          imageSuggestion: asset.visualSuggestion,
+          targetUrl: batch.sourceUrl,
+          sourceType: "social_repurposed_asset",
+          sourceId: asset.id,
+          funnelStage: "consideration",
+          status: "planned",
+        },
+      });
+      await tx.socialRepurposedAsset.update({ where: { id: asset.id }, data: { status: "approved", socialCalendarPostId: post.id } });
+      await tx.executionTask.create({
+        data: {
+          clientId: batch.project.clientId,
+          websiteId: batch.project.websiteId,
+          projectId: batch.projectId,
+          executionPlanId: executionPlan.id,
+          moduleName: "social_strategy",
+          sourceType: "social_calendar_post",
+          sourceId: post.id,
+          dedupeKey: `social-post:${post.id}`,
+          title: `Review ${asset.channel.replaceAll("_", " ")} post: ${asset.title}`.slice(0, 255),
+          description: asset.content,
+          priority: "medium",
+          automationLevel: "execute_with_approval",
+          status: "needs_review",
+          requiresApproval: true,
+          manualRequired: false,
+          safetyCategory: "publishing",
+          actionButtonLabel: "Review and Schedule",
+          relatedUrl: `/social-strategy?project=${batch.project.websiteId || ""}&projectId=${batch.projectId}`,
+          manualInstructions: "Review the repurposed message, CTA, hashtags, visual, and source alignment. Approve before scheduling or publishing.",
+          impact: "Distributes an approved source asset through a channel-specific, measurable social post.",
+          approvalSnapshotJson: { repurposingBatchId: batch.id, repurposedAssetId: asset.id, sourceType: batch.sourceType, sourceId: batch.sourceId } as Prisma.InputJsonValue,
+        },
+      });
+    }
+    await tx.socialRepurposingBatch.update({
+      where: { id: batch.id },
+      data: { status: "approved", approvedByUserId: context.membership.userId, approvedAt: new Date() },
+    });
+    await recordWorkspaceActivity(tx, {
+      context,
+      action: "social_repurposing.approved",
+      entityType: "social_repurposing_batch",
+      entityId: batch.id,
+      agencyClientId: batch.project.agencyClientId,
+      projectId: batch.projectId,
+      nextJson: { assetIds: selected.map((asset) => asset.id), socialPostsAdded: selected.filter((asset) => SOCIAL_CHANNELS.has(asset.channel)).length },
+    });
+  }, { timeout: 30_000 });
+  res.json({ batch: await prisma.socialRepurposingBatch.findUnique({ where: { id: batch.id }, include: { assets: true } }) });
+});
+
+socialStrategyRouter.post("/projects-v2/:projectId/social/performance", async (req, res) => {
+  const parsed = performanceSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() });
+  const context = await workspaceContext(req);
+  if (!hasWorkspacePermission(context, "execute_tasks")) return res.status(403).json({ error: "Performance recording permission is required." });
+  const project = await prisma.project.findUnique({ where: { id: req.params.projectId } });
+  if (!project || !await canAccessProject(context, project.id)) return res.status(404).json({ error: "project not found" });
+  const input = parsed.data;
+  const metric = await prisma.$transaction(async (tx) => {
+    const row = await tx.socialPerformanceMetric.create({
+      data: {
+        projectId: project.id,
+        strategyId: input.strategyId || null,
+        postId: input.postId || null,
+        platform: normalizePlatform(input.platform),
+        sourceType: input.sourceType,
+        externalId: input.externalId || null,
+        impressions: input.impressions,
+        reach: input.reach,
+        engagements: input.engagements,
+        clicks: input.clicks,
+        leads: input.leads,
+        conversions: input.conversions,
+        spend: input.spend,
+        revenue: input.revenue,
+        evidenceJson: (input.evidence || {}) as Prisma.InputJsonValue,
+        recordedAt: input.recordedAt ? new Date(input.recordedAt) : new Date(),
+      },
+    });
+    const totals = await tx.socialPerformanceMetric.aggregate({
+      where: { projectId: project.id },
+      _sum: { impressions: true, reach: true, engagements: true, clicks: true, leads: true, conversions: true },
+      _count: true,
+    });
+    const impressions = totals._sum.impressions || 0;
+    const engagements = totals._sum.engagements || 0;
+    const clicks = totals._sum.clicks || 0;
+    const leads = totals._sum.leads || 0;
+    const conversions = totals._sum.conversions || 0;
+    const engagementRate = impressions ? Number((engagements / impressions * 100).toFixed(2)) : 0;
+    const clickThroughRate = impressions ? Number((clicks / impressions * 100).toFixed(2)) : 0;
+    await tx.growthSignal.upsert({
+      where: { fingerprint: `social-performance:${project.id}` },
+      update: {
+        sourceId: row.id,
+        valueJson: { observations: totals._count, impressions, engagements, clicks, leads, conversions, engagementRate, clickThroughRate },
+        confidence: Math.min(95, 55 + totals._count * 5),
+        collectedAt: new Date(),
+        effectiveDate: row.recordedAt,
+        freshnessStatus: "fresh",
+        expiresAt: new Date(Date.now() + 30 * 86_400_000),
+      },
+      create: {
+        projectId: project.id,
+        fingerprint: `social-performance:${project.id}`,
+        category: "social",
+        signalKey: "social_distribution_performance",
+        sourceType: "social_performance",
+        sourceId: row.id,
+        valueJson: { observations: totals._count, impressions, engagements, clicks, leads, conversions, engagementRate, clickThroughRate },
+        confidence: Math.min(95, 55 + totals._count * 5),
+        collectedAt: new Date(),
+        effectiveDate: row.recordedAt,
+        freshnessStatus: "fresh",
+        expiresAt: new Date(Date.now() + 30 * 86_400_000),
+        engineVersion: "dev-042-v1",
+      },
+    });
+    const strong = conversions > 0 || leads >= 3 || engagementRate >= 4;
+    const recommendation = strong
+      ? "Repurpose the strongest-performing message into the next best-fit channels and test one new format."
+      : "Review low-performing hooks, channel fit, creative format, and CTA before expanding the posting volume.";
+    const existingAction = await tx.nextBestAction.findFirst({ where: { projectId: project.id, dedupeKey: `social-performance-next:${project.id}`, status: { notIn: ["completed", "rejected"] } } });
+    const actionData = {
+      sourceType: "social_performance",
+      sourceId: row.id,
+      title: strong ? "Scale the strongest social content" : "Improve social distribution performance",
+      recommendation,
+      reasoningSummary: `${totals._count} observations show ${engagementRate}% engagement, ${clickThroughRate}% click-through, ${leads} leads, and ${conversions} conversions.`,
+      expectedImpact: strong ? "Extend a proven message while preserving channel-specific optimization." : "Improve engagement and qualified traffic before increasing output.",
+      confidence: Math.min(95, 55 + totals._count * 5),
+      estimatedEffort: "medium",
+      route: "social",
+      priorityScore: strong ? 82 : impressions >= 100 ? 78 : 60,
+      evidenceJson: { observations: totals._count, impressions, engagements, clicks, leads, conversions, engagementRate, clickThroughRate } as Prisma.InputJsonValue,
+      actionType: "social_optimization",
+      businessGoal: project.primaryGoal,
+      estimatedImpactJson: { engagementRate, clickThroughRate, leads, conversions } as Prisma.InputJsonValue,
+      scoreJson: { impact: strong ? 86 : 74, confidence: Math.min(95, 55 + totals._count * 5), effort: 65 } as Prisma.InputJsonValue,
+      approvalType: "user_approval",
+      riskLevel: "low",
+      urgency: strong ? 72 : 65,
+      reviewAfter: new Date(Date.now() + 14 * 86_400_000),
+      engineVersion: "dev-042-v1",
+      dedupeKey: `social-performance-next:${project.id}`,
+      status: "proposed",
+    };
+    if (existingAction) await tx.nextBestAction.update({ where: { id: existingAction.id }, data: actionData });
+    else await tx.nextBestAction.create({ data: { projectId: project.id, ...actionData } });
+    await tx.projectGrowthLearning.create({
+      data: {
+        projectId: project.id,
+        sourceType: "social_performance",
+        sourceId: row.id,
+        outcome: strong ? "positive" : "needs_improvement",
+        summary: actionData.reasoningSummary,
+        learningJson: { platform: row.platform, engagementRate, clickThroughRate, leads, conversions },
+        appliedToFuture: true,
+      },
+    });
+    await recordWorkspaceActivity(tx, {
+      context,
+      action: "social_performance.recorded",
+      entityType: "social_performance_metric",
+      entityId: row.id,
+      agencyClientId: project.agencyClientId,
+      projectId: project.id,
+      nextJson: { platform: row.platform, impressions: row.impressions, engagements: row.engagements, clicks: row.clicks, leads: row.leads, conversions: row.conversions },
+    });
+    return row;
+  }, { timeout: 20_000 });
+  res.status(201).json({ metric, ...(await loadSocialData(project.websiteId || "", project.id)) });
 });

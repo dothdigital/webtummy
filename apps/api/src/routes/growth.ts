@@ -48,6 +48,7 @@ async function scopedProject(req: Request, projectId: string) {
       keywordResearchRuns: { orderBy: { createdAt: "desc" }, take: 5, include: { ideas: { take: 200 } } },
       keywordGroups: { orderBy: { updatedAt: "desc" }, take: 100 },
       websiteBuilds: { orderBy: { updatedAt: "desc" }, take: 1, include: { pages: { where: { status: { not: "deferred" } }, orderBy: { sortOrder: "asc" }, take: 500 } } },
+      socialPerformanceMetrics: { orderBy: { recordedAt: "desc" }, take: 200 },
       businessProfile: true,
       intakeAnswers: true,
       opportunities: { orderBy: { createdAt: "desc" }, take: 5 },
@@ -233,13 +234,21 @@ function scoreProject(project: NonNullable<Awaited<ReturnType<typeof scopedProje
   const highIssues = latestCrawl?.issues.filter((issue) => issue.severity === "high").length ?? 0;
   const keywordRuns = project.keywordResearchRuns.length;
   const socialPosts = project.website?.socialStrategies[0]?.posts.length ?? 0;
+  const socialPerformance = project.socialPerformanceMetrics.reduce((sum, metric) => ({
+    impressions: sum.impressions + metric.impressions,
+    engagements: sum.engagements + metric.engagements,
+    clicks: sum.clicks + metric.clicks,
+    leads: sum.leads + metric.leads,
+    conversions: sum.conversions + metric.conversions,
+  }), { impressions: 0, engagements: 0, clicks: 0, leads: 0, conversions: 0 });
+  const socialEngagementRate = socialPerformance.impressions ? socialPerformance.engagements / socialPerformance.impressions * 100 : 0;
   const hasLeadMagnetTask = project.executionTasks.some((task) => task.moduleName.includes("lead") || task.title.toLowerCase().includes("lead magnet"));
   const strategyApproved = Boolean(project.strategyPlans.find((strategy) => strategy.status === "approved"));
 
   const traffic = Math.min(100, 35 + keywordRuns * 16 + (latestCrawl ? 18 : 0) + Math.max(0, 20 - highIssues * 4));
   const conversion = Math.min(100, 30 + (strategyApproved ? 18 : 0) + (hasLeadMagnetTask ? 14 : 0) + (project.businessProfile?.offerSummary ? 12 : 0));
   const leadCapture = Math.min(100, 25 + (hasLeadMagnetTask ? 24 : 0) + (project.preferredOutputs && jsonList(project.preferredOutputs).some((item) => /lead/i.test(item)) ? 20 : 0));
-  const followUp = Math.min(100, 22 + socialPosts * 3 + (project.preferredPublishingMethod ? 10 : 0));
+  const followUp = Math.min(100, 22 + socialPosts * 3 + Math.min(18, project.socialPerformanceMetrics.length * 3) + Math.min(12, socialPerformance.leads * 2) + (project.preferredPublishingMethod ? 10 : 0));
   const latestAuthoritySnapshot = project.backlinkProfileSnapshots[0];
   const citationOutput = project.aiRuns[0]?.outputJson && typeof project.aiRuns[0].outputJson === "object" && !Array.isArray(project.aiRuns[0].outputJson)
     ? project.aiRuns[0].outputJson as Record<string, unknown>
@@ -265,11 +274,11 @@ function scoreProject(project: NonNullable<Awaited<ReturnType<typeof scopedProje
     + (citationReadiness == null ? 0 : Math.round(citationReadiness * .08))
     + Math.min(10, openTasks.filter((task) => /backlink|citation|authority/i.test(`${task.moduleName} ${task.title}`)).length * 2));
   const offer = Math.min(100, 35 + (project.businessProfile?.offerSummary ? 22 : 0) + (project.businessProfile?.targetAudience ? 14 : 0) + (project.strategyPlans[0]?.offerRecommendation ? 12 : 0));
-  const retention = Math.min(100, 25 + socialPosts * 2 + (project.strategyPlans[0]?.socialStrategy ? 12 : 0));
+  const retention = Math.min(100, 25 + socialPosts * 2 + Math.min(18, socialPerformance.conversions * 3) + (socialEngagementRate >= 4 ? 10 : 0) + (project.strategyPlans[0]?.socialStrategy ? 12 : 0));
   const scoreJson = { traffic, conversion, leadCapture, followUp, authority, offer, retention };
   const bottleneckType = Object.entries(scoreJson).sort((a, b) => a[1] - b[1])[0]?.[0] ?? "conversion";
   const growthScore = Math.round(Object.values(scoreJson).reduce((sum, value) => sum + value, 0) / Object.values(scoreJson).length);
-  return { scoreJson, bottleneckType, growthScore, latestCrawl, openTasks, keywordRuns, socialPosts, hasLeadMagnetTask, strategyApproved, latestAuthoritySnapshot, approvedAuthorityOpportunities, completedAuthorityAssets, earnedReferralLeads, citationReadiness, observedCitationMentions, approvedCitationRecommendations };
+  return { scoreJson, bottleneckType, growthScore, latestCrawl, openTasks, keywordRuns, socialPosts, socialPerformance, socialEngagementRate, hasLeadMagnetTask, strategyApproved, latestAuthoritySnapshot, approvedAuthorityOpportunities, completedAuthorityAssets, earnedReferralLeads, citationReadiness, observedCitationMentions, approvedCitationRecommendations };
 }
 
 function buildSupportingContentRoadmap(project: NonNullable<Awaited<ReturnType<typeof scopedProject>>>) {
@@ -531,6 +540,22 @@ function normalizedGrowthSignals(project: NonNullable<Awaited<ReturnType<typeof 
       collectedAt: now,
       effectiveDate: project.keywordResearchRuns[0]?.createdAt ?? now,
       expiresAt: new Date((project.keywordResearchRuns[0]?.createdAt ?? now).getTime() + 45 * 86_400_000),
+    },
+    {
+      category: "social",
+      signalKey: "social_distribution_performance",
+      sourceType: project.socialPerformanceMetrics.length ? "social_performance" : "project_snapshot",
+      sourceId: project.socialPerformanceMetrics[0]?.id ?? project.id,
+      value: {
+        plannedPosts: score.socialPosts,
+        observations: project.socialPerformanceMetrics.length,
+        ...score.socialPerformance,
+        engagementRate: Number(score.socialEngagementRate.toFixed(2)),
+      },
+      confidence: project.socialPerformanceMetrics.length ? Math.min(95, 55 + project.socialPerformanceMetrics.length * 5) : 30,
+      collectedAt: now,
+      effectiveDate: project.socialPerformanceMetrics[0]?.recordedAt ?? now,
+      expiresAt: new Date((project.socialPerformanceMetrics[0]?.recordedAt ?? now).getTime() + 30 * 86_400_000),
     },
   );
   return signals;
@@ -933,7 +958,7 @@ async function upsertGrowthTask(tx: Prisma.TransactionClient, input: {
 }
 
 async function loadGrowthOverview(projectId: string) {
-  const [diagnosis, funnelStages, experiments, channelTests, reports, blueprint, contentRoadmap, evidenceSignals, candidateActions, learnings, recentRuns] = await Promise.all([
+  const [diagnosis, funnelStages, experiments, channelTests, reports, blueprint, contentRoadmap, socialDistribution, evidenceSignals, candidateActions, learnings, recentRuns] = await Promise.all([
     prisma.growthDiagnosis.findFirst({ where: { projectId }, orderBy: { createdAt: "desc" } }),
     prisma.growthFunnelStage.findMany({ where: { projectId }, orderBy: { sortOrder: "asc" } }),
     prisma.growthExperiment.findMany({ where: { projectId }, orderBy: [{ status: "asc" }, { iceScore: "desc" }], include: { assets: true, results: { orderBy: { recordedAt: "desc" }, take: 3 } } }),
@@ -947,9 +972,18 @@ async function loadGrowthOverview(projectId: string) {
         batches: { orderBy: { createdAt: "desc" }, take: 20, include: { opportunities: { select: { id: true, title: true, lifecycleStatus: true, executionTaskId: true, generationId: true } } } },
       },
     }),
+    prisma.socialStrategy.findFirst({
+      where: { projectId, status: "active" },
+      orderBy: { createdAt: "desc" },
+      include: {
+        posts: { orderBy: { publishDate: "asc" }, take: 50 },
+        metrics: { orderBy: { recordedAt: "desc" }, take: 200 },
+        repurposingBatches: { orderBy: { createdAt: "desc" }, take: 10, include: { assets: { select: { id: true, status: true, channel: true } } } },
+      },
+    }),
     prisma.growthSignal.findMany({ where: { projectId }, orderBy: [{ category: "asc" }, { effectiveDate: "desc" }] }),
     prisma.nextBestAction.findMany({
-      where: { projectId, sourceType: { in: ["growth_engine", "citation_recommendation"] } },
+      where: { projectId, sourceType: { in: ["growth_engine", "citation_recommendation", "social_performance"] } },
       orderBy: [{ status: "asc" }, { priorityScore: "desc" }, { createdAt: "desc" }],
       include: { followupTask: { select: { id: true, title: true, status: true, relatedUrl: true } } },
     }),
@@ -964,6 +998,7 @@ async function loadGrowthOverview(projectId: string) {
     reports,
     blueprint,
     contentRoadmap,
+    socialDistribution,
     evidenceSignals,
     candidateActions,
     selectedAction: candidateActions.find((action) => action.status === "selected")

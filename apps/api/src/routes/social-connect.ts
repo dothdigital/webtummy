@@ -1,4 +1,4 @@
-import { Router, type Request, type Response } from "express";
+import { Router, type Request, type Response as ExpressResponse } from "express";
 import { z } from "zod";
 import { config } from "../config.js";
 import { requireAuth, requireRole } from "../middleware.js";
@@ -72,7 +72,7 @@ function socialUrl(path: string) {
   return `${config.socialConnectBaseUrl.replace(/\/$/, "")}${path}`;
 }
 
-async function readSocialResponse(response: Response) {
+async function readSocialResponse(response: globalThis.Response) {
   const text = await response.text();
   if (!text) return {};
   try {
@@ -99,7 +99,7 @@ async function socialRequest(path: string, init: RequestInit = {}) {
 }
 
 function externalUserId(req: Request) {
-  return req.user?.id ?? "unknown_user";
+  return req.user?.userId ?? "unknown_user";
 }
 
 function socialDeliveryState(value: unknown): "verified" | "pending" | "failed" {
@@ -135,7 +135,7 @@ function toSocialPostPayload(input: z.infer<typeof postPayloadSchema>) {
   };
 }
 
-async function connectProvider(req: Request, res: Response, provider: "facebook" | "instagram") {
+async function connectProvider(req: Request, res: ExpressResponse, provider: "facebook" | "instagram") {
   const parsed = connectSchema.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten().fieldErrors });
   try {
