@@ -133,7 +133,7 @@ function SocialPlatformLogo({ platform }: { platform: string }) {
     pinterest: { mark: "P", className: "bg-[#E60023] text-white" },
   };
   const logo = styles[platform] ?? { mark: platform.slice(0, 1).toUpperCase(), className: "bg-slate-700 text-white" };
-  return <span aria-hidden="true" className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-xs font-black shadow-sm ${logo.className}`}>{logo.mark}</span>;
+  return <span aria-hidden="true" className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-[10px] font-black shadow-sm ${logo.className}`}>{logo.mark}</span>;
 }
 
 function inferPlatformFromUrl(value: string): string | null {
@@ -1141,25 +1141,25 @@ export default function SocialStrategy() {
                 <span className="rounded-full bg-amber-100 px-3 py-1 text-xs font-bold text-amber-800">Approval required before external publishing</span>
               </div>
               <div className="-mx-1 mt-4 overflow-x-auto px-1 pb-2">
-                <div className="flex min-w-max gap-2">
-                  {providers.map((provider) => {
+                <div className="flex min-w-max gap-1.5">
+                  {providers.filter((provider) => provider.platform !== "threads").map((provider) => {
                     const connected = providerAccounts.some((account) => account.platform === provider.platform && account.status === "connected");
                     const connectable = provider.platform === "facebook" || provider.platform === "instagram";
                     return (
-                    <div key={provider.platform} title={provider.requirements.join(" · ")} className={`w-[156px] rounded-xl border bg-white p-2.5 shadow-sm transition hover:shadow-md ${connected ? "border-emerald-300 bg-emerald-50/30" : "border-slate-200"}`}>
-                      <div className="flex items-center gap-2.5">
+                    <div key={provider.platform} title={provider.requirements.join(" · ")} className={`w-[132px] rounded-lg border bg-white p-2 shadow-sm transition hover:shadow-md ${connected ? "border-emerald-300 bg-emerald-50/30" : "border-slate-200"}`}>
+                      <div className="flex items-center gap-2">
                         <SocialPlatformLogo platform={provider.platform} />
                         <div className="min-w-0">
-                          <div className="truncate text-sm font-bold text-charcoal-900">{provider.label}</div>
+                          <div className="truncate text-xs font-bold text-charcoal-900">{provider.label}</div>
                         </div>
                       </div>
-                      <div className="mt-2 border-t border-slate-100 pt-2">
+                      <div className="mt-1.5 border-t border-slate-100 pt-1.5">
                         {connected ? (
-                          <span className="flex items-center gap-1.5 text-[11px] font-bold text-emerald-700"><span className="flex h-4 w-4 items-center justify-center rounded-full bg-emerald-500 text-[9px] text-white">✓</span>Connected</span>
+                          <span className="flex items-center gap-1 text-[10px] font-bold text-emerald-700"><span className="flex h-3.5 w-3.5 items-center justify-center rounded-full bg-emerald-500 text-[8px] text-white">✓</span>Connected</span>
                         ) : connectable ? (
-                          <button type="button" onClick={() => void connectSocialProvider(provider.platform as "facebook" | "instagram")} disabled={providerActionBusy} className="rounded-md bg-brand-600 px-2.5 py-1 text-[11px] font-bold text-white hover:bg-brand-700 disabled:opacity-60">Connect</button>
+                          <button type="button" onClick={() => void connectSocialProvider(provider.platform as "facebook" | "instagram")} disabled={providerActionBusy} className="rounded bg-brand-600 px-2 py-0.5 text-[10px] font-bold text-white hover:bg-brand-700 disabled:opacity-60">Connect</button>
                         ) : (
-                          <span className="flex items-center gap-1.5 text-[11px] font-semibold text-slate-500"><span className="h-1.5 w-1.5 rounded-full bg-slate-300" />Manual handoff</span>
+                          <span className="flex items-center gap-1 text-[10px] font-semibold text-slate-500"><span className="h-1.5 w-1.5 rounded-full bg-slate-300" />Manual</span>
                         )}
                       </div>
                     </div>
