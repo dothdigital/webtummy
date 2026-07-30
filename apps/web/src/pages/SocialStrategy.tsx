@@ -120,6 +120,22 @@ function platformLabel(platform: string): string {
   return PLATFORM_LABELS[platform] ?? platform.replace(/_/g, " ");
 }
 
+function SocialPlatformLogo({ platform }: { platform: string }) {
+  const styles: Record<string, { mark: string; className: string }> = {
+    facebook: { mark: "f", className: "bg-[#1877F2] text-white" },
+    instagram: { mark: "◎", className: "bg-gradient-to-br from-[#833AB4] via-[#FD1D1D] to-[#FCAF45] text-white" },
+    linkedin: { mark: "in", className: "bg-[#0A66C2] text-white" },
+    x: { mark: "𝕏", className: "bg-black text-white" },
+    threads: { mark: "@", className: "bg-black text-white" },
+    google_business: { mark: "G", className: "border border-slate-200 bg-white text-[#4285F4]" },
+    youtube: { mark: "▶", className: "bg-[#FF0000] text-white" },
+    tiktok: { mark: "♪", className: "bg-black text-white" },
+    pinterest: { mark: "P", className: "bg-[#E60023] text-white" },
+  };
+  const logo = styles[platform] ?? { mark: platform.slice(0, 1).toUpperCase(), className: "bg-slate-700 text-white" };
+  return <span aria-hidden="true" className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-xl text-sm font-black shadow-sm ${logo.className}`}>{logo.mark}</span>;
+}
+
 function inferPlatformFromUrl(value: string): string | null {
   const lower = value.toLowerCase();
   if (lower.includes("instagram.com")) return "instagram";
@@ -1114,8 +1130,24 @@ export default function SocialStrategy() {
                 </div>
                 <span className="rounded-full bg-amber-100 px-3 py-1 text-xs font-bold text-amber-800">Approval required before external publishing</span>
               </div>
-              <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
-                {providers.map((provider) => <div key={provider.platform} className="rounded-lg border border-slate-200 p-3"><div className="flex items-center justify-between gap-2"><b className="text-sm text-charcoal-800">{provider.label}</b><span className={`rounded-full px-2 py-1 text-[10px] font-bold ${provider.connectionAvailable ? "bg-green-100 text-green-700" : "bg-slate-100 text-slate-500"}`}>{provider.connectionAvailable ? "Connected provider available" : "Manual handoff"}</span></div><p className="mt-2 text-xs leading-5 text-slate-500">{provider.requirements.join(" · ")}</p></div>)}
+              <div className="-mx-1 mt-4 overflow-x-auto px-1 pb-2">
+                <div className="flex min-w-max gap-3">
+                  {providers.map((provider) => (
+                    <div key={provider.platform} className={`w-[210px] rounded-2xl border bg-white p-3 shadow-sm transition hover:-translate-y-0.5 hover:shadow-md ${provider.connectionAvailable ? "border-emerald-200" : "border-slate-200"}`}>
+                      <div className="flex items-center gap-3">
+                        <SocialPlatformLogo platform={provider.platform} />
+                        <div className="min-w-0">
+                          <div className="truncate text-sm font-bold text-charcoal-900">{provider.label}</div>
+                          <div className={`mt-1 flex items-center gap-1.5 text-[10px] font-bold ${provider.connectionAvailable ? "text-emerald-700" : "text-slate-500"}`}>
+                            <span className={`h-1.5 w-1.5 rounded-full ${provider.connectionAvailable ? "bg-emerald-500" : "bg-slate-300"}`} />
+                            {provider.connectionAvailable ? "Connection available" : "Manual handoff"}
+                          </div>
+                        </div>
+                      </div>
+                      <p title={provider.requirements.join(" · ")} className="mt-3 truncate border-t border-slate-100 pt-2 text-[11px] text-slate-500">{provider.requirements.join(" · ")}</p>
+                    </div>
+                  ))}
+                </div>
               </div>
             </Card>
             <SocialPublisher websiteId={websiteId} strategy={activeStrategy} />
