@@ -738,6 +738,7 @@ export default function SocialStrategy() {
   const [workflowMessage, setWorkflowMessage] = useState("");
   const [performanceForm, setPerformanceForm] = useState({ platform: "linkedin", impressions: "0", reach: "0", engagements: "0", clicks: "0", leads: "0", conversions: "0" });
   const [editingPost, setEditingPost] = useState<SocialCalendarPost | null>(null);
+  const [viewingPost, setViewingPost] = useState<SocialCalendarPost | null>(null);
   const [postDraft, setPostDraft] = useState({ topic: "", caption: "", cta: "", publishDate: "", imageUrl: "", imageAltText: "" });
   const [changeRequestPost, setChangeRequestPost] = useState<SocialCalendarPost | null>(null);
   const [changeInstruction, setChangeInstruction] = useState("");
@@ -776,6 +777,7 @@ export default function SocialStrategy() {
       ...strategy,
       posts: strategy.posts.map((post) => post.id === updated.id ? updated : post),
     })));
+    setViewingPost((current) => current?.id === updated.id ? updated : current);
   };
 
   const openPostEditor = (post: SocialCalendarPost) => {
@@ -1940,75 +1942,103 @@ export default function SocialStrategy() {
 
       {selectedStrategy && selectedStrategy.status !== "draft" && step === "strategy" && (
         <Card className="overflow-hidden">
-          <details className="group">
-            <summary className="flex cursor-pointer list-none flex-col gap-3 px-4 py-3 marker:content-none lg:flex-row lg:items-center lg:justify-between">
-              <div className="min-w-0">
-                <div className="font-semibold text-charcoal-800">Campaign content and publishing calendar</div>
-                <p className="mt-0.5 text-xs text-charcoal-500">{selectedStrategy.posts.length} complete posts with generated visuals, copy, platform, and planned publishing time.</p>
-              </div>
-              <div className="flex flex-wrap items-center gap-1.5">
-                {(() => {
-                  const progress = campaignProgress(selectedStrategy);
-                  return (
-                    <>
-                      <span className="rounded-md border border-sky-200 bg-sky-50 px-2.5 py-1 text-[11px] font-bold text-sky-800">{progress.created} created</span>
-                      <span className="rounded-md border border-emerald-200 bg-emerald-50 px-2.5 py-1 text-[11px] font-bold text-emerald-800">{progress.posted} posted</span>
-                      <span className="rounded-md border border-violet-200 bg-violet-50 px-2.5 py-1 text-[11px] font-bold text-violet-800">{progress.upcoming} upcoming</span>
-                    </>
-                  );
-                })()}
-                <span className="ml-1 rounded-md bg-slate-800 px-2.5 py-1 text-[11px] font-bold text-white"><span className="group-open:hidden">View calendar ▾</span><span className="hidden group-open:inline">Hide calendar ▴</span></span>
-              </div>
-            </summary>
-            <div className="border-t border-sky-100 bg-sky-50 px-5 py-3 text-xs leading-5 text-sky-900">
-              Initial visuals are lightweight design previews. Use <b>Generate AI image</b> on a post to create a richer original image from the campaign image direction, then review it before approval.
+          <div className="flex flex-col gap-3 border-b border-charcoal-100 px-4 py-3 lg:flex-row lg:items-center lg:justify-between">
+            <div className="min-w-0">
+              <div className="font-semibold text-charcoal-800">Campaign content and publishing calendar</div>
+              <p className="mt-0.5 text-xs text-charcoal-500">{selectedStrategy.posts.length} complete posts with generated visuals, copy, platform, and planned publishing time.</p>
             </div>
-            <div className="divide-y divide-slate-100 border-t border-slate-100">
-              {selectedStrategy.posts.map((post, index) => (
-              <article key={post.id} className="grid gap-4 p-4 sm:grid-cols-[150px_minmax(0,1fr)] xl:grid-cols-[150px_minmax(0,1fr)_230px] xl:items-start">
-                <div className="overflow-hidden rounded-xl border border-slate-200 bg-slate-100">
-                  {post.imageUrl ? <img src={post.imageUrl} alt={post.imageAltText || post.topic} className="aspect-[1.91/1] h-full w-full object-cover" /> : <div className="flex aspect-[1.91/1] items-center justify-center p-3 text-center text-[10px] font-semibold text-slate-500">Image awaiting generation</div>}
+            <div className="flex flex-wrap items-center gap-1.5">
+              {(() => {
+                const progress = campaignProgress(selectedStrategy);
+                return (
+                  <>
+                    <span className="rounded-md border border-sky-200 bg-sky-50 px-2.5 py-1 text-[11px] font-bold text-sky-800">{progress.created} created</span>
+                    <span className="rounded-md border border-emerald-200 bg-emerald-50 px-2.5 py-1 text-[11px] font-bold text-emerald-800">{progress.posted} posted</span>
+                    <span className="rounded-md border border-violet-200 bg-violet-50 px-2.5 py-1 text-[11px] font-bold text-violet-800">{progress.upcoming} upcoming</span>
+                  </>
+                );
+              })()}
+            </div>
+          </div>
+          <div className="border-b border-sky-100 bg-sky-50 px-4 py-2 text-[11px] leading-5 text-sky-900">
+            Scroll through every planned post. Open a post to review its complete copy, visual, image brief, CTA, and destination.
+          </div>
+          <div className="max-h-[560px] divide-y divide-slate-100 overflow-y-auto">
+            {selectedStrategy.posts.map((post, index) => (
+              <article key={post.id} className="grid gap-3 px-4 py-3 sm:grid-cols-[88px_minmax(0,1fr)] xl:grid-cols-[88px_minmax(0,1fr)_210px_auto] xl:items-center">
+                <div className="h-12 w-[88px] overflow-hidden rounded-lg border border-slate-200 bg-slate-100">
+                  {post.imageUrl ? <img src={post.imageUrl} alt={post.imageAltText || post.topic} className="h-full w-full object-cover" /> : <div className="flex h-full items-center justify-center px-2 text-center text-[9px] font-semibold text-slate-500">No image</div>}
                 </div>
                 <div className="min-w-0">
-                  <div className="flex flex-wrap items-center gap-2">
-                    <span className="rounded-full bg-brand-50 px-2 py-1 text-[10px] font-bold text-brand-700">{platformLabel(post.platform)}</span>
-                    <span className="rounded-full bg-slate-100 px-2 py-1 text-[10px] font-bold text-slate-600">{post.funnelStage}</span>
-                    <span className="rounded-full bg-emerald-50 px-2 py-1 text-[10px] font-bold text-emerald-700">Image {post.imageStatus}</span>
-                    <span className="text-[10px] font-semibold text-slate-400">Post {index + 1}</span>
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    <span className="rounded-full bg-brand-50 px-2 py-0.5 text-[9px] font-bold text-brand-700">{platformLabel(post.platform)}</span>
+                    <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[9px] font-bold text-slate-600">{post.funnelStage}</span>
+                    <span className="rounded-full bg-white px-2 py-0.5 text-[9px] font-bold text-slate-500">{post.status}</span>
+                    <span className="text-[9px] font-semibold text-slate-400">Post {index + 1}</span>
                   </div>
-                  <h3 className="mt-2 font-bold text-charcoal-900">{post.topic}</h3>
-                  <p className="mt-1 whitespace-pre-line text-xs leading-5 text-charcoal-600">{post.caption}</p>
-                  {post.hashtagsJson.length > 0 && <div className="mt-2 text-xs font-medium text-brand-600">{post.hashtagsJson.join(" ")}</div>}
-                  {post.imageSuggestion && (
-                    <details className="mt-3 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2">
-                      <summary className="cursor-pointer text-xs font-bold text-slate-700">Image brief</summary>
-                      <p className="mt-2 text-xs leading-5 text-slate-600">{post.imageSuggestion}</p>
-                    </details>
-                  )}
-                  <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-slate-500">
-                    {post.cta && <span><b>CTA:</b> {post.cta}</span>}
-                    {post.targetKeyword && <span><b>Keyword:</b> {post.targetKeyword}</span>}
-                    {post.targetUrl && <span className="truncate"><b>Destination:</b> {post.targetUrl}</span>}
-                  </div>
-                  <div className="mt-3 flex flex-wrap gap-2">
-                    <Button variant="ghost" onClick={() => void generateCalendarPostImage(post)} disabled={postSaving}>{postSaving ? "Generating…" : "Generate AI image"}</Button>
-                    <Button variant="ghost" onClick={() => openPostEditor(post)}>Edit content & schedule</Button>
-                    <Button variant="ghost" onClick={() => { setChangeRequestPost(post); setChangeInstruction(""); setChangeContent(true); setChangeImage(false); }}>Request AI changes</Button>
-                  </div>
+                  <h3 className="mt-1 truncate text-sm font-bold text-charcoal-900">{post.topic}</h3>
+                  <p className="mt-0.5 truncate text-[11px] text-charcoal-500">{post.caption}</p>
                 </div>
-                <div className="rounded-xl border border-violet-100 bg-violet-50/60 p-3 sm:col-start-2 xl:col-start-auto">
-                  <div className="text-[10px] font-bold uppercase tracking-wide text-violet-600">Planned publishing time</div>
-                  <div className="mt-1 text-sm font-bold text-violet-950">{formatPublishDate(post.publishDate, selectedStrategy.campaignTimezone)}</div>
-                  <div className="mt-2 flex items-center justify-between gap-2 text-[11px]">
-                    <span className="text-violet-700">{selectedStrategy.postingFrequency || "Campaign cadence"}</span>
-                    <span className="rounded-full bg-white px-2 py-1 font-bold text-slate-600">{post.status}</span>
-                  </div>
+                <div className="sm:col-start-2 xl:col-start-auto">
+                  <div className="text-[9px] font-bold uppercase tracking-wide text-violet-600">Planned</div>
+                  <div className="mt-0.5 text-xs font-bold text-violet-950">{formatPublishDate(post.publishDate, selectedStrategy.campaignTimezone)}</div>
+                </div>
+                <div className="flex flex-wrap gap-1.5 sm:col-start-2 xl:col-start-auto">
+                  <button type="button" onClick={() => setViewingPost(post)} className="rounded-md bg-slate-800 px-2.5 py-1.5 text-[10px] font-bold text-white hover:bg-slate-700">View post</button>
+                  <button type="button" onClick={() => openPostEditor(post)} className="rounded-md border border-slate-300 bg-white px-2.5 py-1.5 text-[10px] font-bold text-slate-700 hover:bg-slate-50">Edit</button>
+                  <button type="button" onClick={() => { setChangeRequestPost(post); setChangeInstruction(""); setChangeContent(true); setChangeImage(false); }} className="rounded-md border border-violet-200 bg-violet-50 px-2.5 py-1.5 text-[10px] font-bold text-violet-700 hover:bg-violet-100">Request changes</button>
                 </div>
               </article>
-              ))}
-            </div>
-          </details>
+            ))}
+          </div>
         </Card>
+      )}
+
+      {viewingPost && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/50 p-4" role="dialog" aria-modal="true" aria-label="View campaign post">
+          <div className="max-h-[92vh] w-full max-w-4xl overflow-y-auto rounded-2xl bg-white shadow-2xl">
+            <div className="flex items-start justify-between gap-3 border-b border-slate-200 px-5 py-4">
+              <div>
+                <div className="flex flex-wrap items-center gap-2 text-[10px] font-bold">
+                  <span className="rounded-full bg-brand-50 px-2 py-1 text-brand-700">{platformLabel(viewingPost.platform)}</span>
+                  <span className="rounded-full bg-slate-100 px-2 py-1 text-slate-600">{viewingPost.funnelStage}</span>
+                  <span className="rounded-full bg-violet-50 px-2 py-1 text-violet-700">{viewingPost.status}</span>
+                </div>
+                <h3 className="mt-2 text-xl font-bold text-charcoal-900">{viewingPost.topic}</h3>
+              </div>
+              <button type="button" onClick={() => setViewingPost(null)} className="rounded-lg px-3 py-2 text-xl text-slate-400 hover:bg-slate-100 hover:text-slate-700" aria-label="Close">×</button>
+            </div>
+            <div className="grid gap-5 p-5 lg:grid-cols-[0.9fr_1.1fr]">
+              <div className="space-y-3">
+                <div className="overflow-hidden rounded-xl border border-slate-200 bg-slate-100">
+                  {viewingPost.imageUrl ? <img src={viewingPost.imageUrl} alt={viewingPost.imageAltText || viewingPost.topic} className="aspect-[1.91/1] w-full object-cover" /> : <div className="flex aspect-[1.91/1] items-center justify-center text-sm font-semibold text-slate-500">Image awaiting generation</div>}
+                </div>
+                <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
+                  <span className="font-semibold text-slate-500">Image status: {viewingPost.imageStatus}</span>
+                  <Button variant="ghost" onClick={() => void generateCalendarPostImage(viewingPost)} disabled={postSaving}>{postSaving ? "Generating image…" : "Generate AI image"}</Button>
+                </div>
+                {viewingPost.imageSuggestion && <div className="rounded-lg border border-violet-100 bg-violet-50 p-3 text-xs leading-5 text-violet-900"><b>Image brief</b><p className="mt-1">{viewingPost.imageSuggestion}</p></div>}
+              </div>
+              <div>
+                <div className="rounded-lg border border-slate-200 bg-slate-50 p-4">
+                  <div className="text-[10px] font-bold uppercase tracking-wide text-slate-500">Complete post copy</div>
+                  <p className="mt-2 whitespace-pre-line text-sm leading-6 text-charcoal-700">{viewingPost.caption}</p>
+                  {viewingPost.hashtagsJson.length > 0 && <div className="mt-3 text-sm font-medium text-brand-600">{viewingPost.hashtagsJson.join(" ")}</div>}
+                </div>
+                <div className="mt-4 grid gap-3 text-xs sm:grid-cols-2">
+                  <div className="rounded-lg border border-slate-200 p-3"><b className="block text-slate-800">Publishing time</b><span className="mt-1 block text-slate-600">{formatPublishDate(viewingPost.publishDate, selectedStrategy?.campaignTimezone)}</span></div>
+                  <div className="rounded-lg border border-slate-200 p-3"><b className="block text-slate-800">CTA</b><span className="mt-1 block text-slate-600">{viewingPost.cta || "No CTA"}</span></div>
+                  {viewingPost.targetKeyword && <div className="rounded-lg border border-slate-200 p-3"><b className="block text-slate-800">Target keyword</b><span className="mt-1 block text-slate-600">{viewingPost.targetKeyword}</span></div>}
+                  {viewingPost.targetUrl && <div className="rounded-lg border border-slate-200 p-3"><b className="block text-slate-800">Destination</b><span className="mt-1 block break-all text-slate-600">{viewingPost.targetUrl}</span></div>}
+                </div>
+              </div>
+            </div>
+            <div className="flex flex-col-reverse gap-2 border-t border-slate-200 px-5 py-4 sm:flex-row sm:justify-end">
+              <Button variant="ghost" onClick={() => { openPostEditor(viewingPost); setViewingPost(null); }}>Edit post</Button>
+              <Button onClick={() => setViewingPost(null)}>Close</Button>
+            </div>
+          </div>
+        </div>
       )}
 
       {editingPost && (
