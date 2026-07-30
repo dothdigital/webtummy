@@ -133,7 +133,7 @@ function SocialPlatformLogo({ platform }: { platform: string }) {
     pinterest: { mark: "P", className: "bg-[#E60023] text-white" },
   };
   const logo = styles[platform] ?? { mark: platform.slice(0, 1).toUpperCase(), className: "bg-slate-700 text-white" };
-  return <span aria-hidden="true" className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-xl text-sm font-black shadow-sm ${logo.className}`}>{logo.mark}</span>;
+  return <span aria-hidden="true" className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-xs font-black shadow-sm ${logo.className}`}>{logo.mark}</span>;
 }
 
 function inferPlatformFromUrl(value: string): string | null {
@@ -505,8 +505,8 @@ function SocialPublisher({ websiteId, strategy }: SocialPublisherProps) {
           </div>
           <div className="flex w-full flex-col gap-2 sm:flex-row sm:items-center lg:w-auto lg:shrink-0 lg:justify-end">
             <Button className="min-w-[150px] border-slate-400 bg-slate-100 text-slate-800 shadow-sm hover:bg-slate-200 sm:w-auto" variant="ghost" onClick={() => void loadAccounts()} disabled={busy}>Refresh accounts</Button>
-            <Button className="min-w-[150px] !border-blue-600 !bg-blue-600 !text-white shadow-sm hover:!bg-blue-700 sm:w-auto" variant="ghost" onClick={() => void connectProvider("facebook")} disabled={busy}>Connect Facebook</Button>
-            <Button className="min-w-[150px] !bg-pink-600 !text-white shadow-sm hover:!bg-pink-700 sm:w-auto" onClick={() => void connectProvider("instagram")} disabled={busy}>Connect Instagram</Button>
+            <Button className={`min-w-[150px] shadow-sm sm:w-auto ${facebookAccounts.length ? "!border-emerald-200 !bg-emerald-50 !text-emerald-700" : "!border-blue-600 !bg-blue-600 !text-white hover:!bg-blue-700"}`} variant="ghost" onClick={() => void connectProvider("facebook")} disabled={busy || facebookAccounts.length > 0}>{facebookAccounts.length ? "✓ Facebook Connected" : "Connect Facebook"}</Button>
+            <Button className={`min-w-[150px] shadow-sm sm:w-auto ${instagramAccounts.length ? "!border-emerald-200 !bg-emerald-50 !text-emerald-700" : "!bg-pink-600 !text-white hover:!bg-pink-700"}`} onClick={() => void connectProvider("instagram")} disabled={busy || instagramAccounts.length > 0}>{instagramAccounts.length ? "✓ Instagram Connected" : "Connect Instagram"}</Button>
           </div>
         </div>
       </div>
@@ -659,6 +659,8 @@ export default function SocialStrategy() {
   const [repurposingBatches, setRepurposingBatches] = useState<SocialRepurposingBatch[]>([]);
   const [performanceSummary, setPerformanceSummary] = useState<SocialPerformanceSummary>(EMPTY_PERFORMANCE);
   const [providers, setProviders] = useState<SocialProviderCapability[]>([]);
+  const [providerAccounts, setProviderAccounts] = useState<SocialConnectAccount[]>([]);
+  const [providerActionBusy, setProviderActionBusy] = useState(false);
   const [repurposingChannels, setRepurposingChannels] = useState<string[]>(Object.keys(REPURPOSING_LABELS));
   const [intelligence, setIntelligence] = useState<SocialStrategyResponse["intelligence"]>(null);
   const [campaignEditorOpen, setCampaignEditorOpen] = useState(false);
@@ -714,6 +716,28 @@ export default function SocialStrategy() {
     applySocialResponse(result);
   };
 
+  const loadProviderAccounts = async () => {
+    try {
+      const result = await api.get<SocialConnectAccountsResponse>("/api/social-connect/accounts");
+      setProviderAccounts(result.accounts ?? []);
+    } catch {
+      setProviderAccounts([]);
+    }
+  };
+
+  const connectSocialProvider = async (provider: "facebook" | "instagram") => {
+    setProviderActionBusy(true);
+    setPageError("");
+    try {
+      const redirectUrl = `${window.location.origin}${window.location.pathname}?project=${encodeURIComponent(websiteId)}${selectedProject?.id ? `&projectId=${encodeURIComponent(selectedProject.id)}` : ""}`;
+      const result = await api.post<{ authorization_url: string }>(`/api/social-connect/accounts/connect/${provider}`, { redirectUrl });
+      window.location.href = result.authorization_url;
+    } catch (err) {
+      setPageError(String(err).replace(/^Error:\s*/, ""));
+      setProviderActionBusy(false);
+    }
+  };
+
   const load = async () => {
     setLoading(true);
     setPageError("");
@@ -740,6 +764,7 @@ export default function SocialStrategy() {
 
   useEffect(() => {
     void load();
+    void loadProviderAccounts();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -1131,22 +1156,29 @@ export default function SocialStrategy() {
                 <span className="rounded-full bg-amber-100 px-3 py-1 text-xs font-bold text-amber-800">Approval required before external publishing</span>
               </div>
               <div className="-mx-1 mt-4 overflow-x-auto px-1 pb-2">
-                <div className="flex min-w-max gap-3">
-                  {providers.map((provider) => (
-                    <div key={provider.platform} className={`w-[210px] rounded-2xl border bg-white p-3 shadow-sm transition hover:-translate-y-0.5 hover:shadow-md ${provider.connectionAvailable ? "border-emerald-200" : "border-slate-200"}`}>
-                      <div className="flex items-center gap-3">
+                <div className="flex min-w-max gap-2">
+                  {providers.map((provider) => {
+                    const connected = providerAccounts.some((account) => account.platform === provider.platform && account.status === "connected");
+                    const connectable = provider.platform === "facebook" || provider.platform === "instagram";
+                    return (
+                    <div key={provider.platform} title={provider.requirements.join(" · ")} className={`w-[156px] rounded-xl border bg-white p-2.5 shadow-sm transition hover:shadow-md ${connected ? "border-emerald-300 bg-emerald-50/30" : "border-slate-200"}`}>
+                      <div className="flex items-center gap-2.5">
                         <SocialPlatformLogo platform={provider.platform} />
                         <div className="min-w-0">
                           <div className="truncate text-sm font-bold text-charcoal-900">{provider.label}</div>
-                          <div className={`mt-1 flex items-center gap-1.5 text-[10px] font-bold ${provider.connectionAvailable ? "text-emerald-700" : "text-slate-500"}`}>
-                            <span className={`h-1.5 w-1.5 rounded-full ${provider.connectionAvailable ? "bg-emerald-500" : "bg-slate-300"}`} />
-                            {provider.connectionAvailable ? "Connection available" : "Manual handoff"}
-                          </div>
                         </div>
                       </div>
-                      <p title={provider.requirements.join(" · ")} className="mt-3 truncate border-t border-slate-100 pt-2 text-[11px] text-slate-500">{provider.requirements.join(" · ")}</p>
+                      <div className="mt-2 border-t border-slate-100 pt-2">
+                        {connected ? (
+                          <span className="flex items-center gap-1.5 text-[11px] font-bold text-emerald-700"><span className="flex h-4 w-4 items-center justify-center rounded-full bg-emerald-500 text-[9px] text-white">✓</span>Connected</span>
+                        ) : connectable ? (
+                          <button type="button" onClick={() => void connectSocialProvider(provider.platform as "facebook" | "instagram")} disabled={providerActionBusy} className="rounded-md bg-brand-600 px-2.5 py-1 text-[11px] font-bold text-white hover:bg-brand-700 disabled:opacity-60">Connect</button>
+                        ) : (
+                          <span className="flex items-center gap-1.5 text-[11px] font-semibold text-slate-500"><span className="h-1.5 w-1.5 rounded-full bg-slate-300" />Manual handoff</span>
+                        )}
+                      </div>
                     </div>
-                  ))}
+                  );})}
                 </div>
               </div>
             </Card>
