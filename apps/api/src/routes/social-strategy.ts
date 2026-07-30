@@ -200,12 +200,13 @@ function average(values: number[]) {
 function scoreProfiles(profiles: SocialProfileInput[]) {
   if (!profiles.length) return { profileScore: 0, consistencyScore: 0, activityScore: 0 };
   const coverageScore = Math.min(100, Math.round((profiles.length / 4) * 100));
-  const completeScore = Math.round((profiles.filter((profile) => profile.profileComplete).length / profiles.length) * 100);
-  const linkScore = Math.round((profiles.filter((profile) => profile.websiteLinked).length / profiles.length) * 100);
-  const brandScore = Math.round((profiles.filter((profile) => profile.brandConsistent).length / profiles.length) * 100);
+  const identityScore = Math.round(profiles.reduce((sum, profile) => sum
+    + (profile.profileUrl ? 60 : 0)
+    + (profile.handle || profile.displayName ? 40 : 0), 0) / profiles.length);
+  const consistencyScore = Math.min(100, Math.round(45 + Math.min(30, profiles.length * 10) + (profiles.every((profile) => profile.handle || profile.displayName) ? 25 : 0)));
   return {
-    profileScore: Math.round(coverageScore * 0.55 + completeScore * 0.25 + linkScore * 0.2),
-    consistencyScore: Math.round(brandScore * 0.65 + linkScore * 0.35),
+    profileScore: Math.round(coverageScore * 0.55 + identityScore * 0.45),
+    consistencyScore,
     activityScore: average(profiles.map((profile) => frequencyScore(profile.postingFrequency))),
   };
 }
@@ -336,11 +337,7 @@ function recommendPlatforms(snapshot: ReturnType<typeof intelligenceSnapshot>, s
 
 function buildRecommendations(input: GenerateInput, profiles: SocialProfileInput[], competitors: CompetitorInput[], sources: ContentSource[], plans: PlatformPlan[]) {
   const recommendations: string[] = [];
-  const incomplete = profiles.filter((profile) => !profile.profileComplete).map((profile) => profile.platform);
-  const unlinked = profiles.filter((profile) => !profile.websiteLinked).map((profile) => profile.platform);
   if (!profiles.length) recommendations.push("Connect or record the official profiles before publishing; strategy generation can continue using project evidence.");
-  if (incomplete.length) recommendations.push(`Complete profile identity, bio, services, and imagery on: ${uniqueStrings(incomplete).join(", ")}.`);
-  if (unlinked.length) recommendations.push(`Add a tracked website link to: ${uniqueStrings(unlinked).join(", ")}.`);
   if (competitors.length < 2) recommendations.push("Add two relevant competitors when available so future refreshes can compare themes and publishing rhythm.");
   if (!sources.length) recommendations.push("Create or import at least one approved blog, page, case study, lead magnet, update, transcript, or news item for repurposing.");
   else recommendations.push(`Repurpose the strongest ${Math.min(5, sources.length)} approved project assets before creating disconnected posts.`);

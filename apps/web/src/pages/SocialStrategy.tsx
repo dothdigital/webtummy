@@ -127,18 +127,6 @@ function FieldHelp({ title, children }: { title: string; children: string }) {
   );
 }
 
-function CheckField({ label, checked, onChange, help }: { label: string; checked: boolean; onChange: (checked: boolean) => void; help: string }) {
-  return (
-    <label className="block rounded-lg border border-charcoal-100 bg-white px-3 py-2 text-sm text-charcoal-600">
-      <span className="flex items-center gap-2 font-medium">
-        <input type="checkbox" checked={checked} onChange={(event) => onChange(event.target.checked)} className="h-4 w-4 rounded border-charcoal-300 text-brand-600 focus:ring-brand-500" />
-        {label}
-      </span>
-      <span className="mt-1 block text-xs leading-5 text-charcoal-400">{help}</span>
-    </label>
-  );
-}
-
 function SelectField({ label, value, options, onChange, help }: { label: string; value: string; options: string[]; onChange: (value: string) => void; help?: string }) {
   return (
     <label className="block">
@@ -1132,9 +1120,6 @@ export default function SocialStrategy() {
                     <div className="min-w-0">
                       <div className="flex flex-wrap items-center gap-2">
                         <span className="rounded-full bg-brand-50 px-2.5 py-1 text-xs font-bold text-brand-700">{platformLabel(profile.platform)}</span>
-                        {profile.profileComplete && <span className="rounded-full bg-green-50 px-2 py-1 text-[10px] font-bold text-green-700">Profile complete</span>}
-                        {profile.websiteLinked && <span className="rounded-full bg-blue-50 px-2 py-1 text-[10px] font-bold text-blue-700">Website linked</span>}
-                        {profile.brandConsistent && <span className="rounded-full bg-violet-50 px-2 py-1 text-[10px] font-bold text-violet-700">Brand consistent</span>}
                       </div>
                       <a href={profile.profileUrl} target="_blank" rel="noreferrer" className="mt-2 block truncate text-sm font-semibold text-charcoal-900 hover:text-brand-700">{profile.displayName || profile.handle || profile.profileUrl}</a>
                       <div className="mt-1 truncate text-xs text-slate-500">{profile.profileUrl}{profile.postingFrequency ? ` · ${profile.postingFrequency}` : ""}</div>
@@ -1170,12 +1155,6 @@ export default function SocialStrategy() {
                         <span className="mt-1 block text-xs leading-5 text-slate-400">This records the profile’s current activity, not the future strategy calendar.</span>
                       </label>
                       <Input label="Follower count (optional)" value={profileDraft.followerCount?.toString() ?? ""} onChange={(value) => setProfileDraft((current) => ({ ...current, followerCount: value ? Number(value.replace(/\D/g, "")) : null }))} placeholder="0" />
-                    </div>
-                    <label className="block"><span className="mb-1 block text-sm font-medium text-slate-600">Bio or profile description (optional)</span><textarea rows={4} value={profileDraft.bio ?? ""} onChange={(event) => setProfileDraft((current) => ({ ...current, bio: event.target.value }))} className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-100"/></label>
-                    <div className="grid gap-2 md:grid-cols-3">
-                      <CheckField label="Website linked" checked={profileDraft.websiteLinked} onChange={(value) => setProfileDraft((current) => ({ ...current, websiteLinked: value }))} help="The public social profile links to the project website." />
-                      <CheckField label="Profile complete" checked={profileDraft.profileComplete} onChange={(value) => setProfileDraft((current) => ({ ...current, profileComplete: value }))} help="Logo, bio, contact details, and important links are complete." />
-                      <CheckField label="Brand consistent" checked={profileDraft.brandConsistent} onChange={(value) => setProfileDraft((current) => ({ ...current, brandConsistent: value }))} help="Name, imagery, message, and details match the website." />
                     </div>
                   </div>
                   <div className="flex flex-col-reverse gap-2 border-t border-slate-200 px-5 py-4 sm:flex-row sm:justify-end">
