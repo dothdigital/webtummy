@@ -610,7 +610,10 @@ export default function SocialStrategy() {
   const [projects, setProjects] = useState<GuidedProject[]>([]);
   const [websiteId, setWebsiteId] = useState("");
   const [platformOptions, setPlatformOptions] = useState<string[]>(DEFAULT_PLATFORMS);
-  const [profiles, setProfiles] = useState<SocialProfile[]>([emptyProfile()]);
+  const [profiles, setProfiles] = useState<SocialProfile[]>([]);
+  const [profileEditorOpen, setProfileEditorOpen] = useState(false);
+  const [editingProfileIndex, setEditingProfileIndex] = useState<number | null>(null);
+  const [profileDraft, setProfileDraft] = useState<SocialProfile>(emptyProfile());
   const [competitors, setCompetitors] = useState<SocialCompetitorProfile[]>([emptyCompetitor()]);
   const [strategies, setStrategies] = useState<SocialStrategyType[]>([]);
   const [contentSources, setContentSources] = useState<SocialContentSource[]>([]);
@@ -646,7 +649,7 @@ export default function SocialStrategy() {
   const selectedProject = projects.find((project) => project.websiteId === websiteId) ?? null;
 
   const applySocialResponse = (result: SocialStrategyResponse) => {
-    setProfiles(result.profiles.length ? result.profiles : [emptyProfile()]);
+    setProfiles(result.profiles);
     setCompetitors(result.competitors.length ? result.competitors : [emptyCompetitor()]);
     setStrategies(result.strategies);
     setContentSources(result.contentSources ?? []);
@@ -696,13 +699,28 @@ export default function SocialStrategy() {
 
   const platformSummary = useMemo(() => profiles.filter((profile) => profile.profileUrl).map((profile) => platformLabel(profile.platform)).join(", ") || "No profiles connected yet", [profiles]);
 
-  const updateProfile = (index: number, patch: Partial<SocialProfile>) => {
-    setProfiles((items) => items.map((item, i) => i === index ? { ...item, ...patch } : item));
+  const openProfileEditor = (index?: number) => {
+    if (typeof index === "number") {
+      setEditingProfileIndex(index);
+      setProfileDraft({ ...emptyProfile(profiles[index].platform), ...profiles[index] });
+    } else {
+      setEditingProfileIndex(null);
+      setProfileDraft(emptyProfile(platformOptions[0] ?? "instagram"));
+    }
+    setProfileEditorOpen(true);
   };
 
-  const updateProfileUrl = (index: number, value: string) => {
-    const inferredPlatform = inferPlatformFromUrl(value);
-    updateProfile(index, inferredPlatform ? { profileUrl: value, platform: inferredPlatform } : { profileUrl: value });
+  const saveProfileDraft = () => {
+    if (!profileDraft.platform || !profileDraft.profileUrl.trim()) {
+      setPageError("Choose a platform and enter its public profile URL.");
+      return;
+    }
+    setProfiles((items) => editingProfileIndex === null
+      ? [...items, profileDraft]
+      : items.map((item, index) => index === editingProfileIndex ? profileDraft : item));
+    setProfileEditorOpen(false);
+    setEditingProfileIndex(null);
+    setPageError("");
   };
 
   const updateCompetitor = (index: number, patch: Partial<SocialCompetitorProfile>) => {
@@ -1077,51 +1095,78 @@ export default function SocialStrategy() {
                 <div className="text-xs font-bold uppercase tracking-wide text-brand-600">Optional profile record</div>
                 <h2 className="mt-1 text-lg font-semibold text-charcoal-800">Existing social profiles</h2>
                 <p className="mt-1 text-sm leading-6 text-charcoal-500">Record the public social profiles already used by {selectedWebsite?.domain ?? "this project"}. This helps AI evaluate channel presence and brand consistency; it does not authorize publishing.</p>
-                <p className="mt-2 rounded-lg border border-blue-200 bg-blue-50 px-3 py-2 text-xs leading-5 text-blue-900"><b>How to add one:</b> click Add social profile, choose the platform, and paste its public profile URL. Connect Facebook and Instagram separately under <b>3 · Publish</b>.</p>
+                <p className="mt-2 rounded-lg border border-blue-200 bg-blue-50 px-3 py-2 text-xs leading-5 text-blue-900"><b>How to add one:</b> click Add Profile, complete the form, and save it. Connect Facebook and Instagram separately under <b>3 · Publish</b>.</p>
               </div>
-              <Button className="shrink-0" onClick={() => setProfiles((items) => [...items, emptyProfile(platformOptions[0] ?? "instagram")])}>+ Add Profile</Button>
+              <Button className="shrink-0" onClick={() => openProfileEditor()}>+ Add Profile</Button>
             </div>
-            <div className="mt-5 space-y-4">
+
+            <div className="mt-6 overflow-hidden rounded-xl border border-slate-200">
+              <div className="flex items-center justify-between gap-3 border-b border-slate-200 bg-slate-50 px-4 py-3">
+                <div>
+                  <div className="font-bold text-charcoal-900">Saved profiles</div>
+                  <div className="text-xs text-slate-500">{profiles.length} profile{profiles.length === 1 ? "" : "s"} recorded for this project</div>
+                </div>
+                {profiles.length > 0 && <Button variant="ghost" onClick={() => openProfileEditor()}>+ Add Profile</Button>}
+              </div>
               {profiles.length === 0 && (
-                <div className="rounded-xl border-2 border-dashed border-brand-200 bg-brand-50/50 p-8 text-center">
+                <div className="p-8 text-center">
                   <div className="text-lg font-bold text-charcoal-900">No social profiles recorded</div>
                   <p className="mx-auto mt-2 max-w-xl text-sm leading-6 text-charcoal-500">You can skip this optional step, or add the brand’s existing Facebook, Instagram, LinkedIn, X, Google Business, or other public profile.</p>
-                  <Button className="mt-4" onClick={() => setProfiles([emptyProfile(platformOptions[0] ?? "instagram")])}>+ Add Profile</Button>
+                  <Button className="mt-4" onClick={() => openProfileEditor()}>+ Add Profile</Button>
                 </div>
               )}
-              {profiles.map((profile, index) => (
-                <div key={index} className="rounded-lg border border-charcoal-100 bg-charcoal-50 p-4">
-                  <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-                    <div>
-                      <div className="text-sm font-bold text-charcoal-800">Profile {index + 1}: {platformLabel(profile.platform)}</div>
-                      <div className="text-xs text-charcoal-400">These values apply only to this {platformLabel(profile.platform)} profile.</div>
+              {profiles.length > 0 && <div className="divide-y divide-slate-100">
+                {profiles.map((profile, index) => (
+                  <div key={`${profile.platform}-${profile.profileUrl}-${index}`} className="flex flex-col gap-3 bg-white px-4 py-4 sm:flex-row sm:items-center sm:justify-between">
+                    <div className="min-w-0">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className="rounded-full bg-brand-50 px-2.5 py-1 text-xs font-bold text-brand-700">{platformLabel(profile.platform)}</span>
+                        {profile.profileComplete && <span className="rounded-full bg-green-50 px-2 py-1 text-[10px] font-bold text-green-700">Profile complete</span>}
+                        {profile.websiteLinked && <span className="rounded-full bg-blue-50 px-2 py-1 text-[10px] font-bold text-blue-700">Website linked</span>}
+                        {profile.brandConsistent && <span className="rounded-full bg-violet-50 px-2 py-1 text-[10px] font-bold text-violet-700">Brand consistent</span>}
+                      </div>
+                      <a href={profile.profileUrl} target="_blank" rel="noreferrer" className="mt-2 block truncate text-sm font-semibold text-charcoal-900 hover:text-brand-700">{profile.displayName || profile.handle || profile.profileUrl}</a>
+                      <div className="mt-1 truncate text-xs text-slate-500">{profile.profileUrl}{profile.postingFrequency ? ` · ${profile.postingFrequency}` : ""}</div>
                     </div>
-                    <span className="rounded-full bg-white px-2.5 py-1 text-xs font-medium text-charcoal-500">Per profile</span>
-                  </div>
-                  <div className="grid gap-4 lg:grid-cols-[1fr_280px]">
-                    <div className="grid gap-3 md:grid-cols-2">
-                      <SelectField label="Platform" value={profile.platform} options={platformOptions} onChange={(value) => updateProfile(index, { platform: value })} help="The social channel for this specific profile. It can also be inferred from the profile URL." />
-                      <Input label="Profile URL" value={profile.profileUrl} onChange={(value) => updateProfileUrl(index, value)} placeholder="https://instagram.com/brand" />
-                      <Input label="Handle" value={profile.handle ?? ""} onChange={(value) => updateProfile(index, { handle: value })} placeholder="@brand" />
-                      <Input label="Posting frequency" value={profile.postingFrequency ?? ""} onChange={(value) => updateProfile(index, { postingFrequency: value })} placeholder="3 posts per week" />
-                    </div>
-                    <div className="space-y-2">
-                      <FieldHelp title="Profile URL">Paste the public profile link. If it matches a known platform domain, the platform field updates automatically for this profile.</FieldHelp>
-                      <FieldHelp title="Handle">The username customers see and search for on that platform.</FieldHelp>
-                      <FieldHelp title="Posting frequency">How often the brand currently posts, such as daily, weekly, or 3 posts per week.</FieldHelp>
+                    <div className="flex shrink-0 gap-2">
+                      <Button variant="ghost" onClick={() => openProfileEditor(index)}>Edit</Button>
+                      <Button variant="ghost" onClick={() => setProfiles((items) => items.filter((_, itemIndex) => itemIndex !== index))}>Remove</Button>
                     </div>
                   </div>
-                  <div className="mt-3 grid gap-2 md:grid-cols-3">
-                    <CheckField label="Website linked" checked={profile.websiteLinked} onChange={(value) => updateProfile(index, { websiteLinked: value })} help="Manual check for this profile: the social bio/about section links back to the website or landing page." />
-                    <CheckField label="Profile complete" checked={profile.profileComplete} onChange={(value) => updateProfile(index, { profileComplete: value })} help="Manual check for this profile: logo, bio, service details, contact info, and key links are filled in." />
-                    <CheckField label="Brand consistent" checked={profile.brandConsistent} onChange={(value) => updateProfile(index, { brandConsistent: value })} help="Manual check for this profile: name, logo, message, and contact details match the website." />
+                ))}
+              </div>}
+            </div>
+
+            {profileEditorOpen && (
+              <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/50 p-4" role="dialog" aria-modal="true" aria-label={editingProfileIndex === null ? "Add profile" : "Edit profile"}>
+                <div className="max-h-[90vh] w-full max-w-3xl overflow-y-auto rounded-2xl bg-white shadow-2xl">
+                  <div className="flex items-start justify-between gap-3 border-b border-slate-200 px-5 py-4">
+                    <div><div className="text-xs font-bold uppercase tracking-wide text-brand-600">{editingProfileIndex === null ? "New profile" : "Update profile"}</div><h3 className="mt-1 text-xl font-bold text-charcoal-900">{editingProfileIndex === null ? "Add Profile" : `Edit ${platformLabel(profileDraft.platform)} Profile`}</h3></div>
+                    <button type="button" onClick={() => setProfileEditorOpen(false)} className="rounded-lg px-3 py-2 text-xl text-slate-400 hover:bg-slate-100 hover:text-slate-700" aria-label="Close">×</button>
                   </div>
-                  <div className="mt-3 flex justify-end">
-                    <Button variant="ghost" onClick={() => setProfiles((items) => items.filter((_, i) => i !== index))}>Remove</Button>
+                  <div className="space-y-5 p-5">
+                    <div className="grid gap-4 md:grid-cols-2">
+                      <SelectField label="Platform" value={profileDraft.platform} options={platformOptions} onChange={(value) => setProfileDraft((current) => ({ ...current, platform: value }))} />
+                      <Input label="Public profile URL" value={profileDraft.profileUrl} onChange={(value) => { const inferred = inferPlatformFromUrl(value); setProfileDraft((current) => ({ ...current, profileUrl: value, ...(inferred ? { platform: inferred } : {}) })); }} placeholder="https://instagram.com/brand" />
+                      <Input label="Handle" value={profileDraft.handle ?? ""} onChange={(value) => setProfileDraft((current) => ({ ...current, handle: value }))} placeholder="@brand" />
+                      <Input label="Display name" value={profileDraft.displayName ?? ""} onChange={(value) => setProfileDraft((current) => ({ ...current, displayName: value }))} placeholder="Brand name" />
+                      <Input label="Posting frequency" value={profileDraft.postingFrequency ?? ""} onChange={(value) => setProfileDraft((current) => ({ ...current, postingFrequency: value }))} placeholder="3 posts per week" />
+                      <Input label="Follower count (optional)" value={profileDraft.followerCount?.toString() ?? ""} onChange={(value) => setProfileDraft((current) => ({ ...current, followerCount: value ? Number(value.replace(/\D/g, "")) : null }))} placeholder="0" />
+                    </div>
+                    <label className="block"><span className="mb-1 block text-sm font-medium text-slate-600">Bio or profile description (optional)</span><textarea rows={4} value={profileDraft.bio ?? ""} onChange={(event) => setProfileDraft((current) => ({ ...current, bio: event.target.value }))} className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-100"/></label>
+                    <div className="grid gap-2 md:grid-cols-3">
+                      <CheckField label="Website linked" checked={profileDraft.websiteLinked} onChange={(value) => setProfileDraft((current) => ({ ...current, websiteLinked: value }))} help="The public social profile links to the project website." />
+                      <CheckField label="Profile complete" checked={profileDraft.profileComplete} onChange={(value) => setProfileDraft((current) => ({ ...current, profileComplete: value }))} help="Logo, bio, contact details, and important links are complete." />
+                      <CheckField label="Brand consistent" checked={profileDraft.brandConsistent} onChange={(value) => setProfileDraft((current) => ({ ...current, brandConsistent: value }))} help="Name, imagery, message, and details match the website." />
+                    </div>
+                  </div>
+                  <div className="flex flex-col-reverse gap-2 border-t border-slate-200 px-5 py-4 sm:flex-row sm:justify-end">
+                    <Button variant="ghost" onClick={() => setProfileEditorOpen(false)}>Cancel</Button>
+                    <Button onClick={saveProfileDraft}>{editingProfileIndex === null ? "Add Profile" : "Save Profile"}</Button>
                   </div>
                 </div>
-              ))}
-            </div>
+              </div>
+            )}
             <StepFooter back={() => setStep("project")} next={() => setStep("competitors")} nextLabel="Continue to competitors" />
           </div>
         )}
