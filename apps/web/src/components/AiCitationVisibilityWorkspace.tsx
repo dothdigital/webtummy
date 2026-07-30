@@ -134,6 +134,14 @@ function websiteUpdateDestination(signalKey: string) {
   return { step: "Website Content", impact: "Review and approve the new or updated website page." };
 }
 
+function websiteAssetDevelopmentUrl(projectId: string, signalKey: string, asset: WebsiteTrustAsset) {
+  const step = asset.kind === "page" ? "content" : asset.kind === "schema" ? "optimization" : asset.kind === "data" ? "foundation" : "structure";
+  const params = new URLSearchParams({ projectId, step, source: "ai-citation" });
+  if (asset.pageId) params.set("pageId", asset.pageId);
+  if (["sitemap", "robots-access", "llms-txt"].includes(signalKey)) params.set("focus", signalKey);
+  return `/site-architect?${params.toString()}`;
+}
+
 function statusTone(value: string) {
   if (/approved|resolved|present|accurate|with_sources|complete/.test(value)) return "bg-emerald-50 text-emerald-700";
   if (/rejected|dismissed|inaccurate|missing|high/.test(value)) return "bg-rose-50 text-rose-700";
@@ -355,6 +363,7 @@ export default function AiCitationVisibilityWorkspace({ projectId }: { projectId
   const latestObservations = useMemo(() => workspace?.prompts.flatMap((prompt) => prompt.snapshots.map((snapshot) => ({ ...snapshot, prompt: prompt.queryText }))) ?? [], [workspace]);
   const websiteUpdates = useMemo(() => workspace?.trustSignals.filter((signal) => signal.websiteUpdate && !signal.websiteAsset) ?? [], [workspace]);
   const contactSignal = useMemo(() => workspace?.trustSignals.find((signal) => signal.signalKey === "contact-page") ?? null, [workspace]);
+  const selectedWebsiteSignal = useMemo(() => workspace?.trustSignals.find((signal) => signal.id === websiteAssetOpen && signal.websiteAsset) ?? null, [workspace, websiteAssetOpen]);
   const validatedAssetId = searchParams.get("generatedAssetId");
   const validatedAssetType = searchParams.get("generatedAssetType");
 
@@ -474,18 +483,7 @@ export default function AiCitationVisibilityWorkspace({ projectId }: { projectId
                     <a href={`/guided-projects/${encodeURIComponent(projectId)}/intake`} className="block rounded-md border border-slate-200 bg-white px-2.5 py-2 text-center text-[10px] font-black text-slate-700 hover:bg-slate-100">Update intake or localization</a>
                   </div>}
                 </> : signal.websiteAsset ? <>
-                  <button type="button" onClick={() => setWebsiteAssetOpen((open) => open === signal.id ? "" : signal.id)} className="block w-full rounded-lg bg-brand-600 px-3 py-2 text-center text-xs font-black text-white hover:bg-brand-700">{websiteAssetOpen === signal.id ? `Hide ${signal.websiteAsset.title}` : `Review ${signal.websiteAsset.title}`} →</button>
-                  {websiteAssetOpen === signal.id && <div className="space-y-2 rounded-lg border border-emerald-200 bg-emerald-50 p-3">
-                    <div className="text-[10px] font-bold leading-4 text-emerald-800">Shared from Website Development · {display(signal.websiteAsset.status)}{signal.websiteAsset.path ? ` · ${signal.websiteAsset.path}` : ""}</div>
-                    {signal.websiteAsset.kind === "page"
-                      ? <div className="rounded-md bg-white px-3 py-2 text-xs font-bold text-slate-700">This page is already part of the current Website Model. Edit it there so Citation Readiness, Quality Review, approval, and publishing all use the same version.</div>
-                      : <pre className="max-h-72 overflow-auto whitespace-pre-wrap break-words rounded-md bg-slate-950 p-3 text-[10px] leading-4 text-slate-100">{typeof signal.websiteAsset.content === "string" ? signal.websiteAsset.content : JSON.stringify(signal.websiteAsset.content, null, 2)}</pre>}
-                    <div className="grid grid-cols-2 gap-2">
-                      {signal.websiteAsset.kind !== "page" && <button type="button" onClick={() => void copyWebsiteAsset(signal.websiteAsset as WebsiteTrustAsset)} className="rounded-md bg-emerald-600 px-2.5 py-2 text-[10px] font-black text-white hover:bg-emerald-700">Copy asset</button>}
-                      {signal.websiteAsset.kind !== "page" && <button type="button" onClick={() => downloadWebsiteAsset(signal.websiteAsset as WebsiteTrustAsset)} className="rounded-md border border-emerald-200 bg-white px-2.5 py-2 text-[10px] font-black text-emerald-700 hover:bg-emerald-50">Download</button>}
-                    </div>
-                    <a href={`/site-architect?projectId=${encodeURIComponent(projectId)}`} className="block rounded-md border border-brand-200 bg-white px-2.5 py-2 text-center text-[10px] font-black text-brand-700 hover:bg-brand-50">Open in Website Development</a>
-                  </div>}
+                  <button type="button" onClick={() => setWebsiteAssetOpen(signal.id)} className="block w-full rounded-lg bg-brand-600 px-3 py-2 text-center text-xs font-black text-white hover:bg-brand-700">Review {signal.websiteAsset.title} →</button>
                 </> : isManagedInfrastructure ? <>
                   {signal.websiteUpdate
                     ? <button type="button" onClick={showWebsiteUpdateList} className="block w-full rounded-lg bg-violet-100 px-3 py-2 text-center text-xs font-black text-violet-800">Added to Website Update List ✓</button>
@@ -578,6 +576,28 @@ export default function AiCitationVisibilityWorkspace({ projectId }: { projectId
         <div className="mt-5 grid gap-2 sm:grid-cols-2">
           <a href={`/guided-projects/${encodeURIComponent(projectId)}/intake`} onClick={() => setContactDetailsOpen(false)} className="rounded-lg border border-brand-200 bg-white px-4 py-2.5 text-center text-xs font-black text-brand-700 hover:bg-brand-50">Update contact details</a>
           <button type="button" disabled={Boolean(busy) || !contactSignal} onClick={() => contactSignal && void sendWebsiteUpdate(contactSignal)} className="rounded-lg bg-emerald-600 px-4 py-2.5 text-xs font-black text-white hover:bg-emerald-700 disabled:opacity-50">{contactSignal && busy === `website-send:${contactSignal.id}` ? "Pushing update…" : "Push update to website →"}</button>
+        </div>
+      </div>
+    </section>
+  </div>}
+  {selectedWebsiteSignal?.websiteAsset && <div onClick={() => setWebsiteAssetOpen("")} className="fixed inset-0 z-[105] grid place-items-center bg-slate-950/65 p-3 backdrop-blur-sm sm:p-6" role="dialog" aria-modal="true" aria-labelledby="citation-website-asset-title">
+    <section onClick={(event) => event.stopPropagation()} className="flex max-h-[calc(100vh-2rem)] w-full max-w-3xl flex-col overflow-hidden rounded-2xl border border-white/20 bg-white shadow-2xl">
+      <header className="flex shrink-0 items-start justify-between gap-4 border-b border-slate-200 px-5 py-4">
+        <div>
+          <div className="text-[10px] font-black uppercase tracking-[0.13em] text-emerald-700">Shared Website Development asset</div>
+          <h2 id="citation-website-asset-title" className="mt-1 text-lg font-black text-slate-950">{selectedWebsiteSignal.websiteAsset.title}</h2>
+          <p className="mt-1 text-xs leading-5 text-slate-500">{display(selectedWebsiteSignal.websiteAsset.status)}{selectedWebsiteSignal.websiteAsset.path ? ` · ${selectedWebsiteSignal.websiteAsset.path}` : ""}</p>
+        </div>
+        <button type="button" onClick={() => setWebsiteAssetOpen("")} className="shrink-0 rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-black text-slate-700 hover:bg-slate-50">Close</button>
+      </header>
+      <div className="min-h-0 overflow-y-auto p-5">
+        {selectedWebsiteSignal.websiteAsset.kind === "page"
+          ? <div className="rounded-xl border border-brand-100 bg-brand-50 px-4 py-3 text-sm font-semibold leading-6 text-brand-900">This page is already part of the current Website Model. Edit it in Website Development so Citation Readiness, Quality Review, approval, and publishing all use the same version.</div>
+          : <pre className="max-h-[50vh] overflow-auto whitespace-pre-wrap break-words rounded-xl bg-slate-950 p-4 text-xs leading-5 text-slate-100">{typeof selectedWebsiteSignal.websiteAsset.content === "string" ? selectedWebsiteSignal.websiteAsset.content : JSON.stringify(selectedWebsiteSignal.websiteAsset.content, null, 2)}</pre>}
+        <div className="mt-4 flex flex-col gap-2 sm:flex-row sm:justify-end">
+          {selectedWebsiteSignal.websiteAsset.kind !== "page" && <button type="button" onClick={() => void copyWebsiteAsset(selectedWebsiteSignal.websiteAsset as WebsiteTrustAsset)} className="rounded-lg border border-emerald-200 bg-white px-4 py-2.5 text-xs font-black text-emerald-700 hover:bg-emerald-50">Copy asset</button>}
+          {selectedWebsiteSignal.websiteAsset.kind !== "page" && <button type="button" onClick={() => downloadWebsiteAsset(selectedWebsiteSignal.websiteAsset as WebsiteTrustAsset)} className="rounded-lg border border-emerald-200 bg-white px-4 py-2.5 text-xs font-black text-emerald-700 hover:bg-emerald-50">Download</button>}
+          <a href={websiteAssetDevelopmentUrl(projectId, selectedWebsiteSignal.signalKey, selectedWebsiteSignal.websiteAsset)} onClick={() => setWebsiteAssetOpen("")} className="rounded-lg bg-brand-600 px-4 py-2.5 text-center text-xs font-black text-white hover:bg-brand-700">Open in Website Development →</a>
         </div>
       </div>
     </section>
