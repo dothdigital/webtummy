@@ -6,10 +6,12 @@ import { canAccessProject, hasWorkspacePermission, recordWorkspaceActivity, work
 
 export const aiCitationVisibilityRouter = Router();
 
-// Phase 2: keep Answer Opportunity research and records intact while the
-// crawler-to-page mapping, FAQ/schema insertion, publishing, and monitoring
-// lifecycle is completed.
+// Phase 2: keep opportunity, monitoring, and recommendation records intact
+// while provider execution and the crawler-to-page, publishing, and measured
+// improvement lifecycle are completed.
 const ANSWER_OPPORTUNITIES_V2_ENABLED = false;
+const AI_MONITORING_V2_ENABLED = false;
+const CITATION_RECOMMENDATIONS_V2_ENABLED = false;
 
 const claimDecisionSchema = z.object({
   decision: z.enum(["approved", "rejected"]),
@@ -580,11 +582,13 @@ aiCitationVisibilityRouter.get("/projects/:projectId/ai-citation-visibility", as
     opportunities: ANSWER_OPPORTUNITIES_V2_ENABLED
       ? opportunities.map((item) => attachContentAsset("opportunity", item))
       : [],
-    prompts,
+    prompts: AI_MONITORING_V2_ENABLED ? prompts : [],
     trustSignals: trustSignals.map(attachTrustAssets),
-    recommendations: recommendations
-      .filter((item) => ANSWER_OPPORTUNITIES_V2_ENABLED || item.recommendationType !== "answer_content")
-      .map((item) => attachContentAsset("recommendation", item)),
+    recommendations: CITATION_RECOMMENDATIONS_V2_ENABLED
+      ? recommendations
+          .filter((item) => ANSWER_OPPORTUNITIES_V2_ENABLED || item.recommendationType !== "answer_content")
+          .map((item) => attachContentAsset("recommendation", item))
+      : [],
   });
 });
 
