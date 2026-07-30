@@ -13,6 +13,7 @@ type CitationContentAsset = {
 
 type CitationWorkspace = {
   project: { id: string; name: string; websiteUrl: string | null };
+  contactProfile: { fields: Array<{ key: string; label: string; value: string | null; source: string | null }> };
   capabilities: { canAudit: boolean; canApprove: boolean; canExecute: boolean; readOnly: boolean };
   scores: Record<string, number | null> | null;
   audit: { id: string; createdAt: string } | null;
@@ -181,6 +182,7 @@ export default function AiCitationVisibilityWorkspace({ projectId }: { projectId
   const [busy, setBusy] = useState("");
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
+  const [contactDetailsOpen, setContactDetailsOpen] = useState(false);
   const [contentRequest, setContentRequest] = useState<CitationContentRequest | null>(null);
   const [contentNotice, setContentNotice] = useState<{
     request: CitationContentRequest;
@@ -221,6 +223,19 @@ export default function AiCitationVisibilityWorkspace({ projectId }: { projectId
   const decideClaim = (id: string, decision: "approved" | "rejected") => void run(`claim:${id}`, () => api.patch(`/api/projects/${encodeURIComponent(projectId)}/ai-citation-visibility/claims/${encodeURIComponent(id)}`, { decision }), `Claim ${decision}. Future drafts will use approved claims only.`);
   const reviewFinding = (id: string, status: FindingStatus) => void run(`finding:${id}`, () => api.patch(`/api/projects/${encodeURIComponent(projectId)}/ai-citation-visibility/findings/${encodeURIComponent(id)}`, { status }), status === "open" ? "Finding reopened for review." : `Finding marked ${display(status).toLowerCase()}.`);
   const approveRecommendation = (id: string) => void run(`recommendation:${id}`, () => api.post(`/api/projects/${encodeURIComponent(projectId)}/ai-citation-visibility/recommendations/${encodeURIComponent(id)}/approve`, {}), "Recommendation approved and converted into an execution task. Publishing remains separately controlled.");
+  const copyContactDetails = async () => {
+    if (!workspace) return;
+    const contactText = workspace.contactProfile.fields
+      .filter((field) => field.value)
+      .map((field) => `${field.label}: ${field.value}`)
+      .join("\n");
+    if (!contactText) {
+      setError("No verified contact details are available yet. Add them in Project Intake or Client Details.");
+      return;
+    }
+    await navigator.clipboard.writeText(contactText);
+    setMessage("Verified contact details copied from Project Intake and Client Details.");
+  };
   const openCitationContent = (
     launch: ContentLaunch,
     contextLabel: string,
@@ -320,10 +335,11 @@ export default function AiCitationVisibilityWorkspace({ projectId }: { projectId
         <div className="rounded-xl border border-slate-200 bg-white shadow-sm">
           <div className="border-b border-slate-100 px-5 py-4">
             <h3 className="font-black text-charcoal-950">Trust and discoverability signals</h3>
-            <p className="mt-1 text-sm text-charcoal-500">Observed from the latest crawl; missing evidence is not treated as a fabricated failure. Create a missing asset—or review and improve a present one—with the existing AI Content workflow.</p>
+            <p className="mt-1 text-sm text-charcoal-500">Observed from the latest crawl; missing evidence is not treated as a fabricated failure. Structured business details come from verified intake and client records. AI is used only for assets that genuinely require content generation.</p>
           </div>
           {workspace.trustSignals.length ? <div className="grid gap-px bg-slate-100 sm:grid-cols-2 xl:grid-cols-3">{workspace.trustSignals.map((signal) => {
             const contentLaunch = trustSignalContentLaunch(signal);
+            const isContactInformation = signal.signalKey === "contact-page";
             return <div key={signal.id} className="flex min-h-44 flex-col bg-white p-4">
               <div className="flex items-start justify-between gap-3">
                 <div>
@@ -333,8 +349,19 @@ export default function AiCitationVisibilityWorkspace({ projectId }: { projectId
                 <Pill value={signal.status} />
               </div>
               {workspace.capabilities.canAudit && <div className="mt-auto space-y-2">
-                <button type="button" onClick={() => openCitationContent(contentLaunch, signal.title, "trust_signal", signal.id, signal.contentAsset?.id)} className={`block w-full rounded-lg px-3 py-2 text-center text-xs font-black ${signal.contentAsset ? "bg-brand-600 text-white hover:bg-brand-700" : signal.status === "present" ? "border border-brand-200 bg-white text-brand-700 hover:bg-brand-50" : "bg-brand-600 text-white hover:bg-brand-700"}`}>{signal.contentAsset ? "View generated content" : contentLaunch.label} →</button>
-                {signal.contentAsset && <button type="button" onClick={() => openCitationContent(contentLaunch, signal.title, "trust_signal", signal.id)} className="w-full text-center text-[11px] font-black text-brand-700 hover:underline">Create a new version</button>}
+                {isContactInformation ? <>
+                  <button type="button" onClick={() => setContactDetailsOpen((open) => !open)} className="block w-full rounded-lg bg-brand-600 px-3 py-2 text-center text-xs font-black text-white hover:bg-brand-700">{contactDetailsOpen ? "Hide contact details" : "Review existing contact details"} →</button>
+                  {contactDetailsOpen && <div className="space-y-2 rounded-lg border border-slate-200 bg-slate-50 p-3">
+                    {workspace.contactProfile.fields.map((field) => <div key={field.key} className="rounded-md bg-white px-2.5 py-2"><div className="text-[9px] font-black uppercase tracking-wide text-slate-400">{field.label}</div><div className={`mt-0.5 break-words text-xs font-bold ${field.value ? "text-slate-800" : "text-amber-700"}`}>{field.value || "Not available"}</div><div className="mt-0.5 text-[9px] font-semibold text-slate-400">{field.source ?? "Add in Project Intake or Client Details"}</div></div>)}
+                    <div className="flex flex-col gap-2 pt-1 sm:flex-row">
+                      <button type="button" onClick={() => void copyContactDetails()} className="flex-1 rounded-md bg-emerald-600 px-2.5 py-2 text-[10px] font-black text-white hover:bg-emerald-700">Copy verified details</button>
+                      <a href={`/guided-projects/${encodeURIComponent(projectId)}/intake`} className="flex-1 rounded-md border border-brand-200 bg-white px-2.5 py-2 text-center text-[10px] font-black text-brand-700 hover:bg-brand-50">Update intake</a>
+                    </div>
+                  </div>}
+                </> : <>
+                  <button type="button" onClick={() => openCitationContent(contentLaunch, signal.title, "trust_signal", signal.id, signal.contentAsset?.id)} className={`block w-full rounded-lg px-3 py-2 text-center text-xs font-black ${signal.contentAsset ? "bg-brand-600 text-white hover:bg-brand-700" : signal.status === "present" ? "border border-brand-200 bg-white text-brand-700 hover:bg-brand-50" : "bg-brand-600 text-white hover:bg-brand-700"}`}>{signal.contentAsset ? "View generated content" : contentLaunch.label} →</button>
+                  {signal.contentAsset && <button type="button" onClick={() => openCitationContent(contentLaunch, signal.title, "trust_signal", signal.id)} className="w-full text-center text-[11px] font-black text-brand-700 hover:underline">Create a new version</button>}
+                </>}
               </div>}
             </div>;
           })}</div> : <Empty title="No trust snapshot" detail="Run citation research to evaluate current trust and discoverability evidence." />}

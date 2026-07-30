@@ -74,7 +74,8 @@ async function scopedCitationProject(req: Request, projectId: string, permission
   const project = await prisma.project.findFirst({
     where: { id: projectId, ...(context.workspace.legacyClientId ? { clientId: context.workspace.legacyClientId } : {}) },
     include: {
-      agencyClient: { select: { id: true } },
+      client: { select: { name: true, contactEmail: true } },
+      agencyClient: { select: { id: true, name: true, contactName: true, contactEmail: true, contactPhone: true, businessLocations: true } },
       businessProfile: true,
       intakeAnswers: true,
       keywordGroups: { where: { status: "approved" }, select: { keywords: true } },
@@ -168,6 +169,64 @@ function citationContext(project: Awaited<ReturnType<typeof scopedCitationProjec
   };
 }
 
+function intakeAnswerText(project: Awaited<ReturnType<typeof scopedCitationProject>>["project"], questionKey: string) {
+  const value = project.intakeAnswers.find((answer) => answer.questionKey === questionKey)?.answerValue;
+  if (typeof value === "string") return value.trim() || null;
+  if (Array.isArray(value)) return value.map(String).map((item) => item.trim()).filter(Boolean).join(", ") || null;
+  if (value && typeof value === "object" && !Array.isArray(value) && "value" in value && typeof value.value === "string") return value.value.trim() || null;
+  return null;
+}
+
+function verifiedContactProfile(project: Awaited<ReturnType<typeof scopedCitationProject>>["project"]) {
+  const local = project.website?.localBusinessProfiles[0];
+  const businessLocation = jsonRecord(project.businessLocationJson);
+  const projectAddress = [
+    businessLocation.streetAddress,
+    businessLocation.city,
+    businessLocation.stateProvince,
+    businessLocation.postalCode,
+    businessLocation.country,
+  ].filter(Boolean).map(String).join(", ") || project.businessLocation;
+  const localAddress = local ? [local.address, local.city, local.region, local.postalCode, local.country].filter(Boolean).join(", ") : null;
+  const agencyAddress = stringList(project.agencyClient?.businessLocations)[0] ?? null;
+  const field = (key: string, label: string, candidates: Array<[string | null | undefined, string]>) => {
+    const match = candidates.find(([value]) => typeof value === "string" && value.trim());
+    return { key, label, value: match?.[0]?.trim() ?? null, source: match?.[1] ?? null };
+  };
+  return {
+    fields: [
+      field("business_name", "Business name", [
+        [local?.businessName, "Local business profile"],
+        [project.businessName, "Project intake"],
+        [project.agencyClient?.name, "Client details"],
+        [project.client.name, "Workspace details"],
+      ]),
+      field("contact_name", "Contact name", [
+        [intakeAnswerText(project, "client_name"), "Project intake"],
+        [project.agencyClient?.contactName, "Client details"],
+      ]),
+      field("email", "Email", [
+        [intakeAnswerText(project, "client_email"), "Project intake"],
+        [project.agencyClient?.contactEmail, "Client details"],
+        [project.client.contactEmail, "Workspace details"],
+      ]),
+      field("phone", "Phone", [
+        [local?.phone, "Local business profile"],
+        [project.agencyClient?.contactPhone, "Client details"],
+      ]),
+      field("address", "Business address", [
+        [localAddress, "Local business profile"],
+        [projectAddress, "Project intake"],
+        [agencyAddress, "Client details"],
+      ]),
+      field("website", "Website", [
+        [project.website?.rootUrl, "Connected website"],
+        [project.websiteUrl, "Project intake"],
+      ]),
+    ],
+  };
+}
+
 aiCitationVisibilityRouter.get("/projects/:projectId/ai-citation-visibility", async (req, res) => {
   const { context, project } = await scopedCitationProject(req, req.params.projectId);
   const clientViewer = context.roles.size === 1 && context.roles.has("client_viewer");
@@ -243,6 +302,7 @@ aiCitationVisibilityRouter.get("/projects/:projectId/ai-citation-visibility", as
   });
   res.json({
     project: { id: project.id, name: citationContext(project).businessName, websiteUrl: citationContext(project).websiteUrl },
+    contactProfile: verifiedContactProfile(project),
     capabilities: {
       canAudit: hasWorkspacePermission(context, "run_ai_analysis"),
       canApprove: hasWorkspacePermission(context, "approve"),
