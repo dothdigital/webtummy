@@ -215,6 +215,7 @@ export default function AiCitationVisibilityWorkspace({ projectId }: { projectId
   const [organizationSchemaOpen, setOrganizationSchemaOpen] = useState(false);
   const [websiteAssetOpen, setWebsiteAssetOpen] = useState("");
   const [websiteUpdateListOpen, setWebsiteUpdateListOpen] = useState(false);
+  const [selectedWebsiteUpdateIds, setSelectedWebsiteUpdateIds] = useState<string[]>([]);
   const [contentRequest, setContentRequest] = useState<CitationContentRequest | null>(null);
   const [contentNotice, setContentNotice] = useState<{
     request: CitationContentRequest;
@@ -284,34 +285,56 @@ export default function AiCitationVisibilityWorkspace({ projectId }: { projectId
     anchor.click();
     window.setTimeout(() => URL.revokeObjectURL(href), 1000);
   };
-  const updateWebsiteList = (signal: CitationWorkspace["trustSignals"][number], action: "add" | "remove", generationId?: string | null) => run(
-    `website-list:${signal.id}`,
-    () => api.patch(`/api/projects/${encodeURIComponent(projectId)}/ai-citation-visibility/trust-signals/${encodeURIComponent(signal.id)}/website-update`, {
-      action,
-      generationId: action === "add" ? generationId ?? signal.contentAsset?.id ?? null : null,
-    }),
-    action === "add"
-      ? `${signal.title} added to the Website Update List. Nothing has changed in Website Development yet.`
-      : `${signal.title} removed from the Website Update List.`,
-  );
-  const sendWebsiteUpdate = async (signal: CitationWorkspace["trustSignals"][number]) => {
-    setBusy(`website-send:${signal.id}`);
+  const updateWebsiteList = (signal: CitationWorkspace["trustSignals"][number], action: "add" | "remove", generationId?: string | null) => {
+    setSelectedWebsiteUpdateIds((selected) => action === "add"
+      ? selected.includes(signal.id) ? selected : [...selected, signal.id]
+      : selected.filter((id) => id !== signal.id));
+    return run(
+      `website-list:${signal.id}`,
+      () => api.patch(`/api/projects/${encodeURIComponent(projectId)}/ai-citation-visibility/trust-signals/${encodeURIComponent(signal.id)}/website-update`, {
+        action,
+        generationId: action === "add" ? generationId ?? signal.contentAsset?.id ?? null : null,
+      }),
+      action === "add"
+        ? `${signal.title} added to the Website Update List. Nothing has changed in Website Development yet.`
+        : `${signal.title} removed from the Website Update List.`,
+    );
+  };
+  const sendWebsiteUpdates = async (signals: CitationWorkspace["trustSignals"], busyKey: string) => {
+    if (!signals.length) {
+      setError("Select at least one website update first.");
+      return;
+    }
+    setBusy(busyKey);
     setError("");
     setMessage("");
+    const completed: CitationWorkspace["trustSignals"] = [];
     try {
-      const result = await api.post<{ importedPage: { id: string } | null; nextStep: "foundation" | "structure" | "content" | "optimization" }>(
-        `/api/projects/${encodeURIComponent(projectId)}/website-builder/sync-citation-assets`,
-        { signalId: signal.id, generationId: signal.websiteUpdate?.generationId ?? signal.contentAsset?.id ?? null },
-      );
-      const params = new URLSearchParams({ projectId, step: result.nextStep, source: "ai-citation" });
-      if (result.importedPage?.id) params.set("pageId", result.importedPage.id);
-      if (["sitemap", "robots-access", "llms-txt"].includes(signal.signalKey)) params.set("focus", signal.signalKey);
+      const results: Array<{ signal: CitationWorkspace["trustSignals"][number]; importedPage: { id: string } | null; nextStep: "foundation" | "structure" | "content" | "optimization" }> = [];
+      for (const signal of signals) {
+        const result = await api.post<{ importedPage: { id: string } | null; nextStep: "foundation" | "structure" | "content" | "optimization" }>(
+          `/api/projects/${encodeURIComponent(projectId)}/website-builder/sync-citation-assets`,
+          { signalId: signal.id, generationId: signal.websiteUpdate?.generationId ?? signal.contentAsset?.id ?? null },
+        );
+        results.push({ signal, ...result });
+        completed.push(signal);
+      }
+      const stepPriority = { foundation: 0, structure: 1, content: 2, optimization: 3 };
+      const nextStep = [...results].sort((left, right) => stepPriority[left.nextStep] - stepPriority[right.nextStep])[0]?.nextStep ?? "content";
+      const params = new URLSearchParams({ projectId, step: nextStep, source: "ai-citation" });
+      if (results.length === 1 && results[0].importedPage?.id) params.set("pageId", results[0].importedPage.id);
+      if (signals.length === 1 && ["sitemap", "robots-access", "llms-txt"].includes(signals[0].signalKey)) params.set("focus", signals[0].signalKey);
       navigate(`/site-architect?${params.toString()}`);
     } catch (actionError) {
-      setError(actionError instanceof Error ? actionError.message : "The website update could not be sent to Website Development.");
+      const detail = actionError instanceof Error ? actionError.message : "The website updates could not be sent to Website Development.";
+      setError(completed.length
+        ? `${completed.length} of ${signals.length} selected updates were pushed before the process stopped. ${detail}`
+        : detail);
       setBusy("");
+      if (completed.length) await load();
     }
   };
+  const sendWebsiteUpdate = (signal: CitationWorkspace["trustSignals"][number]) => sendWebsiteUpdates([signal], `website-send:${signal.id}`);
   const showWebsiteUpdateList = () => {
     setWebsiteUpdateListOpen(true);
     window.setTimeout(() => document.getElementById("website-update-list")?.scrollIntoView({ behavior: "smooth", block: "start" }), 20);
@@ -362,6 +385,7 @@ export default function AiCitationVisibilityWorkspace({ projectId }: { projectId
 
   const latestObservations = useMemo(() => workspace?.prompts.flatMap((prompt) => prompt.snapshots.map((snapshot) => ({ ...snapshot, prompt: prompt.queryText }))) ?? [], [workspace]);
   const websiteUpdates = useMemo(() => workspace?.trustSignals.filter((signal) => signal.websiteUpdate && !signal.websiteAsset) ?? [], [workspace]);
+  const selectedWebsiteUpdates = useMemo(() => websiteUpdates.filter((signal) => selectedWebsiteUpdateIds.includes(signal.id)), [selectedWebsiteUpdateIds, websiteUpdates]);
   const contactSignal = useMemo(() => workspace?.trustSignals.find((signal) => signal.signalKey === "contact-page") ?? null, [workspace]);
   const selectedWebsiteSignal = useMemo(() => workspace?.trustSignals.find((signal) => signal.id === websiteAssetOpen && signal.websiteAsset) ?? null, [workspace, websiteAssetOpen]);
   const validatedAssetId = searchParams.get("generatedAssetId");
@@ -422,25 +446,50 @@ export default function AiCitationVisibilityWorkspace({ projectId }: { projectId
             <div>
               <div className="text-[10px] font-black uppercase tracking-[0.13em] text-violet-700">Website Update List</div>
               <h3 className="mt-1 font-black text-violet-950">{websiteUpdates.length} website {websiteUpdates.length === 1 ? "update is" : "updates are"} ready</h3>
-              <p className="mt-1 text-xs leading-5 text-violet-800">Nothing has changed in Website Development yet. Review the list and send each update when you are ready to continue its website workflow.</p>
+              <p className="mt-1 text-xs leading-5 text-violet-800">Nothing has changed in Website Development yet. Select the updates you want and push them together in one website handoff.</p>
             </div>
             <button type="button" onClick={() => setWebsiteUpdateListOpen((open) => !open)} className="shrink-0 rounded-lg bg-violet-700 px-4 py-2.5 text-xs font-black text-white hover:bg-violet-800">{websiteUpdateListOpen ? "Hide update list" : `View update list (${websiteUpdates.length})`}</button>
           </div>
-          {workspace.websiteWorkflow.hasApprovedRelease && <div className="border-t border-violet-200 bg-amber-50 px-5 py-3 text-xs font-semibold leading-5 text-amber-900"><b>An approved release is ready to publish.</b> Items remain staged until you send them. Sending an item opens the relevant Website Development step for the next version.</div>}
-          {websiteUpdateListOpen && <div className="divide-y divide-violet-100 border-t border-violet-200 bg-white">
-            {websiteUpdates.map((signal) => {
-              const destination = websiteUpdateDestination(signal.signalKey);
-              return <div key={signal.id} className="flex flex-col gap-3 p-4 lg:flex-row lg:items-center lg:justify-between">
-                <div className="min-w-0">
-                  <div className="flex flex-wrap items-center gap-2"><span className="text-sm font-black text-slate-950">{signal.title}</span><span className="rounded-full bg-violet-100 px-2 py-1 text-[9px] font-black uppercase text-violet-700">{destination.step}</span></div>
-                  <p className="mt-1 text-xs leading-5 text-slate-500">{destination.impact}</p>
-                </div>
-                <div className="flex shrink-0 flex-wrap gap-2">
-                  <button type="button" disabled={Boolean(busy)} onClick={() => updateWebsiteList(signal, "remove")} className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-black text-slate-600 hover:bg-slate-50 disabled:opacity-50">{busy === `website-list:${signal.id}` ? "Removing…" : "Remove"}</button>
-                  <button type="button" disabled={Boolean(busy)} onClick={() => void sendWebsiteUpdate(signal)} className="rounded-lg bg-brand-600 px-4 py-2 text-xs font-black text-white hover:bg-brand-700 disabled:opacity-50">{busy === `website-send:${signal.id}` ? "Sending…" : "Send to Website Development →"}</button>
-                </div>
-              </div>;
-            })}
+          {workspace.websiteWorkflow.hasApprovedRelease && <div className="border-t border-violet-200 bg-amber-50 px-5 py-3 text-xs font-semibold leading-5 text-amber-900"><b>An approved release is ready to publish.</b> Checkbox selection has no website impact. Only pushing the selected updates opens the next Website Model version.</div>}
+          {websiteUpdateListOpen && <div className="border-t border-violet-200 bg-white">
+            <div className="flex flex-col gap-3 border-b border-violet-100 bg-violet-50/60 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
+              <label className="inline-flex cursor-pointer items-center gap-2 text-xs font-black text-violet-900">
+                <input
+                  type="checkbox"
+                  checked={selectedWebsiteUpdates.length === websiteUpdates.length}
+                  ref={(input) => { if (input) input.indeterminate = selectedWebsiteUpdates.length > 0 && selectedWebsiteUpdates.length < websiteUpdates.length; }}
+                  onChange={(event) => setSelectedWebsiteUpdateIds(event.target.checked ? websiteUpdates.map((signal) => signal.id) : [])}
+                  className="h-4 w-4 rounded border-violet-300 text-violet-700 focus:ring-violet-500"
+                />
+                Select all updates
+              </label>
+              <div className="text-xs font-bold text-violet-700">{selectedWebsiteUpdates.length} of {websiteUpdates.length} selected</div>
+            </div>
+            <div className="divide-y divide-violet-100">
+              {websiteUpdates.map((signal) => {
+                const destination = websiteUpdateDestination(signal.signalKey);
+                const selected = selectedWebsiteUpdateIds.includes(signal.id);
+                return <div key={signal.id} className={`flex flex-col gap-3 p-4 lg:flex-row lg:items-center lg:justify-between ${selected ? "bg-violet-50/40" : "bg-white"}`}>
+                  <label className="flex min-w-0 cursor-pointer items-start gap-3">
+                    <input
+                      type="checkbox"
+                      checked={selected}
+                      onChange={(event) => setSelectedWebsiteUpdateIds((ids) => event.target.checked ? [...new Set([...ids, signal.id])] : ids.filter((id) => id !== signal.id))}
+                      className="mt-1 h-4 w-4 shrink-0 rounded border-violet-300 text-violet-700 focus:ring-violet-500"
+                    />
+                    <span className="min-w-0">
+                      <span className="flex flex-wrap items-center gap-2"><span className="text-sm font-black text-slate-950">{signal.title}</span><span className="rounded-full bg-violet-100 px-2 py-1 text-[9px] font-black uppercase text-violet-700">{destination.step}</span></span>
+                      <span className="mt-1 block text-xs leading-5 text-slate-500">{destination.impact}</span>
+                    </span>
+                  </label>
+                  <button type="button" disabled={Boolean(busy)} onClick={() => updateWebsiteList(signal, "remove")} className="self-start rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-black text-slate-600 hover:bg-slate-50 disabled:opacity-50 lg:self-auto">{busy === `website-list:${signal.id}` ? "Removing…" : "Remove"}</button>
+                </div>;
+              })}
+            </div>
+            <div className="flex flex-col gap-3 border-t border-violet-100 bg-slate-50 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
+              <p className="text-xs leading-5 text-slate-500">Send all selected updates with one action, then continue from the earliest affected Website Development step.</p>
+              <button type="button" disabled={Boolean(busy) || selectedWebsiteUpdates.length === 0} onClick={() => void sendWebsiteUpdates(selectedWebsiteUpdates, "website-send-batch")} className="shrink-0 rounded-lg bg-brand-600 px-4 py-2.5 text-xs font-black text-white hover:bg-brand-700 disabled:opacity-50">{busy === "website-send-batch" ? "Pushing selected updates…" : selectedWebsiteUpdates.length ? `Push ${selectedWebsiteUpdates.length} selected update${selectedWebsiteUpdates.length === 1 ? "" : "s"} →` : "Select updates to push"}</button>
+            </div>
           </div>}
         </div>}
         <div className="rounded-xl border border-slate-200 bg-white shadow-sm">
