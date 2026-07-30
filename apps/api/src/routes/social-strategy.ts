@@ -75,6 +75,7 @@ const generateSchema = z.object({
   platforms: z.array(z.string().max(40)).default([]),
   postingFrequency: z.string().max(120).optional().nullable(),
   tone: z.string().max(80).optional().nullable(),
+  imageDirection: z.string().max(4000).optional().nullable(),
   targetKeywords: z.array(z.string().max(255)).default([]),
   targetUrls: z.array(z.string().max(512)).default([]),
 });
@@ -94,6 +95,7 @@ const campaignSetupSchema = z.object({
   platforms: z.array(z.string().max(40)).min(1),
   postingFrequency: z.string().max(120),
   tone: z.string().max(80).optional().nullable(),
+  imageDirection: z.string().max(4000).optional().nullable(),
   targetKeywords: z.array(z.string().max(255)).default([]),
   targetUrls: z.array(z.string().max(512)).default([]),
 });
@@ -303,10 +305,10 @@ async function reviseSocialPostImage(post: {
   topic: string;
   platform: string;
   imageSuggestion: string | null;
-  strategy: { campaignName: string | null; project: { businessName: string | null; name: string } | null };
+  strategy: { campaignName: string | null; imageDirection: string | null; project: { businessName: string | null; name: string } | null };
 }, instruction: string) {
   const businessName = post.strategy.project?.businessName || post.strategy.project?.name || "Business";
-  if (!config.openaiApiKey) return generatedSocialVisual(post.platform, post.topic, businessName);
+  if (!config.openaiApiKey) throw Object.assign(new Error("Configure OpenAI image generation before creating a new campaign image."), { statusCode: 409 });
   const response = await fetch("https://api.openai.com/v1/images/generations", {
     method: "POST",
     signal: AbortSignal.timeout(180_000),
@@ -321,6 +323,7 @@ async function reviseSocialPostImage(post: {
         `Create an original, polished social media campaign image for ${businessName}.`,
         `Platform: ${post.platform}. Campaign: ${post.strategy.campaignName || "social campaign"}.`,
         `Post topic: ${post.topic}. Current visual direction: ${post.imageSuggestion || "Professional branded campaign visual"}.`,
+        `Campaign-wide image direction: ${post.strategy.imageDirection || "Polished, specific, brand-appropriate editorial imagery with a clear focal point and natural depth."}.`,
         `Requested change: ${instruction}.`,
         "Do not add logos, watermarks, URLs, fake testimonials, unsupported statistics, or dense text. Make the composition adaptable to a social feed crop.",
       ].join("\n"),
@@ -622,13 +625,13 @@ function buildCalendar(input: GenerateInput, snapshot: ReturnType<typeof intelli
       publishDate,
       topic,
       caption: platformCaption(platform, source, snapshot.businessName, snapshot.audience, input.tone || snapshot.brandVoice, cta),
-      creativeDirection: `Create a ${pillar.formatsJson[0] || "branded post"} using one key message from “${source.title}”. Keep facts and claims aligned with the source.`,
+      creativeDirection: `Create a ${pillar.formatsJson[0] || "branded post"} using one key message from “${source.title}”. Keep facts and claims aligned with the source. ${input.imageDirection ? `Campaign visual direction: ${input.imageDirection}` : ""}`.trim(),
       cta,
       hashtags: tags,
-      imageSuggestion: `Branded ${platform.replaceAll("_", " ")} visual illustrating ${source.title}; use verified project imagery or an original diagram, not unsupported stock claims.`,
+      imageSuggestion: `${input.imageDirection ? `${input.imageDirection} ` : ""}Create a ${platform.replaceAll("_", " ")} visual illustrating ${source.title}. Use a clear focal subject, intentional composition, natural depth, and source-aligned details; avoid generic stock-photo staging, dense text, unsupported claims, logos, and watermarks.`.trim(),
       imageUrl: generatedSocialVisual(platform, topic, snapshot.businessName),
       imageAltText,
-      imageStatus: "generated",
+      imageStatus: "design_preview",
       targetKeyword: keyword,
       targetUrl,
       sourceType: source.type,
@@ -654,14 +657,14 @@ async function enhanceStrategyWithAi(
   snapshot: ReturnType<typeof intelligenceSnapshot>,
   posts: PlannedPost[],
   platformPlans: PlatformPlan[],
-  campaign: { name: string; startAt: string; endAt: string; timezone: string; objective: string; metric: string | null; target: number | null },
+  campaign: { name: string; startAt: string; endAt: string; timezone: string; objective: string; metric: string | null; target: number | null; imageDirection: string | null },
 ) {
   if (!config.openaiApiKey) return null;
   const generated = await centralAiJson({
     system: "You are the SEnuke AI Social Strategy and Multi-Channel Distribution Engine. Adapt approved evidence into useful channel-specific marketing content. Never invent people, results, credentials, statistics, offers, prices, locations, customer claims, or source facts.",
     prompt: [
       "Return {strategySummary, campaignThemes, captions:[{index,caption,cta,hashtags,visualSuggestion}]} for the supplied draft.",
-      "Keep each index and platform. Preserve the factual meaning and target URL. Adapt tone, length, structure, CTA, hashtags, and visual direction for each platform.",
+      "Keep each index and platform. Preserve the factual meaning and target URL. Adapt tone, length, structure, CTA, hashtags, and visual direction for each platform. Every visualSuggestion must follow the campaign-wide image direction and describe a specific subject, setting, composition, lighting, palette, and exclusions.",
       `Business evidence: ${JSON.stringify(snapshot).slice(0, 20_000)}`,
       `Time-bound campaign: ${JSON.stringify(campaign)}`,
       `Platform plan: ${JSON.stringify(platformPlans.filter((plan) => plan.recommended)).slice(0, 12_000)}`,
@@ -866,6 +869,7 @@ socialStrategyRouter.post("/social-strategy/campaigns", async (req, res) => {
     targetUrlsJson: uniqueStrings(input.targetUrls),
     postingFrequency: input.postingFrequency,
     tone: input.tone || null,
+    imageDirection: input.imageDirection || null,
     monthlyTheme: null,
     status: "draft",
     generationMode: "campaign_setup",
@@ -945,6 +949,7 @@ socialStrategyRouter.post("/social-strategy/generate", async (req, res) => {
       objective: goal,
       metric: input.goalMetric || null,
       target: input.goalTarget ?? null,
+      imageDirection: input.imageDirection || null,
     });
     if (ai) {
       const byIndex = new Map(ai.result.captions.map((item) => [item.index, item]));
@@ -987,6 +992,7 @@ socialStrategyRouter.post("/social-strategy/generate", async (req, res) => {
         targetUrlsJson: enrichedInput.targetUrls,
         postingFrequency: enrichedInput.postingFrequency,
         tone: tone || null,
+        imageDirection: input.imageDirection || null,
         monthlyTheme: campaignThemes[0] || `${goal} through coordinated social distribution`,
         status: "active",
         generationMode,
@@ -1066,6 +1072,7 @@ socialStrategyRouter.post("/social-strategy/generate", async (req, res) => {
           campaignStartAt: row.campaignStartAt?.toISOString() ?? null,
           campaignEndAt: row.campaignEndAt?.toISOString() ?? null,
           campaignTimezone: row.campaignTimezone,
+          imageDirection: row.imageDirection,
           goalMetric: row.goalMetric,
           goalTarget: row.goalTarget,
           platforms: activePlatforms,

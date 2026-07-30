@@ -47,6 +47,24 @@ const CAMPAIGN_CADENCE_OPTIONS = [
   "2 posts per month",
   "1 post per month",
 ];
+const IMAGE_DIRECTION_PRESETS = [
+  {
+    label: "Editorial photo",
+    value: "Photorealistic editorial photography with a clear human or product focal point, an authentic working environment, natural light, gentle depth of field, and subtle brand-colour accents. Avoid staged stock-photo poses, floating text, logos, and watermarks.",
+  },
+  {
+    label: "Premium lifestyle",
+    value: "Premium lifestyle photography showing the audience naturally using or benefiting from the service. Use warm light, candid movement, layered composition, realistic details, and restrained brand colours. Avoid generic corporate handshakes, exaggerated expressions, text, logos, and watermarks.",
+  },
+  {
+    label: "Clean illustration",
+    value: "Modern editorial illustration with one strong visual metaphor, dimensional shapes, soft gradients, tactile texture, generous negative space, and a refined brand-aligned palette. Avoid clip-art, childish icons, dense labels, logos, and watermarks.",
+  },
+  {
+    label: "Diagram",
+    value: "Clear professional diagram or visual explainer with one central idea, a simple visual hierarchy, restrained labels, accessible contrast, and brand-aligned colours. Use only source-supported relationships and avoid invented statistics, decorative clutter, logos, and watermarks.",
+  },
+];
 const REPURPOSING_LABELS: Record<string, string> = {
   facebook: "Facebook post",
   linkedin: "LinkedIn post",
@@ -702,6 +720,7 @@ export default function SocialStrategy() {
   const [audience, setAudience] = useState("");
   const [postingFrequency, setPostingFrequency] = useState("3 posts per week");
   const [tone, setTone] = useState("professional");
+  const [imageDirection, setImageDirection] = useState(IMAGE_DIRECTION_PRESETS[0].value);
   const [targetKeywords, setTargetKeywords] = useState("");
   const [targetUrls, setTargetUrls] = useState("");
   const [selectedPlatforms, setSelectedPlatforms] = useState<string[]>(DEFAULT_PLATFORMS.slice(0, 3));
@@ -818,6 +837,27 @@ export default function SocialStrategy() {
       setChangeContent(true);
       setChangeImage(false);
       setWorkflowMessage("AI revised the selected post. Review the new content and image before approval.");
+    } catch (err) {
+      setPageError(String(err).replace(/^Error:\s*/, ""));
+    } finally {
+      setPostSaving(false);
+    }
+  };
+
+  const generateCalendarPostImage = async (post: SocialCalendarPost) => {
+    setPostSaving(true);
+    setPageError("");
+    try {
+      const instruction = selectedStrategy?.imageDirection
+        ? `Generate a new image that follows this campaign direction: ${selectedStrategy.imageDirection}`
+        : "Generate a distinctive, polished, brand-appropriate editorial image with a specific focal subject, natural depth, and no generic stock-photo staging.";
+      const result = await api.post<{ post: SocialCalendarPost }>(`/api/social-strategy/posts/${post.id}/request-changes`, {
+        instruction,
+        changeContent: false,
+        changeImage: true,
+      });
+      replaceCalendarPost(result.post);
+      setWorkflowMessage("A new AI image was generated from the campaign image direction. Review it before approval.");
     } catch (err) {
       setPageError(String(err).replace(/^Error:\s*/, ""));
     } finally {
@@ -1033,6 +1073,7 @@ export default function SocialStrategy() {
     setGoalTarget("");
     setAudience("");
     setTone("professional");
+    setImageDirection(IMAGE_DIRECTION_PRESETS[0].value);
     setPostingFrequency("3 posts per week");
     setTargetKeywords("");
     setTargetUrls("");
@@ -1053,6 +1094,7 @@ export default function SocialStrategy() {
     setGoalTarget(strategy.goalTarget?.toString() ?? "");
     setAudience(strategy.audience ?? "");
     setTone(strategy.tone ?? "professional");
+    setImageDirection(strategy.imageDirection ?? IMAGE_DIRECTION_PRESETS[0].value);
     setPostingFrequency(strategy.postingFrequency ?? "3 posts per week");
     setTargetKeywords(strategy.targetKeywordsJson.join(", "));
     setTargetUrls(strategy.targetUrlsJson.join(", "));
@@ -1104,6 +1146,7 @@ export default function SocialStrategy() {
         platforms: selectedPlatforms,
         postingFrequency,
         tone: tone || null,
+        imageDirection: imageDirection || null,
         targetKeywords: targetKeywords.split(",").map((item) => item.trim()).filter(Boolean),
         targetUrls: targetUrls.split(",").map((item) => item.trim()).filter(Boolean),
       });
@@ -1159,6 +1202,7 @@ export default function SocialStrategy() {
         platforms: savedCampaign?.platforms ?? selectedPlatforms,
         postingFrequency: savedCampaign?.postingFrequency ?? (postingFrequency || null),
         tone: savedCampaign?.tone ?? (tone || null),
+        imageDirection: savedCampaign?.imageDirection ?? (imageDirection || null),
         targetKeywords: savedCampaign?.targetKeywordsJson ?? targetKeywords.split(",").map((item) => item.trim()).filter(Boolean),
         targetUrls: savedCampaign?.targetUrlsJson ?? targetUrls.split(",").map((item) => item.trim()).filter(Boolean),
       });
@@ -1772,6 +1816,23 @@ export default function SocialStrategy() {
                         </label>
                         <Input label="Target keywords" value={targetKeywords} onChange={setTargetKeywords} placeholder="website design, local SEO" />
                         <div className="md:col-span-2"><Input label="Target URLs" value={targetUrls} onChange={setTargetUrls} placeholder="https://example.com/service" /></div>
+                        <div className="md:col-span-2">
+                          <div className="flex flex-wrap items-start justify-between gap-2">
+                            <div>
+                              <div className="text-sm font-bold text-charcoal-900">Image direction</div>
+                              <p className="mt-1 text-xs leading-5 text-slate-500">Guide every campaign image. Describe the subject, setting, composition, lighting, colours, and anything AI must avoid.</p>
+                            </div>
+                            <span className="text-xs font-semibold text-slate-400">{imageDirection.length}/4000</span>
+                          </div>
+                          <div className="mt-3 flex flex-wrap gap-2">
+                            {IMAGE_DIRECTION_PRESETS.map((preset) => (
+                              <button key={preset.label} type="button" onClick={() => setImageDirection(preset.value)} className={`rounded-full border px-3 py-1.5 text-xs font-bold transition ${imageDirection === preset.value ? "border-violet-300 bg-violet-100 text-violet-800" : "border-slate-200 bg-white text-slate-600 hover:border-violet-200 hover:text-violet-700"}`}>
+                                {preset.label}
+                              </button>
+                            ))}
+                          </div>
+                          <textarea value={imageDirection} onChange={(event) => setImageDirection(event.target.value.slice(0, 4000))} rows={6} placeholder="Example: Photorealistic editorial scenes featuring Canadian small-business owners in authentic workplaces, warm window light, subtle navy and teal accents, clear focal subject, natural depth. Avoid posed handshakes, text overlays, logos, and watermarks." className="mt-3 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm leading-6 outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-100" />
+                        </div>
                       </div>
                     </div>
                     <div className="border-t border-slate-200 pt-5">
@@ -1826,6 +1887,11 @@ export default function SocialStrategy() {
                   })()}
                 </div>
                 <p className="mt-2 text-sm text-charcoal-400">Connected platforms: {platformSummary}</p>
+                {selectedStrategy.imageDirection && (
+                  <div className="mt-3 rounded-lg border border-violet-100 bg-violet-50/60 px-3 py-2 text-xs leading-5 text-violet-900">
+                    <b>Campaign image direction:</b> {selectedStrategy.imageDirection}
+                  </div>
+                )}
                 <div className="mt-2 text-xs font-semibold text-violet-700">Generation: {selectedStrategy.generationMode.replaceAll("_", " ")} · Review due {selectedStrategy.nextReviewAt ? formatDate(selectedStrategy.nextReviewAt) : "after performance data"}</div>
                 <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
                   <StatBox label="Profiles" value={selectedStrategy.profileScore ?? 0} tone={scoreTone(selectedStrategy.profileScore ?? 0)} />
@@ -1846,38 +1912,51 @@ export default function SocialStrategy() {
 
       {selectedStrategy && selectedStrategy.status !== "draft" && step === "strategy" && (
         <Card className="overflow-hidden">
-          <div className="border-b border-charcoal-100 px-5 py-3"><div className="font-semibold text-charcoal-700">Platform strategy</div><p className="mt-1 text-xs text-charcoal-400">Recommended channels, business reasoning, cadence, formats, and starting times. Refine these after measured results.</p></div>
-          <div className="grid gap-3 p-5 md:grid-cols-2 xl:grid-cols-3">
-            {selectedStrategy.platformRecommendationsJson.map((plan) => <div key={plan.platform} className={`rounded-xl border p-4 ${plan.recommended ? "border-brand-200 bg-brand-50/40" : "border-slate-200 bg-slate-50 opacity-75"}`}><div className="flex items-center justify-between gap-2"><b className="text-charcoal-900">{platformLabel(plan.platform)}</b><span className={`rounded-full px-2 py-1 text-[10px] font-bold ${plan.recommended ? "bg-green-100 text-green-700" : "bg-slate-200 text-slate-600"}`}>{plan.recommended ? "Recommended" : "Later / conditional"} · {plan.score}/100</span></div><p className="mt-2 text-xs leading-5 text-slate-600">{plan.reason}</p><div className="mt-3 text-xs font-semibold text-brand-700">{plan.frequency}</div><div className="mt-1 text-xs text-slate-500">{plan.bestTimes.join(" · ")}</div><div className="mt-3 flex flex-wrap gap-1">{plan.primaryFormats.map((format) => <span key={format} className="rounded-full bg-white px-2 py-1 text-[10px] text-slate-600">{format}</span>)}</div></div>)}
-          </div>
+          <details className="group">
+            <summary className="flex cursor-pointer list-none items-center justify-between gap-4 px-5 py-4 marker:content-none">
+              <div><div className="font-semibold text-charcoal-700">Platform strategy</div><p className="mt-1 text-xs text-charcoal-400">Recommended channels, business reasoning, cadence, formats, and starting times. Refine these after measured results.</p></div>
+              <span className="shrink-0 rounded-full bg-slate-100 px-3 py-1 text-xs font-bold text-slate-600"><span className="group-open:hidden">Open details ▾</span><span className="hidden group-open:inline">Hide details ▴</span></span>
+            </summary>
+            <div className="grid gap-3 border-t border-charcoal-100 p-5 md:grid-cols-2 xl:grid-cols-3">
+              {selectedStrategy.platformRecommendationsJson.map((plan) => <div key={plan.platform} className={`rounded-xl border p-4 ${plan.recommended ? "border-brand-200 bg-brand-50/40" : "border-slate-200 bg-slate-50 opacity-75"}`}><div className="flex items-center justify-between gap-2"><b className="text-charcoal-900">{platformLabel(plan.platform)}</b><span className={`rounded-full px-2 py-1 text-[10px] font-bold ${plan.recommended ? "bg-green-100 text-green-700" : "bg-slate-200 text-slate-600"}`}>{plan.recommended ? "Recommended" : "Later / conditional"} · {plan.score}/100</span></div><p className="mt-2 text-xs leading-5 text-slate-600">{plan.reason}</p><div className="mt-3 text-xs font-semibold text-brand-700">{plan.frequency}</div><div className="mt-1 text-xs text-slate-500">{plan.bestTimes.join(" · ")}</div><div className="mt-3 flex flex-wrap gap-1">{plan.primaryFormats.map((format) => <span key={format} className="rounded-full bg-white px-2 py-1 text-[10px] text-slate-600">{format}</span>)}</div></div>)}
+            </div>
+          </details>
         </Card>
       )}
 
       {selectedStrategy && selectedStrategy.status !== "draft" && step === "strategy" && (
-        <div className="grid gap-6 xl:grid-cols-[0.8fr_1.2fr]">
-          <Card className="overflow-hidden">
-            <div className="border-b border-charcoal-100 px-5 py-3 font-semibold text-charcoal-700">Recommendations</div>
-            <div className="space-y-3 p-5">
-              {selectedStrategy.recommendationsJson.map((item, index) => (
-                <div key={index} className="rounded-lg border border-charcoal-100 bg-charcoal-50 p-3 text-sm leading-6 text-charcoal-700">{item}</div>
-              ))}
-            </div>
-          </Card>
-          <Card className="overflow-hidden">
-            <div className="border-b border-charcoal-100 px-5 py-3 font-semibold text-charcoal-700">Content pillars</div>
-            <div className="grid gap-3 p-5 md:grid-cols-2">
-              {selectedStrategy.pillars.map((pillar) => (
-                <div key={pillar.id} className="rounded-lg border border-charcoal-100 bg-white p-4">
-                  <div className="font-semibold text-charcoal-800">{pillar.title}</div>
-                  <p className="mt-1 text-sm leading-6 text-charcoal-500">{pillar.description}</p>
-                  <div className="mt-3 flex flex-wrap gap-1.5">
-                    {pillar.formatsJson.map((format) => <span key={format} className="rounded-full bg-charcoal-100 px-2 py-0.5 text-xs font-medium text-charcoal-500">{format}</span>)}
-                  </div>
+        <Card className="overflow-hidden">
+          <details className="group">
+            <summary className="flex cursor-pointer list-none items-center justify-between gap-4 px-5 py-4 marker:content-none">
+              <div><div className="font-semibold text-charcoal-700">Recommendations and content pillars</div><p className="mt-1 text-xs text-charcoal-400">Review the campaign improvements, recurring themes, and formats guiding the content calendar.</p></div>
+              <span className="shrink-0 rounded-full bg-slate-100 px-3 py-1 text-xs font-bold text-slate-600"><span className="group-open:hidden">Open details ▾</span><span className="hidden group-open:inline">Hide details ▴</span></span>
+            </summary>
+            <div className="grid gap-6 border-t border-charcoal-100 p-5 xl:grid-cols-[0.8fr_1.2fr]">
+              <section>
+                <div className="mb-3 font-semibold text-charcoal-700">Recommendations</div>
+                <div className="space-y-3">
+                  {selectedStrategy.recommendationsJson.map((item, index) => (
+                    <div key={index} className="rounded-lg border border-charcoal-100 bg-charcoal-50 p-3 text-sm leading-6 text-charcoal-700">{item}</div>
+                  ))}
                 </div>
-              ))}
+              </section>
+              <section>
+                <div className="mb-3 font-semibold text-charcoal-700">Content pillars</div>
+                <div className="grid gap-3 md:grid-cols-2">
+                  {selectedStrategy.pillars.map((pillar) => (
+                    <div key={pillar.id} className="rounded-lg border border-charcoal-100 bg-white p-4">
+                      <div className="font-semibold text-charcoal-800">{pillar.title}</div>
+                      <p className="mt-1 text-sm leading-6 text-charcoal-500">{pillar.description}</p>
+                      <div className="mt-3 flex flex-wrap gap-1.5">
+                        {pillar.formatsJson.map((format) => <span key={format} className="rounded-full bg-charcoal-100 px-2 py-0.5 text-xs font-medium text-charcoal-500">{format}</span>)}
+                      </div>
+                    </div>
+                  ))}
+                  </div>
+              </section>
             </div>
-          </Card>
-        </div>
+          </details>
+        </Card>
       )}
 
       {selectedStrategy && selectedStrategy.status !== "draft" && step === "strategy" && (
@@ -1888,6 +1967,9 @@ export default function SocialStrategy() {
               <p className="mt-1 text-xs text-charcoal-500">{selectedStrategy.posts.length} complete posts with generated visuals, copy, platform, and planned publishing time.</p>
             </div>
             <span className="rounded-full bg-violet-50 px-3 py-1 text-xs font-bold text-violet-700">{selectedStrategy.campaignTimezone || "UTC"}</span>
+          </div>
+          <div className="border-b border-sky-100 bg-sky-50 px-5 py-3 text-xs leading-5 text-sky-900">
+            Initial visuals are lightweight design previews. Use <b>Generate AI image</b> on a post to create a richer original image from the campaign image direction, then review it before approval.
           </div>
           <div className="divide-y divide-slate-100">
             {selectedStrategy.posts.map((post, index) => (
@@ -1905,12 +1987,19 @@ export default function SocialStrategy() {
                   <h3 className="mt-2 font-bold text-charcoal-900">{post.topic}</h3>
                   <p className="mt-1 whitespace-pre-line text-xs leading-5 text-charcoal-600">{post.caption}</p>
                   {post.hashtagsJson.length > 0 && <div className="mt-2 text-xs font-medium text-brand-600">{post.hashtagsJson.join(" ")}</div>}
+                  {post.imageSuggestion && (
+                    <details className="mt-3 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2">
+                      <summary className="cursor-pointer text-xs font-bold text-slate-700">Image brief</summary>
+                      <p className="mt-2 text-xs leading-5 text-slate-600">{post.imageSuggestion}</p>
+                    </details>
+                  )}
                   <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-slate-500">
                     {post.cta && <span><b>CTA:</b> {post.cta}</span>}
                     {post.targetKeyword && <span><b>Keyword:</b> {post.targetKeyword}</span>}
                     {post.targetUrl && <span className="truncate"><b>Destination:</b> {post.targetUrl}</span>}
                   </div>
                   <div className="mt-3 flex flex-wrap gap-2">
+                    <Button variant="ghost" onClick={() => void generateCalendarPostImage(post)} disabled={postSaving}>{postSaving ? "Generating…" : "Generate AI image"}</Button>
                     <Button variant="ghost" onClick={() => openPostEditor(post)}>Edit content & schedule</Button>
                     <Button variant="ghost" onClick={() => { setChangeRequestPost(post); setChangeInstruction(""); setChangeContent(true); setChangeImage(false); }}>Request AI changes</Button>
                   </div>

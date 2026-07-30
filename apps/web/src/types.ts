@@ -1196,6 +1196,7 @@ export interface SocialStrategy {
   targetUrlsJson: string[];
   postingFrequency: string | null;
   tone: string | null;
+  imageDirection: string | null;
   monthlyTheme: string | null;
   status: string;
   generationMode: string;
