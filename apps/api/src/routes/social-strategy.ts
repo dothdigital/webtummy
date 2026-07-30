@@ -142,6 +142,22 @@ const performanceSchema = z.object({
   recordedAt: z.string().datetime().optional(),
 });
 
+const socialPostUpdateSchema = z.object({
+  topic: z.string().trim().min(3).max(255).optional(),
+  caption: z.string().trim().min(10).max(20_000).optional(),
+  cta: z.string().trim().max(180).optional().nullable(),
+  publishDate: z.string().datetime().optional(),
+  imageUrl: z.string().max(8_000_000).refine((value) => /^https?:\/\//i.test(value) || /^data:image\/(svg\+xml|png|jpeg|webp);base64,/i.test(value), "Use a public HTTPS image URL or generated image.").optional().nullable(),
+  imageAltText: z.string().trim().max(500).optional().nullable(),
+  status: z.enum(["planned", "approved", "scheduled", "published", "changes_requested"]).optional(),
+});
+
+const socialPostChangeRequestSchema = z.object({
+  instruction: z.string().trim().min(3).max(3000),
+  changeContent: z.boolean().default(true),
+  changeImage: z.boolean().default(false),
+}).refine((input) => input.changeContent || input.changeImage, { message: "Choose content, image, or both." });
+
 type SocialProfileInput = z.infer<typeof socialProfileSchema>;
 type CompetitorInput = z.infer<typeof competitorSchema>;
 type GenerateInput = z.infer<typeof generateSchema>;
@@ -250,6 +266,74 @@ function generatedSocialVisual(platform: string, topic: string, businessName: st
   const lineMarkup = lines.map((line, index) => `<text x="76" y="${245 + index * 70}" fill="white" font-family="Arial, Helvetica, sans-serif" font-size="54" font-weight="700">${escapeSvgText(line)}</text>`).join("");
   const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="628" viewBox="0 0 1200 628"><defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop stop-color="${start}"/><stop offset="1" stop-color="${end}"/></linearGradient><filter id="s"><feDropShadow dx="0" dy="10" stdDeviation="18" flood-opacity=".22"/></filter></defs><rect width="1200" height="628" rx="32" fill="url(#g)"/><circle cx="1060" cy="85" r="210" fill="white" opacity=".08"/><circle cx="1120" cy="575" r="260" fill="white" opacity=".06"/><rect x="58" y="54" width="1084" height="520" rx="28" fill="none" stroke="white" stroke-opacity=".18"/><text x="76" y="112" fill="white" opacity=".82" font-family="Arial, Helvetica, sans-serif" font-size="24" font-weight="700" letter-spacing="3">${escapeSvgText(platform.replaceAll("_", " ").toUpperCase())}</text>${lineMarkup}<g filter="url(#s)"><rect x="76" y="500" width="520" height="58" rx="29" fill="white" opacity=".96"/><text x="106" y="538" fill="${start}" font-family="Arial, Helvetica, sans-serif" font-size="24" font-weight="700">${escapeSvgText(sentence(businessName, 34))}</text></g></svg>`;
   return `data:image/svg+xml;base64,${Buffer.from(svg).toString("base64")}`;
+}
+
+const socialPostRevisionSchema = z.object({
+  topic: z.string().min(3).max(255),
+  caption: z.string().min(10).max(20_000),
+  cta: z.string().max(180).nullable(),
+  hashtags: z.array(z.string().max(80)).max(12),
+  imageSuggestion: z.string().min(5).max(2000),
+});
+
+async function reviseSocialPostContent(post: {
+  topic: string;
+  caption: string;
+  cta: string | null;
+  hashtagsJson: Prisma.JsonValue;
+  imageSuggestion: string | null;
+  platform: string;
+}, instruction: string) {
+  if (!config.openaiApiKey) throw Object.assign(new Error("Configure OpenAI before requesting AI content changes."), { statusCode: 409 });
+  const generated = await centralAiJson({
+    system: "You revise an existing social campaign post. Preserve verified facts and source meaning. Never invent people, credentials, offers, prices, results, statistics, locations, or customer claims.",
+    prompt: [
+      "Return {topic,caption,cta,hashtags,imageSuggestion}.",
+      `Platform: ${post.platform}`,
+      `Requested change: ${instruction}`,
+      `Current post: ${JSON.stringify({ topic: post.topic, caption: post.caption, cta: post.cta, hashtags: jsonList(post.hashtagsJson), imageSuggestion: post.imageSuggestion })}`,
+      "Make the content useful, platform-appropriate, clear, and action-oriented. Preserve factual safeguards.",
+    ].join("\n"),
+    temperature: 0.35,
+  });
+  return socialPostRevisionSchema.parse(generated.result);
+}
+
+async function reviseSocialPostImage(post: {
+  topic: string;
+  platform: string;
+  imageSuggestion: string | null;
+  strategy: { campaignName: string | null; project: { businessName: string | null; name: string } | null };
+}, instruction: string) {
+  const businessName = post.strategy.project?.businessName || post.strategy.project?.name || "Business";
+  if (!config.openaiApiKey) return generatedSocialVisual(post.platform, post.topic, businessName);
+  const response = await fetch("https://api.openai.com/v1/images/generations", {
+    method: "POST",
+    signal: AbortSignal.timeout(180_000),
+    headers: { Authorization: `Bearer ${config.openaiApiKey}`, "Content-Type": "application/json" },
+    body: JSON.stringify({
+      model: config.openaiImageModel,
+      size: "1536x1024",
+      quality: "medium",
+      output_format: "png",
+      n: 1,
+      prompt: [
+        `Create an original, polished social media campaign image for ${businessName}.`,
+        `Platform: ${post.platform}. Campaign: ${post.strategy.campaignName || "social campaign"}.`,
+        `Post topic: ${post.topic}. Current visual direction: ${post.imageSuggestion || "Professional branded campaign visual"}.`,
+        `Requested change: ${instruction}.`,
+        "Do not add logos, watermarks, URLs, fake testimonials, unsupported statistics, or dense text. Make the composition adaptable to a social feed crop.",
+      ].join("\n"),
+    }),
+  });
+  const raw = await response.json().catch(() => ({})) as Record<string, unknown>;
+  if (!response.ok) {
+    const error = raw.error && typeof raw.error === "object" ? raw.error as Record<string, unknown> : {};
+    throw Object.assign(new Error(typeof error.message === "string" ? error.message : "AI image revision failed."), { statusCode: 409 });
+  }
+  const first = Array.isArray(raw.data) && raw.data[0] && typeof raw.data[0] === "object" ? raw.data[0] as Record<string, unknown> : {};
+  if (typeof first.b64_json !== "string" || !first.b64_json) throw Object.assign(new Error("The AI image provider returned no image."), { statusCode: 409 });
+  return `data:image/png;base64,${first.b64_json}`;
 }
 
 function validTimeZone(value: string | null | undefined) {
@@ -1099,6 +1183,98 @@ socialStrategyRouter.post("/social-strategy/repurpose", async (req, res) => {
     return row;
   });
   res.status(201).json({ batch, ...(await socialResponse(req, website.id, intelligence.project.id)) });
+});
+
+socialStrategyRouter.patch("/social-strategy/posts/:postId", async (req, res) => {
+  const parsed = socialPostUpdateSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() });
+  const context = await workspaceContext(req);
+  if (!hasWorkspacePermission(context, "execute_tasks")) return res.status(403).json({ error: "Content editing permission is required." });
+  const post = await prisma.socialCalendarPost.findUnique({
+    where: { id: req.params.postId },
+    include: { strategy: { include: { project: true } } },
+  });
+  if (!post?.strategy.projectId || !post.strategy.project || !await canAccessProject(context, post.strategy.projectId)) return res.status(404).json({ error: "Campaign post not found." });
+  const contentChanged = parsed.data.topic !== undefined || parsed.data.caption !== undefined || parsed.data.cta !== undefined || parsed.data.imageUrl !== undefined || parsed.data.imageAltText !== undefined;
+  const updated = await prisma.$transaction(async (tx) => {
+    const row = await tx.socialCalendarPost.update({
+      where: { id: post.id },
+      data: {
+        ...parsed.data,
+        ...(parsed.data.publishDate !== undefined ? { publishDate: new Date(parsed.data.publishDate) } : {}),
+        ...(parsed.data.imageUrl !== undefined ? { imageStatus: parsed.data.imageUrl ? "updated" : "planned" } : {}),
+        ...(contentChanged && parsed.data.status === undefined ? { status: "planned" } : {}),
+      },
+    });
+    if (contentChanged) {
+      await tx.executionTask.updateMany({
+        where: { projectId: post.strategy.projectId!, sourceType: "social_calendar_post", sourceId: post.id },
+        data: { status: "needs_review", approvedAt: null, approverMembershipId: null, blockedReason: "Content or image changed and requires approval again." },
+      });
+    }
+    await recordWorkspaceActivity(tx, {
+      context,
+      action: "social_post.updated",
+      entityType: "social_calendar_post",
+      entityId: post.id,
+      agencyClientId: post.strategy.project!.agencyClientId,
+      projectId: post.strategy.projectId,
+      previousJson: { topic: post.topic, caption: post.caption, publishDate: post.publishDate, status: post.status, imageStatus: post.imageStatus },
+      nextJson: { topic: row.topic, publishDate: row.publishDate, status: row.status, imageStatus: row.imageStatus },
+    });
+    return row;
+  });
+  res.json({ post: updated });
+});
+
+socialStrategyRouter.post("/social-strategy/posts/:postId/request-changes", async (req, res) => {
+  const parsed = socialPostChangeRequestSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() });
+  const context = await workspaceContext(req);
+  if (!hasWorkspacePermission(context, "run_ai_analysis")) return res.status(403).json({ error: "AI generation permission is required." });
+  const post = await prisma.socialCalendarPost.findUnique({
+    where: { id: req.params.postId },
+    include: { strategy: { include: { project: true } } },
+  });
+  if (!post?.strategy.projectId || !post.strategy.project || !await canAccessProject(context, post.strategy.projectId)) return res.status(404).json({ error: "Campaign post not found." });
+  const contentRevision = parsed.data.changeContent ? await reviseSocialPostContent(post, parsed.data.instruction) : null;
+  const imageUrl = parsed.data.changeImage ? await reviseSocialPostImage({
+    topic: contentRevision?.topic || post.topic,
+    platform: post.platform,
+    imageSuggestion: contentRevision?.imageSuggestion || post.imageSuggestion,
+    strategy: post.strategy,
+  }, parsed.data.instruction) : post.imageUrl;
+  const updated = await prisma.$transaction(async (tx) => {
+    const row = await tx.socialCalendarPost.update({
+      where: { id: post.id },
+      data: {
+        ...(contentRevision ? {
+          topic: contentRevision.topic,
+          caption: contentRevision.caption,
+          cta: contentRevision.cta,
+          hashtagsJson: contentRevision.hashtags,
+          imageSuggestion: contentRevision.imageSuggestion,
+        } : {}),
+        ...(parsed.data.changeImage ? { imageUrl, imageStatus: "regenerated", imageAltText: `${post.strategy.project!.businessName || post.strategy.project!.name}: ${contentRevision?.topic || post.topic}`.slice(0, 500) } : {}),
+        status: "planned",
+      },
+    });
+    await tx.executionTask.updateMany({
+      where: { projectId: post.strategy.projectId!, sourceType: "social_calendar_post", sourceId: post.id },
+      data: { status: "needs_review", approvedAt: null, approverMembershipId: null, blockedReason: "AI changes requested; review the revised content and image." },
+    });
+    await recordWorkspaceActivity(tx, {
+      context,
+      action: "social_post.ai_changes_completed",
+      entityType: "social_calendar_post",
+      entityId: post.id,
+      agencyClientId: post.strategy.project!.agencyClientId,
+      projectId: post.strategy.projectId,
+      nextJson: { instruction: parsed.data.instruction, changeContent: parsed.data.changeContent, changeImage: parsed.data.changeImage, status: row.status },
+    });
+    return row;
+  });
+  res.json({ post: updated });
 });
 
 socialStrategyRouter.post("/social-strategy/posts/:postId/approve", async (req, res) => {

@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { api } from "../api.js";
-import type { GuidedProject, SocialCompetitorProfile, SocialContentSource, SocialPerformanceSummary, SocialProfile, SocialProviderCapability, SocialRepurposedAsset, SocialRepurposingBatch, SocialStrategy as SocialStrategyType, SocialStrategyResponse, Website } from "../types.js";
+import type { GuidedProject, SocialCalendarPost, SocialCompetitorProfile, SocialContentSource, SocialPerformanceSummary, SocialProfile, SocialProviderCapability, SocialRepurposedAsset, SocialRepurposingBatch, SocialStrategy as SocialStrategyType, SocialStrategyResponse, Website } from "../types.js";
 import { Button, Card, Input, ScoreGauge, StatusPill } from "../components/ui.js";
 import { getActiveProjectId, resolveActiveProjectId, setActiveProjectId } from "../active-project.js";
 
@@ -64,8 +64,7 @@ const WIZARD_STEPS = [
   { id: "project", title: "Project", description: "Choose the website this strategy belongs to." },
   { id: "profiles", title: "Profiles", description: "Add your official social channels." },
   { id: "competitors", title: "Competitors", description: "Capture examples to compare against." },
-  { id: "strategy", title: "Inputs", description: "Set the campaign direction." },
-  { id: "review", title: "Strategy", description: "Review the score, recommendations, and calendar." },
+  { id: "strategy", title: "Campaign Planning & Strategy", description: "Plan, generate, review, and manage every campaign." },
 ] as const;
 
 type WizardStep = typeof WIZARD_STEPS[number]["id"];
@@ -126,6 +125,17 @@ function campaignDate(daysFromToday: number): string {
 
 function goalMetricLabel(value: string | null | undefined): string {
   return CAMPAIGN_GOAL_OPTIONS.find((option) => option.value === value)?.label ?? value?.replaceAll("_", " ") ?? "Success metric";
+}
+
+function campaignProgress(strategy: SocialStrategyType) {
+  const now = Date.now();
+  const posted = strategy.posts.filter((post) => post.status === "published" || post.status === "posted").length;
+  const scheduled = strategy.posts.filter((post) => post.status === "scheduled").length;
+  const upcoming = strategy.posts.filter((post) => {
+    const publishTime = new Date(post.publishDate).getTime();
+    return publishTime > now && post.status !== "published" && post.status !== "posted";
+  }).length;
+  return { created: strategy.posts.length, posted, scheduled, upcoming };
 }
 
 function platformLabel(platform: string): string {
@@ -230,6 +240,7 @@ type SocialPostPlatform = {
 type SocialPublisherProps = {
   websiteId: string;
   strategy?: SocialStrategyType | null;
+  onPostUpdated?: (post: SocialCalendarPost) => void;
 };
 
 function toDateInputValue(value: string | Date | null | undefined) {
@@ -265,7 +276,7 @@ function PrettyJson({ value }: { value: unknown }) {
   return <pre className="max-h-80 overflow-auto rounded-lg bg-slate-950 p-3 text-xs leading-5 text-slate-100">{JSON.stringify(value, null, 2)}</pre>;
 }
 
-function SocialPublisher({ websiteId, strategy }: SocialPublisherProps) {
+function SocialPublisher({ websiteId, strategy, onPostUpdated }: SocialPublisherProps) {
   const strategyPosts = strategy?.posts ?? [];
   const defaultPost = strategyPosts[0] ?? null;
   const [accounts, setAccounts] = useState<SocialConnectAccount[]>([]);
@@ -382,10 +393,24 @@ function SocialPublisher({ websiteId, strategy }: SocialPublisherProps) {
       if (mode === "publish" && postId) {
         const published = await api.post<unknown>(`/api/social-connect/posts/${encodeURIComponent(postId)}/post-now`, { sourceId: selectedPost?.id ?? "custom" });
         setStatusResult(published);
+        if (selectedPost) {
+          const saved = await api.patch<{ post: SocialCalendarPost }>(`/api/social-strategy/posts/${selectedPost.id}`, {
+            status: "published",
+            publishDate: new Date().toISOString(),
+          });
+          onPostUpdated?.(saved.post);
+        }
         setMessage("Post sent to Social Connect for immediate publishing.");
       } else if (mode === "schedule" && postId) {
         const scheduled = await api.post<unknown>(`/api/social-connect/posts/${encodeURIComponent(postId)}/schedule`, { scheduledAt: new Date(scheduledAt).toISOString(), timezone, sourceId: selectedPost?.id ?? "custom" });
         setStatusResult(scheduled);
+        if (selectedPost) {
+          const saved = await api.patch<{ post: SocialCalendarPost }>(`/api/social-strategy/posts/${selectedPost.id}`, {
+            status: "scheduled",
+            publishDate: new Date(scheduledAt).toISOString(),
+          });
+          onPostUpdated?.(saved.post);
+        }
         setMessage("Approved post scheduled through Social Connect.");
       } else {
         setStatusResult(result);
@@ -405,8 +430,9 @@ function SocialPublisher({ websiteId, strategy }: SocialPublisherProps) {
     setBusy(true);
     setError("");
     try {
-      await api.post(`/api/social-strategy/posts/${selectedPost.id}/approve`, {});
+      const result = await api.post<{ post: SocialCalendarPost }>(`/api/social-strategy/posts/${selectedPost.id}/approve`, {});
       setApprovedPostIds((items) => items.includes(selectedPost.id) ? items : [...items, selectedPost.id]);
+      onPostUpdated?.(result.post);
       setMessage("Calendar post approved and ready for publishing.");
     } catch (err) {
       setError(String(err).replace(/^Error:\s*/, ""));
@@ -654,6 +680,7 @@ export default function SocialStrategy() {
   const [editingCompetitorIndex, setEditingCompetitorIndex] = useState<number | null>(null);
   const [competitorDraft, setCompetitorDraft] = useState<SocialCompetitorProfile>(emptyCompetitor());
   const [strategies, setStrategies] = useState<SocialStrategyType[]>([]);
+  const [selectedCampaignId, setSelectedCampaignId] = useState("");
   const [contentSources, setContentSources] = useState<SocialContentSource[]>([]);
   const [repurposingBatches, setRepurposingBatches] = useState<SocialRepurposingBatch[]>([]);
   const [performanceSummary, setPerformanceSummary] = useState<SocialPerformanceSummary>(EMPTY_PERFORMANCE);
@@ -691,10 +718,18 @@ export default function SocialStrategy() {
   const [assetDrafts, setAssetDrafts] = useState<Record<string, Pick<SocialRepurposedAsset, "title" | "content" | "cta" | "visualSuggestion">>>({});
   const [workflowMessage, setWorkflowMessage] = useState("");
   const [performanceForm, setPerformanceForm] = useState({ platform: "linkedin", impressions: "0", reach: "0", engagements: "0", clicks: "0", leads: "0", conversions: "0" });
+  const [editingPost, setEditingPost] = useState<SocialCalendarPost | null>(null);
+  const [postDraft, setPostDraft] = useState({ topic: "", caption: "", cta: "", publishDate: "", imageUrl: "", imageAltText: "" });
+  const [changeRequestPost, setChangeRequestPost] = useState<SocialCalendarPost | null>(null);
+  const [changeInstruction, setChangeInstruction] = useState("");
+  const [changeContent, setChangeContent] = useState(true);
+  const [changeImage, setChangeImage] = useState(false);
+  const [postSaving, setPostSaving] = useState(false);
 
   const activeStrategy = strategies.find((strategy) => strategy.status === "active")
     ?? strategies.find((strategy) => strategy.status !== "draft" && strategy.status !== "superseded")
     ?? null;
+  const selectedStrategy = strategies.find((strategy) => strategy.id === selectedCampaignId) ?? activeStrategy;
   const selectedWebsite = websites.find((website) => website.id === websiteId) ?? websites[0] ?? null;
   const activeStepIndex = WIZARD_STEPS.findIndex((item) => item.id === step);
   const selectedProject = projects.find((project) => project.websiteId === websiteId) ?? null;
@@ -703,6 +738,9 @@ export default function SocialStrategy() {
     setProfiles(result.profiles);
     setCompetitors(result.competitors);
     setStrategies(result.strategies);
+    setSelectedCampaignId((current) => result.strategies.some((strategy) => strategy.id === current)
+      ? current
+      : result.strategies.find((strategy) => strategy.status === "active")?.id ?? result.strategies.find((strategy) => strategy.status !== "draft")?.id ?? "");
     setContentSources(result.contentSources ?? []);
     setRepurposingBatches(result.repurposingBatches ?? []);
     setPerformanceSummary(result.performanceSummary ?? EMPTY_PERFORMANCE);
@@ -712,6 +750,79 @@ export default function SocialStrategy() {
     setSelectedSourceId((current) => current === "__custom__" || result.contentSources?.some((source) => source.id === current) ? current : result.contentSources?.[0]?.id || "__custom__");
     setPlatformOptions(result.platformOptions.length ? result.platformOptions : DEFAULT_PLATFORMS);
     if (!selectedPlatforms.length && result.platformOptions.length) setSelectedPlatforms(result.platformOptions.slice(0, 3));
+  };
+
+  const replaceCalendarPost = (updated: SocialCalendarPost) => {
+    setStrategies((items) => items.map((strategy) => ({
+      ...strategy,
+      posts: strategy.posts.map((post) => post.id === updated.id ? updated : post),
+    })));
+  };
+
+  const openPostEditor = (post: SocialCalendarPost) => {
+    setEditingPost(post);
+    setPostDraft({
+      topic: post.topic,
+      caption: post.caption,
+      cta: post.cta ?? "",
+      publishDate: toDateInputValue(post.publishDate),
+      imageUrl: post.imageUrl ?? "",
+      imageAltText: post.imageAltText ?? "",
+    });
+  };
+
+  const saveCalendarPost = async () => {
+    if (!editingPost || !postDraft.publishDate) return;
+    setPostSaving(true);
+    setPageError("");
+    try {
+      const changes: Record<string, string | null> = {};
+      if (postDraft.topic !== editingPost.topic) changes.topic = postDraft.topic;
+      if (postDraft.caption !== editingPost.caption) changes.caption = postDraft.caption;
+      if ((postDraft.cta || null) !== (editingPost.cta || null)) changes.cta = postDraft.cta || null;
+      if (new Date(postDraft.publishDate).getTime() !== new Date(editingPost.publishDate).getTime()) changes.publishDate = new Date(postDraft.publishDate).toISOString();
+      if ((postDraft.imageUrl || null) !== (editingPost.imageUrl || null)) changes.imageUrl = postDraft.imageUrl || null;
+      if ((postDraft.imageAltText || null) !== (editingPost.imageAltText || null)) changes.imageAltText = postDraft.imageAltText || null;
+      if (Object.keys(changes).length === 0) {
+        setEditingPost(null);
+        setWorkflowMessage("No post changes were made.");
+        return;
+      }
+      const result = await api.patch<{ post: SocialCalendarPost }>(`/api/social-strategy/posts/${editingPost.id}`, changes);
+      replaceCalendarPost(result.post);
+      setEditingPost(null);
+      const contentChanged = ["topic", "caption", "cta", "imageUrl", "imageAltText"].some((field) => field in changes);
+      setWorkflowMessage(contentChanged
+        ? "Post updated. Because its content or image changed, review and approve it again before publishing."
+        : "Post publishing time updated in the campaign calendar.");
+    } catch (err) {
+      setPageError(String(err).replace(/^Error:\s*/, ""));
+    } finally {
+      setPostSaving(false);
+    }
+  };
+
+  const requestCalendarPostChanges = async () => {
+    if (!changeRequestPost || !changeInstruction.trim() || (!changeContent && !changeImage)) return;
+    setPostSaving(true);
+    setPageError("");
+    try {
+      const result = await api.post<{ post: SocialCalendarPost }>(`/api/social-strategy/posts/${changeRequestPost.id}/request-changes`, {
+        instruction: changeInstruction,
+        changeContent,
+        changeImage,
+      });
+      replaceCalendarPost(result.post);
+      setChangeRequestPost(null);
+      setChangeInstruction("");
+      setChangeContent(true);
+      setChangeImage(false);
+      setWorkflowMessage("AI revised the selected post. Review the new content and image before approval.");
+    } catch (err) {
+      setPageError(String(err).replace(/^Error:\s*/, ""));
+    } finally {
+      setPostSaving(false);
+    }
   };
 
   const loadStrategy = async (id: string, projectId?: string | null) => {
@@ -931,6 +1042,7 @@ export default function SocialStrategy() {
   };
 
   const openExistingCampaign = (strategy: SocialStrategyType) => {
+    setSelectedCampaignId(strategy.id);
     setEditingCampaignId(strategy.id);
     setCampaignName(strategy.campaignName ?? "");
     setCampaignStartAt(strategy.campaignStartAt?.slice(0, 10) ?? campaignDate(1));
@@ -997,6 +1109,7 @@ export default function SocialStrategy() {
       });
       applySocialResponse(result);
       setEditingCampaignId(result.campaign.id);
+      setSelectedCampaignId(result.campaign.id);
       setCampaignConfigured(false);
       setCampaignEditorOpen(false);
       setWorkflowMessage("Campaign setup saved. Generate its strategy when you are ready.");
@@ -1031,7 +1144,7 @@ export default function SocialStrategy() {
     setGenerating(true);
     setPageError("");
     try {
-      const result = await api.post<SocialStrategyResponse>("/api/social-strategy/generate", {
+      const result = await api.post<SocialStrategyResponse & { strategy: SocialStrategyType }>("/api/social-strategy/generate", {
         websiteId,
         projectId: selectedProject?.id ?? null,
         campaignId: savedCampaign?.id ?? editingCampaignId,
@@ -1052,7 +1165,8 @@ export default function SocialStrategy() {
       applySocialResponse(result);
       setCampaignConfigured(false);
       setEditingCampaignId(null);
-      setStep("review");
+      setSelectedCampaignId(result.strategy.id);
+      setStep("strategy");
     } catch (err) {
       setPageError(String(err).replace(/^Error:\s*/, ""));
     } finally {
@@ -1076,7 +1190,7 @@ export default function SocialStrategy() {
       const result = await api.post<SocialStrategyResponse>("/api/social-strategy/repurpose", {
         websiteId,
         projectId: selectedProject.id,
-        strategyId: activeStrategy?.id ?? null,
+        strategyId: selectedStrategy?.id ?? activeStrategy?.id ?? null,
         sourceType: source.type,
         sourceId: source.id,
         sourceTitle: source.title,
@@ -1131,7 +1245,7 @@ export default function SocialStrategy() {
     setPageError("");
     try {
       const result = await api.post<{ performanceSummary: SocialPerformanceSummary }>(`/api/projects-v2/${selectedProject.id}/social/performance`, {
-        strategyId: activeStrategy?.id ?? null,
+        strategyId: selectedStrategy?.id ?? activeStrategy?.id ?? null,
         platform: performanceForm.platform,
         impressions: Number(performanceForm.impressions || 0),
         reach: Number(performanceForm.reach || 0),
@@ -1227,7 +1341,7 @@ export default function SocialStrategy() {
                 </div>
               </div>
             </Card>
-            <SocialPublisher websiteId={websiteId} strategy={activeStrategy} />
+            <SocialPublisher websiteId={websiteId} strategy={selectedStrategy ?? activeStrategy} onPostUpdated={replaceCalendarPost} />
           </div>
         ) : (
           <Card className="order-4 p-6 text-center">
@@ -1238,13 +1352,13 @@ export default function SocialStrategy() {
         )
       )}
 
-      {mode === "strategy" && step === "review" && activeStrategy && (
+      {mode === "strategy" && step === "strategy" && selectedStrategy && selectedStrategy.status !== "draft" && (
         <div className="order-5 space-y-5">
           <Card className="p-5">
             <div className="flex flex-wrap items-start justify-between gap-3">
               <div>
                 <div className="text-xs font-bold uppercase tracking-wide text-brand-600">Campaign · Content repurposing</div>
-                <h2 className="mt-1 text-xl font-bold text-charcoal-900">Repurpose content for {activeStrategy.campaignName || "this campaign"}</h2>
+                <h2 className="mt-1 text-xl font-bold text-charcoal-900">Repurpose content for {selectedStrategy.campaignName || "this campaign"}</h2>
                 <p className="mt-1 text-sm leading-6 text-charcoal-500">Repurposing belongs to this campaign. The source list includes only approved or published project assets, and generated assets remain attached to this campaign’s strategy.</p>
               </div>
               <div className="flex flex-wrap items-center gap-2">
@@ -1277,7 +1391,7 @@ export default function SocialStrategy() {
             </>}
           </Card>
 
-          {repurposingBatches.filter((batch) => batch.strategyId === activeStrategy.id).map((batch) => <Card key={batch.id} className="overflow-hidden">
+          {repurposingBatches.filter((batch) => batch.strategyId === selectedStrategy.id).map((batch) => <Card key={batch.id} className="overflow-hidden">
             <div className="flex flex-wrap items-start justify-between gap-3 border-b border-slate-100 p-5">
               <div><div className="flex flex-wrap items-center gap-2"><h2 className="font-bold text-charcoal-900">{batch.sourceTitle}</h2><span className="rounded-full bg-slate-100 px-2 py-1 text-[10px] font-bold uppercase text-slate-600">{batch.status}</span><span className="rounded-full bg-violet-50 px-2 py-1 text-[10px] font-bold text-violet-700">{batch.generationMode.replaceAll("_", " ")}</span></div><p className="mt-1 text-xs text-slate-500">{batch.sourceType.replaceAll("_", " ")} · {batch.assets.length} generated assets</p></div>
               {batch.status !== "approved" && <Button onClick={() => void approveRepurposingBatch(batch)} disabled={repurposing}>Approve and add to workflows</Button>}
@@ -1326,7 +1440,7 @@ export default function SocialStrategy() {
       {mode === "strategy" && (
         <div className="order-4 space-y-6">
       <Card className="overflow-hidden">
-        <div className="grid gap-0 border-b border-charcoal-100 bg-charcoal-50 md:grid-cols-5">
+        <div className="grid gap-0 border-b border-charcoal-100 bg-charcoal-50 md:grid-cols-4">
           {WIZARD_STEPS.map((item, index) => {
             const active = item.id === step;
             const done = index < activeStepIndex;
@@ -1562,7 +1676,7 @@ export default function SocialStrategy() {
               <div className="flex items-center justify-between gap-3 border-b border-slate-200 bg-slate-50 px-4 py-3">
                 <div>
                   <div className="font-bold text-charcoal-900">Campaigns</div>
-                  <div className="text-xs text-slate-500">{strategies.length} generated campaign{strategies.length === 1 ? "" : "s"} for this project</div>
+                  <div className="text-xs text-slate-500">{strategies.length} saved campaign{strategies.length === 1 ? "" : "s"} for this project</div>
                 </div>
                 {(campaignConfigured || strategies.length > 0) && <Button variant="ghost" onClick={openNewCampaign}>+ Add Campaign</Button>}
               </div>
@@ -1591,23 +1705,37 @@ export default function SocialStrategy() {
               )}
               {strategies.length > 0 && (
                 <div className="divide-y divide-slate-100">
-                  {strategies.map((strategy) => (
-                    <div key={strategy.id} className="flex flex-col gap-3 bg-white px-4 py-4 sm:flex-row sm:items-center sm:justify-between">
-                      <div className="min-w-0">
-                        <div className="flex flex-wrap items-center gap-2">
-                          <span className={`rounded-full px-2.5 py-1 text-xs font-bold ${strategy.status === "active" ? "bg-green-100 text-green-800" : "bg-slate-100 text-slate-600"}`}>{strategy.status}</span>
-                          <span className="text-xs font-semibold text-slate-500">{strategy.campaignStartAt ? formatDate(strategy.campaignStartAt) : "Start date"} – {strategy.campaignEndAt ? formatDate(strategy.campaignEndAt) : "End date"}</span>
+                  {strategies.map((strategy) => {
+                    const progress = campaignProgress(strategy);
+                    const selected = strategy.id === selectedStrategy?.id;
+                    return (
+                      <div key={strategy.id} className={`flex flex-col gap-3 px-4 py-4 sm:flex-row sm:items-center sm:justify-between ${selected ? "bg-brand-50/60 ring-1 ring-inset ring-brand-200" : "bg-white"}`}>
+                        <div className="min-w-0">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <span className={`rounded-full px-2.5 py-1 text-xs font-bold ${strategy.status === "active" ? "bg-green-100 text-green-800" : "bg-slate-100 text-slate-600"}`}>{strategy.status}</span>
+                            <span className="text-xs font-semibold text-slate-500">{strategy.campaignStartAt ? formatDate(strategy.campaignStartAt) : "Start date"} – {strategy.campaignEndAt ? formatDate(strategy.campaignEndAt) : "End date"}</span>
+                          </div>
+                          <div className="mt-2 truncate text-sm font-semibold text-charcoal-900">{strategy.campaignName || "Social campaign"}</div>
+                          <div className="mt-1 truncate text-xs text-slate-500">{strategy.goal} · Target: {strategy.goalTarget ?? "Baseline"} {goalMetricLabel(strategy.goalMetric)}</div>
+                          {strategy.status !== "draft" && (
+                            <div className="mt-2 flex flex-wrap gap-2 text-[11px] font-semibold">
+                              <span className="rounded-full bg-white px-2 py-1 text-slate-700">{progress.created} content created</span>
+                              <span className="rounded-full bg-white px-2 py-1 text-emerald-700">{progress.posted} posted</span>
+                              <span className="rounded-full bg-white px-2 py-1 text-violet-700">{progress.upcoming} upcoming</span>
+                            </div>
+                          )}
                         </div>
-                        <div className="mt-2 truncate text-sm font-semibold text-charcoal-900">{strategy.campaignName || "Social campaign"}</div>
-                        <div className="mt-1 truncate text-xs text-slate-500">{strategy.goal} · Target: {strategy.goalTarget ?? "Baseline"} {goalMetricLabel(strategy.goalMetric)}</div>
+                        <div className="flex shrink-0 flex-wrap gap-2">
+                          <Button variant="ghost" onClick={() => openExistingCampaign(strategy)}>Edit setup</Button>
+                          {strategy.status === "draft" ? (
+                            <Button onClick={() => void generateStrategy(strategy)} disabled={generating}>{generating ? "Generating…" : "Generate strategy with AI"}</Button>
+                          ) : (
+                            <Button onClick={() => setSelectedCampaignId(strategy.id)}>{selected ? "Campaign open" : "Open campaign"}</Button>
+                          )}
+                        </div>
                       </div>
-                      <div className="flex shrink-0 flex-wrap gap-2">
-                        <Button variant="ghost" onClick={() => openExistingCampaign(strategy)}>Edit setup</Button>
-                        {strategy.status === "draft" && <Button onClick={() => void generateStrategy(strategy)} disabled={generating}>{generating ? "Generating…" : "Generate strategy with AI"}</Button>}
-                        {strategy.id === activeStrategy?.id && <Button onClick={() => setStep("review")}>View strategy</Button>}
-                      </div>
-                    </div>
-                  ))}
+                    );
+                  })}
                 </div>
               )}
             </div>
@@ -1668,62 +1796,69 @@ export default function SocialStrategy() {
                 </div>
               </div>
             )}
-            <StepFooter back={() => setStep("competitors")} next={() => void generateStrategy()} nextLabel={generating ? "Analyzing project and building the calendar…" : "Generate Growth-aligned strategy with AI"} nextDisabled={generating || !websiteId || !campaignConfigured} />
+            <StepFooter back={() => setStep("competitors")} />
           </div>
         )}
 
-        {step === "review" && (
-          <div className="p-5">
+        {step === "strategy" && selectedStrategy && selectedStrategy.status !== "draft" && (
+          <div className="border-t border-slate-200 p-5">
             <div className="grid gap-5 lg:grid-cols-[160px_1fr] lg:items-center">
-              <ScoreGauge score={activeStrategy?.socialScore ?? 0} />
+              <ScoreGauge score={selectedStrategy.socialScore ?? 0} />
               <div>
                 <div className="flex flex-wrap items-center gap-2">
-                  <h2 className="text-lg font-semibold text-charcoal-800">{selectedWebsite?.domain ?? "Project"} social strategy</h2>
-                  {activeStrategy && <StatusPill status="active" />}
+                  <h2 className="text-lg font-semibold text-charcoal-800">{selectedStrategy.campaignName || `${selectedWebsite?.domain ?? "Project"} campaign`}</h2>
+                  <StatusPill status={selectedStrategy.status} />
                 </div>
-                <p className="mt-1 text-sm text-charcoal-500">{activeStrategy?.monthlyTheme ?? "Generate a strategy to build a baseline score, recommendations, and 30-day calendar."}</p>
-                {activeStrategy?.strategySummary && <p className="mt-2 max-w-4xl text-sm leading-6 text-charcoal-600">{activeStrategy.strategySummary}</p>}
-                {activeStrategy && (
-                  <div className="mt-3 flex flex-wrap gap-2 text-xs font-semibold">
-                    <span className="rounded-full bg-violet-100 px-3 py-1.5 text-violet-800">{activeStrategy.campaignName || "Social campaign"}</span>
-                    <span className="rounded-full bg-slate-100 px-3 py-1.5 text-slate-700">{activeStrategy.campaignStartAt ? formatDate(activeStrategy.campaignStartAt) : "Start date"} – {activeStrategy.campaignEndAt ? formatDate(activeStrategy.campaignEndAt) : "End date"}</span>
-                    <span className="rounded-full bg-green-100 px-3 py-1.5 text-green-800">Target: {activeStrategy.goalTarget ?? "Baseline"} {goalMetricLabel(activeStrategy.goalMetric)}</span>
-                  </div>
-                )}
+                <p className="mt-1 text-sm text-charcoal-500">{selectedStrategy.monthlyTheme}</p>
+                {selectedStrategy.strategySummary && <p className="mt-2 max-w-4xl text-sm leading-6 text-charcoal-600">{selectedStrategy.strategySummary}</p>}
+                <div className="mt-3 flex flex-wrap gap-2 text-xs font-semibold">
+                  <span className="rounded-full bg-slate-100 px-3 py-1.5 text-slate-700">{selectedStrategy.campaignStartAt ? formatDate(selectedStrategy.campaignStartAt) : "Start date"} – {selectedStrategy.campaignEndAt ? formatDate(selectedStrategy.campaignEndAt) : "End date"}</span>
+                  <span className="rounded-full bg-green-100 px-3 py-1.5 text-green-800">Target: {selectedStrategy.goalTarget ?? "Baseline"} {goalMetricLabel(selectedStrategy.goalMetric)}</span>
+                  {(() => {
+                    const progress = campaignProgress(selectedStrategy);
+                    return (
+                      <>
+                        <span className="rounded-full bg-sky-100 px-3 py-1.5 text-sky-800">{progress.created} content created</span>
+                        <span className="rounded-full bg-emerald-100 px-3 py-1.5 text-emerald-800">{progress.posted} posted</span>
+                        <span className="rounded-full bg-violet-100 px-3 py-1.5 text-violet-800">{progress.upcoming} upcoming schedule</span>
+                      </>
+                    );
+                  })()}
+                </div>
                 <p className="mt-2 text-sm text-charcoal-400">Connected platforms: {platformSummary}</p>
-                {activeStrategy && <div className="mt-2 text-xs font-semibold text-violet-700">Generation: {activeStrategy.generationMode.replaceAll("_", " ")} · Review due {activeStrategy.nextReviewAt ? formatDate(activeStrategy.nextReviewAt) : "after performance data"}</div>}
+                <div className="mt-2 text-xs font-semibold text-violet-700">Generation: {selectedStrategy.generationMode.replaceAll("_", " ")} · Review due {selectedStrategy.nextReviewAt ? formatDate(selectedStrategy.nextReviewAt) : "after performance data"}</div>
                 <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
-                  <StatBox label="Profiles" value={activeStrategy?.profileScore ?? 0} tone={scoreTone(activeStrategy?.profileScore ?? 0)} />
-                  <StatBox label="Consistency" value={activeStrategy?.consistencyScore ?? 0} tone={scoreTone(activeStrategy?.consistencyScore ?? 0)} />
-                  <StatBox label="Activity" value={activeStrategy?.activityScore ?? 0} tone={scoreTone(activeStrategy?.activityScore ?? 0)} />
-                  <StatBox label="Competitors" value={activeStrategy?.competitorScore ?? 0} tone={scoreTone(activeStrategy?.competitorScore ?? 0)} />
-                  <StatBox label="SEO aligned" value={activeStrategy?.seoAlignmentScore ?? 0} tone={scoreTone(activeStrategy?.seoAlignmentScore ?? 0)} />
+                  <StatBox label="Profiles" value={selectedStrategy.profileScore ?? 0} tone={scoreTone(selectedStrategy.profileScore ?? 0)} />
+                  <StatBox label="Consistency" value={selectedStrategy.consistencyScore ?? 0} tone={scoreTone(selectedStrategy.consistencyScore ?? 0)} />
+                  <StatBox label="Activity" value={selectedStrategy.activityScore ?? 0} tone={scoreTone(selectedStrategy.activityScore ?? 0)} />
+                  <StatBox label="Competitors" value={selectedStrategy.competitorScore ?? 0} tone={scoreTone(selectedStrategy.competitorScore ?? 0)} />
+                  <StatBox label="SEO aligned" value={selectedStrategy.seoAlignmentScore ?? 0} tone={scoreTone(selectedStrategy.seoAlignmentScore ?? 0)} />
+                </div>
+                <div className="mt-4 flex flex-wrap gap-2">
+                  <Button variant="ghost" onClick={() => openExistingCampaign(selectedStrategy)}>Edit campaign planning</Button>
+                  <Button onClick={() => setMode("posting")}>Continue to publishing</Button>
                 </div>
               </div>
             </div>
-            {!activeStrategy && (
-              <div className="mt-5 rounded-lg border border-amber-200 bg-amber-50 p-4 text-sm leading-6 text-amber-900">No strategy has been generated yet. Go back to Inputs and click Generate strategy.</div>
-            )}
-            <StepFooter back={() => setStep("strategy")} next={() => setMode("posting")} nextLabel="Continue to publishing" />
           </div>
         )}
       </Card>
 
-      {activeStrategy && step === "review" && (
+      {selectedStrategy && selectedStrategy.status !== "draft" && step === "strategy" && (
         <Card className="overflow-hidden">
           <div className="border-b border-charcoal-100 px-5 py-3"><div className="font-semibold text-charcoal-700">Platform strategy</div><p className="mt-1 text-xs text-charcoal-400">Recommended channels, business reasoning, cadence, formats, and starting times. Refine these after measured results.</p></div>
           <div className="grid gap-3 p-5 md:grid-cols-2 xl:grid-cols-3">
-            {activeStrategy.platformRecommendationsJson.map((plan) => <div key={plan.platform} className={`rounded-xl border p-4 ${plan.recommended ? "border-brand-200 bg-brand-50/40" : "border-slate-200 bg-slate-50 opacity-75"}`}><div className="flex items-center justify-between gap-2"><b className="text-charcoal-900">{platformLabel(plan.platform)}</b><span className={`rounded-full px-2 py-1 text-[10px] font-bold ${plan.recommended ? "bg-green-100 text-green-700" : "bg-slate-200 text-slate-600"}`}>{plan.recommended ? "Recommended" : "Later / conditional"} · {plan.score}/100</span></div><p className="mt-2 text-xs leading-5 text-slate-600">{plan.reason}</p><div className="mt-3 text-xs font-semibold text-brand-700">{plan.frequency}</div><div className="mt-1 text-xs text-slate-500">{plan.bestTimes.join(" · ")}</div><div className="mt-3 flex flex-wrap gap-1">{plan.primaryFormats.map((format) => <span key={format} className="rounded-full bg-white px-2 py-1 text-[10px] text-slate-600">{format}</span>)}</div></div>)}
+            {selectedStrategy.platformRecommendationsJson.map((plan) => <div key={plan.platform} className={`rounded-xl border p-4 ${plan.recommended ? "border-brand-200 bg-brand-50/40" : "border-slate-200 bg-slate-50 opacity-75"}`}><div className="flex items-center justify-between gap-2"><b className="text-charcoal-900">{platformLabel(plan.platform)}</b><span className={`rounded-full px-2 py-1 text-[10px] font-bold ${plan.recommended ? "bg-green-100 text-green-700" : "bg-slate-200 text-slate-600"}`}>{plan.recommended ? "Recommended" : "Later / conditional"} · {plan.score}/100</span></div><p className="mt-2 text-xs leading-5 text-slate-600">{plan.reason}</p><div className="mt-3 text-xs font-semibold text-brand-700">{plan.frequency}</div><div className="mt-1 text-xs text-slate-500">{plan.bestTimes.join(" · ")}</div><div className="mt-3 flex flex-wrap gap-1">{plan.primaryFormats.map((format) => <span key={format} className="rounded-full bg-white px-2 py-1 text-[10px] text-slate-600">{format}</span>)}</div></div>)}
           </div>
         </Card>
       )}
 
-      {activeStrategy && step === "review" && (
+      {selectedStrategy && selectedStrategy.status !== "draft" && step === "strategy" && (
         <div className="grid gap-6 xl:grid-cols-[0.8fr_1.2fr]">
           <Card className="overflow-hidden">
             <div className="border-b border-charcoal-100 px-5 py-3 font-semibold text-charcoal-700">Recommendations</div>
             <div className="space-y-3 p-5">
-              {activeStrategy.recommendationsJson.map((item, index) => (
+              {selectedStrategy.recommendationsJson.map((item, index) => (
                 <div key={index} className="rounded-lg border border-charcoal-100 bg-charcoal-50 p-3 text-sm leading-6 text-charcoal-700">{item}</div>
               ))}
             </div>
@@ -1731,7 +1866,7 @@ export default function SocialStrategy() {
           <Card className="overflow-hidden">
             <div className="border-b border-charcoal-100 px-5 py-3 font-semibold text-charcoal-700">Content pillars</div>
             <div className="grid gap-3 p-5 md:grid-cols-2">
-              {activeStrategy.pillars.map((pillar) => (
+              {selectedStrategy.pillars.map((pillar) => (
                 <div key={pillar.id} className="rounded-lg border border-charcoal-100 bg-white p-4">
                   <div className="font-semibold text-charcoal-800">{pillar.title}</div>
                   <p className="mt-1 text-sm leading-6 text-charcoal-500">{pillar.description}</p>
@@ -1745,17 +1880,17 @@ export default function SocialStrategy() {
         </div>
       )}
 
-      {activeStrategy && step === "review" && (
+      {selectedStrategy && selectedStrategy.status !== "draft" && step === "strategy" && (
         <Card className="overflow-hidden">
           <div className="flex flex-wrap items-center justify-between gap-3 border-b border-charcoal-100 px-5 py-4">
             <div>
               <div className="font-semibold text-charcoal-800">Campaign content and publishing calendar</div>
-              <p className="mt-1 text-xs text-charcoal-500">{activeStrategy.posts.length} complete posts with generated visuals, copy, platform, and planned publishing time.</p>
+              <p className="mt-1 text-xs text-charcoal-500">{selectedStrategy.posts.length} complete posts with generated visuals, copy, platform, and planned publishing time.</p>
             </div>
-            <span className="rounded-full bg-violet-50 px-3 py-1 text-xs font-bold text-violet-700">{activeStrategy.campaignTimezone || "UTC"}</span>
+            <span className="rounded-full bg-violet-50 px-3 py-1 text-xs font-bold text-violet-700">{selectedStrategy.campaignTimezone || "UTC"}</span>
           </div>
           <div className="divide-y divide-slate-100">
-            {activeStrategy.posts.map((post, index) => (
+            {selectedStrategy.posts.map((post, index) => (
               <article key={post.id} className="grid gap-4 p-4 sm:grid-cols-[150px_minmax(0,1fr)] xl:grid-cols-[150px_minmax(0,1fr)_230px] xl:items-start">
                 <div className="overflow-hidden rounded-xl border border-slate-200 bg-slate-100">
                   {post.imageUrl ? <img src={post.imageUrl} alt={post.imageAltText || post.topic} className="aspect-[1.91/1] h-full w-full object-cover" /> : <div className="flex aspect-[1.91/1] items-center justify-center p-3 text-center text-[10px] font-semibold text-slate-500">Image awaiting generation</div>}
@@ -1775,12 +1910,16 @@ export default function SocialStrategy() {
                     {post.targetKeyword && <span><b>Keyword:</b> {post.targetKeyword}</span>}
                     {post.targetUrl && <span className="truncate"><b>Destination:</b> {post.targetUrl}</span>}
                   </div>
+                  <div className="mt-3 flex flex-wrap gap-2">
+                    <Button variant="ghost" onClick={() => openPostEditor(post)}>Edit content & schedule</Button>
+                    <Button variant="ghost" onClick={() => { setChangeRequestPost(post); setChangeInstruction(""); setChangeContent(true); setChangeImage(false); }}>Request AI changes</Button>
+                  </div>
                 </div>
                 <div className="rounded-xl border border-violet-100 bg-violet-50/60 p-3 sm:col-start-2 xl:col-start-auto">
                   <div className="text-[10px] font-bold uppercase tracking-wide text-violet-600">Planned publishing time</div>
-                  <div className="mt-1 text-sm font-bold text-violet-950">{formatPublishDate(post.publishDate, activeStrategy.campaignTimezone)}</div>
+                  <div className="mt-1 text-sm font-bold text-violet-950">{formatPublishDate(post.publishDate, selectedStrategy.campaignTimezone)}</div>
                   <div className="mt-2 flex items-center justify-between gap-2 text-[11px]">
-                    <span className="text-violet-700">{activeStrategy.postingFrequency || "Campaign cadence"}</span>
+                    <span className="text-violet-700">{selectedStrategy.postingFrequency || "Campaign cadence"}</span>
                     <span className="rounded-full bg-white px-2 py-1 font-bold text-slate-600">{post.status}</span>
                   </div>
                 </div>
@@ -1788,6 +1927,65 @@ export default function SocialStrategy() {
             ))}
           </div>
         </Card>
+      )}
+
+      {editingPost && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/50 p-4" role="dialog" aria-modal="true" aria-label="Edit campaign post">
+          <div className="max-h-[90vh] w-full max-w-3xl overflow-y-auto rounded-2xl bg-white shadow-2xl">
+            <div className="flex items-start justify-between gap-3 border-b border-slate-200 px-5 py-4">
+              <div><div className="text-xs font-bold uppercase tracking-wide text-brand-600">Campaign calendar</div><h3 className="mt-1 text-xl font-bold text-charcoal-900">Edit content and schedule</h3></div>
+              <button type="button" onClick={() => setEditingPost(null)} className="rounded-lg px-3 py-2 text-xl text-slate-400 hover:bg-slate-100 hover:text-slate-700" aria-label="Close">×</button>
+            </div>
+            <div className="space-y-4 p-5">
+              <Input label="Post topic" value={postDraft.topic} onChange={(value) => setPostDraft((current) => ({ ...current, topic: value }))} />
+              <label className="block">
+                <span className="mb-1 block text-sm font-medium text-slate-600">Caption</span>
+                <textarea value={postDraft.caption} onChange={(event) => setPostDraft((current) => ({ ...current, caption: event.target.value }))} rows={8} className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-100" />
+              </label>
+              <div className="grid gap-4 md:grid-cols-2">
+                <Input label="CTA" value={postDraft.cta} onChange={(value) => setPostDraft((current) => ({ ...current, cta: value }))} />
+                <label className="block">
+                  <span className="mb-1 block text-sm font-medium text-slate-600">Publishing date and time</span>
+                  <input type="datetime-local" value={postDraft.publishDate} onChange={(event) => setPostDraft((current) => ({ ...current, publishDate: event.target.value }))} className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-100" />
+                </label>
+              </div>
+              {postDraft.imageUrl && <img src={postDraft.imageUrl} alt={postDraft.imageAltText || postDraft.topic} className="aspect-[1.91/1] w-full max-w-md rounded-xl border border-slate-200 object-cover" />}
+              <Input label="Replace image URL (optional)" value={postDraft.imageUrl.startsWith("data:") ? "" : postDraft.imageUrl} onChange={(value) => setPostDraft((current) => ({ ...current, imageUrl: value }))} placeholder="https://cdn.example.com/social-image.jpg" />
+              <Input label="Image alt text" value={postDraft.imageAltText} onChange={(value) => setPostDraft((current) => ({ ...current, imageAltText: value }))} />
+              <p className="text-xs leading-5 text-amber-700">Changing content or the image returns this post to Planned so it can be reviewed and approved again.</p>
+            </div>
+            <div className="flex flex-col-reverse gap-2 border-t border-slate-200 px-5 py-4 sm:flex-row sm:justify-end">
+              <Button variant="ghost" onClick={() => setEditingPost(null)}>Cancel</Button>
+              <Button onClick={() => void saveCalendarPost()} disabled={postSaving || !postDraft.topic.trim() || !postDraft.caption.trim() || !postDraft.publishDate}>{postSaving ? "Saving…" : "Save post"}</Button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {changeRequestPost && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/50 p-4" role="dialog" aria-modal="true" aria-label="Request AI changes">
+          <div className="w-full max-w-xl rounded-2xl bg-white shadow-2xl">
+            <div className="flex items-start justify-between gap-3 border-b border-slate-200 px-5 py-4">
+              <div><div className="text-xs font-bold uppercase tracking-wide text-violet-600">AI revision</div><h3 className="mt-1 text-xl font-bold text-charcoal-900">Request changes</h3><p className="mt-1 text-sm text-slate-500">{changeRequestPost.topic}</p></div>
+              <button type="button" onClick={() => setChangeRequestPost(null)} className="rounded-lg px-3 py-2 text-xl text-slate-400 hover:bg-slate-100 hover:text-slate-700" aria-label="Close">×</button>
+            </div>
+            <div className="space-y-4 p-5">
+              <div className="flex flex-wrap gap-4">
+                <label className="flex items-center gap-2 text-sm font-semibold text-slate-700"><input type="checkbox" checked={changeContent} onChange={(event) => setChangeContent(event.target.checked)} /> Revise content</label>
+                <label className="flex items-center gap-2 text-sm font-semibold text-slate-700"><input type="checkbox" checked={changeImage} onChange={(event) => setChangeImage(event.target.checked)} /> Generate a new image</label>
+              </div>
+              <label className="block">
+                <span className="mb-1 block text-sm font-medium text-slate-600">What should AI change?</span>
+                <textarea value={changeInstruction} onChange={(event) => setChangeInstruction(event.target.value)} rows={6} placeholder="Make the opening more direct, focus on the campaign offer, and use a warmer visual." className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-100" />
+              </label>
+              <p className="text-xs leading-5 text-slate-500">The current post remains in the calendar and is replaced with the revised version. It must be reviewed again before publishing.</p>
+            </div>
+            <div className="flex flex-col-reverse gap-2 border-t border-slate-200 px-5 py-4 sm:flex-row sm:justify-end">
+              <Button variant="ghost" onClick={() => setChangeRequestPost(null)}>Cancel</Button>
+              <Button onClick={() => void requestCalendarPostChanges()} disabled={postSaving || !changeInstruction.trim() || (!changeContent && !changeImage)}>{postSaving ? "Generating changes…" : "Update with AI"}</Button>
+            </div>
+          </div>
+        </div>
       )}
         </div>
       )}
