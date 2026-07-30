@@ -910,7 +910,7 @@ export default function AiContentStudio() {
         <div className={embeddedDialog ? "absolute inset-0 z-50 bg-white" : "fixed inset-0 z-50"} role="dialog" aria-modal="true" aria-label="Create AI content asset">
           {!embeddedDialog && <div className="absolute inset-0 bg-charcoal-900/55" onClick={closeWizard} />}
           <div className={embeddedDialog ? "absolute inset-0 flex flex-col overflow-hidden bg-white" : "absolute inset-x-3 top-4 mx-auto flex max-h-[calc(100vh-2rem)] max-w-5xl flex-col overflow-hidden rounded-2xl bg-white shadow-2xl sm:top-8 sm:max-h-[calc(100vh-4rem)]"}>
-            <div className="border-b border-charcoal-100 bg-[linear-gradient(135deg,#fdf2f8_0%,#ecfeff_100%)] px-5 py-4">
+            {!(embeddedDialog && citationFlow) && <div className="border-b border-charcoal-100 bg-[linear-gradient(135deg,#fdf2f8_0%,#ecfeff_100%)] px-5 py-4">
               <div className="flex items-start justify-between gap-4">
                 <div>
                   <div className="text-xs font-semibold uppercase tracking-wide text-fuchsia-700">{revisionFlow ? "AI content revision" : citationFlow ? "AI Citation asset" : "3-step wizard"}</div>
@@ -924,7 +924,7 @@ export default function AiContentStudio() {
                 <WizardStep number={2} title="Add context" active={wizardStep === 2} complete={wizardStep > 2} />
                 <WizardStep number={3} title="Review" active={wizardStep === 3} complete={false} />
               </div>}
-            </div>
+            </div>}
 
             <form onSubmit={generate} className="relative flex min-h-0 flex-1 flex-col">
               {generating && <div className="absolute inset-0 z-30 grid place-items-center bg-white/95 p-6 backdrop-blur-sm" role="status" aria-live="polite">
