@@ -410,7 +410,7 @@ export default function AiContentStudio() {
     return `${combined.slice(0, 14_000)}\n\n[Approved context shortened to fit the single-page generation request.]\n\n${combined.slice(-5_000)}`;
   };
 
-  const load = async () => {
+  const load = async (options: { preserveCitationResult?: boolean } = {}) => {
     setLoading(true);
     try {
       const requestedProjectId = searchParams.get("projectId");
@@ -448,6 +448,11 @@ export default function AiContentStudio() {
       if (requestedType && GENERATION_TYPES.some((item) => item.value === requestedType)) setType(requestedType as AiGenerationType);
       const requestedTopic = searchParams.get("topic");
       const requestedTargetUrl = searchParams.get("targetUrl");
+      if (citationFlow && !options.preserveCitationResult) {
+        setSelectedResult(null);
+        setSelectedResultItems([]);
+        setSelectedResultTabId(null);
+      }
       if (requestedTask?.moduleName === "content") {
         const keyword = requestedTask.title.match(/[“\"]([^”\"]+)[”\"]/)?.[1] ?? "";
         const snapshot = requestedTask.approvalSnapshotJson && typeof requestedTask.approvalSnapshotJson === "object" ? requestedTask.approvalSnapshotJson : {};
@@ -480,7 +485,7 @@ export default function AiContentStudio() {
         setWizardStep(requestedTask || citationFlow ? 3 : requestedTopic ? 2 : 1);
         setWizardOpen(true);
       }
-      if (!requestedTask && !selectedResult && historyResult.generations[0]) {
+      if (!requestedTask && !citationFlow && !selectedResult && historyResult.generations[0]) {
         setSelectedResult(historyResult.generations[0]);
         setSelectedResultItems([historyResult.generations[0]]);
         setSelectedResultTabId(historyResult.generations[0].id);
@@ -551,7 +556,7 @@ export default function AiContentStudio() {
           generationId: result.generation.id,
         }, window.location.origin);
       }
-      await load();
+      await load({ preserveCitationResult: citationFlow });
     } catch (error) {
       setGenerationError(error instanceof Error ? error.message : "AI generation failed");
     } finally {
