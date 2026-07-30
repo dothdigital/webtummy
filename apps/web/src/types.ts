@@ -1187,6 +1187,8 @@ export interface SocialStrategy {
   goal: string;
   audience: string | null;
   platforms: string[];
+  targetKeywordsJson: string[];
+  targetUrlsJson: string[];
   postingFrequency: string | null;
   tone: string | null;
   monthlyTheme: string | null;

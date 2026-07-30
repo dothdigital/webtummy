@@ -385,9 +385,11 @@ function platformCaption(platform: string, source: ContentSource, businessName: 
 }
 
 function plannedPostCount(frequency: string | null | undefined) {
-  const match = String(frequency || "").match(/\d+/);
-  const weekly = match ? Number(match[0]) : 3;
-  return Math.max(8, Math.min(24, weekly * 4));
+  const value = String(frequency || "").toLowerCase();
+  const match = value.match(/\d+/);
+  const amount = match ? Number(match[0]) : 3;
+  const monthly = value.includes("month") ? amount : amount * 4;
+  return Math.max(1, Math.min(28, monthly));
 }
 
 function buildCalendar(input: GenerateInput, snapshot: ReturnType<typeof intelligenceSnapshot>, platforms: string[], sources: ContentSource[], pillars: ReturnType<typeof buildPillars>) {
@@ -728,6 +730,8 @@ socialStrategyRouter.post("/social-strategy/generate", async (req, res) => {
         goal,
         audience: audience || null,
         platforms: activePlatforms,
+        targetKeywordsJson: enrichedInput.targetKeywords,
+        targetUrlsJson: enrichedInput.targetUrls,
         postingFrequency: enrichedInput.postingFrequency,
         tone: tone || null,
         monthlyTheme: campaignThemes[0] || `${goal} through coordinated social distribution`,

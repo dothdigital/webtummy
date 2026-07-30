@@ -3919,6 +3919,8 @@ model SocialStrategy {
   goal                        String    @db.VarChar(160)
   audience                    String?   @db.VarChar(255)
   platforms                   Json      @default("[]")
+  targetKeywordsJson          Json      @default("[]")
+  targetUrlsJson              Json      @default("[]")
   postingFrequency            String?   @db.VarChar(120)
   tone                        String?   @db.VarChar(80)
   monthlyTheme                String?   @db.VarChar(255)
