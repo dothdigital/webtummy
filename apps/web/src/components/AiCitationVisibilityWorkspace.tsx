@@ -247,19 +247,6 @@ export default function AiCitationVisibilityWorkspace({ projectId }: { projectId
   const decideClaim = (id: string, decision: "approved" | "rejected") => void run(`claim:${id}`, () => api.patch(`/api/projects/${encodeURIComponent(projectId)}/ai-citation-visibility/claims/${encodeURIComponent(id)}`, { decision }), `Claim ${decision}. Future drafts will use approved claims only.`);
   const reviewFinding = (id: string, status: FindingStatus) => void run(`finding:${id}`, () => api.patch(`/api/projects/${encodeURIComponent(projectId)}/ai-citation-visibility/findings/${encodeURIComponent(id)}`, { status }), status === "open" ? "Finding reopened for review." : `Finding marked ${display(status).toLowerCase()}.`);
   const approveRecommendation = (id: string) => void run(`recommendation:${id}`, () => api.post(`/api/projects/${encodeURIComponent(projectId)}/ai-citation-visibility/recommendations/${encodeURIComponent(id)}/approve`, {}), "Recommendation approved and converted into an execution task. Publishing remains separately controlled.");
-  const copyContactDetails = async () => {
-    if (!workspace) return;
-    const contactText = workspace.contactProfile.fields
-      .filter((field) => field.value)
-      .map((field) => `${field.label}: ${field.value}`)
-      .join("\n");
-    if (!contactText) {
-      setError("No verified contact details are available yet. Add them in Project Intake or Client Details.");
-      return;
-    }
-    await navigator.clipboard.writeText(contactText);
-    setMessage("Verified contact details copied from Project Intake and Client Details.");
-  };
   const copyOrganizationSchema = async () => {
     if (!workspace) return;
     await navigator.clipboard.writeText(JSON.stringify(workspace.organizationSchema.schema, null, 2));
@@ -367,6 +354,7 @@ export default function AiCitationVisibilityWorkspace({ projectId }: { projectId
 
   const latestObservations = useMemo(() => workspace?.prompts.flatMap((prompt) => prompt.snapshots.map((snapshot) => ({ ...snapshot, prompt: prompt.queryText }))) ?? [], [workspace]);
   const websiteUpdates = useMemo(() => workspace?.trustSignals.filter((signal) => signal.websiteUpdate && !signal.websiteAsset) ?? [], [workspace]);
+  const contactSignal = useMemo(() => workspace?.trustSignals.find((signal) => signal.signalKey === "contact-page") ?? null, [workspace]);
   const validatedAssetId = searchParams.get("generatedAssetId");
   const validatedAssetType = searchParams.get("generatedAssetType");
 
@@ -574,11 +562,12 @@ export default function AiCitationVisibilityWorkspace({ projectId }: { projectId
         <div>
           <div className="text-[10px] font-black uppercase tracking-[0.13em] text-brand-700">Verified project information</div>
           <h2 id="citation-contact-title" className="mt-1 text-lg font-black text-slate-950">Contact information</h2>
-          <p className="mt-1 text-xs leading-5 text-slate-500">Pulled from Project Intake, Client Details, the local business profile, and the connected website. AI does not generate these details.</p>
+          <p className="mt-1 text-xs leading-5 text-slate-500">The website uses these verified details from Project Intake, Client Details, and the local business profile. Update the source when needed, then push the latest values into Website Development.</p>
         </div>
         <button type="button" onClick={() => setContactDetailsOpen(false)} className="shrink-0 rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-black text-slate-700 hover:bg-slate-50">Close</button>
       </header>
       <div className="min-h-0 overflow-y-auto p-5">
+        {error && <div className="mb-4 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs font-semibold text-rose-800">{error}</div>}
         <div className="grid gap-3 sm:grid-cols-2">
           {workspace.contactProfile.fields.map((field) => <div key={field.key} className="rounded-xl border border-slate-200 bg-slate-50 px-3.5 py-3">
             <div className="text-[9px] font-black uppercase tracking-wide text-slate-400">{field.label}</div>
@@ -587,10 +576,9 @@ export default function AiCitationVisibilityWorkspace({ projectId }: { projectId
           </div>)}
         </div>
         <div className="mt-5 grid gap-2 sm:grid-cols-2">
-          <button type="button" onClick={() => void copyContactDetails()} className="rounded-lg bg-emerald-600 px-4 py-2.5 text-xs font-black text-white hover:bg-emerald-700">Copy verified details</button>
-          <a href={`/guided-projects/${encodeURIComponent(projectId)}/intake`} onClick={() => setContactDetailsOpen(false)} className="rounded-lg border border-brand-200 bg-white px-4 py-2.5 text-center text-xs font-black text-brand-700 hover:bg-brand-50">Update Project Intake</a>
+          <a href={`/guided-projects/${encodeURIComponent(projectId)}/intake`} onClick={() => setContactDetailsOpen(false)} className="rounded-lg border border-brand-200 bg-white px-4 py-2.5 text-center text-xs font-black text-brand-700 hover:bg-brand-50">Update contact details</a>
+          <button type="button" disabled={Boolean(busy) || !contactSignal} onClick={() => contactSignal && void sendWebsiteUpdate(contactSignal)} className="rounded-lg bg-emerald-600 px-4 py-2.5 text-xs font-black text-white hover:bg-emerald-700 disabled:opacity-50">{contactSignal && busy === `website-send:${contactSignal.id}` ? "Pushing update…" : "Push update to website →"}</button>
         </div>
-        {workspace.trustSignals.find((signal) => signal.signalKey === "contact-page")?.websiteAsset?.kind === "page" && <a href={`/site-architect?projectId=${encodeURIComponent(projectId)}`} onClick={() => setContactDetailsOpen(false)} className="mt-2 block rounded-lg border border-slate-200 bg-white px-4 py-2.5 text-center text-xs font-black text-slate-700 hover:bg-slate-50">Open contact page in Website Development</a>}
       </div>
     </section>
   </div>}

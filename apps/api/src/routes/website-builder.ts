@@ -2313,6 +2313,46 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/sync-citation-as
     select: { id: true, signalKey: true, title: true },
   }) : null;
   if (signalId && !signal) return res.status(404).json({ error: "Citation website update not found for this project." });
+  const contactDetailsChanged = signal?.signalKey === "contact-page";
+  let verifiedContactDetails: { email: string; phone: string; address: string } | null = null;
+  if (contactDetailsChanged) {
+    const [intakeAnswers, localProfile, client] = await Promise.all([
+      prisma.projectIntakeAnswer.findMany({
+        where: { projectId: project.id, questionKey: { in: ["client_email"] } },
+        select: { questionKey: true, answerValue: true },
+      }),
+      project.websiteId
+        ? prisma.localBusinessProfile.findFirst({ where: { websiteId: project.websiteId }, orderBy: { updatedAt: "desc" } })
+        : null,
+      prisma.client.findUnique({ where: { id: project.clientId }, select: { contactEmail: true } }),
+    ]);
+    const answerText = (questionKey: string) => {
+      const value = intakeAnswers.find((answer) => answer.questionKey === questionKey)?.answerValue;
+      if (typeof value === "string") return value.trim();
+      if (Array.isArray(value)) return value.map(String).map((item) => item.trim()).filter(Boolean).join(", ");
+      return String(jsonRecord(value).value || "").trim();
+    };
+    const intelligence = jsonRecord(project.businessProfile?.intelligenceJson);
+    const localAddress = localProfile
+      ? [localProfile.address, localProfile.city, localProfile.region, localProfile.postalCode, localProfile.country].filter(Boolean).join(", ")
+      : "";
+    verifiedContactDetails = {
+      email: String(
+        answerText("client_email")
+        || intelligence.primaryContactEmail
+        || project.agencyClient?.contactEmail
+        || client?.contactEmail
+        || "",
+      ).trim(),
+      phone: String(
+        localProfile?.phone
+        || intelligence.primaryContactPhone
+        || project.agencyClient?.contactPhone
+        || "",
+      ).trim(),
+      address: String(localAddress || formattedBusinessAddress(project) || "").trim(),
+    };
+  }
   const previousCitationContent = jsonRecord(jsonRecord(jsonRecord(build.settingsJson).trustAssets).citationContent);
   const previouslySynchronized = signal && generation
     ? String(jsonRecord(previousCitationContent[signal.signalKey]).generationId || "") === generation.id
@@ -2393,8 +2433,31 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/sync-citation-as
         : pageCreated || !signal
           ? ["sitemap.xml", "robots.txt", "llms.txt"]
           : [];
+  const previousContactDetails = jsonRecord(currentSettings.contactDetails);
+  const synchronizedContactDetails = verifiedContactDetails ? {
+    ...previousContactDetails,
+    email: verifiedContactDetails.email || String(previousContactDetails.email || ""),
+    phone: verifiedContactDetails.phone || String(previousContactDetails.phone || ""),
+    address: verifiedContactDetails.address || String(previousContactDetails.address || ""),
+    source: "verified_project_and_client_intake",
+    syncedAt: new Date().toISOString(),
+  } : previousContactDetails;
+  const synchronizedForms = contactDetailsChanged && Array.isArray(currentSettings.forms)
+    ? currentSettings.forms.map((formValue) => {
+        const form = jsonRecord(formValue);
+        const destination = String(form.destination || "").trim();
+        const usesEmailDestination = !destination || /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(destination);
+        return verifiedContactDetails?.email && usesEmailDestination
+          ? { ...form, destination: verifiedContactDetails.email }
+          : form;
+      })
+    : currentSettings.forms;
   const synchronizedSettings = {
     ...currentSettings,
+    ...(contactDetailsChanged ? {
+      contactDetails: synchronizedContactDetails,
+      ...(Array.isArray(currentSettings.forms) ? { forms: synchronizedForms } : {}),
+    } : {}),
     ...(siteFilesChanged ? {
       siteFiles: {
         ...synchronizedSiteFiles,
@@ -2426,13 +2489,15 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/sync-citation-as
     data: {
       sitemapApprovedAt: siteFilesChanged ? null : build.sitemapApprovedAt,
       settingsJson: websiteChangedSettings(synchronizedSettings, {
-        category: pageCreated ? "page_added" : importedPage ? "page_content" : "trust_assets",
-        summary: pageCreated
+        category: pageCreated ? "page_added" : importedPage ? "page_content" : contactDetailsChanged ? "contact_details" : "trust_assets",
+        summary: contactDetailsChanged
+          ? "Verified contact details were updated from Project Intake and Client Details."
+          : pageCreated
           ? `${importedPage?.title || signal?.title || "A website page"} was added from AI Citation.`
           : importedPage
             ? `${importedPage.title} was synchronized from AI Citation into Website Development.`
             : `${signal?.title || "Website trust files and structured data"} was synchronized with AI Citation.`,
-        section: pageCreated ? "structure" : importedPage ? "content" : siteFilesChanged ? "structure" : "optimization",
+        section: contactDetailsChanged ? "foundation" : pageCreated ? "structure" : importedPage ? "content" : siteFilesChanged ? "structure" : "optimization",
         pageId: importedPage?.id,
         pageTitle: importedPage?.title,
         changedByUserId: context.membership.userId,
@@ -2452,6 +2517,7 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/sync-citation-as
       pageId: importedPage?.id ?? null,
       schemas: synchronizedSchemaNames,
       siteFiles: synchronizedSiteFileNames,
+      contactDetailsUpdated: contactDetailsChanged,
     },
   });
   if (signal) {
