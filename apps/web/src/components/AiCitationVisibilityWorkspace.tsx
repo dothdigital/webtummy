@@ -11,6 +11,17 @@ type CitationContentAsset = {
   createdAt: string;
 };
 
+type WebsiteTrustAsset = {
+  kind: "page" | "file" | "schema" | "data";
+  title: string;
+  source: "Website Development";
+  status: string;
+  pageId: string | null;
+  path: string | null;
+  content: unknown;
+  updatedAt: string | null;
+};
+
 type CitationWorkspace = {
   project: { id: string; name: string; websiteUrl: string | null };
   contactProfile: { fields: Array<{ key: string; label: string; value: string | null; source: string | null }> };
@@ -24,7 +35,7 @@ type CitationWorkspace = {
   findings: Array<{ id: string; category: string; findingKey: string; title: string; summary: string; severity: string; confidence: number; scoreImpact: number; evidenceJson: unknown; isInference: boolean; recommendedAction: string; status: string; contentAsset: CitationContentAsset | null }>;
   opportunities: Array<{ id: string; query: string; topic: string | null; searchIntent: string | null; gapSummary: string; recommendedFixes: unknown; evidenceJson: unknown; isInference: boolean; entityFitScore: number; answerValueScore: number; authorityPotentialScore: number; effortScore: number; priorityScore: number; status: string; contentAsset: CitationContentAsset | null }>;
   prompts: Array<{ id: string; queryText: string; topic: string | null; searchIntent: string | null; targetUrl: string | null; scanFrequency: string; engineTargets: unknown; priorityScore: number; promptSource: string; visibilityStatus: string | null; lastScanStatus: string | null; snapshots: Array<{ id: string; scanProvider: string; visibilityStatus: string; mentionDetected: boolean; sentiment: string | null; accuracyStatus: string | null; answerExcerpt: string | null; createdAt: string; sourceMentions: Array<{ id: string; sourceUrl: string; sourceDomain: string; mentionType: string; supportsBrand: boolean; sourceQualityScore: number }> }> }>;
-  trustSignals: Array<{ id: string; signalKey: string; signalType: string; title: string; status: string; confidence: number; sourceUrl: string | null; recommendation: string | null; contentAsset: CitationContentAsset | null }>;
+  trustSignals: Array<{ id: string; signalKey: string; signalType: string; title: string; status: string; observedStatus: string; confidence: number; sourceUrl: string | null; recommendation: string | null; contentAsset: CitationContentAsset | null; websiteAsset: WebsiteTrustAsset | null }>;
   recommendations: Array<{ id: string; recommendationType: string; title: string; rationale: string; recommendedAction: string; contentDraftJson: unknown; schemaDraftJson: unknown; priorityScore: number; riskLevel: string; status: string; executionTaskId: string | null; contentAsset: CitationContentAsset | null }>;
 };
 
@@ -185,6 +196,7 @@ export default function AiCitationVisibilityWorkspace({ projectId }: { projectId
   const [error, setError] = useState("");
   const [contactDetailsOpen, setContactDetailsOpen] = useState(false);
   const [organizationSchemaOpen, setOrganizationSchemaOpen] = useState(false);
+  const [websiteAssetOpen, setWebsiteAssetOpen] = useState("");
   const [contentRequest, setContentRequest] = useState<CitationContentRequest | null>(null);
   const [contentNotice, setContentNotice] = useState<{
     request: CitationContentRequest;
@@ -252,6 +264,28 @@ export default function AiCitationVisibilityWorkspace({ projectId }: { projectId
     anchor.click();
     window.setTimeout(() => URL.revokeObjectURL(href), 1000);
   };
+  const copyWebsiteAsset = async (asset: WebsiteTrustAsset) => {
+    const content = typeof asset.content === "string" ? asset.content : JSON.stringify(asset.content, null, 2);
+    await navigator.clipboard.writeText(content);
+    setMessage(`${asset.title} copied from the shared Website Development asset.`);
+  };
+  const downloadWebsiteAsset = (asset: WebsiteTrustAsset) => {
+    const content = typeof asset.content === "string" ? asset.content : JSON.stringify(asset.content, null, 2);
+    const fileName = asset.path?.split("/").filter(Boolean).pop() || `${asset.title.toLowerCase().replace(/[^a-z0-9]+/g, "-")}.json`;
+    const href = URL.createObjectURL(new Blob([content], { type: asset.kind === "schema" ? "application/ld+json" : "text/plain" }));
+    const anchor = document.createElement("a");
+    anchor.href = href;
+    anchor.download = fileName;
+    anchor.click();
+    window.setTimeout(() => URL.revokeObjectURL(href), 1000);
+  };
+  const syncCitationAssets = (generationId?: string) => run(
+    generationId ? `citation-sync:${generationId}` : "citation-sync:shared",
+    () => api.post(`/api/projects/${encodeURIComponent(projectId)}/website-builder/sync-citation-assets`, generationId ? { generationId } : {}),
+    generationId
+      ? "The citation asset is now part of Website Development and the current Website Model."
+      : "Sitemap, robots.txt, llms.txt, Organization schema, and WebSite schema are now synchronized with Website Development.",
+  );
   const openCitationContent = (
     launch: ContentLaunch,
     contextLabel: string,
@@ -351,12 +385,13 @@ export default function AiCitationVisibilityWorkspace({ projectId }: { projectId
         <div className="rounded-xl border border-slate-200 bg-white shadow-sm">
           <div className="border-b border-slate-100 px-5 py-4">
             <h3 className="font-black text-charcoal-950">Trust and discoverability signals</h3>
-            <p className="mt-1 text-sm text-charcoal-500">Observed from the latest crawl; missing evidence is not treated as a fabricated failure. Structured business details come from verified intake and client records. AI is used only for assets that genuinely require content generation.</p>
+            <p className="mt-1 text-sm text-charcoal-500">Validated against both the current Website Model and the latest crawl. Existing website pages, files, and schema are reused here; anything created here is synchronized back into Website Development.</p>
           </div>
           {workspace.trustSignals.length ? <div className="grid gap-px bg-slate-100 sm:grid-cols-2 xl:grid-cols-3">{workspace.trustSignals.map((signal) => {
             const contentLaunch = trustSignalContentLaunch(signal);
             const isContactInformation = signal.signalKey === "contact-page";
             const isOrganizationSchema = signal.signalKey === "organization-schema";
+            const isManagedInfrastructure = ["sitemap", "robots-access", "llms-txt", "website-schema"].includes(signal.signalKey);
             return <div key={signal.id} className="flex min-h-44 flex-col bg-white p-4">
               <div className="flex items-start justify-between gap-3">
                 <div>
@@ -374,6 +409,7 @@ export default function AiCitationVisibilityWorkspace({ projectId }: { projectId
                       <button type="button" onClick={() => void copyContactDetails()} className="flex-1 rounded-md bg-emerald-600 px-2.5 py-2 text-[10px] font-black text-white hover:bg-emerald-700">Copy verified details</button>
                       <a href={`/guided-projects/${encodeURIComponent(projectId)}/intake`} className="flex-1 rounded-md border border-brand-200 bg-white px-2.5 py-2 text-center text-[10px] font-black text-brand-700 hover:bg-brand-50">Update intake</a>
                     </div>
+                    {signal.websiteAsset?.kind === "page" && <a href={`/site-architect?projectId=${encodeURIComponent(projectId)}`} className="block rounded-md border border-slate-200 bg-white px-2.5 py-2 text-center text-[10px] font-black text-slate-700 hover:bg-slate-100">Open contact page in Website Development</a>}
                   </div>}
                 </> : isOrganizationSchema ? <>
                   <button type="button" onClick={() => setOrganizationSchemaOpen((open) => !open)} className="block w-full rounded-lg bg-brand-600 px-3 py-2 text-center text-xs font-black text-white hover:bg-brand-700">{organizationSchemaOpen ? "Hide Organization schema" : "Review generated schema"} →</button>
@@ -386,11 +422,30 @@ export default function AiCitationVisibilityWorkspace({ projectId }: { projectId
                       <button type="button" onClick={() => void copyOrganizationSchema()} className="rounded-md bg-emerald-600 px-2.5 py-2 text-[10px] font-black text-white hover:bg-emerald-700">Copy JSON-LD</button>
                       <button type="button" onClick={downloadOrganizationSchema} className="rounded-md border border-brand-200 bg-white px-2.5 py-2 text-[10px] font-black text-brand-700 hover:bg-brand-50">Download JSON</button>
                     </div>
+                    {signal.websiteAsset
+                      ? <a href={`/site-architect?projectId=${encodeURIComponent(projectId)}`} className="block rounded-md border border-brand-200 bg-white px-2.5 py-2 text-center text-[10px] font-black text-brand-700 hover:bg-brand-50">Open shared schema in Website Development</a>
+                      : <button type="button" disabled={Boolean(busy)} onClick={() => syncCitationAssets()} className="w-full rounded-md bg-brand-600 px-2.5 py-2 text-[10px] font-black text-white disabled:opacity-50">{busy === "citation-sync:shared" ? "Synchronizing…" : "Add to Website Development"}</button>}
                     <a href={`/guided-projects/${encodeURIComponent(projectId)}/intake`} className="block rounded-md border border-slate-200 bg-white px-2.5 py-2 text-center text-[10px] font-black text-slate-700 hover:bg-slate-100">Update intake or localization</a>
                   </div>}
+                </> : signal.websiteAsset ? <>
+                  <button type="button" onClick={() => setWebsiteAssetOpen((open) => open === signal.id ? "" : signal.id)} className="block w-full rounded-lg bg-brand-600 px-3 py-2 text-center text-xs font-black text-white hover:bg-brand-700">{websiteAssetOpen === signal.id ? `Hide ${signal.websiteAsset.title}` : `Review ${signal.websiteAsset.title}`} →</button>
+                  {websiteAssetOpen === signal.id && <div className="space-y-2 rounded-lg border border-emerald-200 bg-emerald-50 p-3">
+                    <div className="text-[10px] font-bold leading-4 text-emerald-800">Shared from Website Development · {display(signal.websiteAsset.status)}{signal.websiteAsset.path ? ` · ${signal.websiteAsset.path}` : ""}</div>
+                    {signal.websiteAsset.kind === "page"
+                      ? <div className="rounded-md bg-white px-3 py-2 text-xs font-bold text-slate-700">This page is already part of the current Website Model. Edit it there so Citation Readiness, Quality Review, approval, and publishing all use the same version.</div>
+                      : <pre className="max-h-72 overflow-auto whitespace-pre-wrap break-words rounded-md bg-slate-950 p-3 text-[10px] leading-4 text-slate-100">{typeof signal.websiteAsset.content === "string" ? signal.websiteAsset.content : JSON.stringify(signal.websiteAsset.content, null, 2)}</pre>}
+                    <div className="grid grid-cols-2 gap-2">
+                      {signal.websiteAsset.kind !== "page" && <button type="button" onClick={() => void copyWebsiteAsset(signal.websiteAsset as WebsiteTrustAsset)} className="rounded-md bg-emerald-600 px-2.5 py-2 text-[10px] font-black text-white hover:bg-emerald-700">Copy asset</button>}
+                      {signal.websiteAsset.kind !== "page" && <button type="button" onClick={() => downloadWebsiteAsset(signal.websiteAsset as WebsiteTrustAsset)} className="rounded-md border border-emerald-200 bg-white px-2.5 py-2 text-[10px] font-black text-emerald-700 hover:bg-emerald-50">Download</button>}
+                    </div>
+                    <a href={`/site-architect?projectId=${encodeURIComponent(projectId)}`} className="block rounded-md border border-brand-200 bg-white px-2.5 py-2 text-center text-[10px] font-black text-brand-700 hover:bg-brand-50">Open in Website Development</a>
+                  </div>}
+                </> : isManagedInfrastructure ? <>
+                  <button type="button" disabled={Boolean(busy)} onClick={() => syncCitationAssets()} className="block w-full rounded-lg bg-brand-600 px-3 py-2 text-center text-xs font-black text-white disabled:opacity-50">{busy === "citation-sync:shared" ? "Synchronizing…" : "Prepare in Website Development"} →</button>
+                  <p className="text-[10px] leading-4 text-slate-500">Generated from the current website page map and verified project data—not as a separate AI draft.</p>
                 </> : <>
                   <button type="button" onClick={() => openCitationContent(contentLaunch, signal.title, "trust_signal", signal.id, signal.contentAsset?.id)} className={`block w-full rounded-lg px-3 py-2 text-center text-xs font-black ${signal.contentAsset ? "bg-brand-600 text-white hover:bg-brand-700" : signal.status === "present" ? "border border-brand-200 bg-white text-brand-700 hover:bg-brand-50" : "bg-brand-600 text-white hover:bg-brand-700"}`}>{signal.contentAsset ? "View generated content" : contentLaunch.label} →</button>
-                  {signal.contentAsset && <button type="button" onClick={() => openCitationContent(contentLaunch, signal.title, "trust_signal", signal.id)} className="w-full text-center text-[11px] font-black text-brand-700 hover:underline">Create a new version</button>}
+                  {signal.contentAsset && <button type="button" disabled={Boolean(busy)} onClick={() => syncCitationAssets(signal.contentAsset?.id)} className="w-full rounded-lg border border-emerald-200 bg-white px-3 py-2 text-center text-[11px] font-black text-emerald-700 hover:bg-emerald-50 disabled:opacity-50">{busy === `citation-sync:${signal.contentAsset.id}` ? "Synchronizing…" : "Add to Website Development"}</button>}
                 </>}
               </div>}
             </div>;
@@ -456,13 +511,15 @@ export default function AiCitationVisibilityWorkspace({ projectId }: { projectId
     onClose={() => setContentRequest(null)}
     onSaved={(generationId) => {
       if (!contentRequest) return;
+      const shouldSynchronize = contentRequest.sourceType === "trust_signal" && workspace?.capabilities.canExecute;
       setContentNotice({
         request: { ...contentRequest, generationId },
         generationId,
         generationType: contentRequest.type,
         validated: false,
       });
-      void load();
+      if (shouldSynchronize) syncCitationAssets(generationId);
+      else void load();
     }}
     onValidated={(generationId, generationType) => {
       if (!contentRequest) return;

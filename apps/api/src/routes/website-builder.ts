@@ -56,6 +56,32 @@ const jsonRecord = (value: unknown): Record<string, unknown> => value && typeof 
 const jsonStrings = (value: unknown) => Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
 const slugify = (value: string) => value.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 180) || "page";
 const titleCase = (value: string) => value.replace(/\b\w/g, (letter) => letter.toUpperCase());
+function schemaDocumentItems(value: unknown) {
+  const record = jsonRecord(value);
+  if (Array.isArray(record["@graph"])) return record["@graph"].filter((item) => item && typeof item === "object" && !Array.isArray(item));
+  return Object.keys(record).length ? [record] : [];
+}
+function mergeSchemaDocuments(existing: unknown, additions: unknown[]) {
+  const items = [...schemaDocumentItems(existing)];
+  for (const addition of additions.flatMap(schemaDocumentItems)) {
+    const record = jsonRecord(addition);
+    const id = String(record["@id"] || "");
+    const types = Array.isArray(record["@type"]) ? record["@type"].map(String) : [String(record["@type"] || "")];
+    const existingIndex = items.findIndex((candidate) => {
+      const current = jsonRecord(candidate);
+      if (id && String(current["@id"] || "") === id) return true;
+      const currentTypes = Array.isArray(current["@type"]) ? current["@type"].map(String) : [String(current["@type"] || "")];
+      return types.some((type) => type && currentTypes.includes(type) && ["Organization", "LocalBusiness", "WebSite"].includes(type));
+    });
+    if (existingIndex >= 0) items[existingIndex] = { ...jsonRecord(items[existingIndex]), ...record };
+    else items.push(record);
+  }
+  return { "@context": "https://schema.org", "@graph": items.map((item) => {
+    const record = { ...jsonRecord(item) };
+    delete record["@context"];
+    return record;
+  }) };
+}
 type WebsiteChangeSection = "foundation" | "structure" | "content" | "menus" | "media" | "optimization";
 type WebsiteChangeHandoff = {
   category: string;
@@ -314,6 +340,9 @@ function qualityWebsiteModel(project: { id: string; businessLocationJson?: Prism
   const brand = jsonRecord(build.brandJson);
   const settings = jsonRecord(build.settingsJson);
   const buildPages = build.pages.filter(pageIsActive);
+  const homePageId = buildPages.find((page) => !page.slug || /^(home|homepage)$/i.test(page.slug) || page.pageType === "home")?.id ?? buildPages[0]?.id;
+  const sharedSchemas = jsonRecord(jsonRecord(settings.trustAssets).schemas);
+  const sharedSchemaDocuments = [sharedSchemas.organization, sharedSchemas.website].filter((value) => Object.keys(jsonRecord(value)).length);
   const activePageIds = new Set(buildPages.map((page) => page.id));
   const contactDetails = jsonRecord(settings.contactDetails);
   const socialLinks = jsonRecord(contactDetails.socialLinks);
@@ -340,7 +369,9 @@ function qualityWebsiteModel(project: { id: string; businessLocationJson?: Prism
     const authority = jsonRecord(brief.authorityCluster);
     const seo = jsonRecord(page.seoJson);
     const rawLocation = jsonRecord(seo.location);
-    const schema = jsonRecord(seo.schemaJsonLd);
+    const schema = page.id === homePageId && sharedSchemaDocuments.length
+      ? mergeSchemaDocuments(seo.schemaJsonLd, sharedSchemaDocuments)
+      : jsonRecord(seo.schemaJsonLd);
     const mappedRequiredLinks = jsonStrings(mappedPlan.requiredInternalLinks);
     const schemaTypes = schemaEntityTypes(schema);
     const storedSections = canonicalComponents(content);
@@ -1102,6 +1133,10 @@ async function publishingContentFor(project: Awaited<ReturnType<typeof scopedPro
 async function siteFilesFor(project: Awaited<ReturnType<typeof scopedProject>>["project"]) {
   const build = project.websiteBuilds[0];
   const activePages = build?.pages.filter(pageIsActive) ?? [];
+  const storedSiteFiles = jsonRecord(jsonRecord(build?.settingsJson).siteFiles);
+  const storedSitemap = jsonRecord(storedSiteFiles.sitemap);
+  const storedLlms = jsonRecord(storedSiteFiles.llms);
+  const storedRobots = jsonRecord(storedSiteFiles.robots);
   const root = project.websiteUrl?.replace(/\/$/, "") ?? "";
   const generated = project.websiteId ? await prisma.aiContentGeneration.findMany({ where: { clientId: project.clientId, websiteId: project.websiteId, type: { in: ["sitemap", "domain_llms_txt"] }, status: "completed" }, orderBy: { createdAt: "desc" }, take: 20 }) : [];
   const sitemapGeneration = generated.find((item) => item.type === "sitemap");
@@ -1115,11 +1150,67 @@ async function siteFilesFor(project: Awaited<ReturnType<typeof scopedProject>>["
   const crawledLlms = crawl?.llmsFiles[0];
   const sitemapUrl = root ? `${root}/sitemap.xml` : "/sitemap.xml";
   const fallbackLlms = activePages.length ? [`# ${businessIdentity(project) || "Business name required"}`, "", "## Primary pages", ...activePages.map((page) => `- [${page.title}](${root ? `${root}/${page.slug}` : `/${page.slug}`}): ${page.primaryKeyword}`), "", "## Content policy", "Use approved page content, verified business information, and canonical website URLs."].join("\n") : "";
+  const savedSitemapContent = String(storedSitemap.content || "").trim();
+  const savedLlmsContent = String(storedLlms.content || "").trim();
+  const savedRobotsContent = String(storedRobots.content || "").trim();
+  const savedSitemapReady = Boolean(savedSitemapContent && storedSitemap.status === "ready");
+  const savedLlmsReady = Boolean(savedLlmsContent && storedLlms.status === "ready");
+  const savedRobotsReady = Boolean(savedRobotsContent && storedRobots.status === "ready");
   return {
-    sitemap: { status: urls.length ? "ready" : "waiting", source: activePages.length ? "Site Architect active page map" : sitemapGeneration ? "AI Content Studio" : crawl?.sitemaps.length ? "Website crawl" : "Site Architect page map", content: String(activePages.length ? fallbackSitemap : sitemapResult.sitemapXml ?? fallbackSitemap), itemCount: urls.length || crawl?.sitemaps.reduce((sum, item) => sum + item.urlCount, 0) || 0 },
-    llms: { status: llmsGeneration || crawledLlms?.content || fallbackLlms ? "ready" : "waiting", source: activePages.length ? "Site Architect active page map" : llmsGeneration ? "AI Content Studio" : crawledLlms?.content ? "Website crawl" : "Site Architect page map", content: String(activePages.length ? fallbackLlms : llmsResult.llmsTxt ?? crawledLlms?.content ?? fallbackLlms) },
-    robots: { status: crawledRobots?.content || urls.length ? "ready" : "waiting", source: crawledRobots?.content ? "Website crawl" : "Site Architect", content: crawledRobots?.content ?? `User-agent: *\nAllow: /\n\nSitemap: ${sitemapUrl}` },
+    sitemap: { status: urls.length || savedSitemapReady ? "ready" : "waiting", source: activePages.length ? "Site Architect active page map" : savedSitemapReady ? "Shared Website Development asset" : sitemapGeneration ? "AI Content Studio" : crawl?.sitemaps.length ? "Website crawl" : "Site Architect page map", content: String(activePages.length ? fallbackSitemap : savedSitemapReady ? savedSitemapContent : sitemapResult.sitemapXml || savedSitemapContent || fallbackSitemap), itemCount: urls.length || Number(storedSitemap.itemCount || 0) || crawl?.sitemaps.reduce((sum, item) => sum + item.urlCount, 0) || 0 },
+    llms: { status: savedLlmsReady || llmsGeneration || crawledLlms?.content || fallbackLlms ? "ready" : "waiting", source: activePages.length ? "Site Architect active page map" : savedLlmsReady ? "Shared Website Development asset" : llmsGeneration ? "AI Content Studio" : crawledLlms?.content ? "Website crawl" : "Site Architect page map", content: String(activePages.length ? fallbackLlms : savedLlmsReady ? savedLlmsContent : llmsResult.llmsTxt || crawledLlms?.content || savedLlmsContent || fallbackLlms) },
+    robots: { status: savedRobotsReady || crawledRobots?.content || urls.length ? "ready" : "waiting", source: savedRobotsReady ? "Shared Website Development asset" : crawledRobots?.content ? "Website crawl" : "Site Architect", content: savedRobotsReady ? savedRobotsContent : crawledRobots?.content || savedRobotsContent || `User-agent: *\nAllow: /\n\nSitemap: ${sitemapUrl}` },
   };
+}
+
+function sharedWebsiteSchemas(
+  project: Awaited<ReturnType<typeof scopedProject>>["project"],
+  build: NonNullable<Awaited<ReturnType<typeof scopedProject>>["project"]["websiteBuilds"][number]>,
+) {
+  const settings = jsonRecord(build.settingsJson);
+  const brand = jsonRecord(build.brandJson);
+  const contact = jsonRecord(settings.contactDetails);
+  const { location } = approvedBusinessLocation(project);
+  const root = String(project.websiteUrl || "").replace(/\/$/, "");
+  const businessName = String(brand.businessName || businessIdentity(project) || project.name || "Website");
+  const organizationId = root ? `${root}/#organization` : `${build.id}:organization`;
+  const websiteId = root ? `${root}/#website` : `${build.id}:website`;
+  const address = {
+    "@type": "PostalAddress",
+    ...(location.streetAddress ? { streetAddress: String(location.streetAddress) } : {}),
+    ...(location.city ? { addressLocality: String(location.city) } : {}),
+    ...(location.stateProvince ? { addressRegion: String(location.stateProvince) } : {}),
+    ...(location.postalCode ? { postalCode: String(location.postalCode) } : {}),
+    ...(location.country ? { addressCountry: String(location.country) } : {}),
+  };
+  const organization = {
+    "@context": "https://schema.org",
+    "@type": "Organization",
+    "@id": organizationId,
+    name: businessName,
+    ...(root ? { url: root } : {}),
+    ...(contact.email ? { email: String(contact.email) } : {}),
+    ...(contact.phone ? { telephone: String(contact.phone) } : {}),
+    ...(Object.keys(address).length > 1 ? { address } : {}),
+    ...(jsonStrings(project.targetLocations).length ? { areaServed: jsonStrings(project.targetLocations).map((name) => ({ "@type": "Place", name })) } : {}),
+    ...((contact.email || contact.phone) ? {
+      contactPoint: [{
+        "@type": "ContactPoint",
+        contactType: "customer service",
+        ...(contact.email ? { email: String(contact.email) } : {}),
+        ...(contact.phone ? { telephone: String(contact.phone) } : {}),
+      }],
+    } : {}),
+  };
+  const website = {
+    "@context": "https://schema.org",
+    "@type": "WebSite",
+    "@id": websiteId,
+    ...(root ? { url: root } : {}),
+    name: businessName,
+    publisher: { "@id": organizationId },
+  };
+  return { organization, website };
 }
 
 const articlePlainText = (value: string) => value
@@ -2186,6 +2277,144 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/sync-site-files"
   const updated = await prisma.websiteBuild.update({ where: { id: build.id }, data: { settingsJson: { ...jsonRecord(build.settingsJson), siteFiles: { ...siteFiles, syncedAt: new Date().toISOString(), approvedAt: null, approvedByUserId: null } } as Prisma.InputJsonValue } });
   await recordWorkspaceActivity(prisma, { context, action: "website_builder.site_files_synced", entityType: "website_build", entityId: build.id, agencyClientId: project.agencyClientId, projectId: project.id, nextJson: { sitemap: siteFiles.sitemap.status, llms: siteFiles.llms.status, robots: siteFiles.robots.status } });
   res.json({ build: updated, siteFiles });
+});
+
+const citationTrustPageConfig: Record<string, { title: string; slug: string; pageType: string; keyword: string }> = {
+  "about-page": { title: "About Us", slug: "about", pageType: "about", keyword: "about the business" },
+  "privacy-page": { title: "Privacy Policy", slug: "privacy-policy", pageType: "legal", keyword: "privacy policy" },
+  "terms-page": { title: "Terms and Conditions", slug: "terms-and-conditions", pageType: "legal", keyword: "terms and conditions" },
+  "author-evidence": { title: "Our Experts", slug: "experts", pageType: "about", keyword: "verified experts and authors" },
+  "source-evidence": { title: "References and Sources", slug: "references", pageType: "supporting", keyword: "references and source evidence" },
+};
+
+websiteBuilderRouter.post("/projects/:projectId/website-builder/sync-citation-assets", async (req, res) => {
+  const { context, project } = await scopedProject(req.params.projectId, req);
+  if (!hasWorkspacePermission(context, "execute_tasks")) return res.status(403).json({ error: "Task execution permission is required." });
+  const build = project.websiteBuilds[0];
+  if (!build) return res.status(404).json({ error: "Create the website in Website Development before synchronizing citation assets." });
+  if (["queued", "processing"].includes(build.status)) return res.status(409).json({ error: "Wait for the active website job to finish before synchronizing citation assets." });
+
+  const generationId = String(req.body?.generationId || "").trim();
+  const generation = generationId ? await prisma.aiContentGeneration.findFirst({
+    where: {
+      id: generationId,
+      clientId: project.clientId,
+      projectId: project.id,
+      sourceContext: "ai_citation",
+      sourceType: "trust_signal",
+      status: "completed",
+    },
+  }) : null;
+  if (generationId && !generation) return res.status(404).json({ error: "Citation content asset not found for this project." });
+  const signal = generation?.sourceRecordId ? await prisma.trustSignal.findFirst({
+    where: { id: generation.sourceRecordId, projectId: project.id },
+    select: { id: true, signalKey: true, title: true },
+  }) : null;
+  const previousCitationContent = jsonRecord(jsonRecord(jsonRecord(build.settingsJson).trustAssets).citationContent);
+  const previouslySynchronized = signal && generation
+    ? String(jsonRecord(previousCitationContent[signal.signalKey]).generationId || "") === generation.id
+    : false;
+
+  let importedPage: { id: string; title: string; slug: string } | null = null;
+  const pageConfig = signal ? citationTrustPageConfig[signal.signalKey] : null;
+  if (generation && pageConfig && generation.type === "article" && !previouslySynchronized) {
+    const pagePattern = signal?.signalKey === "privacy-page"
+      ? /privacy/i
+      : signal?.signalKey === "terms-page"
+        ? /terms|conditions|legal/i
+        : signal?.signalKey === "about-page"
+          ? /(?:^|[-_/ ])(about|our-story|company)(?:[-_/ ]|$)/i
+          : signal?.signalKey === "author-evidence"
+            ? /author|team|leadership|founder|expert/i
+            : /references|sources|evidence|resources/i;
+    let page = build.pages.find((candidate) => candidate.status !== "deferred" && pagePattern.test(`${candidate.slug} ${candidate.title} ${candidate.pageType}`));
+    if (!page) {
+      page = await prisma.websiteBuildPage.create({
+        data: {
+          buildId: build.id,
+          title: pageConfig.title,
+          slug: pageConfig.slug,
+          pageType: pageConfig.pageType,
+          primaryKeyword: pageConfig.keyword,
+          secondaryKeywords: [],
+          searchIntent: "informational",
+          targetUrl: `/${pageConfig.slug}`,
+          targetCta: "Contact us",
+          sortOrder: build.pages.length,
+          status: "planned",
+        },
+        include: { versions: true, mediaAssets: true },
+      });
+    }
+    const generated = importedArticle(jsonRecord(generation.resultJson), page, businessIdentity(project) || "the business");
+    const saved = await saveGeneratedPage(page, generated, context, build.templateKey, `Synchronized from AI Citation: ${signal?.title || generation.topic}.`);
+    importedPage = { id: saved.id, title: saved.title, slug: saved.slug };
+  }
+
+  const siteFileProject = importedPage ? (await scopedProject(project.id, req)).project : project;
+  const siteFiles = await siteFilesFor(siteFileProject);
+  const schemas = sharedWebsiteSchemas(project, build);
+  const latestBuild = await prisma.websiteBuild.findUnique({ where: { id: build.id }, select: { settingsJson: true } });
+  const currentSettings = jsonRecord(latestBuild?.settingsJson ?? build.settingsJson);
+  const previousTrustAssets = jsonRecord(currentSettings.trustAssets);
+  const synchronizedSettings = {
+    ...currentSettings,
+    siteFiles: {
+      ...siteFiles,
+      syncedAt: new Date().toISOString(),
+      approvedAt: null,
+      approvedByUserId: null,
+      source: "Shared Website Development and AI Citation workflow",
+    },
+    trustAssets: {
+      ...previousTrustAssets,
+      schemas,
+      syncedAt: new Date().toISOString(),
+      source: "Verified project intake, localization, and Website Development",
+      ...(generation ? {
+        citationContent: {
+          ...jsonRecord(previousTrustAssets.citationContent),
+          [signal?.signalKey || generation.id]: {
+            generationId: generation.id,
+            pageId: importedPage?.id ?? null,
+            synchronizedAt: new Date().toISOString(),
+          },
+        },
+      } : {}),
+    },
+  };
+  const updated = await prisma.websiteBuild.update({
+    where: { id: build.id },
+    data: {
+      sitemapApprovedAt: null,
+      settingsJson: websiteChangedSettings(synchronizedSettings, {
+        category: importedPage ? "page_content" : "trust_assets",
+        summary: importedPage
+          ? `${importedPage.title} was synchronized from AI Citation into Website Development.`
+          : "Website trust files and structured data were synchronized with AI Citation.",
+        section: importedPage ? "content" : "optimization",
+        pageId: importedPage?.id,
+        pageTitle: importedPage?.title,
+        changedByUserId: context.membership.userId,
+      }) as Prisma.InputJsonValue,
+    },
+  });
+  await recordWorkspaceActivity(prisma, {
+    context,
+    action: "website_builder.citation_assets_synced",
+    entityType: "website_build",
+    entityId: build.id,
+    agencyClientId: project.agencyClientId,
+    projectId: project.id,
+    nextJson: {
+      generationId: generation?.id ?? null,
+      signalKey: signal?.signalKey ?? null,
+      pageId: importedPage?.id ?? null,
+      schemas: ["Organization", "WebSite"],
+      siteFiles: ["sitemap.xml", "robots.txt", "llms.txt"],
+    },
+  });
+  res.json({ build: updated, siteFiles, schemas, importedPage });
 });
 
 websiteBuilderRouter.post("/projects/:projectId/website-builder/approve-site-files", async (req, res) => {

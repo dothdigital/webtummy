@@ -81,6 +81,13 @@ async function scopedCitationProject(req: Request, projectId: string, permission
       keywordGroups: { where: { status: "approved" }, select: { keywords: true } },
       keywordResearchRuns: { where: { status: "completed" }, orderBy: { createdAt: "desc" }, take: 20, select: { seedKeyword: true, ideas: { take: 20, select: { keyword: true } } } },
       strategyPlans: { orderBy: { version: "desc" }, take: 1 },
+      websiteBuilds: {
+        orderBy: { updatedAt: "desc" },
+        take: 1,
+        include: {
+          pages: { orderBy: { sortOrder: "asc" } },
+        },
+      },
       website: {
         include: {
           localBusinessProfiles: { orderBy: { updatedAt: "desc" }, take: 1 },
@@ -115,31 +122,166 @@ async function activeExecutionPlan(tx: Prisma.TransactionClient, projectId: stri
   return existing ?? tx.executionPlan.create({ data: { projectId, title: "AI citation visibility execution plan", summary: "Approved entity, answer-readiness, structured-data, trust and correction work." } });
 }
 
+type WebsiteTrustAsset = {
+  kind: "page" | "file" | "schema" | "data";
+  title: string;
+  source: "Website Development";
+  status: string;
+  pageId: string | null;
+  path: string | null;
+  content: unknown;
+  updatedAt: Date | string | null;
+};
+
+function schemaTypes(value: unknown) {
+  const types = new Set<string>();
+  const document = jsonRecord(value);
+  const roots = Array.isArray(document["@graph"]) ? document["@graph"] : [document];
+  for (const candidate of roots) {
+    if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) continue;
+    const record = candidate as Record<string, unknown>;
+    const rawType = record["@type"];
+    if (typeof rawType === "string" && rawType.trim()) types.add(rawType.trim().toLowerCase());
+    if (Array.isArray(rawType)) rawType.forEach((item) => {
+      if (typeof item === "string" && item.trim()) types.add(item.trim().toLowerCase());
+    });
+  }
+  return types;
+}
+
+function websiteTrustAssets(project: Awaited<ReturnType<typeof scopedCitationProject>>["project"]) {
+  const build = project.websiteBuilds[0];
+  if (!build) return {} as Record<string, WebsiteTrustAsset>;
+  const settings = jsonRecord(build.settingsJson);
+  const siteFiles = jsonRecord(settings.siteFiles);
+  const trustAssets = jsonRecord(settings.trustAssets);
+  const schemas = jsonRecord(trustAssets.schemas);
+  const activePages = build.pages.filter((page) => page.status !== "deferred");
+  const completedPages = activePages.filter((page) => Object.keys(jsonRecord(page.contentJson)).length > 0);
+  const root = String(project.website?.rootUrl || project.websiteUrl || "").replace(/\/$/, "");
+  const businessName = citationContext(project).businessName || "Website";
+  const assets: Record<string, WebsiteTrustAsset> = {};
+  const pagePatterns: Array<[string, RegExp]> = [
+    ["about-page", /(?:^|[-_/ ])(about|our-story|company)(?:[-_/ ]|$)/i],
+    ["contact-page", /(?:^|[-_/ ])contact(?:[-_/ ]|$)/i],
+    ["privacy-page", /privacy/i],
+    ["terms-page", /terms|conditions|legal/i],
+    ["author-evidence", /author|team|leadership|founder|expert/i],
+    ["source-evidence", /references|sources|evidence|resources/i],
+  ];
+  for (const [signalKey, pattern] of pagePatterns) {
+    const page = completedPages.find((candidate) => pattern.test(`${candidate.slug} ${candidate.title} ${candidate.pageType}`));
+    if (!page) continue;
+    assets[signalKey] = {
+      kind: "page",
+      title: page.title,
+      source: "Website Development",
+      status: page.status,
+      pageId: page.id,
+      path: page.slug ? `/${page.slug.replace(/^\/|\/$/g, "")}/` : "/",
+      content: { contentJson: page.contentJson, seoJson: page.seoJson },
+      updatedAt: page.updatedAt,
+    };
+  }
+  const file = (signalKey: string, key: "sitemap" | "llms" | "robots", title: string, fallbackContent: string) => {
+    const stored = jsonRecord(siteFiles[key]);
+    const content = String(stored.content || fallbackContent).trim();
+    if (!content || (!activePages.length && String(stored.status || "") === "waiting")) return;
+    assets[signalKey] = {
+      kind: "file",
+      title,
+      source: "Website Development",
+      status: String(stored.status || "ready"),
+      pageId: null,
+      path: key === "sitemap" ? "/sitemap.xml" : key === "llms" ? "/llms.txt" : "/robots.txt",
+      content,
+      updatedAt: String(siteFiles.syncedAt || build.updatedAt),
+    };
+  };
+  const urls = activePages.map((page) => `${root}/${page.slug}`.replace(/([^:]\/)\/+/, "$1"));
+  const sitemap = activePages.length
+    ? `<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n${urls.map((url) => `  <url><loc>${url}</loc></url>`).join("\n")}\n</urlset>`
+    : "";
+  const llms = activePages.length
+    ? [`# ${businessName}`, "", "## Primary pages", ...activePages.map((page) => `- [${page.title}](${root ? `${root}/${page.slug}` : `/${page.slug}`}): ${page.primaryKeyword}`), "", "## Content policy", "Use approved page content, verified business information, and canonical website URLs."].join("\n")
+    : "";
+  file("sitemap", "sitemap", "XML sitemap", sitemap);
+  file("llms-txt", "llms", "llms.txt", llms);
+  file("robots-access", "robots", "robots.txt", activePages.length ? `User-agent: *\nAllow: /\n\nSitemap: ${root ? `${root}/sitemap.xml` : "/sitemap.xml"}` : "");
+
+  const pageSchemaTypes = new Set<string>();
+  for (const page of activePages) {
+    for (const type of schemaTypes(jsonRecord(page.seoJson).schemaJsonLd)) pageSchemaTypes.add(type);
+  }
+  const storedOrganization = jsonRecord(schemas.organization);
+  const storedWebsite = jsonRecord(schemas.website);
+  if (Object.keys(storedOrganization).length || pageSchemaTypes.has("organization") || pageSchemaTypes.has("localbusiness")) {
+    assets["organization-schema"] = {
+      kind: "schema",
+      title: "Organization schema",
+      source: "Website Development",
+      status: "ready",
+      pageId: null,
+      path: "/#organization",
+      content: Object.keys(storedOrganization).length ? storedOrganization : { detectedInWebsitePages: true },
+      updatedAt: String(trustAssets.syncedAt || build.updatedAt),
+    };
+  }
+  if (Object.keys(storedWebsite).length || pageSchemaTypes.has("website")) {
+    assets["website-schema"] = {
+      kind: "schema",
+      title: "WebSite schema",
+      source: "Website Development",
+      status: "ready",
+      pageId: null,
+      path: "/#website",
+      content: Object.keys(storedWebsite).length ? storedWebsite : { detectedInWebsitePages: true },
+      updatedAt: String(trustAssets.syncedAt || build.updatedAt),
+    };
+  }
+  const contactProfile = verifiedContactProfile(project);
+  if (!assets["contact-page"] && contactProfile.fields.some((field) => ["email", "phone", "address"].includes(field.key) && field.value)) {
+    assets["contact-page"] = {
+      kind: "data",
+      title: "Verified contact information",
+      source: "Website Development",
+      status: "ready",
+      pageId: null,
+      path: null,
+      content: contactProfile,
+      updatedAt: build.updatedAt,
+    };
+  }
+  return assets;
+}
+
 function crawlEvidence(project: Awaited<ReturnType<typeof scopedCitationProject>>["project"]) {
   const crawl = project.website?.crawlJobs[0] ?? null;
   const pages = crawl?.pages ?? [];
+  const websiteAssets = websiteTrustAssets(project);
   const schemaTypes = pages.flatMap((page) => page.schemas.map((schema) => ({ type: (schema.schemaType ?? "").toLowerCase(), valid: schema.validJson })));
   const pageMatches = (pattern: RegExp) => pages.some((page) => pattern.test(`${page.normalizedUrl} ${page.seo?.title ?? ""}`.toLowerCase()));
+  const hasWebsiteAsset = (signalKey: string) => Boolean(websiteAssets[signalKey]);
   return {
     id: crawl?.id ?? null,
     completedAt: crawl?.completedAt ?? null,
     pageCount: pages.length,
     indexablePageCount: pages.filter((page) => (page.statusCode ?? 0) >= 200 && (page.statusCode ?? 0) < 400 && !/noindex/i.test(page.seo?.robotsMeta ?? "")).length,
-    organizationSchemaCount: schemaTypes.filter((schema) => schema.type === "organization" && schema.valid).length,
-    websiteSchemaCount: schemaTypes.filter((schema) => schema.type === "website" && schema.valid).length,
+    organizationSchemaCount: schemaTypes.filter((schema) => schema.type === "organization" && schema.valid).length + (hasWebsiteAsset("organization-schema") ? 1 : 0),
+    websiteSchemaCount: schemaTypes.filter((schema) => schema.type === "website" && schema.valid).length + (hasWebsiteAsset("website-schema") ? 1 : 0),
     personSchemaCount: schemaTypes.filter((schema) => schema.type === "person" && schema.valid).length,
     faqSchemaCount: schemaTypes.filter((schema) => schema.type === "faqpage" && schema.valid).length,
     breadcrumbSchemaCount: schemaTypes.filter((schema) => schema.type === "breadcrumblist" && schema.valid).length,
     invalidSchemaCount: schemaTypes.filter((schema) => !schema.valid).length,
-    aboutPageFound: pageMatches(/(?:^|[\/\s-])(about|our-story|company)(?:[\/\s-]|$)/i),
-    contactPageFound: pageMatches(/(?:^|[\/\s-])contact(?:[\/\s-]|$)/i),
-    privacyPageFound: pageMatches(/privacy/i),
-    termsPageFound: pageMatches(/terms|conditions|legal/i),
-    authorEvidenceFound: schemaTypes.some((schema) => schema.type === "person" && schema.valid) || pageMatches(/author|team|leadership|founder/i),
-    referenceEvidenceFound: pages.some((page) => page.links.some((link) => link.placement === "body" && Boolean(link.targetUrl))),
-    llmsTxtPresent: Boolean(crawl?.llmsFiles.some((file) => file.statusCode === 200 && file.content)),
-    sitemapPresent: Boolean(crawl?.sitemaps.some((sitemap) => sitemap.statusCode === 200 || sitemap.urlCount > 0)),
-    robotsAccessible: Boolean(crawl?.robotsFiles.some((file) => file.statusCode === 200)),
+    aboutPageFound: pageMatches(/(?:^|[\/\s-])(about|our-story|company)(?:[\/\s-]|$)/i) || hasWebsiteAsset("about-page"),
+    contactPageFound: pageMatches(/(?:^|[\/\s-])contact(?:[\/\s-]|$)/i) || hasWebsiteAsset("contact-page"),
+    privacyPageFound: pageMatches(/privacy/i) || hasWebsiteAsset("privacy-page"),
+    termsPageFound: pageMatches(/terms|conditions|legal/i) || hasWebsiteAsset("terms-page"),
+    authorEvidenceFound: schemaTypes.some((schema) => schema.type === "person" && schema.valid) || pageMatches(/author|team|leadership|founder/i) || hasWebsiteAsset("author-evidence"),
+    referenceEvidenceFound: pages.some((page) => page.links.some((link) => link.placement === "body" && Boolean(link.targetUrl))) || hasWebsiteAsset("source-evidence"),
+    llmsTxtPresent: Boolean(crawl?.llmsFiles.some((file) => file.statusCode === 200 && file.content)) || hasWebsiteAsset("llms-txt"),
+    sitemapPresent: Boolean(crawl?.sitemaps.some((sitemap) => sitemap.statusCode === 200 || sitemap.urlCount > 0)) || hasWebsiteAsset("sitemap"),
+    robotsAccessible: Boolean(crawl?.robotsFiles.some((file) => file.statusCode === 200)) || hasWebsiteAsset("robots-access"),
   };
 }
 
@@ -364,6 +506,19 @@ aiCitationVisibilityRouter.get("/projects/:projectId/ai-citation-visibility", as
     ...item,
     contentAsset: latestAssetBySource.get(`${sourceType}:${item.id}`) ?? null,
   });
+  const websiteAssets = websiteTrustAssets(project);
+  const attachTrustAssets = (item: typeof trustSignals[number]) => {
+    const websiteAsset = websiteAssets[item.signalKey] ?? null;
+    return {
+      ...attachContentAsset("trust_signal", item),
+      observedStatus: item.status,
+      websiteAsset,
+      ...(websiteAsset ? {
+        status: "present",
+        recommendation: `${websiteAsset.title} is already available in Website Development. Review and update the shared asset instead of creating a duplicate.`,
+      } : {}),
+    };
+  };
   res.json({
     project: { id: project.id, name: citationContext(project).businessName, websiteUrl: citationContext(project).websiteUrl },
     contactProfile: verifiedContactProfile(project),
@@ -382,7 +537,7 @@ aiCitationVisibilityRouter.get("/projects/:projectId/ai-citation-visibility", as
     findings: findings.map((item) => attachContentAsset("finding", item)),
     opportunities: opportunities.map((item) => attachContentAsset("opportunity", item)),
     prompts,
-    trustSignals: trustSignals.map((item) => attachContentAsset("trust_signal", item)),
+    trustSignals: trustSignals.map(attachTrustAssets),
     recommendations: recommendations.map((item) => attachContentAsset("recommendation", item)),
   });
 });
