@@ -1074,13 +1074,21 @@ export default function SocialStrategy() {
           <div className="p-5">
             <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
               <div>
-                <h2 className="text-lg font-semibold text-charcoal-800">Add your social profiles</h2>
-                <p className="mt-1 text-sm leading-6 text-charcoal-500">Add official brand profiles for {selectedWebsite?.domain ?? "this project"}. Each profile has its own platform, URL, posting rhythm, and manual quality checks.</p>
-                <p className="mt-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs leading-5 text-amber-900">The tool can infer the platform from common profile URLs, but website link, profile completeness, and brand consistency are manual checks unless we connect official platform APIs later.</p>
+                <div className="text-xs font-bold uppercase tracking-wide text-brand-600">Optional profile record</div>
+                <h2 className="mt-1 text-lg font-semibold text-charcoal-800">Existing social profiles</h2>
+                <p className="mt-1 text-sm leading-6 text-charcoal-500">Record the public social profiles already used by {selectedWebsite?.domain ?? "this project"}. This helps AI evaluate channel presence and brand consistency; it does not authorize publishing.</p>
+                <p className="mt-2 rounded-lg border border-blue-200 bg-blue-50 px-3 py-2 text-xs leading-5 text-blue-900"><b>How to add one:</b> click Add social profile, choose the platform, and paste its public profile URL. Connect Facebook and Instagram separately under <b>3 · Publish</b>.</p>
               </div>
-              <Button variant="ghost" onClick={() => setProfiles((items) => [...items, emptyProfile(platformOptions[0] ?? "instagram")])}>Add profile</Button>
+              <Button className="shrink-0" onClick={() => setProfiles((items) => [...items, emptyProfile(platformOptions[0] ?? "instagram")])}>+ Add Profile</Button>
             </div>
             <div className="mt-5 space-y-4">
+              {profiles.length === 0 && (
+                <div className="rounded-xl border-2 border-dashed border-brand-200 bg-brand-50/50 p-8 text-center">
+                  <div className="text-lg font-bold text-charcoal-900">No social profiles recorded</div>
+                  <p className="mx-auto mt-2 max-w-xl text-sm leading-6 text-charcoal-500">You can skip this optional step, or add the brand’s existing Facebook, Instagram, LinkedIn, X, Google Business, or other public profile.</p>
+                  <Button className="mt-4" onClick={() => setProfiles([emptyProfile(platformOptions[0] ?? "instagram")])}>+ Add Profile</Button>
+                </div>
+              )}
               {profiles.map((profile, index) => (
                 <div key={index} className="rounded-lg border border-charcoal-100 bg-charcoal-50 p-4">
                   <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
