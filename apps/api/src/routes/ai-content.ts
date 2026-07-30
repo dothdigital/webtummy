@@ -16,7 +16,11 @@ type GenerationType = "article" | "h1" | "title" | "meta_description" | "faq" | 
 
 const generationSchema = z.object({
   executionTaskId: z.string().optional().nullable(),
+  projectId: z.string().max(191).optional().nullable(),
   websiteId: z.string().optional().nullable(),
+  sourceContext: z.enum(["ai_citation"]).optional().nullable(),
+  sourceType: z.enum(["trust_signal", "finding", "opportunity", "recommendation"]).optional().nullable(),
+  sourceRecordId: z.string().max(191).optional().nullable(),
   type: z.enum(["article", "h1", "title", "meta_description", "faq", "page_schema", "domain_schema", "page_llms_txt", "domain_llms_txt", "robots_txt", "sitemap", "ai_search"]),
   topic: z.string().min(2).max(500),
   targetKeyword: z.string().max(255).optional().nullable(),
@@ -28,6 +32,10 @@ const generationSchema = z.object({
   // single asset, but do not reject legitimate approved plans at the old 3k
   // limit before generation begins.
   notes: z.string().max(20_000).optional().nullable(),
+}).superRefine((input, context) => {
+  if (input.sourceContext === "ai_citation" && (!input.projectId || !input.sourceType || !input.sourceRecordId)) {
+    context.addIssue({ code: z.ZodIssueCode.custom, message: "Citation content requires its project and originating citation block." });
+  }
 });
 
 function currentMonthStart() {
@@ -46,6 +54,13 @@ async function getClientForRequest(req: Request) {
   const client = await prisma.client.findUnique({ where: { id: clientId } });
   if (!client || !client.isActive) throw new Error("project space inactive");
   return client;
+}
+
+async function citationSourceExists(projectId: string, sourceType: NonNullable<z.infer<typeof generationSchema>["sourceType"]>, sourceRecordId: string) {
+  if (sourceType === "trust_signal") return Boolean(await prisma.trustSignal.findFirst({ where: { id: sourceRecordId, projectId }, select: { id: true } }));
+  if (sourceType === "finding") return Boolean(await prisma.citationReadinessFinding.findFirst({ where: { id: sourceRecordId, projectId }, select: { id: true } }));
+  if (sourceType === "opportunity") return Boolean(await prisma.aiCitationGap.findFirst({ where: { id: sourceRecordId, projectId }, select: { id: true } }));
+  return Boolean(await prisma.citationRecommendation.findFirst({ where: { id: sourceRecordId, projectId }, select: { id: true } }));
 }
 
 async function usageFor(clientId: string, periodStart = currentMonthStart()) {
@@ -200,6 +215,34 @@ aiContentRouter.get("/ai-content/history", async (req, res) => {
   }
 });
 
+aiContentRouter.get("/ai-content/:generationId", async (req, res) => {
+  try {
+    const client = await getClientForRequest(req);
+    const generation = await prisma.aiContentGeneration.findFirst({ where: { id: req.params.generationId, clientId: client.id } });
+    if (!generation) return res.status(404).json({ error: "Generated content was not found." });
+    res.json({ generation });
+  } catch (error) {
+    res.status(400).json({ error: error instanceof Error ? error.message : "Could not load generated content." });
+  }
+});
+
+aiContentRouter.patch("/ai-content/:generationId/citation-validation", async (req, res) => {
+  try {
+    const client = await getClientForRequest(req);
+    const generation = await prisma.aiContentGeneration.findFirst({
+      where: { id: req.params.generationId, clientId: client.id, sourceContext: "ai_citation" },
+    });
+    if (!generation) return res.status(404).json({ error: "Citation content was not found." });
+    const updated = await prisma.aiContentGeneration.update({
+      where: { id: generation.id },
+      data: { validatedAt: new Date() },
+    });
+    res.json({ generation: updated });
+  } catch (error) {
+    res.status(400).json({ error: error instanceof Error ? error.message : "Could not validate citation content." });
+  }
+});
+
 aiContentRouter.get("/ai-content/:generationId/export", async (req, res) => {
   try {
     const client = await getClientForRequest(req);
@@ -258,6 +301,15 @@ aiContentRouter.post("/ai-content/generate", async (req, res) => {
   try {
     const client = await getClientForRequest(req);
     requireBillingAccess(client);
+    if (input.projectId) {
+      const project = await prisma.project.findFirst({ where: { id: input.projectId, clientId: client.id }, select: { id: true } });
+      if (!project) return res.status(404).json({ error: "The selected project was not found." });
+    }
+    if (input.sourceContext === "ai_citation" && input.projectId && input.sourceType && input.sourceRecordId) {
+      if (!await citationSourceExists(input.projectId, input.sourceType, input.sourceRecordId)) {
+        return res.status(404).json({ error: "The originating AI Citation block was not found. Refresh Citation Research and try again." });
+      }
+    }
     const plan = await billingPlanForClient(client.plan);
     await assertQuota(client.id, plan?.articleLimit ?? 5, input.type);
     const linkedTask = input.executionTaskId
@@ -309,7 +361,11 @@ aiContentRouter.post("/ai-content/generate", async (req, res) => {
       data: {
         clientId: client.id,
         userId: req.user?.userId,
+        projectId: input.projectId ?? linkedTask?.projectId ?? null,
         websiteId: website?.id ?? input.websiteId ?? null,
+        sourceContext: input.sourceContext ?? null,
+        sourceType: input.sourceType ?? null,
+        sourceRecordId: input.sourceRecordId ?? null,
         type: input.type,
         topic: input.topic,
         targetKeyword: input.targetKeyword ?? null,

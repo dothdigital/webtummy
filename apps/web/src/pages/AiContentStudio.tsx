@@ -284,6 +284,12 @@ function CitationValidationPanel({ generation, onReturn }: { generation: AiConte
   const checks = citationAutomatedChecks(generation);
   const automaticPass = checks.length > 0 && checks.every((check) => check.passed);
   const complete = automaticPass && Object.values(reviewed).every(Boolean);
+  if (generation.validatedAt) {
+    return <div className="mt-4 flex flex-col gap-3 rounded-xl border border-emerald-200 bg-emerald-50 p-4 sm:flex-row sm:items-center sm:justify-between">
+      <div><div className="text-xs font-black uppercase tracking-wide text-emerald-700">Citation asset validated</div><div className="mt-1 text-sm font-black text-emerald-950">This exact saved version is ready for review and implementation.</div><div className="mt-1 text-xs text-emerald-700">Validated {new Date(generation.validatedAt).toLocaleString()}</div></div>
+      <button type="button" onClick={onReturn} className="shrink-0 rounded-lg bg-emerald-700 px-4 py-2.5 text-sm font-black text-white hover:bg-emerald-800">Done · Return to AI Citations →</button>
+    </div>;
+  }
   return <div className="mt-4 rounded-xl border border-indigo-200 bg-indigo-50/60 p-4">
     <div className="flex flex-wrap items-start justify-between gap-3">
       <div><div className="text-xs font-black uppercase tracking-wide text-indigo-700">Citation asset validation</div><h3 className="mt-1 font-black text-slate-950">Validate before returning to AI Citations</h3><p className="mt-1 text-sm leading-6 text-slate-600">Automated checks verify the output structure. You must still confirm the business facts, sources, URLs and implementation details.</p></div>
@@ -351,21 +357,30 @@ export default function AiContentStudio() {
   const embeddedDialog = searchParams.get("embedded") === "1" && searchParams.get("dialog") === "1";
   const revisionFlow = searchParams.get("action") === "revise";
   const citationFlow = searchParams.get("source") === "ai_citation";
+  const citationReviewOnly = citationFlow && searchParams.get("reviewOnly") === "1";
   const citationReturnPath = (() => {
     const requested = searchParams.get("returnTo");
     return requested?.startsWith("/ai-citations") ? requested : `/ai-citations?projectId=${encodeURIComponent(searchParams.get("projectId") || "")}`;
   })();
-  const returnToCitation = (generation: AiContentGeneration) => {
-    if (embeddedDialog && window.parent !== window) {
-      window.parent.postMessage({
-        type: "senuke:citation-content-validated",
-        generationId: generation.id,
-        generationType: generation.type,
-      }, window.location.origin);
-      return;
+  const returnToCitation = async (generation: AiContentGeneration) => {
+    try {
+      const result = generation.validatedAt
+        ? { generation }
+        : await api.patch<{ generation: AiContentGeneration }>(`/api/ai-content/${encodeURIComponent(generation.id)}/citation-validation`, {});
+      setSelectedResult(result.generation);
+      if (embeddedDialog && window.parent !== window) {
+        window.parent.postMessage({
+          type: "senuke:citation-content-validated",
+          generationId: result.generation.id,
+          generationType: result.generation.type,
+        }, window.location.origin);
+        return;
+      }
+      const separator = citationReturnPath.includes("?") ? "&" : "?";
+      navigate(`${citationReturnPath}${separator}generatedAssetId=${encodeURIComponent(result.generation.id)}&generatedAssetType=${encodeURIComponent(result.generation.type)}`);
+    } catch (validationError) {
+      setGenerationError(validationError instanceof Error ? validationError.message : "The citation validation could not be saved.");
     }
-    const separator = citationReturnPath.includes("?") ? "&" : "?";
-    navigate(`${citationReturnPath}${separator}generatedAssetId=${encodeURIComponent(generation.id)}&generatedAssetType=${encodeURIComponent(generation.type)}`);
   };
   const closeWizard = () => {
     if (generating) return;
@@ -422,12 +437,14 @@ export default function AiContentStudio() {
     setLoading(true);
     try {
       const requestedProjectId = searchParams.get("projectId");
-      const [statusResult, historyResult, websiteResult, projectResult, projectDetailResult] = await Promise.all([
+      const requestedGenerationId = searchParams.get("generationId");
+      const [statusResult, historyResult, websiteResult, projectResult, projectDetailResult, generationDetailResult] = await Promise.all([
         api.get<AiContentStatus>("/api/ai-content/status"),
         api.get<{ generations: AiContentGeneration[] }>("/api/ai-content/history"),
         api.get<{ websites: Website[] }>("/api/websites"),
         api.get<{ projects: GuidedProject[] }>("/api/projects-v2"),
         requestedProjectId ? api.get<{ project: GuidedProject }>(`/api/projects-v2/${encodeURIComponent(requestedProjectId)}`) : Promise.resolve(null),
+        requestedGenerationId ? api.get<{ generation: AiContentGeneration }>(`/api/ai-content/${encodeURIComponent(requestedGenerationId)}`) : Promise.resolve(null),
       ]);
       setStatus(statusResult);
       setHistory(historyResult.generations);
@@ -456,14 +473,14 @@ export default function AiContentStudio() {
       if (requestedType && GENERATION_TYPES.some((item) => item.value === requestedType)) setType(requestedType as AiGenerationType);
       const requestedTopic = searchParams.get("topic");
       const requestedTargetUrl = searchParams.get("targetUrl");
-      const requestedGenerationId = searchParams.get("generationId");
       if (citationFlow && !options.preserveCitationResult) {
         setSelectedResult(null);
         setSelectedResultItems([]);
         setSelectedResultTabId(null);
       }
       if (citationFlow && requestedGenerationId) {
-        const requestedGeneration = historyResult.generations.find((generation) => generation.id === requestedGenerationId);
+        const requestedGeneration = generationDetailResult?.generation
+          ?? historyResult.generations.find((generation) => generation.id === requestedGenerationId);
         if (requestedGeneration) {
           setSelectedResult(requestedGeneration);
           setSelectedResultItems([requestedGeneration]);
@@ -529,6 +546,7 @@ export default function AiContentStudio() {
 
   const generate = async (event: React.FormEvent) => {
     event.preventDefault();
+    if (citationReviewOnly) return;
     if (!canReview) return;
     if (quotaBlocked) {
       setGenerationError(type === "article"
@@ -553,7 +571,11 @@ export default function AiContentStudio() {
     try {
       const result = await api.post<{ generation: AiContentGeneration }>("/api/ai-content/generate", {
         executionTaskId: linkedTask?.id ?? null,
+        projectId: searchParams.get("projectId") || linkedTask?.projectId || null,
         websiteId: websiteId || null,
+        sourceContext: citationFlow ? "ai_citation" : null,
+        sourceType: citationFlow ? searchParams.get("citationSourceType") : null,
+        sourceRecordId: citationFlow ? searchParams.get("citationSourceId") : null,
         type,
         topic,
         targetKeyword: targetKeyword || null,
@@ -1032,7 +1054,9 @@ export default function AiContentStudio() {
               <div className="flex flex-col-reverse gap-3 border-t border-charcoal-100 bg-white px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
                 <div className="min-w-0 flex-1">{generationError ? <div className="rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs font-bold leading-5 text-rose-700">{generationError}</div> : quotaBlocked ? <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-bold leading-5 text-amber-800">{type === "article" ? "Monthly full-content allowance reached." : "Daily AI helper allowance reached."}</div> : revisionFlow ? <div className="text-xs font-semibold text-slate-500">{revisionCompleted ? "Review the revised version, then close this window to return to Site Architect." : "Your current content is preserved until the revised version is generated."}</div> : linkedTask ? selectedResult && !revisionInstruction ? <button type="button" onClick={() => { const input = document.getElementById("content-recreation-comment"); input?.scrollIntoView({ behavior: "smooth", block: "center" }); (input as HTMLTextAreaElement | null)?.focus(); }} className="text-left text-xs font-bold text-amber-700 hover:text-amber-900">Add revision instructions before re-creating ↑</button> : <div className="text-xs font-semibold text-emerald-700">Content type and brief supplied by the approved plan.</div> : <Button type="button" variant="ghost" disabled={wizardStep === 1 || generating} onClick={() => setWizardStep((step) => Math.max(1, step - 1))}>Back</Button>}</div>
                 <div className="flex gap-3 sm:justify-end">
-                  {revisionFlow ? revisionCompleted ? (
+                  {citationReviewOnly ? (
+                    <Button type="button" onClick={closeWizard}>Close Review</Button>
+                  ) : revisionFlow ? revisionCompleted ? (
                     <Button type="button" onClick={closeWizard}>Done</Button>
                   ) : (
                     <Button type="submit" disabled={generating || !canReview || quotaBlocked}>{generating ? "Generating revised content…" : quotaBlocked ? "Allowance reached" : "Generate Revised Content"}</Button>

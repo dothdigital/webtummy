@@ -3719,7 +3719,11 @@ model AiContentGeneration {
   clientId         String
   client           Client   @relation(fields: [clientId], references: [id], onDelete: Cascade)
   userId           String?
+  projectId        String?  @db.VarChar(191)
   websiteId        String?
+  sourceContext    String?  @db.VarChar(80)
+  sourceType       String?  @db.VarChar(80)
+  sourceRecordId   String?  @db.VarChar(191)
   type             String   @db.VarChar(64) // article | title | meta_description | faq | schema | ai_search
   status           String   @default("completed") @db.VarChar(32)
   topic            String   @db.VarChar(512)
@@ -3734,9 +3738,11 @@ model AiContentGeneration {
   outputTokens     Int      @default(0)
   estimatedCostUsd Float?
   error            String?  @db.Text
+  validatedAt      DateTime?
   createdAt        DateTime @default(now())
 
   @@index([clientId, createdAt])
+  @@index([projectId, sourceContext, sourceType, sourceRecordId, createdAt])
   @@index([websiteId])
   @@index([type])
 }

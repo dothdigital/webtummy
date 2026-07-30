@@ -984,7 +984,11 @@ export interface AiContentGeneration {
   id: string;
   clientId: string;
   userId: string | null;
+  projectId: string | null;
   websiteId: string | null;
+  sourceContext: string | null;
+  sourceType: string | null;
+  sourceRecordId: string | null;
   type: AiGenerationType;
   status: string;
   topic: string;
@@ -998,6 +1002,7 @@ export interface AiContentGeneration {
   outputTokens: number;
   estimatedCostUsd: number | null;
   error: string | null;
+  validatedAt: string | null;
   createdAt: string;
 }
 

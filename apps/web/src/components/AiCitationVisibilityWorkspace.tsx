@@ -3,6 +3,14 @@ import { useSearchParams } from "react-router-dom";
 import { api } from "../api.js";
 import CitationContentModal, { type CitationContentRequest } from "./CitationContentModal.js";
 
+type CitationContentAsset = {
+  id: string;
+  type: string;
+  topic: string;
+  validatedAt: string | null;
+  createdAt: string;
+};
+
 type CitationWorkspace = {
   project: { id: string; name: string; websiteUrl: string | null };
   capabilities: { canAudit: boolean; canApprove: boolean; canExecute: boolean; readOnly: boolean };
@@ -11,11 +19,11 @@ type CitationWorkspace = {
   entities: Array<{ id: string; canonicalName: string; entityType: string; description: string | null; canonicalUrl: string | null; confidence: number; verificationStatus: string }>;
   claims: Array<{ id: string; claimType: string; statement: string; classification: string; verificationStatus: string; confidence: number; entity: { canonicalName: string; entityType: string }; sources: Array<{ id: string; sourceType: string; sourceLabel: string; sourceUrl: string | null; evidenceText: string | null }> }>;
   topics: Array<{ id: string; topicName: string; relevanceScore: number; authorityScore: number }>;
-  findings: Array<{ id: string; category: string; findingKey: string; title: string; summary: string; severity: string; confidence: number; scoreImpact: number; evidenceJson: unknown; isInference: boolean; recommendedAction: string; status: string }>;
-  opportunities: Array<{ id: string; query: string; topic: string | null; searchIntent: string | null; gapSummary: string; recommendedFixes: unknown; evidenceJson: unknown; isInference: boolean; entityFitScore: number; answerValueScore: number; authorityPotentialScore: number; effortScore: number; priorityScore: number; status: string }>;
+  findings: Array<{ id: string; category: string; findingKey: string; title: string; summary: string; severity: string; confidence: number; scoreImpact: number; evidenceJson: unknown; isInference: boolean; recommendedAction: string; status: string; contentAsset: CitationContentAsset | null }>;
+  opportunities: Array<{ id: string; query: string; topic: string | null; searchIntent: string | null; gapSummary: string; recommendedFixes: unknown; evidenceJson: unknown; isInference: boolean; entityFitScore: number; answerValueScore: number; authorityPotentialScore: number; effortScore: number; priorityScore: number; status: string; contentAsset: CitationContentAsset | null }>;
   prompts: Array<{ id: string; queryText: string; topic: string | null; searchIntent: string | null; targetUrl: string | null; scanFrequency: string; engineTargets: unknown; priorityScore: number; promptSource: string; visibilityStatus: string | null; lastScanStatus: string | null; snapshots: Array<{ id: string; scanProvider: string; visibilityStatus: string; mentionDetected: boolean; sentiment: string | null; accuracyStatus: string | null; answerExcerpt: string | null; createdAt: string; sourceMentions: Array<{ id: string; sourceUrl: string; sourceDomain: string; mentionType: string; supportsBrand: boolean; sourceQualityScore: number }> }> }>;
-  trustSignals: Array<{ id: string; signalKey: string; signalType: string; title: string; status: string; confidence: number; sourceUrl: string | null; recommendation: string | null }>;
-  recommendations: Array<{ id: string; recommendationType: string; title: string; rationale: string; recommendedAction: string; contentDraftJson: unknown; schemaDraftJson: unknown; priorityScore: number; riskLevel: string; status: string; executionTaskId: string | null }>;
+  trustSignals: Array<{ id: string; signalKey: string; signalType: string; title: string; status: string; confidence: number; sourceUrl: string | null; recommendation: string | null; contentAsset: CitationContentAsset | null }>;
+  recommendations: Array<{ id: string; recommendationType: string; title: string; rationale: string; recommendedAction: string; contentDraftJson: unknown; schemaDraftJson: unknown; priorityScore: number; riskLevel: string; status: string; executionTaskId: string | null; contentAsset: CitationContentAsset | null }>;
 };
 
 type Tab = "overview" | "entities" | "findings" | "opportunities" | "monitoring" | "recommendations";
@@ -36,10 +44,20 @@ const record = (value: unknown) => value && typeof value === "object" && !Array.
 
 type ContentLaunch = { label: string; type: "article" | "faq" | "page_schema" | "domain_schema" | "domain_llms_txt" | "robots_txt" | "sitemap" | "ai_search"; topic: string; instruction: string };
 
-function citationContentRequest(projectId: string, websiteUrl: string | null, launch: ContentLaunch, contextLabel: string, generationId?: string | null): CitationContentRequest {
+function citationContentRequest(
+  projectId: string,
+  websiteUrl: string | null,
+  launch: ContentLaunch,
+  contextLabel: string,
+  sourceType: CitationContentRequest["sourceType"],
+  sourceRecordId: string,
+  generationId?: string | null,
+): CitationContentRequest {
   return {
     projectId,
     websiteUrl,
+    sourceType,
+    sourceRecordId,
     label: launch.label,
     type: launch.type,
     topic: launch.topic,
@@ -126,14 +144,18 @@ function FindingActions({
   canAudit,
   busy,
   contentLabel,
+  contentAsset,
   onCreateContent,
+  onViewContent,
   onReview,
 }: {
   finding: CitationWorkspace["findings"][number];
   canAudit: boolean;
   busy: boolean;
   contentLabel: string;
+  contentAsset: CitationContentAsset | null;
   onCreateContent: () => void;
+  onViewContent: () => void;
   onReview: (status: FindingStatus) => void;
 }) {
   if (!canAudit) return null;
@@ -142,7 +164,8 @@ function FindingActions({
   return <div className="w-full shrink-0 rounded-xl border border-slate-200 bg-slate-50 p-3 lg:w-64">
     <div className="text-[10px] font-black uppercase tracking-wide text-charcoal-400">Finding actions</div>
     <div className="mt-2 space-y-2">
-      {active && <button type="button" onClick={onCreateContent} className="w-full rounded-lg bg-brand-600 px-3 py-2 text-center text-xs font-black text-white hover:bg-brand-700">{contentLabel} →</button>}
+      {contentAsset ? <button type="button" onClick={onViewContent} className="w-full rounded-lg bg-brand-600 px-3 py-2 text-center text-xs font-black text-white hover:bg-brand-700">View generated content →</button> : active && <button type="button" onClick={onCreateContent} className="w-full rounded-lg bg-brand-600 px-3 py-2 text-center text-xs font-black text-white hover:bg-brand-700">{contentLabel} →</button>}
+      {active && contentAsset && <button type="button" onClick={onCreateContent} className="w-full rounded-lg border border-brand-200 bg-white px-3 py-2 text-xs font-black text-brand-700 hover:bg-brand-50">Create a new version</button>}
       {active && <button type="button" onClick={() => onReview("resolved")} disabled={busy} className="w-full rounded-lg bg-emerald-600 px-3 py-2 text-xs font-black text-white disabled:opacity-50">{busy ? "Saving…" : "Mark as Resolved"}</button>}
       {finding.status === "open" && <button type="button" onClick={() => onReview("acknowledged")} disabled={busy} className="w-full rounded-lg border border-amber-200 bg-white px-3 py-2 text-xs font-black text-amber-700 disabled:opacity-50">Acknowledge</button>}
       {active && <button type="button" onClick={() => onReview("dismissed")} disabled={busy} className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-black text-slate-600 disabled:opacity-50">Dismiss</button>}
@@ -198,11 +221,17 @@ export default function AiCitationVisibilityWorkspace({ projectId }: { projectId
   const decideClaim = (id: string, decision: "approved" | "rejected") => void run(`claim:${id}`, () => api.patch(`/api/projects/${encodeURIComponent(projectId)}/ai-citation-visibility/claims/${encodeURIComponent(id)}`, { decision }), `Claim ${decision}. Future drafts will use approved claims only.`);
   const reviewFinding = (id: string, status: FindingStatus) => void run(`finding:${id}`, () => api.patch(`/api/projects/${encodeURIComponent(projectId)}/ai-citation-visibility/findings/${encodeURIComponent(id)}`, { status }), status === "open" ? "Finding reopened for review." : `Finding marked ${display(status).toLowerCase()}.`);
   const approveRecommendation = (id: string) => void run(`recommendation:${id}`, () => api.post(`/api/projects/${encodeURIComponent(projectId)}/ai-citation-visibility/recommendations/${encodeURIComponent(id)}/approve`, {}), "Recommendation approved and converted into an execution task. Publishing remains separately controlled.");
-  const openCitationContent = (launch: ContentLaunch, contextLabel: string, generationId?: string | null) => {
+  const openCitationContent = (
+    launch: ContentLaunch,
+    contextLabel: string,
+    sourceType: CitationContentRequest["sourceType"],
+    sourceRecordId: string,
+    generationId?: string | null,
+  ) => {
     if (!workspace) return;
     setError("");
     setMessage("");
-    setContentRequest(citationContentRequest(projectId, workspace.project.websiteUrl, launch, contextLabel, generationId));
+    setContentRequest(citationContentRequest(projectId, workspace.project.websiteUrl, launch, contextLabel, sourceType, sourceRecordId, generationId));
   };
 
   const createPrompt = (opportunity?: CitationWorkspace["opportunities"][number]) => {
@@ -303,7 +332,10 @@ export default function AiCitationVisibilityWorkspace({ projectId }: { projectId
                 </div>
                 <Pill value={signal.status} />
               </div>
-              {workspace.capabilities.canAudit && <button type="button" onClick={() => openCitationContent(contentLaunch, signal.title)} className={`mt-auto block w-full rounded-lg px-3 py-2 text-center text-xs font-black ${signal.status === "present" ? "border border-brand-200 bg-white text-brand-700 hover:bg-brand-50" : "bg-brand-600 text-white hover:bg-brand-700"}`}>{contentLaunch.label} →</button>}
+              {workspace.capabilities.canAudit && <div className="mt-auto space-y-2">
+                <button type="button" onClick={() => openCitationContent(contentLaunch, signal.title, "trust_signal", signal.id, signal.contentAsset?.id)} className={`block w-full rounded-lg px-3 py-2 text-center text-xs font-black ${signal.contentAsset ? "bg-brand-600 text-white hover:bg-brand-700" : signal.status === "present" ? "border border-brand-200 bg-white text-brand-700 hover:bg-brand-50" : "bg-brand-600 text-white hover:bg-brand-700"}`}>{signal.contentAsset ? "View generated content" : contentLaunch.label} →</button>
+                {signal.contentAsset && <button type="button" onClick={() => openCitationContent(contentLaunch, signal.title, "trust_signal", signal.id)} className="w-full text-center text-[11px] font-black text-brand-700 hover:underline">Create a new version</button>}
+              </div>}
             </div>;
           })}</div> : <Empty title="No trust snapshot" detail="Run citation research to evaluate current trust and discoverability evidence." />}
         </div>
@@ -335,7 +367,9 @@ export default function AiCitationVisibilityWorkspace({ projectId }: { projectId
               canAudit={workspace.capabilities.canAudit}
               busy={busy === `finding:${finding.id}`}
               contentLabel={contentLaunch.label}
-              onCreateContent={() => openCitationContent(contentLaunch, finding.title)}
+              contentAsset={finding.contentAsset}
+              onCreateContent={() => openCitationContent(contentLaunch, finding.title, "finding", finding.id)}
+              onViewContent={() => openCitationContent(contentLaunch, finding.title, "finding", finding.id, finding.contentAsset?.id)}
               onReview={(status) => reviewFinding(finding.id, status)}
             />
           </div>
@@ -344,7 +378,7 @@ export default function AiCitationVisibilityWorkspace({ projectId }: { projectId
 
       {tab === "opportunities" && <div className="space-y-3">{workspace.opportunities.length ? workspace.opportunities.map((opportunity) => {
         const contentLaunch: ContentLaunch = { label: "Create Answer Content", type: "article", topic: opportunity.query, instruction: `Create a citation-ready answer page for this opportunity: ${opportunity.query}. ${opportunity.gapSummary} Use only approved entity claims, answer the question directly, include verifiable sources, and do not guarantee citation inclusion.` };
-        return <div key={opportunity.id} className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm"><div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between"><div className="min-w-0"><div className="flex flex-wrap items-center gap-2"><Pill value={opportunity.status} /><Pill value={opportunity.searchIntent ?? "informational"} /><span className="rounded-full bg-violet-50 px-2.5 py-1 text-[11px] font-black text-violet-700">{opportunity.isInference ? "Inferred opportunity" : "Observed gap"}</span></div><h3 className="mt-3 text-lg font-black text-charcoal-950">{opportunity.query}</h3><p className="mt-2 text-sm leading-6 text-charcoal-600">{opportunity.gapSummary}</p><div className="mt-3 flex flex-wrap gap-2">{list(opportunity.recommendedFixes).map((fix) => <span key={fix} className="rounded-lg bg-slate-50 px-2.5 py-1.5 text-xs font-semibold text-slate-600">{fix}</span>)}</div></div><div className="w-full shrink-0 rounded-xl bg-slate-50 p-4 lg:w-64"><div className="grid grid-cols-2 gap-3 text-center"><div><div className="text-lg font-black text-charcoal-950">{opportunity.priorityScore}</div><div className="text-[9px] font-black uppercase text-charcoal-400">Priority</div></div><div><div className="text-lg font-black text-charcoal-950">{opportunity.entityFitScore}</div><div className="text-[9px] font-black uppercase text-charcoal-400">Entity fit</div></div><div><div className="text-lg font-black text-charcoal-950">{opportunity.answerValueScore}</div><div className="text-[9px] font-black uppercase text-charcoal-400">Answer value</div></div><div><div className="text-lg font-black text-charcoal-950">{opportunity.authorityPotentialScore}</div><div className="text-[9px] font-black uppercase text-charcoal-400">Authority</div></div></div>{workspace.capabilities.canAudit && <div className="mt-4 space-y-2"><button type="button" onClick={() => openCitationContent(contentLaunch, opportunity.query)} className="block w-full rounded-lg bg-emerald-600 px-3 py-2 text-center text-xs font-black text-white hover:bg-emerald-700">Create Answer Content →</button>{opportunity.status !== "monitoring" && <button type="button" onClick={() => createPrompt(opportunity)} disabled={Boolean(busy)} className="w-full rounded-lg border border-brand-200 bg-white px-3 py-2 text-xs font-black text-brand-700">{busy === `prompt:${opportunity.id}` ? "Adding…" : "Add to monitoring"}</button>}</div>}</div></div><Evidence value={opportunity.evidenceJson} /></div>;
+        return <div key={opportunity.id} className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm"><div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between"><div className="min-w-0"><div className="flex flex-wrap items-center gap-2"><Pill value={opportunity.status} /><Pill value={opportunity.searchIntent ?? "informational"} /><span className="rounded-full bg-violet-50 px-2.5 py-1 text-[11px] font-black text-violet-700">{opportunity.isInference ? "Inferred opportunity" : "Observed gap"}</span></div><h3 className="mt-3 text-lg font-black text-charcoal-950">{opportunity.query}</h3><p className="mt-2 text-sm leading-6 text-charcoal-600">{opportunity.gapSummary}</p><div className="mt-3 flex flex-wrap gap-2">{list(opportunity.recommendedFixes).map((fix) => <span key={fix} className="rounded-lg bg-slate-50 px-2.5 py-1.5 text-xs font-semibold text-slate-600">{fix}</span>)}</div></div><div className="w-full shrink-0 rounded-xl bg-slate-50 p-4 lg:w-64"><div className="grid grid-cols-2 gap-3 text-center"><div><div className="text-lg font-black text-charcoal-950">{opportunity.priorityScore}</div><div className="text-[9px] font-black uppercase text-charcoal-400">Priority</div></div><div><div className="text-lg font-black text-charcoal-950">{opportunity.entityFitScore}</div><div className="text-[9px] font-black uppercase text-charcoal-400">Entity fit</div></div><div><div className="text-lg font-black text-charcoal-950">{opportunity.answerValueScore}</div><div className="text-[9px] font-black uppercase text-charcoal-400">Answer value</div></div><div><div className="text-lg font-black text-charcoal-950">{opportunity.authorityPotentialScore}</div><div className="text-[9px] font-black uppercase text-charcoal-400">Authority</div></div></div>{workspace.capabilities.canAudit && <div className="mt-4 space-y-2"><button type="button" onClick={() => openCitationContent(contentLaunch, opportunity.query, "opportunity", opportunity.id, opportunity.contentAsset?.id)} className="block w-full rounded-lg bg-emerald-600 px-3 py-2 text-center text-xs font-black text-white hover:bg-emerald-700">{opportunity.contentAsset ? "View generated content" : "Create Answer Content"} →</button>{opportunity.contentAsset && <button type="button" onClick={() => openCitationContent(contentLaunch, opportunity.query, "opportunity", opportunity.id)} className="w-full text-center text-[11px] font-black text-emerald-700 hover:underline">Create a new version</button>}{opportunity.status !== "monitoring" && <button type="button" onClick={() => createPrompt(opportunity)} disabled={Boolean(busy)} className="w-full rounded-lg border border-brand-200 bg-white px-3 py-2 text-xs font-black text-brand-700">{busy === `prompt:${opportunity.id}` ? "Adding…" : "Add to monitoring"}</button>}</div>}</div></div><Evidence value={opportunity.evidenceJson} /></div>;
       }) : <Empty title="No answer opportunities" detail="Run citation research to infer high-value questions from approved keywords and verified project context." />}</div>}
 
       {tab === "monitoring" && <div className="space-y-5">
@@ -356,7 +390,7 @@ export default function AiCitationVisibilityWorkspace({ projectId }: { projectId
 
       {tab === "recommendations" && <div className="space-y-3">{workspace.recommendations.length ? workspace.recommendations.map((recommendation) => {
         const contentLaunch = recommendationContentLaunch(recommendation);
-        return <div key={recommendation.id} className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm"><div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between"><div className="min-w-0"><div className="flex flex-wrap items-center gap-2"><Pill value={recommendation.status} /><Pill value={recommendation.recommendationType} /><span className="text-xs font-bold text-charcoal-400">Priority {recommendation.priorityScore} · {display(recommendation.riskLevel)} risk</span></div><h3 className="mt-3 text-lg font-black text-charcoal-950">{recommendation.title}</h3><p className="mt-1 text-sm leading-6 text-charcoal-600">{recommendation.rationale}</p><div className="mt-3 rounded-lg border border-brand-100 bg-brand-50 p-3 text-sm leading-6 text-brand-900"><b>Recommended action:</b> {recommendation.recommendedAction}</div>{Object.keys(record(recommendation.contentDraftJson)).length > 0 && <details className="mt-3 rounded-lg border border-slate-200 p-3"><summary className="cursor-pointer text-xs font-black text-charcoal-700">Review content brief</summary><pre className="mt-3 overflow-x-auto whitespace-pre-wrap text-xs leading-5 text-charcoal-600">{JSON.stringify(recommendation.contentDraftJson, null, 2)}</pre></details>}{Object.keys(record(recommendation.schemaDraftJson)).length > 0 && <details className="mt-3 rounded-lg border border-slate-200 p-3"><summary className="cursor-pointer text-xs font-black text-charcoal-700">Review schema draft</summary><pre className="mt-3 overflow-x-auto whitespace-pre-wrap text-xs leading-5 text-charcoal-600">{JSON.stringify(recommendation.schemaDraftJson, null, 2)}</pre></details>}</div><div className="flex shrink-0 flex-col gap-2">{workspace.capabilities.canAudit && <button type="button" onClick={() => openCitationContent(contentLaunch, recommendation.title)} className="rounded-lg bg-brand-600 px-4 py-2 text-center text-xs font-black text-white hover:bg-brand-700">{contentLaunch.label} →</button>}{workspace.capabilities.canApprove && recommendation.status === "proposed" && <button type="button" onClick={() => approveRecommendation(recommendation.id)} disabled={Boolean(busy)} className="rounded-lg border border-emerald-200 bg-white px-4 py-2 text-xs font-black text-emerald-700">{busy === `recommendation:${recommendation.id}` ? "Approving…" : "Approve & create task"}</button>}</div></div></div>;
+        return <div key={recommendation.id} className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm"><div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between"><div className="min-w-0"><div className="flex flex-wrap items-center gap-2"><Pill value={recommendation.status} /><Pill value={recommendation.recommendationType} /><span className="text-xs font-bold text-charcoal-400">Priority {recommendation.priorityScore} · {display(recommendation.riskLevel)} risk</span></div><h3 className="mt-3 text-lg font-black text-charcoal-950">{recommendation.title}</h3><p className="mt-1 text-sm leading-6 text-charcoal-600">{recommendation.rationale}</p><div className="mt-3 rounded-lg border border-brand-100 bg-brand-50 p-3 text-sm leading-6 text-brand-900"><b>Recommended action:</b> {recommendation.recommendedAction}</div>{Object.keys(record(recommendation.contentDraftJson)).length > 0 && <details className="mt-3 rounded-lg border border-slate-200 p-3"><summary className="cursor-pointer text-xs font-black text-charcoal-700">Review content brief</summary><pre className="mt-3 overflow-x-auto whitespace-pre-wrap text-xs leading-5 text-charcoal-600">{JSON.stringify(recommendation.contentDraftJson, null, 2)}</pre></details>}{Object.keys(record(recommendation.schemaDraftJson)).length > 0 && <details className="mt-3 rounded-lg border border-slate-200 p-3"><summary className="cursor-pointer text-xs font-black text-charcoal-700">Review schema draft</summary><pre className="mt-3 overflow-x-auto whitespace-pre-wrap text-xs leading-5 text-charcoal-600">{JSON.stringify(recommendation.schemaDraftJson, null, 2)}</pre></details>}</div><div className="flex shrink-0 flex-col gap-2">{workspace.capabilities.canAudit && <><button type="button" onClick={() => openCitationContent(contentLaunch, recommendation.title, "recommendation", recommendation.id, recommendation.contentAsset?.id)} className="rounded-lg bg-brand-600 px-4 py-2 text-center text-xs font-black text-white hover:bg-brand-700">{recommendation.contentAsset ? "View generated content" : contentLaunch.label} →</button>{recommendation.contentAsset && <button type="button" onClick={() => openCitationContent(contentLaunch, recommendation.title, "recommendation", recommendation.id)} className="text-center text-[11px] font-black text-brand-700 hover:underline">Create a new version</button>}</>}{workspace.capabilities.canApprove && recommendation.status === "proposed" && <button type="button" onClick={() => approveRecommendation(recommendation.id)} disabled={Boolean(busy)} className="rounded-lg border border-emerald-200 bg-white px-4 py-2 text-xs font-black text-emerald-700">{busy === `recommendation:${recommendation.id}` ? "Approving…" : "Approve & create task"}</button>}</div></div></div>;
       }) : <Empty title="No proposed recommendations" detail="Run citation research to generate evidence-backed content, schema, trust, and correction recommendations." />}</div>}
     </>}
   </div>
@@ -371,6 +405,7 @@ export default function AiCitationVisibilityWorkspace({ projectId }: { projectId
         generationType: contentRequest.type,
         validated: false,
       });
+      void load();
     }}
     onValidated={(generationId, generationType) => {
       if (!contentRequest) return;
@@ -381,6 +416,7 @@ export default function AiCitationVisibilityWorkspace({ projectId }: { projectId
         validated: true,
       });
       setContentRequest(null);
+      void load();
     }}
   />
   </>;

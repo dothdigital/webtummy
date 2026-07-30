@@ -182,6 +182,65 @@ aiCitationVisibilityRouter.get("/projects/:projectId/ai-citation-visibility", as
     prisma.citationRecommendation.findMany({ where: { projectId: project.id, status: clientViewer ? "approved" : { not: "superseded" } }, orderBy: [{ priorityScore: "desc" }, { createdAt: "desc" }] }),
     prisma.aiRun.findFirst({ where: { projectId: project.id, moduleName: "ai_citation_visibility", status: "completed" }, orderBy: { createdAt: "desc" } }),
   ]);
+  const sourceRecordIds = [...findings, ...opportunities, ...trustSignals, ...recommendations].map((item) => item.id);
+  const generatedAssets = sourceRecordIds.length ? await prisma.aiContentGeneration.findMany({
+    where: {
+      clientId: project.clientId,
+      projectId: project.id,
+      sourceContext: "ai_citation",
+      sourceRecordId: { in: sourceRecordIds },
+      status: "completed",
+    },
+    orderBy: { createdAt: "desc" },
+    select: { id: true, sourceType: true, sourceRecordId: true, type: true, topic: true, validatedAt: true, createdAt: true },
+  }) : [];
+  const sourceItems = [
+    ...findings.map((item) => ({ sourceType: "finding", sourceRecordId: item.id, label: item.title })),
+    ...opportunities.map((item) => ({ sourceType: "opportunity", sourceRecordId: item.id, label: item.query })),
+    ...trustSignals.map((item) => ({ sourceType: "trust_signal", sourceRecordId: item.id, label: item.title })),
+    ...recommendations.map((item) => ({ sourceType: "recommendation", sourceRecordId: item.id, label: item.title })),
+  ];
+  const linkedSourceKeys = new Set(generatedAssets.map((asset) => `${asset.sourceType}:${asset.sourceRecordId}`));
+  if (project.websiteId && sourceItems.some((item) => !linkedSourceKeys.has(`${item.sourceType}:${item.sourceRecordId}`))) {
+    const legacyCitationAssets = await prisma.aiContentGeneration.findMany({
+      where: {
+        clientId: project.clientId,
+        websiteId: project.websiteId,
+        sourceContext: null,
+        prompt: { contains: "citation", mode: "insensitive" },
+        status: "completed",
+      },
+      orderBy: { createdAt: "desc" },
+      take: 100,
+      select: { id: true, prompt: true, type: true, topic: true, validatedAt: true, createdAt: true },
+    });
+    const claimedGenerationIds = new Set<string>();
+    for (const source of sourceItems) {
+      const key = `${source.sourceType}:${source.sourceRecordId}`;
+      if (linkedSourceKeys.has(key)) continue;
+      const normalizedLabel = source.label.trim().toLowerCase();
+      const legacy = legacyCitationAssets.find((candidate) => !claimedGenerationIds.has(candidate.id) && candidate.prompt.toLowerCase().includes(normalizedLabel));
+      if (!legacy) continue;
+      claimedGenerationIds.add(legacy.id);
+      linkedSourceKeys.add(key);
+      const linked = await prisma.aiContentGeneration.update({
+        where: { id: legacy.id },
+        data: { projectId: project.id, sourceContext: "ai_citation", sourceType: source.sourceType, sourceRecordId: source.sourceRecordId },
+        select: { id: true, sourceType: true, sourceRecordId: true, type: true, topic: true, validatedAt: true, createdAt: true },
+      });
+      generatedAssets.push(linked);
+    }
+  }
+  const latestAssetBySource = new Map<string, typeof generatedAssets[number]>();
+  for (const asset of generatedAssets) {
+    if (!asset.sourceType || !asset.sourceRecordId) continue;
+    const key = `${asset.sourceType}:${asset.sourceRecordId}`;
+    if (!latestAssetBySource.has(key)) latestAssetBySource.set(key, asset);
+  }
+  const attachContentAsset = <T extends { id: string }>(sourceType: string, item: T) => ({
+    ...item,
+    contentAsset: latestAssetBySource.get(`${sourceType}:${item.id}`) ?? null,
+  });
   res.json({
     project: { id: project.id, name: citationContext(project).businessName, websiteUrl: citationContext(project).websiteUrl },
     capabilities: {
@@ -195,11 +254,11 @@ aiCitationVisibilityRouter.get("/projects/:projectId/ai-citation-visibility", as
     entities,
     claims,
     topics,
-    findings,
-    opportunities,
+    findings: findings.map((item) => attachContentAsset("finding", item)),
+    opportunities: opportunities.map((item) => attachContentAsset("opportunity", item)),
     prompts,
-    trustSignals,
-    recommendations,
+    trustSignals: trustSignals.map((item) => attachContentAsset("trust_signal", item)),
+    recommendations: recommendations.map((item) => attachContentAsset("recommendation", item)),
   });
 });
 

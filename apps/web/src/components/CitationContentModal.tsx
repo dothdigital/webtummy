@@ -3,6 +3,8 @@ import { useEffect, useMemo, useRef, useState } from "react";
 export type CitationContentRequest = {
   projectId: string;
   websiteUrl: string | null;
+  sourceType: "trust_signal" | "finding" | "opportunity" | "recommendation";
+  sourceRecordId: string;
   label: string;
   type: string;
   topic: string;
@@ -40,13 +42,18 @@ export default function CitationContentModal({
       contentMode: "seo",
       instruction: request.instruction,
       source: "ai_citation",
+      citationSourceType: request.sourceType,
+      citationSourceId: request.sourceRecordId,
       returnTo: `/ai-citations?projectId=${request.projectId}`,
       open: "1",
       embedded: "1",
       dialog: "1",
     });
     if (request.websiteUrl) params.set("targetUrl", request.websiteUrl);
-    if (request.generationId) params.set("generationId", request.generationId);
+    if (request.generationId) {
+      params.set("generationId", request.generationId);
+      params.set("reviewOnly", "1");
+    }
     return `/ai-content?${params.toString()}`;
   }, [request]);
 
