@@ -3788,10 +3788,16 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/pages/:pageId/re
     const nextVersions = new Map<string, number>();
     for (const page of pages) {
       const currentSeo = jsonRecord(page.seoJson);
-      const faqs = Array.isArray(currentSeo.faqs) ? currentSeo.faqs.map(jsonRecord).filter((faq) => faq.question && faq.answer).map((faq) => ({ question: String(faq.question), answer: String(faq.answer) })) : [];
-      const seoJson = { ...currentSeo, schemaJsonLd: combinedPageSchema(page, project, faqs, currentSeo.schemaJsonLd) } as Prisma.InputJsonValue;
+      const seoFaqs = Array.isArray(currentSeo.faqs) ? currentSeo.faqs.map(jsonRecord).filter((faq) => faq.question && faq.answer).map((faq) => ({ question: String(faq.question), answer: String(faq.answer) })) : [];
+      const contentComponents = Array.isArray(jsonRecord(page.contentJson).components) ? jsonRecord(page.contentJson).components as unknown[] : [];
+      const faqComponent = contentComponents.map(jsonRecord).find((component) => component.componentId === "content.faq");
+      const visibleFaqs = Array.isArray(jsonRecord(faqComponent?.props).items)
+        ? (jsonRecord(faqComponent?.props).items as unknown[]).map(jsonRecord).filter((faq) => faq.question && faq.answer).map((faq) => ({ question: String(faq.question), answer: String(faq.answer) }))
+        : [];
+      const faqs = visibleFaqs.length ? visibleFaqs : seoFaqs;
+      const seoJson = { ...currentSeo, faqs, schemaJsonLd: combinedPageSchema(page, project, faqs, currentSeo.schemaJsonLd) } as Prisma.InputJsonValue;
       const nextVersion = page.version + 1;
-      const comment = input.scope === "page" ? "Repaired page schema from approved business identity, location, service, and FAQ data." : "Repaired project-wide schema from approved business identity and location data.";
+      const comment = input.scope === "page" ? "Repaired page schema from approved business identity, location, service, and visible FAQ data." : "Repaired project-wide schema from approved business identity and location data.";
       await tx.websiteBuildPageVersion.upsert({ where: { pageId_version: { pageId: page.id, version: nextVersion } }, update: { briefJson: page.briefJson, contentJson: page.contentJson, seoJson, comment, createdById: context.membership.userId }, create: { pageId: page.id, version: nextVersion, briefJson: page.briefJson, contentJson: page.contentJson, seoJson, layoutJson: page.layoutJson, comment, createdById: context.membership.userId } });
       rows.push(await tx.websiteBuildPage.update({ where: { id: page.id }, data: { seoJson, version: nextVersion, status: "review", approvedAt: null } }));
       nextVersions.set(page.id, nextVersion);
