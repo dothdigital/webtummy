@@ -305,6 +305,46 @@ function CitationValidationPanel({ generation, onReturn }: { generation: AiConte
   </div>;
 }
 
+function CitationAssetBrief({
+  assetType,
+  topic,
+  instruction,
+  reviewing,
+}: {
+  assetType: string;
+  topic: string;
+  instruction: string;
+  reviewing: boolean;
+}) {
+  return <section className="rounded-xl border border-indigo-200 bg-gradient-to-br from-indigo-50 via-white to-violet-50 p-4">
+    <div className="flex flex-wrap items-start justify-between gap-3">
+      <div>
+        <div className="text-[10px] font-black uppercase tracking-[0.14em] text-indigo-700">Citation asset brief</div>
+        <h3 className="mt-1 text-base font-black text-slate-950">{reviewing ? "Review the saved citation asset" : "Create the evidence-backed asset"}</h3>
+        <p className="mt-1 text-xs leading-5 text-slate-600">This request comes from a specific AI Citation finding or opportunity. Its format and safeguards are already selected.</p>
+      </div>
+      <span className="rounded-full bg-indigo-100 px-3 py-1 text-[10px] font-black uppercase text-indigo-800">{assetType}</span>
+    </div>
+    <div className="mt-4 grid gap-3 sm:grid-cols-2">
+      <div className="rounded-lg border border-indigo-100 bg-white p-3">
+        <div className="text-[10px] font-black uppercase tracking-wide text-slate-400">Originating citation block</div>
+        <div className="mt-1 text-sm font-black text-slate-900">{topic}</div>
+      </div>
+      <div className="rounded-lg border border-indigo-100 bg-white p-3">
+        <div className="text-[10px] font-black uppercase tracking-wide text-slate-400">Evidence rule</div>
+        <div className="mt-1 text-sm font-black text-slate-900">Verified project facts and sources only</div>
+      </div>
+    </div>
+    {instruction && <div className="mt-3 rounded-lg border border-indigo-100 bg-white p-3"><div className="text-[10px] font-black uppercase tracking-wide text-slate-400">AI task</div><p className="mt-1 whitespace-pre-line text-sm leading-6 text-slate-700">{instruction}</p></div>}
+    <div className="mt-3 flex flex-wrap gap-x-4 gap-y-1 text-[10px] font-bold text-slate-600">
+      <span>✓ No invented people or credentials</span>
+      <span>✓ No fabricated URLs or statistics</span>
+      <span>✓ Sources and implementation reviewed</span>
+      <span>✓ Exact version saved to this citation block</span>
+    </div>
+  </section>;
+}
+
 function WizardStep({ number, title, active, complete }: { number: number; title: string; active: boolean; complete: boolean }) {
   return (
     <div className="flex min-w-0 flex-1 items-center gap-3">
@@ -584,7 +624,14 @@ export default function AiContentStudio() {
         tone,
         notes: boundedGenerationNotes(
           revisionInstruction && (revisionFlow || (selectedResult && linkedTask)) ? `Re-creation change request: ${revisionInstruction}` : "",
-          contentGenerationPrompt(contentMode, generationInstruction),
+          citationFlow
+            ? [
+              "Create the requested AI citation-readiness or trust asset for the originating citation block.",
+              generationInstruction,
+              "Use only verified project facts, approved entity claims, and real sources or URLs. If required evidence is unavailable, identify what must be supplied instead of inventing it.",
+              "Return an implementation-ready asset that can be reviewed against the citation validation checklist.",
+            ].filter(Boolean).join("\n\n")
+            : contentGenerationPrompt(contentMode, generationInstruction),
           notes,
         ),
       });
@@ -874,13 +921,13 @@ export default function AiContentStudio() {
             <div className="border-b border-charcoal-100 bg-[linear-gradient(135deg,#fdf2f8_0%,#ecfeff_100%)] px-5 py-4">
               <div className="flex items-start justify-between gap-4">
                 <div>
-                  <div className="text-xs font-semibold uppercase tracking-wide text-fuchsia-700">{revisionFlow ? "AI content revision" : "3-step wizard"}</div>
-                  <div className="mt-1 text-xl font-bold text-charcoal-900">{revisionFlow ? `Revise ${topic || "page content"}` : "Create content asset"}</div>
+                  <div className="text-xs font-semibold uppercase tracking-wide text-fuchsia-700">{revisionFlow ? "AI content revision" : citationFlow ? "AI Citation asset" : "3-step wizard"}</div>
+                  <div className="mt-1 text-xl font-bold text-charcoal-900">{revisionFlow ? `Revise ${topic || "page content"}` : citationFlow ? (citationReviewOnly ? "Review generated citation content" : "Create citation content") : "Create content asset"}</div>
                   {linkedTask && <div className="mt-1 text-xs font-semibold text-emerald-700">Linked to project task: {contentTaskTitle(linkedTask)}</div>}
                 </div>
                 <button type="button" disabled={generating} onClick={closeWizard} className="rounded-lg border border-charcoal-200 bg-white px-3 py-1.5 text-sm font-medium text-charcoal-600 hover:bg-charcoal-50 disabled:opacity-50">Close</button>
               </div>
-              {!revisionFlow && <div className="mt-4 grid gap-3 sm:grid-cols-3">
+              {!revisionFlow && !citationFlow && <div className="mt-4 grid gap-3 sm:grid-cols-3">
                 <WizardStep number={1} title="Choose type" active={wizardStep === 1} complete={wizardStep > 1} />
                 <WizardStep number={2} title="Add context" active={wizardStep === 2} complete={wizardStep > 2} />
                 <WizardStep number={3} title="Review" active={wizardStep === 3} complete={false} />
@@ -891,8 +938,8 @@ export default function AiContentStudio() {
               {generating && <div className="absolute inset-0 z-30 grid place-items-center bg-white/95 p-6 backdrop-blur-sm" role="status" aria-live="polite">
                 <div className="max-w-md text-center">
                   <div className="mx-auto h-12 w-12 animate-spin rounded-full border-4 border-fuchsia-100 border-t-fuchsia-600" />
-                  <h3 className="mt-4 text-lg font-black text-slate-950">{revisionFlow ? "Revising the complete page…" : "Creating the complete page…"}</h3>
-                  <p className="mt-2 text-sm leading-6 text-slate-600">SENuke AI is writing the structured page content, SEO title, meta description, headings, FAQs, schema, CTA, and internal-link guidance. Keep this window open; the result will return here automatically.</p>
+                  <h3 className="mt-4 text-lg font-black text-slate-950">{revisionFlow ? "Revising the complete page…" : citationFlow ? "Creating the citation asset…" : "Creating the complete page…"}</h3>
+                  <p className="mt-2 text-sm leading-6 text-slate-600">{citationFlow ? "SENuke AI is using the originating citation block, verified project facts, and available source evidence. Keep this window open; the reviewable result will return here automatically." : "SENuke AI is writing the structured page content, SEO title, meta description, headings, FAQs, schema, CTA, and internal-link guidance. Keep this window open; the result will return here automatically."}</p>
                 </div>
               </div>}
               <div className="min-h-0 flex-1 overflow-y-auto p-5">
@@ -1014,7 +1061,7 @@ export default function AiContentStudio() {
                   </div>
                 ) : (
                   <div className="space-y-3">
-                    <div className="rounded-xl border border-charcoal-100 bg-charcoal-50 px-4 py-3">
+                    {citationFlow ? <CitationAssetBrief assetType={selectedType.label} topic={topic || "AI citation asset"} instruction={generationInstruction} reviewing={Boolean(selectedResult)} /> : <div className="rounded-xl border border-charcoal-100 bg-charcoal-50 px-4 py-3">
                       <div className="mb-2 flex items-center justify-between gap-3">
                         <div className="text-sm font-bold text-charcoal-900">Review and generate</div>
                         <div className="text-xs text-charcoal-500">
@@ -1030,12 +1077,11 @@ export default function AiContentStudio() {
                         <div className="truncate"><span className="font-semibold text-charcoal-800">Tone:</span> {languageCode || "en"} · {tone || "professional"}</div>
                       </div>
                       <div className="mt-1 truncate text-xs text-charcoal-500">Keyword: {targetKeyword || "Not provided"} · Target page: {targetUrl || "Not provided"}{targetUrlSuggested ? " (suggested)" : ""}</div>
-                    </div>
+                    </div>}
 
                     {linkedTask && <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-4"><div className="text-xs font-bold uppercase tracking-wide text-emerald-700">Approved plan context</div><div className="mt-1 font-bold text-charcoal-900">{contentTaskTitle(linkedTask)}</div><p className="mt-2 text-sm leading-6 text-charcoal-600">{linkedTask.description}</p>{linkedTask.manualInstructions && <p className="mt-2 whitespace-pre-line text-sm leading-6 text-charcoal-600"><span className="font-bold">Instructions:</span> {` ${scopedTaskInstructions(linkedTask)}`}</p>}{linkedTask.expectedOutcome && <p className="mt-2 text-sm leading-6 text-charcoal-600"><span className="font-bold">Expected outcome:</span> {linkedTask.expectedOutcome}</p>}<p className="mt-3 text-xs font-semibold text-emerald-800">This plan remains attached to the asset. {selectedResult ? "Review the generated result below or re-create it from the same plan." : "Click Generate to create this planned asset."}</p></div>}
 
-                    {citationFlow && <div className="rounded-xl border border-indigo-200 bg-indigo-50 p-4"><div className="text-xs font-black uppercase tracking-wide text-indigo-700">Opened from AI Citations</div><p className="mt-1 text-sm leading-6 text-indigo-900">The project, asset type, website and citation instructions are already attached. Review the request, click Generate, then complete the automated and human validation checklist before returning to the citation workspace.</p></div>}
-                    <ContentGenerationControls mode={contentMode} instruction={generationInstruction} onModeChange={setContentMode} onInstructionChange={setGenerationInstruction} compact />
+                    {!citationFlow && <ContentGenerationControls mode={contentMode} instruction={generationInstruction} onModeChange={setContentMode} onInstructionChange={setGenerationInstruction} compact />}
                     {generationError && <div className="rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm font-semibold text-rose-700">{generationError}</div>}
 
                     {linkedTask && selectedResult && <label className="block rounded-xl border border-amber-200 bg-amber-50 p-4" htmlFor="content-recreation-comment"><span className="text-xs font-bold uppercase tracking-wide text-amber-700">Revision instructions required</span><span className="mt-1 block text-sm font-bold text-charcoal-900">What should SENuke AI change in the current version?</span><textarea id="content-recreation-comment" value={recreationComment} onChange={(event) => { setRecreationComment(event.target.value); if (generationError) setGenerationError(""); }} rows={4} placeholder="Example: Make the introduction more direct, add a Brampton-specific example, improve the SEO title, and reduce repetition." className="mt-3 w-full rounded-lg border border-amber-300 bg-white px-3 py-2 text-sm outline-none focus:border-amber-500 focus:ring-2 focus:ring-amber-100" /><span className="mt-1 block text-xs text-charcoal-500">The current content remains unchanged until the new version is generated and reviewed.</span></label>}
@@ -1052,7 +1098,7 @@ export default function AiContentStudio() {
               </div>
 
               <div className="flex flex-col-reverse gap-3 border-t border-charcoal-100 bg-white px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
-                <div className="min-w-0 flex-1">{generationError ? <div className="rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs font-bold leading-5 text-rose-700">{generationError}</div> : quotaBlocked ? <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-bold leading-5 text-amber-800">{type === "article" ? "Monthly full-content allowance reached." : "Daily AI helper allowance reached."}</div> : revisionFlow ? <div className="text-xs font-semibold text-slate-500">{revisionCompleted ? "Review the revised version, then close this window to return to Site Architect." : "Your current content is preserved until the revised version is generated."}</div> : linkedTask ? selectedResult && !revisionInstruction ? <button type="button" onClick={() => { const input = document.getElementById("content-recreation-comment"); input?.scrollIntoView({ behavior: "smooth", block: "center" }); (input as HTMLTextAreaElement | null)?.focus(); }} className="text-left text-xs font-bold text-amber-700 hover:text-amber-900">Add revision instructions before re-creating ↑</button> : <div className="text-xs font-semibold text-emerald-700">Content type and brief supplied by the approved plan.</div> : <Button type="button" variant="ghost" disabled={wizardStep === 1 || generating} onClick={() => setWizardStep((step) => Math.max(1, step - 1))}>Back</Button>}</div>
+                <div className="min-w-0 flex-1">{generationError ? <div className="rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs font-bold leading-5 text-rose-700">{generationError}</div> : quotaBlocked && !citationReviewOnly ? <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-bold leading-5 text-amber-800">{type === "article" ? "Monthly full-content allowance reached." : "Daily AI helper allowance reached."}</div> : revisionFlow ? <div className="text-xs font-semibold text-slate-500">{revisionCompleted ? "Review the revised version, then close this window to return to Site Architect." : "Your current content is preserved until the revised version is generated."}</div> : citationFlow ? <div className="text-xs font-semibold text-indigo-700">{selectedResult ? "Review the exact saved asset and its citation validation status." : "The originating citation block controls this asset request."}</div> : linkedTask ? selectedResult && !revisionInstruction ? <button type="button" onClick={() => { const input = document.getElementById("content-recreation-comment"); input?.scrollIntoView({ behavior: "smooth", block: "center" }); (input as HTMLTextAreaElement | null)?.focus(); }} className="text-left text-xs font-bold text-amber-700 hover:text-amber-900">Add revision instructions before re-creating ↑</button> : <div className="text-xs font-semibold text-emerald-700">Content type and brief supplied by the approved plan.</div> : <Button type="button" variant="ghost" disabled={wizardStep === 1 || generating} onClick={() => setWizardStep((step) => Math.max(1, step - 1))}>Back</Button>}</div>
                 <div className="flex gap-3 sm:justify-end">
                   {citationReviewOnly ? (
                     <Button type="button" onClick={closeWizard}>Close Review</Button>
