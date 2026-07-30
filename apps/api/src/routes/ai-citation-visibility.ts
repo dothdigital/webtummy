@@ -6,6 +6,11 @@ import { canAccessProject, hasWorkspacePermission, recordWorkspaceActivity, work
 
 export const aiCitationVisibilityRouter = Router();
 
+// Phase 2: keep Answer Opportunity research and records intact while the
+// crawler-to-page mapping, FAQ/schema insertion, publishing, and monitoring
+// lifecycle is completed.
+const ANSWER_OPPORTUNITIES_V2_ENABLED = false;
+
 const claimDecisionSchema = z.object({
   decision: z.enum(["approved", "rejected"]),
   statement: z.string().trim().min(2).max(10_000).optional(),
@@ -569,10 +574,14 @@ aiCitationVisibilityRouter.get("/projects/:projectId/ai-citation-visibility", as
     claims,
     topics,
     findings: visibleFindings,
-    opportunities: opportunities.map((item) => attachContentAsset("opportunity", item)),
+    opportunities: ANSWER_OPPORTUNITIES_V2_ENABLED
+      ? opportunities.map((item) => attachContentAsset("opportunity", item))
+      : [],
     prompts,
     trustSignals: trustSignals.map(attachTrustAssets),
-    recommendations: recommendations.map((item) => attachContentAsset("recommendation", item)),
+    recommendations: recommendations
+      .filter((item) => ANSWER_OPPORTUNITIES_V2_ENABLED || item.recommendationType !== "answer_content")
+      .map((item) => attachContentAsset("recommendation", item)),
   });
 });
 
