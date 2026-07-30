@@ -1168,6 +1168,7 @@ export interface SocialCalendarPost {
   imageUrl: string | null;
   imageAltText: string | null;
   imageStatus: string;
+  externalPostId: string | null;
   targetKeyword: string | null;
   targetUrl: string | null;
   sourceType: string | null;
@@ -1197,6 +1198,10 @@ export interface SocialStrategy {
   postingFrequency: string | null;
   tone: string | null;
   imageDirection: string | null;
+  publishingProfileJson: {
+    accountIds?: string[];
+    timezone?: string;
+  };
   monthlyTheme: string | null;
   status: string;
   generationMode: string;

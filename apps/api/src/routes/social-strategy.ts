@@ -151,7 +151,13 @@ const socialPostUpdateSchema = z.object({
   publishDate: z.string().datetime().optional(),
   imageUrl: z.string().max(8_000_000).refine((value) => /^https?:\/\//i.test(value) || /^data:image\/(svg\+xml|png|jpeg|webp);base64,/i.test(value), "Use a public HTTPS image URL or generated image.").optional().nullable(),
   imageAltText: z.string().trim().max(500).optional().nullable(),
+  externalPostId: z.string().trim().max(191).optional().nullable(),
   status: z.enum(["planned", "approved", "scheduled", "published", "changes_requested"]).optional(),
+});
+
+const publishingProfileSchema = z.object({
+  accountIds: z.array(z.string().trim().min(1).max(191)).max(10),
+  timezone: z.string().trim().min(1).max(80),
 });
 
 const socialPostChangeRequestSchema = z.object({
@@ -1190,6 +1196,39 @@ socialStrategyRouter.post("/social-strategy/repurpose", async (req, res) => {
     return row;
   });
   res.status(201).json({ batch, ...(await socialResponse(req, website.id, intelligence.project.id)) });
+});
+
+socialStrategyRouter.patch("/social-strategy/:strategyId/publishing-profile", async (req, res) => {
+  const parsed = publishingProfileSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() });
+  const context = await workspaceContext(req);
+  if (!hasWorkspacePermission(context, "execute_tasks")) return res.status(403).json({ error: "Publishing profile permission is required." });
+  const strategy = await prisma.socialStrategy.findUnique({
+    where: { id: req.params.strategyId },
+    include: { project: true },
+  });
+  if (!strategy?.projectId || !strategy.project || !await canAccessProject(context, strategy.projectId)) return res.status(404).json({ error: "Campaign not found." });
+  const timezone = validTimeZone(parsed.data.timezone);
+  if (!timezone) return res.status(400).json({ error: "Enter a valid IANA publishing timezone, such as America/Toronto." });
+  const publishingProfileJson = { accountIds: uniqueStrings(parsed.data.accountIds), timezone };
+  const updated = await prisma.$transaction(async (tx) => {
+    const row = await tx.socialStrategy.update({
+      where: { id: strategy.id },
+      data: { publishingProfileJson },
+      include: { pillars: true, posts: { orderBy: { publishDate: "asc" }, include: { metrics: { orderBy: { recordedAt: "desc" }, take: 3 } } } },
+    });
+    await recordWorkspaceActivity(tx, {
+      context,
+      action: "social_publishing_profile.saved",
+      entityType: "social_strategy",
+      entityId: strategy.id,
+      agencyClientId: strategy.project!.agencyClientId,
+      projectId: strategy.projectId,
+      nextJson: { accountCount: publishingProfileJson.accountIds.length, timezone },
+    });
+    return row;
+  });
+  res.json({ strategy: updated });
 });
 
 socialStrategyRouter.patch("/social-strategy/posts/:postId", async (req, res) => {

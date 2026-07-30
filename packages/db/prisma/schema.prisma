@@ -3925,6 +3925,7 @@ model SocialStrategy {
   postingFrequency            String?   @db.VarChar(120)
   tone                        String?   @db.VarChar(80)
   imageDirection              String?   @db.Text
+  publishingProfileJson       Json      @default("{}")
   monthlyTheme                String?   @db.VarChar(255)
   status                      String    @default("draft") @db.VarChar(40)
   generationMode              String    @default("evidence_engine") @db.VarChar(60)
@@ -3982,6 +3983,7 @@ model SocialCalendarPost {
   imageUrl          String?        @db.Text
   imageAltText      String?        @db.VarChar(500)
   imageStatus       String         @default("planned") @db.VarChar(40)
+  externalPostId    String?        @db.VarChar(191)
   targetKeyword     String?        @db.VarChar(255)
   targetUrl         String?        @db.VarChar(512)
   sourceType        String?        @db.VarChar(80)
