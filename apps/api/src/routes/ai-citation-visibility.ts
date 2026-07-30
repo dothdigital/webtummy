@@ -22,6 +22,13 @@ const websiteUpdateListSchema = z.object({
   generationId: z.string().trim().min(1).optional().nullable(),
 });
 
+const findingWebsiteSignalKeys: Record<string, string[]> = {
+  "core-entity-schema-missing": ["organization-schema", "website-schema"],
+  "organization-transparency-limited": ["about-page", "contact-page", "privacy-page"],
+  "authorship-evidence-limited": ["author-evidence"],
+  "source-provenance-limited": ["source-evidence"],
+};
+
 const promptSchema = z.object({
   queryText: z.string().trim().min(5).max(512),
   topic: z.string().trim().max(255).optional().nullable(),
@@ -528,6 +535,20 @@ aiCitationVisibilityRouter.get("/projects/:projectId/ai-citation-visibility", as
       } : {}),
     };
   };
+  const trustSignalsByKey = new Map(trustSignals.map((signal) => [signal.signalKey, attachTrustAssets(signal)]));
+  const websiteHasFaqEvidence = Boolean(websiteBuild?.pages.some((page) => schemaTypes(jsonRecord(page.seoJson).schemaJsonLd).has("faqpage")));
+  const visibleFindings = findings.flatMap((item) => {
+    if (item.findingKey === "answer-blocks-limited" && websiteHasFaqEvidence) return [];
+    const requirementKeys = findingWebsiteSignalKeys[item.findingKey] ?? [];
+    const websiteRequirements = requirementKeys
+      .map((signalKey) => trustSignalsByKey.get(signalKey))
+      .filter((signal): signal is NonNullable<typeof signal> => Boolean(signal && !signal.websiteAsset));
+    if (requirementKeys.length && websiteRequirements.length === 0) return [];
+    return [{
+      ...attachContentAsset("finding", item),
+      websiteRequirements,
+    }];
+  });
   res.json({
     project: { id: project.id, name: citationContext(project).businessName, websiteUrl: citationContext(project).websiteUrl },
     websiteWorkflow: {
@@ -547,7 +568,7 @@ aiCitationVisibilityRouter.get("/projects/:projectId/ai-citation-visibility", as
     entities,
     claims,
     topics,
-    findings: findings.map((item) => attachContentAsset("finding", item)),
+    findings: visibleFindings,
     opportunities: opportunities.map((item) => attachContentAsset("opportunity", item)),
     prompts,
     trustSignals: trustSignals.map(attachTrustAssets),

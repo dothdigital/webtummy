@@ -22,6 +22,21 @@ type WebsiteTrustAsset = {
   updatedAt: string | null;
 };
 
+type CitationTrustSignal = {
+  id: string;
+  signalKey: string;
+  signalType: string;
+  title: string;
+  status: string;
+  observedStatus: string;
+  confidence: number;
+  sourceUrl: string | null;
+  recommendation: string | null;
+  contentAsset: CitationContentAsset | null;
+  websiteAsset: WebsiteTrustAsset | null;
+  websiteUpdate: { status: "queued"; generationId: string | null; queuedAt: string; queuedByUserId: string | null } | null;
+};
+
 type CitationWorkspace = {
   project: { id: string; name: string; websiteUrl: string | null };
   websiteWorkflow: { buildStatus: string | null; hasApprovedRelease: boolean };
@@ -33,10 +48,10 @@ type CitationWorkspace = {
   entities: Array<{ id: string; canonicalName: string; entityType: string; description: string | null; canonicalUrl: string | null; confidence: number; verificationStatus: string }>;
   claims: Array<{ id: string; claimType: string; statement: string; classification: string; verificationStatus: string; confidence: number; entity: { canonicalName: string; entityType: string }; sources: Array<{ id: string; sourceType: string; sourceLabel: string; sourceUrl: string | null; evidenceText: string | null }> }>;
   topics: Array<{ id: string; topicName: string; relevanceScore: number; authorityScore: number }>;
-  findings: Array<{ id: string; category: string; findingKey: string; title: string; summary: string; severity: string; confidence: number; scoreImpact: number; evidenceJson: unknown; isInference: boolean; recommendedAction: string; status: string; contentAsset: CitationContentAsset | null }>;
+  findings: Array<{ id: string; category: string; findingKey: string; title: string; summary: string; severity: string; confidence: number; scoreImpact: number; evidenceJson: unknown; isInference: boolean; recommendedAction: string; status: string; contentAsset: CitationContentAsset | null; websiteRequirements: CitationTrustSignal[] }>;
   opportunities: Array<{ id: string; query: string; topic: string | null; searchIntent: string | null; gapSummary: string; recommendedFixes: unknown; evidenceJson: unknown; isInference: boolean; entityFitScore: number; answerValueScore: number; authorityPotentialScore: number; effortScore: number; priorityScore: number; status: string; contentAsset: CitationContentAsset | null }>;
   prompts: Array<{ id: string; queryText: string; topic: string | null; searchIntent: string | null; targetUrl: string | null; scanFrequency: string; engineTargets: unknown; priorityScore: number; promptSource: string; visibilityStatus: string | null; lastScanStatus: string | null; snapshots: Array<{ id: string; scanProvider: string; visibilityStatus: string; mentionDetected: boolean; sentiment: string | null; accuracyStatus: string | null; answerExcerpt: string | null; createdAt: string; sourceMentions: Array<{ id: string; sourceUrl: string; sourceDomain: string; mentionType: string; supportsBrand: boolean; sourceQualityScore: number }> }> }>;
-  trustSignals: Array<{ id: string; signalKey: string; signalType: string; title: string; status: string; observedStatus: string; confidence: number; sourceUrl: string | null; recommendation: string | null; contentAsset: CitationContentAsset | null; websiteAsset: WebsiteTrustAsset | null; websiteUpdate: { status: "queued"; generationId: string | null; queuedAt: string; queuedByUserId: string | null } | null }>;
+  trustSignals: CitationTrustSignal[];
   recommendations: Array<{ id: string; recommendationType: string; title: string; rationale: string; recommendedAction: string; contentDraftJson: unknown; schemaDraftJson: unknown; priorityScore: number; riskLevel: string; status: string; executionTaskId: string | null; contentAsset: CitationContentAsset | null }>;
 };
 
@@ -142,6 +157,25 @@ function websiteAssetDevelopmentUrl(projectId: string, signalKey: string, asset:
   return `/site-architect?${params.toString()}`;
 }
 
+function findingGuidedResolution(projectId: string, findingKey: string) {
+  if (findingKey === "entity-profile-incomplete") return {
+    label: "Update Project Intake →",
+    detail: "Complete the verified business identity before sending it to Website Development.",
+    href: `/guided-projects/${encodeURIComponent(projectId)}/intake`,
+  };
+  if (findingKey === "answer-blocks-limited") return {
+    label: "Add in Website Content →",
+    detail: "Add useful visible FAQs to an appropriate page, then rerun Website Quality.",
+    href: `/site-architect?projectId=${encodeURIComponent(projectId)}&step=content&source=ai-citation`,
+  };
+  if (findingKey === "invalid-schema-detected") return {
+    label: "Resolve in Website Quality →",
+    detail: "Review and correct the affected page schema in the shared Website Model.",
+    href: `/site-architect?projectId=${encodeURIComponent(projectId)}&step=optimization&source=ai-citation`,
+  };
+  return null;
+}
+
 function statusTone(value: string) {
   if (/approved|resolved|present|accurate|with_sources|complete/.test(value)) return "bg-emerald-50 text-emerald-700";
   if (/rejected|dismissed|inaccurate|missing|high/.test(value)) return "bg-rose-50 text-rose-700";
@@ -190,11 +224,12 @@ function FindingActions({
   if (!canAudit) return null;
   const active = finding.status === "open" || finding.status === "acknowledged";
   const terminal = finding.status === "resolved" || finding.status === "dismissed";
+  const usesWebsiteRequirements = finding.websiteRequirements.length > 0 || ["entity-profile-incomplete", "answer-blocks-limited", "invalid-schema-detected"].includes(finding.findingKey);
   return <div className="w-full shrink-0 rounded-xl border border-slate-200 bg-slate-50 p-3 lg:w-64">
     <div className="text-[10px] font-black uppercase tracking-wide text-charcoal-400">Finding actions</div>
     <div className="mt-2 space-y-2">
-      {contentAsset ? <button type="button" onClick={onViewContent} className="w-full rounded-lg bg-brand-600 px-3 py-2 text-center text-xs font-black text-white hover:bg-brand-700">View generated content →</button> : active && <button type="button" onClick={onCreateContent} className="w-full rounded-lg bg-brand-600 px-3 py-2 text-center text-xs font-black text-white hover:bg-brand-700">{contentLabel} →</button>}
-      {active && contentAsset && <button type="button" onClick={onCreateContent} className="w-full rounded-lg border border-brand-200 bg-white px-3 py-2 text-xs font-black text-brand-700 hover:bg-brand-50">Create a new version</button>}
+      {!usesWebsiteRequirements && (contentAsset ? <button type="button" onClick={onViewContent} className="w-full rounded-lg bg-brand-600 px-3 py-2 text-center text-xs font-black text-white hover:bg-brand-700">View generated content →</button> : active && <button type="button" onClick={onCreateContent} className="w-full rounded-lg bg-brand-600 px-3 py-2 text-center text-xs font-black text-white hover:bg-brand-700">{contentLabel} →</button>)}
+      {!usesWebsiteRequirements && active && contentAsset && <button type="button" onClick={onCreateContent} className="w-full rounded-lg border border-brand-200 bg-white px-3 py-2 text-xs font-black text-brand-700 hover:bg-brand-50">Create a new version</button>}
       {active && <button type="button" onClick={() => onReview("resolved")} disabled={busy} className="w-full rounded-lg bg-emerald-600 px-3 py-2 text-xs font-black text-white disabled:opacity-50">{busy ? "Saving…" : "Mark as Resolved"}</button>}
       {finding.status === "open" && <button type="button" onClick={() => onReview("acknowledged")} disabled={busy} className="w-full rounded-lg border border-amber-200 bg-white px-3 py-2 text-xs font-black text-amber-700 disabled:opacity-50">Acknowledge</button>}
       {active && <button type="button" onClick={() => onReview("dismissed")} disabled={busy} className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-black text-slate-600 disabled:opacity-50">Dismiss</button>}
@@ -557,6 +592,8 @@ export default function AiCitationVisibilityWorkspace({ projectId }: { projectId
 
       {tab === "findings" && <div className="space-y-3">{workspace.findings.length ? workspace.findings.map((finding) => {
         const contentLaunch = findingContentLaunch(finding);
+        const websiteRequirements = finding.websiteRequirements ?? [];
+        const guidedResolution = findingGuidedResolution(projectId, finding.findingKey);
         return <div key={finding.id} className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
           <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
             <div className="min-w-0">
@@ -569,6 +606,36 @@ export default function AiCitationVisibilityWorkspace({ projectId }: { projectId
               <h3 className="mt-3 font-black text-charcoal-950">{finding.title}</h3>
               <p className="mt-1 text-sm leading-6 text-charcoal-600">{finding.summary}</p>
               <div className="mt-3 rounded-lg border border-brand-100 bg-brand-50 p-3 text-sm leading-6 text-brand-900"><b>Recommended:</b> {finding.recommendedAction}</div>
+              {websiteRequirements.length > 0 && <div className="mt-3 rounded-xl border border-violet-200 bg-violet-50 p-3">
+                <div className="text-[10px] font-black uppercase tracking-wide text-violet-700">Missing from Website Development</div>
+                <p className="mt-1 text-xs leading-5 text-violet-800">Only the missing shared assets are shown. Add them to the Website Update List, then push the selected updates together.</p>
+                <div className="mt-3 space-y-2">
+                  {websiteRequirements.map((signal) => {
+                    const launch = trustSignalContentLaunch(signal);
+                    const needsGeneratedContent = ["about-page", "privacy-page", "terms-page", "author-evidence", "source-evidence"].includes(signal.signalKey);
+                    return <div key={signal.id} className="flex flex-col gap-2 rounded-lg border border-violet-100 bg-white p-3 sm:flex-row sm:items-center sm:justify-between">
+                      <div>
+                        <div className="text-xs font-black text-slate-900">{signal.title}</div>
+                        <div className="mt-0.5 text-[10px] leading-4 text-slate-500">{signal.recommendation}</div>
+                      </div>
+                      {signal.signalKey === "contact-page"
+                        ? <a href={`/guided-projects/${encodeURIComponent(projectId)}/intake`} className="shrink-0 rounded-lg border border-brand-200 bg-white px-3 py-2 text-center text-[11px] font-black text-brand-700 hover:bg-brand-50">Update contact details →</a>
+                        : signal.websiteUpdate
+                          ? <button type="button" onClick={showWebsiteUpdateList} className="shrink-0 rounded-lg bg-violet-100 px-3 py-2 text-[11px] font-black text-violet-800">Added to Website Update List ✓</button>
+                          : needsGeneratedContent && !signal.contentAsset
+                            ? <button type="button" onClick={() => openCitationContent(launch, signal.title, "trust_signal", signal.id)} className="shrink-0 rounded-lg bg-brand-600 px-3 py-2 text-[11px] font-black text-white hover:bg-brand-700">Create for Website Development →</button>
+                            : <button type="button" disabled={Boolean(busy)} onClick={() => updateWebsiteList(signal, "add", signal.contentAsset?.id)} className="shrink-0 rounded-lg bg-brand-600 px-3 py-2 text-[11px] font-black text-white hover:bg-brand-700 disabled:opacity-50">{busy === `website-list:${signal.id}` ? "Adding…" : "Add to Website Update List →"}</button>}
+                    </div>;
+                  })}
+                </div>
+              </div>}
+              {websiteRequirements.length === 0 && guidedResolution && <div className="mt-3 flex flex-col gap-3 rounded-xl border border-violet-200 bg-violet-50 p-3 sm:flex-row sm:items-center sm:justify-between">
+                <div>
+                  <div className="text-[10px] font-black uppercase tracking-wide text-violet-700">Shared resolution workflow</div>
+                  <p className="mt-1 text-xs leading-5 text-violet-800">{guidedResolution.detail}</p>
+                </div>
+                <a href={guidedResolution.href} className="shrink-0 rounded-lg bg-brand-600 px-3 py-2 text-center text-[11px] font-black text-white hover:bg-brand-700">{guidedResolution.label}</a>
+              </div>}
               <Evidence value={finding.evidenceJson} />
             </div>
             <FindingActions
