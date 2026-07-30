@@ -391,18 +391,40 @@ export default function AiCitationVisibilityWorkspace({ projectId }: { projectId
     setContentRequest(citationContentRequest(projectId, workspace.project.websiteUrl, launch, contextLabel, sourceType, sourceRecordId, generationId));
   };
 
-  const createPrompt = (opportunity?: CitationWorkspace["opportunities"][number]) => {
+  const createPrompt = async (opportunity?: CitationWorkspace["opportunities"][number]) => {
     const draft = opportunity ? {
       queryText: opportunity.query,
       topic: opportunity.topic ?? "",
       searchIntent: opportunity.searchIntent ?? "informational",
-      targetUrl: workspace?.project.websiteUrl ?? "",
+      targetUrl: workspace?.project.websiteUrl ?? null,
       scanFrequency: "weekly",
-      engineTargets: "ChatGPT, Google AI Overviews, Perplexity",
+      engineTargets: ["ChatGPT", "Google AI Overviews", "Perplexity"],
       promptSource: "answer_opportunity",
       opportunityId: opportunity.id,
-    } : { ...promptDraft, engineTargets: promptDraft.engineTargets.split(",").map((item) => item.trim()).filter(Boolean), promptSource: "user" };
-    void run(`prompt:${opportunity?.id ?? "new"}`, () => api.post(`/api/projects/${encodeURIComponent(projectId)}/ai-citation-visibility/prompts`, draft), "Monitoring prompt saved. Record only observations collected through a permitted provider or a documented manual check.");
+    } : {
+      ...promptDraft,
+      topic: promptDraft.topic.trim() || null,
+      targetUrl: promptDraft.targetUrl.trim() || workspace?.project.websiteUrl || null,
+      engineTargets: promptDraft.engineTargets.split(",").map((item) => item.trim()).filter(Boolean),
+      promptSource: "user",
+    };
+    const key = `prompt:${opportunity?.id ?? "new"}`;
+    setBusy(key);
+    setError("");
+    setMessage("");
+    try {
+      const result = await api.post<{ prompt: { id: string } }>(`/api/projects/${encodeURIComponent(projectId)}/ai-citation-visibility/prompts`, draft);
+      if (!opportunity) {
+        setPromptDraft({ queryText: "", topic: "", searchIntent: "informational", targetUrl: "", scanFrequency: "manual", engineTargets: "ChatGPT, Google AI Overviews, Perplexity" });
+        setObservation((current) => ({ ...current, promptId: result.prompt.id }));
+      }
+      setMessage("Monitoring prompt saved. It is ready for a documented manual observation; an automatic provider scan has not run.");
+      await load();
+    } catch (actionError) {
+      setError(actionError instanceof Error ? actionError.message : "The monitoring prompt could not be saved.");
+    } finally {
+      setBusy("");
+    }
   };
 
   const recordObservation = () => {
@@ -663,8 +685,34 @@ export default function AiCitationVisibilityWorkspace({ projectId }: { projectId
       }) : <Empty title="No answer opportunities" detail="Run citation research to infer high-value questions from approved keywords and verified project context." />}</div>}
 
       {tab === "monitoring" && <div className="space-y-5">
-        {workspace.capabilities.canAudit && <div className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm"><h3 className="font-black text-charcoal-950">Add a monitoring prompt</h3><p className="mt-1 text-sm text-charcoal-500">Define a real audience question and the engines you intend to observe. Saving a prompt does not claim it was checked.</p><div className="mt-4 grid gap-3 md:grid-cols-2"><input value={promptDraft.queryText} onChange={(event) => setPromptDraft({ ...promptDraft, queryText: event.target.value })} placeholder="Audience question or comparison prompt" className="rounded-lg border border-slate-200 px-3 py-2 text-sm md:col-span-2" /><input value={promptDraft.topic} onChange={(event) => setPromptDraft({ ...promptDraft, topic: event.target.value })} placeholder="Topic" className="rounded-lg border border-slate-200 px-3 py-2 text-sm" /><select value={promptDraft.searchIntent} onChange={(event) => setPromptDraft({ ...promptDraft, searchIntent: event.target.value })} className="rounded-lg border border-slate-200 px-3 py-2 text-sm"><option value="informational">Informational</option><option value="commercial_research">Commercial research</option><option value="comparison">Comparison</option><option value="local">Local</option><option value="navigational">Navigational</option></select><input value={promptDraft.targetUrl} onChange={(event) => setPromptDraft({ ...promptDraft, targetUrl: event.target.value })} placeholder="Target page URL (optional)" className="rounded-lg border border-slate-200 px-3 py-2 text-sm" /><input value={promptDraft.engineTargets} onChange={(event) => setPromptDraft({ ...promptDraft, engineTargets: event.target.value })} placeholder="Target engines, separated by commas" className="rounded-lg border border-slate-200 px-3 py-2 text-sm" /></div><button type="button" onClick={() => createPrompt()} disabled={Boolean(busy) || promptDraft.queryText.trim().length < 5} className="mt-4 rounded-lg bg-brand-600 px-4 py-2 text-xs font-black text-white disabled:opacity-50">Save monitoring prompt</button></div>}
-        <div className="rounded-xl border border-slate-200 bg-white shadow-sm"><div className="border-b border-slate-100 px-5 py-4"><h3 className="font-black text-charcoal-950">Prompt portfolio</h3><p className="mt-1 text-sm text-charcoal-500">Status reflects saved observations only—not assumed visibility.</p></div>{workspace.prompts.length ? <div className="divide-y divide-slate-100">{workspace.prompts.map((prompt) => <div key={prompt.id} className="p-5"><div className="flex flex-wrap items-center gap-2"><Pill value={prompt.visibilityStatus ?? "not_assessed"} /><Pill value={prompt.promptSource} /><span className="text-xs font-bold text-charcoal-400">{prompt.snapshots.length} saved observation(s)</span></div><div className="mt-2 font-black text-charcoal-950">{prompt.queryText}</div><div className="mt-1 text-xs text-charcoal-500">{list(prompt.engineTargets).join(", ") || "No engine targets selected"} · {display(prompt.scanFrequency)}</div></div>)}</div> : <Empty title="No monitoring prompts" detail="Define a custom audience question to begin monitoring." />}</div>
+        {workspace.capabilities.canAudit && <div className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
+          <h3 className="font-black text-charcoal-950">Add a monitoring prompt</h3>
+          <p className="mt-1 text-sm text-charcoal-500">Define a real audience question and the engines you intend to observe. Saving creates the monitoring record; it does not run an automatic provider scan.</p>
+          {error && <div className="mt-3 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs font-semibold text-rose-800">{error}</div>}
+          {message && <div className="mt-3 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs font-semibold text-emerald-800">{message}</div>}
+          <div className="mt-4 grid gap-3 md:grid-cols-2">
+            <input value={promptDraft.queryText} onChange={(event) => setPromptDraft({ ...promptDraft, queryText: event.target.value })} placeholder="Audience question or comparison prompt" className="rounded-lg border border-slate-200 px-3 py-2 text-sm md:col-span-2" />
+            <input value={promptDraft.topic} onChange={(event) => setPromptDraft({ ...promptDraft, topic: event.target.value })} placeholder="Topic" className="rounded-lg border border-slate-200 px-3 py-2 text-sm" />
+            <select value={promptDraft.searchIntent} onChange={(event) => setPromptDraft({ ...promptDraft, searchIntent: event.target.value })} className="rounded-lg border border-slate-200 px-3 py-2 text-sm"><option value="informational">Informational</option><option value="commercial_research">Commercial research</option><option value="comparison">Comparison</option><option value="local">Local</option><option value="navigational">Navigational</option></select>
+            <input value={promptDraft.targetUrl} onChange={(event) => setPromptDraft({ ...promptDraft, targetUrl: event.target.value })} placeholder="Target page URL (optional)" className="rounded-lg border border-slate-200 px-3 py-2 text-sm" />
+            <input value={promptDraft.engineTargets} onChange={(event) => setPromptDraft({ ...promptDraft, engineTargets: event.target.value })} placeholder="Target engines, separated by commas" className="rounded-lg border border-slate-200 px-3 py-2 text-sm" />
+          </div>
+          <button type="button" onClick={() => void createPrompt()} disabled={Boolean(busy) || promptDraft.queryText.trim().length < 5} className="mt-4 rounded-lg bg-brand-600 px-4 py-2 text-xs font-black text-white disabled:opacity-50">{busy === "prompt:new" ? "Saving prompt…" : "Save monitoring prompt"}</button>
+        </div>}
+        <div className="rounded-xl border border-slate-200 bg-white shadow-sm">
+          <div className="border-b border-slate-100 px-5 py-4"><h3 className="font-black text-charcoal-950">Prompt portfolio</h3><p className="mt-1 text-sm text-charcoal-500">Saved prompts remain Not run until a permitted provider result or manual observation is recorded.</p></div>
+          {workspace.prompts.length ? <div className="divide-y divide-slate-100">{workspace.prompts.map((prompt) => <div key={prompt.id} className="p-5">
+            <div className="flex flex-wrap items-center gap-2">
+              <Pill value={prompt.lastScanStatus || "not_run"} />
+              <Pill value={prompt.visibilityStatus ?? "not_assessed"} />
+              <Pill value={prompt.promptSource} />
+              <span className="text-xs font-bold text-charcoal-400">{prompt.snapshots.length} saved observation{prompt.snapshots.length === 1 ? "" : "s"}</span>
+            </div>
+            <div className="mt-2 font-black text-charcoal-950">{prompt.queryText}</div>
+            <div className="mt-1 text-xs text-charcoal-500"><b>Engines:</b> {list(prompt.engineTargets).join(", ") || "None selected"} · <b>Frequency:</b> {display(prompt.scanFrequency)}</div>
+            {prompt.targetUrl && <a href={prompt.targetUrl} target="_blank" rel="noreferrer" className="mt-1 block break-all text-xs font-semibold text-brand-700"><b>Target:</b> {prompt.targetUrl}</a>}
+          </div>)}</div> : <Empty title="No monitoring prompts" detail="Define a custom audience question to begin monitoring." />}
+        </div>
         {workspace.capabilities.canAudit && workspace.prompts.length > 0 && <div className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm"><h3 className="font-black text-charcoal-950">Record an observed result</h3><p className="mt-1 text-sm leading-6 text-charcoal-500">Use a permitted provider result or documented manual observation. Include the answer and cited sources so the record can be audited later.</p><div className="mt-4 grid gap-3 md:grid-cols-2"><select value={observation.promptId} onChange={(event) => setObservation({ ...observation, promptId: event.target.value })} className="rounded-lg border border-slate-200 px-3 py-2 text-sm md:col-span-2"><option value="">Select prompt</option>{workspace.prompts.map((prompt) => <option key={prompt.id} value={prompt.id}>{prompt.queryText}</option>)}</select><input value={observation.scanProvider} onChange={(event) => setObservation({ ...observation, scanProvider: event.target.value })} placeholder="Provider or manual method" className="rounded-lg border border-slate-200 px-3 py-2 text-sm" /><select value={observation.mentionDetected} onChange={(event) => setObservation({ ...observation, mentionDetected: event.target.value })} className="rounded-lg border border-slate-200 px-3 py-2 text-sm"><option value="false">Brand not mentioned</option><option value="true">Brand mentioned</option></select><select value={observation.accuracyStatus} onChange={(event) => setObservation({ ...observation, accuracyStatus: event.target.value })} className="rounded-lg border border-slate-200 px-3 py-2 text-sm"><option value="not_assessed">Accuracy not assessed</option><option value="accurate">Accurate</option><option value="partially_accurate">Partially accurate</option><option value="inaccurate">Inaccurate</option></select><select value={observation.sentiment} onChange={(event) => setObservation({ ...observation, sentiment: event.target.value })} className="rounded-lg border border-slate-200 px-3 py-2 text-sm"><option value="not_applicable">Sentiment not applicable</option><option value="positive">Positive</option><option value="neutral">Neutral</option><option value="negative">Negative</option><option value="mixed">Mixed</option></select><textarea value={observation.answerExcerpt} onChange={(event) => setObservation({ ...observation, answerExcerpt: event.target.value })} placeholder="Observed answer or factual excerpt" rows={4} className="rounded-lg border border-slate-200 px-3 py-2 text-sm md:col-span-2" /><textarea value={observation.sourceUrls} onChange={(event) => setObservation({ ...observation, sourceUrls: event.target.value })} placeholder="Cited source URLs, one per line" rows={3} className="rounded-lg border border-slate-200 px-3 py-2 text-sm" /><textarea value={observation.competitorsVisible} onChange={(event) => setObservation({ ...observation, competitorsVisible: event.target.value })} placeholder="Visible competitors, comma-separated" rows={3} className="rounded-lg border border-slate-200 px-3 py-2 text-sm" /></div><button type="button" onClick={recordObservation} disabled={Boolean(busy) || !observation.promptId} className="mt-4 rounded-lg bg-brand-600 px-4 py-2 text-xs font-black text-white disabled:opacity-50">{busy === "observation" ? "Saving evidence…" : "Save observed result"}</button></div>}
         <div className="rounded-xl border border-slate-200 bg-white shadow-sm"><div className="border-b border-slate-100 px-5 py-4"><h3 className="font-black text-charcoal-950">Observation history</h3></div>{latestObservations.length ? <div className="divide-y divide-slate-100">{latestObservations.map((item) => <div key={item.id} className="p-5"><div className="flex flex-wrap items-center gap-2"><Pill value={item.visibilityStatus} />{item.accuracyStatus && <Pill value={item.accuracyStatus} />}<span className="text-xs text-charcoal-400">{item.scanProvider} · {new Date(item.createdAt).toLocaleString()}</span></div><div className="mt-2 text-sm font-black text-charcoal-900">{item.prompt}</div>{item.answerExcerpt && <p className="mt-2 rounded-lg bg-slate-50 p-3 text-sm leading-6 text-charcoal-600">{item.answerExcerpt}</p>}{item.sourceMentions.length > 0 && <div className="mt-2 space-y-1">{item.sourceMentions.map((source) => <a key={source.id} href={source.sourceUrl} target="_blank" rel="noreferrer" className="block break-all text-xs font-semibold text-brand-700">{source.sourceDomain} · {source.sourceUrl}</a>)}</div>}</div>)}</div> : <Empty title="No observed results" detail="Visibility stays unassessed until a real provider result or documented manual check is recorded." />}</div>
       </div>}

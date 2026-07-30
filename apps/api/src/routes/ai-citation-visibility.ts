@@ -38,7 +38,10 @@ const promptSchema = z.object({
   queryText: z.string().trim().min(5).max(512),
   topic: z.string().trim().max(255).optional().nullable(),
   searchIntent: z.enum(["informational", "commercial_research", "comparison", "local", "navigational"]).default("informational"),
-  targetUrl: z.string().url().optional().nullable(),
+  targetUrl: z.preprocess(
+    (value) => typeof value === "string" && !value.trim() ? null : value,
+    z.string().url().optional().nullable(),
+  ),
   competitors: z.array(z.string().trim().min(1).max(180)).max(20).default([]),
   engineTargets: z.array(z.string().trim().min(1).max(80)).max(20).default([]),
   scanFrequency: z.enum(["manual", "weekly", "monthly"]).default("manual"),
