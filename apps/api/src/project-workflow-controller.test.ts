@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { resolveProjectWorkflow, type WorkflowEvidenceSnapshot } from "./project-workflow-controller.js";
+import { resolveProjectApplicability, resolveProjectWorkflow, type WorkflowEvidenceSnapshot } from "./project-workflow-controller.js";
 
 function snapshot(overrides: Partial<WorkflowEvidenceSnapshot> = {}): WorkflowEvidenceSnapshot {
   const now = new Date("2026-08-01T12:00:00.000Z");
@@ -21,6 +21,11 @@ function snapshot(overrides: Partial<WorkflowEvidenceSnapshot> = {}): WorkflowEv
     siteAnalysisInProgress: false,
     siteAnalysisFailed: false,
     siteEvidenceAt: now,
+    ecommerceApplicable: false,
+    ecommerceAnalysisComplete: true,
+    ecommerceAnalysisInProgress: false,
+    ecommerceAnalysisFailed: false,
+    ecommerceEvidenceAt: null,
     gapAnalysisComplete: true,
     gapAnalysisInProgress: false,
     gapAnalysisFailed: false,
@@ -64,6 +69,23 @@ function snapshot(overrides: Partial<WorkflowEvidenceSnapshot> = {}): WorkflowEv
 }
 
 describe("DEV-046 project workflow controller", () => {
+  it("treats ecommerce as a project type and requires public-store intelligence only when a store is live", () => {
+    const existingStore = resolveProjectApplicability({ projectType: "ecommerce", websiteStatus: "existing_website", hasWebsite: true, contextText: "online store" });
+    const plannedStore = resolveProjectApplicability({ projectType: "ecommerce", websiteStatus: "new_website_required", hasWebsite: false, contextText: "online store" });
+    expect(existingStore.requiredModules).toContain("ecommerce_intelligence");
+    expect(plannedStore.requiredModules).not.toContain("ecommerce_intelligence");
+    expect(plannedStore.requiredModules).not.toContain("site_analysis");
+  });
+
+  it("blocks an existing ecommerce store at Ecommerce Intelligence after its public crawl", () => {
+    const result = resolveProjectWorkflow(snapshot({ ecommerceApplicable: true, ecommerceAnalysisComplete: false }));
+    const ecommerce = result.intelligenceModules.find((item) => item.key === "ecommerce_intelligence");
+    expect(ecommerce?.required).toBe(true);
+    expect(ecommerce?.status).toBe("not_started");
+    expect(result.intelligenceReady).toBe(false);
+    expect(result.nextBestAction.action.url).toContain("/ecommerce-intelligence?");
+  });
+
   it("routes an intake-complete project to Opportunities before Keyword Intelligence", () => {
     const result = resolveProjectWorkflow(snapshot({
       selectedOpportunity: false,

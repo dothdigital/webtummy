@@ -68,7 +68,7 @@ describe("workspace role enforcement", () => {
     expect(() => validateRolesForWorkspace(context(["owner"], "personal"), ["manager"])).toThrow(/Personal workspaces/);
   });
 
-  it("supports the four simplified internal roles in Business and Ecommerce workspaces", () => {
+  it("keeps historical Ecommerce workspaces compatible with the Business role model", () => {
     for (const workspaceType of ["business", "ecommerce"]) {
       expect(() => validateRolesForWorkspace(context(["owner"], workspaceType), ["admin", "manager", "editor", "viewer"])).not.toThrow();
       expect(() => validateRolesForWorkspace(context(["owner"], workspaceType), ["client_viewer"])).toThrow();

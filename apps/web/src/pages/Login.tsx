@@ -414,10 +414,10 @@ function SignUpForm({
   const workspaceOptions = jvZooPlan === "agency"
     ? ["Agency"]
     : jvZooPlan === "business"
-      ? ["Business", "Ecommerce"]
+      ? ["Business"]
       : jvZooPlan === "starter"
         ? ["Personal", "Business"]
-        : ["Personal", "Business", "Agency", "Ecommerce"];
+        : ["Personal", "Business", "Agency"];
   const canSubmit = Boolean(name && emailOk(email) && passwordValid(password) && confirm === password && workspaceType && acceptedTerms);
 
   useEffect(() => {
@@ -505,6 +505,7 @@ function SignUpForm({
             </select>
             <span className="pointer-events-none absolute right-4 top-1/2 -translate-y-1/2 text-slate-400"><AuthIcon name="chevron" /></span>
           </span>
+          <span className="mt-1.5 block text-xs leading-5 text-slate-500">Choose who manages the work. Ecommerce, SaaS, local, and service models are selected later as the project’s Business Type.</span>
           <FieldError msg={err.workspaceType} />
         </label>
         <label className="flex items-start gap-2.5 text-xs leading-5 text-slate-500 xl:text-sm">

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { SENUKE_COMPONENT_REGISTRY_V1 } from "@webtummy/core/website-model";
-import { combinedPageSchema, effectiveExistingPageRequirements, generatedPageSchema, importedWebsiteRouteAssignment, pageIsImportedExistingWebsite, publishingAssetMatchesWebsitePage } from "./website-builder.js";
+import { combinedPageSchema, effectiveExistingPageRequirements, generatedPageSchema, importedWebsiteRouteAssignment, pageIsImportedExistingWebsite, publishingAssetMatchesWebsitePage, websiteSettingsWithVerifiedLocalEvidence } from "./website-builder.js";
 
 const project = {
   businessName: "Example Financial",
@@ -15,6 +15,44 @@ const project = {
 };
 
 describe("ongoing WordPress publishing schema", () => {
+  it("synchronizes verified local evidence into the matching Website Plan page", () => {
+    const evidence = {
+      id: "verified-local-evidence-1",
+      type: "user_confirmed_local_service_evidence" as const,
+      location: "Toronto",
+      detail: "Remote onboarding and implementation support are genuinely available to Toronto customers.",
+      serviceAvailable: true as const,
+      confirmedById: "user-1",
+      confirmedAt: "2026-08-07T12:00:00.000Z",
+    };
+    const result = websiteSettingsWithVerifiedLocalEvidence({
+      seoPlan: {
+        pageAssignments: [{
+          pageKey: "page-toronto-location-hub",
+          pageName: "Insurance CRM Services In Toronto",
+          targetUrl: "/locations/toronto",
+          canonicalKeyword: "Insurance CRM services in Toronto",
+          serviceAvailabilityVerified: false,
+          localEvidenceIds: [],
+        }],
+      },
+    }, {
+      title: "Insurance CRM Services In Toronto",
+      slug: "locations/toronto",
+      targetUrl: "/locations/toronto",
+      primaryKeyword: "Insurance CRM services in Toronto",
+      secondaryKeywords: [],
+      briefJson: { authorityCluster: { pageKey: "page-toronto-location-hub" } },
+    }, evidence);
+
+    expect(result.matchedAssignments).toBe(1);
+    expect((result.settings.seoPlan as { pageAssignments: Array<Record<string, unknown>> }).pageAssignments[0]).toMatchObject({
+      serviceAvailabilityVerified: true,
+      localEvidenceIds: [evidence.id],
+      localEvidenceRecords: [evidence],
+    });
+  });
+
   it("matches a Publishing asset for / to the existing Home page", () => {
     expect(publishingAssetMatchesWebsitePage(
       { keyword: "physiotherapy rehabilitation", topic: "Home", targetUrl: "/" },

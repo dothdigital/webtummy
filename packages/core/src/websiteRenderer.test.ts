@@ -88,6 +88,68 @@ describe("Approved Release website renderer", () => {
     expect(html).not.toContain("<script>alert");
   });
 
+  it("renders a saved section alignment into publishable website HTML and CSS", () => {
+    const aligned = {
+      ...model.pages[0].sections[1],
+      props: { ...model.pages[0].sections[1].props, alignment: "center", headingSize: "large", headingWeight: "black", headingColor: "primary" },
+    } as WebsiteComponentInstance;
+    expect(renderWebsiteComponentHtml(aligned)).toContain("senuke-align-center");
+    expect(renderWebsiteComponentHtml(aligned)).toContain("senuke-heading-large senuke-heading-black senuke-heading-color-primary");
+    const alignedModel: WebsiteModel = {
+      ...model,
+      pages: [{ ...model.pages[0], sections: [hero, aligned] }],
+    };
+    const css = String(createStaticWebsiteFiles(alignedModel).find((file) => file.path === "assets/senuke.css")?.content ?? "");
+    expect(css).toContain(".senuke-align-center");
+  });
+
+  it("renders nested section columns, colours, and a saved background image for static and WordPress output", () => {
+    const layout: WebsiteComponentInstance = {
+      instanceId: "layout-1",
+      componentId: "layout.section",
+      componentVersion: "1.0.0",
+      variant: "two_left_wide",
+      props: {
+        backgroundColor: "secondary",
+        textColor: "white",
+        backgroundImageAssetId: "section-background",
+        backgroundOverlay: 60,
+        spacing: "spacious",
+        columnOne: [{
+          instanceId: "nested-copy",
+          componentId: "content.rich_text",
+          componentVersion: "1.0.0",
+          variant: "answer_first",
+          props: { heading: "Nested decision support", body: "This content remains inside the first website column." },
+        }],
+        columnTwo: [{
+          instanceId: "nested-image",
+          componentId: "media.image",
+          componentVersion: "1.0.0",
+          variant: "card",
+          props: { imageAssetId: "section-background", altText: "Advisor helping a customer" },
+        }],
+        columnThree: [],
+      },
+    };
+    const html = renderWebsiteComponentHtml(layout, {
+      mediaAssets: [{ assetId: "section-background", status: "approved", sourceUrl: "https://example.com/advisor.jpg", altText: "Advisor helping a customer" }],
+    });
+    expect(html).toContain("senuke-layout-two_left_wide");
+    expect(html).toContain("senuke-layout-bg-secondary");
+    expect(html).toContain("Nested decision support");
+    expect(html.match(/https:\/\/example.com\/advisor.jpg/g)).toHaveLength(2);
+
+    const layoutModel: WebsiteModel = {
+      ...model,
+      mediaAssets: [{ assetId: "section-background", status: "approved", sourceUrl: "https://example.com/advisor.jpg", altText: "Advisor helping a customer" }],
+      pages: [{ ...model.pages[0], sections: [hero, layout] }],
+    };
+    const css = String(createStaticWebsiteFiles(layoutModel).find((file) => file.path === "assets/senuke.css")?.content ?? "");
+    expect(css).toContain(".senuke-layout-two_left_wide");
+    expect(css).toContain(".senuke-layout-background-image");
+  });
+
   it("rejects unsupported components at the renderer boundary", () => {
     expect(() => renderWebsiteComponentHtml({ ...hero, componentId: "custom.javascript" })).toThrow("Unsupported website component");
   });
@@ -98,6 +160,54 @@ describe("Approved Release website renderer", () => {
     expect(html).toContain('type="application/ld+json"');
     expect(html).toContain("All rights reserved.");
     expect(html).not.toContain("approved SENuke AI release");
+  });
+
+  it("merges duplicate legacy footer columns while preserving their links", () => {
+    const secondPage = { ...model.pages[0], pageId: "page-2", name: "Critical Illness Insurance", slug: "/critical-illness/" };
+    const legacyModel: WebsiteModel = {
+      ...model,
+      pages: [...model.pages, secondPage],
+      navigationModel: {
+        primaryMenu: model.navigation,
+        utilityMenu: [],
+        breadcrumbs: [],
+        clusterNavigationBlocks: [],
+        contextualNavRules: [],
+        footerMenus: [
+          { groupId: "services-one", label: "Services", items: [{ pageId: "page-1", label: "Services" }] },
+          { groupId: "services-two", label: "Services", items: [{ pageId: "page-2", label: "Services" }] },
+        ],
+      },
+    };
+    const html = renderWebsitePageDocument(legacyModel, legacyModel.pages[0]);
+    expect(html.match(/<h2>Services<\/h2>/g)).toHaveLength(1);
+    expect(html).toContain(">Super Visa Insurance in Brampton</a>");
+    expect(html).toContain(">Critical Illness Insurance</a>");
+  });
+
+  it("centres the first post-hero H2 even when the second fold is not rich text", () => {
+    const secondFoldModel: WebsiteModel = {
+      ...model,
+      pages: [{
+        ...model.pages[0],
+        sections: [
+          hero,
+          {
+            instanceId: "services-first-fold",
+            componentId: "service.grid",
+            componentVersion: "1.0.0",
+            variant: "three_column",
+            props: { heading: "Insurance options for your needs", introduction: "Review the available options.", items: [] },
+          },
+        ],
+      }],
+    };
+    const files = createStaticWebsiteFiles(secondFoldModel);
+    const html = String(files.find((file) => file.path.endsWith("index.html"))?.content ?? "");
+    const css = String(files.find((file) => file.path === "assets/senuke.css")?.content ?? "");
+    expect(html).toContain('class="senuke-component senuke-second-fold senuke-services');
+    expect(css).toContain(".senuke-second-fold>h2");
+    expect(css).toContain("text-align:center");
   });
 
   it("renders the uploaded WordPress media URL inside the first-fold hero", () => {

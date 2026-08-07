@@ -1,5 +1,6 @@
 import {
   SENUKE_COMPONENT_REGISTRY_V1,
+  flattenWebsiteComponents,
   validateComponentInstance,
   type JsonValue,
   type WebsiteComponentInstance,
@@ -44,6 +45,31 @@ const propObjects = (component: WebsiteComponentInstance, name: string) => {
   return Array.isArray(value)
     ? value.filter((item): item is Record<string, JsonValue> => Boolean(item && typeof item === "object" && !Array.isArray(item)))
     : [];
+};
+
+const propComponents = (component: WebsiteComponentInstance, name: string): WebsiteComponentInstance[] => {
+  const value = component.props[name];
+  if (!Array.isArray(value)) return [];
+  return value.filter((item): item is WebsiteComponentInstance => Boolean(
+    item
+    && typeof item === "object"
+    && !Array.isArray(item)
+    && typeof (item as Record<string, JsonValue>).componentId === "string"
+    && typeof (item as Record<string, JsonValue>).instanceId === "string",
+  ));
+};
+
+const componentAlignmentClass = (component: WebsiteComponentInstance) => {
+  const value = propString(component, "alignment");
+  const size = propString(component, "headingSize");
+  const weight = propString(component, "headingWeight");
+  const color = propString(component, "headingColor");
+  return [
+    ["left", "center", "right"].includes(value) ? `senuke-align-${value}` : "",
+    ["small", "medium", "large"].includes(size) ? `senuke-heading-${size}` : "",
+    ["regular", "semibold", "bold", "black"].includes(weight) ? `senuke-heading-${weight}` : "",
+    ["primary", "secondary", "accent", "text"].includes(color) ? `senuke-heading-color-${color}` : "",
+  ].filter(Boolean).join(" ");
 };
 
 const itemText = (item: Record<string, JsonValue>, ...keys: string[]) => {
@@ -150,7 +176,26 @@ export function renderWebsiteComponentHtml(
     throw new Error(`Unsupported website component ${component.componentId}@${component.componentVersion}.`);
   }
   const heading = escapeHtml(propString(component, "heading"));
+  const alignmentClass = componentAlignmentClass(component);
   switch (component.componentId) {
+    case "layout.section":
+      {
+        const variant = ["one_column", "two_equal", "two_left_wide", "two_right_wide", "three_equal"].includes(component.variant) ? component.variant : "two_equal";
+        const count = variant === "one_column" ? 1 : variant === "three_equal" ? 3 : 2;
+        const background = ["default", "background", "surface", "primary", "secondary", "accent", "dark"].includes(propString(component, "backgroundColor")) ? propString(component, "backgroundColor") : "default";
+        const textColor = ["auto", "text", "muted", "white"].includes(propString(component, "textColor")) ? propString(component, "textColor") : "auto";
+        const spacing = ["compact", "comfortable", "spacious"].includes(propString(component, "spacing")) ? propString(component, "spacing") : "comfortable";
+        const assetId = propString(component, "backgroundImageAssetId");
+        const asset = options.mediaAssets?.find((candidate) => candidate.assetId === assetId);
+        const imageUrl = options.assetUrls?.[assetId] || asset?.sourceUrl || "";
+        const image = assetId && renderableImageUrl(imageUrl) ? `<img class="senuke-layout-background-image" src="${escapeHtml(imageUrl)}" alt="" aria-hidden="true">` : "";
+        const rawOverlay = component.props.backgroundOverlay;
+        const overlay = typeof rawOverlay === "number" ? Math.max(0, Math.min(90, rawOverlay)) : 40;
+        const overlayHtml = image && overlay ? `<span class="senuke-layout-background-overlay" style="opacity:${overlay / 100}"></span>` : "";
+        const slotNames = ["columnOne", "columnTwo", "columnThree"].slice(0, count);
+        const columns = slotNames.map((slotName, index) => `<div class="senuke-layout-column" data-column="${index + 1}">${propComponents(component, slotName).map((child) => renderWebsiteComponentHtml(child, options)).join("")}</div>`).join("");
+        return `<section class="senuke-component senuke-layout-section senuke-layout-${escapeHtml(variant)} senuke-layout-bg-${escapeHtml(background)} senuke-layout-text-${escapeHtml(textColor)} senuke-layout-spacing-${escapeHtml(spacing)}">${image}${overlayHtml}<div class="senuke-layout-columns">${columns}</div></section>`;
+      }
     case "global.header":
       return `<header class="senuke-component senuke-header"><strong>${escapeHtml(propString(component, "businessName"))}</strong>${propString(component, "primaryCtaLabel") ? `<a class="senuke-button" href="${escapeHtml(resolvedComponentUrl(propString(component, "primaryCtaUrl"), options))}">${escapeHtml(propString(component, "primaryCtaLabel"))}</a>` : ""}</header>`;
     case "hero.local_service":
@@ -161,10 +206,10 @@ export function renderWebsiteComponentHtml(
         const image = assetId && renderableImageUrl(imageUrl)
           ? `<img class="senuke-hero-image" src="${escapeHtml(imageUrl)}" alt="${escapeHtml(asset?.altText || propString(component, "headline"))}">`
           : "";
-        return `<section class="senuke-component senuke-hero senuke-${escapeHtml(component.variant)}"><div>${propString(component, "eyebrow") ? `<p class="senuke-eyebrow">${escapeHtml(propString(component, "eyebrow"))}</p>` : ""}<h1>${escapeHtml(propString(component, "headline"))}</h1><p class="senuke-lead">${escapeHtml(propString(component, "summary"))}</p><a class="senuke-button" href="${escapeHtml(resolvedComponentUrl(propString(component, "primaryCtaUrl"), options))}">${escapeHtml(propString(component, "primaryCtaLabel"))}</a></div>${image}</section>`;
+        return `<section class="senuke-component senuke-hero senuke-${escapeHtml(component.variant)} ${alignmentClass}"><div>${propString(component, "eyebrow") ? `<p class="senuke-eyebrow">${escapeHtml(propString(component, "eyebrow"))}</p>` : ""}<h1>${escapeHtml(propString(component, "headline"))}</h1><p class="senuke-lead">${escapeHtml(propString(component, "summary"))}</p><a class="senuke-button" href="${escapeHtml(resolvedComponentUrl(propString(component, "primaryCtaUrl"), options))}">${escapeHtml(propString(component, "primaryCtaLabel"))}</a></div>${image}</section>`;
       }
     case "content.rich_text":
-      return `<section class="senuke-component senuke-rich-text"><h2>${heading}</h2>${paragraphs(propString(component, "body"))}</section>`;
+      return `<section class="senuke-component senuke-rich-text ${alignmentClass}"><h2>${heading}</h2>${paragraphs(propString(component, "body"))}</section>`;
     case "media.image":
       {
         const assetId = propString(component, "imageAssetId");
@@ -176,21 +221,21 @@ export function renderWebsiteComponentHtml(
         return `<figure class="senuke-component senuke-media senuke-media-${escapeHtml(component.variant)}">${image}${propString(component, "caption") ? `<figcaption>${escapeHtml(propString(component, "caption"))}</figcaption>` : ""}</figure>`;
       }
     case "service.grid":
-      return `<section class="senuke-component senuke-services senuke-services-${escapeHtml(component.variant)}"><h2>${heading}</h2>${propString(component, "introduction") ? `<p>${escapeHtml(propString(component, "introduction"))}</p>` : ""}<div class="senuke-grid">${renderCardItems(component, "senuke-card")}</div></section>`;
+      return `<section class="senuke-component senuke-services senuke-services-${escapeHtml(component.variant)} ${alignmentClass}"><h2>${heading}</h2>${propString(component, "introduction") ? `<p>${escapeHtml(propString(component, "introduction"))}</p>` : ""}<div class="senuke-grid">${renderCardItems(component, "senuke-card")}</div></section>`;
     case "service.benefits":
-      return `<section class="senuke-component senuke-benefits senuke-benefits-${escapeHtml(component.variant)}"><h2>${heading}</h2><div class="senuke-grid">${renderCardItems(component, "senuke-card senuke-benefit")}</div></section>`;
+      return `<section class="senuke-component senuke-benefits senuke-benefits-${escapeHtml(component.variant)} ${alignmentClass}"><h2>${heading}</h2><div class="senuke-grid">${renderCardItems(component, "senuke-card senuke-benefit")}</div></section>`;
     case "content.process":
-      return `<section class="senuke-component senuke-process senuke-process-${escapeHtml(component.variant)}"><h2>${heading}</h2><ol class="senuke-steps">${propObjects(component, "steps").map((item) => `<li><h3>${escapeHtml(itemText(item, "title", "name"))}</h3><p>${escapeHtml(itemText(item, "description", "body", "text"))}</p></li>`).join("")}</ol></section>`;
+      return `<section class="senuke-component senuke-process senuke-process-${escapeHtml(component.variant)} ${alignmentClass}"><h2>${heading}</h2><ol class="senuke-steps">${propObjects(component, "steps").map((item) => `<li><h3>${escapeHtml(itemText(item, "title", "name"))}</h3><p>${escapeHtml(itemText(item, "description", "body", "text"))}</p></li>`).join("")}</ol></section>`;
     case "trust.proof":
-      return `<section class="senuke-component senuke-proof"><h2>${heading}</h2>${propString(component, "introduction") ? `<p>${escapeHtml(propString(component, "introduction"))}</p>` : ""}<div class="senuke-grid">${renderCardItems(component, "senuke-card")}</div></section>`;
+      return `<section class="senuke-component senuke-proof ${alignmentClass}"><h2>${heading}</h2>${propString(component, "introduction") ? `<p>${escapeHtml(propString(component, "introduction"))}</p>` : ""}<div class="senuke-grid">${renderCardItems(component, "senuke-card")}</div></section>`;
     case "content.faq":
-      return `<section class="senuke-component senuke-faq"><h2>${heading}</h2>${propObjects(component, "items").map((item) => `<details><summary>${escapeHtml(itemText(item, "question", "title"))}</summary><p>${escapeHtml(itemText(item, "answer", "description", "body"))}</p></details>`).join("")}</section>`;
+      return `<section class="senuke-component senuke-faq ${alignmentClass}"><h2>${heading}</h2>${propObjects(component, "items").map((item) => `<details><summary>${escapeHtml(itemText(item, "question", "title"))}</summary><p>${escapeHtml(itemText(item, "answer", "description", "body"))}</p></details>`).join("")}</section>`;
     case "conversion.cta":
-      return `<section class="senuke-component senuke-cta"><h2>${heading}</h2><p>${escapeHtml(propString(component, "body"))}</p><a class="senuke-button" href="${escapeHtml(resolvedComponentUrl(propString(component, "buttonUrl"), options))}">${escapeHtml(propString(component, "buttonLabel"))}</a></section>`;
+      return `<section class="senuke-component senuke-cta ${alignmentClass}"><h2>${heading}</h2><p>${escapeHtml(propString(component, "body"))}</p><a class="senuke-button" href="${escapeHtml(resolvedComponentUrl(propString(component, "buttonUrl"), options))}">${escapeHtml(propString(component, "buttonLabel"))}</a></section>`;
     case "conversion.contact_form":
       {
         if (options.formShortcode) {
-          return `<section class="senuke-component senuke-contact-form senuke-contact-form-shortcode"><div><h2>${heading}</h2><p>${escapeHtml(propString(component, "introduction"))}</p></div><div>${options.formShortcode}</div></section>`;
+          return `<section class="senuke-component senuke-contact-form senuke-contact-form-shortcode ${alignmentClass}"><div><h2>${heading}</h2><p>${escapeHtml(propString(component, "introduction"))}</p></div><div>${options.formShortcode}</div></section>`;
         }
         const fields = propObjects(component, "fields");
         const controls = fields.map((field) => {
@@ -207,7 +252,7 @@ export function renderWebsiteComponentHtml(
           const inputType = ["email", "tel", "text"].includes(type) ? type : /email/i.test(name) ? "email" : /phone|tel/i.test(name) ? "tel" : "text";
           return `<label>${escapeHtml(label)}<input type="${inputType}" name="${escapeHtml(name)}"${required ? " required" : ""}></label>`;
         }).join("");
-        return `<section class="senuke-component senuke-contact-form"><div><h2>${heading}</h2><p>${escapeHtml(propString(component, "introduction"))}</p></div><form ${managedFormAttributes(options, propString(component, "formId"))}>${formHoneypot()}${controls}<button class="senuke-button" type="submit">${escapeHtml(propString(component, "submitLabel"))}</button><p class="senuke-form-status" role="status" aria-live="polite" hidden>${escapeHtml(propString(component, "successMessage"))}</p></form></section>`;
+        return `<section class="senuke-component senuke-contact-form ${alignmentClass}"><div><h2>${heading}</h2><p>${escapeHtml(propString(component, "introduction"))}</p></div><form ${managedFormAttributes(options, propString(component, "formId"))}>${formHoneypot()}${controls}<button class="senuke-button" type="submit">${escapeHtml(propString(component, "submitLabel"))}</button><p class="senuke-form-status" role="status" aria-live="polite" hidden>${escapeHtml(propString(component, "successMessage"))}</p></form></section>`;
       }
     case "global.footer":
       return `<footer class="senuke-component senuke-footer"><strong>${escapeHtml(propString(component, "businessName"))}</strong>${propString(component, "summary") ? `<p>${escapeHtml(propString(component, "summary"))}</p>` : ""}</footer>`;
@@ -229,7 +274,14 @@ export function renderWebsitePageBodyHtml(
     ...options.internalUrlMap,
   };
   const componentOptions = { ...options, internalUrlMap };
-  const renderedSections = page.sections.map((component) => renderWebsiteComponentHtml(component, componentOptions));
+  const heroIndex = page.sections.findIndex((component) => component.componentId === "hero.local_service");
+  const secondFoldIndex = page.sections.findIndex((component, index) => index > heroIndex && Boolean(propString(component, "heading")));
+  const renderedSections = page.sections.map((component, index) => {
+    const html = renderWebsiteComponentHtml(component, componentOptions);
+    return index === secondFoldIndex
+      ? html.replace('class="senuke-component ', 'class="senuke-component senuke-second-fold ')
+      : html;
+  });
   const introLinks = renderInternalLinkList(model, page, ["body_intro", "body"], componentOptions, "senuke-contextual-links senuke-intro-links", "Related information");
   const sections = renderedSections.length
     ? `${renderedSections[0]}${introLinks}${renderedSections.slice(1).join("")}`
@@ -237,7 +289,7 @@ export function renderWebsitePageBodyHtml(
   const relatedLinks = renderInternalLinkList(model, page, ["related_pages", "service_area", "faq", "card"], componentOptions, "senuke-related-pages", pageIsLocalRender(page) ? "Related service areas" : "Related pages");
   const conversionLinks = renderInternalLinkList(model, page, ["cta"], componentOptions, "senuke-link-cta", "Next step");
   const form = model.forms[0];
-  const hasRegisteredForm = page.sections.some((section) => section.componentId === "conversion.contact_form");
+  const hasRegisteredForm = flattenWebsiteComponents(page.sections).some((section) => section.componentId === "conversion.contact_form");
   const isContactPage = page.pageType === "contact"
     || page.pageType === "conversion"
     || /\b(contact|get in touch|enquir|request (?:a )?quote)\b/i.test(`${page.name} ${page.slug}`);
@@ -291,13 +343,30 @@ const utilityNavigationHtml = (model: WebsiteModel, options: WebsiteRenderOption
 };
 
 const footerNavigationHtml = (model: WebsiteModel, options: WebsiteRenderOptions = {}) => {
-  const groups = model.navigationModel?.footerMenus ?? [];
+  const sourceGroups = model.navigationModel?.footerMenus ?? [];
+  const groups = [...sourceGroups.reduce((merged, group) => {
+    const key = group.label.trim().toLowerCase();
+    const current = merged.get(key);
+    if (!current) {
+      merged.set(key, { ...group, items: [...group.items] });
+      return merged;
+    }
+    const existingPageIds = new Set(current.items.map((item) => item.pageId));
+    current.items.push(...group.items.filter((item) => !existingPageIds.has(item.pageId)));
+    return merged;
+  }, new Map<string, (typeof sourceGroups)[number]>()).values()];
   if (!groups.length) return "";
+  const labelCounts = new Map<string, number>();
+  for (const item of groups.flatMap((group) => group.items)) {
+    const key = item.label.trim().toLowerCase();
+    labelCounts.set(key, (labelCounts.get(key) ?? 0) + 1);
+  }
   return `<nav class="senuke-footer-navigation" aria-label="Footer navigation">${groups.map((group) => `<section><h2>${escapeHtml(group.label)}</h2><ul>${group.items.map((item) => {
     const page = pageById(model, item.pageId);
     const path = page ? normalizedPath(page.slug) : item.url || "";
     const href = page ? options.internalUrlMap?.[path] || path : resolvedComponentUrl(path, options);
-    return href ? `<li><a href="${escapeHtml(href)}">${escapeHtml(item.label)}</a></li>` : "";
+    const label = page && (labelCounts.get(item.label.trim().toLowerCase()) ?? 0) > 1 ? page.name : item.label;
+    return href ? `<li><a href="${escapeHtml(href)}">${escapeHtml(label)}</a></li>` : "";
   }).join("")}</ul></section>`).join("")}</nav>`;
 };
 
@@ -421,6 +490,37 @@ h1{max-width:18ch;font-size:clamp(2.2rem,6vw,4.8rem)}
 .senuke-link-cta ul{display:flex;flex-wrap:wrap;gap:.75rem;list-style:none;margin:0;padding:0}
 .senuke-link-cta a{display:inline-flex;border-radius:.75rem;background:var(--senuke-accent);padding:.8rem 1rem;color:var(--senuke-text);font-weight:850;text-decoration:none}
 .senuke-component{padding:clamp(3rem,7vw,7rem) 0}
+.senuke-layout-section{position:relative;isolation:isolate;overflow:hidden;width:100%;max-width:none;padding-inline:max(1rem,calc((100% - 1120px)/2))}
+.senuke-layout-background-image{position:absolute;z-index:-2;inset:0;width:100%;height:100%;object-fit:cover}
+.senuke-layout-background-overlay{position:absolute;z-index:-1;inset:0;background:#020617}
+.senuke-layout-columns{display:grid;gap:clamp(1.1rem,3vw,2.25rem);align-items:stretch}
+.senuke-layout-one_column .senuke-layout-columns{grid-template-columns:minmax(0,1fr)}
+.senuke-layout-two_equal .senuke-layout-columns{grid-template-columns:repeat(2,minmax(0,1fr))}
+.senuke-layout-two_left_wide .senuke-layout-columns{grid-template-columns:minmax(0,1.35fr) minmax(0,.65fr)}
+.senuke-layout-two_right_wide .senuke-layout-columns{grid-template-columns:minmax(0,.65fr) minmax(0,1.35fr)}
+.senuke-layout-three_equal .senuke-layout-columns{grid-template-columns:repeat(3,minmax(0,1fr))}
+.senuke-layout-column{min-width:0}
+.senuke-layout-column>.senuke-component{width:100%;padding:clamp(1.25rem,3vw,2.5rem) 0;background:transparent}
+.senuke-layout-column>.senuke-rich-text{text-align:inherit}.senuke-layout-column>.senuke-rich-text h2,.senuke-layout-column>.senuke-rich-text p{max-width:none;margin-left:0;margin-right:0;text-align:inherit}
+.senuke-layout-column>.senuke-contact-form{grid-template-columns:1fr}.senuke-layout-column>.senuke-contact-form form{grid-template-columns:1fr}.senuke-layout-column>.senuke-contact-form form>*{grid-column:1}
+.senuke-layout-column>.senuke-cta{margin:0;padding-inline:clamp(1.25rem,3vw,2.5rem)}
+.senuke-layout-bg-default,.senuke-layout-bg-surface{background:var(--senuke-surface)}.senuke-layout-bg-background{background:var(--senuke-background)}.senuke-layout-bg-primary{background:var(--senuke-primary)}.senuke-layout-bg-secondary{background:var(--senuke-secondary)}.senuke-layout-bg-accent{background:var(--senuke-accent)}.senuke-layout-bg-dark{background:var(--senuke-text)}
+.senuke-layout-text-text{color:var(--senuke-text)}.senuke-layout-text-muted{color:var(--senuke-muted)}.senuke-layout-text-white{color:#fff}.senuke-layout-text-auto.senuke-layout-bg-primary,.senuke-layout-text-auto.senuke-layout-bg-secondary,.senuke-layout-text-auto.senuke-layout-bg-dark{color:#fff}
+.senuke-layout-text-white .senuke-layout-column h1,.senuke-layout-text-white .senuke-layout-column h2,.senuke-layout-text-white .senuke-layout-column h3,.senuke-layout-text-white .senuke-layout-column p,.senuke-layout-text-auto.senuke-layout-bg-primary .senuke-layout-column h1,.senuke-layout-text-auto.senuke-layout-bg-primary .senuke-layout-column h2,.senuke-layout-text-auto.senuke-layout-bg-primary .senuke-layout-column h3,.senuke-layout-text-auto.senuke-layout-bg-primary .senuke-layout-column p,.senuke-layout-text-auto.senuke-layout-bg-secondary .senuke-layout-column h1,.senuke-layout-text-auto.senuke-layout-bg-secondary .senuke-layout-column h2,.senuke-layout-text-auto.senuke-layout-bg-secondary .senuke-layout-column h3,.senuke-layout-text-auto.senuke-layout-bg-secondary .senuke-layout-column p,.senuke-layout-text-auto.senuke-layout-bg-dark .senuke-layout-column h1,.senuke-layout-text-auto.senuke-layout-bg-dark .senuke-layout-column h2,.senuke-layout-text-auto.senuke-layout-bg-dark .senuke-layout-column h3,.senuke-layout-text-auto.senuke-layout-bg-dark .senuke-layout-column p{color:#fff}
+.senuke-layout-spacing-compact{padding-block:1.75rem}.senuke-layout-spacing-comfortable{padding-block:clamp(3rem,6vw,5rem)}.senuke-layout-spacing-spacious{padding-block:clamp(4.5rem,9vw,7.5rem)}
+.senuke-second-fold{text-align:center}
+.senuke-second-fold>h2,.senuke-second-fold>div>h2{max-width:30ch;margin:0 auto 1.15rem;text-align:center;text-wrap:balance}
+.senuke-second-fold>p,.senuke-second-fold>div>p{max-width:72ch;margin:.8rem auto 0;text-align:center}
+.senuke-rich-text{width:min(900px,calc(100% - 2rem));padding-block:clamp(3rem,5vw,4.5rem);text-align:center}
+.senuke-rich-text h2{max-width:30ch;margin:0 auto 1.15rem;font-size:clamp(1.75rem,3vw,2.35rem);letter-spacing:-.02em;text-wrap:balance}
+.senuke-rich-text p{max-width:72ch;margin:.8rem auto 0;color:var(--senuke-muted);font-size:1rem;line-height:1.75}
+.senuke-align-left{text-align:left}.senuke-align-center{text-align:center}.senuke-align-right{text-align:right}
+.senuke-align-left>h1,.senuke-align-left>h2,.senuke-align-left>p,.senuke-align-left>div>h1,.senuke-align-left>div>h2,.senuke-align-left>div>p{margin-left:0;margin-right:auto;text-align:left}
+.senuke-align-center>h1,.senuke-align-center>h2,.senuke-align-center>p,.senuke-align-center>div>h1,.senuke-align-center>div>h2,.senuke-align-center>div>p{margin-left:auto;margin-right:auto;text-align:center}
+.senuke-align-right>h1,.senuke-align-right>h2,.senuke-align-right>p,.senuke-align-right>div>h1,.senuke-align-right>div>h2,.senuke-align-right>div>p{margin-left:auto;margin-right:0;text-align:right}
+.senuke-heading-small h1,.senuke-heading-small h2{font-size:clamp(1.55rem,3vw,2.35rem)}.senuke-heading-medium h1,.senuke-heading-medium h2{font-size:clamp(2rem,4vw,3.15rem)}.senuke-heading-large h1,.senuke-heading-large h2{font-size:clamp(2.6rem,6vw,4.5rem)}
+.senuke-heading-regular h1,.senuke-heading-regular h2{font-weight:500}.senuke-heading-semibold h1,.senuke-heading-semibold h2{font-weight:650}.senuke-heading-bold h1,.senuke-heading-bold h2{font-weight:800}.senuke-heading-black h1,.senuke-heading-black h2{font-weight:950}
+.senuke-heading-color-primary h1,.senuke-heading-color-primary h2{color:var(--senuke-primary)}.senuke-heading-color-secondary h1,.senuke-heading-color-secondary h2{color:var(--senuke-secondary)}.senuke-heading-color-accent h1,.senuke-heading-color-accent h2{color:var(--senuke-accent)}.senuke-heading-color-text h1,.senuke-heading-color-text h2{color:var(--senuke-text)}
 .senuke-hero{min-height:64vh;display:grid;grid-template-columns:minmax(0,1fr) minmax(260px,.8fr);align-items:center;gap:clamp(2rem,6vw,5rem)}
 .senuke-hero-image{width:100%;max-height:620px;border-radius:1.25rem;object-fit:cover}
 .senuke-media{padding-block:clamp(1.5rem,4vw,3rem);text-align:center}
@@ -464,6 +564,7 @@ h1{max-width:18ch;font-size:clamp(2.2rem,6vw,4.8rem)}
 .senuke-footer-navigation a{color:inherit;text-decoration:none}
 .senuke-footer-copyright{border-top:1px solid rgba(255,255,255,.16);margin-top:2rem;padding-top:1rem;color:#94a3b8}
 @media(max-width:860px){
+ .senuke-layout-columns{grid-template-columns:1fr!important}
  .senuke-site-header{position:sticky!important;top:0!important;display:flex;min-height:68px;flex-direction:row;align-items:center;padding-block:.65rem}
  .senuke-header-navigation{display:none}
  .senuke-mobile-menu{display:block;margin-left:auto}
@@ -511,14 +612,16 @@ body{background:linear-gradient(180deg,var(--senuke-background),var(--senuke-sur
 .senuke-site-header>nav>ul{align-items:center}.senuke-site-header a{text-decoration:none;font-weight:750}
 .senuke-hero{position:relative;isolation:isolate;width:100%;max-width:none;padding-inline:max(1rem,calc((100% - 1120px)/2));background:radial-gradient(circle at 90% 10%,color-mix(in srgb,var(--senuke-accent) 25%,transparent),transparent 28%),linear-gradient(135deg,var(--senuke-background),var(--senuke-surface) 55%,color-mix(in srgb,var(--senuke-secondary) 10%,white))}
 .senuke-hero h1{letter-spacing:-.045em;text-wrap:balance}.senuke-hero-image{aspect-ratio:3/2;box-shadow:0 30px 80px rgba(15,23,42,.2)}
-.senuke-rich-text{display:grid;grid-template-columns:minmax(220px,.7fr) minmax(0,1.3fr);gap:clamp(2rem,6vw,5.5rem);align-items:start}.senuke-rich-text h2{margin:0;font-size:clamp(2rem,4vw,3rem);letter-spacing:-.025em}.senuke-rich-text p{margin-top:0;color:var(--senuke-muted);font-size:1.05rem;line-height:1.9}
+.senuke-rich-text{display:block;width:min(900px,calc(100% - 2rem));padding-block:clamp(3rem,5vw,4.5rem);text-align:center}.senuke-rich-text h2{max-width:30ch;margin:0 auto 1.15rem;font-size:clamp(1.75rem,3vw,2.35rem);letter-spacing:-.02em;text-wrap:balance}.senuke-rich-text p{max-width:72ch;margin:.8rem auto 0;color:var(--senuke-muted);font-size:1rem;line-height:1.75}
+.senuke-align-left{text-align:left}.senuke-align-center{text-align:center}.senuke-align-right{text-align:right}.senuke-align-left>h1,.senuke-align-left>h2,.senuke-align-left>p,.senuke-align-left>div>h1,.senuke-align-left>div>h2,.senuke-align-left>div>p{margin-left:0;margin-right:auto;text-align:left}.senuke-align-center>h1,.senuke-align-center>h2,.senuke-align-center>p,.senuke-align-center>div>h1,.senuke-align-center>div>h2,.senuke-align-center>div>p{margin-left:auto;margin-right:auto;text-align:center}.senuke-align-right>h1,.senuke-align-right>h2,.senuke-align-right>p,.senuke-align-right>div>h1,.senuke-align-right>div>h2,.senuke-align-right>div>p{margin-left:auto;margin-right:0;text-align:right}
+.senuke-heading-small h1,.senuke-heading-small h2{font-size:clamp(1.55rem,3vw,2.35rem)}.senuke-heading-medium h1,.senuke-heading-medium h2{font-size:clamp(2rem,4vw,3.15rem)}.senuke-heading-large h1,.senuke-heading-large h2{font-size:clamp(2.6rem,6vw,4.5rem)}.senuke-heading-regular h1,.senuke-heading-regular h2{font-weight:500}.senuke-heading-semibold h1,.senuke-heading-semibold h2{font-weight:650}.senuke-heading-bold h1,.senuke-heading-bold h2{font-weight:800}.senuke-heading-black h1,.senuke-heading-black h2{font-weight:950}.senuke-heading-color-primary h1,.senuke-heading-color-primary h2{color:var(--senuke-primary)}.senuke-heading-color-secondary h1,.senuke-heading-color-secondary h2{color:var(--senuke-secondary)}.senuke-heading-color-accent h1,.senuke-heading-color-accent h2{color:var(--senuke-accent)}.senuke-heading-color-text h1,.senuke-heading-color-text h2{color:var(--senuke-text)}
 .senuke-services .senuke-card{position:relative;overflow:hidden;min-height:210px;padding:1.75rem;border:0;box-shadow:0 18px 55px rgba(15,23,42,.08)}.senuke-services .senuke-card:before{content:"";position:absolute;inset:0 auto 0 0;width:5px;background:linear-gradient(var(--senuke-primary),var(--senuke-accent))}
 .senuke-benefits{width:100%;max-width:none;padding-inline:max(1rem,calc((100% - 1120px)/2));background:var(--senuke-secondary);color:#fff}.senuke-benefits .senuke-card{border-color:rgba(255,255,255,.16);background:rgba(255,255,255,.1)}.senuke-benefits .senuke-card p{color:rgba(255,255,255,.75)}
 .senuke-process .senuke-steps{grid-template-columns:repeat(auto-fit,minmax(220px,1fr));padding:0;list-style:none}.senuke-process .senuke-steps li{padding:1.5rem;border-radius:1rem;background:var(--senuke-surface);box-shadow:0 16px 45px rgba(15,23,42,.07)}
 .senuke-proof{padding-inline:clamp(1.5rem,5vw,4rem);background:linear-gradient(135deg,color-mix(in srgb,var(--senuke-accent) 13%,white),var(--senuke-surface))}
 .senuke-cta{position:relative;overflow:hidden;margin-block:3rem 5rem;background:linear-gradient(135deg,var(--senuke-secondary),color-mix(in srgb,var(--senuke-secondary) 76%,var(--senuke-primary)));box-shadow:0 28px 80px color-mix(in srgb,var(--senuke-secondary) 35%,transparent)}
 .senuke-faq{width:min(920px,calc(100% - 2rem))}.senuke-faq details{box-shadow:0 10px 30px rgba(15,23,42,.05)}
-@media(max-width:860px){.senuke-rich-text{grid-template-columns:1fr}.senuke-site-header{position:sticky!important}.senuke-hero{padding-block:4rem}}
+@media(max-width:860px){.senuke-rich-text{padding-block:2.75rem}.senuke-site-header{position:sticky!important}.senuke-hero{padding-block:4rem}}
 `;
 
 export function createStaticWebsiteFiles(

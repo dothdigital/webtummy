@@ -706,6 +706,7 @@ export function reconcileAiWebsitePlanBatch(
 }
 
 async function applyFullAiWebsitePlan(plan: ContentPlan, evidence: {
+  projectType: string;
   business: AiBusinessContext;
   goal: string;
   keywords: string[];
@@ -718,7 +719,7 @@ async function applyFullAiWebsitePlan(plan: ContentPlan, evidence: {
   const suppliedAssignments = plan.pageAssignments.slice(0, 100);
   if (!suppliedAssignments.length) throw new Error("The unified Website Plan has no page candidates for AI evaluation.");
   const sharedEvidence = `Approved business and goal:
-${JSON.stringify({ business: evidence.business, goal: evidence.goal, keywords: evidence.keywords, targetLocations: evidence.targetLocations }).slice(0, 20_000)}
+${JSON.stringify({ projectType: evidence.projectType, business: evidence.business, goal: evidence.goal, keywords: evidence.keywords, targetLocations: evidence.targetLocations }).slice(0, 20_000)}
 
 Latest SEO and Gap Analysis findings:
 ${JSON.stringify(evidence.gapRecommendations).slice(0, 18_000)}
@@ -756,6 +757,8 @@ Decision rules:
 - Give each page an intent-matched CTA and complete writing brief. Trust and informational pages should not all use a sales CTA.
 - Include specific evidence source labels such as Gap Analysis, Keyword Research, Site Analysis, Strategy, Funnel, Local SEO, or AI Citation.
 - Never invent services, locations, addresses, claims, proof, credentials, reviews, statistics, prices, or guarantees.
+- When projectType is ecommerce, treat primaryServices as approved products or product families. Prefer product, collection/category, buying-guide, comparison, FAQ, brand, trust, and conversion roles over service-business assumptions. Preserve the full Growth Operating System, but do not create a service page merely because generic fallback wording says services.
+- For ecommerce, public crawl facts are observed; bundle, cross-sell, upsell, seasonal, and merchandising ideas are inferred unless explicit performance evidence validates them. Never claim best seller, margin, inventory, revenue, conversion, or profitability from public pages.
 ${repair ? `\nREPAIR REQUIRED: Return only the ${requestedAssignments.length} missing supplied targetUrl${requestedAssignments.length === 1 ? "" : "s"} above. Do not repeat or add any other page. Every decision must include every named field, including arrays when empty.` : ""}`;
     let lastError: unknown;
     let completed = false;
@@ -2954,6 +2957,7 @@ async function performContentPlanPrepare(req: Request, res: Response) {
   const strategyFunnel = recordJson(unifiedStrategyPlan.growthFunnel);
   const sitePages = websitePlanEvidencePages(preLaunchWebsite, task.project.website?.crawlJobs[0]?.pages).map((page) => ({ url: page.url, title: page.seo?.title ?? null }));
   const fullAiPlan = await applyFullAiWebsitePlan({ ...generatedPlanBase, aiBusinessContext: businessContext }, {
+    projectType: task.project.projectType,
     business: businessContext,
     goal: task.project.primaryGoal?.trim() || "help qualified visitors take the next step",
     keywords: approvedKeywords,

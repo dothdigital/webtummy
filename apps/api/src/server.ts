@@ -31,6 +31,7 @@ import { siteArchitectureRouter } from "./routes/site-architecture.js";
 import { leadMagnetsRouter, publicLeadMagnetsRouter } from "./routes/lead-magnets.js";
 import { aiIntakeRouter } from "./routes/ai-intake.js";
 import { websiteBuilderRouter } from "./routes/website-builder.js";
+import { ecommerceIntelligenceRouter } from "./routes/ecommerce-intelligence.js";
 import { authorityGrowthRouter } from "./routes/authority-growth.js";
 import { aiCitationVisibilityRouter } from "./routes/ai-citation-visibility.js";
 import { publicWebsiteFormsRouter } from "./routes/website-public-forms.js";
@@ -150,6 +151,7 @@ app.get("/", (_req, res) =>
       authorityGrowth: "GET|POST /api/projects/:projectId/authority-growth",
       aiCitationVisibility: "GET|POST /api/projects/:projectId/ai-citation-visibility",
       siteArchitecture: "GET|POST /api/projects/:projectId/site-architecture",
+      ecommerceIntelligence: "GET|POST /api/projects/:projectId/ecommerce-intelligence",
     },
   }),
 );
@@ -177,6 +179,7 @@ app.use("/api", siteArchitectureRouter);
 app.use("/api", leadMagnetsRouter);
 app.use("/api", aiIntakeRouter);
 app.use("/api", websiteBuilderRouter);
+app.use("/api", ecommerceIntelligenceRouter);
 app.use("/api/websites", websitesRouter);
 app.use("/api", crawlsRouter); // crawls routes carry their own full paths
 app.use("/api", overviewRouter);

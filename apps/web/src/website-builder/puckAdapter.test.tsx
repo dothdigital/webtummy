@@ -26,6 +26,7 @@ const components: WebsiteComponentInstance[] = [
     variant: "accordion",
     props: {
       heading: "Frequently asked questions",
+      alignment: "center",
       items: [{ question: "Who is eligible?", answer: "Eligibility depends on the approved policy requirements." }],
     },
   },
@@ -36,6 +37,70 @@ describe("SENuke Puck adapter", () => {
     const puck = websiteComponentsToPuck(components);
     const restored = puckToWebsiteComponents(puck);
     expect(restored).toEqual(components);
+  });
+
+  it("exposes section alignment as an editor control", () => {
+    const config = createSenukePuckConfig();
+    const definition = config.components["content.rich_text"] as { fields: Record<string, { type: string; label: string; options: Array<{ label: string; value: string }> }> };
+    expect(definition.fields.alignment.type).toBe("radio");
+    expect(definition.fields.alignment.options).toEqual([
+      { label: "Left", value: "left" },
+      { label: "Centre", value: "center" },
+      { label: "Right", value: "right" },
+    ]);
+  });
+
+  it("provides Unlayer-style section slots and round-trips nested column blocks", () => {
+    const layout: WebsiteComponentInstance = {
+      instanceId: "layout-1",
+      componentId: "layout.section",
+      componentVersion: "1.0.0",
+      variant: "two_equal",
+      props: {
+        backgroundColor: "primary",
+        textColor: "white",
+        backgroundOverlay: 40,
+        spacing: "comfortable",
+        columnOne: [{
+          instanceId: "nested-content-1",
+          componentId: "content.rich_text",
+          componentVersion: "1.0.0",
+          variant: "answer_first",
+          props: { heading: "Why this matters", body: "A useful explanation for the customer." },
+        }],
+        columnTwo: [],
+        columnThree: [],
+      },
+    };
+    const puck = websiteComponentsToPuck([layout]);
+    expect((puck.content[0].props.columnOne as Array<{ type: string }>)[0].type).toBe("content.rich_text");
+    expect(puckToWebsiteComponents(puck)).toEqual([layout]);
+
+    const config = createSenukePuckConfig();
+    const definition = config.components["layout.section"] as { fields: Record<string, { type: string; allow?: string[] }> };
+    expect(definition.fields.columnOne.type).toBe("slot");
+    expect(definition.fields.columnOne.allow).toContain("media.image");
+    expect(definition.fields.columnOne.allow).not.toContain("global.header");
+  });
+
+  it("renders visible column targets and section styling in the editor", () => {
+    const actual = createSenukePuckConfig({}, [{ id: "background-1", sourceUrl: "https://example.com/background.jpg", altText: "" }]);
+    const definition = actual.components["layout.section"] as { render: (props: Record<string, unknown>) => ReactNode };
+    const Slot = () => createElement("p", null, "Nested website block");
+    const html = renderToStaticMarkup(createElement(() => definition.render({
+      variant: "two_equal",
+      backgroundColor: "secondary",
+      textColor: "white",
+      backgroundImageAssetId: "background-1",
+      backgroundOverlay: 40,
+      spacing: "spacious",
+      columnOne: Slot,
+      columnTwo: Slot,
+    })));
+    expect(html).toContain("senuke-layout-two_equal");
+    expect(html).toContain("Column 1");
+    expect(html).toContain("Nested website block");
+    expect(html).toContain("background.jpg");
   });
 
   it("rejects a component Puck cannot introduce through the registry", () => {

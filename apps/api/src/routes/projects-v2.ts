@@ -374,6 +374,7 @@ async function scopedProject(req: Request, projectId: string) {
       keywordGroups: { orderBy: { createdAt: "asc" } },
       strategyPlans: { orderBy: { createdAt: "desc" }, take: 3 },
       gapAnalysisRuns: { orderBy: { createdAt: "desc" }, take: 1, select: { id: true, completedAt: true, createdAt: true } },
+      aiRuns: { where: { moduleName: "ecommerce_intelligence", status: "completed" }, orderBy: { createdAt: "desc" }, take: 1, select: { id: true, outputJson: true, createdAt: true } },
       websiteBuilds: { orderBy: { updatedAt: "desc" }, take: 1, select: { id: true } },
     },
   });
@@ -3802,6 +3803,11 @@ async function performStrategyGeneration(req: Request, res: Response) {
     },
     competitors: competitorNames,
     approvedBusinessIntelligence: ctx.businessIntelligence,
+    ecommerceIntelligence: project.projectType === "ecommerce" && project.aiRuns[0]
+      ? { runId: project.aiRuns[0].id, createdAt: project.aiRuns[0].createdAt, evidencePolicy: "public_plus_explicitly_supplied_data", result: project.aiRuns[0].outputJson }
+      : project.projectType === "ecommerce"
+        ? { status: "not_collected", evidencePolicy: "Do not infer private sales, margin, inventory, revenue, conversion, profitability, or promotion performance." }
+        : null,
     previousStrategy: previousStrategy ? { version: previousStrategy.version, summary: previousStrategy.strategySummary, positioning: previousStrategy.positioningStatement, seo: previousStrategy.seoStrategy, content: previousStrategy.contentStrategy, revisionComment: previousStrategy.revisionComment } : null,
   };
   let generatedStrategy: Awaited<ReturnType<typeof generateUnifiedStrategyWithAi>>;

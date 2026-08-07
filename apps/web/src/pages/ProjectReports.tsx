@@ -30,7 +30,10 @@ export default function ProjectReports() {
   const [branding, setBranding] = useState<AgencyBranding | null>(null);
   const permissions = user?.workspace?.capabilities.permissions ?? {};
   const workspaceType = user?.workspace?.type;
-  const availableTypes = useMemo(() => projectReportCatalog.filter((item) => !("agencyOnly" in item && item.agencyOnly && workspaceType !== "agency") && !("ecommerceOnly" in item && item.ecommerceOnly && workspaceType !== "ecommerce")), [workspaceType]);
+  const selectedProject = projects.find((project) => project.id === projectId);
+  const ecommerceProject = selectedProject?.projectType === "ecommerce" || workspaceType === "ecommerce";
+  const availableTypes = useMemo(() => projectReportCatalog.filter((item) => !("agencyOnly" in item && item.agencyOnly && workspaceType !== "agency") && !("ecommerceOnly" in item && item.ecommerceOnly && !ecommerceProject)), [ecommerceProject, workspaceType]);
+  useEffect(() => { if (!availableTypes.some((item) => item.type === reportType)) setReportType(availableTypes[0]?.type ?? "executive_summary"); }, [availableTypes, reportType]);
 
   const loadReports = async (id: string) => {
     if (!id) return setReports([]);

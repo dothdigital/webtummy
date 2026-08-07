@@ -1,5 +1,6 @@
 import { createCipheriv, createDecipheriv, createHash, randomBytes } from "node:crypto";
 import { lookup } from "node:dns/promises";
+import { readFile } from "node:fs/promises";
 import { isIP } from "node:net";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -8,6 +9,7 @@ import { Prisma, prisma } from "@webtummy/db";
 import {
   SENUKE_COMPONENT_REGISTRY_V1,
   applyWebsiteGovernance,
+  flattenWebsiteComponents,
   normalizeGeneratedComponentInstance,
   scoreSeoPage,
   validateComponentInstance,
@@ -31,12 +33,14 @@ import { approvedStrategyContext } from "../strategy-ai.js";
 import { isWebsitePlanTask } from "../website-plan-task.js";
 import { cleanGeographicTargetMarkets, projectAnalysisLocationLabels } from "../project-location.js";
 import {
+  ensurePageSpecificFirstH2,
   fitWebsiteComponentsToWordBudget,
   websiteContentBatchPageMode,
   websiteDraftAcceptanceWords,
   websitePageHasCompleteContent,
   websitePageUniquenessCollisions,
   websiteRichTextExpansionBudget,
+  websiteFirstSupportingHeading,
   type WebsitePageUniquenessSignals,
 } from "@webtummy/core/website-generation";
 import {
@@ -61,7 +65,7 @@ import { isPreLaunchWebsiteCampaign } from "../campaign-intelligence.js";
 
 export const websiteBuilderRouter = Router();
 const WEBSITE_SEO_PLAN_NORMALIZATION_VERSION = "keyword-owner-v2";
-const WORDPRESS_CONNECTOR_ARCHIVE = resolve(dirname(fileURLToPath(import.meta.url)), "../../../../wordpress-plugin/senuke-ai-connector.zip");
+const WORDPRESS_CONNECTOR_SOURCE = resolve(dirname(fileURLToPath(import.meta.url)), "../../../../wordpress-plugin/senuke-ai-connector/senuke-ai-connector.php");
 
 const jsonRecord = (value: unknown): Record<string, unknown> => value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
 const jsonStrings = (value: unknown) => Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
@@ -556,7 +560,7 @@ function qualityWebsiteModel(project: { id: string; businessLocationJson?: Prism
     const mappedRequiredLinks = jsonStrings(mappedPlan.requiredInternalLinks);
     const schemaTypes = schemaEntityTypes(schema);
     const storedSections = canonicalComponents(content);
-    const registeredSections = isContactWebsitePage(page) && !storedSections.some((section) => section.componentId === "conversion.contact_form")
+    const registeredSections = isContactWebsitePage(page) && !flattenWebsiteComponents(storedSections).some((section) => section.componentId === "conversion.contact_form")
       ? (() => {
           const contactForm = configuredContactForm(primaryForm, page, businessName);
           const ctaIndex = storedSections.findIndex((section) => section.componentId === "conversion.cta");
@@ -685,6 +689,16 @@ function qualityWebsiteModel(project: { id: string; businessLocationJson?: Prism
       ...(item.parentPageId && savedNavigationIds.has(String(item.parentPageId)) ? { parentPageId: String(item.parentPageId) } : {}),
       ...((item.custom === true || String(item.pageId || "").startsWith("custom-")) ? { custom: true, url: String(item.slug || "") } : {}),
     }));
+  const savedFooterNavigation = Array.isArray(settings.footerMenu) ? settings.footerMenu.map(jsonRecord) : [];
+  const savedFooterNavigationIds = new Set(savedFooterNavigation.map((item) => String(item.pageId || "")).filter(Boolean));
+  const footerNavigation = savedFooterNavigation
+    .filter((item) => pageIds.has(String(item.pageId || "")) || item.custom === true || String(item.pageId || "").startsWith("custom-"))
+    .map((item) => ({
+      pageId: String(item.pageId),
+      label: String(item.label || buildPages.find((page) => page.id === item.pageId)?.title || "Page"),
+      ...(item.parentPageId && savedFooterNavigationIds.has(String(item.parentPageId)) ? { parentPageId: String(item.parentPageId) } : {}),
+      ...((item.custom === true || String(item.pageId || "").startsWith("custom-")) ? { custom: true, url: String(item.slug || "") } : {}),
+    }));
   const planSettings = jsonRecord(settings.seoPlan);
   const activeAuthorityByCluster = new Map<string, WebsitePageModel[]>();
   for (const page of pages) {
@@ -723,7 +737,7 @@ function qualityWebsiteModel(project: { id: string; businessLocationJson?: Prism
   const governance = applyWebsiteGovernance(pages, navigation, {
     ...(planSettings.syncedAt ? { lockedAt: String(planSettings.syncedAt) } : {}),
     ...(planSettings.sourceTaskId ? { lockedBy: String(planSettings.sourceTaskId) } : {}),
-  });
+  }, footerNavigation, jsonStrings(settings.footerExcludedPageIds));
   return {
     modelId: `${build.id}:current`,
     websiteId: build.id,
@@ -1927,6 +1941,64 @@ function plannedPageMatchesAssignment(page: Record<string, unknown>, assignment:
   );
 }
 
+type VerifiedLocalEvidenceRecord = {
+  id: string;
+  type: "user_confirmed_local_service_evidence";
+  location: string;
+  detail: string;
+  serviceAvailable: true;
+  confirmedById: string;
+  confirmedAt: string;
+};
+
+/**
+ * Keep the build-level Website Plan synchronized with the page-level brief.
+ * The Website Plan is used again during later content, quality, and refresh
+ * steps, so updating only WebsiteBuildPage.briefJson makes valid evidence
+ * appear to disappear when the plan is reloaded.
+ */
+export function websiteSettingsWithVerifiedLocalEvidence(
+  settingsJson: unknown,
+  page: {
+    title: string;
+    slug: string;
+    targetUrl: string | null;
+    primaryKeyword: string;
+    secondaryKeywords: unknown;
+    briefJson: unknown;
+  },
+  evidence: VerifiedLocalEvidenceRecord,
+) {
+  const settings = jsonRecord(settingsJson);
+  const seoPlan = jsonRecord(settings.seoPlan);
+  const assignments = Array.isArray(seoPlan.pageAssignments) ? seoPlan.pageAssignments.map(jsonRecord) : [];
+  const authority = jsonRecord(jsonRecord(page.briefJson).authorityCluster);
+  const pageKey = String(authority.pageKey ?? "").trim();
+  let matchedAssignments = 0;
+  const pageAssignments = assignments.map((assignment) => {
+    const assignmentPageKey = String(assignment.pageKey ?? "").trim();
+    if (!((pageKey && assignmentPageKey === pageKey) || plannedPageMatchesAssignment(page as unknown as Record<string, unknown>, assignment))) return assignment;
+    matchedAssignments += 1;
+    const records = Array.isArray(assignment.localEvidenceRecords) ? assignment.localEvidenceRecords.map(jsonRecord) : [];
+    return {
+      ...assignment,
+      serviceAvailabilityVerified: true,
+      localEvidenceIds: [...new Set([...jsonStrings(assignment.localEvidenceIds), evidence.id])],
+      localEvidenceRecords: [...records.filter((record) => String(record.id ?? "") !== evidence.id), evidence],
+    };
+  });
+  return {
+    settings: {
+      ...settings,
+      seoPlan: {
+        ...seoPlan,
+        pageAssignments,
+      },
+    },
+    matchedAssignments,
+  };
+}
+
 function assignmentPageType(assignment: Record<string, unknown>) {
   const target = normalizedPageTarget(assignment.targetUrl);
   const name = String(assignment.pageName ?? "").toLocaleLowerCase();
@@ -2583,7 +2655,7 @@ function registeredPageComponents(page: { title: string; pageType?: string; sear
   const cta = (page.targetCta || "Request a consultation").slice(0, 40);
   const all: WebsiteComponentInstance[] = [
     { instanceId: `${slugify(page.title)}-hero`, componentId: "hero.local_service", componentVersion: "1.0.0", variant: "split", props: { eyebrow: page.primaryKeyword, headline: page.title, summary: `${business} helps visitors understand ${page.primaryKeyword}, compare the available approach, and choose an appropriate next step.`, primaryCtaLabel: cta, primaryCtaUrl: "/contact/" } },
-    { instanceId: `${slugify(page.title)}-overview`, componentId: "content.rich_text", componentVersion: "1.0.0", variant: "answer_first", props: { heading: "A solution aligned to your goals", body: "Understand the requirements, priorities, and desired outcome before selecting the appropriate service." } },
+    { instanceId: `${slugify(page.title)}-overview`, componentId: "content.rich_text", componentVersion: "1.0.0", variant: "answer_first", props: { heading: websiteFirstSupportingHeading({ pageTitle: page.title, pageType: page.pageType, primaryKeyword: page.primaryKeyword, businessName: business }), body: "Understand the requirements, priorities, and desired outcome before selecting the appropriate service." } },
     { instanceId: `${slugify(page.title)}-services`, componentId: "service.grid", componentVersion: "1.0.0", variant: "three_column", props: { heading: `Understanding ${page.primaryKeyword}`.slice(0, 100), introduction: "Explain the relevant options, scope, eligibility or fit, and how a visitor can compare them.", items: [{ title: "Relevant option", description: "Provide useful, page-specific detail grounded in approved evidence." }, { title: "How it differs", description: "Explain when this option may be relevant and what a buyer should compare." }, { title: "What to prepare", description: "Help the visitor understand information, documents, timing, and next steps." }] } },
     { instanceId: `${slugify(page.title)}-benefits`, componentId: "service.benefits", componentVersion: "1.0.0", variant: "checklist", props: { heading: "What a suitable solution should help you achieve", items: [{ title: "Clear fit", description: "Understand how the option relates to the visitor's needs." }, { title: "Informed comparison", description: "Review meaningful differences before taking action." }, { title: "Practical next step", description: "Know what to prepare and what happens next." }] } },
     { instanceId: `${slugify(page.title)}-process`, componentId: "content.process", componentVersion: "1.0.0", variant: "steps", props: { heading: "How the process works", steps: [{ title: "Understand the requirement", description: "Confirm the need and desired result." }, { title: "Review the options", description: "Compare the suitable service and delivery approach." }, { title: "Take the next step", description: "Continue with a clear recommendation." }] } },
@@ -2680,7 +2752,7 @@ function synchronizeFaqSchemaDocument(schemaValue: unknown, faqs: Array<{ questi
 
 function synchronizePageFaqSeo(page: { contentJson: unknown; seoJson: unknown }) {
   const seo = jsonRecord(page.seoJson);
-  const faqs = generatedFaqRows(canonicalComponents(page.contentJson));
+  const faqs = generatedFaqRows(flattenWebsiteComponents(canonicalComponents(page.contentJson)));
   return {
     ...seo,
     faqs,
@@ -2710,18 +2782,21 @@ function reservedWebsitePageSignals(
   return pages.filter((page) => page.id !== currentPageId).map((page) => {
     const seo = jsonRecord(page.seoJson);
     const snapshot = jsonRecord(jsonRecord(jsonRecord(page.briefJson).importSource).currentWebsiteSnapshot);
-    const hero = canonicalComponents(page.contentJson).find((component) => component.componentId === "hero.local_service");
+    const pageComponents = flattenWebsiteComponents(canonicalComponents(page.contentJson));
+    const hero = pageComponents.find((component) => component.componentId === "hero.local_service");
+    const firstH2 = pageComponents.find((component) => component.componentId !== "hero.local_service" && typeof component.props.heading === "string");
     return {
       pageId: page.id,
       pageTitle: page.title,
       seoTitles: uniqueSignalStrings([seo.metaTitle, snapshot.title]),
       metaDescriptions: uniqueSignalStrings([seo.metaDescription, snapshot.metaDescription]),
       h1s: uniqueSignalStrings([hero?.props.headline, snapshot.h1]),
+      h2s: uniqueSignalStrings([firstH2?.props.heading]),
     };
-  }).filter((page) => page.seoTitles.length || page.metaDescriptions.length || page.h1s.length);
+  }).filter((page) => page.seoTitles.length || page.metaDescriptions.length || page.h1s.length || Boolean(page.h2s?.length));
 }
 
-const generatedPageH1 = (components: WebsiteComponentInstance[]) => String(components.find((component) => component.componentId === "hero.local_service")?.props.headline ?? "").trim();
+const generatedPageH1 = (components: WebsiteComponentInstance[]) => String(flattenWebsiteComponents(components).find((component) => component.componentId === "hero.local_service")?.props.headline ?? "").trim();
 
 async function expandGeneratedRichText(
   components: WebsiteComponentInstance[],
@@ -2812,7 +2887,7 @@ async function generatePage(page: { title: string; pageType: string; primaryKeyw
         : "";
       const generated = await centralAiJson({
         system: "You are the SEnuke AI Website Generation Service. Return safe structured JSON only. The approved Strategy and page-specific Execution contract are governing requirements. Generate only components and props permitted by the supplied Component Registry. Do not invent testimonials, metrics, credentials, addresses, awards, guarantees, or citations. Write a complete useful SEO page through registered website sections and never return arbitrary scripts, PHP, WordPress code, generic placeholder copy, or a thin outline.",
-        prompt: `${basePrompt}${correctivePrompt}`,
+        prompt: `${basePrompt}${correctivePrompt}\nFIRST SUPPORTING SECTION: Return an original first post-hero H2 that names this page's assigned topic or intent and differs from every sibling page. Never use “A solution aligned to your goals”, “How we can help”, “What we offer”, “Overview”, or “Why choose us”. Keep the follow-up overview concise at 70–130 words in 2–3 short paragraphs before deeper sections.`,
         temperature: 0.35,
         timeoutMs: 120_000,
       });
@@ -2850,6 +2925,12 @@ async function generatePage(page: { title: string; pageType: string; primaryKeyw
           // short but otherwise valid page for revision.
         }
       }
+      parsed.content.components = ensurePageSpecificFirstH2(
+        parsed.content.components as WebsiteComponentInstance[],
+        page,
+        businessContext.businessName ?? businessIdentity(project),
+        reservedSignals,
+      );
       parsed.content.components = fitWebsiteComponentsToWordBudget(parsed.content.components, composition.maximumWords);
       const componentWords = generatedComponentWordCount(parsed.content.components);
       const visibleFaqs = generatedFaqRows(parsed.content.components);
@@ -4100,6 +4181,8 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/submit-developme
     ...(page.parentPageId ? { parentPageId: page.parentPageId } : {}),
   }));
   if (!menu.length) return res.status(409).json({ error: "Website navigation could not be created from the approved page plan." });
+  const savedFooterMenu = Array.isArray(settings.footerMenu) ? settings.footerMenu : [];
+  const footerMenu = savedFooterMenu.map(jsonRecord).filter((item) => item.custom === true || activePageIds.has(String(item.pageId || "")));
   const savedContactDetails = jsonRecord(settings.contactDetails);
   const contactEmail = String(
     savedContactDetails.email
@@ -4166,7 +4249,7 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/submit-developme
     } : {}),
   };
   const pageVersionSignature = activePages.map((page) => `${page.id}:${page.version}`).join("|");
-  const navigationSignature = JSON.stringify(menu);
+  const navigationSignature = JSON.stringify({ primaryMenu: menu, footerMenu });
   const queued = await createOrReuseActiveWebsiteJob(build.id, "website_generation", {
     buildId: build.id,
     projectId: project.id,
@@ -4191,6 +4274,7 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/submit-developme
       navigationSignature,
       pageIds: activePages.map((page) => page.id),
       navigation: menu,
+      footerNavigation: footerMenu,
       forms,
       preferredPublishingMethod: project.preferredPublishingMethod,
       pages: activePages.map((page) => ({ id: page.id, title: page.title, slug: page.slug, version: page.version, primaryKeyword: page.primaryKeyword, secondaryKeywords: page.secondaryKeywords, searchIntent: page.searchIntent, brief: page.briefJson, content: page.contentJson, seo: page.seoJson })),
@@ -4497,6 +4581,7 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/authority-pages/
   const changedAt = new Date();
   const authorityPageIds = authorityPages.map((page) => page.id);
   const savedMenu = Array.isArray(settings.menu) ? settings.menu.map(jsonRecord) : [];
+  const savedFooterMenu = Array.isArray(settings.footerMenu) ? settings.footerMenu.map(jsonRecord) : [];
   await prisma.$transaction(async (tx) => {
     for (const page of authorityPages) {
       const brief = jsonRecord(page.briefJson);
@@ -4541,6 +4626,9 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/authority-pages/
           menu: input.action === "defer"
             ? savedMenu.filter((item) => !authorityPageIds.includes(String(item.pageId || "")))
             : savedMenu,
+          footerMenu: input.action === "defer"
+            ? savedFooterMenu.filter((item) => !authorityPageIds.includes(String(item.pageId || "")))
+            : savedFooterMenu,
           siteFiles: null,
           deferredAuthorityStage: {
             status: input.action === "defer" ? "deferred" : "activated",
@@ -5191,51 +5279,88 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/pages/:pageId/lo
     serviceAvailable: z.literal(true),
     evidence: z.string().trim().min(20).max(2500),
   }).parse(req.body ?? {});
-  const page = project.websiteBuilds[0]?.pages.find((candidate) => candidate.id === req.params.pageId);
-  if (!page) return res.status(404).json({ error: "Builder page not found." });
-  const brief = jsonRecord(page.briefJson);
-  const currentPlan = jsonRecord(brief.seoPlan);
-  const authority = jsonRecord(brief.authorityCluster);
-  const pageLocation = jsonRecord(jsonRecord(page.seoJson).location);
-  const currentRecords = Array.isArray(currentPlan.localEvidenceRecords) ? currentPlan.localEvidenceRecords.map(jsonRecord) : [];
-  const evidenceId = `verified-local-evidence-${createHash("sha256").update(`${page.id}:${input.evidence.toLowerCase()}`).digest("hex").slice(0, 16)}`;
-  const evidenceRecord = {
-    id: evidenceId,
-    type: "user_confirmed_local_service_evidence",
-    location: String(authority.location || pageLocation.market || pageLocation.city || pageLocation.province || pageLocation.country || ""),
-    detail: input.evidence,
-    serviceAvailable: true,
-    confirmedById: context.membership.userId,
-    confirmedAt: new Date().toISOString(),
-  };
-  const localEvidenceRecords = [...currentRecords.filter((record) => String(record.id || "") !== evidenceId), evidenceRecord];
-  const localEvidenceIds = [...new Set([...jsonStrings(currentPlan.localEvidenceIds), evidenceId])];
-  const nextBrief = {
-    ...brief,
-    seoPlan: {
-      ...currentPlan,
-      serviceAvailabilityVerified: true,
-      localEvidenceIds,
-      localEvidenceRecords,
-    },
-  } as Prisma.InputJsonValue;
-  const nextVersion = page.version + 1;
-  const updated = await prisma.$transaction(async (tx) => {
-    await tx.websiteBuildPageVersion.upsert({
-      where: { pageId_version: { pageId: page.id, version: nextVersion } },
-      update: { briefJson: nextBrief, contentJson: page.contentJson, seoJson: page.seoJson, comment: "Added user-confirmed local service evidence for Website Quality Review.", createdById: context.membership.userId },
-      create: { pageId: page.id, version: nextVersion, briefJson: nextBrief, contentJson: page.contentJson, seoJson: page.seoJson, layoutJson: page.layoutJson, comment: "Added user-confirmed local service evidence for Website Quality Review.", createdById: context.membership.userId },
+  const result = await prisma.$transaction(async (tx) => {
+    // Read the current page inside the transaction. A Quality Review, content
+    // edit, or another evidence save may have changed its version since the
+    // workspace payload was loaded in the browser.
+    const page = await tx.websiteBuildPage.findFirst({
+      where: { id: req.params.pageId, build: { projectId: project.id } },
+      include: { versions: { select: { version: true } } },
     });
+    if (!page) return null;
+    const build = await tx.websiteBuild.findUnique({
+      where: { id: page.buildId },
+      include: {
+        pages: { select: { id: true, version: true } },
+        jobs: { select: { id: true, status: true, inputJson: true, resultJson: true } },
+      },
+    });
+    if (!build) return null;
+
+    const brief = jsonRecord(page.briefJson);
+    const currentPlan = jsonRecord(brief.seoPlan);
+    const authority = jsonRecord(brief.authorityCluster);
+    const pageLocation = jsonRecord(jsonRecord(page.seoJson).location);
+    const location = String(authority.location || pageLocation.market || pageLocation.city || pageLocation.province || pageLocation.country || "").trim();
+    if (!location) throw Object.assign(new Error("This page has no saved target location. Review its location mapping in the Website Plan before adding local evidence."), { statusCode: 409, publicMessage: true });
+
+    const evidenceId = `verified-local-evidence-${createHash("sha256").update(`${page.id}:${input.evidence.toLowerCase()}`).digest("hex").slice(0, 16)}`;
+    const evidenceRecord: VerifiedLocalEvidenceRecord = {
+      id: evidenceId,
+      type: "user_confirmed_local_service_evidence",
+      location,
+      detail: input.evidence,
+      serviceAvailable: true,
+      confirmedById: context.membership.userId,
+      confirmedAt: new Date().toISOString(),
+    };
+    const currentRecords = Array.isArray(currentPlan.localEvidenceRecords) ? currentPlan.localEvidenceRecords.map(jsonRecord) : [];
+    const alreadySaved = currentPlan.serviceAvailabilityVerified === true
+      && currentRecords.some((record) => String(record.id ?? "") === evidenceId);
+    const localEvidenceRecords = [...currentRecords.filter((record) => String(record.id ?? "") !== evidenceId), evidenceRecord];
+    const localEvidenceIds = [...new Set([...jsonStrings(currentPlan.localEvidenceIds), evidenceId])];
+    const nextBrief = {
+      ...brief,
+      seoPlan: {
+        ...currentPlan,
+        serviceAvailabilityVerified: true,
+        localEvidenceIds,
+        localEvidenceRecords,
+      },
+    } as Prisma.InputJsonValue;
+    const maxStoredVersion = page.versions.reduce((maximum, version) => Math.max(maximum, version.version), 0);
+    const nextVersion = alreadySaved ? page.version : Math.max(page.version, maxStoredVersion) + 1;
+    const synchronized = websiteSettingsWithVerifiedLocalEvidence(build.settingsJson, { ...page, briefJson: nextBrief }, evidenceRecord);
+
+    if (!alreadySaved) {
+      await tx.websiteBuildPageVersion.create({
+        data: {
+          pageId: page.id,
+          version: nextVersion,
+          briefJson: nextBrief,
+          contentJson: page.contentJson,
+          seoJson: page.seoJson,
+          layoutJson: page.layoutJson,
+          comment: "Added user-confirmed local service evidence for Website Quality Review.",
+          createdById: context.membership.userId,
+        },
+      });
+    }
     const updatedPage = await tx.websiteBuildPage.update({
       where: { id: page.id },
       data: { briefJson: nextBrief, version: nextVersion, status: "review", approvedAt: null },
     });
     await markWebsiteContentExecutionNeedsReview(tx, nextBrief);
-    const build = project.websiteBuilds[0];
-    if (build) await preserveCompletedAssemblyAfterQualityCorrection(tx, build, new Map([[page.id, nextVersion]]), "local_evidence");
-    return updatedPage;
-  });
-  res.json({ page: updated, evidence: evidenceRecord });
+    await preserveCompletedAssemblyAfterQualityCorrection(
+      tx,
+      { ...build, settingsJson: synchronized.settings as Prisma.JsonValue },
+      new Map([[page.id, nextVersion]]),
+      "local_evidence",
+    );
+    return { page: updatedPage, evidence: evidenceRecord, alreadySaved, matchedPlanAssignments: synchronized.matchedAssignments };
+  }, { timeout: 30_000, maxWait: 10_000 });
+  if (!result) return res.status(404).json({ error: "Builder page not found." });
+  res.json(result);
 });
 
 websiteBuilderRouter.post("/projects/:projectId/website-builder/pages/:pageId/optimization-field", async (req, res) => {
@@ -6684,10 +6809,18 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/wordpress/:integ
 websiteBuilderRouter.get("/projects/:projectId/website-builder/wordpress/connector", async (req, res) => {
   const { context } = await scopedProject(req.params.projectId, req);
   if (!hasWorkspacePermission(context, "manage_integrations")) return res.status(403).json({ error: "Integration management permission is required." });
-  res.download(
-    WORDPRESS_CONNECTOR_ARCHIVE,
-    "senuke-ai-connector.zip",
-  );
+  const source = await readFile(WORDPRESS_CONNECTOR_SOURCE);
+  const zip = new JSZip();
+  zip.file("senuke-ai-connector/senuke-ai-connector.php", source);
+  const archive = await zip.generateAsync({
+    type: "nodebuffer",
+    compression: "DEFLATE",
+    compressionOptions: { level: 9 },
+  });
+  res.setHeader("Content-Type", "application/zip");
+  res.setHeader("Content-Disposition", 'attachment; filename="senuke-ai-connector.zip"');
+  res.setHeader("Cache-Control", "private, no-store");
+  res.send(archive);
 });
 
 function approvedReleaseWebsiteModel(release: { immutableSnapshot: Prisma.JsonValue; snapshotHash: string }) {
@@ -7179,7 +7312,17 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/deploy", async (
       const page = releaseModel.pages.find((candidate) => candidate.pageId === item.pageId);
       return { pageId: item.pageId, label: item.label, parentPageId: item.parentPageId, slug: page?.slug || item.url || "" };
     });
-    if (menu.length) {
+    const footerMenu = releaseModel.navigationModel.footerMenus.flatMap((group) => {
+      const parentId = `footer-group-${group.groupId}`;
+      return [
+        { pageId: parentId, label: group.label, parentPageId: undefined, slug: "", custom: true },
+        ...group.items.map((item, index) => {
+          const page = releaseModel.pages.find((candidate) => candidate.pageId === item.pageId);
+          return { pageId: `footer-${group.groupId}-${item.pageId}-${index}`, label: item.label, parentPageId: parentId, slug: page?.slug || item.url || "" };
+        }),
+      ];
+    });
+    if (menu.length || footerMenu.length) {
       try {
         const base = integration.siteUrl.replace(/\/$/, "");
         const menuUrl = (item: Record<string, unknown>) => {
@@ -7189,9 +7332,16 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/deploy", async (
           return `${base}/${destination.replace(/^\//, "")}`;
         };
         if (connectorEnabled) {
-          const connectorMenu = jsonRecord(await wpFetch(integration, "/wp-json/senuke/v1/menus", { method: "POST", body: JSON.stringify({ name: "SENuke Primary Navigation", items: menu.map((item) => ({ id: String(item.pageId ?? ""), parentId: item.parentPageId ? String(item.parentPageId) : null, label: String(item.label ?? "Page"), url: menuUrl(item) })) }) }));
-          logs.push({ action: "menu_created", status: "success", remoteNavigationId: connectorMenu.menuId, location: connectorMenu.location, at: new Date().toISOString() });
+          if (menu.length) {
+            const connectorMenu = jsonRecord(await wpFetch(integration, "/wp-json/senuke/v1/menus", { method: "POST", body: JSON.stringify({ name: "SENuke Primary Navigation", location: "primary", items: menu.map((item) => ({ id: String(item.pageId ?? ""), parentId: item.parentPageId ? String(item.parentPageId) : null, label: String(item.label ?? "Page"), url: menuUrl(item) })) }) }));
+            logs.push({ action: "primary_menu_created", status: "success", remoteNavigationId: connectorMenu.menuId, location: connectorMenu.location, at: new Date().toISOString() });
+          }
+          if (footerMenu.length) {
+            const connectorFooterMenu = jsonRecord(await wpFetch(integration, "/wp-json/senuke/v1/menus", { method: "POST", body: JSON.stringify({ name: "SENuke Footer Navigation", location: "footer", items: footerMenu.map((item) => ({ id: String(item.pageId ?? ""), parentId: item.parentPageId ? String(item.parentPageId) : null, label: String(item.label ?? "Page"), url: menuUrl(item) })) }) }));
+            logs.push({ action: "footer_menu_created", status: "success", remoteNavigationId: connectorFooterMenu.menuId, location: connectorFooterMenu.location, at: new Date().toISOString() });
+          }
         } else {
+        if (menu.length) {
         const navigationBlock = (item: Record<string, unknown>, topLevel: boolean, visited = new Set<string>()): string => {
           const id = String(item.pageId ?? "");
           if (visited.has(id)) return "";
@@ -7203,6 +7353,15 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/deploy", async (
         const navigationContent = menu.filter((item) => !item.parentPageId).map((item) => navigationBlock(item, true)).filter(Boolean).join("\n");
         const navigation = jsonRecord(await wpFetch(integration, "/wp-json/wp/v2/navigation", { method: "POST", body: JSON.stringify({ title: "Primary Navigation", status: input.mode, content: navigationContent }) }));
         logs.push({ action: "menu_created", status: "success", remoteNavigationId: navigation.id, at: new Date().toISOString() });
+        }
+        if (footerMenu.length) {
+          const footerNavigationContent = footerMenu.filter((item) => !item.parentPageId).map((parent) => {
+            const children = footerMenu.filter((item) => item.parentPageId === parent.pageId);
+            return `<!-- wp:navigation-submenu ${JSON.stringify({ label: parent.label, url: "#", kind: "custom", isTopLevelItem: true })} -->\n${children.map((item) => `<!-- wp:navigation-link ${JSON.stringify({ label: item.label, url: menuUrl(item), kind: "custom", isTopLevelLink: false })} /-->`).join("\n")}\n<!-- /wp:navigation-submenu -->`;
+          }).join("\n");
+          const footerNavigation = jsonRecord(await wpFetch(integration, "/wp-json/wp/v2/navigation", { method: "POST", body: JSON.stringify({ title: "Footer Navigation", status: input.mode, content: footerNavigationContent }) }));
+          logs.push({ action: "footer_menu_created", status: "warning", remoteNavigationId: footerNavigation.id, detail: "Footer Navigation was created. Assign it to the theme footer when the theme does not expose a footer menu location through REST.", at: new Date().toISOString() });
+        }
         }
       } catch (error) {
         logs.push({ action: "menu_creation", status: "skipped", detail: "WordPress Navigation REST support or the SENuke Connector is required.", error: error instanceof Error ? error.message : "Menu endpoint unavailable", at: new Date().toISOString() });

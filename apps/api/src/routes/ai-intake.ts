@@ -233,7 +233,11 @@ const conversationAdvancedFields: ConversationAdvancedField[] = [
   { key: "proposal_package_preference", label: "Proposal package", type: "select", options: ["Single package", "Good/better/best", "Phased project", "Monthly retainer", "Custom"], projectTypes: ["agency_client"] },
   { key: "store_type", label: "Store type", type: "select", required: true, options: ["New Shopify store", "Existing Shopify store", "WooCommerce", "Custom ecommerce", "Product landing page"], projectTypes: ["ecommerce"] },
   { key: "product_category", label: "Product category", type: "text", required: true, projectTypes: ["ecommerce"] },
-  { key: "product_list", label: "Product list", type: "textarea", projectTypes: ["ecommerce"] },
+  { key: "product_list", label: "Primary products", type: "textarea", required: true, projectTypes: ["ecommerce"] },
+  { key: "product_types", label: "Product types", type: "textarea", projectTypes: ["ecommerce"] },
+  { key: "store_collections", label: "Current or planned collections", type: "textarea", projectTypes: ["ecommerce"] },
+  { key: "shipping_markets", label: "Shipping markets", type: "textarea", required: true, projectTypes: ["ecommerce"] },
+  { key: "brand_structure", label: "Brand structure", type: "select", options: ["Single brand", "Multiple owned brands", "Multi-brand retailer", "Marketplace", "Private label", "Unknown"], projectTypes: ["ecommerce"] },
   { key: "target_buyer", label: "Target buyer", type: "textarea", required: true, projectTypes: ["ecommerce"] },
   { key: "average_order_value", label: "Average order value or price range", type: "text", projectTypes: ["ecommerce"] },
   { key: "fulfillment_model", label: "Fulfillment model", type: "select", options: ["Inventory", "Dropshipping", "Print-on-demand", "Digital delivery", "Service/product hybrid", "Unknown"], projectTypes: ["ecommerce"] },
@@ -629,7 +633,7 @@ aiIntakeRouter.post(["/ai-intake/converse", "/ai-intake/business-discovery"], as
       const agencyWorkspace = (input.workspaceType || context.workspace.workspaceType) === "agency";
       const allApplicableAdvancedFields = applicableConversationFields(activeProjectType, activeWebsiteStatus, agencyWorkspace);
       const applicableAdvancedFields = businessDiscovery
-        ? allApplicableAdvancedFields.filter((field) => ["business_experience", "existing_assets"].includes(field.key))
+        ? allApplicableAdvancedFields.filter((field) => ["business_experience", "existing_assets"].includes(field.key) || (activeProjectType === "ecommerce" && field.projectTypes?.includes("ecommerce")))
         : allApplicableAdvancedFields;
       const savedAdvancedAnswers = {
         ...Object.fromEntries((project?.intakeAnswers ?? []).filter((answer) => conversationAdvancedByKey.has(answer.questionKey)).map((answer) => [answer.questionKey, answer.answerValue])),
@@ -655,6 +659,7 @@ Business Discovery mode:
 - When the narrative asks for multiple outcomes or deliverables—such as website development, an SEO plan, and a growth plan—capture every supported item in preferredOutputs. Do not reduce the request to one inherited output.
 - Treat the initial businessDescription as the user's source narrative. Replace it with a concise professional summary in fieldUpdates while separately capturing targetAudience and productsServices. productsServices must be a concise comma-separated string; businessLocation must be an object with country, stateProvince, city, streetAddress, and postalCode.
 - Use the industry or niche only as research context. Do not turn it into a confirmed keyword or website page.
+- Ecommerce is a Business Type available inside Personal, Business, and Agency-managed projects; it is never a capability-limited workspace. When the confirmed project type is ecommerce, structure products separately from services and learn the store URL, platform/store type, product categories, primary products, product types, collections, shipping markets, brand structure, target buyers, fulfillment model, and available assets. Do not claim access to orders, margins, inventory, revenue, conversion, or profitability unless the user explicitly supplies those facts.
 - Suggest contextual keywords, goals, website direction, and competitors, but do not confirm suggestions until the user selects or edits them.
 - Ask only the single highest-value unresolved decision after extraction. Prefer the decision that most changes the project direction, not the first missing database field.
 - Write that question separately in question and identify its field in questionField. Provide 3-5 genuinely project-specific answer choices in questionOptions. Base them on the actual business, offer, audience clues, geography and goals. Do not use generic business templates when they do not fit the industry.

@@ -2,7 +2,7 @@
 /**
  * Plugin Name: SENuke AI Connector
  * Description: Secure WordPress deployment bridge for SENuke AI website builds, ongoing posts and pages, SEO metadata, menus, and lead forms.
- * Version: 1.2.0
+ * Version: 1.2.1
  * Author: SENuke AI
  */
 
@@ -29,7 +29,7 @@ final class SENuke_AI_Connector {
             'methods' => 'GET', 'permission_callback' => fn() => current_user_can('edit_pages'),
             'callback' => fn() => rest_ensure_response([
                 'connected' => true,
-                'version' => '1.2.0',
+                'version' => '1.2.1',
                 'features' => ['seo_meta', 'schema', 'menus', 'forms', 'site_backup', 'design_package', 'rollback'],
                 'managedDeploymentReady' => current_user_can('publish_pages')
                     && current_user_can('upload_files')
@@ -139,7 +139,14 @@ final class SENuke_AI_Connector {
         }
         $locations = get_theme_mod('nav_menu_locations', []);
         $registered = get_registered_nav_menus();
-        $preferred = array_key_exists('primary', $registered) ? 'primary' : array_key_first($registered);
+        $requested_location = sanitize_key($data['location'] ?? '');
+        $preferred = ($requested_location && array_key_exists($requested_location, $registered)) ? $requested_location : null;
+        if (!$preferred && $requested_location === 'footer') {
+            foreach (array_keys($registered) as $registered_location) {
+                if (preg_match('/footer|bottom|secondary/i', (string)$registered_location)) { $preferred = $registered_location; break; }
+            }
+        }
+        if (!$preferred && $requested_location !== 'footer') $preferred = array_key_exists('primary', $registered) ? 'primary' : array_key_first($registered);
         if ($preferred) { $locations[$preferred] = $menu_id; set_theme_mod('nav_menu_locations', $locations); }
         return rest_ensure_response(['menuId' => $menu_id, 'location' => $preferred, 'itemCount' => count($created)]);
     }

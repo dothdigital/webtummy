@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   SENUKE_COMPONENT_REGISTRY_V1,
   WEBSITE_PAGE_MAXIMUM_WORDS,
+  applyWebsiteGovernance,
   normalizeGeneratedComponentInstance,
   scoreSeoPage,
   validateComponentInstance,
@@ -127,6 +128,94 @@ const model = (pages = [page()]): WebsiteModel => ({
 });
 
 describe("SENuke canonical Website Model", () => {
+  it("uses a separately saved footer menu instead of the automatic footer groups", () => {
+    const home = page({ pageId: "home", name: "Home", slug: "/", pageType: "home" });
+    const contact = page({ pageId: "contact", name: "Contact Us", slug: "/contact/", pageType: "contact" });
+    const governed = applyWebsiteGovernance(
+      [home, contact],
+      [{ pageId: "home", label: "Home" }],
+      undefined,
+      [
+        { pageId: "custom-company", label: "Company", custom: true },
+        { pageId: "contact", label: "Contact", parentPageId: "custom-company" },
+        { pageId: "home", label: "Homepage" },
+      ],
+    );
+
+    expect(governed.navigationModel.primaryMenu).toEqual([{ pageId: "home", label: "Home" }]);
+    expect(governed.navigationModel.footerMenus).toEqual([
+      { groupId: "custom-company", label: "Company", items: [{ pageId: "contact", label: "Contact", parentPageId: undefined }] },
+      { groupId: "footer-links", label: "Quick links", items: [{ pageId: "home", label: "Homepage" }] },
+    ]);
+  });
+
+  it("keeps every active website page in a partially customized footer", () => {
+    const home = page({ pageId: "home", name: "Home", slug: "/", pageType: "home" });
+    const service = page({ pageId: "service", name: "Life Insurance", slug: "/life-insurance/", pageType: "service" });
+    const contact = page({ pageId: "contact", name: "Contact Us", slug: "/contact/", pageType: "contact" });
+    const governed = applyWebsiteGovernance(
+      [home, service, contact],
+      [{ pageId: "home", label: "Home" }],
+      undefined,
+      [{ pageId: "contact", label: "Contact" }],
+    );
+
+    expect(governed.navigationModel.footerMenus).toEqual([
+      { groupId: "footer-links", label: "Quick links", items: [{ pageId: "contact", label: "Contact" }] },
+      { groupId: "remaining-pages", label: "More", items: [{ pageId: "home", label: "Home" }, { pageId: "service", label: "Life Insurance" }] },
+    ]);
+  });
+
+  it("expands repeated short footer labels into distinct page names", () => {
+    const toronto = page({ pageId: "toronto", name: "Insurance CRM Services in Toronto", slug: "/locations/toronto/insurance-crm/", pageType: "local_service" });
+    const brampton = page({ pageId: "brampton", name: "Insurance CRM Services in Brampton", slug: "/locations/brampton/insurance-crm/", pageType: "local_service" });
+    const governed = applyWebsiteGovernance(
+      [toronto, brampton],
+      [],
+      undefined,
+      [{ pageId: "toronto", label: "Services" }, { pageId: "brampton", label: "Services" }],
+    );
+
+    expect(governed.navigationModel.footerMenus[0].items.map((item) => item.label)).toEqual([
+      "Insurance CRM Services in Toronto",
+      "Insurance CRM Services in Brampton",
+    ]);
+  });
+
+  it("merges legacy footer columns that use the same heading", () => {
+    const life = page({ pageId: "life", name: "Life Insurance", slug: "/life-insurance/", pageType: "service" });
+    const critical = page({ pageId: "critical", name: "Critical Illness Insurance", slug: "/critical-illness/", pageType: "service" });
+    const governed = applyWebsiteGovernance(
+      [life, critical],
+      [],
+      undefined,
+      [
+        { pageId: "legacy-services-one", label: "Services", custom: true },
+        { pageId: "life", label: "Life Insurance", parentPageId: "legacy-services-one" },
+        { pageId: "legacy-services-two", label: "Services", custom: true },
+        { pageId: "critical", label: "Critical Illness Insurance", parentPageId: "legacy-services-two" },
+      ],
+    );
+
+    expect(governed.navigationModel.footerMenus).toEqual([
+      {
+        groupId: "legacy-services-one",
+        label: "Services",
+        items: [
+          { pageId: "life", label: "Life Insurance", parentPageId: undefined },
+          { pageId: "critical", label: "Critical Illness Insurance", parentPageId: undefined },
+        ],
+      },
+    ]);
+  });
+
+  it("supports intentionally removing a page from the footer", () => {
+    const home = page({ pageId: "home", name: "Home", slug: "/", pageType: "home" });
+    const contact = page({ pageId: "contact", name: "Contact Us", slug: "/contact/", pageType: "contact" });
+    const governed = applyWebsiteGovernance([home, contact], [], undefined, [], ["contact"]);
+    expect(governed.navigationModel.footerMenus.flatMap((group) => group.items).map((item) => item.pageId)).toEqual(["home"]);
+  });
+
   it("reports when the Home first fold has no approved hero image", () => {
     const home = page({
       name: "Home",
@@ -233,6 +322,29 @@ describe("SENuke canonical Website Model", () => {
   it("accepts registered component instances", () => {
     expect(validateComponentInstance(page().sections[0])).toEqual([]);
     expect(validateWebsiteModel(model()).valid).toBe(true);
+  });
+
+  it("validates governed nested blocks inside a section layout", () => {
+    const layout = {
+      instanceId: "layout-1",
+      componentId: "layout.section",
+      componentVersion: "1.0.0",
+      variant: "two_equal",
+      props: {
+        backgroundColor: "primary",
+        textColor: "white",
+        backgroundOverlay: 40,
+        spacing: "comfortable",
+        columnOne: [page().sections[2]],
+        columnTwo: [page().sections[4]],
+        columnThree: [],
+      },
+    };
+    expect(validateComponentInstance(layout)).toEqual([]);
+    expect(validateComponentInstance({
+      ...layout,
+      props: { ...layout.props, columnOne: [page().sections[0]] },
+    }).map((finding) => finding.code)).toContain("disallowed_nested_component");
   });
 
   it("rejects unknown components before editing or publishing", () => {

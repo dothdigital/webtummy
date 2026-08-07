@@ -9,7 +9,8 @@ export type ComponentFieldType =
   | "boolean"
   | "number"
   | "string_list"
-  | "object_list";
+  | "object_list"
+  | "component_slot";
 
 export type ComponentFieldDefinition = {
   type: ComponentFieldType;
@@ -21,7 +22,7 @@ export type ComponentFieldDefinition = {
 export type ComponentDefinition = {
   componentId: string;
   version: string;
-  category: "global" | "hero" | "service" | "trust" | "content" | "media" | "conversion";
+  category: "global" | "layout" | "hero" | "service" | "trust" | "content" | "media" | "conversion";
   lifecycleStatus: "active" | "deprecated" | "blocked";
   variants: readonly string[];
   fields: Readonly<Record<string, ComponentFieldDefinition>>;
@@ -507,8 +508,28 @@ const commonMappings = (name: string) => ({
   staticHtml: `senuke/${name}`,
 });
 
+const headingStyleFields = {
+  alignment: { type: "string", maxLength: 10 },
+  headingSize: { type: "string", maxLength: 10 },
+  headingWeight: { type: "string", maxLength: 10 },
+  headingColor: { type: "string", maxLength: 12 },
+} as const;
+
+const layoutChildComponents = [
+  "content.rich_text",
+  "media.image",
+  "service.grid",
+  "service.benefits",
+  "content.process",
+  "trust.proof",
+  "content.faq",
+  "conversion.cta",
+  "conversion.contact_form",
+] as const;
+
 export const SENUKE_COMPONENT_REGISTRY_V1: ComponentRegistry = {
   registryId: "senuke-core",
+  // Optional visual style fields are backward-compatible with saved 1.1 models.
   version: "1.1.0",
   status: "active",
   components: [
@@ -527,6 +548,25 @@ export const SENUKE_COMPONENT_REGISTRY_V1: ComponentRegistry = {
       rendererMappings: commonMappings("header"),
     },
     {
+      componentId: "layout.section",
+      version: "1.0.0",
+      category: "layout",
+      lifecycleStatus: "active",
+      variants: ["one_column", "two_equal", "two_left_wide", "two_right_wide", "three_equal"],
+      fields: {
+        backgroundColor: { type: "string", maxLength: 20 },
+        textColor: { type: "string", maxLength: 12 },
+        backgroundImageAssetId: { type: "asset_id" },
+        backgroundOverlay: { type: "number" },
+        spacing: { type: "string", maxLength: 12 },
+        columnOne: { type: "component_slot" },
+        columnTwo: { type: "component_slot" },
+        columnThree: { type: "component_slot" },
+      },
+      allowedChildren: layoutChildComponents,
+      rendererMappings: commonMappings("section-layout"),
+    },
+    {
       componentId: "hero.local_service",
       version: "1.0.0",
       category: "hero",
@@ -536,6 +576,7 @@ export const SENUKE_COMPONENT_REGISTRY_V1: ComponentRegistry = {
         eyebrow: { type: "string", maxLength: 80 },
         headline: { type: "string", required: true, maxLength: 90 },
         summary: { type: "string", required: true, maxLength: 240 },
+        ...headingStyleFields,
         primaryCtaLabel: { type: "string", required: true, maxLength: 40 },
         primaryCtaUrl: { type: "url", required: true },
         imageAssetId: { type: "asset_id" },
@@ -551,6 +592,7 @@ export const SENUKE_COMPONENT_REGISTRY_V1: ComponentRegistry = {
       fields: {
         heading: { type: "string", required: true, maxLength: 100 },
         body: { type: "rich_text", required: true, maxLength: 4000 },
+        ...headingStyleFields,
       },
       rendererMappings: commonMappings("rich-text"),
     },
@@ -577,6 +619,7 @@ export const SENUKE_COMPONENT_REGISTRY_V1: ComponentRegistry = {
         heading: { type: "string", required: true, maxLength: 100 },
         introduction: { type: "string", maxLength: 240 },
         items: { type: "object_list", required: true, maxItems: 8 },
+        ...headingStyleFields,
       },
       rendererMappings: commonMappings("service-grid"),
     },
@@ -589,6 +632,7 @@ export const SENUKE_COMPONENT_REGISTRY_V1: ComponentRegistry = {
       fields: {
         heading: { type: "string", required: true, maxLength: 100 },
         items: { type: "object_list", required: true, maxItems: 8 },
+        ...headingStyleFields,
       },
       rendererMappings: commonMappings("benefits"),
     },
@@ -601,6 +645,7 @@ export const SENUKE_COMPONENT_REGISTRY_V1: ComponentRegistry = {
       fields: {
         heading: { type: "string", required: true, maxLength: 100 },
         steps: { type: "object_list", required: true, maxItems: 8 },
+        ...headingStyleFields,
       },
       rendererMappings: commonMappings("process"),
     },
@@ -614,6 +659,7 @@ export const SENUKE_COMPONENT_REGISTRY_V1: ComponentRegistry = {
         heading: { type: "string", required: true, maxLength: 100 },
         introduction: { type: "string", maxLength: 240 },
         items: { type: "object_list", required: true, maxItems: 8 },
+        ...headingStyleFields,
       },
       rendererMappings: commonMappings("proof"),
     },
@@ -626,6 +672,7 @@ export const SENUKE_COMPONENT_REGISTRY_V1: ComponentRegistry = {
       fields: {
         heading: { type: "string", required: true, maxLength: 100 },
         items: { type: "object_list", required: true, maxItems: 12 },
+        ...headingStyleFields,
       },
       rendererMappings: commonMappings("faq"),
     },
@@ -640,6 +687,7 @@ export const SENUKE_COMPONENT_REGISTRY_V1: ComponentRegistry = {
         body: { type: "string", required: true, maxLength: 280 },
         buttonLabel: { type: "string", required: true, maxLength: 40 },
         buttonUrl: { type: "url", required: true },
+        ...headingStyleFields,
       },
       rendererMappings: commonMappings("cta"),
     },
@@ -652,6 +700,7 @@ export const SENUKE_COMPONENT_REGISTRY_V1: ComponentRegistry = {
       fields: {
         heading: { type: "string", required: true, maxLength: 100 },
         introduction: { type: "string", required: true, maxLength: 280 },
+        ...headingStyleFields,
         formId: { type: "string", required: true, maxLength: 80 },
         fields: { type: "object_list", required: true, maxItems: 10 },
         submitLabel: { type: "string", required: true, maxLength: 40 },
@@ -684,8 +733,38 @@ const fieldMatches = (value: JsonValue, field: ComponentFieldDefinition) => {
   if (["string", "rich_text", "url", "asset_id"].includes(field.type)) return typeof value === "string";
   if (field.type === "string_list") return Array.isArray(value) && value.every((item) => typeof item === "string");
   if (field.type === "object_list") return Array.isArray(value) && value.every((item) => item !== null && typeof item === "object" && !Array.isArray(item));
+  if (field.type === "component_slot") return Array.isArray(value) && value.every((item) => item !== null && typeof item === "object" && !Array.isArray(item));
   return false;
 };
+
+const nestedComponentInstance = (value: JsonValue): WebsiteComponentInstance | null => {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const item = value as Record<string, JsonValue>;
+  if (
+    typeof item.instanceId !== "string"
+    || typeof item.componentId !== "string"
+    || typeof item.componentVersion !== "string"
+    || typeof item.variant !== "string"
+    || !item.props
+    || typeof item.props !== "object"
+    || Array.isArray(item.props)
+  ) return null;
+  return item as unknown as WebsiteComponentInstance;
+};
+
+export function flattenWebsiteComponents(instances: WebsiteComponentInstance[]): WebsiteComponentInstance[] {
+  const result: WebsiteComponentInstance[] = [];
+  for (const instance of instances) {
+    result.push(instance);
+    for (const slotName of ["columnOne", "columnTwo", "columnThree"] as const) {
+      const value = instance.props[slotName];
+      if (!Array.isArray(value)) continue;
+      const children = value.map(nestedComponentInstance).filter((item): item is WebsiteComponentInstance => Boolean(item));
+      result.push(...flattenWebsiteComponents(children));
+    }
+  }
+  return result;
+}
 
 export function componentDefinition(
   registry: ComponentRegistry,
@@ -787,6 +866,52 @@ export function validateComponentInstance(
       continue;
     }
     if (value === undefined || value === null || value === "") continue;
+    if (name === "alignment" && !["left", "center", "right"].includes(String(value))) {
+      findings.push({
+        code: "invalid_component_alignment",
+        severity: "blocking",
+        path: `${path}.props.${name}`,
+        message: `${String(value)} is not an approved section alignment.`,
+      });
+      continue;
+    }
+    const approvedHeadingStyles: Record<string, string[]> = {
+      headingSize: ["small", "medium", "large"],
+      headingWeight: ["regular", "semibold", "bold", "black"],
+      headingColor: ["default", "primary", "secondary", "accent", "text"],
+    };
+    if (approvedHeadingStyles[name] && !approvedHeadingStyles[name].includes(String(value))) {
+      findings.push({
+        code: "invalid_component_heading_style",
+        severity: "blocking",
+        path: `${path}.props.${name}`,
+        message: `${String(value)} is not an approved ${name} value.`,
+      });
+      continue;
+    }
+    const approvedLayoutStyles: Record<string, string[]> = {
+      backgroundColor: ["default", "background", "surface", "primary", "secondary", "accent", "dark"],
+      textColor: ["auto", "text", "muted", "white"],
+      spacing: ["compact", "comfortable", "spacious"],
+    };
+    if (approvedLayoutStyles[name] && !approvedLayoutStyles[name].includes(String(value))) {
+      findings.push({
+        code: "invalid_layout_style",
+        severity: "blocking",
+        path: `${path}.props.${name}`,
+        message: `${String(value)} is not an approved ${name} value.`,
+      });
+      continue;
+    }
+    if (name === "backgroundOverlay" && (typeof value !== "number" || value < 0 || value > 90)) {
+      findings.push({
+        code: "invalid_layout_overlay",
+        severity: "blocking",
+        path: `${path}.props.${name}`,
+        message: "Section image overlay must be between 0 and 90 percent.",
+      });
+      continue;
+    }
     if (!fieldMatches(value, field)) {
       findings.push({
         code: "invalid_component_prop_type",
@@ -802,6 +927,31 @@ export function validateComponentInstance(
         severity: "blocking",
         path: `${path}.props.${name}`,
         message: `${name} exceeds its ${field.maxLength}-character component limit.`,
+      });
+      continue;
+    }
+    if (field.type === "component_slot" && Array.isArray(value)) {
+      value.forEach((childValue, childIndex) => {
+        const child = nestedComponentInstance(childValue);
+        if (!child) {
+          findings.push({
+            code: "invalid_nested_component",
+            severity: "blocking",
+            path: `${path}.props.${name}.${childIndex}`,
+            message: "This column contains an invalid website block.",
+          });
+          return;
+        }
+        if (!definition.allowedChildren?.includes(child.componentId)) {
+          findings.push({
+            code: "disallowed_nested_component",
+            severity: "blocking",
+            path: `${path}.props.${name}.${childIndex}`,
+            message: `${child.componentId} cannot be placed inside ${instance.componentId}.`,
+          });
+          return;
+        }
+        findings.push(...validateComponentInstance(child, registry, `${path}.props.${name}.${childIndex}`));
       });
     }
     if (Array.isArray(value) && field.maxItems && value.length > field.maxItems) {
@@ -972,6 +1122,8 @@ export function applyWebsiteGovernance(
   inputPages: WebsitePageModel[],
   savedNavigation: WebsiteNavigationItem[] = [],
   keywordLock?: { lockedAt?: string; lockedBy?: string },
+  savedFooterNavigation: WebsiteNavigationItem[] = [],
+  excludedFooterPageIds: string[] = [],
 ) {
   const basePages = inputPages.map((page) => {
     const indexable = page.indexable ?? !/noindex/i.test(page.seo.robots);
@@ -1009,6 +1161,8 @@ export function applyWebsiteGovernance(
   });
   const pages = applyInternalLinkStrategy(basePages);
   const byId = new Map(pages.map((page) => [page.pageId, page]));
+  const excludedFooterIds = new Set(excludedFooterPageIds);
+  const footerPages = pages.filter((page) => !excludedFooterIds.has(page.pageId));
   const defaultNavigation = pages
     .filter((page) => page.navVisibility?.primaryMenu)
     .map((page) => ({ pageId: page.pageId, label: page.navLabel || page.name, ...(page.parentPageId ? { parentPageId: page.parentPageId } : {}) }));
@@ -1020,15 +1174,70 @@ export function applyWebsiteGovernance(
     ...topLevel,
     ...candidateNavigation.filter((item) => item.parentPageId && topIds.has(item.parentPageId)),
   ];
-  const footerGroups = ["services", "locations", "resources", "company", "legal", "contact"]
+  const automaticFooterGroups = ["services", "locations", "resources", "company", "legal", "contact"]
     .map((groupId) => ({
       groupId,
       label: groupId === "company" ? "Company" : groupId.charAt(0).toUpperCase() + groupId.slice(1),
-      items: pages
+      items: footerPages
         .filter((page) => page.navVisibility?.footerMenu && page.menuGroupId === groupId)
         .map((page) => ({ pageId: page.pageId, label: page.navLabel || page.name })),
     }))
     .filter((group) => group.items.length);
+  const automaticallyGroupedPageIds = new Set(automaticFooterGroups.flatMap((group) => group.items.map((item) => item.pageId)));
+  const automaticallyUngroupedPages = footerPages
+    .filter((page) => !automaticallyGroupedPageIds.has(page.pageId))
+    .map((page) => ({ pageId: page.pageId, label: page.navLabel || page.name }));
+  if (automaticallyUngroupedPages.length) automaticFooterGroups.push({ groupId: "all-pages", label: "More", items: automaticallyUngroupedPages });
+  const validSavedFooter = savedFooterNavigation.filter((item) => item.custom || (byId.has(item.pageId) && !excludedFooterIds.has(item.pageId)));
+  const footerParentIds = new Set(validSavedFooter.map((item) => item.parentPageId).filter((value): value is string => Boolean(value)));
+  const savedFooterGroups = validSavedFooter
+    .filter((item) => !item.parentPageId && footerParentIds.has(item.pageId))
+    .map((parent) => ({
+      groupId: parent.pageId,
+      label: parent.label,
+      items: validSavedFooter
+        .filter((item) => item.parentPageId === parent.pageId)
+        .map((item) => ({ ...item, parentPageId: undefined })),
+    }))
+    .filter((group) => group.items.length);
+  const standaloneFooterItems = validSavedFooter.filter((item) => !item.parentPageId && !footerParentIds.has(item.pageId));
+  const savedFooterPageIds = new Set(validSavedFooter.filter((item) => !item.custom).map((item) => item.pageId));
+  const missingSavedFooterPages = footerPages
+    .filter((page) => !savedFooterPageIds.has(page.pageId))
+    .map((page) => ({ pageId: page.pageId, label: page.navLabel || page.name }));
+  const footerGroups = validSavedFooter.length
+    ? [
+        ...savedFooterGroups,
+        ...(standaloneFooterItems.length ? [{ groupId: "footer-links", label: "Quick links", items: standaloneFooterItems }] : []),
+        ...(missingSavedFooterPages.length ? [{ groupId: "remaining-pages", label: "More", items: missingSavedFooterPages }] : []),
+      ]
+    : automaticFooterGroups;
+  const mergedFooterGroups = [...footerGroups.reduce((groups, group) => {
+    const key = normalizedText(group.label);
+    const current = groups.get(key);
+    if (!current) {
+      groups.set(key, { ...group, items: [...group.items] });
+      return groups;
+    }
+    const existingPageIds = new Set(current.items.map((item) => item.pageId));
+    current.items.push(...group.items.filter((item) => !existingPageIds.has(item.pageId)));
+    return groups;
+  }, new Map<string, (typeof footerGroups)[number]>()).values()];
+  const footerLabelCounts = new Map<string, number>();
+  for (const item of mergedFooterGroups.flatMap((group) => group.items)) {
+    const key = normalizedText(item.label);
+    footerLabelCounts.set(key, (footerLabelCounts.get(key) ?? 0) + 1);
+  }
+  const footerGroupsWithDistinctLabels = mergedFooterGroups.map((group) => ({
+    ...group,
+    items: group.items.map((item) => {
+      if ((footerLabelCounts.get(normalizedText(item.label)) ?? 0) < 2) return item;
+      const page = byId.get(item.pageId);
+      if (!page) return item;
+      const fullName = page.name.trim();
+      return { ...item, label: normalizedText(fullName) === normalizedText(item.label) ? `${fullName} · ${page.slug}` : fullName };
+    }),
+  }));
   const utilityMenu = pages
     .filter((page) => page.navVisibility?.utilityMenu)
     .map((page) => ({ pageId: page.pageId, label: page.navLabel || page.name }));
@@ -1084,7 +1293,7 @@ export function applyWebsiteGovernance(
     navigation: primaryMenu,
     navigationModel: {
       primaryMenu,
-      footerMenus: footerGroups,
+      footerMenus: footerGroupsWithDistinctLabels,
       utilityMenu,
       breadcrumbs,
       clusterNavigationBlocks,
@@ -1106,7 +1315,7 @@ export function applyWebsiteGovernance(
 
 const pageText = (page: WebsitePageModel) =>
   normalizedText(
-    page.sections
+    flattenWebsiteComponents(page.sections)
       .flatMap((section) => Object.values(section.props))
       .flatMap((value) => typeof value === "string" ? [value] : [])
       .join(" "),
@@ -1159,7 +1368,8 @@ export function validateWebsiteModel(
     if (pageIsLocal(page) && page.serviceAvailabilityVerified === false) findings.push({ code: "unverified_local_service_availability", severity: "blocking", path: `${path}.serviceAvailabilityVerified`, message: `${page.name} cannot be indexed or released until service availability for its target location is verified.` });
     if (pageIsLocal(page) && !(page.localEvidenceIds?.length)) findings.push({ code: "missing_local_uniqueness_evidence", severity: model.status === "validated" ? "blocking" : "warning", path: `${path}.localEvidenceIds`, message: `${page.name} requires approved local evidence or should be merged into a broader service or location page.` });
     if (!page.sections.length) findings.push({ code: "empty_page", severity: "blocking", path: `${path}.sections`, message: `${page.name} has no registered sections.` });
-    const h1Candidates = page.sections.filter((section) => section.componentId.startsWith("hero.") && typeof section.props.headline === "string");
+    const flattenedSections = flattenWebsiteComponents(page.sections);
+    const h1Candidates = flattenedSections.filter((section) => section.componentId.startsWith("hero.") && typeof section.props.headline === "string");
     if (h1Candidates.length !== 1) findings.push({ code: "invalid_h1_count", severity: "blocking", path: `${path}.sections`, message: `${page.name} must have exactly one hero headline mapped to H1.` });
     const isHome = page.slug === "/" || /^(?:home|homepage)$/i.test(page.name) || page.pageType === "home";
     if (isHome) {
@@ -1190,7 +1400,7 @@ export function validateWebsiteModel(
     }
     for (const [sectionIndex, section] of page.sections.entries()) findings.push(...validateComponentInstance(section, registry, `${path}.sections.${sectionIndex}`));
     const composition = websitePageCompositionPolicy({ pageType: page.pageType, title: page.name, searchIntent: page.seo.dominantIntent });
-    const componentIds = new Set(page.sections.map((section) => section.componentId));
+    const componentIds = new Set(flattenedSections.map((section) => section.componentId));
     for (const componentId of composition.requiredComponentIds) {
       if (!componentIds.has(componentId)) findings.push({
         code: "missing_archetype_component",
@@ -1199,11 +1409,12 @@ export function validateWebsiteModel(
         message: `${page.name} requires ${componentId} for its ${composition.archetype.replace("_", " ")} page structure.`,
       });
     }
-    if (page.sections.length < composition.minimumComponentCount) findings.push({
+    const meaningfulComponentCount = flattenedSections.filter((section) => section.componentId !== "layout.section").length;
+    if (meaningfulComponentCount < composition.minimumComponentCount) findings.push({
       code: "thin_page_composition",
       severity: "warning",
       path: `${path}.sections`,
-      message: `${page.name} has ${page.sections.length} sections; its ${composition.archetype.replace("_", " ")} composition normally needs at least ${composition.minimumComponentCount}.`,
+      message: `${page.name} has ${meaningfulComponentCount} content sections; its ${composition.archetype.replace("_", " ")} composition normally needs at least ${composition.minimumComponentCount}.`,
     });
     const contentWords = JSON.stringify(page.sections.flatMap((section) => Object.values(section.props)))
       .replace(/[^a-z0-9]+/gi, " ")

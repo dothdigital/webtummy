@@ -259,12 +259,17 @@ authRouter.post("/register", async (req, res) => {
 
   const { user } = await prisma.$transaction(async (tx) => {
     const trialStartedAt = new Date();
-    const workspaceType = d.workspaceType.toLowerCase();
-    const compatibilityPlan = workspaceType === "agency" ? "agency" : workspaceType === "ecommerce" ? "business" : "starter";
+    // Ecommerce is a project/business type, not an ownership workspace. Keep
+    // accepting the historical value at the API boundary so old clients do not
+    // fail, but create the canonical Business workspace for new registrations.
+    const requestedWorkspaceType = d.workspaceType.toLowerCase();
+    const workspaceType = requestedWorkspaceType === "ecommerce" ? "business" : requestedWorkspaceType;
+    const workspaceName = requestedWorkspaceType === "ecommerce" ? "Business" : d.workspaceType;
+    const compatibilityPlan = workspaceType === "agency" ? "agency" : workspaceType === "business" ? "business" : "starter";
     const commercialState = registrationPolicy.trialEnabled ? "trialing" : "payment_required";
     const client = await tx.client.create({
       data: {
-        name: d.workspaceType,
+        name: workspaceName,
         contactEmail: d.email,
         plan: compatibilityPlan,
         aiSubscriptionStatus: commercialState,
@@ -286,7 +291,7 @@ authRouter.post("/register", async (req, res) => {
     const workspace = await tx.workspace.create({
       data: {
         legacyClientId: client.id,
-        name: d.workspaceType,
+        name: workspaceName,
         workspaceType,
         ownerUserId: user.id,
         commercialState,

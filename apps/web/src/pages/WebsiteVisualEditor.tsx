@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
-import { Puck, Render, type Data } from "@puckeditor/core";
-import type { WebsiteComponentInstance } from "@webtummy/core/website-model";
+import { ActionBar, Puck, Render, legacySideBarPlugin, type Data } from "@puckeditor/core";
+import { flattenWebsiteComponents, type WebsiteComponentInstance } from "@webtummy/core/website-model";
 import { api } from "../api.js";
 import {
   createSenukePuckConfig,
@@ -40,7 +40,7 @@ const componentsFromPage = (page: Page | null) => {
         : component);
   }
   const isContactPage = page && (page.pageType === "conversion" || page.pageType === "contact" || /\bcontact(?:\s+us)?\b/i.test(page.title));
-  if (!isContactPage || components.some((component) => component.componentId === "conversion.contact_form")) return components;
+  if (!isContactPage || flattenWebsiteComponents(components).some((component) => component.componentId === "conversion.contact_form")) return components;
   const contactForm: WebsiteComponentInstance = {
     instanceId: `${page.id}-contact-form`,
     componentId: "conversion.contact_form",
@@ -222,6 +222,10 @@ export default function WebsiteVisualEditor({ mode }: { mode: "editor" | "previe
       <button onClick={closeWorkspace} className="rounded-lg border border-white/20 px-3 py-2 text-xs font-black">Close</button>
     </div>
     {message ? <div className={`px-4 py-2 text-center text-xs font-bold ${/could not|required|unsupported/i.test(message) ? "bg-rose-100 text-rose-800" : "bg-emerald-100 text-emerald-800"}`}>{message}</div> : null}
+    <div className="flex flex-wrap items-center justify-between gap-2 border-b border-indigo-200 bg-indigo-50 px-4 py-2 text-[11px] font-bold text-indigo-950">
+      <span><b>Build a layout:</b> drag <span className="whitespace-nowrap">Add section / columns</span> from the left, choose its columns, then drag content or images into each column.</span>
+      <span><b>Style it:</b> select a section to change its background, image, spacing and text colour; select a content block for heading controls.</span>
+    </div>
     <div className="min-h-0 flex-1" style={theme}>
       <Puck
         key={`${page.id}:${page.version}`}
@@ -232,12 +236,17 @@ export default function WebsiteVisualEditor({ mode }: { mode: "editor" | "previe
         headerPath={`/${page.slug}`}
         height="100%"
         iframe={{ enabled: true, waitForStyles: true, syncHostStyles: true }}
+        plugins={[legacySideBarPlugin()]}
         viewports={[
           { width: 1440, height: "auto", label: "Desktop", icon: "Monitor" },
           { width: 820, height: "auto", label: "Tablet", icon: "Tablet" },
           { width: 390, height: "auto", label: "Mobile", icon: "Smartphone" },
         ]}
         overrides={{
+          actionBar: ({ label, children, parentAction }) => <ActionBar>
+            <ActionBar.Group>{parentAction}<ActionBar.Label label={`↕ Drag to move · ${label || "Section"}`} /></ActionBar.Group>
+            <ActionBar.Group>{children}</ActionBar.Group>
+          </ActionBar>,
           headerActions: () => <div className="flex items-center gap-2"><span className="hidden text-[10px] font-bold text-slate-500 md:inline">Saves a new Website Model version—not a live publication.</span><button type="button" disabled={saving} onClick={() => void save()} className="rounded-md bg-emerald-600 px-4 py-2 text-xs font-black text-white disabled:bg-slate-300">{saving ? "Saving…" : "Save New Version"}</button></div>,
         }}
       />

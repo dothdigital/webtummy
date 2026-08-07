@@ -11,6 +11,7 @@ export const WORKFLOW_MODULE_CAPABILITIES = [
   { key: "location_intelligence", module: "local_seo", route: "/local-seo", events: ["intelligence.local_seo_completed"], canSuggest: true, canImplement: true, approvalRequired: true },
   { key: "competitor_intelligence", module: "gap_analysis", route: "/gap-analysis", events: ["intelligence.competitor_completed", "intelligence.gap_analysis_completed"], canSuggest: true, canImplement: false, approvalRequired: false },
   { key: "site_analysis", module: "site_analysis", route: "/site-analysis", events: ["intelligence.site_analysis_completed"], canSuggest: true, canImplement: false, approvalRequired: false },
+  { key: "ecommerce_intelligence", module: "ecommerce_intelligence", route: "/ecommerce-intelligence", events: ["intelligence.ecommerce_completed"], canSuggest: true, canImplement: true, approvalRequired: true },
   { key: "technical_seo", module: "gap_analysis", route: "/gap-analysis", events: ["intelligence.gap_analysis_completed"], canSuggest: true, canImplement: true, approvalRequired: true },
   { key: "content_gap_analysis", module: "gap_analysis", route: "/gap-analysis", events: ["intelligence.gap_analysis_completed"], canSuggest: true, canImplement: true, approvalRequired: true },
   { key: "local_seo_analysis", module: "local_seo", route: "/local-seo", events: ["intelligence.local_seo_completed", "intelligence.gap_analysis_completed"], canSuggest: true, canImplement: true, approvalRequired: true },
@@ -23,6 +24,7 @@ const WORKFLOW_EVIDENCE_FRESHNESS_DAYS: Record<string, number> = {
   location_intelligence: 90,
   competitor_intelligence: 90,
   site_analysis: 45,
+  ecommerce_intelligence: 45,
   technical_seo: 45,
   content_gap_analysis: 45,
   local_seo_analysis: 60,
@@ -40,6 +42,7 @@ export function resolveProjectApplicability(input: { projectType: string; websit
     localSeo,
     requiredModules: WORKFLOW_MODULE_CAPABILITIES.filter((capability) => {
       if (["site_analysis", "technical_seo"].includes(capability.key)) return existingWebsite;
+      if (capability.key === "ecommerce_intelligence") return input.projectType === "ecommerce" && existingWebsite;
       if (["location_intelligence", "local_seo_analysis"].includes(capability.key)) return localSeo;
       return true;
     }).map((capability) => capability.key),
@@ -175,6 +178,11 @@ export type WorkflowEvidenceSnapshot = {
   siteAnalysisInProgress: boolean;
   siteAnalysisFailed: boolean;
   siteEvidenceAt: Date | null;
+  ecommerceApplicable: boolean;
+  ecommerceAnalysisComplete: boolean;
+  ecommerceAnalysisInProgress: boolean;
+  ecommerceAnalysisFailed: boolean;
+  ecommerceEvidenceAt: Date | null;
   gapAnalysisComplete: boolean;
   gapAnalysisInProgress: boolean;
   gapAnalysisFailed: boolean;
@@ -384,6 +392,9 @@ export function resolveProjectWorkflow(snapshot: WorkflowEvidenceSnapshot): Proj
   const websiteBaselineDue = snapshot.existingWebsite && snapshot.publishingComplete && !snapshot.siteAnalysisComplete;
   push({ key: "site_analysis", label: snapshot.preLaunchWebsite || websiteBaselineDue ? "Website Intelligence Baseline" : "Website Intelligence", description: "Crawl-backed pages, links, indexability, content, schema, accessibility, and conversion evidence.", status: siteStatus, required: snapshot.existingWebsite, weight: 16, reason: snapshot.preLaunchWebsite ? "Starts after the website is published; a live-site baseline is never fabricated before launch." : statusReason(siteStatus, "A completed crawl exists for the current website.", websiteBaselineDue ? "The website is published. Run the first Website Intelligence assessment and save its measurement baseline." : "Analyze the connected website before Strategy generation.", "Complete Keyword Intelligence first."), evidenceAt: snapshot.siteEvidenceAt?.toISOString() ?? null, action: snapshot.existingWebsite ? action(snapshot.siteAnalysisComplete ? "Review Website Intelligence" : websiteBaselineDue ? "Create Website Intelligence Baseline" : "Analyze website", `/site-analysis?${projectQuery}`, snapshot.siteAnalysisComplete ? "review" : "generate") : null, ai: { ...aiRoles.intelligence, implementation: "The crawler collects page-level evidence; AI groups repeated findings, explains impact, and recommends fixes for the correct canonical page." } });
 
+  const ecommerceStatus = moduleStatus({ required: snapshot.ecommerceApplicable, complete: snapshot.ecommerceAnalysisComplete, inProgress: snapshot.ecommerceAnalysisInProgress, failed: snapshot.ecommerceAnalysisFailed, blockedBy: snapshot.siteAnalysisComplete ? null : "Complete Website Intelligence for the public store first." });
+  push({ key: "ecommerce_intelligence", label: "Ecommerce Intelligence", description: "Public products, collections, store structure, product search intent, merchandising, content, internal linking, and evidence limitations.", status: ecommerceStatus, required: snapshot.ecommerceApplicable, weight: 12, reason: statusReason(ecommerceStatus, "Public product and collection intelligence is available to Strategy.", "Analyze the public catalog and approve the product or collection priorities that should influence Strategy.", "Complete Website Intelligence for the public store first."), evidenceAt: snapshot.ecommerceEvidenceAt?.toISOString() ?? null, action: snapshot.ecommerceApplicable ? action(snapshot.ecommerceAnalysisComplete ? "Review Ecommerce Intelligence" : "Analyze public store", `/ecommerce-intelligence?${projectQuery}`, snapshot.ecommerceAnalysisComplete ? "review" : "generate") : null, ai: { ...aiRoles.intelligence, implementation: "AI classifies crawl-visible products and collections, compares them with search demand, labels inferred merchandising ideas, and never invents private sales, margin, inventory, or conversion data." } });
+
   // Every project needs a gap decision before Strategy. Existing websites use
   // crawl-backed technical and page evidence; pre-website projects use the
   // same workspace for keyword, competitor, market, entity, authority, local,
@@ -572,6 +583,7 @@ export async function getProjectWorkflowController(projectId: string): Promise<P
       localSeoAuditJobs: { orderBy: { createdAt: "desc" }, take: 5, select: { status: true, createdAt: true, completedAt: true } },
       citationReadinessFindings: { orderBy: { updatedAt: "desc" }, take: 1, select: { updatedAt: true } },
       authorityOpportunities: { orderBy: { updatedAt: "desc" }, take: 1, select: { updatedAt: true } },
+      aiRuns: { where: { moduleName: "ecommerce_intelligence" }, orderBy: { createdAt: "desc" }, take: 5, select: { id: true, status: true, createdAt: true } },
       measurementCheckpoints: { orderBy: { updatedAt: "desc" }, take: 20, select: { status: true, updatedAt: true, completedAt: true } },
       growthBlueprint: { select: { status: true, currentVersion: true, businessBrainVersion: true, evidenceVersion: true, updatedAt: true } },
       nextBestActions: { where: { status: { in: ["proposed", "recommended", "selected"] } }, orderBy: [{ priorityScore: "desc" }, { createdAt: "desc" }], take: 1, select: { id: true, title: true, reasoningSummary: true, expectedImpact: true, confidence: true, route: true, evidenceJson: true, status: true } },
@@ -594,6 +606,8 @@ export async function getProjectWorkflowController(projectId: string): Promise<P
   const latestLocal = project.localSeoAuditJobs[0] ?? null;
   const completedLocal = project.localSeoAuditJobs.find((run) => run.status === "completed") ?? null;
   const latestStrategy = project.strategyPlans[0] ?? null;
+  const latestEcommerce = project.aiRuns[0] ?? null;
+  const completedEcommerce = project.aiRuns.find((run) => run.status === "completed") ?? null;
   const activePlan = project.executionPlans[0] ?? null;
   const terminalStatuses = new Set(["completed", "skipped", "published", "verified"]);
   const openTasks = project.executionTasks.filter((task) => !terminalStatuses.has(task.status));
@@ -623,6 +637,7 @@ export async function getProjectWorkflowController(projectId: string): Promise<P
   const localSeoApplicable = applicability.localSeo;
   const existingWebsite = applicability.existingWebsite;
   const preLaunchWebsite = applicability.preLaunchWebsite;
+  const ecommerceApplicable = project.projectType === "ecommerce" && existingWebsite;
   const businessLocationJson = project.businessLocationJson && typeof project.businessLocationJson === "object" && !Array.isArray(project.businessLocationJson)
     ? project.businessLocationJson as Partial<BusinessLocation>
     : null;
@@ -649,6 +664,7 @@ export async function getProjectWorkflowController(projectId: string): Promise<P
   const competitorEvidenceAt = completedCompetitor?.completedAt ?? completedCompetitor?.createdAt ?? null;
   const citationEvidenceAt = project.citationReadinessFindings[0]?.updatedAt ?? null;
   const authorityEvidenceAt = project.authorityOpportunities[0]?.updatedAt ?? null;
+  const ecommerceEvidenceAt = completedEcommerce?.createdAt ?? null;
   const citationEvidenceCurrent = Boolean(gapAnalysisCurrent || (citationEvidenceAt && (!keywordEvidenceAt || citationEvidenceAt.getTime() >= keywordEvidenceAt.getTime())));
   const authorityEvidenceCurrent = Boolean(gapAnalysisCurrent || (authorityEvidenceAt && (!keywordEvidenceAt || authorityEvidenceAt.getTime() >= keywordEvidenceAt.getTime())));
   const competitorComplete = Boolean(
@@ -666,6 +682,7 @@ export async function getProjectWorkflowController(projectId: string): Promise<P
     completedLocal?.completedAt ?? completedLocal?.createdAt,
     project.citationReadinessFindings[0]?.updatedAt,
     project.authorityOpportunities[0]?.updatedAt,
+    ecommerceEvidenceAt,
   );
   const projectConfigured = Boolean(project.name && project.projectType && project.primaryGoal);
   const situationConfigured = Boolean(project.websiteStatus && (project.websiteStatus !== "existing_website" || existingWebsite));
@@ -701,6 +718,11 @@ export async function getProjectWorkflowController(projectId: string): Promise<P
     siteAnalysisInProgress: Boolean(latestCrawl && ["queued", "running"].includes(latestCrawl.status)),
     siteAnalysisFailed: latestCrawl?.status === "failed",
     siteEvidenceAt,
+    ecommerceApplicable,
+    ecommerceAnalysisComplete: !ecommerceApplicable || Boolean(completedEcommerce && (!siteEvidenceAt || completedEcommerce.createdAt.getTime() >= siteEvidenceAt.getTime())),
+    ecommerceAnalysisInProgress: Boolean(latestEcommerce && ["queued", "running", "in_progress"].includes(latestEcommerce.status)),
+    ecommerceAnalysisFailed: latestEcommerce?.status === "failed",
+    ecommerceEvidenceAt,
     // A new website has no crawl-backed technical gaps yet, but it still needs
     // a completed pre-website market/content gap decision before Strategy.
     gapAnalysisComplete: gapAnalysisCurrent,

@@ -9,6 +9,7 @@ RUN apt-get update \
 COPY package.json package-lock.json tsconfig.base.json ./
 COPY packages ./packages
 COPY apps ./apps
+COPY wordpress-plugin ./wordpress-plugin
 
 RUN npm ci
 RUN npm run db:generate

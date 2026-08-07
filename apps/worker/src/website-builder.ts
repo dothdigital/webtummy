@@ -11,6 +11,7 @@ import {
   type WebsiteComponentInstance,
 } from "@webtummy/core/website-model";
 import {
+  ensurePageSpecificFirstH2,
   fitWebsiteComponentsToWordBudget,
   strictWebsiteJsonResponseFormat,
   websiteDraftAcceptanceWords,
@@ -20,6 +21,7 @@ import {
   websitePageUniquenessCollisions,
   websiteRichTextExpansionBudget,
   websiteSectionGroupBudgets,
+  websiteFirstSupportingHeading,
   type WebsitePageUniquenessSignals,
   type WebsiteQueueState,
 } from "@webtummy/core/website-generation";
@@ -918,7 +920,7 @@ function fallbackComponents(page: { title: string; primaryKeyword: string; targe
       componentVersion: "1.0.0",
       variant: "answer_first",
       props: {
-        heading: "A solution aligned to your goals",
+        heading: websiteFirstSupportingHeading({ pageTitle: page.title, primaryKeyword: page.primaryKeyword, businessName: business }),
         body: "Start by confirming the requirements, priorities, constraints, and desired outcome before selecting the appropriate service.",
       },
     },
@@ -1392,7 +1394,8 @@ ${context}
 Depth requirements:
 - Every object_list field, including items and steps, must remain a JSON array of objects exactly like the supplied shape. Never return an object map or wrapper in place of an array.
 - Distribute the available word budget across the supplied sections instead of padding any one block.
-- Rich-text bodies should normally use 120–220 words in short paragraphs.
+- The first post-hero H2 must name this page's exact topic or intent and differ from every sibling page. Never use generic headings such as “A solution aligned to your goals”, “How we can help”, “What we offer”, “Overview”, or “Why choose us”.
+- Keep the first post-hero overview concise at 70–130 words in 2–3 short paragraphs. Other rich-text bodies should normally use 120–220 words.
 - Service, benefit, process, and proof item descriptions should normally use 25–55 useful words each.
 - FAQ answers should normally use 35–70 words.
 - Hero and CTA copy must be concise and specific.
@@ -1609,15 +1612,18 @@ function reservedWebsiteSignals(
   return pages.filter((page) => page.id !== currentPageId).map((page) => {
     const seo = record(page.seoJson);
     const snapshot = record(record(record(page.briefJson).importSource).currentWebsiteSnapshot);
-    const hero = componentRows(record(page.contentJson).components).find((component) => component.componentId === "hero.local_service");
+    const pageComponents = componentRows(record(page.contentJson).components);
+    const hero = pageComponents.find((component) => component.componentId === "hero.local_service");
+    const firstH2 = pageComponents.find((component) => component.componentId !== "hero.local_service" && typeof component.props.heading === "string");
     return {
       pageId: page.id,
       pageTitle: page.title,
       seoTitles: uniqueWebsiteSignals([seo.metaTitle, snapshot.title]),
       metaDescriptions: uniqueWebsiteSignals([seo.metaDescription, snapshot.metaDescription]),
       h1s: uniqueWebsiteSignals([hero?.props.headline, snapshot.h1]),
+      h2s: uniqueWebsiteSignals([firstH2?.props.heading]),
     };
-  }).filter((page) => page.seoTitles.length || page.metaDescriptions.length || page.h1s.length);
+  }).filter((page) => page.seoTitles.length || page.metaDescriptions.length || page.h1s.length || Boolean(page.h2s?.length));
 }
 
 const generatedWorkerH1 = (components: WebsiteComponentInstance[]) => String(components.find((component) => component.componentId === "hero.local_service")?.props.headline ?? "").trim();
@@ -1637,7 +1643,7 @@ async function aiPage(page: { id: string; title: string; pageType: string; prima
   const uniquenessSignals = reservedWebsiteSignals(siblingPages, page.id);
   instructions = `${instructions || "Build a complete conversion-focused page."}${localDraftGuardrail}
 Visible page word budget: ${policy.minimumWords}–${policy.maximumWords} words across all website sections combined, including hero, service descriptions, proof, FAQs, forms, and CTA copy. Do not exceed ${policy.maximumWords} words. Metadata and schema are outside this visible-content budget.
-Page uniqueness contract: return an original SEO title, H1, and meta description that do not match any value reserved by another page. Reserved page identity values: ${promptJson(uniquenessSignals, 20_000)}`.trim();
+Page uniqueness contract: return an original SEO title, H1, first post-hero H2, and meta description that do not match values reserved by another page. The first H2 must name this page's assigned topic or intent. Never use “A solution aligned to your goals”, “How we can help”, “What we offer”, “Overview”, or “Why choose us”. Keep its follow-up overview concise at 70–130 words before deeper sections. Reserved page identity values: ${promptJson(uniquenessSignals, 20_000)}`.trim();
   const businessContext = interpretedBusinessContext(seoPlan, project);
   if (!businessContext.coreBusinessValue || !businessContext.primaryServices.length || !businessContext.audience) {
     throw new Error("The approved SEO plan is missing its AI-interpreted business foundation. Reload and approve the SEO Content Plan before generating website content.");
@@ -1647,6 +1653,7 @@ Page uniqueness contract: return an original SEO title, H1, and meta description
   let lastError: unknown;
   try {
     const grouped = await aiPageBySectionGroups(page, project, brand, seoPlan, instructions, basic, checkpoint);
+    grouped.content.components = ensurePageSpecificFirstH2(grouped.content.components, page, businessIdentity(project), uniquenessSignals);
     const groupedCollisions = websitePageUniquenessCollisions({ seoTitle: grouped.seo.metaTitle, metaDescription: grouped.seo.metaDescription, h1: generatedWorkerH1(grouped.content.components) }, uniquenessSignals);
     if (groupedCollisions.length) throw new Error(`Generated page identity duplicates existing pages: ${groupedCollisions.map((collision) => `${collision.field.replaceAll("_", " ")} matches ${collision.pageTitle}`).join("; ")}.`);
     return grouped;
@@ -1702,7 +1709,12 @@ Page uniqueness contract: return an original SEO title, H1, and meta description
           // Review recommendation instead of failing the generation job.
         }
       }
-      proposedContent.components = requiredRegisteredComponents(generatedComponents, 0, policy.requiredComponentIds, policy.minimumComponentCount, maximumWords);
+      proposedContent.components = ensurePageSpecificFirstH2(
+        requiredRegisteredComponents(generatedComponents, 0, policy.requiredComponentIds, policy.minimumComponentCount, maximumWords),
+        page,
+        businessIdentity(project),
+        uniquenessSignals,
+      );
       proposedContent.componentRegistryVersion = SENUKE_COMPONENT_REGISTRY_V1.version;
       const faqs = faqsFromComponents(proposedContent.components as WebsiteComponentInstance[]);
       if (policy.archetype === "faq" && faqs.length < 8) throw new Error("A dedicated FAQ page requires at least 8 complete, visible question-and-answer pairs grounded in approved evidence.");
@@ -1977,10 +1989,47 @@ function visualGrounding(
   };
 }
 
+function pageVisualDirection(page: VisualPageContext, grounding: ReturnType<typeof visualGrounding>) {
+  const key = `${page.title}|${page.primaryKeyword}|${page.pageType}|${page.searchIntent}`;
+  const index = [...key].reduce((total, character) => (total * 31 + character.charCodeAt(0)) >>> 0, 7);
+  const cameraDirections = [
+    "documentary wide scene with the environment clearly supporting the story",
+    "medium environmental portrait focused on a real task rather than a posed subject",
+    "close editorial detail of the relevant product, tool, material, or hands in action",
+    "over-the-shoulder process view with a clear subject and purposeful depth",
+    "side-angle customer journey moment with natural movement and candid interaction",
+  ];
+  const journeyRole = page.searchIntent === "transactional"
+    ? "show the concrete decision or next-step moment that helps a ready visitor act"
+    : page.searchIntent === "comparison"
+      ? "show meaningful visual differences or evaluation criteria without charts or text"
+      : page.searchIntent === "local"
+        ? "show the service in a plausible local customer context without inventing premises or landmarks"
+        : /about|team|company/i.test(`${page.pageType} ${page.title}`)
+          ? "show the people, standards, or working approach behind the business"
+          : /contact|book|appointment|quote/i.test(`${page.pageType} ${page.title}`)
+            ? "show a welcoming, credible next-step context without using a generic handshake or desk consultation"
+            : "show the real situation, need, or process the visitor is trying to understand";
+  const pageEvidence = record(grounding.page);
+  const contentAnchor = promptStrings(pageEvidence.headings, 12, 250).find((heading) =>
+    !/frequently asked|ready to|contact|get started/i.test(heading)) || page.primaryKeyword;
+  return {
+    journeyRole,
+    cameraDirection: cameraDirections[index % cameraDirections.length],
+    contentAnchor,
+  };
+}
+
 function groundedImagePrompt(planPrompt: string, grounding: ReturnType<typeof visualGrounding>) {
   const business = record(grounding.business);
   const page = record(grounding.page);
   const location = record(grounding.location);
+  const direction = pageVisualDirection({
+    title: String(page.title || ""),
+    pageType: String(page.pageType || ""),
+    primaryKeyword: String(page.primaryKeyword || ""),
+    searchIntent: String(page.searchIntent || ""),
+  }, grounding);
   return `${planPrompt.trim()}
 
 MANDATORY VISUAL GROUNDING
@@ -1994,8 +2043,11 @@ MANDATORY VISUAL GROUNDING
 - Relevant page sections: ${promptStrings(page.headings, 10, 250).join(" | ")}
 - Visible content signals: ${promptStrings(page.visibleContent, 12, 300).join(" | ")}
 - Verified location context: ${promptText(location.pageSpecificLocation, 200) || promptStrings(location.relevantMarkets, 5, 200).join(", ") || "No location-specific scene required"}
+- Customer-journey role: ${direction.journeyRole}
+- Unique visual anchor for this page: ${promptText(direction.contentAnchor, 300)}
+- Composition direction assigned to this page: ${direction.cameraDirection}
 
-The finished image must visibly fit this exact business and this exact page. Depict a specific, credible subject, action, and environment that a visitor would associate with the page content. Do not substitute a generic office meeting, handshake, laptop scene, abstract technology graphic, skyline, or unrelated lifestyle photograph. Do not show a landmark, uniform, credential, product, person, statistic, outcome, or location-specific claim unless it is supported by the grounding above. No words, lettering, logos, UI screenshots, badges, watermarks, or fabricated proof.`.slice(0, 7_500);
+The finished image must visibly fit this exact business, page, and position in the customer journey. Use the assigned content anchor and composition direction. Depict a specific, credible subject, action, and environment that a visitor would associate with the page content. Do not substitute a generic office meeting, handshake, laptop scene, abstract technology graphic, skyline, or unrelated lifestyle photograph. Do not show a landmark, uniform, credential, product, person, statistic, outcome, or location-specific claim unless it is supported by the grounding above. No words, lettering, logos, UI screenshots, badges, watermarks, or fabricated proof.`.slice(0, 7_500);
 }
 
 function isHomeVisualPage(page: VisualPageContext & { slug?: string }) {
@@ -2055,6 +2107,7 @@ async function aiVisualPlan(
   project: VisualProjectContext,
   brand: Prisma.JsonValue,
   components: WebsiteComponentInstance[],
+  reservedVisualDirections: string[] = [],
 ): Promise<VisualPlan> {
   const business = businessIdentity(project) || "the business";
   const grounding = visualGrounding(page, project, components);
@@ -2087,6 +2140,7 @@ async function aiVisualPlan(
 Business: ${business}
 Verified Business Brain and page evidence: ${promptJson(grounding, 16_000)}
 Brand system: ${promptJson(promptBrand(brand), 2_000)}
+Visual directions already used elsewhere on this website: ${promptJson(reservedVisualDirections.slice(-20), 12_000) || "none"}
 Registered components and allowed variants: ${JSON.stringify(components.map((component) => ({
   instanceId: component.instanceId,
   componentId: component.componentId,
@@ -2103,6 +2157,8 @@ Rules:
 - State the exact visible subject, action, environment, composition, lighting, and mood. The scene must be recognizable as belonging to this business type and page topic without relying on text.
 - Use a location only when it is verified and relevant to this page. Convey it through plausible environment and climate; never invent landmarks, office premises, signage, or service availability.
 - Do not repeat the same people, action, or generic consultation scene across unrelated pages.
+- Choose a visibly different main subject, action, setting, camera distance, and composition from every used direction listed above. Changing only clothing, age, colour, or background detail is not a distinct concept.
+- Make the images form a customer journey across the website: discovery pages establish the need, evaluation pages explain the choice, trust pages show credible process or people, and conversion pages support the next action.
 - The alt text must describe the visual naturally and must not stuff keywords.`,
           },
         ],
@@ -2390,6 +2446,9 @@ export async function executeWebsiteBuildJob(jobId: string) {
     let imagesGeneratedCount = 0;
     let imagesReusedCount = 0;
     let pagesWithoutImagesCount = 0;
+    const reservedVisualDirections = build.pages.flatMap((candidate) => candidate.mediaAssets
+      .filter((asset) => asset.role !== "none" && Boolean(asset.sourceUrl) && asset.prompt.trim())
+      .map((asset) => `${candidate.title}: ${asset.prompt.slice(0, 900)}`));
     for (let index = 0; index < pages.length; index++) {
       const liveJob = await prisma.websiteBuildJob.findUnique({ where: { id: job.id }, select: { status: true } });
       // A project reset or explicit cancellation may remove/stop a long-running
@@ -2525,10 +2584,11 @@ export async function executeWebsiteBuildJob(jobId: string) {
                   }))
                 : [],
             }
-          : await aiVisualPlan(page, project, build.brandJson, currentComponents);
+          : await aiVisualPlan(page, project, build.brandJson, currentComponents, reservedVisualDirections);
         if (!savedVisualPlan) {
           await savePageCheckpoint(checkpoint, "image:plan", "image_plan", proposedDesignPlan);
         }
+        if (proposedDesignPlan.prompt) reservedVisualDirections.push(`${page.title}: ${proposedDesignPlan.prompt.slice(0, 900)}`);
         const designPlan = requiredVisualCount(page)>0
           ? { ...proposedDesignPlan, placement: "hero" as const }
           : { ...proposedDesignPlan, placement: "none" as const, prompt: "", altText: "" };
@@ -2589,6 +2649,7 @@ export async function executeWebsiteBuildJob(jobId: string) {
           : designedComponents;
         if (input.generateImages !== false && isHomeVisualPage(page) && visualPlan && visualPlan.placement !== "none") {
           for (const visual of additionalHomeVisualPlans(page, project, placedComponents)) {
+            reservedVisualDirections.push(`${page.title} ${visual.key}: ${visual.plan.prompt.slice(0, 900)}`);
             const assetId = `${page.id}-${visual.key}`;
             const checkpointKey = `image:${visual.key}`;
             await prisma.websiteBuildJob.update({

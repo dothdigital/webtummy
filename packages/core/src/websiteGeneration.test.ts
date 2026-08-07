@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  ensurePageSpecificFirstH2,
   fitWebsiteComponentsToWordBudget,
   jsonSchemaFromWebsiteShape,
   strictWebsiteJsonResponseFormat,
@@ -11,6 +12,7 @@ import {
   websitePageUniquenessCollisions,
   websiteRichTextExpansionBudget,
   websiteSectionGroupBudgets,
+  websiteFirstSupportingHeading,
 } from "./websiteGeneration.js";
 import {
   SENUKE_COMPONENT_REGISTRY_V1,
@@ -19,6 +21,53 @@ import {
 } from "./websiteModel.js";
 
 describe("website generation workflow contracts", () => {
+  it("repairs a generic or repeated first H2 with a page-specific supporting heading", () => {
+    const components: WebsiteComponentInstance[] = [
+      {
+        instanceId: "service-hero",
+        componentId: "hero.local_service",
+        componentVersion: "1.0.0",
+        variant: "split",
+        props: { eyebrow: "Life insurance", headline: "Life Insurance", summary: "Compare suitable coverage.", primaryCtaLabel: "Talk to an advisor", primaryCtaUrl: "/contact/" },
+      },
+      {
+        instanceId: "service-overview",
+        componentId: "content.rich_text",
+        componentVersion: "1.0.0",
+        variant: "answer_first",
+        props: { heading: "A solution aligned to your goals", body: "Start with the customer need." },
+      },
+    ];
+    const repaired = ensurePageSpecificFirstH2(components, {
+      title: "Life Insurance",
+      pageType: "service",
+      primaryKeyword: "life insurance in Edmonton",
+    }, "Lifex Insurance");
+    expect(repaired[1].props.heading).toBe("life insurance in Edmonton: what to know before you decide");
+    expect(components[1].props.heading).toBe("A solution aligned to your goals");
+    expect(websiteFirstSupportingHeading({ pageTitle: "About Us", pageType: "about", businessName: "Lifex Insurance" })).toBe("A closer look at Lifex Insurance");
+  });
+
+  it("preserves a useful original first H2 that is not duplicated", () => {
+    const components: WebsiteComponentInstance[] = [{
+      instanceId: "service-overview",
+      componentId: "content.rich_text",
+      componentVersion: "1.0.0",
+      variant: "answer_first",
+      props: { heading: "Choose coverage around your family's priorities", body: "Useful content." },
+    }];
+    expect(ensurePageSpecificFirstH2(components, { title: "Life Insurance", primaryKeyword: "life insurance" })[0].props.heading)
+      .toBe("Choose coverage around your family's priorities");
+    expect(ensurePageSpecificFirstH2(components, { title: "Life Insurance", primaryKeyword: "life insurance" }, "Advisor", [{
+      pageId: "other-page",
+      pageTitle: "Other page",
+      seoTitles: [],
+      metaDescriptions: [],
+      h1s: [],
+      h2s: ["Choose coverage around your family's priorities"],
+    }])[0].props.heading).toBe("life insurance: what to know before you decide");
+  });
+
   it("rejects duplicate generated SEO titles, descriptions, and H1s before save", () => {
     const reserved = [{
       pageId: "home",

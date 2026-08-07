@@ -18,3 +18,4 @@ export * from "./websiteRenderer.js";
 export * from "./websiteLaunchReadiness.js";
 export * from "./keywordNormalization.js";
 export * from "./seoPagePlanner.js";
+export * from "./ecommerceIntelligence.js";

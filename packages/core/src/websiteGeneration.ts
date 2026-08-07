@@ -22,6 +22,7 @@ export type WebsitePageUniquenessSignals = {
   seoTitles: string[];
   metaDescriptions: string[];
   h1s: string[];
+  h2s?: string[];
 };
 
 export const normalizeWebsiteUniquenessSignal = (value: unknown) => String(value ?? "")
@@ -51,6 +52,73 @@ export function websitePageUniquenessCollisions(
     if (values.h1 && page.h1s.some((value) => normalizeWebsiteUniquenessSignal(value) === values.h1)) collisions.push({ field: "h1", pageId: page.pageId, pageTitle: page.pageTitle });
     return collisions;
   });
+}
+
+const genericFirstSectionHeading = (value: string) => /^(?:a solution aligned to your goals|how (?:we|our team) can help|what we (?:do|offer)|our (?:services|solutions)|learn more|overview|introduction|welcome|why choose us|your (?:solution|path forward|next step))\??$/i.test(value.trim());
+
+const cleanHeadingSubject = (value: unknown) => String(value ?? "")
+  .replace(/[.!?]+$/g, "")
+  .replace(/\s+/g, " ")
+  .trim();
+
+/**
+ * The first H2 is the bridge between the hero and the substantive page copy.
+ * It must explain this page's assigned intent rather than repeat a generic
+ * template heading across the whole website.
+ */
+export function websiteFirstSupportingHeading(input: {
+  pageTitle: string;
+  pageType?: string;
+  primaryKeyword?: string;
+  businessName?: string;
+}) {
+  const pageTitle = cleanHeadingSubject(input.pageTitle) || "this page";
+  const keyword = cleanHeadingSubject(input.primaryKeyword) || pageTitle;
+  const business = cleanHeadingSubject(input.businessName) || "our team";
+  const identity = `${input.pageType ?? ""} ${pageTitle}`.toLowerCase();
+  const heading = /contact|enquir|book|appointment|quote/.test(identity)
+    ? `Start a conversation with ${business}`
+    : /about|our team|company|who we are/.test(identity)
+      ? `A closer look at ${business}`
+      : /faq|frequently asked|question/.test(identity)
+        ? `Answers about ${keyword}`
+        : /privacy|terms|legal|accessibility|cookie/.test(identity)
+          ? `${pageTitle} at ${business}`
+          : /home|homepage|landing/.test(identity)
+            ? `How ${business} helps you move forward`
+            : `${keyword}: what to know before you decide`;
+  return heading.slice(0, 120).trim();
+}
+
+/**
+ * Preserve a good AI-written first H2, but repair generic or repeated values
+ * before content is saved. This keeps generation creative while guaranteeing
+ * that sibling pages do not all begin with the same second-fold heading.
+ */
+export function ensurePageSpecificFirstH2(
+  components: WebsiteComponentInstance[],
+  page: { title: string; pageType?: string; primaryKeyword?: string },
+  businessName = "",
+  reserved: WebsitePageUniquenessSignals[] = [],
+) {
+  const next = components.map((component) => ({
+    ...component,
+    props: JSON.parse(JSON.stringify(component.props)) as WebsiteComponentInstance["props"],
+  }));
+  const firstHeadingSection = next.find((component) => component.componentId !== "hero.local_service" && typeof component.props.heading === "string");
+  if (!firstHeadingSection) return next;
+  const current = cleanHeadingSubject(firstHeadingSection.props.heading);
+  const normalized = normalizeWebsiteUniquenessSignal(current);
+  const reservedH2s = reserved.flatMap((signal) => signal.h2s ?? []).map(normalizeWebsiteUniquenessSignal);
+  if (!current || genericFirstSectionHeading(current) || (normalized && reservedH2s.includes(normalized))) {
+    firstHeadingSection.props.heading = websiteFirstSupportingHeading({
+      pageTitle: page.title,
+      pageType: page.pageType,
+      primaryKeyword: page.primaryKeyword,
+      businessName,
+    });
+  }
+  return next;
 }
 
 function jsonSchemaFromWebsiteShapeAt(value: unknown, propertyName = ""): Record<string, unknown> {

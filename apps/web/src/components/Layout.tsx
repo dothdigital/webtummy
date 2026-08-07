@@ -27,6 +27,7 @@ const nav = [
   { to: "/keywords", label: "Keywords", icon: "keywords", permission: "run_ai_analysis" },
   { to: "/site-analysis", label: "Site Analysis", icon: "audits", permission: "run_ai_analysis" },
   { to: "/seo-growth", label: "SEO & Growth", icon: "plans", permission: "run_ai_analysis" },
+  { to: "/ecommerce-intelligence", label: "Ecommerce Intelligence", icon: "content", permission: "run_ai_analysis" },
   { to: "/site-architect", label: "Site Architect", icon: "overview", anyPermissions: ["run_ai_analysis", "read_internal", "read_shared_client_data"] },
   { to: "/lead-magnets", label: "Lead Magnets", icon: "billing", anyPermissions: ["run_ai_analysis", "read_internal", "read_shared_client_data"] },
   { to: "/growth", label: "Growth Engine", icon: "plans", permission: "run_ai_analysis" },
@@ -234,6 +235,30 @@ const helpByPath: Record<string, HelpContent> = {
         ],
       },
       sharedHelpSections.projectRequired,
+    ],
+  },
+  "/ecommerce-intelligence": {
+    eyebrow: "Module Help",
+    title: "Ecommerce Intelligence",
+    intro: "Ecommerce Intelligence uses public store evidence and explicitly supplied performance data to adapt the shared Growth Operating System for products, collections, and buyer journeys.",
+    sections: [
+      {
+        title: "What SEnuke can evaluate",
+        bullets: [
+          "Public products, collections, categories, descriptions, visible prices, reviews, schema, navigation, internal links, and supporting content.",
+          "Keyword demand, commercial intent, buying-guide opportunities, comparison content, seasonal demand, AI Citation readiness, and authority gaps.",
+          "User-provided CSV evidence remains clearly labelled and is never represented as connected or independently verified data.",
+        ],
+      },
+      {
+        title: "Evidence safeguards",
+        bullets: [
+          "Public crawling cannot reveal margins, actual best sellers, inventory, average order value, revenue, conversion rate, or profitability.",
+          "Cross-sell, upsell, bundle, and merchandising ideas remain inferred until user-provided or connected evidence validates them.",
+          "Approved recommendations update the Unified Strategy; execution work is created only from an approved Strategy and remains approval-gated.",
+        ],
+      },
+      sharedHelpSections.approvalSafety,
     ],
   },
   "/strategy": {
@@ -1307,7 +1332,7 @@ function ProjectCreationHelpDrawer({ open, onClose }: { open: boolean; onClose: 
   const prompts: [string, string][] = [
     ["How do I choose Website Status?", "Choose Existing Website only for a live URL that can be crawled. Choose New Website Required when SEnuke should plan the site, Website Planned when it is coming later, or No Website Required when the workflow does not depend on a site."],
     ["What is the difference between Business Location and Target Markets?", "Business Location is the physical business identity. Target Markets are the cities, regions, states, or countries where the project wants to rank or acquire customers."],
-    ["How should I choose the Project Type?", "Choose the closest business model. Project Type controls the workflow and whether SEnuke prioritizes local visibility, lead generation, SaaS positioning, ecommerce, content authority, or personal-brand growth."],
+    ["How should I choose the Business Type?", "Choose how the business operates. Business Type adapts SEnuke for local services, SaaS, ecommerce, content authority, or personal-brand growth; the Workspace still represents who owns and manages the work."],
     ["How do Primary and Secondary Goals work?", "Choose exactly one Primary Goal as the main success objective. Secondary Goals are optional supporting outcomes that influence Strategy and execution without replacing the Primary Goal."],
   ];
   const [answer, setAnswer] = useState<string | null>(null);

@@ -42,6 +42,7 @@ import Welcome from "./pages/Welcome.js";
 import ProjectReports from "./pages/ProjectReports.js";
 import Approvals from "./pages/Approvals.js";
 import PublicLeadFunnel from "./pages/PublicLeadFunnel.js";
+import EcommerceIntelligence from "./pages/EcommerceIntelligence.js";
 
 const WebsiteVisualEditor = lazy(() => import("./pages/WebsiteVisualEditor.js"));
 
@@ -162,6 +163,7 @@ function Shell() {
         <Route path="/seo-growth" element={<PermissionRoute permission="run_ai_analysis"><SeoGrowthHub /></PermissionRoute>} />
         <Route path="/seo-page-map" element={<PermissionRoute anyOf={["run_ai_analysis", "execute_tasks", "read_internal", "read_shared_client_data"]}><SeoPageMap /></PermissionRoute>} />
         <Route path="/gap-analysis" element={<PermissionRoute permission="run_ai_analysis"><GapAnalysis /></PermissionRoute>} />
+        <Route path="/ecommerce-intelligence" element={<PermissionRoute permission="run_ai_analysis"><EcommerceIntelligence /></PermissionRoute>} />
         <Route path="/workspace" element={<AgencyWorkspace />} />
         <Route path="/agency" element={<AgencyWorkspace />} />
         <Route path="/agency/clients/:clientId" element={<AgencyClientDashboard />} />
