@@ -1084,6 +1084,8 @@ async function wpFetch(integration: { siteUrl: string; username: string | null; 
     const response = await fetch(endpoint, { ...init, redirect: "error", signal: controller.signal, headers: { Authorization: `Basic ${Buffer.from(`${integration.username}:${decryptCredential(integration.credentialCiphertext)}`).toString("base64")}`, "Content-Type": "application/json", Accept: "application/json", ...(init.headers ?? {}) } });
     const body = await response.text();
     const data = parseWordPressJsonResponse(body, { endpoint, status: response.status, statusText: response.statusText, contentType: response.headers.get("content-type") });
+    if (response.status === 401) throw Object.assign(new Error("WordPress rejected the credentials. Use the account’s exact WordPress login username and a generated Application Password—not the normal wp-admin password. In WordPress, open Users → Profile → Application Passwords, create one for SENuke AI, and paste the generated value here."), { statusCode: 409, code: "wordpress_application_password_rejected", publicMessage: true });
+    if (response.status === 403) throw Object.assign(new Error(`WordPress authenticated the request but the account is not allowed to use this REST operation. Use a dedicated WordPress administrator account and confirm that security plugins allow ${endpoint}.`), { statusCode: 409, code: "wordpress_rest_permission_denied", publicMessage: true });
     if (!response.ok) throw Object.assign(new Error(`WordPress rejected the request (${response.status}): ${jsonRecord(data).message ?? response.statusText}`), { statusCode: 409 });
     return data;
   } catch (error) {
