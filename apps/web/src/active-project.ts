@@ -10,6 +10,7 @@ export const PROJECT_SCOPED_PATHS = new Set([
   "/site-architect",
   "/lead-magnets",
   "/growth",
+  "/seo-growth",
   "/gap-analysis",
   "/local-seo",
   "/ai-content",

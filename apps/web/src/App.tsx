@@ -24,12 +24,15 @@ import SocialStrategy from "./pages/SocialStrategy.js";
 import LocalSeo from "./pages/LocalSeo.js";
 import GrowthEngine from "./pages/GrowthEngine.js";
 import GapAnalysis from "./pages/GapAnalysis.js";
+import SeoGrowthHub from "./pages/SeoGrowthHub.js";
+import SeoPageMap from "./pages/SeoPageMap.js";
 import AutomationCenter from "./pages/AutomationCenter.js";
 import AdminUsageConfig from "./pages/AdminUsageConfig.js";
 import Pricing from "./pages/Pricing.js";
 import Billing from "./pages/Billing.js";
 import AdminManagement from "./pages/AdminManagement.js";
 import AdminPlans from "./pages/AdminPlans.js";
+import AdminCommercial from "./pages/AdminCommercial.js";
 import AdminTasks from "./pages/AdminTasks.js";
 import Legal from "./pages/Legal.js";
 import AgencyWorkspace from "./pages/AgencyWorkspace.js";
@@ -78,7 +81,7 @@ function Shell() {
   useEffect(() => {
     if (!user || user.role === "super_admin") return;
     if (location.pathname === "/pricing" || location.pathname === "/billing") return;
-    const paymentBlockedStatuses = new Set(["past_due", "incomplete", "incomplete_expired", "unpaid", "canceled"]);
+    const paymentBlockedStatuses = new Set(["payment_required", "pending", "incomplete", "incomplete_expired", "unpaid", "canceled", "cancelled", "read_only", "suspended", "chargeback", "deletion_scheduled"]);
     void api.get<BillingStatus>("/api/billing/status").then((status) => {
       if (!status.hasAccess && paymentBlockedStatuses.has(status.status)) {
         navigate("/pricing?payment=unsuccessful", { replace: true });
@@ -108,7 +111,10 @@ function Shell() {
   const landingPath = platformOnlySuperAdmin ? "/admin" : user.workspace?.landingPath ?? "/";
   if (location.pathname === "/login") return <Navigate to={landingPath} replace />;
   if (platformOnlySuperAdmin && location.pathname !== "/users" && !location.pathname.startsWith("/admin")) return <Navigate to="/admin" replace />;
-  if (workspaceRole === "client_viewer" && location.pathname !== "/workspace" && location.pathname !== "/reports" && !location.pathname.startsWith("/site-architect") && location.pathname !== "/lead-magnets" && !location.pathname.startsWith("/agency/clients/")) return <Navigate to="/workspace" replace />;
+  if (workspaceRole === "client_viewer" && location.pathname !== "/workspace" && location.pathname !== "/reports" && !location.pathname.startsWith("/site-architect") && location.pathname !== "/seo-page-map" && location.pathname !== "/lead-magnets" && !location.pathname.startsWith("/agency/clients/")) return <Navigate to="/workspace" replace />;
+
+  const paymentRequired = Boolean(user.workspace?.primaryOwner && user.workspace.commercialState === "payment_required");
+  if (paymentRequired && location.pathname !== "/pricing" && location.pathname !== "/billing") return <Navigate to="/pricing?payment=required" replace />;
 
   const welcomeEligible = Boolean(user.workspace && user.workspace.primaryRole === "admin" && user.workspace.onboardingRequired);
   const showWelcome = welcomeEligible && welcomePending(user.id, user.workspace?.id);
@@ -153,6 +159,8 @@ function Shell() {
         <Route path="/approvals" element={<PermissionRoute permission="approve"><Approvals /></PermissionRoute>} />
         <Route path="/social-strategy" element={<PermissionRoute permission="publish"><SocialStrategy /></PermissionRoute>} />
         <Route path="/growth" element={<PermissionRoute permission="run_ai_analysis"><GrowthEngine /></PermissionRoute>} />
+        <Route path="/seo-growth" element={<PermissionRoute permission="run_ai_analysis"><SeoGrowthHub /></PermissionRoute>} />
+        <Route path="/seo-page-map" element={<PermissionRoute anyOf={["run_ai_analysis", "execute_tasks", "read_internal", "read_shared_client_data"]}><SeoPageMap /></PermissionRoute>} />
         <Route path="/gap-analysis" element={<PermissionRoute permission="run_ai_analysis"><GapAnalysis /></PermissionRoute>} />
         <Route path="/workspace" element={<AgencyWorkspace />} />
         <Route path="/agency" element={<AgencyWorkspace />} />
@@ -171,6 +179,7 @@ function Shell() {
         <Route path="/admin/tasks/project" element={<PlatformAdminOnly><AdminTasks mode="project" /></PlatformAdminOnly>} />
         <Route path="/admin/tasks/module" element={<PlatformAdminOnly><AdminTasks mode="module" /></PlatformAdminOnly>} />
         <Route path="/admin/plans" element={<PlatformAdminOnly><AdminPlans /></PlatformAdminOnly>} />
+        <Route path="/admin/commercial" element={<PlatformAdminOnly><AdminCommercial /></PlatformAdminOnly>} />
         <Route path="/keyword-insights/:id" element={<PermissionRoute permission="view_reports"><KeywordResearchDetail /></PermissionRoute>} />
         <Route path="/keyword-reports" element={<Navigate to="/keyword-insights" replace />} />
         <Route path="/geo-keyword-intelligence" element={<PermissionRoute permission="run_ai_analysis"><GeoKeywordIntelligence /></PermissionRoute>} />

@@ -28,6 +28,8 @@ type FeatureCost = {
   requiresIntegration: boolean;
   cacheTtlMinutes: number;
   isActive: boolean;
+  modelTier: "research" | "content" | null;
+  defaultModel: string;
   planLimits: PlanLimit[];
 };
 
@@ -180,9 +182,9 @@ export default function AdminUsageConfig() {
       await api.post("/api/admin/usage/model-routes", {
         featureKey: selectedFeature.featureKey,
         planCode: null,
-        taskComplexity: "standard",
+        taskComplexity: selectedFeature.modelTier === "research" ? "advanced" : "standard",
         provider: "openai",
-        model: "gpt-4o-mini",
+        model: selectedFeature.defaultModel,
         isActive: true,
         sortOrder: 100,
       });
@@ -332,7 +334,10 @@ export default function AdminUsageConfig() {
             <div className="flex items-center justify-between gap-3 border-b border-slate-100 p-5">
               <div>
                 <h2 className="font-bold text-charcoal-950">Model routing</h2>
-                <p className="mt-1 text-sm text-slate-500">Route expensive actions by feature, plan, provider, model, and complexity.</p>
+                <p className="mt-1 text-sm text-slate-500">
+                  Default: <span className="font-semibold text-slate-700">{selectedFeature.defaultModel}</span>
+                  {selectedFeature.modelTier ? ` · ${titleCase(selectedFeature.modelTier)} tier` : ""}. Add a rule only when this feature or plan needs an override.
+                </p>
               </div>
               <Button onClick={createModelRoute} disabled={busy}>Add Route</Button>
             </div>
@@ -348,7 +353,7 @@ export default function AdminUsageConfig() {
                   <div className="text-sm font-bold text-slate-700">{route.isActive ? "Active" : "Inactive"}</div>
                 </div>
               ))}
-              {!modelRoutes.some((route) => route.featureKey === selectedFeature.featureKey) && <div className="p-5 text-sm text-slate-500">No routing rules for this feature yet. The API uses the default model until a rule exists.</div>}
+              {!modelRoutes.some((route) => route.featureKey === selectedFeature.featureKey) && <div className="p-5 text-sm text-slate-500">No override is configured. This feature currently uses {selectedFeature.defaultModel} from the {selectedFeature.modelTier ?? "default"} model policy.</div>}
             </div>
           </Card>
         )}

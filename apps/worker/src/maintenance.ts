@@ -9,6 +9,7 @@ import { isIP } from "node:net";
 const DAY_MS = 24 * 60 * 60 * 1000;
 const PAYMENT_BLOCKED = new Set(["past_due", "incomplete", "incomplete_expired", "unpaid", "canceled"]);
 const STALE_RUNNING_CRAWL_MS = 2 * 60 * 1000;
+const STALE_QUEUED_CRAWL_MS = 60 * 60 * 1000;
 
 function privateDiscoveryAddress(address: string) {
   if (address === "::1" || address === "::" || /^f[cd]/i.test(address) || /^fe[89ab]/i.test(address)) return true;
@@ -84,6 +85,7 @@ async function notifyClient(input: { clientId: string; fallbackEmail: string | n
 export async function recoverQueuedCrawlJobs() {
   return runLogged("recover_queued_crawl_jobs", async () => {
     const staleStartedBefore = new Date(Date.now() - STALE_RUNNING_CRAWL_MS);
+    const staleQueuedBefore = new Date(Date.now() - STALE_QUEUED_CRAWL_MS);
     const crawls = await prisma.crawlJob.findMany({
       where: {
         OR: [
@@ -93,7 +95,7 @@ export async function recoverQueuedCrawlJobs() {
       },
       orderBy: { createdAt: "asc" },
       take: 100,
-      select: { id: true, status: true },
+      select: { id: true, status: true, createdAt: true },
     });
 
     let requeued = 0;
@@ -103,6 +105,15 @@ export async function recoverQueuedCrawlJobs() {
 
     for (const crawl of crawls) {
       const existingJob = await crawlQueue.getJob(crawl.id);
+      if (crawl.status === "queued" && crawl.createdAt < staleQueuedBefore) {
+        await prisma.crawlJob.updateMany({
+          where: { id: crawl.id, status: "queued" },
+          data: { status: "failed", completedAt: new Date(), error: "Site analysis waited longer than 60 minutes and was stopped. Run Analyze Site again." },
+        });
+        if (existingJob && await existingJob.getState().catch(() => "unknown") !== "active") await existingJob.remove().catch(() => undefined);
+        markedFailed++;
+        continue;
+      }
       if (existingJob) {
         const state = await existingJob.getState();
         if (trackedStates.has(state)) {
@@ -243,6 +254,68 @@ export async function dailyBillingAccessSync() {
     }
 
     return { checked: clients.length, trialEndingSoon, trialExpired, paymentFailed, manualEndingSoon, manualExpired, subscriptionExpiring };
+  });
+}
+
+export async function commercialLifecycleSync() {
+  return runLogged("commercial_lifecycle_sync", async () => {
+    const now = new Date();
+    const graceExpired = await prisma.workspaceSubscription.findMany({
+      where: { status: "past_due", graceEndsAt: { lte: now } },
+      include: { workspace: true },
+    });
+    const retentionExpired = await prisma.workspaceSubscription.findMany({
+      where: { status: { in: ["cancelled", "suspended"] }, retentionEndsAt: { lte: now } },
+      include: { workspace: true },
+    });
+    const expiredReservations = await prisma.usageEvent.findMany({
+      where: { status: "reserved", approvalTokenExpiresAt: { lte: now }, creditsReserved: { gt: 0 } },
+      take: 500,
+    });
+
+    for (const subscription of graceExpired) {
+      await prisma.$transaction(async (tx) => {
+        await tx.workspaceSubscription.update({ where: { id: subscription.id }, data: { status: "read_only" } });
+        await tx.workspace.update({ where: { id: subscription.workspaceId }, data: { commercialState: "read_only", accessMode: "read_only" } });
+        if (subscription.workspace.legacyClientId) await tx.client.update({ where: { id: subscription.workspace.legacyClientId }, data: { aiSubscriptionStatus: "unpaid" } });
+        await tx.commercialAuditEvent.create({ data: { workspaceId: subscription.workspaceId, actorType: "job", action: "commercial.grace_expired", reasonCode: "grace_period_elapsed", source: "job", beforeJson: { status: "past_due" }, afterJson: { status: "read_only" } } });
+        await tx.workspaceNotification.create({ data: { workspaceId: subscription.workspaceId, userId: subscription.workspace.ownerUserId, type: "billing_read_only", title: "Workspace is now read-only", body: "The JVZoo payment grace period ended. Existing work remains available, but new AI, publishing, and automation actions are paused until the subscription is active.", actionUrl: "/billing", emailEligible: true } });
+      });
+    }
+
+    for (const subscription of retentionExpired) {
+      await prisma.$transaction(async (tx) => {
+        await tx.workspaceSubscription.update({ where: { id: subscription.id }, data: { status: "deletion_scheduled" } });
+        await tx.workspace.update({ where: { id: subscription.workspaceId }, data: { commercialState: "deletion_scheduled", accessMode: "read_only", deletionScheduledAt: now } });
+        await tx.commercialRetentionCase.upsert({
+          where: { id: `retention:${subscription.id}` },
+          update: { state: "deletion_scheduled", deletionScheduledAt: now },
+          create: { id: `retention:${subscription.id}`, workspaceId: subscription.workspaceId, policyVersionId: subscription.policyVersionId, state: "deletion_scheduled", retentionEndsAt: subscription.retentionEndsAt!, deletionScheduledAt: now },
+        });
+        await tx.commercialAuditEvent.create({ data: { workspaceId: subscription.workspaceId, actorType: "job", action: "commercial.retention_expired", reasonCode: "retention_period_elapsed", source: "job", beforeJson: { status: subscription.status }, afterJson: { status: "deletion_scheduled" } } });
+        await tx.workspaceNotification.create({ data: { workspaceId: subscription.workspaceId, userId: subscription.workspace.ownerUserId, type: "deletion_scheduled", title: "Workspace deletion requires review", body: "The commercial retention period ended. Deletion has been scheduled but customer data has not been silently removed.", actionUrl: "/billing", emailEligible: true } });
+      });
+    }
+
+    let reservationsReleased = 0;
+    for (const reservation of expiredReservations) {
+      const metadata = reservation.metadataJson && typeof reservation.metadataJson === "object" && !Array.isArray(reservation.metadataJson)
+        ? reservation.metadataJson as Record<string, unknown>
+        : {};
+      const creditAccountId = typeof metadata.creditAccountId === "string" ? metadata.creditAccountId : null;
+      const account = creditAccountId
+        ? await prisma.creditAccount.findFirst({ where: { id: creditAccountId, clientId: reservation.clientId } })
+        : await prisma.creditAccount.findFirst({ where: { clientId: reservation.clientId, status: "active" }, orderBy: { periodStart: "desc" } });
+      if (!account) continue;
+      await prisma.$transaction(async (tx) => {
+        const released = await tx.usageEvent.updateMany({ where: { id: reservation.id, status: "reserved" }, data: { status: "refunded", refundedAt: now, error: "reservation expired" } });
+        if (!released.count) return;
+        const updated = await tx.creditAccount.update({ where: { id: account.id }, data: { balance: { increment: reservation.creditsReserved } } });
+        await tx.creditTransaction.create({ data: { clientId: reservation.clientId, usageEventId: reservation.id, type: "refund", amount: reservation.creditsReserved, balanceAfter: updated.balance, reason: "reservation expired" } });
+        reservationsReleased += 1;
+      });
+    }
+    return { graceExpired: graceExpired.length, retentionExpired: retentionExpired.length, reservationsReleased };
   });
 }
 
@@ -740,6 +813,7 @@ export async function runMaintenanceSuite() {
   running = true;
   try {
     await recoverQueuedCrawlJobs();
+    await commercialLifecycleSync();
     await dailyBillingAccessSync();
     await monthlyUsageReset();
     await monthlyScheduledAudit();

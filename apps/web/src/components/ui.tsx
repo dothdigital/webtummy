@@ -5,11 +5,78 @@ import { Link } from "react-router-dom";
 export type ActionIconName = "view" | "open" | "refresh" | "verify" | "details" | "compare" | "run" | "save" | "close" | "project" | "enable" | "disable" | "key" | "edit" | "trash";
 
 export function Card({ children, className = "", id }: { children: ReactNode; className?: string; id?: string }) {
+  // Do not make two Tailwind background utilities compete. Tailwind's
+  // generated rule order (rather than class attribute order) decides which
+  // one wins, which previously allowed Card's default white background to
+  // cover dark and tinted card designs.
+  const defaultBackground = /(?:^|\s)!?bg-[^\s]+/.test(className) ? "" : "bg-white";
   return (
-    <div id={id} className={`rounded-xl border border-slate-200 bg-white shadow-sm ${className}`}>
+    <div id={id} className={`rounded-xl border border-slate-200 ${defaultBackground} shadow-sm ${className}`}>
       {children}
     </div>
   );
+}
+
+export function EmptyState({ title, description, eyebrow, icon = "✦", action, compact = false, className = "" }: {
+  title: string;
+  description: string;
+  eyebrow?: string;
+  icon?: ReactNode;
+  action?: ReactNode;
+  compact?: boolean;
+  className?: string;
+}) {
+  return <div className={`grid place-items-center text-center ${compact ? "px-5 py-7" : "px-6 py-10 sm:px-10"} ${className}`}>
+    <div className="w-full max-w-2xl">
+      <div className={`mx-auto grid place-items-center rounded-2xl bg-brand-50 text-brand-700 ${compact ? "h-11 w-11 text-lg" : "h-14 w-14 text-2xl"}`}>{icon}</div>
+      {eyebrow && <div className="mt-4 text-[10px] font-black uppercase tracking-[0.14em] text-brand-700">{eyebrow}</div>}
+      <h2 className={`${eyebrow ? "mt-2" : "mt-4"} font-black text-charcoal-950 ${compact ? "text-base" : "text-xl"}`}>{title}</h2>
+      <p className="mx-auto mt-2 max-w-xl text-sm leading-6 text-charcoal-500">{description}</p>
+      {action && <div className="mt-5 flex flex-wrap justify-center gap-2">{action}</div>}
+    </div>
+  </div>;
+}
+
+export type AiPlanningStep = { title: string; detail: string };
+export type AiPlanningStat = { value: ReactNode; label: string; tone?: "brand" | "violet" | "emerald" | "slate" };
+
+/** Shared explanatory screen for long-running AI research and generation. */
+export function AiPlanningScreen({ eyebrow, title, description, steps, status, stats = [], checks = [], note, ariaLabel, zIndexClass = "z-[80]", mode = "fullscreen", theme = "light" }: {
+  eyebrow: string;
+  title: string;
+  description: string;
+  steps: AiPlanningStep[];
+  status: string;
+  stats?: AiPlanningStat[];
+  checks?: string[];
+  note?: string;
+  ariaLabel: string;
+  zIndexClass?: string;
+  mode?: "fullscreen" | "contained";
+  theme?: "light" | "dark";
+}) {
+  const statTone = {
+    brand: "border-brand-200 text-brand-800",
+    violet: "border-violet-200 text-violet-800",
+    emerald: "border-emerald-200 text-emerald-800",
+    slate: "border-slate-200 text-slate-700",
+  };
+  const shell = mode === "fullscreen" ? `fixed inset-0 ${zIndexClass} min-h-screen backdrop-blur-sm` : "relative min-h-[34rem] w-full";
+  const dark = theme === "dark" || ariaLabel === "Analyzing logo colour palette";
+  return <div className={`${shell} grid place-items-center overflow-y-auto p-5 sm:p-8 ${dark ? "bg-slate-950" : "bg-gradient-to-b from-white/95 via-brand-50/30 to-violet-50/40"}`} role="status" aria-live="polite" aria-label={ariaLabel}>
+    <div className="my-auto w-full max-w-3xl text-center">
+      <div className="relative mx-auto h-20 w-20"><div className={`absolute inset-0 rounded-full border-4 ${dark ? "border-white/10" : "border-brand-100"}`}/><div className="absolute inset-0 animate-spin rounded-full border-4 border-transparent border-r-violet-400 border-t-emerald-400"/><div className={`absolute inset-[18px] grid place-items-center rounded-full text-2xl ${dark ? "bg-white/10 text-white" : "bg-brand-50"}`}>✦</div></div>
+      <div className={`mt-6 text-[10px] font-black uppercase tracking-[0.18em] ${dark ? "text-emerald-300" : "text-brand-700"}`}>{eyebrow}</div>
+      <h2 className={`mt-2 text-2xl font-black sm:text-3xl ${dark ? "text-white" : "text-charcoal-950"}`}>{title}</h2>
+      <p className={`mx-auto mt-2 max-w-2xl text-sm leading-6 ${dark ? "text-slate-300" : "text-charcoal-600"}`}>{description}</p>
+      {stats.length > 0 && <div className="mt-4 flex flex-wrap justify-center gap-2">{stats.map((stat, index) => <span key={`${stat.label}-${index}`} className={`rounded-full border bg-white px-3 py-1.5 text-[10px] font-black ${statTone[stat.tone ?? "slate"]}`}><span className="mr-1 text-xs">{stat.value}</span>{stat.label}</span>)}</div>}
+      <div className="mt-5 grid gap-3 text-left sm:grid-cols-3">{steps.slice(0, 3).map((step, index) => <div key={`${step.title}-${index}`} className={`rounded-2xl border p-4 shadow-sm ${dark ? "border-white/10 bg-white/[0.06]" : "border-slate-200 bg-white"}`}><div className="flex items-center gap-3"><span className={`grid h-8 w-8 shrink-0 place-items-center rounded-lg text-xs font-black text-white ${dark ? "bg-emerald-600" : "bg-brand-600"}`}>{index + 1}</span><div className={`text-sm font-black ${dark ? "text-white" : "text-charcoal-950"}`}>{step.title}</div></div><p className={`mt-3 text-xs leading-5 ${dark ? "text-slate-300" : "text-charcoal-500"}`}>{step.detail}</p></div>)}</div>
+      {checks.length > 0 && <div className={`mt-4 flex flex-wrap justify-center gap-x-5 gap-y-2 rounded-xl border px-4 py-3 text-[10px] font-bold ${dark ? "border-emerald-300/20 bg-emerald-400/10 text-emerald-200" : "border-emerald-100 bg-emerald-50/70 text-emerald-800"}`}>{checks.map((check) => <span key={check}>✓ {check}</span>)}</div>}
+      <div className={`mx-auto mt-5 h-2 max-w-md overflow-hidden rounded-full ${dark ? "bg-white/10" : "bg-slate-100"}`}><div className="h-full w-2/3 animate-pulse rounded-full bg-gradient-to-r from-emerald-400 via-violet-500 to-brand-500"/></div>
+      <p className={`mt-3 text-xs font-black uppercase tracking-wide ${dark ? "text-emerald-300" : "text-brand-700"}`}>{status}</p>
+      {note && <p className={`mx-auto mt-2 max-w-xl text-[11px] leading-5 ${dark ? "text-slate-400" : "text-charcoal-500"}`}>{note}</p>}
+    </div>
+  </div>;
 }
 
 export function Button({

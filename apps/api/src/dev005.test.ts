@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { agencyPrimaryGoal, goalContext, normalizeProjectGoals, primaryGoalsForWorkspace, standardSecondaryGoals } from "./dev005.js";
 import { buildCampaignExecutionTasks } from "./campaign-intelligence.js";
+import { canonicalSecondaryGoal } from "@webtummy/core/project-goals";
 
 describe("DEV-005 primary and secondary goals", () => {
   it.each(["personal", "business", "ecommerce"])("uses business goals in %s", (workspaceType) => {
@@ -15,6 +16,10 @@ describe("DEV-005 primary and secondary goals", () => {
     expect(() => normalizeProjectGoals("", [], "agency")).toThrow(/Exactly one/);
     expect(() => normalizeProjectGoals("Generate More Leads", ["Unknown"], "agency")).toThrow(/supported Secondary/);
     expect(standardSecondaryGoals).toHaveLength(8);
+  });
+  it("maps contextual AI goal choices into supported secondary goals", () => {
+    expect(canonicalSecondaryGoal("Increase bookings for registered massage therapy")).toBe("Improve Conversion Rate");
+    expect(canonicalSecondaryGoal("Attract more patients needing custom braces or orthotics")).toBe("Increase Organic Traffic");
   });
   it("provides primary and secondary goals to downstream AI context", () => {
     expect(goalContext("Improve SEO Rankings", ["Improve AI Visibility", "Build Backlinks"])).toEqual({ primaryGoal: "Improve SEO Rankings", secondaryGoals: ["Improve AI Visibility", "Build Backlinks"], summary: "Improve SEO Rankings; Improve AI Visibility; Build Backlinks" });

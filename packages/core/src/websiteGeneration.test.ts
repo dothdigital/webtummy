@@ -4,9 +4,11 @@ import {
   jsonSchemaFromWebsiteShape,
   strictWebsiteJsonResponseFormat,
   websiteContentProgress,
+  websiteContentBatchPageMode,
   websiteDraftAcceptanceWords,
   websiteJobRecoveryAction,
   websitePageHasCompleteContent,
+  websitePageUniquenessCollisions,
   websiteRichTextExpansionBudget,
   websiteSectionGroupBudgets,
 } from "./websiteGeneration.js";
@@ -17,6 +19,28 @@ import {
 } from "./websiteModel.js";
 
 describe("website generation workflow contracts", () => {
+  it("rejects duplicate generated SEO titles, descriptions, and H1s before save", () => {
+    const reserved = [{
+      pageId: "home",
+      pageTitle: "Home",
+      seoTitles: ["Physiotherapy Clinic in Mississauga | Procare"],
+      metaDescriptions: ["Book evidence-based physiotherapy care in Mississauga and choose a clear next step for assessment and recovery."],
+      h1s: ["Physiotherapy and rehabilitation in Mississauga"],
+    }];
+    expect(websitePageUniquenessCollisions({
+      seoTitle: "  Physiotherapy Clinic in Mississauga | Procare ",
+      metaDescription: "Book evidence-based physiotherapy care in Mississauga and choose a clear next step for assessment and recovery.",
+      h1: "Physiotherapy and Rehabilitation in Mississauga",
+    }, reserved).map((collision) => collision.field)).toEqual(["seo_title", "meta_description", "h1"]);
+  });
+
+  it("keeps imported updates and new-page generation separate inside one content batch", () => {
+    expect(websiteContentBatchPageMode({ contentWorkspaceBatch: true, targetedExistingSiteUpdates: false, importedExistingWebsite: true, hasTargetedRequirements: true })).toBe("targeted_update");
+    expect(websiteContentBatchPageMode({ contentWorkspaceBatch: true, targetedExistingSiteUpdates: false, importedExistingWebsite: false, hasTargetedRequirements: false })).toBe("full_page");
+    expect(websiteContentBatchPageMode({ contentWorkspaceBatch: true, targetedExistingSiteUpdates: false, importedExistingWebsite: true, hasTargetedRequirements: false })).toBe("skip");
+    expect(websiteContentBatchPageMode({ contentWorkspaceBatch: false, targetedExistingSiteUpdates: true, importedExistingWebsite: false, hasTargetedRequirements: true })).toBe("skip");
+  });
+
   it("does not reset work already owned by BullMQ", () => {
     expect(websiteJobRecoveryAction({ databaseStatus: "processing", queueState: "active" })).toBe("preserve");
     expect(websiteJobRecoveryAction({ databaseStatus: "queued", queueState: "waiting" })).toBe("preserve");

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { keywordMarketKey, keywordMarketOptions, latestSuccessfulKeywordRuns, uniqueSerpDomains } from "./keyword-runs.js";
+import { keywordMarketKey, keywordMarketOptions, keywordOpportunityScore, latestSuccessfulKeywordRuns, uniqueSerpDomains } from "./keyword-runs.js";
 
 describe("keyword report scope", () => {
   it("uses only the latest completed run for each keyword, location, device and website", () => {
@@ -9,6 +9,12 @@ describe("keyword report scope", () => {
       { websiteId: "site", seedKeyword: "CRM", locationName: "Toronto", device: "desktop", status: "failed", createdAt: "2026-07-15T12:00:00Z" },
     ];
     expect(latestSuccessfulKeywordRuns(runs)).toEqual([runs[1]]);
+  });
+
+  it("never presents a country fallback as a successful local result", () => {
+    const exact = { websiteId: "site", seedKeyword: "CRM", locationName: "Toronto,Ontario,Canada", device: "desktop", status: "completed", createdAt: "2026-07-15T10:00:00Z", ideas: [{ rawJson: { metricSource: "selected_location" } }] };
+    const fallback = { ...exact, createdAt: "2026-07-15T11:00:00Z", ideas: [{ rawJson: { metricSource: "country_fallback" } }] };
+    expect(latestSuccessfulKeywordRuns([exact, fallback])).toEqual([exact]);
   });
 
   it("counts unique SERP domains and excludes the project domain", () => {
@@ -25,5 +31,11 @@ describe("keyword report scope", () => {
       { value: "oakville", label: "Oakville" },
       { value: "toronto", label: "Toronto" },
     ]);
+  });
+
+  it("does not invent an opportunity score from incomplete provider metrics", () => {
+    expect(keywordOpportunityScore(10, null)).toBeNull();
+    expect(keywordOpportunityScore(null, 20)).toBeNull();
+    expect(keywordOpportunityScore(100, 20)).toBeTypeOf("number");
   });
 });

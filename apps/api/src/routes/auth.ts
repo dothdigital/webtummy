@@ -10,6 +10,7 @@ import { sendMail } from "../email.js";
 import { trialEndsFrom } from "../billing.js";
 import { hasWorkspacePermission, workspaceApprovalMode, workspaceSeatUsage, type WorkspaceContext } from "../workspace-access.js";
 import { rolesConsumeSeat } from "@webtummy/core/workspace-permissions";
+import { commercialRegistrationPolicy, reconcilePendingJvZooEventsForUser } from "../commercial-service.js";
 
 export const authRouter = Router();
 
@@ -32,7 +33,7 @@ async function workspaceSession(userId: string) {
   const membership = await prisma.workspaceMembership.findFirst({
     where: { userId, status: "active", workspace: { status: "active" } },
     orderBy: { createdAt: "asc" },
-    include: { workspace: { select: { id: true, name: true, workspaceType: true, ownerUserId: true, legacyClientId: true, settingsJson: true, securitySettingsJson: true, autoApprovalPolicyJson: true } }, roles: { select: { role: true } } },
+    include: { workspace: { select: { id: true, name: true, workspaceType: true, ownerUserId: true, legacyClientId: true, commercialState: true, accessMode: true, settingsJson: true, securitySettingsJson: true, autoApprovalPolicyJson: true } }, roles: { select: { role: true } } },
   });
   if (!membership) return null;
   if (membership.workspace.workspaceType === "personal" && membership.workspace.ownerUserId !== userId) return null;
@@ -68,6 +69,8 @@ async function workspaceSession(userId: string) {
     roles,
     primaryRole,
     primaryOwner: membership.workspace.ownerUserId === userId,
+    commercialState: membership.workspace.commercialState,
+    accessMode: membership.workspace.accessMode,
     onboardingRequired: clientCount === 0 && projectCount === 0,
     landingPath,
     capabilities: {
@@ -98,7 +101,22 @@ function escapeHtml(value: string) {
     .replace(new RegExp(String.fromCharCode(39), "g"), "&#39;");
 }
 
-async function verifyCaptcha(token: string | undefined, expectedAction: string, remoteIp?: string) {
+function localCaptchaBypass(req: import("express").Request) {
+  if (!config.recaptchaBypassLocal) return false;
+  const localHosts = new Set(["localhost", "127.0.0.1", "::1", "[::1]"]);
+  const requestHost = req.hostname.toLowerCase();
+  if (!localHosts.has(requestHost)) return false;
+  const origin = req.header("origin");
+  if (!origin) return true;
+  try {
+    return localHosts.has(new URL(origin).hostname.toLowerCase());
+  } catch {
+    return false;
+  }
+}
+
+async function verifyCaptcha(token: string | undefined, expectedAction: string, remoteIp?: string, bypass = false) {
+  if (bypass) return;
   if (!config.recaptchaSecretKey) return;
   if (!token) throw new Error("captcha_required");
 
@@ -119,8 +137,9 @@ async function verifyCaptcha(token: string | undefined, expectedAction: string, 
   }
 }
 
-authRouter.get("/config", (_req, res) => {
-  res.json({ recaptchaSiteKey: config.recaptchaSiteKey });
+authRouter.get("/config", async (req, res) => {
+  const registrationPolicy = await commercialRegistrationPolicy();
+  res.json({ recaptchaSiteKey: localCaptchaBypass(req) ? "" : config.recaptchaSiteKey, trialEnabled: registrationPolicy.trialEnabled, trialDays: registrationPolicy.trialDays });
 });
 
 async function sendVerificationEmail(user: { id: string; email: string; name: string | null }) {
@@ -228,7 +247,7 @@ authRouter.post("/register", async (req, res) => {
   const d = parsed.data;
 
   try {
-    await verifyCaptcha(d.captchaToken, "register", req.ip);
+    await verifyCaptcha(d.captchaToken, "register", req.ip, localCaptchaBypass(req));
   } catch {
     return res.status(400).json({ error: { captchaToken: ["Complete the captcha check"] } });
   }
@@ -236,16 +255,22 @@ authRouter.post("/register", async (req, res) => {
   const existing = await prisma.user.findUnique({ where: { email: d.email } });
   if (existing) return res.status(409).json({ error: { email: ["Email already registered"] } });
 
+  const registrationPolicy = await commercialRegistrationPolicy();
+
   const { user } = await prisma.$transaction(async (tx) => {
     const trialStartedAt = new Date();
+    const workspaceType = d.workspaceType.toLowerCase();
+    const compatibilityPlan = workspaceType === "agency" ? "agency" : workspaceType === "ecommerce" ? "business" : "starter";
+    const commercialState = registrationPolicy.trialEnabled ? "trialing" : "payment_required";
     const client = await tx.client.create({
       data: {
         name: d.workspaceType,
         contactEmail: d.email,
-        plan: "mini",
-        aiSubscriptionStatus: "trialing",
-        trialStartedAt,
-        trialEndsAt: trialEndsFrom(trialStartedAt),
+        plan: compatibilityPlan,
+        aiSubscriptionStatus: commercialState,
+        subscriptionSource: registrationPolicy.trialEnabled ? "trial" : "registration",
+        trialStartedAt: registrationPolicy.trialEnabled ? trialStartedAt : null,
+        trialEndsAt: registrationPolicy.trialEnabled ? trialEndsFrom(trialStartedAt, registrationPolicy.trialDays) : null,
       },
     });
     const user = await tx.user.create({
@@ -258,9 +283,15 @@ authRouter.post("/register", async (req, res) => {
         emailVerifiedAt: null,
       },
     });
-    const workspaceType = d.workspaceType.toLowerCase();
     const workspace = await tx.workspace.create({
-      data: { legacyClientId: client.id, name: d.workspaceType, workspaceType, ownerUserId: user.id },
+      data: {
+        legacyClientId: client.id,
+        name: d.workspaceType,
+        workspaceType,
+        ownerUserId: user.id,
+        commercialState,
+        accessMode: registrationPolicy.trialEnabled ? "full" : "read_only",
+      },
     });
     const membership = await tx.workspaceMembership.create({
       data: { workspaceId: workspace.id, userId: user.id, status: "active", joinedAt: new Date() },
@@ -378,6 +409,12 @@ authRouter.post("/verify-email", async (req, res) => {
       data: { emailVerifiedAt: now },
     });
   });
+
+  try {
+    await reconcilePendingJvZooEventsForUser(user.id);
+  } catch (error) {
+    console.error("Failed to reconcile a verified JVZoo purchase after email verification", error);
+  }
 
   res.json({ token: issueLogin(user), user: { ...authUser(user), workspace: await workspaceSession(user.id) } });
 });

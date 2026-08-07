@@ -31,12 +31,14 @@ export default function ContentGenerationControls({
   onModeChange,
   onInstructionChange,
   compact = false,
+  showInstruction = true,
 }: {
   mode: ContentGenerationMode;
   instruction: string;
   onModeChange: (mode: ContentGenerationMode) => void;
   onInstructionChange: (instruction: string) => void;
   compact?: boolean;
+  showInstruction?: boolean;
 }) {
   const addSuggestion = (suggestion: string) => {
     if (instruction.toLowerCase().includes(suggestion.toLowerCase())) return;
@@ -73,7 +75,7 @@ export default function ContentGenerationControls({
         ))}
       </div>
 
-      <label className="mt-4 block">
+      {showInstruction && <><label className="mt-4 block">
         <span className="text-xs font-black text-slate-800">{mode === "custom" ? "Your content instructions" : "Additional instructions (optional)"}</span>
         <textarea
           value={instruction}
@@ -96,7 +98,7 @@ export default function ContentGenerationControls({
             + {suggestion}
           </button>
         ))}
-      </div>
+      </div></>}
 
       {mode === "seo" && (
         <div className="mt-3 flex flex-wrap gap-x-4 gap-y-1 border-t border-cyan-100 pt-3 text-[10px] font-bold text-slate-600">

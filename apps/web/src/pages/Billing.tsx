@@ -96,12 +96,12 @@ export default function Billing() {
     <div className="space-y-6">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
         <div>
-          <h1 className="text-2xl font-bold text-charcoal-900">Billing</h1>
-          <p className="mt-1 text-sm text-charcoal-500">Monthly usage resets each calendar month. Unused article quota does not carry forward.</p>
+          <h1 className="text-2xl font-bold text-charcoal-900">Commercial centre</h1>
+          <p className="mt-1 text-sm text-charcoal-500">Workspace subscription, entitlements, seats, project limits, AI Capacity, billing history, and lifecycle status.</p>
         </div>
         <div className="flex gap-2">
           <Link to="/pricing"><Button variant="ghost">Change plan</Button></Link>
-          {billing?.stripeCustomerId && <Button onClick={openPortal} disabled={portalBusy}>{portalBusy ? "Opening..." : "Manage billing"}</Button>}
+          {billing?.commercial?.subscription && <Button onClick={openPortal} disabled={portalBusy}>{portalBusy ? "Opening..." : "Open JVZoo purchases"}</Button>}
         </div>
       </div>
 
@@ -119,45 +119,66 @@ export default function Billing() {
             </Card>
           )}
 
-          <div className="grid gap-4 lg:grid-cols-3">
+          <div className="grid gap-4 lg:grid-cols-4">
             <Card className="p-5">
               <div className="text-xs font-semibold uppercase tracking-wide text-charcoal-400">Current plan</div>
-              <div className="mt-2 text-3xl font-bold text-charcoal-900">{billing.plan?.name ?? "Mini"}</div>
-              <div className="mt-1 text-sm text-charcoal-500">${billing.plan?.priceMonthly ?? 9}/mo billed monthly</div>
+              <div className="mt-2 text-3xl font-bold text-charcoal-900">{billing.commercial?.subscription?.plan.name ?? billing.plan?.name ?? "Not assigned"}</div>
+              <div className="mt-1 text-sm text-charcoal-500">Version {billing.commercial?.subscription?.plan.version ?? "—"} · {billing.commercial?.subscription?.billingInterval ?? "—"}</div>
               <div className="mt-4"><StatusPill status={billing.status} /></div>
             </Card>
             <Card className="p-5">
-              <div className="text-xs font-semibold uppercase tracking-wide text-charcoal-400">Trial</div>
-              <div className="mt-2 text-3xl font-bold text-charcoal-900">{billing.trialDaysRemaining}</div>
-              <div className="mt-1 text-sm text-charcoal-500">days remaining</div>
-              <div className="mt-4 text-xs text-charcoal-500">Ends {dateLabel(billing.trialEndsAt)}</div>
+              <div className="text-xs font-semibold uppercase tracking-wide text-charcoal-400">Workspace access</div>
+              <div className="mt-2 text-2xl font-bold capitalize text-charcoal-900">{billing.commercial?.workspace.accessMode.replace(/_/g, " ") ?? (billing.hasAccess ? "Full" : "Read only")}</div>
+              <div className="mt-1 text-sm text-charcoal-500">Provider: {billing.billingProvider === "jvzoo" ? "JVZoo" : billing.billingProvider ?? "Not connected"}</div>
+              <div className="mt-4 text-xs text-charcoal-500">Grace: {billing.commercial?.subscription?.policy.graceDays ?? "—"} days</div>
             </Card>
             <Card className="p-5">
-              <div className="text-xs font-semibold uppercase tracking-wide text-charcoal-400">Subscription period</div>
-              <div className="mt-2 text-lg font-bold text-charcoal-900">{dateLabel(billing.subscriptionCurrentPeriodEnd)}</div>
-              <div className="mt-1 text-sm text-charcoal-500">Next Stripe period end</div>
+              <div className="text-xs font-semibold uppercase tracking-wide text-charcoal-400">Current paid period</div>
+              <div className="mt-2 text-lg font-bold text-charcoal-900">{dateLabel(billing.commercial?.subscription?.currentPeriodEnd ?? billing.subscriptionCurrentPeriodEnd)}</div>
+              <div className="mt-1 text-sm text-charcoal-500">{billing.commercial?.subscription?.cancelAtPeriodEnd ? "Cancels at period end" : "Recurring through JVZoo"}</div>
+            </Card>
+            <Card className="p-5">
+              <div className="text-xs font-semibold uppercase tracking-wide text-charcoal-400">Price protection</div>
+              <div className="mt-2 text-2xl font-bold text-charcoal-900">{billing.commercial?.subscription?.foundingMember ? "Founding" : "Standard"}</div>
+              <div className="mt-1 text-sm text-charcoal-500">{billing.commercial?.subscription?.foundingMember ? "Protected while continuously eligible" : "Current commercial price"}</div>
             </Card>
           </div>
 
           <div className="grid gap-4 lg:grid-cols-3">
             <Card className="p-5">
-              <div className="text-sm font-semibold text-charcoal-800">Articles used in {monthLabel()}</div>
-              <div className="mt-3 text-4xl font-bold text-brand-700">{articlesUsed}/{articleLimit}</div>
-              <div className="mt-1 text-sm text-charcoal-500">{articlesRemaining} remaining this month</div>
-              <div className="mt-4 h-2 rounded-full bg-charcoal-100"><div className="h-2 rounded-full bg-brand-600" style={{ width: `${Math.min(100, articleLimit ? (articlesUsed / articleLimit) * 100 : 0)}%` }} /></div>
+              <div className="text-sm font-semibold text-charcoal-800">Active projects</div>
+              <div className="mt-3 text-4xl font-bold text-brand-700">{billing.commercial?.usage.activeProjects ?? 0}</div>
+              <div className="mt-1 text-sm text-charcoal-500">{billing.commercial?.usage.archivedProjects ?? 0} archived · limit {String(billing.commercial?.entitlements.limits.activeProjects ?? "not configured")}</div>
             </Card>
             <Card className="p-5">
-              <div className="text-sm font-semibold text-charcoal-800">Helper generations in {monthLabel()}</div>
-              <div className="mt-3 text-4xl font-bold text-cyan-700">{helpersUsed}/{helperLimit}</div>
-              <div className="mt-1 text-sm text-charcoal-500">{helpersRemaining} remaining this month</div>
-              <div className="mt-4 h-2 rounded-full bg-charcoal-100"><div className="h-2 rounded-full bg-cyan-600" style={{ width: `${Math.min(100, helperLimit ? (helpersUsed / helperLimit) * 100 : 0)}%` }} /></div>
+              <div className="text-sm font-semibold text-charcoal-800">Named internal seats</div>
+              <div className="mt-3 text-4xl font-bold text-cyan-700">{billing.commercial?.usage.assignedSeats ?? 0}/{billing.commercial?.entitlements.seatLimit ?? "—"}</div>
+              <div className="mt-1 text-sm text-charcoal-500">Client Viewers do not consume an internal seat by default.</div>
             </Card>
             <Card className="p-5">
-              <div className="text-sm font-semibold text-charcoal-800">Tokens tracked in {monthLabel()}</div>
-              <div className="mt-3 text-4xl font-bold text-emerald-700">{(usage?.usage.tokens ?? 0).toLocaleString()}</div>
-              <div className="mt-1 text-sm text-charcoal-500">For internal cost control</div>
+              <div className="text-sm font-semibold text-charcoal-800">AI Capacity in {monthLabel()}</div>
+              <div className="mt-3 text-4xl font-bold text-emerald-700">{(billing.commercial?.usage.capacity?.balance ?? 0).toLocaleString()}</div>
+              <div className="mt-1 text-sm text-charcoal-500">of {(billing.commercial?.usage.capacity?.monthlyAllowance ?? 0).toLocaleString()} remaining · {billing.commercial?.usage.capacity?.reserved ?? 0} reserved</div>
             </Card>
           </div>
+
+          <Card className="p-5">
+            <div className="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
+              <div>
+                <div className="text-lg font-bold text-charcoal-900">Effective workspace entitlements</div>
+                <p className="mt-1 text-sm text-charcoal-500">Resolved from the immutable plan version, paid additions, and audited overrides.</p>
+              </div>
+              <div className="text-xs font-semibold text-charcoal-500">Agency clients: {billing.commercial?.usage.activeAgencyClients ?? 0} / {String(billing.commercial?.entitlements.limits.activeAgencyClients ?? "not configured")}</div>
+            </div>
+            <div className="mt-4 grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
+              {Object.entries(billing.commercial?.entitlements.features ?? {}).filter(([key]) => key !== "*").map(([key, value]) => (
+                <div key={key} className="flex items-center justify-between rounded-lg border border-slate-100 bg-slate-50 px-3 py-2 text-sm">
+                  <span className="capitalize text-charcoal-600">{key.replace(/_/g, " ")}</span>
+                  <span className={`font-bold ${value === false ? "text-rose-600" : "text-emerald-700"}`}>{value === false ? "Not included" : "Included"}</span>
+                </div>
+              ))}
+            </div>
+          </Card>
 
 
           <Card className="p-5">
@@ -180,12 +201,12 @@ export default function Billing() {
             <div className="flex flex-col gap-2 border-b border-slate-200 p-5 sm:flex-row sm:items-center sm:justify-between">
               <div>
                 <div className="text-lg font-bold text-charcoal-900">Invoices</div>
-                <div className="text-sm text-charcoal-500">Recent Stripe invoices for this account.</div>
+                <div className="text-sm text-charcoal-500">Verified JVZoo sale, rebill, and refund records for this workspace.</div>
               </div>
-              {billing.stripeCustomerId && <Button variant="ghost" onClick={openPortal} disabled={portalBusy}>{portalBusy ? "Opening..." : "Open Stripe billing"}</Button>}
+              {billing.commercial?.subscription && <Button variant="ghost" onClick={openPortal} disabled={portalBusy}>{portalBusy ? "Opening..." : "Open JVZoo purchases"}</Button>}
             </div>
             {invoices.length === 0 ? (
-              <div className="p-5 text-sm text-charcoal-500">No Stripe invoices found for this account yet.</div>
+              <div className="p-5 text-sm text-charcoal-500">No verified JVZoo billing records have been linked to this workspace yet.</div>
             ) : (
               <div className="overflow-x-auto">
                 <table className="min-w-full divide-y divide-slate-200 text-sm">

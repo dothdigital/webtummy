@@ -1,6 +1,9 @@
 import crypto from "node:crypto";
 import { prisma, type Prisma } from "@webtummy/db";
 import { normalizePlanCode } from "./billing.js";
+import { assertWorkspaceFeature, effectiveCommercialEntitlements } from "./commercial-service.js";
+import { currentCommercialRequestContext } from "./commercial-request-context.js";
+import { aiModelTierForFeature, defaultAiModelForFeature } from "./ai-model-policy.js";
 
 export const USAGE_APPROVAL_HEADER = "x-senuke-usage-token";
 
@@ -73,6 +76,11 @@ const featureSeeds: FeatureSeed[] = [
   { featureKey: "demo_proof_project", moduleName: "gap_analysis", label: "Demo proof project", description: "Create clearly marked demo projects with sample audit, strategy, execution, and report assets.", defaultCreditCost: 0, estimatedProviderCost: 0, cacheTtlMinutes: 0 },
   { featureKey: "ad_landing_suggestions", moduleName: "gap_analysis", label: "Ad and landing suggestions", description: "Generate ad copy, CTA, offer, landing page, and experiment suggestions without ad-account automation.", defaultCreditCost: 6, estimatedProviderCost: 0.06, requiresApproval: true, cacheTtlMinutes: 1440 },
   { featureKey: "ecommerce_export_guidance", moduleName: "gap_analysis", label: "Ecommerce export guidance", description: "Generate manual Shopify or ecommerce SEO publishing guidance without deep launch integration.", defaultCreditCost: 6, estimatedProviderCost: 0.05, cacheTtlMinutes: 1440 },
+  { featureKey: "ai_content_generate", moduleName: "content", label: "Generate AI content", description: "Generate or revise a content asset through the central AI service.", defaultCreditCost: 6, estimatedProviderCost: 0.08, requiresApproval: true, cacheTtlMinutes: 720 },
+  { featureKey: "website_page_generate", moduleName: "website_development", label: "Generate website page", description: "Generate or revise website page structure and content through the central AI service.", defaultCreditCost: 10, estimatedProviderCost: 0.14, requiresApproval: true, cacheTtlMinutes: 720 },
+  { featureKey: "website_image_generate", moduleName: "website_development", label: "Generate website image", description: "Generate an approved website image asset.", defaultCreditCost: 12, estimatedProviderCost: 0.18, requiresApproval: true, cacheTtlMinutes: 0 },
+  { featureKey: "execution_content_generate", moduleName: "execution", label: "Generate execution content", description: "Generate reviewable execution-task content.", defaultCreditCost: 6, estimatedProviderCost: 0.08, requiresApproval: true, cacheTtlMinutes: 720 },
+  { featureKey: "project_agent_chat", moduleName: "project_agent", label: "Project Agent response", description: "Generate one evidence-grounded Project Agent response.", defaultCreditCost: 2, estimatedProviderCost: 0.03, cacheTtlMinutes: 0 },
 ];
 
 const planDefaults: Record<string, { monthlyCredits: number; limits: Record<string, number | null> }> = {
@@ -96,6 +104,10 @@ function hashToken(token: string) {
 
 function roundCost(value: number) {
   return Math.round(value * 1_000_000) / 1_000_000;
+}
+
+function usageFailure(name: string, message: string, statusCode: number) {
+  return Object.assign(new Error(message), { name, code: name, statusCode, publicMessage: true });
 }
 
 function defaultPlanConfig(planCode: string | null | undefined) {
@@ -138,11 +150,36 @@ export async function ensureCreditAccount(clientId: string, db: Db = prisma) {
   const client = await db.client.findUnique({ where: { id: clientId }, select: { plan: true } });
   if (!client) throw new Error("client not found");
   const { periodStart, periodEnd } = monthWindow();
-  const allowance = defaultPlanConfig(client.plan).monthlyCredits;
-  return db.creditAccount.upsert({
-    where: { clientId_periodStart: { clientId, periodStart } },
-    update: { monthlyAllowance: allowance, periodEnd },
-    create: { clientId, periodStart, periodEnd, monthlyAllowance: allowance, balance: allowance },
+  const workspace = await db.workspace.findUnique({ where: { legacyClientId: clientId }, select: { id: true } });
+  const commercialAllowance = workspace
+    ? Number((await effectiveCommercialEntitlements(workspace.id)).limits.monthlyAiCapacity)
+    : NaN;
+  const planCode = normalizePlanCode(client.plan);
+  const planAllowance = defaultPlanConfig(planCode).monthlyCredits;
+  // Internal workspaces use the internal allowance even when a compatibility
+  // subscription has not yet been assigned an AI-capacity entitlement.
+  const allowance = planCode === "internal"
+    ? planAllowance
+    : Number.isFinite(commercialAllowance) ? Math.max(0, commercialAllowance) : planAllowance;
+  const key = { clientId_periodStart: { clientId, periodStart } };
+  const existing = await db.creditAccount.findUnique({ where: key });
+  if (!existing) {
+    return db.creditAccount.upsert({
+      where: key,
+      update: { monthlyAllowance: allowance, periodEnd },
+      create: { clientId, periodStart, periodEnd, monthlyAllowance: allowance, balance: allowance },
+    });
+  }
+  const allowanceDelta = allowance - existing.monthlyAllowance;
+  return db.creditAccount.update({
+    where: { id: existing.id },
+    data: {
+      monthlyAllowance: allowance,
+      periodEnd,
+      // Preserve used credits and manual top-ups when the plan allowance is
+      // corrected, while never allowing a negative available balance.
+      balance: Math.max(0, existing.balance + allowanceDelta),
+    },
   });
 }
 
@@ -202,9 +239,7 @@ async function checkBudgetCaps(input: UsagePreflightInput, creditCost: number) {
         _sum: { creditsCommitted: true },
       });
       if ((spent._sum.creditsCommitted ?? 0) + creditCost > cap.monthlyCredits) {
-        const error = new Error("monthly budget cap reached");
-        error.name = "usage_budget_cap_reached";
-        throw error;
+        throw usageFailure("usage_budget_cap_reached", "This workspace has reached its monthly AI budget cap. Ask an administrator to increase the budget before continuing.", 409);
       }
     }
   }
@@ -218,34 +253,29 @@ export async function preflightUsage(input: UsagePreflightInput) {
 
   const feature = await prisma.featureCostCatalog.findUnique({ where: { featureKey: input.featureKey } });
   if (!feature || !feature.isActive) {
-    const error = new Error("feature is not enabled");
-    error.name = "usage_feature_disabled";
-    throw error;
+    throw usageFailure("usage_feature_disabled", "This AI feature is currently disabled.", 404);
   }
+
+  const workspace = await prisma.workspace.findUnique({ where: { legacyClientId: input.clientId }, select: { id: true } });
+  if (workspace) await assertWorkspaceFeature(workspace.id, feature.moduleName);
 
   const planCode = normalizePlanCode(client.plan);
   const limit = await prisma.planFeatureLimit.findUnique({ where: { planCode_featureKey: { planCode, featureKey: input.featureKey } } });
   if (limit?.hardBlocked) {
-    const error = new Error("feature is not available on this plan");
-    error.name = "usage_plan_blocked";
-    throw error;
+    throw usageFailure("usage_plan_blocked", "This AI feature is not available on the workspace plan.", 409);
   }
 
   if (limit?.monthlyLimit != null) {
     const used = await monthlyFeatureCount(input.clientId, input.featureKey, ["reserved", "committed"]);
     if (used + units > limit.monthlyLimit && !limit.overageAllowed) {
-      const error = new Error("monthly feature limit reached");
-      error.name = "usage_limit_reached";
-      throw error;
+      throw usageFailure("usage_limit_reached", "This workspace has reached the monthly limit for this AI feature.", 409);
     }
   }
 
   const account = await ensureCreditAccount(input.clientId);
   const creditCost = Math.max(0, (limit?.creditCost ?? feature.defaultCreditCost) * units);
   if (account.balance < creditCost) {
-    const error = new Error("not enough credits");
-    error.name = "usage_insufficient_credits";
-    throw error;
+    throw usageFailure("usage_insufficient_credits", "This workspace does not have enough AI credits for this action. Add credits or ask an administrator to increase the monthly AI allowance.", 402);
   }
   await checkBudgetCaps(input, creditCost);
 
@@ -254,10 +284,14 @@ export async function preflightUsage(input: UsagePreflightInput) {
   const actionKey = input.actionKey?.trim() || input.featureKey;
 
   const event = await prisma.$transaction(async (tx) => {
-    const updated = await tx.creditAccount.update({
-      where: { id: account.id },
+    const debited = await tx.creditAccount.updateMany({
+      where: { id: account.id, balance: { gte: creditCost } },
       data: { balance: { decrement: creditCost } },
     });
+    if (!debited.count) {
+      throw usageFailure("usage_insufficient_credits", "This workspace does not have enough AI credits for this action. Add credits or ask an administrator to increase the monthly AI allowance.", 402);
+    }
+    const updated = await tx.creditAccount.findUniqueOrThrow({ where: { id: account.id } });
     const usageEvent = await tx.usageEvent.create({
       data: {
         clientId: input.clientId,
@@ -271,7 +305,7 @@ export async function preflightUsage(input: UsagePreflightInput) {
         inputUnits: units,
         approvalTokenHash: hashToken(token),
         approvalTokenExpiresAt: expiresAt,
-        metadataJson: input.metadata ?? {},
+        metadataJson: { ...(input.metadata ?? {}), creditAccountId: account.id } as Prisma.InputJsonValue,
       },
     });
     if (creditCost > 0) {
@@ -289,6 +323,12 @@ export async function preflightUsage(input: UsagePreflightInput) {
     }
     return usageEvent;
   });
+
+  const requestContext = currentCommercialRequestContext();
+  if (requestContext && requestContext.clientId === input.clientId) {
+    requestContext.usageEventId = event.id;
+    requestContext.manualUsageReservation = true;
+  }
 
   return {
     usageEventId: event.id,
@@ -318,16 +358,27 @@ export async function commitUsage(input: CommitUsageInput) {
 
   const providerCostUsd = roundCost(input.providerCostUsd ?? 0);
   return prisma.$transaction(async (tx) => {
-    const updated = await tx.usageEvent.update({
-      where: { id: usageEvent.id },
+    const claimed = await tx.usageEvent.updateMany({
+      where: { id: usageEvent.id, status: "reserved" },
       data: {
         status: "committed",
         creditsCommitted: usageEvent.creditsReserved,
         providerCostUsd,
         committedAt: new Date(),
-        metadataJson: { ...(usageEvent.metadataJson as object), ...(input.metadata ?? {}) },
+        metadataJson: { ...(usageEvent.metadataJson as object), ...(input.metadata ?? {}) } as Prisma.InputJsonValue,
       },
     });
+    if (!claimed.count) return tx.usageEvent.findUniqueOrThrow({ where: { id: usageEvent.id } });
+    const updated = await tx.usageEvent.findUniqueOrThrow({ where: { id: usageEvent.id } });
+    const creditAccountId = usageEvent.metadataJson && typeof usageEvent.metadataJson === "object" && !Array.isArray(usageEvent.metadataJson)
+      ? String((usageEvent.metadataJson as Record<string, unknown>).creditAccountId ?? "")
+      : "";
+    if (creditAccountId && usageEvent.creditsReserved > 0) {
+      await tx.creditAccount.updateMany({
+        where: { id: creditAccountId, clientId: usageEvent.clientId },
+        data: { monthlyUsed: { increment: usageEvent.creditsReserved } },
+      });
+    }
     if (providerCostUsd > 0 || input.inputTokens || input.outputTokens || input.provider) {
       await tx.providerCostEvent.create({
         data: {
@@ -339,7 +390,7 @@ export async function commitUsage(input: CommitUsageInput) {
           inputTokens: input.inputTokens ?? 0,
           outputTokens: input.outputTokens ?? 0,
           costUsd: providerCostUsd,
-          metadataJson: input.metadata ?? {},
+          metadataJson: (input.metadata ?? {}) as Prisma.InputJsonValue,
         },
       });
     }
@@ -354,8 +405,19 @@ export async function refundUsage(input: { usageEventId: string; reason?: string
   if (usageEvent.creditsReserved <= 0 || usageEvent.status === "committed") {
     return prisma.usageEvent.update({ where: { id: usageEvent.id }, data: { status: "failed", error: input.reason ?? "failed after commit check" } });
   }
-  const account = await ensureCreditAccount(usageEvent.clientId);
+  const creditAccountId = usageEvent.metadataJson && typeof usageEvent.metadataJson === "object" && !Array.isArray(usageEvent.metadataJson)
+    ? String((usageEvent.metadataJson as Record<string, unknown>).creditAccountId ?? "")
+    : "";
+  const account = creditAccountId
+    ? await prisma.creditAccount.findFirst({ where: { id: creditAccountId, clientId: usageEvent.clientId } })
+    : await ensureCreditAccount(usageEvent.clientId);
+  if (!account) throw new Error("usage credit account not found");
   return prisma.$transaction(async (tx) => {
+    const released = await tx.usageEvent.updateMany({
+      where: { id: usageEvent.id, status: "reserved" },
+      data: { status: "refunded", refundedAt: new Date(), error: input.reason ?? null },
+    });
+    if (!released.count) return tx.usageEvent.findUniqueOrThrow({ where: { id: usageEvent.id } });
     const updatedAccount = await tx.creditAccount.update({
       where: { id: account.id },
       data: { balance: { increment: usageEvent.creditsReserved } },
@@ -370,10 +432,7 @@ export async function refundUsage(input: { usageEventId: string; reason?: string
         reason: input.reason ?? "usage refunded",
       },
     });
-    return tx.usageEvent.update({
-      where: { id: usageEvent.id },
-      data: { status: "refunded", refundedAt: new Date(), error: input.reason ?? null },
-    });
+    return tx.usageEvent.findUniqueOrThrow({ where: { id: usageEvent.id } });
   });
 }
 
@@ -389,10 +448,39 @@ export async function guardedUsage<T>(input: UsagePreflightInput, fn: (usage: { 
   }
 }
 
-export async function modelForFeature(featureKey: string, planCode: string | null | undefined, fallbackModel: string) {
-  await ensureUsageControlDefaults();
+type ModelRouteCandidate = { model: string; planCode: string | null; sortOrder: number; configJson: unknown };
+
+function routingConfig(value: unknown) {
+  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
+}
+
+export function expectedSuccessfulWorkflowCost(value: unknown) {
+  const config = routingConfig(value);
+  const number = (key: string) => typeof config[key] === "number" && Number.isFinite(config[key]) ? Math.max(0, Number(config[key])) : 0;
+  const hasCost = ["initialApiCost", "expectedRetryCost", "validationCost", "correctionCost", "retryCost", "expectedRetryRate"].some((key) => typeof config[key] === "number");
+  if (!hasCost) return null;
+  const expectedRetryCost = number("expectedRetryCost") || number("retryCost") * number("expectedRetryRate");
+  return number("initialApiCost") + expectedRetryCost + number("validationCost") + number("correctionCost");
+}
+
+export function selectLowestSuccessfulWorkflowCostRoute<T extends ModelRouteCandidate>(rules: T[], normalizedPlan: string) {
+  const eligible = rules.filter((rule) => {
+    const config = routingConfig(rule.configJson);
+    return config.providerAvailable !== false && config.disabled !== true;
+  });
+  const planSpecific = eligible.filter((rule) => rule.planCode === normalizedPlan);
+  const pool = planSpecific.length ? planSpecific : eligible.filter((rule) => rule.planCode == null);
+  return [...pool].sort((left, right) => {
+    const leftCost = expectedSuccessfulWorkflowCost(left.configJson);
+    const rightCost = expectedSuccessfulWorkflowCost(right.configJson);
+    if (leftCost != null || rightCost != null) return (leftCost ?? Number.POSITIVE_INFINITY) - (rightCost ?? Number.POSITIVE_INFINITY) || left.sortOrder - right.sortOrder;
+    return left.sortOrder - right.sortOrder;
+  })[0] ?? null;
+}
+
+export async function modelRouteForFeature(featureKey: string, planCode: string | null | undefined, fallbackModel: string) {
   const normalizedPlan = normalizePlanCode(planCode);
-  const rule = await prisma.modelRoutingRule.findFirst({
+  const rules = await prisma.modelRoutingRule.findMany({
     where: {
       featureKey,
       isActive: true,
@@ -400,7 +488,22 @@ export async function modelForFeature(featureKey: string, planCode: string | nul
     },
     orderBy: [{ planCode: "desc" }, { sortOrder: "asc" }],
   });
-  return rule?.model ?? fallbackModel;
+  // centralAiJson currently has a production adapter for OpenAI. Other
+  // providers can be registered without being selected until their adapter
+  // is available, preventing a low-cost but non-runnable route.
+  const rule = selectLowestSuccessfulWorkflowCostRoute(rules.filter((candidate) => candidate.provider === "openai"), normalizedPlan);
+  return {
+    provider: rule?.provider ?? "openai",
+    model: rule?.model ?? defaultAiModelForFeature(featureKey, fallbackModel),
+    modelTier: aiModelTierForFeature(featureKey),
+    taskComplexity: rule?.taskComplexity ?? (aiModelTierForFeature(featureKey) === "research" ? "advanced" : "standard"),
+    expectedSuccessfulWorkflowCost: rule ? expectedSuccessfulWorkflowCost(rule.configJson) : null,
+    routingRuleId: rule?.id ?? null,
+  };
+}
+
+export async function modelForFeature(featureKey: string, planCode: string | null | undefined, fallbackModel: string) {
+  return (await modelRouteForFeature(featureKey, planCode, fallbackModel)).model;
 }
 
 export const defaultUsageFeatures = featureSeeds;

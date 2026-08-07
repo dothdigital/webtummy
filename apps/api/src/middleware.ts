@@ -5,6 +5,9 @@ import { signToken, verifyToken, type JwtPayload } from "./auth.js";
 import { prisma } from "@webtummy/db";
 import { hasWorkspacePermission, workspaceContext } from "./workspace-access.js";
 import { clientViewerRouteAllowed } from "./dev002.js";
+import { assertWorkspaceFeature } from "./commercial-service.js";
+import crypto from "node:crypto";
+import { runCommercialRequestContext } from "./commercial-request-context.js";
 
 declare global {
   // eslint-disable-next-line @typescript-eslint/no-namespace
@@ -97,6 +100,84 @@ export async function enforceWorkspacePermissions(req: Request, res: Response, n
   } catch (error) {
     const status = typeof error === "object" && error !== null && "statusCode" in error && typeof error.statusCode === "number" ? error.statusCode : 403;
     res.status(status).json({ error: error instanceof Error ? error.message : "Workspace access denied." });
+  }
+}
+
+function commercialFeatureForRequest(path: string) {
+  const normalized = path.toLowerCase();
+  if (/lead-magnets/.test(normalized)) return "lead_magnets";
+  if (/website-builder|site-architecture|site-architect/.test(normalized)) return "website_development";
+  if (/ai-citation|visibility/.test(normalized)) return "ai_citations";
+  if (/authority|backlink/.test(normalized)) return "authority_growth";
+  if (/social/.test(normalized)) return "social";
+  if (/growth/.test(normalized)) return "growth";
+  if (/ai-content|content/.test(normalized)) return "content";
+  if (/keyword/.test(normalized)) return "keywords";
+  if (/crawl|site-analysis|websites/.test(normalized)) return "site_analysis";
+  if (/publish|wordpress|deployment/.test(normalized)) return "publishing";
+  if (/automation/.test(normalized)) return "automation";
+  return "*";
+}
+
+function capacityFeatureForRequest(path: string) {
+  const normalized = path.toLowerCase();
+  if (/opportunit/.test(normalized) || /projects-v2\/[^/]+\/intake/.test(normalized)) return "opportunity_refresh";
+  if (/strategy/.test(normalized)) return "strategy_generate";
+  if (/lead-magnets?.*(research|recommend|refresh)/.test(normalized)) return "lead_magnet_research";
+  if (/lead-magnets?/.test(normalized)) return "lead_magnet_generate";
+  if (/site-architecture|site-architect/.test(normalized)) return "site_architect_generate";
+  if (/website-builder/.test(normalized)) return "website_page_generate";
+  if (/gap-analysis/.test(normalized)) return "seo_fix_queue";
+  if (/local-seo|\/local\//.test(normalized)) return "local_seo_launch_plan";
+  if (/ai-citation/.test(normalized)) return "ai_citation_scan";
+  if (/authority|backlink/.test(normalized)) return "backlink_snapshot";
+  if (/social/.test(normalized)) return "social_calendar_generate";
+  if (/growth.*report/.test(normalized)) return "growth_report";
+  if (/growth/.test(normalized)) return "growth_diagnosis";
+  if (/ai-content/.test(normalized)) return "ai_content_generate";
+  if (/keyword/.test(normalized)) return "keyword_research_batch";
+  if (/execution-tasks?/.test(normalized)) return "execution_content_generate";
+  if (/ai-intake/.test(normalized)) return "ai_assisted_intake";
+  return "ai_content_generate";
+}
+
+/** DEV-030 workspace lifecycle and feature gate shared by every module. */
+export async function enforceCommercialAccess(req: Request, res: Response, next: NextFunction) {
+  if (!req.user || ["GET", "HEAD", "OPTIONS"].includes(req.method)) return next();
+  const path = req.path.toLowerCase();
+  if (path.startsWith("/billing") || path.startsWith("/auth")) return next();
+  const platformAdminRoute = ["/users", "/clients", "/admin"].some((prefix) => path.startsWith(prefix));
+  if (req.user.role === "super_admin" && platformAdminRoute) return next();
+  try {
+    const context = await workspaceContext(req);
+    await assertWorkspaceFeature(context.workspace.id, commercialFeatureForRequest(path));
+    if (!context.workspace.legacyClientId) return next();
+    const commercialClient = await prisma.client.findUnique({
+      where: { id: context.workspace.legacyClientId },
+      select: { plan: true },
+    });
+    const body = req.body && typeof req.body === "object" ? req.body as Record<string, unknown> : {};
+    const projectId = typeof body.projectId === "string" ? body.projectId : req.path.match(/\/projects(?:-v2)?\/([^/]+)/i)?.[1] ?? null;
+    const websiteId = typeof body.websiteId === "string" ? body.websiteId : null;
+    runCommercialRequestContext({
+      workspaceId: context.workspace.id,
+      clientId: context.workspace.legacyClientId,
+      planCode: commercialClient?.plan ?? null,
+      userId: context.membership.userId,
+      projectId,
+      websiteId,
+      featureKey: capacityFeatureForRequest(path),
+      actionKey: `${req.method.toUpperCase()} ${req.path}`,
+      requestId: req.header("x-request-id")?.trim() || crypto.randomUUID(),
+    }, next);
+  } catch (error) {
+    const status = typeof error === "object" && error !== null && "statusCode" in error && typeof error.statusCode === "number"
+      ? error.statusCode
+      : 402;
+    res.status(status).json({
+      error: error instanceof Error ? error.message : "Workspace commercial access is required.",
+      billingRequired: status === 402,
+    });
   }
 }
 

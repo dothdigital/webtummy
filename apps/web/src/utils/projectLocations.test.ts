@@ -1,16 +1,16 @@
 import { describe, expect, it } from "vitest";
 import { geographicTargetMarkets } from "./projectLocations.js";
 
-describe("project geographic target markets", () => {
-  it("keeps confirmed places and excludes audiences, services, and duplicates", () => {
+describe("geographicTargetMarkets", () => {
+  it("removes vague AI service-area fragments before splitting markets", () => {
     expect(geographicTargetMarkets([
-      "Dehradun",
-      "Uttarakhand",
-      "India",
-      "dehradun",
-      "Tech startups",
-      "Enterprises looking for AI integration",
-      "AI solutions in India",
-    ])).toEqual(["Dehradun", "Uttarakhand", "India"]);
+      "Mississauga and nearby neighbourhoods",
+      "Brampton, Oakville, Milton, and surrounding communities",
+      "Canada",
+    ])).toEqual(["Mississauga", "Brampton", "Oakville", "Milton", "Canada"]);
+  });
+
+  it("rejects standalone vague market labels", () => {
+    expect(geographicTargetMarkets(["nearby neighbourhoods", "and surrounding communities", "Ontario"])).toEqual(["Ontario"]);
   });
 });

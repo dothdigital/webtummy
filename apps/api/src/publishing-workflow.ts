@@ -4,6 +4,8 @@ import { isIP } from "node:net";
 import { Prisma, prisma } from "@webtummy/db";
 import { publishingState, publishingValidationErrors, type PublishingTarget, type PublishingVerification } from "@webtummy/core/publishing";
 import { canAccessProject, createWorkspaceNotification, hasWorkspacePermission, recordWorkspaceActivity, workspaceContext } from "./workspace-access.js";
+import { attachPublicationOutcome, prepareMarketingExecution, publishingExecutionPreflight } from "./marketing-execution-engine.js";
+import { publishProjectWorkflowEvent } from "./project-workflow-controller.js";
 
 type Context = Awaited<ReturnType<typeof workspaceContext>>;
 type JsonRecord = Record<string, unknown>;
@@ -77,8 +79,13 @@ export async function startTaskPublishing(context: Context, taskId: string, inpu
   providerInitiated?: boolean;
 }) {
   if (!hasWorkspacePermission(context, "publish")) throw Object.assign(new Error("Publishing permission is required."), { statusCode: 403 });
-  const task = await publishingTask(context, taskId);
-  const currentSnapshot = jsonRecord(task.approvalSnapshotJson);
+  let task = await publishingTask(context, taskId);
+  let currentSnapshot = jsonRecord(task.approvalSnapshotJson);
+  if (!jsonRecord(currentSnapshot.marketingExecution).workPackage) {
+    await prepareMarketingExecution(context, taskId);
+    task = await publishingTask(context, taskId);
+    currentSnapshot = jsonRecord(task.approvalSnapshotJson);
+  }
   const currentPublishing = jsonRecord(currentSnapshot.publishing);
   if (task.status === "publishing" && currentPublishing.attemptId) return { task, publishing: currentPublishing, idempotent: true };
 
@@ -94,6 +101,7 @@ export async function startTaskPublishing(context: Context, taskId: string, inpu
     dependenciesComplete,
     targetReference,
   });
+  validationErrors.push(...publishingExecutionPreflight(task).errors);
   if (target === "social" && !input.providerInitiated) validationErrors.push("Social publishing must be initiated through the connected social publishing module.");
   if (target === "shopify" && !input.providerInitiated) validationErrors.push("Shopify publishing is unavailable until a supported Shopify delivery integration is connected.");
   if (validationErrors.length) {
@@ -163,16 +171,17 @@ export async function verifyTaskPublishing(context: Context, taskId: string, inp
   const status = publishingState(input);
   const now = new Date();
   const nextPublishing = { ...publishing, ...input, verifiedAt: now.toISOString() };
-  return prisma.$transaction(async (tx) => {
+  const result = await prisma.$transaction(async (tx) => {
     if (target === "wordpress" && targetReference) await tx.wordPressPublishJob.updateMany({
       where: { id: targetReference, projectId: task.projectId! },
       data: { status: input.status === "verified" ? "completed" : input.status, externalPostId: input.externalId ?? undefined, errorMessage: input.error ?? null, completedAt: input.status === "verified" ? now : null },
     });
+    const governedSnapshot = attachPublicationOutcome({ ...currentSnapshot, publishing: nextPublishing }, { status: input.status, attemptId: input.attemptId, externalId: input.externalId, liveUrl: input.liveUrl, checksum: input.checksum, verifiedAt: now });
     const updated = await tx.executionTask.update({ where: { id: task.id }, data: {
       status,
       publishedAt: input.status === "verified" ? now : task.publishedAt,
       blockedReason: input.status === "failed" ? input.error || "Publishing failed verification; the previous version remains active." : null,
-      approvalSnapshotJson: { ...currentSnapshot, publishing: nextPublishing } as Prisma.InputJsonValue,
+      approvalSnapshotJson: governedSnapshot as Prisma.InputJsonValue,
     } });
     if (task.sourceType === "growth_content_opportunity" && task.sourceId) {
       await tx.growthContentOpportunity.updateMany({
@@ -216,4 +225,13 @@ export async function verifyTaskPublishing(context: Context, taskId: string, inp
     if (input.status === "verified" && task.projectId && ["content", "publishing", "local_seo"].includes(task.moduleName)) await createWorkspaceNotification(tx, { context, userId: context.workspace.ownerUserId, type: "measurement_checkpoints_scheduled", title: "Measurement checkpoints scheduled", body: `${task.title} is live. Discovery and post-publish, 30-day, 60-day, 90-day, and recurring reviews are scheduled.`, actionUrl: `/guided-projects/${task.projectId}?tab=execution#optimization-workflow`, agencyClientId: task.project?.agencyClientId, projectId: task.projectId });
     return { task: updated, publishing: nextPublishing, idempotent: false };
   });
+  if (input.status === "verified" && task.projectId) await publishProjectWorkflowEvent({
+    projectId: task.projectId,
+    eventType: "execution.outcome_ready",
+    sourceModule: task.moduleName,
+    sourceId: task.id,
+    idempotencyKey: `execution.outcome-ready:${task.id}:${input.attemptId}`,
+    payload: { taskId: task.id, publicationAttemptId: input.attemptId, liveUrl: input.liveUrl, externalId: input.externalId, measurementStatus: "active" },
+  });
+  return result;
 }

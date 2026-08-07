@@ -12,6 +12,7 @@ import { agencyNextActions } from "../dev002.js";
 import { configurableWorkspaceRoles, workspaceRoleCanEver } from "@webtummy/core/workspace-permissions";
 import { decideTaskApproval, submitTaskApproval } from "../approval-workflow.js";
 import { startTaskPublishing, verifyTaskPublishing } from "../publishing-workflow.js";
+import { assertWorkspaceResourceAvailable } from "../commercial-service.js";
 
 export const agencyWorkspaceRouter = Router();
 agencyWorkspaceRouter.use(requireAuth);
@@ -536,6 +537,7 @@ agencyWorkspaceRouter.post("/agency/clients", (req, res) => handle(res, async ()
   const context = await workspaceContext(req);
   requirePermission(context, "manage_clients");
   if (context.workspace.workspaceType !== "agency") throw Object.assign(new Error("Client management is available only in Agency workspaces."), { statusCode: 400 });
+  await assertWorkspaceResourceAvailable(context.workspace.id, "activeAgencyClients");
   const parsed = createClientSchema.parse(req.body);
   const normalizedLocations = normalizeRequiredLocations(parsed.businessLocations, parsed.targetMarkets);
   const clientPrimaryGoal = normalizeProjectGoals(String(parsed.defaultSettings.primaryBusinessGoal ?? ""), [], "agency").primaryGoal;
@@ -612,6 +614,7 @@ for (const action of ["archive", "restore"] as const) {
     requirePermission(context, "manage_clients");
     const client = await prisma.agencyClient.findFirst({ where: { id: req.params.clientId, workspaceId: context.workspace.id } });
     if (!client) throw Object.assign(new Error("Client not found."), { statusCode: 404 });
+    if (action === "restore") await assertWorkspaceResourceAvailable(context.workspace.id, "activeAgencyClients", { excludeId: client.id });
     const status = action === "archive" ? "archived" : "active";
     return prisma.$transaction(async (tx) => {
       const updated = await tx.agencyClient.update({ where: { id: client.id }, data: { status, archivedAt: action === "archive" ? new Date() : null, archivedById: action === "archive" ? context.membership.userId : null } });

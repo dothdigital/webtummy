@@ -21,6 +21,10 @@ const clientProjectTypes = [
   { value: "other", label: "Other", description: "Custom client or project type that does not fit the standard categories.", projectType: "existing_website" },
 ] as const;
 
+function workflowProjectType(projectType: typeof clientProjectTypes[number]["projectType"], websiteStatus: string) {
+  return ["new_website_required", "website_planned"].includes(websiteStatus) && projectType === "existing_website" ? "new_business" : projectType;
+}
+
 const setupSteps = [
   { title: "Basics", helper: "Project and website" },
   { title: "Project Type", helper: "Choose the workflow" },
@@ -94,7 +98,8 @@ export default function GuidedProjectNew() {
   const [message, setMessage] = useState<string | null>(null);
   const [activeField, setActiveField] = useState<{ label: string; detail: string } | null>(null);
   const [step, setStep] = useState(0);
-  const [creationMode, setCreationMode] = useState<"ai" | "classic">("ai");
+  const requestedCreationMode = searchParams.get("mode");
+  const [creationMode, setCreationMode] = useState<"choose" | "ai" | "classic">(resumeConversationId || requestedCreationMode === "ai" ? "ai" : editProjectId || requestedCreationMode === "classic" ? "classic" : "choose");
   const [workspaceType, setWorkspaceType] = useState("");
   const [workspaceLoaded, setWorkspaceLoaded] = useState(false);
   const [workspaceLocationDefaults, setWorkspaceLocationDefaults] = useState<{ businessLocation: string; businessLocationDetails: { country: string; stateProvince: string; city: string; streetAddress?: string; postalCode?: string } | null } | null>(null);
@@ -137,12 +142,76 @@ export default function GuidedProjectNew() {
     secondaryKeywords: [] as string[],
     advancedIntake: {} as Record<string, string | string[]>,
     conversationReadyForReview: false,
+    websiteContextLoaded: false,
     conversationTranscript: [] as Array<{ role: "user" | "assistant"; text: string }>,
   });
 
   const patch = (data: Partial<typeof form>) => setForm((current) => ({ ...current, ...data }));
   const isAgency = workspaceType === "agency";
   const requiresWebsite = form.websiteStatus === "existing_website";
+
+  const rememberCreationMode = (mode: "ai" | "classic", projectPath?: string) => {
+    const params = new URLSearchParams(searchParams);
+    params.set("mode", mode);
+    if (projectPath) params.set("path", projectPath);
+    if (mode === "classic") params.delete("resumeConversation");
+    navigate(`/projects/new?${params.toString()}`, { replace: true });
+    setCreationMode(mode);
+  };
+
+  const openAiCreation = (projectPath = "ai_discovery") => {
+    setMessage(null);
+    setForm((current) => current.savedProjectId ? current : {
+      ...current,
+      // AI Project Launch is a distinct intake path. Do not let fields from
+      // Detailed Setup, workspace defaults, or an automatically selected
+      // agency client classify a new idea before SEnuke reads its narrative.
+      agencyClientId: searchParams.get("agencyClientId") ?? "",
+      websiteStatus: projectPath === "new_website" ? "new_website_required" : projectPath === "existing_growth" ? "existing_website" : "undecided",
+      websiteUrl: "",
+      hasDomain: "",
+      businessName: "",
+      niche: "",
+      businessLocation: "",
+      locationCountry: "",
+      locationStateProvince: "",
+      locationCity: "",
+      locationStreetAddress: "",
+      locationPostalCode: "",
+      targetLocations: [],
+      primaryGoal: "",
+      secondaryGoals: [],
+      competitorsText: "",
+      notes: projectPath === "research_only" ? "Initial project path: business research only. Convert the approved research into a project only after the user confirms the direction." : "",
+      brandVoice: "",
+      analyticsText: "",
+      cmsPlatform: "",
+      preferredOutputs: projectPath === "new_website" ? ["Website"] : projectPath === "existing_growth" ? ["SEO plan"] : [],
+      primaryKeywords: [],
+      secondaryKeywords: [],
+      targetAudience: "",
+      productsServices: "",
+      advancedIntake: {},
+      conversationReadyForReview: false,
+      websiteContextLoaded: false,
+      conversationTranscript: [],
+      aiConversationSessionId: "",
+    });
+    rememberCreationMode("ai", projectPath);
+  };
+
+  useEffect(() => {
+    if (creationMode !== "ai" || editProjectId || resumeConversationId || form.savedProjectId || form.websiteStatus !== "undecided") return;
+    patch({ websiteStatus: "undecided", websiteUrl: "", hasDomain: "" });
+  }, [creationMode, editProjectId, resumeConversationId, form.savedProjectId]);
+
+  useEffect(() => {
+    if (creationMode !== "ai" || !form.savedProjectId || resumeConversationId === form.savedProjectId) return;
+    const params = new URLSearchParams(searchParams);
+    params.set("mode", "ai");
+    params.set("resumeConversation", form.savedProjectId);
+    navigate(`/projects/new?${params.toString()}`, { replace: true });
+  }, [creationMode, form.savedProjectId, resumeConversationId, searchParams, navigate]);
 
   useEffect(() => setActiveField(null), [step]);
   useEffect(() => {
@@ -152,17 +221,33 @@ export default function GuidedProjectNew() {
   }, []);
 
   useEffect(() => {
-    void api.get<{ workspace: { workspaceType: string; locationDefaults?: { businessLocation: string; businessLocationDetails: { country: string; stateProvince: string; city: string; streetAddress?: string; postalCode?: string } | null; targetMarkets: string[] } }; clients: { id: string; name: string; status: string; websites: unknown; businessLocations: unknown; targetMarkets: unknown; defaultSettings: unknown }[] }>("/api/agency/workspace")
-      .then((result) => {
-        const activeClients = result.clients.filter((client) => client.status === "active");
-        setWorkspaceType(result.workspace.workspaceType);
-        setWorkspaceLocationDefaults(result.workspace.locationDefaults ?? null);
-        setAgencyClients(activeClients);
-        if (result.workspace.workspaceType === "agency" && !form.agencyClientId && activeClients.length === 1) patch({ agencyClientId: activeClients[0].id });
-      })
-      .catch(() => setMessage("Could not load workspace information."))
-      .finally(() => setWorkspaceLoaded(true));
-  }, []);
+    let cancelled = false;
+    void (async () => {
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        try {
+          const result = await api.get<{ workspace: { workspaceType: string; locationDefaults?: { businessLocation: string; businessLocationDetails: { country: string; stateProvince: string; city: string; streetAddress?: string; postalCode?: string } | null; targetMarkets: string[] } }; clients: { id: string; name: string; status: string; websites: unknown; businessLocations: unknown; targetMarkets: unknown; defaultSettings: unknown }[] }>("/api/agency/workspace");
+          if (cancelled) return;
+          const activeClients = result.clients.filter((client) => client.status === "active");
+          setWorkspaceType(result.workspace.workspaceType);
+          setWorkspaceLocationDefaults(result.workspace.locationDefaults ?? null);
+          setAgencyClients(activeClients);
+          if (result.workspace.workspaceType === "agency" && creationMode === "classic" && !form.agencyClientId && activeClients.length === 1) patch({ agencyClientId: activeClients[0].id });
+          setWorkspaceLoaded(true);
+          return;
+        } catch {
+          if (attempt < 2) {
+            await new Promise((resolve) => window.setTimeout(resolve, 600 * (attempt + 1)));
+            continue;
+          }
+          if (!cancelled) {
+            setMessage("Could not load workspace information. Please refresh the page. If this continues, sign in again.");
+            setWorkspaceLoaded(true);
+          }
+        }
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [creationMode]);
 
   useEffect(() => {
     const loadProjectId = editProjectId || resumeConversationId;
@@ -200,7 +285,7 @@ export default function GuidedProjectNew() {
           preferredPublishingMethod: project.preferredPublishingMethod ?? "WordPress",
           ...(resumeConversationId ? { savedProjectId: project.id } : {}),
         });
-        if (resumeConversationId) void api.get<{ sessionId: string; messages: Array<{ role: "user" | "assistant"; text: string }>; draft: Record<string, unknown>; readyForReview: boolean; usage: { used: number; limit: number } }>(`/api/ai-intake/conversation/${project.id}`).then((conversation) => {
+        if (resumeConversationId) void api.get<{ sessionId: string; messages: Array<{ role: "user" | "assistant"; text: string }>; draft: Record<string, unknown>; readyForReview: boolean; websiteContextLoaded?: boolean; usage: { used: number; limit: number } }>(`/api/ai-intake/conversation/${project.id}`).then((conversation) => {
           const savedDraft = conversation.draft;
           patch({
             aiConversationSessionId: conversation.sessionId,
@@ -212,6 +297,7 @@ export default function GuidedProjectNew() {
             secondaryKeywords: Array.isArray(savedDraft.secondaryKeywords) ? savedDraft.secondaryKeywords.map(String) : [],
             advancedIntake: savedDraft.advancedIntake && typeof savedDraft.advancedIntake === "object" && !Array.isArray(savedDraft.advancedIntake) ? Object.fromEntries(Object.entries(savedDraft.advancedIntake as Record<string, unknown>).flatMap(([key, value]) => typeof value === "string" ? [[key, value]] : Array.isArray(value) ? [[key, value.map(String)]] : [])) : {},
             conversationReadyForReview: conversation.readyForReview,
+            websiteContextLoaded: Boolean(conversation.websiteContextLoaded),
           });
         }).catch(() => undefined);
       })
@@ -220,7 +306,7 @@ export default function GuidedProjectNew() {
   }, [editProjectId, resumeConversationId, workspaceLoaded]);
 
   useEffect(() => {
-    if (!isAgency || !form.agencyClientId) return;
+    if (creationMode === "ai" || !isAgency || !form.agencyClientId) return;
     const client = agencyClients.find((item) => item.id === form.agencyClientId);
     if (!client) return;
     const websites = Array.isArray(client.websites) ? client.websites.map(String).filter(Boolean) : [];
@@ -236,10 +322,10 @@ export default function GuidedProjectNew() {
       typeof settings.timeZone === "string" && `Time zone: ${settings.timeZone}`,
     ].filter(Boolean).join("\n");
       patch({ websiteUrl: form.websiteUrl || websites[0] || "", businessLocation: form.businessLocation || locations[0] || "", targetLocations: form.targetLocations.length ? geographicTargetMarkets(form.targetLocations) : geographicTargetMarkets(markets), niche: form.niche || (typeof settings.niche === "string" ? settings.niche : ""), primaryGoal: form.primaryGoal || (typeof settings.primaryBusinessGoal === "string" ? canonicalPrimaryGoal(settings.primaryBusinessGoal) : ""), brandVoice: form.brandVoice || (typeof settings.brandVoice === "string" ? settings.brandVoice : ""), notes: form.notes || inheritedNotes });
-  }, [form.agencyClientId, isAgency, agencyClients]);
+  }, [form.agencyClientId, isAgency, agencyClients, creationMode]);
 
-  const createProject = async (event: React.FormEvent) => {
-    event.preventDefault();
+  const createProject = async (event?: React.FormEvent) => {
+    event?.preventDefault();
     const hasLocation = Boolean(form.businessLocation.trim() || (form.locationCountry.trim() && form.locationStateProvince.trim() && form.locationCity.trim()));
     const hasStructuredLocation = Boolean(form.locationCountry.trim() && form.locationStateProvince.trim() && form.locationCity.trim());
     const missing = [
@@ -249,9 +335,10 @@ export default function GuidedProjectNew() {
       (!(form.savedProjectId ? hasStructuredLocation : hasLocation)) && "Business Location (Country, State/Province and City)",
       !form.targetLocations.length && "at least one Target Market",
       !form.primaryGoal && "Primary Goal",
+      form.websiteStatus === "undecided" && "Website Status",
       form.websiteStatus === "existing_website" && !form.websiteUrl.trim() && "Website URL",
-      (form.websiteStatus === "new_website_required" || form.websiteStatus === "website_planned") && !form.hasDomain && "whether a domain is already available",
-      (form.websiteStatus === "new_website_required" || form.websiteStatus === "website_planned") && form.hasDomain === "yes" && !form.websiteUrl.trim() && "Domain name",
+      !form.savedProjectId && (form.websiteStatus === "new_website_required" || form.websiteStatus === "website_planned") && !form.hasDomain && "whether a domain is already available",
+      !form.savedProjectId && (form.websiteStatus === "new_website_required" || form.websiteStatus === "website_planned") && form.hasDomain === "yes" && !form.websiteUrl.trim() && "Domain name",
     ].filter((item): item is string => Boolean(item));
     if (missing.length) {
       setMessage(`Complete these required fields before finishing the project: ${missing.join(", ")}. Continue the conversation or use Edit essentials / Classic Form.`);
@@ -265,7 +352,7 @@ export default function GuidedProjectNew() {
       // Website status describes whether a site exists; it must not reclassify
       // an established service, local, professional, or ecommerce business as
       // a brand-new business.
-      const projectType = selectedClientType.projectType;
+      const projectType = workflowProjectType(selectedClientType.projectType, form.websiteStatus);
       const split = (value: string) => value.split(/[,;\n]/g).map((item) => item.trim()).filter(Boolean);
       const payload = {
         ...form, businessName: isAgency ? null : form.businessName, projectType,
@@ -288,7 +375,7 @@ export default function GuidedProjectNew() {
     if (form.savedProjectId) return form.savedProjectId;
     setMessage(null);
     const selectedClientType = clientProjectTypes.find((type) => type.value === form.clientProjectType) ?? clientProjectTypes[1];
-    const projectType = selectedClientType.projectType;
+    const projectType = workflowProjectType(selectedClientType.projectType, form.websiteStatus);
     const result = await api.post<{ project: GuidedProject }>("/api/projects-v2/intake-draft", {
       name: form.name, projectType, websiteStatus: form.websiteStatus, websiteUrl: form.websiteUrl || null,
       businessName: isAgency ? null : form.businessName, niche: form.niche, agencyClientId: isAgency ? form.agencyClientId : null,
@@ -296,6 +383,10 @@ export default function GuidedProjectNew() {
       targetLocations: form.targetLocations, primaryGoal: form.primaryGoal,
     });
     patch({ savedProjectId: result.project.id });
+    const params = new URLSearchParams(searchParams);
+    params.set("mode", "ai");
+    params.set("resumeConversation", result.project.id);
+    navigate(`/projects/new?${params.toString()}`, { replace: true });
     return result.project.id;
   };
 
@@ -362,6 +453,20 @@ export default function GuidedProjectNew() {
     </div>
   );
 
+  if (!editProjectId && creationMode === "choose") return <div className="space-y-6">
+    <div className="text-sm font-semibold text-brand-700"><Link to="/projects">‹ Projects</Link><span className="mx-2 text-slate-300">›</span>Create Project</div>
+    <section className="relative overflow-hidden rounded-[28px] bg-slate-950 px-6 py-10 text-white shadow-2xl sm:px-10 sm:py-12"><div className="absolute inset-0 bg-[radial-gradient(circle_at_15%_15%,rgba(52,211,153,.2),transparent_34%),radial-gradient(circle_at_85%_20%,rgba(139,92,246,.2),transparent_32%)]" /><div className="relative max-w-4xl"><div className="text-xs font-black uppercase tracking-[0.22em] text-emerald-300">Start a new project</div><h1 className="mt-4 text-3xl font-black leading-tight sm:text-5xl">Choose how you want to begin</h1><p className="mt-4 max-w-3xl text-sm leading-7 text-slate-300 sm:text-base">If you are new, describe the idea in your own words and let SEnuke AI turn it into a researched project direction. If you already know the details, use the structured setup.</p></div></section>
+    <div className="grid gap-5 md:grid-cols-2">
+      {[
+        { key:"new_website", icon:"✦", badge:"Recommended for a new launch", title:"Create a new website", detail:"Start with a domain and business information. SEnuke builds the Business Brain, researches the opportunity, market and keywords, creates Website and Unified Strategy, then generates the approved website.", points:["No website crawl is required before Strategy","Website Intelligence baseline starts automatically after publishing"], tone:"border-emerald-300 bg-gradient-to-br from-emerald-50 via-white to-cyan-50", iconTone:"bg-slate-950 text-white" },
+        { key:"existing_growth", icon:"↗", badge:"Live website", title:"Improve an existing website", detail:"Provide the current website and goals. SEnuke collects keyword and crawl evidence, finds the gaps, creates the Unified Strategy, and prepares controlled website updates.", points:["Website Intelligence and Gap Analysis before Strategy","Existing pages are preserved and updated selectively"], tone:"border-cyan-200 bg-gradient-to-br from-cyan-50 via-white to-blue-50", iconTone:"bg-cyan-700 text-white" },
+        { key:"research_only", icon:"⌕", badge:"Explore before committing", title:"Research a business idea", detail:"Have an open AI discussion about a market, audience, offer, geography, competitors, risks, and opportunities. Review the research proposal before deciding whether to create a project.", points:["No project is created until approval","Approved research can become a project without re-entering it"], tone:"border-violet-200 bg-gradient-to-br from-violet-50 via-white to-fuchsia-50", iconTone:"bg-violet-700 text-white" },
+      ].map((option)=><button key={option.key} type="button" onClick={()=>openAiCreation(option.key)} className={`group rounded-[24px] border-2 p-7 text-left shadow-sm transition hover:-translate-y-1 hover:shadow-xl sm:p-8 ${option.tone}`}><div className="flex items-start justify-between gap-4"><span className={`grid h-14 w-14 place-items-center rounded-2xl text-2xl shadow-lg ${option.iconTone}`}>{option.icon}</span><span className="rounded-full bg-white/90 px-3 py-1.5 text-[10px] font-black uppercase tracking-wide text-slate-600 shadow-sm">{option.badge}</span></div><h2 className="mt-6 text-2xl font-black text-slate-950">{option.title}</h2><p className="mt-2 text-sm leading-7 text-slate-600">{option.detail}</p><div className="mt-5 space-y-2">{option.points.map((item)=><div key={item} className="flex items-start gap-3 text-xs font-bold leading-5 text-slate-700"><span className="mt-0.5 grid h-5 w-5 shrink-0 place-items-center rounded-full bg-white text-[10px] text-emerald-700">✓</span>{item}</div>)}</div><div className="mt-7 flex items-center justify-between border-t border-slate-200/80 pt-5"><span className="text-xs font-bold text-slate-500">AI-guided project path</span><span className="text-sm font-black text-slate-950 transition group-hover:translate-x-1">Continue →</span></div></button>)}
+      <button type="button" onClick={() => rememberCreationMode("classic", "detailed_setup")} className="group rounded-[24px] border-2 border-slate-200 bg-white p-7 text-left shadow-sm transition hover:-translate-y-1 hover:border-brand-300 hover:shadow-xl sm:p-8"><div className="flex items-start justify-between gap-4"><span className="grid h-14 w-14 place-items-center rounded-2xl bg-brand-50 text-2xl text-brand-700">▦</span><span className="rounded-full bg-slate-100 px-3 py-1.5 text-[10px] font-black uppercase tracking-wide text-slate-600">Advanced control</span></div><h2 className="mt-6 text-2xl font-black text-slate-950">Detailed project setup</h2><p className="mt-2 text-sm leading-7 text-slate-600">Enter the business type, website situation, locations, goals, deliverables, client ownership, and advanced preferences directly.</p><div className="mt-5 space-y-2">{["Best for agencies and experienced users","The same workflow rules still apply"].map((item)=><div key={item} className="flex items-start gap-3 text-xs font-bold leading-5 text-slate-700"><span className="mt-0.5 grid h-5 w-5 shrink-0 place-items-center rounded-full bg-brand-50 text-[10px] text-brand-700">✓</span>{item}</div>)}</div><div className="mt-7 flex items-center justify-between border-t pt-5"><span className="text-xs font-bold text-slate-500">Structured project setup</span><span className="text-sm font-black text-slate-950 transition group-hover:translate-x-1">Open setup →</span></div></button>
+    </div>
+    <Card className="border-slate-200 bg-slate-50 p-4 text-center text-xs leading-5 text-slate-600">The selected path controls the intake and valid next action. Every path still produces one governed Business Brain and preserves approved research.</Card>
+  </div>;
+
   if (!editProjectId && creationMode === "ai") return <ConversationalProjectIntake
     draft={form}
     patch={patch}
@@ -374,7 +479,7 @@ export default function GuidedProjectNew() {
     message={message}
     onCreate={createProject}
     onStart={saveConversationDraft}
-    onUseClassic={() => setCreationMode("classic")}
+    onUseClassic={() => rememberCreationMode("classic")}
     inheritedLocation={inheritedLocationLabel || undefined}
     inheritedLocationDetails={inheritedLocationValues}
   />;
@@ -400,7 +505,7 @@ export default function GuidedProjectNew() {
       patch({ niche: typeof values.industryNiche === "string" ? values.industryNiche : form.niche, notes: typeof values.businessDescription === "string" ? `${form.notes ? `${form.notes}\n` : ""}Business description: ${values.businessDescription}${typeof values.targetAudience === "string" ? `\nTarget audience: ${values.targetAudience}` : ""}${values.productsServices ? `\nMain products/services: ${Array.isArray(values.productsServices) ? values.productsServices.join(", ") : values.productsServices}` : ""}${values.seedKeywords ? `\nSeed keywords: ${Array.isArray(values.seedKeywords) ? values.seedKeywords.join(", ") : values.seedKeywords}` : ""}` : form.notes, brandVoice: typeof values.brandVoice === "string" ? values.brandVoice : form.brandVoice, cmsPlatform: typeof values.cms === "string" ? values.cms : form.cmsPlatform, primaryGoal: typeof values.primaryGoal === "string" ? canonicalPrimaryGoal(values.primaryGoal) : form.primaryGoal, locationCountry: typeof location.country === "string" ? location.country : form.locationCountry, locationStateProvince: typeof location.stateProvince === "string" ? location.stateProvince : form.locationStateProvince, locationCity: typeof location.city === "string" ? location.city : form.locationCity, targetLocations: suggestedMarkets.length ? suggestedMarkets : form.targetLocations, competitorsText: Array.isArray(values.competitors) ? values.competitors.join("\n") : form.competitorsText });
     };
     return <form onSubmit={createProject} onFocusCapture={showFieldGuide} onClickCapture={showFieldGuide} className="space-y-5">
-      <div className="flex flex-wrap items-start justify-between gap-4"><div><div className="text-sm font-semibold text-brand-700"><Link to="/projects">‹ Projects</Link><span className="mx-2 text-slate-300">›</span>Create Project</div><h1 className="mt-2 text-[28px] font-bold text-slate-950">Tell us about your project</h1><p className="mt-1 text-sm text-slate-500">Answer one simple question at a time. You can review everything before creating the project.</p></div><button type="button" onClick={() => setCreationMode("ai")} className="rounded-lg bg-gradient-to-r from-brand-600 to-violet-600 px-4 py-2 text-sm font-bold text-white shadow-sm">Use AI Conversation</button></div>
+      <div className="flex flex-wrap items-start justify-between gap-4"><div><div className="text-sm font-semibold text-brand-700"><Link to="/projects">‹ Projects</Link><span className="mx-2 text-slate-300">›</span>Create Project</div><h1 className="mt-2 text-[28px] font-bold text-slate-950">Tell us about your project</h1><p className="mt-1 text-sm text-slate-500">Answer one simple question at a time. You can review everything before creating the project.</p></div><button type="button" onClick={()=>openAiCreation()} className="rounded-lg bg-gradient-to-r from-brand-600 to-violet-600 px-4 py-2 text-sm font-bold text-white shadow-sm">Use AI Conversation</button></div>
       {message && <Card className="border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">{message}</Card>}
       <div className="overflow-x-auto rounded-xl border bg-white p-4 shadow-sm"><div className="flex min-w-[620px] items-center">{questions.map((question, index) => <div key={question.title} className="flex flex-1 items-center"><button type="button" disabled={index > step} onClick={() => index <= step && setStep(index)} className="flex min-w-0 flex-1 flex-col items-center text-center"><span className={`grid h-8 w-8 place-items-center rounded-full text-xs font-black ${index < step ? "bg-emerald-500 text-white" : index === step ? "bg-brand-600 text-white ring-4 ring-brand-100" : "bg-slate-100 text-slate-400"}`}>{index < step ? "✓" : index + 1}</span><span className={`mt-2 text-[11px] font-bold ${index === step ? "text-brand-700" : "text-slate-500"}`}>{question.title}</span></button>{index < questions.length - 1 && <div className={`h-0.5 w-6 ${index < step ? "bg-emerald-400" : "bg-slate-200"}`} />}</div>)}</div></div>
       <div className="grid items-start gap-5 xl:grid-cols-[minmax(0,1fr)_340px]"><Card className="p-6"><div className="flex items-start justify-between gap-4"><div><div className="text-xs font-black uppercase tracking-wide text-brand-600">Question {step + 1} of {questions.length}</div><h2 className="mt-1 text-xl font-black text-slate-950">{questions[step].title}</h2><p className="mt-1 text-sm text-slate-500">{questions[step].helper}</p></div><span className="rounded-full bg-brand-50 px-3 py-1 text-xs font-black text-brand-700">{Math.round(((step + 1) / questions.length) * 100)}%</span></div>

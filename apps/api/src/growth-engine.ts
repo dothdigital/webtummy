@@ -1,4 +1,6 @@
-export const GROWTH_ENGINE_VERSION = "growth-engine-v1";
+import { GROWTH_INTELLIGENCE_CONTRACT_VERSION, scoreGrowthOpportunity } from "./growth-intelligence-engine.js";
+
+export const GROWTH_ENGINE_VERSION = GROWTH_INTELLIGENCE_CONTRACT_VERSION;
 
 export type GrowthSignalDraft = {
   category: string;
@@ -31,6 +33,7 @@ export type CandidateFactors = {
   readiness: number;
   learningValue: number;
   riskPenalty: number;
+  reach?: number;
 };
 
 export type GrowthCandidate = {
@@ -61,30 +64,46 @@ export type BlueprintPhaseItem = {
   rationale: string;
 };
 
-const SCORE_WEIGHTS = {
-  impact: 0.30,
-  confidence: 0.20,
-  urgency: 0.15,
-  strategicFit: 0.15,
-  efficiency: 0.10,
-  readiness: 0.05,
-  learningValue: 0.05,
-} as const;
+function boundedStorageText(value: string, maximumLength: number) {
+  const text = value.trim();
+  if (text.length <= maximumLength) return text;
+  const candidate = text.slice(0, Math.max(1, maximumLength - 1));
+  const wordBoundary = candidate.lastIndexOf(" ");
+  const shortened = wordBoundary >= Math.floor(maximumLength * 0.6) ? candidate.slice(0, wordBoundary) : candidate;
+  return `${shortened.trimEnd()}…`;
+}
+
+/** Keep every NextBestAction write inside the Prisma schema's varchar limits. */
+export function normalizeGrowthCandidateForStorage(candidate: GrowthCandidate): GrowthCandidate {
+  return {
+    ...candidate,
+    dedupeKey: boundedStorageText(candidate.dedupeKey, 191),
+    actionType: boundedStorageText(candidate.actionType, 80),
+    title: boundedStorageText(candidate.title, 255),
+    businessGoal: boundedStorageText(candidate.businessGoal, 255),
+    route: boundedStorageText(candidate.route, 80),
+    estimatedEffort: boundedStorageText(candidate.estimatedEffort, 40) as GrowthCandidate["estimatedEffort"],
+    approvalType: boundedStorageText(candidate.approvalType, 60) as GrowthCandidate["approvalType"],
+    riskLevel: boundedStorageText(candidate.riskLevel, 40) as GrowthCandidate["riskLevel"],
+  };
+}
 
 function bounded(value: number) {
   return Math.max(0, Math.min(100, Math.round(value)));
 }
 
 export function scoreGrowthCandidate(factors: CandidateFactors) {
-  const weighted =
-    bounded(factors.impact) * SCORE_WEIGHTS.impact +
-    bounded(factors.confidence) * SCORE_WEIGHTS.confidence +
-    bounded(factors.urgency) * SCORE_WEIGHTS.urgency +
-    bounded(factors.strategicFit) * SCORE_WEIGHTS.strategicFit +
-    bounded(factors.efficiency) * SCORE_WEIGHTS.efficiency +
-    bounded(factors.readiness) * SCORE_WEIGHTS.readiness +
-    bounded(factors.learningValue) * SCORE_WEIGHTS.learningValue;
-  return bounded(weighted - Math.max(0, factors.riskPenalty));
+  return scoreGrowthOpportunity({
+    impact: bounded(factors.impact),
+    goalAlignment: bounded(factors.strategicFit),
+    confidence: bounded(factors.confidence),
+    reach: bounded(factors.reach ?? factors.urgency),
+    urgency: bounded(factors.urgency),
+    learningValue: bounded(factors.learningValue),
+    ease: bounded(factors.efficiency),
+    readiness: bounded(factors.readiness),
+    risk: bounded(factors.riskPenalty),
+  });
 }
 
 export function signalFreshness(signal: Pick<GrowthSignalDraft, "effectiveDate" | "expiresAt">, now = new Date()) {
@@ -126,7 +145,32 @@ type CandidateContext = {
   hasLeadMagnet: boolean;
   hasApprovedStrategy: boolean;
   hasRecentKeywordResearch: boolean;
+  strategyId?: string | null;
+  strategyVersion?: number | null;
+  strategyFocusAreas?: Array<{
+    key: string;
+    title: string;
+    priority: "critical" | "high" | "medium" | "low";
+    objective: string;
+    whyNow: string;
+    actions: string[];
+    channels: string[];
+    successMeasures: string[];
+    dependencies: string[];
+  }>;
 };
+
+function strategyRoute(channels: string[]) {
+  const value = channels.join(" ").toLowerCase();
+  if (/local|google business|gbp/.test(value)) return "local_seo";
+  if (/authority|backlink/.test(value)) return "authority";
+  if (/technical|crawl|performance/.test(value)) return "technical";
+  return "content";
+}
+
+function strategyPriorityScore(priority: "critical" | "high" | "medium" | "low") {
+  return priority === "critical" ? 98 : priority === "high" ? 90 : priority === "medium" ? 76 : 62;
+}
 
 const actionTemplates: Record<string, {
   actionType: string;
@@ -285,6 +329,42 @@ export function generateGrowthCandidates(ctx: CandidateContext, excludedDedupeKe
       targetEntities: ["website", "crawl_findings"],
       dependencies: [],
       evidenceKeys: ["crawl:high-severity-open"],
+      factors,
+      priorityScore: scoreGrowthCandidate(factors),
+    });
+  }
+
+  for (const [index, focus] of (ctx.strategyFocusAreas ?? []).slice(0, 6).entries()) {
+    const normalizedKey = focus.key.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || `focus-${index + 1}`;
+    const dedupeKey = boundedStorageText(`growth:${ctx.projectId}:approved-strategy:${ctx.strategyId ?? "current"}:${normalizedKey}`, 191);
+    if (excludedDedupeKeys.has(dedupeKey)) continue;
+    const base = strategyPriorityScore(focus.priority);
+    const factors: CandidateFactors = {
+      impact: base,
+      confidence: 94,
+      urgency: bounded(base - index * 3),
+      strategicFit: 100,
+      efficiency: focus.priority === "critical" ? 82 : 76,
+      readiness: focus.dependencies.length ? 68 : 92,
+      learningValue: 80,
+      riskPenalty: 3,
+    };
+    candidates.push({
+      dedupeKey,
+      actionType: `strategy_${normalizedKey}`.slice(0, 80),
+      title: focus.title,
+      recommendation: [focus.objective, focus.actions[0]].filter(Boolean).join(" Next: "),
+      reasoningSummary: `${focus.whyNow} This recommendation comes directly from approved Strategy v${ctx.strategyVersion ?? "current"} and is sequenced ahead of disconnected channel work.`,
+      expectedImpact: focus.successMeasures.join(" · ") || "Advances the approved strategic objective with a measurable result.",
+      businessGoal: ctx.primaryGoal,
+      route: strategyRoute(focus.channels),
+      estimatedEffort: focus.priority === "critical" ? "medium" : "low",
+      approvalType: "user_approval",
+      riskLevel: "low",
+      urgency: factors.urgency,
+      targetEntities: ["approved_strategy", focus.key, ...focus.channels.map((channel) => channel.toLowerCase().replace(/\s+/g, "_"))],
+      dependencies: [],
+      evidenceKeys: [`strategy:${ctx.strategyId ?? "approved"}`, `strategy-focus:${focus.key}`],
       factors,
       priorityScore: scoreGrowthCandidate(factors),
     });

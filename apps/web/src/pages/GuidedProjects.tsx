@@ -30,11 +30,39 @@ function nextActionHref(project: GuidedProject, task: GuidedExecutionTask | null
   if (!task) return workflowStep ? milestoneHref(project, workflowStep.actionUrl, workflowStep.stepKey) : `/guided-projects/${project.id}`;
   if (["submitted_for_approval", "waiting_for_approval", "pending_approval", "needs_approval"].includes(task.status)) return `/approvals?projectId=${encodeURIComponent(project.id)}&taskId=${encodeURIComponent(task.id)}`;
   if (task.moduleName === "opportunity") return `/opportunities?projectId=${encodeURIComponent(project.id)}`;
-  if (task.relatedUrl) return task.relatedUrl.startsWith(`/guided-projects/${project.id}`) ? task.relatedUrl : `${task.relatedUrl}${task.relatedUrl.includes("?") ? "&" : "?"}projectId=${encodeURIComponent(project.id)}`;
+  if (task.relatedUrl) {
+    if (task.relatedUrl.startsWith(`/guided-projects/${project.id}`) || /[?&]projectId=/.test(task.relatedUrl)) return task.relatedUrl;
+    return `${task.relatedUrl}${task.relatedUrl.includes("?") ? "&" : "?"}projectId=${encodeURIComponent(project.id)}`;
+  }
   if (task.moduleName === "content") return task.status === "ready" ? `/ai-content?projectId=${encodeURIComponent(project.id)}&taskId=${encodeURIComponent(task.id)}&open=1` : `/ai-content?projectId=${encodeURIComponent(project.id)}#publishing`;
-  const routes: Record<string, string> = { opportunity: "/opportunities", keyword_research: "/keywords", site_analysis: "/site-analysis", strategy: "/strategy", strategy_approval: "/strategy", site_architect: "/site-architect", local_seo: "/local-seo", publishing: "/ai-content", backlinks: "/backlinks", social: "/social-strategy", growth: "/growth", reports: "/reports" };
+  const routes: Record<string, string> = {
+    opportunity: "/opportunities",
+    keyword_research: "/keywords",
+    keyword_intelligence: "/keywords",
+    site_analysis: "/site-analysis",
+    website_intelligence: "/site-analysis",
+    seo: "/gap-analysis",
+    gap_analysis: "/gap-analysis",
+    strategy: "/strategy",
+    strategy_approval: "/strategy",
+    site_architect: "/site-architect",
+    website: "/site-architect",
+    lead_magnets: "/lead-magnets",
+    ai_citations: "/ai-citations",
+    local_seo: "/local-seo",
+    authority: "/backlinks",
+    backlinks: "/backlinks",
+    publishing: "/ai-content",
+    social: "/social-strategy",
+    growth: "/growth",
+    measurement: "/growth",
+    reports: "/reports",
+    execution_plan: `/guided-projects/${project.id}?tab=execution#execution-tasks`,
+  };
   const route = routes[task.moduleName];
-  return route ? `${route}?projectId=${encodeURIComponent(project.id)}` : `/guided-projects/${project.id}?tab=execution#execution-tasks`;
+  if (!route) return `/guided-projects/${project.id}?tab=execution#execution-tasks`;
+  if (route.startsWith(`/guided-projects/${project.id}`)) return route;
+  return `${route}?projectId=${encodeURIComponent(project.id)}`;
 }
 
 function nextWorkflowStep(project: GuidedProject) {
@@ -177,7 +205,7 @@ export default function GuidedProjects() {
   const visibleProjects = useMemo(() => {
     const query = search.trim().toLowerCase();
     return projects.filter((project) => {
-      const matchesSearch = !query || [project.name, project.businessName, project.website?.domain, project.websiteUrl, project.projectType]
+      const matchesSearch = !query || [project.name, project.agencyClient?.name, project.businessName, project.website?.domain, project.websiteUrl, project.projectType]
         .filter(Boolean).some((value) => String(value).toLowerCase().includes(query));
       const matchesFilter = filter === "all"
         || (filter === "completed" && project.status === "completed")
@@ -252,15 +280,14 @@ export default function GuidedProjects() {
             const breakdown = projectProgressBreakdown(project);
             const needsReview = projectNeedsReview(project);
             const nextTitle = task?.title ?? workflowStep?.title ?? (project.status === "completed" ? "Project complete" : "Review project overview");
-            // The project list is an overview. Open the project first so the
-            // user can review its evidence, milestones, and task context before
-            // following the task's module action from the detail page.
-            const nextHref = `/guided-projects/${project.id}`;
+            const nextHref = nextActionHref(project, task, workflowStep);
+            const projectHref = `/guided-projects/${project.id}`;
             return <article key={project.id} className="rounded-2xl border border-violet-100 bg-white px-5 py-5 shadow-sm transition hover:border-teal-200 hover:shadow-md sm:px-6">
               <div className="flex items-start justify-between gap-4">
                 <div className="flex min-w-0 items-center gap-4">
                   <div className={`flex h-14 w-14 shrink-0 items-center justify-center rounded-2xl text-lg font-bold ${avatarTones[index % avatarTones.length]}`}>{project.name.slice(0, 2).toUpperCase()}</div>
                   <div className="min-w-0">
+                    {project.agencyClient?.name && <div className="mb-0.5 truncate text-[11px] font-black uppercase tracking-[0.12em] text-teal-700">Client · {project.agencyClient.name}</div>}
                     <Link to={`/guided-projects/${project.id}`} className="block truncate text-lg font-bold text-slate-950 hover:text-teal-700">{project.name}</Link>
                     <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-sm text-slate-500">
                       {project.website?.id ? <Link to={`/website-projects/${project.website.id}`} className="font-semibold text-teal-700 hover:underline">{project.website.rootUrl ?? project.websiteUrl ?? project.website.domain}</Link> : <span>{project.websiteUrl ?? "No website connected"}</span>}
@@ -300,7 +327,7 @@ export default function GuidedProjects() {
 
               <div className="mt-5 flex flex-col gap-3 border-t border-violet-50 pt-4 md:flex-row md:items-center md:justify-between">
                 <div className="flex min-w-0 flex-col gap-2 text-sm text-slate-500 sm:flex-row sm:items-center sm:gap-7"><Link to={nextHref} className="group inline-flex min-w-0 items-center gap-2 rounded-lg border border-teal-200 bg-teal-50 px-3 py-2 text-teal-800 transition hover:border-teal-400 hover:bg-teal-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-300"><span className="shrink-0 text-[10px] font-black uppercase tracking-wide text-teal-600">Next task</span><span className="truncate font-black">{nextTitle}</span><span aria-hidden="true" className="shrink-0 font-black transition-transform group-hover:translate-x-1">→</span></Link><div className="shrink-0">Updated <span className="font-bold text-slate-800">{relativeUpdated(project.updatedAt)}</span></div></div>
-                <div className="flex shrink-0 items-center gap-4">{canEditProjects && !["archived", "intake_draft"].includes(project.status) && <Link to={`/projects/new?edit=${project.id}`} className="text-xs font-bold text-teal-700 hover:text-teal-900">Edit</Link>}{canManageProjects && project.status !== "archived" && <button disabled={statusBusy === project.id} type="button" onClick={() => void changeArchiveStatus(project, "archive")} className="text-xs font-bold text-slate-500 hover:text-amber-700 disabled:opacity-50">Archive</button>}{canManageProjects && project.status === "archived" && <><button disabled={statusBusy === project.id} type="button" onClick={() => void changeArchiveStatus(project, "restore")} className="text-xs font-bold text-teal-700 disabled:opacity-50">Restore</button><button type="button" onClick={() => setDeleteTarget(project)} className="text-xs font-bold text-rose-600 hover:text-rose-800">Permanently delete</button></>}<Link to={project.status === "intake_draft" ? `/projects/new?resumeConversation=${project.id}` : nextHref} className="text-sm font-bold text-teal-700 hover:text-teal-900">{project.status === "archived" ? "View project →" : project.status === "intake_draft" ? "Continue intake →" : "Open project →"}</Link></div>
+                <div className="flex shrink-0 items-center gap-4">{canEditProjects && !["archived", "intake_draft"].includes(project.status) && <Link to={`/projects/new?edit=${project.id}`} className="text-xs font-bold text-teal-700 hover:text-teal-900">Edit</Link>}{canManageProjects && project.status !== "archived" && <button disabled={statusBusy === project.id} type="button" onClick={() => void changeArchiveStatus(project, "archive")} className="text-xs font-bold text-slate-500 hover:text-amber-700 disabled:opacity-50">Archive</button>}{canManageProjects && project.status === "archived" && <><button disabled={statusBusy === project.id} type="button" onClick={() => void changeArchiveStatus(project, "restore")} className="text-xs font-bold text-teal-700 disabled:opacity-50">Restore</button><button type="button" onClick={() => setDeleteTarget(project)} className="text-xs font-bold text-rose-600 hover:text-rose-800">Permanently delete</button></>}<Link to={project.status === "intake_draft" ? `/projects/new?resumeConversation=${project.id}` : projectHref} className="text-sm font-bold text-teal-700 hover:text-teal-900">{project.status === "archived" ? "View project →" : project.status === "intake_draft" ? "Continue intake →" : "Open project →"}</Link></div>
               </div>
             </article>;
           })}

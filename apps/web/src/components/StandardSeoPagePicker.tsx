@@ -18,6 +18,15 @@ function normalized(value: string) {
   return value.toLocaleLowerCase().replace(/^https?:\/\/[^/]+/i, "").replace(/[^a-z0-9]+/g, " ").trim();
 }
 
+function normalizedPagePath(value: string) {
+  let path = value;
+  try { path = new URL(value, "https://senuke.local").pathname; } catch { /* use the raw value */ }
+  return normalized(decodeURIComponent(path)
+    .replace(/\/index(?:\.html?)?\/?$/i, "/")
+    .replace(/\.html?\/?$/i, "")
+    .replace(/\/+$/, ""));
+}
+
 function cleanSuggestions(values: string[]) {
   const seen = new Set<string>();
   return values.map((value) => value.replace(/\s+/g, " ").trim()).filter((value) => {
@@ -103,9 +112,7 @@ function matchingCandidate(preset: StandardPagePreset, candidates: PageCandidate
     team: ["our team", "team", "people"],
   };
   return candidates.find((candidate) => {
-    let pathname = candidate.url;
-    try { pathname = new URL(candidate.url, "https://senuke.local").pathname; } catch { /* use the raw value */ }
-    const pathName = normalized(pathname).replace(/\s+/g, " ");
+    const pathName = normalizedPagePath(candidate.url).replace(/\s+/g, " ");
     const title = normalized(candidate.title ?? "").replace(/\s+/g, " ");
     return (aliases[preset.key] ?? [preset.slug]).some((alias) => pathName === normalized(alias) || title === normalized(alias));
   });
@@ -181,8 +188,8 @@ export default function StandardSeoPagePicker({
       {presets.map((preset) => {
         const alreadyPlanned = plannedPages.some((page) => {
           const name = normalized(page.pageName);
-          const url = normalized(page.targetUrl);
-          return name === normalized(preset.title) || url === normalized(preset.slug);
+          const url = normalizedPagePath(page.targetUrl);
+          return name === normalized(preset.title) || url === normalizedPagePath(preset.slug);
         });
         const existingMatch = matchingCandidate(preset, pageCandidates);
         return <StandardPageCard key={preset.key} preset={preset} alreadyPlanned={alreadyPlanned} existingMatch={existingMatch} disabled={disabled} onAdd={(canonicalKeyword) => onAdd({

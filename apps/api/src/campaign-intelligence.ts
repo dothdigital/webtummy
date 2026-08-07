@@ -68,10 +68,10 @@ export const projectWorkflowDefinitions: ProjectWorkflowDefinition[] = [
   },
   {
     stepKey: "keyword_analysis",
-    title: "Run keyword analysis",
-    description: "Research target keywords, buyer intent, topical clusters, competitor gaps, difficulty, opportunity score, and revenue potential.",
+    title: "Complete Keyword Intelligence",
+    description: "Discover and validate primary, supporting, long-tail, question, commercial, and local keywords; then evaluate intent, demand, competition, topic clusters, entities, AI-search opportunities, and page direction.",
     priority: "high",
-    actionLabel: "Add Keywords",
+    actionLabel: "Start Keyword Intelligence",
     sortOrder: 40,
   },
   {
@@ -112,9 +112,33 @@ export function hasProjectWebsite(project: CampaignProjectContext) {
   return Boolean(project.websiteId || project.websiteUrl || project.website?.id || project.website?.rootUrl);
 }
 
+/**
+ * Website status is the authoritative source for the website lifecycle. Older
+ * intake options used `existing_website` as a generic service-business type,
+ * which could contradict a user's explicit New Website selection.
+ */
+export function projectTypeForWebsiteSituation(projectType: string, websiteStatus?: string | null): ProjectType {
+  if (["new_website_required", "website_planned"].includes(String(websiteStatus ?? "")) && projectType === "existing_website") {
+    return "new_business";
+  }
+  return projectTypes.includes(projectType as ProjectType) ? projectType as ProjectType : "new_business";
+}
+
 export function isExistingWebsiteCampaign(project: CampaignProjectContext) {
   if (project.websiteStatus) return project.websiteStatus === "existing_website";
   return project.projectType === "existing_website" || project.projectType === "local_seo" || hasProjectWebsite(project);
+}
+
+/**
+ * A new-site project is still pre-launch until a non-draft deployment exists.
+ * Market, competitor, keyword, website-planning, and Strategy intelligence are
+ * collected before launch. Only evidence that requires a live site (crawl,
+ * technical/site gaps, and the Website Intelligence baseline) waits until the
+ * website is published.
+ */
+export function isPreLaunchWebsiteCampaign(project: CampaignProjectContext) {
+  return ["new_website_required", "website_planned"].includes(String(project.websiteStatus ?? ""))
+    && !isExistingWebsiteCampaign(project);
 }
 
 export function requiresSiteAnalysisBeforeStrategy(project: CampaignProjectContext) {
@@ -176,6 +200,7 @@ export function campaignSignals(project: CampaignProjectContext) {
 
 export function buildCampaignExecutionTasks(project: CampaignProjectContext): CampaignExecutionTaskInput[] {
   const signals = campaignSignals(project);
+  const preLaunchWebsite = isPreLaunchWebsiteCampaign(project);
   const {
     contextText,
     hasWebsite,
@@ -198,9 +223,11 @@ export function buildCampaignExecutionTasks(project: CampaignProjectContext): Ca
     {
       key: isLocalSeo ? "local-keyword-plan" : "seo-keyword-plan",
       moduleName: "content",
-      title: "SEO Page Map & Content Plan",
-      description: "Group approved keywords by intent, assign one owner page, prepare URLs and SEO briefs, then review FAQs, proof, Local SEO, internal links, and publishing requirements in one governed workflow.",
-      actionButtonLabel: "Create SEO Plan",
+      title: preLaunchWebsite ? "Website Plan" : "SEO Page Map & Content Plan",
+      description: preLaunchWebsite
+        ? "Turn the approved Website and Unified Strategy into a build-ready sitemap, navigation, page purposes, content briefs, conversion paths, Local SEO, AI Citation, authority, internal-link, schema, media, and publishing requirements."
+        : "Group approved keywords by intent, assign one owner page, prepare URLs and SEO briefs, then review FAQs, proof, Local SEO, internal links, and publishing requirements in one governed workflow.",
+      actionButtonLabel: preLaunchWebsite ? "Create Website Plan" : "Create SEO Plan",
       relatedUrl: "/guided-projects",
       priority: "high",
       automationLevel: "generate",
@@ -208,13 +235,13 @@ export function buildCampaignExecutionTasks(project: CampaignProjectContext): Ca
     },
     ...(hasWebsite ? [{
       key: "optimize-existing-site",
-      moduleName: "site_analysis",
-      title: isLocalSeo ? "Fix local site and service-page issues" : "Fix site analysis issues",
+      moduleName: "gap_analysis",
+      title: "SEO & Gap Execution Plan",
       description: isLocalSeo
-        ? "Use the crawl to improve service pages, local landing pages, titles, internal links, indexability, CTAs, and local trust signals."
-        : "Use the crawl to improve technical SEO, page structure, titles, metadata, internal links, indexability, CTAs, and keyword alignment.",
-      actionButtonLabel: "Review Site Issues",
-      relatedUrl: "/site-analysis",
+        ? "Convert completed Site Analysis, keyword and location research, Local SEO evidence, and Gap Analysis into grouped actions for service pages, technical fixes, internal links, content, and local trust signals."
+        : "Convert completed Site Analysis, keyword and location research, page mapping, and Gap Analysis into grouped actions for technical SEO, content, internal links, AI visibility, and page ownership.",
+      actionButtonLabel: "Review Consolidated Plan",
+      relatedUrl: "/gap-analysis",
       priority: "high",
       automationLevel: "prepare",
       requiresApproval: true,

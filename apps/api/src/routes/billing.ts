@@ -5,6 +5,17 @@ import { prisma } from "@webtummy/db";
 import { requireAuth, requireRole } from "../middleware.js";
 import { projectClientIdForRequest } from "../project-scope.js";
 import { hasWorkspacePermission, isWorkspaceOwner, workspaceContext } from "../workspace-access.js";
+import { config } from "../config.js";
+import {
+  checkoutUrlForPrice,
+  commercialCatalog,
+  commercialRegistrationPolicy,
+  COMMERCIAL_REGISTRATION_POLICY_ID,
+  ensureCommercialDefaults,
+  processJvZooIpn,
+  recordCommercialAdjustment,
+  workspaceCommercialSummary,
+} from "../commercial-service.js";
 import {
   billingBlockReason,
   billingPlanForClient,
@@ -73,6 +84,35 @@ const reportEmailPreferencesSchema = z.object({
   rankingChangeEmailEnabled: z.boolean(),
 });
 
+const commercialCheckoutSchema = z.object({
+  priceId: z.string().trim().min(1).optional(),
+  planCode: z.string().trim().min(1).optional(),
+  billingInterval: z.enum(["monthly", "annual"]).default("monthly"),
+  priceClass: z.enum(["founding", "standard", "interim", "legacy"]).default("standard"),
+}).refine((value) => value.priceId || value.planCode, "Choose a commercial price.");
+
+const commercialPriceSchema = z.object({
+  providerProductRef: z.string().trim().max(191).nullable().optional(),
+  checkoutUrl: z.string().trim().url().max(1000).nullable().optional(),
+  amountCents: z.number().int().min(0).max(100_000_000).optional(),
+  effectiveFrom: z.string().datetime().optional(),
+  status: z.enum(["active", "inactive"]).optional(),
+});
+
+const commercialAdjustmentSchema = z.object({
+  entitlementKey: z.string().trim().regex(/^(feature|limit)\.[a-zA-Z0-9_.-]{1,100}$/),
+  value: z.union([z.boolean(), z.number(), z.string(), z.null()]),
+  mode: z.enum(["replace", "add"]).default("replace"),
+  reasonCode: z.string().trim().min(2).max(80),
+  justification: z.string().trim().min(5).max(2000),
+  expiresAt: z.string().datetime().nullable().optional(),
+});
+
+const registrationPolicySchema = z.object({
+  trialEnabled: z.boolean(),
+  trialDays: z.number().int().min(1).max(90),
+});
+
 const allowedDescriptionTags = new Set(["p", "br", "strong", "b", "em", "i", "u", "ul", "ol", "li"]);
 
 function sanitizePlanDescription(value: string) {
@@ -131,23 +171,39 @@ async function clientForBillingRequest(req: Request) {
 async function billingStatusForClient(client: Awaited<ReturnType<typeof clientForBillingRequest>>) {
   const plan = await billingPlanForClient(client.plan);
   const view = plan ? planView(plan) : null;
+  const workspace = await prisma.workspace.findUnique({ where: { legacyClientId: client.id } });
+  const commercial = workspace ? await workspaceCommercialSummary(workspace.id) : null;
   const now = new Date();
   const trialEndsAt = client.trialEndsAt?.toISOString() ?? null;
   const manualAccessEndsAt = client.manualAccessEndsAt?.toISOString() ?? null;
   const trialDaysRemaining = client.trialEndsAt ? Math.max(0, Math.ceil((client.trialEndsAt.getTime() - now.getTime()) / (24 * 60 * 60 * 1000))) : 0;
+  const trialDurationDays = client.trialStartedAt && client.trialEndsAt
+    ? Math.max(1, Math.round((client.trialEndsAt.getTime() - client.trialStartedAt.getTime()) / (24 * 60 * 60 * 1000)))
+    : 0;
   const manualAccessDaysRemaining = client.manualAccessEndsAt ? Math.max(0, Math.ceil((client.manualAccessEndsAt.getTime() - now.getTime()) / (24 * 60 * 60 * 1000))) : 0;
   return {
-    plan: view,
-    status: client.aiSubscriptionStatus,
-    hasAccess: hasBillingAccess(client),
-    blockReason: hasBillingAccess(client) ? null : billingBlockReason(client),
+    plan: commercial?.subscription ? {
+      ...(view ?? {}),
+      code: commercial.subscription.plan.code,
+      name: commercial.subscription.plan.name,
+      priceMonthly: commercial.subscription.price?.amountCents ? commercial.subscription.price.amountCents / 100 : view?.priceMonthly ?? 0,
+      priceMonthlyCents: commercial.subscription.price?.amountCents ?? view?.priceMonthlyCents ?? 0,
+    } : view,
+    status: commercial?.workspace.commercialState ?? client.aiSubscriptionStatus,
+    hasAccess: commercial ? ["full", "grace"].includes(commercial.workspace.accessMode) : hasBillingAccess(client),
+    blockReason: commercial && !["full", "grace"].includes(commercial.workspace.accessMode)
+      ? `Workspace access is ${commercial.workspace.accessMode.replace(/_/g, " ")}.`
+      : hasBillingAccess(client) ? null : billingBlockReason(client),
     trialStartedAt: client.trialStartedAt?.toISOString() ?? null,
     trialEndsAt,
     trialDaysRemaining,
+    trialDurationDays,
     manualAccessEndsAt,
     manualAccessDaysRemaining,
     stripeCustomerId: client.stripeCustomerId,
     stripeSubscriptionId: client.stripeSubscriptionId,
+    billingProvider: commercial?.subscription?.provider ?? client.subscriptionSource,
+    commercial,
     subscriptionCurrentPeriodEnd: client.subscriptionCurrentPeriodEnd?.toISOString() ?? null,
     reportEmailEnabled: client.reportEmailEnabled,
     weeklyReportEmailEnabled: client.weeklyReportEmailEnabled,
@@ -156,10 +212,45 @@ async function billingStatusForClient(client: Awaited<ReturnType<typeof clientFo
   };
 }
 
+async function commercialPricingPayload(workspaceType?: string | null) {
+  const catalog = await commercialCatalog({ workspaceType });
+  return {
+    plans: catalog.map((plan) => {
+      const monthly = plan.prices.find((price) => price.billingInterval === "monthly" && price.priceClass === "standard")
+        ?? plan.prices.find((price) => price.billingInterval === "monthly");
+      const legacyFeatures = plan.featureEntitlements && typeof plan.featureEntitlements === "object"
+        ? Object.entries(plan.featureEntitlements as Record<string, unknown>).filter(([key, value]) => key !== "*" && value === true).map(([key]) => key.replace(/_/g, " "))
+        : [];
+      return {
+        code: plan.code,
+        name: plan.name,
+        description: plan.description,
+        priceMonthly: (monthly?.amountCents ?? 0) / 100,
+        priceMonthlyCents: monthly?.amountCents ?? 0,
+        articleLimit: 0,
+        articles: 0,
+        helperMonthlyLimit: Number((plan.numericLimits as Record<string, unknown>)?.monthlyAiCapacity ?? 0),
+        helperDailyLimit: Number((plan.numericLimits as Record<string, unknown>)?.monthlyAiCapacity ?? 0),
+        features: legacyFeatures,
+        stripeProductId: null,
+        stripePriceId: null,
+        isActive: plan.isActive,
+        sortOrder: plan.sortOrder,
+        commercialVersion: plan.version,
+        workspaceTypeEligibility: plan.workspaceTypeEligibility,
+        prices: plan.prices,
+      };
+    }),
+  };
+}
+
 billingRouter.get("/pricing", async (_req, res) => {
-  await ensureDefaultBillingPlans();
-  const plans = await prisma.billingPlan.findMany({ where: { isActive: true }, orderBy: [{ sortOrder: "asc" }, { priceMonthlyCents: "asc" }] });
-  res.json({ plans: plans.map(planView) });
+  res.json(await commercialPricingPayload());
+});
+
+billingRouter.get("/pricing/workspace", requireAuth, async (req, res) => {
+  const context = await workspaceContext(req);
+  res.json(await commercialPricingPayload(context.workspace.workspaceType));
 });
 
 billingRouter.get("/status", requireAuth, async (req, res) => {
@@ -172,45 +263,70 @@ billingRouter.get("/status", requireAuth, async (req, res) => {
 });
 
 billingRouter.post("/checkout-session", requireAuth, requireBillingOwner, async (req, res) => {
-  const parsed = z.object({ planCode: z.string().min(1) }).safeParse(req.body);
+  const parsed = commercialCheckoutSchema.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() });
 
   try {
-    const client = await clientForBillingRequest(req);
-    const plan = await prisma.billingPlan.findUnique({ where: { code: normalizePlanCode(parsed.data.planCode) } });
-    if (!plan || !plan.isActive) return res.status(404).json({ error: "plan not available" });
-    if (!plan.stripePriceId) return res.status(400).json({ error: "plan is missing a Stripe price ID" });
-
-    const user = await prisma.user.findUnique({ where: { id: req.user!.userId }, select: { email: true } });
-    const session = await createCheckoutSession({
-      client,
-      userEmail: user?.email ?? client.contactEmail ?? "",
-      planCode: plan.code,
-      stripePriceId: plan.stripePriceId,
+    await ensureCommercialDefaults();
+    const context = await workspaceContext(req);
+    const user = await prisma.user.findUniqueOrThrow({ where: { id: req.user!.userId }, select: { email: true } });
+    const price = await prisma.commercialPrice.findFirst({
+      where: parsed.data.priceId
+        ? { id: parsed.data.priceId, provider: "jvzoo", status: "active" }
+        : {
+            provider: "jvzoo",
+            status: "active",
+            billingInterval: parsed.data.billingInterval,
+            priceClass: parsed.data.priceClass,
+            planVersion: { billingPlan: { code: normalizePlanCode(parsed.data.planCode) }, status: "active" },
+          },
+      include: { planVersion: { include: { billingPlan: true } } },
     });
-    res.json({ url: session.url });
+    if (!price) return res.status(404).json({ error: "JVZoo price is not available." });
+    const eligibleWorkspaceTypes = Array.isArray(price.planVersion.workspaceTypeEligibility)
+      ? price.planVersion.workspaceTypeEligibility.map(String)
+      : [];
+    if (eligibleWorkspaceTypes.length && !eligibleWorkspaceTypes.includes(context.workspace.workspaceType)) {
+      return res.status(409).json({ error: `This product is not available for a ${context.workspace.workspaceType} workspace.` });
+    }
+    const url = checkoutUrlForPrice(price, context.workspace.id, user.email);
+    res.json({ url, provider: "jvzoo", priceId: price.id, planCode: price.planVersion.billingPlan.code });
   } catch (error) {
     res.status(400).json({ error: error instanceof Error ? error.message : "could not start checkout" });
   }
 });
 
 billingRouter.post("/portal-session", requireAuth, requireBillingOwner, async (req, res) => {
-  try {
-    const client = await clientForBillingRequest(req);
-    if (!client.stripeCustomerId) return res.status(400).json({ error: "No Stripe customer exists for this account yet" });
-    const session = await createPortalSession(client.stripeCustomerId);
-    res.json({ url: session.url });
-  } catch (error) {
-    res.status(400).json({ error: error instanceof Error ? error.message : "could not open billing portal" });
-  }
+  res.json({ url: config.jvzooCustomerPortalUrl, provider: "jvzoo" });
 });
 
 billingRouter.get("/invoices", requireAuth, requireBillingOwner, async (req, res) => {
   try {
-    const client = await clientForBillingRequest(req);
-    if (!client.stripeCustomerId) return res.json({ invoices: [] });
-    const invoices = await listCustomerInvoices(client.stripeCustomerId);
-    res.json({ invoices });
+    const context = await workspaceContext(req);
+    const events = await prisma.commercialBillingEvent.findMany({
+      where: { workspaceId: context.workspace.id, provider: "jvzoo", verified: true, eventType: { in: ["SALE", "BILL", "REBILL", "RFND", "REFUND"] } },
+      orderBy: { occurredAt: "desc" },
+      take: 24,
+    });
+    res.json({
+      invoices: events.map((event) => {
+        const normalized = event.normalizedPayload && typeof event.normalizedPayload === "object" ? event.normalizedPayload as Record<string, unknown> : {};
+        const v2Amount = Number(normalized.amount ?? 0);
+        const amount = Number.isFinite(v2Amount) ? (Number(normalized.version) === 1 ? Math.round(v2Amount) : Math.round(v2Amount * 100)) : 0;
+        return {
+          id: event.providerEventId,
+          number: event.providerEventId,
+          status: ["RFND", "REFUND"].includes(event.eventType) ? "refunded" : "paid",
+          currency: String(normalized.currency ?? "USD"),
+          amountDue: amount,
+          amountPaid: ["RFND", "REFUND"].includes(event.eventType) ? 0 : amount,
+          createdAt: (event.occurredAt ?? event.createdAt).toISOString(),
+          hostedInvoiceUrl: config.jvzooCustomerPortalUrl,
+          invoicePdf: null,
+          provider: "jvzoo",
+        };
+      }),
+    });
   } catch (error) {
     res.status(400).json({ error: error instanceof Error ? error.message : "could not load invoices" });
   }
@@ -230,6 +346,194 @@ billingRouter.patch("/report-email-preferences", requireAuth, requireWorkspaceSe
     });
   } catch (error) {
     res.status(400).json({ error: error instanceof Error ? error.message : "could not update report email preferences" });
+  }
+});
+
+billingRouter.get("/commercial-summary", requireAuth, async (req, res) => {
+  try {
+    const context = await workspaceContext(req);
+    res.json(await workspaceCommercialSummary(context.workspace.id));
+  } catch (error) {
+    res.status(400).json({ error: error instanceof Error ? error.message : "Could not load the workspace commercial state." });
+  }
+});
+
+billingRouter.get("/admin/commercial", requireAuth, requireRole("super_admin"), async (_req, res) => {
+  await ensureCommercialDefaults();
+  const [catalog, policies, events, audits, workspaces, registrationPolicy] = await Promise.all([
+    commercialCatalog({ includeInactive: true }),
+    prisma.commercialPolicyVersion.findMany({ orderBy: [{ code: "asc" }, { version: "desc" }] }),
+    prisma.commercialBillingEvent.findMany({ orderBy: { createdAt: "desc" }, take: 100 }),
+    prisma.commercialAuditEvent.findMany({ orderBy: { createdAt: "desc" }, take: 100 }),
+    prisma.workspace.findMany({
+      orderBy: { createdAt: "desc" },
+      take: 100,
+      select: {
+        id: true,
+        name: true,
+        workspaceType: true,
+        commercialState: true,
+        accessMode: true,
+        retentionEndsAt: true,
+        commercialSubscriptions: {
+          orderBy: { createdAt: "desc" },
+          take: 1,
+          select: {
+            id: true,
+            status: true,
+            provider: true,
+            currentPeriodEnd: true,
+            planVersion: { select: { version: true, billingPlan: { select: { code: true, name: true } } } },
+          },
+        },
+        _count: { select: { memberships: true, agencyClients: true } },
+      },
+    }),
+    commercialRegistrationPolicy(),
+  ]);
+  res.json({ catalog, policies, events, audits, workspaces, registrationPolicy });
+});
+
+billingRouter.patch("/admin/commercial/registration-policy", requireAuth, requireRole("super_admin"), async (req, res) => {
+  const parsed = registrationPolicySchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() });
+  const previous = await commercialRegistrationPolicy();
+  const policy = await prisma.$transaction(async (tx) => {
+    const updated = await tx.commercialRegistrationPolicy.update({
+      where: { id: COMMERCIAL_REGISTRATION_POLICY_ID },
+      data: { trialEnabled: parsed.data.trialEnabled, trialDays: parsed.data.trialDays, updatedById: req.user!.userId },
+    });
+    await tx.commercialAuditEvent.create({
+      data: {
+        actorType: "admin",
+        actorId: req.user!.userId,
+        action: "commercial.registration_policy_updated",
+        reasonCode: "launch_configuration",
+        source: "admin",
+        beforeJson: { trialEnabled: previous.trialEnabled, trialDays: previous.trialDays },
+        afterJson: { trialEnabled: updated.trialEnabled, trialDays: updated.trialDays },
+      },
+    });
+    return updated;
+  });
+  res.json({ registrationPolicy: policy });
+});
+
+billingRouter.patch("/admin/commercial/prices/:priceId", requireAuth, requireRole("super_admin"), async (req, res) => {
+  const parsed = commercialPriceSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() });
+  const previous = await prisma.commercialPrice.findUnique({ where: { id: req.params.priceId } });
+  if (!previous) return res.status(404).json({ error: "Commercial price not found." });
+  const amountChanged = parsed.data.amountCents !== undefined && parsed.data.amountCents !== previous.amountCents;
+  const price = await prisma.$transaction(async (tx) => {
+    if (amountChanged) {
+      const effectiveFrom = parsed.data.effectiveFrom ? new Date(parsed.data.effectiveFrom) : new Date();
+      const codeRoot = previous.code.replace(/-r\d+$/i, "").slice(0, 98);
+      const revised = await tx.commercialPrice.create({
+        data: {
+          code: `${codeRoot}-r${effectiveFrom.getTime()}`,
+          planVersionId: previous.planVersionId,
+          billingInterval: previous.billingInterval,
+          currency: previous.currency,
+          amountCents: parsed.data.amountCents!,
+          priceClass: previous.priceClass,
+          market: previous.market,
+          provider: previous.provider,
+          providerProductRef: parsed.data.providerProductRef !== undefined ? parsed.data.providerProductRef || null : previous.providerProductRef,
+          providerPriceRef: previous.providerPriceRef,
+          checkoutUrl: parsed.data.checkoutUrl !== undefined ? parsed.data.checkoutUrl || null : previous.checkoutUrl,
+          effectiveFrom,
+          status: parsed.data.status ?? "active",
+        },
+      });
+      await tx.commercialPrice.update({
+        where: { id: previous.id },
+        data: { status: "inactive", effectiveTo: effectiveFrom },
+      });
+      await tx.commercialAuditEvent.create({
+        data: {
+          actorType: "admin",
+          actorId: req.user!.userId,
+          action: "commercial.price_revised",
+          reasonCode: "rate_change",
+          source: "admin",
+          beforeJson: { id: previous.id, code: previous.code, amountCents: previous.amountCents, providerProductRef: previous.providerProductRef, checkoutUrl: previous.checkoutUrl, status: previous.status },
+          afterJson: { id: revised.id, code: revised.code, amountCents: revised.amountCents, providerProductRef: revised.providerProductRef, checkoutUrl: revised.checkoutUrl, status: revised.status, effectiveFrom },
+          metadataJson: { previousPriceId: previous.id, sameProviderProductRetained: previous.providerProductRef === revised.providerProductRef },
+        },
+      });
+      return revised;
+    }
+    const updated = await tx.commercialPrice.update({
+      where: { id: previous.id },
+      data: {
+        ...(parsed.data.providerProductRef !== undefined ? { providerProductRef: parsed.data.providerProductRef || null } : {}),
+        ...(parsed.data.checkoutUrl !== undefined ? { checkoutUrl: parsed.data.checkoutUrl || null } : {}),
+        ...(parsed.data.status !== undefined ? { status: parsed.data.status } : {}),
+      },
+    });
+    await tx.commercialAuditEvent.create({
+      data: {
+        actorType: "admin",
+        actorId: req.user!.userId,
+        action: "commercial.price_provider_mapping_updated",
+        reasonCode: "provider_configuration",
+        source: "admin",
+        beforeJson: { id: previous.id, providerProductRef: previous.providerProductRef, checkoutUrl: previous.checkoutUrl, status: previous.status },
+        afterJson: { id: updated.id, providerProductRef: updated.providerProductRef, checkoutUrl: updated.checkoutUrl, status: updated.status },
+      },
+    });
+    return updated;
+  });
+  res.json({ price, revised: amountChanged, previousPriceId: amountChanged ? previous.id : null });
+});
+
+billingRouter.post("/admin/commercial/workspaces/:workspaceId/adjustments", requireAuth, requireRole("super_admin"), async (req, res) => {
+  const parsed = commercialAdjustmentSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() });
+  const workspace = await prisma.workspace.findUnique({ where: { id: req.params.workspaceId }, select: { id: true } });
+  if (!workspace) return res.status(404).json({ error: "Workspace not found." });
+  const adjustment = await recordCommercialAdjustment({
+    workspaceId: workspace.id,
+    entitlementKey: parsed.data.entitlementKey,
+    value: parsed.data.value,
+    mode: parsed.data.mode,
+    reasonCode: parsed.data.reasonCode,
+    justification: parsed.data.justification,
+    actorId: req.user!.userId,
+    expiresAt: parsed.data.expiresAt ? new Date(parsed.data.expiresAt) : null,
+  });
+  res.status(201).json({ adjustment, summary: await workspaceCommercialSummary(workspace.id) });
+});
+
+billingRouter.post("/admin/commercial/events/:eventId/replay", requireAuth, requireRole("super_admin"), async (req, res) => {
+  const event = await prisma.commercialBillingEvent.findUnique({ where: { id: req.params.eventId } });
+  if (!event || event.provider !== "jvzoo") return res.status(404).json({ error: "JVZoo event not found." });
+  const payload = event.rawPayload && typeof event.rawPayload === "object" && !Array.isArray(event.rawPayload)
+    ? event.rawPayload as Record<string, unknown>
+    : null;
+  if (!payload) return res.status(409).json({ error: "The event has no replayable payload." });
+  try {
+    res.json(await processJvZooIpn(payload));
+  } catch (error) {
+    res.status(400).json({ error: error instanceof Error ? error.message : "Could not replay JVZoo event." });
+  }
+});
+
+billingRouter.post("/webhooks/jvzoo", async (req, res) => {
+  const payload = req.body && typeof req.body === "object" && !Array.isArray(req.body)
+    ? req.body as Record<string, unknown>
+    : {};
+  try {
+    const result = await processJvZooIpn(payload);
+    // JVZoo retries non-200 responses. Verified unresolved events are accepted
+    // and surfaced in Commercial Admin for reconciliation.
+    res.status(200).json({ received: true, duplicate: result.duplicate, status: result.event.status });
+  } catch (error) {
+    const statusCode = typeof error === "object" && error !== null && "statusCode" in error && typeof error.statusCode === "number"
+      ? error.statusCode
+      : 500;
+    res.status(statusCode).json({ received: false, error: error instanceof Error ? error.message : "JVZoo notification failed." });
   }
 });
 

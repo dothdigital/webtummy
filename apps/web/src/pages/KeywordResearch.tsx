@@ -1214,7 +1214,7 @@ export default function KeywordResearch() {
         const [summary, health, pageResult] = await Promise.all([
           api.get<CrawlSummary>(`/api/crawls/${crawlForInsight.id}/summary`),
           api.get<HealthReport>(`/api/crawls/${crawlForInsight.id}/health-report`),
-          api.get<{ total: number; pages: PageRow[] }>(`/api/crawls/${crawlForInsight.id}/pages?take=25`),
+          api.get<{ total: number; pages: PageRow[] }>(`/api/crawls/${crawlForInsight.id}/pages?take=25&logical=1`),
         ]);
         setCrawlSummary(summary);
         setHealthReport(health);

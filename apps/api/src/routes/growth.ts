@@ -1,6 +1,7 @@
 import { Router, type Request } from "express";
 import { z } from "zod";
 import { prisma, type Prisma } from "@webtummy/db";
+import { splitKeywordEntries } from "@webtummy/core";
 import { requireAuth } from "../middleware.js";
 import { projectClientIdForRequest } from "../project-scope.js";
 import { approvalRequiredForLevel, policyForModule, type AutomationLevel } from "../automation-policy.js";
@@ -10,11 +11,21 @@ import {
   buildBlueprintPhases,
   findingsFromScores,
   generateGrowthCandidates,
+  normalizeGrowthCandidateForStorage,
   selectNextBestAction,
   signalFingerprint,
   signalFreshness,
   type GrowthSignalDraft,
 } from "../growth-engine.js";
+import { approvedStrategyContext } from "../strategy-ai.js";
+import { getProjectWorkflowController, publishProjectWorkflowEvent } from "../project-workflow-controller.js";
+import {
+  GROWTH_INTELLIGENCE_CONTRACT_VERSION,
+  createBlueprintPatch,
+  evaluateMeasurement,
+  safeObservedImpact,
+  type EvidenceAvailability,
+} from "../growth-intelligence-engine.js";
 
 export const growthRouter = Router();
 growthRouter.use(requireAuth);
@@ -25,7 +36,7 @@ type GrowthReadinessItem = {
   key: string;
   title: string;
   description: string;
-  status: "complete" | "missing";
+  status: "complete" | "in_progress" | "missing";
   required: boolean;
   actions: GrowthReadinessAction[];
 };
@@ -46,7 +57,7 @@ async function scopedProject(req: Request, projectId: string) {
         },
       },
       keywordResearchRuns: { orderBy: { createdAt: "desc" }, take: 5, include: { ideas: { take: 200 } } },
-      keywordGroups: { orderBy: { updatedAt: "desc" }, take: 100 },
+      keywordGroups: { where: { status: "approved" }, orderBy: { updatedAt: "desc" }, take: 100 },
       websiteBuilds: { orderBy: { updatedAt: "desc" }, take: 1, include: { pages: { where: { status: { not: "deferred" } }, orderBy: { sortOrder: "asc" }, take: 500 } } },
       socialPerformanceMetrics: { orderBy: { recordedAt: "desc" }, take: 200 },
       businessProfile: true,
@@ -54,6 +65,7 @@ async function scopedProject(req: Request, projectId: string) {
       opportunities: { orderBy: { createdAt: "desc" }, take: 5 },
       strategyPlans: { orderBy: { createdAt: "desc" }, take: 3 },
       executionTasks: { orderBy: { createdAt: "desc" }, take: 80 },
+      measurementCheckpoints: { orderBy: { updatedAt: "desc" }, take: 100 },
       backlinkProfileSnapshots: { orderBy: { capturedAt: "desc" }, take: 2 },
       authorityOpportunities: { where: { status: { not: "superseded" } }, orderBy: [{ priorityScore: "desc" }, { createdAt: "desc" }] },
       authorityAssets: { orderBy: { createdAt: "desc" }, take: 50 },
@@ -77,6 +89,37 @@ async function authorizeProject(req: Request, projectId: string, permission?: st
 
 function jsonList(value: unknown): string[] {
   return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string" && item.trim().length > 0) : [];
+}
+
+function jsonRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
+}
+
+function savedCanonicalPages(tasks: Array<{ status: string; approvalSnapshotJson: unknown }>, rootUrl: string) {
+  for (const task of tasks) {
+    const snapshot = jsonRecord(task.approvalSnapshotJson);
+    const planStatus = String(snapshot.contentPlanStatus ?? "");
+    if (!["saved", "confirmed", "approved"].includes(planStatus) && !["completed", "approved"].includes(task.status)) continue;
+    const contentPlan = jsonRecord(snapshot.contentPlan);
+    const assignments = Array.isArray(contentPlan.pageAssignments) ? contentPlan.pageAssignments : [];
+    const pages = assignments.flatMap((value, index) => {
+      const item = jsonRecord(value);
+      if (typeof item.canonicalKeyword !== "string" || typeof item.targetUrl !== "string") return [];
+      const targetUrl = (() => { try { return new URL(item.targetUrl, rootUrl || undefined).toString(); } catch { return item.targetUrl; } })();
+      return [{
+        id: `canonical-page:${index}:${normalizedTopic(item.canonicalKeyword).replace(/\s+/g, "-")}`.slice(0, 191),
+        title: typeof item.pageName === "string" ? item.pageName : item.canonicalKeyword,
+        primaryKeyword: item.canonicalKeyword,
+        secondaryKeywords: Array.isArray(item.secondaryKeywords) ? item.secondaryKeywords.map(String).filter(Boolean) : [],
+        sortOrder: index,
+        targetUrl,
+        slug: (() => { try { return new URL(targetUrl, rootUrl || undefined).pathname.replace(/^\//, ""); } catch { return targetUrl.replace(/^\//, ""); } })(),
+        pageType: typeof item.clusterRole === "string" ? item.clusterRole : typeof item.searchIntent === "string" ? item.searchIntent : "planned",
+      }];
+    });
+    if (pages.length) return pages;
+  }
+  return [];
 }
 
 function boundedText(value: unknown, maximumLength: number) {
@@ -140,12 +183,14 @@ function projectContext(project: NonNullable<Awaited<ReturnType<typeof scopedPro
   const targetMarkets = jsonList(project.targetLocations);
   const secondaryGoals = jsonList(project.secondaryGoals);
   const primaryGoal = project.primaryGoal?.trim() || "growth";
+  const approvedStrategy = project.strategyPlans.find((strategy) => strategy.status === "approved") ?? null;
+  const strategyContract = approvedStrategyContext(approvedStrategy);
   return {
     name: project.businessName ?? project.name,
     website: project.website?.rootUrl ?? project.websiteUrl ?? null,
     niche: project.niche ?? project.businessProfile?.businessSummary ?? "this market",
-    audience: project.businessProfile?.targetAudience ?? "the target audience",
-    offer: project.businessProfile?.offerSummary ?? project.primaryGoal ?? "the main offer",
+    audience: strategyContract?.audience ?? project.businessProfile?.targetAudience ?? "the target audience",
+    offer: strategyContract?.offer ?? project.businessProfile?.offerSummary ?? project.primaryGoal ?? "the main offer",
     primaryGoal,
     goal: [primaryGoal, ...secondaryGoals].filter(Boolean).join("; "),
     secondaryGoals,
@@ -154,7 +199,8 @@ function projectContext(project: NonNullable<Awaited<ReturnType<typeof scopedPro
     market: targetMarkets.join(", ") || project.targetLocation || "the target market",
     outputs: jsonList(project.preferredOutputs),
     strategy: project.strategyPlans[0] ?? null,
-    approvedStrategy: project.strategyPlans.find((strategy) => strategy.status === "approved") ?? null,
+    approvedStrategy,
+    strategyContract,
   };
 }
 
@@ -165,6 +211,7 @@ function growthReadiness(project: NonNullable<Awaited<ReturnType<typeof scopedPr
   const hasWebsite = Boolean(project.website);
   const latestCrawl = project.website?.crawlJobs[0] ?? null;
   const siteAnalysisComplete = Boolean(latestCrawl && latestCrawl.status === "completed");
+  const siteAnalysisInProgress = Boolean(latestCrawl && ["queued", "running"].includes(latestCrawl.status));
 
   const items: GrowthReadinessItem[] = [
     {
@@ -208,15 +255,17 @@ function growthReadiness(project: NonNullable<Awaited<ReturnType<typeof scopedPr
   } else {
     items.push({
       key: "site_analysis",
-      title: "Site analysis required",
-      description: "SEnuke AI needs to analyze your website before it can evaluate funnel gaps, conversion issues, SEO issues, internal links, AI citations, or page improvements.",
-      status: siteAnalysisComplete ? "complete" : "missing",
+      title: siteAnalysisInProgress ? "Site analysis in progress" : "Site analysis required",
+      description: siteAnalysisInProgress
+        ? "SEnuke AI is currently analyzing this website. Growth recommendations will unlock automatically when the crawl finishes."
+        : "SEnuke AI needs to analyze your website before it can evaluate funnel gaps, conversion issues, SEO issues, internal links, AI citations, or page improvements.",
+      status: siteAnalysisComplete ? "complete" : siteAnalysisInProgress ? "in_progress" : "missing",
       required: true,
-      actions: [{ label: "Analyze Site", url: `/site-analysis?projectId=${project.id}` }],
+      actions: [{ label: siteAnalysisInProgress ? "View progress" : "Analyze Site", url: `/site-analysis?projectId=${project.id}` }],
     });
   }
 
-  const missing = items.filter((item) => item.required && item.status === "missing");
+  const missing = items.filter((item) => item.required && item.status !== "complete");
   return {
     canRun: missing.length === 0,
     status: missing.length === 0 ? "ready" : "blocked",
@@ -226,6 +275,22 @@ function growthReadiness(project: NonNullable<Awaited<ReturnType<typeof scopedPr
     items,
     missing,
   };
+}
+
+async function growthWorkflowBlocker(projectId: string) {
+  const workflow = await getProjectWorkflowController(projectId);
+  if (!workflow) return { error: "workflow_controller_unavailable", message: "Project workflow readiness could not be loaded." };
+  if (!workflow.intelligenceReady) return {
+    error: "growth_intelligence_stale_or_incomplete",
+    message: "Complete or refresh the required Keyword, Site, Gap, Local SEO, AI Citation, and Authority intelligence before running Growth.",
+    workflow,
+  };
+  if (workflow.strategyStale) return {
+    error: "growth_strategy_stale",
+    message: "Approved keyword or analysis evidence changed. Regenerate and approve Strategy before running Growth.",
+    workflow,
+  };
+  return null;
 }
 
 function scoreProject(project: NonNullable<Awaited<ReturnType<typeof scopedProject>>>) {
@@ -282,8 +347,9 @@ function scoreProject(project: NonNullable<Awaited<ReturnType<typeof scopedProje
 }
 
 function buildSupportingContentRoadmap(project: NonNullable<Awaited<ReturnType<typeof scopedProject>>>) {
-  const buildPages = project.websiteBuilds[0]?.pages ?? [];
   const rootUrl = project.website?.rootUrl?.replace(/\/$/, "") ?? project.websiteUrl?.replace(/\/$/, "") ?? "";
+  const canonicalPages = savedCanonicalPages(project.executionTasks, rootUrl);
+  const buildPages = canonicalPages.length ? canonicalPages : project.websiteBuilds[0]?.pages ?? [];
   const targetLocations = jsonList(project.targetLocations);
   const inputs: Array<{
     keyword: string;
@@ -294,19 +360,23 @@ function buildSupportingContentRoadmap(project: NonNullable<Awaited<ReturnType<t
     sourceId: string;
     sourceCluster?: string;
   }> = [];
+  const approvedKeywordGroups = project.keywordGroups.filter((item) => item.status === "approved");
+  const approvedKeywords = splitKeywordEntries(approvedKeywordGroups.flatMap((group) => splitKeywordEntries(group.keywords)));
+  const approvedKeywordSet = new Set(approvedKeywords.map(normalizedTopic));
   for (const run of project.keywordResearchRuns) {
-    for (const idea of run.ideas) inputs.push({
-      keyword: idea.keyword,
-      volume: idea.avgMonthlySearches,
-      competitionIndex: idea.competitionIndex,
-      competition: idea.competition,
+    if (!approvedKeywordSet.has(normalizedTopic(run.seedKeyword))) continue;
+    inputs.push({
+      keyword: run.seedKeyword,
+      volume: run.averageVolume,
+      competitionIndex: null,
+      competition: null,
       sourceType: "keyword_research",
-      sourceId: idea.id,
+      sourceId: run.id,
       sourceCluster: run.seedKeyword,
     });
   }
-  for (const group of project.keywordGroups) {
-    for (const keyword of [...jsonList(group.keywords), ...jsonList(group.gapKeywords)]) inputs.push({
+  for (const group of approvedKeywordGroups) {
+    for (const keyword of splitKeywordEntries(group.keywords)) inputs.push({
       keyword,
       volume: null,
       competitionIndex: null,
@@ -341,18 +411,6 @@ function buildSupportingContentRoadmap(project: NonNullable<Awaited<ReturnType<t
       }
     }
   }
-  if (!uniqueInputs.size) {
-    const base = project.niche || project.businessProfile?.offerSummary || project.primaryGoal || project.businessName || project.name;
-    for (const angle of [`How ${base} works`, `${base} buyer guide`, `${base} questions and answers`]) uniqueInputs.set(normalizedTopic(angle), {
-      keyword: angle,
-      volume: null,
-      competitionIndex: null,
-      competition: null,
-      sourceType: "project_intake",
-      sourceId: project.id,
-      sourceCluster: String(project.niche || project.businessName || project.name),
-    });
-  }
   const pageCandidates = buildPages.map((page) => ({
     page,
     tokens: new Set(topicTokens(`${page.title} ${page.primaryKeyword} ${jsonList(page.secondaryKeywords).join(" ")}`)),
@@ -377,7 +435,7 @@ function buildSupportingContentRoadmap(project: NonNullable<Awaited<ReturnType<t
     const targetUrl = matchedPage
       ? matchedPage.targetUrl || (rootUrl ? `${rootUrl}/${matchedPage.slug}`.replace(/\/$/, matchedPage.slug ? "" : "/") : `/${matchedPage.slug}`)
       : rootUrl || null;
-    const clusterName = matchedPage?.title || input.sourceCluster || project.niche || "Supporting authority";
+    const clusterName = matchedPage?.title || input.sourceCluster || "Supporting authority";
     return {
       input,
       matchedPage,
@@ -474,7 +532,14 @@ function normalizedGrowthSignals(project: NonNullable<Awaited<ReturnType<typeof 
       signalKey: "approved_strategy",
       sourceType: "strategy_plan",
       sourceId: projectContext(project).approvedStrategy?.id ?? null,
-      value: { approved: score.strategyApproved, primaryGoal: project.primaryGoal },
+      value: {
+        approved: score.strategyApproved,
+        primaryGoal: project.primaryGoal,
+        contractVersion: projectContext(project).strategyContract?.contractVersion ?? null,
+        strategyVersion: projectContext(project).strategyContract?.version ?? null,
+        focusAreas: projectContext(project).strategyContract?.focusAreas.map((focus) => ({ key: focus.key, priority: focus.priority, channels: focus.channels })) ?? [],
+        currentPhase: projectContext(project).strategyContract?.phases[0]?.name ?? null,
+      },
       confidence: score.strategyApproved ? 98 : 40,
       collectedAt: now,
       effectiveDate: now,
@@ -607,6 +672,9 @@ async function runGrowthEngine(input: {
     hasLeadMagnet: score.hasLeadMagnetTask,
     hasApprovedStrategy: score.strategyApproved,
     hasRecentKeywordResearch: score.keywordRuns > 0,
+    strategyId: ctx.strategyContract?.strategyId,
+    strategyVersion: ctx.strategyContract?.version,
+    strategyFocusAreas: ctx.strategyContract?.focusAreas,
   }, excluded);
   const activeAccepted = priorActions.find((action) =>
     action.status === "accepted" &&
@@ -673,6 +741,7 @@ async function runGrowthEngine(input: {
           socialPosts: score.socialPosts,
           openTasks: score.openTasks.length,
           latestCrawlScore: score.latestCrawl?.siteScore ?? null,
+          approvedStrategy: ctx.strategyContract,
         },
         findingsJson: findings as unknown as Prisma.InputJsonValue,
         evidenceJson: { signalFingerprints: signals.map((signal) => signalFingerprint(project.id, signal)) },
@@ -695,29 +764,30 @@ async function runGrowthEngine(input: {
       data: { status: "recommended", selectedAt: null },
     });
     for (const candidate of candidates) {
+      const storedCandidate = normalizeGrowthCandidateForStorage(candidate);
       const existingCandidate = await tx.nextBestAction.findFirst({
-        where: { projectId: project.id, sourceType: "growth_engine", dedupeKey: candidate.dedupeKey },
+        where: { projectId: project.id, sourceType: "growth_engine", dedupeKey: storedCandidate.dedupeKey },
         orderBy: { createdAt: "asc" },
       });
       const candidateData = {
-        title: candidate.title,
-        recommendation: candidate.recommendation,
-        reasoningSummary: candidate.reasoningSummary,
-        expectedImpact: candidate.expectedImpact,
-        confidence: candidate.factors.confidence,
-        estimatedEffort: candidate.estimatedEffort,
-        route: candidate.route,
-        priorityScore: candidate.priorityScore,
-        evidenceJson: { keys: candidate.evidenceKeys, findings: findings.filter((finding) => candidate.targetEntities.includes(finding.category)) } as Prisma.InputJsonValue,
-        actionType: candidate.actionType,
-        businessGoal: candidate.businessGoal,
-        targetEntitiesJson: candidate.targetEntities,
-        estimatedImpactJson: { description: candidate.expectedImpact },
-        scoreJson: candidate.factors,
-        dependencyIdsJson: candidate.dependencies,
-        approvalType: candidate.approvalType,
-        riskLevel: candidate.riskLevel,
-        urgency: candidate.urgency,
+        title: storedCandidate.title,
+        recommendation: storedCandidate.recommendation,
+        reasoningSummary: storedCandidate.reasoningSummary,
+        expectedImpact: storedCandidate.expectedImpact,
+        confidence: storedCandidate.factors.confidence,
+        estimatedEffort: storedCandidate.estimatedEffort,
+        route: storedCandidate.route,
+        priorityScore: storedCandidate.priorityScore,
+        evidenceJson: { keys: storedCandidate.evidenceKeys, findings: findings.filter((finding) => storedCandidate.targetEntities.includes(finding.category)) } as Prisma.InputJsonValue,
+        actionType: storedCandidate.actionType,
+        businessGoal: storedCandidate.businessGoal,
+        targetEntitiesJson: storedCandidate.targetEntities,
+        estimatedImpactJson: { description: storedCandidate.expectedImpact },
+        scoreJson: storedCandidate.factors,
+        dependencyIdsJson: storedCandidate.dependencies,
+        approvalType: storedCandidate.approvalType,
+        riskLevel: storedCandidate.riskLevel,
+        urgency: storedCandidate.urgency,
         engineVersion: GROWTH_ENGINE_VERSION,
         status: candidate.dedupeKey === selected?.dedupeKey ? "selected" : "recommended",
         selectedAt: candidate.dedupeKey === selected?.dedupeKey ? new Date() : null,
@@ -730,7 +800,7 @@ async function runGrowthEngine(input: {
             projectId: project.id,
             sourceType: "growth_engine",
             sourceId: null,
-            dedupeKey: candidate.dedupeKey,
+            dedupeKey: storedCandidate.dedupeKey,
             ...candidateData,
           },
         });
@@ -742,7 +812,7 @@ async function runGrowthEngine(input: {
       include: { versions: { orderBy: { version: "desc" }, take: 1 } },
     });
     const phasePayload = {
-      goals: [ctx.goal],
+      goals: ctx.strategyContract?.unifiedPlan?.objectives?.length ? ctx.strategyContract.unifiedPlan.objectives : [ctx.goal],
       now: phases.now,
       next: phases.next,
       later: phases.later,
@@ -757,27 +827,37 @@ async function runGrowthEngine(input: {
       conditional: previousVersion.conditionalJson,
     } : null;
     const blueprintChanged = JSON.stringify(previousPayload) !== JSON.stringify(phasePayload);
+    const strategyDecisionSet = ctx.strategyContract?.decisionSet && typeof ctx.strategyContract.decisionSet === "object" && !Array.isArray(ctx.strategyContract.decisionSet) ? ctx.strategyContract.decisionSet as Record<string, unknown> : {};
+    const strategyBusinessBrainVersion = typeof strategyDecisionSet.businessBrainVersion === "number" ? strategyDecisionSet.businessBrainVersion : null;
+    const strategyEvidenceVersion = typeof strategyDecisionSet.evidenceVersion === "number" ? strategyDecisionSet.evidenceVersion : null;
+    const measurementStarted = project.measurementCheckpoints.length > 0 || project.executionTasks.some((task) => Boolean(task.completedAt || task.publishedAt) || ["completed", "published", "verified"].includes(task.status));
+    const blueprintLifecycleStatus = measurementStarted ? "active" : "baseline";
+    const blueprintReason = measurementStarted
+      ? "Blueprint uses the approved Strategy plus execution or measurement evidence for continuous optimization."
+      : "Initial Blueprint baseline generated from the approved Strategy. It becomes active after execution and measurement begin.";
     if (!existingBlueprint) {
       await tx.growthBlueprint.create({
         data: {
           projectId: project.id,
           title: `${ctx.name} Growth Blueprint`,
-          status: "active",
+          status: blueprintLifecycleStatus,
           currentVersion: 1,
           primaryGoal: boundedText(ctx.primaryGoal, 255),
           approvedStrategyId: ctx.approvedStrategy?.id,
+          businessBrainVersion: strategyBusinessBrainVersion,
+          evidenceVersion: strategyEvidenceVersion,
           nextReviewAt: new Date(Date.now() + 7 * 86_400_000),
           versions: {
             create: {
               version: 1,
-              status: "active",
+              status: blueprintLifecycleStatus,
               goalsJson: phasePayload.goals,
               nowJson: phasePayload.now,
               nextJson: phasePayload.next,
               laterJson: phasePayload.later,
               conditionalJson: phasePayload.conditional,
-              evidenceJson: { diagnosis: score.bottleneckType, signalCount: signals.length },
-              reason: "Initial Blueprint generated from the approved strategy and normalized project signals.",
+              evidenceJson: { diagnosis: score.bottleneckType, signalCount: signals.length, approvedStrategy: ctx.strategyContract },
+              reason: blueprintReason,
               engineVersion: GROWTH_ENGINE_VERSION,
               createdByUserId: context.membership.userId,
             },
@@ -790,26 +870,26 @@ async function runGrowthEngine(input: {
         data: {
           blueprintId: existingBlueprint.id,
           version,
-          status: "active",
+          status: blueprintLifecycleStatus,
           goalsJson: phasePayload.goals,
           nowJson: phasePayload.now,
           nextJson: phasePayload.next,
           laterJson: phasePayload.later,
           conditionalJson: phasePayload.conditional,
-          evidenceJson: { diagnosis: score.bottleneckType, signalCount: signals.length },
-          reason: `Blueprint refreshed after a ${input.runType.replace(/_/g, " ")} Growth Engine run.`,
+          evidenceJson: { diagnosis: score.bottleneckType, signalCount: signals.length, approvedStrategy: ctx.strategyContract },
+          reason: `${blueprintReason} Refreshed after a ${input.runType.replace(/_/g, " ")} Growth Engine run.`,
           engineVersion: GROWTH_ENGINE_VERSION,
           createdByUserId: context.membership.userId,
         },
       });
       await tx.growthBlueprint.update({
         where: { id: existingBlueprint.id },
-        data: { currentVersion: version, primaryGoal: boundedText(ctx.primaryGoal, 255), approvedStrategyId: ctx.approvedStrategy?.id, nextReviewAt: new Date(Date.now() + 7 * 86_400_000) },
+        data: { status: blueprintLifecycleStatus, currentVersion: version, primaryGoal: boundedText(ctx.primaryGoal, 255), approvedStrategyId: ctx.approvedStrategy?.id, businessBrainVersion: strategyBusinessBrainVersion, evidenceVersion: strategyEvidenceVersion, nextReviewAt: new Date(Date.now() + 7 * 86_400_000) },
       });
     } else {
       await tx.growthBlueprint.update({
         where: { id: existingBlueprint.id },
-        data: { nextReviewAt: new Date(Date.now() + 7 * 86_400_000) },
+        data: { status: blueprintLifecycleStatus, primaryGoal: boundedText(ctx.primaryGoal, 255), approvedStrategyId: ctx.approvedStrategy?.id, businessBrainVersion: strategyBusinessBrainVersion, evidenceVersion: strategyEvidenceVersion, nextReviewAt: new Date(Date.now() + 7 * 86_400_000) },
       });
     }
 
@@ -819,8 +899,8 @@ async function runGrowthEngine(input: {
         clientId: project.clientId,
         moduleName: "growth_engine",
         promptVersion: GROWTH_ENGINE_VERSION,
-        inputSnapshotJson: { runType: input.runType, signals: signals.map((signal) => ({ key: signal.signalKey, confidence: signal.confidence, freshness: signalFreshness(signal) })) },
-        outputJson: { findings, candidateCount: candidates.length, selectedDedupeKey: selected?.dedupeKey ?? null, phases } as unknown as Prisma.InputJsonValue,
+        inputSnapshotJson: { runType: input.runType, approvedStrategy: ctx.strategyContract, signals: signals.map((signal) => ({ key: signal.signalKey, confidence: signal.confidence, freshness: signalFreshness(signal) })) },
+        outputJson: { findings, candidateCount: candidates.length, selectedDedupeKey: selected?.dedupeKey ?? null, phases, strategyId: ctx.strategyContract?.strategyId ?? null } as unknown as Prisma.InputJsonValue,
       },
     });
     await recordWorkspaceActivity(tx, {
@@ -1009,6 +1089,81 @@ async function loadGrowthOverview(projectId: string) {
   };
 }
 
+async function loadGrowthIntelligence(projectId: string) {
+  const now = new Date();
+  const [checkpoints, signals, experiments, blueprint, activeTasks] = await Promise.all([
+    prisma.measurementCheckpoint.findMany({
+      where: { projectId },
+      orderBy: [{ dueAt: "asc" }, { createdAt: "asc" }],
+      include: { task: { select: { id: true, title: true, moduleName: true, status: true, approvalSnapshotJson: true } } },
+    }),
+    prisma.growthSignal.findMany({ where: { projectId }, orderBy: { effectiveDate: "desc" } }),
+    prisma.growthExperiment.findMany({ where: { projectId }, include: { results: { orderBy: { recordedAt: "desc" } } } }),
+    prisma.growthBlueprint.findUnique({ where: { projectId }, include: { versions: { orderBy: { version: "desc" }, take: 20 } } }),
+    prisma.executionTask.findMany({ where: { projectId, status: { notIn: [...terminalStatuses] } }, select: { id: true, status: true, title: true, moduleName: true } }),
+  ]);
+  const completed = checkpoints.filter((item) => item.status === "completed");
+  const due = checkpoints.filter((item) => item.status !== "completed" && item.dueAt <= now);
+  const scheduled = checkpoints.filter((item) => item.status !== "completed" && item.dueAt > now);
+  const staleSignals = signals.filter((signal) => ["stale", "expired"].includes(signal.freshnessStatus));
+  const limitedSignals = signals.filter((signal) => signal.confidence < 50 || ["stale", "expired"].includes(signal.freshnessStatus));
+  const evaluations = experiments.flatMap((experiment) => experiment.results.map((result) => ({
+    id: result.id,
+    experimentId: experiment.id,
+    title: experiment.title,
+    metric: experiment.metric,
+    status: result.resultStatus,
+    evaluation: jsonRecord(result.learningJson).evaluation ?? null,
+    recordedAt: result.recordedAt,
+  })));
+  const latestVersion = blueprint?.versions[0] ?? null;
+  const latestEvidence = jsonRecord(latestVersion?.evidenceJson);
+  const patches = Array.isArray(latestEvidence.patches) ? latestEvidence.patches : [];
+  const verifiedExposures = checkpoints.filter((checkpoint) => Boolean(jsonRecord(checkpoint.baselineJson).publishedAt));
+  const measurementState = !checkpoints.length
+    ? "NOT_PLANNED"
+    : !verifiedExposures.length
+      ? "AWAITING_VERIFIED_EXPOSURE"
+      : due.length
+        ? "EVALUATION_DUE"
+        : scheduled.length
+          ? "COLLECTING"
+          : "CURRENT";
+  return {
+    contractVersion: GROWTH_INTELLIGENCE_CONTRACT_VERSION,
+    lifecycle: {
+      state: measurementState,
+      verifiedExposures: verifiedExposures.length,
+      completedEvaluations: completed.length,
+      dueEvaluations: due.length,
+      scheduledEvaluations: scheduled.length,
+      nextEvaluationAt: scheduled[0]?.dueAt ?? null,
+    },
+    dataQuality: {
+      status: staleSignals.length ? "LIMITED" : signals.length ? "AVAILABLE" : "UNAVAILABLE",
+      sourceCount: signals.length,
+      limitedSourceCount: limitedSignals.length,
+      staleSourceCount: staleSignals.length,
+      limitations: [
+        ...(!signals.length ? ["No normalized growth evidence has been collected yet."] : []),
+        ...(staleSignals.length ? [`${staleSignals.length} evidence source${staleSignals.length === 1 ? " is" : "s are"} stale or expired.`] : []),
+        ...(!verifiedExposures.length ? ["Official outcome measurement starts only after a verified external exposure."] : []),
+      ],
+    },
+    activeWork: {
+      count: activeTasks.length,
+      tasks: activeTasks.slice(0, 10),
+    },
+    evaluations: evaluations.slice(0, 20),
+    blueprint: {
+      version: blueprint?.currentVersion ?? null,
+      patchCount: patches.length,
+      patches,
+      strategyReviewRequired: patches.some((patch) => jsonRecord(patch).materialStrategyChange === true),
+    },
+  };
+}
+
 async function refreshSupportingContentPlan(
   context: WorkspaceContext,
   project: NonNullable<Awaited<ReturnType<typeof scopedProject>>>,
@@ -1150,7 +1305,9 @@ growthRouter.get("/projects-v2/:projectId/growth/overview", async (req, res) => 
   const score = scoreProject(project);
   const readiness = growthReadiness(project);
   const growth = await loadGrowthOverview(project.id);
-  res.json({ project, signals: score, readiness, growth, automationPolicy: policyForModule("growth_marketing") });
+  const growthIntelligence = await loadGrowthIntelligence(project.id);
+  const workflowController = await getProjectWorkflowController(project.id);
+  res.json({ project, signals: score, readiness, growth, growthIntelligence, workflowController, strategyContext: projectContext(project).strategyContract, automationPolicy: policyForModule("growth_marketing") });
 });
 
 growthRouter.post("/projects-v2/:projectId/growth/analyze", async (req, res) => {
@@ -1159,11 +1316,15 @@ growthRouter.post("/projects-v2/:projectId/growth/analyze", async (req, res) => 
   if (!project) return res.status(404).json({ error: "project not found" });
   const readiness = growthReadiness(project);
   if (!readiness.canRun) return res.status(409).json({ error: "growth_readiness_incomplete", readiness });
+  const workflowBlocker = await growthWorkflowBlocker(project.id);
+  if (workflowBlocker) return res.status(409).json(workflowBlocker);
   await runGrowthEngine({ req, context, project, runType: "manual" });
 
   const score = scoreProject(project);
   const growth = await loadGrowthOverview(project.id);
-  res.json({ project, signals: score, readiness, growth, automationPolicy: policyForModule("growth_marketing") });
+  const growthIntelligence = await loadGrowthIntelligence(project.id);
+  const workflowController = await getProjectWorkflowController(project.id);
+  res.json({ project, signals: score, readiness, growth, growthIntelligence, workflowController, strategyContext: projectContext(project).strategyContract, automationPolicy: policyForModule("growth_marketing") });
 });
 
 growthRouter.post("/projects-v2/:projectId/growth/content-roadmap/refresh", async (req, res) => {
@@ -1172,6 +1333,8 @@ growthRouter.post("/projects-v2/:projectId/growth/content-roadmap/refresh", asyn
   if (!project) return res.status(404).json({ error: "project not found" });
   const readiness = growthReadiness(project);
   if (!readiness.canRun) return res.status(409).json({ error: "growth_readiness_incomplete", readiness });
+  const workflowBlocker = await growthWorkflowBlocker(project.id);
+  if (workflowBlocker) return res.status(409).json(workflowBlocker);
   const blueprintExists = Boolean(await prisma.growthBlueprint.findUnique({ where: { projectId: project.id }, select: { id: true } }));
   if (!blueprintExists) {
     await runGrowthEngine({ req, context, project, runType: "manual" });
@@ -1346,6 +1509,8 @@ growthRouter.post("/projects-v2/:projectId/growth/funnel-map", async (req, res) 
   if (!project) return res.status(404).json({ error: "project not found" });
   const readiness = growthReadiness(project);
   if (!readiness.canRun) return res.status(409).json({ error: "growth_readiness_incomplete", readiness });
+  const workflowBlocker = await growthWorkflowBlocker(project.id);
+  if (workflowBlocker) return res.status(409).json(workflowBlocker);
   const score = scoreProject(project);
   const stages = funnelDefinitions(project, score);
   await prisma.$transaction(async (tx) => {
@@ -1366,6 +1531,8 @@ growthRouter.post("/projects-v2/:projectId/growth/experiments/generate", async (
   if (!project) return res.status(404).json({ error: "project not found" });
   const readiness = growthReadiness(project);
   if (!readiness.canRun) return res.status(409).json({ error: "growth_readiness_incomplete", readiness });
+  const workflowBlocker = await growthWorkflowBlocker(project.id);
+  if (workflowBlocker) return res.status(409).json(workflowBlocker);
   const latestDiagnosis = await prisma.growthDiagnosis.findFirst({ where: { projectId: project.id }, orderBy: { createdAt: "desc" } });
   const score = scoreProject(project);
   const bottleneckType = latestDiagnosis?.bottleneckType ?? score.bottleneckType;
@@ -1483,7 +1650,16 @@ growthRouter.post("/growth/experiments/:experimentId/start", async (req, res) =>
 const resultSchema = z.object({
   baselineValue: z.number().optional(),
   currentValue: z.number().optional(),
-  resultStatus: z.enum(["tracking", "winner", "failed", "inconclusive", "scaled"]).default("tracking"),
+  baselineSampleSize: z.number().int().nonnegative().optional(),
+  currentSampleSize: z.number().int().nonnegative().optional(),
+  minimumSampleSize: z.number().int().positive().max(1_000_000).optional(),
+  minimumMaterialChangePercent: z.number().nonnegative().max(100).optional(),
+  direction: z.enum(["increase", "decrease"]).optional(),
+  sourceStatus: z.enum(["AVAILABLE", "LIMITED", "STALE", "UNAVAILABLE", "INSUFFICIENT"]).optional(),
+  sourceFreshnessDays: z.number().nonnegative().optional(),
+  evaluationWindowComplete: z.boolean().optional(),
+  limitations: z.array(z.string().trim().min(2).max(500)).max(20).optional(),
+  resultStatus: z.enum(["tracking", "winner", "failed", "inconclusive", "scaled"]).optional(),
   notes: z.string().max(5000).optional(),
 });
 
@@ -1496,17 +1672,44 @@ growthRouter.post("/growth/experiments/:experimentId/results", async (req, res) 
   });
   if (!experiment) return res.status(404).json({ error: "experiment not found" });
   const context = await authorizeProject(req, experiment.projectId, "execute_tasks");
-  const terminal = ["winner", "failed", "inconclusive", "scaled"].includes(parsed.data.resultStatus);
+  const evaluation = evaluateMeasurement({
+    metricKey: experiment.metric,
+    direction: parsed.data.direction,
+    baselineValue: parsed.data.baselineValue,
+    currentValue: parsed.data.currentValue,
+    baselineSampleSize: parsed.data.baselineSampleSize,
+    currentSampleSize: parsed.data.currentSampleSize,
+    minimumSampleSize: parsed.data.minimumSampleSize,
+    minimumMaterialChangePercent: parsed.data.minimumMaterialChangePercent,
+    sourceStatus: parsed.data.sourceStatus as EvidenceAvailability | undefined,
+    sourceFreshnessDays: parsed.data.sourceFreshnessDays,
+    evaluationWindowComplete: parsed.data.evaluationWindowComplete ?? parsed.data.resultStatus !== "tracking",
+    limitations: parsed.data.limitations,
+  });
+  const evaluatedStatus = evaluation.classification === "IMPROVED"
+    ? parsed.data.resultStatus === "scaled" ? "scaled" : "winner"
+    : evaluation.classification === "DECLINED"
+      ? "failed"
+      : evaluation.classification === "COLLECTING"
+        ? "tracking"
+        : "inconclusive";
+  const terminal = evaluatedStatus !== "tracking";
   const result = await prisma.$transaction(async (tx) => {
     const row = await tx.growthExperimentResult.create({
       data: {
         experimentId: experiment.id,
-        ...parsed.data,
+        baselineValue: parsed.data.baselineValue,
+        currentValue: parsed.data.currentValue,
+        resultStatus: evaluatedStatus,
+        notes: parsed.data.notes,
         learningJson: {
+          contractVersion: GROWTH_INTELLIGENCE_CONTRACT_VERSION,
           metric: experiment.metric,
           baselineValue: parsed.data.baselineValue ?? null,
           currentValue: parsed.data.currentValue ?? null,
-          outcome: parsed.data.resultStatus,
+          outcome: evaluatedStatus,
+          evaluation,
+          observedImpact: safeObservedImpact(evaluation),
         },
         evaluatedAt: terminal ? new Date() : null,
       },
@@ -1514,18 +1717,54 @@ growthRouter.post("/growth/experiments/:experimentId/results", async (req, res) 
     if (terminal) {
       await tx.growthExperiment.update({
         where: { id: experiment.id },
-        data: { status: parsed.data.resultStatus === "winner" ? "completed" : parsed.data.resultStatus, completedAt: new Date() },
+        data: { status: evaluatedStatus === "winner" ? "completed" : evaluatedStatus, completedAt: new Date() },
       });
-      await tx.projectGrowthLearning.create({
+      const learning = await tx.projectGrowthLearning.create({
         data: {
           projectId: experiment.projectId,
           sourceType: "growth_experiment",
           sourceId: experiment.id,
-          outcome: parsed.data.resultStatus === "winner" || parsed.data.resultStatus === "scaled" ? "won" : parsed.data.resultStatus === "failed" ? "lost" : "inconclusive",
-          summary: parsed.data.notes || `${experiment.title} finished as ${parsed.data.resultStatus}.`,
-          learningJson: { metric: experiment.metric, baselineValue: parsed.data.baselineValue ?? null, currentValue: parsed.data.currentValue ?? null },
+          outcome: evaluatedStatus === "winner" || evaluatedStatus === "scaled" ? "won" : evaluatedStatus === "failed" ? "lost" : "inconclusive",
+          summary: parsed.data.notes || evaluation.summary,
+          learningJson: { contractVersion: GROWTH_INTELLIGENCE_CONTRACT_VERSION, metric: experiment.metric, evaluation, observedImpact: safeObservedImpact(evaluation) },
         },
       });
+      const blueprint = await tx.growthBlueprint.findUnique({
+        where: { projectId: experiment.projectId },
+        include: { versions: { orderBy: { version: "desc" }, take: 1 } },
+      });
+      const previous = blueprint?.versions[0];
+      if (blueprint && previous) {
+        const patch = createBlueprintPatch({
+          patchType: "LEARNING",
+          path: `/learnings/${learning.id}`,
+          operation: "add",
+          previousValue: null,
+          nextValue: { outcome: learning.outcome, metric: experiment.metric, evaluation, sourceExperimentId: experiment.id },
+          reason: evaluation.summary,
+          evidenceRefs: [`growth_experiment:${experiment.id}`, `growth_experiment_result:${row.id}`],
+        });
+        const previousEvidence = jsonRecord(previous.evidenceJson);
+        const previousPatches = Array.isArray(previousEvidence.patches) ? previousEvidence.patches : [];
+        const version = blueprint.currentVersion + 1;
+        await tx.growthBlueprintVersion.create({
+          data: {
+            blueprintId: blueprint.id,
+            version,
+            status: "active",
+            goalsJson: previous.goalsJson as Prisma.InputJsonValue,
+            nowJson: previous.nowJson as Prisma.InputJsonValue,
+            nextJson: previous.nextJson as Prisma.InputJsonValue,
+            laterJson: previous.laterJson as Prisma.InputJsonValue,
+            conditionalJson: previous.conditionalJson as Prisma.InputJsonValue,
+            evidenceJson: { ...previousEvidence, patches: [...previousPatches, patch], latestEvaluation: evaluation } as Prisma.InputJsonValue,
+            reason: `Growth Blueprint updated from measured learning: ${evaluation.summary}`,
+            engineVersion: GROWTH_INTELLIGENCE_CONTRACT_VERSION,
+            createdByUserId: context.membership.userId,
+          },
+        });
+        await tx.growthBlueprint.update({ where: { id: blueprint.id }, data: { currentVersion: version, status: "active", nextReviewAt: new Date(Date.now() + 7 * 86_400_000) } });
+      }
     }
     await recordWorkspaceActivity(tx, {
       context,
@@ -1534,9 +1773,17 @@ growthRouter.post("/growth/experiments/:experimentId/results", async (req, res) 
       entityId: row.id,
       agencyClientId: experiment.project.agencyClientId,
       projectId: experiment.projectId,
-      nextJson: { resultStatus: parsed.data.resultStatus, terminal },
+      nextJson: { resultStatus: evaluatedStatus, terminal, evaluationClassification: evaluation.classification, availability: evaluation.availability },
     });
     return row;
+  });
+  await publishProjectWorkflowEvent({
+    projectId: experiment.projectId,
+    eventType: terminal ? "experiment.completed" : "measurement.recorded",
+    sourceModule: "growth_engine",
+    sourceId: experiment.id,
+    idempotencyKey: `${terminal ? "experiment.completed" : "measurement.recorded"}:${experiment.id}:${result.id}`,
+    payload: { resultId: result.id, resultStatus: evaluatedStatus, metric: experiment.metric, baselineValue: parsed.data.baselineValue ?? null, currentValue: parsed.data.currentValue ?? null, evaluation },
   });
   if (terminal) {
     const refreshedProject = await scopedProject(req, experiment.projectId);
@@ -1545,6 +1792,109 @@ growthRouter.post("/growth/experiments/:experimentId/results", async (req, res) 
     }
   }
   res.json({ result });
+});
+
+const checkpointEvaluationSchema = z.object({
+  metricKey: z.string().trim().min(2).max(160),
+  direction: z.enum(["increase", "decrease"]).optional(),
+  baselineValue: z.number().optional(),
+  currentValue: z.number().optional(),
+  baselineSampleSize: z.number().int().nonnegative().optional(),
+  currentSampleSize: z.number().int().nonnegative().optional(),
+  minimumSampleSize: z.number().int().positive().max(1_000_000).optional(),
+  minimumMaterialChangePercent: z.number().nonnegative().max(100).optional(),
+  sourceStatus: z.enum(["AVAILABLE", "LIMITED", "STALE", "UNAVAILABLE", "INSUFFICIENT"]).optional(),
+  sourceFreshnessDays: z.number().nonnegative().optional(),
+  evaluationWindowComplete: z.boolean().default(true),
+  limitations: z.array(z.string().trim().min(2).max(500)).max(20).optional(),
+});
+
+growthRouter.post("/projects-v2/:projectId/growth/measurements/:checkpointId/evaluate", async (req, res) => {
+  const parsed = checkpointEvaluationSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() });
+  const context = await authorizeProject(req, req.params.projectId, "execute_tasks");
+  const checkpoint = await prisma.measurementCheckpoint.findFirst({
+    where: { id: req.params.checkpointId, projectId: req.params.projectId },
+    include: { task: { select: { id: true, title: true, moduleName: true } } },
+  });
+  if (!checkpoint) return res.status(404).json({ error: "Measurement checkpoint not found." });
+  const evaluation = evaluateMeasurement(parsed.data);
+  const terminal = evaluation.classification !== "COLLECTING";
+  const observedImpact = safeObservedImpact(evaluation);
+  const updated = await prisma.$transaction(async (tx) => {
+    const row = await tx.measurementCheckpoint.update({
+      where: { id: checkpoint.id },
+      data: {
+        status: terminal ? "completed" : "collecting",
+        metricsJson: { contractVersion: GROWTH_INTELLIGENCE_CONTRACT_VERSION, evaluation, observedImpact } as Prisma.InputJsonValue,
+        diagnosis: evaluation.summary,
+        completedAt: terminal ? new Date() : null,
+      },
+    });
+    if (terminal) {
+      const learning = await tx.projectGrowthLearning.create({
+        data: {
+          projectId: checkpoint.projectId,
+          sourceType: "measurement_checkpoint",
+          sourceId: checkpoint.id,
+          outcome: evaluation.classification === "IMPROVED" ? "won" : evaluation.classification === "DECLINED" ? "lost" : "inconclusive",
+          summary: evaluation.summary,
+          learningJson: { contractVersion: GROWTH_INTELLIGENCE_CONTRACT_VERSION, taskId: checkpoint.taskId, checkpointType: checkpoint.checkpointType, evaluation, observedImpact } as Prisma.InputJsonValue,
+        },
+      });
+      const blueprint = await tx.growthBlueprint.findUnique({ where: { projectId: checkpoint.projectId }, include: { versions: { orderBy: { version: "desc" }, take: 1 } } });
+      const previous = blueprint?.versions[0];
+      if (blueprint && previous) {
+        const patch = createBlueprintPatch({
+          patchType: "MEASUREMENT",
+          path: `/measurements/${checkpoint.id}`,
+          operation: "add",
+          previousValue: null,
+          nextValue: { checkpointType: checkpoint.checkpointType, taskId: checkpoint.taskId, evaluation },
+          reason: evaluation.summary,
+          evidenceRefs: [`measurement_checkpoint:${checkpoint.id}`, `execution_task:${checkpoint.taskId}`, `learning:${learning.id}`],
+        });
+        const evidence = jsonRecord(previous.evidenceJson);
+        const patches = Array.isArray(evidence.patches) ? evidence.patches : [];
+        const version = blueprint.currentVersion + 1;
+        await tx.growthBlueprintVersion.create({
+          data: {
+            blueprintId: blueprint.id,
+            version,
+            status: "active",
+            goalsJson: previous.goalsJson as Prisma.InputJsonValue,
+            nowJson: previous.nowJson as Prisma.InputJsonValue,
+            nextJson: previous.nextJson as Prisma.InputJsonValue,
+            laterJson: previous.laterJson as Prisma.InputJsonValue,
+            conditionalJson: previous.conditionalJson as Prisma.InputJsonValue,
+            evidenceJson: { ...evidence, patches: [...patches, patch], latestEvaluation: evaluation } as Prisma.InputJsonValue,
+            reason: `Growth Blueprint updated from ${checkpoint.checkpointType.replaceAll("_", " ")} evidence.`,
+            engineVersion: GROWTH_INTELLIGENCE_CONTRACT_VERSION,
+            createdByUserId: context.membership.userId,
+          },
+        });
+        await tx.growthBlueprint.update({ where: { id: blueprint.id }, data: { currentVersion: version, status: "active", nextReviewAt: new Date(Date.now() + 7 * 86_400_000) } });
+      }
+    }
+    await recordWorkspaceActivity(tx, {
+      context,
+      action: terminal ? "growth_measurement.evaluated" : "growth_measurement.collecting",
+      entityType: "measurement_checkpoint",
+      entityId: checkpoint.id,
+      projectId: checkpoint.projectId,
+      nextJson: { taskId: checkpoint.taskId, checkpointType: checkpoint.checkpointType, classification: evaluation.classification, availability: evaluation.availability, confidence: evaluation.confidence },
+    });
+    return row;
+  });
+  await publishProjectWorkflowEvent({
+    projectId: checkpoint.projectId,
+    eventType: terminal ? "measurement.evaluated" : "measurement.recorded",
+    sourceModule: "growth_intelligence",
+    sourceId: checkpoint.id,
+    idempotencyKey: `measurement:${checkpoint.id}:${updated.updatedAt.toISOString()}`,
+    payload: { checkpointId: checkpoint.id, taskId: checkpoint.taskId, evaluation },
+  });
+  res.json({ checkpoint: updated, evaluation, observedImpact, growthIntelligence: await loadGrowthIntelligence(checkpoint.projectId) });
 });
 
 const growthDecisionSchema = z.object({

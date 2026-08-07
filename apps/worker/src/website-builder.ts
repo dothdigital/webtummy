@@ -14,10 +14,13 @@ import {
   fitWebsiteComponentsToWordBudget,
   strictWebsiteJsonResponseFormat,
   websiteDraftAcceptanceWords,
+  websiteContentBatchPageMode,
   websiteJobRecoveryAction,
   websitePageHasCompleteContent,
+  websitePageUniquenessCollisions,
   websiteRichTextExpansionBudget,
   websiteSectionGroupBudgets,
+  type WebsitePageUniquenessSignals,
   type WebsiteQueueState,
 } from "@webtummy/core/website-generation";
 import { config, WEBSITE_BUILDER_QUEUE } from "./config.js";
@@ -26,6 +29,70 @@ import { connection, websiteBuilderQueue, type WebsiteBuilderJobData } from "./q
 
 const record = (value: unknown): Record<string, unknown> => value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
 const strings = (value: unknown) => Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
+const targetedUpdateFields = ["seo_title", "meta_description", "h1", "h2_heading", "page_section", "faq", "internal_link", "canonical_url", "schema", "other"] as const;
+const aiText = (value: unknown, maximum = 15_000) => {
+  if (value == null) return "";
+  const text = typeof value === "string"
+    ? value
+    : typeof value === "number" || typeof value === "boolean"
+      ? String(value)
+      : JSON.stringify(value, null, 2);
+  return String(text || "").trim().slice(0, maximum);
+};
+const targetedField = (value: unknown): typeof targetedUpdateFields[number] => {
+  const normalized = String(value ?? "").trim().toLowerCase().replace(/[\s-]+/g, "_");
+  const aliases: Record<string, typeof targetedUpdateFields[number]> = {
+    title: "seo_title", meta_title: "seo_title", seo_meta_title: "seo_title",
+    description: "meta_description", meta: "meta_description",
+    h2: "h2_heading", h3: "h2_heading", heading: "h2_heading",
+    section: "page_section", content_section: "page_section", body_section: "page_section",
+    faqs: "faq", internal_links: "internal_link", link: "internal_link",
+    canonical: "canonical_url", json_ld: "schema", structured_data: "schema",
+  };
+  if (aliases[normalized]) return aliases[normalized];
+  return targetedUpdateFields.includes(normalized as typeof targetedUpdateFields[number])
+    ? normalized as typeof targetedUpdateFields[number]
+    : "other";
+};
+const importedExistingWebsitePage = (page: { briefJson: Prisma.JsonValue }) => {
+  const source = record(record(page.briefJson).importSource);
+  if (source.importedFromExistingWebsite !== true) return false;
+  const type = String(source.type ?? source.source ?? "");
+  if (String(source.crawlPageId ?? "").trim()) return true;
+  if (type === "existing_crawl") return false;
+  if (type === "existing_sitemap") {
+    const statusCode = Number(source.statusCode);
+    return Number.isFinite(statusCode) && statusCode >= 200 && statusCode < 400;
+  }
+  return false;
+};
+const existingPageRequirements = (page: { briefJson: Prisma.JsonValue; pageType?: string; title?: string }) => {
+  const plan = record(record(page.briefJson).seoPlan);
+  const approved = Array.isArray(plan.gapRequirements) ? plan.gapRequirements.map(record) : [];
+  const suggested = Array.isArray(plan.suggestedGapRequirements) ? plan.suggestedGapRequirements.map(record) : [];
+  const requirements = approved.length ? approved : suggested;
+  const faqPage = websitePageCompositionPolicy({ pageType: page.pageType, title: page.title, searchIntent: "informational" }).archetype === "faq";
+  const alreadyCoversFaqPurpose = requirements.some((requirement) => /faq|frequently asked/i.test([
+    requirement.issueType,
+    requirement.title,
+    requirement.evidence,
+    requirement.recommendedFix,
+  ].map((value) => String(value ?? "")).join(" ")));
+  return faqPage && !alreadyCoversFaqPurpose
+    ? [...requirements, {
+        findingKey: "page-purpose:faq-library",
+        issueType: "faq_page_content",
+        title: "Create the dedicated FAQ answer library",
+        evidence: "This URL and page title identify the page as the website's dedicated FAQ destination.",
+        recommendedFix: "Create 8–12 verified questions and answers organized around buyer decisions, services, booking, policies, and practical next steps. Synchronize the exact visible questions and answers with FAQPage schema and preserve all unrelated existing page content.",
+      }]
+    : requirements;
+};
+const existingPageTargetedDraftReady = (page: { briefJson: Prisma.JsonValue }) => {
+  const plan = record(record(page.briefJson).seoPlan);
+  return Array.isArray(record(plan.targetedUpdateDraft).updates)
+    && (record(plan.targetedUpdateDraft).updates as unknown[]).length > 0;
+};
 const pageHasCompleteContent = (page: {
   contentJson: Prisma.JsonValue;
   status: string;
@@ -86,7 +153,9 @@ function compactPromptValue(value: unknown, depth = 0): unknown {
   if (typeof value === "object") {
     return Object.fromEntries(Object.entries(value as Record<string, unknown>)
       .slice(0, 36)
-      .map(([key, item]) => [key, compactPromptValue(item, depth + 1)]));
+      .map(([key, item]) => [key, key === "currentVisibleContentExcerpt"
+        ? promptText(item, 24_000)
+        : compactPromptValue(item, depth + 1)]));
   }
   return promptText(value);
 }
@@ -105,6 +174,9 @@ function pageBriefEvidence(briefJson: unknown) {
   const seo = record(brief.seoPlan);
   const authority = record(brief.authorityCluster);
   const governance = record(brief.seoGovernance);
+  const importSource = record(brief.importSource);
+  const currentWebsiteSnapshot = record(importSource.currentWebsiteSnapshot);
+  const migrationDecision = record(brief.migrationDecision);
   const internalLinks = Array.isArray(brief.internalLinkPlan)
     ? brief.internalLinkPlan.slice(0, 20).map((value) => {
       const link = record(value);
@@ -152,6 +224,18 @@ function pageBriefEvidence(briefJson: unknown) {
     internalLinkTargets: promptStrings(brief.internalLinkTargets, 20, 500),
     internalLinkPlan: internalLinks,
     seoGovernance: compactPromptValue(governance),
+    existingWebsiteAsset: {
+      sourceUrl: promptText(migrationDecision.sourceUrl ?? currentWebsiteSnapshot.url ?? importSource.liveUrl, 500),
+      decision: promptText(migrationDecision.decision || (importSource.importedFromExistingWebsite === true ? "review_for_keep_improve_rewrite_merge_replace_or_redirect" : "create"), 80),
+      rationale: promptText(migrationDecision.rationale, 1_500),
+      currentTitle: promptText(currentWebsiteSnapshot.title, 512),
+      currentMetaDescription: promptText(currentWebsiteSnapshot.metaDescription, 1_000),
+      currentH1: promptStrings(currentWebsiteSnapshot.h1, 5, 500),
+      currentH2: promptStrings(currentWebsiteSnapshot.h2, 20, 500),
+      currentWordCount: currentWebsiteSnapshot.wordCount ?? null,
+      currentVisibleContentExcerpt: promptText(currentWebsiteSnapshot.visibleTextExcerpt, 24_000),
+      preservationRule: "Keep verified facts, services, proof, testimonials, case-study evidence, and useful topic coverage when they remain relevant. Never preserve unsupported claims or obsolete structure merely because it appeared on the old site.",
+    },
   };
 }
 
@@ -288,12 +372,16 @@ function normalizeAiComponentInstance(instance: WebsiteComponentInstance) {
   }
   return normalizeGeneratedComponentInstance({ ...instance, props });
 }
-const businessIdentity = (project: { businessName: string | null; agencyClient?: { name: string } | null }) => project.businessName?.trim() || project.agencyClient?.name?.trim() || null;
-const interpretedBusinessContext = (seoPlan: unknown, project: { businessName: string | null; agencyClient?: { name: string } | null }) => {
+const businessIdentity = (project: { name?: string | null; businessName: string | null; agencyClient?: { name: string } | null }) => project.businessName?.trim() || project.name?.trim() || project.agencyClient?.name?.trim() || null;
+const interpretedBusinessContext = (seoPlan: unknown, project: { name?: string | null; businessName: string | null; agencyClient?: { name: string } | null }) => {
   const plan = record(seoPlan);
   const context = record(plan.aiBusinessContext || record(plan.contentPlan).aiBusinessContext);
+  const plannedBusinessName = String(context.businessName || "").trim();
+  const agencyName = project.agencyClient?.name?.trim() || "";
+  const projectName = project.name?.trim() || "";
+  const plannedNameIsAgencyLeak = Boolean(plannedBusinessName && agencyName && projectName && plannedBusinessName.toLocaleLowerCase() === agencyName.toLocaleLowerCase() && projectName.toLocaleLowerCase() !== agencyName.toLocaleLowerCase());
   return {
-    businessName: String(context.businessName || businessIdentity(project) || "").trim() || null,
+    businessName: String((plannedNameIsAgencyLeak ? "" : plannedBusinessName) || businessIdentity(project) || "").trim() || null,
     industry: String(context.industry || "").trim(),
     coreBusinessValue: String(context.coreBusinessValue || "").trim(),
     primaryServices: strings(context.primaryServices),
@@ -301,6 +389,206 @@ const interpretedBusinessContext = (seoPlan: unknown, project: { businessName: s
     homepagePrimaryTopic: String(context.homepagePrimaryTopic || "").trim(),
   };
 };
+
+type WebsiteGenerationBusinessProfile = {
+  businessSummary: string | null;
+  targetAudience: string | null;
+  offerSummary: string | null;
+  strengths: Prisma.JsonValue;
+  constraints: Prisma.JsonValue;
+  intelligenceJson: Prisma.JsonValue;
+} | null;
+
+function pageIntakeEvidence(
+  page: { title: string; pageType?: string; searchIntent?: string },
+  project: { name: string; businessName: string | null; businessProfile: WebsiteGenerationBusinessProfile; businessLocationJson?: Prisma.JsonValue | null; targetLocations?: Prisma.JsonValue },
+) {
+  const profile = project.businessProfile;
+  const intelligence = record(profile?.intelligenceJson);
+  const launch = record(intelligence.aiProjectLaunch);
+  const proposal = record(launch.proposal);
+  const proposalWebsite = record(proposal.website);
+  const archetype = websitePageCompositionPolicy(page).archetype;
+  return {
+    pageArchetype: archetype,
+    approvedBusinessIdentity: businessIdentity(project),
+    businessSummary: profile?.businessSummary ?? null,
+    targetAudience: profile?.targetAudience ?? null,
+    offerSummary: profile?.offerSummary ?? null,
+    strengths: profile?.strengths ?? [],
+    constraints: profile?.constraints ?? [],
+    approvedBusinessDiscovery: proposal.business ?? null,
+    observedWebsiteAssets: proposalWebsite.assetsObserved ?? intelligence.websiteAssets ?? null,
+    approvedWebsiteEvidence: proposalWebsite.evidence ?? proposal.evidence ?? null,
+    missingOrConflictingInformation: proposal.missingInformation ?? intelligence.missingInformation ?? null,
+    projectLocation: project.businessLocationJson ?? null,
+    targetMarkets: strings(project.targetLocations),
+    evidenceRule: archetype === "contact"
+      ? "Use only verified phone, email, address, hours, service areas, booking details, and form destination. Omit or flag anything missing or conflicting."
+      : archetype === "about"
+        ? "Use only approved story, experience, people, values, approach, strengths, and proof. Never invent names, credentials, dates, awards, or outcomes."
+        : archetype === "faq"
+          ? "Use approved business, service, booking, policy, and customer-journey evidence. If an answer is not supported, omit the question or state that confirmation is required."
+          : "Use approved intake and website evidence only; never turn a suggestion into a public fact.",
+  };
+}
+
+async function enrichExistingWebsitePageEvidence<T extends { briefJson: Prisma.JsonValue }>(page: T): Promise<T> {
+  const brief = record(page.briefJson);
+  const importSource = record(brief.importSource);
+  const crawlPageId = String(importSource.crawlPageId || "").trim();
+  if (!crawlPageId || Object.keys(record(importSource.currentWebsiteSnapshot)).length) return page;
+  const crawlPage = await prisma.page.findUnique({
+    where: { id: crawlPageId },
+    select: {
+      url: true,
+      finalUrl: true,
+      wordCount: true,
+      seo: { select: { title: true, metaDescription: true, h1Text: true, h2Json: true, canonicalUrl: true, robotsMeta: true } },
+    },
+  });
+  if (!crawlPage) return page;
+  const sourceUrl = crawlPage.finalUrl || crawlPage.url;
+  let visibleTextExcerpt = "";
+  if (/^https?:\/\//i.test(sourceUrl)) {
+    try {
+      const response = await fetch(sourceUrl, {
+        redirect: "follow",
+        signal: AbortSignal.timeout(15_000),
+        headers: { "User-Agent": "SEnuke-AI-Website-Migration/1.0" },
+      });
+      const contentType = String(response.headers.get("content-type") || "");
+      const contentLength = Number(response.headers.get("content-length") || 0);
+      if (response.ok && /text\/html/i.test(contentType) && (!contentLength || contentLength <= 3_000_000)) {
+        const html = await response.text();
+        visibleTextExcerpt = html
+          .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, " ")
+          .replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, " ")
+          .replace(/<noscript\b[^>]*>[\s\S]*?<\/noscript>/gi, " ")
+          .replace(/<!--([\s\S]*?)-->/g, " ")
+          .replace(/<[^>]+>/g, " ")
+          .replace(/&nbsp;/gi, " ")
+          .replace(/&amp;/gi, "&")
+          .replace(/&quot;/gi, '"')
+          .replace(/&#39;|&apos;/gi, "'")
+          .replace(/&lt;/gi, "<")
+          .replace(/&gt;/gi, ">")
+          .replace(/\s+/g, " ")
+          .trim()
+          .slice(0, 24_000);
+      }
+    } catch {
+      // The saved crawl metadata remains valid evidence when a live-page
+      // refresh is unavailable during generation.
+    }
+  }
+  return {
+    ...page,
+    briefJson: {
+      ...brief,
+      importSource: {
+        ...importSource,
+        currentWebsiteSnapshot: {
+          url: sourceUrl,
+          wordCount: crawlPage.wordCount,
+          title: crawlPage.seo?.title ?? null,
+          metaDescription: crawlPage.seo?.metaDescription ?? null,
+          h1: strings(crawlPage.seo?.h1Text),
+          h2: strings(crawlPage.seo?.h2Json),
+          canonicalUrl: crawlPage.seo?.canonicalUrl ?? null,
+          robots: crawlPage.seo?.robotsMeta ?? null,
+          visibleTextExcerpt: visibleTextExcerpt || null,
+        },
+      },
+    } as Prisma.JsonValue,
+  };
+}
+
+function governedPageKeyword(
+  page: { title: string; pageType?: string; searchIntent?: string; primaryKeyword: string },
+  project: { name?: string | null; businessName: string | null; agencyClient?: { name: string } | null },
+) {
+  const business = businessIdentity(project);
+  if (!business) return page.primaryKeyword;
+  const archetype = websitePageCompositionPolicy(page).archetype;
+  if (archetype === "faq") return `${business} frequently asked questions`;
+  if (archetype === "contact") return `${business} contact`;
+  if (archetype === "about") return `${business} about`;
+  return page.primaryKeyword;
+}
+
+async function aiExistingPageUpdates(
+  page: { id: string; title: string; primaryKeyword: string; searchIntent: string; targetUrl: string | null; briefJson: Prisma.JsonValue },
+  project: { name: string; businessName: string | null; agencyClient?: { name: string } | null; businessProfile: WebsiteGenerationBusinessProfile; businessLocationJson?: Prisma.JsonValue | null; targetLocations?: Prisma.JsonValue },
+  requirements: Record<string, unknown>[],
+  instructions: string,
+) {
+  const brief = record(page.briefJson);
+  const importSource = record(brief.importSource);
+  const crawlPage = importSource.crawlPageId
+    ? await prisma.page.findUnique({
+        where: { id: String(importSource.crawlPageId) },
+        select: { url: true, finalUrl: true, wordCount: true, seo: { select: { title: true, metaDescription: true, h1Text: true, h2Json: true, canonicalUrl: true, robotsMeta: true } } },
+      })
+    : null;
+  const current = {
+    url: crawlPage?.finalUrl || crawlPage?.url || importSource.liveUrl || page.targetUrl,
+    wordCount: crawlPage?.wordCount ?? null,
+    title: crawlPage?.seo?.title ?? null,
+    metaDescription: crawlPage?.seo?.metaDescription ?? null,
+    h1: strings(crawlPage?.seo?.h1Text),
+    h2: strings(crawlPage?.seo?.h2Json),
+    canonicalUrl: crawlPage?.seo?.canonicalUrl ?? null,
+    robots: crawlPage?.seo?.robotsMeta ?? null,
+  };
+  const intakeEvidence = pageIntakeEvidence(page, project);
+  const approvedPageKeyword = governedPageKeyword(page, project);
+  const response = await fetch("https://api.openai.com/v1/chat/completions", {
+    method: "POST",
+    signal: AbortSignal.timeout(120_000),
+    headers: { Authorization: `Bearer ${config.openaiApiKey}`, "Content-Type": "application/json" },
+    body: JSON.stringify({
+      model: config.openaiContentModel,
+      response_format: { type: "json_object" },
+      temperature: 0.25,
+      max_tokens: 5000,
+      messages: [
+        { role: "system", content: "You prepare surgical existing-website updates. Return JSON only. Change only the supplied missing or weak fields. Preserve all other page content. Never invent business facts, claims, reviews, credentials, addresses, prices, statistics, legal promises, or source URLs." },
+        { role: "user", content: `Return JSON matching {"summary":"what changes and what remains untouched","updates":[{"findingKey":"source key","field":"seo_title|meta_description|h1|h2_heading|page_section|faq|internal_link|canonical_url|schema|other","label":"clear update name","currentValue":"exact current value when available","proposedValue":"complete replacement field or missing content only","implementationNotes":"where and how to apply it"}]}.
+Business: ${businessIdentity(project) || "Business identity requires confirmation"}
+Page: ${page.title}
+Primary keyword: ${approvedPageKeyword}
+Search intent: ${page.searchIntent}
+Current crawl snapshot: ${promptJson(current, 12_000)}
+Approved page assignment: ${promptJson(brief.seoPlan, 12_000)}
+Verified Project Intake evidence for this page purpose: ${promptJson(intakeEvidence, 18_000)}
+Missing or weak items: ${promptJson(requirements, 18_000)}
+Additional instruction: ${promptText(instructions || "none", 2_000)}
+For every page, the governing order is approved intake facts, approved keyword owner, page purpose and intent, then Strategy and Gap requirements. Do not write from the niche alone.
+Return one update for every supplied requirement. Do not rewrite the complete page. Preserve all copy not named in a requirement.
+For a dedicated FAQ page, return 8–12 verified question-and-answer pairs rather than generic article copy, and keep the visible answers synchronized with FAQPage schema when schema is requested.
+For Contact and About pages, use the verified Project Intake evidence above. Omit or flag missing or conflicting facts; never invent them.
+Return currentValue, proposedValue, and implementationNotes as text; serialize FAQ or schema JSON as text.` },
+      ],
+    }),
+  });
+  if (!response.ok) throw new Error(`AI existing-page update request failed (${response.status}).`);
+  const payload = record(await response.json());
+  const choice = Array.isArray(payload.choices) ? record(payload.choices[0]) : {};
+  const parsed = record(JSON.parse(String(record(choice.message).content || "{}")));
+  const updates = (Array.isArray(parsed.updates) ? parsed.updates : []).map(record).map((item) => ({
+    findingKey: aiText(item.findingKey, 191),
+    field: targetedField(item.field),
+    label: aiText(item.label, 120),
+    currentValue: aiText(item.currentValue, 5_000),
+    proposedValue: aiText(item.proposedValue, 15_000),
+    implementationNotes: aiText(item.implementationNotes, 2_000),
+  })).filter((item) => item.label.length >= 2 && item.proposedValue.length >= 2);
+  if (updates.length < requirements.length) throw new Error(`AI returned ${updates.length} of ${requirements.length} required existing-page updates.`);
+  const summary = aiText(parsed.summary, 1_000);
+  if (summary.length < 10) throw new Error("AI did not explain the existing-page update scope.");
+  return { summary, updates: updates.slice(0, 30) };
+}
 const componentRows = (value: unknown): WebsiteComponentInstance[] => Array.isArray(value) ? value.filter((item): item is WebsiteComponentInstance => Boolean(item && typeof item === "object" && !Array.isArray(item))) : [];
 const componentWordCount = (components: WebsiteComponentInstance[]) => JSON.stringify(components.flatMap((component) => Object.values(component.props)))
   .replace(/[^a-z0-9]+/gi, " ")
@@ -404,13 +692,14 @@ async function withGenerationHeartbeat<T>(
   progressCeiling: number,
   task: () => Promise<T>,
 ) {
+  const safeStage = stage.slice(0, 80);
   let pulse = 0;
   const timer = setInterval(() => {
     pulse += 1;
     const progress = Math.min(progressCeiling, startingProgress + pulse);
     void prisma.websiteBuildJob.updateMany({
       where: { id: jobId, status: "processing" },
-      data: { stage, progress },
+      data: { stage: safeStage, progress },
     }).catch(() => undefined);
   }, 12_000);
   try {
@@ -528,7 +817,7 @@ async function expandRichTextComponents(
     try {
       const response = await fetch("https://api.openai.com/v1/chat/completions", {
         method: "POST",
-        signal: AbortSignal.timeout(120_000),
+        signal: AbortSignal.timeout(180_000),
         headers: { Authorization: `Bearer ${config.openaiApiKey}`, "Content-Type": "application/json" },
         body: JSON.stringify({
           model: config.openaiModel,
@@ -785,15 +1074,25 @@ function repairApprovedPageComponents(
   return { components: next, inserted, policy };
 }
 
-function pageSchema(page: { title: string; briefJson?: Prisma.JsonValue }, project: { name: string; businessName: string | null; agencyClient?: { name: string } | null; websiteUrl: string | null; businessLocationJson: Prisma.JsonValue | null; targetLocations: Prisma.JsonValue }, faqs: unknown) {
+function pageSchema(page: { title: string; pageType?: string; searchIntent?: string; briefJson?: Prisma.JsonValue }, project: { name: string; businessName: string | null; agencyClient?: { name: string } | null; websiteUrl: string | null; businessLocationJson: Prisma.JsonValue | null; targetLocations: Prisma.JsonValue }, faqs: unknown) {
   const location = record(project.businessLocationJson);
-  const authority = record(record(page.briefJson).authorityCluster);
+  const brief = record(page.briefJson);
+  const authority = record(brief.authorityCluster);
+  const mappedSeoPlan = record(brief.seoPlan);
+  const localServiceVerified = mappedSeoPlan.serviceAvailabilityVerified !== false;
   const address = { "@type": "PostalAddress", ...(location.streetAddress ? { streetAddress: String(location.streetAddress) } : {}), ...(location.city ? { addressLocality: String(location.city) } : {}), ...(location.stateProvince ? { addressRegion: String(location.stateProvince) } : {}), ...(location.postalCode ? { postalCode: String(location.postalCode) } : {}), ...(location.country ? { addressCountry: String(location.country) } : {}) };
-  const areas = strings(project.targetLocations).map((name) => ({ "@type": "AdministrativeArea", name }));
-  const pageAreas = authority.location ? [{ "@type": "AdministrativeArea", name: String(authority.location) }] : areas;
+  const areas = localServiceVerified ? strings(project.targetLocations).map((name) => ({ "@type": "AdministrativeArea", name })) : [];
+  const pageAreas = localServiceVerified && authority.location ? [{ "@type": "AdministrativeArea", name: String(authority.location) }] : areas;
   const organizationName = businessIdentity(project);
   const provider = { "@type": "Organization", ...(organizationName ? { name: organizationName } : {}), ...(project.websiteUrl ? { url: project.websiteUrl } : {}), ...(Object.keys(address).length > 1 ? { address } : {}), ...(areas.length ? { areaServed: areas } : {}) };
-  const graph: unknown[] = [{ "@type": "Service", name: page.title, provider, ...(pageAreas.length ? { areaServed: pageAreas } : {}) }];
+  const archetype = websitePageCompositionPolicy(page).archetype;
+  const graph: unknown[] = archetype === "faq"
+    ? []
+    : archetype === "about"
+      ? [{ "@type": "AboutPage", name: page.title, about: provider }]
+      : archetype === "contact"
+        ? [{ "@type": "ContactPage", name: page.title, about: provider }]
+        : [{ "@type": "Service", name: page.title, provider, ...(pageAreas.length ? { areaServed: pageAreas } : {}) }];
   const faqRows = Array.isArray(faqs) ? faqs.map(record).filter((faq) => faq.question && faq.answer) : [];
   if (faqRows.length) graph.push({ "@type": "FAQPage", mainEntity: faqRows.map((faq) => ({ "@type": "Question", name: String(faq.question), acceptedAnswer: { "@type": "Answer", text: String(faq.answer) } })) });
   return { "@context": "https://schema.org", "@graph": graph };
@@ -1138,7 +1437,7 @@ ${prior ? `The previous result was incomplete. Expand and correct it while prese
 
 async function aiPageBySectionGroups(
   page: { title: string; pageType: string; primaryKeyword: string; secondaryKeywords: Prisma.JsonValue; searchIntent: string; targetCta: string | null; slug: string; briefJson: Prisma.JsonValue },
-  project: { name: string; businessName: string | null; agencyClient?: { name: string } | null; brandVoice: string | null; websiteUrl: string | null; businessLocationJson: Prisma.JsonValue | null; targetLocations: Prisma.JsonValue; businessProfile: { targetAudience: string | null; offerSummary: string | null } | null },
+  project: { name: string; businessName: string | null; agencyClient?: { name: string } | null; brandVoice: string | null; websiteUrl: string | null; businessLocationJson: Prisma.JsonValue | null; targetLocations: Prisma.JsonValue; businessProfile: WebsiteGenerationBusinessProfile },
   brand: Prisma.JsonValue,
   seoPlan: unknown,
   instructions: string,
@@ -1148,7 +1447,12 @@ async function aiPageBySectionGroups(
   const composition = await planPageComposition(page, project, brand, seoPlan, basic, checkpoint);
   const components = composition.components;
   const businessContext = interpretedBusinessContext(seoPlan, project);
-  const mappedBrief = pageBriefEvidence(page.briefJson);
+  const mappedBrief = {
+    ...pageBriefEvidence(page.briefJson),
+    verifiedProjectIntakeEvidence: pageIntakeEvidence(page, project),
+    governingContentContract: "Approved intake facts → approved keyword owner → page archetype and intent → Strategy and Gap requirements → page content.",
+  };
+  const intakeEvidence = pageIntakeEvidence(page, project);
   const commonContext = `Business: ${businessContext.businessName || "business name not approved"}
 Industry: ${businessContext.industry || "use the approved page intent"}
 Core customer value: ${businessContext.coreBusinessValue || "use the approved page brief; do not quote raw intake wording"}
@@ -1156,8 +1460,9 @@ Approved services: ${businessContext.primaryServices.join(", ") || "use the appr
 Audience: ${businessContext.audience || "use the approved page brief"}
 Locations: ${promptStrings(project.targetLocations, 12, 200).join(", ")}
 Brand: ${promptJson(promptBrand(brand), 4_000)}
+Verified Project Intake evidence: ${promptJson(intakeEvidence, 18_000)}
 Relevant approved SEO evidence: ${promptJson(relevantSeoEvidence(seoPlan, page), 14_000)}
-Mapped page brief: ${promptJson(mappedBrief, 24_000)}
+Mapped page brief and existing-page migration evidence: ${promptJson(mappedBrief, 40_000)}
 Page: ${page.title}
 Page archetype: ${composition.policy.archetype}
 Composition source: ${composition.source}
@@ -1170,6 +1475,7 @@ CTA: ${page.targetCta || "Request a consultation"}
 User instructions: ${promptText(instructions || "Create clear, complete content that helps the visitor make an informed decision.", 4_000)}`;
   const governedContext = `${commonContext}
 SEO and navigation governance:
+- Build every section from the approved intake facts, the assigned keyword owner, and this page's archetype and dominant intent. The niche alone is never a content brief.
 - Use exactly the approved primary keyword and dominant intent shown above.
 - Treat Mapped page brief.internalLinkPlan as immutable: use only those approved destinations, anchors, placements, and intents; never guess a URL.
 - Write link-adjacent sentences naturally for the approved anchor text, but do not add unsupported destinations.
@@ -1235,6 +1541,7 @@ SEO and navigation governance:
   const savedFinalIds = new Set(savedFinalComponents.map((component) => component.componentId));
   const savedFinalValid = savedFinalComponents.length >= composition.policy.minimumComponentCount
     && composition.policy.requiredComponentIds.every((componentId) => savedFinalIds.has(componentId))
+    && (composition.policy.archetype !== "faq" || faqsFromComponents(savedFinalComponents).length >= 8)
     && savedFinalComponents.every((component, index) =>
       validateComponentInstance(component, SENUKE_COMPONENT_REGISTRY_V1, `checkpoint.final.${index}`).length === 0);
   if (savedFinalValid) {
@@ -1262,6 +1569,9 @@ SEO and navigation governance:
     composition.policy.minimumComponentCount,
     composition.policy.maximumWords,
   );
+  if (composition.policy.archetype === "faq" && faqsFromComponents(generatedComponents).length < 8) {
+    throw new Error("A dedicated FAQ page requires at least 8 complete, visible question-and-answer pairs grounded in approved evidence.");
+  }
   if (checkpoint && !savedFinalValid) {
     await savePageCheckpoint(checkpoint, "content:final", "content_final", { components: generatedComponents });
   }
@@ -1291,16 +1601,43 @@ SEO and navigation governance:
   };
 }
 
-async function aiPage(page: { title: string; pageType: string; primaryKeyword: string; secondaryKeywords: Prisma.JsonValue; searchIntent: string; targetCta: string | null; slug: string; briefJson: Prisma.JsonValue; contentJson: Prisma.JsonValue }, project: { name: string; businessName: string | null; agencyClient?: { name: string } | null; brandVoice: string | null; websiteUrl: string | null; businessLocationJson: Prisma.JsonValue | null; targetLocations: Prisma.JsonValue; businessProfile: { targetAudience: string | null; offerSummary: string | null } | null }, brand: Prisma.JsonValue, seoPlan: unknown, instructions: string, checkpoint?: PageCheckpointContext) {
+const uniqueWebsiteSignals = (values: unknown[]) => [...new Set(values.flatMap((value) => Array.isArray(value) ? value : [value]).map((value) => String(value ?? "").trim()).filter(Boolean))];
+function reservedWebsiteSignals(
+  pages: Array<{ id: string; title: string; seoJson: Prisma.JsonValue; contentJson: Prisma.JsonValue; briefJson: Prisma.JsonValue }>,
+  currentPageId: string,
+): WebsitePageUniquenessSignals[] {
+  return pages.filter((page) => page.id !== currentPageId).map((page) => {
+    const seo = record(page.seoJson);
+    const snapshot = record(record(record(page.briefJson).importSource).currentWebsiteSnapshot);
+    const hero = componentRows(record(page.contentJson).components).find((component) => component.componentId === "hero.local_service");
+    return {
+      pageId: page.id,
+      pageTitle: page.title,
+      seoTitles: uniqueWebsiteSignals([seo.metaTitle, snapshot.title]),
+      metaDescriptions: uniqueWebsiteSignals([seo.metaDescription, snapshot.metaDescription]),
+      h1s: uniqueWebsiteSignals([hero?.props.headline, snapshot.h1]),
+    };
+  }).filter((page) => page.seoTitles.length || page.metaDescriptions.length || page.h1s.length);
+}
+
+const generatedWorkerH1 = (components: WebsiteComponentInstance[]) => String(components.find((component) => component.componentId === "hero.local_service")?.props.headline ?? "").trim();
+
+async function aiPage(page: { id: string; title: string; pageType: string; primaryKeyword: string; secondaryKeywords: Prisma.JsonValue; searchIntent: string; targetCta: string | null; slug: string; briefJson: Prisma.JsonValue; contentJson: Prisma.JsonValue }, project: { name: string; businessName: string | null; agencyClient?: { name: string } | null; brandVoice: string | null; websiteUrl: string | null; businessLocationJson: Prisma.JsonValue | null; targetLocations: Prisma.JsonValue; businessProfile: WebsiteGenerationBusinessProfile }, brand: Prisma.JsonValue, seoPlan: unknown, instructions: string, siblingPages: Array<{ id: string; title: string; seoJson: Prisma.JsonValue; contentJson: Prisma.JsonValue; briefJson: Prisma.JsonValue }> = [], checkpoint?: PageCheckpointContext) {
+  page = await enrichExistingWebsitePageEvidence(page);
+  page = { ...page, primaryKeyword: governedPageKeyword(page, project) };
   const mappedSeoPlan = record(record(page.briefJson).seoPlan);
   const mappedAuthority = record(record(page.briefJson).authorityCluster);
-  if (mappedAuthority.location && mappedSeoPlan.serviceAvailabilityVerified === false) {
-    throw new Error(`Local content for ${page.title} is blocked until service availability is verified.`);
-  }
+  const unverifiedLocalDraft = Boolean(mappedAuthority.location)
+    && mappedSeoPlan.serviceAvailabilityVerified === false;
+  const localDraftGuardrail = unverifiedLocalDraft
+    ? `\nREVIEW-ONLY LOCAL DRAFT: ${String(mappedAuthority.location)} is an approved target market, but service availability evidence is not confirmed yet. Prepare the page draft without claiming a physical office, address, local staff, current customers, testimonials, operating history, travel time, or guaranteed service availability in that market. Use only the verified physical business location supplied in project evidence. Approval and publishing remain blocked until local service evidence is confirmed.`
+    : "";
   const basic = fallback(page, businessIdentity(project) || "the business");
   const policy = compositionForPage(page);
-  instructions = `${instructions || "Build a complete conversion-focused page."}
-Visible page word budget: ${policy.minimumWords}–${policy.maximumWords} words across all website sections combined, including hero, service descriptions, proof, FAQs, forms, and CTA copy. Do not exceed ${policy.maximumWords} words. Metadata and schema are outside this visible-content budget.`.trim();
+  const uniquenessSignals = reservedWebsiteSignals(siblingPages, page.id);
+  instructions = `${instructions || "Build a complete conversion-focused page."}${localDraftGuardrail}
+Visible page word budget: ${policy.minimumWords}–${policy.maximumWords} words across all website sections combined, including hero, service descriptions, proof, FAQs, forms, and CTA copy. Do not exceed ${policy.maximumWords} words. Metadata and schema are outside this visible-content budget.
+Page uniqueness contract: return an original SEO title, H1, and meta description that do not match any value reserved by another page. Reserved page identity values: ${promptJson(uniquenessSignals, 20_000)}`.trim();
   const businessContext = interpretedBusinessContext(seoPlan, project);
   if (!businessContext.coreBusinessValue || !businessContext.primaryServices.length || !businessContext.audience) {
     throw new Error("The approved SEO plan is missing its AI-interpreted business foundation. Reload and approve the SEO Content Plan before generating website content.");
@@ -1309,12 +1646,19 @@ Visible page word budget: ${policy.minimumWords}–${policy.maximumWords} words 
   if (!config.openaiApiKey) throw new Error("OpenAI is not configured for the website background worker. No placeholder page was saved.");
   let lastError: unknown;
   try {
-    return await aiPageBySectionGroups(page, project, brand, seoPlan, instructions, basic, checkpoint);
+    const grouped = await aiPageBySectionGroups(page, project, brand, seoPlan, instructions, basic, checkpoint);
+    const groupedCollisions = websitePageUniquenessCollisions({ seoTitle: grouped.seo.metaTitle, metaDescription: grouped.seo.metaDescription, h1: generatedWorkerH1(grouped.content.components) }, uniquenessSignals);
+    if (groupedCollisions.length) throw new Error(`Generated page identity duplicates existing pages: ${groupedCollisions.map((collision) => `${collision.field.replaceAll("_", " ")} matches ${collision.pageTitle}`).join("; ")}.`);
+    return grouped;
   } catch (error) {
     lastError = error;
   }
   basic.content.components = materializeComposition(defaultCompositionIds(page).map((componentId) => ({ componentId })), basic, page);
-  const mappedBrief = pageBriefEvidence(page.briefJson);
+  const mappedBrief = {
+    ...pageBriefEvidence(page.briefJson),
+    verifiedProjectIntakeEvidence: pageIntakeEvidence(page, project),
+    governingContentContract: "Approved intake facts → approved keyword owner → page archetype and intent → Strategy and Gap requirements → page content.",
+  };
   const activeComponentIds = new Set(componentRows(basic.content.components).map((component) => component.componentId));
   const activeRegistry = {
     version: SENUKE_COMPONENT_REGISTRY_V1.version,
@@ -1324,7 +1668,7 @@ Visible page word budget: ${policy.minimumWords}–${policy.maximumWords} words 
   let previousFailure = "";
   for (let attempt = 0; attempt < 3; attempt++) {
     try {
-      const response = await fetch("https://api.openai.com/v1/chat/completions", { method: "POST", signal: AbortSignal.timeout(120_000), headers: { Authorization: `Bearer ${config.openaiApiKey}`, "Content-Type": "application/json" }, body: JSON.stringify({ model: config.openaiModel, response_format: strictWebsiteJsonResponseFormat("website_page_model", basic), temperature: 0.35, max_tokens: 8000, messages: [{ role: "system", content: `You are the SENuke AI website development worker. Follow the approved SEO content plan as the controlling specification. Return structured JSON only. Generate only component IDs, versions, variants, and fields present in the supplied SENuke Component Registry. Never generate arbitrary components, scripts, PHP, WordPress code, fake claims, metrics, testimonials, credentials, offices, addresses, service availability, response times, local statistics, business relationships, awards, guarantees, or citations. Write only for the assigned intent owner and do not target prohibited competing keywords. Write a complete useful page section by section using the supplied registered-component blueprint. Every page needs one primary keyword, one dominant intent, exactly one hero headline mapped to H1, a specific CTA, appropriate schema, internal links, and image alt text. Use FAQs and process sections only when they serve the page intent. Local content must use only supplied evidence IDs, be meaningfully specific, and must not be a city-name swap. A failed or thin response is invalid; never return placeholder copy.` }, { role: "user", content: `Return the same JSON structure as this page blueprint, but rewrite every sample content value with original page-specific copy: ${promptJson(basic, 42_000)}\nActive Component Registry: ${promptJson(activeRegistry, 24_000)}\nPage composition policy: ${promptJson(policy, 4_000)}\nBusiness: ${businessContext.businessName || "business name not approved"}\nIndustry: ${businessContext.industry}\nCore customer value: ${businessContext.coreBusinessValue}\nApproved services: ${businessContext.primaryServices.join(", ")}\nAudience: ${businessContext.audience}\nLocations: ${promptStrings(project.targetLocations, 12, 200).join(", ")}\nBrand: ${promptJson(promptBrand(brand), 4_000)}\nRelevant approved SEO evidence: ${promptJson(relevantSeoEvidence(seoPlan, page), 14_000)}\nMapped page brief: ${promptJson(mappedBrief, 24_000)}\nAssigned primary intent: ${String(mappedSeoPlan.primaryIntent || page.searchIntent)}\nIntent owner: ${String(mappedSeoPlan.intentOwner || `/${page.slug}`)}\nAllowed local evidence IDs: ${promptStrings(mappedSeoPlan.localEvidenceIds, 16, 200).join(", ") || "none"}\nRequired internal links: ${promptStrings(mappedSeoPlan.requiredInternalLinks, 20, 500).join(", ") || "approved page map only"}\nProhibited competing keywords: ${promptStrings(mappedSeoPlan.prohibitedCompetingKeywords, 20, 300).join(", ") || "none supplied"}\nPage: ${page.title}\nPage type: ${page.pageType}\nPrimary keyword: ${page.primaryKeyword}\nSecondary: ${promptStrings(page.secondaryKeywords, 20, 300).join(", ")}\nIntent: ${page.searchIntent}\nSlug: ${page.slug}\nInstructions: ${promptText(instructions || "Build a complete conversion-focused page.", 4_000)}\nRequirements:\n- Create at least ${policy.minimumWords} words of useful page-specific copy across ${policy.minimumComponentCount}–10 registered component instances.\n- Follow this page-specific direction: ${policy.guidance}\n- Keep the selected section sequence and rewrite every field with substantive page-specific content.\n- Give service, benefit, process, and proof item descriptions useful depth when those sections are selected.\n- Include page-specific FAQs only when the blueprint contains an FAQ block.\n- The meta description must be an original 120–160 character search snippet explaining this page's specific value and next step. Never write “Explore ... Review capabilities, process, proof, FAQs, and next steps.”\n- Do not copy any sentence from the supplied blueprint.\n- content.components is the complete and only editable page-content model. Do not return duplicate hero, section, or CTA fields outside content.components.` }, ...(previousCandidate ? [{ role: "user", content: `Expand and correct this prior candidate rather than starting over. Preserve valid component IDs and rewrite thin props with substantive copy.\nValidation failure: ${promptText(previousFailure, 2_000)}\nPrior candidate: ${promptJson(previousCandidate, 30_000)}` }] : [])] }) });
+      const response = await fetch("https://api.openai.com/v1/chat/completions", { method: "POST", signal: AbortSignal.timeout(180_000), headers: { Authorization: `Bearer ${config.openaiApiKey}`, "Content-Type": "application/json" }, body: JSON.stringify({ model: config.openaiModel, response_format: strictWebsiteJsonResponseFormat("website_page_model", basic), temperature: 0.35, max_tokens: 8000, messages: [{ role: "system", content: `You are the SEnuke AI website development worker. Follow the approved SEO content plan as the controlling specification. Return structured JSON only. Generate only component IDs, versions, variants, and fields present in the supplied SENuke Component Registry. Never generate arbitrary components, scripts, PHP, WordPress code, fake claims, metrics, testimonials, credentials, offices, addresses, service availability, response times, local statistics, business relationships, awards, guarantees, or citations. Write only for the assigned intent owner and do not target prohibited competing keywords. Write a complete useful page section by section using the supplied registered-component blueprint. Every page needs one primary keyword, one dominant intent, exactly one hero headline mapped to H1, a specific CTA, appropriate schema, internal links, and image alt text. Use FAQs and process sections only when they serve the page intent. Local content must use only supplied evidence IDs, be meaningfully specific, and must not be a city-name swap. A failed or thin response is invalid; never return placeholder copy.` }, { role: "user", content: `Return the same JSON structure as this page blueprint, but rewrite every sample content value with original page-specific copy: ${promptJson(basic, 42_000)}\nActive Component Registry: ${promptJson(activeRegistry, 24_000)}\nPage composition policy: ${promptJson(policy, 4_000)}\nBusiness: ${businessContext.businessName || "business name not approved"}\nIndustry: ${businessContext.industry}\nCore customer value: ${businessContext.coreBusinessValue}\nApproved services: ${businessContext.primaryServices.join(", ")}\nAudience: ${businessContext.audience}\nLocations: ${promptStrings(project.targetLocations, 12, 200).join(", ")}\nBrand: ${promptJson(promptBrand(brand), 4_000)}\nRelevant approved SEO evidence: ${promptJson(relevantSeoEvidence(seoPlan, page), 14_000)}\nMapped page brief: ${promptJson(mappedBrief, 24_000)}\nAssigned primary intent: ${String(mappedSeoPlan.primaryIntent || page.searchIntent)}\nIntent owner: ${String(mappedSeoPlan.intentOwner || `/${page.slug}`)}\nAllowed local evidence IDs: ${promptStrings(mappedSeoPlan.localEvidenceIds, 16, 200).join(", ") || "none"}\nRequired internal links: ${promptStrings(mappedSeoPlan.requiredInternalLinks, 20, 500).join(", ") || "approved page map only"}\nProhibited competing keywords: ${promptStrings(mappedSeoPlan.prohibitedCompetingKeywords, 20, 300).join(", ") || "none supplied"}\nReserved titles, H1s, and meta descriptions already used by other planned or crawled pages: ${promptJson(uniquenessSignals, 20_000)}\nPage: ${page.title}\nPage type: ${page.pageType}\nPrimary keyword: ${page.primaryKeyword}\nSecondary: ${promptStrings(page.secondaryKeywords, 20, 300).join(", ")}\nIntent: ${page.searchIntent}\nSlug: ${page.slug}\nInstructions: ${promptText(instructions || "Build a complete conversion-focused page.", 4_000)}\nRequirements:\n- Write useful, substantive content up to ${policy.maximumWords} words across ${policy.minimumComponentCount}–10 registered component instances. Treat ${policy.minimumWords} words as a planning target, not permission to add filler.\n- Follow this page-specific direction: ${policy.guidance}\n- Keep the selected section sequence and rewrite every field with substantive page-specific content.\n- Give service, benefit, process, and proof item descriptions useful depth when those sections are selected.\n- Include page-specific FAQs only when the blueprint contains an FAQ block.\n- Return a unique SEO title, H1, and 120–160 character meta description. None may duplicate any reserved value above. Never write “Explore ... Review capabilities, process, proof, FAQs, and next steps.”\n- Do not copy any sentence from the supplied blueprint.\n- content.components is the complete and only editable page-content model. Do not return duplicate hero, section, or CTA fields outside content.components.` }, ...(previousCandidate ? [{ role: "user", content: `Expand and correct this prior candidate rather than starting over. Preserve valid component IDs and rewrite thin props with substantive copy.\nValidation failure: ${promptText(previousFailure, 2_000)}\nPrior candidate: ${promptJson(previousCandidate, 30_000)}` }] : [])] }) });
       const body = record(await response.json());
       if (!response.ok) throw new Error(String(record(body.error).message || `OpenAI returned HTTP ${response.status}.`));
       const choice = record(Array.isArray(body.choices) ? body.choices[0] : null);
@@ -1361,7 +1705,10 @@ Visible page word budget: ${policy.minimumWords}–${policy.maximumWords} words 
       proposedContent.components = requiredRegisteredComponents(generatedComponents, 0, policy.requiredComponentIds, policy.minimumComponentCount, maximumWords);
       proposedContent.componentRegistryVersion = SENUKE_COMPONENT_REGISTRY_V1.version;
       const faqs = faqsFromComponents(proposedContent.components as WebsiteComponentInstance[]);
+      if (policy.archetype === "faq" && faqs.length < 8) throw new Error("A dedicated FAQ page requires at least 8 complete, visible question-and-answer pairs grounded in approved evidence.");
       const seo = { ...basic.seo, ...parsedSeo, metaDescription, ...(faqs.length ? { faqs } : {}) };
+      const collisions = websitePageUniquenessCollisions({ seoTitle: seo.metaTitle, metaDescription: seo.metaDescription, h1: generatedWorkerH1(proposedContent.components as WebsiteComponentInstance[]) }, uniquenessSignals);
+      if (collisions.length) throw new Error(`Generated page identity duplicates existing pages: ${collisions.map((collision) => `${collision.field.replaceAll("_", " ")} matches ${collision.pageTitle}`).join("; ")}. Return distinct page-specific values.`);
       return {
         brief: {
           ...basic.brief,
@@ -1478,6 +1825,57 @@ async function notify(job: { workspaceId: string; requestedByUserId: string | nu
   });
 }
 
+async function settleWebsiteJobCapacity(jobId: string) {
+  const job = await prisma.websiteBuildJob.findUnique({
+    where: { id: jobId },
+    select: { id: true, status: true, stage: true, usageEventId: true, resultJson: true },
+  });
+  if (!job?.usageEventId || !["completed", "failed", "cancelled"].includes(job.status)) return;
+  const usage = await prisma.usageEvent.findUnique({ where: { id: job.usageEventId } });
+  if (!usage || usage.status !== "reserved") return;
+  const result = record(job.resultJson);
+  await prisma.$transaction(async (tx) => {
+    const committed = await tx.usageEvent.updateMany({
+      where: { id: usage.id, status: "reserved" },
+      data: {
+        status: "committed",
+        creditsCommitted: usage.creditsReserved,
+        committedAt: new Date(),
+        metadataJson: {
+          ...record(usage.metadataJson),
+          websiteBuildJobId: job.id,
+          terminalStatus: job.status,
+          terminalStage: job.stage,
+          completedPageCount: strings(result.completedPageIds).length,
+        },
+      },
+    });
+    if (!committed.count) return;
+    const creditAccountId = record(usage.metadataJson).creditAccountId;
+    if (typeof creditAccountId === "string" && creditAccountId && usage.creditsReserved > 0) {
+      await tx.creditAccount.updateMany({
+        where: { id: creditAccountId, clientId: usage.clientId },
+        data: { monthlyUsed: { increment: usage.creditsReserved } },
+      });
+    }
+    await tx.providerCostEvent.create({
+      data: {
+        clientId: usage.clientId,
+        usageEventId: usage.id,
+        featureKey: usage.featureKey,
+        provider: "openai",
+        model: config.openaiModel,
+        costUsd: 0,
+        metadataJson: {
+          source: "website_builder_worker",
+          websiteBuildJobId: job.id,
+          terminalStatus: job.status,
+        },
+      },
+    });
+  });
+}
+
 type VisualPlacement = "hero" | "banner" | "inline" | "library" | "none";
 type VisualPlan = {
   placement: VisualPlacement;
@@ -1487,7 +1885,118 @@ type VisualPlan = {
   componentVariants: Array<{ instanceId: string; variant: string }>;
 };
 
-type VisualPageContext = { title: string; pageType: string; primaryKeyword: string; searchIntent: string };
+type VisualPageContext = { title: string; pageType: string; primaryKeyword: string; searchIntent: string; slug?: string };
+
+type VisualProjectContext = {
+  name: string;
+  businessName: string | null;
+  agencyClient?: { name: string } | null;
+  targetLocations: Prisma.JsonValue;
+  businessLocationJson?: Prisma.JsonValue | null;
+  businessProfile: WebsiteGenerationBusinessProfile;
+};
+
+const visualTextKeys = new Set([
+  "headline", "heading", "subheading", "title", "description", "summary", "body", "text",
+  "question", "answer", "label", "caption", "eyebrow", "intro", "value", "service", "name",
+]);
+
+function componentVisualEvidence(components: WebsiteComponentInstance[]) {
+  const values: string[] = [];
+  const collect = (value: unknown, key = "", depth = 0) => {
+    if (values.length >= 28 || depth > 4 || value == null) return;
+    if (typeof value === "string") {
+      if (!key || visualTextKeys.has(key)) {
+        const text = promptText(value, 500);
+        if (text && !/^https?:\/\//i.test(text)) values.push(text);
+      }
+      return;
+    }
+    if (Array.isArray(value)) {
+      value.slice(0, 10).forEach((item) => collect(item, key, depth + 1));
+      return;
+    }
+    if (typeof value === "object") {
+      Object.entries(value as Record<string, unknown>).slice(0, 24).forEach(([childKey, item]) => collect(item, childKey, depth + 1));
+    }
+  };
+  components.forEach((component) => collect(component.props));
+  const unique = [...new Set(values)];
+  const h1 = components
+    .filter((component) => component.componentId === "hero.local_service")
+    .map((component) => promptText(component.props.headline || component.props.heading || component.props.title, 300))
+    .find(Boolean) || unique[0] || "";
+  const headings = components
+    .map((component) => promptText(component.props.headline || component.props.heading || component.props.title, 300))
+    .filter(Boolean)
+    .filter((value, index, all) => all.indexOf(value) === index)
+    .slice(0, 12);
+  return { h1, headings, visibleContent: unique.slice(0, 24) };
+}
+
+function visualGrounding(
+  page: VisualPageContext & { briefJson?: Prisma.JsonValue },
+  project: VisualProjectContext,
+  components: WebsiteComponentInstance[],
+) {
+  const intake = pageIntakeEvidence(page, project);
+  const brief = pageBriefEvidence(page.briefJson ?? {});
+  const componentEvidence = componentVisualEvidence(components);
+  const authority = record(brief.authorityCluster);
+  const pageLocation = promptText(authority.location, 200);
+  const locations = [pageLocation, ...strings(project.targetLocations)].filter(Boolean)
+    .filter((value, index, all) => all.findIndex((candidate) => candidate.toLocaleLowerCase() === value.toLocaleLowerCase()) === index)
+    .slice(0, 6);
+  return {
+    business: {
+      name: businessIdentity(project),
+      summary: promptText(project.businessProfile?.businessSummary, 1_800),
+      audience: promptText(project.businessProfile?.targetAudience, 1_200),
+      productsAndServices: promptText(project.businessProfile?.offerSummary, 1_800),
+      strengths: promptStrings(project.businessProfile?.strengths, 10, 400),
+      constraints: promptStrings(project.businessProfile?.constraints, 10, 400),
+      approvedDiscovery: compactPromptValue(record(record(project.businessProfile?.intelligenceJson).aiProjectLaunch).proposal),
+    },
+    page: {
+      title: page.title,
+      h1: componentEvidence.h1,
+      pageType: page.pageType,
+      primaryKeyword: page.primaryKeyword,
+      searchIntent: page.searchIntent,
+      pagePurpose: promptText(record(brief.seoPlan).pagePurpose, 1_200),
+      contentBrief: promptText(record(brief.seoPlan).contentBrief, 2_000),
+      headings: componentEvidence.headings,
+      visibleContent: componentEvidence.visibleContent,
+    },
+    location: {
+      verifiedBusinessLocation: compactPromptValue(project.businessLocationJson),
+      relevantMarkets: locations,
+      pageSpecificLocation: pageLocation || null,
+    },
+    safeguards: intake.evidenceRule,
+  };
+}
+
+function groundedImagePrompt(planPrompt: string, grounding: ReturnType<typeof visualGrounding>) {
+  const business = record(grounding.business);
+  const page = record(grounding.page);
+  const location = record(grounding.location);
+  return `${planPrompt.trim()}
+
+MANDATORY VISUAL GROUNDING
+- Business type and purpose: ${promptText(business.summary, 1_200) || promptText(business.productsAndServices, 1_200)}
+- Products or services: ${promptText(business.productsAndServices, 1_200)}
+- Intended audience: ${promptText(business.audience, 800)}
+- Exact page subject: ${promptText(page.title, 300)}
+- Page H1: ${promptText(page.h1, 400)}
+- Approved search intent: ${promptText(page.primaryKeyword, 300)} (${promptText(page.searchIntent, 100)})
+- Page purpose and content: ${promptText(page.pagePurpose, 900)} ${promptText(page.contentBrief, 1_200)}
+- Relevant page sections: ${promptStrings(page.headings, 10, 250).join(" | ")}
+- Visible content signals: ${promptStrings(page.visibleContent, 12, 300).join(" | ")}
+- Verified location context: ${promptText(location.pageSpecificLocation, 200) || promptStrings(location.relevantMarkets, 5, 200).join(", ") || "No location-specific scene required"}
+
+The finished image must visibly fit this exact business and this exact page. Depict a specific, credible subject, action, and environment that a visitor would associate with the page content. Do not substitute a generic office meeting, handshake, laptop scene, abstract technology graphic, skyline, or unrelated lifestyle photograph. Do not show a landmark, uniform, credential, product, person, statistic, outcome, or location-specific claim unless it is supported by the grounding above. No words, lettering, logos, UI screenshots, badges, watermarks, or fabricated proof.`.slice(0, 7_500);
+}
 
 function isHomeVisualPage(page: VisualPageContext & { slug?: string }) {
   return page.pageType === "home" || /^home$/i.test(page.title) || !String(page.slug || "").replaceAll("/", "").trim();
@@ -1521,11 +2030,20 @@ function fallbackComponentVariants(components: WebsiteComponentInstance[], page:
   return components.map((component) => ({ instanceId: component.instanceId, variant: recommendedVariant(component, page) }));
 }
 
-function fallbackVisualPlan(page: { title: string; pageType: string; primaryKeyword: string; searchIntent: string }, business: string): VisualPlan {
+function fallbackVisualPlan(
+  page: VisualPageContext & { briefJson?: Prisma.JsonValue },
+  project: VisualProjectContext,
+  components: WebsiteComponentInstance[],
+): VisualPlan {
+  const business = businessIdentity(project) || "the business";
+  const grounding = visualGrounding(page, project, components);
+  const pageEvidence = record(grounding.page);
+  const locationEvidence = record(grounding.location);
   const placement: VisualPlacement = "hero";
+  const prompt = `Create an original, premium editorial website image for ${business}'s ${page.title} page. The scene must directly communicate ${promptText(pageEvidence.h1, 300) || page.primaryKeyword} to ${promptText(record(grounding.business).audience, 500) || "the intended customer"}. Show the real-world service, product, customer need, or outcome described by this page in a specific and believable environment. ${promptText(locationEvidence.pageSpecificLocation, 160) ? `Use ${promptText(locationEvidence.pageSpecificLocation, 160)} only as subtle environmental context, without unverified landmarks or signage.` : "Do not force a geographic landmark into the scene."} Professional photographic art direction, authentic people and details where appropriate, natural light, cohesive brand mood, wide 3:2 composition, clear focal subject, useful negative space, no text or logos.`;
   return {
     placement,
-    prompt: `Create an original professional website photograph or illustration for ${business}'s ${page.title} page. Communicate ${page.primaryKeyword} clearly through a credible human or service-oriented scene. Match a modern, trustworthy brand. Wide landscape composition, useful negative space, natural details, no text, no lettering, no logos, no badges, no fake awards, and no unsupported claims.`,
+    prompt: groundedImagePrompt(prompt, grounding),
     altText: `${business} ${page.primaryKeyword}`,
     rationale: `${placement} placement supports the page's ${page.searchIntent} intent without interrupting the content flow.`,
     componentVariants: [],
@@ -1534,18 +2052,15 @@ function fallbackVisualPlan(page: { title: string; pageType: string; primaryKeyw
 
 async function aiVisualPlan(
   page: { title: string; pageType: string; primaryKeyword: string; searchIntent: string; briefJson: Prisma.JsonValue },
-  project: { name: string; businessName: string | null; agencyClient?: { name: string } | null; targetLocations: Prisma.JsonValue },
+  project: VisualProjectContext,
   brand: Prisma.JsonValue,
   components: WebsiteComponentInstance[],
 ): Promise<VisualPlan> {
   const business = businessIdentity(project) || "the business";
-  const fallback = { ...fallbackVisualPlan(page, business), componentVariants: fallbackComponentVariants(components, page) };
+  const grounding = visualGrounding(page, project, components);
+  const fallback = { ...fallbackVisualPlan(page, project, components), componentVariants: fallbackComponentVariants(components, page) };
   if (!config.openaiApiKey) return fallback;
   try {
-    const headings = components
-      .map((component) => String(component.props.headline || component.props.heading || ""))
-      .filter(Boolean)
-      .slice(0, 12);
     const response = await fetch("https://api.openai.com/v1/chat/completions", {
       method: "POST",
       signal: AbortSignal.timeout(60_000),
@@ -1564,20 +2079,14 @@ async function aiVisualPlan(
         messages: [
           {
             role: "system",
-            content: "You are SENuke's website visual director. Return a structured composition plan using only the supplied registered components and allowed variants. Decide where a useful original image belongs. Return JSON only. Avoid decorative clutter, repeated stock-photo concepts, text inside images, fake proof, logos, awards, guarantees, medical or financial promises, and unsupported claims.",
+            content: "You are SEnuke AI's senior website art director. Translate verified business intelligence and the exact page content into a distinctive, page-specific image brief. Return JSON only. Never use a generic stock-photo concept when the supplied business, service, audience, location, H1, or page content supports a more specific scene. Avoid decorative clutter, repeated concepts across pages, text inside images, fake proof, logos, awards, guarantees, medical or financial promises, and unsupported claims.",
           },
           {
             role: "user",
             content: `Return {"placement":"hero|banner|inline|library|none","prompt":"complete image-generation prompt or empty when none","altText":"concise descriptive alt text or empty when none","rationale":"one sentence","componentVariants":[{"instanceId":"existing instance id","variant":"one allowed variant"}]}.
 Business: ${business}
-Page: ${page.title}
-Page type: ${page.pageType}
-Primary keyword: ${page.primaryKeyword}
-Search intent: ${page.searchIntent}
-Locations: ${strings(project.targetLocations).join(", ")}
-Brand system: ${JSON.stringify(brand)}
-Approved brief: ${JSON.stringify(page.briefJson)}
-Page headings: ${JSON.stringify(headings)}
+Verified Business Brain and page evidence: ${promptJson(grounding, 16_000)}
+Brand system: ${promptJson(promptBrand(brand), 2_000)}
 Registered components and allowed variants: ${JSON.stringify(components.map((component) => ({
   instanceId: component.instanceId,
   componentId: component.componentId,
@@ -1591,6 +2100,9 @@ Rules:
 - Prefer inline for educational/supporting pages where the visual explains a concept.
 - Use library only when the asset is useful but should not be placed automatically.
 - The prompt must request a wide 3:2 composition with no words, lettering, logos, UI screenshots, badges, or watermarks.
+- State the exact visible subject, action, environment, composition, lighting, and mood. The scene must be recognizable as belonging to this business type and page topic without relying on text.
+- Use a location only when it is verified and relevant to this page. Convey it through plausible environment and climate; never invent landmarks, office premises, signage, or service availability.
+- Do not repeat the same people, action, or generic consultation scene across unrelated pages.
 - The alt text must describe the visual naturally and must not stuff keywords.`,
           },
         ],
@@ -1617,19 +2129,25 @@ Rules:
     const prompt = String(parsed.prompt || "").trim();
     const altText = String(parsed.altText || "").trim();
     if (prompt.length < 40 || altText.length < 5) return fallback;
-    return { placement, prompt: prompt.slice(0, 4000), altText: altText.slice(0, 500), rationale: String(parsed.rationale || fallback.rationale).slice(0, 500), componentVariants };
+    return { placement, prompt: groundedImagePrompt(prompt, grounding), altText: altText.slice(0, 500), rationale: String(parsed.rationale || fallback.rationale).slice(0, 500), componentVariants };
   } catch {
     return fallback;
   }
 }
 
-function additionalHomeVisualPlans(page: VisualPageContext, business: string): Array<{ key: string; plan: VisualPlan }> {
+function additionalHomeVisualPlans(
+  page: VisualPageContext & { briefJson?: Prisma.JsonValue },
+  project: VisualProjectContext,
+  components: WebsiteComponentInstance[],
+): Array<{ key: string; plan: VisualPlan }> {
+  const business = businessIdentity(project) || "the business";
+  const grounding = visualGrounding(page, project, components);
   return [
     {
       key: "services",
       plan: {
         placement: "banner",
-        prompt: `Create an original wide homepage image for ${business} that visually explains the range and practical value of ${page.primaryKeyword}. Show a credible service-oriented scene with distinct people or objects that complement—but do not repeat—the hero concept. Align with ${page.searchIntent} search intent and a professional, trustworthy brand. Wide 3:2 composition, natural detail, no words, lettering, logos, badges, watermarks, fake awards, unsupported claims, or generic abstract technology imagery.`,
+        prompt: groundedImagePrompt(`Create an original premium homepage image for ${business} that visually explains the range and practical value of its approved products or services. Choose a concrete service or customer-use scene supported by the page sections. It must complement—but not repeat—the hero subject, people, action, or composition. Professional editorial photography, wide 3:2 composition, natural light and detail, useful negative space.`, grounding),
         altText: `${business} services supporting ${page.primaryKeyword}`,
         rationale: "A second homepage visual introduces the main service range below the hero.",
         componentVariants: [],
@@ -1639,7 +2157,7 @@ function additionalHomeVisualPlans(page: VisualPageContext, business: string): A
       key: "process",
       plan: {
         placement: "inline",
-        prompt: `Create an original supporting homepage image for ${business} showing the customer journey or consultation process related to ${page.primaryKeyword}. Use a different composition and scene from the hero and services image. Emphasize clarity, human guidance, and a credible next step appropriate to ${page.searchIntent} intent. Wide 3:2 composition, realistic and brand appropriate, no words, lettering, logos, UI screenshots, badges, watermarks, promises, or fabricated proof.`,
+        prompt: groundedImagePrompt(`Create an original premium supporting homepage image for ${business} showing a verified step in the customer's decision, service, or delivery journey. Use a different composition and scene from both the hero and service-range image. Emphasize clarity, human guidance, and a credible next step appropriate to ${page.searchIntent} intent. Realistic editorial photography, wide 3:2 composition and brand-appropriate light.`, grounding),
         altText: `${business} customer process for ${page.primaryKeyword}`,
         rationale: "A third homepage visual supports the process and conversion section.",
         componentVariants: [],
@@ -1655,7 +2173,7 @@ async function generateVisual(plan: VisualPlan) {
     method: "POST",
     signal: AbortSignal.timeout(180_000),
     headers: { Authorization: `Bearer ${config.openaiApiKey}`, "Content-Type": "application/json" },
-    body: JSON.stringify({ model: "gpt-image-1", prompt: plan.prompt, size: "1536x1024", quality: "medium" }),
+    body: JSON.stringify({ model: config.openaiImageModel, prompt: plan.prompt, size: "1536x1024", quality: config.websiteImageQuality }),
   });
   const raw = record(await response.json());
   if (!response.ok) throw new Error(String(record(raw.error).message || `Image generation returned HTTP ${response.status}.`));
@@ -1797,12 +2315,31 @@ export async function executeWebsiteBuildJob(jobId: string) {
   const job = await prisma.websiteBuildJob.findUnique({ where: { id: jobId }, include: { build: { include: { pages: { orderBy: { sortOrder: "asc" }, include: { mediaAssets: true } }, project: { include: { businessProfile: true, agencyClient: true } } } } } });
   if (!job || ["completed", "cancelled"].includes(job.status)) return;
   const build = job.build, project = build.project, input = record(job.inputJson), instructions = String(input.instructions || ""), seoPlan = input.seoPlan || record(build.settingsJson).seoPlan || {};
-  if (!project.businessName && project.agencyClient?.name) project.businessName = project.agencyClient.name;
   const mode = String(input.mode || "website_development");
   const contentPhase = String(input.phase || "all");
   const websiteGeneration = ["website_generation", "website_development"].includes(mode);
   const automaticSetup = websiteGeneration && input.automaticSetup === true;
   const regenerateContent = input.regenerate === true;
+  const targetedExistingSiteUpdates = mode === "content_generation" && input.targetedExistingSiteUpdates === true;
+  const contentWorkspaceBatch = mode === "content_generation" && input.contentWorkspaceBatch === true;
+  const fullPageContentMode = ["redesign", "replace"].includes(String(record(build.settingsJson).existingWebsiteDirection || "").trim().toLowerCase());
+  const targetedRequirementsByPage = record(input.targetedRequirementsByPage);
+  const requirementsForTargetedPage = (page: { id: string; briefJson: Prisma.JsonValue; pageType?: string; title?: string }) => {
+    const saved = targetedRequirementsByPage[page.id];
+    return Array.isArray(saved) ? saved.map(record) : existingPageRequirements(page);
+  };
+  const contentModeForPage = (page: { id: string; briefJson: Prisma.JsonValue }) => websiteContentBatchPageMode({
+    contentWorkspaceBatch,
+    targetedExistingSiteUpdates,
+    importedExistingWebsite: !fullPageContentMode && importedExistingWebsitePage(page),
+    hasTargetedRequirements: Array.isArray(targetedRequirementsByPage[page.id]) && requirementsForTargetedPage(page).length > 0,
+  });
+  const contentPageEligible = (page: { id: string; briefJson: Prisma.JsonValue; contentJson: Prisma.JsonValue; status: string; pageType: string; title: string; searchIntent: string }) => {
+    const pageMode = contentModeForPage(page);
+    if (pageMode === "skip") return false;
+    if (pageMode === "targeted_update") return regenerateContent || !existingPageTargetedDraftReady(page);
+    return contentWorkspaceBatch || regenerateContent || !pageHasCompleteContent(page);
+  };
   const checkpointRunId = String(input.checkpointRunId || job.id);
   const completedPageIds = new Set(strings(record(job.resultJson).completedPageIds));
   const requestedPageIds = new Set(strings(input.pageIds));
@@ -1811,7 +2348,7 @@ export async function executeWebsiteBuildJob(jobId: string) {
       page.status !== "deferred" &&
       !completedPageIds.has(page.id) &&
       (!requestedPageIds.size || requestedPageIds.has(page.id)) &&
-      (mode !== "content_generation" || regenerateContent || !pageHasCompleteContent(page)))
+      (mode !== "content_generation" || contentPageEligible(page)))
     : build.pages.filter((page) =>
       page.status !== "deferred" &&
       !completedPageIds.has(page.id) &&
@@ -1827,7 +2364,7 @@ export async function executeWebsiteBuildJob(jobId: string) {
     return leftPhase - rightPhase || left.sortOrder - right.sortOrder;
   });
   const initialStage = mode === "content_generation"
-    ? "generating_page_content"
+    ? contentWorkspaceBatch ? "preparing_content_workspace" : targetedExistingSiteUpdates ? "preparing_existing_page_updates" : "generating_page_content"
     : mode === "image_generation"
       ? "planning_page_visuals"
       : automaticSetup
@@ -1872,7 +2409,53 @@ export async function executeWebsiteBuildJob(jobId: string) {
       const pageNeedsGeneration = !pageHasCompleteContent(page);
       const pageNeedsManualApproval = !["approved", "deployed", "published"].includes(page.status);
       try {
-      await prisma.websiteBuildJob.update({ where: { id: job.id }, data: { stage: mode === "image_generation" ? `planning_visual:${page.slug || "home"}` : automaticSetup && pageNeedsGeneration ? `writing_page:${page.slug || "home"}` : websiteGeneration ? `assembling_page:${page.slug || "home"}` : `generating_content:${page.slug || "home"}`, progress: baseProgress } });
+      if (contentModeForPage(page) === "targeted_update") {
+        const requirements = requirementsForTargetedPage(page);
+        await prisma.websiteBuildJob.update({ where: { id: job.id }, data: { stage: `preparing_existing_page_updates:${page.slug || "home"}`.slice(0, 80), progress: baseProgress } });
+        const generated = await withGenerationHeartbeat(
+          job.id,
+          `writing_targeted_updates:${page.slug || "home"}`,
+          baseProgress,
+          Math.max(baseProgress, nextPageProgress - 1),
+          () => aiExistingPageUpdates(page, project, requirements, instructions),
+        );
+        const brief = record(page.briefJson);
+        const importSource = record(brief.importSource);
+        const plan = record(brief.seoPlan);
+        const nextBrief = {
+          ...brief,
+          seoPlan: {
+            ...plan,
+            targetedUpdateDraft: {
+              status: "ready_for_review",
+              generatedAt: new Date().toISOString(),
+              generatedBy: "ai",
+              sourceCrawlPageId: importSource.crawlPageId ?? null,
+              sourceRequirements: requirements,
+              ...generated,
+            },
+          },
+        } as Prisma.InputJsonValue;
+        const nextVersion = page.version + 1;
+        await prisma.$transaction(async (tx) => {
+          await tx.websiteBuildPageVersion.upsert({
+            where: { pageId_version: { pageId: page.id, version: nextVersion } },
+            update: { briefJson: nextBrief, contentJson: page.contentJson, seoJson: page.seoJson, layoutJson: page.layoutJson, comment: "AI generated only the approved or crawl-backed targeted page updates.", createdById: job.requestedByUserId },
+            create: { pageId: page.id, version: nextVersion, briefJson: nextBrief, contentJson: page.contentJson, seoJson: page.seoJson, layoutJson: page.layoutJson, comment: "AI generated only the approved or crawl-backed targeted page updates.", createdById: job.requestedByUserId },
+          });
+          await tx.websiteBuildPage.update({ where: { id: page.id }, data: { briefJson: nextBrief, version: nextVersion, status: "review", approvedAt: null } });
+          const gapTaskIds = requirements.map((item) => String(item.executionTaskId ?? "").trim());
+          const executionTaskIds = [...new Set([String(plan.executionTaskId ?? "").trim(), ...strings(plan.executionTaskIds), ...gapTaskIds].filter(Boolean))];
+          if (executionTaskIds.length) await tx.executionTask.updateMany({ where: { id: { in: executionTaskIds } }, data: { status: "needs_review", submittedAt: new Date(), completedAt: null, approvedAt: null, approvalDecision: null, actionButtonLabel: "Review Existing-Page Updates", relatedUrl: `/site-architect?projectId=${project.id}&step=content&pageId=${page.id}`, blockedReason: null } });
+          const currentBuild = await tx.websiteBuild.findUnique({ where: { id: build.id }, select: { settingsJson: true } });
+          await tx.websiteBuild.update({ where: { id: build.id }, data: { status: "content", settingsJson: websiteChangeSettings(currentBuild?.settingsJson ?? build.settingsJson, { category: "targeted_page_update", summary: `${page.title} has an AI-prepared targeted update draft.`, section: "content", pageId: page.id, pageTitle: page.title }) as Prisma.InputJsonValue } });
+          completedPageIds.add(page.id);
+          const currentJob = await tx.websiteBuildJob.findUnique({ where: { id: job.id }, select: { resultJson: true } });
+          await tx.websiteBuildJob.update({ where: { id: job.id }, data: { resultJson: { ...record(currentJob?.resultJson), completedPageIds: [...completedPageIds], lastCompletedPageId: page.id, lastCompletedPageTitle: page.title, checkpointedAt: new Date().toISOString(), updateMode: "targeted_existing_pages" } as Prisma.InputJsonValue } });
+        });
+        continue;
+      }
+      await prisma.websiteBuildJob.update({ where: { id: job.id }, data: { stage: (mode === "image_generation" ? `planning_visual:${page.slug || "home"}` : automaticSetup && pageNeedsGeneration ? `writing_page:${page.slug || "home"}` : websiteGeneration ? `assembling_page:${page.slug || "home"}` : `generating_content:${page.slug || "home"}`).slice(0, 80), progress: baseProgress } });
       if (websiteGeneration && !automaticSetup && (pageNeedsGeneration || pageNeedsManualApproval)) {
         throw new Error(`${page.title} must contain approved content before the website can be assembled.`);
       }
@@ -1883,7 +2466,7 @@ export async function executeWebsiteBuildJob(jobId: string) {
           `writing_sections:${page.slug || "home"}`,
           baseProgress,
           Math.max(baseProgress, nextPageProgress - 1),
-          () => aiPage(page, project, build.brandJson, seoPlan, instructions, checkpoint),
+          () => aiPage(page, project, build.brandJson, seoPlan, instructions, build.pages, checkpoint),
         );
       const jobBeforeSave = await prisma.websiteBuildJob.findUnique({ where: { id: job.id }, select: { status: true } });
       if (!jobBeforeSave || jobBeforeSave.status === "cancelled") return;
@@ -1896,6 +2479,9 @@ export async function executeWebsiteBuildJob(jobId: string) {
       generated.brief = {
         ...approvedBrief,
         ...record(generated.brief),
+        seoPlan: approvedBrief.seoPlan ?? record(generated.brief).seoPlan ?? null,
+        authorityCluster: approvedBrief.authorityCluster ?? record(generated.brief).authorityCluster ?? null,
+        executionTrace: approvedBrief.executionTrace ?? record(generated.brief).executionTrace ?? null,
         internalLinkTargets: strings(approvedBrief.internalLinkTargets),
         internalLinkPlan: approvedLinkPlan,
       };
@@ -1911,7 +2497,7 @@ export async function executeWebsiteBuildJob(jobId: string) {
         const repaired = repairApprovedPageComponents(importStoredComponents(generated.content, page, business), page, business);
         if (repaired.inserted.length) {
           structuralRepairs.push({ pageId: page.id, pageTitle: page.title, insertedComponents: repaired.inserted });
-          await prisma.websiteBuildJob.update({ where: { id: job.id }, data: { stage: `repairing_registered_sections:${page.slug || "home"}`, progress: baseProgress } });
+          await prisma.websiteBuildJob.update({ where: { id: job.id }, data: { stage: `repairing_registered_sections:${page.slug || "home"}`.slice(0, 80), progress: baseProgress } });
         }
         generated.content = contentWithComponents(generated.content, repaired.components);
         const currentComponents = requiredRegisteredComponents(
@@ -1951,8 +2537,21 @@ export async function executeWebsiteBuildJob(jobId: string) {
             ?? page.mediaAssets.find((asset) => asset.status === "approved" && asset.role === "hero")
             ?? page.mediaAssets.find((asset) => asset.status === "approved" && ["banner", "inline", "library"].includes(asset.role))
           : null;
+        // Reassembling a website without image generation must preserve the
+        // saved visual state. It is not an instruction to approve every
+        // missing image slot as text-only.
         visualPlan = websiteGeneration && input.generateImages === false
-          ? { placement: "none", prompt: "", altText: "", rationale: "The user chose to assemble this website without generating additional images.", componentVariants: designPlan.componentVariants }
+          ? approvedVisual
+            ? {
+                placement: approvedVisual.id === `${page.id}-hero` && approvedVisual.role !== "none"
+                  ? "hero"
+                  : approvedVisual.role as VisualPlacement,
+                prompt: approvedVisual.prompt,
+                altText: approvedVisual.altText || page.title,
+                rationale: "The user previously approved this image and placement.",
+                componentVariants: designPlan.componentVariants,
+              }
+            : null
           : approvedVisual
             ? {
                 placement: approvedVisual.id === `${page.id}-hero` && approvedVisual.role !== "none"
@@ -1965,9 +2564,9 @@ export async function executeWebsiteBuildJob(jobId: string) {
               }
             : designPlan;
         const normalizedComponents = normalizeApprovedComposition(currentComponents);
-        const designedComponents = applyDesignVariants(normalizedComponents, visualPlan.componentVariants, page);
-        if (visualPlan.placement !== "none") {
-          await prisma.websiteBuildJob.update({ where: { id: job.id }, data: { stage: `generating_image:${page.slug}`, progress: Math.min(89, baseProgress + 2) } });
+        const designedComponents = applyDesignVariants(normalizedComponents, designPlan.componentVariants, page);
+        if (visualPlan && visualPlan.placement !== "none") {
+          await prisma.websiteBuildJob.update({ where: { id: job.id }, data: { stage: `generating_image:${page.slug}`.slice(0, 80), progress: Math.min(89, baseProgress + 2) } });
           const savedHeroImage = await loadPageCheckpoint(checkpoint, "image:hero");
           const existingAsset = input.regenerateImages === true
             ? null
@@ -1982,17 +2581,19 @@ export async function executeWebsiteBuildJob(jobId: string) {
               altText: visualPlan.altText,
             }, visualSource);
           }
-        } else {
+        } else if (visualPlan?.placement === "none") {
           pagesWithoutImagesCount += 1;
         }
-        let placedComponents = applyVisualPlacement(designedComponents, `${page.id}-hero`, visualPlan);
-        if (input.generateImages !== false && isHomeVisualPage(page) && visualPlan.placement !== "none") {
-          for (const visual of additionalHomeVisualPlans(page, businessIdentity(project) || "the business")) {
+        let placedComponents = visualPlan
+          ? applyVisualPlacement(designedComponents, `${page.id}-hero`, visualPlan)
+          : designedComponents;
+        if (input.generateImages !== false && isHomeVisualPage(page) && visualPlan && visualPlan.placement !== "none") {
+          for (const visual of additionalHomeVisualPlans(page, project, placedComponents)) {
             const assetId = `${page.id}-${visual.key}`;
             const checkpointKey = `image:${visual.key}`;
             await prisma.websiteBuildJob.update({
               where: { id: job.id },
-              data: { stage: `generating_${visual.key}_image:${page.slug || "home"}`, progress: Math.min(89, baseProgress + 3 + additionalVisuals.length) },
+              data: { stage: `generating_${visual.key}_image:${page.slug || "home"}`.slice(0, 80), progress: Math.min(89, baseProgress + 3 + additionalVisuals.length) },
             });
             const existingAsset = input.regenerateImages === true
               ? null
@@ -2021,7 +2622,40 @@ export async function executeWebsiteBuildJob(jobId: string) {
       const seoJson = generated.seo as Prisma.InputJsonValue;
       await prisma.$transaction(async (tx) => {
         await tx.websiteBuildPageVersion.upsert({ where: { pageId_version: { pageId: page.id, version: nextVersion } }, update: { briefJson, contentJson, seoJson, source: "worker", comment: instructions || null, createdById: job.requestedByUserId }, create: { pageId: page.id, version: nextVersion, briefJson, contentJson, seoJson, layoutJson: { template: build.templateKey }, source: "worker", comment: instructions || null, createdById: job.requestedByUserId } });
-        await tx.websiteBuildPage.update({ where: { id: page.id }, data: { briefJson, contentJson, seoJson, layoutJson: { template: build.templateKey }, version: nextVersion, status: websiteGeneration && !automaticSetup ? "approved" : "review", approvedAt: websiteGeneration && !automaticSetup ? new Date() : null } });
+        const pageWasApproved = ["approved", "deployed", "published"].includes(page.status);
+        const mediaOnlyRevision = mode === "image_generation";
+        const nextPageStatus = mediaOnlyRevision && pageWasApproved
+          ? "approved"
+          : websiteGeneration && !automaticSetup
+            ? "approved"
+            : "review";
+        const nextPageApprovedAt = mediaOnlyRevision && pageWasApproved
+          ? page.approvedAt ?? new Date()
+          : websiteGeneration && !automaticSetup
+            ? new Date()
+            : null;
+        await tx.websiteBuildPage.update({ where: { id: page.id }, data: { briefJson, contentJson, seoJson, layoutJson: { template: build.templateKey }, version: nextVersion, status: nextPageStatus, approvedAt: nextPageApprovedAt } });
+        const executionContract = record(record(briefJson).seoPlan);
+        const gapTaskIds = Array.isArray(executionContract.gapRequirements) ? executionContract.gapRequirements.map((item) => String(record(item).executionTaskId ?? "").trim()) : [];
+        const executionTaskIds = [...new Set([String(executionContract.executionTaskId ?? "").trim(), ...strings(executionContract.executionTaskIds), ...gapTaskIds].filter(Boolean))];
+        // Image work has its own review and approval state. It must not reopen
+        // a completed content/website execution task.
+        if (executionTaskIds.length && !mediaOnlyRevision) {
+          const completed = websiteGeneration && !automaticSetup;
+          const changedAt = new Date();
+          await tx.executionTask.updateMany({
+            where: { id: { in: executionTaskIds } },
+            data: {
+              status: completed ? "completed" : "needs_review",
+              submittedAt: changedAt,
+              completedAt: completed ? changedAt : null,
+              approvedAt: completed ? changedAt : null,
+              approvalDecision: completed ? "approved" : null,
+              actionButtonLabel: completed ? "View Approved Website Content" : "Review in Website Content",
+              blockedReason: null,
+            },
+          });
+        }
         if (visualPlan) {
           await tx.websiteBuildMediaAsset.upsert({
             where: { id: `${page.id}-hero` },
@@ -2100,7 +2734,7 @@ export async function executeWebsiteBuildJob(jobId: string) {
           },
         });
         await clearPageCheckpoints(checkpoint, tx);
-      });
+      }, { maxWait: 10_000, timeout: 60_000 });
       } catch (pageError) {
         if (mode !== "content_generation") throw pageError;
         const errorMessage = (pageError instanceof Error ? pageError.message : "Page content generation failed.").slice(0, 1_500);
@@ -2109,7 +2743,10 @@ export async function executeWebsiteBuildJob(jobId: string) {
         await prisma.websiteBuildJob.update({
           where: { id: job.id },
           data: {
-            stage: `page_needs_attention:${page.slug || "home"}`,
+            // WebsiteBuildJob.stage is VarChar(80). Long local-page slugs used
+            // to overflow this column and turn a recoverable page blocker into
+            // a failed batch. Page identity belongs in resultJson below.
+            stage: "page_needs_attention",
             progress: nextPageProgress,
             errorMessage: null,
             resultJson: {
@@ -2152,7 +2789,9 @@ export async function executeWebsiteBuildJob(jobId: string) {
           }, {
             category: "page_content",
             summary: generatedPages
-              ? `${generatedPages} website page${generatedPages === 1 ? "" : "s"} received new content.`
+              ? contentWorkspaceBatch
+                ? `${generatedPages} website content item${generatedPages === 1 ? " was" : "s were"} prepared for review.`
+                : `${generatedPages} website page${generatedPages === 1 ? "" : "s"} received new content.`
               : "Website content generation finished with pages requiring attention.",
             section: "content",
           }) as Prisma.InputJsonValue,
@@ -2184,12 +2823,14 @@ export async function executeWebsiteBuildJob(jobId: string) {
       if (job.requestedByUserId) {
         const title = failedPages.length
           ? `${generatedPages} page${generatedPages === 1 ? "" : "s"} completed · ${failedPages.length} need attention`
-          : `${contentPhaseLabel(contentPhase)} ready to review`;
+          : contentWorkspaceBatch ? "Website content workspace ready to review" : `${contentPhaseLabel(contentPhase)} ready to review`;
         const body = failedPages.length
           ? `SENuke AI continued the batch and saved every successful page. Retry only: ${failedPages.slice(0, 4).map((item) => item.pageTitle).join(", ")}${failedPages.length > 4 ? ` and ${failedPages.length - 4} more` : ""}.`
           : nextPhase
             ? `${pages.length} page${pages.length === 1 ? " is" : "s are"} ready. Review this stage, then choose whether to proceed to ${contentPhaseLabel(nextPhase)}.`
-            : `${pages.length} page${pages.length === 1 ? " is" : "s are"} ready. Review the completed website content in Site Architect.`;
+            : contentWorkspaceBatch
+              ? `${pages.length} content item${pages.length === 1 ? " is" : "s are"} ready. Review targeted existing-page updates and complete new-page drafts in Site Architect.`
+              : `${pages.length} page${pages.length === 1 ? " is" : "s are"} ready. Review the completed website content in Site Architect.`;
         await notifyWebsiteJob(job, {
           type: failedPages.length ? "website_content_attention" : nextPhase ? "website_content_phase_ready" : "website_content_ready",
           title,
@@ -2238,12 +2879,23 @@ export async function executeWebsiteBuildJob(jobId: string) {
     await prisma.websiteBuildJob.update({ where: { id: job.id }, data: { stage: "preparing_review_ready_preview", progress: 92 } });
     const reviewTask = await prisma.executionTask.upsert({ where: { dedupeKey: `website-builder:${build.id}:company-review` }, update: { status: "ready", actionButtonLabel: "Review Website Preview", relatedUrl: `/site-architect?projectId=${project.id}` }, create: { clientId: project.clientId, websiteId: project.websiteId, projectId: project.id, dedupeKey: `website-builder:${build.id}:company-review`, moduleName: "site_architect", sourceType: "website_builder_review", sourceId: build.id, title: `Review generated ${project.name} website`, description: "Review the complete responsive preview, approved content, generated images and placements, navigation, forms, and SEO/AEO/GEO output before any publishing.", expectedOutcome: "The exact Website Model is approved as an immutable release for the client’s selected publishing destination.", priority: "high", automationLevel: "execute_with_approval", status: "ready", requiresApproval: true, manualRequired: false, safetyCategory: "protected_change", approvalRisk: "high", actionButtonLabel: "Review Website Preview", relatedUrl: `/site-architect?projectId=${project.id}`, manualInstructions: "Review the responsive website inside Site Architect, request changes or approve the exact version, then continue to Launch Readiness and the selected WordPress or Static HTML renderer.", impact: "Provides the final human review gate after automated website creation and before external publishing." } });
     const completedAt = new Date();
+    // A retried job may process only the unfinished subset while retaining
+    // checkpointed pages from its earlier attempt. The review-ready signature
+    // must cover the complete active website, not only the pages processed by
+    // the final attempt, otherwise the UI enters a false Refresh loop.
+    const assembledPages = await prisma.websiteBuildPage.findMany({
+      where: { buildId: build.id, status: { not: "deferred" } },
+      orderBy: { sortOrder: "asc" },
+      select: { id: true, version: true },
+    });
+    const assembledPageVersionSignature = assembledPages.map((page) => `${page.id}:${page.version}`).join("|");
+    const currentMediaSetup = record(record(build.settingsJson).mediaSetup);
     await prisma.$transaction([
-      prisma.websiteBuild.update({ where: { id: build.id }, data: { status: "preview", settingsJson: websiteChangeSettings({ ...record(build.settingsJson), reviewTaskId: reviewTask.id, developmentCompletedAt: completedAt.toISOString(), mediaSetup: { completedAt: completedAt.toISOString(), source: input.generateImages === false ? "website_generation_without_images" : "automatic_website_generation" } }, { category: "website_assembly", summary: "The assembled website preview changed.", section: "media" }) as Prisma.InputJsonValue } }),
-      prisma.websiteBuildJob.update({ where: { id: job.id }, data: { status: "completed", stage: "preview_ready", progress: 100, completedAt, resultJson: { pagesAssembled: pages.length, automaticSetup, imagesGenerated: imagesGeneratedCount, imagesReused: imagesReusedCount, pagesWithoutImages: pagesWithoutImagesCount, structuralRepairs, sourcePageVersionSignature: String(input.pageVersionSignature || ""), assembledPageVersionSignature: pages.map((page) => `${page.id}:${page.version + 1}`).join("|"), navigationSignature: String(input.navigationSignature || ""), reviewTaskId: reviewTask.id, completedPageIds: [...completedPageIds] } } }),
+      prisma.websiteBuild.update({ where: { id: build.id }, data: { status: "preview", settingsJson: websiteChangeSettings({ ...record(build.settingsJson), reviewTaskId: reviewTask.id, developmentCompletedAt: completedAt.toISOString(), mediaSetup: { ...currentMediaSetup, completedAt: completedAt.toISOString(), source: input.generateImages === false ? "website_generation_without_images" : "automatic_website_generation" } }, { category: "website_assembly", summary: "The assembled website preview changed.", section: "media" }) as Prisma.InputJsonValue } }),
+      prisma.websiteBuildJob.update({ where: { id: job.id }, data: { status: "completed", stage: "preview_ready", progress: 100, completedAt, resultJson: { pagesAssembled: assembledPages.length, automaticSetup, imagesGenerated: imagesGeneratedCount, imagesReused: imagesReusedCount, pagesWithoutImages: pagesWithoutImagesCount, structuralRepairs, sourcePageVersionSignature: String(input.pageVersionSignature || ""), assembledPageVersionSignature, navigationSignature: String(input.navigationSignature || ""), reviewTaskId: reviewTask.id, completedPageIds: [...completedPageIds] } } }),
       prisma.executionTask.updateMany({ where: { projectId: project.id, sourceType: "website_builder_request", sourceId: build.id, status: "in_progress" }, data: { status: "completed", completedAt, actionButtonLabel: "Review Website Preview", relatedUrl: `/site-architect?projectId=${project.id}` } }),
     ]);
-    await notify(job, "completed", `${build.name} has ${pages.length} assembled page${pages.length === 1 ? "" : "s"} with content, navigation, brand, and image placement ready for responsive review.`);
+    await notify(job, "completed", `${build.name} has ${assembledPages.length} assembled page${assembledPages.length === 1 ? "" : "s"} with content, navigation, brand, and image placement ready for responsive review.`);
   } catch (error) {
     const message = error instanceof Error ? error.message : "Website development failed.";
     const persisted = await prisma.websiteBuildJob.updateMany({
@@ -2252,7 +2904,25 @@ export async function executeWebsiteBuildJob(jobId: string) {
     });
     if (persisted.count) await notify(job, "failed", `${build.name} could not be generated: ${message}`);
     throw error;
+  } finally {
+    await settleWebsiteJobCapacity(job.id).catch((error) => {
+      console.error(`[worker] website capacity settlement failed for ${job.id}:`, error);
+    });
   }
+}
+
+let websiteQueueWatchdog: ReturnType<typeof setInterval> | null = null;
+const WEBSITE_JOB_STALE_AFTER_MS = 3 * 60 * 60 * 1000;
+
+async function expireStaleWebsiteJobs() {
+  const cutoff = new Date(Date.now() - WEBSITE_JOB_STALE_AFTER_MS);
+  const stale = await prisma.websiteBuildJob.findMany({ where: { status: { in: ["queued", "processing"] }, updatedAt: { lt: cutoff } }, select: { id: true } });
+  for (const item of stale) {
+    await prisma.websiteBuildJob.updateMany({ where: { id: item.id, status: { in: ["queued", "processing"] } }, data: { status: "cancelled", stage: "timed_out", errorMessage: "Website background work made no progress for three hours and was stopped. Resume the unfinished work.", completedAt: new Date() } });
+    const queueJob = await websiteBuilderQueue.getJob(item.id);
+    if (queueJob && await queueJob.getState().catch(() => "unknown") !== "active") await queueJob.remove().catch(() => undefined);
+  }
+  if (stale.length) console.info(`[worker] website queue watchdog expired ${stale.length} stale job${stale.length === 1 ? "" : "s"}.`);
 }
 
 export function startWebsiteBuilderWorker() {
@@ -2285,6 +2955,7 @@ export function startWebsiteBuilderWorker() {
     console.error(`[worker] website queue lock warning for ${jobId}: ${error.message}`);
   });
   void (async () => {
+    await expireStaleWebsiteJobs();
     await prisma.websiteBuildPageCheckpoint.deleteMany({
       where: {
         updatedAt: { lt: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000) },
@@ -2318,5 +2989,9 @@ export function startWebsiteBuilderWorker() {
     }
     if (recovered) console.info(`[worker] recovered ${recovered} website build job${recovered === 1 ? "" : "s"} missing from the queue.`);
   })().catch((error) => console.error("[worker] website build recovery failed:", error));
+  if (!websiteQueueWatchdog) {
+    websiteQueueWatchdog = setInterval(() => { void expireStaleWebsiteJobs().catch((error) => console.error("[worker] website queue watchdog failed:", error)); }, 60_000);
+    websiteQueueWatchdog.unref?.();
+  }
   return worker;
 }

@@ -21,16 +21,24 @@ export default function Login() {
   const { login, register, verifyEmail, resetPassword } = useAuth();
   const [mode, setMode] = useState<Mode>("signin");
   const [routeToken, setRouteToken] = useState("");
+  const [jvZooPurchase, setJvZooPurchase] = useState(false);
+  const [jvZooPlan, setJvZooPlan] = useState("");
 
   useEffect(() => {
     const url = new URL(window.location.href);
     const token = url.searchParams.get("token") ?? "";
+    const fromJvZoo = url.searchParams.get("source")?.toLowerCase() === "jvzoo";
+    const purchasedPlan = url.searchParams.get("plan")?.toLowerCase() ?? "";
+    setJvZooPurchase(fromJvZoo);
+    setJvZooPlan(["starter", "business", "agency"].includes(purchasedPlan) ? purchasedPlan : "");
     if (url.pathname === "/verify-email" && token) {
       setRouteToken(token);
       setMode("verify");
     } else if (url.pathname === "/reset-password" && token) {
       setRouteToken(token);
       setMode("reset");
+    } else if (fromJvZoo) {
+      setMode("signup");
     }
   }, []);
 
@@ -87,7 +95,7 @@ export default function Login() {
               </AuthCard>
             ) : mode === "signup" ? (
               <AuthCard>
-                <SignUpForm onRegister={register} onSignIn={() => setMode("signin")} />
+                <SignUpForm onRegister={register} onSignIn={() => setMode("signin")} jvZooPurchase={jvZooPurchase} jvZooPlan={jvZooPlan} />
               </AuthCard>
             ) : (
               <AuthCard>
@@ -384,9 +392,13 @@ function SignInForm({
 function SignUpForm({
   onRegister,
   onSignIn,
+  jvZooPurchase,
+  jvZooPlan,
 }: {
   onRegister: (i: { name: string; workspaceType: string; email: string; password: string; captchaToken?: string }) => Promise<string>;
   onSignIn: () => void;
+  jvZooPurchase: boolean;
+  jvZooPlan: string;
 }) {
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
@@ -398,13 +410,28 @@ function SignUpForm({
   const [success, setSuccess] = useState("");
   const [busy, setBusy] = useState(false);
   const [captchaSiteKey, setCaptchaSiteKey] = useState("");
+  const [trialPolicy, setTrialPolicy] = useState({ enabled: false, days: 14 });
+  const workspaceOptions = jvZooPlan === "agency"
+    ? ["Agency"]
+    : jvZooPlan === "business"
+      ? ["Business", "Ecommerce"]
+      : jvZooPlan === "starter"
+        ? ["Personal", "Business"]
+        : ["Personal", "Business", "Agency", "Ecommerce"];
   const canSubmit = Boolean(name && emailOk(email) && passwordValid(password) && confirm === password && workspaceType && acceptedTerms);
+
+  useEffect(() => {
+    if (workspaceOptions.length === 1) setWorkspaceType(workspaceOptions[0]);
+  }, [jvZooPlan]);
 
   useEffect(() => {
     let cancelled = false;
     fetchPublicConfig()
       .then((config) => {
-        if (!cancelled) setCaptchaSiteKey(config.recaptchaSiteKey || "");
+        if (!cancelled) {
+          setCaptchaSiteKey(config.recaptchaSiteKey || "");
+          setTrialPolicy({ enabled: config.trialEnabled, days: config.trialDays });
+        }
       })
       .catch(() => undefined);
     return () => {
@@ -452,8 +479,9 @@ function SignUpForm({
     <form onSubmit={submit}>
       <div className="text-center">
         <h2 className="text-2xl font-bold text-slate-950 xl:text-3xl">Create Your Account</h2>
-        <p className="mt-1.5 text-base text-slate-500">Get started in less than a minute.</p>
+        <p className="mt-1.5 text-base text-slate-500">{jvZooPurchase ? "Claim your JVZoo purchase and create your SEnuke AI account." : "Get started in less than a minute."}</p>
       </div>
+      {jvZooPurchase && <div className="mt-4 rounded-lg border border-brand-200 bg-brand-50 px-3 py-2.5 text-sm leading-5 text-brand-900"><strong>Already purchased through JVZoo?</strong> Use the same delivery email used at checkout. After email verification, your verified purchase will be connected automatically and you will not be charged again.</div>}
       <div className="mt-4 space-y-2.5">
         <div className="grid gap-2.5 sm:grid-cols-2">
           <div><AuthInput label="Full Name" icon="user" value={name} onChange={setName} autoComplete="name" placeholder="Full name" /><FieldError msg={err.name} /></div>
@@ -473,10 +501,7 @@ function SignUpForm({
             <span className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400"><AuthIcon name="workspace" /></span>
             <select value={workspaceType} onChange={(event) => setWorkspaceType(event.target.value)} className="h-11 w-full appearance-none rounded-lg border border-slate-200 bg-white pl-11 pr-10 text-sm text-slate-600 outline-none transition focus:border-brand-400 focus:ring-2 focus:ring-brand-100 xl:h-12 xl:text-base">
               <option value="">Select workspace type</option>
-              <option value="Personal">Personal</option>
-              <option value="Business">Business</option>
-              <option value="Agency">Agency</option>
-              <option value="Ecommerce">Ecommerce</option>
+              {workspaceOptions.map((option) => <option key={option} value={option}>{option}</option>)}
             </select>
             <span className="pointer-events-none absolute right-4 top-1/2 -translate-y-1/2 text-slate-400"><AuthIcon name="chevron" /></span>
           </span>
@@ -499,8 +524,8 @@ function SignUpForm({
         <div className="flex gap-3">
           <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-brand-50 text-sm font-bold text-brand-700">↗</div>
           <div>
-            <div className="text-sm font-bold text-slate-950">Start your first project in seconds!</div>
-            <p className="text-xs leading-4 text-slate-500">After signup, create your first project and start optimizing right away.</p>
+            <div className="text-sm font-bold text-slate-950">{jvZooPurchase ? "Connect your existing JVZoo purchase" : trialPolicy.enabled ? `Start your ${trialPolicy.days}-day trial` : "Activate your workspace after verification"}</div>
+            <p className="text-xs leading-4 text-slate-500">{jvZooPurchase ? "Verification securely proves ownership of the delivery email before SEnuke AI unlocks the purchased plan." : trialPolicy.enabled ? "Verify your email, then create your first project with trial access." : "Verify your email, choose the plan for your workspace, and complete secure checkout through JVZoo before using projects or AI tools."}</p>
           </div>
         </div>
       </div>

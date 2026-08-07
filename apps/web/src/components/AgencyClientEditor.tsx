@@ -33,7 +33,20 @@ export default function AgencyClientEditor({ client, owner, onClose, onSaved }: 
   const patch = (data: Partial<typeof form>) => setForm((current) => ({ ...current, ...data }));
 
   async function save(event: React.FormEvent) {
-    event.preventDefault(); setBusy("save"); setError("");
+    event.preventDefault();
+    const missing = [
+      !form.name.trim() ? "business name" : "",
+      !form.primaryBusinessGoal ? "primary business goal" : "",
+      !form.country ? "country" : "",
+      !form.stateProvince ? "state or province" : "",
+      !form.city ? "city" : "",
+      !values(form.targetMarkets).length ? "at least one target market" : "",
+    ].filter(Boolean);
+    if (missing.length) {
+      setError(`Complete the required fields before saving: ${missing.join(", ")}.`);
+      return;
+    }
+    setBusy("save"); setError("");
     try {
       await api.patch(`/api/agency/clients/${client.id}`, {
         name: form.name, contactName: form.contactName || null, contactEmail: form.contactEmail || null, contactPhone: form.contactPhone || null,
@@ -69,13 +82,13 @@ export default function AgencyClientEditor({ client, owner, onClose, onSaved }: 
         <Area label="Business description" value={form.businessDescription} onChange={(businessDescription) => patch({ businessDescription })} />
         <Area label="Target audience" value={form.targetAudience} onChange={(targetAudience) => patch({ targetAudience })} />
         <Area label="Main products / services" value={form.mainProductsServices} onChange={(mainProductsServices) => patch({ mainProductsServices })} />
-        <Area label="Primary keywords" value={form.primaryKeywords} onChange={(primaryKeywords) => patch({ primaryKeywords })} hint="One keyword per line" />
+        <Area label="Primary keywords" value={form.primaryKeywords} onChange={(primaryKeywords) => patch({ primaryKeywords })} hint="One keyword per line, or separate keywords with commas" />
         <Field label="Brand voice / tone" value={form.brandVoice} onChange={(brandVoice) => patch({ brandVoice })} />
         <Field label="Preferred language" value={form.preferredLanguage} onChange={(preferredLanguage) => patch({ preferredLanguage })} />
         <label className="text-xs font-bold">Time zone<select value={form.timeZone} onChange={(event) => patch({ timeZone: event.target.value })} className="mt-1 h-10 w-full rounded-lg border bg-white px-3 text-sm font-normal">{!timeZones.includes(form.timeZone) && <option value={form.timeZone}>{form.timeZone}</option>}{timeZones.map((zone) => <option key={zone} value={zone}>{zone.replace(/_/g, " ")}</option>)}</select></label>
         <Area label="Internal notes" value={form.internalNotes} onChange={(internalNotes) => patch({ internalNotes })} />
         <Area label="Client-visible notes" value={form.clientVisibleNotes} onChange={(clientVisibleNotes) => patch({ clientVisibleNotes })} />
-        <button disabled={busy === "save" || !form.name.trim() || !form.country || !form.stateProvince || !form.city || !values(form.targetMarkets).length} className="h-11 rounded-lg bg-brand-600 px-4 text-sm font-bold text-white disabled:opacity-50 md:col-span-2">{busy === "save" ? "Saving…" : "Save shared client details"}</button>
+        <button disabled={busy === "save"} className="h-11 rounded-lg bg-brand-600 px-4 text-sm font-bold text-white disabled:opacity-50 md:col-span-2">{busy === "save" ? "Saving…" : "Save shared client details"}</button>
       </form>
       {owner && <div className="mt-6 rounded-xl border border-red-200 bg-red-50 p-4"><h3 className="font-bold text-red-900">Permanently delete client</h3><p className="mt-1 text-sm text-red-800">This also deletes the client’s projects. Type <b>{client.name}</b> to confirm.</p><div className="mt-3 flex flex-col gap-2 sm:flex-row"><input value={confirmation} onChange={(event) => setConfirmation(event.target.value)} className="h-10 flex-1 rounded-lg border border-red-200 px-3 text-sm" /><button type="button" disabled={confirmation !== client.name || busy === "delete"} onClick={() => void permanentlyDelete()} className="h-10 rounded-lg bg-red-700 px-4 text-sm font-bold text-white disabled:opacity-40">Permanently delete</button></div></div>}
     </div>

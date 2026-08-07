@@ -5,6 +5,7 @@ import { z } from "zod";
 import { createHash } from "node:crypto";
 import { config } from "../config.js";
 import { rankNextBestAction, type NextBestActionContext } from "../dev016.js";
+import { getProjectWorkflowController } from "../project-workflow-controller.js";
 
 export const agentPageSchema = z.enum([
   "project", "intake", "opportunities", "keywords", "keyword-insights", "site-analysis",
@@ -118,7 +119,8 @@ export async function loadProjectAgentEvidence(projectId: string) {
     },
   });
   const activities = await prisma.workspaceActivity.findMany({ where: { projectId }, orderBy: { createdAt: "desc" }, take: 30, select: { id: true, action: true, entityType: true, previousJson: true, nextJson: true, metadataJson: true, createdAt: true } });
-  return { project, latestCrawl, keywordResearchRuns, activities };
+  const workflowController = await getProjectWorkflowController(projectId);
+  return { project, latestCrawl, keywordResearchRuns, activities, workflowController };
 }
 
 type SemanticSource = { sourceType: string; sourceId: string; title: string; content: string; metadata?: Record<string, unknown> };
@@ -245,7 +247,7 @@ export function nextBestActionContext(evidence: Awaited<ReturnType<typeof loadPr
 }
 
 export function deterministicProjectPlan(evidence: Awaited<ReturnType<typeof loadProjectAgentEvidence>>, page: AgentPage, question?: string, access = { canExecute: true, canApprove: true }): ProjectAgentOutput {
-  const { project, latestCrawl, keywordResearchRuns } = evidence;
+  const { project, latestCrawl, keywordResearchRuns, workflowController } = evidence;
   const steps = new Map(project.workflowSteps.map((step) => [step.stepKey, step]));
   const completed = project.workflowSteps.filter((step) => ["completed", "skipped"].includes(step.status)).map((step) => step.title);
   const active = project.workflowSteps.filter((step) => ["ready", "active", "in_progress", "current"].includes(step.status)).map((step) => step.title);
@@ -416,8 +418,11 @@ export function deterministicProjectPlan(evidence: Awaited<ReturnType<typeof loa
     const isCurrent = !isComplete && item.key === next.key;
     return { ...item, status: notRequired ? "not_required" as const : isComplete ? "complete" as const : isCurrent ? "current" as const : "pending" as const };
   });
-  let answer = `The next recommended activity is ${actionLabel}. ${next.key === "execution_plan" && readyTask ? `${nextBestDecision?.reason ?? "It is dependency-ready and has the highest current priority."} Expected outcome: ${nextBestDecision?.expectedOutcome || readyTask.expectedOutcome || readyTask.description}` : "It is the first incomplete workflow dependency."}`;
-  if (page === "opportunities" && /(am i ready|readiness|what.*missing|before.*opportunit|can i (generate|start|continue))/.test(normalizedQuestion)) {
+  let answer = workflowController ? `The workflow-controlled Next Best Action is ${workflowController.nextBestAction.title}. ${workflowController.nextBestAction.reason} ${workflowController.nextBestAction.explainability}` : `The next recommended activity is ${actionLabel}. ${next.key === "execution_plan" && readyTask ? `${nextBestDecision?.reason ?? "It is dependency-ready and has the highest current priority."} Expected outcome: ${nextBestDecision?.expectedOutcome || readyTask.expectedOutcome || readyTask.description}` : "It is the first incomplete workflow dependency."}`;
+  if (workflowController && /next best action|what (?:should|do) i d.?o next|what.*d.?o next|next action|readiness|block|stuck/.test(normalizedQuestion)) {
+    answer = `${workflowController.nextBestAction.title} is the current workflow-controlled Next Best Action (${workflowController.nextBestAction.confidence}% confidence). ${workflowController.nextBestAction.reason} Why: ${workflowController.nextBestAction.explainability} Expected result: ${workflowController.nextBestAction.expectedResult}`;
+  }
+  else if (page === "opportunities" && /(am i ready|readiness|what.*missing|before.*opportunit|can i (generate|start|continue))/.test(normalizedQuestion)) {
     const incomplete = opportunityReadiness.filter((item) => item.status !== "complete");
     const nextCheck = incomplete[0];
     answer = nextCheck
@@ -669,17 +674,44 @@ export function deterministicProjectPlan(evidence: Awaited<ReturnType<typeof loa
         ? ["Why does this opportunity fit the project?", "How does it affect Keyword Intelligence?", "What evidence could improve its score?"]
         : ["Which opportunity should I select and why?", "How are opportunity scores calculated?", "What happens after I select one?"]
       : [`Why is “${actionLabel}” the next step?`, "What evidence supports this recommendation?", "What could block the next step?", "Show me the full pre-execution activity list"];
+  const controllerPage = (() => {
+    const url = workflowController?.nextBestAction.action.url ?? "";
+    if (url.includes("/strategy")) return "strategy";
+    if (url.includes("/keywords")) return "keywords";
+    if (url.includes("/site-analysis")) return "site-analysis";
+    if (url.includes("/gap-analysis")) return "gap-analysis";
+    if (url.includes("/local-seo")) return "local-seo";
+    if (url.includes("/ai-citations")) return "ai-citations";
+    if (url.includes("/backlinks")) return "backlinks";
+    if (url.includes("/growth")) return "growth";
+    if (url.includes("/ai-content")) return "publishing";
+    if (url.includes("/intake")) return "intake";
+    if (url.includes("tab=execution")) return "execution-plan";
+    return "project";
+  })() as AgentPage;
+  const controllerActivity = workflowController ? {
+    title: workflowController.nextBestAction.title,
+    reason: `${workflowController.nextBestAction.reason} ${workflowController.nextBestAction.explainability}`,
+    module: controllerPage,
+    actionUrl: workflowController.nextBestAction.action.url,
+    priority: "high" as const,
+    expectedOutcome: workflowController.nextBestAction.expectedResult,
+    dependencies: workflowController.blockers.map((item) => item.title),
+    blocked: workflowController.blockers.length > 0 && workflowController.nextBestAction.action.type === "approve",
+    confidence: workflowController.nextBestAction.confidence,
+    signals: workflowController.confidence.reasons.map((reason, index) => ({ key: `workflow-${index + 1}`, label: "Workflow evidence", contribution: Math.max(1, Math.round(workflowController.confidence.overall / Math.max(1, workflowController.confidence.reasons.length))), evidence: reason })),
+  } : null;
   return {
     projectId: project.id,
     page,
     answer,
-    summary: `${project.name} is at ${next.title}. Guidance is based on ${measuredSignals.join(", ")}.`,
+    summary: workflowController ? `${project.name} is in ${workflowController.stateLabel} at ${workflowController.readinessPercent}% intelligence readiness and ${workflowController.confidence.overall}% confidence.` : `${project.name} is at ${next.title}. Guidance is based on ${measuredSignals.join(", ")}.`,
     currentState: { completed, active, blocked },
     readinessChecklist,
     presentation: { showReadinessChecklist },
     followUpQuestions,
-    nextPlannedActivity: { title: actionTitle, reason: nextReason, module: next.page, actionUrl, priority: (readyTask?.priority as "critical" | "high" | "medium" | "low") || "high", expectedOutcome: nextOutcome, dependencies, blocked: dependencies.length > 0, score: nextBestDecision?.score, confidence: nextBestDecision?.confidence, signals: nextBestDecision?.signals },
-    suggestions: [{ title: actionTitle, reason: nextBestDecision?.reason || "It is the highest-priority dependency-ready action.", impact: nextBestDecision?.expectedOutcome || readyTask?.impact || "Advances the project workflow and improves downstream evidence.", confidence: nextBestDecision?.confidence ?? (missingInputs.length ? 68 : 88), evidence: nextBestDecision?.signals.map((item) => item.evidence) ?? measuredSignals }],
+    nextPlannedActivity: controllerActivity ?? { title: actionTitle, reason: nextReason, module: next.page, actionUrl, priority: (readyTask?.priority as "critical" | "high" | "medium" | "low") || "high", expectedOutcome: nextOutcome, dependencies, blocked: dependencies.length > 0, score: nextBestDecision?.score, confidence: nextBestDecision?.confidence, signals: nextBestDecision?.signals },
+    suggestions: workflowController ? [{ title: workflowController.nextBestAction.title, reason: workflowController.nextBestAction.explainability, impact: workflowController.nextBestAction.expectedResult, confidence: workflowController.nextBestAction.confidence, evidence: workflowController.confidence.reasons }] : [{ title: actionTitle, reason: nextBestDecision?.reason || "It is the highest-priority dependency-ready action.", impact: nextBestDecision?.expectedOutcome || readyTask?.impact || "Advances the project workflow and improves downstream evidence.", confidence: nextBestDecision?.confidence ?? (missingInputs.length ? 68 : 88), evidence: nextBestDecision?.signals.map((item) => item.evidence) ?? measuredSignals }],
     predictedOutcome: { statement: `Completing ${actionTitle.toLowerCase()} should unlock or improve the next dependent module.`, confidence: missingInputs.length ? 62 : 82, assumptions: ["Saved project data is current", "External integrations remain available"], dependencies: dependencies.length ? dependencies : [next.title] },
     pageGuidance: [{ title: page === next.page ? "Continue here" : `Continue in ${next.page}`, detail: `Complete ${actionTitle} before relying on downstream predictions.`, actionUrl }],
     suggestedChanges: missingInputs.map((input) => ({ title: `Add ${input}`, reason: "This input improves recommendations across downstream modules.", requiresApproval: false, targetModule: "intake" as const })),
@@ -694,7 +726,7 @@ const orchestratorAgent = new Agent({
   id: "senuke-project-orchestrator",
   name: "SEnuke Project Orchestrator",
   description: "Project-scoped planning agent for SEO workflow guidance, predictions, dependencies and next actions.",
-  model: openai(config.openaiModel),
+  model: openai(config.openaiContentModel),
   instructions: `You are the SEnuke AI project orchestration agent. Use only supplied project evidence. Never invent completed work, metrics, integrations or permissions. Keep Business Location separate from Target Markets. Respect workflow dependencies, RBAC and approvals. Do not claim predictions are guarantees. Intent takes precedence over sequence: first answer the user's direct question fully using current-page and project evidence; then offer relevant follow-up guidance; mention the workflow sequence only after the answer. Lead with the next activity only when the user explicitly asks what to do next, asks about readiness, dependencies, blockers, or progress. Never replace a requested explanation, recommendation, comparison, or suggestion with a generic workflow reminder. Never execute, approve, publish, delete, or mutate data.`,
 });
 

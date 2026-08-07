@@ -74,9 +74,12 @@ export function normalizeForDedup(raw: string, opts: NormalizeOptions = {}): str
   kept.sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
   u.search = kept.length ? "?" + kept.map(([k, v]) => `${k}=${v}`).join("&") : "";
 
-  // 6. trailing-slash policy (never touch root "/")
+  // 6. trailing-slash policy (never touch root "/"). A slash after a
+  // file-style path is significant: `/blog.html/` can be a 404 while
+  // `/blog.html` is a valid page, so they must not share a crawl dedup key.
   if (u.pathname.length > 1) {
-    if (trailingSlash === "strip") u.pathname = u.pathname.replace(/\/+$/, "");
+    const slashAfterFilePath = /\/[^/]+\.[a-z0-9]{1,12}\/+$/i.test(u.pathname);
+    if (trailingSlash === "strip" && !slashAfterFilePath) u.pathname = u.pathname.replace(/\/+$/, "");
     else if (!u.pathname.endsWith("/")) u.pathname = u.pathname + "/";
   }
 
@@ -97,4 +100,36 @@ export function isSameHost(a: string, b: string): boolean {
 /** Truncate to fit the indexed VARCHAR(512) dedup column (MySQL index limit). */
 export function dedupKey(raw: string, opts?: NormalizeOptions): string {
   return normalizeForDedup(raw, opts).slice(0, 512);
+}
+
+/**
+ * Return the likely live counterpart for a file-style URL with an invalid
+ * trailing slash. This is intentionally narrow: directory URLs are not
+ * guessed or rewritten.
+ */
+export function fileUrlWithoutTrailingSlash(raw: string): string | null {
+  try {
+    const url = new URL(raw);
+    if (!/\/[^/]+\.[a-z0-9]{1,12}\/+$/i.test(url.pathname)) return null;
+    url.pathname = url.pathname.replace(/\/+$/, "");
+    return url.toString();
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Group only well-known aliases of the same logical page. This intentionally
+ * does not merge `/file.html/` with `/file.html`, because servers can resolve
+ * those differently.
+ */
+export function urlAliasKey(raw: string): string {
+  try {
+    const url = new URL(normalizeForDedup(raw));
+    url.hostname = url.hostname.replace(/^www\./i, "").toLowerCase();
+    url.pathname = url.pathname.replace(/\/index\.(?:html?|php)$/i, "/");
+    return `${url.hostname}${url.pathname}${url.search}`.toLowerCase();
+  } catch {
+    return raw.trim().toLowerCase();
+  }
 }

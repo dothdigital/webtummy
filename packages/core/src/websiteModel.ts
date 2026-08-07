@@ -367,6 +367,8 @@ export type SeoQualityResult = {
   status: "ready" | "recommendations" | "revision_required" | "blocked";
   checks: SeoQualityCheck[];
   blockingReasons: string[];
+  /** Machine-readable findings used by every Website Content repair surface. */
+  blockingFindings: WebsiteValidationFinding[];
 };
 
 export type WebsitePageArchetype =
@@ -374,6 +376,7 @@ export type WebsitePageArchetype =
   | "service"
   | "local_service"
   | "supporting"
+  | "faq"
   | "about"
   | "case_study"
   | "contact"
@@ -405,7 +408,9 @@ export function websitePageCompositionPolicy(page: {
   const title = String(page.title || "").toLowerCase();
   const intent = String(page.searchIntent || "").toLowerCase();
   const utility = /\b(privacy|terms|cookie|accessibility|disclaimer|legal)\b/.test(`${pageType} ${title}`);
-  const contact = pageType === "contact" || /\b(contact|get in touch|request a quote|book a consultation)\b/.test(title);
+  const contact = ["contact", "conversion"].includes(pageType)
+    || /\b(contact|get in touch|request a quote|book (?:a |an )?(?:consultation|appointment))\b/.test(title);
+  const faq = pageType === "faq" || /\b(faqs?|frequently asked questions)\b/.test(`${pageType} ${title}`);
   const home = pageType === "home" || title === "home" || title === "homepage";
   const caseStudy = /case.?study|portfolio|success.?stor/.test(`${pageType} ${title}`);
   const about = /about|team|company|our story/.test(`${pageType} ${title}`);
@@ -429,7 +434,16 @@ export function websitePageCompositionPolicy(page: {
     minimumComponentCount: 3,
     minimumWords: 280,
     maximumWords: WEBSITE_PAGE_MAXIMUM_WORDS,
-    guidance: "Prioritize a real enquiry form, verified contact options, expectations, service area, and the response process.",
+    guidance: "Build the contact journey from verified Project Intake facts: phone, email, address, hours, service area, booking method, and form destination. Omit or flag any missing or conflicting fact; never invent it. Prioritize a real enquiry form, contact options, expectations, and the response process.",
+  };
+  if (faq) return {
+    archetype: "faq",
+    requiredComponentIds: ["hero.local_service", "content.faq", "conversion.cta"],
+    recommendedComponentIds: ["content.rich_text", "trust.proof"],
+    minimumComponentCount: 3,
+    minimumWords: 400,
+    maximumWords: WEBSITE_PAGE_MAXIMUM_WORDS,
+    guidance: "Create a dedicated answer library rather than a generic article. Use 8–12 concise, verified questions and answers grouped around real buyer decisions, services, booking, policies, and practical next steps. Keep the introduction brief, link answers to canonical pages where useful, and generate FAQPage schema from the exact visible questions and answers.",
   };
   if (home) return {
     archetype: "home",
@@ -456,7 +470,7 @@ export function websitePageCompositionPolicy(page: {
     minimumComponentCount: 5,
     minimumWords: 500,
     maximumWords: WEBSITE_PAGE_MAXIMUM_WORDS,
-    guidance: "Explain the organization, values, relevant experience, working approach, and verified trust signals without turning the page into a service template.",
+    guidance: "Build the organization story from approved Project Intake evidence: purpose, history, experience, team, values, approach, strengths, and verified proof. Omit or flag missing facts; never invent people, credentials, dates, awards, or outcomes. Do not turn the page into a generic service template.",
   };
   if (local) return {
     archetype: "local_service",
@@ -1198,10 +1212,11 @@ export function validateWebsiteModel(
       .filter(Boolean).length;
     if (contentWords < composition.minimumWords) findings.push({
       code: "content_depth_recommendation",
-      // Drafts may still be edited after generation. The exact approved
-      // Website Model version, however, cannot be released with thin local
-      // content or city-name swaps.
-      severity: pageIsLocal(page) && model.status === "validated" ? "blocking" : "warning",
+      // Word count is advisory. A concise page with complete intent coverage,
+      // evidence, structure, and conversion path must never lose approval only
+      // because it is below an archetype's planning target. The separate
+      // 1,000-word ceiling still prevents filler and runaway generation.
+      severity: "warning",
       path: `${path}.sections`,
       message: `${page.name} contains approximately ${contentWords} words across its registered sections; review whether more useful detail is needed for this ${composition.archetype.replace("_", " ")} intent.`,
     });
@@ -1229,7 +1244,11 @@ export function validateWebsiteModel(
     const schemaText = JSON.stringify(page.seo.schemaJsonLd);
     const schemaNormalized = normalizedText(schemaText);
     const finalReleaseValidation = model.status === "validated";
-    if ((pageIsLocal(page) || /(?:service|commercial|transactional)/i.test(`${page.pageType} ${page.seo.dominantIntent}`)) && !/"@type"\s*:\s*"Service"/i.test(schemaText)) findings.push({
+    // Schema follows the page archetype, not the broad search-intent label.
+    // Contact and booking pages are often transactional and can carry the
+    // business location, but neither fact turns them into a Service page.
+    const requiresServiceEntity = ["service", "local_service"].includes(composition.archetype);
+    if (requiresServiceEntity && !/"@type"\s*:\s*"Service"/i.test(schemaText)) findings.push({
       code: "missing_service_entity_schema",
       severity: finalReleaseValidation ? "blocking" : "warning",
       path: `${path}.seo.schemaJsonLd`,
@@ -1415,11 +1434,13 @@ export function scoreSeoPage(
     qualityCheck("cta", "CTA clarity", Boolean(page.primaryCta.label && urlIsSafe(page.primaryCta.url)), 5, "Provide one clear next step."),
   ];
   const score = checks.reduce((total, check) => total + check.score, 0);
-  const blockingReasons = pageFindings.filter((finding) => finding.severity === "blocking").map((finding) => finding.message);
+  const blockingFindings = pageFindings.filter((finding) => finding.severity === "blocking");
+  const blockingReasons = blockingFindings.map((finding) => finding.message);
   return {
     score,
     status: blockingReasons.length || score < 70 ? "blocked" : score < 80 ? "revision_required" : score < 90 ? "recommendations" : "ready",
     checks,
     blockingReasons,
+    blockingFindings,
   };
 }

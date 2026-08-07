@@ -22,4 +22,10 @@ describe("DEV-015 intelligent Execution Plan", () => {
     expect(tasks.find((item) => item.analysisKey === "cannibalization")?.dependencyKeys).toContain("intent_content_mapping");
     expect(tasks.find((item) => item.analysisKey === "serp_ai")?.dependencyKeys).toContain("intent_content_mapping");
   });
+
+  it("turns queued DEV-047 decisions into destination-routed work", () => {
+    const tasks = buildIntelligentExecutionTasks([{ ...recommendation("focus_conversion"), engineVersion: "dev-047-part2-v1", disposition: "queued", destination: "content", destinationUrl: "/ai-content?projectId=project-1", successMeasure: "Qualified actions improve from baseline." }]);
+    expect(tasks).toHaveLength(1);
+    expect(tasks[0]).toMatchObject({ destination: "content", destinationUrl: "/ai-content?projectId=project-1", expectedOutcome: "Qualified actions improve from baseline." });
+  });
 });

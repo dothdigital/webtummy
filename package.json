@@ -14,6 +14,7 @@
     "db:push": "npm run -w @webtummy/db push",
     "db:postgres-init": "npm run -w @webtummy/db postgres:init",
     "db:backfill-workspaces": "npm run -w @webtummy/db backfill-workspaces",
+    "db:backfill-workflows": "npm run -w @webtummy/api backfill:workflow",
     "dev:api": "npm run -w @webtummy/api dev",
     "dev:worker": "npm run -w @webtummy/worker dev",
     "test": "vitest run",

@@ -131,8 +131,6 @@ function PlanForm({ draft, mode, busy, onChange, onCancel, onSubmit }: { draft: 
               className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-100"
             />
           </label>
-          <Input label="Stripe product ID" value={draft.stripeProductId ?? ""} onChange={(value) => onChange({ stripeProductId: value || null })} placeholder="prod_..." />
-          <div className="lg:col-span-2"><Input label="Stripe price ID" value={draft.stripePriceId ?? ""} onChange={(value) => onChange({ stripePriceId: value || null })} placeholder="price_..." /></div>
           <label className="flex items-center gap-2 text-sm font-medium text-charcoal-700">
             <input type="checkbox" checked={draft.isActive} onChange={(event) => onChange({ isActive: event.target.checked })} className="h-4 w-4 rounded border-charcoal-300" />
             Active for new purchases

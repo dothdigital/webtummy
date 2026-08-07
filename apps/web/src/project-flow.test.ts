@@ -12,7 +12,7 @@ const project = (overrides: Partial<GuidedProject> = {}) => ({
 describe("project workflow navigation", () => {
   it("sends new-website projects from opportunity to keywords before strategy", () => {
     const next = nextProjectFlowStep(project());
-    expect(next.actionLabel).toBe("Run Keyword Analysis");
+    expect(next.actionLabel).toBe("Start Keyword Intelligence");
     expect(next.to).toContain("/keywords?projectId=project-1");
   });
 

@@ -22,4 +22,21 @@ describe("DEV-014 extended Strategy Engine", () => {
     expect(result.analyses.find((item) => item.key === "cannibalization")?.applicable).toBe(true);
     expect(result.analyses.find((item) => item.key === "internal_link_equity")?.applicable).toBe(true);
   });
+
+  it("keeps inferred planning signals separate from measured findings", () => {
+    const result = buildExtendedStrategyAnalysis({ ...base, keywordGroups: [...base.keywordGroups, { title: "Primary", category: "primary", keywords: ["insurance crm"], gaps: [] }] });
+    const overlap = result.analyses.find((item) => item.key === "cannibalization");
+    expect(overlap?.evidenceType).toBe("inferred");
+    expect(overlap?.why).toContain("requires page-level validation");
+  });
+
+  it("turns canonical page findings into measured, execution-ready priorities", () => {
+    const result = buildExtendedStrategyAnalysis({
+      ...base,
+      pagePriorities: [{ url: "https://acme.test/crm", severity: "high", score: 96, summary: "Keyword ownership and content gaps", findingCount: 4 }],
+    });
+    const pagePriority = result.analyses.find((item) => item.key === "page_priorities");
+    expect(pagePriority).toMatchObject({ applicable: true, priority: "critical", evidenceType: "measured", timeHorizon: "now", destination: "Strategy Funnel Plan" });
+    expect(pagePriority?.affectedPages).toContain("https://acme.test/crm");
+  });
 });

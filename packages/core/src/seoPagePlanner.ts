@@ -214,6 +214,139 @@ const canonicalLocationName = (value: string, country?: string | null) => {
 const sameLocation = (left: string, right: string, country?: string | null) =>
   canonicalLocationName(left, country).toLowerCase() === canonicalLocationName(right, country).toLowerCase();
 
+type ExistingPageMatchTarget = {
+  primaryKeyword: string;
+  pageType: string;
+  searchIntent: SeoSearchIntent;
+  businessName: string;
+};
+
+function canonicalExistingPagePath(value: string) {
+  try {
+    const path = decodeURIComponent(new URL(value, "https://senuke.local").pathname)
+      .toLocaleLowerCase()
+      .replace(/\/index(?:\.html?)?\/?$/, "/")
+      .replace(/\.html?\/?$/, "")
+      .replace(/\/+$/, "");
+    return path || "/";
+  } catch {
+    const path = value.split(/[?#]/, 1)[0]!.toLocaleLowerCase().replace(/\.html?\/?$/, "").replace(/\/+$/, "");
+    return path || "/";
+  }
+}
+
+function canonicalExistingPages(pages: SeoPlannerExistingPage[]) {
+  const byPath = new Map<string, SeoPlannerExistingPage>();
+  for (const page of pages) {
+    const key = canonicalExistingPagePath(page.url);
+    const saved = byPath.get(key);
+    if (!saved) {
+      byPath.set(key, page);
+      continue;
+    }
+    const savedEvidence = [saved.primaryKeyword, saved.h1, saved.title].filter(Boolean).length;
+    const nextEvidence = [page.primaryKeyword, page.h1, page.title].filter(Boolean).length;
+    if (nextEvidence > savedEvidence) byPath.set(key, page);
+  }
+  return [...byPath.values()];
+}
+
+type StandardPagePurpose = "about" | "contact" | "privacy" | "terms" | "services";
+
+function existingStandardPage(pages: SeoPlannerExistingPage[], purpose: StandardPagePurpose) {
+  const patterns: Record<StandardPagePurpose, RegExp[]> = {
+    about: [/^\/about-us$/, /^\/about$/, /^\/aboutus$/],
+    contact: [/^\/contact-us$/, /^\/contact$/, /^\/get-in-touch$/],
+    privacy: [/^\/privacy-policy$/, /^\/privacy$/],
+    terms: [/^\/terms-and-conditions$/, /^\/terms-of-service$/, /^\/term-condition$/, /^\/terms$/],
+    services: [/^\/services$/, /^\/our-services$/, /^\/service$/],
+  };
+  return canonicalExistingPages(pages)
+    .map((page) => ({
+      page,
+      priority: patterns[purpose].findIndex((pattern) => pattern.test(canonicalExistingPagePath(page.url))),
+    }))
+    .filter((candidate) => candidate.priority >= 0)
+    .sort((left, right) => left.priority - right.priority)[0]?.page ?? null;
+}
+
+function pathRole(path: string) {
+  if (path === "/") return "home";
+  if (/(?:^|\/)(?:blog|news|articles?|resources?)(?:\/|$)/.test(path)) return "content";
+  if (/(?:^|\/)(?:contact(?:-us)?|book(?:ing)?|appointments?|request-a-quote)(?:[/.]|$)/.test(path)) return "conversion";
+  if (/(?:^|\/)(?:about(?:-us)?|aboutus|our-team|team|staff|providers?)(?:[/.]|$)/.test(path)) return "trust";
+  if (/(?:^|\/)(?:faq|faqs|frequently-asked-questions)(?:[/.]|$)/.test(path)) return "faq";
+  if (/(?:^|\/)(?:privacy(?:-policy)?|terms(?:-and-conditions)?|cookies?|legal)(?:[/.]|$)/.test(path)) return "legal";
+  if (/(?:^|\/)(?:payment(?:-insurance)?|login|portal|search|sitemap|404)(?:[/.]|$)/.test(path)) return "utility";
+  return "subject";
+}
+
+function pageRoleCompatible(page: SeoPlannerExistingPage, target: ExistingPageMatchTarget) {
+  const role = pathRole(canonicalExistingPagePath(page.url));
+  if (target.pageType === "home") return role === "home";
+  if (target.pageType === "trust") return role === "trust";
+  if (target.pageType === "conversion") return role === "conversion";
+  if (target.pageType === "legal") return role === "legal";
+  if (target.pageType === "faq" || target.searchIntent === "support_faq") return role === "faq" || role === "content";
+  if (["informational", "comparison"].includes(target.searchIntent)) return !["conversion", "trust", "legal", "utility"].includes(role);
+  return role === "subject";
+}
+
+function topicCoverage(value: string, keyword: string) {
+  const expected = unique(tokens(keyword));
+  if (!expected.length) return 0;
+  const actual = new Set(tokens(value));
+  return Math.round(expected.filter((token) => actual.has(token)).length / expected.length * 100);
+}
+
+function compactTopicCoverage(value: string, keyword: string) {
+  const expected = unique(tokens(keyword)).filter((token) => token.length >= 2);
+  if (!expected.length) return 0;
+  const compact = value.toLocaleLowerCase().normalize("NFKD").replace(/[^a-z0-9]+/g, "");
+  if (!compact) return 0;
+  return Math.round(expected.filter((token) => compact.includes(token.toLocaleLowerCase().replace(/[^a-z0-9]+/g, ""))).length / expected.length * 100);
+}
+
+function existingPageMatch(page: SeoPlannerExistingPage, target: ExistingPageMatchTarget) {
+  if (!pageRoleCompatible(page, target)) return null;
+  const path = canonicalExistingPagePath(page.url).replace(/[\/-]+/g, " ");
+  const title = String(page.title ?? "").split(/\s(?:\||–|—|-)\s/, 1)[0] ?? "";
+  // Paths can express the same service-location intent in either order and
+  // with hyphens, folders, no separators, or an .html file extension.
+  const pathScore = Math.max(topicCoverage(path, target.primaryKeyword), compactTopicCoverage(path, target.primaryKeyword));
+  const keywordScore = page.primaryKeyword ? similarity(page.primaryKeyword, target.primaryKeyword) : 0;
+  const h1Score = page.h1 ? similarity(page.h1, target.primaryKeyword) : 0;
+  const titleScore = Math.max(topicCoverage(title, target.primaryKeyword), compactTopicCoverage(title, target.primaryKeyword));
+  const keywordTokenCount = unique(tokens(target.primaryKeyword)).length;
+  const strongSubjectSignal = pathScore >= 70
+    || keywordScore >= 75
+    || h1Score >= 75
+    || (keywordTokenCount >= 2 && titleScore === 100);
+  if (!strongSubjectSignal) return null;
+  return {
+    page,
+    similarity: Math.max(pathScore, keywordScore, h1Score, titleScore),
+    evidenceScore: pathScore * 4 + keywordScore * 3 + h1Score * 2 + titleScore,
+  };
+}
+
+function existingPageMatches(pages: SeoPlannerExistingPage[], target: ExistingPageMatchTarget) {
+  return canonicalExistingPages(pages)
+    .flatMap((page) => {
+      const match = existingPageMatch(page, target);
+      return match ? [match] : [];
+    })
+    .sort((left, right) => right.evidenceScore - left.evidenceScore || right.similarity - left.similarity);
+}
+
+export function bestExistingSeoPageMatch(
+  pages: SeoPlannerExistingPage[],
+  target: { primaryKeyword: string; pageType: string; searchIntent: SeoSearchIntent; businessName: string },
+): { page: SeoPlannerExistingPage; similarity: number } | null {
+  const match = existingPageMatches(pages, target)[0];
+  return match ? { page: match.page, similarity: match.similarity } : null;
+}
+
 export function classifySeoSearchIntent(keyword: string, businessName = "", locations: SeoPlannerLocation[] = []): SeoSearchIntent {
   const value = cleanPhrase(keyword).toLowerCase();
   const local = locations.some((location) => value.includes(location.name.toLowerCase())) || /\b(near me|nearby|closest|local|in my area)\b/.test(value);
@@ -288,11 +421,9 @@ function buildKeywordClusters(input: SeoPlannerInput, locations: SeoPlannerLocat
     cleanPhrase(entry.keyword).toLocaleLowerCase(),
     entry,
   ]));
-  const normalizedKeywords = unique([
-    ...input.keywords,
-    ...input.services,
-    ...(input.products ?? []),
-  ].map(cleanPhrase).filter(Boolean)).map((original) => {
+  // Services and products help normalize an approved keyword, but they are
+  // not keyword evidence by themselves and cannot create SEO page owners.
+  const normalizedKeywords = unique(input.keywords.map(cleanPhrase).filter(Boolean)).map((original) => {
     const location = locations.find((candidate) => original.toLowerCase().includes(candidate.name.toLowerCase()))?.name ?? null;
     const semantic = semanticByKeyword.get(original.toLocaleLowerCase());
     const deterministicTopic = normalizedTopic(original, locations);
@@ -411,7 +542,7 @@ export function planSeoPages(input: SeoPlannerInput): SeoPagePlan {
   const conflicts: SeoPageConflict[] = [];
   const ownerIds = new Map<string, string>();
   const coreClusters = clusters.filter((cluster) => ["commercial_service", "transactional"].includes(cluster.searchIntent));
-  const authorityTopic = cleanPhrase(input.businessType || input.homepagePrimaryTopic || "Services");
+  const authorityTopic = cleanPhrase(coreClusters[0]?.primaryKeyword || "Services");
   const authorityTopicWithService = /\bservices?\b/i.test(authorityTopic) ? authorityTopic : `${authorityTopic} services`;
   const isProductCluster = (cluster: SeoKeywordCluster) =>
     (input.products ?? []).some((product) => similarity(product, cluster.normalizedTopic) >= 66);
@@ -482,7 +613,25 @@ export function planSeoPages(input: SeoPlannerInput): SeoPagePlan {
     normalizedTopic: primaryKeyword,
   });
 
-  const homepageTopic = cleanPhrase(input.homepagePrimaryTopic || authorityTopic);
+  const requestedHomepageTopic = cleanPhrase(input.homepagePrimaryTopic || authorityTopic);
+  const businessType = cleanPhrase(input.businessType || "");
+  const homepageTopicMatch = businessType
+    ? coreClusters
+      .map((cluster, index) => ({
+        cluster,
+        index,
+        score: keywordTopicSimilarity(cluster.primaryKeyword, businessType, keywordInputLocations),
+      }))
+      .sort((left, right) => right.score - left.score || left.index - right.index)[0]
+    : null;
+  // The homepage owns the broad business/category intent. A specialty service
+  // must not become the umbrella merely because it was the first approved
+  // keyword or the AI returned it first.
+  const homepageTopic = cleanPhrase(
+    homepageTopicMatch && homepageTopicMatch.score >= 30
+      ? homepageTopicMatch.cluster.primaryKeyword
+      : requestedHomepageTopic,
+  );
   const homepageOwnerCluster = syntheticCluster("system-home", homepageTopic, "commercial_service", "home");
   const home = createCandidate(
     homepageOwnerCluster,
@@ -498,6 +647,7 @@ export function planSeoPages(input: SeoPlannerInput): SeoPagePlan {
 
   let serviceHubId: string | null = null;
   if (coreClusters.length >= 2) {
+    const existingServices = existingStandardPage(input.existingPages ?? [], "services");
     const serviceHub = createCandidate(
       syntheticCluster("system-service-hub", "Services", "commercial_service", "category_hub"),
       null,
@@ -505,17 +655,24 @@ export function planSeoPages(input: SeoPlannerInput): SeoPagePlan {
       home.candidateId,
       emptyScore(),
       "approved",
-      "Multiple distinct service or product owners need one category hub for discovery and internal linking.",
+      existingServices
+        ? `Reuse the crawled Services page at ${existingServices.url}; improve it as the category hub instead of creating a competing URL.`
+        : "Multiple distinct service or product owners need one category hub for discovery and internal linking.",
     );
-    serviceHub.slug = "/services/";
+    serviceHub.slug = existingServices?.url ?? "/services/";
     serviceHub.pagePurpose = "Summarize the approved offers and route visitors to each distinct service or product intent owner.";
     serviceHubId = serviceHub.candidateId;
   }
 
   for (const cluster of clusters) {
     if (cluster.searchIntent === "brand" || cluster.searchIntent === "navigational") continue;
-    const existing = (input.existingPages ?? []).map((page) => ({ page, similarity: similarity(`${page.primaryKeyword ?? ""} ${page.title ?? ""} ${page.url}`, cluster.primaryKeyword) })).sort((left, right) => right.similarity - left.similarity)[0];
     const candidatePageType = isProductCluster(cluster) ? "product" : cluster.recommendedPageType;
+    const existing = existingPageMatches(input.existingPages ?? [], {
+      primaryKeyword: cluster.primaryKeyword,
+      pageType: candidatePageType,
+      searchIntent: cluster.searchIntent,
+      businessName: input.businessName,
+    })[0];
     const candidate = createCandidate(
       cluster,
       null,
@@ -528,6 +685,7 @@ export function planSeoPages(input: SeoPlannerInput): SeoPagePlan {
     if (existing?.similarity >= 65) candidate.slug = existing.page.url;
   }
 
+  const existingAbout = existingStandardPage(input.existingPages ?? [], "about");
   const about = createCandidate(
     syntheticCluster("system-about", `About ${input.businessName}`, "brand", "trust"),
     null,
@@ -535,11 +693,14 @@ export function planSeoPages(input: SeoPlannerInput): SeoPagePlan {
     home.candidateId,
     emptyScore(),
     "approved",
-    "A trust page gives verified business identity, experience, people, credentials, and proof a dedicated owner.",
+    existingAbout
+      ? `Reuse the crawled About page at ${existingAbout.url}; improve it instead of creating a competing URL.`
+      : "A trust page gives verified business identity, experience, people, credentials, and proof a dedicated owner.",
   );
-  about.slug = "/about/";
+  about.slug = existingAbout?.url ?? "/about/";
   about.pagePurpose = "Present only verified business identity, people, experience, credentials, and proof.";
 
+  const existingContact = existingStandardPage(input.existingPages ?? [], "contact");
   const contact = createCandidate(
     syntheticCluster("system-contact", `Contact ${input.businessName}`, "navigational", "conversion"),
     null,
@@ -547,11 +708,14 @@ export function planSeoPages(input: SeoPlannerInput): SeoPagePlan {
     home.candidateId,
     emptyScore(),
     "approved",
-    "Every commercial website needs one governed contact and primary conversion destination.",
+    existingContact
+      ? `Reuse the crawled Contact page at ${existingContact.url}; improve it instead of creating a competing URL.`
+      : "Every commercial website needs one governed contact and primary conversion destination.",
   );
-  contact.slug = "/contact/";
+  contact.slug = existingContact?.url ?? "/contact/";
   contact.pagePurpose = "Own the primary enquiry or conversion route using verified contact and service-area details.";
 
+  const existingPrivacy = existingStandardPage(input.existingPages ?? [], "privacy");
   const privacy = createCandidate(
     syntheticCluster("system-privacy", "Privacy policy", "navigational", "legal"),
     null,
@@ -559,11 +723,14 @@ export function planSeoPages(input: SeoPlannerInput): SeoPagePlan {
     home.candidateId,
     emptyScore(),
     "approved",
-    "A privacy notice is required when the website collects enquiries, analytics, or other personal information.",
+    existingPrivacy
+      ? `Reuse the crawled Privacy page at ${existingPrivacy.url}; review and update it instead of creating a competing URL.`
+      : "A privacy notice is required when the website collects enquiries, analytics, or other personal information.",
   );
-  privacy.slug = "/privacy-policy/";
+  privacy.slug = existingPrivacy?.url ?? "/privacy-policy/";
   privacy.pagePurpose = "Explain data collection and handling using reviewed legal language; AI output must not be treated as legal advice.";
 
+  const existingTerms = existingStandardPage(input.existingPages ?? [], "terms");
   const terms = createCandidate(
     syntheticCluster("system-terms", "Website terms", "navigational", "legal"),
     null,
@@ -573,25 +740,35 @@ export function planSeoPages(input: SeoPlannerInput): SeoPagePlan {
     "human_review",
     "Confirm the business model, jurisdiction, transactions, and legal requirements before adding an indexable terms page.",
   );
-  terms.slug = "/terms/";
+  terms.slug = existingTerms?.url ?? "/terms/";
+  if (existingTerms) terms.decisionReason = `Reuse the crawled Terms page at ${existingTerms.url}; review and update it instead of creating a competing URL.`;
   terms.pagePurpose = "Hold reviewed website or service terms only when the business and jurisdiction require them.";
 
   const serviceAreaLocations = locations.filter((location) => ["state_province", "region", "city", "neighbourhood"].includes(location.level) && location.serviceArea);
   for (const location of serviceAreaLocations) {
+    if (!coreClusters.length) continue;
     const locationHubId = `page-${slugify(location.name)}-location-hub`;
     const locationSignals = (input.keywordSignals ?? []).filter((signal) => signal.location && (
       signal.location.toLowerCase().includes(location.name.toLowerCase())
       || sameLocation(signal.location, location.name, input.targetCountry)
     ));
     const evidence = (input.localEvidence ?? []).filter((row) => sameLocation(row.location, location.name, input.targetCountry) && row.verified !== false);
-    const genericHubScore = Math.min(100, 45 + Math.min(25, locationSignals.length * 4) + Math.min(20, evidence.length * 5) + (location.physical ? 10 : 0));
-    const hubScore = genericHubScore;
-    const hubDecision: SeoPageDecision = hubScore >= 65 ? "approved" : "human_review";
-    const hubEvidenceIds = unique(evidence.map((row) => row.id));
     const verifiedMarketAvailability = Boolean((input.serviceAvailability ?? []).some((row) =>
       sameLocation(row.location, location.name, input.targetCountry)
       && row.available
       && row.verified !== false));
+    const genericHubScore = Math.min(100, 45 + Math.min(25, locationSignals.length * 4) + Math.min(20, evidence.length * 5) + (location.physical ? 10 : 0));
+    const hubScore = genericHubScore;
+    const verifiedPhysicalMarket = location.physical && verifiedMarketAvailability && evidence.length > 0;
+    // Search demand or a selected target market can justify researching a
+    // location hub, but neither proves that the business actually serves that
+    // market. Keep the hub in the additional-ideas review queue until service
+    // availability is verified. This prevents one generic service phrase from
+    // becoming an approved city page merely because the market was selected.
+    const hubDecision: SeoPageDecision = verifiedMarketAvailability && (verifiedPhysicalMarket || hubScore >= 65)
+      ? "approved"
+      : "human_review";
+    const hubEvidenceIds = unique(evidence.map((row) => row.id));
     candidates.push({
       candidateId: locationHubId,
       pageType: "location_hub",
@@ -616,8 +793,10 @@ export function planSeoPages(input: SeoPlannerInput): SeoPagePlan {
       score: { total: hubScore, localDemand: Math.min(20, locationSignals.length * 4), distinctIntent: 20, serviceAvailability: verifiedMarketAvailability ? 15 : 8, uniqueLocalInformation: Math.min(20, evidence.length * 5 + (location.physical ? 5 : 0)), conversionValue: input.conversionGoal ? 10 : 6, serpDifferentiation: locationSignals.length ? 10 : 0, internalLinkingValue: 5 },
       decision: hubDecision,
       decisionReason: hubDecision === "approved"
-        ? `${location.name} has sufficient verified service coverage, local evidence, demand, or child-page linking value for a distinct geographic hub.`
-        : "Verify service coverage and add local evidence before indexing this location hub.",
+        ? `${location.name} has verified service coverage plus sufficient local evidence, demand, or child-page linking value for a distinct geographic hub.`
+        : verifiedMarketAvailability
+          ? "Verified service coverage exists, but stronger local evidence or demand is required before this location hub enters the sitemap."
+          : "This is an additional page idea only. Verify that the business serves this market and add useful local evidence before the location hub can enter the sitemap.",
       mergedIntoCandidateId: null,
     });
     for (const cluster of coreClusters) {
@@ -630,9 +809,14 @@ export function planSeoPages(input: SeoPlannerInput): SeoPagePlan {
       } else if (!scoreResult.verified) {
         decision = scoreResult.score.total >= 55 ? "human_review" : "rejected";
         reason = decision === "human_review" ? "Demand may justify this page, but service availability must be verified before approval." : "The candidate lacks verified availability, meaningful demand, or unique local information.";
-      } else if (scoreResult.score.total >= 70 && scoreResult.score.uniqueLocalInformation >= 6) {
+      } else if (
+        (location.physical && scoreResult.score.total >= 60 && scoreResult.score.uniqueLocalInformation >= 6)
+        || (scoreResult.score.total >= 70 && scoreResult.score.uniqueLocalInformation >= 6)
+      ) {
         decision = "approved";
-        reason = "Distinct intent, verified service availability, local evidence, conversion value, and linking support justify a dedicated page.";
+        reason = location.physical
+          ? "The verified physical business location, confirmed service availability, and useful local evidence justify a dedicated page."
+          : "Distinct intent, verified service availability, local evidence, conversion value, and linking support justify a dedicated page.";
       } else if (scoreResult.score.total >= 55) {
         decision = "human_review";
         reason = "The candidate is plausible but needs stronger local evidence or search-result differentiation.";
@@ -653,7 +837,23 @@ export function planSeoPages(input: SeoPlannerInput): SeoPagePlan {
     hub.decisionReason = `${approvedChildren.length} verified service-location page${approvedChildren.length === 1 ? "" : "s"} require a useful geographic hub and reciprocal internal links.`;
   }
 
-  const approved = candidates.filter((candidate) => candidate.decision === "approved");
+  const approvedById = new Map<string, SeoPageCandidate>();
+  for (const candidate of candidates.filter((item) => item.decision === "approved")) {
+    const existing = approvedById.get(candidate.candidateId);
+    if (!existing) {
+      approvedById.set(candidate.candidateId, candidate);
+      continue;
+    }
+    existing.secondaryKeywords = unique([
+      ...existing.secondaryKeywords,
+      candidate.primaryKeyword,
+      ...candidate.secondaryKeywords,
+    ]).filter((keyword) => keyword.trim().toLocaleLowerCase() !== existing.primaryKeyword.trim().toLocaleLowerCase());
+    existing.requiredInternalLinks = unique([...existing.requiredInternalLinks, ...candidate.requiredInternalLinks]);
+    existing.prohibitedCompetingKeywords = unique([...existing.prohibitedCompetingKeywords, ...candidate.prohibitedCompetingKeywords]);
+    existing.decisionReason = `${existing.decisionReason} An equivalent candidate was consolidated into this canonical owner.`;
+  }
+  const approved = [...approvedById.values()];
   for (let leftIndex = 0; leftIndex < approved.length; leftIndex++) {
     for (let rightIndex = leftIndex + 1; rightIndex < approved.length; rightIndex++) {
       const left = approved[leftIndex], right = approved[rightIndex];
@@ -672,16 +872,20 @@ export function planSeoPages(input: SeoPlannerInput): SeoPagePlan {
     }
   }
   for (const candidate of approved) {
-    const existing = (input.existingPages ?? []).map((page) => ({ page, similarity: similarity(`${page.primaryKeyword ?? ""} ${page.title ?? ""}`, candidate.primaryKeyword) })).filter((row) => row.similarity >= 70);
-    for (const row of existing.filter((match) => candidate.slug !== match.page.url)) conflicts.push({
-      conflictId: `existing-${candidate.candidateId}-${slugify(row.page.url)}`,
-      conflictingPageIds: [candidate.candidateId, row.page.id || row.page.url],
-      conflictType: "existing_page_overlap",
-      similarityScore: row.similarity,
-      severity: row.similarity >= 90 ? "blocking" : "high",
-      recommendedAction: "MERGE",
-      explanation: `The proposed page overlaps an existing URL (${row.page.url}). Prefer updating the existing intent owner unless review proves a distinct purpose.`,
-    });
+    // A location hub must represent the whole market, not merely one service
+    // page that happens to contain the city name. The content-plan layer has a
+    // stricter hub matcher for explicit location/service-area routes.
+    if (candidate.pageType === "location_hub") continue;
+    const existing = existingPageMatches(input.existingPages ?? [], {
+      primaryKeyword: candidate.primaryKeyword,
+      pageType: candidate.pageType,
+      searchIntent: candidate.primaryIntent,
+      businessName: input.businessName,
+    })[0];
+    if (existing && canonicalExistingPagePath(candidate.slug) !== canonicalExistingPagePath(existing.page.url)) {
+      candidate.slug = existing.page.url;
+      candidate.decisionReason = `Reuse the crawled page at ${existing.page.url} for this matching topic, intent, and geographic scope; improve it instead of creating a competing URL.`;
+    }
   }
 
   const internalLinks = approved.flatMap((candidate) => candidate.requiredInternalLinks.filter((target) => approved.some((row) => row.candidateId === target)).map((targetCandidateId) => ({ sourceCandidateId: candidate.candidateId, targetCandidateId, purpose: targetCandidateId.includes("location-hub") ? "Connect the service page to its geographic hub." : "Connect the page to its parent intent or conversion route." })));

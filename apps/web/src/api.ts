@@ -40,6 +40,38 @@ async function readJson(res: Response) {
   }
 }
 
+type ApiErrorEnvelope = { error?: unknown; errorCode?: unknown; supportEmail?: unknown };
+
+function firstErrorText(value: unknown, depth = 0): string | null {
+  if (typeof value === "string" && value.trim()) return value;
+  if (depth > 5) return null;
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      const found = firstErrorText(item, depth + 1);
+      if (found) return found;
+    }
+    return null;
+  }
+  if (value && typeof value === "object") {
+    for (const item of Object.values(value)) {
+      const found = firstErrorText(item, depth + 1);
+      if (found) return found;
+    }
+  }
+  return null;
+}
+
+export function apiErrorMessage(data: unknown, fallback: string, res?: Response) {
+  const envelope = data && typeof data === "object" && !Array.isArray(data) ? data as ApiErrorEnvelope : {};
+  const message = firstErrorText(envelope.error) ?? fallback;
+  const errorCode = typeof envelope.errorCode === "string"
+    ? envelope.errorCode
+    : res?.headers.get("X-SEnuke-Error-Code");
+  const supportEmail = typeof envelope.supportEmail === "string" ? envelope.supportEmail : null;
+  if (!errorCode && !supportEmail) return message;
+  return [message, errorCode ? `Error code: ${errorCode}` : null, supportEmail ? `Support: ${supportEmail}` : null].filter(Boolean).join("\n");
+}
+
 function notifySessionExpired() {
   window.dispatchEvent(new Event(SESSION_EXPIRED_EVENT));
 }
@@ -59,6 +91,8 @@ export interface AppUser {
     roles: string[];
     primaryRole: "admin" | "manager" | "editor" | "viewer" | "client_viewer";
     primaryOwner: boolean;
+    commercialState: string;
+    accessMode: string;
     onboardingRequired: boolean;
     landingPath: string;
     capabilities: {
@@ -132,6 +166,7 @@ export async function login(email: string, password: string): Promise<AppUser> {
   });
   if (!res.ok) {
     const data = await res.json().catch(() => ({}));
+    if (res.status >= 500) throw new Error(apiErrorMessage(data, "Sign in is temporarily unavailable. Please try again.", res));
     throw new Error(data.error === "email_not_verified" ? "email_not_verified" : "Invalid email or password");
   }
   const data = await res.json();
@@ -145,10 +180,10 @@ export async function login(email: string, password: string): Promise<AppUser> {
   return authenticatedUser;
 }
 
-export async function fetchPublicConfig(): Promise<{ recaptchaSiteKey: string }> {
+export async function fetchPublicConfig(): Promise<{ recaptchaSiteKey: string; trialEnabled: boolean; trialDays: number }> {
   const res = await fetch("/api/auth/config");
-  if (!res.ok) return { recaptchaSiteKey: "" };
-  return res.json() as Promise<{ recaptchaSiteKey: string }>;
+  if (!res.ok) return { recaptchaSiteKey: "", trialEnabled: false, trialDays: 14 };
+  return res.json() as Promise<{ recaptchaSiteKey: string; trialEnabled: boolean; trialDays: number }>;
 }
 
 export async function register(input: {
@@ -168,7 +203,7 @@ export async function register(input: {
     // surface field errors from zod
     const fe = data.error ?? {};
     const first = Object.values(fe).flat()[0] as string | undefined;
-    throw new Error(first ?? "Registration failed");
+    throw new Error(res.status >= 500 ? apiErrorMessage(data, "Registration is temporarily unavailable. Please try again.", res) : first ?? "Registration failed");
   }
   return data.message as string;
 }
@@ -180,7 +215,7 @@ export async function verifyEmail(verificationToken: string): Promise<AppUser> {
     body: JSON.stringify({ token: verificationToken }),
   });
   const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(data.error ?? "Verification link is invalid or expired");
+  if (!res.ok) throw new Error(res.status >= 500 ? apiErrorMessage(data, "Email verification is temporarily unavailable. Please try again.", res) : data.error ?? "Verification link is invalid or expired");
   token = data.token;
   localStorage.setItem("wt_token", token!);
   rememberUser(data.user as AppUser);
@@ -194,7 +229,7 @@ export async function resendVerification(email: string): Promise<string> {
     body: JSON.stringify({ email }),
   });
   const data = await res.json();
-  if (!res.ok) throw new Error("Could not process request");
+  if (!res.ok) throw new Error(res.status >= 500 ? apiErrorMessage(data, "Could not process request. Please try again.", res) : "Could not process request");
   return data.message as string;
 }
 
@@ -205,7 +240,7 @@ export async function forgotPassword(email: string): Promise<string> {
     body: JSON.stringify({ email }),
   });
   const data = await res.json();
-  if (!res.ok) throw new Error("Could not process request");
+  if (!res.ok) throw new Error(res.status >= 500 ? apiErrorMessage(data, "Could not process request. Please try again.", res) : "Could not process request");
   return data.message as string;
 }
 
@@ -219,7 +254,7 @@ export async function resetPassword(resetToken: string, password: string): Promi
   if (!res.ok) {
     const fe = data.error ?? {};
     const first = typeof fe === "string" ? fe : (Object.values(fe).flat()[0] as string | undefined);
-    throw new Error(first ?? "Could not reset password");
+    throw new Error(res.status >= 500 ? apiErrorMessage(data, "Password reset is temporarily unavailable. Please try again.", res) : first ?? "Could not reset password");
   }
   token = data.token;
   localStorage.setItem("wt_token", token!);
@@ -253,7 +288,8 @@ export async function fetchMe(): Promise<AppUser | null> {
       expireSession();
       return null;
     }
-    throw new Error("Session validation is temporarily unavailable.");
+    const data = await readJson(res).catch(() => ({}));
+    throw new Error(apiErrorMessage(data, "Session validation is temporarily unavailable.", res));
   }
   const user = (await res.json()).user as AppUser;
   rememberUser(user);
@@ -276,28 +312,7 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   if (!res.ok) {
     const data = await readJson(res).catch(() => ({}));
     if (res.status === 401) expireSession();
-    const error = (data as { error?: unknown }).error;
-    if (typeof error === "string") throw new Error(error);
-    const firstErrorText = (value: unknown, depth = 0): string | null => {
-      if (typeof value === "string" && value.trim()) return value;
-      if (depth > 5) return null;
-      if (Array.isArray(value)) {
-        for (const item of value) {
-          const found = firstErrorText(item, depth + 1);
-          if (found) return found;
-        }
-        return null;
-      }
-      if (value && typeof value === "object") {
-        for (const item of Object.values(value)) {
-          const found = firstErrorText(item, depth + 1);
-          if (found) return found;
-        }
-      }
-      return null;
-    };
-    const firstFieldError = firstErrorText(error);
-    throw new Error(firstFieldError ?? "Request failed. Please try again.");
+    throw new Error(apiErrorMessage(data, "Request failed. Please try again.", res));
   }
   return res.json() as Promise<T>;
 }
@@ -315,7 +330,7 @@ async function download(path: string, init: RequestInit = {}) {
   if (!res.ok) {
     const data = await readJson(res).catch(() => ({}));
     if (res.status === 401) expireSession();
-    throw new Error(typeof data.error === "string" ? data.error : "Download failed. Please try again.");
+    throw new Error(apiErrorMessage(data, "Download failed. Please try again.", res));
   }
   const disposition = res.headers.get("Content-Disposition") ?? "";
   const filename = disposition.match(/filename="([^"]+)"/)?.[1] ?? "project-report.pdf";
@@ -332,7 +347,7 @@ async function preview(path: string) {
     if (!res.ok) {
       const data = await readJson(res).catch(() => ({}));
       if (res.status === 401) expireSession();
-      throw new Error(typeof data.error === "string" ? data.error : "Preview failed. Please try again.");
+      throw new Error(apiErrorMessage(data, "Preview failed. Please try again.", res));
     }
     const href = URL.createObjectURL(await res.blob());
     if (previewWindow) previewWindow.location.href = href;

@@ -11,6 +11,7 @@ import {
   refundUsage,
   usageSummaryForClient,
 } from "../usage-engine.js";
+import { aiModelTierForFeature, defaultAiModelForFeature } from "../ai-model-policy.js";
 
 export const usageRouter = Router();
 usageRouter.use(requireAuth);
@@ -186,7 +187,13 @@ usageRouter.get("/admin/usage/feature-costs", requireRole("super_admin"), async 
     orderBy: [{ moduleName: "asc" }, { featureKey: "asc" }],
     include: { planLimits: { orderBy: { planCode: "asc" } }, modelRoutingRules: { orderBy: [{ planCode: "asc" }, { sortOrder: "asc" }] } },
   });
-  res.json({ features });
+  res.json({
+    features: features.map((feature) => ({
+      ...feature,
+      modelTier: aiModelTierForFeature(feature.featureKey),
+      defaultModel: defaultAiModelForFeature(feature.featureKey),
+    })),
+  });
 });
 
 usageRouter.patch("/admin/usage/feature-costs/:featureKey", requireRole("super_admin"), async (req, res) => {

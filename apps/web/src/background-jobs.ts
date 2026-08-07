@@ -17,6 +17,7 @@ export type BackgroundJob = {
   resultMetricKey?: string;
   resultMetricLabel?: string;
   resultMetric?: number;
+  resultMetricTotal?: number;
   error?: string | null;
 };
 

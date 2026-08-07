@@ -40,8 +40,8 @@ export function canonicalSecondaryGoal(value: string) {
   const normalized = trimmed.toLocaleLowerCase();
   const exact = standardSecondaryGoals.find((goal) => goal.toLocaleLowerCase() === normalized);
   if (exact) return exact;
-  if (/organic|traffic/.test(normalized)) return "Increase Organic Traffic";
-  if (/conversion|cro/.test(normalized)) return "Improve Conversion Rate";
+  if (/conversion|cro|booking|appointment|enquir|inquir|lead/.test(normalized)) return "Improve Conversion Rate";
+  if (/organic|traffic|search visibility|local visibility|attract|reach more|promote/.test(normalized)) return "Increase Organic Traffic";
   if (/publish|content/.test(normalized)) return "Publish More Content";
   if (/backlink|link building|authority link/.test(normalized)) return "Build Backlinks";
   if (/email|subscriber|mailing list/.test(normalized)) return "Grow Email List";

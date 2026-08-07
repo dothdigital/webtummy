@@ -3,6 +3,9 @@ import { keywordTopicSimilarity } from "@webtummy/core";
 import { approvalDecisionState, normalizedApprovalDecision } from "./dev011.js";
 import { websiteBuilderQueue } from "./queue.js";
 import { canAccessProject, createWorkspaceNotification, hasWorkspacePermission, managerSelfApprovalEnabled, recordWorkspaceActivity, workspaceContext } from "./workspace-access.js";
+import { refundWebsiteJobUsage, reserveWebsiteJobUsage } from "./website-job-usage.js";
+import { attachApprovalFingerprint, prepareMarketingExecution } from "./marketing-execution-engine.js";
+import { isWebsitePlanTask } from "./website-plan-task.js";
 
 type Context = Awaited<ReturnType<typeof workspaceContext>>;
 
@@ -13,7 +16,13 @@ async function enqueueApprovedWebsiteBuild(approvalTaskId: string) {
     prisma.websiteBuildJob.update({ where: { id: job.id }, data: { status: "queued", stage: "queued", progress: 0, queuedAt: new Date(), errorMessage: null } }),
     prisma.websiteBuild.update({ where: { id: job.buildId }, data: { status: "queued" } }),
   ]);
-  await websiteBuilderQueue.add("website:develop", { jobId: job.id }, { jobId: job.id, attempts: 2, backoff: { type: "exponential", delay: 5000 }, removeOnComplete: 100, removeOnFail: 100 });
+  await reserveWebsiteJobUsage(job.id);
+  try {
+    await websiteBuilderQueue.add("website:develop", { jobId: job.id }, { jobId: job.id, attempts: 2, backoff: { type: "exponential", delay: 5000 }, removeOnComplete: 100, removeOnFail: 100 });
+  } catch (error) {
+    await refundWebsiteJobUsage(job.id, "Approved website job could not be queued.").catch(() => undefined);
+    throw error;
+  }
 }
 
 const taskInclude = {
@@ -29,6 +38,17 @@ async function workflowTask(context: Context, taskId: string) {
   const task = await prisma.executionTask.findUnique({ where: { id: taskId }, include: taskInclude });
   if (!task?.projectId || !await canAccessProject(context, task.projectId)) throw Object.assign(new Error("Approval request not found."), { statusCode: 404 });
   return task;
+}
+
+async function ensureGovernedApprovalPackage(context: Context, task: Awaited<ReturnType<typeof workflowTask>>) {
+  if (!task.executionPlanId) return task;
+  const snapshot = task.approvalSnapshotJson && typeof task.approvalSnapshotJson === "object" && !Array.isArray(task.approvalSnapshotJson) ? task.approvalSnapshotJson as Record<string, unknown> : {};
+  const execution = snapshot.marketingExecution && typeof snapshot.marketingExecution === "object" && !Array.isArray(snapshot.marketingExecution) ? snapshot.marketingExecution as Record<string, unknown> : {};
+  const workPackage = execution.workPackage && typeof execution.workPackage === "object" && !Array.isArray(execution.workPackage) ? execution.workPackage as Record<string, unknown> : {};
+  if (typeof workPackage.fingerprint === "string") return task;
+  const prepared = await prepareMarketingExecution(context, task.id);
+  if (prepared.summary.canonicalState === "BLOCKED") throw Object.assign(new Error(prepared.summary.blockedReason || "Resolve the governed execution blockers before requesting approval."), { statusCode: 409 });
+  return workflowTask(context, task.id);
 }
 
 type ContentPlanSnapshot = {
@@ -57,7 +77,7 @@ function contentPlanSnapshot(value: unknown): ContentPlanSnapshot | null {
     if (!value || typeof value !== "object" || Array.isArray(value)) return [];
     const conflict = value as Record<string, unknown>;
     if (conflict.severity !== "blocking") return [];
-    const conflictingPageIds = Array.isArray(conflict.conflictingPageIds) ? conflict.conflictingPageIds.filter((item): item is string => typeof item === "string") : [];
+    const conflictingPageIds = Array.isArray(conflict.conflictingPageIds) ? [...new Set(conflict.conflictingPageIds.filter((item): item is string => typeof item === "string"))] : [];
     const dedupeKey = [...conflictingPageIds].sort().join("::");
     if (!dedupeKey || seenConflicts.has(dedupeKey)) return [];
     seenConflicts.add(dedupeKey);
@@ -66,6 +86,7 @@ function contentPlanSnapshot(value: unknown): ContentPlanSnapshot | null {
       const assignment = assignmentsByKey.get(conflictingPageIds[0]);
       if (!assignment || !conflictingPageIds[1] || normalizeTarget(assignment.targetUrl) === normalizeTarget(conflictingPageIds[1])) return [];
     } else {
+      if (conflictingPageIds.length < 2) return [];
       const assignments = conflictingPageIds.flatMap((id) => {
         const assignment = assignmentsByKey.get(id);
         return assignment ? [assignment] : [];
@@ -83,12 +104,12 @@ function contentPlanSnapshot(value: unknown): ContentPlanSnapshot | null {
     }];
   }) : [];
   const parsed = { summary: typeof plan.summary === "string" ? plan.summary : "", pageUpdates: list("pageUpdates"), supportingContent: list("supportingContent"), faqTopics: list("faqTopics"), proofBlocks: list("proofBlocks"), contentBriefs: list("contentBriefs"), publishingSequence: list("publishingSequence"), kpis: list("kpis"), localSeoActions: list("localSeoActions"), pageAssignments, blockingConflicts };
-  return parsed.summary && parsed.pageUpdates.length && parsed.supportingContent.length && parsed.contentBriefs.length ? parsed : null;
+  return parsed.summary && parsed.pageAssignments.length && parsed.pageUpdates.length && parsed.supportingContent.length && parsed.contentBriefs.length ? parsed : null;
 }
 
-async function materializeApprovedContentPlan(tx: Prisma.TransactionClient, context: Context, task: Awaited<ReturnType<typeof workflowTask>>) {
-  if (!task.projectId || task.moduleName !== "content" || !/(?:content\s*plan|seo\s*page\s*map)/i.test(`${task.title} ${task.actionButtonLabel ?? ""}`)) return null;
-  const snapshot = task.approvalSnapshotJson && typeof task.approvalSnapshotJson === "object" && !Array.isArray(task.approvalSnapshotJson) ? task.approvalSnapshotJson as Record<string, unknown> : {};
+async function materializeApprovedContentPlan(tx: Prisma.TransactionClient, context: Context, task: Awaited<ReturnType<typeof workflowTask>>, governedSnapshot?: Record<string, unknown>) {
+  if (!task.projectId || task.moduleName !== "content" || !isWebsitePlanTask(task)) return null;
+  const snapshot = governedSnapshot ?? (task.approvalSnapshotJson && typeof task.approvalSnapshotJson === "object" && !Array.isArray(task.approvalSnapshotJson) ? task.approvalSnapshotJson as Record<string, unknown> : {});
   const plan = contentPlanSnapshot(snapshot.contentPlan);
   if (!plan) throw Object.assign(new Error("Save a valid content plan before approving it."), { statusCode: 409 });
   const incompleteAiPage = plan.pageAssignments.find((assignment) => (
@@ -203,8 +224,24 @@ async function materializeApprovedContentPlan(tx: Prisma.TransactionClient, cont
   const existingNextAction = await tx.executionTask.findUnique({ where: { dedupeKey: nextActionDedupeKey } });
   const nextActionTask = existingNextAction ? await tx.executionTask.update({ where: { id: existingNextAction.id }, data: nextActionData }) : await tx.executionTask.create({ data: { ...nextActionData, dedupeKey: nextActionDedupeKey } });
   await tx.executionTaskDependency.createMany({ data: [{ taskId: nextActionTask.id, requiredTaskId: performanceTask.id }], skipDuplicates: true });
+  const existingWebsiteProject = task.project?.projectType === "existing_website" || task.project?.websiteStatus === "existing_website";
+  if (existingWebsiteProject) {
+    await tx.executionTask.updateMany({
+      where: {
+        projectId: task.projectId,
+        sourceType: "strategy_decision",
+        moduleName: { in: ["website", "site_architect"] },
+      },
+      data: {
+        moduleName: "site_architect",
+        actionButtonLabel: "Open Website Improvement Plan",
+        relatedUrl: `/site-architect?projectId=${task.projectId}&source=existing-site&step=structure`,
+        blockedReason: null,
+      },
+    });
+  }
   const completedAt = new Date();
-  const parent = await tx.executionTask.update({ where: { id: task.id }, data: { status: "completed", completedAt, actionButtonLabel: "View Approved Content Plan", approvalSnapshotJson: { ...snapshot, contentPlanStatus: "approved", approvedAt: completedAt.toISOString(), childTaskCount: childIds.length, publishingTaskId: publishingTask.id, performanceTaskId: performanceTask.id, nextActionTaskId: nextActionTask.id } as Prisma.InputJsonValue } });
+  const parent = await tx.executionTask.update({ where: { id: task.id }, data: { status: "completed", completedAt, actionButtonLabel: "View Approved SEO Page Map", relatedUrl: `/seo-page-map?projectId=${task.projectId}&taskId=${task.id}`, approvalSnapshotJson: { ...snapshot, contentPlanStatus: "approved", approvedAt: completedAt.toISOString(), childTaskCount: childIds.length, publishingTaskId: publishingTask.id, performanceTaskId: performanceTask.id, nextActionTaskId: nextActionTask.id } as Prisma.InputJsonValue } });
   await recordWorkspaceActivity(tx, { context, action: "content_plan.approved_and_materialized", entityType: "execution_task", entityId: task.id, agencyClientId: task.project?.agencyClientId, projectId: task.projectId, nextJson: { childTasksCreated: childIds.length, publishingTaskId: publishingTask.id, performanceTaskId: performanceTask.id, nextActionTaskId: nextActionTask.id, writer: "ai", workflow: ["page_map", "brief", "ai_creation", "seo_review", "company_approval", "publishing", "performance", "next_best_action"] } });
   return parent;
 }
@@ -222,10 +259,11 @@ function savedProjectApprovalRoute(settings: unknown, projectId: string | null):
 }
 
 export async function submitTaskApproval(context: Context, taskId: string, input: { notes?: string | null; confirmed?: boolean; approvalRoute?: ApprovalRoute; seoReview?: SeoReviewChecklist; allowVersionResubmission?: boolean }) {
-  const task = await workflowTask(context, taskId);
+  let task = await workflowTask(context, taskId);
   if (!hasWorkspacePermission(context, "submit_for_approval")) throw Object.assign(new Error("Submit-for-approval permission is required."), { statusCode: 403 });
   if (task.assigneeMembershipId && task.assigneeMembershipId !== context.membership.id && !context.roles.has("owner") && !context.roles.has("admin")) throw Object.assign(new Error("Only the assigned user can submit this task."), { statusCode: 403 });
   if (!["draft", "in_progress", "changes_requested", "needs_review", "ready"].includes(task.status) && input.allowVersionResubmission !== true) throw Object.assign(new Error("This task cannot be submitted from its current status."), { statusCode: 409 });
+  task = await ensureGovernedApprovalPackage(context, task);
   const taskSnapshot = task.approvalSnapshotJson && typeof task.approvalSnapshotJson === "object" && !Array.isArray(task.approvalSnapshotJson) ? task.approvalSnapshotJson as Record<string, unknown> : {};
   if (task.moduleName === "content" && taskSnapshot.generatedContent) {
     const checklist = input.seoReview;
@@ -258,8 +296,9 @@ export async function submitTaskApproval(context: Context, taskId: string, input
     const existingSnapshot = task.approvalSnapshotJson && typeof task.approvalSnapshotJson === "object" && !Array.isArray(task.approvalSnapshotJson) ? task.approvalSnapshotJson as Record<string, unknown> : {};
     const existingContentWorkflow = existingSnapshot.contentWorkflow && typeof existingSnapshot.contentWorkflow === "object" && !Array.isArray(existingSnapshot.contentWorkflow) ? existingSnapshot.contentWorkflow as Record<string, unknown> : null;
     const snapshot = { ...existingSnapshot, ...(input.seoReview ? { seoReview: { checklist: input.seoReview, reviewerMembershipId: context.membership.id, reviewerUserId: context.membership.userId, comment: input.notes, completedAt: now.toISOString() } } : {}), ...(existingContentWorkflow ? { contentWorkflow: { ...existingContentWorkflow, currentStage: clientPending ? "client_approval" : directlyApproved ? "publishing" : "company_approval" } } : {}), stage: clientPending ? "client_approval" : directlyApproved ? "approved" : "team_approval", approvalRoute, requesterMembershipId: context.membership.id, requesterUserId: context.membership.userId, personalNoApprovalWorkflow: personal };
-    const updated = await tx.executionTask.update({ where: { id: task.id }, data: { status, submittedAt: now, approvalDecision: decision, approvedAt: directlyApproved ? now : null, approvalNotes: input.notes, changesRequestedAt: null, approvalSnapshotJson: snapshot } });
-    if (!personal) await tx.executionTaskApproval.create({ data: { taskId: task.id, actorMembershipId: context.membership.id, decision: directlyApproved ? "approved" : "requested", notes: input.notes, snapshotJson: snapshot } });
+    const governedSnapshot = directlyApproved && !clientPending ? attachApprovalFingerprint(snapshot, { taskId: task.id, approvedAt: now, destination: task.relatedAssetId ?? task.relatedUrl, actorMembershipId: context.membership.id }) : snapshot;
+    const updated = await tx.executionTask.update({ where: { id: task.id }, data: { status, submittedAt: now, approvalDecision: decision, approvedAt: directlyApproved ? now : null, approvalNotes: input.notes, changesRequestedAt: null, approvalSnapshotJson: governedSnapshot as Prisma.InputJsonValue } });
+    if (!personal) await tx.executionTaskApproval.create({ data: { taskId: task.id, actorMembershipId: context.membership.id, decision: directlyApproved ? "approved" : "requested", notes: input.notes, snapshotJson: governedSnapshot as Prisma.InputJsonValue } });
     if (ownerCanChoose && input.approvalRoute) {
       const settings = context.workspace.settingsJson && typeof context.workspace.settingsJson === "object" && !Array.isArray(context.workspace.settingsJson) ? context.workspace.settingsJson as Record<string, unknown> : {};
       const routes = settings.projectApprovalRoutes && typeof settings.projectApprovalRoutes === "object" && !Array.isArray(settings.projectApprovalRoutes) ? settings.projectApprovalRoutes as Record<string, unknown> : {};
@@ -269,7 +308,7 @@ export async function submitTaskApproval(context: Context, taskId: string, input
     if (!directlyApproved) for (const userId of [...new Set(approvers.map((member) => member.userId))]) await createWorkspaceNotification(tx, { context, userId, type: "approval_requested", title: "Approval requested", body: `${task.title} is ready for your review.`, actionUrl: `/approvals?projectId=${task.projectId}&taskId=${task.id}`, agencyClientId: task.project?.agencyClientId, projectId: task.projectId });
     if (clientPending && task.project?.agencyClientId) await notifyClientApprovers(tx, context, task);
     if (task.sourceType === "website_builder_review" && task.sourceId) await tx.websiteBuild.updateMany({ where: { id: task.sourceId, projectId: task.projectId! }, data: { status: directlyApproved && !clientPending ? "approved" : "review" } });
-    const finalized = directlyApproved && !clientPending ? await materializeApprovedContentPlan(tx, context, task) ?? updated : updated;
+    const finalized = directlyApproved && !clientPending ? await materializeApprovedContentPlan(tx, context, task, governedSnapshot) ?? updated : updated;
     return { task: finalized };
   });
   if (task.sourceType === "website_builder_request" && ["ready_to_publish", "approved", "completed"].includes(result.task.status)) await enqueueApprovedWebsiteBuild(task.id);
@@ -277,12 +316,13 @@ export async function submitTaskApproval(context: Context, taskId: string, input
 }
 
 export async function decideTaskApproval(context: Context, taskId: string, input: { decision: string; notes?: string | null; snapshotJson?: Record<string, unknown> }) {
-  const task = await workflowTask(context, taskId);
+  let task = await workflowTask(context, taskId);
   const clientViewer = context.roles.size === 1 && context.roles.has("client_viewer");
   if (clientViewer && !task.clientApprovalRequired) throw Object.assign(new Error("This request was not sent to the client."), { statusCode: 403 });
   if (!clientViewer && !hasWorkspacePermission(context, "approve")) throw Object.assign(new Error("Approval permission is required."), { statusCode: 403 });
   if (!clientViewer && task.approverMembershipId && task.approverMembershipId !== context.membership.id && !context.roles.has("owner") && !context.roles.has("admin")) throw Object.assign(new Error("This approval is assigned to another Approver."), { statusCode: 403 });
   if (!["submitted_for_approval", "awaiting_confirmation"].includes(task.status)) throw Object.assign(new Error("Only submitted work can receive an approval decision."), { statusCode: 409 });
+  task = await ensureGovernedApprovalPackage(context, task);
   const snapshot = task.approvalSnapshotJson && typeof task.approvalSnapshotJson === "object" && !Array.isArray(task.approvalSnapshotJson) ? task.approvalSnapshotJson as Record<string, unknown> : {};
   const confirmationOnly = task.status === "awaiting_confirmation" || snapshot.confirmationOnly === true;
   if (confirmationOnly && !context.roles.has("owner") && !context.roles.has("admin")) throw Object.assign(new Error("Only Owner/Admin can confirm this action."), { statusCode: 403 });
@@ -297,15 +337,16 @@ export async function decideTaskApproval(context: Context, taskId: string, input
   const result = await prisma.$transaction(async (tx) => {
     const now = new Date();
     const decisionSnapshot = { ...(input.snapshotJson ?? {}), before: task.approvalSnapshotJson, requester: snapshot.requesterMembershipId ?? null, approverMembershipId: context.membership.id, approverUserId: context.membership.userId };
-    await tx.executionTaskApproval.create({ data: { taskId: task.id, actorMembershipId: context.membership.id, decision, notes: input.notes, snapshotJson: decisionSnapshot as Prisma.InputJsonValue } });
     const contentWorkflow = snapshot.contentWorkflow && typeof snapshot.contentWorkflow === "object" && !Array.isArray(snapshot.contentWorkflow) ? snapshot.contentWorkflow as Record<string, unknown> : null;
     const nextSnapshot = { ...snapshot, ...(contentWorkflow ? { contentWorkflow: { ...contentWorkflow, currentStage: needsClient ? "client_approval" : decision === "approved" ? "publishing" : decision === "changes_requested" ? "seo_review" : "company_approval" } } : {}), ...(needsClient ? { stage: "client_approval" } : {}) };
-    const updated = await tx.executionTask.update({ where: { id: task.id }, data: { status: state.status, approvalDecision: state.storedDecision, approvalNotes: input.notes, approvedAt: decision === "approved" ? now : null, clientApprovedAt: clientViewer && decision === "approved" ? now : undefined, changesRequestedAt: decision === "changes_requested" ? now : null, approvalSnapshotJson: nextSnapshot as Prisma.InputJsonValue } });
+    const governedSnapshot = decision === "approved" && !needsClient ? attachApprovalFingerprint(nextSnapshot, { taskId: task.id, approvedAt: now, destination: task.relatedAssetId ?? task.relatedUrl, actorMembershipId: context.membership.id }) : nextSnapshot;
+    await tx.executionTaskApproval.create({ data: { taskId: task.id, actorMembershipId: context.membership.id, decision, notes: input.notes, snapshotJson: { ...decisionSnapshot, governedExecution: governedSnapshot.marketingExecution ?? null } as Prisma.InputJsonValue } });
+    const updated = await tx.executionTask.update({ where: { id: task.id }, data: { status: state.status, approvalDecision: state.storedDecision, approvalNotes: input.notes, approvedAt: decision === "approved" ? now : null, clientApprovedAt: clientViewer && decision === "approved" ? now : undefined, changesRequestedAt: decision === "changes_requested" ? now : null, approvalSnapshotJson: governedSnapshot as Prisma.InputJsonValue } });
     if (task.sourceType === "website_builder_review" && task.sourceId) await tx.websiteBuild.updateMany({ where: { id: task.sourceId, projectId: task.projectId! }, data: { status: decision === "approved" && !needsClient ? "approved" : "review" } });
     await recordWorkspaceActivity(tx, { context, action: `approval.${clientViewer ? "client_" : ""}${decision}`, entityType: "execution_task", entityId: task.id, agencyClientId: task.project?.agencyClientId, projectId: task.projectId, previousJson: { status: task.status, decision: task.approvalDecision }, nextJson: { status: state.status, decision, notes: input.notes, approverMembershipId: context.membership.id } });
     for (const userId of [...new Set([task.assignee?.userId, task.manager?.userId, task.createdByUserId].filter((id): id is string => Boolean(id)))]) await createWorkspaceNotification(tx, { context, userId, type: `approval_${decision}`, title: `Task ${decision.replaceAll("_", " ")}`, body: `${task.title}: ${input.notes || decision.replaceAll("_", " ")}.`, actionUrl: task.relatedUrl ?? `/guided-projects/${task.projectId}#execution-tasks`, agencyClientId: task.project?.agencyClientId, projectId: task.projectId });
     if (needsClient && task.project?.agencyClientId) await notifyClientApprovers(tx, context, task);
-    const finalized = decision === "approved" && !needsClient ? await materializeApprovedContentPlan(tx, context, task) ?? updated : updated;
+    const finalized = decision === "approved" && !needsClient ? await materializeApprovedContentPlan(tx, context, task, governedSnapshot) ?? updated : updated;
     return { task: finalized };
   });
   if (task.sourceType === "website_builder_request" && decision === "approved" && !needsClient) await enqueueApprovedWebsiteBuild(task.id);

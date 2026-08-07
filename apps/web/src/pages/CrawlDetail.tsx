@@ -570,6 +570,33 @@ function duplicateIssueLabel(issueType: string): string {
   return "Related pages";
 }
 
+function compactIssueMessage(issue: IssueRow): string {
+  const count = issue.relatedPages?.length ?? 0;
+  if (count > 1) {
+    if (issue.issueType === "duplicate_title") return `Duplicate title shared by ${count} distinct pages.`;
+    if (issue.issueType === "duplicate_meta_description") return `Duplicate meta description shared by ${count} distinct pages.`;
+    if (issue.issueType === "duplicate_h1") return `Duplicate H1 shared by ${count} distinct pages.`;
+    if (issue.issueType === "exact_duplicate_content") return `Exact duplicate content shared by ${count} distinct pages.`;
+  }
+  return issue.message;
+}
+
+function compactLengthStatus(metric: NonNullable<ReturnType<typeof lengthMetric>>): string {
+  if (metric.value < metric.min) return `${metric.value} characters · ${metric.min - metric.value} short`;
+  if (metric.value > metric.max) return `${metric.value} characters · ${metric.value - metric.max} over`;
+  return `${metric.value} characters · within ${metric.min}-${metric.max}`;
+}
+
+function pageUrlParts(value: string | null | undefined): { path: string; host: string; full: string } | null {
+  if (!value) return null;
+  try {
+    const url = new URL(value);
+    return { path: `${url.pathname || "/"}${url.search}`, host: url.host, full: value };
+  } catch {
+    return { path: value, host: "", full: value };
+  }
+}
+
 function scoreTone(score: number | null | undefined): string {
   if (score == null) return "text-charcoal-400";
   if (score >= 90) return "text-green-600";
@@ -2399,20 +2426,28 @@ export default function CrawlDetail() {
                   </tr>
                 </thead>
                 <tbody>
-                  {issueRows.map((i) => (
+                  {issueRows.map((i) => {
+                    const metric = lengthMetric(i);
+                    const pageUrl = pageUrlParts(i.page?.url);
+                    return (
                       <tr key={i.id} className="border-t border-charcoal-50 align-top">
                         <td className="px-5 py-3"><Badge severity={i.severity} /></td>
-                        <td className="px-5 py-3">
+                        <td className="max-w-[360px] px-5 py-3">
                           <div className="flex items-start gap-2">
                             <div>
-                              <div className="font-medium text-charcoal-700">{i.message}</div>
+                              <div className="font-medium leading-5 text-charcoal-700">{compactIssueMessage(i)}</div>
                               <div className="text-xs text-charcoal-400">{i.category} · {i.issueType}</div>
-                              {lengthMetric(i) && <LengthMeter metric={lengthMetric(i)!} compact />}
+                              {metric && <div className="mt-1 inline-flex rounded-full bg-slate-100 px-2 py-0.5 text-[11px] font-semibold text-charcoal-600">{metric.label}: {compactLengthStatus(metric)}</div>}
                             </div>
                           </div>
                         </td>
-                        <td className="max-w-[220px] truncate px-5 py-3 text-charcoal-500">{i.page?.url ?? "—"}</td>
-                        <td className="px-5 py-3 text-charcoal-500">{i.recommendation ?? "—"}</td>
+                        <td className="w-[280px] max-w-[280px] px-5 py-3 text-charcoal-500">
+                          {pageUrl ? <div title={pageUrl.full}>
+                            <div className="break-all font-semibold leading-5 text-charcoal-700">{pageUrl.path}</div>
+                            {pageUrl.host ? <div className="mt-0.5 break-all text-[11px] text-charcoal-400">{pageUrl.host}</div> : null}
+                          </div> : "—"}
+                        </td>
+                        <td className="max-w-[300px] px-5 py-3 leading-5 text-charcoal-500">{i.recommendation ?? "—"}</td>
                         <td className="px-5 py-3 text-right">
                           <div className="flex justify-end gap-2">
                             <ActionIconButton icon={openIssueId === i.id ? "close" : "details"} label={openIssueId === i.id ? "Close issue details" : "View issue details"} onClick={() => setOpenIssueId(openIssueId === i.id ? null : i.id)} />
@@ -2420,7 +2455,8 @@ export default function CrawlDetail() {
                           </div>
                         </td>
                       </tr>
-                  ))}
+                    );
+                  })}
                 </tbody>
               </table></div>
               <Pagination page={issuesPage} total={shownIssues.length} onPage={(p) => { setIssuesPage(p); setOpenIssueId(null); }} />

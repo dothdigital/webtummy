@@ -1,8 +1,11 @@
 import { Router, type NextFunction, type Request, type Response } from "express";
 import { Prisma, prisma } from "@webtummy/db";
+import { approvedKeywordEntries, missingApprovedKeywordResearch } from "@webtummy/core";
 import { z } from "zod";
 import { buildCitationAudit, claimFingerprint, visibilityStatus } from "../ai-citation-engine.js";
 import { canAccessProject, hasWorkspacePermission, recordWorkspaceActivity, workspaceContext } from "../workspace-access.js";
+import { approvedStrategyContext } from "../strategy-ai.js";
+import { projectAnalysisLocationLabels } from "../project-location.js";
 
 export const aiCitationVisibilityRouter = Router();
 
@@ -100,9 +103,8 @@ async function scopedCitationProject(req: Request, projectId: string, permission
       agencyClient: { select: { id: true, name: true, contactName: true, contactEmail: true, contactPhone: true, businessLocations: true } },
       businessProfile: true,
       intakeAnswers: true,
-      keywordGroups: { where: { status: "approved" }, select: { keywords: true } },
-      keywordResearchRuns: { where: { status: "completed" }, orderBy: { createdAt: "desc" }, take: 20, select: { seedKeyword: true, ideas: { take: 20, select: { keyword: true } } } },
-      strategyPlans: { orderBy: { version: "desc" }, take: 1 },
+      keywordGroups: { where: { status: "approved" }, select: { status: true, keywords: true } },
+      strategyPlans: { where: { status: "approved" }, orderBy: { version: "desc" }, take: 1 },
       websiteBuilds: {
         orderBy: { updatedAt: "desc" },
         take: 1,
@@ -316,20 +318,19 @@ function citationContext(project: Awaited<ReturnType<typeof scopedCitationProjec
     [businessLocation.city, businessLocation.stateProvince, businessLocation.country].filter(Boolean).map(String).join(", "),
     project.businessLocation,
   ].filter((item): item is string => typeof item === "string" && item.trim().length > 0))];
-  const keywords = [...new Set([
-    ...project.keywordGroups.flatMap((group) => stringList(group.keywords)),
-    ...project.keywordResearchRuns.flatMap((run) => [run.seedKeyword, ...run.ideas.map((idea) => idea.keyword)]),
-  ].map((item) => item.trim()).filter(Boolean))].slice(0, 50);
+  const keywords = approvedKeywordEntries(project.keywordGroups).slice(0, 50);
   const profile = project.businessProfile;
+  const strategyContract = approvedStrategyContext(project.strategyPlans[0]);
   return {
     businessName: local?.businessName || project.businessName || project.name,
     websiteUrl: project.website?.rootUrl || project.websiteUrl,
     businessSummary: profile?.businessSummary ?? null,
-    offerSummary: profile?.offerSummary ?? (local ? stringList(local.services).join(", ") : null),
-    targetAudience: profile?.targetAudience ?? null,
+    offerSummary: strategyContract?.offer ?? profile?.offerSummary ?? (local ? stringList(local.services).join(", ") : null),
+    targetAudience: strategyContract?.audience ?? profile?.targetAudience ?? null,
     targetLocations: locations,
     approvedKeywords: keywords,
     competitors: stringList(project.competitors),
+    strategyContract,
   };
 }
 
@@ -552,7 +553,7 @@ aiCitationVisibilityRouter.get("/projects/:projectId/ai-citation-visibility", as
     const requirementKeys = findingWebsiteSignalKeys[item.findingKey] ?? [];
     const websiteRequirements = requirementKeys
       .map((signalKey) => trustSignalsByKey.get(signalKey))
-      .filter((signal): signal is NonNullable<typeof signal> => Boolean(signal && !signal.websiteAsset));
+      .filter((signal): signal is NonNullable<typeof signal> => Boolean(signal && signal.observedStatus !== "present" && !signal.websiteAsset));
     if (requirementKeys.length && websiteRequirements.length === 0) return [];
     return [{
       ...attachContentAsset("finding", item),
@@ -562,6 +563,8 @@ aiCitationVisibilityRouter.get("/projects/:projectId/ai-citation-visibility", as
   res.json({
     project: { id: project.id, name: citationContext(project).businessName, websiteUrl: citationContext(project).websiteUrl },
     websiteWorkflow: {
+      hasWebsiteDevelopment: Boolean(websiteBuild),
+      hasExistingWebsiteCrawl: Boolean(project.website?.crawlJobs[0]),
       buildStatus: websiteBuild?.status ?? null,
       hasApprovedRelease: Boolean(websiteBuildSettings.currentApprovedReleaseId),
     },
@@ -594,6 +597,12 @@ aiCitationVisibilityRouter.get("/projects/:projectId/ai-citation-visibility", as
 
 aiCitationVisibilityRouter.post("/projects/:projectId/ai-citation-visibility/audit", async (req, res) => {
   const { context, project } = await scopedCitationProject(req, req.params.projectId, "run_ai_analysis");
+  const completedKeywordRuns = await prisma.keywordResearchRun.findMany({ where: { projectId: project.id }, select: { seedKeyword: true, status: true, locationName: true, languageCode: true, device: true, createdAt: true } });
+  const approvedKeywords = approvedKeywordEntries(project.keywordGroups);
+  const missingKeywords = missingApprovedKeywordResearch(project.keywordGroups, completedKeywordRuns, projectAnalysisLocationLabels(project.targetLocations, project.businessLocationJson));
+  if (!approvedKeywords.length || missingKeywords.length) return res.status(409).json({ error: !approvedKeywords.length
+    ? "Approve Primary or Secondary keywords and complete Keyword Analysis before running AI Citation Analysis."
+    : `Complete Keyword Analysis for all approved Primary and Secondary keywords before running AI Citation Analysis. ${missingKeywords.length} still need analysis.` });
   const contextData = citationContext(project);
   const crawl = crawlEvidence(project);
   const observations = await prisma.aiVisibilitySnapshot.findMany({ where: { projectId: project.id }, select: { mentionDetected: true, accuracyStatus: true } });
@@ -717,6 +726,12 @@ aiCitationVisibilityRouter.patch("/projects/:projectId/ai-citation-visibility/tr
   const input = websiteUpdateListSchema.parse(req.body);
   const signal = await prisma.trustSignal.findFirst({ where: { id: req.params.signalId, projectId: project.id } });
   if (!signal) fail("Trust signal not found.", 404);
+  if (input.action === "add" && project.websiteBuilds.length === 0) {
+    fail("Website Development has not been started. Create or download this asset for the existing website instead of adding it to a Website Development update list.", 409);
+  }
+  if (input.action === "add" && signal.status === "present") {
+    fail("This asset is already present on the existing website and does not need to be added to the Website Update List.", 409);
+  }
   if (input.generationId) {
     const generation = await prisma.aiContentGeneration.findFirst({
       where: {

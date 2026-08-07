@@ -4,10 +4,11 @@ import { api } from "../api.js";
 import type { GuidedProject, KeywordResearchRun, Website } from "../types.js";
 import { getActiveProjectId, setActiveProjectId } from "../active-project.js";
 import { ActionIconButton, ActionIconLink, Button, Card, Input } from "../components/ui.js";
-import { COUNTRY_OPTIONS, buildLocationNames, defaultLocationParts } from "../locationOptions.js";
+import { COUNTRY_OPTIONS, buildLocationNames, defaultLocationParts, projectAnalysisLocations } from "../locationOptions.js";
 import { isBackgroundJobFinished, registerBackgroundJob } from "../background-jobs.js";
 import { latestSuccessfulKeywordRuns } from "../keyword-runs.js";
-import { keywordResearchRequestIdentity, selectKeywordAnalysisLocations } from "@webtummy/core";
+import { incompleteApprovedKeywordResearchChecks, keywordResearchRequestIdentity, normalizeKeywordPhrase, selectKeywordAnalysisLocations, splitKeywordEntries } from "@webtummy/core";
+import { geographicTargetMarkets } from "../utils/projectLocations.js";
 
 type KeywordSuggestion = {
   keyword: string;
@@ -134,26 +135,8 @@ function targetCitiesText(value: unknown): string {
     .join(", ");
 }
 
-function projectResearchLocation(project: GuidedProject) {
-  const targets = (Array.isArray(project.targetLocations) ? project.targetLocations : [])
-    .filter((item): item is string => typeof item === "string")
-    .flatMap((item) => item.split(","))
-    .map((item) => item.trim())
-    .filter(Boolean);
-  const foundation = project.businessLocationJson;
-  const countryValue = foundation?.country?.trim() || targets.find((item) => COUNTRY_OPTIONS.some((country) =>
-    country.value.toLowerCase() === item.toLowerCase() || country.isoCode.toLowerCase() === item.toLowerCase(),
-  )) || "";
-  const country = COUNTRY_OPTIONS.find((item) =>
-    item.value.toLowerCase() === countryValue.toLowerCase() || item.isoCode.toLowerCase() === countryValue.toLowerCase(),
-  )?.value || countryValue;
-  const region = foundation?.stateProvince?.trim() || "";
-  const excluded = new Set([country.toLowerCase(), countryValue.toLowerCase(), region.toLowerCase()].filter(Boolean));
-  const cities = [...new Map(targets.filter((item) => {
-    if (excluded.has(item.toLowerCase())) return false;
-    return !COUNTRY_OPTIONS.some((countryOption) => countryOption.value.toLowerCase() === item.toLowerCase() || countryOption.isoCode.toLowerCase() === item.toLowerCase());
-  }).map((item) => [item.toLowerCase(), item])).values()];
-  return { country, region, cities };
+function projectMarketLocationNames(markets: string[], region: string, country: string): string[] {
+  return buildLocationNames(geographicTargetMarkets(markets).join(", "), region, country);
 }
 
 export default function KeywordReports() {
@@ -189,13 +172,15 @@ export default function KeywordReports() {
   const [editingSuggestion, setEditingSuggestion] = useState<string | null>(null);
   const [editingSuggestionValue, setEditingSuggestionValue] = useState("");
   const [queuedKeywords, setQueuedKeywords] = useState<QueuedKeywordRun[]>([]);
+  const [retryQueueMode, setRetryQueueMode] = useState(false);
   const [formError, setFormError] = useState<FormError | null>(null);
   const [message, setMessage] = useState("");
+  const [marketDraft, setMarketDraft] = useState("");
   const [reportKeywordFilter, setReportKeywordFilter] = useState("");
   const [reportPage, setReportPage] = useState(1);
   const campaignQuery = () => {
     const next = new URLSearchParams();
-    for (const key of ["project", "projectId", "groupId", "groupIds"]) {
+    for (const key of ["project", "projectId", "groupId", "groupIds", "keyword"]) {
       const value = searchParams.get(key);
       if (value) next.set(key, value);
     }
@@ -243,26 +228,96 @@ export default function KeywordReports() {
         if (guided.project.websiteId && websiteResult.websites.some((website) => website.id === guided.project.websiteId)) setWebsiteId(guided.project.websiteId);
         const eligibleGroups = (guided.project.keywordGroups ?? []).filter((group) => group.status === "approved");
         const selectedGroups = requestedGroups.size ? eligibleGroups.filter((group) => requestedGroups.has(group.id)) : eligibleGroups;
-        const suggestions = selectedGroups.flatMap((group) => (Array.isArray(group.keywords) ? group.keywords : [])
-          .filter((keyword): keyword is string => typeof keyword === "string")
-          .flatMap((keyword) => keyword.split(/[,;\n]/).map((part) => part.trim()).filter(Boolean))
+        const projectLocation = projectAnalysisLocations(guided.project);
+        const incompleteChecks = incompleteApprovedKeywordResearchChecks(selectedGroups, runResult.runs, projectLocation.locationNames);
+        const incompleteKeywordSet = new Set(incompleteChecks.map((check) => normalizeKeywordPhrase(check.keyword)));
+        const suggestions = selectedGroups.flatMap((group) => splitKeywordEntries(group.keywords)
           .map((keyword) => ({ keyword, reason: `Approved in ${group.title}` })))
           .filter((suggestion) => suggestion.keyword);
         const uniqueSuggestions = [...new Map(suggestions.map((suggestion) => [suggestion.keyword.toLowerCase(), suggestion])).values()];
-        const preselectedKeywords = uniqueSuggestions.map((suggestion) => suggestion.keyword);
-        setKeywordSuggestions(uniqueSuggestions);
-        setSelectedKeywordSuggestions(preselectedKeywords);
+        const approvedKeywordSet = new Set(uniqueSuggestions.map((suggestion) => normalizeKeywordPhrase(suggestion.keyword)));
+        const latestRunByCheck = [...runResult.runs]
+          .filter((run) => run.projectId === guided.project.id && approvedKeywordSet.has(normalizeKeywordPhrase(run.seedKeyword)))
+          .sort((left, right) => new Date(right.createdAt).getTime() - new Date(left.createdAt).getTime())
+          .reduce((latest, run) => {
+            const identity = keywordResearchRequestIdentity({ keyword: run.seedKeyword, location: run.locationName, languageCode: run.languageCode, device: run.device });
+            if (!latest.has(identity)) latest.set(identity, run);
+            return latest;
+          }, new Map<string, KeywordResearchRun>());
+        const failedChecks = [...latestRunByCheck.values()].filter((run) => ["failed", "cancelled", "canceled"].includes(run.status.toLocaleLowerCase()));
+        const failedKeywords = new Set(failedChecks.map((run) => normalizeKeywordPhrase(run.seedKeyword)));
+        const requestedKeyword = searchParams.get("keyword");
+        const remainingOnly = searchParams.get("remaining") === "1";
+        // Older and bookmarked workflow links may contain only remaining=1.
+        // Failed checks always take priority so the user reaches a usable retry
+        // queue instead of a generic keyword selection/report screen.
+        const failedOnly = searchParams.get("failed") === "1" || (remainingOnly && failedChecks.length > 0);
+        setRetryQueueMode(failedOnly);
+        const requestedSuggestions = requestedKeyword
+          ? uniqueSuggestions.filter((suggestion) => normalizeKeywordPhrase(suggestion.keyword) === normalizeKeywordPhrase(requestedKeyword))
+          : uniqueSuggestions;
+        const scopedSuggestions = failedOnly
+          ? requestedSuggestions.filter((suggestion) => failedKeywords.has(normalizeKeywordPhrase(suggestion.keyword)))
+          : requestedSuggestions;
+        const preselectedKeywords = scopedSuggestions
+          .map((suggestion) => suggestion.keyword)
+          .filter((keyword) => failedOnly || incompleteKeywordSet.has(normalizeKeywordPhrase(keyword)));
+        setKeywordSuggestions(remainingOnly
+          ? scopedSuggestions.filter((suggestion) => preselectedKeywords.includes(suggestion.keyword))
+          : scopedSuggestions);
+        setSelectedKeywordSuggestions(remainingOnly ? [] : preselectedKeywords);
+        if (remainingOnly && (preselectedKeywords.length || (failedOnly && failedChecks.length))) {
+          setMessage(failedOnly
+            ? `${failedChecks.length} failed keyword-location check${failedChecks.length === 1 ? " is" : "s are"} ready to retry. Completed checks will not be rerun.`
+            : `${preselectedKeywords.length} remaining approved keyword${preselectedKeywords.length === 1 ? " is" : "s are"} selected. Review the analysis settings, then continue to start the research.`);
+        }
         setTargetUrl(guided.project.websiteUrl ?? "");
         if (guided.project.websiteUrl) {
           try { setTargetDomain(new URL(guided.project.websiteUrl).hostname.replace(/^www\./, "")); } catch { setTargetDomain(guided.project.websiteUrl); }
         }
-        const projectLocation = projectResearchLocation(guided.project);
         if (projectLocation.country) setLocationCountry(projectLocation.country);
         if (projectLocation.region) setLocationRegion(projectLocation.region);
-        if (projectLocation.cities.length) {
-          setTargetMarkets(projectLocation.cities);
-          setSelectedTargetMarkets(projectLocation.cities);
-          setLocationCity(projectLocation.cities.join(", "));
+        if (projectLocation.markets.length) {
+          setTargetMarkets(projectLocation.markets);
+          setSelectedTargetMarkets(projectLocation.markets);
+          setLocationCity(projectLocation.markets.join(", "));
+        }
+        if (remainingOnly && (preselectedKeywords.length || (failedOnly && failedChecks.length))) {
+          const nextTargetUrl = guided.project.websiteUrl ?? "";
+          let nextTargetDomain = nextTargetUrl;
+          try { nextTargetDomain = nextTargetUrl ? new URL(nextTargetUrl).hostname.replace(/^www\./, "") : ""; } catch { /* Keep the saved value for review. */ }
+          setQueuedKeywords(failedOnly
+            ? failedChecks.map((run) => ({
+                id: `retry-${run.id}`,
+                keyword: run.seedKeyword,
+                targetUrl: run.targetUrl ?? nextTargetUrl,
+                targetDomain: run.targetDomain ?? nextTargetDomain,
+                locationCountry: projectLocation.country,
+                locationRegion: projectLocation.region,
+                locationCity: run.locationName,
+                locationNames: [run.locationName],
+                languageCode: run.languageCode,
+                device: run.device === "mobile" ? "mobile" : "desktop",
+                serpDepth: String(run.serpDepth || 20),
+                keywordLimit: "25",
+              }))
+            : preselectedKeywords.map((keyword, index) => ({
+                id: `remaining-${index}-${normalizeKeywordPhrase(keyword)}`,
+                keyword,
+                targetUrl: nextTargetUrl,
+                targetDomain: nextTargetDomain,
+                locationCountry: projectLocation.country,
+                locationRegion: projectLocation.region,
+                locationCity: projectLocation.markets.join(", "),
+                locationNames: incompleteChecks
+                  .filter((check) => normalizeKeywordPhrase(check.keyword) === normalizeKeywordPhrase(keyword))
+                  .map((check) => check.location),
+                languageCode: "en",
+                device: "desktop",
+                serpDepth: "20",
+                keywordLimit: "25",
+              })));
+          setKeywordStep("review");
         }
       }
     } finally {
@@ -279,65 +334,57 @@ export default function KeywordReports() {
     event.preventDefault();
     setCreating(true);
     setFormError(null);
-    let activeKeyword = "";
-    let activeLocation = "";
     try {
-      let firstRun: KeywordResearchRun | null = null;
-      const submittedRequests = new Set<string>();
-      for (const queued of queuedKeywords) {
-        activeKeyword = queued.keyword;
-        for (const locationName of queued.locationNames) {
-          const requestIdentity = keywordResearchRequestIdentity({
-            keyword: queued.keyword,
-            location: locationName,
-            languageCode: queued.languageCode,
-            device: queued.device,
-          });
-          if (submittedRequests.has(requestIdentity)) continue;
-          submittedRequests.add(requestIdentity);
-          activeLocation = locationName;
-          const result = await api.post<{ run: KeywordResearchRun }>("/api/keyword-research", {
-            projectId: guidedProject?.id ?? null,
-            websiteId: websiteId || null,
-            seedKeyword: queued.keyword,
-            targetUrl: queued.targetUrl || null,
-            targetDomain: queued.targetDomain || null,
-            locationName,
-            languageCode: queued.languageCode,
-            device: queued.device,
-            serpDepth: Number(queued.serpDepth) || 10,
-            keywordLimit: Number(queued.keywordLimit) || 25,
-          });
-          if (!isBackgroundJobFinished(result.run.status)) {
+      const checks = queuedKeywords.flatMap((queued) => queued.locationNames.map((locationName) => ({
+        seedKeyword: queued.keyword,
+        targetUrl: queued.targetUrl || null,
+        targetDomain: queued.targetDomain || null,
+        locationName,
+        languageCode: queued.languageCode,
+        device: queued.device,
+        serpDepth: Number(queued.serpDepth) || 20,
+        keywordLimit: Number(queued.keywordLimit) || 25,
+      })));
+      const result = await api.post<{
+        accepted: Array<{ run: KeywordResearchRun; requestedLocation: string; resolvedLocation: string; reused: boolean; retried: boolean }>;
+        failed: Array<{ keyword: string; location: string; reason: string }>;
+        summary: { requested: number; unique: number; queued: number; reused: number; retried: number; failed: number };
+      }>("/api/keyword-research/batch", {
+        projectId: guidedProject?.id ?? null,
+        websiteId: websiteId || null,
+        checks,
+      });
+      for (const accepted of result.accepted) {
+        if (!isBackgroundJobFinished(accepted.run.status)) {
             registerBackgroundJob({
-              id: result.run.id,
+              id: accepted.run.id,
               projectId: guidedProject?.id ?? null,
               type: "keyword-research",
               title: "Keyword research",
-              subject: `${queued.keyword} · ${locationName}`,
-              status: result.run.status,
-              statusUrl: `/api/keyword-research/${result.run.id}`,
-              resultUrl: reportUrl(result.run.id),
+              subject: `${accepted.run.seedKeyword} · ${accepted.resolvedLocation}`,
+              status: accepted.run.status,
+              statusUrl: `/api/keyword-research/${accepted.run.id}`,
+              resultUrl: reportUrl(accepted.run.id),
               startedAt: new Date().toISOString(),
-              progressMessage: `You can continue working. We’re researching “${queued.keyword}” for ${locationName} in the background.`,
-              completedMessage: `“${queued.keyword}” for ${locationName} is ready to review`,
-              failedMessage: `Keyword research for “${queued.keyword}” needs attention.`,
+              progressMessage: `You can continue working. We’re researching “${accepted.run.seedKeyword}” for ${accepted.resolvedLocation} in the background.`,
+              completedMessage: `“${accepted.run.seedKeyword}” for ${accepted.resolvedLocation} is ready to review`,
+              failedMessage: `Keyword research for “${accepted.run.seedKeyword}” needs attention.`,
               resultMetricKey: "keywordCount",
               resultMetricLabel: "keywords found",
-              resultMetric: result.run.keywordCount,
+              resultMetric: accepted.run.keywordCount,
             });
-          }
-          firstRun = firstRun ?? result.run;
         }
       }
-      if (firstRun) navigate(backToKeywords);
+      if (!result.accepted.length) {
+        throw new Error(result.failed.map((item) => `${item.keyword} · ${item.location}: ${item.reason}`).join(" ") || "No keyword-location checks were accepted.");
+      }
+      navigate(backToKeywords);
     } catch (e) {
       const message = e instanceof Error ? e.message : "Keyword research could not be completed.";
-      const context = [activeKeyword ? `Keyword: ${activeKeyword}` : "", activeLocation ? `Location: ${activeLocation}` : ""].filter(Boolean).join(" • ");
       setFormError({
         title: "Keyword research needs attention",
-        detail: context ? `${message} (${context})` : message,
-        action: "Check the selected keyword and location, or try running with a country-level location if this was a suggested keyword.",
+        detail: message,
+        action: "Review the exact keyword-location checks shown here. Existing completed checks are preserved and no partial browser submission is left behind.",
       });
     } finally {
       setCreating(false);
@@ -346,13 +393,16 @@ export default function KeywordReports() {
 
   const previouslyResearched = (keyword: string) => runs.some((run) =>
     (guidedProject ? run.projectId === guidedProject.id : websiteId ? run.websiteId === websiteId : true)
-      && run.seedKeyword.trim().toLowerCase() === keyword.trim().toLowerCase(),
+      && normalizeKeywordPhrase(run.seedKeyword) === normalizeKeywordPhrase(keyword),
   );
 
   const queueKeywordWithSettings = (keywordValue = seedKeyword, clearInput = true, confirmExisting = true) => {
     const keyword = keywordValue.trim();
     if (!keyword) return;
-    const locationNames = selectKeywordAnalysisLocations(keyword, buildLocationNames(locationCity, locationRegion, locationCountry));
+    const configuredLocations = guidedProject && selectedTargetMarkets.length
+      ? projectMarketLocationNames(selectedTargetMarkets, locationRegion, locationCountry)
+      : buildLocationNames(locationCity, locationRegion, locationCountry);
+    const locationNames = selectKeywordAnalysisLocations(keyword, configuredLocations);
     if (!locationNames.length) {
       setMessage("Enter a city, state/province, or country before adding this keyword.");
       return;
@@ -510,9 +560,29 @@ export default function KeywordReports() {
 
   const toggleTargetMarket = (market: string) => setSelectedTargetMarkets((current) => current.includes(market) ? current.filter((item) => item !== market) : [...current, market]);
 
+  const addTargetMarket = () => {
+    const candidates = marketDraft
+      .split(/[;\n]/)
+      .map((entry) => geographicTargetMarkets([entry])[0] ?? "")
+      .filter(Boolean);
+    if (!candidates.length) {
+      setMessage("Enter a named city, neighbourhood, region, province or state, or country.");
+      return;
+    }
+    setTargetMarkets((current) => [...new Map([...current, ...candidates].map((market) => [market.toLocaleLowerCase(), market])).values()]);
+    setSelectedTargetMarkets((current) => [...new Map([...current, ...candidates].map((market) => [market.toLocaleLowerCase(), market])).values()]);
+    setMarketDraft("");
+    setMessage("");
+  };
+
+  const removeTargetMarket = (market: string) => {
+    setTargetMarkets((current) => current.filter((item) => item !== market));
+    setSelectedTargetMarkets((current) => current.filter((item) => item !== market));
+  };
+
   const applyTargetMarkets = () => {
     if (!selectedTargetMarkets.length) return;
-    const selectedLocations = buildLocationNames(selectedTargetMarkets.join(", "), locationRegion, locationCountry);
+    const selectedLocations = projectMarketLocationNames(selectedTargetMarkets, locationRegion, locationCountry);
     setQueuedKeywords((current) => current.map((item) => ({
       ...item,
       locationCity: selectedTargetMarkets.join(", "),
@@ -526,8 +596,18 @@ export default function KeywordReports() {
   const visibleRuns = latestSuccessfulKeywordRuns(
     projectRuns,
   );
-  const completedProjectRuns = projectRuns.filter((run) => run.status === "completed").length;
-  const failedProjectRuns = projectRuns.filter((run) => ["failed", "cancelled"].includes(run.status)).length;
+  const latestProjectRunsByCheck = [...projectRuns]
+    .sort((left, right) => new Date(right.createdAt).getTime() - new Date(left.createdAt).getTime())
+    .reduce((latest, run) => {
+      const identity = keywordResearchRequestIdentity({ keyword: run.seedKeyword, location: run.locationName, languageCode: run.languageCode, device: run.device });
+      if (!latest.has(identity)) latest.set(identity, run);
+      return latest;
+    }, new Map<string, KeywordResearchRun>());
+  const currentProjectRuns = [...latestProjectRunsByCheck.values()];
+  const completedProjectRuns = currentProjectRuns.filter((run) => run.status === "completed").length;
+  const failedProjectRuns = currentProjectRuns.filter((run) => ["failed", "cancelled", "canceled"].includes(run.status)).length;
+  const retryMode = retryQueueMode;
+  const queuedCheckCount = queuedKeywords.reduce((sum, item) => sum + item.locationNames.length, 0);
   const analyzedSeedCount = new Set(projectRuns.map((run) => run.seedKeyword.trim().toLowerCase())).size;
   const reportKeywordOptions = [...new Map(visibleRuns.map((run) => [run.seedKeyword.trim().toLowerCase(), run.seedKeyword.trim()])).values()].sort((a, b) => a.localeCompare(b));
   const filteredVisibleRuns = reportKeywordFilter
@@ -538,9 +618,56 @@ export default function KeywordReports() {
   const currentReportPage = Math.min(reportPage, reportPageCount);
   const paginatedVisibleRuns = filteredVisibleRuns.slice((currentReportPage - 1) * reportPageSize, currentReportPage * reportPageSize);
   const focusedAddMode = showAddKeyword && searchParams.get("add") === "1";
+  const remainingActionMode = focusedAddMode && searchParams.get("remaining") === "1";
   const guidedProjectId = searchParams.get("projectId");
   const backToKeywords = guidedProjectId ? `/keywords?projectId=${encodeURIComponent(guidedProjectId)}` : "/keywords";
   const locationPreview = buildLocationNames(locationCity, locationRegion, locationCountry).join(" | ");
+
+  // Route-driven workflow actions must remain usable even if the first async
+  // load is interrupted by navigation/HMR or another state update. Rebuild
+  // the exact missing queue from canonical project evidence instead of
+  // leaving the user on the generic selection step with zero selected rows.
+  useEffect(() => {
+    if (!remainingActionMode || loading || creating || !guidedProject || queuedKeywords.length > 0) return;
+    const requestedGroupIds = new Set((searchParams.get("groupIds") ?? searchParams.get("groupId") ?? "")
+      .split(",")
+      .map((id) => id.trim())
+      .filter(Boolean));
+    const approvedGroups = (guidedProject.keywordGroups ?? []).filter((group) => group.status === "approved");
+    const selectedGroups = requestedGroupIds.size
+      ? approvedGroups.filter((group) => requestedGroupIds.has(group.id))
+      : approvedGroups;
+    const projectLocation = projectAnalysisLocations(guidedProject);
+    const incompleteChecks = incompleteApprovedKeywordResearchChecks(selectedGroups, runs, projectLocation.locationNames);
+    if (!incompleteChecks.length) return;
+    const approvedLabels = new Map(selectedGroups.flatMap((group) => splitKeywordEntries(group.keywords))
+      .map((keyword) => [normalizeKeywordPhrase(keyword), keyword]));
+    const checksByKeyword = new Map<string, typeof incompleteChecks>();
+    for (const check of incompleteChecks) {
+      const key = normalizeKeywordPhrase(check.keyword);
+      checksByKeyword.set(key, [...(checksByKeyword.get(key) ?? []), check]);
+    }
+    const nextTargetUrl = guidedProject.websiteUrl ?? "";
+    let nextTargetDomain = nextTargetUrl;
+    try { nextTargetDomain = nextTargetUrl ? new URL(nextTargetUrl).hostname.replace(/^www\./, "") : ""; } catch { /* Keep the supplied value. */ }
+    const queue = [...checksByKeyword.entries()].map(([key, checks], index) => ({
+      id: `remaining-reconciled-${index}-${key}`,
+      keyword: approvedLabels.get(key) ?? checks[0].keyword,
+      targetUrl: nextTargetUrl,
+      targetDomain: nextTargetDomain,
+      locationCountry: projectLocation.country,
+      locationRegion: projectLocation.region,
+      locationCity: projectLocation.markets.join(", "),
+      locationNames: checks.map((check) => check.location),
+      languageCode: checks[0].languageCode || "en",
+      device: checks[0].device === "mobile" ? "mobile" as const : "desktop" as const,
+      serpDepth: "20",
+      keywordLimit: "25",
+    }));
+    setQueuedKeywords(queue);
+    setKeywordStep("review");
+    setMessage(`${incompleteChecks.length} required keyword-location check${incompleteChecks.length === 1 ? " is" : "s are"} ready. Completed checks will not be rerun.`);
+  }, [remainingActionMode, loading, creating, guidedProject, queuedKeywords.length, runs, searchParams]);
 
   return (
     <div className="space-y-6">
@@ -795,7 +922,50 @@ export default function KeywordReports() {
               </>}
 
               {keywordStep === "review" && <>
-              {targetMarkets.length > 0 && <div className="rounded-xl border border-brand-200 bg-gradient-to-r from-brand-50 via-white to-emerald-50 p-4"><div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between"><div><div className="text-sm font-bold text-charcoal-900">Analysis markets</div><p className="mt-1 max-w-2xl text-xs leading-5 text-charcoal-600">Choose where each seed should be researched. Markets are stored separately and are never appended to the keyword text. A seed that already names a city will run only in that matching city.</p></div><Button type="button" onClick={applyTargetMarkets} disabled={!selectedTargetMarkets.length || !queuedKeywords.length}>Apply Analysis Markets</Button></div><div className="mt-4 flex flex-wrap gap-2">{targetMarkets.map((market) => { const active = selectedTargetMarkets.includes(market); return <button key={market} type="button" onClick={() => toggleTargetMarket(market)} className={`rounded-full border px-3 py-1.5 text-xs font-bold transition ${active ? "border-brand-500 bg-brand-600 text-white" : "border-slate-200 bg-white text-charcoal-600 hover:border-brand-300"}`}>{active ? "✓ " : ""}{market}</button>; })}</div></div>}
+              {retryMode && <div className="flex flex-col gap-3 rounded-xl border border-rose-200 bg-gradient-to-r from-rose-50 via-white to-amber-50 p-4 sm:flex-row sm:items-center sm:justify-between">
+                <div>
+                  <div className="text-sm font-black text-rose-950">Failed-check retry queue ready</div>
+                  <p className="mt-1 text-xs leading-5 text-rose-800">{queuedCheckCount} exact keyword-location check{queuedCheckCount === 1 ? " is" : "s are"} ready. Completed research will not be rerun.</p>
+                </div>
+                <Button type="submit" disabled={creating || queuedCheckCount === 0}>{creating ? "Retrying…" : `Retry ${queuedCheckCount} failed check${queuedCheckCount === 1 ? "" : "s"}`}</Button>
+              </div>}
+              {!retryMode && searchParams.get("remaining") === "1" && <div className="flex flex-col gap-3 rounded-xl border border-brand-200 bg-gradient-to-r from-brand-50 via-white to-emerald-50 p-4 sm:flex-row sm:items-center sm:justify-between">
+                <div>
+                  <div className="text-sm font-black text-charcoal-950">Remaining analysis queue ready</div>
+                  <p className="mt-1 text-xs leading-5 text-charcoal-700">{queuedCheckCount} keyword-location check{queuedCheckCount === 1 ? " is" : "s are"} ready across {queuedKeywords.length} approved keyword{queuedKeywords.length === 1 ? "" : "s"}. Review the markets below, then start the missing analysis. Completed research will not be rerun.</p>
+                </div>
+                <Button type="submit" disabled={creating || queuedCheckCount === 0}>{creating ? "Starting…" : `Start ${queuedCheckCount} remaining check${queuedCheckCount === 1 ? "" : "s"}`}</Button>
+              </div>}
+              {guidedProject && <div className="rounded-xl border border-brand-200 bg-gradient-to-r from-brand-50 via-white to-emerald-50 p-4">
+                <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+                  <div>
+                    <div className="text-sm font-bold text-charcoal-900">Analysis markets</div>
+                    <p className="mt-1 max-w-2xl text-xs leading-5 text-charcoal-600">Choose and edit the exact named markets for this research. Locations stay separate from keyword text.</p>
+                  </div>
+                  <Button type="button" onClick={applyTargetMarkets} disabled={!selectedTargetMarkets.length || !queuedKeywords.length}>Apply Analysis Markets</Button>
+                </div>
+                <div className="mt-4 flex flex-wrap gap-2">
+                  {targetMarkets.map((market) => {
+                    const active = selectedTargetMarkets.includes(market);
+                    return <div key={market} className={`inline-flex items-center overflow-hidden rounded-full border text-xs font-bold transition ${active ? "border-brand-500 bg-brand-600 text-white" : "border-slate-200 bg-white text-charcoal-600"}`}>
+                      <button type="button" onClick={() => toggleTargetMarket(market)} className="px-3 py-1.5 hover:bg-black/5">{active ? "✓ " : ""}{market}</button>
+                      <button type="button" onClick={() => removeTargetMarket(market)} aria-label={`Remove ${market}`} className={`border-l px-2 py-1.5 ${active ? "border-white/25 hover:bg-white/15" : "border-slate-200 hover:bg-rose-50 hover:text-rose-700"}`}>×</button>
+                    </div>;
+                  })}
+                  {!targetMarkets.length && <span className="text-xs text-charcoal-500">No analysis markets selected yet.</span>}
+                </div>
+                <div className="mt-4 flex flex-col gap-2 sm:flex-row">
+                  <input
+                    value={marketDraft}
+                    onChange={(event) => setMarketDraft(event.target.value)}
+                    onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); addTargetMarket(); } }}
+                    placeholder="Add a city, region, or country"
+                    aria-label="Add analysis market"
+                    className="min-h-10 flex-1 rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-100"
+                  />
+                  <Button type="button" variant="ghost" onClick={addTargetMarket} disabled={!marketDraft.trim()}>Add market</Button>
+                </div>
+              </div>}
               <div className="rounded-xl border border-slate-200 bg-white p-4">
                 <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
                   <div>
@@ -807,7 +977,7 @@ export default function KeywordReports() {
                 {queuedKeywords.length > 0 ? (
                   <div className="mt-3 grid gap-2 lg:grid-cols-2">
                     {queuedKeywords.map((item) => (
-                      <button key={item.id} type="button" onClick={() => removeQueuedKeyword(item.id)} className="flex w-full items-start justify-between gap-3 rounded-lg border border-emerald-100 bg-emerald-50 px-3 py-2 text-left hover:bg-emerald-100">
+                      <div key={item.id} className="flex w-full items-start justify-between gap-3 rounded-lg border border-emerald-100 bg-emerald-50 px-3 py-2 text-left">
                         <span className="min-w-0">
                           <span className="block text-sm font-bold text-emerald-900">{item.keyword}</span>
                           <span className="mt-0.5 block text-xs leading-5 text-emerald-700">
@@ -816,8 +986,8 @@ export default function KeywordReports() {
                             {item.targetDomain ? ` · Domain: ${item.targetDomain}` : ""}
                           </span>
                         </span>
-                        <span aria-hidden="true" className="shrink-0 text-sm font-bold text-emerald-700">x</span>
-                      </button>
+                        {remainingActionMode ? <span className="shrink-0 rounded-full bg-emerald-100 px-2 py-1 text-[10px] font-black uppercase tracking-wide text-emerald-800">Required</span> : <button type="button" onClick={() => removeQueuedKeyword(item.id)} className="shrink-0 rounded-md px-2 py-1 text-xs font-black text-rose-700 hover:bg-rose-50" aria-label={`Remove ${item.keyword} from this batch`}>Remove</button>}
+                      </div>
                     ))}
                   </div>
                 ) : (
@@ -851,7 +1021,7 @@ export default function KeywordReports() {
                   <Button type="button" variant="ghost" onClick={() => setKeywordStep("select")}>Go back</Button>
                 )}
                 <Button type="submit" disabled={creating || (!websiteId && !guidedProject) || queuedKeywords.length === 0}>
-                  {creating ? "Running..." : queuedKeywords.length ? `Start keyword analysis (${queuedKeywords.length})` : "Start keyword analysis"}
+                  {creating ? "Running..." : queuedCheckCount ? `Start keyword analysis (${queuedCheckCount} checks)` : "Start keyword analysis"}
                 </Button>
               </div>
               </>}
@@ -859,15 +1029,15 @@ export default function KeywordReports() {
           </div>
         )}
 
-        {guidedProject && projectRuns.length > 0 && <div className="border-b border-charcoal-100 bg-slate-50 px-5 py-4"><div className="font-semibold text-charcoal-700">Project analysis run summary</div><div className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-xs font-semibold text-charcoal-500"><span>{analyzedSeedCount} seed keywords</span><span>· {projectRuns.length} seed-and-market runs</span><span>· {completedProjectRuns} completed</span>{failedProjectRuns > 0 && <span className="text-amber-700">· {failedProjectRuns} need attention</span>}</div><p className="mt-2 text-xs leading-5 text-charcoal-500">Each seed is analyzed separately for every selected market. Open a completed run to see the related keyword ideas DataForSEO returned for that seed.</p></div>}
-        {focusedAddMode && <div className="border-b border-charcoal-100 bg-slate-50 px-5 py-4"><div className="font-semibold text-charcoal-700">{visibleRuns.length ? "Saved keyword research" : "No keyword analysis run yet"}</div><div className="mt-0.5 text-xs text-charcoal-500">{visibleRuns.length ? "Completed analyses for this selected project remain available while you prepare additional keywords." : "Review the selected keywords above, then start Keyword Analysis to create this project's first research runs."}</div></div>}
+        {!remainingActionMode && guidedProject && projectRuns.length > 0 && <div className="border-b border-charcoal-100 bg-slate-50 px-5 py-4"><div className="font-semibold text-charcoal-700">Project analysis run summary</div><div className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-xs font-semibold text-charcoal-500"><span>{analyzedSeedCount} seed keywords</span><span>· {currentProjectRuns.length} current seed-and-market checks</span><span>· {completedProjectRuns} completed</span>{failedProjectRuns > 0 && <span className="text-amber-700">· {failedProjectRuns} need attention</span>}</div><p className="mt-2 text-xs leading-5 text-charcoal-500">Each seed is analyzed separately for every selected market. Only the latest state of each check is counted here; older attempts remain in audit history.</p></div>}
+        {focusedAddMode && !remainingActionMode && <div className="border-b border-charcoal-100 bg-slate-50 px-5 py-4"><div className="font-semibold text-charcoal-700">{visibleRuns.length ? "Saved keyword research" : "No keyword analysis run yet"}</div><div className="mt-0.5 text-xs text-charcoal-500">{visibleRuns.length ? "Completed analyses for this selected project remain available while you prepare additional keywords." : "Review the selected keywords above, then start Keyword Analysis to create this project's first research runs."}</div></div>}
 
-        {!loading && visibleRuns.length > 0 && <div className="flex flex-col gap-3 border-b border-charcoal-100 bg-white px-5 py-4 sm:flex-row sm:items-end sm:justify-between">
+        {!remainingActionMode && !loading && visibleRuns.length > 0 && <div className="flex flex-col gap-3 border-b border-charcoal-100 bg-white px-5 py-4 sm:flex-row sm:items-end sm:justify-between">
           <label className="block w-full max-w-sm"><span className="mb-1 block text-xs font-bold uppercase tracking-wide text-charcoal-500">Filter by seed keyword</span><select value={reportKeywordFilter} onChange={(event) => { setReportKeywordFilter(event.target.value); setReportPage(1); }} className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2.5 text-sm font-semibold text-charcoal-800 outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-100"><option value="">All seed keywords ({reportKeywordOptions.length})</option>{reportKeywordOptions.map((keyword) => <option key={keyword.toLowerCase()} value={keyword.toLowerCase()}>{keyword}</option>)}</select></label>
           <div className="text-xs font-semibold text-charcoal-500">Showing {filteredVisibleRuns.length ? (currentReportPage - 1) * reportPageSize + 1 : 0}–{Math.min(currentReportPage * reportPageSize, filteredVisibleRuns.length)} of {filteredVisibleRuns.length} completed runs</div>
         </div>}
 
-        {loading ? (
+        {!remainingActionMode && (loading ? (
           <div className="p-6 text-sm text-charcoal-400">Loading reports...</div>
         ) : visibleRuns.length === 0 ? (
           <div className="p-6 text-sm text-charcoal-400">No completed keyword reports exist for this selected project yet.</div>
@@ -914,7 +1084,7 @@ export default function KeywordReports() {
             </table>
             {reportPageCount > 1 && <div className="flex flex-col gap-3 border-t border-charcoal-100 bg-slate-50 px-5 py-4 sm:flex-row sm:items-center sm:justify-between"><div className="text-xs font-semibold text-charcoal-500">Page {currentReportPage} of {reportPageCount} · 20 runs per page</div><div className="flex gap-2"><Button type="button" variant="ghost" disabled={currentReportPage <= 1} onClick={() => setReportPage((page) => Math.max(1, page - 1))}>Previous</Button><Button type="button" variant="ghost" disabled={currentReportPage >= reportPageCount} onClick={() => setReportPage((page) => Math.min(reportPageCount, page + 1))}>Next</Button></div></div>}
           </div>
-        )}
+        ))}
       </Card>
     </div>
   );

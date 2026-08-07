@@ -7,6 +7,7 @@ import { getActiveProjectId, resolveActiveProjectId, setActiveProjectId } from "
 import ContentGenerationControls from "../components/ContentGenerationControls.js";
 import { contentGenerationPrompt, type ContentGenerationMode } from "../content-generation.js";
 import { useApprovalRouting } from "../components/ApprovalRoutingDialog.js";
+import { isPublishingWorkflowCandidate, publishingSourceLabel } from "@webtummy/core/publishing";
 
 const GENERATION_TYPES: { value: AiGenerationType; label: string; detail: string }[] = [
   { value: "article", label: "Article", detail: "Full article with SEO fields, FAQ, schema, and AI-search notes." },
@@ -101,8 +102,14 @@ function ResultViewer({ value }: { value: unknown }) {
   if (typeof value === "object") {
     const data = value as Record<string, unknown>;
     const articleHtml = typeof data.articleHtml === "string" ? data.articleHtml : null;
-    const codeKeys = ["schemaJsonLd", "llmsTxt", "llmsSection", "markdown"];
-    const hasCodeOutput = codeKeys.some((key) => typeof data[key] === "string" || typeof data[key] === "object");
+    const codeKeys = ["schemaJsonLd", "llmsTxt", "llmsSection", "markdown", "robotsTxt", "sitemapXml"];
+    const codeEntries = codeKeys.flatMap((key) => {
+      const entry = data[key];
+      if (typeof entry === "string" && entry.trim()) return [{ key, content: entry }];
+      if (entry && typeof entry === "object") return [{ key, content: JSON.stringify(entry, null, 2) }];
+      return [];
+    });
+    const hasCodeOutput = codeEntries.length > 0;
     const visibleEntries = Object.entries(data).filter(([key]) => key !== "articleHtml" && !codeKeys.includes(key));
     return (
       <div className="space-y-4">
@@ -113,9 +120,11 @@ function ResultViewer({ value }: { value: unknown }) {
           </div>
         )}
         {hasCodeOutput && (
-          <div className="rounded-lg border border-emerald-100 bg-emerald-50 p-4">
-            <div className="text-sm font-semibold text-emerald-900">Generated content is ready</div>
-            <div className="mt-1 text-sm text-emerald-800">Use Copy to copy the generated schema, llms.txt, or markdown output.</div>
+          <div className="space-y-3">
+            {codeEntries.map((entry) => <div key={entry.key} className="overflow-hidden rounded-lg border border-emerald-200 bg-slate-950">
+              <div className="border-b border-white/10 bg-emerald-950/70 px-4 py-2 text-xs font-black uppercase tracking-wide text-emerald-200">{entry.key.replace(/([A-Z])/g, " $1")}</div>
+              <pre className="max-h-[520px] overflow-auto whitespace-pre-wrap break-words p-4 text-xs leading-6 text-emerald-100">{entry.content}</pre>
+            </div>)}
           </div>
         )}
         {visibleEntries.length > 0 && (
@@ -140,6 +149,22 @@ function resultText(value: unknown) {
   return typeof value === "string" ? value : JSON.stringify(value, null, 2);
 }
 
+function implementationFile(generation: AiContentGeneration) {
+  const result = generation.resultJson && typeof generation.resultJson === "object" && !Array.isArray(generation.resultJson)
+    ? generation.resultJson as Record<string, unknown>
+    : {};
+  const text = (...keys: string[]) => keys.map((key) => result[key]).find((value) => typeof value === "string" && value.trim()) as string | undefined;
+  if (generation.type === "domain_llms_txt") return { name: "llms.txt", mime: "text/plain;charset=utf-8", content: text("llmsTxt", "markdown") ?? "" };
+  if (generation.type === "page_llms_txt") return { name: "page-llms.txt", mime: "text/plain;charset=utf-8", content: text("llmsSection", "markdown", "llmsTxt") ?? "" };
+  if (generation.type === "robots_txt") return { name: "robots.txt", mime: "text/plain;charset=utf-8", content: text("robotsTxt") ?? "" };
+  if (generation.type === "sitemap") return { name: "sitemap.xml", mime: "application/xml;charset=utf-8", content: text("sitemapXml") ?? "" };
+  if (generation.type === "domain_schema" || generation.type === "page_schema") {
+    const schema = result.schemaJsonLd;
+    return { name: "schema.json", mime: "application/ld+json;charset=utf-8", content: schema ? JSON.stringify(schema, null, 2) : "" };
+  }
+  return null;
+}
+
 function TabbedResultViewer({
   items,
   activeId,
@@ -155,6 +180,7 @@ function TabbedResultViewer({
   const [exportError, setExportError] = useState<string | null>(null);
   if (items.length === 0) return <ResultViewer value={null} />;
   const active = items.find((item) => item.id === activeId) ?? items[0];
+  const file = implementationFile(active);
   const result = active.resultJson && typeof active.resultJson === "object" && !Array.isArray(active.resultJson) ? active.resultJson as Record<string, unknown> : null;
   const sections = result ? [
     { key: "preview", label: "Content preview", value: result.articleHtml ? { articleHtml: result.articleHtml } : result },
@@ -166,9 +192,22 @@ function TabbedResultViewer({
   ].filter((section) => section.key === "preview" || (section.value && (typeof section.value !== "object" || Object.values(section.value as Record<string, unknown>).some(Boolean)))) : [{ key: "preview", label: "Generated result", value: active.resultJson }];
   const selectedSection = sections.find((section) => section.key === sectionTab) ?? sections[0];
   const copyActive = async () => {
-    await navigator.clipboard.writeText(resultText(active.resultJson));
+    await navigator.clipboard.writeText(file?.content || resultText(active.resultJson));
     setCopied(true);
     window.setTimeout(() => setCopied(false), 1800);
+  };
+  const downloadFile = () => {
+    if (!file?.content) {
+      setExportError("The generated file content is empty. Generate a new version and try again.");
+      return;
+    }
+    setExportError(null);
+    const href = URL.createObjectURL(new Blob([file.content], { type: file.mime }));
+    const anchor = document.createElement("a");
+    anchor.href = href;
+    anchor.download = file.name;
+    anchor.click();
+    window.setTimeout(() => URL.revokeObjectURL(href), 1000);
   };
   const downloadActive = async (format: "word" | "pdf" | "html") => {
     setExporting(format);
@@ -189,7 +228,9 @@ function TabbedResultViewer({
             <div className="font-semibold text-charcoal-800">Generated content</div>
             <div className="mt-0.5 text-xs text-charcoal-400">Switch tabs to review each stored output.</div>
           </div>
-          <div className="flex flex-wrap gap-2">{(["word", "pdf", "html"] as const).map((format) => <button key={format} type="button" disabled={Boolean(exporting)} onClick={() => void downloadActive(format)} className="rounded-lg border border-charcoal-200 bg-white px-3 py-2 text-xs font-bold uppercase text-charcoal-700 hover:bg-charcoal-50 disabled:opacity-50">{exporting === format ? "Preparing…" : format}</button>)}<Button variant="ghost" onClick={copyActive}>{copied ? "Copied" : "Copy all"}</Button></div>
+          <div className="flex flex-wrap gap-2">{file
+            ? <button type="button" onClick={downloadFile} className="rounded-lg bg-emerald-700 px-3 py-2 text-xs font-black text-white hover:bg-emerald-800">Download {file.name}</button>
+            : (["word", "pdf", "html"] as const).map((format) => <button key={format} type="button" disabled={Boolean(exporting)} onClick={() => void downloadActive(format)} className="rounded-lg border border-charcoal-200 bg-white px-3 py-2 text-xs font-bold uppercase text-charcoal-700 hover:bg-charcoal-50 disabled:opacity-50">{exporting === format ? "Preparing…" : format}</button>)}<Button variant="ghost" onClick={copyActive}>{copied ? "Copied" : file ? `Copy ${file.name}` : "Copy all"}</Button></div>
         </div>
         {exportError && <div className="mt-2 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs font-semibold text-red-700">{exportError}</div>}
       </div>
@@ -247,9 +288,13 @@ function citationAutomatedChecks(generation: AiContentGeneration): ValidationChe
   }
   if (generation.type === "domain_llms_txt" || generation.type === "page_llms_txt") {
     const content = text("llmsTxt") || text("markdown") || text("llmsSection");
+    const containsPlaceholder = /\b(?:example|placeholder|please\s+verify|verify\s+before|todo|tbd)\b|(?:^|\D)555(?:\D|$)/i.test(content);
+    const containsEditorialInstructions = /(?:citation validation checklist|ensure that all links|regularly (?:review|update)|maintenance (?:note|reminder))/i.test(content);
     return [
       { label: "Readable llms.txt content", detail: "The generated result contains a usable text asset.", passed: content.length >= 80 },
       { label: "Useful page references", detail: "At least one website URL is included.", passed: /https?:\/\//i.test(content) || array("priorityPages").length > 0 || array("recommendedLinks").length > 0 },
+      { label: "No invented or placeholder facts", detail: "Example contact details, 555 numbers, TODO/TBD values, and unverified placeholders are prohibited.", passed: !containsPlaceholder },
+      { label: "Publication-ready file", detail: "The downloadable file must not contain internal validation checklists or maintenance instructions.", passed: !containsEditorialInstructions },
     ];
   }
   if (generation.type === "domain_schema" || generation.type === "page_schema") {
@@ -281,7 +326,7 @@ function citationAutomatedChecks(generation: AiContentGeneration): ValidationChe
 function CitationValidationPanel({ generation, onReturn }: { generation: AiContentGeneration; onReturn: () => void }) {
   const checks = citationAutomatedChecks(generation);
   const automaticPass = checks.length > 0 && checks.every((check) => check.passed);
-  if (generation.validatedAt) {
+  if (generation.validatedAt && automaticPass) {
     return <div className="mt-4 flex flex-col gap-3 rounded-xl border border-emerald-200 bg-emerald-50 p-4 sm:flex-row sm:items-center sm:justify-between">
       <div><div className="text-xs font-black uppercase tracking-wide text-emerald-700">Citation asset validated</div><div className="mt-1 text-sm font-black text-emerald-950">This exact saved version is ready for review and implementation.</div><div className="mt-1 text-xs text-emerald-700">Validated {new Date(generation.validatedAt).toLocaleString()}</div></div>
       <button type="button" onClick={onReturn} className="shrink-0 rounded-lg bg-emerald-700 px-4 py-2.5 text-sm font-black text-white hover:bg-emerald-800">Done · Return to AI Citations →</button>
@@ -488,7 +533,7 @@ export default function AiContentStudio() {
         ...(activeProject?.executionTasks ?? []),
         ...(activeProject?.executionPlans?.flatMap((plan) => plan.tasks ?? []) ?? []),
       ].map((task) => [task.id, task])).values());
-      setProjectContentTasks(activeProjectTasks.filter((task) => task.moduleName === "publishing" || (task.moduleName === "content" && (task.sourceType === "content_plan_action" || task.sourceType === "growth_content_opportunity" || Boolean(task.relatedAssetId) || Boolean(task.approvalSnapshotJson?.generatedContent)))));
+      setProjectContentTasks(activeProjectTasks.filter((task) => isPublishingWorkflowCandidate(task) || (task.moduleName === "content" && ["content_plan_action", "growth_content_opportunity"].includes(task.sourceType))));
       const requestedTaskId = searchParams.get("taskId");
       const requestedMode = searchParams.get("contentMode");
       const requestedInstruction = searchParams.get("instruction");
@@ -657,7 +702,15 @@ export default function AiContentStudio() {
     setPublishingTaskId(task.id);
     setPublishingError(null);
     try {
-      await api.post(`/api/execution-tasks/${task.id}/publish`, {});
+      if (task.sourceType === "wordpress_publish_job") {
+        await api.post(`/api/execution-tasks/${task.id}/publish`, { target: "wordpress" });
+      } else {
+        const suggestedUrl = String(task.approvalSnapshotJson?.targetUrl ?? (task.approvalSnapshotJson?.publishingWorkflow as Record<string, unknown> | undefined)?.affectedUrl ?? "");
+        const liveUrl = window.prompt("Enter the exact public URL after this approved update has been deployed. SEnuke AI will verify it before marking the work published.", suggestedUrl)?.trim();
+        if (!liveUrl) return;
+        const started = await api.post<{ publishing: { attemptId: string } }>(`/api/execution-tasks/${task.id}/publish`, { target: "html", targetReference: liveUrl });
+        await api.post(`/api/execution-tasks/${task.id}/publish/verify`, { attemptId: started.publishing.attemptId, status: "verified", liveUrl });
+      }
       await load();
     } catch (error) {
       setPublishingError(error instanceof Error ? error.message : "Could not start publishing.");
@@ -667,9 +720,10 @@ export default function AiContentStudio() {
   };
 
   const submitForApproval = async (task: GuidedExecutionTask) => {
-    const confirmed = window.confirm("Confirm that you reviewed search intent, title/meta and headings, factual evidence, internal links and CTA, cannibalization/duplication, and AEO/GEO answer quality for this exact content version.");
+    const sourceLabel = publishingSourceLabel(task);
+    const confirmed = window.confirm(`Confirm that you reviewed this exact ${sourceLabel.toLowerCase()} asset: factual evidence, links, brand and destination fit, implementation requirements, duplication risk, and the final call to action where applicable.`);
     if (!confirmed) return;
-    const reviewerComment = window.prompt("Add the SEO reviewer comment that the company approver should see:", "SEO, AEO, and GEO checks completed for this generated version.")?.trim();
+    const reviewerComment = window.prompt("Add the reviewer comment that the company approver should see:", `${sourceLabel} review completed for this exact saved version.`)?.trim();
     if (!reviewerComment) return;
     const approvalRoute = task.projectId ? await chooseApprovalRoute(task.projectId, task.title) : null;
     if (!approvalRoute) return;
@@ -684,6 +738,31 @@ export default function AiContentStudio() {
       setPublishingTaskId(null);
     }
   };
+
+  const downloadTaskHandoff = (task: GuidedExecutionTask) => {
+    const targetUrl = task.approvalSnapshotJson?.targetUrl ?? (task.approvalSnapshotJson?.publishingWorkflow as Record<string, unknown> | undefined)?.affectedUrl;
+    const content = [
+      task.title,
+      `Source: ${publishingSourceLabel(task)}`,
+      targetUrl ? `Target: ${String(targetUrl)}` : "",
+      `Status: ${task.status.replaceAll("_", " ")}`,
+      "",
+      task.description,
+      task.manualInstructions ? `\nImplementation guidance\n${task.manualInstructions}` : "",
+      task.impact ? `\nExpected impact\n${task.impact}` : "",
+      "\nPublishing safeguard\nKeep the current live version available until the approved update is published and verified.",
+    ].filter(Boolean).join("\n");
+    const href = URL.createObjectURL(new Blob([content], { type: "text/plain;charset=utf-8" }));
+    const anchor = document.createElement("a");
+    anchor.href = href;
+    anchor.download = `${task.title.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 80) || "publishing-handoff"}.txt`;
+    anchor.click();
+    window.setTimeout(() => URL.revokeObjectURL(href), 1000);
+  };
+
+  const taskReviewUrl = (task: GuidedExecutionTask) => task.moduleName === "content"
+    ? `/ai-content?projectId=${encodeURIComponent(searchParams.get("projectId") || task.projectId || "")}&taskId=${encodeURIComponent(task.id)}&open=1`
+    : task.relatedUrl || `/guided-projects/${encodeURIComponent(task.projectId || "")}?tab=execution&actionTask=${encodeURIComponent(task.id)}#execution-tasks`;
 
   const approvedPendingTasks = projectContentTasks.filter((task) => ["approved", "ready_to_publish"].includes(task.status));
   const publishingInProgressTasks = projectContentTasks.filter((task) => task.status === "publishing");
@@ -794,20 +873,20 @@ export default function AiContentStudio() {
 
       <Card className="overflow-hidden" id="publishing">
         <div className="flex flex-col gap-3 border-b border-emerald-200 bg-emerald-50 px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
-          <div><div className="text-xs font-bold uppercase tracking-wide text-emerald-700">Publishing</div><div className="mt-1 text-lg font-bold text-charcoal-900">Approved content pending publication</div><p className="mt-1 text-sm text-charcoal-600">Approved assets for this project that are waiting to be published to the selected destination.</p></div>
+          <div><div className="text-xs font-bold uppercase tracking-wide text-emerald-700">Shared Publishing workspace</div><div className="mt-1 text-lg font-bold text-charcoal-900">Manage every approved asset and website update</div><p className="mt-1 text-sm text-charcoal-600">SEO, Local SEO, AI Citation, Growth, lead-magnet, social, content, and website work follows one review, approval, delivery, verification, and measurement workflow here.</p></div>
           <div className="flex gap-2"><span className="rounded-full bg-white px-3 py-1 text-xs font-bold text-emerald-700 shadow-sm">{approvedPendingTasks.length} pending</span>{publishingInProgressTasks.length > 0 && <span className="rounded-full bg-amber-100 px-3 py-1 text-xs font-bold text-amber-800">{publishingInProgressTasks.length} publishing</span>}</div>
         </div>
         <div className="space-y-3 p-5">
           {publishingError && <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm font-semibold text-red-700">{publishingError}</div>}
           {approvedPendingTasks.map((task) => <div key={task.id} className="flex flex-col gap-3 rounded-xl border border-emerald-200 bg-white p-4 sm:flex-row sm:items-center sm:justify-between">
-            <div className="min-w-0"><div className="flex flex-wrap items-center gap-2"><div className="font-bold text-charcoal-900">{task.title}</div><span className="rounded-full bg-emerald-100 px-2 py-0.5 text-xs font-bold text-emerald-800">{task.status.replaceAll("_", " ")}</span></div><p className="mt-1 line-clamp-2 text-sm text-charcoal-500">{task.description}</p><div className="mt-2 text-xs font-semibold text-charcoal-500">Asset reference: {String((task.approvalSnapshotJson?.generatedContent as Record<string, unknown> | undefined)?.generationId ?? task.sourceId ?? "Attached content")}</div></div>
-            <div className="flex shrink-0 flex-wrap gap-2"><a href={`/ai-content?projectId=${encodeURIComponent(searchParams.get("projectId") || task.projectId || "")}&taskId=${encodeURIComponent(task.id)}&open=1`} className="rounded-lg border border-emerald-300 bg-white px-4 py-2.5 text-center text-sm font-bold text-emerald-700 hover:bg-emerald-50">Review / re-create</a><button type="button" disabled={publishingTaskId === task.id} onClick={() => void publishTask(task)} className="rounded-lg bg-emerald-600 px-4 py-2.5 text-sm font-bold text-white hover:bg-emerald-700 disabled:bg-slate-300">{publishingTaskId === task.id ? "Starting…" : "Publish approved work"}</button></div>
+            <div className="min-w-0"><div className="flex flex-wrap items-center gap-2"><div className="font-bold text-charcoal-900">{task.title}</div><span className="rounded-full bg-white px-2 py-0.5 text-[10px] font-black uppercase text-emerald-700 ring-1 ring-emerald-200">{publishingSourceLabel(task)}</span><span className="rounded-full bg-emerald-100 px-2 py-0.5 text-xs font-bold text-emerald-800">{task.status.replaceAll("_", " ")}</span></div><p className="mt-1 line-clamp-2 text-sm text-charcoal-500">{task.description}</p><div className="mt-2 text-xs font-semibold text-charcoal-500">Asset reference: {String((task.approvalSnapshotJson?.generatedContent as Record<string, unknown> | undefined)?.generationId ?? task.relatedAssetId ?? task.sourceId ?? "Attached update")}</div></div>
+            <div className="flex shrink-0 flex-wrap gap-2"><button type="button" onClick={() => downloadTaskHandoff(task)} className="rounded-lg border border-emerald-300 bg-white px-4 py-2.5 text-sm font-bold text-emerald-700 hover:bg-emerald-50">Download handoff</button>{task.moduleName === "content" && <a href={`/ai-content?projectId=${encodeURIComponent(searchParams.get("projectId") || task.projectId || "")}&taskId=${encodeURIComponent(task.id)}&open=1`} className="rounded-lg border border-emerald-300 bg-white px-4 py-2.5 text-center text-sm font-bold text-emerald-700 hover:bg-emerald-50">Review / re-create</a>}<button type="button" disabled={publishingTaskId === task.id} onClick={() => void publishTask(task)} className="rounded-lg bg-emerald-600 px-4 py-2.5 text-sm font-bold text-white hover:bg-emerald-700 disabled:bg-slate-300">{publishingTaskId === task.id ? "Verifying…" : task.sourceType === "wordpress_publish_job" ? "Publish through WordPress" : "Verify live publication"}</button></div>
           </div>)}
           {publishingInProgressTasks.map((task) => <div key={task.id} className="flex items-center justify-between gap-3 rounded-xl border border-amber-200 bg-amber-50 p-4"><div><div className="font-bold text-charcoal-900">{task.title}</div><p className="mt-1 text-sm text-charcoal-500">The publishing request has started and is awaiting verification.</p></div><span className="shrink-0 rounded-full bg-amber-100 px-3 py-1 text-xs font-bold text-amber-800">Publishing</span></div>)}
-          {approvedPendingTasks.length === 0 && publishingInProgressTasks.length === 0 && <div className="rounded-xl border border-dashed border-emerald-200 bg-emerald-50/40 px-5 py-8 text-center"><div className="font-bold text-charcoal-800">No approved content is waiting to publish</div><p className="mt-1 text-sm text-charcoal-500">Create content with the wizard and approve it. It will then appear in this list.</p></div>}
+          {approvedPendingTasks.length === 0 && publishingInProgressTasks.length === 0 && <div className="rounded-xl border border-dashed border-emerald-200 bg-emerald-50/40 px-5 py-8 text-center"><div className="font-bold text-charcoal-800">No approved work is waiting to publish</div><p className="mt-1 text-sm text-charcoal-500">Assets and updates prepared by platform modules will appear here as they move through review and approval.</p></div>}
           {(contentReadyTasks.length > 0 || contentApprovalTasks.length > 0) && <div className="mt-5 border-t border-charcoal-100 pt-5"><div className="mb-3"><div className="text-xs font-bold uppercase tracking-wide text-charcoal-500">Earlier workflow stages</div><p className="mt-1 text-sm text-charcoal-500">Complete these actions to move content into the approved pending list above.</p></div><div className="space-y-2">
-            {contentReadyTasks.map((task) => <div key={task.id} className="flex flex-col gap-3 rounded-xl border border-brand-100 bg-brand-50/40 p-4 sm:flex-row sm:items-center sm:justify-between"><div><div className="font-bold text-charcoal-900">{task.title}</div><p className="mt-1 text-sm text-charcoal-500">Content has not been generated yet.</p></div><a href={`/ai-content?projectId=${encodeURIComponent(searchParams.get("projectId") || task.projectId || "")}&taskId=${encodeURIComponent(task.id)}&open=1`} className="shrink-0 rounded-lg bg-brand-600 px-4 py-2 text-center text-sm font-bold text-white hover:bg-brand-700">Create content →</a></div>)}
-            {contentApprovalTasks.map((task) => <div key={task.id} className="flex flex-col gap-3 rounded-xl border border-amber-200 bg-amber-50/50 p-4 sm:flex-row sm:items-center sm:justify-between"><div><div className="flex flex-wrap items-center gap-2"><div className="font-bold text-charcoal-900">{task.title}</div><span className="rounded-full bg-white px-2 py-0.5 text-xs font-bold text-amber-700">{task.status.replaceAll("_", " ")}</span></div><p className="mt-1 text-sm text-charcoal-500">{task.status === "needs_review" ? "AI created or updated the asset. An SEO reviewer must check intent, metadata, evidence, internal links, duplication, and the CTA before sending it for company approval." : task.status === "changes_requested" ? "The company approver requested changes. Review the feedback and ask AI to re-create the content." : "SEO review is complete. The asset is waiting for an authorized company approver."}</p></div><div className="flex shrink-0 flex-wrap gap-2">{task.status === "needs_review" && <><a href={`/ai-content?projectId=${encodeURIComponent(searchParams.get("projectId") || task.projectId || "")}&taskId=${encodeURIComponent(task.id)}&open=1`} className="rounded-lg border border-amber-300 bg-white px-4 py-2 text-center text-sm font-bold text-amber-700">Perform SEO review</a><button type="button" disabled={publishingTaskId === task.id} onClick={() => void submitForApproval(task)} className="rounded-lg bg-amber-600 px-4 py-2 text-sm font-bold text-white hover:bg-amber-700 disabled:bg-slate-300">{publishingTaskId === task.id ? "Submitting…" : "SEO reviewed · Send for company approval"}</button></>}{task.status === "submitted_for_approval" && <a href={`/approvals?projectId=${encodeURIComponent(searchParams.get("projectId") || task.projectId || "")}`} className="rounded-lg bg-amber-600 px-4 py-2 text-center text-sm font-bold text-white hover:bg-amber-700">Open Company Approval →</a>}{task.status === "changes_requested" && <a href={`/ai-content?projectId=${encodeURIComponent(searchParams.get("projectId") || task.projectId || "")}&taskId=${encodeURIComponent(task.id)}&open=1`} className="rounded-lg bg-brand-600 px-4 py-2 text-center text-sm font-bold text-white hover:bg-brand-700">Review feedback &amp; ask AI to re-create →</a>}</div></div>)}
+            {contentReadyTasks.map((task) => { const canGenerate = task.moduleName === "content"; return <div key={task.id} className="flex flex-col gap-3 rounded-xl border border-brand-100 bg-brand-50/40 p-4 sm:flex-row sm:items-center sm:justify-between"><div><div className="flex flex-wrap items-center gap-2"><div className="font-bold text-charcoal-900">{task.title}</div><span className="rounded-full bg-white px-2 py-0.5 text-[10px] font-black uppercase text-brand-700">{publishingSourceLabel(task)}</span></div><p className="mt-1 text-sm text-charcoal-500">{canGenerate ? "The source module prepared this request. Create and review the exact asset before approval." : "The source module prepared an implementation update. Review or download the handoff before approval and delivery."}</p></div><div className="flex shrink-0 flex-wrap gap-2"><button type="button" onClick={() => downloadTaskHandoff(task)} className="rounded-lg border border-brand-200 bg-white px-4 py-2 text-sm font-bold text-brand-700">Download handoff</button>{canGenerate ? <a href={`/ai-content?projectId=${encodeURIComponent(searchParams.get("projectId") || task.projectId || "")}&taskId=${encodeURIComponent(task.id)}&open=1`} className="rounded-lg bg-brand-600 px-4 py-2 text-center text-sm font-bold text-white hover:bg-brand-700">Create &amp; review →</a> : <a href={task.relatedUrl || `/guided-projects/${encodeURIComponent(task.projectId || "")}?tab=execution`} className="rounded-lg bg-brand-600 px-4 py-2 text-center text-sm font-bold text-white hover:bg-brand-700">Review update →</a>}</div></div>; })}
+            {contentApprovalTasks.map((task) => <div key={task.id} className="flex flex-col gap-3 rounded-xl border border-amber-200 bg-amber-50/50 p-4 sm:flex-row sm:items-center sm:justify-between"><div><div className="flex flex-wrap items-center gap-2"><div className="font-bold text-charcoal-900">{task.title}</div><span className="rounded-full bg-white px-2 py-0.5 text-[10px] font-black uppercase text-amber-700">{publishingSourceLabel(task)}</span><span className="rounded-full bg-white px-2 py-0.5 text-xs font-bold text-amber-700">{task.status.replaceAll("_", " ")}</span></div><p className="mt-1 text-sm text-charcoal-500">{task.status === "needs_review" ? "The exact source asset or update is ready for factual, quality, destination, and implementation review before company approval." : task.status === "changes_requested" ? "The company approver requested changes. Open the source asset, address the feedback, and resubmit the saved version." : "Source review is complete. The exact saved asset is waiting for an authorized company approver."}</p></div><div className="flex shrink-0 flex-wrap gap-2"><button type="button" onClick={() => downloadTaskHandoff(task)} className="rounded-lg border border-amber-300 bg-white px-4 py-2 text-sm font-bold text-amber-700">Download handoff</button>{task.status === "needs_review" && <><a href={taskReviewUrl(task)} className="rounded-lg border border-amber-300 bg-white px-4 py-2 text-center text-sm font-bold text-amber-700">Review exact asset</a><button type="button" disabled={publishingTaskId === task.id} onClick={() => void submitForApproval(task)} className="rounded-lg bg-amber-600 px-4 py-2 text-sm font-bold text-white hover:bg-amber-700 disabled:bg-slate-300">{publishingTaskId === task.id ? "Submitting…" : "Review complete · Send for approval"}</button></>}{task.status === "submitted_for_approval" && <a href={`/approvals?projectId=${encodeURIComponent(searchParams.get("projectId") || task.projectId || "")}`} className="rounded-lg bg-amber-600 px-4 py-2 text-center text-sm font-bold text-white hover:bg-amber-700">Open Company Approval →</a>}{task.status === "changes_requested" && <a href={taskReviewUrl(task)} className="rounded-lg bg-brand-600 px-4 py-2 text-center text-sm font-bold text-white hover:bg-brand-700">Review requested changes →</a>}</div></div>)}
           </div></div>}
         </div>
       </Card>

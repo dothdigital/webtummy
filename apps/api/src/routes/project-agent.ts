@@ -16,7 +16,7 @@ projectAgentRouter.post("/agent/provider-check", async (_req, res) => {
       headers: { Authorization: `Bearer ${config.openaiApiKey}`, "Content-Type": "application/json" },
       body: JSON.stringify({ model: config.openaiEmbeddingModel, input: ["SEnuke provider health check"] }),
     });
-    if (response.ok) return res.json({ ok: true, embeddingModel: config.openaiEmbeddingModel, chatModel: config.openaiModel });
+    if (response.ok) return res.json({ ok: true, embeddingModel: config.openaiEmbeddingModel, chatModel: config.openaiContentModel });
     const body = await response.json().catch(() => null) as { error?: { code?: string; type?: string } } | null;
     return res.status(503).json({ ok: false, status: response.status, error: body?.error?.code ?? body?.error?.type ?? "provider_error" });
   } catch {

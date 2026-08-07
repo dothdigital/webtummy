@@ -16,6 +16,43 @@ export type WebsiteQueueState =
   | "unknown"
   | "missing";
 
+export type WebsitePageUniquenessSignals = {
+  pageId: string;
+  pageTitle: string;
+  seoTitles: string[];
+  metaDescriptions: string[];
+  h1s: string[];
+};
+
+export const normalizeWebsiteUniquenessSignal = (value: unknown) => String(value ?? "")
+  .toLocaleLowerCase()
+  .replace(/&(?:amp|nbsp);/g, " ")
+  .replace(/[^a-z0-9]+/g, " ")
+  .trim();
+
+/**
+ * Generation uses the same exact normalized collision rule as Website Quality.
+ * The AI receives the reserved values first; this check is the deterministic
+ * guardrail before a generated page may be saved.
+ */
+export function websitePageUniquenessCollisions(
+  candidate: { seoTitle: unknown; metaDescription: unknown; h1: unknown },
+  reserved: WebsitePageUniquenessSignals[],
+) {
+  const values = {
+    seoTitle: normalizeWebsiteUniquenessSignal(candidate.seoTitle),
+    metaDescription: normalizeWebsiteUniquenessSignal(candidate.metaDescription),
+    h1: normalizeWebsiteUniquenessSignal(candidate.h1),
+  };
+  return reserved.flatMap((page) => {
+    const collisions: Array<{ field: "seo_title" | "meta_description" | "h1"; pageId: string; pageTitle: string }> = [];
+    if (values.seoTitle && page.seoTitles.some((value) => normalizeWebsiteUniquenessSignal(value) === values.seoTitle)) collisions.push({ field: "seo_title", pageId: page.pageId, pageTitle: page.pageTitle });
+    if (values.metaDescription && page.metaDescriptions.some((value) => normalizeWebsiteUniquenessSignal(value) === values.metaDescription)) collisions.push({ field: "meta_description", pageId: page.pageId, pageTitle: page.pageTitle });
+    if (values.h1 && page.h1s.some((value) => normalizeWebsiteUniquenessSignal(value) === values.h1)) collisions.push({ field: "h1", pageId: page.pageId, pageTitle: page.pageTitle });
+    return collisions;
+  });
+}
+
 function jsonSchemaFromWebsiteShapeAt(value: unknown, propertyName = ""): Record<string, unknown> {
   if (Array.isArray(value)) {
     const itemSchemas = value.map((item) => jsonSchemaFromWebsiteShapeAt(item));
@@ -74,6 +111,29 @@ export function websiteJobRecoveryAction(input: {
   if (!["queued", "processing"].includes(input.databaseStatus)) return "ignore";
   if (["active", "waiting", "waiting-children", "delayed", "prioritized"].includes(input.queueState)) return "preserve";
   return "requeue";
+}
+
+/**
+ * A content-workspace job may safely combine two different write modes. An
+ * imported page is eligible only when it has an explicit targeted-update
+ * snapshot; a new page is eligible for complete generation. This contract is
+ * shared by queue creation, retry, and the worker so a displayed count cannot
+ * turn into an empty background job.
+ */
+export function websiteContentBatchPageMode(input: {
+  contentWorkspaceBatch: boolean;
+  targetedExistingSiteUpdates: boolean;
+  importedExistingWebsite: boolean;
+  hasTargetedRequirements: boolean;
+}): "targeted_update" | "full_page" | "skip" {
+  if (input.targetedExistingSiteUpdates) {
+    return input.importedExistingWebsite && input.hasTargetedRequirements ? "targeted_update" : "skip";
+  }
+  if (input.contentWorkspaceBatch) {
+    if (input.importedExistingWebsite) return input.hasTargetedRequirements ? "targeted_update" : "skip";
+    return "full_page";
+  }
+  return "full_page";
 }
 
 const sectionWeight = (componentId: string) => {

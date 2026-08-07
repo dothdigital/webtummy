@@ -1,13 +1,14 @@
 import { useEffect, useRef, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import { api } from "../api.js";
 import type { GuidedExecutionTask, GuidedProject } from "../types.js";
 import StandardSeoPagePicker from "./StandardSeoPagePicker.js";
 import { useApprovalRouting } from "./ApprovalRoutingDialog.js";
-import { clusterKeywordDirections, stripNonGeographicAudienceQualifier } from "@webtummy/core";
+import { clusterKeywordDirections, splitKeywordEntries } from "@webtummy/core";
 import { geographicTargetMarkets } from "../utils/projectLocations.js";
 
 type ContentPlan = {
-  workflowVersion?: "seo_page_map_v4";
+  workflowVersion?: "seo_page_map_v7";
   summary: string;
   aiBusinessContext?: {
     version: "ai_business_context_v1";
@@ -135,6 +136,35 @@ type KeepBothConflictDraft = {
     pagePurpose: string;
   }>;
 };
+type ContentPlanPrepareResponse = {
+  task: GuidedExecutionTask;
+  plan: ContentPlan;
+  pageCandidates?: Array<{ url: string; title: string | null }>;
+};
+
+// React StrictMode intentionally remounts components in development. Without
+// request sharing, opening an auto-prepared Website Plan can launch the same
+// long-running AI preparation twice. Keep one browser request per exact task
+// and planning scope; a remounted screen attaches to the existing promise.
+const inFlightInitialContentPlanRequests = new Map<string, Promise<ContentPlanPrepareResponse>>();
+
+function prepareInitialContentPlan(taskId: string, input: { localSeoEnabled: boolean; targetLocations: string[] }) {
+  const normalizedLocations = [...input.targetLocations].map((value) => value.trim()).filter(Boolean).sort();
+  const key = `${taskId}:${input.localSeoEnabled ? "local" : "global"}:${normalizedLocations.join("|").toLocaleLowerCase()}`;
+  const existing = inFlightInitialContentPlanRequests.get(key);
+  if (existing) return existing;
+  const request = api.post<ContentPlanPrepareResponse>(`/api/execution-tasks/${taskId}/content-plan/prepare`, {
+    localSeoEnabled: input.localSeoEnabled,
+    targetLocations: normalizedLocations,
+  });
+  inFlightInitialContentPlanRequests.set(key, request);
+  const clear = () => {
+    if (inFlightInitialContentPlanRequests.get(key) === request) inFlightInitialContentPlanRequests.delete(key);
+  };
+  void request.then(clear, clear);
+  return request;
+}
+
 type PlanTabKey = Exclude<keyof ContentPlan, "workflowVersion" | "aiBusinessContext" | "keywordNormalization" | "localSeo" | "pageAssignments" | "locationAuthorityClusters" | "advancedSeoIntelligence" | "pagePlanningIntelligence">;
 const PLAN_TABS: Array<{ key: PlanTabKey; label: string; help: string }> = [
   { key: "summary", label: "Direction", help: "Overall content direction and strategic rationale." },
@@ -154,8 +184,7 @@ const PLAN_TABS: Array<{ key: PlanTabKey; label: string; help: string }> = [
 type PlanPhaseKey = "direction" | "pages" | "assets" | "publishing";
 const PLAN_PHASES: Array<{ key: PlanPhaseKey; label: string; description: string; sections: PlanTabKey[] }> = [
   { key: "direction", label: "Direction", description: "Confirm what the plan is trying to achieve before reviewing individual recommendations.", sections: ["summary"] },
-  { key: "pages", label: "SEO page map", description: "Review every keyword cluster and its proposed page in one place: existing versus new, page name, URL, intent, secondary keywords, recommended action, and identified gap.", sections: ["pageMap"] },
-  { key: "assets", label: "Planned content", description: "Review each planned page and supporting asset together with its brief, audience, destination, FAQs, and required proof.", sections: ["contentBriefs", "faqTopics", "proofBlocks"] },
+  { key: "pages", label: "Pages & content", description: "Review each page once: keyword ownership, URL, intent, gaps, metadata, content sections, FAQs, proof, and supporting ideas are kept together.", sections: ["pageMap"] },
   { key: "publishing", label: "Publish & improve", description: "See the complete handoff from approved plan to release, performance tracking, and the next improvement action.", sections: ["publishingSequence", "localSeoActions", "workflowStages", "kpis"] },
 ];
 const PHASE_STYLES: Record<PlanPhaseKey, { active: string; panel: string; eyebrow: string; canvas: string; subtab: string; dot: string; item: string }> = {
@@ -378,6 +407,10 @@ function repairDuplicateAssignmentIdentities(assignments: ContentPlan["pageAssig
 
 function normalizePlan(plan: ContentPlan): ContentPlan {
   const localSeo = plan.localSeo ?? { enabled: false, targetLocations: [] };
+  const approvedCandidateById = new Map((plan.pagePlanningIntelligence?.approvedCandidates ?? []).flatMap((candidate) => {
+    const candidateId = typeof candidate.candidateId === "string" ? candidate.candidateId : "";
+    return candidateId ? [[candidateId, candidate] as const] : [];
+  }));
   const normalizedAssignments = (plan.pageAssignments ?? []).map((assignment) => {
     const home = assignment.targetUrl.trim() === "/" || /^home(?:\s+in\s+.+)?$/i.test(assignment.pageName.trim());
     if (home) return {
@@ -390,7 +423,17 @@ function normalizePlan(plan: ContentPlan): ContentPlan {
       clusterKey: undefined,
       clusterRole: "global" as const,
     };
-    return normalizeNearMeAssignment(assignment, localSeo.targetLocations);
+    const normalized = normalizeNearMeAssignment(assignment, localSeo.targetLocations);
+    const candidate = normalized.pageKey ? approvedCandidateById.get(normalized.pageKey) : null;
+    const candidateSlug = candidate && typeof candidate.slug === "string" ? candidate.slug.trim() : "";
+    const candidateReason = candidate && typeof candidate.decisionReason === "string" ? candidate.decisionReason : "";
+    const verifiedExistingTarget = /^https?:\/\//i.test(candidateSlug) && /\b(existing|crawled|reuse)\b/i.test(candidateReason);
+    return verifiedExistingTarget ? {
+      ...normalized,
+      targetUrl: candidateSlug,
+      source: "existing_crawl" as const,
+      recommendedAction: "update_existing" as const,
+    } : normalized;
   });
   const assignments = mergeEquivalentAssignments(repairDuplicateAssignmentIdentities(normalizedAssignments)).map((assignment) => {
     if (assignment.faqStrategyVersion === "ai_seo_plan_v2" && assignment.faqTopics?.length) return assignment;
@@ -419,12 +462,22 @@ function conflictText(conflict: Record<string, unknown>, key: string) {
 
 function conflictPageIds(conflict: Record<string, unknown>) {
   return Array.isArray(conflict.conflictingPageIds)
-    ? conflict.conflictingPageIds.filter((value): value is string => typeof value === "string")
+    ? [...new Set(conflict.conflictingPageIds.filter((value): value is string => typeof value === "string"))]
     : [];
 }
 
 function normalizedTarget(value: string) {
-  return value.trim().toLocaleLowerCase().replace(/^https?:\/\/[^/]+/i, "").replace(/\/+$/, "") || "/";
+  return value.trim().toLocaleLowerCase()
+    .replace(/^https?:\/\/[^/]+/i, "")
+    .replace(/\/index(?:\.html?)?\/?$/, "/")
+    .replace(/\.html?\/?$/, "")
+    .replace(/\/+$/, "") || "/";
+}
+
+function existingPageCanOwnAssignment(existingUrl: string, assignment: ContentPlan["pageAssignments"][number]) {
+  if (!["commercial", "transactional", "local"].includes(assignment.searchIntent)) return true;
+  const path = normalizedTarget(existingUrl);
+  return !/(?:^|\/)(?:blog|news|articles?|resources?|contact(?:-us)?|book(?:ing)?|appointments?|about(?:-us)?|aboutus|our-team|team|staff|faq|faqs|payment(?:-insurance)?|privacy(?:-policy)?|terms(?:-and-conditions)?|login|portal)(?:\/|$)/.test(path);
 }
 
 function conflictKey(conflict: Record<string, unknown>) {
@@ -458,15 +511,19 @@ function activePlanConflicts(plan: ContentPlan) {
   const seen = new Set<string>();
   return plan.pagePlanningIntelligence.conflicts.filter((conflict) => {
     const ids = conflictPageIds(conflict);
-    const key = [...ids].sort().join("::");
+    const type = conflictText(conflict, "conflictType");
+    const key = type === "existing_page_overlap" && ids[1]
+      ? `${ids[0]}::${normalizedTarget(ids[1])}`
+      : [...ids].sort().join("::");
     if (!ids.length || seen.has(key)) return false;
     seen.add(key);
-    const type = conflictText(conflict, "conflictType");
     if (type === "existing_page_overlap") {
       const assignment = assignmentsByKey.get(ids[0]);
       if (!assignment || !ids[1]) return false;
-      return normalizedTarget(assignment.targetUrl) !== normalizedTarget(ids[1]);
+      return existingPageCanOwnAssignment(ids[1], assignment)
+        && normalizedTarget(assignment.targetUrl) !== normalizedTarget(ids[1]);
     }
+    if (ids.length < 2) return false;
     const assignments = ids.flatMap((id) => {
       const assignment = assignmentsByKey.get(id);
       return assignment ? [assignment] : [];
@@ -504,7 +561,7 @@ function lines(value: string) {
 }
 
 function keywordValues(value: unknown): string[] {
-  if (typeof value === "string") return value.trim() ? [value.trim()] : [];
+  if (typeof value === "string") return splitKeywordEntries(value);
   if (Array.isArray(value)) return value.flatMap(keywordValues);
   if (!value || typeof value !== "object") return [];
   const record = value as Record<string, unknown>;
@@ -535,44 +592,11 @@ function addAssignmentToPlan(plan: ContentPlan, assignment: ContentPlan["pageAss
   });
 }
 
-function contentPlanRequiresAutomaticUpgrade(plan: ContentPlan) {
-  // Current plans were already produced by the governed keyword-owner,
-  // location-authority, FAQ, and content-brief pipeline. Do not turn a
-  // heuristic warning into an endless AI regeneration loop on every open.
-  if (plan.workflowVersion === "seo_page_map_v4") return false;
-  const planningText = JSON.stringify({
-    owners: plan.pagePlanningIntelligence.ownerMap,
-    locations: plan.pagePlanningIntelligence.locationHierarchy,
-    assignments: plan.pageAssignments,
-  }).toLocaleLowerCase();
-  const groupedOwnerKeywords = new Map<string, string[]>();
-  for (const assignment of plan.pageAssignments) {
-    const target = assignment.targetUrl.trim().toLocaleLowerCase().replace(/^https?:\/\/[^/]+/i, "").replace(/\/+$/, "") || "/";
-    if (target === "/" || /^\/(?:about(?:-us)?|contact(?:-us)?|privacy-policy|terms|services|locations)$/.test(target) || ["home", "location_hub"].includes(assignment.clusterRole ?? "")) continue;
-    const keyword = assignment.canonicalKeyword.trim();
-    if (stripNonGeographicAudienceQualifier(keyword).toLocaleLowerCase() !== keyword.toLocaleLowerCase()) return true;
-    const intentFamily = assignment.searchIntent === "informational"
-      ? "informational"
-      : /\b(vs\.?|versus|compare|comparison|alternative)\b/i.test(keyword)
-        ? "comparison"
-        : "commercial";
-    const key = `${assignment.location?.trim().toLocaleLowerCase() || "global"}::${intentFamily}`;
-    groupedOwnerKeywords.set(key, [...(groupedOwnerKeywords.get(key) ?? []), keyword]);
-  }
-  const duplicateOwnerVariants = [...groupedOwnerKeywords.values()].some((keywords) =>
-    keywords.length > 1 && clusterKeywordDirections(keywords, plan.localSeo.targetLocations).length < keywords.length,
-  );
-  const pageKeys = plan.pageAssignments.map((assignment) => assignment.pageKey).filter((value): value is string => Boolean(value));
-  const duplicatePageKeys = new Set(pageKeys).size !== pageKeys.length;
-  return !plan.aiBusinessContext
-    || duplicatePageKeys
-    || /\bwebsite services in\b/.test(planningText)
-    || plan.pagePlanningIntelligence.locationHierarchy.some((location) => location.level === "state_province" && /^[a-z]{2}$/i.test(location.name))
-    || duplicateOwnerVariants;
-}
-
-export default function ContentPlanDialog({ task, onClose, onSaved }: { task: GuidedExecutionTask; onClose: () => void; onSaved?: (task: GuidedExecutionTask) => void }) {
+export default function ContentPlanDialog({ task, onClose, onSaved, autoPrepare = false, presentation = "modal" }: { task: GuidedExecutionTask; onClose: () => void; onSaved?: (task: GuidedExecutionTask) => void; autoPrepare?: boolean; presentation?: "modal" | "page" }) {
   const { chooseApprovalRoute, approvalRouteDialog } = useApprovalRouting();
+  const navigate = useNavigate();
+  const pagePresentation = presentation === "page";
+  const launchPlan = /website\s*(?:page\s*map\s*(?:&|and)\s*content\s*)?(?:launch\s*)?plan|page\s*(?:&|and)\s*content\s*plan/i.test(`${task.title} ${task.actionButtonLabel ?? ""}`);
   const initialPlan = savedPlan(task);
   const [plan, setPlan] = useState<ContentPlan | null>(() => initialPlan);
   const [busy, setBusy] = useState(false);
@@ -596,10 +620,13 @@ export default function ContentPlanDialog({ task, onClose, onSaved }: { task: Gu
   const [persistedPageCount, setPersistedPageCount] = useState(initialPlan?.pageAssignments.length ?? 0);
   const [saveNotice, setSaveNotice] = useState("");
   const [savingPageMap, setSavingPageMap] = useState(false);
+  const [candidateOwnerSelections, setCandidateOwnerSelections] = useState<Record<string, string>>({});
+  const [candidateOwnerPickerId, setCandidateOwnerPickerId] = useState<string | null>(null);
+  const [availableCombinationsOpen, setAvailableCombinationsOpen] = useState(false);
   const [keepBothDraft, setKeepBothDraft] = useState<KeepBothConflictDraft | null>(null);
   const [planReopened, setPlanReopened] = useState(false);
   const [marketSaveState, setMarketSaveState] = useState<"idle" | "dirty" | "saving" | "saved">("idle");
-  const automaticUpgradeAttempted = useRef(false);
+  const automaticPreparationStarted = useRef(false);
 
   useEffect(() => {
     if (!task.projectId) return;
@@ -609,18 +636,28 @@ export default function ContentPlanDialog({ task, onClose, onSaved }: { task: Gu
       setProjectContext(result.project);
       if (initialPlan) return;
       const intakeLocations = geographicTargetMarkets(result.project.targetLocations);
-      if (!intakeLocations.length) return;
-      setLocalSeoEnabled(true);
-      setTargetLocations([...new Set(intakeLocations)].join("\n"));
-    }).catch(() => undefined);
+      if (intakeLocations.length) {
+        setLocalSeoEnabled(true);
+        setTargetLocations([...new Set(intakeLocations)].join("\n"));
+      }
+      if (autoPrepare && !automaticPreparationStarted.current) {
+        automaticPreparationStarted.current = true;
+        setSetupReady(true);
+      }
+    }).catch(() => {
+      if (active && autoPrepare && !automaticPreparationStarted.current) {
+        automaticPreparationStarted.current = true;
+        setSetupReady(true);
+      }
+    });
     return () => { active = false; };
-  }, [initialPlan, task.projectId]);
+  }, [autoPrepare, initialPlan, task.projectId]);
 
   useEffect(() => {
     if (plan || !setupReady) return;
     let active = true;
     setBusy(true);
-    api.post<{ task: GuidedExecutionTask; plan: ContentPlan; pageCandidates?: Array<{ url: string; title: string | null }> }>(`/api/execution-tasks/${task.id}/content-plan/prepare`, { localSeoEnabled, targetLocations: geographicTargetMarkets(lines(targetLocations)) }).then((result) => {
+    prepareInitialContentPlan(task.id, { localSeoEnabled, targetLocations: geographicTargetMarkets(lines(targetLocations)) }).then((result) => {
       if (active) {
         const normalized = normalizePlan(result.plan);
         setPlan(normalized);
@@ -638,39 +675,13 @@ export default function ContentPlanDialog({ task, onClose, onSaved }: { task: Gu
   useEffect(() => {
     if (!plan || !setupReady || pageCandidatesLoaded) return;
     let active = true;
-    api.post<{ plan?: ContentPlan; pageCandidates?: Array<{ url: string; title: string | null }> }>(`/api/execution-tasks/${task.id}/content-plan/prepare`, {}).then((result) => {
+    api.post<{ plan?: ContentPlan; pageCandidates?: Array<{ url: string; title: string | null }> }>(`/api/execution-tasks/${task.id}/content-plan/prepare`, { inspectOnly: true }).then((result) => {
       if (active) {
         if (result.plan) setPlan(normalizePlan(result.plan));
         setPageCandidates(result.pageCandidates ?? []);
         setPageCandidatesLoaded(true);
       }
     }).catch(() => { if (active) setPageCandidatesLoaded(true); });
-    return () => { active = false; };
-  }, [pageCandidatesLoaded, plan, setupReady, task.id]);
-
-  useEffect(() => {
-    if (!plan || !setupReady || !pageCandidatesLoaded || automaticUpgradeAttempted.current || !contentPlanRequiresAutomaticUpgrade(plan)) return;
-    automaticUpgradeAttempted.current = true;
-    let active = true;
-    setBusy(true);
-    setSaveNotice("Updating the saved plan to the current keyword-owner and location rules…");
-    api.post<{ task: GuidedExecutionTask; plan: ContentPlan; pageCandidates?: Array<{ url: string; title: string | null }> }>(`/api/execution-tasks/${task.id}/content-plan/prepare`, {
-      localSeoEnabled: plan.localSeo.enabled,
-      targetLocations: plan.localSeo.targetLocations,
-    }).then((result) => {
-      if (!active) return;
-      const normalized = normalizePlan(result.plan);
-      setPlan(normalized);
-      setPersistedFingerprint(JSON.stringify(normalized));
-      setPersistedPageCount(normalized.pageAssignments.length);
-      setPageCandidates(result.pageCandidates ?? []);
-      setPageCandidatesLoaded(true);
-      setSaveNotice("Legacy company-name owners and duplicate location aliases were replaced.");
-    }).catch((reason: unknown) => {
-      if (!active) return;
-      setError(reason instanceof Error ? reason.message : "The saved SEO plan could not be upgraded.");
-      setSaveNotice("");
-    }).finally(() => { if (active) setBusy(false); });
     return () => { active = false; };
   }, [pageCandidatesLoaded, plan, setupReady, task.id]);
 
@@ -796,7 +807,6 @@ export default function ContentPlanDialog({ task, onClose, onSaved }: { task: Gu
   const targetKeywords = [...new Set([
     ...approvedKeywordGroups.flatMap((group) => keywordValues(group.keywords)),
     ...intakeKeywordAnswers.flatMap((answer) => keywordValues(answer.answerValue)),
-    ...(!approvedKeywordGroups.length && !intakeKeywordAnswers.length && projectContext?.niche ? [projectContext.niche] : []),
   ].map((keyword) => keyword.replace(/\s+/g, " ").trim()).filter(Boolean))];
   const selectedMarkets = geographicTargetMarkets(lines(targetLocations));
   const keywordDirectionClusters = clusterKeywordDirections(targetKeywords, selectedMarkets);
@@ -848,6 +858,162 @@ export default function ContentPlanDialog({ task, onClose, onSaved }: { task: Gu
     } finally {
       setSavingPageMap(false);
     }
+  };
+
+  const excludedCandidateId = (candidate: Record<string, unknown>, fallbackIndex: number) => (
+    conflictText(candidate, "candidateId") || `excluded-candidate-${fallbackIndex}`
+  );
+
+  const removeExcludedCandidate = (currentPlan: ContentPlan, candidateId: string) => ({
+    ...currentPlan.pagePlanningIntelligence,
+    rejectedCandidates: currentPlan.pagePlanningIntelligence.rejectedCandidates.filter((candidate) => conflictText(candidate, "candidateId") !== candidateId),
+    humanReviewCandidates: currentPlan.pagePlanningIntelligence.humanReviewCandidates.filter((candidate) => conflictText(candidate, "candidateId") !== candidateId),
+  });
+
+  const useCandidateOnOwnerPage = async (candidate: Record<string, unknown>, fallbackIndex: number) => {
+    if (!plan || planLocked || savingPageMap) return;
+    const candidateId = excludedCandidateId(candidate, fallbackIndex);
+    const selectedPageKey = candidateOwnerSelections[candidateId] || plan.pageAssignments[0]?.pageKey;
+    const owner = plan.pageAssignments.find((assignment) => assignment.pageKey === selectedPageKey);
+    if (!owner) {
+      setError("Choose the canonical page that should own this supporting keyword.");
+      return;
+    }
+    const keyword = conflictText(candidate, "primaryKeyword").trim();
+    if (!keyword) {
+      setError("This candidate has no usable keyword to assign.");
+      return;
+    }
+    const secondaryKeywords = Array.isArray(candidate.secondaryKeywords)
+      ? candidate.secondaryKeywords.filter((value): value is string => typeof value === "string" && Boolean(value.trim()))
+      : [];
+    const nextAssignments = plan.pageAssignments.map((assignment) => assignment.pageKey === owner.pageKey ? {
+      ...assignment,
+      secondaryKeywords: [...new Set([...assignment.secondaryKeywords, keyword, ...secondaryKeywords])]
+        .filter((value) => value.trim().toLocaleLowerCase() !== assignment.canonicalKeyword.trim().toLocaleLowerCase()),
+      decisionReason: `${assignment.decisionReason || assignment.gapAnalysis} “${keyword}” was reviewed and assigned as supporting coverage instead of creating a competing page.`,
+    } : assignment);
+    const nextPlan: ContentPlan = {
+      ...plan,
+      pageAssignments: nextAssignments,
+      keywordMapping: [...plan.keywordMapping, `“${keyword}” supports ${owner.pageName} · ${owner.targetUrl}`],
+      pagePlanningIntelligence: {
+        ...removeExcludedCandidate(plan, candidateId),
+        mergedCandidates: [
+          ...plan.pagePlanningIntelligence.mergedCandidates.filter((item) => conflictText(item, "candidateId") !== candidateId),
+          { ...candidate, decision: "merged", indexingDirective: "noindex", mergedIntoCandidateId: owner.pageKey, decisionReason: `Assigned to ${owner.pageName} as supporting keyword coverage during sitemap review.` },
+        ],
+      },
+    };
+    const saved = await persistPageMap(nextPlan, `“${keyword}” now supports “${owner.pageName}”. No additional sitemap page was created.`);
+    if (saved) setCandidateOwnerPickerId(null);
+  };
+
+  const addCandidateAsPlannedPage = async (candidate: Record<string, unknown>, fallbackIndex: number) => {
+    if (!plan || planLocked || savingPageMap || plan.pageAssignments.length >= 500) return;
+    const candidateId = excludedCandidateId(candidate, fallbackIndex);
+    const keyword = conflictText(candidate, "primaryKeyword").trim();
+    if (!keyword) {
+      setError("This candidate has no usable keyword to add to the sitemap.");
+      return;
+    }
+    const location = conflictText(candidate, "targetLocation").trim() || undefined;
+    const rawIntent = conflictText(candidate, "primaryIntent").trim().toLocaleLowerCase();
+    const searchIntent: ContentPlan["pageAssignments"][number]["searchIntent"] = rawIntent === "informational" || rawIntent === "support_faq"
+      ? "informational"
+      : rawIntent === "transactional"
+        ? "transactional"
+        : rawIntent === "brand" || rawIntent === "navigational"
+          ? "navigational"
+          : location ? "local" : "commercial";
+    const rawSlug = conflictText(candidate, "slug").trim();
+    const generatedSlug = `/${[keyword, location].filter(Boolean).join(" ").toLocaleLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "")}`;
+    const targetUrl = rawSlug
+      ? (rawSlug === "/" || /^https?:\/\//i.test(rawSlug) ? rawSlug : `/${rawSlug.replace(/^\/+/, "")}`)
+      : generatedSlug;
+    const existingPage = pageCandidates.find((page) => normalizedTarget(page.url) === normalizedTarget(targetUrl));
+    const parentCandidateId = conflictText(candidate, "parentCandidateId").trim();
+    const parentPage = plan.pageAssignments.find((assignment) => assignment.pageKey === parentCandidateId);
+    const candidateScoreValue = candidate.score && typeof candidate.score === "object" && !Array.isArray(candidate.score)
+      ? Number((candidate.score as Record<string, unknown>).total ?? 0)
+      : 0;
+    const pageType = conflictText(candidate, "pageType");
+    const clusterRole: ContentPlan["pageAssignments"][number]["clusterRole"] = pageType === "location_hub"
+      ? "location_hub"
+      : pageType === "local_service"
+        ? "service"
+        : ["resource", "faq", "comparison"].includes(pageType)
+          ? "supporting"
+          : "global";
+    const assignment: ContentPlan["pageAssignments"][number] = {
+      canonicalKeyword: keyword,
+      pageName: conflictText(candidate, "pageName") || keyword.replace(/\b\w/g, (character) => character.toLocaleUpperCase()),
+      targetUrl: existingPage?.url || targetUrl,
+      source: existingPage ? "existing_crawl" : "suggested",
+      secondaryKeywords: Array.isArray(candidate.secondaryKeywords)
+        ? candidate.secondaryKeywords.filter((value): value is string => typeof value === "string" && Boolean(value.trim()))
+        : [],
+      searchIntent,
+      pagePurpose: conflictText(candidate, "pagePurpose") || `Serve the approved ${searchIntent} intent for “${keyword}” without competing with another canonical page.`,
+      gapAnalysis: conflictText(candidate, "decisionReason") || "Added during sitemap review. Confirm distinct value, evidence, internal links, and conversion role before approval.",
+      recommendedAction: existingPage ? "update_existing" : "create_new",
+      pageKey: candidateId,
+      parentPageId: parentPage?.targetUrl,
+      location,
+      clusterKey: conflictText(candidate, "intentClusterId") || undefined,
+      clusterRole,
+      primaryIntent: rawIntent || searchIntent,
+      intentClusterId: conflictText(candidate, "intentClusterId") || undefined,
+      intentOwner: conflictText(candidate, "intentOwner") || undefined,
+      locationLevel: (["country", "state_province", "region", "city", "neighbourhood"] as const).find((value) => value === conflictText(candidate, "locationLevel")) || undefined,
+      candidateScore: Number.isFinite(candidateScoreValue) ? Math.max(0, Math.min(100, Math.round(candidateScoreValue))) : undefined,
+      decisionReason: `Reviewer promoted this candidate into the sitemap. ${conflictText(candidate, "decisionReason")}`.trim(),
+      serviceAvailabilityVerified: typeof candidate.serviceAvailabilityVerified === "boolean" ? candidate.serviceAvailabilityVerified : undefined,
+      localEvidenceIds: Array.isArray(candidate.localEvidenceIds) ? candidate.localEvidenceIds.filter((value): value is string => typeof value === "string") : undefined,
+      requiredInternalLinks: Array.isArray(candidate.requiredInternalLinks) ? candidate.requiredInternalLinks.filter((value): value is string => typeof value === "string") : undefined,
+      prohibitedCompetingKeywords: Array.isArray(candidate.prohibitedCompetingKeywords) ? candidate.prohibitedCompetingKeywords.filter((value): value is string => typeof value === "string") : undefined,
+    };
+    const reviewedCandidate = {
+      ...candidate,
+      decision: "approved",
+      indexingDirective: "index",
+      decisionReason: assignment.decisionReason,
+    };
+    const intelligenceWithoutExcluded = removeExcludedCandidate(plan, candidateId);
+    const ownerKey = assignment.intentOwner || `${keyword.toLocaleLowerCase()}::${assignment.primaryIntent || searchIntent}::${location?.toLocaleLowerCase() || "global"}`;
+    const rolloutPhase = location ? 2 : 1;
+    const rolloutPhases = intelligenceWithoutExcluded.rolloutPhases.some((phase) => phase.phase === rolloutPhase)
+      ? intelligenceWithoutExcluded.rolloutPhases.map((phase) => phase.phase === rolloutPhase
+        ? { ...phase, candidateIds: [...new Set([...phase.candidateIds, candidateId])] }
+        : phase)
+      : [...intelligenceWithoutExcluded.rolloutPhases, { phase: rolloutPhase, label: location ? "Local authority pages" : "Primary intent pages", candidateIds: [candidateId] }]
+        .sort((left, right) => left.phase - right.phase);
+    const basePlan: ContentPlan = {
+      ...plan,
+      pagePlanningIntelligence: {
+        ...intelligenceWithoutExcluded,
+        approvedCandidates: [
+          ...intelligenceWithoutExcluded.approvedCandidates.filter((item) => conflictText(item, "candidateId") !== candidateId),
+          reviewedCandidate,
+        ],
+        ownerMap: [
+          ...intelligenceWithoutExcluded.ownerMap.filter((owner) => owner.candidateId !== candidateId && owner.ownerKey !== ownerKey),
+          { ownerKey, candidateId, primaryKeyword: keyword, location: location ?? null },
+        ],
+        navigation: [
+          ...intelligenceWithoutExcluded.navigation.filter((item) => conflictText(item, "candidateId") !== candidateId),
+          { label: keyword, candidateId, parentCandidateId: parentCandidateId || null, mainMenu: pageType === "location_hub" },
+        ],
+        rolloutPhases,
+        recommendedTotalPages: plan.pageAssignments.length + 1,
+      },
+    };
+    const nextPlan = addAssignmentToPlan(basePlan, assignment);
+    if (!nextPlan) {
+      setError(`A planned page already uses “${assignment.pageName}” or ${assignment.targetUrl}. Assign this combination to that owner page instead.`);
+      return;
+    }
+    await persistPageMap(nextPlan, `“${keyword}” was added as a separate planned page and is now included in the canonical owner map.`);
   };
 
   const addPlannedPage = async () => {
@@ -903,6 +1069,29 @@ export default function ContentPlanDialog({ task, onClose, onSaved }: { task: Gu
   const removePlannedPage = (index: number) => {
     if (!plan || planLocked) return;
     const removed = plan.pageAssignments[index];
+    if (!removed) return;
+    const removedCandidateId = removed.pageKey || `page-${removed.targetUrl.replace(/[^a-z0-9]+/gi, "-").replace(/^-+|-+$/g, "").toLocaleLowerCase() || index + 1}`;
+    const approvedCandidate = plan.pagePlanningIntelligence.approvedCandidates.find((candidate) => conflictText(candidate, "candidateId") === removedCandidateId);
+    const removedCandidate: Record<string, unknown> = approvedCandidate ?? {
+      candidateId: removedCandidateId,
+      primaryKeyword: removed.canonicalKeyword,
+      pageName: removed.pageName,
+      secondaryKeywords: removed.secondaryKeywords,
+      primaryIntent: removed.primaryIntent || removed.searchIntent,
+      targetLocation: removed.location ?? null,
+      locationLevel: removed.locationLevel ?? null,
+      slug: removed.targetUrl,
+      pageType: removed.clusterRole === "location_hub" ? "location_hub" : removed.location ? "local_service" : removed.searchIntent === "informational" ? "resource" : "service",
+      pagePurpose: removed.pagePurpose,
+      intentClusterId: removed.intentClusterId ?? removed.clusterKey ?? null,
+      intentOwner: removed.intentOwner ?? null,
+      parentCandidateId: removed.parentPageId ?? null,
+      score: { total: removed.candidateScore ?? removed.authorityScore ?? 0 },
+      serviceAvailabilityVerified: removed.serviceAvailabilityVerified,
+      localEvidenceIds: removed.localEvidenceIds ?? [],
+      requiredInternalLinks: removed.requiredInternalLinks ?? [],
+      prohibitedCompetingKeywords: removed.prohibitedCompetingKeywords ?? [],
+    };
     const keywordMarker = removed?.canonicalKeyword ? `“${removed.canonicalKeyword.trim()}”`.toLocaleLowerCase() : "";
     const targetMarker = removed?.targetUrl?.trim().toLocaleLowerCase() ?? "";
     const releaseMarker = removed?.pageName ? `release ${removed.pageName.trim()} at`.toLocaleLowerCase() : "";
@@ -924,8 +1113,27 @@ export default function ContentPlanDialog({ task, onClose, onSaved }: { task: Gu
       supportingContent: plan.supportingContent.filter(excludesRemovedPage),
       contentBriefs: plan.contentBriefs.filter(excludesRemovedPage),
       publishingSequence: plan.publishingSequence.filter(excludesRemovedPage),
+      pagePlanningIntelligence: {
+        ...plan.pagePlanningIntelligence,
+        approvedCandidates: plan.pagePlanningIntelligence.approvedCandidates.filter((candidate) => conflictText(candidate, "candidateId") !== removedCandidateId),
+        humanReviewCandidates: [
+          ...plan.pagePlanningIntelligence.humanReviewCandidates.filter((candidate) => conflictText(candidate, "candidateId") !== removedCandidateId),
+          {
+            ...removedCandidate,
+            candidateId: removedCandidateId,
+            decision: "human_review",
+            indexingDirective: "noindex",
+            decisionReason: `Removed from the sitemap during plan review. Add it again only if it needs a distinct canonical page; otherwise assign it as supporting coverage to an existing owner.`,
+          },
+        ],
+        ownerMap: plan.pagePlanningIntelligence.ownerMap.filter((owner) => owner.candidateId !== removedCandidateId),
+        navigation: plan.pagePlanningIntelligence.navigation.filter((item) => conflictText(item, "candidateId") !== removedCandidateId),
+        internalLinks: plan.pagePlanningIntelligence.internalLinks.filter((item) => conflictText(item, "sourceCandidateId") !== removedCandidateId && conflictText(item, "targetCandidateId") !== removedCandidateId),
+        rolloutPhases: plan.pagePlanningIntelligence.rolloutPhases.map((phase) => ({ ...phase, candidateIds: phase.candidateIds.filter((candidateId) => candidateId !== removedCandidateId) })),
+        recommendedTotalPages: Math.max(0, plan.pageAssignments.length - 1),
+      },
     };
-    void persistPageMap(nextPlan, `“${removed?.pageName || "Page"}” was removed from the saved page map.`);
+    void persistPageMap(nextPlan, `“${removed.pageName}” was removed from the sitemap and returned to the available combinations list.`);
   };
 
   const resolveConflictByMerging = async (conflict: Record<string, unknown>, winnerPageKey: string) => {
@@ -1204,48 +1412,17 @@ export default function ContentPlanDialog({ task, onClose, onSaved }: { task: Gu
 
   const renderLocationAuthorityClusters = () => {
     if (!plan?.locationAuthorityClusters.length) return null;
-    return <div className="rounded-xl border border-slate-200 bg-white p-3">
-      <div className="flex flex-wrap items-start justify-between gap-2">
+    const availableCombinationCount = plan.pagePlanningIntelligence.humanReviewCandidates.length + plan.pagePlanningIntelligence.rejectedCandidates.length;
+    return <section className="rounded-xl border border-slate-200 bg-white p-3">
+      <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
-          <div className="text-[10px] font-black uppercase tracking-wide text-slate-500">AI Location Authority Planner</div>
-          <h4 className="mt-0.5 text-sm font-black text-charcoal-950">A complete authority cluster for every approved market</h4>
-          <p className="mt-1 text-[11px] leading-5 text-charcoal-600">Cluster size changes with approved services, demand, competition, and available evidence. Existing websites reuse suitable crawled pages; new websites receive build-ready URLs.</p>
+          <div className="text-[10px] font-black uppercase tracking-wide text-slate-500">Local page recommendations</div>
+          <h4 className="mt-0.5 text-sm font-black text-charcoal-950">Review the pages recommended for each target market</h4>
+          <p className="mt-1 text-[11px] leading-5 text-charcoal-600">Only approved pages are added to the website plan. Open a market to review its pages before continuing.</p>
         </div>
-        <span className="rounded-full bg-slate-900 px-2.5 py-1 text-[10px] font-black text-white">{plan.locationAuthorityClusters.length} market{plan.locationAuthorityClusters.length === 1 ? "" : "s"}</span>
+        <button type="button" onClick={() => setAvailableCombinationsOpen(true)} className="inline-flex items-center gap-2 whitespace-nowrap rounded-lg border border-cyan-200 bg-cyan-50 px-3 py-2 text-[10px] font-black text-cyan-800 hover:bg-cyan-100">Review {availableCombinationCount} additional page ideas <span aria-hidden="true">→</span></button>
       </div>
-      <div className="mt-3 grid gap-2 lg:grid-cols-2">
-        {plan.locationAuthorityClusters.map((cluster) => {
-          const clusterPages = plan.pageAssignments.filter((assignment) => assignment.clusterKey === cluster.clusterKey);
-          const existingPages = clusterPages.filter((assignment) => assignment.source === "existing_crawl").length;
-          const newPages = clusterPages.length - existingPages;
-          return <details key={cluster.clusterKey} className="group overflow-hidden rounded-lg border border-slate-200 bg-white open:border-slate-400">
-            <summary className="flex cursor-pointer list-none items-center gap-2 px-3 py-2.5 marker:hidden">
-              <span className="grid h-7 w-7 shrink-0 place-items-center rounded-md bg-slate-100 text-[10px] font-black text-slate-700">{cluster.authorityScore}</span>
-              <div className="min-w-0 flex-1">
-                <div className="truncate text-sm font-black text-charcoal-900">{cluster.location}</div>
-                <div className="truncate text-[10px] font-semibold text-charcoal-500">{cluster.requiredPageCount} required pages · {cluster.servicePageKeys.length} services · {cluster.supportingPageKeys.length} supporting</div>
-              </div>
-              <span className="hidden rounded-full bg-emerald-50 px-2 py-1 text-[9px] font-black text-emerald-700 sm:inline">{existingPages} reuse</span>
-              <span className="hidden rounded-full bg-amber-50 px-2 py-1 text-[9px] font-black text-amber-700 sm:inline">{newPages} create</span>
-              <span className="text-xs font-black text-slate-400 transition group-open:rotate-180">⌄</span>
-            </summary>
-            <div className="border-t border-slate-200 bg-slate-50 p-3">
-              <div className="grid grid-cols-3 gap-2">
-                <div className="rounded-lg bg-white px-2.5 py-2"><div className="text-[9px] font-black uppercase text-charcoal-400">Demand</div><div className="mt-0.5 text-xs font-black capitalize text-charcoal-800">{cluster.demandLevel}</div></div>
-                <div className="rounded-lg bg-white px-2.5 py-2"><div className="text-[9px] font-black uppercase text-charcoal-400">Competition</div><div className="mt-0.5 text-xs font-black capitalize text-charcoal-800">{cluster.competitionLevel}</div></div>
-                <div className="rounded-lg bg-white px-2.5 py-2"><div className="text-[9px] font-black uppercase text-charcoal-400">Evidence</div><div className="mt-0.5 text-xs font-black capitalize text-charcoal-800">{cluster.evidenceConfidence}</div></div>
-              </div>
-              <p className="mt-2 text-[11px] leading-5 text-charcoal-600">{cluster.rationale}</p>
-              <div className="mt-2 flex flex-wrap gap-1">{cluster.schemaTypes.map((schema) => <span key={schema} className="rounded-full border border-slate-200 bg-white px-2 py-1 text-[9px] font-bold text-slate-600">{schema}</span>)}</div>
-              <details className="mt-2 rounded-lg border border-slate-200 bg-white">
-                <summary className="cursor-pointer px-3 py-2 text-[10px] font-black text-slate-700">Review hub-and-spoke linking rules</summary>
-                <ul className="space-y-1 border-t border-slate-200 px-3 py-2">{cluster.internalLinkRules.map((rule) => <li key={rule} className="flex gap-2 text-[10px] leading-4 text-charcoal-600"><span className="text-brand-600">→</span><span>{rule}</span></li>)}</ul>
-              </details>
-            </div>
-          </details>;
-        })}
-      </div>
-    </div>;
+    </section>;
   };
 
   const renderPagePlanningIntelligence = () => {
@@ -1263,39 +1440,32 @@ export default function ContentPlanDialog({ task, onClose, onSaved }: { task: Gu
       const score = candidate.score;
       return score && typeof score === "object" && !Array.isArray(score) ? Number((score as Record<string, unknown>).total ?? 0) : 0;
     };
-    return <section className="rounded-xl border border-slate-800 bg-slate-950 p-4 text-white">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div>
-          <div className="text-[10px] font-black uppercase tracking-[0.14em] text-slate-400">SEO sitemap decision</div>
-          <h4 className="mt-1 text-base font-black">Approved keywords have been consolidated into build-ready pages</h4>
-        </div>
+    return <section className="contents"><div className="hidden">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <h4 className="text-sm font-black">Approved keywords → build-ready pages</h4>
         <div className="flex flex-wrap gap-1.5 text-[10px] font-black">
           {intelligence.humanReviewCandidates.length > 0 && <span className="rounded-full border border-amber-300/30 bg-amber-300/10 px-2.5 py-1 text-amber-200">{intelligence.humanReviewCandidates.length} held for review</span>}
           <span className={`rounded-full border px-2.5 py-1 ${currentConflicts.length ? "border-rose-300/30 bg-rose-300/10 text-rose-200" : "border-emerald-300/30 bg-emerald-300/10 text-emerald-200"}`}>{currentConflicts.length} blocking conflicts</span>
         </div>
       </div>
-      <div className="mt-3 flex flex-wrap items-center gap-2 rounded-lg border border-white/10 bg-white/5 px-3 py-3">
-        <div><b className="text-lg text-cyan-200">{targetKeywords.length}</b><span className="ml-1.5 text-[10px] font-bold text-slate-300">keywords</span></div>
+      <div className="mt-2 flex flex-wrap items-center gap-2 rounded-lg border border-white/10 bg-white/5 px-3 py-2">
+        <div><b className="text-sm text-cyan-200">{targetKeywords.length}</b><span className="ml-1 text-[10px] font-bold text-slate-300">keywords</span></div>
         <span className="text-slate-500">→</span>
-        <div><b className="text-lg text-violet-200">{intelligence.keywordClusters.length}</b><span className="ml-1.5 text-[10px] font-bold text-slate-300">intent clusters</span></div>
+        <div><b className="text-sm text-violet-200">{intelligence.keywordClusters.length}</b><span className="ml-1 text-[10px] font-bold text-slate-300">intent clusters</span></div>
         <span className="text-slate-500">→</span>
-        <div><b className="text-lg text-emerald-300">{plannedPageCount}</b><span className="ml-1.5 text-[10px] font-bold text-slate-300">planned pages</span></div>
+        <div><b className="text-sm text-emerald-300">{plannedPageCount}</b><span className="ml-1 text-[10px] font-bold text-slate-300">planned pages</span></div>
+        <span className="ml-auto text-[9px] text-slate-500">{evaluatedCandidateCount} candidates · {intelligence.maximumCombinations} location combinations checked</span>
       </div>
-      <p className="mt-2 text-[10px] leading-5 text-slate-400">{evaluatedCandidateCount} page candidates and {intelligence.maximumCombinations} service-location combinations were checked. Unsupported combinations remain outside the sitemap and can be reviewed below.</p>
-      {intelligence.rolloutPhases.length > 0 && <div className="mt-3 grid gap-2 sm:grid-cols-3">
-        {intelligence.rolloutPhases.map((phase, index) => <div key={phase.phase} className="relative rounded-lg border border-white/10 bg-white/5 px-3 py-2.5">
-          <div className="flex items-center gap-2">
-            <span className="grid h-6 w-6 shrink-0 place-items-center rounded-md bg-white text-[10px] font-black text-slate-950">{phase.phase}</span>
-            <div><b className="block text-[11px] text-white">{phase.label}</b><span className="text-[9px] font-bold text-slate-400">{phase.candidateIds.length} approved page{phase.candidateIds.length === 1 ? "" : "s"}</span></div>
-          </div>
-          <p className="mt-2 text-[10px] leading-4 text-slate-300">{index === 0 ? "Review the main intent-owner pages first." : index === 1 ? "Proceed only with evidence-approved market pages." : "Add supporting, trust, conversion, and compliance coverage last."}</p>
-          {index < intelligence.rolloutPhases.length - 1 && <span className="absolute -right-2 top-1/2 z-10 hidden -translate-y-1/2 text-sm font-black text-slate-500 sm:block">›</span>}
+      {intelligence.rolloutPhases.length > 0 && <div className="mt-2 flex flex-wrap gap-1.5">
+        {intelligence.rolloutPhases.map((phase) => <div key={phase.phase} className="inline-flex items-center gap-2 rounded-md border border-white/10 bg-white/5 px-2 py-1.5">
+          <span className="grid h-5 w-5 shrink-0 place-items-center rounded bg-white text-[9px] font-black text-slate-950">{phase.phase}</span>
+          <span className="text-[10px] font-bold text-slate-200">{phase.label}</span>
+          <span className="rounded-full bg-white/10 px-1.5 py-0.5 text-[9px] font-black text-slate-400">{phase.candidateIds.length}</span>
         </div>)}
       </div>}
-      {intelligence.missingInputs.length > 0 && <div className="mt-3 rounded-lg border border-amber-300/30 bg-amber-300/10 p-3">
-        <b className="text-xs text-amber-200">Optional evidence for more city-specific service pages</b>
-        <p className="mt-1 text-[11px] leading-5 text-amber-100">The current sitemap can proceed. Add the following only if you want SENuke to evaluate more dedicated service-by-city pages:</p>
-        <ul className="mt-2 space-y-1.5">
+      {intelligence.missingInputs.length > 0 && <details className="mt-2 rounded-lg border border-amber-300/30 bg-amber-300/10">
+        <summary className="cursor-pointer px-3 py-2 text-[10px] font-black text-amber-200">Optional evidence for additional location pages · {intelligence.missingInputs.length}</summary>
+        <div className="border-t border-amber-300/20 px-3 py-2"><p className="text-[10px] leading-4 text-amber-100">The sitemap can proceed. Add this only when you want more dedicated service-by-city pages.</p><ul className="mt-2 space-y-1.5">
           {intelligence.missingInputs.map((item) => <li key={item} className="flex gap-2 text-[10px] leading-4 text-amber-50">
             <span className="font-black text-amber-300">•</span>
             <span><b>{item}:</b> {item === "Verified service availability by location"
@@ -1304,22 +1474,59 @@ export default function ContentPlanDialog({ task, onClose, onSaved }: { task: Gu
                 ? "identify relevant search competitors so local demand and content gaps can be compared."
                 : "add this project evidence to improve the page recommendation."}</span>
           </li>)}
-        </ul>
-      </div>}
-      <div className="mt-3 grid gap-2 lg:grid-cols-2">
-        <details className="rounded-lg border border-white/10 bg-white/5" open>
-          <summary className="cursor-pointer list-none px-3 py-2.5 text-xs font-black marker:hidden">Canonical keyword owner map · {intelligence.ownerMap.length} pages</summary>
-          <div className="border-t border-white/10 p-2"><p className="mb-2 rounded-md bg-cyan-300/10 px-2.5 py-2 text-[10px] leading-4 text-cyan-100">Each row shows the one page allowed to target that keyword intent in that geographic scope. The company name appears only for genuine brand pages such as Home, About, and Contact.</p><div className="max-h-52 space-y-1 overflow-y-auto">{intelligence.ownerMap.map((owner) => <div key={owner.ownerKey} className="rounded-md bg-white/10 px-2.5 py-2 text-[10px]"><b className="text-white">{owner.primaryKeyword}</b><span className="ml-2 text-cyan-200">→ {owner.location || "Global website"}</span></div>)}</div></div>
-        </details>
-        <details className="rounded-lg border border-white/10 bg-white/5" open={reviewRows.length > 0}>
-          <summary className="cursor-pointer list-none px-3 py-2.5 text-xs font-black marker:hidden">Combinations not added to the sitemap · {reviewRows.length}</summary>
-          <div className="max-h-64 space-y-1 overflow-y-auto border-t border-white/10 p-2">{reviewRows.length ? reviewRows.map((candidate, index) => <div key={`${candidateText(candidate, "candidateId")}-${index}`} className="rounded-md bg-white/10 px-2.5 py-2">
-            <div className="flex items-center justify-between gap-2 text-[10px]"><b>{candidateText(candidate, "primaryKeyword") || "Page candidate"}</b><span className="rounded-full bg-white/10 px-2 py-0.5 font-black">{candidateScore(candidate)}/100</span></div>
-            <p className="mt-1 text-[10px] leading-4 text-slate-300">{candidateText(candidate, "decisionReason")}</p>
-          </div>) : <p className="p-2 text-[11px] text-emerald-200">Every evaluated candidate passed the current planning rules.</p>}</div>
+        </ul></div>
+      </details>}
+      <div className="mt-3 flex items-center justify-end">
+        <button type="button" onClick={() => setAvailableCombinationsOpen(true)} className="inline-flex items-center gap-2 rounded-lg border border-cyan-300/30 bg-cyan-300/10 px-3 py-2 text-[10px] font-black text-cyan-100 hover:bg-cyan-300/20">
+          Available combinations not yet in the sitemap
+          <span className="rounded-full bg-cyan-200 px-2 py-0.5 text-slate-950">{reviewRows.length}</span>
+          <span aria-hidden="true">→</span>
+        </button>
+      </div>
+      <div className="mt-2">
+        <details className="h-[28rem] overflow-hidden rounded-lg border border-white/10 bg-white/5" open>
+          <summary className="shrink-0 cursor-pointer list-none px-3 py-2.5 text-xs font-black marker:hidden">Canonical keyword owner map · {intelligence.ownerMap.length} pages</summary>
+          <div className="h-[25rem] overflow-hidden border-t border-white/10 p-2"><p className="mb-2 rounded-md bg-cyan-300/10 px-2.5 py-2 text-[10px] leading-4 text-cyan-100">Each row shows the one page allowed to target that keyword intent in that geographic scope. Excluded combinations can be attached as supporting coverage or promoted into a separate planned page.</p><div className="h-[20rem] space-y-1 overflow-y-scroll pr-1 [scrollbar-gutter:stable]">{intelligence.ownerMap.map((owner) => {
+            const assignment = plan.pageAssignments.find((item) => item.pageKey === owner.candidateId);
+            const assignmentIndex = plan.pageAssignments.findIndex((item) => item.pageKey === owner.candidateId);
+            const requiredHome = assignment ? normalizedTarget(assignment.targetUrl) === "/" : false;
+            return <div key={owner.ownerKey} className="rounded-md bg-white/10 px-2.5 py-2 text-[10px]">
+              <div className="flex items-start gap-2"><div className="min-w-0 flex-1"><div className="flex items-start justify-between gap-2"><b className="truncate text-white">{requiredHome ? "Home" : owner.primaryKeyword}</b><span className="shrink-0 text-cyan-200">{owner.location || "Global"}</span></div><div className="mt-1 truncate text-slate-400">{assignment?.targetUrl || "Planned destination"}{requiredHome ? ` · Homepage focus: ${owner.primaryKeyword}` : assignment?.secondaryKeywords.length ? ` · ${assignment.secondaryKeywords.length} supporting` : ""}</div></div>{requiredHome ? <span className="shrink-0 rounded-full border border-emerald-300/20 bg-emerald-300/10 px-2 py-1 text-[8px] font-black uppercase text-emerald-200">Homepage</span> : assignmentIndex >= 0 ? <button type="button" disabled={savingPageMap || planLocked} onClick={() => removePlannedPage(assignmentIndex)} className="shrink-0 rounded-md border border-rose-300/30 bg-rose-300/10 px-2 py-1 text-[8px] font-black text-rose-100 hover:bg-rose-300/20 disabled:opacity-40">Remove</button> : null}</div>
+            </div>;
+          })}</div></div>
         </details>
       </div>
-      {intelligence.locationHierarchy.length > 0 && <div className="mt-3 flex flex-wrap gap-1.5">{intelligence.locationHierarchy.map((location) => <span key={location.locationId} className="rounded-full border border-white/10 bg-white/10 px-2 py-1 text-[9px] font-bold text-slate-200">{location.level.replace("_", " ")} · {location.name}</span>)}</div>}
+      </div>{availableCombinationsOpen && <div className="fixed inset-0 z-[140] grid place-items-center bg-slate-950/70 p-3 sm:p-6" role="dialog" aria-modal="true" aria-label="Available page combinations">
+        <button type="button" className="absolute inset-0" aria-label="Close available combinations" onClick={() => { setAvailableCombinationsOpen(false); setCandidateOwnerPickerId(null); }} />
+        <div className="relative flex max-h-[90vh] w-full max-w-5xl flex-col overflow-hidden rounded-2xl border border-slate-200 bg-slate-50 text-slate-950 shadow-2xl">
+          <div className="flex items-start justify-between gap-4 border-b border-slate-200 bg-white px-5 py-4">
+            <div><div className="text-[10px] font-black uppercase tracking-[0.14em] text-cyan-700">AI Location Authority Planner</div><h3 className="mt-1 text-xl font-black text-slate-950">Available combinations</h3><p className="mt-1 text-xs leading-5 text-slate-500">These {reviewRows.length} combinations are not in the sitemap. Add a justified page or attach the keyword to an existing canonical owner.</p></div>
+            <button type="button" onClick={() => { setAvailableCombinationsOpen(false); setCandidateOwnerPickerId(null); }} className="grid h-9 w-9 shrink-0 place-items-center rounded-lg border border-slate-200 bg-white text-lg text-slate-500">×</button>
+          </div>
+          <div className="flex-1 overflow-y-auto p-4 [scrollbar-gutter:stable]">
+            {reviewRows.length ? <div className="grid gap-3 md:grid-cols-2">{reviewRows.map((candidate, index) => {
+            const candidateId = excludedCandidateId(candidate, index);
+            const selectedOwner = candidateOwnerSelections[candidateId] || plan.pageAssignments[0]?.pageKey || "";
+            return <div key={`${candidateId}-${index}`} className="rounded-xl border border-slate-200 bg-white p-3 shadow-sm">
+              <div className="flex items-start gap-3"><span className="grid h-7 w-7 shrink-0 place-items-center rounded-lg bg-cyan-50 text-[10px] font-black text-cyan-800">{index + 1}</span><div className="min-w-0 flex-1"><div className="flex items-start justify-between gap-2"><b className="text-sm leading-5 text-slate-950">{candidateText(candidate, "primaryKeyword") || "Page candidate"}</b><span className="shrink-0 rounded-full bg-slate-100 px-2 py-1 text-[9px] font-black text-slate-600">{candidateScore(candidate)}/100</span></div>{candidateText(candidate, "targetLocation") && <span className="mt-1 block text-[10px] font-bold text-cyan-700">{candidateText(candidate, "targetLocation")}</span>}</div></div>
+              <p className="mt-2 text-[10px] leading-4 text-slate-500">{candidateText(candidate, "decisionReason")}</p>
+              <div className="mt-2 flex flex-wrap gap-1.5">
+                <button type="button" disabled={savingPageMap || planLocked || plan.pageAssignments.length >= 500} onClick={() => void addCandidateAsPlannedPage(candidate, index)} className="rounded-md bg-slate-950 px-2.5 py-1.5 text-[9px] font-black text-white hover:bg-slate-800 disabled:opacity-40">+ Add page</button>
+                <button type="button" disabled={savingPageMap || planLocked || !plan.pageAssignments.length} onClick={() => setCandidateOwnerPickerId((current) => current === candidateId ? null : candidateId)} className="rounded-md border border-cyan-200 bg-cyan-50 px-2.5 py-1.5 text-[9px] font-black text-cyan-800 hover:bg-cyan-100 disabled:opacity-40">Use on existing page</button>
+              </div>
+              {candidateOwnerPickerId === candidateId && <div className="mt-2 rounded-lg border border-cyan-200 bg-cyan-50 p-2">
+                <label className="block text-[9px] font-black uppercase tracking-wide text-cyan-800">Choose canonical owner</label>
+                <select value={selectedOwner} disabled={savingPageMap || planLocked} onChange={(event) => setCandidateOwnerSelections((current) => ({ ...current, [candidateId]: event.target.value }))} className="mt-1 w-full rounded-md border border-cyan-200 bg-white px-2 py-1.5 text-[10px] font-semibold text-slate-800 disabled:opacity-50">
+                  {plan.pageAssignments.map((assignment) => <option key={assignment.pageKey || assignment.targetUrl} value={assignment.pageKey}>{assignment.pageName} · {assignment.targetUrl}</option>)}
+                </select>
+                <div className="mt-2 flex justify-end gap-1.5"><button type="button" onClick={() => setCandidateOwnerPickerId(null)} className="rounded-md border border-slate-200 bg-white px-2.5 py-1.5 text-[9px] font-black text-slate-600">Cancel</button><button type="button" disabled={savingPageMap || planLocked || !selectedOwner} onClick={() => void useCandidateOnOwnerPage(candidate, index)} className="rounded-md bg-cyan-700 px-2.5 py-1.5 text-[9px] font-black text-white disabled:opacity-40">Add to owner page</button></div>
+              </div>}
+            </div>;
+          })}</div> : <div className="rounded-xl border border-emerald-200 bg-emerald-50 px-5 py-10 text-center"><b className="text-sm text-emerald-800">Every evaluated candidate is already resolved</b><p className="mt-1 text-xs text-emerald-700">There are no additional combinations waiting for review.</p></div>}
+          </div>
+          <div className="flex items-center justify-between gap-3 border-t border-slate-200 bg-white px-5 py-3"><span className="text-xs text-slate-500">{reviewRows.length} remaining for review</span><button type="button" onClick={() => { setAvailableCombinationsOpen(false); setCandidateOwnerPickerId(null); }} className="rounded-lg bg-slate-950 px-4 py-2 text-xs font-black text-white">Done</button></div>
+        </div>
+      </div>}
     </section>;
   };
 
@@ -1380,6 +1587,7 @@ export default function ContentPlanDialog({ task, onClose, onSaved }: { task: Gu
         {assignment.location && <span className="hidden rounded-full bg-slate-100 px-2 py-1 text-[9px] font-bold text-slate-600 lg:inline">{assignment.location} · {assignment.clusterRole?.replaceAll("_", " ")}</span>}
         {assignment.candidateScore != null && <span className={`hidden rounded-full px-2 py-1 text-[9px] font-black lg:inline ${assignment.candidateScore >= 70 ? "bg-emerald-50 text-emerald-700" : "bg-amber-50 text-amber-700"}`}>{assignment.candidateScore}/100</span>}
         <span className="hidden rounded-full bg-slate-100 px-2 py-1 text-[9px] font-bold text-slate-600 xl:inline">{assignment.searchIntent} · {assignment.recommendedAction.replaceAll("_", " ")}</span>
+        {!isRequiredHome && <button type="button" title="Remove from the website plan and return to Additional Page Ideas" aria-label={`Remove ${assignment.pageName} from the website plan`} disabled={savingPageMap || planLocked} onClick={(event) => { event.preventDefault(); event.stopPropagation(); removePlannedPage(index); }} className="shrink-0 rounded-md border border-rose-200 bg-white px-2 py-1 text-[9px] font-black text-rose-700 hover:bg-rose-50 disabled:opacity-40">Remove</button>}
         <span className="text-xs font-black text-slate-400 transition group-open:rotate-180">⌄</span>
       </summary>
       <div className="border-t border-slate-100 bg-slate-50/50 p-3">
@@ -1433,8 +1641,8 @@ export default function ContentPlanDialog({ task, onClose, onSaved }: { task: Gu
           </div>
         </div>
         {assignment.decisionReason && <div className="mt-2 rounded-lg border border-slate-200 bg-white px-3 py-2"><b className="text-[10px] uppercase text-slate-500">Why this page was approved</b><p className="mt-1 text-xs leading-5 text-slate-700">{assignment.decisionReason}</p>{assignment.location && <p className="mt-1 text-[10px] font-bold text-slate-600">{assignment.serviceAvailabilityVerified ? "✓ Service availability verified" : "Service availability requires confirmation"} · {assignment.localEvidenceIds?.length ?? 0} local evidence item{assignment.localEvidenceIds?.length === 1 ? "" : "s"}</p>}</div>}
-        {(assignment.seoTitle || assignment.metaDescription || assignment.contentOutline?.length) && <details className="mt-2 rounded-lg border border-sky-200 bg-sky-50" open={isRequiredHome}>
-          <summary className="cursor-pointer px-3 py-2 text-xs font-black text-sky-900">AI SEO title, meta description, and content plan</summary>
+        {(assignment.seoTitle || assignment.metaDescription || assignment.contentOutline?.length || assignment.contentBrief || assignment.supportingContentIdeas?.length || assignment.proofRequirements?.length || pageFaqTopics(assignment).length) && <details className="mt-2 rounded-lg border border-sky-200 bg-sky-50" open={isRequiredHome}>
+          <summary className="cursor-pointer px-3 py-2 text-xs font-black text-sky-900">SEO and content requirements</summary>
           <div className="space-y-2 border-t border-sky-200 p-3">
             <label className="block text-[10px] font-black uppercase tracking-wide text-sky-700">SEO title
               <input value={assignment.seoTitle ?? ""} onChange={(event) => updateAssignment({ seoTitle: event.target.value })} className="mt-1 w-full rounded-lg border border-sky-200 bg-white px-3 py-2 text-sm font-normal normal-case tracking-normal text-slate-800" />
@@ -1445,14 +1653,36 @@ export default function ContentPlanDialog({ task, onClose, onSaved }: { task: Gu
             <label className="block text-[10px] font-black uppercase tracking-wide text-sky-700">Content sections
               <textarea value={(assignment.contentOutline ?? []).join("\n")} onChange={(event) => updateAssignment({ contentOutline: lines(event.target.value) })} rows={Math.min(8, Math.max(4, assignment.contentOutline?.length ?? 4))} className="mt-1 w-full rounded-lg border border-sky-200 bg-white px-3 py-2 text-sm font-normal normal-case tracking-normal text-slate-800" />
             </label>
+            <label className="block text-[10px] font-black uppercase tracking-wide text-sky-700">Page brief
+              <textarea value={assignment.contentBrief ?? ""} onChange={(event) => updateAssignment({ contentBrief: event.target.value })} rows={3} className="mt-1 w-full rounded-lg border border-sky-200 bg-white px-3 py-2 text-sm font-normal normal-case tracking-normal text-slate-800" placeholder="The purpose, audience, and conversion direction for this page." />
+            </label>
+            <div className="grid gap-2 md:grid-cols-2">
+              <label className="block text-[10px] font-black uppercase tracking-wide text-sky-700">Supporting content ideas
+                <textarea value={(assignment.supportingContentIdeas ?? []).join("\n")} onChange={(event) => updateAssignment({ supportingContentIdeas: lines(event.target.value) })} rows={4} className="mt-1 w-full rounded-lg border border-sky-200 bg-white px-3 py-2 text-sm font-normal normal-case tracking-normal text-slate-800" placeholder="One supporting idea per line" />
+              </label>
+              <label className="block text-[10px] font-black uppercase tracking-wide text-sky-700">Proof and trust requirements
+                <textarea value={(assignment.proofRequirements ?? []).join("\n")} onChange={(event) => updateAssignment({ proofRequirements: lines(event.target.value) })} rows={4} className="mt-1 w-full rounded-lg border border-sky-200 bg-white px-3 py-2 text-sm font-normal normal-case tracking-normal text-slate-800" placeholder="One verified proof requirement per line" />
+              </label>
+            </div>
+            <label className="block text-[10px] font-black uppercase tracking-wide text-sky-700">Page FAQ topics
+              <textarea value={pageFaqTopics(assignment).join("\n")} onChange={(event) => updateAssignment({ faqTopics: lines(event.target.value), faqStrategyVersion: "ai_seo_plan_v2" })} rows={Math.min(7, Math.max(3, pageFaqTopics(assignment).length))} className="mt-1 w-full rounded-lg border border-sky-200 bg-white px-3 py-2 text-sm font-normal normal-case tracking-normal text-slate-800" placeholder="One buyer question per line" />
+            </label>
           </div>
         </details>}
         <div className="mt-3 flex justify-end">
-          {isRequiredHome ? <span className="text-[11px] font-bold text-brand-700">Home is always included at the root URL.</span> : <button type="button" disabled={savingPageMap || planLocked} onClick={() => removePlannedPage(index)} className="rounded-lg border border-rose-200 bg-white px-3 py-1.5 text-xs font-bold text-rose-700 hover:bg-rose-50 disabled:opacity-50">Remove page</button>}
+          {isRequiredHome ? <span className="text-[11px] font-bold text-brand-700">Home is always included at the root URL.</span> : <button type="button" disabled={savingPageMap || planLocked} onClick={() => removePlannedPage(index)} className="rounded-lg border border-rose-200 bg-white px-3 py-1.5 text-xs font-bold text-rose-700 hover:bg-rose-50 disabled:opacity-50">Remove from sitemap</button>}
         </div>
       </div>
     </details>;
-  })}{!plan.pageAssignments.length && <div className="rounded-xl border border-dashed border-slate-200 p-6 text-center text-sm text-charcoal-500">Add a page or rebuild the smart plan to create interactive page assignments.</div>}</div> : null;
+  })}{!plan.pageAssignments.length && <div className="rounded-xl border border-dashed border-slate-200 p-6 text-center text-sm text-charcoal-500">Add a page or rebuild the smart plan to create interactive page assignments.</div>}
+    {plan.proofBlocks.length > 0 && <details className="rounded-lg border border-slate-200 bg-white">
+      <summary className="cursor-pointer px-3 py-2.5 text-xs font-black text-slate-700">Shared proof and trust requirements · {plan.proofBlocks.length}</summary>
+      <div className="border-t border-slate-200 p-3">
+        <p className="mb-2 text-[11px] leading-5 text-slate-500">These requirements apply across the plan. Page-specific proof remains inside each page above.</p>
+        <textarea value={plan.proofBlocks.join("\n")} onChange={(event) => setPlan({ ...plan, proofBlocks: lines(event.target.value) })} rows={Math.min(8, Math.max(4, plan.proofBlocks.length))} className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm leading-6 text-slate-800" />
+      </div>
+    </details>}
+  </div> : null;
 
   const renderFaqs = () => {
     if (!plan) return null;
@@ -1646,7 +1876,7 @@ export default function ContentPlanDialog({ task, onClose, onSaved }: { task: Gu
       </details>
     </div>;
   };
-  return <div className="seo-content-plan-dialog fixed inset-0 z-[100] grid place-items-center bg-slate-950/55 p-2 sm:p-4" role="dialog" aria-modal="true" aria-label="SEO Page Map and Content Plan">
+  return <div className={pagePresentation ? "seo-content-plan-dialog w-full" : "seo-content-plan-dialog fixed inset-0 z-[100] grid place-items-center bg-slate-950/55 p-2 sm:p-4"} role={pagePresentation ? undefined : "dialog"} aria-modal={pagePresentation ? undefined : true} aria-label={launchPlan ? "Website Page Map and Content Plan" : "SEO Page Map and Content Plan"}>
     {approvalRouteDialog}
     {websiteHandoffOpen && <div className="fixed inset-0 z-[120] grid place-items-center bg-slate-950/65 p-4" role="alertdialog" aria-modal="true" aria-labelledby="seo-plan-approved-title">
       <div className="w-full max-w-md overflow-hidden rounded-2xl border border-emerald-200 bg-white shadow-2xl">
@@ -1654,35 +1884,49 @@ export default function ContentPlanDialog({ task, onClose, onSaved }: { task: Gu
           <div className="flex items-center gap-3">
             <span className="grid h-10 w-10 shrink-0 place-items-center rounded-full bg-white/20 text-xl font-black">✓</span>
             <div>
-              <div className="text-[10px] font-black uppercase tracking-[0.16em] text-emerald-100">SEO plan approved</div>
+              <div className="text-[10px] font-black uppercase tracking-[0.16em] text-emerald-100">{launchPlan ? "Website page and content plan approved" : "SEO plan approved"}</div>
               <h3 id="seo-plan-approved-title" className="mt-1 text-xl font-black">Your website is the next step</h3>
             </div>
           </div>
         </div>
         <div className="p-6">
-          <p className="text-sm leading-6 text-charcoal-700">SENuke AI will prepare the website based on your approved SEO plan.</p>
+          <p className="text-sm leading-6 text-charcoal-700">SENuke AI will continue the same Website Plan using the approved page and content direction.</p>
           <div className="mt-4 rounded-xl border border-brand-100 bg-brand-50/60 p-4">
-            <div className="text-xs font-black uppercase tracking-wide text-brand-700">What will carry into Website Creation</div>
+            <div className="text-xs font-black uppercase tracking-wide text-brand-700">What carries into the complete Website Plan</div>
             <p className="mt-2 text-sm leading-6 text-charcoal-600">{plan?.pageAssignments.length ?? 0} approved pages, their keyword intent and URLs, content briefs, FAQs, Local SEO requirements, schema direction, and internal-link relationships.</p>
           </div>
-          <p className="mt-4 text-xs leading-5 text-charcoal-500">You will review the brand, layout, generated content, images, navigation, and quality checks before anything can be published.</p>
+          <p className="mt-4 text-xs leading-5 text-charcoal-500">Next you will complete foundation, styling, colours, page management, content, navigation, forms, images, quality, approval, hosting, and publishing. Nothing is published without approval.</p>
         </div>
         <div className="flex flex-wrap items-center justify-end gap-2 border-t border-slate-200 bg-slate-50 px-6 py-4">
           <button type="button" onClick={() => setWebsiteHandoffOpen(false)} className="rounded-lg border border-slate-300 bg-white px-4 py-2.5 text-sm font-bold text-charcoal-700">Review approved plan</button>
-          <button type="button" onClick={() => { setWebsiteHandoffOpen(false); onClose(); }} className="rounded-lg bg-brand-700 px-5 py-2.5 text-sm font-black text-white shadow-sm hover:bg-brand-800">Continue to Website Creation →</button>
+          <button type="button" onClick={() => {
+            setWebsiteHandoffOpen(false);
+            if (!task.projectId) return onClose();
+            const existingWebsite = projectContext?.websiteStatus === "existing_website"
+              || ["existing_website", "local_seo"].includes(projectContext?.projectType ?? "");
+            navigate(`/site-architect?projectId=${encodeURIComponent(task.projectId)}&step=${existingWebsite ? "structure" : "foundation"}`);
+          }} className="rounded-lg bg-brand-700 px-5 py-2.5 text-sm font-black text-white shadow-sm hover:bg-brand-800">Continue Website Plan →</button>
         </div>
       </div>
     </div>}
-    <div className="flex max-h-[90vh] w-full max-w-[1320px] flex-col overflow-hidden rounded-2xl border border-slate-200 bg-slate-50 shadow-2xl">
+    <div className={pagePresentation ? "flex min-h-[calc(100vh-15rem)] w-full flex-col overflow-hidden rounded-2xl border border-slate-200 bg-slate-50 shadow-sm" : "flex max-h-[90vh] w-full max-w-[1320px] flex-col overflow-hidden rounded-2xl border border-slate-200 bg-slate-50 shadow-2xl"}>
       <div className="flex min-h-14 items-center justify-between gap-3 border-b border-slate-200 bg-white px-4 py-2.5">
         <div className="flex min-w-0 flex-1 items-center gap-3 overflow-hidden">
-          <div className="shrink-0"><span className="text-[9px] font-black uppercase tracking-wide text-brand-600">Guided SEO planning</span><h2 className="text-base font-black leading-5 text-charcoal-950">SEO Page Map & Content Plan</h2></div>
+          <div className="shrink-0"><span className="text-[9px] font-black uppercase tracking-wide text-brand-600">Website Plan · Planning stage</span><h2 className="text-base font-black leading-5 text-charcoal-950">Page Map & Content Direction</h2></div>
           {(plan?.localSeo.targetLocations.length || lines(targetLocations).length) > 0 && <div className="flex min-w-0 items-center gap-1 overflow-x-auto border-l border-slate-200 pl-3"><span className="shrink-0 text-[9px] font-black uppercase text-charcoal-400">Cities</span>{(plan?.localSeo.targetLocations ?? lines(targetLocations)).map((location) => <span key={location} className="shrink-0 rounded-full border border-brand-100 bg-white px-2 py-0.5 text-[9px] font-bold text-brand-700">{location}</span>)}</div>}
           {plan?.keywordNormalization && <span title={`${plan.keywordNormalization.acceptedCount} AI interpretations accepted; ${plan.keywordNormalization.deterministicProtectedCount} protected by deterministic validation.`} className="shrink-0 rounded-full border border-violet-200 bg-violet-50 px-2.5 py-1 text-[9px] font-black text-violet-700">AI + governed normalization · {plan.keywordNormalization.acceptedCount}/{plan.keywordNormalization.reviewedCount}</span>}
         </div>
-        <div className="flex shrink-0 items-center gap-2"><button type="button" disabled={busy || !plan || planLocked} onClick={() => void rebuildSmartPlan()} className="rounded-lg border border-brand-200 bg-white px-3 py-2 text-xs font-bold text-brand-700 hover:bg-brand-50 disabled:opacity-50">Rebuild plan</button><button type="button" onClick={onClose} className="grid h-8 w-8 place-items-center rounded-lg border border-slate-200 bg-white text-lg text-slate-500">×</button></div>
+        <div className="flex shrink-0 items-center gap-2">{planApproved && <button type="button" onClick={() => { setPlanReopened(true); setSubmissionOutcome(null); setSaveNotice("Editing the approved Website Plan. Save and approve the revised version before continuing to content."); }} className="rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-xs font-black text-amber-800 hover:bg-amber-100">Edit Page List</button>}<button type="button" disabled={busy || !plan || planLocked} onClick={() => void rebuildSmartPlan()} className="rounded-lg border border-brand-200 bg-white px-3 py-2 text-xs font-bold text-brand-700 hover:bg-brand-50 disabled:opacity-50">Rebuild plan</button><button type="button" onClick={onClose} className={pagePresentation ? "inline-flex h-8 items-center rounded-lg border border-slate-200 bg-white px-3 text-xs font-bold text-slate-600 hover:bg-slate-50" : "grid h-8 w-8 place-items-center rounded-lg border border-slate-200 bg-white text-lg text-slate-500"}>{pagePresentation ? "Back" : "×"}</button></div>
       </div>
-      {!setupReady ? <div className="flex-1 overflow-y-auto p-4 sm:p-5"><div className="mx-auto max-w-[1180px]"><div className="text-xs font-black uppercase tracking-wide text-brand-700">Before generating the plan</div><h3 className="mt-1 text-xl font-black text-charcoal-950">Review the SEO direction SEnuke AI will use</h3><p className="mt-2 max-w-4xl text-sm leading-6 text-charcoal-500">The plan starts with this project’s approved keyword direction and groups related searches into useful pages instead of creating a separate page for every keyword variation.</p>
+      <div className="border-b border-slate-200 bg-slate-950 px-4 py-3 text-white">
+        <div className="flex min-w-max items-center gap-1 overflow-x-auto" aria-label="Complete Website Plan workflow">
+          {["Plan", "Foundation", "Page management", "Content", "Navigation & forms", "Design & images", "Quality", "Approval", "Hosting & publish"].map((label, index) => <div key={label} className="flex items-center gap-1">
+            <div className={`rounded-lg border px-2.5 py-1.5 text-[9px] font-black uppercase tracking-wide ${index === 0 ? "border-cyan-300 bg-cyan-400/15 text-cyan-100" : "border-white/15 bg-white/5 text-slate-300"}`}>{index + 1} · {label}</div>
+            {index < 8 && <span className="text-slate-600">→</span>}
+          </div>)}
+        </div>
+      </div>
+      {!setupReady ? <div className="flex-1 overflow-y-auto p-4 sm:p-5"><div className="mx-auto max-w-[1180px]"><div className="text-xs font-black uppercase tracking-wide text-brand-700">Before generating the plan</div><h3 className="mt-1 text-xl font-black text-charcoal-950">Review the {launchPlan ? "approved website direction" : "SEO direction"} SEnuke AI will use</h3><p className="mt-2 max-w-4xl text-sm leading-6 text-charcoal-500">The plan starts with this project’s approved {launchPlan ? "Business Brain, opportunity and market evidence, Keyword Intelligence, Website Strategy, Unified Strategy, services, and target markets" : "keyword direction"} and turns those decisions into build-ready pages instead of creating a separate page for every keyword variation.</p>
         <div className="mt-4 space-y-3">
           <section className="rounded-xl border border-slate-200 bg-white p-4">
             <div className="flex items-center justify-between gap-2"><div className="text-[10px] font-black uppercase tracking-wide text-slate-500">Target keyword direction</div><span className="rounded-full bg-slate-100 px-2 py-1 text-[9px] font-black text-slate-600">{keywordDirectionClusters.length} primary topics · {targetKeywords.length} approved phrases</span></div>
@@ -1706,7 +1950,7 @@ export default function ContentPlanDialog({ task, onClose, onSaved }: { task: Gu
           <div className="mt-3 grid gap-2 sm:grid-cols-[1fr_auto_1fr_auto_1fr] sm:items-center"><div className="rounded-lg border border-slate-200 bg-slate-50/60 p-3"><span className="text-[9px] font-black uppercase text-slate-500">Primary page</span><p className="mt-1 text-xs font-bold text-charcoal-800">{localizedExample}</p></div><span className="hidden h-px w-6 bg-slate-300 sm:block" /><div className="rounded-lg border border-slate-200 bg-slate-50/60 p-3"><span className="text-[9px] font-black uppercase text-slate-500">Supporting pages</span><p className="mt-1 text-xs font-bold text-charcoal-800">Cost, provider choice, process, local questions</p></div><span className="hidden h-px w-6 bg-slate-300 sm:block" /><div className="rounded-lg border border-slate-200 bg-slate-50/60 p-3"><span className="text-[9px] font-black uppercase text-slate-500">Authority signals</span><p className="mt-1 text-xs font-bold text-charcoal-800">Unique proof, FAQs, schema, CTA, internal links</p></div></div>
           <p className="mt-3 text-[11px] leading-5 text-slate-600">SEnuke AI determines the final cluster size from search intent, demand, competition, available proof, services, and business goals. It will not create thin city-swap pages.</p>
         </div>
-        <div className="mt-5"><h4 className="text-sm font-black text-charcoal-950">Should this content plan include Local SEO?</h4><p className="mt-1 text-xs leading-5 text-charcoal-500">Target cities are loaded from project intake. Confirm whether they should shape the authority clusters.</p><div className="mt-3 grid gap-3 sm:grid-cols-2"><button type="button" onClick={() => setLocalSeoEnabled(true)} className={`rounded-xl border p-4 text-left ${localSeoEnabled ? "border-brand-500 bg-brand-50 ring-1 ring-brand-500" : "border-slate-200 bg-white"}`}><div className="font-bold text-charcoal-900">Yes, include Local SEO</div><p className="mt-1 text-sm text-charcoal-500">Evaluate each selected market independently and create a complete local authority cluster where justified.</p></button><button type="button" onClick={() => setLocalSeoEnabled(false)} className={`rounded-xl border p-4 text-left ${!localSeoEnabled ? "border-brand-500 bg-brand-50 ring-1 ring-brand-500" : "border-slate-200 bg-white"}`}><div className="font-bold text-charcoal-900">No, standard SEO plan</div><p className="mt-1 text-sm text-charcoal-500">Build service and topical authority without location-specific pages.</p></button></div></div>{localSeoEnabled && <label className="mt-4 block rounded-xl border border-brand-100 bg-brand-50/40 p-4"><span className="flex flex-wrap items-center justify-between gap-2"><span className="text-sm font-bold text-charcoal-800">Target cities or service areas</span><span className={`rounded-full px-2 py-1 text-[9px] font-black uppercase ${marketSaveState === "saved" ? "bg-emerald-100 text-emerald-700" : marketSaveState === "saving" ? "bg-amber-100 text-amber-700" : "bg-brand-100 text-brand-700"}`}>{marketSaveState === "saved" ? "Saved project-wide" : marketSaveState === "saving" ? "Saving…" : "Project-wide setting"}</span></span><span className="mt-1 block text-xs leading-5 text-charcoal-500">Loaded from project intake. Changes are saved to this project before generation, so all modules use the same target-market source for new or refreshed work.</span><textarea value={targetLocations} onChange={(event) => { setTargetLocations(event.target.value); setMarketSaveState("dirty"); }} rows={3} placeholder={"Toronto\nMississauga\nGreater Toronto Area"} className="mt-3 w-full rounded-lg border border-brand-200 bg-white px-3 py-2 text-sm leading-6 outline-none focus:border-brand-500" /></label>}<div className="mt-5 flex justify-end"><button type="button" disabled={busy || (localSeoEnabled && geographicTargetMarkets(lines(targetLocations)).length === 0)} onClick={() => void startPlanSetup()} className="rounded-lg bg-brand-600 px-5 py-2.5 text-sm font-bold text-white hover:bg-brand-700 disabled:bg-slate-300">{busy || marketSaveState === "saving" ? "Saving project markets…" : localSeoEnabled ? "Save markets & generate plan →" : "Generate smart content plan →"}</button></div></div></div> : busy && !plan ? <div className="grid min-h-80 flex-1 place-items-center"><div className="text-center"><div className="mx-auto h-10 w-10 animate-spin rounded-full border-4 border-brand-100 border-t-brand-600" /><div className="mt-4 font-bold">Building the content plan…</div></div></div> : plan ? <>
+        <div className="mt-5"><h4 className="text-sm font-black text-charcoal-950">Should this content plan include Local SEO?</h4><p className="mt-1 text-xs leading-5 text-charcoal-500">Target cities are loaded from project intake. Confirm whether they should shape the authority clusters.</p><div className="mt-3 grid gap-3 sm:grid-cols-2"><button type="button" onClick={() => setLocalSeoEnabled(true)} className={`rounded-xl border p-4 text-left ${localSeoEnabled ? "border-brand-500 bg-brand-50 ring-1 ring-brand-500" : "border-slate-200 bg-white"}`}><div className="font-bold text-charcoal-900">Yes, include Local SEO</div><p className="mt-1 text-sm text-charcoal-500">Evaluate each selected market independently and create a complete local authority cluster where justified.</p></button><button type="button" onClick={() => setLocalSeoEnabled(false)} className={`rounded-xl border p-4 text-left ${!localSeoEnabled ? "border-brand-500 bg-brand-50 ring-1 ring-brand-500" : "border-slate-200 bg-white"}`}><div className="font-bold text-charcoal-900">No, standard SEO plan</div><p className="mt-1 text-sm text-charcoal-500">Build service and topical authority without location-specific pages.</p></button></div></div>{localSeoEnabled && <label className="mt-4 block rounded-xl border border-brand-100 bg-brand-50/40 p-4"><span className="flex flex-wrap items-center justify-between gap-2"><span className="text-sm font-bold text-charcoal-800">Target cities or service areas</span><span className={`rounded-full px-2 py-1 text-[9px] font-black uppercase ${marketSaveState === "saved" ? "bg-emerald-100 text-emerald-700" : marketSaveState === "saving" ? "bg-amber-100 text-amber-700" : "bg-brand-100 text-brand-700"}`}>{marketSaveState === "saved" ? "Saved project-wide" : marketSaveState === "saving" ? "Saving…" : "Project-wide setting"}</span></span><span className="mt-1 block text-xs leading-5 text-charcoal-500">Loaded from project intake. Changes are saved to this project before generation, so all modules use the same target-market source for new or refreshed work.</span><textarea value={targetLocations} onChange={(event) => { setTargetLocations(event.target.value); setMarketSaveState("dirty"); }} rows={3} placeholder={"Toronto\nMississauga\nGreater Toronto Area"} className="mt-3 w-full rounded-lg border border-brand-200 bg-white px-3 py-2 text-sm leading-6 outline-none focus:border-brand-500" /></label>}<div className="mt-5 flex justify-end"><button type="button" disabled={busy || (localSeoEnabled && geographicTargetMarkets(lines(targetLocations)).length === 0)} onClick={() => void startPlanSetup()} className="rounded-lg bg-brand-600 px-5 py-2.5 text-sm font-bold text-white hover:bg-brand-700 disabled:bg-slate-300">{busy || marketSaveState === "saving" ? "Saving project markets…" : localSeoEnabled ? "Save markets & generate plan →" : "Generate smart content plan →"}</button></div></div></div> : busy && !plan ? <div className="grid min-h-[34rem] flex-1 place-items-center overflow-y-auto bg-gradient-to-b from-white via-brand-50/20 to-violet-50/30 p-6" role="status" aria-live="polite" aria-label="Creating the SEO Page Map and Content Plan"><div className="w-full max-w-3xl text-center"><div className="relative mx-auto h-20 w-20"><div className="absolute inset-0 rounded-full border-4 border-brand-100" /><div className="absolute inset-0 animate-spin rounded-full border-4 border-transparent border-r-violet-400 border-t-brand-600" /><div className="absolute inset-[18px] grid place-items-center rounded-full bg-brand-50 text-2xl">✦</div></div><div className="mt-6 text-[10px] font-black uppercase tracking-[0.18em] text-brand-700">SEO planning in progress</div><h3 className="mt-2 text-2xl font-black text-slate-950">Hang tight — we’re building your content plan!</h3><p className="mx-auto mt-2 max-w-2xl text-sm leading-6 text-slate-600">SEnuke AI is turning the approved business direction, keywords, markets, website evidence, and Strategy into one practical page map. It is deciding what to reuse, what to improve, and which new pages are genuinely justified.</p><div className="mt-4 flex flex-wrap justify-center gap-2"><span className="rounded-full border border-brand-200 bg-white px-3 py-1.5 text-[10px] font-black text-brand-800">{targetKeywords.length} approved keyword{targetKeywords.length === 1 ? "" : "s"}</span><span className="rounded-full border border-violet-200 bg-white px-3 py-1.5 text-[10px] font-black text-violet-800">{selectedMarkets.length} target market{selectedMarkets.length === 1 ? "" : "s"}</span>{projectContext?.websiteUrl && <span className="rounded-full border border-emerald-200 bg-white px-3 py-1.5 text-[10px] font-black text-emerald-800">Existing website evidence included</span>}</div><div className="mt-5 grid gap-3 text-left sm:grid-cols-3">{[["1", "Review the evidence", "Business goals, approved keywords, search intent, target markets, and existing website pages"], ["2", "Assign page ownership", "Group overlapping searches, select one canonical owner, and prevent duplicate or competing pages"], ["3", "Prepare the handoff", "Create URLs, briefs, FAQs, schema, proof, CTAs, Local SEO, and internal-link requirements"]].map(([step, title, detail]) => <div key={step} className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm"><div className="flex items-center gap-3"><span className="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-brand-600 text-xs font-black text-white">{step}</span><div className="text-sm font-black text-slate-900">{title}</div></div><p className="mt-3 text-xs leading-5 text-slate-500">{detail}</p></div>)}</div><div className="mt-4 flex flex-wrap justify-center gap-x-5 gap-y-2 rounded-xl border border-emerald-100 bg-emerald-50/60 px-4 py-3 text-[10px] font-bold text-emerald-800"><span>✓ Reuse suitable existing pages first</span><span>✓ One canonical owner per intent</span><span>✓ Hold unverified location pages for review</span></div><div className="mx-auto mt-5 h-2 max-w-md overflow-hidden rounded-full bg-slate-100"><div className="h-full w-2/3 animate-pulse rounded-full bg-gradient-to-r from-brand-400 via-violet-500 to-brand-600" /></div><p className="mt-3 text-xs font-black uppercase tracking-wide text-brand-700">Creating an evidence-backed Website Plan…</p><p className="mx-auto mt-2 max-w-xl text-[11px] leading-5 text-slate-500">Nothing is being published. You will review and edit every recommended page before approval or Website Development begins.</p></div></div> : plan ? <>
         <div className="border-b border-slate-200 bg-white px-4 py-2.5">
           {saveNotice && <div className="mb-2 flex justify-end"><span className={`rounded-full px-3 py-1 text-[10px] font-black ${savingPageMap ? "bg-amber-100 text-amber-800" : planStored ? "bg-emerald-100 text-emerald-800" : "bg-rose-100 text-rose-700"}`}>{saveNotice}</span></div>}
           <div className="mx-auto flex max-w-[1180px] gap-1.5 overflow-x-auto" role="tablist" aria-label="Content plan workflow">
@@ -1726,7 +1970,7 @@ export default function ContentPlanDialog({ task, onClose, onSaved }: { task: Gu
         <div className={`flex-1 overflow-y-auto p-4 ${currentPhaseStyle.canvas}`}>
           <div className="mx-auto w-full max-w-[1180px]">
           {error && <div className="mb-3 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm font-semibold text-red-700">{error}</div>}
-          <div className={`rounded-xl border p-3.5 ${currentPhaseStyle.panel}`}>
+          {currentPhase.key !== "pages" && <div className={`rounded-xl border p-3.5 ${currentPhaseStyle.panel}`}>
             <div className={`text-xs font-black uppercase tracking-wide ${currentPhaseStyle.eyebrow}`}>{currentPhase.label}</div>
             <p className="mt-1 text-sm leading-6 text-charcoal-700">{currentPhase.description}</p>
             {currentPhase.sections.length > 1 && (currentPhase.key === "publishing" ? <div className="mt-4 grid gap-2 lg:grid-cols-4">{currentPhase.sections.map((key, index) => {
@@ -1750,7 +1994,7 @@ export default function ContentPlanDialog({ task, onClose, onSaved }: { task: Gu
               return <button key={key} type="button" onClick={() => setActiveTab(key)} className={`rounded-lg border px-3 py-2 text-xs font-bold ${activeTab === key ? currentPhaseStyle.subtab : "border-white/80 bg-white/70 text-charcoal-600 hover:bg-white"}`}>{section?.label}<span className="ml-1.5 text-charcoal-400">{key === "faqTopics" ? `${count} page topics` : key === "proofBlocks" ? `${count} requirements` : count}</span></button>;
             })}</div>)}
             <div className="mt-3 rounded-lg border border-white bg-white/80 px-3 py-2"><span className="text-xs font-bold text-charcoal-800">What you are reviewing: </span><span className="text-xs leading-5 text-charcoal-600">{PLAN_TABS.find((tab) => tab.key === activeTab)?.help}</span></div>
-          </div>
+          </div>}
           {activeTab === "summary" ? <div className="mt-3">
             {plan.aiBusinessContext && <section className="mb-3 overflow-hidden rounded-xl border border-sky-200 bg-white">
               <div className="flex flex-wrap items-start justify-between gap-3 border-b border-sky-100 bg-sky-50 px-4 py-3">
@@ -1773,7 +2017,7 @@ export default function ContentPlanDialog({ task, onClose, onSaved }: { task: Gu
           {!aiSuggestionsComplete && <div className="mt-3 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-semibold text-amber-900">AI content planning is incomplete for one or more pages. Retry or regenerate the plan before approval; SENuke will not substitute generic suggestions.</div>}
           </div>
         </div>
-        <div className="border-t border-slate-200 bg-white px-4 py-3"><div className="mx-auto flex max-w-[1180px] flex-wrap items-center justify-between gap-3"><div className="max-w-2xl flex-1">{error && <p className="mb-1 text-xs font-bold text-red-700">{error}</p>}<p className={`text-xs ${approvalPending || planApproved ? "font-semibold text-emerald-700" : planDirty || !aiSuggestionsComplete ? "font-semibold text-amber-700" : "text-charcoal-500"}`}>{planApproved ? "Plan approved. Every saved page now has an executable AI content task in Content Assets." : approvalPending ? "Plan sent for approval successfully. Content tasks will be created from this exact saved version after approval." : !aiSuggestionsComplete ? planDirty ? "Save your page changes first, then complete the missing AI page briefs." : "Complete the AI plan to generate every page brief, SEO title, meta description, outline, FAQ set, proof direction, and CTA." : planDirty ? `${newUnsavedPages ? `${newUnsavedPages} added page${newUnsavedPages === 1 ? " is" : "s are"}` : "Your changes are"} not stored yet. Save changes before closing or submitting.` : "This version is saved in the project. Review its content assets, then submit the exact saved version for approval."}</p></div><div className="flex w-full flex-wrap justify-end gap-2 sm:w-auto"><button type="button" onClick={onClose} className="whitespace-nowrap rounded-lg border border-slate-200 bg-white px-4 py-2 text-sm font-bold text-charcoal-700">{approvalPending || planApproved ? "Close" : "Cancel"}</button><button type="button" disabled={busy || savingPageMap || approvalPending || planApproved || !planDirty} onClick={() => void save(false)} className="whitespace-nowrap rounded-lg border border-brand-200 bg-white px-4 py-2 text-sm font-bold text-brand-700 hover:bg-brand-50 disabled:bg-slate-100 disabled:text-slate-400">{busy || savingPageMap ? "Saving…" : planDirty ? "Save Changes" : "✓ Changes Saved"}</button><button type="button" disabled={busy || savingPageMap || approvalPending || planApproved || planDirty} onClick={() => void (aiSuggestionsComplete ? save(true) : rebuildSmartPlan())} className={`whitespace-nowrap rounded-lg px-4 py-2 text-sm font-bold text-white ${approvalPending || planApproved ? "bg-emerald-600 disabled:bg-emerald-600 disabled:text-white" : "bg-brand-600 hover:bg-brand-700 disabled:bg-slate-300"}`}>{busy ? aiSuggestionsComplete ? "Submitting…" : "Completing AI Plan…" : planApproved ? "✓ Approved" : approvalPending ? "✓ Sent for Approval" : planDirty ? "Save Before Continuing" : !aiSuggestionsComplete ? "Complete AI Plan" : "Submit Plan for Approval"}</button></div></div></div>
+        <div className="border-t border-slate-200 bg-white px-4 py-3"><div className="mx-auto flex max-w-[1180px] flex-wrap items-center justify-between gap-3"><div className="max-w-2xl flex-1">{error && <p className="mb-1 text-xs font-bold text-red-700">{error}</p>}<p className={`text-xs ${approvalPending || planApproved ? "font-semibold text-emerald-700" : planDirty || !aiSuggestionsComplete ? "font-semibold text-amber-700" : "text-charcoal-500"}`}>{planApproved ? "Plan approved. Every saved page now has an executable AI content task in Content Assets." : approvalPending ? "Plan sent for approval successfully. Content tasks will be created from this exact saved version after approval." : !aiSuggestionsComplete ? planDirty ? "Save your page changes first, then complete the missing AI page briefs." : "Complete the AI plan to generate every page brief, SEO title, meta description, outline, FAQ set, proof direction, and CTA." : planDirty ? `${newUnsavedPages ? `${newUnsavedPages} added page${newUnsavedPages === 1 ? " is" : "s are"}` : "Your changes are"} not stored yet. Save changes before closing or submitting.` : "Saved and ready for approval. Review the page assets, then select Submit Plan for Approval."}</p></div><div className="flex w-full flex-wrap justify-end gap-2 sm:w-auto"><button type="button" onClick={onClose} className="whitespace-nowrap rounded-lg border border-slate-200 bg-white px-4 py-2 text-sm font-bold text-charcoal-700">{approvalPending || planApproved ? "Close" : "Cancel"}</button><button type="button" disabled={busy || savingPageMap || approvalPending || planApproved || !planDirty} onClick={() => void save(false)} className="whitespace-nowrap rounded-lg border border-brand-200 bg-white px-4 py-2 text-sm font-bold text-brand-700 hover:bg-brand-50 disabled:bg-slate-100 disabled:text-slate-400">{busy || savingPageMap ? "Saving…" : planDirty ? "Save Changes" : "✓ Changes Saved"}</button><button type="button" disabled={busy || savingPageMap || approvalPending || planApproved || planDirty} onClick={() => void (aiSuggestionsComplete ? save(true) : rebuildSmartPlan())} className={`whitespace-nowrap rounded-lg px-4 py-2 text-sm font-bold text-white ${approvalPending || planApproved ? "bg-emerald-600 disabled:bg-emerald-600 disabled:text-white" : "bg-brand-600 hover:bg-brand-700 disabled:bg-slate-300"}`}>{busy ? aiSuggestionsComplete ? "Submitting…" : "Completing AI Plan…" : planApproved ? "✓ Approved" : approvalPending ? "✓ Sent for Approval" : planDirty ? "Save Before Continuing" : !aiSuggestionsComplete ? "Complete AI Plan" : "Submit Plan for Approval"}</button></div></div></div>
       </> : <div className="grid min-h-72 place-items-center p-8"><div className="rounded-xl border border-red-200 bg-red-50 p-5 text-center text-red-700">{error || "The content plan could not be opened."}</div></div>}
     </div>
   </div>;

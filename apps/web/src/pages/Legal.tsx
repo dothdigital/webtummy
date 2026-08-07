@@ -64,7 +64,7 @@ export default function Legal({ kind }: { kind: LegalKind }) {
         </Section>
 
         <Section title="5. Third-Party Services">
-          <p>We use selected service providers to operate SEnuke AI, including hosting and infrastructure providers, email delivery providers, Stripe for billing and invoices, Google reCAPTCHA v3 for abuse prevention, Google or other performance APIs where configured, keyword and SERP data providers where configured, and OpenAI for AI-assisted content or analysis features.</p>
+          <p>We use selected service providers to operate SEnuke AI, including hosting and infrastructure providers, email delivery providers, JVZoo for checkout, recurring billing, and purchase notifications, Google reCAPTCHA v3 for abuse prevention, Google or other performance APIs where configured, keyword and SERP data providers where configured, and OpenAI for AI-assisted content or analysis features.</p>
           <p>These providers process information according to their own terms and privacy policies. We share only the information needed for the relevant feature or operational purpose.</p>
         </Section>
 
@@ -74,7 +74,7 @@ export default function Legal({ kind }: { kind: LegalKind }) {
         </Section>
 
         <Section title="7. Billing and Invoices">
-          <p>Payments, subscriptions, customer portals, and invoices are handled through Stripe. We store billing-related identifiers, subscription status, plan information, and invoice links or metadata, but we do not store full payment card numbers on SEnuke AI servers.</p>
+          <p>Payments, subscriptions, purchase records, and customer purchase access are handled through JVZoo and its supported payment processors. We store provider references, subscription status, plan information, and limited transaction metadata, but we do not store full payment card numbers on SEnuke AI servers.</p>
         </Section>
 
         <Section title="8. Security and Retention">
@@ -125,7 +125,7 @@ export default function Legal({ kind }: { kind: LegalKind }) {
       </Section>
 
       <Section title="7. Plans, Billing, and Invoices">
-        <p>Paid plan access, subscription status, quotas, and invoice downloads may be managed through SEnuke AI and Stripe. Fees are billed according to the selected plan and Stripe checkout or portal terms shown at purchase.</p>
+        <p>Paid plan access, subscription status, entitlements, and purchase history may be managed through SEnuke AI and JVZoo. Fees are billed according to the selected plan and the JVZoo checkout terms shown at purchase.</p>
         <p>Unless otherwise stated, fees are non-refundable except where required by law or expressly agreed in writing. We may change plans, quotas, or pricing with notice where required.</p>
       </Section>
 

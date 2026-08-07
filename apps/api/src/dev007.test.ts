@@ -10,7 +10,12 @@ describe("DEV-007 Keyword Intelligence", () => {
     expect(groups.find((group) => group.category === "local")?.keywords).toContain("roof repair Toronto");
     expect(groups[0].goalSupport).toContain("Generate More Leads");
   });
-  it("deduplicates manual keywords case-insensitively", () => expect(normalizeKeywordList(["Roof Repair", "roof repair", "Toronto roofer"])).toEqual(["roof repair", "Toronto roofer"]));
-  it("preserves commas inside an already submitted keyword phrase", () => expect(normalizeKeywordList(["insurance crm, software, saas"])).toEqual(["insurance crm, software, saas"]));
+  it("suggests comma-separated niche terms individually for user approval", () => {
+    const groups = buildKeywordGroups({ ...project, niche: "Insurtech, Insurance CRM" });
+    expect(groups.find((group) => group.category === "primary")?.keywords).toEqual(expect.arrayContaining(["insurtech", "insurance crm"]));
+    expect(groups.find((group) => group.category === "primary")?.keywords).not.toContain("insurtech, insurance crm");
+  });
+  it("deduplicates manual keywords case-insensitively", () => expect(normalizeKeywordList(["Roof Repair", "roof repair", "Toronto roofer"])).toEqual(["Roof Repair", "Toronto roofer"]));
+  it("splits comma-separated keyword entries", () => expect(normalizeKeywordList(["insurance crm, software, saas"])).toEqual(["insurance crm", "software", "saas"]));
   it("requests fallback input only when direction data is insufficient", () => expect(keywordIntakeSufficient({ name: "Untitled" })).toBe(false));
 });

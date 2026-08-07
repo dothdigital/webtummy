@@ -1,3 +1,5 @@
+import { geographicTargetMarkets } from "./utils/projectLocations";
+
 export const COUNTRY_OPTIONS = [
   { value: "Albania", locationCode: 2008, isoCode: "AL", locationType: "Country", label: "🇦🇱 Albania (AL)", defaultRegion: "", defaultCity: "" },
   { value: "Algeria", locationCode: 2012, isoCode: "DZ", locationType: "Country", label: "🇩🇿 Algeria (DZ)", defaultRegion: "", defaultCity: "" },
@@ -110,6 +112,13 @@ export function buildLocationNames(cities: string, region: string, country: stri
   const countryLower = country.trim().toLowerCase();
   const seen = new Set<string>();
   const parsed = citiesFromText(cities)
+    // Intake can contain a natural-language service area such as
+    // "Etobicoke and west Toronto". Research providers require one exact
+    // market per request, so split composite markets before adding the
+    // shared region and country. A country value containing "and" is removed
+    // by the country filter below before this split is applied.
+    .filter((part) => part.toLowerCase() !== regionLower && part.toLowerCase() !== countryLower)
+    .flatMap((part) => part.split(/\s+(?:and|&)\s+/i).map((market) => market.trim()).filter(Boolean))
     .filter((part) => {
       const value = part.toLowerCase();
       return value !== regionLower && value !== countryLower;
@@ -121,6 +130,33 @@ export function buildLocationNames(cities: string, region: string, country: stri
       return true;
     });
   return (parsed.length ? parsed : [cities.trim()].filter(Boolean)).map((city) => buildLocationName(city, region, country));
+}
+
+export function projectAnalysisLocations(input: {
+  targetLocations?: unknown;
+  businessLocationJson?: { country?: string | null; stateProvince?: string | null; city?: string | null } | null;
+}) {
+  const rawTargets = Array.isArray(input.targetLocations)
+    ? input.targetLocations.map(String)
+    : typeof input.targetLocations === "string"
+      ? input.targetLocations.split(/[;\n]/)
+      : [];
+  const countryValue = input.businessLocationJson?.country?.trim() || rawTargets.find((item) => COUNTRY_OPTIONS.some((country) =>
+    country.value.toLowerCase() === item.trim().toLowerCase() || country.isoCode.toLowerCase() === item.trim().toLowerCase(),
+  )) || "";
+  const country = COUNTRY_OPTIONS.find((item) =>
+    item.value.toLowerCase() === countryValue.toLowerCase() || item.isoCode.toLowerCase() === countryValue.toLowerCase(),
+  )?.value || countryValue;
+  const region = input.businessLocationJson?.stateProvince?.trim() || "";
+  const excluded = new Set([country.toLowerCase(), countryValue.toLowerCase(), region.toLowerCase()].filter(Boolean));
+  const markets = [...new Map(geographicTargetMarkets(rawTargets)
+    .filter((item) => {
+      if (excluded.has(item.toLowerCase())) return false;
+      return !COUNTRY_OPTIONS.some((countryOption) => countryOption.value.toLowerCase() === item.toLowerCase() || countryOption.isoCode.toLowerCase() === item.toLowerCase());
+    })
+    .map((item) => [item.toLowerCase(), item])).values()];
+  if (!markets.length && input.businessLocationJson?.city?.trim()) markets.push(input.businessLocationJson.city.trim());
+  return { country, region, markets, locationNames: buildLocationNames(markets.join(", "), region, country) };
 }
 
 export function defaultLocationParts() {

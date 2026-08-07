@@ -1,34 +1,43 @@
 import { Router, type Request } from "express";
 import { z } from "zod";
-import { prisma, type Prisma } from "@webtummy/db";
+import { Prisma, prisma } from "@webtummy/db";
 import { requireAuth, requireRole } from "../middleware.js";
 import { projectClientIdForRequest } from "../project-scope.js";
 import { config } from "../config.js";
-import { commitUsage, modelForFeature, preflightUsage, refundUsage } from "../usage-engine.js";
-import { buildCampaignExecutionTasks, isExistingWebsiteCampaign, projectTypes, projectWorkflowDefinitions, requiresSiteAnalysisBeforeStrategy } from "../campaign-intelligence.js";
+import { commitUsage, modelForFeature, modelRouteForFeature, preflightUsage, refundUsage } from "../usage-engine.js";
+import { buildCampaignExecutionTasks, isExistingWebsiteCampaign, isPreLaunchWebsiteCampaign, projectTypeForWebsiteSituation, projectTypes, projectWorkflowDefinitions, requiresSiteAnalysisBeforeStrategy } from "../campaign-intelligence.js";
 import { canAccessAgencyClient, canAccessProject, createWorkspaceNotification, hasWorkspacePermission, recordWorkspaceActivity, requireWorkspaceRole, workspaceContext } from "../workspace-access.js";
 import { clientDefaults } from "../dev002.js";
 import { validateProjectCreation, websiteStatuses } from "../dev003.js";
-import { cleanGeographicTargetMarkets, formatBusinessLocation, locationIsComplete, type BusinessLocation } from "../project-location.js";
+import { canonicalGeographicLocationLabel, cleanGeographicTargetMarkets, formatBusinessLocation, locationIsComplete, projectAnalysisLocationLabels, type BusinessLocation } from "../project-location.js";
 import { locationDefaultsFromSettings, resolveProjectLocations, withLocationDefaults } from "../dev004.js";
 import { goalContext, normalizeProjectGoals } from "../dev005.js";
 import { opportunityDecisionStatus, opportunityInputSummary, opportunityRunMode, rankedOpportunityRecommendations } from "../dev006.js";
 import { buildKeywordGroups, keywordIntakeSufficient, normalizeKeywordList } from "../dev007.js";
 import { buildExtendedStrategyAnalysis } from "../dev014.js";
 import { buildIntelligentExecutionTasks, type StrategyRecommendation } from "../dev015.js";
+import { assertWorkspaceResourceAvailable } from "../commercial-service.js";
+import { approvedKeywordEntries, missingApprovedKeywordResearch, splitKeywordEntries, stripKeywordLocationQualifiers, urlAliasKey } from "@webtummy/core";
+import { recommendationFindings } from "./gap-analysis.js";
+import { approvedStrategyContext, channelStrategyText, extractUnifiedStrategyPlan, generateUnifiedStrategyWithAi } from "../strategy-ai.js";
+import { buildStrategyDecisionSet, composeStrategyDecisionExplainability, STRATEGY_DECISION_ENGINE_VERSION } from "../strategy-decision-engine.js";
+import { getProjectWorkflowController, publishProjectWorkflowEvent } from "../project-workflow-controller.js";
+import { marketingExecutionSummary } from "../marketing-execution-engine.js";
+import { generateAiOpportunityRecommendations, type AiOpportunityRecommendation } from "../opportunity-ai.js";
+import { centralAiJson } from "../central-ai-service.js";
+import { isWebsitePlanTask } from "../website-plan-task.js";
 
 export const guidedProjectsRouter = Router();
 guidedProjectsRouter.use(requireAuth);
 
 function normalizeIntakeKeywords(values: string[], targetLocations: unknown) {
-  const locations = new Set(cleanGeographicTargetMarkets(Array.isArray(targetLocations) ? targetLocations.map(String) : []).map((item) => item.toLocaleLowerCase()));
-  return [...new Map(values.flatMap((item) => item.split(/[;\n]/)).map((item) => item.trim()).filter((item) => {
+  const locations = cleanGeographicTargetMarkets(Array.isArray(targetLocations) ? targetLocations.map(String) : []);
+  return [...new Map(splitKeywordEntries(values).map((item) => stripKeywordLocationQualifiers(item.trim(), locations)).filter((item) => {
     const normalized = item.toLocaleLowerCase().replace(/[.!]+$/, "").trim();
-    if (!normalized || locations.has(normalized)) return false;
+    if (!normalized) return false;
     if (/^(?:and|or)\b|^(?:and\s+)?others?\b/.test(normalized)) return false;
     if (/\bincluding\s+\S+$/.test(normalized)) return false;
-    if (!normalized.includes(" ") && !/^(?:seo|crm|rrsp|resp|saas)$/i.test(normalized)) return false;
-    return normalized.length >= 4;
+    return normalized.length >= 3;
   }).map((item) => [item.toLocaleLowerCase(), item])).values()];
 }
 
@@ -76,14 +85,14 @@ const createProjectSchema = z.object({
 const conversationalDraftSchema = z.object({
   name: z.string().trim().min(2).max(180),
   projectType: z.enum(projectTypes),
-  websiteStatus: z.enum(websiteStatuses),
+  websiteStatus: z.union([z.enum(websiteStatuses), z.literal("undecided")]),
   websiteUrl: z.string().trim().max(512).optional().nullable(),
   businessName: z.string().trim().max(180).optional().nullable(),
-  niche: z.string().trim().min(2).max(180),
+  niche: z.string().trim().max(180).optional().default(""),
   agencyClientId: z.string().optional().nullable(),
-  businessLocationDetails: z.object({ country: z.string().trim().min(1).max(120), stateProvince: z.string().trim().min(1).max(120), city: z.string().trim().min(1).max(120), streetAddress: z.string().trim().max(255).default(""), postalCode: z.string().trim().max(40).default("") }),
-  targetLocations: z.array(z.string().trim().min(1).max(180)).min(1).max(50),
-  primaryGoal: z.string().trim().min(1).max(255),
+  businessLocationDetails: z.object({ country: z.string().trim().max(120), stateProvince: z.string().trim().max(120), city: z.string().trim().max(120), streetAddress: z.string().trim().max(255).default(""), postalCode: z.string().trim().max(40).default("") }).optional().nullable(),
+  targetLocations: z.array(z.string().trim().min(1).max(180)).max(50).default([]),
+  primaryGoal: z.string().trim().max(255).optional().default(""),
 });
 const conversationalDraftUpdateSchema = z.object({
   projectName: z.string().trim().min(2).max(180).optional(), businessName: z.string().trim().max(180).optional(), industryNiche: z.string().trim().max(180).optional(),
@@ -127,6 +136,10 @@ const projectGoalsSchema = z.object({
 });
 const resetAfterStrategySchema = z.object({
   confirmation: z.literal("RESET"),
+  modules: z.array(z.enum(["opportunities", "execution", "website", "content", "lead_magnets", "local_seo", "publishing"]))
+    .min(1)
+    .max(7)
+    .optional(),
 });
 const opportunityActionSchema = z.object({ confirmation: z.boolean().default(false), reason: z.string().trim().max(1000).optional().nullable() });
 const opportunityRefineSchema = z.object({ instructions: z.string().trim().min(3).max(2000) });
@@ -261,6 +274,10 @@ const workflowStepCreateSchema = z.object({
   sortOrder: z.coerce.number().int().min(0).max(10000).default(999),
   reason: z.string().max(5000).optional().nullable(),
 });
+const workflowModuleDecisionSchema = z.object({
+  decision: z.enum(["waive", "defer", "resume"]),
+  reason: z.string().trim().min(5).max(1000),
+});
 
 const moduleTaskCreateSchema = z.object({
   projectId: z.string().optional().nullable(),
@@ -281,33 +298,12 @@ const moduleTaskCreateSchema = z.object({
 });
 
 async function openaiJson(prompt: string, model = config.openaiModel) {
-  if (!config.openaiApiKey) throw new Error("openai_not_configured");
-  const response = await fetch("https://api.openai.com/v1/chat/completions", {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${config.openaiApiKey}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      model,
-      temperature: 0.35,
-      response_format: { type: "json_object" },
-      messages: [
-        { role: "system", content: "You are SEnuke AI. Return valid JSON only. No markdown fences. Do not invent unavailable metrics or claim live publication." },
-        { role: "user", content: prompt },
-      ],
-    }),
+  return centralAiJson({
+    system: "You are SEnuke AI. Do not invent unavailable metrics or claim live publication.",
+    prompt,
+    model,
+    temperature: 0.35,
   });
-  const data = await response.json().catch(() => ({})) as any;
-  if (!response.ok) throw new Error(typeof data?.error?.message === "string" ? data.error.message : "OpenAI request failed");
-  const content = data?.choices?.[0]?.message?.content;
-  if (typeof content !== "string") throw new Error("OpenAI returned no content");
-  return {
-    result: JSON.parse(content) as unknown,
-    model: data?.model ?? model,
-    inputTokens: Number(data?.usage?.prompt_tokens ?? 0),
-    outputTokens: Number(data?.usage?.completion_tokens ?? 0),
-  };
 }
 
 function clean(value?: string | null) {
@@ -348,7 +344,7 @@ async function scopedProject(req: Request, projectId: string) {
     where: { id: projectId, ...(clientId ? { clientId } : {}) },
     include: {
       website: { select: { id: true, domain: true, rootUrl: true, status: true } },
-      agencyClient: { select: { id: true, name: true, contactPhone: true, businessLocations: true, defaultSettings: true, brandingJson: true } },
+      agencyClient: { select: { id: true, name: true, contactPhone: true, businessLocations: true, targetMarkets: true, defaultSettings: true, brandingJson: true } },
       businessProfile: true,
       workflowSteps: { orderBy: { sortOrder: "asc" } },
       intakeAnswers: { orderBy: { createdAt: "asc" } },
@@ -371,20 +367,117 @@ async function scopedProject(req: Request, projectId: string) {
       opportunities: { orderBy: { createdAt: "desc" }, take: 10 },
       keywordGroups: { orderBy: { createdAt: "asc" } },
       strategyPlans: { orderBy: { createdAt: "desc" }, take: 3 },
+      gapAnalysisRuns: { orderBy: { createdAt: "desc" }, take: 1, select: { id: true, completedAt: true, createdAt: true } },
+      websiteBuilds: { orderBy: { updatedAt: "desc" }, take: 1, select: { id: true } },
     },
   });
   if (!project) return null;
   const context = await workspaceContext(req);
   const accessible = context.workspace.workspaceType === "personal" || await canAccessProject(context, project.id);
   if (!accessible) return null;
-  const normalizeGuidedPlanTask = <T extends { id: string; title: string; actionButtonLabel?: string | null; relatedUrl?: string | null }>(task: T): T => {
-    if (!/(?:seo\s*plan|content\s*plan)/i.test(`${task.title} ${task.actionButtonLabel ?? ""}`)) return task;
-    return { ...task, relatedUrl: `/guided-projects/${project.id}?tab=execution&actionTask=${task.id}#execution-tasks` };
+  const latestStrategy = project.strategyPlans[0] ?? null;
+  const latestGapAnalysis = project.gapAnalysisRuns[0] ?? null;
+  const gapAnalysisAt = latestGapAnalysis?.completedAt ?? latestGapAnalysis?.createdAt ?? null;
+  const seoEvidenceCurrent = !requiresSiteAnalysisBeforeStrategy(project) || Boolean(
+    latestStrategy?.status === "approved"
+    && gapAnalysisAt
+    && gapAnalysisAt.getTime() <= latestStrategy.createdAt.getTime()
+  );
+  const strategyCoversLatestGap = Boolean(latestStrategy && gapAnalysisAt && gapAnalysisAt.getTime() <= latestStrategy.createdAt.getTime());
+  const seoWorkflowGate = !latestGapAnalysis
+    ? {
+      title: "Run SEO & Gap Analysis",
+      description: "Analyze Site Analysis, approved keywords, target locations, page mapping, content, technical SEO, Local SEO, and AI visibility before creating executable SEO work.",
+      reason: "Run SEO and Gap Analysis, then update and approve Strategy before creating the consolidated SEO execution plan.",
+      action: "Run SEO & Gap Analysis",
+      url: `/gap-analysis?projectId=${project.id}`,
+    }
+    : strategyCoversLatestGap && latestStrategy?.status !== "approved"
+      ? {
+        title: "Review & Approve Updated Strategy",
+        description: "The latest Strategy already includes the completed SEO and Gap Analysis. Review and approve it before executable SEO work is released.",
+        reason: "Review and approve the Strategy generated from the latest SEO and Gap Analysis before creating executable SEO work.",
+        action: "Review & Approve Strategy",
+        url: `/strategy?projectId=${project.id}`,
+      }
+      : {
+        title: "Update Strategy with Latest SEO Evidence",
+        description: "The completed SEO and Gap Analysis is newer than the approved Strategy. Regenerate and approve Strategy so execution uses the latest evidence.",
+        reason: "The latest SEO or Gap Analysis is newer than the approved Strategy. Update and approve Strategy before creating executable SEO work.",
+        action: "Update Strategy",
+        url: `/strategy?projectId=${project.id}`,
+      };
+  const existingWebsiteWithoutBuild = (project.projectType === "existing_website" || project.websiteStatus === "existing_website") && project.websiteBuilds.length === 0;
+  const seoPageMapTask = project.executionTasks.find(isWebsitePlanTask) ?? null;
+  const seoPageMapApproved = Boolean(
+    seoPageMapTask?.approvedAt
+    && ["ready_to_publish", "approved", "completed"].includes(seoPageMapTask.status),
+  );
+  const seoPageMapUrl = `/seo-page-map?projectId=${project.id}${seoPageMapTask ? `&taskId=${seoPageMapTask.id}` : ""}`;
+  const normalizeGuidedPlanTask = <T extends { id: string; moduleName: string; sourceType?: string | null; title: string; description: string; status: string; approvedAt?: Date | string | null; blockedReason?: string | null; actionButtonLabel?: string | null; relatedUrl?: string | null }>(task: T): T => {
+    const isSeoPlanTask = isWebsitePlanTask(task);
+    if (isSeoPlanTask) return {
+      ...task,
+      actionButtonLabel: task.approvedAt ? "View SEO Page Map" : task.status === "ready" ? "Create SEO Page Map" : "Review SEO Page Map",
+      relatedUrl: `/seo-page-map?projectId=${project.id}&taskId=${task.id}`,
+    };
+    const seoExecutionDecision = task.sourceType === "strategy_decision"
+      && task.moduleName === "execution_plan"
+      && /(?:crawl|seo|page|keyword|internal\s+link|canonical|content)/i.test(`${task.title} ${task.description}`);
+    if (seoExecutionDecision) return seoPageMapApproved ? {
+      ...task,
+      actionButtonLabel: "Review executable page tasks",
+      relatedUrl: `/guided-projects/${project.id}?tab=execution#execution-tasks`,
+      blockedReason: null,
+    } : {
+      ...task,
+      actionButtonLabel: "Create and approve SEO Page Map",
+      relatedUrl: seoPageMapUrl,
+      blockedReason: "Approve the SEO Page Map & Content Plan before these page priorities become executable website tasks.",
+    };
+    const existingSiteStrategyUpdate = existingWebsiteWithoutBuild
+      && task.sourceType === "strategy_decision"
+      && (task.moduleName === "website" || task.moduleName === "site_architect" || /review in website/i.test(task.actionButtonLabel ?? ""));
+    if (existingSiteStrategyUpdate) return {
+      ...task,
+      moduleName: seoPageMapApproved ? "site_architect" : "content",
+      actionButtonLabel: seoPageMapApproved ? "Open Website Improvement Plan" : "Create and approve SEO Page Map",
+      relatedUrl: seoPageMapApproved
+        ? `/site-architect?projectId=${project.id}&source=existing-site&taskId=${task.id}&step=structure`
+        : seoPageMapUrl,
+      ...(!seoPageMapApproved ? { blockedReason: "Approve the SEO Page Map & Content Plan before Website Development prepares this existing-site update." } : {}),
+    };
+    const isSeoGapAggregate = task.moduleName === "gap_analysis"
+      || (task.moduleName === "site_analysis" && /(?:fix (?:local )?site|review site issues|optimize existing site)/i.test(`${task.title} ${task.actionButtonLabel ?? ""}`));
+    if (!isSeoPlanTask && !isSeoGapAggregate) return task;
+    if (!seoEvidenceCurrent && !["completed", "skipped", "cancelled", "canceled"].includes(task.status ?? "")) return {
+      ...task,
+      ...(isSeoGapAggregate ? { moduleName: "gap_analysis", title: seoWorkflowGate.title, description: seoWorkflowGate.description } : {}),
+      status: "pending",
+      blockedReason: seoWorkflowGate.reason,
+      actionButtonLabel: seoWorkflowGate.action,
+      relatedUrl: seoWorkflowGate.url,
+    };
+    if (isSeoGapAggregate) return {
+      ...task,
+      moduleName: "gap_analysis",
+      title: "SEO & Gap Execution Plan",
+      description: "Work through the consolidated actions created from Site Analysis, keywords, locations, page mapping, content, technical SEO, Local SEO, AI visibility, and authority evidence.",
+      actionButtonLabel: "Review Consolidated Plan",
+      relatedUrl: `/gap-analysis?projectId=${project.id}`,
+    };
+    return { ...task, relatedUrl: `/seo-page-map?projectId=${project.id}&taskId=${task.id}` };
   };
+  const withExecutionGovernance = <T extends { moduleName: string; status: string }>(task: T) => ({ ...task, executionGovernance: marketingExecutionSummary(task) });
   const normalizedProject = {
     ...project,
-    executionTasks: project.executionTasks.map(normalizeGuidedPlanTask),
-    executionPlans: project.executionPlans.map((plan) => ({ ...plan, tasks: plan.tasks.map(normalizeGuidedPlanTask) })),
+    keywordGroups: project.keywordGroups.map((group) => ({
+      ...group,
+      keywords: normalizeKeywordList(group.keywords),
+      gapKeywords: normalizeKeywordList(group.gapKeywords),
+    })),
+    executionTasks: project.executionTasks.map(normalizeGuidedPlanTask).map(withExecutionGovernance),
+    executionPlans: project.executionPlans.map((plan) => ({ ...plan, tasks: plan.tasks.map(normalizeGuidedPlanTask).map(withExecutionGovernance) })),
   };
   if (normalizedProject.businessLocationJson) return normalizedProject;
   const clientSettings = project.agencyClient?.defaultSettings && typeof project.agencyClient.defaultSettings === "object"
@@ -415,6 +508,43 @@ async function projectSourceActivitySummaries(project: NonNullable<Awaited<Retur
     items: Array<{ id: string; title: string; detail?: string | null; status?: string; priority?: string }>;
     actionUrl: string;
   }> = [];
+
+  const latestGapAnalysis = await prisma.gapAnalysisRun.findFirst({
+    where: { projectId: project.id, status: "completed" },
+    orderBy: [{ completedAt: "desc" }, { createdAt: "desc" }],
+    select: {
+      id: true,
+      recommendations: {
+        orderBy: [{ impactScore: "desc" }, { confidenceScore: "desc" }],
+        select: { id: true, title: true, category: true, recommendedAction: true, expectedImpact: true, status: true, priority: true },
+      },
+    },
+  });
+  if (latestGapAnalysis?.recommendations.length) {
+    const recommendations = latestGapAnalysis.recommendations;
+    summaries.push({
+      key: "gap_analysis",
+      label: "SEO & Gap execution plan",
+      total: recommendations.length,
+      metrics: [
+        { label: "All actions", value: recommendations.length },
+        { label: "Critical", value: recommendations.filter((item) => item.priority === "critical").length, tone: "critical" },
+        { label: "High", value: recommendations.filter((item) => item.priority === "high").length, tone: "high" },
+        { label: "Medium", value: recommendations.filter((item) => item.priority === "medium").length, tone: "medium" },
+        { label: "Low", value: recommendations.filter((item) => item.priority === "low").length, tone: "low" },
+        { label: "Approved", value: recommendations.filter((item) => item.status === "approved").length },
+        { label: "To review", value: recommendations.filter((item) => item.status !== "approved" && item.status !== "ignored").length },
+      ],
+      items: recommendations.slice(0, 5).map((item) => ({
+        id: item.id,
+        title: item.title,
+        detail: `${item.recommendedAction}${item.expectedImpact ? ` Expected impact: ${item.expectedImpact}` : ""}`,
+        status: item.status,
+        priority: item.priority,
+      })),
+      actionUrl: `/gap-analysis?projectId=${project.id}`,
+    });
+  }
 
   if (project.websiteId) {
     const latestCrawl = await prisma.crawlJob.findFirst({
@@ -475,7 +605,7 @@ async function projectSourceActivitySummaries(project: NonNullable<Awaited<Retur
         { label: "Analysis runs", value: keywordRuns.length },
         { label: "Completed", value: keywordRuns.filter((run) => run.status === "completed").length },
       ],
-      items: keywordRuns.slice(0, 5).map((run) => ({ id: run.id, title: run.seedKeyword, detail: run.locationName, status: run.status })),
+      items: keywordRuns.slice(0, 5).map((run) => ({ id: run.id, title: run.seedKeyword, detail: canonicalGeographicLocationLabel(run.locationName), status: run.status })),
       actionUrl: `/keywords?projectId=${project.id}`,
     });
   }
@@ -918,11 +1048,14 @@ async function syncProjectWorkflow(tx: Prisma.TransactionClient, projectId: stri
       businessProfile: true,
       intakeAnswers: { select: { id: true }, take: 1 },
       opportunities: { select: { id: true, status: true }, orderBy: { createdAt: "desc" }, take: 10 },
-      keywordGroups: { select: { id: true, status: true }, take: 10 },
-      keywordResearchRuns: { select: { id: true, status: true, keywordCount: true }, orderBy: { createdAt: "desc" }, take: 3 },
+      keywordGroups: { select: { id: true, status: true, keywords: true, updatedAt: true } },
+      keywordResearchRuns: { select: { id: true, seedKeyword: true, status: true, keywordCount: true, locationName: true, languageCode: true, device: true, createdAt: true }, orderBy: { createdAt: "desc" } },
+      gapAnalysisRuns: { where: { status: "completed" }, select: { id: true, completedAt: true, createdAt: true }, orderBy: { createdAt: "desc" }, take: 1 },
       strategyPlans: { orderBy: { createdAt: "desc" }, take: 3 },
       executionPlans: { where: { status: "active" }, select: { id: true, title: true }, take: 1 },
       executionTasks: { select: { id: true, status: true, moduleName: true }, take: 50 },
+      websiteBuilds: { orderBy: { updatedAt: "desc" }, take: 1, select: { deployments: { orderBy: { createdAt: "desc" }, take: 5, select: { status: true, mode: true } } } },
+      websitePublications: { orderBy: { createdAt: "desc" }, take: 10, select: { status: true, mode: true, publishedAt: true, completedAt: true } },
       website: {
         select: {
           id: true,
@@ -943,18 +1076,28 @@ async function syncProjectWorkflow(tx: Prisma.TransactionClient, projectId: stri
   const strategyApproved = latestStrategy?.status === "approved" || project.currentStep === "execution";
   const hasWebsite = Boolean(project.websiteId || project.websiteUrl || project.website?.rootUrl);
   const readinessComplete = intakeComplete && Boolean(project.name && project.projectType && project.primaryGoal && project.businessLocation && Array.isArray(project.targetLocations) && project.targetLocations.length && (project.websiteStatus !== "existing_website" || hasWebsite));
-  const isExistingWebsite = isExistingWebsiteCampaign(project);
-  const isNewWebsiteLaunch = !isExistingWebsite || !hasWebsite;
-  const keywordGroupApproved = project.keywordGroups.some((group) => group.status === "approved");
-  const keywordAnalysisComplete = Boolean(keywordGroupApproved || project.keywordResearchRuns.some((run) => run.status === "completed" || run.keywordCount > 0) || project.executionTasks.some((task) => task.moduleName === "keyword_research" && ["completed", "skipped"].includes(task.status)));
+  const websiteLaunched = Boolean(
+    project.websiteBuilds[0]?.deployments.some((deployment) => ["completed", "success", "success_with_warnings"].includes(deployment.status) && deployment.mode !== "draft")
+    || project.websitePublications.some((publication) => publication.status === "published" || (publication.status === "completed" && ["publish", "sftp", "live"].includes(publication.mode))),
+  );
+  const isExistingWebsite = isExistingWebsiteCampaign(project) || websiteLaunched;
+  const isNewWebsiteLaunch = isPreLaunchWebsiteCampaign(project) && !websiteLaunched;
+  const approvedKeywords = approvedKeywordEntries(project.keywordGroups);
+  const workflowBusinessLocation = project.businessLocationJson && typeof project.businessLocationJson === "object" && !Array.isArray(project.businessLocationJson)
+    ? project.businessLocationJson as Partial<BusinessLocation>
+    : null;
+  const workflowKeywordLocations = projectAnalysisLocationLabels(project.targetLocations, workflowBusinessLocation);
+  const missingKeywordResearch = missingApprovedKeywordResearch(project.keywordGroups, project.keywordResearchRuns, workflowKeywordLocations);
+  const keywordAnalysisComplete = approvedKeywords.length > 0 && missingKeywordResearch.length === 0;
+  const marketAndContentIntelligenceComplete = project.gapAnalysisRuns.length > 0;
   const siteAnalysisComplete = Boolean(project.website?.crawlJobs.some((crawl) => crawl.status === "completed" && crawl.pagesCrawled > 0) || project.executionTasks.some((task) => task.moduleName === "site_analysis" && ["completed", "skipped"].includes(task.status)));
-  const siteAnalysisRequiredBeforeStrategy = requiresSiteAnalysisBeforeStrategy(project);
+  const siteAnalysisRequiredBeforeStrategy = websiteLaunched || requiresSiteAnalysisBeforeStrategy(project);
   const projectWorkflowModuleNames = new Set(["core_intake", "opportunity", "strategy", "strategy_approval"]);
   const moduleTaskCount = project.executionTasks.filter((task) => !["completed", "skipped", "cancelled", "canceled"].includes(task.status) && !projectWorkflowModuleNames.has(task.moduleName)).length;
   // An Execution Plan is project-wide. Its title may be Guided, Adaptive, or Full,
   // so completion must be based on the active plan and its real module tasks.
   const activeExecutionPlan = project.executionPlans[0] ?? null;
-  const executionPlanCreated = strategyApproved && Boolean(activeExecutionPlan) && moduleTaskCount > 0;
+  const executionPlanCreated = Boolean(activeExecutionPlan) && moduleTaskCount > 0 && strategyApproved;
 
   const statusByStep: Record<string, { status: string; actionUrl: string; sourceType?: string; sourceId?: string | null; completionReason?: string; readyReason?: string; completedAt?: Date | null }> = {
     intake: intakeComplete
@@ -975,7 +1118,7 @@ async function syncProjectWorkflow(tx: Prisma.TransactionClient, projectId: stri
     keyword_analysis: keywordAnalysisComplete
       ? { status: "completed", actionUrl: "/keywords", sourceType: "keyword_research", completionReason: "Keyword analysis exists for this project or connected website.", completedAt: new Date() }
       : selectedOpportunity
-        ? { status: "ready", actionUrl: "/keywords", readyReason: isNewWebsiteLaunch ? "Use the project profile to create seed keywords and page targets before a website exists." : "Use the project profile and opportunity direction to run keyword analysis before full execution planning." }
+        ? { status: "ready", actionUrl: "/keywords", readyReason: isNewWebsiteLaunch ? "Research the approved seed directions across target markets before the website Strategy is created." : "Use the project profile and opportunity direction to run keyword analysis before full execution planning." }
         : { status: "pending", actionUrl: "/keywords", readyReason: "Waiting for an opportunity selection or confirmed existing direction." },
     site_analysis: siteAnalysisComplete
       ? { status: "completed", actionUrl: "/site-analysis", sourceType: "site_analysis", completionReason: isExistingWebsite ? "A completed site crawl exists for the connected website." : "Site analysis is not required until generated pages or a website exist.", completedAt: new Date() }
@@ -988,9 +1131,9 @@ async function syncProjectWorkflow(tx: Prisma.TransactionClient, projectId: stri
           : { status: "pending", actionUrl: "/site-analysis", readyReason: "Waiting for keyword analysis." },
     strategy: strategyGenerated
       ? { status: "completed", actionUrl: "/strategy", sourceType: "strategy_plan", sourceId: latestStrategy?.id, completionReason: "A strategy plan exists.", completedAt: new Date() }
-      : selectedOpportunity && keywordGroupApproved && intakeComplete && (!siteAnalysisRequiredBeforeStrategy || siteAnalysisComplete)
-        ? { status: "ready", actionUrl: "/strategy", readyReason: isNewWebsiteLaunch ? "Project profile is enough to create the initial website, keyword, GBP/local, content, and publishing strategy." : keywordAnalysisComplete ? "Keyword and required site discovery are ready for strategy." : "Initial strategy can be generated now; keyword data can refine it later." }
-        : { status: "pending", actionUrl: "/strategy", readyReason: !selectedOpportunity ? "Select an opportunity or confirm the existing direction first." : !keywordGroupApproved ? "Approve at least one keyword group first." : siteAnalysisRequiredBeforeStrategy ? "Waiting for site analysis on the existing website." : "Waiting for intake completion." },
+      : selectedOpportunity && keywordAnalysisComplete && marketAndContentIntelligenceComplete && intakeComplete && (!siteAnalysisRequiredBeforeStrategy || siteAnalysisComplete)
+        ? { status: "ready", actionUrl: "/strategy", readyReason: isNewWebsiteLaunch ? "Opportunity, market, keyword, Local SEO, and content-gap evidence are ready for Website Strategy and the Unified Strategy." : "All approved keywords and required site discovery are ready for Strategy." }
+        : { status: "pending", actionUrl: "/strategy", readyReason: !selectedOpportunity ? "Select an opportunity or confirm the existing direction first." : !approvedKeywords.length ? "Approve at least one Primary or Secondary keyword first." : missingKeywordResearch.length ? `${missingKeywordResearch.length} approved keyword${missingKeywordResearch.length === 1 ? " still needs" : "s still need"} analysis.` : !marketAndContentIntelligenceComplete ? "Complete Opportunity, Market, and Content Gap intelligence first." : siteAnalysisRequiredBeforeStrategy ? "Waiting for site analysis on the existing website." : "Waiting for intake completion." },
     strategy_approval: strategyApproved
       ? { status: "completed", actionUrl: "/strategy", sourceType: "strategy_plan", sourceId: latestStrategy?.id, completionReason: "The current strategy is approved.", completedAt: latestStrategy?.approvedAt ?? new Date() }
       : strategyGenerated
@@ -1005,13 +1148,18 @@ async function syncProjectWorkflow(tx: Prisma.TransactionClient, projectId: stri
 
   for (const definition of projectWorkflowDefinitions) {
     const state = statusByStep[definition.stepKey];
+    const launchDefinition = isNewWebsiteLaunch && definition.stepKey === "keyword_analysis"
+      ? { title: "Complete Keyword Intelligence", description: "Research approved keyword directions and target markets before Website Strategy.", actionLabel: "Open Keyword Intelligence" }
+      : isNewWebsiteLaunch && definition.stepKey === "execution_plan"
+        ? { title: "Generate Website Execution Plan", description: "Convert the approved Unified Strategy into website architecture, content, design, review, and publishing tasks.", actionLabel: "Review Execution Plan" }
+        : null;
     await tx.projectWorkflowStep.upsert({
       where: { projectId_stepKey: { projectId: project.id, stepKey: definition.stepKey } },
       update: {
-        title: definition.title,
-        description: definition.description,
+        title: launchDefinition?.title ?? definition.title,
+        description: launchDefinition?.description ?? definition.description,
         priority: definition.priority,
-        actionLabel: definition.actionLabel,
+        actionLabel: launchDefinition?.actionLabel ?? definition.actionLabel,
         actionUrl: state.actionUrl,
         sortOrder: definition.sortOrder,
         status: state.status,
@@ -1024,10 +1172,10 @@ async function syncProjectWorkflow(tx: Prisma.TransactionClient, projectId: stri
       create: {
         projectId: project.id,
         stepKey: definition.stepKey,
-        title: definition.title,
-        description: definition.description,
+        title: launchDefinition?.title ?? definition.title,
+        description: launchDefinition?.description ?? definition.description,
         priority: definition.priority,
-        actionLabel: definition.actionLabel,
+        actionLabel: launchDefinition?.actionLabel ?? definition.actionLabel,
         actionUrl: state.actionUrl,
         sortOrder: definition.sortOrder,
         status: state.status,
@@ -1052,6 +1200,90 @@ async function syncProjectWorkflowsForClient(clientId: string, projectId?: strin
   }
 }
 
+type StrategyPageFindingGroup = {
+  category: "keyword_mapping" | "content" | "site_structure";
+  findings: Awaited<ReturnType<typeof recommendationFindings>>;
+};
+
+export function buildStrategyPagePriorities(
+  groups: StrategyPageFindingGroup[],
+  tasks: Array<{ id: string; title: string; description: string; status: string }>,
+) {
+  const labels: Record<StrategyPageFindingGroup["category"], string> = {
+    keyword_mapping: "Keyword and page mapping",
+    content: "Content quality",
+    site_structure: "Internal links and site structure",
+  };
+  const categoryWeight: Record<StrategyPageFindingGroup["category"], number> = {
+    keyword_mapping: 16,
+    content: 14,
+    site_structure: 12,
+  };
+  const severityWeight = { high: 32, medium: 22, low: 12 } as const;
+  const grouped = new Map<string, {
+    url: string;
+    severity: "high" | "medium" | "low";
+    categories: Set<StrategyPageFindingGroup["category"]>;
+    findingCount: number;
+    reasons: string[];
+    recommendedActions: string[];
+  }>();
+
+  for (const group of groups) {
+    for (const finding of group.findings) {
+      const key = urlAliasKey(finding.affectedUrl);
+      const current = grouped.get(key) ?? {
+        url: finding.affectedUrl,
+        severity: finding.severity,
+        categories: new Set<StrategyPageFindingGroup["category"]>(),
+        findingCount: 0,
+        reasons: [],
+        recommendedActions: [],
+      };
+      const severityRank = { high: 3, medium: 2, low: 1 } as const;
+      if (severityRank[finding.severity] > severityRank[current.severity]) current.severity = finding.severity;
+      current.categories.add(group.category);
+      current.findingCount += Math.max(1, finding.details?.length ?? 0);
+      if (!current.reasons.includes(finding.evidence)) current.reasons.push(finding.evidence);
+      if (!current.recommendedActions.includes(finding.recommendedFix)) current.recommendedActions.push(finding.recommendedFix);
+      grouped.set(key, current);
+    }
+  }
+
+  return [...grouped.entries()].flatMap(([key, item]) => {
+    let pathname = "";
+    try { pathname = new URL(item.url).pathname.toLowerCase(); } catch { pathname = item.url.toLowerCase(); }
+    const utilityPage = /\/(?:privacy(?:-policy)?|terms?(?:-and-conditions?)?|cookie(?:-policy)?|legal|login|account|cart|checkout|404)(?:[/.]|$)/i.test(pathname)
+      || /\.(?:xml|txt)(?:\/|$)/i.test(pathname);
+    if (utilityPage) return [];
+    const executionTask = tasks.find((task) => {
+      const taskText = `${task.title} ${task.description}`;
+      if (taskText.includes(item.url)) return true;
+      const taskUrls = taskText.match(/https?:\/\/[^\s)]+/g) ?? [];
+      return taskUrls.some((url) => urlAliasKey(url.replace(/[.,;:]+$/, "")) === key);
+    });
+    const baseScore = severityWeight[item.severity]
+      + [...item.categories].reduce((total, category) => total + categoryWeight[category], 0)
+      + Math.min(8, item.findingCount);
+    const conversionPageBonus = pathname === "/" || pathname === "" ? 18
+      : pathname.includes("/blog/") ? -10
+        : /(?:crm|quote|service|solution|product|insurance-agent-website|contact|demo|pricing)/i.test(pathname) ? 24 : 0;
+    return [{
+      url: item.url,
+      severity: item.severity,
+      score: Math.max(0, Math.min(100, baseScore + conversionPageBonus)),
+      categories: [...item.categories].map((category) => ({ key: category, label: labels[category] })),
+      findingCount: item.findingCount,
+      summary: [...item.categories].map((category) => labels[category]).join(" + "),
+      reasons: item.reasons.slice(0, 4),
+      recommendedActions: item.recommendedActions.slice(0, 4),
+      source: "site_and_gap_analysis",
+      executionTaskId: executionTask?.id ?? null,
+      executionStatus: executionTask?.status ?? "not_created",
+    }];
+  }).sort((left, right) => right.score - left.score || right.findingCount - left.findingCount || left.url.localeCompare(right.url));
+}
+
 async function ensureNextTask(tx: Prisma.TransactionClient, input: {
   clientId: string;
   projectId: string;
@@ -1074,6 +1306,8 @@ async function ensureNextTask(tx: Prisma.TransactionClient, input: {
   manualInstructions?: string;
   approvalRisk?: string;
   safetyCategory?: string;
+  status?: string;
+  blockedReason?: string | null;
 }) {
   const existing = await tx.executionTask.findUnique({ where: { dedupeKey: input.key } });
   const data = {
@@ -1098,6 +1332,8 @@ async function ensureNextTask(tx: Prisma.TransactionClient, input: {
       manualInstructions: input.manualInstructions ?? null,
       approvalRisk: input.approvalRisk ?? (input.requiresApproval ? "high" : "low"),
       safetyCategory: input.safetyCategory ?? (input.requiresApproval ? "protected_change" : "safe"),
+      ...(input.status ? { status: input.status } : {}),
+      ...(input.status || input.blockedReason !== undefined ? { blockedReason: input.blockedReason ?? null } : {}),
   };
   if (existing) {
     if (["completed", "cancelled", "canceled"].includes(existing.status)) return existing;
@@ -1107,7 +1343,7 @@ async function ensureNextTask(tx: Prisma.TransactionClient, input: {
     data: {
       ...data,
       dedupeKey: input.key,
-      status: "ready",
+      status: input.status ?? "ready",
     },
   });
 }
@@ -1115,10 +1351,19 @@ async function ensureNextTask(tx: Prisma.TransactionClient, input: {
 async function syncStrategyIntelligenceTasks(tx: Prisma.TransactionClient, project: NonNullable<Awaited<ReturnType<typeof scopedProject>>>, planId: string, strategy: { id: string; prioritizedRecommendations?: unknown }, context: Awaited<ReturnType<typeof workspaceContext>>) {
   const recommendations = Array.isArray(strategy.prioritizedRecommendations) ? strategy.prioritizedRecommendations as StrategyRecommendation[] : [];
   const inputs = buildIntelligentExecutionTasks(recommendations);
+  const hasWebsiteBuild = await tx.websiteBuild.count({ where: { projectId: project.id } }) > 0;
+  const existingWebsiteWithoutBuild = (project.projectType === "existing_website" || project.websiteStatus === "existing_website") && !hasWebsiteBuild;
   const created = new Map<string, Awaited<ReturnType<typeof ensureNextTask>>[]>();
   for (const input of inputs) {
-    const approvalRequired = context.workspace.workspaceType !== "personal" && input.requiresApproval;
-    const task = await ensureNextTask(tx, { clientId: project.clientId, websiteId: project.websiteId, projectId: project.id, executionPlanId: planId, key: `project:${project.id}:${input.key}`, moduleName: "strategy_intelligence", sourceType: "strategy_recommendation", sourceId: strategy.id, title: input.title, description: input.description, expectedOutcome: input.expectedOutcome, actionButtonLabel: approvalRequired ? "Review & Approve" : "Review & Fix", relatedUrl: `/guided-projects/${project.id}?tab=execution#execution-tasks`, priority: input.priority, automationLevel: input.automationLevel, requiresApproval: approvalRequired, impact: input.expectedOutcome, manualInstructions: input.manualInstructions, approvalRisk: input.approvalRisk, safetyCategory: input.safetyCategory });
+    const approvalRequired = input.requiresApproval;
+    const destinationModule = input.destination?.trim().toLowerCase().replace(/[&/\s-]+/g, "_") || input.sourceModule || "strategy_intelligence";
+    const destinationLabel = destinationModule.replaceAll("_", " ").replace(/\b\w/g, (letter) => letter.toUpperCase());
+    const existingSiteUpdate = destinationModule === "website" && existingWebsiteWithoutBuild;
+    let task = await ensureNextTask(tx, { clientId: project.clientId, websiteId: project.websiteId, projectId: project.id, executionPlanId: planId, key: `project:${project.id}:${input.key}`, moduleName: existingSiteUpdate ? "site_architect" : destinationModule, sourceType: "strategy_decision", sourceId: strategy.id, title: input.title, description: input.description, expectedOutcome: input.expectedOutcome, actionButtonLabel: existingSiteUpdate ? "Open Website Improvement Plan" : approvalRequired ? `Review in ${destinationLabel}` : `Open ${destinationLabel}`, relatedUrl: existingSiteUpdate ? `/site-architect?projectId=${project.id}&source=existing-site&step=structure` : input.destinationUrl ?? `/guided-projects/${project.id}?tab=execution#execution-tasks`, priority: input.priority, automationLevel: input.automationLevel, requiresApproval: approvalRequired, impact: input.expectedOutcome, manualInstructions: input.manualInstructions, approvalRisk: input.approvalRisk, safetyCategory: input.safetyCategory });
+    if (existingSiteUpdate) task = await tx.executionTask.update({ where: { id: task.id }, data: { relatedUrl: `/site-architect?projectId=${project.id}&source=existing-site&taskId=${task.id}&step=structure` } });
+    if (recommendations.find((item) => item.analysisKey === input.analysisKey)?.selected) {
+      await tx.nextBestAction.updateMany({ where: { projectId: project.id, sourceType: "strategy_decision_engine", sourceId: strategy.id, status: { in: ["proposed", "selected", "recommended"] } }, data: { followupTaskId: task.id } });
+    }
     created.set(input.analysisKey, [...(created.get(input.analysisKey) ?? []), task]);
     await recordWorkspaceActivity(tx, { context, action: "task.synced_from_strategy_intelligence", entityType: "execution_task", entityId: task.id, agencyClientId: project.agencyClientId, projectId: project.id, nextJson: { title: task.title, analysisKey: input.analysisKey, explanation: input.description, expectedOutcome: input.expectedOutcome, priority: input.priority, approvalRequired, evidence: recommendations.find((item) => item.analysisKey === input.analysisKey)?.evidence ?? [] } });
   }
@@ -1257,11 +1502,40 @@ function applyOpportunityRefinement(options: ReturnType<typeof buildOpportunityO
 async function generateOpportunityRecommendations(project: NonNullable<Awaited<ReturnType<typeof scopedProject>>>, context: Awaited<ReturnType<typeof workspaceContext>>, refinement?: string | null) {
   const ctx = projectContext(project);
   const run = opportunityRunMode(project);
-  const options = applyOpportunityRefinement(buildOpportunityOptions(project, ctx), refinement);
+  const ruleGuardrails = applyOpportunityRefinement(buildOpportunityOptions(project, ctx), refinement);
+  const client = await prisma.client.findUnique({ where: { id: project.clientId }, select: { plan: true } });
+  const routedModel = await modelForFeature("opportunity_refresh", client?.plan, config.openaiModel);
+  let options: AiOpportunityRecommendation[];
+  let generationMode: "ai" | "rule_fallback" = "ai";
+  let generatedModel: string | null = null;
+  let tokenUsage: { inputTokens: number; outputTokens: number } = { inputTokens: 0, outputTokens: 0 };
+  let analysisSummary = "";
+  let fallbackReason: string | null = null;
+  try {
+    const generated = await generateAiOpportunityRecommendations({
+      businessBrain: opportunityInputSummary(project),
+      projectContext: ctx,
+      ruleGuardrails,
+      mode: run.mode,
+      refinement,
+      model: routedModel,
+    });
+    options = generated.result.recommendations;
+    analysisSummary = generated.result.analysisSummary;
+    generatedModel = generated.model;
+    tokenUsage = { inputTokens: generated.inputTokens, outputTokens: generated.outputTokens };
+  } catch (error) {
+    const errorCode = typeof error === "object" && error !== null && "code" in error ? String(error.code) : "";
+    if (errorCode.startsWith("usage_") || errorCode.startsWith("commercial_")) throw error;
+    generationMode = "rule_fallback";
+    fallbackReason = error instanceof Error ? error.message : "AI provider unavailable";
+    options = ruleGuardrails.map((option) => ({ ...option, evidence: ["Verified project intake", "Rule-based project-fit guardrails"], assumptions: ["Refresh with AI when the provider is available"] }));
+    analysisSummary = "A recoverable rules-based set was created because the AI provider could not complete this request.";
+  }
   // A clear project direction changes the decision required from the user; it
   // should not remove their ability to compare alternatives. Always persist
   // the three ranked options and mark the strongest one for confirmation.
-  const recommendations = rankedOpportunityRecommendations(options);
+  const recommendations = rankedOpportunityRecommendations(options.slice().sort((left, right) => right.opportunityScore - left.opportunityScore));
   return prisma.$transaction(async (tx) => {
     // Saved ideas are user-owned decisions and must survive regeneration/refinement.
     await tx.opportunity.deleteMany({ where: { projectId: project.id, status: { in: ["suggested", "confirmation_required"] } } });
@@ -1279,18 +1553,20 @@ async function generateOpportunityRecommendations(project: NonNullable<Awaited<R
       status: run.mode === "confirmation" && index === 0 && !refinement ? "confirmation_required" : "suggested",
     } })));
     await tx.aiRun.create({ data: {
-      projectId: project.id, clientId: project.clientId, moduleName: "opportunity", promptVersion: refinement ? "opportunity-refine-v1" : "dynamic-opportunity-v3",
-      inputSnapshotJson: { projectId: project.id, inputs: opportunityInputSummary(project), context: ctx, mode: run.mode, refinement: refinement ?? null },
-      outputJson: rows.map((row) => ({ id: row.id, name: row.name, score: row.opportunityScore, status: row.status })),
-      outputText: refinement ? `Refined opportunity recommendations using: ${refinement}` : `Generated ${rows.length} ${run.mode} opportunity recommendation(s) from project intake.`, status: "completed",
+      projectId: project.id, clientId: project.clientId, moduleName: "opportunity", promptVersion: refinement ? "ai-opportunity-refine-v4" : "ai-opportunity-decision-v4",
+      inputSnapshotJson: { projectId: project.id, inputs: opportunityInputSummary(project), context: ctx, mode: run.mode, refinement: refinement ?? null, ruleGuardrails },
+      outputJson: { generationMode, model: generatedModel, analysisSummary, fallbackReason, recommendations: recommendations.map((item, index) => ({ ...item, id: rows[index]?.id, status: rows[index]?.status })) },
+      outputText: generationMode === "ai" ? (refinement ? `AI refined opportunity recommendations using: ${refinement}` : `AI generated ${rows.length} ${run.mode} opportunity recommendation(s) from the Business Brain.`) : `Rules fallback generated ${rows.length} opportunity recommendation(s): ${fallbackReason}`,
+      status: generationMode === "ai" ? "completed" : "completed_with_fallback",
+      tokenUsage,
     } });
     await recordWorkspaceActivity(tx, {
       context, action: refinement ? "opportunity.recommendations_refined" : "opportunity.recommendations_generated", entityType: "project", entityId: project.id,
       agencyClientId: project.agencyClientId, projectId: project.id,
-      nextJson: { mode: run.mode, recommendationIds: rows.map((row) => row.id), input: opportunityInputSummary(project), refinement: refinement ?? null },
+      nextJson: { mode: run.mode, generationMode, model: generatedModel, recommendationIds: rows.map((row) => row.id), input: opportunityInputSummary(project), refinement: refinement ?? null, fallbackReason },
     });
     await syncProjectWorkflow(tx, project.id);
-    return rows;
+    return { opportunities: rows, generationMode, model: generatedModel, analysisSummary, fallbackReason };
   });
 }
 
@@ -1304,8 +1580,7 @@ function keywordTopicFromInstruction(instruction?: string | null) {
 function validSemanticKeyword(keyword: string, locations: string[]) {
   const normalized = keyword.trim().replace(/\s+/g, " ");
   const lower = normalized.toLocaleLowerCase().replace(/[.!]+$/, "");
-  if (normalized.length < 4 || normalized.length > 120) return false;
-  if (!lower.includes(" ")) return false;
+  if (normalized.length < 3 || normalized.length > 120) return false;
   if (locations.some((location) => lower === location.trim().toLocaleLowerCase())) return false;
   if (/^(?:and|or)\b|^(?:and\s+)?others?\b|\b(?:and\s+)?others?\.?\s+(?:company|provider|services?)\b/.test(lower)) return false;
   if (/\bincluding\s+\S+$/.test(lower) || /\bservices?\s+services?\b/.test(lower)) return false;
@@ -1321,7 +1596,7 @@ function semanticPreviewGroups(value: unknown, locations: string[]) {
     const record = raw as Record<string, unknown>;
     const category = String(record.category ?? "supporting").trim().toLocaleLowerCase();
     if (!allowed.has(category)) return [];
-    const keywords = [...new Map((Array.isArray(record.keywords) ? record.keywords : []).map(String).map((item) => item.trim()).filter((item) => validSemanticKeyword(item, locations)).map((item) => [item.toLocaleLowerCase(), item])).values()].slice(0, 10);
+    const keywords = normalizeKeywordList(record.keywords).filter((item) => validSemanticKeyword(item, locations)).slice(0, 10);
     return keywords.length ? [{ category, title: String(record.title ?? category.replaceAll("_", " ")).trim(), keywords }] : [];
   });
 }
@@ -1467,6 +1742,7 @@ function buildLeadMagnetPrompt(input: {
     `Content strategy: ${strategy.contentStrategy ?? "not provided"}`,
     `SEO strategy: ${strategy.seoStrategy ?? "not provided"}`,
     `Social strategy: ${strategy.socialStrategy ?? "not provided"}`,
+    `Shared approved Strategy contract (governing direction; do not conflict with it): ${JSON.stringify(approvedStrategyContext(strategy))}`,
     "",
     "Selected opportunity:",
     selectedOpportunity ? JSON.stringify({
@@ -1811,40 +2087,6 @@ type WorkspaceMilestone = {
   relatedUrl: string;
 };
 
-function taskMatches(task: { moduleName: string; title: string }, terms: string[]) {
-  const haystack = `${task.moduleName} ${task.title}`.toLowerCase();
-  return terms.some((term) => haystack.includes(term.toLowerCase()));
-}
-
-function milestoneTask<T extends { moduleName: string; title: string }>(tasks: T[], terms: string[]) {
-  return tasks.find((task) => taskMatches(task, terms));
-}
-
-function inferWorkspaceMilestone(
-  title: string,
-  moduleName: string,
-  relatedUrl: string,
-  task: { title: string; status: string } | undefined,
-  signals: { completed?: boolean; inProgress?: boolean; ready?: boolean; completedReason?: string; inProgressReason?: string; readyReason?: string },
-): WorkspaceMilestone {
-  if (task && ["completed", "skipped"].includes(task.status)) {
-    return { title, moduleName, relatedUrl, status: "Completed", reason: `${task.title} is marked ${task.status}.` };
-  }
-  if (signals.completed) {
-    return { title, moduleName, relatedUrl, status: "Completed", reason: signals.completedReason ?? "Existing workspace data confirms this step is already done." };
-  }
-  if (task && ["running", "queued", "in_progress", "needs_review"].includes(task.status)) {
-    return { title, moduleName, relatedUrl, status: "In Progress", reason: `${task.title} is ${task.status.replace(/_/g, " ")}.` };
-  }
-  if (signals.inProgress) {
-    return { title, moduleName, relatedUrl, status: "In Progress", reason: signals.inProgressReason ?? "Related workspace validation is currently running." };
-  }
-  if (task || signals.ready) {
-    return { title, moduleName, relatedUrl, status: "Ready", reason: signals.readyReason ?? "This step is available from the current workspace data." };
-  }
-  return { title, moduleName, relatedUrl, status: "Pending", reason: "Waiting for earlier workspace data or execution tasks." };
-}
-
 function avgNumber(values: (number | null | undefined)[]) {
   const nums = values.filter((value): value is number => typeof value === "number" && Number.isFinite(value));
   return nums.length ? nums.reduce((sum, value) => sum + value, 0) / nums.length : null;
@@ -1854,7 +2096,7 @@ function keywordRunView(run: Prisma.KeywordResearchRunGetPayload<{ include: { we
   const avgDifficulty = avgNumber(run.ideas.map((idea) => idea.competitionIndex));
   const avgCpc = avgNumber(run.ideas.map((idea) => idea.cpc));
   const avgSearchVolume = avgNumber(run.ideas.map((idea) => idea.avgMonthlySearches)) ?? run.averageVolume;
-  const opportunityScore = Math.round(Math.max(0, Math.min(100, 55 + Math.min(25, run.keywordCount / 20) + (avgDifficulty == null ? 8 : Math.max(0, 20 - avgDifficulty / 5)))));
+  const opportunityScore = keywordOpportunityScore(avgSearchVolume, avgDifficulty);
   return {
     ...run,
     avgDifficulty,
@@ -1865,67 +2107,92 @@ function keywordRunView(run: Prisma.KeywordResearchRunGetPayload<{ include: { we
   };
 }
 
+function keywordOpportunityScore(volume: number | null, difficulty: number | null): number | null {
+  if (volume == null || difficulty == null) return null;
+  const volumeSignal = Math.min(100, Math.log10(volume + 1) * 32);
+  const difficultySignal = Math.max(0, 100 - difficulty);
+  return Math.round((volumeSignal + difficultySignal) / 2);
+}
+
 function workspaceRoadmap(input: {
   strategyApproved: boolean;
-  tasks: { moduleName: string; title: string; status: string }[];
-  website: { rootUrl: string; domain: string; status: string } | null | undefined;
-  project: { websiteUrl: string | null } | null | undefined;
-  completedCrawl: { pagesCrawled: number } | null | undefined;
-  activeCrawl: { status: string } | null | undefined;
-  keywordRuns: { status: string; keywordCount: number; ideas?: unknown[] }[];
+  projectId: string | null;
+  keywordEvidence: { approvedGroupCount: number; approvedKeywordCount: number; researchRunCount: number };
+  siteEvidence: { completed: boolean; pagesCrawled: number; priorityPageCount: number; highPriorityPageCount: number };
+  tasks: Array<{ moduleName: string; title: string; description?: string | null; status: string; priority?: string | null; relatedUrl?: string | null; blockedReason?: string | null; createdAt?: Date | string }>;
+  plannedTasks: Array<{ moduleName: string; title: string; description?: string | null; priority?: string | null; relatedUrl?: string | null }>;
 }): WorkspaceMilestone[] {
-  const hasWebsite = Boolean(input.website?.rootUrl || input.website?.domain || input.project?.websiteUrl);
-  const hasScannedPages = Boolean(input.completedCrawl && input.completedCrawl.pagesCrawled > 0);
-  const hasKeywordPlan = input.keywordRuns.some((run) => run.status === "completed" || run.keywordCount > 0 || (run.ideas?.length ?? 0) > 0);
-  const hasDomainData = Boolean(input.website?.domain || input.project?.websiteUrl);
+  const approval: WorkspaceMilestone = {
+    title: "Approve Strategy",
+    moduleName: "strategy_approval",
+    relatedUrl: input.projectId ? `/strategy?projectId=${encodeURIComponent(input.projectId)}` : "/strategy",
+    status: input.strategyApproved ? "Completed" : "Pending",
+    reason: input.strategyApproved ? "The current Strategy is approved." : "Approve the current Strategy before project-specific execution work is created.",
+  };
+  const candidateTasks = input.strategyApproved
+    ? input.tasks
+    : input.plannedTasks.map((task) => ({ ...task, status: "pending", blockedReason: null, description: `${task.description || "Project-specific execution work."} Planned from the current evidence; approve the Strategy to create this task.` }));
+  const executionTasks = candidateTasks
+    .filter((task) => task.moduleName !== "strategy_approval" && !/approve strategy/i.test(task.title))
+    .sort((left, right) => {
+      const evidenceRank = (task: { moduleName: string; title: string }) => {
+        const text = `${task.moduleName} ${task.title}`.toLowerCase();
+        if (input.siteEvidence.priorityPageCount > 0 && /site_analysis|site analysis|technical|internal link|page map|content/.test(text)) return 0;
+        if (input.keywordEvidence.approvedKeywordCount > 0 && /keyword|seo|content|page map/.test(text)) return 1;
+        return 2;
+      };
+      const leftEvidence = evidenceRank(left);
+      const rightEvidence = evidenceRank(right);
+      if (leftEvidence !== rightEvidence) return leftEvidence - rightEvidence;
+      const statusOrder = (status: string) => ["running", "in_progress", "queued", "needs_review", "ready", "pending", "completed", "skipped", "published"].indexOf(status);
+      const leftStatus = statusOrder(left.status);
+      const rightStatus = statusOrder(right.status);
+      if (leftStatus !== rightStatus) return (leftStatus < 0 ? 99 : leftStatus) - (rightStatus < 0 ? 99 : rightStatus);
+      const priorityOrder = { high: 0, medium: 1, low: 2 } as Record<string, number>;
+      return (priorityOrder[left.priority ?? ""] ?? 3) - (priorityOrder[right.priority ?? ""] ?? 3);
+    });
 
-  return [
-    {
-      title: "Approve Strategy",
-      moduleName: "strategy_approval",
-      relatedUrl: "/strategy",
-      status: input.strategyApproved ? "Completed" : "Pending",
-      reason: input.strategyApproved ? "The current strategy plan is approved." : "Approve the strategy before downstream execution.",
-    },
-    inferWorkspaceMilestone("Generate Sitemap", "site_architect", "/site-architect", milestoneTask(input.tasks, ["site_architect", "sitemap"]), {
-      completed: hasScannedPages,
-      inProgress: Boolean(input.activeCrawl),
-      ready: input.strategyApproved,
-      completedReason: `A completed crawl already found ${input.completedCrawl?.pagesCrawled ?? 0} page(s), so sitemap/site structure evidence exists.`,
-      inProgressReason: "A website crawl is currently running.",
-      readyReason: "Strategy is approved and sitemap generation can start.",
-    }),
-    inferWorkspaceMilestone("Create Homepage", "content", "/ai-content", milestoneTask(input.tasks, ["content", "homepage"]), {
-      completed: hasWebsite && hasScannedPages,
-      inProgress: Boolean(input.activeCrawl),
-      ready: input.strategyApproved,
-      completedReason: "The connected website has a completed crawl, so the homepage/site entry point already exists.",
-      inProgressReason: "A crawl is checking the current website pages.",
-      readyReason: "Strategy is approved and homepage content can be created.",
-    }),
-    inferWorkspaceMilestone("Build Lead Magnet", "lead_magnet", "/lead-magnets", milestoneTask(input.tasks, ["lead_magnet", "lead magnet"]), {
-      ready: input.strategyApproved,
-      readyReason: "Strategy is approved and the lead magnet can be generated from the offer and audience.",
-    }),
-    inferWorkspaceMilestone("Create SEO Plan", "keyword_research", "/keywords", milestoneTask(input.tasks, ["keyword_research", "seo plan"]), {
-      completed: hasKeywordPlan,
-      ready: input.strategyApproved,
-      completedReason: "Keyword research data already exists for this workspace.",
-      readyReason: "Strategy is approved and keyword mapping can start.",
-    }),
-    inferWorkspaceMilestone("Find Domains", "domain", "/local-seo", milestoneTask(input.tasks, ["domain", "find domains"]), {
-      completed: hasDomainData,
-      ready: input.strategyApproved,
-      completedReason: "A domain or website URL is already connected to this workspace.",
-      readyReason: "Strategy is approved and domain discovery can start.",
-    }),
-    inferWorkspaceMilestone("Publish Site", "publishing", "/ai-content", milestoneTask(input.tasks, ["publishing", "publish"]), {
-      completed: input.website?.status === "active" && hasScannedPages,
-      ready: input.strategyApproved,
-      completedReason: "The website is active and has been crawled successfully.",
-      readyReason: "Strategy is approved. Complete upstream execution tasks before publishing.",
-    }),
-  ];
+  if (!executionTasks.length) return input.strategyApproved ? [approval, {
+    title: "Create Project Execution Plan",
+    moduleName: "execution_plan",
+    relatedUrl: input.projectId ? `/guided-projects/${encodeURIComponent(input.projectId)}?tab=execution#execution-tasks` : "/guided-projects",
+    status: "Ready",
+    reason: "No downstream tasks exist yet. Create the Execution Plan from this approved Strategy.",
+  }] : [approval];
+
+  const statusForTask = (status: string): WorkspaceMilestoneStatus => {
+    if (["completed", "skipped", "approved", "published"].includes(status)) return "Completed";
+    if (["running", "queued", "in_progress", "needs_review", "submitted_for_approval", "awaiting_confirmation"].includes(status)) return "In Progress";
+    if (status === "ready") return "Ready";
+    return "Pending";
+  };
+  const visibleTasks = executionTasks.slice(0, executionTasks.length > 8 ? 7 : 8);
+  const milestones: WorkspaceMilestone[] = visibleTasks.map((task) => {
+    const taskText = `${task.moduleName} ${task.title}`.toLowerCase();
+    const evidence = [
+      input.siteEvidence.priorityPageCount > 0 && /site_analysis|site analysis|technical|internal link|page map|content/.test(taskText)
+        ? `${input.siteEvidence.priorityPageCount} canonical page priorit${input.siteEvidence.priorityPageCount === 1 ? "y" : "ies"} from the latest ${input.siteEvidence.pagesCrawled}-page Site Analysis`
+        : null,
+      input.keywordEvidence.approvedKeywordCount > 0 && /keyword|seo|content|page map/.test(taskText)
+        ? `${input.keywordEvidence.approvedKeywordCount} approved keywords across ${input.keywordEvidence.approvedGroupCount} group${input.keywordEvidence.approvedGroupCount === 1 ? "" : "s"}`
+        : null,
+    ].filter((item): item is string => Boolean(item));
+    return {
+      title: task.title,
+      moduleName: task.moduleName,
+      relatedUrl: task.relatedUrl || (input.projectId ? `/guided-projects/${encodeURIComponent(input.projectId)}?tab=execution#execution-tasks` : "/guided-projects"),
+      status: statusForTask(task.status),
+      reason: task.blockedReason || `${evidence.length ? `Evidence: ${evidence.join("; ")}. ` : ""}${task.priority ? `${task.priority} priority · ` : ""}${task.status.replace(/_/g, " ")}. ${task.description || "This task was created from the approved project Strategy."}`,
+    };
+  });
+  if (executionTasks.length > visibleTasks.length) milestones.push({
+    title: `Review ${executionTasks.length - visibleTasks.length} more execution task${executionTasks.length - visibleTasks.length === 1 ? "" : "s"}`,
+    moduleName: "execution_plan",
+    relatedUrl: input.projectId ? `/guided-projects/${encodeURIComponent(input.projectId)}?tab=execution#execution-tasks` : "/guided-projects",
+    status: executionTasks.slice(visibleTasks.length).some((task) => !["completed", "skipped", "approved", "published"].includes(task.status)) ? "Ready" : "Completed",
+    reason: "Open the Execution Plan to review the remaining project-specific work.",
+  });
+  return [approval, ...milestones];
 }
 
 guidedProjectsRouter.get("/projects-v2/intake-questions", (_req, res) => {
@@ -1987,7 +2254,8 @@ guidedProjectsRouter.post("/admin/projects/:projectId/workflow/sync", requireRol
   if (!project) return res.status(404).json({ error: "project not found" });
   await prisma.$transaction((tx) => syncProjectWorkflow(tx, project.id));
   const updated = await scopedProject(req, project.id);
-  res.json({ project: updated });
+  const workflow = await getProjectWorkflowController(project.id);
+  res.json({ project: updated, workflow });
 });
 
 guidedProjectsRouter.patch("/admin/module-tasks/:taskId", requireRole("super_admin"), async (req, res) => {
@@ -2068,6 +2336,7 @@ guidedProjectsRouter.get("/workspace/intelligence", async (req, res) => {
     projects: [],
     websites: [],
     keywordRuns: [],
+    strategyPagePriorities: [],
     tasks: [],
     notifications: [],
     backlinkSummary: null,
@@ -2083,6 +2352,7 @@ guidedProjectsRouter.get("/workspace/intelligence", async (req, res) => {
 
   const requestedProjectId = typeof req.query.projectId === "string" ? req.query.projectId : null;
   const requestedWebsiteId = typeof req.query.websiteId === "string" ? req.query.websiteId : null;
+  const includeStrategyPagePriorities = req.query.includeStrategyPagePriorities === "true";
   await syncProjectWorkflowsForClient(clientId, requestedProjectId);
 
   const context = await workspaceContext(req);
@@ -2119,7 +2389,7 @@ guidedProjectsRouter.get("/workspace/intelligence", async (req, res) => {
           },
         },
       },
-      agencyClient: { select: { id: true, name: true, contactPhone: true, businessLocations: true, defaultSettings: true } },
+      agencyClient: { select: { id: true, name: true, contactPhone: true, businessLocations: true, targetMarkets: true, defaultSettings: true } },
       businessProfile: true,
       workflowSteps: { orderBy: { sortOrder: "asc" } },
       intakeAnswers: { orderBy: { createdAt: "asc" } },
@@ -2172,7 +2442,7 @@ guidedProjectsRouter.get("/workspace/intelligence", async (req, res) => {
     ? [{ projectId: activeProject.id }]
     : websiteIds.length ? [{ websiteId: { in: websiteIds } }] : [];
 
-  const [tasks, keywordRuns, leadMagnetGenerations, notifications] = await Promise.all([
+  const [tasks, keywordRuns, leadMagnetGenerations, notifications, pageFindingGroups] = await Promise.all([
     prisma.executionTask.findMany({
       where: {
         clientId,
@@ -2205,6 +2475,11 @@ guidedProjectsRouter.get("/workspace/intelligence", async (req, res) => {
       orderBy: { createdAt: "desc" },
       take: 50,
     }) : Promise.resolve([]),
+    activeProject && includeStrategyPagePriorities ? Promise.all(([
+      "keyword_mapping",
+      "content",
+      "site_structure",
+    ] as const).map(async (category): Promise<StrategyPageFindingGroup> => ({ category, findings: await recommendationFindings(activeProject.id, category) }))) : Promise.resolve([] as StrategyPageFindingGroup[]),
   ]);
 
   const crawlJobs = websites.flatMap((website) => website.crawlJobs ?? []);
@@ -2214,15 +2489,17 @@ guidedProjectsRouter.get("/workspace/intelligence", async (req, res) => {
   const strategyReviewTasks = tasks.filter((task) => task.moduleName === "strategy_approval");
   const strategyApproved = latestStrategy?.status === "approved" || activeProject?.currentStep === "execution" || strategyReviewTasks.some((task) => ["completed", "skipped"].includes(task.status));
   const keywordViews = keywordRuns.map(keywordRunView);
+  const strategyPagePriorities = buildStrategyPagePriorities(pageFindingGroups, tasks);
+  const approvedKeywordGroups = activeProject?.keywordGroups.filter((group) => group.status === "approved") ?? [];
+  const approvedKeywordCount = new Set(approvedKeywordGroups.flatMap((group) => normalizeKeywordList(group.keywords)).map((keyword) => keyword.toLowerCase())).size;
+  const plannedRoadmapTasks = activeProject ? buildCampaignExecutionTasks(activeProject) : [];
   const roadmap = workspaceRoadmap({
     strategyApproved,
+    projectId: activeProject?.id ?? null,
     tasks,
-    notifications,
-    website: activeWebsite,
-    project: activeProject,
-    completedCrawl,
-    activeCrawl,
-    keywordRuns: keywordViews,
+    keywordEvidence: { approvedGroupCount: approvedKeywordGroups.length, approvedKeywordCount, researchRunCount: keywordViews.length },
+    siteEvidence: { completed: Boolean(completedCrawl), pagesCrawled: completedCrawl?.pagesCrawled ?? 0, priorityPageCount: strategyPagePriorities.length, highPriorityPageCount: strategyPagePriorities.filter((page) => page.severity === "high").length },
+    plannedTasks: plannedRoadmapTasks,
   });
   const openTasks = tasks.filter((task) => !["completed", "skipped"].includes(task.status));
   const moduleStatuses = Object.fromEntries(roadmap.map((item) => [item.moduleName, { status: item.status, reason: item.reason, relatedUrl: item.relatedUrl }]));
@@ -2232,6 +2509,7 @@ guidedProjectsRouter.get("/workspace/intelligence", async (req, res) => {
     websites: websites.map((website) => ({ ...website, hasCompletedCrawl: website.crawlJobs?.some((crawl) => crawl.status === "completed") ?? false })),
     keywordRuns: keywordViews,
     leadMagnetGenerations,
+    strategyPagePriorities,
     tasks,
     backlinkSummary: null,
     backlinkLinks: null,
@@ -2267,8 +2545,9 @@ guidedProjectsRouter.get("/projects-v2", async (req, res) => {
     orderBy: { createdAt: "desc" },
     include: {
       website: { select: { id: true, domain: true, rootUrl: true, status: true } },
-      agencyClient: { select: { id: true, name: true, contactPhone: true, businessLocations: true, defaultSettings: true } },
+      agencyClient: { select: { id: true, name: true, contactPhone: true, businessLocations: true, targetMarkets: true, defaultSettings: true } },
       businessProfile: true,
+      keywordGroups: { orderBy: { createdAt: "asc" } },
       workflowSteps: { orderBy: { sortOrder: "asc" } },
       executionPlans: {
         where: { status: "active" },
@@ -2309,6 +2588,7 @@ guidedProjectsRouter.post("/projects-v2/intake-draft", async (req, res) => {
   const data = parsed.data;
   const context = await workspaceContext(req);
   requireWorkspaceRole(context, "editor");
+  await assertWorkspaceResourceAvailable(context.workspace.id, "activeProjects");
   const clientId = await projectClientIdForRequest(req);
   if (!clientId) return res.status(400).json({ error: "project context required" });
   if (context.workspace.workspaceType === "agency" && !data.agencyClientId) return res.status(400).json({ error: "Agency Workspace projects require a client." });
@@ -2317,15 +2597,14 @@ guidedProjectsRouter.post("/projects-v2/intake-draft", async (req, res) => {
   const normalized = data.websiteUrl ? normalizeUrl(data.websiteUrl) : null;
   if (data.websiteStatus === "existing_website" && !data.websiteUrl) return res.status(400).json({ error: "Website URL is required for Existing Website." });
   if (data.websiteUrl && !normalized) return res.status(400).json({ error: "Enter a valid Website URL or leave it blank." });
-  const goals = normalizeProjectGoals(data.primaryGoal, [], context.workspace.workspaceType);
-  const location = [data.businessLocationDetails.streetAddress, data.businessLocationDetails.city, data.businessLocationDetails.stateProvince, data.businessLocationDetails.postalCode, data.businessLocationDetails.country].filter(Boolean).join(", ");
+  const locationDetails = data.businessLocationDetails ?? null;
+  const location = locationDetails ? [locationDetails.streetAddress, locationDetails.city, locationDetails.stateProvince, locationDetails.postalCode, locationDetails.country].filter(Boolean).join(", ") : "";
   const targetMarkets = cleanGeographicTargetMarkets(data.targetLocations);
-  if (!targetMarkets.length) return res.status(400).json({ error: "Target Markets must contain at least one country, province/state, region, city, or neighbourhood—not an audience or keyword." });
   const project = await prisma.$transaction(async (tx) => {
     const row = await tx.project.create({ data: {
-      clientId, agencyClientId: agencyClient?.id ?? null, name: data.name, projectType: data.projectType,
+      clientId, agencyClientId: agencyClient?.id ?? null, name: data.name, projectType: projectTypeForWebsiteSituation(data.projectType, data.websiteStatus),
       websiteStatus: data.websiteStatus, websiteUrl: normalized?.rootUrl ?? null, businessName: agencyClient ? null : (data.businessName || null),
-      niche: data.niche, businessLocation: location, businessLocationJson: data.businessLocationDetails, targetLocations: targetMarkets, targetLocation: targetMarkets.join(", ").slice(0, 180), primaryGoal: goals.primaryGoal, status: "intake_draft", currentStep: "intake",
+      niche: data.niche || null, businessLocation: location || null, businessLocationJson: locationDetails ?? Prisma.DbNull, targetLocations: targetMarkets, targetLocation: targetMarkets.join(", ").slice(0, 180) || null, primaryGoal: data.primaryGoal || null, status: "intake_draft", currentStep: "intake",
     } });
     if (!context.roles.has("owner") && !context.roles.has("admin")) await tx.projectMemberAssignment.create({ data: { projectId: row.id, membershipId: context.membership.id, assignmentRole: context.roles.has("manager") ? "manager" : "contributor" } });
     await recordWorkspaceActivity(tx, { context, action: "project.intake_draft_saved", entityType: "project", entityId: row.id, agencyClientId: row.agencyClientId, projectId: row.id, nextJson: { name: row.name, projectType: row.projectType, websiteStatus: row.websiteStatus, websiteUrl: row.websiteUrl, niche: row.niche, businessLocation: row.businessLocation, targetLocations: row.targetLocations, primaryGoal: row.primaryGoal, status: row.status } });
@@ -2359,7 +2638,7 @@ guidedProjectsRouter.patch("/projects-v2/:projectId/intake-draft", async (req, r
     if (data.primaryKeywords !== undefined) { const keywords = normalizeIntakeKeywords(data.primaryKeywords, targetMarkets ?? cleanGeographicTargetMarkets(Array.isArray(project.targetLocations) ? project.targetLocations.map(String) : [])); if (keywords.length) await tx.projectKeywordGroup.upsert({ where: { projectId_category: { projectId: project.id, category: "primary" } }, create: { projectId: project.id, category: "primary", title: "Primary Keywords", explanation: "Starting keyword directions captured during conversational intake.", expectedValue: "Provides an initial direction for Keyword Intelligence validation.", goalSupport: `Supports ${data.primaryGoal || project.primaryGoal || "the project goal"}.`, keywords, source: "project_intake" }, update: { keywords } }); else await tx.projectKeywordGroup.deleteMany({ where: { projectId: project.id, category: "primary", source: "project_intake" } }); }
     if (data.secondaryKeywords !== undefined) { const keywords = normalizeIntakeKeywords(data.secondaryKeywords, targetMarkets ?? cleanGeographicTargetMarkets(Array.isArray(project.targetLocations) ? project.targetLocations.map(String) : [])); if (keywords.length) await tx.projectKeywordGroup.upsert({ where: { projectId_category: { projectId: project.id, category: "supporting_topics" } }, create: { projectId: project.id, category: "supporting_topics", title: "Secondary Keywords", explanation: "Supporting keyword directions captured during conversational intake.", expectedValue: "Expands topical coverage before Keyword Intelligence validation.", goalSupport: `Supports ${data.primaryGoal || project.primaryGoal || "the project goal"}.`, keywords, source: "project_intake" }, update: { keywords } }); else await tx.projectKeywordGroup.deleteMany({ where: { projectId: project.id, category: "supporting_topics", source: "project_intake" } }); }
     if (data.aiConversationSessionId) {
-      const session = await tx.workspaceAiIntakeSession.findFirst({ where: { id: data.aiConversationSessionId, workspaceId: context.workspace.id, userId: context.membership.userId, appliedProjectId: project.id, mode: "conversation", status: { in: ["active", "applied"] } } });
+      const session = await tx.workspaceAiIntakeSession.findFirst({ where: { id: data.aiConversationSessionId, workspaceId: context.workspace.id, userId: context.membership.userId, appliedProjectId: project.id, mode: { in: ["business_discovery", "conversation"] }, status: { in: ["active", "applied"] } } });
       if (session) {
         const input = session.inputJson && typeof session.inputJson === "object" && !Array.isArray(session.inputJson) ? session.inputJson as Record<string, unknown> : {};
         const safeDraft = { ...data, ...(targetMarkets !== undefined ? { targetMarkets } : {}) };
@@ -2377,9 +2656,10 @@ guidedProjectsRouter.post("/projects-v2", async (req, res) => {
   const targetLocations = cleanGeographicTargetMarkets(cleanLocations(data.targetLocations, data.targetLocation));
   const workspace = await workspaceContext(req);
   requireWorkspaceRole(workspace, "editor");
+  await assertWorkspaceResourceAvailable(workspace.workspace.id, "activeProjects");
   const aiIntakeSession = data.aiIntakeSessionId ? await prisma.workspaceAiIntakeSession.findFirst({ where: { id: data.aiIntakeSessionId, workspaceId: workspace.workspace.id, userId: workspace.membership.userId, contextType: "project", status: "reviewed" } }) : null;
   if (data.aiIntakeSessionId && !aiIntakeSession) return res.status(400).json({ error: "Review the AI intake suggestions again before creating this project." });
-  const conversationSession = data.aiConversationSessionId ? await prisma.workspaceAiIntakeSession.findFirst({ where: { id: data.aiConversationSessionId, workspaceId: workspace.workspace.id, userId: workspace.membership.userId, contextType: "project", mode: "conversation", status: "active" } }) : null;
+  const conversationSession = data.aiConversationSessionId ? await prisma.workspaceAiIntakeSession.findFirst({ where: { id: data.aiConversationSessionId, workspaceId: workspace.workspace.id, userId: workspace.membership.userId, contextType: "project", mode: { in: ["business_discovery", "conversation"] }, status: "active" } }) : null;
   if (data.aiConversationSessionId && !conversationSession) return res.status(400).json({ error: "This AI project conversation is no longer available. Reopen the conversational intake before creating the project." });
   const conversationInput = conversationSession?.inputJson && typeof conversationSession.inputJson === "object" && !Array.isArray(conversationSession.inputJson) ? conversationSession.inputJson as Record<string, unknown> : {};
   const persistedConversation = Array.isArray(conversationInput.messages) ? conversationInput.messages.filter((message): message is { role: "user" | "assistant"; text: string; requestNumber?: number; usageEventId?: string } => Boolean(message && typeof message === "object" && "role" in message && "text" in message && ((message as { role?: unknown }).role === "user" || (message as { role?: unknown }).role === "assistant") && typeof (message as { text?: unknown }).text === "string")) : [];
@@ -2430,7 +2710,7 @@ guidedProjectsRouter.post("/projects-v2", async (req, res) => {
   if (creationErrors.length) return res.status(400).json({ error: creationErrors.join(" ") });
   const normalized = normalizeUrl(websiteUrl);
   if (websiteUrl && !normalized) return res.status(400).json({ error: "Enter a valid Website URL or leave it blank." });
-  const effectiveProjectType = data.projectType;
+  const effectiveProjectType = projectTypeForWebsiteSituation(data.projectType, data.websiteStatus);
   const result = await prisma.$transaction(async (tx) => {
     let website = normalized
       ? await tx.website.findFirst({ where: { clientId, domain: normalized.domain, status: "active" } })
@@ -2487,10 +2767,12 @@ guidedProjectsRouter.post("/projects-v2", async (req, res) => {
     if (aiIntakeSession || finalConversationTranscript.length || Object.keys(defaults.aiBusinessIntelligence).length || data.businessDescription || data.targetAudience || data.productsServices || data.primaryKeywords.length || data.secondaryKeywords.length) {
       const baseFields = new Set(["businessDescription", "industryNiche", "targetAudience", "productsServices", "primaryGoal", "businessLocation", "targetMarkets", "competitors", "seedKeywords", "brandVoice", "cms", "technologyStack"]);
       const intelligence = aiIntakeSession ? Object.fromEntries(Object.entries(acceptedAi).filter(([field]) => !baseFields.has(field))) : defaults.aiBusinessIntelligence;
-      const conversationIntelligence = { ...intelligence, ...(data.primaryKeywords.length ? { primaryKeywords: data.primaryKeywords } : {}), ...(data.secondaryKeywords.length ? { secondaryKeywords: data.secondaryKeywords } : {}), ...(finalConversationTranscript.length ? { conversationalIntake: { sessionId: conversationSession?.id ?? null, messages: finalConversationTranscript, confirmedAt: new Date().toISOString() } } : {}) };
+      const normalizedPrimaryKeywords = normalizeIntakeKeywords(data.primaryKeywords, effectiveTargetLocations);
+      const normalizedSecondaryKeywords = normalizeIntakeKeywords(data.secondaryKeywords, effectiveTargetLocations);
+      const conversationIntelligence = { ...intelligence, ...(normalizedPrimaryKeywords.length ? { primaryKeywords: normalizedPrimaryKeywords } : {}), ...(normalizedSecondaryKeywords.length ? { secondaryKeywords: normalizedSecondaryKeywords } : {}), ...(finalConversationTranscript.length ? { conversationalIntake: { sessionId: conversationSession?.id ?? null, messages: finalConversationTranscript, confirmedAt: new Date().toISOString() } } : {}) };
       await tx.businessProfile.create({ data: { projectId: project.id, businessSummary: clean(data.businessDescription) || (typeof acceptedAi.businessDescription === "string" ? acceptedAi.businessDescription : defaults.businessDescription || project.niche), targetAudience: clean(data.targetAudience) || (typeof acceptedAi.targetAudience === "string" ? acceptedAi.targetAudience : defaults.targetAudience || null), offerSummary: clean(data.productsServices) || (Array.isArray(acceptedAi.productsServices) ? acceptedAi.productsServices.map(String).join(", ") : typeof acceptedAi.productsServices === "string" ? acceptedAi.productsServices : defaults.mainProductsServices || null), tonePreference: clean(data.brandVoice)?.slice(0, 80) || (typeof acceptedAi.brandVoice === "string" ? acceptedAi.brandVoice.slice(0, 80) : defaults.brandVoice?.slice(0, 80) || null), strengths: Array.isArray(acceptedAi.websiteStrengths) ? acceptedAi.websiteStrengths as Prisma.InputJsonValue : [], constraints: Array.isArray(acceptedAi.websiteWeaknesses) ? acceptedAi.websiteWeaknesses as Prisma.InputJsonValue : [], intelligenceJson: conversationIntelligence as Prisma.InputJsonValue } });
-      if (data.primaryKeywords.length) await tx.projectKeywordGroup.create({ data: { projectId: project.id, category: "primary", title: "Primary Keywords", explanation: "Starting keyword directions confirmed during conversational project intake.", expectedValue: "Provides an initial search direction before Keyword Intelligence validates demand, difficulty, intent, and competition.", goalSupport: `Supports ${effectivePrimaryGoal}.`, keywords: [...new Set(data.primaryKeywords.map((item) => item.trim()))], source: "project_intake" } });
-      if (data.secondaryKeywords.length) await tx.projectKeywordGroup.create({ data: { projectId: project.id, category: "supporting_topics", title: "Secondary Keywords", explanation: "Supporting keyword directions confirmed during conversational project intake.", expectedValue: "Expands topical coverage before Keyword Intelligence validates and organizes the final direction.", goalSupport: `Supports ${effectivePrimaryGoal}.`, keywords: [...new Set(data.secondaryKeywords.map((item) => item.trim()))], source: "project_intake" } });
+      if (normalizedPrimaryKeywords.length) await tx.projectKeywordGroup.create({ data: { projectId: project.id, category: "primary", title: "Primary Keywords", explanation: "Starting keyword directions confirmed during conversational project intake.", expectedValue: "Provides an initial search direction before Keyword Intelligence validates demand, difficulty, intent, and competition.", goalSupport: `Supports ${effectivePrimaryGoal}.`, keywords: normalizedPrimaryKeywords, source: "project_intake" } });
+      if (normalizedSecondaryKeywords.length) await tx.projectKeywordGroup.create({ data: { projectId: project.id, category: "supporting_topics", title: "Secondary Keywords", explanation: "Supporting keyword directions confirmed during conversational project intake.", expectedValue: "Expands topical coverage before Keyword Intelligence validates and organizes the final direction.", goalSupport: `Supports ${effectivePrimaryGoal}.`, keywords: normalizedSecondaryKeywords, source: "project_intake" } });
       if (aiIntakeSession) { await tx.workspaceAiIntakeSession.update({ where: { id: aiIntakeSession.id }, data: { appliedProjectId: project.id, status: "applied" } }); await recordWorkspaceActivity(tx, { context: workspace, action: "ai_intake.applied_to_project", entityType: "project", entityId: project.id, projectId: project.id, nextJson: { sessionId: aiIntakeSession.id, acceptedFields: Object.keys(acceptedAi), intelligenceFields: Object.keys(intelligence) } }); }
     }
     if (finalConversationTranscript.length) {
@@ -2597,6 +2879,32 @@ guidedProjectsRouter.get("/projects-v2/:projectId", async (req, res) => {
   res.json({ project: { ...project, sourceActivitySummaries } });
 });
 
+guidedProjectsRouter.get("/projects-v2/:projectId/workflow-controller", async (req, res) => {
+  const accessible = await scopedProject(req, req.params.projectId);
+  if (!accessible) return res.status(404).json({ error: "project not found" });
+  const workflow = await getProjectWorkflowController(accessible.id);
+  if (!workflow) return res.status(404).json({ error: "project not found" });
+  res.json({ workflow });
+});
+
+guidedProjectsRouter.post("/projects-v2/:projectId/workflow-controller/modules/:moduleKey/decision", async (req, res) => {
+  await requireRequestPermission(req, "approve");
+  const parsed = workflowModuleDecisionSchema.safeParse(req.body ?? {});
+  if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() });
+  const project = await scopedProject(req, req.params.projectId);
+  if (!project) return res.status(404).json({ error: "project not found" });
+  const workflow = await getProjectWorkflowController(project.id);
+  const module = workflow?.intelligenceModules.find((item) => item.key === req.params.moduleKey);
+  if (!module) return res.status(404).json({ error: "workflow module not found" });
+  if (parsed.data.decision === "waive" && !module.required) return res.status(409).json({ error: "This module is already not required for the project." });
+  if (parsed.data.decision !== "resume" && ["complete", "approved"].includes(module.status)) return res.status(409).json({ error: "Completed evidence cannot be waived or deferred. Refresh or supersede it through its source module." });
+  const context = await workspaceContext(req);
+  const eventType = `module.${parsed.data.decision === "waive" ? "waived" : parsed.data.decision === "defer" ? "deferred" : "resumed"}`;
+  const nextWorkflow = await publishProjectWorkflowEvent({ projectId: project.id, eventType, sourceModule: "workflow_controller", sourceId: module.key, idempotencyKey: `${eventType}:${project.id}:${module.key}:${Date.now()}`, payload: { reason: parsed.data.reason, actorUserId: context.membership.userId, previousStatus: module.status } });
+  await recordWorkspaceActivity(prisma, { context, action: eventType, entityType: "project_workflow_module", entityId: module.key, agencyClientId: project.agencyClientId, projectId: project.id, previousJson: { status: module.status }, nextJson: { decision: parsed.data.decision, reason: parsed.data.reason } });
+  res.json({ workflow: nextWorkflow });
+});
+
 guidedProjectsRouter.patch("/projects-v2/:projectId/settings", async (req, res) => {
   await requireRequestPermission(req, "edit_project_settings");
   const parsed = createProjectSchema.safeParse(req.body);
@@ -2605,8 +2913,9 @@ guidedProjectsRouter.patch("/projects-v2/:projectId/settings", async (req, res) 
   if (!project || project.status === "archived") return res.status(project ? 409 : 404).json({ error: project ? "Restore the project before editing it." : "project not found" });
   const data = parsed.data;
   const context = await workspaceContext(req);
-  const conversationSession = data.aiConversationSessionId ? await prisma.workspaceAiIntakeSession.findFirst({ where: { id: data.aiConversationSessionId, workspaceId: context.workspace.id, userId: context.membership.userId, contextType: "project", mode: "conversation", status: { in: ["active", "applied"] }, appliedProjectId: project.id } }) : null;
+  const conversationSession = data.aiConversationSessionId ? await prisma.workspaceAiIntakeSession.findFirst({ where: { id: data.aiConversationSessionId, workspaceId: context.workspace.id, userId: context.membership.userId, contextType: "project", mode: { in: ["business_discovery", "conversation"] }, status: { in: ["active", "applied"] }, appliedProjectId: project.id } }) : null;
   if (data.aiConversationSessionId && !conversationSession) return res.status(400).json({ error: "This saved AI conversation does not belong to this project." });
+  const projectLaunchSession = await prisma.workspaceAiIntakeSession.findFirst({ where: { workspaceId: context.workspace.id, userId: context.membership.userId, contextType: "project", mode: "project_launch_research", status: { in: ["reviewed", "applied"] }, appliedProjectId: project.id }, orderBy: { updatedAt: "desc" } });
   if (context.workspace.workspaceType === "agency" && !data.agencyClientId) return res.status(400).json({ error: "Agency Workspace projects require a client." });
   const agencyClient = data.agencyClientId ? await prisma.agencyClient.findFirst({ where: { id: data.agencyClientId, workspaceId: context.workspace.id, status: "active" } }) : null;
   if (data.agencyClientId && (!agencyClient || !await canAccessAgencyClient(context, data.agencyClientId))) return res.status(404).json({ error: "agency client not found" });
@@ -2617,23 +2926,25 @@ guidedProjectsRouter.patch("/projects-v2/:projectId/settings", async (req, res) 
   const location = [data.businessLocationDetails.streetAddress, data.businessLocationDetails.city, data.businessLocationDetails.stateProvince, data.businessLocationDetails.postalCode, data.businessLocationDetails.country].filter(Boolean).join(", ");
   const normalized = normalizeUrl(data.websiteUrl);
   if (data.websiteStatus === "existing_website" && !normalized) return res.status(400).json({ error: "Existing Website requires a valid Website URL." });
+  const primaryKeywords = normalizeIntakeKeywords(data.primaryKeywords, targetMarkets);
+  const secondaryKeywords = normalizeIntakeKeywords(data.secondaryKeywords, targetMarkets);
+  const effectiveProjectType = projectTypeForWebsiteSituation(data.projectType, data.websiteStatus);
   await prisma.$transaction(async (tx) => {
     let website = normalized ? await tx.website.findFirst({ where: { clientId: project.clientId, domain: normalized.domain, status: "active" } }) : null;
-    if (!website && normalized && data.projectType !== "new_business") website = await tx.website.create({ data: { clientId: project.clientId, domain: normalized.domain, rootUrl: normalized.rootUrl, status: "active", targetCountry: targetMarkets[0], targetCities: targetMarkets } });
+    if (!website && normalized && effectiveProjectType !== "new_business") website = await tx.website.create({ data: { clientId: project.clientId, domain: normalized.domain, rootUrl: normalized.rootUrl, status: "active", targetCountry: targetMarkets[0], targetCities: targetMarkets } });
     else if (website) website = await tx.website.update({ where: { id: website.id }, data: { rootUrl: normalized?.rootUrl, targetCountry: targetMarkets[0], targetCities: targetMarkets } });
-    await tx.project.update({ where: { id: project.id }, data: { status: "active", agencyClientId: agencyClient?.id ?? null, websiteId: website?.id ?? null, name: data.name.trim(), projectType: data.projectType, websiteStatus: data.websiteStatus, websiteUrl: normalized?.rootUrl ?? (data.websiteUrl?.trim() || null), businessName: agencyClient ? null : (data.businessName?.trim() || null), niche: data.niche?.trim() || null, businessLocation: location, businessLocationJson: data.businessLocationDetails, targetLocations: targetMarkets, targetLocation: targetMarkets.join(", ").slice(0, 180), primaryGoal: goals.primaryGoal, secondaryGoals: goals.secondaryGoals, competitors: data.competitors, notes: data.notes, brandVoice: data.brandVoice, analyticsPlatforms: data.analyticsPlatforms, cmsPlatform: data.cmsPlatform, targetLaunchTimeline: data.targetLaunchTimeline, preferredOutputs: data.preferredOutputs, preferredPublishingMethod: data.preferredPublishingMethod } });
-    if (data.businessDescription || data.targetAudience || data.productsServices || conversationSession) {
+    await tx.project.update({ where: { id: project.id }, data: { status: "active", agencyClientId: agencyClient?.id ?? null, websiteId: website?.id ?? null, name: data.name.trim(), projectType: effectiveProjectType, websiteStatus: data.websiteStatus, websiteUrl: normalized?.rootUrl ?? (data.websiteUrl?.trim() || null), businessName: agencyClient ? null : (data.businessName?.trim() || null), niche: data.niche?.trim() || null, businessLocation: location, businessLocationJson: data.businessLocationDetails, targetLocations: targetMarkets, targetLocation: targetMarkets.join(", ").slice(0, 180), primaryGoal: goals.primaryGoal, secondaryGoals: goals.secondaryGoals, competitors: data.competitors, notes: data.notes, brandVoice: data.brandVoice, analyticsPlatforms: data.analyticsPlatforms, cmsPlatform: data.cmsPlatform, targetLaunchTimeline: data.targetLaunchTimeline, preferredOutputs: data.preferredOutputs, preferredPublishingMethod: data.preferredPublishingMethod } });
+    if (data.businessDescription || data.targetAudience || data.productsServices || conversationSession || projectLaunchSession) {
       const previousIntelligence = project.businessProfile?.intelligenceJson && typeof project.businessProfile.intelligenceJson === "object" && !Array.isArray(project.businessProfile.intelligenceJson) ? project.businessProfile.intelligenceJson as Record<string, unknown> : {};
       const sessionInput = conversationSession?.inputJson && typeof conversationSession.inputJson === "object" && !Array.isArray(conversationSession.inputJson) ? conversationSession.inputJson as Record<string, unknown> : {};
       const conversationMessages = Array.isArray(sessionInput.messages) ? sessionInput.messages : data.conversationTranscript;
-      const intelligenceJson = { ...previousIntelligence, primaryKeywords: data.primaryKeywords, secondaryKeywords: data.secondaryKeywords, conversationalIntake: { sessionId: conversationSession?.id ?? null, messages: conversationMessages, confirmedAt: new Date().toISOString() } };
+      const intelligenceJson = { ...previousIntelligence, primaryKeywords, secondaryKeywords, conversationalIntake: { sessionId: conversationSession?.id ?? null, messages: conversationMessages, confirmedAt: new Date().toISOString() }, ...(projectLaunchSession ? { aiProjectLaunch: { sessionId: projectLaunchSession.id, proposal: projectLaunchSession.suggestionsJson, review: projectLaunchSession.reviewJson, approvedAt: new Date().toISOString() } } : {}) };
       await tx.businessProfile.upsert({ where: { projectId: project.id }, create: { projectId: project.id, businessSummary: data.businessDescription?.trim() || project.niche, targetAudience: data.targetAudience?.trim() || null, offerSummary: data.productsServices?.trim() || null, tonePreference: data.brandVoice?.trim().slice(0, 80) || null, intelligenceJson: intelligenceJson as Prisma.InputJsonValue }, update: { businessSummary: data.businessDescription?.trim() || project.businessProfile?.businessSummary || project.niche, targetAudience: data.targetAudience?.trim() || project.businessProfile?.targetAudience || null, offerSummary: data.productsServices?.trim() || project.businessProfile?.offerSummary || null, tonePreference: data.brandVoice?.trim().slice(0, 80) || project.businessProfile?.tonePreference || null, intelligenceJson: intelligenceJson as Prisma.InputJsonValue } });
     }
-    const primaryKeywords = normalizeIntakeKeywords(data.primaryKeywords, targetMarkets);
-    const secondaryKeywords = normalizeIntakeKeywords(data.secondaryKeywords, targetMarkets);
     if (primaryKeywords.length) await tx.projectKeywordGroup.upsert({ where: { projectId_category: { projectId: project.id, category: "primary" } }, create: { projectId: project.id, category: "primary", title: "Primary Keywords", explanation: "Starting keyword directions confirmed during conversational project intake.", expectedValue: "Provides an initial search direction before Keyword Intelligence validates it.", goalSupport: `Supports ${goals.primaryGoal}.`, keywords: primaryKeywords, source: "project_intake" }, update: { keywords: primaryKeywords, goalSupport: `Supports ${goals.primaryGoal}.` } });
     if (secondaryKeywords.length) await tx.projectKeywordGroup.upsert({ where: { projectId_category: { projectId: project.id, category: "supporting_topics" } }, create: { projectId: project.id, category: "supporting_topics", title: "Secondary Keywords", explanation: "Supporting keyword directions confirmed during conversational project intake.", expectedValue: "Expands topical coverage before Keyword Intelligence validates it.", goalSupport: `Supports ${goals.primaryGoal}.`, keywords: secondaryKeywords, source: "project_intake" }, update: { keywords: secondaryKeywords, goalSupport: `Supports ${goals.primaryGoal}.` } });
     if (conversationSession) await tx.workspaceAiIntakeSession.update({ where: { id: conversationSession.id }, data: { status: "applied", appliedProjectId: project.id, completedAt: new Date() } });
+    if (projectLaunchSession) await tx.workspaceAiIntakeSession.update({ where: { id: projectLaunchSession.id }, data: { status: "applied", appliedProjectId: project.id, completedAt: new Date() } });
     if (agencyClient && data.updateClientDefaults) {
       const previousSettings = agencyClient.defaultSettings && typeof agencyClient.defaultSettings === "object" ? agencyClient.defaultSettings as Record<string, unknown> : {};
       const existingWebsites = Array.isArray(agencyClient.websites) ? agencyClient.websites.map(String) : [];
@@ -2649,9 +2960,10 @@ guidedProjectsRouter.patch("/projects-v2/:projectId/settings", async (req, res) 
     }
     if (project.status === "intake_draft") await createInitialPlan(tx, { id: project.id, clientId: project.clientId, websiteId: website?.id ?? null });
     else await syncProjectWorkflow(tx, project.id);
-    await recordWorkspaceActivity(tx, { context, action: "project.settings_updated", entityType: "project", entityId: project.id, agencyClientId: project.agencyClientId, projectId: project.id, previousJson: { name: project.name, projectType: project.projectType, websiteStatus: project.websiteStatus, websiteUrl: project.websiteUrl, businessLocation: project.businessLocation, targetLocations: project.targetLocations, primaryGoal: project.primaryGoal, secondaryGoals: project.secondaryGoals }, nextJson: { name: data.name, projectType: data.projectType, websiteStatus: data.websiteStatus, websiteUrl: data.websiteUrl, businessLocation: location, targetLocations: targetMarkets, primaryGoal: goals.primaryGoal, secondaryGoals: goals.secondaryGoals } });
+    await recordWorkspaceActivity(tx, { context, action: "project.settings_updated", entityType: "project", entityId: project.id, agencyClientId: project.agencyClientId, projectId: project.id, previousJson: { name: project.name, projectType: project.projectType, websiteStatus: project.websiteStatus, websiteUrl: project.websiteUrl, businessLocation: project.businessLocation, targetLocations: project.targetLocations, primaryGoal: project.primaryGoal, secondaryGoals: project.secondaryGoals }, nextJson: { name: data.name, projectType: effectiveProjectType, websiteStatus: data.websiteStatus, websiteUrl: data.websiteUrl, businessLocation: location, targetLocations: targetMarkets, primaryGoal: goals.primaryGoal, secondaryGoals: goals.secondaryGoals } });
   });
-  res.json({ project: await scopedProject(req, project.id) });
+  const workflow = await publishProjectWorkflowEvent({ projectId: project.id, eventType: "business_brain.updated", sourceModule: "project_intake", sourceId: project.id, idempotencyKey: `business-brain.updated:${project.id}:${Date.now()}`, payload: { source: "project_settings" } });
+  res.json({ project: await scopedProject(req, project.id), workflow });
 });
 
 guidedProjectsRouter.patch("/projects-v2/:projectId/locations", async (req, res) => {
@@ -2809,10 +3121,33 @@ guidedProjectsRouter.post("/projects-v2/:projectId/reset-after-strategy", async 
   if (!project) return res.status(404).json({ error: "project not found" });
   if (project.status === "archived") return res.status(409).json({ error: "Restore the project before restarting its workflow." });
   const approvedStrategy = project.strategyPlans.find((strategy) => strategy.status === "approved");
-  if (!approvedStrategy) return res.status(409).json({ error: "Approve a Strategy before clearing downstream work." });
+
+  const requestedModules = new Set(parsed.data.modules ?? ["execution", "website", "content", "lead_magnets", "local_seo", "publishing"]);
+  // An Opportunity is an input to every Strategy decision. Removing it while
+  // retaining an approved Strategy would leave a misleading, ungoverned plan.
+  // Reset all dependent work, but preserve intake and collected intelligence
+  // so the user can generate a fresh direction from the same evidence.
+  if (requestedModules.has("opportunities")) {
+    ["execution", "website", "content", "lead_magnets", "local_seo", "publishing"].forEach((module) => requestedModules.add(module));
+  }
+  if (!approvedStrategy && !requestedModules.has("opportunities")) return res.status(409).json({ error: "Approve a Strategy before clearing downstream work." });
+  // Immutable releases and publications belong to a Website Build. Clearing
+  // the build must therefore clear those dependent publishing records too.
+  if (requestedModules.has("website")) requestedModules.add("publishing");
+  const selectedModules = [...requestedModules];
+  const selectedTaskModules = new Set<string>();
+  if (requestedModules.has("website")) ["website", "website_builder", "site_architect"].forEach((item) => selectedTaskModules.add(item));
+  if (requestedModules.has("content")) ["content", "ai_content", "ai_citations"].forEach((item) => selectedTaskModules.add(item));
+  if (requestedModules.has("lead_magnets")) selectedTaskModules.add("lead_magnet");
+  if (requestedModules.has("local_seo")) selectedTaskModules.add("local_seo");
+  if (requestedModules.has("publishing")) selectedTaskModules.add("publishing");
 
   const taskAssets = await prisma.executionTask.findMany({
-    where: { projectId: project.id, relatedAssetId: { not: null } },
+    where: {
+      projectId: project.id,
+      relatedAssetId: { not: null },
+      ...(!requestedModules.has("execution") ? { moduleName: { in: [...selectedTaskModules] } } : {}),
+    },
     select: { relatedAssetId: true },
   });
   const candidateGenerationIds = [...new Set(taskAssets.map((task) => task.relatedAssetId).filter((id): id is string => Boolean(id)))];
@@ -2831,24 +3166,38 @@ guidedProjectsRouter.post("/projects-v2/:projectId/reset-after-strategy", async 
   const cleared = await prisma.$transaction(async (tx) => {
     // Publications must be removed before their immutable releases. The
     // remaining website-model records cascade safely from WebsiteBuild.
-    const publications = await tx.websitePublication.deleteMany({ where: { projectId: project.id } });
-    await tx.websiteApprovedRelease.deleteMany({ where: { projectId: project.id } });
-    const publishingJobs = await tx.wordPressPublishJob.deleteMany({ where: { projectId: project.id } });
-    const websiteBuilds = await tx.websiteBuild.deleteMany({ where: { projectId: project.id } });
-    const siteArchitectures = await tx.siteArchitectureVersion.deleteMany({ where: { projectId: project.id } });
-    const leadMagnets = await tx.leadMagnetFunnel.deleteMany({ where: { projectId: project.id } });
-    const localSeoTasks = await tx.gapLocalSeoTask.deleteMany({ where: { projectId: project.id } });
-    await tx.nextBestAction.deleteMany({ where: { projectId: project.id } });
-    const executionTasks = await tx.executionTask.deleteMany({ where: { projectId: project.id } });
-    const executionPlans = await tx.executionPlan.deleteMany({ where: { projectId: project.id } });
+    const publications = requestedModules.has("publishing") ? await tx.websitePublication.deleteMany({ where: { projectId: project.id } }) : { count: 0 };
+    if (requestedModules.has("publishing")) await tx.websiteApprovedRelease.deleteMany({ where: { projectId: project.id } });
+    const publishingJobs = requestedModules.has("publishing") ? await tx.wordPressPublishJob.deleteMany({ where: { projectId: project.id } }) : { count: 0 };
+    const websiteBuilds = requestedModules.has("website") ? await tx.websiteBuild.deleteMany({ where: { projectId: project.id } }) : { count: 0 };
+    const siteArchitectures = requestedModules.has("website") ? await tx.siteArchitectureVersion.deleteMany({ where: { projectId: project.id } }) : { count: 0 };
+    const leadMagnets = requestedModules.has("lead_magnets") ? await tx.leadMagnetFunnel.deleteMany({ where: { projectId: project.id } }) : { count: 0 };
+    const localSeoTasks = requestedModules.has("local_seo") ? await tx.gapLocalSeoTask.deleteMany({ where: { projectId: project.id } }) : { count: 0 };
+    if (requestedModules.has("execution")) await tx.nextBestAction.deleteMany({ where: { projectId: project.id } });
+    const executionTasks = await tx.executionTask.deleteMany({ where: {
+      projectId: project.id,
+      ...(!requestedModules.has("execution") ? { moduleName: { in: [...selectedTaskModules] } } : {}),
+    } });
+    const executionPlans = requestedModules.has("execution") ? await tx.executionPlan.deleteMany({ where: { projectId: project.id } }) : { count: 0 };
     const contentAssets = generationIds.length
       ? await tx.aiContentGeneration.deleteMany({ where: { clientId: project.clientId, id: { in: generationIds } } })
       : { count: 0 };
 
-    await tx.workspaceNotification.deleteMany({
-      where: { projectId: project.id, createdAt: { gte: approvedStrategy.approvedAt ?? approvedStrategy.updatedAt } },
+    const strategies = requestedModules.has("opportunities")
+      ? await tx.strategyPlan.deleteMany({ where: { projectId: project.id } })
+      : { count: 0 };
+    const opportunities = requestedModules.has("opportunities")
+      ? await tx.opportunity.deleteMany({ where: { projectId: project.id } })
+      : { count: 0 };
+    const decisionAiRuns = requestedModules.has("opportunities")
+      ? await tx.aiRun.deleteMany({ where: { projectId: project.id, moduleName: { in: ["opportunity", "strategy"] } } })
+      : { count: 0 };
+
+    const resetNotificationSince = approvedStrategy?.approvedAt ?? approvedStrategy?.updatedAt ?? project.updatedAt;
+    if (requestedModules.has("execution")) await tx.workspaceNotification.deleteMany({
+      where: { projectId: project.id, createdAt: { gte: resetNotificationSince } },
     });
-    await tx.project.update({ where: { id: project.id }, data: { currentStep: "strategy" } });
+    if (requestedModules.has("execution")) await tx.project.update({ where: { id: project.id }, data: { currentStep: requestedModules.has("opportunities") ? "opportunities" : "strategy" } });
     await syncProjectWorkflow(tx, project.id);
     await recordWorkspaceActivity(tx, {
       context,
@@ -2865,9 +3214,10 @@ guidedProjectsRouter.post("/projects-v2/:projectId/reset-after-strategy", async 
         websiteBuilds: websiteBuilds.count,
       },
       nextJson: {
-        currentStep: "strategy",
-        preservedStrategyId: approvedStrategy.id,
-        preservedStrategyVersion: approvedStrategy.version,
+        currentStep: requestedModules.has("opportunities") ? "opportunities" : requestedModules.has("execution") ? "strategy" : project.currentStep,
+        preservedStrategyId: requestedModules.has("opportunities") ? null : approvedStrategy?.id ?? null,
+        preservedStrategyVersion: requestedModules.has("opportunities") ? null : approvedStrategy?.version ?? null,
+        selectedModules,
       },
     });
 
@@ -2880,6 +3230,10 @@ guidedProjectsRouter.post("/projects-v2/:projectId/reset-after-strategy", async 
       leadMagnets: leadMagnets.count,
       localSeoTasks: localSeoTasks.count,
       publishingRecords: publications.count + publishingJobs.count,
+      opportunities: opportunities.count,
+      strategies: strategies.count,
+      decisionAiRuns: decisionAiRuns.count,
+      selectedModules,
     };
   }, {
     // Resetting a mature project intentionally clears several dependent record
@@ -2902,6 +3256,14 @@ guidedProjectsRouter.delete("/projects-v2/:projectId", async (req, res) => {
   const result = await prisma.$transaction(async (tx) => {
     const websiteId = project.websiteId;
     let deletedWebsite = false;
+
+    // These operational records intentionally do not have cascading Project
+    // foreign keys. Remove them before the Project row disappears so a new
+    // intake cannot resume a deleted project's conversation or notifications,
+    // and keyword runs do not become anonymous orphan records via SetNull.
+    await tx.workspaceAiIntakeSession.deleteMany({ where: { appliedProjectId: project.id } });
+    await tx.workspaceNotification.deleteMany({ where: { projectId: project.id } });
+    await tx.keywordResearchRun.deleteMany({ where: { projectId: project.id } });
 
     if (websiteId) {
       const otherProjectCount = await tx.project.count({
@@ -2944,6 +3306,7 @@ guidedProjectsRouter.post("/projects-v2/:projectId/restore", async (req, res) =>
   const context = await workspaceContext(req);
   const project = await scopedProject(req, req.params.projectId);
   if (!project) return res.status(404).json({ error: "project not found" });
+  await assertWorkspaceResourceAvailable(context.workspace.id, "activeProjects", { excludeId: project.id });
   const updated = await prisma.$transaction(async (tx) => {
     const next = await tx.project.update({ where: { id: project.id }, data: { status: "active", archivedAt: null, archivedById: null } });
     await recordWorkspaceActivity(tx, { context, action: "project.restored", entityType: "project", entityId: project.id, agencyClientId: project.agencyClientId, projectId: project.id, previousJson: { status: project.status }, nextJson: { status: "active" } });
@@ -3021,7 +3384,8 @@ guidedProjectsRouter.post("/projects-v2/:projectId/intake", async (req, res) => 
     await generateOpportunityRecommendations(updated, context);
     updated = await scopedProject(req, project.id);
   }
-  res.json({ project: updated, opportunityMode: updated ? opportunityRunMode(updated).mode : null });
+  const workflow = await publishProjectWorkflowEvent({ projectId: project.id, eventType: "business_brain.updated", sourceModule: "project_intake", sourceId: project.id, idempotencyKey: `intake.saved:${project.id}:${Date.now()}`, payload: { answerCount: parsed.data.answers.length } });
+  res.json({ project: updated, opportunityMode: updated ? opportunityRunMode(updated).mode : null, workflow });
 });
 
 guidedProjectsRouter.post("/projects-v2/:projectId/opportunities/generate", async (req, res) => {
@@ -3033,7 +3397,7 @@ guidedProjectsRouter.post("/projects-v2/:projectId/opportunities/generate", asyn
   const created = await generateOpportunityRecommendations(project, context);
 
   const updated = await scopedProject(req, project.id);
-  res.json({ opportunities: created, project: updated });
+  res.json({ ...created, project: updated });
 });
 
 guidedProjectsRouter.post("/projects-v2/:projectId/opportunities/refine", async (req, res) => {
@@ -3043,8 +3407,8 @@ guidedProjectsRouter.post("/projects-v2/:projectId/opportunities/refine", async 
   const project = await scopedProject(req, req.params.projectId);
   if (!project?.businessProfile) return res.status(409).json({ error: "complete intake before refining opportunities" });
   const context = await workspaceContext(req);
-  const opportunities = await generateOpportunityRecommendations(project, context, parsed.data.instructions);
-  res.json({ opportunities, project: await scopedProject(req, project.id) });
+  const generated = await generateOpportunityRecommendations(project, context, parsed.data.instructions);
+  res.json({ ...generated, project: await scopedProject(req, project.id) });
 });
 
 guidedProjectsRouter.post("/projects-v2/:projectId/opportunities/:opportunityId/select", async (req, res) => {
@@ -3100,7 +3464,8 @@ guidedProjectsRouter.post("/projects-v2/:projectId/opportunities/:opportunityId/
   });
 
   const updated = await scopedProject(req, project.id);
-  res.json({ project: updated });
+  const workflow = await publishProjectWorkflowEvent({ projectId: project.id, eventType: "project_direction.selected", sourceModule: "opportunity", sourceId: opportunity.id, idempotencyKey: `opportunity.selected:${opportunity.id}:${nextStatus}`, payload: { status: nextStatus, changedAfterApproval: changingApprovedDirection } });
+  res.json({ project: updated, workflow });
 });
 
 guidedProjectsRouter.post("/projects-v2/:projectId/opportunities/clear-selection", async (req, res) => {
@@ -3247,7 +3612,8 @@ guidedProjectsRouter.post("/projects-v2/:projectId/keyword-groups/:groupId/appro
     await recordWorkspaceActivity(tx, { context, action: "keyword.group_approved", entityType: "project_keyword_group", entityId: group.id, agencyClientId: project.agencyClientId, projectId: project.id, previousJson: { status: group.status }, nextJson: { status: "approved", keywords: group.keywords } });
     await syncProjectWorkflow(tx, project.id);
   });
-  res.json({ project: await scopedProject(req, project.id) });
+  const workflow = await publishProjectWorkflowEvent({ projectId: project.id, eventType: "intelligence.keyword_completed", sourceModule: "keyword_intelligence", sourceId: group.id, idempotencyKey: `keyword-group.approved:${group.id}:${group.updatedAt.toISOString()}`, payload: { groupId: group.id, keywordCount: normalizeKeywordList(group.keywords).length } });
+  res.json({ project: await scopedProject(req, project.id), workflow });
 });
 
 guidedProjectsRouter.patch("/projects-v2/:projectId/keyword-groups/:groupId", async (req, res) => {
@@ -3277,9 +3643,15 @@ guidedProjectsRouter.post("/projects-v2/:projectId/keyword-groups/manual", async
   if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() });
   const project = await scopedProject(req, req.params.projectId);
   if (!project) return res.status(404).json({ error: "project not found" });
+  const requestedCategory = parsed.data.category.trim().toLowerCase().replace(/[\s-]+/g, "_");
+  const supportingCategories = new Set(["supporting", "supporting_topics", "secondary", "secondary_keywords"]);
   const existing = (parsed.data.groupId ? project.keywordGroups.find((group) => group.id === parsed.data.groupId) : undefined)
-    ?? project.keywordGroups.find((group) => group.category === parsed.data.category)
-    ?? project.keywordGroups.find((group) => group.category === "supporting");
+    ?? project.keywordGroups.find((group) => group.category.trim().toLowerCase().replace(/[\s-]+/g, "_") === requestedCategory)
+    ?? (supportingCategories.has(requestedCategory)
+      ? project.keywordGroups.find((group) => supportingCategories.has(group.category.trim().toLowerCase().replace(/[\s-]+/g, "_")))
+      : undefined)
+    ?? project.keywordGroups.find((group) => supportingCategories.has(group.category.trim().toLowerCase().replace(/[\s-]+/g, "_")))
+    ?? project.keywordGroups.find((group) => group.category !== "primary");
   if (!existing) return res.status(409).json({ error: "Generate recommendations before adding manual keywords." });
   // Clean legacy conversational fragments before appending, while preserving
   // the user's newly submitted manual keywords exactly as selected.
@@ -3299,19 +3671,25 @@ async function extendedStrategyAnalysisForProject(project: NonNullable<Awaited<R
   const ctx = projectContext(project);
   const competitorNames = Array.isArray(project.competitors) ? project.competitors.map((item) => typeof item === "string" ? item : item && typeof item === "object" && "name" in item ? String((item as { name: unknown }).name) : "").map((item) => item.trim()).filter(Boolean).slice(0, 10) : [];
   const approvedKeywordGroups = project.keywordGroups.filter((group) => group.status === "approved");
-  const latestCrawlEvidence = project.websiteId ? await prisma.crawlJob.findFirst({
+  const [latestCrawlEvidence, pageFindingGroups] = await Promise.all([project.websiteId ? prisma.crawlJob.findFirst({
     where: { websiteId: project.websiteId, status: "completed" }, orderBy: [{ completedAt: "desc" }, { createdAt: "desc" }],
     select: {
       pages: { select: { url: true, wordCount: true, inlinkCount: true, brokenInternalLinkCount: true, weakAnchorCount: true, isOrphan: true, statusCode: true, seo: { select: { title: true, robotsMeta: true } } } },
       issues: { select: { category: true, severity: true, message: true } },
     },
-  }) : null;
+  }) : Promise.resolve(null), project.websiteId ? Promise.all(([
+    "keyword_mapping",
+    "content",
+    "site_structure",
+  ] as const).map(async (category): Promise<StrategyPageFindingGroup> => ({ category, findings: await recommendationFindings(project.id, category) }))) : Promise.resolve([] as StrategyPageFindingGroup[])]);
+  const pagePriorities = buildStrategyPagePriorities(pageFindingGroups, []);
   return buildExtendedStrategyAnalysis({
     existingWebsite: isExistingWebsiteCampaign(project), businessName: project.businessName || ctx.name, niche: ctx.niche,
     goals: [ctx.goal, ...ctx.secondaryGoals], markets: Array.isArray(project.targetLocations) ? project.targetLocations.map(String) : [], competitors: competitorNames,
     keywordGroups: approvedKeywordGroups.map((group) => ({ title: group.title, category: group.category, keywords: normalizeKeywordList(group.keywords), gaps: normalizeKeywordList(group.gapKeywords) })),
     pages: (latestCrawlEvidence?.pages ?? []).map((page) => ({ url: page.url, title: page.seo?.title, wordCount: page.wordCount, inlinks: page.inlinkCount, brokenLinks: page.brokenInternalLinkCount, weakAnchors: page.weakAnchorCount, orphan: page.isOrphan, indexable: (page.statusCode ?? 500) < 400 && !/noindex/i.test(page.seo?.robotsMeta ?? "") })),
     issues: latestCrawlEvidence?.issues ?? [],
+    pagePriorities: pagePriorities.map((page) => ({ url: page.url, severity: page.severity, score: page.score, summary: page.summary, findingCount: page.findingCount })),
   });
 }
 
@@ -3330,6 +3708,14 @@ guidedProjectsRouter.post("/projects-v2/:projectId/strategy/generate", async (re
     if (!project.websiteId) return res.status(409).json({ error: "Connect the existing website before generating Strategy." });
     const completedCrawl = await prisma.crawlJob.findFirst({ where: { websiteId: project.websiteId, status: "completed", pagesCrawled: { gt: 0 } }, select: { id: true } });
     if (!completedCrawl) return res.status(409).json({ error: "Complete Site Analysis before generating Strategy for an existing website." });
+  }
+  const workflowGate = await getProjectWorkflowController(project.id);
+  if (!workflowGate?.intelligenceReady) {
+    return res.status(409).json({
+      error: "Complete the required project intelligence before generating Strategy.",
+      code: "WORKFLOW_INTELLIGENCE_INCOMPLETE",
+      workflow: workflowGate,
+    });
   }
   const context = await workspaceContext(req);
   const generateInput = z.object({ revisionComment: z.string().trim().max(2000).optional() }).safeParse(req.body ?? {});
@@ -3352,12 +3738,116 @@ guidedProjectsRouter.post("/projects-v2/:projectId/strategy/generate", async (re
   const revenuePotential = clampScore(scoreValue("revenuePotential", selectedOpportunity?.monetizationScore ?? 70) + (revisesContent ? 3 : 0) + (revisesKpis ? 2 : 0));
   const executionComplexity = clampScore(scoreValue("executionComplexity", selectedOpportunity?.executionScore ?? 50) - (revisionLines.length ? Math.min(5, revisionLines.length) : 0));
   const confidence = clampScore(scoreValue("confidence", selectedOpportunity?.opportunityScore ?? 70) + Math.min(6, revisionLines.length));
-  const strategyScore = clampScore(profileDemandFit * 0.2 + seoPotential * 0.25 + revenuePotential * 0.2 + (100 - executionComplexity) * 0.15 + confidence * 0.2);
   const scoreBreakdown = { profileDemandFit, seoPotential, revenuePotential, executionComplexity, confidence };
   const advanced = await extendedStrategyAnalysisForProject(project);
   const approvedGapRecommendations = await prisma.gapRecommendation.findMany({ where: { projectId: project.id, status: "approved" }, orderBy: [{ impactScore: "desc" }, { confidenceScore: "desc" }], take: 20 });
   const gapStrategyRecommendations = approvedGapRecommendations.map((item) => ({ gapRecommendationId: item.id, analysisKey: `gap_${item.category}`, key: `gap_${item.category}`, title: item.title, applicable: true, priority: item.priority, impact: item.impactScore, confidence: item.confidenceScore, why: item.explanation, evidence: item.evidenceJson, actions: [item.recommendedAction], expectedImpact: item.expectedImpact }));
   const personalNoApproval = context.workspace.workspaceType === "personal";
+  const client = await prisma.client.findUnique({ where: { id: project.clientId }, select: { plan: true } });
+  const strategyAiRoute = await modelRouteForFeature("strategy_generate", client?.plan, config.openaiModel);
+  const strategyEvidence = {
+    project: {
+      id: project.id,
+      name: ctx.name,
+      projectType: project.projectType,
+      websiteStatus: project.websiteStatus,
+      website: project.website?.rootUrl ?? project.websiteUrl ?? null,
+      niche: ctx.niche,
+      primaryGoal: ctx.goal,
+      secondaryGoals: ctx.secondaryGoals,
+      businessLocation: project.businessLocation,
+      targetMarkets: Array.isArray(project.targetLocations) ? project.targetLocations.map(String) : [],
+      audience: ctx.audience,
+      offer: ctx.offer,
+      preferredOutputs: ctx.outputs,
+      preferredPublishingMethod: project.preferredPublishingMethod,
+      brandVoice: project.brandVoice,
+      analyticsPlatforms: project.analyticsPlatforms,
+      cmsPlatform: project.cmsPlatform,
+      targetLaunchTimeline: project.targetLaunchTimeline,
+    },
+    workflow: {
+      state: workflowGate.state,
+      readinessPercent: workflowGate.readinessPercent,
+      businessBrainVersion: workflowGate.businessBrainVersion,
+      evidenceVersion: workflowGate.evidenceVersion,
+      confidence: workflowGate.confidence,
+      applicableModules: workflowGate.intelligenceModules.filter((module) => module.required).map((module) => ({ key: module.key, status: module.status, evidenceAt: module.evidenceAt })),
+      optionalOrWaivedModules: workflowGate.intelligenceModules.filter((module) => !module.required || ["waived", "deferred", "not_required"].includes(module.status)).map((module) => ({ key: module.key, status: module.status })),
+      currentUserRoles: [...context.roles],
+      workspaceType: context.workspace.workspaceType,
+      protectedActionsRequireApproval: context.workspace.workspaceType !== "personal",
+    },
+    selectedOpportunity: selectedOpportunity ? { name: selectedOpportunity.name, summary: selectedOpportunity.summary, targetAudience: selectedOpportunity.targetAudience, problemSolved: selectedOpportunity.problemSolved, recommendedOffer: selectedOpportunity.recommendedOffer, businessModel: selectedOpportunity.businessModel, scores: { opportunity: selectedOpportunity.opportunityScore, seo: selectedOpportunity.seoScore, monetization: selectedOpportunity.monetizationScore, execution: selectedOpportunity.executionScore, userFit: selectedOpportunity.userFitScore } } : null,
+    approvedKeywords: approvedKeywordGroups.map((group) => ({ title: group.title, category: group.category, keywords: normalizeKeywordList(group.keywords), gaps: normalizeKeywordList(group.gapKeywords), explanation: group.explanation, goalSupport: group.goalSupport })),
+    siteAndGapAnalysis: advanced.analyses.filter((item) => item.applicable).map((item) => ({ key: item.key, title: item.title, evidenceType: item.evidenceType, priority: item.priority, impact: item.impact, confidence: item.confidence, finding: item.why, evidence: item.evidence, affectedPages: item.affectedPages, expectedImpact: item.expectedImpact, destination: item.destination })),
+    approvedGapActions: approvedGapRecommendations.map((item) => ({ category: item.category, title: item.title, priority: item.priority, explanation: item.explanation, evidence: item.evidenceJson, action: item.recommendedAction, expectedImpact: item.expectedImpact })),
+    executionState: {
+      total: project.executionTasks.length,
+      ready: project.executionTasks.filter((task) => ["ready", "approved", "planned"].includes(task.status)).length,
+      inProgress: project.executionTasks.filter((task) => ["in_progress", "running", "processing"].includes(task.status)).length,
+      awaitingApproval: project.executionTasks.filter((task) => task.requiresApproval && !task.approvedAt && !["completed", "published", "skipped"].includes(task.status)).length,
+      blocked: project.executionTasks.filter((task) => ["blocked", "failed"].includes(task.status)).length,
+      completed: project.executionTasks.filter((task) => ["completed", "published", "skipped"].includes(task.status)).length,
+      tasks: project.executionTasks.slice(0, 80).map((task) => ({ title: task.title, module: task.moduleName, status: task.status, priority: task.priority, expectedOutcome: task.expectedOutcome, relatedUrl: task.relatedUrl })),
+    },
+    competitors: competitorNames,
+    approvedBusinessIntelligence: ctx.businessIntelligence,
+    previousStrategy: previousStrategy ? { version: previousStrategy.version, summary: previousStrategy.strategySummary, positioning: previousStrategy.positioningStatement, seo: previousStrategy.seoStrategy, content: previousStrategy.contentStrategy, revisionComment: previousStrategy.revisionComment } : null,
+  };
+  let generatedStrategy: Awaited<ReturnType<typeof generateUnifiedStrategyWithAi>>;
+  try {
+    generatedStrategy = await generateUnifiedStrategyWithAi({ evidence: strategyEvidence, revision, model: strategyAiRoute.model });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Strategy generation failed.";
+    const errorCode = error && typeof error === "object" && "code" in error ? String((error as { code?: unknown }).code ?? "strategy_generation_failed") : "strategy_generation_failed";
+    await prisma.aiRun.create({ data: { projectId: project.id, clientId: project.clientId, moduleName: "strategy", promptVersion: "unified-strategy-v4", inputSnapshotJson: { projectId: project.id, businessBrainVersion: workflowGate.businessBrainVersion, evidenceVersion: workflowGate.evidenceVersion, revision }, outputJson: { recoverable: true, retryAction: `/strategy?projectId=${project.id}`, errorCode }, outputText: null, status: "failed", errorMessage: message } }).catch(() => undefined);
+    await publishProjectWorkflowEvent({ projectId: project.id, eventType: "strategy.generation_failed", sourceModule: "strategy", idempotencyKey: `strategy.generation_failed:${project.id}:${workflowGate.businessBrainVersion}:${workflowGate.evidenceVersion}:${Date.now()}`, payload: { errorCode, recoverable: true, retryAction: `/strategy?projectId=${project.id}` } }).catch(() => undefined);
+    throw error;
+  }
+  const unifiedPlan = generatedStrategy.result;
+  const decisionSet = buildStrategyDecisionSet({
+    projectId: project.id,
+    workspaceId: context.workspace.id,
+    modelPipelineReference: `${strategyAiRoute.provider}:${generatedStrategy.model}:${strategyAiRoute.routingRuleId ?? "default"}`,
+    approval: personalNoApproval ? { status: "approved", decidedAt: new Date().toISOString(), decidedBy: context.membership.userId } : { status: "pending" },
+    plan: unifiedPlan,
+    businessBrainVersion: workflowGate.businessBrainVersion,
+    evidenceVersion: workflowGate.evidenceVersion,
+    workflowConfidence: workflowGate.confidence,
+    externalRecommendations: [...gapStrategyRecommendations, ...advanced.recommendations],
+  });
+  const unifiedStrategyScore = clampScore(workflowGate.confidence.overall * 0.65 + decisionSet.nextBestAction.confidence * 0.25 + (workflowGate.intelligenceReady ? 10 : 0));
+  const unifiedRecommendation = {
+    analysisKey: "unified_strategy_plan",
+    key: "unified_strategy_plan",
+    title: "Integrated project strategy",
+    applicable: true,
+    priority: "critical",
+    impact: unifiedStrategyScore,
+    confidence: workflowGate.confidence.overall,
+    why: unifiedPlan.diagnosis.keyChallenge,
+    evidence: [`${approvedKeywordGroups.length} approved keyword groups`, `${advanced.analyses.filter((item) => item.applicable).length} applicable analysis areas`, `${approvedGapRecommendations.length} approved gap actions`],
+    actions: unifiedPlan.topActions,
+    expectedImpact: unifiedPlan.executiveSummary,
+    evidenceType: "verified_project_data",
+    effort: "high",
+    timeHorizon: "now",
+    dependencies: unifiedPlan.focusAreas.flatMap((area) => area.dependencies).slice(0, 12),
+    affectedPages: advanced.analyses.find((item) => item.key === "page_priorities")?.affectedPages ?? [],
+    destination: "Project Execution Plan",
+    plan: unifiedPlan,
+    decisionSet: {
+      engineVersion: decisionSet.engineVersion,
+      businessBrainVersion: decisionSet.businessBrainVersion,
+      evidenceVersion: decisionSet.evidenceVersion,
+      generatedAt: decisionSet.generatedAt,
+      formula: decisionSet.formula,
+      nextBestActionKey: decisionSet.nextBestActionKey,
+      nextBestAction: decisionSet.nextBestAction,
+      audit: decisionSet.audit,
+    },
+  };
 
   const strategy = await prisma.$transaction(async (tx) => {
     const row = await tx.strategyPlan.create({
@@ -3365,29 +3855,43 @@ guidedProjectsRouter.post("/projects-v2/:projectId/strategy/generate", async (re
         projectId: project.id,
         version: latestVersion + 1,
         opportunityId: selectedOpportunity?.id ?? null,
-        strategySummary: `Build ${ctx.name} around ${ctx.goal.toLowerCase()}${ctx.secondaryGoals.length ? ` while supporting ${ctx.secondaryGoals.join(", ").toLowerCase()}` : ""}. Prioritize the approved keyword groups: ${approvedKeywordGroups.map((group) => `${group.title} (${normalizeKeywordList(group.keywords).slice(0, 5).join(", ")})`).join("; ")}.${approvedGapRecommendations.length ? ` Include ${approvedGapRecommendations.length} approved Gap Analysis action${approvedGapRecommendations.length === 1 ? "" : "s"}, led by ${approvedGapRecommendations.slice(0, 3).map((item) => item.title).join(", ")}.` : ""} Move from keyword demand to pages, optimization tasks, and approved publishing/export.${revisionFocus}`,
-        businessObjectives: [ctx.goal, ...ctx.secondaryGoals],
-        positioningStatement: `${ctx.name} should be positioned for ${ctx.audience} with clear proof, direct CTAs, and answer-first content.`,
-        audienceProfile: ctx.audience,
-        offerRecommendation: ctx.offer,
+        strategySummary: unifiedPlan.executiveSummary,
+        businessObjectives: unifiedPlan.objectives,
+        positioningStatement: unifiedPlan.positioning.statement,
+        audienceProfile: `${unifiedPlan.positioning.audience}\n\nPriority segments: ${unifiedPlan.audience.primarySegments.map((segment) => `${segment.name}: ${segment.need}`).join(" | ")}`,
+        offerRecommendation: unifiedPlan.positioning.offer,
         businessModel: selectedOpportunity?.businessModel ?? (project.projectType === "ecommerce" ? "Ecommerce" : project.projectType === "local_seo" ? "Local service lead generation" : "Lead generation"),
-        seoStrategy: `Prioritize keyword clusters for ${ctx.niche} against these success goals: ${ctx.goalSummary}. Map each approved keyword to a page, and create execution tasks for metadata, internal links, FAQs, and schema.${revisesSeo ? revisionFocus : ""}`,
-        localSeoStrategy: project.projectType === "local_seo" || project.businessLocation || (Array.isArray(project.targetLocations) && project.targetLocations.length) ? `Use ${project.businessLocation ?? ctx.location} as the business identity and create market-specific pages and local visibility work for ${Array.isArray(project.targetLocations) ? project.targetLocations.map(String).join(", ") : ctx.location}.${revisesLocal ? revisionFocus : ""}` : null,
-        aiCitationStrategy: "Add entity summaries, answer-first sections, source clarity blocks, FAQs, and schema suggestions to improve AI citation readiness.",
-        contentStrategy: `Generate the selected outputs: ${ctx.outputs.join(", ") || "SEO plan and supporting pages"}. Keep review approval before publishing.${revisesContent ? revisionFocus : ""}`,
-        competitorStrategy: competitorNames.length ? `Benchmark content coverage, positioning, page formats, proof, calls to action, and authority signals against ${competitorNames.join(", ")}. Use gaps to prioritize differentiated pages and supporting content; do not copy competitor messaging.` : "Competitor benchmarking is pending because no primary competitors are saved. Add competitors to the project intake to produce evidence-based content-gap priorities.",
-        competitiveInsights: competitorNames.map((name) => ({ competitor: name, review: ["Keyword and topic coverage", "Page and content formats", "Positioning and proof", "Calls to action", "Authority signals"], response: "Find defensible gaps and create a clearer, more useful alternative." })),
-        authorityStrategy: "Use safe authority tasks only: citations, partnerships, resource pages, reviews, digital PR, and outreach drafts requiring approval.",
-        socialStrategy: "Create platform-specific social drafts from approved strategy, lead magnet, and page content. Require approval before scheduling.",
-        publishingStrategy: `Use ${project.preferredPublishingMethod ?? "HTML ZIP"} first, then add direct publishing integrations after approval and provider setup.`,
-        growthRecommendations: [`Prioritize ${ctx.goal.toLowerCase()} by expected business impact.`, "Measure approved keyword visibility and conversion actions.", "Refresh recommendations when goals, keywords, site findings, or approved AI Business Intelligence materially change.", ...(Array.isArray(ctx.businessIntelligence.topOpportunities) ? ctx.businessIntelligence.topOpportunities.map(String).slice(0, 5) : []), ...(Array.isArray(ctx.businessIntelligence.thirtyDayPlan) ? ctx.businessIntelligence.thirtyDayPlan.map(String).slice(0, 5) : []), ...revisionLines],
-        kpis: [ctx.goal, "Approved keyword visibility", "Organic traffic", "Qualified conversions", "Execution task completion", ...(revisesKpis ? ["Revision-specific goal and outcome tracking"] : [])],
+        seoStrategy: channelStrategyText(unifiedPlan.channels.seo),
+        localSeoStrategy: channelStrategyText(unifiedPlan.channels.localSeo),
+        aiCitationStrategy: channelStrategyText(unifiedPlan.channels.aiCitations),
+        contentStrategy: channelStrategyText(unifiedPlan.channels.content),
+        competitorStrategy: unifiedPlan.competitiveApproach,
+        competitiveInsights: competitorNames.map((name) => ({ competitor: name, strategy: unifiedPlan.competitiveApproach, safeguard: "Use verified gaps only; do not copy content or infer unsupported performance." })),
+        authorityStrategy: channelStrategyText(unifiedPlan.channels.authority),
+        socialStrategy: channelStrategyText(unifiedPlan.channels.social),
+        publishingStrategy: channelStrategyText(unifiedPlan.channels.publishing),
+        growthRecommendations: unifiedPlan.topActions,
+        kpis: unifiedPlan.kpis.map((kpi) => `${kpi.name}: ${kpi.measurement} (${kpi.targetDirection})`),
         revisionComment: generateInput.data.revisionComment ?? null,
-        strategyScore,
-        scoreBreakdown,
-        advancedAnalysis: advanced.analyses,
-        prioritizedRecommendations: [...gapStrategyRecommendations, ...advanced.recommendations],
+        strategyScore: unifiedStrategyScore,
+        scoreBreakdown: { ...scoreBreakdown, confidence: workflowGate.confidence.overall, contractVersion: "unified-strategy-v4", decisionEngineVersion: STRATEGY_DECISION_ENGINE_VERSION, generatedByAi: true, funnelEvaluatedByAi: unifiedPlan.growthFunnel?.evaluationMethod === "ai", model: generatedStrategy.model },
+        advancedAnalysis: decisionSet.decisions,
+        prioritizedRecommendations: [unifiedRecommendation, ...decisionSet.decisions],
         status: personalNoApproval ? "approved" : "draft",
+        businessBrainVersion: workflowGate.businessBrainVersion,
+        evidenceVersion: workflowGate.evidenceVersion,
+        confidenceJson: workflowGate.confidence as unknown as Prisma.InputJsonValue,
+        explainabilityJson: {
+          generatedFrom: { businessBrainVersion: workflowGate.businessBrainVersion, evidenceVersion: workflowGate.evidenceVersion },
+          why: unifiedPlan.diagnosis.keyChallenge,
+          evidence: unifiedRecommendation.evidence,
+          decision: unifiedPlan.executiveSummary,
+          limitations: workflowGate.confidence.cautions,
+          decisionAudit: decisionSet.audit,
+          nextBestAction: decisionSet.nextBestAction,
+          nextBestActionExplainability: composeStrategyDecisionExplainability(decisionSet.nextBestAction),
+          engineVersion: decisionSet.engineVersion,
+        },
         approvedAt: personalNoApproval ? new Date() : null,
       },
     });
@@ -3397,11 +3901,42 @@ guidedProjectsRouter.post("/projects-v2/:projectId/strategy/generate", async (re
         projectId: project.id,
         clientId: project.clientId,
         moduleName: "strategy",
-        promptVersion: "mock-strategy-v1",
-        inputSnapshotJson: { projectId: project.id, context: ctx, opportunityId: selectedOpportunity?.id ?? null, advancedAnalysisKeys: advanced.analyses.filter((item) => item.applicable).map((item) => item.key), approvedGapRecommendationIds: approvedGapRecommendations.map((item) => item.id) },
-        outputJson: { id: row.id, status: row.status, recommendationCount: advanced.recommendations.length + gapStrategyRecommendations.length },
+        promptVersion: "unified-strategy-v4",
+        inputSnapshotJson: { projectId: project.id, context: ctx, opportunityId: selectedOpportunity?.id ?? null, businessBrainVersion: workflowGate.businessBrainVersion, evidenceVersion: workflowGate.evidenceVersion, advancedAnalysisKeys: advanced.analyses.filter((item) => item.applicable).map((item) => item.key), approvedGapRecommendationIds: approvedGapRecommendations.map((item) => item.id), aiRoute: strategyAiRoute },
+        outputJson: { id: row.id, status: row.status, contractVersion: "unified-strategy-v4", decisionEngineVersion: decisionSet.engineVersion, model: generatedStrategy.model, focusAreaCount: unifiedPlan.focusAreas.length, funnelStepCount: unifiedPlan.growthFunnel?.steps.length ?? 0, funnelEvaluationMethod: unifiedPlan.growthFunnel?.evaluationMethod ?? null, phaseCount: unifiedPlan.phases.length, candidateCount: decisionSet.audit.candidateCount, nextBestActionKey: decisionSet.nextBestActionKey, recommendationCount: decisionSet.decisions.length },
         outputText: row.strategySummary,
+        tokenUsage: { model: generatedStrategy.model, inputTokens: generatedStrategy.inputTokens, outputTokens: generatedStrategy.outputTokens },
         status: "completed",
+      },
+    });
+
+    await tx.nextBestAction.create({
+      data: {
+        projectId: project.id,
+        sourceType: "strategy_decision_engine",
+        sourceId: row.id,
+        title: decisionSet.nextBestAction.title,
+        recommendation: decisionSet.nextBestAction.actions.join("\n"),
+        reasoningSummary: decisionSet.nextBestAction.whyNow,
+        expectedImpact: decisionSet.nextBestAction.expectedImpact,
+        confidence: decisionSet.nextBestAction.confidence,
+        estimatedEffort: decisionSet.nextBestAction.effort,
+        route: decisionSet.nextBestAction.destination,
+        priorityScore: decisionSet.nextBestAction.priorityScore,
+        evidenceJson: { references: decisionSet.nextBestAction.evidenceReferences, explainability: composeStrategyDecisionExplainability(decisionSet.nextBestAction), successMeasure: decisionSet.nextBestAction.successMeasure, validationRequirement: decisionSet.nextBestAction.validationRequirement, destinationUrl: decisionSet.nextBestAction.destinationUrl, businessBrainVersion: decisionSet.businessBrainVersion, evidenceVersion: decisionSet.evidenceVersion } as Prisma.InputJsonValue,
+        actionType: "strategy_decision",
+        businessGoal: decisionSet.nextBestAction.businessObjective.slice(0, 255),
+        targetEntitiesJson: decisionSet.nextBestAction.affectedPages as Prisma.InputJsonValue,
+        estimatedImpactJson: { statement: decisionSet.nextBestAction.expectedImpact, disclaimer: "Expected impact is directional and must be confirmed against a recorded baseline." },
+        scoreJson: { formula: decisionSet.formula, impact: decisionSet.nextBestAction.impact, confidence: decisionSet.nextBestAction.confidence, goalAlignment: decisionSet.nextBestAction.goalAlignment, urgency: decisionSet.nextBestAction.urgency, effort: decisionSet.nextBestAction.effort, priorityScore: decisionSet.nextBestAction.priorityScore },
+        dependencyIdsJson: decisionSet.nextBestAction.dependencies as Prisma.InputJsonValue,
+        approvalType: "strategy_approval",
+        riskLevel: decisionSet.nextBestAction.requiredPermissions.includes("Approval before public or protected changes") ? "medium" : "low",
+        urgency: decisionSet.nextBestAction.urgency,
+        engineVersion: decisionSet.engineVersion,
+        dedupeKey: `strategy-decision:${row.id}:${decisionSet.nextBestAction.key}`,
+        status: personalNoApproval ? "selected" : "proposed",
+        selectedAt: personalNoApproval ? new Date() : null,
       },
     });
 
@@ -3417,6 +3952,9 @@ guidedProjectsRouter.post("/projects-v2/:projectId/strategy/generate", async (re
 
     if (personalNoApproval) {
       await tx.strategyPlan.updateMany({ where: { projectId: project.id, id: { not: row.id }, status: "approved" }, data: { status: "superseded" } });
+      await tx.nextBestAction.updateMany({ where: { projectId: project.id, sourceType: "strategy_decision_engine", sourceId: { not: row.id }, status: { in: ["proposed", "selected", "recommended"] } }, data: { status: "superseded", decision: "strategy_superseded", selectedAt: null } });
+      await tx.nextBestAction.updateMany({ where: { projectId: project.id, sourceType: "growth_engine", status: { in: ["selected", "recommended"] } }, data: { status: "superseded", decision: "strategy_changed", selectedAt: null } });
+      await tx.growthBlueprint.updateMany({ where: { projectId: project.id }, data: { status: "needs_refresh", nextReviewAt: new Date() } });
       await tx.project.update({ where: { id: project.id }, data: { currentStep: "execution" } });
       const planId = await activePlanId(tx, project.id);
       for (const input of buildCampaignExecutionTasks(project)) await ensureNextTask(tx, {
@@ -3429,7 +3967,7 @@ guidedProjectsRouter.post("/projects-v2/:projectId/strategy/generate", async (re
     }
 
     await syncProjectWorkflow(tx, project.id);
-    await recordWorkspaceActivity(tx, { context, action: personalNoApproval ? "strategy.generated_and_activated" : latestVersion ? "strategy.regenerated" : "strategy.generated", entityType: "strategy_plan", entityId: row.id, agencyClientId: project.agencyClientId, projectId: project.id, nextJson: { version: latestVersion + 1, status: personalNoApproval ? "approved" : "draft", revisionComment: generateInput.data.revisionComment ?? null, applicableAnalyses: advanced.analyses.filter((item) => item.applicable).map((item) => item.key), recommendationCount: advanced.recommendations.length } });
+    await recordWorkspaceActivity(tx, { context, action: personalNoApproval ? "strategy.generated_and_activated" : latestVersion ? "strategy.regenerated" : "strategy.generated", entityType: "strategy_plan", entityId: row.id, agencyClientId: project.agencyClientId, projectId: project.id, nextJson: { version: latestVersion + 1, status: personalNoApproval ? "approved" : "draft", revisionComment: generateInput.data.revisionComment ?? null, businessBrainVersion: decisionSet.businessBrainVersion, evidenceVersion: decisionSet.evidenceVersion, candidateCount: decisionSet.audit.candidateCount, invalidCandidateCount: decisionSet.audit.invalidCandidates.length, nextBestAction: decisionSet.nextBestAction.title, recommendationCount: decisionSet.decisions.length } });
     const approvers = await tx.projectMemberAssignment.findMany({
       where: { projectId: project.id, membership: { status: "active", roles: { some: { role: { in: ["manager", "approver", "manager_approver"] } } } } },
       select: { membership: { select: { userId: true } } },
@@ -3442,7 +3980,8 @@ guidedProjectsRouter.post("/projects-v2/:projectId/strategy/generate", async (re
   });
 
   const updated = await scopedProject(req, project.id);
-  res.json({ strategy, project: updated });
+  const workflow = await publishProjectWorkflowEvent({ projectId: project.id, eventType: "strategy.generated", sourceModule: "strategy", sourceId: strategy.id, idempotencyKey: `strategy.generated:${strategy.id}`, payload: { version: strategy.version, status: strategy.status } });
+  res.json({ strategy, project: updated, workflow });
 });
 
 guidedProjectsRouter.post("/projects-v2/:projectId/strategy/analyze", async (req, res) => {
@@ -3451,15 +3990,25 @@ guidedProjectsRouter.post("/projects-v2/:projectId/strategy/analyze", async (req
   if (!project) return res.status(404).json({ error: "project not found" });
   const strategy = project.strategyPlans[0];
   if (!strategy) return res.status(409).json({ error: "Generate a Strategy before running optimization analysis." });
+  if (strategy.status === "approved") return res.status(409).json({ error: "The approved Strategy is version-locked. Regenerate Strategy to incorporate new evidence or recalculate decisions.", code: "STRATEGY_VERSION_LOCKED" });
+  const unifiedPlan = extractUnifiedStrategyPlan(strategy.prioritizedRecommendations);
+  if (!unifiedPlan) return res.status(409).json({ error: "Regenerate this legacy Strategy with the Unified Strategy & Decision Engine.", code: "STRATEGY_REGENERATION_REQUIRED" });
+  const workflowGate = await getProjectWorkflowController(project.id);
+  if (!workflowGate?.intelligenceReady) return res.status(409).json({ error: "Complete required intelligence before recalculating Strategy decisions.", code: "WORKFLOW_INTELLIGENCE_INCOMPLETE", workflow: workflowGate });
   const advanced = await extendedStrategyAnalysisForProject(project);
+  const priorEntries = Array.isArray(strategy.prioritizedRecommendations) ? strategy.prioritizedRecommendations : [];
+  const unifiedEntry = priorEntries.find((item) => item && typeof item === "object" && !Array.isArray(item) && (item as { analysisKey?: unknown }).analysisKey === "unified_strategy_plan") as Record<string, unknown> | undefined;
+  const retainedGapRecommendations = priorEntries.filter((item) => item && typeof item === "object" && !Array.isArray(item) && /^gap_/.test(String((item as { analysisKey?: unknown }).analysisKey ?? ""))) as StrategyRecommendation[];
+  const previousScoreBreakdown = strategy.scoreBreakdown && typeof strategy.scoreBreakdown === "object" && !Array.isArray(strategy.scoreBreakdown) ? strategy.scoreBreakdown as Record<string, unknown> : {};
+  const decisionSet = buildStrategyDecisionSet({ projectId: project.id, workspaceId: context.workspace.id, modelPipelineReference: String(previousScoreBreakdown.model ?? "saved-strategy-candidates"), approval: { status: "pending" }, plan: unifiedPlan, businessBrainVersion: workflowGate.businessBrainVersion, evidenceVersion: workflowGate.evidenceVersion, workflowConfidence: workflowGate.confidence, externalRecommendations: [...retainedGapRecommendations, ...advanced.recommendations] });
+  const nextUnifiedEntry = { ...(unifiedEntry ?? { analysisKey: "unified_strategy_plan", plan: unifiedPlan }), decisionSet: { engineVersion: decisionSet.engineVersion, businessBrainVersion: decisionSet.businessBrainVersion, evidenceVersion: decisionSet.evidenceVersion, generatedAt: decisionSet.generatedAt, formula: decisionSet.formula, nextBestActionKey: decisionSet.nextBestActionKey, nextBestAction: decisionSet.nextBestAction, audit: decisionSet.audit } };
+  const nextRecommendations = [nextUnifiedEntry, ...decisionSet.decisions];
   await prisma.$transaction(async (tx) => {
-    await tx.strategyPlan.update({ where: { id: strategy.id }, data: { advancedAnalysis: advanced.analyses, prioritizedRecommendations: advanced.recommendations } });
-    await tx.aiRun.create({ data: { projectId: project.id, clientId: project.clientId, moduleName: "strategy_intelligence", promptVersion: "dev014-v1", inputSnapshotJson: { strategyId: strategy.id, version: strategy.version }, outputJson: { applicableAnalyses: advanced.analyses.filter((item) => item.applicable).map((item) => item.key), recommendationCount: advanced.recommendations.length }, outputText: `Analyzed the current Strategy using ${advanced.analyses.filter((item) => item.applicable).length} applicable optimization areas.`, status: "completed" } });
-    if (strategy.status === "approved") {
-      const planId = await activePlanId(tx, project.id);
-      await syncStrategyIntelligenceTasks(tx, project, planId, { ...strategy, prioritizedRecommendations: advanced.recommendations }, context);
-    }
-    await recordWorkspaceActivity(tx, { context, action: "strategy.optimization_analysis_completed", entityType: "strategy_plan", entityId: strategy.id, agencyClientId: project.agencyClientId, projectId: project.id, previousJson: { analysisCount: Array.isArray(strategy.advancedAnalysis) ? strategy.advancedAnalysis.length : 0 }, nextJson: { version: strategy.version, status: strategy.status, applicableAnalyses: advanced.analyses.filter((item) => item.applicable).map((item) => item.key), recommendationCount: advanced.recommendations.length } });
+    await tx.strategyPlan.update({ where: { id: strategy.id }, data: { advancedAnalysis: decisionSet.decisions as Prisma.InputJsonValue, prioritizedRecommendations: nextRecommendations as Prisma.InputJsonValue, businessBrainVersion: workflowGate.businessBrainVersion, evidenceVersion: workflowGate.evidenceVersion, confidenceJson: workflowGate.confidence as unknown as Prisma.InputJsonValue, explainabilityJson: { generatedFrom: { businessBrainVersion: workflowGate.businessBrainVersion, evidenceVersion: workflowGate.evidenceVersion }, decisionAudit: decisionSet.audit, nextBestAction: decisionSet.nextBestAction, nextBestActionExplainability: composeStrategyDecisionExplainability(decisionSet.nextBestAction), engineVersion: decisionSet.engineVersion } } });
+    await tx.nextBestAction.deleteMany({ where: { projectId: project.id, sourceType: "strategy_decision_engine", sourceId: strategy.id, status: "proposed" } });
+    await tx.nextBestAction.create({ data: { projectId: project.id, sourceType: "strategy_decision_engine", sourceId: strategy.id, title: decisionSet.nextBestAction.title, recommendation: decisionSet.nextBestAction.actions.join("\n"), reasoningSummary: decisionSet.nextBestAction.whyNow, expectedImpact: decisionSet.nextBestAction.expectedImpact, confidence: decisionSet.nextBestAction.confidence, estimatedEffort: decisionSet.nextBestAction.effort, route: decisionSet.nextBestAction.destination, priorityScore: decisionSet.nextBestAction.priorityScore, evidenceJson: { references: decisionSet.nextBestAction.evidenceReferences, explainability: composeStrategyDecisionExplainability(decisionSet.nextBestAction), destinationUrl: decisionSet.nextBestAction.destinationUrl, successMeasure: decisionSet.nextBestAction.successMeasure }, actionType: "strategy_decision", businessGoal: decisionSet.nextBestAction.businessObjective.slice(0, 255), targetEntitiesJson: decisionSet.nextBestAction.affectedPages as Prisma.InputJsonValue, estimatedImpactJson: { statement: decisionSet.nextBestAction.expectedImpact, disclaimer: "Expected impact is directional and must be measured." }, scoreJson: { formula: decisionSet.formula, priorityScore: decisionSet.nextBestAction.priorityScore }, dependencyIdsJson: decisionSet.nextBestAction.dependencies as Prisma.InputJsonValue, approvalType: "strategy_approval", riskLevel: "medium", urgency: decisionSet.nextBestAction.urgency, engineVersion: decisionSet.engineVersion, dedupeKey: `strategy-decision:${strategy.id}:${decisionSet.nextBestAction.key}`, status: "proposed" } });
+    await tx.aiRun.create({ data: { projectId: project.id, clientId: project.clientId, moduleName: "strategy_decision_engine", promptVersion: STRATEGY_DECISION_ENGINE_VERSION, inputSnapshotJson: { strategyId: strategy.id, version: strategy.version, businessBrainVersion: workflowGate.businessBrainVersion, evidenceVersion: workflowGate.evidenceVersion }, outputJson: { candidateCount: decisionSet.audit.candidateCount, nextBestActionKey: decisionSet.nextBestActionKey, priorityScore: decisionSet.nextBestAction.priorityScore }, outputText: `Compared ${decisionSet.audit.candidateCount} valid Strategy actions and selected ${decisionSet.nextBestAction.title}.`, status: "completed" } });
+    await recordWorkspaceActivity(tx, { context, action: "strategy.decisions_recalculated", entityType: "strategy_plan", entityId: strategy.id, agencyClientId: project.agencyClientId, projectId: project.id, previousJson: { analysisCount: Array.isArray(strategy.advancedAnalysis) ? strategy.advancedAnalysis.length : 0 }, nextJson: { version: strategy.version, status: strategy.status, businessBrainVersion: workflowGate.businessBrainVersion, evidenceVersion: workflowGate.evidenceVersion, candidateCount: decisionSet.audit.candidateCount, nextBestAction: decisionSet.nextBestAction.title } });
   });
   res.json({ strategyId: strategy.id, project: await scopedProject(req, project.id) });
 });
@@ -3471,8 +4020,34 @@ guidedProjectsRouter.post("/projects-v2/:projectId/strategy/approve", async (req
 
   const latestStrategy = project.strategyPlans[0];
   if (!latestStrategy) return res.status(409).json({ error: "generate strategy before approving" });
+  if (latestStrategy.status === "stale") return res.status(409).json({ error: "This Strategy is stale because upstream project evidence changed. Regenerate Strategy before approval.", code: "WORKFLOW_STRATEGY_STALE" });
+  const workflowGate = await getProjectWorkflowController(project.id);
+  if (!workflowGate?.intelligenceReady || workflowGate.strategyStale) return res.status(409).json({ error: workflowGate?.strategyStale ? "Newer intelligence exists. Regenerate Strategy before approval." : "Complete the required project intelligence before approving Strategy.", code: workflowGate?.strategyStale ? "WORKFLOW_STRATEGY_STALE" : "WORKFLOW_INTELLIGENCE_INCOMPLETE", workflow: workflowGate });
+  const latestGapAnalysis = requiresSiteAnalysisBeforeStrategy(project)
+    ? await prisma.gapAnalysisRun.findFirst({ where: { projectId: project.id, status: "completed" }, orderBy: [{ completedAt: "desc" }, { createdAt: "desc" }], select: { completedAt: true, createdAt: true } })
+    : null;
+  const latestGapAnalysisAt = latestGapAnalysis?.completedAt ?? latestGapAnalysis?.createdAt ?? null;
+  const seoPlanEvidenceReady = !requiresSiteAnalysisBeforeStrategy(project) || Boolean(latestGapAnalysisAt && latestGapAnalysisAt.getTime() <= latestStrategy.createdAt.getTime());
 
   const context = await workspaceContext(req);
+  const approvalTimestamp = new Date();
+  const existingExplainability = latestStrategy.explainabilityJson && typeof latestStrategy.explainabilityJson === "object" && !Array.isArray(latestStrategy.explainabilityJson) ? latestStrategy.explainabilityJson as Record<string, unknown> : {};
+  const existingDecisionAudit = existingExplainability.decisionAudit && typeof existingExplainability.decisionAudit === "object" && !Array.isArray(existingExplainability.decisionAudit) ? existingExplainability.decisionAudit as Record<string, unknown> : {};
+  const approvedExplainability = {
+    ...existingExplainability,
+    decisionAudit: {
+      ...existingDecisionAudit,
+      approval: { status: "approved", decidedAt: approvalTimestamp.toISOString(), decidedBy: context.membership.userId },
+      lifecycleStatus: "active",
+    },
+  };
+  const approvedRecommendations = (Array.isArray(latestStrategy.prioritizedRecommendations) ? latestStrategy.prioritizedRecommendations : []).map((item) => {
+    if (!item || typeof item !== "object" || Array.isArray(item) || (item as { analysisKey?: unknown }).analysisKey !== "unified_strategy_plan") return item;
+    const entry = item as Record<string, unknown>;
+    const decisionSet = entry.decisionSet && typeof entry.decisionSet === "object" && !Array.isArray(entry.decisionSet) ? entry.decisionSet as Record<string, unknown> : {};
+    const audit = decisionSet.audit && typeof decisionSet.audit === "object" && !Array.isArray(decisionSet.audit) ? decisionSet.audit as Record<string, unknown> : {};
+    return { ...entry, decisionSet: { ...decisionSet, audit: { ...audit, approval: { status: "approved", decidedAt: approvalTimestamp.toISOString(), decidedBy: context.membership.userId }, lifecycleStatus: "active" } } };
+  });
   await prisma.$transaction(async (tx) => {
     await tx.strategyPlan.updateMany({
       where: { projectId: project.id, status: "approved" },
@@ -3480,8 +4055,18 @@ guidedProjectsRouter.post("/projects-v2/:projectId/strategy/approve", async (req
     });
     await tx.strategyPlan.update({
       where: { id: latestStrategy.id },
-      data: { status: "approved", approvedAt: new Date() },
+      data: { status: "approved", approvedAt: approvalTimestamp, explainabilityJson: approvedExplainability as Prisma.InputJsonValue, prioritizedRecommendations: approvedRecommendations as Prisma.InputJsonValue },
     });
+    await tx.nextBestAction.updateMany({
+      where: { projectId: project.id, sourceType: "strategy_decision_engine", sourceId: { not: latestStrategy.id }, status: { in: ["proposed", "selected", "recommended"] } },
+      data: { status: "superseded", decision: "strategy_superseded", selectedAt: null, decidedAt: new Date(), decidedByUserId: context.membership.userId },
+    });
+    await tx.nextBestAction.updateMany({
+      where: { projectId: project.id, sourceType: "strategy_decision_engine", sourceId: latestStrategy.id, status: "proposed" },
+      data: { status: "selected", decision: "strategy_approved", selectedAt: new Date(), decidedAt: new Date(), decidedByUserId: context.membership.userId },
+    });
+    await tx.nextBestAction.updateMany({ where: { projectId: project.id, sourceType: "growth_engine", status: { in: ["selected", "recommended"] } }, data: { status: "superseded", decision: "strategy_changed", selectedAt: null } });
+    await tx.growthBlueprint.updateMany({ where: { projectId: project.id }, data: { status: "needs_refresh", nextReviewAt: new Date() } });
     await tx.project.update({
       where: { id: project.id },
       data: { currentStep: "execution" },
@@ -3492,6 +4077,9 @@ guidedProjectsRouter.post("/projects-v2/:projectId/strategy/approve", async (req
     });
     const planId = await activePlanId(tx, project.id);
     for (const input of buildCampaignExecutionTasks(project)) {
+      const isSeoPlanTask = isWebsitePlanTask(input);
+      const isSeoEvidenceTask = isSeoPlanTask || input.moduleName === "gap_analysis";
+      const waitForSeoEvidence = isSeoEvidenceTask && !seoPlanEvidenceReady;
       const task = await ensureNextTask(tx, {
         clientId: project.clientId,
         websiteId: project.websiteId,
@@ -3501,12 +4089,14 @@ guidedProjectsRouter.post("/projects-v2/:projectId/strategy/approve", async (req
         moduleName: input.moduleName,
         title: input.title,
         description: input.description,
-        actionButtonLabel: input.actionButtonLabel,
-        relatedUrl: input.relatedUrl,
+        actionButtonLabel: waitForSeoEvidence ? "Run SEO & Gap Analysis" : input.actionButtonLabel,
+        relatedUrl: waitForSeoEvidence ? `/gap-analysis?projectId=${project.id}` : input.relatedUrl,
         priority: input.priority,
         automationLevel: input.automationLevel,
         requiresApproval: input.requiresApproval,
         requiresIntegration: input.requiresIntegration,
+        status: waitForSeoEvidence ? "pending" : "ready",
+        blockedReason: waitForSeoEvidence ? "Run SEO and Gap Analysis, then update and approve Strategy before creating consolidated executable SEO work." : null,
       });
       await recordWorkspaceActivity(tx, { context, action: "task.synced_from_strategy", entityType: "execution_task", entityId: task.id, agencyClientId: project.agencyClientId, projectId: project.id, nextJson: { title: task.title, sourceModule: task.moduleName, expectedOutcome: task.expectedOutcome, priority: task.priority, status: task.status, automationLevel: task.automationLevel } });
     }
@@ -3518,7 +4108,8 @@ guidedProjectsRouter.post("/projects-v2/:projectId/strategy/approve", async (req
   });
 
   const updated = await scopedProject(req, project.id);
-  res.json({ project: updated });
+  const workflow = await publishProjectWorkflowEvent({ projectId: project.id, eventType: "strategy.approved", sourceModule: "strategy", sourceId: latestStrategy.id, idempotencyKey: `strategy.approved:${latestStrategy.id}`, payload: { version: latestStrategy.version } });
+  res.json({ project: updated, workflow });
 });
 
 guidedProjectsRouter.post("/projects-v2/:projectId/execution-plan/create", async (req, res) => {
@@ -3527,6 +4118,14 @@ guidedProjectsRouter.post("/projects-v2/:projectId/execution-plan/create", async
   if (!project) return res.status(404).json({ error: "project not found" });
   const approvedStrategy = project.strategyPlans.find((strategy) => strategy.status === "approved");
   if (!approvedStrategy) return res.status(409).json({ error: "approve strategy before creating execution plan" });
+  const workflowGate = await getProjectWorkflowController(project.id);
+  if (!workflowGate?.intelligenceReady || workflowGate.strategyStale) return res.status(409).json({ error: workflowGate?.strategyStale ? "The approved Strategy is stale. Regenerate and approve Strategy before creating the Execution Plan." : "Complete required intelligence before creating the Execution Plan.", code: workflowGate?.strategyStale ? "WORKFLOW_STRATEGY_STALE" : "WORKFLOW_INTELLIGENCE_INCOMPLETE", workflow: workflowGate });
+  if (requiresSiteAnalysisBeforeStrategy(project)) {
+    const latestGapAnalysis = await prisma.gapAnalysisRun.findFirst({ where: { projectId: project.id, status: "completed" }, orderBy: [{ completedAt: "desc" }, { createdAt: "desc" }], select: { completedAt: true, createdAt: true } });
+    if (!latestGapAnalysis) return res.status(409).json({ error: "Run SEO and Gap Analysis before creating the Execution Plan. Then update and approve Strategy from that evidence." });
+    const gapAnalysisAt = latestGapAnalysis.completedAt ?? latestGapAnalysis.createdAt;
+    if (gapAnalysisAt.getTime() > approvedStrategy.createdAt.getTime()) return res.status(409).json({ error: "The latest SEO and Gap Analysis is newer than the approved Strategy. Update and approve Strategy before creating the Execution Plan." });
+  }
 
   const websiteId = project.websiteId ?? project.website?.id ?? null;
   const isExistingWebsite = isExistingWebsiteCampaign(project);
@@ -3565,6 +4164,15 @@ guidedProjectsRouter.post("/projects-v2/:projectId/execution-plan/create", async
 
   await prisma.$transaction(async (tx) => {
     const planId = await activePlanId(tx, project.id);
+    await tx.executionPlan.update({ where: { id: planId }, data: {
+      planVersion: `${approvedStrategy.version}.0`,
+      strategyPlanId: approvedStrategy.id,
+      strategyVersion: approvedStrategy.version,
+      businessBrainVersion: workflowGate.businessBrainVersion,
+      evidenceVersion: workflowGate.evidenceVersion,
+      confidenceJson: workflowGate.confidence as unknown as Prisma.InputJsonValue,
+      explainabilityJson: { reason: "Execution Plan generated from the exact approved Strategy and controller evidence contract.", strategyId: approvedStrategy.id, strategyVersion: approvedStrategy.version, businessBrainVersion: workflowGate.businessBrainVersion, evidenceVersion: workflowGate.evidenceVersion },
+    } });
     const readinessTasks = [
       !keywordAnalysisComplete ? {
         key: "readiness-keyword-analysis",
@@ -3690,7 +4298,8 @@ guidedProjectsRouter.post("/projects-v2/:projectId/execution-plan/create", async
   });
 
   const updated = await scopedProject(req, project.id);
-  res.json({ project: updated });
+  const workflow = await publishProjectWorkflowEvent({ projectId: project.id, eventType: "execution_plan.synchronized", sourceModule: "execution_plan", sourceId: updated?.executionPlans?.[0]?.id ?? null, idempotencyKey: `execution-plan.synchronized:${project.id}:${approvedStrategy.id}`, payload: { strategyId: approvedStrategy.id, strategyVersion: approvedStrategy.version } });
+  res.json({ project: updated, workflow });
 });
 
 guidedProjectsRouter.post("/projects-v2/:projectId/execution-tasks", async (req, res) => {
@@ -3772,8 +4381,8 @@ guidedProjectsRouter.post("/projects-v2/:projectId/lead-magnet/research", async 
     ]);
     const targetMarkets = cleanLocations(Array.isArray(project.targetLocations) ? project.targetLocations.filter((item): item is string => typeof item === "string") : [], project.targetLocation);
     const keywordEvidence = keywordRuns.flatMap((run) => [
-      { keyword: run.seedKeyword, monthlySearches: run.averageVolume ?? 0, intent: "Seed topic", geography: run.locationName, source: "keyword research seed" },
-      ...run.ideas.map((idea) => ({ keyword: idea.keyword, monthlySearches: idea.avgMonthlySearches ?? 0, intent: idea.competition ?? "Research", geography: run.locationName, source: "keyword research idea" })),
+      { keyword: run.seedKeyword, monthlySearches: run.averageVolume ?? 0, intent: "Seed topic", geography: canonicalGeographicLocationLabel(run.locationName), source: "keyword research seed" },
+      ...run.ideas.map((idea) => ({ keyword: idea.keyword, monthlySearches: idea.avgMonthlySearches ?? 0, intent: idea.competition ?? "Research", geography: canonicalGeographicLocationLabel(run.locationName), source: "keyword research idea" })),
     ]);
     const allDedupedKeywords = [...new Map(keywordEvidence.map((item) => [item.keyword.trim().toLowerCase(), item])).values()]
       .sort((a, b) => b.monthlySearches - a.monthlySearches);
@@ -3781,8 +4390,8 @@ guidedProjectsRouter.post("/projects-v2/:projectId/lead-magnet/research", async 
     const approvedKeywordGroups = project.keywordGroups.filter((group) => group.status === "approved").map((group) => ({
       category: group.category,
       title: group.title,
-      keywords: Array.isArray(group.keywords) ? group.keywords.map(String).slice(0, 20) : [],
-      gapKeywords: Array.isArray(group.gapKeywords) ? group.gapKeywords.map(String).slice(0, 20) : [],
+      keywords: normalizeKeywordList(group.keywords).slice(0, 20),
+      gapKeywords: normalizeKeywordList(group.gapKeywords).slice(0, 20),
       goalSupport: group.goalSupport,
     }));
     const selectedOpportunity = project.opportunities.find((opportunity) => opportunityDecisionStatus(opportunity.status)) ?? null;
@@ -3822,7 +4431,7 @@ guidedProjectsRouter.post("/projects-v2/:projectId/lead-magnet/research", async 
       geography: {
         businessLocation: project.businessLocation,
         targetMarkets,
-        keywordResearchLocations: [...new Set(keywordRuns.map((run) => run.locationName).filter(Boolean))],
+        keywordResearchLocations: [...new Set(keywordRuns.map((run) => canonicalGeographicLocationLabel(run.locationName)).filter(Boolean))],
       },
       keywords: {
         approvedGroups: approvedKeywordGroups,
@@ -3867,6 +4476,7 @@ guidedProjectsRouter.post("/projects-v2/:projectId/lead-magnet/research", async 
         contentStrategy: researchText(approvedStrategy.contentStrategy, 3000),
         seoStrategy: researchText(approvedStrategy.seoStrategy, 3000),
         socialStrategy: researchText(approvedStrategy.socialStrategy, 2000),
+        sharedStrategyContract: approvedStrategyContext(approvedStrategy),
       } : { available: false, reason: "No approved or draft Strategy is available." },
     };
     const routedModel = await modelForFeature("lead_magnet_research", client?.plan, config.openaiModel);

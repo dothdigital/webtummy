@@ -6,7 +6,7 @@ vi.mock("../queue.js", () => ({
   keywordResearchQueue: { add: vi.fn() },
 }));
 
-import { contentPlanFor, repairContentPlanPageIdentities } from "./execution-tasks.js";
+import { contentPlanFor, includeEveryCrawledPageInContentPlan, reconcileAiWebsitePlanBatch, repairContentPlanPageIdentities, websitePlanEvidencePages } from "./execution-tasks.js";
 
 const baseInput = {
   projectName: "Growth Project",
@@ -38,6 +38,45 @@ const baseInput = {
 };
 
 describe("AI Location Authority Planner", () => {
+  it("does not expose old crawl pages to a New Website plan", () => {
+    const oldCrawlPages = [{ url: "https://old.example.com/about.html" }];
+    expect(websitePlanEvidencePages(true, oldCrawlPages)).toEqual([]);
+    expect(websitePlanEvidencePages(false, oldCrawlPages)).toEqual(oldCrawlPages);
+  });
+
+  it("classifies every crawled canonical page in the SEO Page Map before Website Development", () => {
+    const pages = [
+      { url: "https://example.com/physiotherapy.html", title: "Physiotherapy", h1: "Physiotherapy" },
+      { url: "https://example.com/contact-us.html", title: "Physiotherapy", h1: "Physiotherapy" },
+      { url: "https://example.com/our-team.html", title: "Physiotherapy", h1: "Physiotherapy" },
+      { url: "https://example.com/faq.html", title: "Physiotherapy", h1: "Physiotherapy" },
+      { url: "https://example.com/payment-insurance.html", title: "Physiotherapy", h1: "Physiotherapy" },
+    ];
+    const basePlan = contentPlanFor({
+      ...baseInput,
+      businessName: "Procare Physio",
+      markets: [],
+      keywords: ["Physiotherapy"],
+      services: ["Physiotherapy"],
+      localSeoEnabled: false,
+      websiteUrl: "https://example.com",
+      websitePages: pages,
+      keywordSignals: [],
+      serviceAvailability: [],
+      localEvidence: [],
+    });
+    const plan = includeEveryCrawledPageInContentPlan(basePlan, pages, "Procare Physio");
+    expect(plan.pageAssignments.map((assignment) => assignment.targetUrl)).toEqual(expect.arrayContaining(pages.map((page) => page.url)));
+    const contact = plan.pageAssignments.find((assignment) => assignment.targetUrl.endsWith("contact-us.html"));
+    expect(contact?.pageName).toBe("Contact Us");
+    expect(contact?.canonicalKeyword).not.toBe("Physiotherapy");
+    expect(["navigational", "transactional"]).toContain(contact?.searchIntent);
+    expect(plan.pageAssignments.find((assignment) => assignment.targetUrl.endsWith("our-team.html"))).toMatchObject({ canonicalKeyword: "Procare Physio team", searchIntent: "navigational" });
+    expect(plan.pageAssignments.find((assignment) => assignment.targetUrl.endsWith("faq.html"))).toMatchObject({ canonicalKeyword: "Procare Physio frequently asked questions", searchIntent: "informational" });
+    expect(plan.pageAssignments.find((assignment) => assignment.targetUrl.endsWith("payment-insurance.html"))).toMatchObject({ canonicalKeyword: "Procare Physio payment and insurance information", searchIntent: "informational" });
+    expect(plan.pageAssignments.filter((assignment) => assignment.canonicalKeyword === "Physiotherapy")).toHaveLength(1);
+  });
+
   it("creates a complete evidence-sized cluster for every location on a new website", () => {
     const plan = contentPlanFor({
       ...baseInput,
@@ -93,6 +132,32 @@ describe("AI Location Authority Planner", () => {
       "Super Visa Insurance Ontario",
       "Business Insurance Ontario",
     ]));
+  });
+
+  it("uses approved keywords—not a comma-separated niche—to create Website Plan owners", () => {
+    const plan = contentPlanFor({
+      ...baseInput,
+      markets: ["Toronto"],
+      keywords: ["Insurance CRM"],
+      offer: "Insurtech, Insurance CRM",
+      businessType: "Insurtech, Insurance CRM",
+      services: ["Insurance CRM", "Unapproved Automation Platform"],
+      websiteUrl: null,
+      websitePages: [],
+      keywordSignals: [
+        { keyword: "Insurance CRM", location: "Toronto", searchVolume: 500, competitionIndex: 45, competitorCount: 8 },
+      ],
+      serviceAvailability: [
+        { service: "Insurance CRM", location: "Toronto", available: true, verified: true },
+      ],
+      localEvidence: [
+        { id: "toronto-proof", location: "Toronto", type: "approved local service evidence", verified: true },
+      ],
+    });
+    const suggestedOwners = plan.pageAssignments.filter((page) => page.source === "suggested");
+    expect(suggestedOwners.every((page) => !page.canonicalKeyword.includes(","))).toBe(true);
+    expect(suggestedOwners.some((page) => /unapproved automation/i.test(page.canonicalKeyword))).toBe(false);
+    expect(plan.pageAssignments.find((page) => page.clusterRole === "location_hub")?.canonicalKeyword).toBe("Insurance CRM services in Toronto");
   });
 
   it("repairs duplicate page keys and intent owners in an older saved plan", () => {
@@ -155,8 +220,66 @@ describe("AI Location Authority Planner", () => {
       localEvidence: [],
     });
     expect(plan.locationAuthorityClusters).toHaveLength(0);
+    expect(plan.pageAssignments.some((page) => page.clusterRole === "location_hub")).toBe(false);
     expect(plan.pagePlanningIntelligence.maximumCombinations).toBeGreaterThan(100);
+    expect(plan.pagePlanningIntelligence.humanReviewCandidates.some((page) => page.pageType === "location_hub")).toBe(true);
     expect(plan.pagePlanningIntelligence.rejectedCandidates.filter((page) => page.pageType === "local_service").length).toBe(plan.pagePlanningIntelligence.maximumCombinations);
     expect(plan.pagePlanningIntelligence.missingInputs).toContain("Verified service availability by location");
+  });
+});
+
+describe("AI Website Plan batch reconciliation", () => {
+  const decision = (targetUrl: string) => ({
+    targetUrl,
+    pageName: "Service Page",
+    canonicalKeyword: "service keyword",
+    secondaryKeywords: [],
+    searchIntent: "commercial" as const,
+    pagePurpose: "Explain the approved service and guide qualified visitors toward the next step.",
+    gapAnalysis: "The approved service needs one clear canonical page owner and conversion path.",
+    recommendedAction: "update_existing" as const,
+    intentOwner: targetUrl,
+    decisionReason: "This existing page is the strongest evidence-backed owner for the approved intent.",
+    funnelStage: "evaluate" as const,
+    strategyRole: "Own the commercial service intent without competing with supporting content.",
+    requiredInternalLinks: [],
+    prohibitedCompetingKeywords: [],
+    contentBrief: "Improve the existing page around the approved service intent, verified business facts, useful proof, and one clear conversion action.",
+    ctaSuggestion: "Request an assessment",
+    evidenceSources: ["Keyword Research"],
+  });
+
+  it("keeps all required decisions and ignores an unrequested AI page", () => {
+    const result = reconcileAiWebsitePlanBatch(
+      [{ targetUrl: "https://example.com/services.html" }],
+      [decision("https://example.com/services.html"), decision("https://example.com/extra-page")],
+    );
+    expect(result.missing).toEqual([]);
+    expect(result.unexpected).toEqual(["https://example.com/extra-page"]);
+    expect(result.decisions).toHaveLength(1);
+    expect(result.decisions[0]?.targetUrl).toBe("https://example.com/services.html");
+  });
+
+  it("accepts an equivalent URL alias and restores the governed target URL", () => {
+    const result = reconcileAiWebsitePlanBatch(
+      [{ targetUrl: "https://www.example.com/about-us.html" }],
+      [decision("https://example.com/about-us/")],
+    );
+    expect(result.missing).toEqual([]);
+    expect(result.unexpected).toEqual([]);
+    expect(result.decisions[0]).toMatchObject({
+      targetUrl: "https://www.example.com/about-us.html",
+      intentOwner: "https://www.example.com/about-us.html",
+    });
+  });
+
+  it("still blocks a batch when a required governed page is missing", () => {
+    const result = reconcileAiWebsitePlanBatch(
+      [{ targetUrl: "/services" }, { targetUrl: "/contact" }],
+      [decision("/services"), decision("/unrequested")],
+    );
+    expect(result.missing).toEqual(["/contact"]);
+    expect(result.unexpected).toEqual(["/unrequested"]);
+    expect(result.decisions.map((item) => item.targetUrl)).toEqual(["/services"]);
   });
 });

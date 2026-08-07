@@ -2,7 +2,9 @@ import { useEffect, useMemo, useState } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { api } from "../api.js";
 import { getActiveProjectId, resolveActiveProjectId, setActiveProjectId } from "../active-project.js";
-import { Button, Card } from "../components/ui.js";
+import ProjectModuleHeader from "../components/ProjectModuleHeader.js";
+import ProjectWorkflowController from "../components/ProjectWorkflowController.js";
+import { Button, Card, EmptyState } from "../components/ui.js";
 import type { GrowthCandidateAction, GrowthContentOpportunity, GrowthExperiment, GrowthOverviewResponse, GrowthReadinessItem, GuidedProject } from "../types.js";
 
 type Tab = "overview" | "blueprint" | "content" | "recommendations" | "diagnosis" | "evidence" | "funnel" | "experiments" | "tracker" | "history" | "report";
@@ -166,7 +168,7 @@ function RecommendationCard({ action, primary, busy, onDecision }: {
 }
 
 function ReadinessChecklist({ items }: { items: GrowthReadinessItem[] }) {
-  const missing = items.filter((item) => item.status === "missing");
+  const missing = items.filter((item) => item.status !== "complete");
   const complete = items.filter((item) => item.status === "complete");
   return (
     <Card className="overflow-hidden">
@@ -178,14 +180,16 @@ function ReadinessChecklist({ items }: { items: GrowthReadinessItem[] }) {
         </p>
       </div>
       <div className="grid gap-4 p-5 lg:grid-cols-2">
-        {missing.map((item) => (
-          <div key={item.key} className="rounded-xl border border-amber-200 bg-amber-50 p-4">
+        {missing.map((item) => {
+          const inProgress = item.status === "in_progress";
+          return (
+          <div key={item.key} className={`rounded-xl border p-4 ${inProgress ? "border-blue-200 bg-blue-50" : "border-amber-200 bg-amber-50"}`}>
             <div className="flex items-start justify-between gap-3">
               <div>
-                <h3 className="font-bold text-amber-950">{item.title}</h3>
-                <p className="mt-2 text-sm leading-6 text-amber-900">{item.description}</p>
+                <h3 className={`font-bold ${inProgress ? "text-blue-950" : "text-amber-950"}`}>{item.title}</h3>
+                <p className={`mt-2 text-sm leading-6 ${inProgress ? "text-blue-900" : "text-amber-900"}`}>{item.description}</p>
               </div>
-              <span className="rounded-full bg-white px-2 py-1 text-xs font-bold text-amber-700">Required</span>
+              <span className={`rounded-full bg-white px-2 py-1 text-xs font-bold ${inProgress ? "text-blue-700" : "text-amber-700"}`}>{inProgress ? "In progress" : "Required"}</span>
             </div>
             <div className="mt-4 flex flex-wrap gap-2">
               {item.actions.map((action) => (
@@ -199,7 +203,8 @@ function ReadinessChecklist({ items }: { items: GrowthReadinessItem[] }) {
               ))}
             </div>
           </div>
-        ))}
+          );
+        })}
       </div>
       {complete.length > 0 && (
         <div className="border-t border-slate-100 p-5">
@@ -226,6 +231,7 @@ export default function GrowthEngine() {
   const [error, setError] = useState<string | null>(null);
   const [contentQueue, setContentQueue] = useState<"now" | "next" | "later" | "conditional" | "all">("now");
   const [selectedContentIds, setSelectedContentIds] = useState<string[]>([]);
+  const [workflowRefreshKey, setWorkflowRefreshKey] = useState(0);
   const projectId = resolveActiveProjectId(projects, params.get("projectId"), getActiveProjectId());
 
   useEffect(() => {
@@ -265,6 +271,7 @@ export default function GrowthEngine() {
       await api.post(path, {});
       const fresh = await api.get<GrowthOverviewResponse>(`/api/projects-v2/${projectId}/growth/overview`);
       setData(fresh);
+      setWorkflowRefreshKey((value) => value + 1);
       if (nextTab) {
         setTab(nextTab);
         setParams({ projectId, tab: nextTab });
@@ -380,26 +387,33 @@ export default function GrowthEngine() {
   ).sort((left, right) => contentQueueOrder[left.queue] - contentQueueOrder[right.queue] || right.priorityScore - left.priorityScore);
   const selectableContentOpportunities = visibleContentOpportunities.filter((item) => ["proposed", "deferred"].includes(item.lifecycleStatus) && !item.executionTaskId);
   const findings = findingItems(data.growth.diagnosis?.findingsJson);
+  const growthStrategySynced = Boolean(data.strategyContext?.strategyId && data.growth.blueprint?.approvedStrategyId === data.strategyContext.strategyId && data.growth.blueprint?.status === "active");
+  const officialNextAction = data.workflowController?.nextBestAction ?? null;
 
   return (
     <div className="space-y-5">
-      <div className="flex flex-col gap-3 xl:flex-row xl:items-end xl:justify-between">
-        <div>
-          <h1 className="text-[28px] font-bold leading-tight text-charcoal-950">Growth Marketing Engine</h1>
-          <p className="text-sm text-slate-500">Turn strategy and live evidence into one explainable next-best action, approved execution, measurement, and learning.</p>
-        </div>
-        <div className="flex flex-wrap items-center gap-2">
-          <select
-            value={projectId}
-            onChange={(event) => { setActiveProjectId(event.target.value); setParams({ projectId: event.target.value, tab }); }}
-            className="h-10 rounded-lg border border-slate-200 bg-white px-3 text-sm font-semibold text-slate-700"
-          >
-            {projects.map((project) => <option key={project.id} value={project.id}>{project.businessName || project.name}</option>)}
-          </select>
-          <Button onClick={() => runAction(`/api/projects-v2/${projectId}/growth/analyze`, "recommendations")} disabled={busy || !canRunGrowth}>{busy ? "Running…" : "Run Growth Engine"}</Button>
-          <Button variant="ghost" onClick={() => runAction(`/api/projects-v2/${projectId}/growth/experiments/generate`, "experiments")} disabled={busy || !canRunGrowth}>Generate Experiments</Button>
-        </div>
-      </div>
+      <ProjectModuleHeader
+        eyebrow="AI Growth Engine"
+        title={data.project.businessName || data.project.name}
+        subtitle="Turn the approved Strategy and live project evidence into one prioritized Growth Blueprint, Next Best Action, execution sequence, measurement, and continuous learning."
+        project={data.project}
+        projects={projects}
+        tasks={data.project.executionTasks ?? []}
+        onProjectChange={(nextProjectId) => { setActiveProjectId(nextProjectId); setParams({ projectId: nextProjectId, tab }); }}
+        actions={[{
+          key: "refresh-growth",
+          label: busy ? "Refreshing…" : data.growth.blueprint ? "Refresh Growth Engine" : "Run Growth Engine",
+          disabled: busy || !canRunGrowth,
+          onClick: () => { void runAction(`/api/projects-v2/${projectId}/growth/analyze`, "recommendations"); },
+        }]}
+        showExecution
+      />
+
+      <ProjectWorkflowController
+        projectId={projectId}
+        refreshKey={workflowRefreshKey + (data.project.executionTasks?.length ?? 0) + (data.growth.blueprint?.currentVersion ?? 0)}
+        compact
+      />
 
       {error && <Card className="border-red-200 bg-red-50 p-4 text-sm text-red-800">{error}</Card>}
 
@@ -408,10 +422,33 @@ export default function GrowthEngine() {
       {!canRunGrowth ? null : (
       <>
 
+      {!growthStrategySynced && <Card className="border-amber-200 bg-amber-50 p-4">
+        <div className="flex flex-wrap items-start justify-between gap-4">
+          <div className="max-w-4xl">
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="rounded-full bg-amber-600 px-2.5 py-1 text-xs font-bold text-white">Strategy refresh required</span>
+              <span className="text-xs font-bold text-amber-900">Approved Strategy v{data.strategyContext?.version ?? "—"}</span>
+              <span className="text-xs font-semibold text-slate-500">{data.strategyContext?.focusAreas.length ?? 0} focus areas drive Growth</span>
+            </div>
+            <h2 className="mt-3 font-bold text-charcoal-950">Synchronize Growth with the approved Strategy</h2>
+            <p className="mt-1 text-sm leading-6 text-slate-600">
+              A newer Strategy is approved. Refresh the Growth Engine to rebuild the Blueprint and Next Best Action from that exact Strategy version and current evidence.
+            </p>
+            {data.strategyContext?.phases[0] && (
+              <p className="mt-2 text-xs font-semibold text-amber-800">Current strategic phase: {data.strategyContext.phases[0].name} · {data.strategyContext.phases[0].timeframe}</p>
+            )}
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <Button onClick={() => runAction(`/api/projects-v2/${projectId}/growth/analyze`, "recommendations")} disabled={busy}>Refresh Growth Engine</Button>
+            <Link to={`/strategy?projectId=${projectId}`} className="rounded-lg border border-brand-200 bg-white px-3 py-2 text-sm font-bold text-brand-700 hover:bg-brand-50">Review Strategy</Link>
+          </div>
+        </div>
+      </Card>}
+
       <div className="grid gap-4 md:grid-cols-4">
         <Stat label="Growth score" value={data.signals.growthScore} detail="Blended score from project signals" />
         <Stat label="Current bottleneck" value={titleCase(data.growth.diagnosis?.bottleneckType || data.signals.bottleneckType)} detail={data.growth.diagnosis ? "Latest diagnosis" : "Predicted from available data"} />
-        <Stat label="Next Best Action" value={data.growth.selectedAction ? data.growth.selectedAction.priorityScore : "—"} detail={data.growth.selectedAction?.title || "Run the engine to select one action"} />
+        <Stat label="Next Best Action" value={officialNextAction?.confidence ?? data.growth.selectedAction?.priorityScore ?? "—"} detail={officialNextAction?.title || data.growth.selectedAction?.title || "Run the engine to select one action"} />
         <Stat label="Blueprint version" value={data.growth.blueprint ? `v${data.growth.blueprint.currentVersion}` : "—"} detail={data.growth.blueprint?.nextReviewAt ? `Review ${new Date(data.growth.blueprint.nextReviewAt).toLocaleDateString()}` : "Not generated"} />
       </div>
 
@@ -431,7 +468,24 @@ export default function GrowthEngine() {
       </Card>
 
       {tab === "overview" && (
-        <div className="grid gap-5 xl:grid-cols-[1fr_360px]">
+        <div className="space-y-5">
+          <div className="overflow-hidden rounded-xl border border-slate-800 bg-slate-950 text-white shadow-sm">
+            <div className="grid gap-5 p-5 lg:grid-cols-[1fr_auto] lg:items-center">
+              <div>
+                <div className="text-xs font-bold uppercase tracking-[0.2em] text-emerald-300">Growth Intelligence · continuous optimization</div>
+                <h2 className="mt-2 text-xl font-bold">Measure what changed, learn from evidence, then choose one valid next action</h2>
+                <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-300">Verified execution activates measurement. SEnuke AI separates missing evidence from zero, evaluates the result without inventing causality, updates the versioned Growth Blueprint, and sends one governed Next Best Action to execution.</p>
+              </div>
+              <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+                <div className="rounded-xl bg-white/10 p-3"><div className="text-2xl font-bold">{data.growthIntelligence.lifecycle.verifiedExposures}</div><div className="text-[11px] text-slate-300">Verified exposures</div></div>
+                <div className="rounded-xl bg-white/10 p-3"><div className="text-2xl font-bold">{data.growthIntelligence.lifecycle.dueEvaluations}</div><div className="text-[11px] text-slate-300">Evaluations due</div></div>
+                <div className="rounded-xl bg-white/10 p-3"><div className="text-2xl font-bold">{data.growthIntelligence.blueprint.patchCount}</div><div className="text-[11px] text-slate-300">Blueprint learnings</div></div>
+                <div className="rounded-xl bg-white/10 p-3"><div className="text-sm font-bold text-emerald-300">{titleCase(data.growthIntelligence.lifecycle.state)}</div><div className="text-[11px] text-slate-300">Measurement state</div></div>
+              </div>
+            </div>
+            {data.growthIntelligence.dataQuality.limitations.length > 0 && <div className="border-t border-white/10 bg-white/5 px-5 py-3 text-xs text-amber-200">Known limitations: {data.growthIntelligence.dataQuality.limitations.join(" · ")}</div>}
+          </div>
+          <div className="grid gap-5 xl:grid-cols-[1fr_360px]">
           <Card className="p-5">
             <h2 className="font-bold text-charcoal-950">Growth constraint scorecard</h2>
             <div className="mt-5 grid gap-4 md:grid-cols-2">
@@ -446,15 +500,16 @@ export default function GrowthEngine() {
                 <div className="mt-1 text-sm text-slate-500">Normalize current signals, diagnose constraints, score candidates, and select one action. No task is created yet.</div>
               </button>
               <button type="button" onClick={() => { setTab("recommendations"); setParams({ projectId, tab: "recommendations" }); }} className="w-full rounded-lg border border-slate-200 p-3 text-left hover:bg-slate-50">
-                <div className="font-bold text-charcoal-950">{data.growth.selectedAction ? data.growth.selectedAction.title : "Review the Next Best Action"}</div>
-                <div className="mt-1 text-sm text-slate-500">{data.growth.selectedAction ? "Accept, edit, defer, reject, or request alternatives." : "Run the Growth Engine to generate an explainable recommendation."}</div>
+                <div className="font-bold text-charcoal-950">{officialNextAction?.title || data.growth.selectedAction?.title || "Review the Next Best Action"}</div>
+                <div className="mt-1 text-sm text-slate-500">{officialNextAction?.reason || (data.growth.selectedAction ? "Accept, edit, defer, reject, or request alternatives." : "Run the Growth Engine to generate an explainable recommendation.")}</div>
               </button>
-              <Link to="/strategy" className="block rounded-lg border border-slate-200 p-3 text-left hover:bg-slate-50">
+              <Link to={`/strategy?projectId=${projectId}`} className="block rounded-lg border border-slate-200 p-3 text-left hover:bg-slate-50">
                 <div className="font-bold text-charcoal-950">Review approved strategy</div>
                 <div className="mt-1 text-sm text-slate-500">The Blueprint and recommendations remain anchored to this approved direction.</div>
               </Link>
             </div>
           </Card>
+          </div>
         </div>
       )}
 
@@ -494,10 +549,7 @@ export default function GrowthEngine() {
               ))}
             </div>
           ) : (
-            <Card className="p-8 text-center">
-              <p className="text-sm text-slate-500">No Blueprint exists yet.</p>
-              <Button className="mt-4" onClick={() => runAction(`/api/projects-v2/${projectId}/growth/analyze`, "blueprint")} disabled={busy}>Generate Blueprint</Button>
-            </Card>
+            <Card className="overflow-hidden"><EmptyState eyebrow="Growth Intelligence" title="No Growth Blueprint exists yet" description="Create the first evidence-led Blueprint from the approved Strategy and current project signals." action={<Button onClick={() => runAction(`/api/projects-v2/${projectId}/growth/analyze`, "blueprint")} disabled={busy}>Generate Blueprint</Button>} /></Card>
           )}
           <Card className="overflow-hidden">
             <div className="flex flex-wrap items-start justify-between gap-4 border-b border-slate-100 bg-gradient-to-r from-violet-50 to-white p-5">
@@ -544,12 +596,7 @@ export default function GrowthEngine() {
       {tab === "content" && (
         <div className="space-y-5">
           {!contentRoadmap ? (
-            <Card className="p-8 text-center">
-              <div className="text-xs font-bold uppercase tracking-wide text-violet-700">Growth Blueprint</div>
-              <h2 className="mt-2 text-xl font-bold text-charcoal-950">Generate the Supporting Content Plan</h2>
-              <p className="mx-auto mt-2 max-w-2xl text-sm leading-6 text-slate-500">SEnuke AI will use approved strategy, keyword research, website pages, target markets and business goals to build a complete opportunity map. It will not generate the articles yet.</p>
-              <Button className="mt-5" onClick={() => runAction(`/api/projects-v2/${projectId}/growth/content-roadmap/refresh`, "content")} disabled={busy || !canRunGrowth}>{busy ? "Researching opportunities…" : "Generate Supporting Content Plan"}</Button>
-            </Card>
+            <Card className="overflow-hidden"><EmptyState eyebrow="Growth Blueprint" title="Generate the Supporting Content Plan" description="SEnuke AI will use the approved Strategy, keyword research, website pages, target markets, and business goals to build a complete opportunity map. It will not generate the articles yet." action={<Button onClick={() => runAction(`/api/projects-v2/${projectId}/growth/content-roadmap/refresh`, "content")} disabled={busy || !canRunGrowth}>{busy ? "Researching opportunities…" : "Generate Supporting Content Plan"}</Button>} /></Card>
           ) : (
             <>
               <Card className="overflow-hidden">
@@ -658,7 +705,7 @@ export default function GrowthEngine() {
           <Card className="p-5">
             <h2 className="font-bold text-charcoal-950">Top diagnosis</h2>
             <p className="mt-3 text-sm leading-6 text-slate-600">{data.growth.diagnosis?.summary || "Run diagnosis to create a stored growth bottleneck and scorecard."}</p>
-            {data.growth.diagnosis && <div className="mt-2 text-xs font-semibold text-slate-400">{data.growth.diagnosis.confidence}% confidence · {titleCase(data.growth.diagnosis.runType)} run · {data.growth.diagnosis.engineVersion}</div>}
+            {data.growth.diagnosis && <div className="mt-2 text-xs font-semibold text-slate-400">{data.growth.diagnosis.confidence}% confidence · {titleCase(data.growth.diagnosis.runType)} run</div>}
             {findings.length > 0 && (
               <div className="mt-5 space-y-3">
                 {findings.map((finding, index) => (
@@ -735,11 +782,7 @@ export default function GrowthEngine() {
       {tab === "experiments" && (
         <div className="space-y-4">
           {data.growth.experiments.length === 0 ? (
-            <Card className="p-8 text-center">
-              <h2 className="font-bold text-charcoal-950">No experiments yet</h2>
-              <p className="mt-2 text-sm text-slate-500">Generate experiments from the latest diagnosis and project strategy.</p>
-              <Button className="mt-4" onClick={() => runAction(`/api/projects-v2/${projectId}/growth/experiments/generate`, "experiments")} disabled={busy}>Generate Experiments</Button>
-            </Card>
+            <Card className="overflow-hidden"><EmptyState eyebrow="Growth Experiments" title="No experiments yet" description="Generate experiments from the latest diagnosis and approved project Strategy." action={<Button onClick={() => runAction(`/api/projects-v2/${projectId}/growth/experiments/generate`, "experiments")} disabled={busy}>Generate Experiments</Button>} /></Card>
           ) : data.growth.experiments.map((experiment) => <ExperimentCard key={experiment.id} experiment={experiment} onStart={startExperiment} busy={busy} />)}
         </div>
       )}
@@ -777,7 +820,7 @@ export default function GrowthEngine() {
               {data.growth.recentRuns.length === 0 ? <div className="p-6 text-sm text-slate-500">No runs recorded.</div> : data.growth.recentRuns.map((run) => (
                 <div key={run.id} className="p-4">
                   <div className="flex items-center justify-between gap-3">
-                    <div className="font-bold text-charcoal-950">{run.promptVersion}</div>
+                    <div className="font-bold text-charcoal-950">Growth Engine run</div>
                     <span className={`rounded-full px-2 py-1 text-xs font-bold ${statusBadge(run.status)}`}>{titleCase(run.status)}</span>
                   </div>
                   <div className="mt-1 text-sm text-slate-500">{new Date(run.createdAt).toLocaleString()}</div>

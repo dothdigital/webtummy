@@ -155,12 +155,34 @@ describe("SENuke canonical Website Model", () => {
     const home = websitePageCompositionPolicy({ pageType: "home", title: "Home", searchIntent: "navigational" });
     const service = websitePageCompositionPolicy({ pageType: "service", title: "Life Insurance", searchIntent: "commercial" });
     const contact = websitePageCompositionPolicy({ pageType: "conversion", title: "Contact Us", searchIntent: "navigational" });
+    const faq = websitePageCompositionPolicy({ pageType: "supporting", title: "Frequently Asked Questions", searchIntent: "informational" });
     const legal = websitePageCompositionPolicy({ pageType: "legal", title: "Privacy Policy", searchIntent: "navigational" });
     expect(home.requiredComponentIds).not.toContain("content.process");
     expect(service.recommendedComponentIds).toContain("content.process");
     expect(contact.requiredComponentIds).toContain("conversion.contact_form");
     expect(contact.requiredComponentIds).not.toContain("conversion.cta");
+    expect(faq.archetype).toBe("faq");
+    expect(faq.requiredComponentIds).toContain("content.faq");
+    expect(faq.guidance).toContain("8–12");
     expect(legal.requiredComponentIds).toEqual(["hero.local_service", "content.rich_text"]);
+  });
+
+  it("does not require Service schema for a transactional Contact page", () => {
+    const contact = page({
+      name: "Contact Us",
+      pageType: "conversion",
+      seo: {
+        ...page().seo,
+        dominantIntent: "transactional",
+        schemaJsonLd: {
+          "@context": "https://schema.org",
+          "@type": "ContactPage",
+          about: { "@type": "Organization", name: "Example Insurance" },
+        },
+      },
+    });
+    const result = validateWebsiteModel(model([contact]));
+    expect(result.findings.map((finding) => finding.code)).not.toContain("missing_service_entity_schema");
   });
 
   it("uses one universal maximum word ceiling for every page archetype", () => {
@@ -176,6 +198,14 @@ describe("SENuke canonical Website Model", () => {
     ];
     expect(examples.map((example) => websitePageCompositionPolicy(example).maximumWords))
       .toEqual(examples.map(() => WEBSITE_PAGE_MAXIMUM_WORDS));
+  });
+
+  it("keeps content-depth targets advisory after a page is validated", () => {
+    const releaseModel = model();
+    releaseModel.status = "validated";
+    const result = validateWebsiteModel(releaseModel);
+    const depthFinding = result.findings.find((finding) => finding.code === "content_depth_recommendation");
+    expect(depthFinding?.severity).toBe("warning");
   });
 
   it("accepts the registered contact enquiry form", () => {
@@ -342,6 +372,9 @@ describe("SENuke canonical Website Model", () => {
     const score = scoreSeoPage(invalidPage, website);
     expect(score.status).toBe("blocked");
     expect(score.blockingReasons.some((reason) => reason.includes("canonical"))).toBe(true);
+    expect(score.blockingFindings).toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: "missing_canonical", severity: "blocking" }),
+    ]));
   });
 
   it("does not attach page 10 findings to page 1", () => {

@@ -7,17 +7,29 @@ import { projectClientIdForRequest } from "../project-scope.js";
 import { canAccessProject, hasWorkspacePermission, recordWorkspaceActivity, workspaceContext } from "../workspace-access.js";
 import { startTaskPublishing, verifyTaskPublishing } from "../publishing-workflow.js";
 import { submitTaskApproval } from "../approval-workflow.js";
-import { buildCampaignExecutionTasks } from "../campaign-intelligence.js";
-import { clusterKeywordDirections, keywordTopicSimilarity, planSeoPages, stripNonGeographicAudienceQualifier, type SeoPagePlan, type SeoPlannerInput } from "@webtummy/core";
+import { buildCampaignExecutionTasks, isExistingWebsiteCampaign, isPreLaunchWebsiteCampaign } from "../campaign-intelligence.js";
+import { approvedKeywordEntries, bestExistingSeoPageMatch, clusterKeywordDirections, keywordTopicSimilarity, missingApprovedKeywordResearch, normalizeKeywordTopic, planSeoPages, splitKeywordEntries, stripNonGeographicAudienceQualifier, type SeoPagePlan, type SeoPlannerInput } from "@webtummy/core";
 import { centralAiJson } from "../central-ai-service.js";
-import { cleanGeographicTargetMarkets } from "../project-location.js";
+import { cleanGeographicTargetMarkets, projectAnalysisLocationLabels } from "../project-location.js";
 import { normalizeKeywordsWithAi } from "../ai-keyword-normalization.js";
+import { publishProjectWorkflowEvent } from "../project-workflow-controller.js";
+import { MARKETING_EXECUTION_CONTRACT_VERSION, marketingExecutionSummary, prepareMarketingExecution } from "../marketing-execution-engine.js";
+import { isWebsitePlanTask } from "../website-plan-task.js";
 
 export const executionTasksRouter = Router();
 executionTasksRouter.use(requireAuth);
 
 const terminalStatuses = new Set(["completed", "skipped"]);
-const CONTENT_PLAN_WORKFLOW_VERSION = "seo_page_map_v4" as const;
+const CONTENT_PLAN_WORKFLOW_VERSION = "seo_page_map_v7" as const;
+
+/**
+ * Crawl evidence is valid for an existing-site improvement or redesign, but a
+ * New Website project must always start from planned new pages. This also
+ * protects a project after its direction changes while old crawl rows remain.
+ */
+export function websitePlanEvidencePages<T>(preLaunchWebsite: boolean, pages: T[] | null | undefined): T[] {
+  return preLaunchWebsite ? [] : pages ?? [];
+}
 
 const querySchema = z.object({
   websiteId: z.string().optional(),
@@ -175,7 +187,10 @@ const contentPlanSchema = z.object({
     supportingContentIdeas: z.array(z.string().trim().min(5).max(300)).min(2).max(6).optional(),
     proofRequirements: z.array(z.string().trim().min(5).max(300)).min(1).max(6).optional(),
     ctaSuggestion: z.string().trim().min(2).max(160).optional(),
-  })).max(500).default([]),
+    funnelStage: z.enum(["discover", "evaluate", "trust", "convert", "delight", "grow_refer"]).optional(),
+    strategyRole: z.string().trim().min(2).max(800).optional(),
+    evidenceSources: z.array(z.string().trim().min(2).max(300)).max(20).optional(),
+  })).min(1).max(500),
   pagePlanningIntelligence: z.object({
     version: z.literal("v1"),
     normalizedKeywords: z.array(z.object({
@@ -368,7 +383,7 @@ function reconcileContentPlanConflicts(plan: ContentPlan): ContentPlan {
   const normalizeTarget = (value: string) => value.trim().toLocaleLowerCase().replace(/^https?:\/\/[^/]+/i, "").replace(/\/+$/, "") || "/";
   const seen = new Set<string>();
   const conflicts = plan.pagePlanningIntelligence.conflicts.filter((value) => {
-    const ids = Array.isArray(value.conflictingPageIds) ? value.conflictingPageIds.filter((item): item is string => typeof item === "string") : [];
+    const ids = Array.isArray(value.conflictingPageIds) ? [...new Set(value.conflictingPageIds.filter((item): item is string => typeof item === "string"))] : [];
     const dedupeKey = [...ids].sort().join("::");
     if (!ids.length || seen.has(dedupeKey)) return false;
     seen.add(dedupeKey);
@@ -376,6 +391,7 @@ function reconcileContentPlanConflicts(plan: ContentPlan): ContentPlan {
       const assignment = assignmentsByKey.get(ids[0]);
       return Boolean(assignment && ids[1] && normalizeTarget(assignment.targetUrl) !== normalizeTarget(ids[1]));
     }
+    if (ids.length < 2) return false;
     const assignments = ids.flatMap((id) => {
       const assignment = assignmentsByKey.get(id);
       return assignment ? [assignment] : [];
@@ -397,10 +413,34 @@ function reconcileContentPlanConflicts(plan: ContentPlan): ContentPlan {
 }
 
 export function repairContentPlanPageIdentities(plan: ContentPlan): ContentPlan {
+  const assignmentsByTarget = new Map<string, ContentPlan["pageAssignments"][number]>();
+  for (const assignment of plan.pageAssignments) {
+    const target = assignment.targetUrl.trim().toLocaleLowerCase().replace(/^https?:\/\/[^/]+/i, "").replace(/\/index(?:\.html?)?\/?$/, "/").replace(/\.html?\/?$/, "").replace(/\/+$/, "") || "/";
+    const current = assignmentsByTarget.get(target);
+    if (!current) {
+      assignmentsByTarget.set(target, assignment);
+      continue;
+    }
+    const preferred = current.source === "existing_crawl" || assignment.source !== "existing_crawl" ? current : assignment;
+    const alternate = preferred === current ? assignment : current;
+    assignmentsByTarget.set(target, {
+      ...preferred,
+      secondaryKeywords: [...new Set([
+        ...preferred.secondaryKeywords,
+        alternate.canonicalKeyword,
+        ...alternate.secondaryKeywords,
+      ])].filter((keyword) => keyword.trim().toLocaleLowerCase() !== preferred.canonicalKeyword.trim().toLocaleLowerCase()),
+      requiredInternalLinks: [...new Set([...(preferred.requiredInternalLinks ?? []), ...(alternate.requiredInternalLinks ?? [])])],
+      prohibitedCompetingKeywords: [...new Set([...(preferred.prohibitedCompetingKeywords ?? []), ...(alternate.prohibitedCompetingKeywords ?? [])])],
+      faqTopics: [...new Set([...(preferred.faqTopics ?? []), ...(alternate.faqTopics ?? [])])],
+      gapAnalysis: `${preferred.gapAnalysis} An equivalent page candidate was consolidated here to preserve one canonical URL owner.`,
+    });
+  }
+  const sourceAssignments = [...assignmentsByTarget.values()];
   const usedKeys = new Set<string>();
   const usedOwners = new Set<string>();
   const previousKeyByNewKey = new Map<string, string>();
-  const pageAssignments = plan.pageAssignments.map((assignment, index) => {
+  const pageAssignments = sourceAssignments.map((assignment, index) => {
     const previousKey = assignment.pageKey?.trim() || "";
     const baseSlug = assignment.targetUrl.replace(/^https?:\/\/[^/]+/i, "").replace(/[^a-z0-9]+/gi, "-").replace(/^-+|-+$/g, "").toLocaleLowerCase()
       || assignment.canonicalKeyword.replace(/[^a-z0-9]+/gi, "-").replace(/^-+|-+$/g, "").toLocaleLowerCase()
@@ -505,7 +545,7 @@ type ContentPlanHomeContext = {
   businessName?: string | null;
   offer?: string | null;
   websiteUrl?: string | null;
-  websitePages?: Array<{ url: string; title: string | null }>;
+  websitePages?: Array<{ url: string; title: string | null; h1?: string | null }>;
 };
 
 function isHomePageAssignment(assignment: ContentPlan["pageAssignments"][number]) {
@@ -562,6 +602,214 @@ function defaultPageFaqTopics(assignment: ContentPlan["pageAssignments"][number]
   ];
 }
 
+const aiUnifiedWebsitePlanSchema = z.object({
+  summary: z.string().trim().min(20).max(3000),
+  decisions: z.array(z.object({
+    targetUrl: z.string().trim().min(1).max(512),
+    pageName: z.string().trim().min(2).max(255),
+    canonicalKeyword: z.string().trim().min(2).max(255),
+    secondaryKeywords: z.array(z.string().trim().min(2).max(255)).max(30),
+    searchIntent: z.enum(["commercial", "transactional", "informational", "local", "navigational"]),
+    pagePurpose: z.string().trim().min(20).max(800),
+    gapAnalysis: z.string().trim().min(20).max(1200),
+    recommendedAction: z.enum(["update_existing", "create_new", "consolidate", "support_only"]),
+    intentOwner: z.string().trim().max(500),
+    decisionReason: z.string().trim().min(20).max(1200),
+    funnelStage: z.enum(["discover", "evaluate", "trust", "convert", "delight", "grow_refer"]),
+    strategyRole: z.string().trim().min(2).max(800),
+    requiredInternalLinks: z.array(z.string().trim().min(1).max(512)).max(20),
+    prohibitedCompetingKeywords: z.array(z.string().trim().min(2).max(255)).max(30),
+    contentBrief: z.string().trim().min(40).max(1500),
+    ctaSuggestion: z.string().trim().min(3).max(160),
+    evidenceSources: z.array(z.string().trim().min(2).max(300)).min(1).max(20),
+  }).superRefine((decision, context) => {
+    if (["consolidate", "support_only"].includes(decision.recommendedAction) && !decision.intentOwner) {
+      context.addIssue({ code: z.ZodIssueCode.custom, path: ["intentOwner"], message: "Consolidated and supporting pages must identify their canonical owner URL." });
+    }
+  })).min(1).max(100),
+});
+
+type AiWebsitePlanDecision = z.infer<typeof aiUnifiedWebsitePlanSchema>["decisions"][number];
+
+function reconcileAiTargetUrlBatch<T extends { targetUrl: string }>(
+  assignments: Array<{ targetUrl: string }>,
+  returnedItems: T[],
+) {
+  const unusedItemIndexes = new Set(returnedItems.map((_, index) => index));
+  const reconciled: T[] = [];
+  const missing: string[] = [];
+  const exactTarget = (value: string) => value.trim().toLocaleLowerCase();
+
+  const findUnusedItem = (assignmentUrl: string, canonical: boolean) => {
+    for (const index of unusedItemIndexes) {
+      const returnedUrl = returnedItems[index]?.targetUrl ?? "";
+      const matches = canonical
+        ? canonicalContentPlanTarget(returnedUrl) === canonicalContentPlanTarget(assignmentUrl)
+        : exactTarget(returnedUrl) === exactTarget(assignmentUrl);
+      if (matches) return index;
+    }
+    return undefined;
+  };
+
+  for (const assignment of assignments) {
+    const matchedIndex = findUnusedItem(assignment.targetUrl, false)
+      ?? findUnusedItem(assignment.targetUrl, true);
+    if (matchedIndex === undefined) {
+      missing.push(assignment.targetUrl);
+      continue;
+    }
+    unusedItemIndexes.delete(matchedIndex);
+    reconciled.push({ ...returnedItems[matchedIndex]!, targetUrl: assignment.targetUrl });
+  }
+
+  const unexpected = [...unusedItemIndexes]
+    .map((index) => returnedItems[index]?.targetUrl)
+    .filter((targetUrl): targetUrl is string => Boolean(targetUrl));
+  return { items: reconciled, missing, unexpected };
+}
+
+/**
+ * Reconcile an AI batch with the governed page candidates supplied to it.
+ *
+ * Models occasionally return a useful but unrequested extra page, or return an
+ * existing page through an equivalent URL form (www, trailing slash, .html).
+ * Neither should invalidate decisions for every governed page in the batch.
+ * Required candidates are still strict: each one must receive exactly one
+ * decision before the batch can be accepted.
+ */
+export function reconcileAiWebsitePlanBatch(
+  assignments: Array<{ targetUrl: string }>,
+  returnedDecisions: AiWebsitePlanDecision[],
+) {
+  const matched = reconcileAiTargetUrlBatch(assignments, returnedDecisions);
+  const exactTarget = (value: string) => value.trim().toLocaleLowerCase();
+  const decisions = matched.items.map((decision) => {
+    const governedOwner = assignments.find((candidate) => (
+      exactTarget(candidate.targetUrl) === exactTarget(decision.intentOwner)
+      || canonicalContentPlanTarget(candidate.targetUrl) === canonicalContentPlanTarget(decision.intentOwner)
+    ))?.targetUrl;
+    const ownsItself = canonicalContentPlanTarget(decision.intentOwner)
+      === canonicalContentPlanTarget(decision.targetUrl);
+    return {
+      ...decision,
+      intentOwner: governedOwner ?? (ownsItself ? decision.targetUrl : decision.intentOwner),
+    };
+  });
+  return { decisions, missing: matched.missing, unexpected: matched.unexpected };
+}
+
+async function applyFullAiWebsitePlan(plan: ContentPlan, evidence: {
+  business: AiBusinessContext;
+  goal: string;
+  keywords: string[];
+  targetLocations: string[];
+  gapRecommendations: unknown[];
+  sitePages: Array<{ url: string; title: string | null }>;
+  strategy: unknown;
+  funnel: unknown;
+}) {
+  const suppliedAssignments = plan.pageAssignments.slice(0, 100);
+  if (!suppliedAssignments.length) throw new Error("The unified Website Plan has no page candidates for AI evaluation.");
+  const sharedEvidence = `Approved business and goal:
+${JSON.stringify({ business: evidence.business, goal: evidence.goal, keywords: evidence.keywords, targetLocations: evidence.targetLocations }).slice(0, 20_000)}
+
+Latest SEO and Gap Analysis findings:
+${JSON.stringify(evidence.gapRecommendations).slice(0, 18_000)}
+
+Completed Site Analysis page inventory:
+${JSON.stringify(evidence.sitePages).slice(0, 12_000)}
+
+Approved unified Strategy and ranked decisions:
+${JSON.stringify(evidence.strategy).slice(0, 18_000)}
+
+Approved customer-growth funnel:
+${JSON.stringify(evidence.funnel).slice(0, 12_000)}`;
+  const generatedDecisions: z.infer<typeof aiUnifiedWebsitePlanSchema>["decisions"] = [];
+  const generatedSummaries: string[] = [];
+  for (let start = 0; start < suppliedAssignments.length; start += 6) {
+    const assignmentBatch = suppliedAssignments.slice(start, start + 6);
+    const batchNumber = Math.floor(start / 6) + 1;
+    const batchCount = Math.ceil(suppliedAssignments.length / 6);
+    const promptFor = (requestedAssignments: typeof assignmentBatch, repair: boolean) => `Create ${repair ? "the missing decisions from" : "this batch of"} the final unified SEO Page Map and Website Improvement Plan. This is an AI decision task, not a generic rewrite and not a keyword-to-page fallback.
+
+Return {"summary":"20+ character batch decision summary","decisions":[...]} with exactly one complete decision for every supplied targetUrl. Every decision object MUST contain all of these fields: targetUrl, pageName, canonicalKeyword, secondaryKeywords, searchIntent, pagePurpose, gapAnalysis, recommendedAction, intentOwner, decisionReason, funnelStage, strategyRole, requiredInternalLinks, prohibitedCompetingKeywords, contentBrief, ctaSuggestion, evidenceSources. Use [] for an empty array; never omit a field. recommendedAction must be update_existing, create_new, consolidate, or support_only. funnelStage must be discover, evaluate, trust, convert, delight, or grow_refer.
+
+${sharedEvidence}
+
+Governed candidate page-map batch ${batchNumber} of ${batchCount}:
+${JSON.stringify(requestedAssignments.map((assignment) => ({ targetUrl: assignment.targetUrl, pageName: assignment.pageName, source: assignment.source, canonicalKeyword: assignment.canonicalKeyword, secondaryKeywords: assignment.secondaryKeywords, searchIntent: assignment.searchIntent, pagePurpose: assignment.pagePurpose, currentGap: assignment.gapAnalysis, proposedAction: assignment.recommendedAction, location: assignment.location ?? null, localEvidenceIds: assignment.localEvidenceIds ?? [] })))}
+
+Decision rules:
+- Use Gap Analysis, keyword demand, crawl evidence, Strategy priority, and funnel role together.
+- Choose one canonical owner for each distinct intent. Mark overlapping pages consolidate or support_only and point intentOwner to the canonical supplied URL.
+- For update_existing or create_new, set intentOwner to that decision's own targetUrl. Never leave intentOwner blank.
+- Never map commercial services to privacy, terms, contact, login, or unrelated policy pages merely because words overlap.
+- Preserve existing URLs whenever the crawl shows a credible page. Create a page only when no existing page serves the approved intent.
+- Assign discover, evaluate, trust, convert, delight, or grow_refer according to the approved funnel, not a generic marketing sequence.
+- Give each page an intent-matched CTA and complete writing brief. Trust and informational pages should not all use a sales CTA.
+- Include specific evidence source labels such as Gap Analysis, Keyword Research, Site Analysis, Strategy, Funnel, Local SEO, or AI Citation.
+- Never invent services, locations, addresses, claims, proof, credentials, reviews, statistics, prices, or guarantees.
+${repair ? `\nREPAIR REQUIRED: Return only the ${requestedAssignments.length} missing supplied targetUrl${requestedAssignments.length === 1 ? "" : "s"} above. Do not repeat or add any other page. Every decision must include every named field, including arrays when empty.` : ""}`;
+    let lastError: unknown;
+    let completed = false;
+    let pendingAssignments = assignmentBatch;
+    const acceptedBatchDecisions: AiWebsitePlanDecision[] = [];
+    let batchSummary = "";
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      try {
+        const generated = await centralAiJson({ system: "You are the SENuke AI Unified Website Planning Engine. Make complete, evidence-grounded page ownership, content, conversion, and funnel decisions. Never omit a requested JSON field. Return valid structured JSON only.", prompt: promptFor(pendingAssignments, attempt > 0), temperature: 0.2, timeoutMs: 120_000, validate: (value) => aiUnifiedWebsitePlanSchema.parse(value) });
+        const parsed = generated.result;
+        const reconciled = reconcileAiWebsitePlanBatch(pendingAssignments, parsed.decisions);
+        acceptedBatchDecisions.push(...reconciled.decisions);
+        batchSummary ||= parsed.summary;
+        if (reconciled.unexpected.length) {
+          console.warn("[content-plan] ignored unrequested AI Website Plan page decisions", {
+            batch: batchNumber,
+            count: reconciled.unexpected.length,
+            targetUrls: reconciled.unexpected,
+          });
+        }
+        if (reconciled.missing.length) {
+          const missingTargets = new Set(reconciled.missing.map((targetUrl) => targetUrl.trim().toLocaleLowerCase()));
+          pendingAssignments = pendingAssignments.filter((assignment) => missingTargets.has(assignment.targetUrl.trim().toLocaleLowerCase()));
+          lastError = new Error(`AI returned an incomplete Website Plan batch: ${pendingAssignments.length} required page decision${pendingAssignments.length === 1 ? " is" : "s are"} missing.`);
+          console.warn("[content-plan] retrying only missing AI Website Plan page decisions", {
+            batch: batchNumber,
+            attempt: attempt + 1,
+            count: pendingAssignments.length,
+            targetUrls: pendingAssignments.map((assignment) => assignment.targetUrl),
+          });
+          continue;
+        }
+        generatedDecisions.push(...acceptedBatchDecisions);
+        generatedSummaries.push(batchSummary);
+        completed = true;
+        break;
+      } catch (error) {
+        lastError = error;
+      }
+    }
+    if (!completed) throw lastError;
+  }
+  const decisionsByUrl = new Map(generatedDecisions.map((decision) => [canonicalContentPlanTarget(decision.targetUrl), decision]));
+  const pageAssignments = plan.pageAssignments.map((assignment) => {
+    const decision = decisionsByUrl.get(canonicalContentPlanTarget(assignment.targetUrl));
+    // AI evaluates the governed candidate, but it cannot replace its approved
+    // keyword ownership with an industry/niche phrase.
+    return decision ? {
+      ...assignment,
+      ...decision,
+      canonicalKeyword: assignment.canonicalKeyword,
+      secondaryKeywords: assignment.secondaryKeywords,
+      intentOwner: decision.intentOwner || decision.targetUrl,
+    } : assignment;
+  });
+  const summary = generatedSummaries.length === 1
+    ? generatedSummaries[0]
+    : `SENuke AI evaluated ${generatedDecisions.length} page decisions across ${generatedSummaries.length} evidence batches. ${generatedSummaries.join(" ")}`.slice(0, 3000);
+  return contentPlanSchema.parse({ ...plan, summary, pageAssignments, pageUpdates: pageAssignments.map((assignment) => `${assignment.recommendedAction.replaceAll("_", " ")}: ${assignment.pageName} · ${assignment.targetUrl} · ${assignment.funnelStage ?? "evaluate"} stage`), keywordMapping: pageAssignments.map((assignment) => `“${assignment.canonicalKeyword}” → ${assignment.intentOwner || assignment.targetUrl}${assignment.secondaryKeywords.length ? ` · Supporting: ${assignment.secondaryKeywords.join(", ")}` : ""}`), pageMap: pageAssignments.map((assignment) => `${assignment.pageName} → ${assignment.targetUrl} · ${assignment.searchIntent} · ${assignment.recommendedAction.replaceAll("_", " ")}`), planningChecks: pageAssignments.map((assignment) => `${assignment.pageName}: ${assignment.decisionReason || assignment.gapAnalysis}`) });
+}
+
 const aiPageFaqPlanSchema = z.object({
   pages: z.array(z.object({
     targetUrl: z.string().trim().min(1).max(512),
@@ -595,7 +843,11 @@ async function applyAiPageFaqSuggestions(plan: ContentPlan, context: {
     const generatedPages: z.infer<typeof aiPageFaqPlanSchema>["pages"] = [];
     for (let start = 0; start < assignments.length; start += 8) {
       const assignmentBatch = assignments.slice(start, start + 8);
-      const generated = await centralAiJson({
+      let parsedBatch: z.infer<typeof aiPageFaqPlanSchema> | null = null;
+      let batchValidationError: unknown;
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        try {
+          const generated = await centralAiJson({
         system: "You are the SENuke AI SEO content planner. Create useful, natural FAQ topic suggestions from the approved keyword-to-page map. Never invent business facts, prices, credentials, guarantees, reviews, statistics, eligibility rules, or service availability.",
         prompt: `Return {"pages":[{"targetUrl":"exact supplied target URL","seoTitle":"unique SEO title","metaDescription":"unique search description","contentOutline":["4 to 8 page sections"],"contentBrief":"complete page-specific writing direction","supportingContentIdeas":["2 to 4 useful supporting assets"],"proofRequirements":["1 to 4 evidence requirements"],"ctaSuggestion":"page-specific conversion action","faqTopics":["3 or 4 question topics"]}]}.
 
@@ -635,18 +887,36 @@ Rules:
 - Do not copy rough intake fragments, internal project names, "and others", or ambiguous transcription into customer-facing copy.
 - Treat the interpreted business context above as the customer-facing source; the page's approved keyword map still controls its search intent.
 - Ask questions the page can answer from verified project evidence; do not assume unverified facts.
-- Return topics only, without answers or explanations.`,
+- Return topics only, without answers or explanations.
+${attempt ? "REPAIR REQUIRED: The previous response was incomplete or invalid. Return every supplied targetUrl exactly once and include every requested field with the required arrays." : ""}`,
         temperature: 0.25,
         timeoutMs: 90_000,
+        validate: (value) => aiPageFaqPlanSchema.parse(value),
       });
-      const parsedBatch = aiPageFaqPlanSchema.parse(generated.result);
-      const normalizedReturnedUrls = new Set(parsedBatch.pages.map((page) => page.targetUrl.trim().toLocaleLowerCase()));
-      generatedPages.push(...parsedBatch.pages);
-      const missingAssignments = assignmentBatch.filter((assignment) => !normalizedReturnedUrls.has(assignment.targetUrl.trim().toLocaleLowerCase()));
+          parsedBatch = generated.result;
+          break;
+        } catch (error) {
+          batchValidationError = error;
+        }
+      }
+      if (!parsedBatch) throw batchValidationError;
+      const reconciledBatch = reconcileAiTargetUrlBatch(assignmentBatch, parsedBatch.pages);
+      generatedPages.push(...reconciledBatch.items);
+      if (reconciledBatch.unexpected.length) console.warn("[content-plan] ignored unrequested AI page-content suggestions", {
+        batch: Math.floor(start / 8) + 1,
+        count: reconciledBatch.unexpected.length,
+        targetUrls: reconciledBatch.unexpected,
+      });
+      const missingTargets = new Set(reconciledBatch.missing.map((targetUrl) => targetUrl.trim().toLocaleLowerCase()));
+      const missingAssignments = assignmentBatch.filter((assignment) => missingTargets.has(assignment.targetUrl.trim().toLocaleLowerCase()));
       if (missingAssignments.length) {
-        const retry = await centralAiJson({
-          system: "You are the SENuke AI SEO content planner completing pages omitted from a prior structured response. Return every supplied page exactly once. Never invent business facts, claims, prices, credentials, guarantees, reviews, statistics, eligibility rules, or service availability.",
-          prompt: `Return {"pages":[{"targetUrl":"exact supplied target URL","seoTitle":"unique SEO title","metaDescription":"unique search description","contentOutline":["3 to 8 page sections"],"contentBrief":"complete page-specific writing direction","supportingContentIdeas":["2 to 4 useful supporting assets"],"proofRequirements":["1 to 4 evidence requirements"],"ctaSuggestion":"page-specific conversion action","faqTopics":["3 or 4 question topics"]}]}.
+        let repairedPages: z.infer<typeof aiPageFaqPlanSchema>["pages"] | null = null;
+        let repairError: unknown;
+        for (let attempt = 0; attempt < 2; attempt += 1) {
+          try {
+            const retry = await centralAiJson({
+              system: "You are the SENuke AI SEO content planner completing pages omitted from a prior structured response. Return every supplied page exactly once. Never invent business facts, claims, prices, credentials, guarantees, reviews, statistics, eligibility rules, or service availability.",
+              prompt: `Return {"pages":[{"targetUrl":"exact supplied target URL","seoTitle":"unique SEO title","metaDescription":"unique search description","contentOutline":["3 to 8 page sections"],"contentBrief":"complete page-specific writing direction","supportingContentIdeas":["2 to 4 useful supporting assets"],"proofRequirements":["1 to 4 evidence requirements"],"ctaSuggestion":"page-specific conversion action","faqTopics":["3 or 4 question topics"]}]}.
 
 Business: ${context.business.businessName || "Business name not confirmed"}
 Industry: ${context.business.industry}
@@ -665,15 +935,22 @@ ${JSON.stringify(missingAssignments.map((assignment) => ({
   location: assignment.location || null,
   pagePurpose: assignment.pagePurpose,
   prohibitedCompetingKeywords: assignment.prohibitedCompetingKeywords || [],
-})))}`,
-          temperature: 0.2,
-          timeoutMs: 90_000,
-        });
-        const retryPages = aiPageFaqPlanSchema.parse(retry.result).pages;
-        const retriedUrls = new Set(retryPages.map((page) => page.targetUrl.trim().toLocaleLowerCase()));
-        const stillMissing = missingAssignments.filter((assignment) => !retriedUrls.has(assignment.targetUrl.trim().toLocaleLowerCase()));
-        if (stillMissing.length) throw new Error(`AI omitted ${stillMissing.length} required page suggestion${stillMissing.length === 1 ? "" : "s"} after a focused retry.`);
-        generatedPages.push(...retryPages);
+})))}${attempt ? "\nREPAIR REQUIRED: Include every field and return only the missing target URLs above." : ""}`,
+              temperature: 0.2,
+              timeoutMs: 90_000,
+              validate: (value) => aiPageFaqPlanSchema.parse(value),
+            });
+            repairedPages = retry.result.pages;
+            break;
+          } catch (error) {
+            repairError = error;
+          }
+        }
+        if (!repairedPages) throw repairError;
+        const reconciledRepair = reconcileAiTargetUrlBatch(missingAssignments, repairedPages);
+        if (reconciledRepair.missing.length) throw new Error(`AI omitted ${reconciledRepair.missing.length} required page suggestion${reconciledRepair.missing.length === 1 ? "" : "s"} after a focused retry.`);
+        if (reconciledRepair.unexpected.length) console.warn("[content-plan] ignored unrequested AI page-content repair suggestions", { count: reconciledRepair.unexpected.length, targetUrls: reconciledRepair.unexpected });
+        generatedPages.push(...reconciledRepair.items);
       }
     }
     const parsed = aiPageFaqPlanSchema.parse({ pages: generatedPages });
@@ -795,6 +1072,7 @@ function contentPlanHasUnnormalizedOwners(plan: ContentPlan, markets: string[]) 
   };
   const groups = new Map<string, ContentPlan["pageAssignments"]>();
   for (const assignment of plan.pageAssignments) {
+    if (assignment.source === "suggested" && /[,;\n]/.test(assignment.canonicalKeyword)) return true;
     if (systemTarget(assignment)) continue;
     const keyword = assignment.canonicalKeyword.trim();
     if (stripNonGeographicAudienceQualifier(keyword).toLocaleLowerCase() !== keyword.toLocaleLowerCase()) return true;
@@ -811,6 +1089,136 @@ function contentPlanHasUnnormalizedOwners(plan: ContentPlan, markets: string[]) 
     if (assignments.length < 2) return false;
     const clusters = clusterKeywordDirections(assignments.map((assignment) => assignment.canonicalKeyword), markets);
     return clusters.length < assignments.length;
+  });
+}
+
+function standardPageFamily(value: string) {
+  let path = value;
+  try { path = decodeURIComponent(new URL(value, "https://senuke.local").pathname); } catch { path = value.split(/[?#]/, 1)[0] ?? value; }
+  const normalized = path.toLocaleLowerCase()
+    .replace(/\/index(?:\.html?)?\/?$/, "/")
+    .replace(/\.html?\/?$/, "")
+    .replace(/\/+$/, "") || "/";
+  if (/^\/(?:about|about-us|aboutus)$/.test(normalized)) return "about";
+  if (/^\/(?:contact|contact-us|get-in-touch)$/.test(normalized)) return "contact";
+  if (/^\/(?:services|our-services|service)$/.test(normalized)) return "services";
+  if (/^\/(?:privacy|privacy-policy)$/.test(normalized)) return "privacy";
+  if (/^\/(?:terms|terms-and-conditions|terms-of-service|term-condition)$/.test(normalized)) return "terms";
+  return null;
+}
+
+function canonicalContentPlanTarget(value: string) {
+  let path = value;
+  try { path = decodeURIComponent(new URL(value, "https://senuke.local").pathname); } catch { path = value.split(/[?#]/, 1)[0] ?? value; }
+  return path.toLocaleLowerCase()
+    .replace(/\/index(?:\.html?)?\/?$/, "/")
+    .replace(/\.html?\/?$/, "")
+    .replace(/\/+$/, "") || "/";
+}
+
+function existingCrawlPageAssignment(
+  page: { url: string; title: string | null; h1?: string | null },
+  businessName: string,
+): ContentPlan["pageAssignments"][number] {
+  const target = canonicalContentPlanTarget(page.url);
+  const route = target.split("/").filter(Boolean).at(-1)?.replace(/[-_]+/g, " ").trim() || "home";
+  const brand = businessName.trim() || "Business";
+  const branded = (topic: string) => `${brand} ${topic}`.trim().slice(0, 255);
+  const suppliedTitle = String(page.title || page.h1 || "").split(/\s(?:\||–|—)\s/, 1)[0]?.trim() || "";
+  const routeTitle = route.replace(/\b\w/g, (letter) => letter.toLocaleUpperCase());
+  const role = (() => {
+    if (target === "/") return { pageName: "Home", keyword: brand, intent: "navigational" as const, role: "global" as const, purpose: "Represent the business brand and route visitors to its approved services, proof, and conversion paths." };
+    if (/\/(?:contact|contact-us|get-in-touch)$/.test(target)) return { pageName: "Contact Us", keyword: branded("contact"), intent: "transactional" as const, role: "global" as const, purpose: "Help visitors contact the business or take the approved conversion action." };
+    if (/\/(?:book|book-an-appointment|appointment|request-a-quote|quote)$/.test(target)) return { pageName: routeTitle, keyword: branded(route), intent: "transactional" as const, role: "global" as const, purpose: "Complete the approved booking, quote, or enquiry action." };
+    if (/\/(?:about|about-us|aboutus)$/.test(target)) return { pageName: "About Us", keyword: branded("about"), intent: "navigational" as const, role: "global" as const, purpose: "Explain the verified organization identity, experience, and trust evidence." };
+    if (/\/(?:our-team|team|staff|providers?)$/.test(target)) return { pageName: "Our Team", keyword: branded("team"), intent: "navigational" as const, role: "global" as const, purpose: "Present verified people and expertise without competing with a service page." };
+    if (/\/(?:faq|faqs|frequently-asked-questions)$/.test(target)) return { pageName: "Frequently Asked Questions", keyword: branded("frequently asked questions"), intent: "informational" as const, role: "resource" as const, purpose: "Answer common customer questions and link each answer to its canonical service owner." };
+    if (/\/(?:payment-insurance|insurance-payment|payment-options?)$/.test(target)) return { pageName: "Payment and Insurance", keyword: branded("payment and insurance information"), intent: "informational" as const, role: "resource" as const, purpose: "Explain verified payment and insurance information without becoming a service-keyword owner." };
+    if (/\/(?:privacy|privacy-policy)$/.test(target)) return { pageName: "Privacy Policy", keyword: branded("privacy policy"), intent: "navigational" as const, role: "resource" as const, purpose: "Provide the approved privacy policy and compliance information." };
+    if (/\/(?:terms|terms-and-conditions|terms-of-service|term-condition)$/.test(target)) return { pageName: "Terms and Conditions", keyword: branded("terms and conditions"), intent: "navigational" as const, role: "resource" as const, purpose: "Provide the approved website or service terms." };
+    if (/\/(?:blog|news|articles?|resources?)(?:\/|$)/.test(target)) return { pageName: suppliedTitle || routeTitle, keyword: (suppliedTitle || routeTitle).slice(0, 255), intent: "informational" as const, role: "resource" as const, purpose: "Support a canonical commercial page by answering a distinct informational search intent." };
+    return { pageName: suppliedTitle || routeTitle, keyword: (suppliedTitle || routeTitle).slice(0, 255), intent: "informational" as const, role: "supporting" as const, purpose: "Preserve this existing canonical page and clarify its distinct role before assigning commercial keyword ownership." };
+  })();
+  const pageKey = `existing-${target.replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "home"}`.slice(0, 180);
+  return {
+    canonicalKeyword: role.keyword,
+    pageName: role.pageName,
+    targetUrl: page.url,
+    source: "existing_crawl",
+    secondaryKeywords: [],
+    searchIntent: role.intent,
+    pagePurpose: role.purpose,
+    gapAnalysis: "This canonical page exists in the completed crawl. The SEO Page Map must assign its role before Website Development can optimize it.",
+    recommendedAction: "update_existing",
+    pageKey,
+    clusterKey: "existing-website",
+    clusterRole: role.role,
+    primaryIntent: role.intent,
+    intentClusterId: pageKey,
+    intentOwner: page.url,
+    decisionReason: "Preserve the existing canonical URL and give it a distinct, crawl-backed purpose. It must not inherit an unrelated service keyword from a repeated heading.",
+    requiredInternalLinks: [],
+    prohibitedCompetingKeywords: [],
+    evidenceSources: ["Site Analysis", "SEO Page Map"],
+  };
+}
+
+export function includeEveryCrawledPageInContentPlan(
+  plan: ContentPlan,
+  pages: Array<{ url: string; title: string | null; h1?: string | null }>,
+  businessName: string,
+): ContentPlan {
+  const representedTargets = new Set(plan.pageAssignments.map((assignment) => canonicalContentPlanTarget(assignment.targetUrl)));
+  const additions = pages
+    .filter((page, index, all) => all.findIndex((candidate) => canonicalContentPlanTarget(candidate.url) === canonicalContentPlanTarget(page.url)) === index)
+    .filter((page) => !representedTargets.has(canonicalContentPlanTarget(page.url)))
+    .map((page) => existingCrawlPageAssignment(page, businessName));
+  if (!additions.length) return plan;
+  const pageAssignments = [...plan.pageAssignments, ...additions].slice(0, 500);
+  return {
+    ...plan,
+    pageAssignments,
+    pageUpdates: [...plan.pageUpdates, ...additions.map((assignment) => `Update existing page: ${assignment.pageName} · ${assignment.targetUrl}`)].slice(0, 500),
+    keywordMapping: [...plan.keywordMapping, ...additions.map((assignment) => `Existing supporting role: “${assignment.canonicalKeyword}” → ${assignment.targetUrl}`)].slice(0, 500),
+    pageMap: [...plan.pageMap, ...additions.map((assignment) => `${assignment.pageName} → ${assignment.targetUrl} · existing page · ${assignment.searchIntent} intent`)].slice(0, 500),
+    planningChecks: [...plan.planningChecks, ...additions.map((assignment) => `${assignment.pageName}: preserve the canonical URL and verify its distinct supporting or navigational purpose.`)].slice(0, 500),
+    pagePlanningIntelligence: {
+      ...plan.pagePlanningIntelligence,
+      recommendedTotalPages: pageAssignments.length,
+    },
+  };
+}
+
+function contentPlanCreatesExistingStandardPage(plan: ContentPlan, pages: Array<{ url: string }>) {
+  const existingFamilies = new Set(pages.map((page) => standardPageFamily(page.url)).filter((value): value is string => Boolean(value)));
+  return plan.pageAssignments.some((assignment) => {
+    const family = standardPageFamily(assignment.targetUrl);
+    return Boolean(family && existingFamilies.has(family) && (assignment.source !== "existing_crawl" || assignment.recommendedAction === "create_new"));
+  });
+}
+
+function contentPlanCreatesExistingIntentPage(plan: ContentPlan, pages: Array<{ url: string; title: string | null; h1?: string | null }>, businessName: string) {
+  return plan.pageAssignments.some((assignment) => {
+    if (assignment.source === "existing_crawl" && assignment.recommendedAction !== "create_new") return false;
+    if (assignment.clusterRole === "location_hub" || standardPageFamily(assignment.targetUrl) || assignment.targetUrl.trim() === "/") return false;
+    const searchIntent = assignment.searchIntent === "local"
+      ? "local_service" as const
+      : assignment.searchIntent === "commercial"
+        ? "commercial_service" as const
+        : assignment.searchIntent;
+    const pageType = assignment.searchIntent === "local"
+      ? "local_service"
+      : assignment.searchIntent === "informational"
+        ? "resource"
+        : assignment.clusterRole === "supporting"
+          ? "resource"
+          : "service";
+    return Boolean(bestExistingSeoPageMatch(pages, {
+      primaryKeyword: assignment.canonicalKeyword,
+      pageType,
+      searchIntent,
+      businessName,
+    }));
   });
 }
 
@@ -885,7 +1293,7 @@ export function contentPlanFor(input: {
   contentStrategy: string | null;
   websiteUrl: string | null;
   localSeoEnabled: boolean;
-  websitePages: Array<{ url: string; title: string | null }>;
+  websitePages: Array<{ url: string; title: string | null; h1?: string | null }>;
   keywordSignals?: Array<{ keyword: string; location: string; searchVolume: number | null; competitionIndex: number | null; competitorCount: number }>;
   businessType?: string | null;
   services?: string[];
@@ -1004,7 +1412,7 @@ export function contentPlanFor(input: {
   const pagePlanningIntelligence: SeoPagePlan = planSeoPages({
     businessName: input.businessName?.trim() || input.businessType?.trim() || focus,
     businessType: input.businessType ?? null,
-    homepagePrimaryTopic: input.offer,
+    homepagePrimaryTopic: input.offer?.trim() || coreServices[0] || keywords[0] || null,
     services: input.services?.length ? input.services : coreServices,
     products: input.products ?? [],
     keywords,
@@ -1019,7 +1427,7 @@ export function contentPlanFor(input: {
     competitors: input.competitors ?? [],
     keywordSignals: input.keywordSignals,
     semanticKeywords: input.semanticKeywords,
-    existingPages: input.websitePages.map((page) => ({ url: page.url, title: page.title })),
+    existingPages: input.websitePages.map((page) => ({ url: page.url, title: page.title, h1: page.h1 ?? null })),
     localEvidence: input.localEvidence ?? [],
   });
   const approvedPlannerCandidates = pagePlanningIntelligence.approvedCandidates;
@@ -1489,6 +1897,15 @@ function severityPriority(severity: string): "high" | "medium" | "low" {
   return severity === "high" ? "high" : severity === "low" ? "low" : "medium";
 }
 
+function boundedExecutionTaskText(value: string, maximum: number) {
+  const normalized = value.trim().replace(/\s+/g, " ");
+  if (normalized.length <= maximum) return normalized;
+  const available = Math.max(1, maximum - 1);
+  const candidate = normalized.slice(0, available);
+  const wordBoundary = candidate.lastIndexOf(" ");
+  return `${candidate.slice(0, wordBoundary >= Math.floor(available * 0.7) ? wordBoundary : available).trimEnd()}…`;
+}
+
 function taskPath(moduleName: string, websiteId: string, sourceId?: string | null) {
   if (moduleName === "crawl" && sourceId) return `/crawls/${sourceId}`;
   if (moduleName === "keyword_research" && sourceId) return `/keyword-insights/${sourceId}`;
@@ -1507,7 +1924,7 @@ async function upsertTask(tx: Prisma.TransactionClient, input: TaskInput) {
     moduleName: input.moduleName,
     sourceType: input.sourceType,
     sourceId: input.sourceId ?? null,
-    title: input.title,
+    title: boundedExecutionTaskText(input.title, 255),
     description: input.description,
     expectedOutcome: input.expectedOutcome ?? input.impact ?? input.description,
     priority: input.priority,
@@ -1516,7 +1933,7 @@ async function upsertTask(tx: Prisma.TransactionClient, input: TaskInput) {
     requiresApproval: input.requiresApproval ?? false,
     requiresIntegration: input.requiresIntegration ?? false,
     manualRequired: input.manualRequired ?? true,
-    actionButtonLabel: input.actionButtonLabel ?? null,
+    actionButtonLabel: input.actionButtonLabel ? boundedExecutionTaskText(input.actionButtonLabel, 120) : null,
     relatedUrl: input.relatedUrl ?? taskPath(input.moduleName, input.websiteId, input.sourceId),
     relatedAssetId: input.relatedAssetId ?? null,
     manualInstructions: input.manualInstructions ?? null,
@@ -1798,9 +2215,89 @@ executionTasksRouter.get("/execution-tasks", async (req, res) => {
   const actionableTasks = crawlFindingTasks?.issues.length ? tasks.filter((task) => task.moduleName !== "site_analysis") : tasks;
   for (const task of [...actionableTasks, ...unsyncedCrawlFindings]) if (projectScope || !task.projectId || await canAccessProject(context, task.projectId)) visible.push(task);
   const searched = parsed.data.search ? visible.filter((task) => [task.title, task.actionButtonLabel, task.description, task.moduleName].some((value) => value?.toLowerCase().includes(parsed.data.search!.toLowerCase()))) : visible;
-  res.json({ tasks: searched.map((task) => /(?:seo\s*plan|content\s*plan)/i.test(`${task.title} ${task.actionButtonLabel ?? ""}`) && task.projectId
-    ? { ...task, relatedUrl: `/guided-projects/${task.projectId}?tab=execution&actionTask=${task.id}#execution-tasks` }
-    : task) });
+  const seoPageMapByProject = new Map<string, (typeof visible)[number]>();
+  for (const task of visible) {
+    if (!task.projectId || !(task.sourceType === "seo_plan" || /(?:seo\s*page\s*map|seo\s+plan)/i.test(`${task.title} ${task.actionButtonLabel ?? ""}`))) continue;
+    const selected = seoPageMapByProject.get(task.projectId);
+    if (!selected || task.updatedAt > selected.updatedAt) seoPageMapByProject.set(task.projectId, task);
+  }
+  res.json({ tasks: searched.map((task) => {
+    const isSeoPageMap = task.sourceType === "seo_plan" || /(?:seo\s*page\s*map|seo\s+plan)/i.test(`${task.title} ${task.actionButtonLabel ?? ""}`);
+    const routed = isSeoPageMap && task.projectId
+      ? { ...task, relatedUrl: `/seo-page-map?projectId=${task.projectId}&taskId=${task.id}` }
+      : task;
+    const pageMapTask = task.projectId ? seoPageMapByProject.get(task.projectId) : null;
+    const pageMapApproved = Boolean(pageMapTask?.approvedAt && ["ready_to_publish", "approved", "completed"].includes(pageMapTask.status));
+    const seoExecutionDecision = task.sourceType === "strategy_decision"
+      && task.moduleName === "execution_plan"
+      && /(?:crawl|seo|page|keyword|internal\s+link|canonical|content)/i.test(`${task.title} ${task.description}`);
+    const existingSiteStrategyAction = task.sourceType === "strategy_decision"
+      && (task.moduleName === "website" || task.moduleName === "site_architect" || /website improvement plan/i.test(task.actionButtonLabel ?? ""));
+    const gatedExistingSiteAction = !isSeoPageMap
+      && task.projectId
+      && task.sourceType === "strategy_decision"
+      && (existingSiteStrategyAction || seoExecutionDecision)
+      && !pageMapApproved
+      ? {
+        ...task,
+        actionButtonLabel: "Create and approve SEO Page Map",
+        relatedUrl: `/seo-page-map?projectId=${task.projectId}${pageMapTask ? `&taskId=${pageMapTask.id}` : ""}`,
+        blockedReason: seoExecutionDecision
+          ? "Approve the SEO Page Map & Content Plan before these page priorities become executable website tasks."
+          : "Approve the SEO Page Map & Content Plan before Website Development prepares this existing-site update.",
+      }
+      : routed;
+    const releasedAction = pageMapApproved && task.projectId && existingSiteStrategyAction
+      ? { ...task, moduleName: "site_architect", actionButtonLabel: "Open Website Improvement Plan", relatedUrl: `/site-architect?projectId=${task.projectId}&source=existing-site&taskId=${task.id}&step=structure`, blockedReason: null }
+      : pageMapApproved && task.projectId && seoExecutionDecision
+        ? { ...task, actionButtonLabel: "Review executable page tasks", relatedUrl: `/guided-projects/${task.projectId}?tab=execution#execution-tasks`, blockedReason: null }
+        : gatedExistingSiteAction;
+    return { ...releasedAction, executionGovernance: marketingExecutionSummary(releasedAction) };
+  }) });
+});
+
+executionTasksRouter.get("/execution-tasks/:id/execution-workspace", async (req, res) => {
+  const clientId = await executionClientScope(req);
+  const task = await prisma.executionTask.findFirst({
+    where: { id: req.params.id, ...(clientId ? { clientId } : {}) },
+    include: {
+      executionPlan: true,
+      dependencies: { include: { requiredTask: { select: { id: true, title: true, status: true } } } },
+      approvalHistory: { orderBy: { createdAt: "desc" }, take: 20 },
+      measurementCheckpoints: { orderBy: { dueAt: "asc" }, take: 20 },
+      project: { select: { id: true, agencyClientId: true, name: true } },
+    },
+  });
+  if (!task?.projectId || !await canAccessProject(await workspaceContext(req), task.projectId)) return res.status(404).json({ error: "task not found" });
+  const snapshot = recordJson(task.approvalSnapshotJson);
+  res.json({
+    contractVersion: MARKETING_EXECUTION_CONTRACT_VERSION,
+    task,
+    summary: marketingExecutionSummary(task),
+    execution: recordJson(snapshot.marketingExecution),
+  });
+});
+
+executionTasksRouter.post("/execution-tasks/:id/prepare-execution", async (req, res) => {
+  const context = await workspaceContext(req);
+  if (!hasWorkspacePermission(context, "execute_tasks")) return res.status(403).json({ error: "Task execution permission is required." });
+  const result = await prepareMarketingExecution(context, req.params.id);
+  if (result.task.projectId) await publishProjectWorkflowEvent({
+    projectId: result.task.projectId,
+    eventType: result.summary.canonicalState === "BLOCKED" ? "execution_task.blocked" : "execution_task.prepared",
+    sourceModule: result.summary.module,
+    sourceId: result.task.id,
+    idempotencyKey: `marketing-execution.prepared:${result.task.id}:${String((result.execution.workPackage as { fingerprint?: unknown }).fingerprint ?? result.task.updatedAt.toISOString())}`,
+    payload: { taskId: result.task.id, contractVersion: MARKETING_EXECUTION_CONTRACT_VERSION, canonicalState: result.summary.canonicalState, executionMode: result.summary.executionMode },
+  });
+  res.json(result);
+});
+
+executionTasksRouter.post("/execution-tasks/:id/reconcile-execution", async (req, res) => {
+  const context = await workspaceContext(req);
+  if (!hasWorkspacePermission(context, "execute_tasks")) return res.status(403).json({ error: "Task execution permission is required." });
+  const result = await prepareMarketingExecution(context, req.params.id);
+  res.json({ ...result, reconciled: true });
 });
 
 executionTasksRouter.get("/websites/:websiteId/execution-tasks", async (req, res) => {
@@ -1811,7 +2308,7 @@ executionTasksRouter.get("/websites/:websiteId/execution-tasks", async (req, res
     orderBy: [{ status: "asc" }, { priority: "asc" }, { updatedAt: "desc" }],
     take: 200,
   });
-  res.json({ website, tasks });
+  res.json({ website, tasks: tasks.map((task) => ({ ...task, executionGovernance: marketingExecutionSummary(task) })) });
 });
 
 executionTasksRouter.post("/websites/:websiteId/execution-tasks/sync", async (req, res) => {
@@ -1840,7 +2337,7 @@ executionTasksRouter.post("/websites/:websiteId/execution-tasks/sync", async (re
     orderBy: [{ status: "asc" }, { priority: "asc" }, { updatedAt: "desc" }],
     take: 200,
   });
-  res.json({ ...result, tasks });
+  res.json({ ...result, tasks: tasks.map((task) => ({ ...task, executionGovernance: marketingExecutionSummary(task) })) });
 });
 
 executionTasksRouter.patch("/execution-tasks/:id", async (req, res) => {
@@ -1862,10 +2359,16 @@ executionTasksRouter.patch("/execution-tasks/:id", async (req, res) => {
   }
   if (!hasWorkspacePermission(context, "execute_tasks")) return res.status(403).json({ error: "Task execution permission is required." });
   const task = await prisma.$transaction(async (tx) => {
-    const updated = await tx.executionTask.update({ where: { id: existing.id }, data: { ...parsed.data, completedAt: status === "completed" ? new Date() : existing.completedAt, skippedAt: status === "skipped" ? new Date() : existing.skippedAt } });
+    const personalApproval = status === "completed" && existing.requiresApproval && context.workspace.workspaceType === "personal" && !existing.approvedAt;
+    const updated = await tx.executionTask.update({ where: { id: existing.id }, data: { ...parsed.data, completedAt: status === "completed" ? new Date() : existing.completedAt, skippedAt: status === "skipped" ? new Date() : existing.skippedAt, ...(personalApproval ? { approvedAt: new Date(), approvalDecision: "approved", approvalNotes: "Owner approved this protected action by explicitly completing it." } : {}) } });
+    if (personalApproval) await tx.executionTaskApproval.create({ data: { taskId: existing.id, actorMembershipId: context.membership.id, decision: "approved", notes: "Owner approved this protected action by explicitly completing it.", snapshotJson: { status: "completed", source: "personal_owner_completion" } } });
+    if (status === "completed") await tx.nextBestAction.updateMany({ where: { followupTaskId: existing.id, status: { notIn: ["superseded", "stale"] } }, data: { status: "completed", decision: "execution_completed", decidedAt: new Date() } });
     await recordWorkspaceActivity(tx, { context, action: status !== existing.status ? "task.status_changed" : "task.edited", entityType: "execution_task", entityId: existing.id, agencyClientId: existing.project?.agencyClientId, projectId: existing.projectId, previousJson: { status: existing.status, priority: existing.priority, manualInstructions: existing.manualInstructions }, nextJson: { status: updated.status, priority: updated.priority, manualInstructions: updated.manualInstructions } });
     return updated;
   });
+  if (existing.projectId && task.status === "completed" && existing.status !== "completed") {
+    await publishProjectWorkflowEvent({ projectId: existing.projectId, eventType: "execution_task.completed", sourceModule: existing.moduleName, sourceId: task.id, idempotencyKey: `execution-task.completed:${task.id}:${task.updatedAt.toISOString()}`, payload: { taskId: task.id, moduleName: existing.moduleName, expectedOutcome: existing.expectedOutcome } });
+  }
   res.json({ task });
 });
 
@@ -1882,7 +2385,10 @@ executionTasksRouter.post("/execution-tasks/:id/complete", async (req, res) => {
   const blocked = existing.dependencies.filter((dependency) => !["completed", "published", "approved"].includes(dependency.requiredTask.status));
   if (blocked.length) return res.status(409).json({ error: `Complete dependencies first: ${blocked.map((item) => item.requiredTask.title).join(", ")}` });
   if (context.workspace.workspaceType !== "personal" && existing.requiresApproval && !existing.approvedAt) return res.status(409).json({ error: "This task requires approval before it can be completed." });
-  const task = await prisma.$transaction(async (tx) => { const updated = await tx.executionTask.update({ where: { id: existing.id }, data: { status: "completed", completedAt: new Date() } }); await recordWorkspaceActivity(tx, { context, action: "task.completed", entityType: "execution_task", entityId: existing.id, agencyClientId: existing.project?.agencyClientId, projectId: existing.projectId, previousJson: { status: existing.status }, nextJson: { status: "completed", expectedOutcome: existing.expectedOutcome } }); return updated; });
+  const task = await prisma.$transaction(async (tx) => { const personalApproval = existing.requiresApproval && context.workspace.workspaceType === "personal" && !existing.approvedAt; const updated = await tx.executionTask.update({ where: { id: existing.id }, data: { status: "completed", completedAt: new Date(), ...(personalApproval ? { approvedAt: new Date(), approvalDecision: "approved", approvalNotes: "Owner approved this protected action by explicitly completing it." } : {}) } }); if (personalApproval) await tx.executionTaskApproval.create({ data: { taskId: existing.id, actorMembershipId: context.membership.id, decision: "approved", notes: "Owner approved this protected action by explicitly completing it.", snapshotJson: { status: "completed", source: "personal_owner_completion" } } }); await tx.nextBestAction.updateMany({ where: { followupTaskId: existing.id, status: { notIn: ["superseded", "stale"] } }, data: { status: "completed", decision: "execution_completed", decidedAt: new Date() } }); await recordWorkspaceActivity(tx, { context, action: "task.completed", entityType: "execution_task", entityId: existing.id, agencyClientId: existing.project?.agencyClientId, projectId: existing.projectId, previousJson: { status: existing.status }, nextJson: { status: "completed", expectedOutcome: existing.expectedOutcome, personalOwnerApprovalRecorded: personalApproval } }); return updated; });
+  if (existing.projectId && existing.status !== "completed") {
+    await publishProjectWorkflowEvent({ projectId: existing.projectId, eventType: "execution_task.completed", sourceModule: existing.moduleName, sourceId: task.id, idempotencyKey: `execution-task.completed:${task.id}:${task.updatedAt.toISOString()}`, payload: { taskId: task.id, moduleName: existing.moduleName, expectedOutcome: existing.expectedOutcome } });
+  }
   res.json({ task });
 });
 
@@ -1893,19 +2399,42 @@ executionTasksRouter.post("/projects/:projectId/seo-plan/task", async (req, res)
     include: {
       businessProfile: true,
       website: { select: { id: true, rootUrl: true } },
-      strategyPlans: { where: { status: "approved" }, select: { id: true }, take: 1 },
+      keywordGroups: { where: { status: "approved" }, select: { status: true, category: true, keywords: true } },
+      strategyPlans: { where: { status: "approved" }, orderBy: { createdAt: "desc" }, select: { id: true, version: true, createdAt: true, approvedAt: true, businessBrainVersion: true, evidenceVersion: true }, take: 1 },
+      gapAnalysisRuns: { where: { status: "completed" }, orderBy: [{ completedAt: "desc" }, { createdAt: "desc" }], select: { id: true, completedAt: true, createdAt: true }, take: 1 },
     },
   });
   if (!project) return res.status(404).json({ error: "project not found" });
   const context = await workspaceContext(req);
   if (!await canAccessProject(context, project.id)) return res.status(404).json({ error: "project not found" });
   if (!hasWorkspacePermission(context, "execute_tasks")) return res.status(403).json({ error: "Task execution permission is required." });
-  if (!project.strategyPlans.length) return res.status(409).json({ error: "Approve the Strategy before creating the SEO Page Plan." });
-  const plan = await prisma.executionPlan.findFirst({ where: { projectId: project.id, status: "active" }, orderBy: { createdAt: "asc" } })
-    ?? await prisma.executionPlan.create({ data: { projectId: project.id, title: "Guided execution plan", summary: "Project-wide tasks generated from approved discovery and Strategy.", status: "active" } });
-  const task = await prisma.$transaction(async (tx) => {
-    const campaignTasks = buildCampaignExecutionTasks(project);
-    const pageMapInput = campaignTasks.find((input) => /seo page map/i.test(input.title));
+  const preLaunchWebsite = isPreLaunchWebsiteCampaign(project);
+  if (!approvedKeywordEntries(project.keywordGroups).length) return res.status(409).json({ error: "Approve and analyze at least one Primary or Secondary keyword before creating the Website Plan." });
+  if (!project.strategyPlans.length) return res.status(409).json({ error: "Approve the Unified Strategy before creating the Website Page Map & Content Plan." });
+  if (isExistingWebsiteCampaign(project)) {
+    const latestGapAnalysis = project.gapAnalysisRuns[0];
+    if (!latestGapAnalysis) return res.status(409).json({ error: "Run SEO and Gap Analysis first. Then update and approve Strategy before creating the SEO Page Map & Content Plan." });
+    const gapAnalysisAt = latestGapAnalysis.completedAt ?? latestGapAnalysis.createdAt;
+    if (gapAnalysisAt.getTime() > project.strategyPlans[0].createdAt.getTime()) return res.status(409).json({ error: `Gap Analysis is newer than approved Strategy v${project.strategyPlans[0].version}. Update and approve Strategy before creating the SEO Page Map & Content Plan.` });
+  }
+  const task = await withTransactionRetry(() => prisma.$transaction(async (tx) => {
+    const approvedStrategy = project.strategyPlans[0] ?? null;
+    const existingPlan = await tx.executionPlan.findFirst({ where: { projectId: project.id, status: "active" }, orderBy: { createdAt: "asc" } });
+    const plan = existingPlan
+      ? approvedStrategy && existingPlan.strategyPlanId == null && existingPlan.strategyVersion == null
+        ? await tx.executionPlan.update({ where: { id: existingPlan.id }, data: { strategyPlanId: approvedStrategy.id, strategyVersion: approvedStrategy.version, planVersion: `${approvedStrategy.version}.0`, businessBrainVersion: approvedStrategy.businessBrainVersion, evidenceVersion: approvedStrategy.evidenceVersion, explainabilityJson: { reason: "SEO Page Plan uses the exact approved Strategy authority.", strategyId: approvedStrategy.id, strategyVersion: approvedStrategy.version, businessBrainVersion: approvedStrategy.businessBrainVersion, evidenceVersion: approvedStrategy.evidenceVersion } } })
+        : existingPlan
+      : await tx.executionPlan.create({ data: { projectId: project.id, title: "Guided execution plan", summary: preLaunchWebsite ? "Website architecture, generation, review, and publishing tasks generated from the approved Unified Strategy." : "Project-wide tasks generated from approved discovery and Strategy.", status: "active", strategyPlanId: approvedStrategy!.id, strategyVersion: approvedStrategy!.version, planVersion: `${approvedStrategy!.version}.0`, businessBrainVersion: approvedStrategy!.businessBrainVersion, evidenceVersion: approvedStrategy!.evidenceVersion, explainabilityJson: { reason: "The Website Plan uses the exact approved Unified Strategy authority.", strategyId: approvedStrategy!.id, strategyVersion: approvedStrategy!.version, businessBrainVersion: approvedStrategy!.businessBrainVersion, evidenceVersion: approvedStrategy!.evidenceVersion } } });
+    const generatedCampaignTasks = buildCampaignExecutionTasks(project);
+    const campaignTasks = generatedCampaignTasks;
+    // New-website projects call this task "Website Page Map & Content Plan" while existing-site
+    // projects call it "SEO Page Map & Content Plan". The stable task key is
+    // the canonical identity; title matching is only a legacy fallback.
+    const pageMapInput = campaignTasks.find((input) =>
+      ["seo-keyword-plan", "local-keyword-plan"].includes(input.key)
+      || /(?:website plan|seo page map)/i.test(input.title),
+    );
+    if (!pageMapInput) throw new Error("The campaign task builder did not return a Website Plan task.");
     let legacyPageMap = await tx.executionTask.findFirst({
       where: {
         projectId: project.id,
@@ -1932,13 +2461,13 @@ executionTasksRouter.post("/projects/:projectId/seo-plan/task", async (req, res)
         where: { id: legacyPageMap.id },
         data: {
           moduleName: "content",
-          title: "SEO Page Map & Content Plan",
-          description: "Group approved keywords by intent, assign one owner page, prepare URLs and SEO briefs, then review FAQs, proof, Local SEO, internal links, and publishing requirements in one governed workflow.",
+          title: preLaunchWebsite ? "Website Page Map & Content Plan" : "SEO Page Map & Content Plan",
+          description: preLaunchWebsite ? "Turn the approved Website and Unified Strategy into the first website structure, page briefs, conversion paths, Local SEO, AI Citation, authority, and content plan." : "Group approved keywords by intent, assign one owner page, prepare URLs and SEO briefs, then review FAQs, proof, Local SEO, internal links, and publishing requirements in one governed workflow.",
           status: detailedPlanExists ? duplicateContentPlan.status : legacyPageMap.status,
           approvedAt: detailedPlanExists ? duplicateContentPlan.approvedAt : legacyPageMap.approvedAt,
           completedAt: detailedPlanExists ? duplicateContentPlan.completedAt : legacyPageMap.completedAt,
           requiresApproval: true,
-          actionButtonLabel: detailedPlanExists ? duplicateContentPlan.actionButtonLabel : "Create SEO Plan",
+          actionButtonLabel: detailedPlanExists ? duplicateContentPlan.actionButtonLabel : preLaunchWebsite ? "Create Page & Content Plan" : "Create SEO Plan",
           approvalSnapshotJson: mergedSnapshot as Prisma.InputJsonValue,
         },
       });
@@ -1959,12 +2488,12 @@ executionTasksRouter.post("/projects/:projectId/seo-plan/task", async (req, res)
         where: { id: legacyPageMap.id },
         data: {
           moduleName: "content",
-          title: "SEO Page Map & Content Plan",
+          title: preLaunchWebsite ? "Website Page Map & Content Plan" : "SEO Page Map & Content Plan",
           status: "ready",
           completedAt: null,
           approvedAt: null,
           requiresApproval: true,
-          actionButtonLabel: "Create SEO Plan",
+          actionButtonLabel: preLaunchWebsite ? "Create Page & Content Plan" : "Create SEO Plan",
           blockedReason: null,
         },
       });
@@ -1988,9 +2517,9 @@ executionTasksRouter.post("/projects/:projectId/seo-plan/task", async (req, res)
         projectId: project.id,
         executionPlanId: plan.id,
         moduleName: input.moduleName,
-        sourceType: isPageMap ? "seo_plan" : "project",
+        sourceType: isPageMap ? preLaunchWebsite ? "website_launch_plan" : "seo_plan" : "project",
         sourceId: project.id,
-        title: input.title,
+        title: boundedExecutionTaskText(input.title, 255),
         description: input.description,
         expectedOutcome: input.description,
         priority: input.priority,
@@ -1998,29 +2527,52 @@ executionTasksRouter.post("/projects/:projectId/seo-plan/task", async (req, res)
         requiresApproval: input.requiresApproval ?? false,
         requiresIntegration: input.requiresIntegration ?? false,
         manualRequired: true,
-        actionButtonLabel: input.actionButtonLabel,
-        relatedUrl: isPageMap ? `/guided-projects/${project.id}?tab=execution#execution-tasks` : input.relatedUrl,
+        actionButtonLabel: input.actionButtonLabel ? boundedExecutionTaskText(input.actionButtonLabel, 120) : null,
+        relatedUrl: isPageMap ? `/seo-page-map?projectId=${project.id}${existing?.id ? `&taskId=${existing.id}` : ""}` : input.relatedUrl,
         approvalRisk: input.requiresApproval ? "high" : "low",
         safetyCategory: input.requiresApproval ? "protected_change" : "safe",
       };
-      const row = existing
-        ? ["completed", "cancelled", "canceled"].includes(existing.status)
-          ? existing
-          : await tx.executionTask.update({ where: { id: existing.id }, data: taskData })
-        : await tx.executionTask.create({ data: { ...taskData, dedupeKey, status: "ready" } });
+      const existingPageMapSnapshot = existing ? recordJson(existing.approvalSnapshotJson) : {};
+      const existingPageMapHasPlan = Object.keys(recordJson(existingPageMapSnapshot.contentPlan)).length > 0;
+      const reopenPageMap = Boolean(isPageMap && existing && (
+        ["cancelled", "canceled"].includes(existing.status)
+        || (existing.status === "completed" && !existingPageMapHasPlan)
+      ));
+      const row = existing && ["completed", "cancelled", "canceled"].includes(existing.status) && !reopenPageMap
+        ? existing
+        : await tx.executionTask.upsert({
+          where: { dedupeKey },
+          create: { ...taskData, dedupeKey, status: "ready" },
+          update: {
+            ...taskData,
+            ...(reopenPageMap ? {
+              status: "ready",
+              approvedAt: null,
+              submittedAt: null,
+              completedAt: null,
+              approvalDecision: null,
+              blockedReason: null,
+              approvalSnapshotJson: {} as Prisma.InputJsonValue,
+            } : {}),
+          },
+        });
       if (isPageMap) pageMapTask = row;
     }
-    if (!pageMapTask) throw new Error("SEO Page Map task could not be created.");
+    if (!pageMapTask) throw new Error(preLaunchWebsite ? "Website Plan task could not be created." : "SEO Page Map task could not be created.");
     await tx.executionPlan.update({
       where: { id: plan.id },
       data: {
-        title: "Adaptive SEO/Growth execution plan",
-        summary: "Prioritized project-wide tasks generated from the approved Strategy. Website, Local SEO, citations, authority, content, publishing, growth, and reporting remain visible in one execution workflow.",
+        title: preLaunchWebsite ? "Website execution plan" : "Adaptive SEO/Growth execution plan",
+        summary: preLaunchWebsite ? "Build, review, and publish the first website from the approved Unified Strategy. Publishing then starts the Website Intelligence baseline and measurement lifecycle." : "Prioritized project-wide tasks generated from the approved Strategy. Website, Local SEO, citations, authority, content, publishing, growth, and reporting remain visible in one execution workflow.",
       },
     });
     await recordWorkspaceActivity(tx, { context, action: "execution_plan.synced_from_site_architect", entityType: "execution_plan", entityId: plan.id, agencyClientId: project.agencyClientId, projectId: project.id, nextJson: { taskCount: campaignTasks.length, pageMapTaskId: pageMapTask.id } });
     return pageMapTask;
-  });
+  }, {
+    isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
+    maxWait: 10_000,
+    timeout: 30_000,
+  }));
   res.status(201).json({ task, created: !task.createdAt || task.createdAt.getTime() === task.updatedAt.getTime() });
 });
 
@@ -2050,30 +2602,56 @@ executionTasksRouter.post("/execution-tasks/:id/content-plan/prepare", (req, res
             },
           },
           strategyPlans: { orderBy: [{ version: "desc" }, { updatedAt: "desc" }], take: 1 },
-          website: { include: { crawlJobs: { where: { status: "completed" }, orderBy: { createdAt: "desc" }, take: 1, include: { pages: { take: 250, select: { url: true, seo: { select: { title: true } } } } } } } },
+          gapAnalysisRuns: { where: { status: "completed" }, orderBy: [{ completedAt: "desc" }, { createdAt: "desc" }], select: { id: true, completedAt: true, createdAt: true, recommendations: { orderBy: [{ impactScore: "desc" }, { confidenceScore: "desc" }], take: 30, select: { category: true, title: true, explanation: true, recommendedAction: true, expectedImpact: true, evidenceJson: true, priority: true, impactScore: true, confidenceScore: true } } }, take: 1 },
+          website: { include: { crawlJobs: { where: { status: "completed" }, orderBy: { createdAt: "desc" }, take: 1, include: { pages: { where: { statusCode: { gte: 200, lt: 400 }, fetchError: null }, take: 250, select: { url: true, finalUrl: true, normalizedUrl: true, seo: { select: { title: true, h1Text: true, canonicalUrl: true } } } } } } } },
         },
       },
     },
   });
-  if (!task?.project || !/(?:content\s*plan|seo\s*page\s*map)/i.test(`${task.title} ${task.actionButtonLabel ?? ""}`)) return res.status(404).json({ error: "Content-plan task not found" });
+  if (!task?.project || !isWebsitePlanTask(task)) return res.status(404).json({ error: "Website planning task not found" });
   const context = await workspaceContext(req);
   if (!task.projectId || !await canAccessProject(context, task.projectId)) return res.status(404).json({ error: "task not found" });
   if (!hasWorkspacePermission(context, "execute_tasks")) return res.status(403).json({ error: "Task execution permission is required." });
+  const preLaunchWebsite = isPreLaunchWebsiteCampaign(task.project);
+  if (isExistingWebsiteCampaign(task.project)) {
+    const latestStrategy = task.project.strategyPlans[0];
+    const latestGapAnalysis = task.project.gapAnalysisRuns[0];
+    if (!latestGapAnalysis) return res.status(409).json({ error: "Run SEO and Gap Analysis first. Then update and approve Strategy before preparing the SEO Page Map & Content Plan." });
+    if (!latestStrategy || latestStrategy.status !== "approved") return res.status(409).json({ error: "Update and approve Strategy from the latest SEO evidence before preparing the SEO Page Map & Content Plan." });
+    const gapAnalysisAt = latestGapAnalysis.completedAt ?? latestGapAnalysis.createdAt;
+    if (gapAnalysisAt.getTime() > latestStrategy.createdAt.getTime()) return res.status(409).json({ error: "The latest Gap Analysis is newer than the approved Strategy. Update and approve Strategy before preparing the SEO Page Map & Content Plan." });
+  }
+  const currentStrategy = task.project.strategyPlans[0];
+  if (!currentStrategy || currentStrategy.status !== "approved") return res.status(409).json({ error: "Approve the Unified Strategy before preparing the Website Page Map & Content Plan." });
   const snapshot = recordJson(task.approvalSnapshotJson);
   const projectBusinessName = task.project.businessName?.trim() || null;
+  const projectLabel = task.project.name.trim();
   const agencyBusinessName = task.project.agencyClient?.name?.trim() || null;
-  const projectNameLooksInternal = Boolean(
-    projectBusinessName
-    && (
-      projectBusinessName.toLocaleLowerCase() === task.project.name.trim().toLocaleLowerCase()
-      || /\bwebsite(?:\s+project)?$/i.test(projectBusinessName)
-    ),
-  );
-  const confirmedBusinessName = agencyBusinessName && projectNameLooksInternal
-    ? agencyBusinessName
-    : projectBusinessName || agencyBusinessName;
-  const approvedKeywords = task.project.keywordGroups.flatMap((group) => jsonStrings(group.keywords));
+  const projectLabelLooksGeneric = /^(?:new\s+)?(?:website|seo|marketing|client)?\s*project(?:\s+\d+)?$|^untitled$/i.test(projectLabel);
+  // The workspace/agency name is not automatically the public identity of a
+  // client project. Prefer the project's approved business name or a useful
+  // project label, and use the agency identity only for genuinely generic
+  // internal project labels.
+  const confirmedBusinessName = projectBusinessName
+    || (!projectLabelLooksGeneric ? projectLabel : null)
+    || agencyBusinessName;
+  const approvedKeywords = approvedKeywordEntries(task.project.keywordGroups);
+  if (!approvedKeywords.length) return res.status(409).json({ error: "Approve at least one Primary or Secondary keyword and complete Keyword Intelligence before preparing the Website Page Map & Content Plan." });
+  // The research evidence supplied to AI is intentionally sampled above, but
+  // workflow readiness must consider every completed run for the project.
+  const completedKeywordRuns = await prisma.keywordResearchRun.findMany({
+    where: { projectId: task.projectId },
+    select: { seedKeyword: true, status: true, locationName: true, languageCode: true, device: true, createdAt: true },
+  });
+  const unresearchedApprovedKeywords = missingApprovedKeywordResearch(task.project.keywordGroups, completedKeywordRuns, projectAnalysisLocationLabels(task.project.targetLocations, task.project.businessLocationJson));
+  if (unresearchedApprovedKeywords.length) return res.status(409).json({
+    error: `Complete Keyword Analysis for all approved Primary and Secondary keywords before preparing Website Content. ${unresearchedApprovedKeywords.length} still need analysis: ${unresearchedApprovedKeywords.slice(0, 8).join(", ")}${unresearchedApprovedKeywords.length > 8 ? "…" : ""}`,
+  });
   const intakeTargetLocations = cleanGeographicTargetMarkets(jsonStrings(task.project.targetLocations));
+  const businessLocation = recordJson(task.project.businessLocationJson);
+  const targetCountry = typeof businessLocation.country === "string" ? businessLocation.country.trim() : task.project.website?.targetCountry ?? null;
+  const targetStateProvince = typeof businessLocation.stateProvince === "string" ? businessLocation.stateProvince.trim() : null;
+  const physicalCity = typeof businessLocation.city === "string" ? businessLocation.city.trim() : null;
   const verifiedServices = task.project.gapLocalSeoProfiles[0] ? jsonStrings(task.project.gapLocalSeoProfiles[0].services) : [];
   const businessEvidenceInput = {
     confirmedBusinessName,
@@ -2100,13 +2678,28 @@ executionTasksRouter.post("/execution-tasks/:id/content-plan/prepare", (req, res
     verifiedServices,
   });
   const saved = contentPlanSchema.safeParse(snapshot.contentPlan);
+  // A domain may already be attached to a pre-launch project, and old crawl
+  // records may even survive a change in project direction. They are not
+  // existing-site page candidates for a New Website plan. Existing-site
+  // redesigns remain eligible because their live pages are useful evidence.
+  const pageCandidates = websitePlanEvidencePages(preLaunchWebsite, task.project.website?.crawlJobs[0]?.pages).map((page) => ({
+    url: page.seo?.canonicalUrl || page.finalUrl || page.normalizedUrl || page.url,
+    title: page.seo?.title ?? null,
+    h1: firstJsonString(page.seo?.h1Text) ?? null,
+  }));
+  // Opening an existing plan must be read-only. The web client uses this to
+  // load crawl page choices without triggering AI generation, migration, or a
+  // database update. Rebuild and save remain explicit user actions.
+  if (req.body?.inspectOnly === true) {
+    if (!saved.success) return res.status(409).json({ error: "No saved Website Plan is available to inspect. Prepare the plan first." });
+    return res.json({ task, plan: saved.data, existing: true, pageCandidates });
+  }
   const savedBusinessContext = saved.success ? aiBusinessContextSchema.safeParse(saved.data.aiBusinessContext) : null;
   const businessContext = savedBusinessContext?.success
     && savedBusinessContext.data.sourceFingerprint === expectedBusinessFingerprint
     && req.body?.regenerate !== true
     ? savedBusinessContext.data
     : await interpretApprovedBusinessEvidence(businessEvidenceInput);
-  const pageCandidates = task.project.website?.crawlJobs[0]?.pages.map((page) => ({ url: page.url, title: page.seo?.title ?? null })) ?? [];
   const savedPlanningText = saved.success
     ? JSON.stringify({
       assignments: saved.data.pageAssignments,
@@ -2139,6 +2732,46 @@ executionTasksRouter.post("/execution-tasks/:id/content-plan/prepare", (req, res
     const keys = saved.data.pageAssignments.map((assignment) => assignment.pageKey).filter((value): value is string => Boolean(value));
     return new Set(keys).size !== keys.length;
   })());
+  const savedMissingCrawledPageAssignments = Boolean(saved.success && pageCandidates.some((page) => (
+    !saved.data.pageAssignments.some((assignment) => canonicalContentPlanTarget(assignment.targetUrl) === canonicalContentPlanTarget(page.url))
+  )));
+  const successfulCrawlTargets = new Set(pageCandidates.map((page) => canonicalContentPlanTarget(page.url)).filter(Boolean));
+  const savedClaimsUnverifiedExistingPage = Boolean(saved.success && saved.data.pageAssignments.some((assignment) => (
+    (assignment.source === "existing_crawl" || assignment.recommendedAction === "update_existing")
+    && !successfulCrawlTargets.has(canonicalContentPlanTarget(assignment.targetUrl))
+  )));
+  const savedHasUnverifiedLocalOwner = Boolean(saved.success && saved.data.pageAssignments.some((assignment) => (
+    ["location_hub", "service"].includes(assignment.clusterRole ?? "")
+    && Boolean(assignment.location)
+    && assignment.serviceAvailabilityVerified !== true
+  )));
+  const savedMissingPhysicalCity = Boolean(
+    saved.success
+    && saved.data.localSeo.enabled
+    && physicalCity
+    && !saved.data.pagePlanningIntelligence.locationHierarchy.some((location) => location.name.toLocaleLowerCase() === physicalCity.toLocaleLowerCase()),
+  );
+  const homepageComparisonLocations = cleanGeographicTargetMarkets([
+    ...(physicalCity ? [physicalCity] : []),
+    ...intakeTargetLocations,
+  ]);
+  const expectedHomepageOwner = approvedKeywords
+    .map((keyword, index) => ({ keyword, index, score: keywordTopicSimilarity(keyword, businessContext.industry, homepageComparisonLocations) }))
+    .sort((left, right) => right.score - left.score || left.index - right.index)[0];
+  const savedHomepage = saved.success ? saved.data.pageAssignments.find(isHomePageAssignment) : null;
+  const savedHasSpecialtyHomepageOwner = Boolean(
+    saved.success
+    && savedHomepage
+    && expectedHomepageOwner
+    && expectedHomepageOwner.score >= 30
+    && normalizeKeywordTopic(savedHomepage.canonicalKeyword, homepageComparisonLocations) !== normalizeKeywordTopic(expectedHomepageOwner.keyword, homepageComparisonLocations),
+  );
+  const savedCreatesDuplicateStandardPage = Boolean(
+    saved.success && contentPlanCreatesExistingStandardPage(saved.data, pageCandidates),
+  );
+  const savedCreatesDuplicateIntentPage = Boolean(
+    saved.success && contentPlanCreatesExistingIntentPage(saved.data, pageCandidates, businessContext.businessName),
+  );
   const savedEvidenceChanged = !savedBusinessContext?.success
     || savedBusinessContext.data.sourceFingerprint !== expectedBusinessFingerprint;
   const savedHasCurrentArchitecture = saved.success
@@ -2152,7 +2785,15 @@ executionTasksRouter.post("/execution-tasks/:id/content-plan/prepare", (req, res
     );
   const savedRequiresPlanUpgrade = saved.success && (
     savedEvidenceChanged
+    || savedMissingPhysicalCity
+    || savedHasSpecialtyHomepageOwner
     || savedHasDuplicatePageKeys
+    || savedMissingCrawledPageAssignments
+    || savedClaimsUnverifiedExistingPage
+    || savedHasUnverifiedLocalOwner
+    || savedCreatesDuplicateStandardPage
+    || savedCreatesDuplicateIntentPage
+    || contentPlanHasUnnormalizedOwners(saved.data, intakeTargetLocations)
     || (
       saved.data.workflowVersion !== CONTENT_PLAN_WORKFLOW_VERSION
       && !savedHasCurrentArchitecture
@@ -2164,7 +2805,6 @@ executionTasksRouter.post("/execution-tasks/:id/content-plan/prepare", (req, res
         || savedUsesInternalProjectName
         || savedUsesBrandLedLocationHub
         || savedHasDuplicateStateAlias
-        || contentPlanHasUnnormalizedOwners(saved.data, intakeTargetLocations)
       )
     )
   );
@@ -2201,19 +2841,22 @@ executionTasksRouter.post("/execution-tasks/:id/content-plan/prepare", (req, res
   }
   const strategy = task.project.strategyPlans[0];
   const requestedLocalSeo = z.object({ localSeoEnabled: z.boolean().optional(), targetLocations: z.array(z.string().trim().min(2).max(160)).max(20).optional() }).parse(req.body ?? {});
-  const localSeoEnabled = requestedLocalSeo.localSeoEnabled ?? intakeTargetLocations.length > 0;
+  const localSeoEnabled = requestedLocalSeo.localSeoEnabled ?? (intakeTargetLocations.length > 0 || Boolean(physicalCity));
   const targetLocations = localSeoEnabled
     ? cleanGeographicTargetMarkets(requestedLocalSeo.targetLocations?.length ? requestedLocalSeo.targetLocations : intakeTargetLocations)
     : [];
-  if (localSeoEnabled && !targetLocations.length) return res.status(400).json({ error: "Local SEO requires at least one geographic target city, region, province/state, or country." });
-  const businessLocation = recordJson(task.project.businessLocationJson);
-  const targetCountry = typeof businessLocation.country === "string" ? businessLocation.country.trim() : task.project.website?.targetCountry ?? null;
-  const targetStateProvince = typeof businessLocation.stateProvince === "string" ? businessLocation.stateProvince.trim() : null;
-  const physicalCity = typeof businessLocation.city === "string" ? businessLocation.city.trim() : null;
+  // The physical business city is verified location evidence, not merely a
+  // marketing target. Include it in page-combination planning alongside every
+  // approved service area so it cannot silently disappear from the sitemap
+  // decision report.
+  const planningLocations = localSeoEnabled
+    ? cleanGeographicTargetMarkets([...(physicalCity ? [physicalCity] : []), ...targetLocations]).slice(0, 20)
+    : [];
+  if (localSeoEnabled && !planningLocations.length) return res.status(400).json({ error: "Local SEO requires at least one geographic target city, region, province/state, or country." });
   const localProfile = task.project.gapLocalSeoProfiles[0] ?? null;
   const confirmedLocalServices = localProfile ? jsonStrings(localProfile.services) : [];
   const confirmedServiceCities = localProfile ? jsonStrings(localProfile.citiesServed) : [];
-  const locationInputs: SeoPlannerInput["locations"] = targetLocations.map((name) => ({
+  const locationInputs: SeoPlannerInput["locations"] = planningLocations.map((name) => ({
     name,
     level: targetCountry && name.toLocaleLowerCase() === targetCountry.toLocaleLowerCase()
       ? "country"
@@ -2252,27 +2895,31 @@ executionTasksRouter.post("/execution-tasks/:id/content-plan/prepare", (req, res
   ]);
   const keywordNormalization = await normalizeKeywordsWithAi({
     keywords: approvedKeywords,
-    locations: targetLocations,
+    locations: planningLocations,
     services: confirmedLocalServices.length ? confirmedLocalServices : businessContext.primaryServices,
     businessName: businessContext.businessName,
     industry: businessContext.industry,
     audience: businessContext.audienceSummary,
     offer: businessContext.coreBusinessValue,
   });
-  const generatedPlanBase = {
+  const generatedPlanBase = includeEveryCrawledPageInContentPlan({
     workflowVersion: CONTENT_PLAN_WORKFLOW_VERSION,
     ...contentPlanFor({
     projectName: task.project.name,
     businessName: businessContext.businessName,
     goal: task.project.primaryGoal,
-    markets: targetLocations,
+    markets: planningLocations,
     keywords: approvedKeywords,
     offer: businessContext.homepagePrimaryTopic,
     audience: businessContext.audienceSummary,
     contentStrategy: strategy?.contentStrategy ?? null,
     websiteUrl: task.project.websiteUrl,
     localSeoEnabled,
-    websitePages: task.project.website?.crawlJobs[0]?.pages.map((page) => ({ url: page.url, title: page.seo?.title ?? null })) ?? [],
+    websitePages: websitePlanEvidencePages(preLaunchWebsite, task.project.website?.crawlJobs[0]?.pages).map((page) => ({
+      url: page.url,
+      title: page.seo?.title ?? null,
+      h1: firstJsonString(page.seo?.h1Text) ?? null,
+    })),
     keywordSignals,
     businessType: businessContext.industry,
     services: confirmedLocalServices.length ? confirmedLocalServices : businessContext.primaryServices,
@@ -2294,17 +2941,43 @@ executionTasksRouter.post("/execution-tasks/:id/content-plan/prepare", (req, res
       acceptedCount: keywordNormalization.acceptedCount,
       deterministicProtectedCount: keywordNormalization.deterministicProtectedCount,
     },
-  };
-  const generatedPlan = await applyAiPageFaqSuggestions({ ...generatedPlanBase, aiBusinessContext: businessContext }, {
+  }, pageCandidates, businessContext.businessName);
+  const strategyRecommendations = Array.isArray(strategy?.prioritizedRecommendations) ? strategy.prioritizedRecommendations.map(recordJson) : [];
+  const unifiedStrategyEntry = strategyRecommendations.find((item) => item.analysisKey === "unified_strategy_plan");
+  const unifiedStrategyPlan = recordJson(unifiedStrategyEntry?.plan);
+  const strategyFunnel = recordJson(unifiedStrategyPlan.growthFunnel);
+  const sitePages = websitePlanEvidencePages(preLaunchWebsite, task.project.website?.crawlJobs[0]?.pages).map((page) => ({ url: page.url, title: page.seo?.title ?? null }));
+  const fullAiPlan = await applyFullAiWebsitePlan({ ...generatedPlanBase, aiBusinessContext: businessContext }, {
     business: businessContext,
     goal: task.project.primaryGoal?.trim() || "help qualified visitors take the next step",
-    locations: targetLocations,
+    keywords: approvedKeywords,
+    targetLocations: planningLocations,
+    gapRecommendations: task.project.gapAnalysisRuns[0]?.recommendations ?? [],
+    sitePages,
+    strategy: strategy ? {
+      id: strategy.id,
+      version: strategy.version,
+      strategySummary: strategy.strategySummary,
+      seoStrategy: strategy.seoStrategy,
+      localSeoStrategy: strategy.localSeoStrategy,
+      aiCitationStrategy: strategy.aiCitationStrategy,
+      contentStrategy: strategy.contentStrategy,
+      authorityStrategy: strategy.authorityStrategy,
+      advancedAnalysis: strategy.advancedAnalysis,
+      prioritizedRecommendations: strategy.prioritizedRecommendations,
+    } : null,
+    funnel: Object.keys(strategyFunnel).length ? strategyFunnel : null,
   });
-  const plan = contentPlanSchema.parse(savedRequiresPlanUpgrade && saved.success ? (() => {
+  const generatedPlan = await applyAiPageFaqSuggestions(fullAiPlan, {
+    business: businessContext,
+    goal: task.project.primaryGoal?.trim() || "help qualified visitors take the next step",
+    locations: planningLocations,
+  });
+  const generatedCandidatePlan = savedRequiresPlanUpgrade && saved.success ? (() => {
     const assignmentTargets = new Set(generatedPlan.pageAssignments.map((assignment) => assignment.targetUrl.trim().toLocaleLowerCase()));
     const preservedAssignments = saved.data.pageAssignments.filter((assignment) => (
       !assignmentTargets.has(assignment.targetUrl.trim().toLocaleLowerCase())
-      && (!assignment.pageKey || /added manually|custom page/i.test(assignment.gapAnalysis))
+      && (!assignment.pageKey || /added manually|custom page|reviewer promoted/i.test(`${assignment.gapAnalysis} ${assignment.decisionReason ?? ""}`))
     ));
     const customPageUpdates = preservedAssignments.map((assignment) =>
       `${assignment.recommendedAction === "update_existing" ? "Update" : "Create"} custom page: “${assignment.pageName}” · ${assignment.targetUrl}`,
@@ -2326,9 +2999,20 @@ executionTasksRouter.post("/execution-tasks/:id/content-plan/prepare", (req, res
       pageMap: [...generatedPlan.pageMap, ...customPageMap].slice(0, 500),
       planningChecks: [...generatedPlan.planningChecks, ...customPlanningChecks].slice(0, 500),
     };
-  })() : generatedPlan);
-  const updated = await prisma.executionTask.update({ where: { id: task.id }, data: { status: "in_progress", actionButtonLabel: "Review Content Plan", relatedUrl: `/guided-projects/${task.projectId}?tab=execution&actionTask=${task.id}#execution-tasks`, approvalSnapshotJson: { ...snapshot, contentPlan: plan, contentPlanStatus: "draft", preparedAt: new Date().toISOString() } as Prisma.InputJsonValue } });
-  await prisma.$transaction((tx) => recordWorkspaceActivity(tx, { context, action: "content_plan.prepared", entityType: "execution_task", entityId: task.id, agencyClientId: task.project?.agencyClientId, projectId: task.projectId, nextJson: { pages: plan.pageUpdates.length, supportingContent: plan.supportingContent.length, briefs: plan.contentBriefs.length } }));
+  })() : generatedPlan;
+  const plan = contentPlanSchema.parse(reconcileContentPlanConflicts(repairContentPlanPageIdentities(generatedCandidatePlan)));
+  const updated = await prisma.$transaction(async (tx) => {
+    // A project reset can legitimately remove this task while the AI request is
+    // still running. Use a conditional write so that stale completions are
+    // discarded cleanly instead of surfacing Prisma P2025 as an internal error.
+    const saved = await tx.executionTask.updateMany({ where: { id: task.id, projectId: task.projectId }, data: { status: "in_progress", actionButtonLabel: preLaunchWebsite ? "Review Page & Content Plan" : "Review SEO Page Map", relatedUrl: `/seo-page-map?projectId=${task.projectId}&taskId=${task.id}`, approvalSnapshotJson: { ...snapshot, contentPlan: plan, contentPlanStatus: "draft", contentPlanGeneration: "full_ai", contentPlanEvidence: { planningMode: "full_intelligence", seedKeywordsOnly: false, gapAnalysisRunId: task.project.gapAnalysisRuns[0]?.id ?? null, strategyId: strategy?.id ?? null, strategyVersion: strategy?.version ?? null, keywordResearchRunCount: task.project.keywordResearchRuns.length, siteAnalysisPageCount: sitePages.length, funnelIncluded: Object.keys(strategyFunnel).length > 0 }, preparedAt: new Date().toISOString() } as Prisma.InputJsonValue } });
+    if (!saved.count) return null;
+    const row = await tx.executionTask.findUnique({ where: { id: task.id } });
+    if (!row) return null;
+    await recordWorkspaceActivity(tx, { context, action: "content_plan.prepared", entityType: "execution_task", entityId: task.id, agencyClientId: task.project?.agencyClientId, projectId: task.projectId, nextJson: { pages: plan.pageUpdates.length, supportingContent: plan.supportingContent.length, briefs: plan.contentBriefs.length } });
+    return row;
+  });
+  if (!updated) return res.status(409).json({ error: `This ${preLaunchWebsite ? "Website Plan" : "SEO Page Map"} request was cancelled because the project workflow was reset. Refresh the project and create a new Execution Plan when you are ready.` });
     res.json({ task: updated, plan, existing: false, pageCandidates });
   })().catch(next);
 });
@@ -2338,19 +3022,53 @@ executionTasksRouter.post("/execution-tasks/:id/content-plan/save", (req, res, n
   const parsed = contentPlanSaveSchema.safeParse(req.body ?? {});
   if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() });
   const clientId = await executionClientScope(req);
-  const task = await prisma.executionTask.findFirst({ where: { id: req.params.id, ...(clientId ? { clientId } : {}) }, include: { project: { select: { id: true, name: true, businessName: true, niche: true, websiteUrl: true, agencyClientId: true, agencyClient: { select: { name: true } }, businessProfile: { select: { offerSummary: true } } } } } });
-  if (!task?.project || !task.projectId || !/(?:content\s*plan|seo\s*page\s*map)/i.test(`${task.title} ${task.actionButtonLabel ?? ""}`)) return res.status(404).json({ error: "Content-plan task not found" });
+  const task = await prisma.executionTask.findFirst({ where: { id: req.params.id, ...(clientId ? { clientId } : {}) }, include: { project: { select: { id: true, name: true, businessName: true, niche: true, projectType: true, websiteStatus: true, websiteId: true, websiteUrl: true, targetLocations: true, businessLocationJson: true, agencyClientId: true, agencyClient: { select: { name: true } }, businessProfile: { select: { offerSummary: true } }, keywordGroups: { where: { status: "approved" }, select: { status: true, keywords: true } }, keywordResearchRuns: { select: { seedKeyword: true, status: true, locationName: true, languageCode: true, device: true, createdAt: true } } } } } });
+  if (!task?.project || !task.projectId || !isWebsitePlanTask(task)) return res.status(404).json({ error: "Website planning task not found" });
   const context = await workspaceContext(req);
   if (!await canAccessProject(context, task.projectId)) return res.status(404).json({ error: "task not found" });
   if (!hasWorkspacePermission(context, "execute_tasks")) return res.status(403).json({ error: "Task execution permission is required." });
   const snapshot = recordJson(task.approvalSnapshotJson);
+  const preLaunchWebsite = isPreLaunchWebsiteCampaign(task.project);
+  const preparedPlan = contentPlanSchema.safeParse(snapshot.contentPlan);
+  if (!preparedPlan.success || preparedPlan.data.workflowVersion !== CONTENT_PLAN_WORKFLOW_VERSION || parsed.data.plan.workflowVersion !== CONTENT_PLAN_WORKFLOW_VERSION) return res.status(409).json({ error: "This Website Plan predates the governed keyword workflow. Regenerate it from the latest approved keyword evidence before saving." });
+  const approvedKeywords = approvedKeywordEntries(task.project.keywordGroups);
+  const missingKeywords = missingApprovedKeywordResearch(task.project.keywordGroups, task.project.keywordResearchRuns, projectAnalysisLocationLabels(task.project.targetLocations, task.project.businessLocationJson));
+  if (!approvedKeywords.length || missingKeywords.length) return res.status(409).json({ error: !approvedKeywords.length
+    ? "Approve Primary or Secondary keywords and complete Keyword Analysis before saving the Website Plan."
+    : `Complete Keyword Analysis for all approved Primary and Secondary keywords before saving the Website Plan. ${missingKeywords.length} still need analysis.` });
+  const savedBusinessLocation = recordJson(task.project.businessLocationJson);
+  const savedPhysicalCity = typeof savedBusinessLocation.city === "string" ? savedBusinessLocation.city.trim() : "";
+  const planMarkets = cleanGeographicTargetMarkets([
+    ...(savedPhysicalCity ? [savedPhysicalCity] : []),
+    ...jsonStrings(task.project.targetLocations),
+  ]);
+  const preparedOwners = new Map(preparedPlan.data.pageAssignments.map((assignment) => [`${assignment.pageKey ?? ""}|${assignment.targetUrl.trim().toLocaleLowerCase()}`, assignment.canonicalKeyword]));
+  const preparedCandidateIds = new Set([
+    ...preparedPlan.data.pagePlanningIntelligence.approvedCandidates,
+    ...preparedPlan.data.pagePlanningIntelligence.humanReviewCandidates,
+    ...preparedPlan.data.pagePlanningIntelligence.rejectedCandidates,
+  ].map((candidate) => typeof candidate.candidateId === "string" ? candidate.candidateId : "").filter(Boolean));
+  const invalidOwners = parsed.data.plan.pageAssignments.filter((assignment) => {
+    if (isHomePageAssignment(assignment) || /\/(?:about(?:-us)?|contact(?:-us)?|privacy(?:-policy)?|terms(?:-and-conditions)?|legal|team)\/?$/i.test(assignment.targetUrl)) return false;
+    // A reviewer may promote an evaluated planner candidate even when its
+    // normalized wording includes a harmless service/provider modifier. The
+    // immutable candidate ID proves that it came from the governed plan; only
+    // manually introduced owners need the stricter keyword-source comparison.
+    if (assignment.pageKey && preparedCandidateIds.has(assignment.pageKey)) return false;
+    const ownerTopic = normalizeKeywordTopic(assignment.canonicalKeyword, planMarkets);
+    const preparedOwner = preparedOwners.get(`${assignment.pageKey ?? ""}|${assignment.targetUrl.trim().toLocaleLowerCase()}`);
+    return !approvedKeywords.some((keyword) => normalizeKeywordTopic(keyword, planMarkets) === ownerTopic)
+      && preparedOwner?.trim().toLocaleLowerCase() !== assignment.canonicalKeyword.trim().toLocaleLowerCase();
+  });
+  if (invalidOwners.length) return res.status(409).json({ error: `Every SEO page owner must come from approved Primary or Secondary keyword evidence. Review: ${invalidOwners.slice(0, 5).map((item) => item.canonicalKeyword).join(", ")}` });
   const normalizedPlan = reconcileContentPlanConflicts(repairContentPlanPageIdentities(ensureContentPlanHome(parsed.data.plan, {
     projectName: task.project.name,
     businessName: parsed.data.plan.aiBusinessContext?.businessName
       || task.project.businessName?.trim()
+      || task.project.name?.trim()
       || task.project.agencyClient?.name?.trim()
       || null,
-    offer: parsed.data.plan.aiBusinessContext?.homepagePrimaryTopic || task.project.niche,
+    offer: parsed.data.plan.aiBusinessContext?.homepagePrimaryTopic || approvedKeywords[0],
     websiteUrl: task.project.websiteUrl,
   })));
   const normalizedTarget = (value: string) => value.trim().toLocaleLowerCase().replace(/^https?:\/\/[^/]+/i, "").replace(/\/+$/, "") || "/";
@@ -2367,12 +3085,12 @@ executionTasksRouter.post("/execution-tasks/:id/content-plan/save", (req, res, n
   }
   const savedPlan = { ...normalizedPlan, pageMap: normalizedPlan.pageAssignments.map((assignment, index) => `Page ${index + 1} | Name: ${assignment.pageName} | Target URL: ${assignment.targetUrl} | Search intent: ${assignment.searchIntent} | Action: ${assignment.recommendedAction.replaceAll("_", " ")} | Canonical intent: “${assignment.canonicalKeyword}” | Secondary keywords: ${assignment.secondaryKeywords.length ? assignment.secondaryKeywords.join(", ") : "none"} | Source: ${assignment.source === "existing_crawl" ? "selected from website crawl" : "suggested and confirmed"}.`) };
   const updated = await prisma.$transaction(async (tx) => {
-    const row = await tx.executionTask.update({
-      where: { id: task.id },
+    const write = await tx.executionTask.updateMany({
+      where: { id: task.id, projectId: task.projectId },
       data: {
         status: "in_progress",
-        actionButtonLabel: "Review Content Plan",
-        relatedUrl: `/guided-projects/${task.projectId}?tab=execution&actionTask=${task.id}#execution-tasks`,
+        actionButtonLabel: preLaunchWebsite ? "Review Page & Content Plan" : "Review SEO Page Map",
+        relatedUrl: `/seo-page-map?projectId=${task.projectId}&taskId=${task.id}`,
         approvalSnapshotJson: { ...snapshot, contentPlan: savedPlan, contentPlanReviewComment: parsed.data.reviewComment, contentPlanStatus: "saved", savedAt: new Date().toISOString() } as Prisma.InputJsonValue,
         approvedAt: null,
         submittedAt: null,
@@ -2381,9 +3099,13 @@ executionTasksRouter.post("/execution-tasks/:id/content-plan/save", (req, res, n
         blockedReason: null,
       },
     });
+    if (!write.count) return null;
+    const row = await tx.executionTask.findUnique({ where: { id: task.id } });
+    if (!row) return null;
     await recordWorkspaceActivity(tx, { context, action: "content_plan.saved", entityType: "execution_task", entityId: task.id, agencyClientId: task.project?.agencyClientId, projectId: task.projectId, nextJson: { pages: savedPlan.pageUpdates.length, pageAssignments: savedPlan.pageAssignments.length, supportingContent: savedPlan.supportingContent.length, briefs: savedPlan.contentBriefs.length, reviewComment: parsed.data.reviewComment || null } });
     return row;
   });
+  if (!updated) return res.status(409).json({ error: "This Website Plan was reset or removed while it was being edited. Refresh the project before saving again." });
     res.json({ task: updated, plan: savedPlan, reviewComment: parsed.data.reviewComment });
   })().catch(next);
 });
@@ -2408,6 +3130,7 @@ executionTasksRouter.post("/execution-tasks/:id/seo-plan/prepare", async (req, r
         include: {
           businessProfile: true,
           keywordGroups: { where: { status: "approved" } },
+          keywordResearchRuns: { select: { seedKeyword: true, status: true, locationName: true, languageCode: true, device: true, createdAt: true } },
           strategyPlans: { orderBy: [{ version: "desc" }, { updatedAt: "desc" }], take: 1 },
           website: { include: { crawlJobs: { where: { status: "completed" }, orderBy: { createdAt: "desc" }, take: 1, include: { issues: { where: { status: "open" }, orderBy: { weightImpact: "desc" }, take: 12 } } } } },
         },
@@ -2419,11 +3142,14 @@ executionTasksRouter.post("/execution-tasks/:id/seo-plan/prepare", async (req, r
   if (!task.projectId || !await canAccessProject(context, task.projectId)) return res.status(404).json({ error: "task not found" });
   if (!hasWorkspacePermission(context, "execute_tasks")) return res.status(403).json({ error: "Task execution permission is required." });
   const snapshot = recordJson(task.approvalSnapshotJson);
+  const strategy = task.project.strategyPlans[0];
+  const keywords = approvedKeywordEntries(task.project.keywordGroups);
+  if (!keywords.length) return res.status(409).json({ error: "Approve at least one Primary or Secondary keyword and complete Keyword Analysis before preparing the SEO Page Map." });
+  const unresearchedApprovedKeywords = missingApprovedKeywordResearch(task.project.keywordGroups, task.project.keywordResearchRuns, projectAnalysisLocationLabels(task.project.targetLocations, task.project.businessLocationJson));
+  if (unresearchedApprovedKeywords.length) return res.status(409).json({ error: `Complete Keyword Analysis for all approved Primary and Secondary keywords before preparing the SEO Page Map. ${unresearchedApprovedKeywords.length} still need analysis.` });
   const existingPlan = seoPlanSchema.safeParse(snapshot.seoPlan);
   if (existingPlan.success) return res.json({ task, plan: existingPlan.data, existing: true });
-  const strategy = task.project.strategyPlans[0];
-  const keywords = task.project.keywordGroups.flatMap((group) => jsonStrings(group.keywords));
-  const targetMarkets = jsonStrings(task.project.targetLocations);
+  const targetMarkets = cleanGeographicTargetMarkets(jsonStrings(task.project.targetLocations));
   const crawlIssues = task.project.website?.crawlJobs[0]?.issues.map((issue) => issue.recommendation || issue.message) ?? [];
   const plan = seoPlanSchema.parse(seoPlanFor({
     projectName: task.project.name,
@@ -2440,7 +3166,7 @@ executionTasksRouter.post("/execution-tasks/:id/seo-plan/prepare", async (req, r
     crawlIssues,
     hasWebsite: Boolean(task.project.websiteId || task.project.websiteUrl),
   }));
-  const updated = await prisma.executionTask.update({ where: { id: task.id }, data: { title: "Create SEO Page Map", description: "Convert approved keywords into intent clusters, target pages, metadata, schema, FAQs, and content briefs for review.", status: "in_progress", actionButtonLabel: "Review SEO Page Map", relatedUrl: `/guided-projects/${task.projectId}?tab=execution`, approvalSnapshotJson: { ...snapshot, seoPlan: plan, seoPlanStatus: "draft", preparedAt: new Date().toISOString() } as Prisma.InputJsonValue } });
+  const updated = await prisma.executionTask.update({ where: { id: task.id }, data: { title: "Create SEO Page Map", description: "Convert approved keywords into intent clusters, target pages, metadata, schema, FAQs, and content briefs for review.", status: "in_progress", actionButtonLabel: "Review SEO Page Map", relatedUrl: `/seo-page-map?projectId=${task.projectId}&taskId=${task.id}`, approvalSnapshotJson: { ...snapshot, seoPlan: plan, seoPlanStatus: "draft", preparedAt: new Date().toISOString() } as Prisma.InputJsonValue } });
   await prisma.$transaction((tx) => recordWorkspaceActivity(tx, { context, action: "seo_plan.prepared", entityType: "execution_task", entityId: task.id, agencyClientId: task.project?.agencyClientId, projectId: task.projectId, nextJson: { objectives: plan.objectives.length, keywords: plan.keywordPriorities.length } }));
   res.json({ task: updated, plan, existing: false });
 });
@@ -2473,7 +3199,7 @@ executionTasksRouter.post("/execution-tasks/:id/seo-plan/confirm", async (req, r
       else if (!terminalStatuses.has(existing.status)) await tx.executionTask.update({ where: { id: existing.id }, data });
     }
     const snapshot = recordJson(task.approvalSnapshotJson);
-    const parent = await tx.executionTask.update({ where: { id: task.id }, data: { title: "Create SEO Page Map", status: "completed", completedAt: new Date(), actionButtonLabel: "View SEO Page Map", relatedUrl: `/guided-projects/${task.projectId}?tab=execution`, approvalSnapshotJson: { ...snapshot, seoPlan: plan, seoPlanStatus: "confirmed", confirmedAt: new Date().toISOString(), childTaskCount: childDefinitions.length } as Prisma.InputJsonValue } });
+    const parent = await tx.executionTask.update({ where: { id: task.id }, data: { title: "Create SEO Page Map", status: "completed", completedAt: new Date(), actionButtonLabel: "View SEO Page Map", relatedUrl: `/seo-page-map?projectId=${task.projectId}&taskId=${task.id}`, approvalSnapshotJson: { ...snapshot, seoPlan: plan, seoPlanStatus: "confirmed", confirmedAt: new Date().toISOString(), childTaskCount: childDefinitions.length } as Prisma.InputJsonValue } });
     await recordWorkspaceActivity(tx, { context, action: "seo_plan.confirmed", entityType: "execution_task", entityId: task.id, agencyClientId: task.project?.agencyClientId, projectId: task.projectId, nextJson: { childTasksCreated: childDefinitions.length, keywordPriorities: plan.keywordPriorities.length } });
     return parent;
   }));
@@ -2496,7 +3222,7 @@ executionTasksRouter.post("/execution-tasks/:id/ranking-plan/prepare", async (re
   if (existingPlan.success) return res.json({ task, plan: existingPlan.data, existing: true });
   const run = task.sourceId ? await prisma.keywordResearchRun.findUnique({ where: { id: task.sourceId }, include: { competitors: { orderBy: { rank: "asc" }, take: 5 } } }) : null;
   const keyword = run?.seedKeyword || rankingKeywordFromTitle(task.title);
-  const targetMarkets = Array.isArray(task.project.targetLocations) ? task.project.targetLocations.filter((item): item is string => typeof item === "string") : [];
+  const targetMarkets = cleanGeographicTargetMarkets(jsonStrings(task.project.targetLocations));
   const plan = rankingPlanFor({
     keyword,
     location: run?.locationName || targetMarkets[0] || "Not specified",

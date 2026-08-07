@@ -6,7 +6,8 @@
   "scripts": {
     "dev": "tsx watch src/server.ts",
     "start": "tsx src/server.ts",
-    "seed": "tsx src/seed.ts"
+    "seed": "tsx src/seed.ts",
+    "backfill:workflow": "tsx scripts/backfill-project-workflows.ts"
   },
   "dependencies": {
     "@ai-sdk/openai": "^4.0.15",

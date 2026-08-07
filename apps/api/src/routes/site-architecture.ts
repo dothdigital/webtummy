@@ -2,6 +2,7 @@ import { Router } from "express";
 import { Prisma, prisma } from "@webtummy/db";
 import { z } from "zod";
 import { requireAuth } from "../middleware.js";
+import { cleanGeographicTargetMarkets } from "../project-location.js";
 import { canAccessProject, createWorkspaceNotification, hasWorkspacePermission, recordWorkspaceActivity, workspaceContext } from "../workspace-access.js";
 
 export const siteArchitectureRouter = Router();
@@ -49,7 +50,7 @@ function buildArchitecture(project: Awaited<ReturnType<typeof contextProject>>["
   const strategy = project.strategyPlans[0];
   const business = project.businessName || project.name;
   const offerParts = unique((project.businessProfile?.offerSummary || project.niche || "Services").split(/[,;\n]|\band\b/gi), 6);
-  const markets = unique(list(project.targetLocations), 8);
+  const markets = unique(cleanGeographicTargetMarkets(list(project.targetLocations)), 8);
   const groups = project.keywordGroups;
   const existingUrls = new Set((evidence.crawl?.pages ?? []).map((page) => {
     try { return new URL(page.finalUrl || page.url).pathname.replace(/\/$/, "") || "/"; } catch { return page.url; }
@@ -153,7 +154,7 @@ siteArchitectureRouter.post("/projects/:projectId/site-architecture/generate", a
       const architecture = await tx.siteArchitectureVersion.create({ data: {
         projectId: project.id, clientId: project.clientId, version, status: "draft", title: `${project.name} Site Architecture v${version}`,
         executiveSummary: generated.summary, rationale: generated.rationale, goalsJson: [project.primaryGoal, ...list(project.secondaryGoals)],
-        evidenceJson: { strategyId: strategy.id, keywordGroupIds: project.keywordGroups.map((item) => item.id), crawlId: evidence.crawl?.id ?? null, approvedGapIds: project.gapRecommendations.map((item) => item.id), targetMarkets: list(project.targetLocations) }, createdByUserId: context.membership.userId,
+        evidenceJson: { strategyId: strategy.id, keywordGroupIds: project.keywordGroups.map((item) => item.id), crawlId: evidence.crawl?.id ?? null, approvedGapIds: project.gapRecommendations.map((item) => item.id), targetMarkets: cleanGeographicTargetMarkets(list(project.targetLocations)) }, createdByUserId: context.membership.userId,
         pages: { create: generated.pages.map(({ targetKeywords, ...page }) => ({ ...page, targetKeywordsJson: targetKeywords })) },
         links: { create: generated.links },
         decisions: { create: { actorUserId: context.membership.userId, decision: "generated", snapshotJson: { pageCount: generated.pages.length, linkCount: generated.links.length } } },

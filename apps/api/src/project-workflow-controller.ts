@@ -1,0 +1,946 @@
+import { createHash } from "node:crypto";
+import { prisma, type Prisma } from "@webtummy/db";
+import { approvedKeywordEntries, incompleteApprovedKeywordResearchChecks, latestKeywordResearchChecks, missingApprovedKeywordResearch, normalizeKeywordPhrase, unresolvedApprovedKeywordResearchChecks } from "@webtummy/core";
+import { projectAnalysisLocationLabels, type BusinessLocation } from "./project-location.js";
+import { isWebsitePlanTask } from "./website-plan-task.js";
+
+export const WORKFLOW_CONTROLLER_VERSION = "workflow-controller-v1";
+
+export const WORKFLOW_MODULE_CAPABILITIES = [
+  { key: "keyword_intelligence", module: "keywords", route: "/keywords", events: ["intelligence.keyword_completed"], canSuggest: true, canImplement: true, approvalRequired: true },
+  { key: "location_intelligence", module: "local_seo", route: "/local-seo", events: ["intelligence.local_seo_completed"], canSuggest: true, canImplement: true, approvalRequired: true },
+  { key: "competitor_intelligence", module: "gap_analysis", route: "/gap-analysis", events: ["intelligence.competitor_completed", "intelligence.gap_analysis_completed"], canSuggest: true, canImplement: false, approvalRequired: false },
+  { key: "site_analysis", module: "site_analysis", route: "/site-analysis", events: ["intelligence.site_analysis_completed"], canSuggest: true, canImplement: false, approvalRequired: false },
+  { key: "technical_seo", module: "gap_analysis", route: "/gap-analysis", events: ["intelligence.gap_analysis_completed"], canSuggest: true, canImplement: true, approvalRequired: true },
+  { key: "content_gap_analysis", module: "gap_analysis", route: "/gap-analysis", events: ["intelligence.gap_analysis_completed"], canSuggest: true, canImplement: true, approvalRequired: true },
+  { key: "local_seo_analysis", module: "local_seo", route: "/local-seo", events: ["intelligence.local_seo_completed", "intelligence.gap_analysis_completed"], canSuggest: true, canImplement: true, approvalRequired: true },
+  { key: "ai_citation_analysis", module: "ai_citations", route: "/ai-citations", events: ["intelligence.citation_completed", "intelligence.gap_analysis_completed"], canSuggest: true, canImplement: true, approvalRequired: true },
+  { key: "authority_analysis", module: "backlinks", route: "/backlinks", events: ["intelligence.authority_completed", "intelligence.gap_analysis_completed"], canSuggest: true, canImplement: true, approvalRequired: true },
+] as const;
+
+const WORKFLOW_EVIDENCE_FRESHNESS_DAYS: Record<string, number> = {
+  keyword_intelligence: 90,
+  location_intelligence: 90,
+  competitor_intelligence: 90,
+  site_analysis: 45,
+  technical_seo: 45,
+  content_gap_analysis: 45,
+  local_seo_analysis: 60,
+  ai_citation_analysis: 60,
+  authority_analysis: 90,
+};
+
+export function resolveProjectApplicability(input: { projectType: string; websiteStatus: string; hasWebsite: boolean; websiteLaunched?: boolean; targetMarketCount?: number; contextText: string }) {
+  const existingWebsite = Boolean(input.websiteLaunched) || (input.websiteStatus === "existing_website" && input.hasWebsite);
+  const preLaunchWebsite = ["new_website_required", "website_planned"].includes(input.websiteStatus) && !existingWebsite;
+  const localSeo = input.projectType === "local_seo" || (preLaunchWebsite && (input.targetMarketCount ?? 0) > 0) || /local|service area|near me|google business|map pack|appointment|booking|physical location|storefront/i.test(input.contextText);
+  return {
+    existingWebsite,
+    preLaunchWebsite,
+    localSeo,
+    requiredModules: WORKFLOW_MODULE_CAPABILITIES.filter((capability) => {
+      if (["site_analysis", "technical_seo"].includes(capability.key)) return existingWebsite;
+      if (["location_intelligence", "local_seo_analysis"].includes(capability.key)) return localSeo;
+      return true;
+    }).map((capability) => capability.key),
+  };
+}
+
+export type WorkflowModuleStatus =
+  | "not_required"
+  | "not_started"
+  | "in_progress"
+  | "needs_attention"
+  | "ready"
+  | "complete"
+  | "approved"
+  | "blocked"
+  | "failed"
+  | "stale"
+  | "deferred"
+  | "waived";
+
+export type WorkflowState =
+  | "discovery"
+  | "intelligence_collection"
+  | "strategy_ready"
+  | "strategy_approved"
+  | "execution_planning"
+  | "execution"
+  | "measurement"
+  | "continuous_growth";
+
+export type WorkflowAction = {
+  label: string;
+  url: string;
+  type: "navigate" | "review" | "approve" | "generate" | "implement";
+};
+
+export type WorkflowAiRole = {
+  mode: "automatic" | "ai_assisted" | "guided" | "approval_required";
+  suggestion: string;
+  implementation: string;
+  humanRole: string;
+};
+
+export type WorkflowModule = {
+  key: string;
+  label: string;
+  description: string;
+  status: WorkflowModuleStatus;
+  required: boolean;
+  weight: number;
+  reason: string;
+  evidenceAt: string | null;
+  action: WorkflowAction | null;
+  ai: WorkflowAiRole;
+};
+
+export type WorkflowStage = {
+  key: string;
+  label: string;
+  description: string;
+  status: WorkflowModuleStatus;
+  reason: string;
+  action: WorkflowAction | null;
+  ai: WorkflowAiRole;
+  modules?: WorkflowModule[];
+};
+
+export type ProjectWorkflowControllerView = {
+  version: string;
+  projectId: string;
+  state: WorkflowState;
+  stateLabel: string;
+  readinessPercent: number;
+  overallProgressPercent: number;
+  intelligenceReady: boolean;
+  strategyStale: boolean;
+  executionPlanStale: boolean;
+  businessBrainVersion: number;
+  evidenceVersion: number;
+  strategyVersion: number;
+  executionPlanVersion: string | null;
+  executionPlanStrategyVersion: number | null;
+  growthBlueprintVersion: number;
+  confidence: {
+    overall: number;
+    completeness: number;
+    freshness: number;
+    signalCoverage: number;
+    dataQuality: number;
+    conflictPenalty: number;
+    independentSignals: number;
+    reasons: string[];
+    cautions: string[];
+  };
+  blockers: Array<{ key: string; title: string; reason: string; action: WorkflowAction | null }>;
+  nextBestAction: {
+    title: string;
+    reason: string;
+    expectedResult: string;
+    action: WorkflowAction;
+    aiWill: string[];
+    userWill: string;
+    confidence: number;
+    explainability: string;
+  };
+  stages: WorkflowStage[];
+  intelligenceModules: WorkflowModule[];
+  updatedAt: string;
+};
+
+export type WorkflowEvidenceSnapshot = {
+  projectId: string;
+  projectConfigured: boolean;
+  workspaceConfigured: boolean;
+  situationConfigured: boolean;
+  discoveryComplete: boolean;
+  existingWebsite: boolean;
+  preLaunchWebsite: boolean;
+  localSeoApplicable: boolean;
+  targetLocationsConfirmed: boolean;
+  approvedKeywords: boolean;
+  approvedKeywordCount?: number;
+  missingKeywordResearchCount?: number;
+  missingKeywordResearchCheckCount?: number;
+  missingKeywordResearchKeywords?: string[];
+  failedKeywordResearchKeywords?: string[];
+  failedKeywordResearchCheckCount?: number;
+  keywordResearchActiveCheckCount?: number;
+  keywordResearchInProgress: boolean;
+  keywordResearchFailed: boolean;
+  keywordEvidenceAt: Date | null;
+  siteAnalysisComplete: boolean;
+  siteAnalysisInProgress: boolean;
+  siteAnalysisFailed: boolean;
+  siteEvidenceAt: Date | null;
+  gapAnalysisComplete: boolean;
+  gapAnalysisInProgress: boolean;
+  gapAnalysisFailed: boolean;
+  gapEvidenceAt: Date | null;
+  localAnalysisComplete: boolean;
+  localAnalysisInProgress: boolean;
+  localAnalysisFailed: boolean;
+  localEvidenceAt: Date | null;
+  competitorAnalysisComplete: boolean;
+  competitorAnalysisInProgress: boolean;
+  competitorAnalysisFailed: boolean;
+  competitorEvidenceAt: Date | null;
+  citationEvidenceComplete: boolean;
+  citationEvidenceAt: Date | null;
+  authorityEvidenceComplete: boolean;
+  authorityEvidenceAt: Date | null;
+  selectedOpportunity: boolean;
+  latestStrategy: { id: string; status: string; createdAt: Date; approvedAt: Date | null } | null;
+  latestEvidenceAt: Date | null;
+  executionPlanExists: boolean;
+  executionTasksExist: boolean;
+  executionPlanUpdatedAt: Date | null;
+  openExecutionTasks: number;
+  completedExecutionTasks: number;
+  websitePlanRequired: boolean;
+  websitePlanApproved: boolean;
+  websitePlanTaskStatus: string | null;
+  publishingStarted: boolean;
+  publishingComplete: boolean;
+  measurementStarted: boolean;
+  measurementComplete: boolean;
+  growthBlueprintStatus: string | null;
+  nextBestActionExists: boolean;
+  activeNextBestAction: {
+    title: string;
+    reason: string;
+    expectedImpact: string;
+    confidence: number;
+    route: string;
+    destinationUrl: string | null;
+    status: string;
+  } | null;
+  latestStrategyVersion: number;
+  executionPlanVersion: string | null;
+  executionPlanStrategyVersion: number | null;
+  growthBlueprintVersion: number;
+  moduleDecisions: Record<string, "waived" | "deferred" | null>;
+};
+
+const stateLabels: Record<WorkflowState, string> = {
+  discovery: "Business discovery",
+  intelligence_collection: "Intelligence collection",
+  strategy_ready: "Strategy ready",
+  strategy_approved: "Strategy approved",
+  execution_planning: "Execution planning",
+  execution: "AI-assisted execution",
+  measurement: "Measurement",
+  continuous_growth: "Continuous growth",
+};
+
+function newest(...dates: Array<Date | null | undefined>) {
+  return dates.filter((date): date is Date => Boolean(date)).sort((a, b) => b.getTime() - a.getTime())[0] ?? null;
+}
+
+function action(label: string, url: string, type: WorkflowAction["type"] = "navigate"): WorkflowAction {
+  return { label, url, type };
+}
+
+const aiRoles = {
+  setup: {
+    mode: "guided",
+    suggestion: "AI checks the selected project path and explains which information is required.",
+    implementation: "AI reuses workspace and client defaults so the user does not enter the same facts again.",
+    humanRole: "Confirm factual business and ownership details.",
+  },
+  discovery: {
+    mode: "ai_assisted",
+    suggestion: "AI summarizes the business, audience, offer, goals, locations, competitors, and existing assets.",
+    implementation: "AI identifies missing or conflicting intake facts and prepares a reusable Business Brain.",
+    humanRole: "Verify facts and approve the completed profile.",
+  },
+  intelligence: {
+    mode: "automatic",
+    suggestion: "AI recommends the evidence collection required for this exact project situation.",
+    implementation: "AI coordinates research, crawling, grouping, scoring, and gap diagnosis across the existing modules.",
+    humanRole: "Start provider-backed research when required and verify sensitive business facts.",
+  },
+  strategy: {
+    mode: "ai_assisted",
+    suggestion: "AI turns all current evidence into ranked focus areas and one cross-platform plan of action.",
+    implementation: "AI generates the unified SEO, content, local, citation, authority, lead, social, and publishing direction.",
+    humanRole: "Review the decisions and request regeneration when the direction needs adjustment.",
+  },
+  approval: {
+    mode: "approval_required",
+    suggestion: "AI highlights assumptions, dependencies, expected impact, and decisions that need review.",
+    implementation: "AI locks the approved strategy version used by downstream work.",
+    humanRole: "Approve the exact strategy version or regenerate it.",
+  },
+  planning: {
+    mode: "automatic",
+    suggestion: "AI converts the approved strategy into sequenced, dependency-aware actions.",
+    implementation: "AI creates tasks, expected outcomes, destinations, approvals, and implementation routes.",
+    humanRole: "Confirm priorities, ownership, and any external access requirements.",
+  },
+  execution: {
+    mode: "ai_assisted",
+    suggestion: "AI recommends the highest-priority valid task instead of making the user choose a module.",
+    implementation: "AI creates or fixes content, pages, metadata, schema, links, lead assets, social assets, and implementation packages where supported.",
+    humanRole: "Review factual claims and approve protected or public changes.",
+  },
+  publishing: {
+    mode: "approval_required",
+    suggestion: "AI validates readiness, provider access, links, forms, assets, and rollback requirements.",
+    implementation: "AI publishes through a connected provider or prepares a verified download and handoff package.",
+    humanRole: "Approve public changes and provide required hosting or provider access.",
+  },
+  measurement: {
+    mode: "automatic",
+    suggestion: "AI selects the KPIs and checkpoints tied to the approved strategy and implemented work.",
+    implementation: "AI records baselines, compares results, detects movement, and diagnoses weak outcomes.",
+    humanRole: "Connect permitted analytics or confirm manually supplied observations.",
+  },
+  growth: {
+    mode: "automatic",
+    suggestion: "AI updates the Growth Blueprint from measured results and current business goals.",
+    implementation: "AI ranks experiments and creates the next valid recommendation without bypassing approval rules.",
+    humanRole: "Approve the next experiment or change its priority.",
+  },
+} satisfies Record<string, WorkflowAiRole>;
+
+function moduleStatus(input: {
+  required: boolean;
+  complete: boolean;
+  inProgress?: boolean;
+  failed?: boolean;
+  blockedBy?: string | null;
+}): WorkflowModuleStatus {
+  if (!input.required) return "not_required";
+  if (input.complete) return "complete";
+  if (input.failed) return "failed";
+  if (input.inProgress) return "in_progress";
+  if (input.blockedBy) return "blocked";
+  return "not_started";
+}
+
+function statusReason(status: WorkflowModuleStatus, complete: string, pending: string, blocked?: string) {
+  if (status === "complete" || status === "approved") return complete;
+  if (status === "not_required") return "Not required for this project situation.";
+  if (status === "in_progress") return "AI and connected data providers are collecting this evidence in the background.";
+  if (status === "failed") return "The latest collection attempt failed. Review the error and run it again.";
+  if (status === "blocked") return blocked || pending;
+  return pending;
+}
+
+export function resolveProjectWorkflow(snapshot: WorkflowEvidenceSnapshot): ProjectWorkflowControllerView {
+  const projectQuery = `projectId=${encodeURIComponent(snapshot.projectId)}`;
+  const intelligence: WorkflowModule[] = [];
+  const push = (value: WorkflowModule) => intelligence.push(value);
+
+  const approvedKeywordCount = snapshot.approvedKeywordCount ?? 0;
+  const missingKeywordResearchCount = snapshot.missingKeywordResearchCount ?? 0;
+  const missingKeywordResearchCheckCount = snapshot.missingKeywordResearchCheckCount ?? missingKeywordResearchCount;
+  const missingKeywordResearchKeywords = snapshot.missingKeywordResearchKeywords ?? [];
+  const failedKeywordResearchKeywords = snapshot.failedKeywordResearchKeywords ?? [];
+  const failedKeywordResearchCheckCount = snapshot.failedKeywordResearchCheckCount ?? failedKeywordResearchKeywords.length;
+  const keywordResearchActiveCheckCount = snapshot.keywordResearchActiveCheckCount ?? (snapshot.keywordResearchInProgress ? 1 : 0);
+  const keywordBlockedBy = !snapshot.discoveryComplete
+    ? "Complete Business Discovery first."
+    : !snapshot.selectedOpportunity
+      ? "Create and select the project opportunity before Keyword Intelligence."
+      : null;
+  let keywordsStatus = moduleStatus({ required: true, complete: snapshot.approvedKeywords, inProgress: snapshot.keywordResearchInProgress, failed: snapshot.keywordResearchFailed && !snapshot.keywordResearchInProgress, blockedBy: keywordBlockedBy });
+  if (keywordsStatus === "not_started" && approvedKeywordCount > missingKeywordResearchCount && missingKeywordResearchCount > 0) keywordsStatus = "needs_attention";
+  const missingKeywordNames = missingKeywordResearchKeywords.length
+    ? ` Affected: ${missingKeywordResearchKeywords.slice(0, 6).join(", ")}${missingKeywordResearchKeywords.length > 6 ? `, and ${missingKeywordResearchKeywords.length - 6} more` : ""}.`
+    : "";
+  const keywordResolution = keywordResearchActiveCheckCount > 0
+    ? ` ${keywordResearchActiveCheckCount} keyword-location check${keywordResearchActiveCheckCount === 1 ? " is" : "s are"} currently running. Wait for those checks before reviewing any remaining failures.`
+    : failedKeywordResearchCheckCount > 0
+    ? ` Retry ${failedKeywordResearchCheckCount} failed keyword-location check${failedKeywordResearchCheckCount === 1 ? "" : "s"}; completed checks are preserved.`
+    : " Start the remaining keywords from Keyword Intelligence.";
+  const keywordPendingReason = approvedKeywordCount > 0 && missingKeywordResearchCount > 0
+    ? `${missingKeywordResearchCheckCount} exact market check${missingKeywordResearchCheckCount === 1 ? "" : "s"} across ${missingKeywordResearchCount} of ${approvedKeywordCount} approved Primary and Secondary keywords do not have completed analysis.${missingKeywordNames}${keywordResolution}`
+    : "Run Keyword Intelligence and approve the relevant groups.";
+  const keywordActionLabel = keywordResearchActiveCheckCount > 0
+    ? `View ${keywordResearchActiveCheckCount} Running Check${keywordResearchActiveCheckCount === 1 ? "" : "s"}`
+    : failedKeywordResearchCheckCount > 0
+    ? `Review & Retry ${failedKeywordResearchCheckCount} Failed Check${failedKeywordResearchCheckCount === 1 ? "" : "s"}`
+    : snapshot.approvedKeywords
+    ? "Review keywords"
+    : missingKeywordResearchCount > 0
+      ? `Analyze ${missingKeywordResearchCheckCount} remaining check${missingKeywordResearchCheckCount === 1 ? "" : "s"}`
+      : "Run keyword research";
+  push({ key: "keyword_intelligence", label: "Keyword Intelligence", description: "Search demand, intent, topic groups, opportunity, and approved keyword evidence.", status: keywordsStatus, required: true, weight: 18, reason: statusReason(keywordsStatus, `All ${approvedKeywordCount || "approved"} Primary and Secondary keywords have completed analysis.`, keywordPendingReason, keywordBlockedBy ?? undefined), evidenceAt: snapshot.keywordEvidenceAt?.toISOString() ?? null, action: keywordBlockedBy === "Create and select the project opportunity before Keyword Intelligence." ? action("Create and select opportunity", `/opportunities?${projectQuery}`, "generate") : action(keywordActionLabel, `/keywords?${projectQuery}`, snapshot.approvedKeywords ? "review" : "generate"), ai: { ...aiRoles.intelligence, implementation: "AI expands seed topics, researches demand and intent, groups keywords, identifies page ownership, and explains the strongest opportunities." } });
+
+  const locationRequired = snapshot.localSeoApplicable;
+  const locationComplete = snapshot.targetLocationsConfirmed && (snapshot.localAnalysisComplete || snapshot.gapAnalysisComplete || snapshot.approvedKeywords);
+  const locationStatus = moduleStatus({ required: locationRequired, complete: locationComplete, inProgress: snapshot.localAnalysisInProgress, failed: snapshot.localAnalysisFailed, blockedBy: snapshot.targetLocationsConfirmed ? null : "Confirm target markets first." });
+  push({ key: "location_intelligence", label: "Location Intelligence", description: "Target markets, service areas, local intent, and location-specific evidence where applicable.", status: locationStatus, required: locationRequired, weight: 8, reason: statusReason(locationStatus, "Target markets and location evidence are available.", "Confirm target markets and collect local search evidence.", "Confirm target markets first."), evidenceAt: snapshot.localEvidenceAt?.toISOString() ?? snapshot.keywordEvidenceAt?.toISOString() ?? null, action: locationRequired ? action(locationComplete ? "Review Local SEO" : "Collect local evidence", `/local-seo?${projectQuery}`, locationComplete ? "review" : "generate") : null, ai: { ...aiRoles.intelligence, implementation: "AI maps services to cities and service areas, avoids doorway-page patterns, and recommends the markets that need attention first." } });
+
+  const competitorRequired = true;
+  const competitorStatus = moduleStatus({ required: competitorRequired, complete: snapshot.competitorAnalysisComplete || snapshot.gapAnalysisComplete, inProgress: snapshot.competitorAnalysisInProgress, failed: snapshot.competitorAnalysisFailed, blockedBy: snapshot.approvedKeywords ? null : "Keyword Intelligence must establish the comparison topics first." });
+  push({ key: "competitor_intelligence", label: "Opportunity & Competitor Intelligence", description: "Demand, customer questions, real search competitors, positioning, coverage, and market opportunities.", status: competitorStatus, required: competitorRequired, weight: 10, reason: statusReason(competitorStatus, "Opportunity and competitor evidence has been collected.", "Run Market & Content Gap Analysis to compare demand, questions, and real search competitors.", "Complete Keyword Intelligence first."), evidenceAt: snapshot.competitorEvidenceAt?.toISOString() ?? snapshot.gapEvidenceAt?.toISOString() ?? null, action: action(competitorStatus === "complete" ? "Review market intelligence" : "Analyze market and competitors", `/gap-analysis?${projectQuery}`, competitorStatus === "complete" ? "review" : "generate"), ai: { ...aiRoles.intelligence, implementation: "AI identifies actual competing domains, demand and customer questions, compares coverage and authority, and recommends defensible opportunities rather than copying competitors." } });
+
+  const siteStatus = moduleStatus({ required: snapshot.existingWebsite, complete: snapshot.siteAnalysisComplete, inProgress: snapshot.siteAnalysisInProgress, failed: snapshot.siteAnalysisFailed, blockedBy: snapshot.approvedKeywords ? null : "Complete Keyword Intelligence so the crawl can be interpreted against target demand." });
+  const websiteBaselineDue = snapshot.existingWebsite && snapshot.publishingComplete && !snapshot.siteAnalysisComplete;
+  push({ key: "site_analysis", label: snapshot.preLaunchWebsite || websiteBaselineDue ? "Website Intelligence Baseline" : "Website Intelligence", description: "Crawl-backed pages, links, indexability, content, schema, accessibility, and conversion evidence.", status: siteStatus, required: snapshot.existingWebsite, weight: 16, reason: snapshot.preLaunchWebsite ? "Starts after the website is published; a live-site baseline is never fabricated before launch." : statusReason(siteStatus, "A completed crawl exists for the current website.", websiteBaselineDue ? "The website is published. Run the first Website Intelligence assessment and save its measurement baseline." : "Analyze the connected website before Strategy generation.", "Complete Keyword Intelligence first."), evidenceAt: snapshot.siteEvidenceAt?.toISOString() ?? null, action: snapshot.existingWebsite ? action(snapshot.siteAnalysisComplete ? "Review Website Intelligence" : websiteBaselineDue ? "Create Website Intelligence Baseline" : "Analyze website", `/site-analysis?${projectQuery}`, snapshot.siteAnalysisComplete ? "review" : "generate") : null, ai: { ...aiRoles.intelligence, implementation: "The crawler collects page-level evidence; AI groups repeated findings, explains impact, and recommends fixes for the correct canonical page." } });
+
+  // Every project needs a gap decision before Strategy. Existing websites use
+  // crawl-backed technical and page evidence; pre-website projects use the
+  // same workspace for keyword, competitor, market, entity, authority, local,
+  // and planned-content gaps without pretending that live pages exist.
+  const gapBlocked = snapshot.existingWebsite
+    ? !snapshot.siteAnalysisComplete ? "Complete Site Analysis first." : null
+    : !snapshot.approvedKeywords ? "Complete Keyword Intelligence first." : null;
+  const technicalRequired = snapshot.existingWebsite;
+  const technicalStatus = moduleStatus({ required: technicalRequired, complete: snapshot.gapAnalysisComplete, inProgress: snapshot.gapAnalysisInProgress, failed: snapshot.gapAnalysisFailed, blockedBy: technicalRequired ? gapBlocked : null });
+  push({ key: "technical_seo", label: "Technical SEO", description: "Canonical, redirect, sitemap, indexability, performance, structured data, and crawl-health priorities.", status: technicalStatus, required: technicalRequired, weight: 12, reason: statusReason(technicalStatus, "Technical findings are consolidated and prioritized.", "Run SEO & Gap Analysis to turn crawl evidence into priorities.", gapBlocked ?? undefined), evidenceAt: snapshot.gapEvidenceAt?.toISOString() ?? null, action: technicalRequired ? action(technicalStatus === "complete" ? "Review technical fixes" : "Run gap analysis", `/gap-analysis?${projectQuery}`, technicalStatus === "complete" ? "review" : "generate") : null, ai: { ...aiRoles.intelligence, implementation: "AI consolidates aliases and repeated crawl checks, ranks technical fixes, and sends approved work to implementation or publishing." } });
+
+  const contentGapRequired = true;
+  const contentGapStatus = moduleStatus({ required: contentGapRequired, complete: snapshot.gapAnalysisComplete, inProgress: snapshot.gapAnalysisInProgress, failed: snapshot.gapAnalysisFailed, blockedBy: gapBlocked });
+  const contentGapLabel = snapshot.existingWebsite ? "Content Gap Analysis" : "Market & Content Gap Analysis";
+  const contentGapDescription = snapshot.existingWebsite
+    ? "Keyword-to-page mapping, missing intent, weak content, internal links, entities, and conversion gaps."
+    : "Keyword, competitor, market, entity, authority, local, and planned-content gaps before the first website is built.";
+  const contentGapPending = snapshot.existingWebsite
+    ? "Run SEO & Gap Analysis after the crawl."
+    : "Analyze market and content gaps before generating Strategy.";
+  push({ key: "content_gap_analysis", label: contentGapLabel, description: contentGapDescription, status: contentGapStatus, required: contentGapRequired, weight: 12, reason: statusReason(contentGapStatus, "Content, market, and page-planning gaps are available.", contentGapPending, gapBlocked ?? undefined), evidenceAt: snapshot.gapEvidenceAt?.toISOString() ?? null, action: action(contentGapStatus === "complete" ? "Review content gaps" : snapshot.existingWebsite ? "Find content gaps" : "Analyze market gaps", `/gap-analysis?${projectQuery}`, contentGapStatus === "complete" ? "review" : "generate"), ai: { ...aiRoles.intelligence, implementation: snapshot.existingWebsite ? "AI maps keywords and locations to owner pages, finds missing or competing intent, and prepares content, FAQ, schema, and internal-link fixes." : "AI compares approved keywords, markets, competitors, entities, authority, and local readiness, then defines the content and page opportunities the first website must address." } });
+
+  const localAnalysisRequired = locationRequired;
+  const localSeoStatus = moduleStatus({ required: localAnalysisRequired, complete: snapshot.localAnalysisComplete || snapshot.gapAnalysisComplete, inProgress: snapshot.localAnalysisInProgress, failed: snapshot.localAnalysisFailed, blockedBy: snapshot.targetLocationsConfirmed ? null : "Confirm business and target locations first." });
+  push({ key: "local_seo_analysis", label: "Local SEO Analysis", description: "Business location, service areas, GBP readiness, NAP, citations, categories, local pages, schema, and local search intent.", status: localSeoStatus, required: localAnalysisRequired, weight: 8, reason: statusReason(localSeoStatus, "Local visibility and website-planning evidence is available.", "Run the Local SEO audit for this location-dependent project.", "Confirm business and target locations first."), evidenceAt: snapshot.localEvidenceAt?.toISOString() ?? snapshot.gapEvidenceAt?.toISOString() ?? null, action: localAnalysisRequired ? action(localSeoStatus === "complete" ? "Review local plan" : "Run Local SEO audit", `/local-seo?${projectQuery}`, localSeoStatus === "complete" ? "review" : "generate") : null, ai: { ...aiRoles.intelligence, implementation: "AI validates business and service-area facts, checks available profile evidence, and plans local pages and schema without inventing addresses, listings, or reviews." } });
+
+  const citationRequired = true;
+  const citationStatus = moduleStatus({ required: citationRequired, complete: snapshot.citationEvidenceComplete || snapshot.gapAnalysisComplete, inProgress: snapshot.gapAnalysisInProgress, failed: snapshot.gapAnalysisFailed, blockedBy: gapBlocked });
+  push({ key: "ai_citation_analysis", label: snapshot.preLaunchWebsite ? "AI Citation Opportunities" : "AI Citation Analysis", description: snapshot.preLaunchWebsite ? "Planned entities, answer content, source clarity, schema, trust signals, and AI-discoverability requirements for the first website." : "Entity, claim, source, answer structure, trust, schema, and AI-discoverability readiness.", status: citationStatus, required: citationRequired, weight: 8, reason: statusReason(citationStatus, snapshot.preLaunchWebsite ? "AI Citation and trust requirements are available to the Unified Strategy." : "AI citation and trust evidence is available.", snapshot.preLaunchWebsite ? "Identify factual AI Citation and trust opportunities during Market & Content Gap Analysis." : "Run Citation Research or the consolidated gap analysis.", gapBlocked ?? undefined), evidenceAt: snapshot.citationEvidenceAt?.toISOString() ?? snapshot.gapEvidenceAt?.toISOString() ?? null, action: action(citationStatus === "complete" ? "Review citation direction" : snapshot.preLaunchWebsite ? "Plan AI Citation readiness" : "Analyze AI citations", snapshot.preLaunchWebsite ? `/gap-analysis?${projectQuery}` : `/ai-citations?${projectQuery}`, citationStatus === "complete" ? "review" : "generate"), ai: { ...aiRoles.intelligence, implementation: snapshot.preLaunchWebsite ? "AI converts verified business facts, audience questions, trust requirements, and planned page roles into citation-ready content and schema requirements without inventing claims." : "AI validates trust signals against crawl and Website Development records, then prepares factual content, schema, files, and website updates for review." } });
+
+  const authorityRequired = true;
+  const authorityBlockedBy = snapshot.preLaunchWebsite ? gapBlocked : snapshot.siteAnalysisComplete ? null : "Complete Site Analysis first.";
+  const authorityStatus = moduleStatus({ required: authorityRequired, complete: snapshot.authorityEvidenceComplete || snapshot.gapAnalysisComplete, inProgress: snapshot.competitorAnalysisInProgress || snapshot.gapAnalysisInProgress, failed: snapshot.competitorAnalysisFailed || snapshot.gapAnalysisFailed, blockedBy: authorityBlockedBy });
+  push({ key: "authority_analysis", label: snapshot.preLaunchWebsite ? "Authority Opportunities" : "Authority Analysis", description: snapshot.preLaunchWebsite ? "Topical authority clusters, proof assets, expert content, mentions, partnerships, and safe authority requirements for launch." : "Backlinks, mentions, assets, source quality, risk, and realistic authority opportunities.", status: authorityStatus, required: authorityRequired, weight: 8, reason: statusReason(authorityStatus, snapshot.preLaunchWebsite ? "Authority requirements and safe opportunities are available to the Unified Strategy." : "Authority evidence and safe opportunities are available.", snapshot.preLaunchWebsite ? "Identify topical, local, trust, and external authority opportunities before Strategy generation." : "Analyze backlink and authority gaps before Strategy generation.", authorityBlockedBy ?? undefined), evidenceAt: snapshot.authorityEvidenceAt?.toISOString() ?? snapshot.gapEvidenceAt?.toISOString() ?? null, action: action(authorityStatus === "complete" ? "Review authority opportunities" : "Analyze authority", snapshot.preLaunchWebsite ? `/gap-analysis?${projectQuery}` : `/backlinks?${projectQuery}`, authorityStatus === "complete" ? "review" : "generate"), ai: { ...aiRoles.intelligence, implementation: snapshot.preLaunchWebsite ? "AI defines topical and local authority clusters, trust assets, proof requirements, and future earning opportunities that the first website must support." : "AI identifies relevant authority gaps and safe earning opportunities, scores risk, and prepares assets or outreach for approval without spam automation." } });
+
+  for (const item of intelligence) {
+    const freshnessDays = WORKFLOW_EVIDENCE_FRESHNESS_DAYS[item.key] ?? 90;
+    const evidenceAgeDays = item.evidenceAt ? Math.floor((Date.now() - new Date(item.evidenceAt).getTime()) / 86_400_000) : null;
+    if (item.required && ["complete", "approved"].includes(item.status) && evidenceAgeDays != null && evidenceAgeDays > freshnessDays) {
+      item.status = "stale";
+      item.reason = `This evidence is ${evidenceAgeDays} days old and exceeds its ${freshnessDays}-day freshness window. Refresh it or record an authorized waiver before generating an official Strategy.`;
+    }
+    const decision = snapshot.moduleDecisions[item.key];
+    if (decision === "waived" && item.required && !["complete", "approved"].includes(item.status)) {
+      item.status = "waived";
+      item.reason = "An authorized user waived this requirement for the current evidence cycle. The decision remains in the audit history.";
+    } else if (decision === "deferred" && item.required && !["complete", "approved"].includes(item.status)) {
+      item.status = "deferred";
+      item.reason = "This intelligence area is deferred. Strategy remains blocked until it is completed or explicitly waived.";
+    }
+  }
+
+  const requiredIntelligence = intelligence.filter((item) => item.required);
+  const intelligenceReady = requiredIntelligence.every((item) => ["complete", "approved", "waived"].includes(item.status));
+  const intelligenceWeight = requiredIntelligence.reduce((sum, item) => sum + item.weight, 0) || 1;
+  const readinessPercent = Math.round(requiredIntelligence.reduce((sum, item) => sum + (["complete", "approved", "waived"].includes(item.status) ? item.weight : item.status === "in_progress" ? item.weight * 0.5 : 0), 0) / intelligenceWeight * 100);
+  const strategyStale = Boolean(snapshot.latestStrategy && (snapshot.latestStrategy.status === "stale" || (snapshot.latestEvidenceAt && snapshot.latestEvidenceAt.getTime() > snapshot.latestStrategy.createdAt.getTime())));
+  const strategyApproved = snapshot.latestStrategy?.status === "approved" && !strategyStale;
+  const executionPlanStale = Boolean(snapshot.executionTasksExist && snapshot.latestStrategy?.status === "approved" && (snapshot.executionPlanStrategyVersion == null ? snapshot.latestStrategy.approvedAt && snapshot.executionPlanUpdatedAt && snapshot.latestStrategy.approvedAt.getTime() > snapshot.executionPlanUpdatedAt.getTime() : snapshot.executionPlanStrategyVersion !== snapshot.latestStrategyVersion));
+  const implementationComplete = snapshot.executionTasksExist && snapshot.openExecutionTasks === 0 && snapshot.completedExecutionTasks > 0;
+  // The build-ready Website Plan is the governed bridge between an approved
+  // Strategy and every page-level execution action. For an existing website,
+  // this is presented as the SEO Page Map & Content Plan. Prioritize it whenever it
+  // is required and not approved; otherwise users can reach Website
+  // Development first and encounter a circular approval blocker.
+  const websitePlanPrerequisitePending = snapshot.websitePlanRequired && !snapshot.websitePlanApproved;
+  const verifiedExecutionOutcome = snapshot.publishingComplete || implementationComplete;
+  const evidenceAgeDays = snapshot.latestEvidenceAt ? Math.max(0, Math.floor((Date.now() - snapshot.latestEvidenceAt.getTime()) / 86_400_000)) : null;
+  const freshness = evidenceAgeDays === null ? 30 : evidenceAgeDays <= 30 ? 100 : evidenceAgeDays <= 90 ? 75 : evidenceAgeDays <= 180 ? 55 : 30;
+  const independentSignals = requiredIntelligence.filter((item) => ["complete", "approved", "waived"].includes(item.status)).length;
+  const signalCoverage = Math.round(independentSignals / Math.max(1, requiredIntelligence.length) * 100);
+  const dataQualityChecks = [snapshot.projectConfigured, snapshot.situationConfigured, snapshot.discoveryComplete, snapshot.selectedOpportunity, !snapshot.existingWebsite || snapshot.siteAnalysisComplete, !snapshot.localSeoApplicable || snapshot.targetLocationsConfirmed];
+  const dataQuality = Math.round(dataQualityChecks.filter(Boolean).length / dataQualityChecks.length * 100);
+  const conflictPenalty = (strategyStale ? 12 : 0) + (executionPlanStale ? 8 : 0);
+  const overallConfidence = Math.max(0, Math.min(100, Math.round(readinessPercent * 0.35 + freshness * 0.2 + signalCoverage * 0.2 + dataQuality * 0.15 + 10 - conflictPenalty)));
+  const confidence = {
+    overall: overallConfidence,
+    completeness: readinessPercent,
+    freshness,
+    signalCoverage,
+    dataQuality,
+    conflictPenalty,
+    independentSignals,
+    reasons: [
+      snapshot.discoveryComplete ? "Business Discovery is complete." : "Business Discovery is incomplete.",
+      `${independentSignals} of ${requiredIntelligence.length} required independent intelligence signals are complete.`,
+      evidenceAgeDays === null ? "No dated evidence is available yet." : `Latest evidence is ${evidenceAgeDays} day(s) old.`,
+    ],
+    cautions: [strategyStale ? "Strategy predates newer evidence." : null, executionPlanStale ? "Execution Plan predates the approved Strategy." : null, !snapshot.measurementStarted ? "No measured outcome evidence is connected yet." : null].filter((item): item is string => Boolean(item)),
+  };
+
+  const stages: WorkflowStage[] = [
+    { key: "create_project", label: "Create Project", description: "Create the governed project record used by every module.", status: snapshot.projectConfigured ? "complete" : "not_started", reason: snapshot.projectConfigured ? "The project record exists." : "Complete the project setup.", action: action("Review project", `/guided-projects/${snapshot.projectId}`, "review"), ai: aiRoles.setup },
+    { key: "workspace_context", label: "Workspace Context", description: "Apply Personal, Business, Agency, Freelancer, and client ownership rules.", status: snapshot.workspaceConfigured ? "complete" : "needs_attention", reason: snapshot.workspaceConfigured ? "Workspace context and permissions are active." : "Select or repair the workspace context.", action: action("Review workspace", "/workspace", "review"), ai: aiRoles.setup },
+    { key: "project_situation", label: "Project Situation", description: "Determine whether the business and website are existing, new, required, or not required.", status: snapshot.situationConfigured ? "complete" : "needs_attention", reason: snapshot.situationConfigured ? "The project situation controls module applicability." : "Confirm the business and website situation.", action: action("Review project setup", `/guided-projects/${snapshot.projectId}/intake`, "review"), ai: aiRoles.setup },
+    { key: "business_discovery", label: "Business Discovery & Goals", description: "Build the shared Business Brain used by all downstream AI work.", status: snapshot.discoveryComplete ? "complete" : "ready", reason: snapshot.discoveryComplete ? "Business, audience, offer, goals, and core project facts are available." : "Complete the guided intake before collecting intelligence.", action: action(snapshot.discoveryComplete ? "Review Business Brain" : "Complete discovery", `/guided-projects/${snapshot.projectId}/intake`, snapshot.discoveryComplete ? "review" : "generate"), ai: aiRoles.discovery },
+    { key: "intelligence_collection", label: "Required Intelligence Collection", description: "Collect only the evidence required for this project situation, in parallel where possible.", status: intelligenceReady ? "complete" : requiredIntelligence.some((item) => item.status === "in_progress") ? "in_progress" : snapshot.discoveryComplete ? "ready" : "blocked", reason: intelligenceReady ? "Every required intelligence module is complete." : `${requiredIntelligence.filter((item) => !["complete", "approved", "waived"].includes(item.status)).length} required intelligence area(s) still need attention.`, action: intelligence.find((item) => item.required && !["complete", "approved", "waived"].includes(item.status))?.action ?? action("Review intelligence", `/seo-growth?${projectQuery}`, "review"), ai: aiRoles.intelligence, modules: intelligence },
+    ...(snapshot.preLaunchWebsite ? [{ key: "website_strategy", label: "Website Strategy", description: "Define the sitemap, navigation, funnel, page and content clusters, lead capture, conversions, Local SEO, AI Citation, and authority direction before generation.", status: strategyStale ? "stale" as const : snapshot.latestStrategy ? "complete" as const : intelligenceReady ? "ready" as const : "blocked" as const, reason: strategyStale ? "Newer intelligence exists; regenerate the Website Strategy with the Unified Strategy." : snapshot.latestStrategy ? "The current Strategy version contains the saved website decision layer." : intelligenceReady ? "Required pre-launch intelligence is ready for website and cross-platform decisions." : "Complete Opportunity, Market, Keyword, Local, and Content Gap intelligence first.", action: action(snapshot.latestStrategy && !strategyStale ? "Review website direction" : "Generate website strategy", `/strategy?${projectQuery}`, snapshot.latestStrategy && !strategyStale ? "review" : "generate"), ai: aiRoles.strategy }] : []),
+    { key: "unified_strategy", label: "Generate Unified Strategy", description: "Combine Website, SEO, content, Local SEO, AI Citation, authority, conversion, and growth decisions into one ranked plan.", status: strategyStale ? "stale" : snapshot.latestStrategy ? snapshot.latestStrategy.status === "approved" ? "complete" : "ready" : intelligenceReady && snapshot.selectedOpportunity ? "ready" : "blocked", reason: strategyStale ? "Newer project intelligence exists. Regenerate Strategy before relying on it." : snapshot.latestStrategy ? "A Strategy version exists and is ready for review." : intelligenceReady && snapshot.selectedOpportunity ? "All required evidence is ready for AI Strategy generation." : !snapshot.selectedOpportunity ? "Confirm the project direction before generating Strategy." : "Complete all required intelligence first.", action: action(strategyStale || !snapshot.latestStrategy ? "Generate unified strategy" : "Review strategy", `/strategy?${projectQuery}`, strategyStale || !snapshot.latestStrategy ? "generate" : "review"), ai: aiRoles.strategy },
+    { key: "strategy_approval", label: "Strategy Approval", description: "Approve the exact Strategy version that will control execution and website generation.", status: strategyApproved ? "approved" : snapshot.latestStrategy && !strategyStale ? "ready" : "blocked", reason: strategyApproved ? "The current evidence-backed Strategy is approved." : strategyStale ? "Regenerate Strategy from the latest evidence before approval." : snapshot.latestStrategy ? "Review and approve the current Strategy version." : "Generate Strategy first.", action: action(strategyApproved ? "View approved strategy" : "Review and approve", `/strategy?${projectQuery}`, strategyApproved ? "review" : "approve"), ai: aiRoles.approval },
+    { key: "execution_plan", label: "Generate Execution Plan", description: snapshot.preLaunchWebsite ? "Convert the approved Strategy into sequenced website architecture, content, design, form, metadata, schema, review, and publishing work." : "Convert approved decisions into sequenced, actionable work.", status: executionPlanStale ? "stale" : snapshot.executionTasksExist && strategyApproved ? "complete" : strategyApproved ? "ready" : "blocked", reason: executionPlanStale ? "The approved Strategy is newer than this Execution Plan." : snapshot.executionTasksExist && strategyApproved ? "The Execution Plan contains actionable tasks." : strategyApproved ? "Create or synchronize tasks from the approved Strategy." : "Approve the current Strategy first.", action: action(snapshot.executionTasksExist && !executionPlanStale ? "Review Execution Plan" : "Create Execution Plan", `/guided-projects/${snapshot.projectId}?tab=execution#execution-tasks`, snapshot.executionTasksExist ? "review" : "generate"), ai: aiRoles.planning },
+    { key: "ai_execution", label: "AI-Assisted Execution", description: "Create, fix, prepare, and route approved implementation work.", status: snapshot.executionTasksExist ? snapshot.openExecutionTasks > 0 ? "in_progress" : "complete" : "blocked", reason: snapshot.executionTasksExist ? snapshot.openExecutionTasks > 0 ? `${snapshot.openExecutionTasks} execution task(s) remain open.` : "All current execution tasks are complete." : "Create the Execution Plan first.", action: action("Continue execution", `/guided-projects/${snapshot.projectId}?tab=execution#execution-tasks`, "implement"), ai: aiRoles.execution },
+    { key: "publish_implement", label: "Publish / Implement Outcome", description: "Move approved work to a connected destination or verified handoff when the selected execution task requires it.", status: snapshot.publishingComplete ? "complete" : snapshot.publishingStarted ? "in_progress" : snapshot.executionTasksExist ? "not_required" : "blocked", reason: snapshot.publishingComplete ? "At least one approved implementation is live or verified." : snapshot.publishingStarted ? "Publishing or implementation is in progress." : snapshot.executionTasksExist ? "No current task requires a separate publishing workflow; implementation remains an execution outcome." : "Execution work has not been created yet.", action: snapshot.publishingStarted ? action("Open publishing", `/ai-content?${projectQuery}#publishing`, "implement") : null, ai: aiRoles.publishing },
+    { key: "measurement", label: "Measurement", description: "Measure visibility, traffic, engagement, leads, authority, and outcomes tied to executed work.", status: snapshot.measurementComplete ? "complete" : snapshot.measurementStarted ? "in_progress" : verifiedExecutionOutcome ? "ready" : "blocked", reason: snapshot.measurementComplete ? "Measured results are available." : snapshot.measurementStarted ? "Measurement checkpoints are active." : verifiedExecutionOutcome ? "Create baselines and measurement checkpoints for the implemented work." : "Measurement begins after an execution outcome is verified.", action: action("Review measurement", `/growth?${projectQuery}`, "review"), ai: aiRoles.measurement },
+    { key: "growth_blueprint", label: "Growth Blueprint", description: "Activate the living cross-channel growth plan after execution and measurement begin.", status: snapshot.growthBlueprintStatus === "approved" || snapshot.growthBlueprintStatus === "active" ? "complete" : snapshot.growthBlueprintStatus === "needs_refresh" ? "stale" : snapshot.measurementStarted || snapshot.publishingComplete ? "ready" : "blocked", reason: snapshot.growthBlueprintStatus === "needs_refresh" ? "New Strategy or measurement evidence requires a Blueprint refresh." : snapshot.growthBlueprintStatus ? "A Growth Blueprint exists for continuous optimization." : "The Blueprint activates when execution and measurement provide a real baseline.", action: action(snapshot.growthBlueprintStatus ? "Review Growth Blueprint" : "Generate Growth Blueprint", `/growth?${projectQuery}`, snapshot.growthBlueprintStatus ? "review" : "generate"), ai: aiRoles.growth },
+    { key: "next_best_action", label: "Next Best Action & Continuous Improvement", description: "Use workflow state and measured evidence to recommend the next valid improvement.", status: snapshot.nextBestActionExists && snapshot.measurementStarted ? "in_progress" : snapshot.measurementStarted ? "ready" : "blocked", reason: snapshot.nextBestActionExists ? "A workflow-valid Next Best Action is available." : snapshot.measurementStarted ? "AI can now rank the next improvement from measured evidence." : "Start measurement before continuous optimization.", action: action("Review Next Best Action", `/growth?${projectQuery}`, "review"), ai: aiRoles.growth },
+  ];
+
+  const incompleteIntelligence = intelligence.find((item) => item.required && !["complete", "approved", "waived"].includes(item.status));
+  let state: WorkflowState;
+  let nextBestAction: ProjectWorkflowControllerView["nextBestAction"];
+  if (!snapshot.discoveryComplete) {
+    state = "discovery";
+    nextBestAction = { title: "Complete Business Discovery", reason: "Every AI recommendation and implementation depends on verified business context.", expectedResult: "A reusable Business Brain for all modules.", action: action("Continue discovery", `/guided-projects/${snapshot.projectId}/intake`, "generate"), aiWill: ["Reuse workspace and client defaults", "Summarize business, audience, offer, goals, and assets", "Identify missing or conflicting facts"], userWill: "Confirm the factual profile.", confidence: overallConfidence, explainability: "This is first because all research, strategy, content, and fixes need verified business facts." };
+  } else if (!snapshot.selectedOpportunity) {
+    state = "intelligence_collection";
+    nextBestAction = { title: "Create and select the project opportunity", reason: "The business intake is complete, but the project direction has not been generated and selected yet.", expectedResult: "One approved opportunity that guides keyword, competitor, website, and market research.", action: action("Generate Opportunities", `/opportunities?${projectQuery}`, "generate"), aiWill: ["Evaluate the Business Brain, goals, audience, offers, markets, and existing assets", "Generate and rank practical opportunities with reasons, confidence, impact, and effort", "Use the selected direction to focus every downstream intelligence module"], userWill: "Review the AI suggestions and select the direction to pursue.", confidence: overallConfidence, explainability: "Opportunity selection comes before Keyword Intelligence so research follows the chosen business direction instead of producing disconnected keyword data." };
+  } else if (!intelligenceReady && incompleteIntelligence) {
+    state = "intelligence_collection";
+    nextBestAction = { title: incompleteIntelligence.label, reason: incompleteIntelligence.reason, expectedResult: `Verified ${incompleteIntelligence.label.toLowerCase()} available to the Unified Strategy.`, action: incompleteIntelligence.action ?? action("Review intelligence", `/seo-growth?${projectQuery}`, "review"), aiWill: [incompleteIntelligence.ai.suggestion, incompleteIntelligence.ai.implementation], userWill: incompleteIntelligence.ai.humanRole, confidence: overallConfidence, explainability: `${incompleteIntelligence.label} is the highest-weight required evidence that is not complete. Completing it increases Strategy confidence and unlocks dependent analysis.` };
+  } else if (!strategyApproved) {
+    state = "strategy_ready";
+    nextBestAction = { title: strategyStale ? "Regenerate Strategy from latest evidence" : snapshot.latestStrategy ? "Review and approve Unified Strategy" : "Generate Unified Strategy", reason: strategyStale ? "The evidence changed after the current Strategy was generated." : "Required intelligence is complete, so AI can now make evidence-backed decisions.", expectedResult: "One approved plan controlling Website, SEO, Local, Citations, Authority, Lead Magnets, Social, Growth, and Publishing.", action: action(strategyStale || !snapshot.latestStrategy ? "Generate Strategy" : "Review Strategy", `/strategy?${projectQuery}`, strategyStale || !snapshot.latestStrategy ? "generate" : "approve"), aiWill: [aiRoles.strategy.suggestion, aiRoles.strategy.implementation], userWill: snapshot.latestStrategy && !strategyStale ? aiRoles.approval.humanRole : aiRoles.strategy.humanRole, confidence: overallConfidence, explainability: strategyStale ? "The current Strategy was created before newer evidence, so downstream work would otherwise use an outdated decision set." : "All applicable intelligence requirements are complete, so Strategy is the next governed decision layer." };
+  } else if (!snapshot.executionTasksExist || executionPlanStale) {
+    state = snapshot.executionPlanExists ? "execution_planning" : "strategy_approved";
+    nextBestAction = { title: executionPlanStale ? "Refresh the Execution Plan" : "Create the Execution Plan", reason: executionPlanStale ? "The plan predates the approved Strategy." : "The Strategy is approved and can now be converted into governed work.", expectedResult: "A sequenced plan with dependencies, approvals, destinations, and expected outcomes.", action: action(executionPlanStale ? "Refresh Execution Plan" : "Create Execution Plan", `/guided-projects/${snapshot.projectId}?tab=execution#execution-tasks`, "generate"), aiWill: [aiRoles.planning.suggestion, aiRoles.planning.implementation], userWill: aiRoles.planning.humanRole, confidence: overallConfidence, explainability: "Execution must use the exact approved Strategy version; AI can now safely translate decisions into tasks." };
+  } else if (snapshot.openExecutionTasks > 0 || (snapshot.publishingStarted && !snapshot.publishingComplete)) {
+    state = "execution";
+    nextBestAction = websitePlanPrerequisitePending
+      ? {
+        title: snapshot.preLaunchWebsite
+          ? snapshot.websitePlanTaskStatus === "ready" ? "Create and approve the Website Plan" : "Review and approve the Website Plan"
+          : snapshot.websitePlanTaskStatus === "ready" ? "Create and approve the SEO Page Map & Content Plan" : "Review and approve the SEO Page Map & Content Plan",
+        reason: snapshot.preLaunchWebsite
+          ? "Website generation depends on one approved, build-ready plan derived from the Website and Unified Strategy."
+          : "Website and page-level execution depends on one approved page-to-intent plan before Website Development can import pages or prepare changes.",
+        expectedResult: snapshot.preLaunchWebsite
+          ? "One approved Website Plan covering sitemap, navigation, pages, content briefs, conversion paths, Local SEO, AI Citation, authority, internal links, schema, media, and publishing requirements."
+          : "One approved page map connecting canonical pages, keywords, search intent, conversion roles, content requirements, internal links, Local SEO, and citation requirements.",
+        action: action(snapshot.preLaunchWebsite ? snapshot.websitePlanTaskStatus === "ready" ? "Create Website Plan" : "Review Website Plan" : snapshot.websitePlanTaskStatus === "ready" ? "Create SEO Plan" : "Review SEO Plan", `/seo-page-map?${projectQuery}`, snapshot.websitePlanTaskStatus === "ready" ? "generate" : "approve"),
+        aiWill: [snapshot.preLaunchWebsite ? "Translate the approved Website and Unified Strategy into a build-ready implementation plan" : "Combine Keyword Intelligence, Site Analysis, Gap Analysis, the approved Strategy, and funnel decisions", "Prepare page ownership, URLs, briefs, CTAs, links, Local SEO, AI Citation, authority, schema, media, and publishing requirements for review"],
+        userWill: "Review and approve the exact Website Plan before implementation begins.",
+        confidence: snapshot.activeNextBestAction?.confidence ?? overallConfidence,
+        explainability: "This prerequisite is shown first because the selected Website action cannot execute safely until every canonical page has one approved intent and conversion role. The original Strategy action remains queued and becomes actionable immediately after approval.",
+      }
+      : snapshot.activeNextBestAction
+      ? { title: snapshot.activeNextBestAction.title, reason: snapshot.activeNextBestAction.reason, expectedResult: snapshot.activeNextBestAction.expectedImpact, action: action("Continue Next Best Action", snapshot.activeNextBestAction.destinationUrl ?? `/guided-projects/${snapshot.projectId}?tab=execution#execution-tasks`, "implement"), aiWill: ["Preserve the approved decision evidence and success measure", aiRoles.execution.implementation], userWill: aiRoles.execution.humanRole, confidence: snapshot.activeNextBestAction.confidence, explainability: `The Strategy Decision Engine selected this action across all valid modules. ${snapshot.openExecutionTasks} approved or dependency-ready task(s) remain in the background.` }
+      : { title: "Continue the highest-priority valid task", reason: snapshot.openExecutionTasks > 0 ? `${snapshot.openExecutionTasks} approved or dependency-ready task(s) remain.` : "Execution outputs are ready for implementation or publishing.", expectedResult: "An implemented, approved, or publishing-ready project improvement.", action: action("Continue execution", `/guided-projects/${snapshot.projectId}?tab=execution#execution-tasks`, "implement"), aiWill: [aiRoles.execution.suggestion, aiRoles.execution.implementation], userWill: aiRoles.execution.humanRole, confidence: overallConfidence, explainability: "The controller prioritizes dependency-ready work from the approved plan and does not route around approvals or provider requirements." };
+  } else if (!snapshot.measurementStarted) {
+    state = "measurement";
+    nextBestAction = { title: "Start measurement", reason: "Implemented work needs a baseline before AI can recommend the next improvement.", expectedResult: "Strategy-linked KPIs and scheduled checkpoints.", action: action("Set up measurement", `/growth?${projectQuery}`, "generate"), aiWill: [aiRoles.measurement.suggestion, aiRoles.measurement.implementation], userWill: aiRoles.measurement.humanRole, confidence: overallConfidence, explainability: "Without a measured baseline, AI cannot distinguish a real improvement from an assumption." };
+  } else {
+    state = snapshot.growthBlueprintStatus ? "continuous_growth" : "measurement";
+    nextBestAction = { title: snapshot.growthBlueprintStatus ? "Review the Next Best Action" : "Activate the Growth Blueprint", reason: "Execution and measurement evidence are now available for continuous optimization.", expectedResult: "A ranked experiment or improvement based on measured evidence.", action: action(snapshot.growthBlueprintStatus ? "Open Next Best Action" : "Generate Growth Blueprint", `/growth?${projectQuery}`, snapshot.growthBlueprintStatus ? "review" : "generate"), aiWill: [aiRoles.growth.suggestion, aiRoles.growth.implementation], userWill: aiRoles.growth.humanRole, confidence: overallConfidence, explainability: "Measured outcomes now provide the evidence needed to rank the next experiment instead of repeating static recommendations." };
+  }
+
+  const blockers = intelligence.filter((item) => item.required && ["blocked", "failed", "not_started", "needs_attention"].includes(item.status)).map((item) => ({ key: item.key, title: item.label, reason: item.reason, action: item.action }));
+  if (strategyStale) blockers.push({ key: "strategy_stale", title: "Strategy needs regeneration", reason: "Newer intelligence exists than the current Strategy version.", action: action("Regenerate Strategy", `/strategy?${projectQuery}`, "generate") });
+  if (executionPlanStale) blockers.push({ key: "execution_plan_stale", title: "Execution Plan needs refresh", reason: "The approved Strategy is newer than the current plan.", action: action("Refresh Execution Plan", `/guided-projects/${snapshot.projectId}?tab=execution#execution-tasks`, "generate") });
+  if (websitePlanPrerequisitePending) blockers.push({ key: "website_plan_required", title: snapshot.preLaunchWebsite ? "Website Plan approval required" : "SEO Page Map approval required", reason: snapshot.preLaunchWebsite ? "Website creation depends on an approved build-ready plan derived from the Website and Unified Strategy." : "Website and page-level execution depends on an approved page-to-intent and conversion plan.", action: action(snapshot.preLaunchWebsite ? snapshot.websitePlanTaskStatus === "ready" ? "Create Website Plan" : "Review Website Plan" : snapshot.websitePlanTaskStatus === "ready" ? "Create SEO Plan" : "Review SEO Plan", `/seo-page-map?${projectQuery}`, snapshot.websitePlanTaskStatus === "ready" ? "generate" : "approve") });
+
+  const stageWeights: Record<string, number> = { create_project: 4, workspace_context: 3, project_situation: 3, business_discovery: 10, intelligence_collection: 25, unified_strategy: 10, strategy_approval: 8, execution_plan: 8, ai_execution: 10, publish_implement: 7, measurement: 5, growth_blueprint: 4, next_best_action: 3 };
+  const overallProgressPercent = Math.round(stages.reduce((sum, stage) => sum + (["complete", "approved"].includes(stage.status) ? stageWeights[stage.key] ?? 0 : stage.status === "in_progress" ? (stageWeights[stage.key] ?? 0) * 0.5 : 0), 0));
+  return { version: WORKFLOW_CONTROLLER_VERSION, projectId: snapshot.projectId, state, stateLabel: stateLabels[state], readinessPercent, overallProgressPercent, intelligenceReady, strategyStale, executionPlanStale, businessBrainVersion: 0, evidenceVersion: 0, strategyVersion: snapshot.latestStrategyVersion, executionPlanVersion: snapshot.executionPlanVersion, executionPlanStrategyVersion: snapshot.executionPlanStrategyVersion, growthBlueprintVersion: snapshot.growthBlueprintVersion, confidence, blockers, nextBestAction, stages, intelligenceModules: intelligence, updatedAt: new Date().toISOString() };
+}
+
+export async function getProjectWorkflowController(projectId: string): Promise<ProjectWorkflowControllerView | null> {
+  const project = await prisma.project.findUnique({
+    where: { id: projectId },
+    include: {
+      client: { select: { id: true } },
+      agencyClient: { select: { name: true } },
+      businessProfile: true,
+      intakeAnswers: { orderBy: { updatedAt: "desc" }, take: 100, select: { questionKey: true, questionText: true, answerValue: true, moduleContext: true, updatedAt: true } },
+      keywordGroups: { orderBy: { updatedAt: "desc" }, select: { status: true, category: true, keywords: true, updatedAt: true } },
+      keywordResearchRuns: { orderBy: { createdAt: "desc" }, select: { id: true, seedKeyword: true, status: true, keywordCount: true, competitorCount: true, locationName: true, languageCode: true, device: true, createdAt: true, completedAt: true } },
+      opportunities: { orderBy: { createdAt: "desc" }, take: 10, select: { id: true, status: true, name: true, targetAudience: true, problemSolved: true, recommendedOffer: true, businessModel: true } },
+      strategyPlans: { orderBy: { createdAt: "desc" }, take: 1, select: { id: true, version: true, status: true, createdAt: true, approvedAt: true, businessBrainVersion: true, evidenceVersion: true } },
+      executionPlans: { where: { status: "active" }, orderBy: { updatedAt: "desc" }, take: 1, select: { id: true, planVersion: true, strategyVersion: true, businessBrainVersion: true, evidenceVersion: true, updatedAt: true } },
+      executionTasks: { where: { status: { notIn: ["cancelled", "canceled"] } }, select: { id: true, title: true, actionButtonLabel: true, status: true, moduleName: true, approvalSnapshotJson: true, updatedAt: true, publishedAt: true, completedAt: true } },
+      websiteBuilds: { orderBy: { updatedAt: "desc" }, take: 1, select: { id: true, status: true, deployments: { orderBy: { createdAt: "desc" }, take: 5, select: { status: true, mode: true, completedAt: true } } } },
+      websitePublications: { orderBy: { createdAt: "desc" }, take: 10, select: { status: true, mode: true, target: true, publishedAt: true, completedAt: true } },
+      website: { select: { id: true, rootUrl: true, crawlJobs: { orderBy: { createdAt: "desc" }, take: 10, select: { status: true, pagesCrawled: true, createdAt: true, completedAt: true } } } },
+      gapAnalysisRuns: { orderBy: { createdAt: "desc" }, take: 3, select: { status: true, createdAt: true, completedAt: true } },
+      competitiveIntelligenceRuns: { orderBy: { createdAt: "desc" }, take: 5, select: { status: true, createdAt: true, completedAt: true } },
+      localSeoAuditJobs: { orderBy: { createdAt: "desc" }, take: 5, select: { status: true, createdAt: true, completedAt: true } },
+      citationReadinessFindings: { orderBy: { updatedAt: "desc" }, take: 1, select: { updatedAt: true } },
+      authorityOpportunities: { orderBy: { updatedAt: "desc" }, take: 1, select: { updatedAt: true } },
+      measurementCheckpoints: { orderBy: { updatedAt: "desc" }, take: 20, select: { status: true, updatedAt: true, completedAt: true } },
+      growthBlueprint: { select: { status: true, currentVersion: true, businessBrainVersion: true, evidenceVersion: true, updatedAt: true } },
+      nextBestActions: { where: { status: { in: ["proposed", "recommended", "selected"] } }, orderBy: [{ priorityScore: "desc" }, { createdAt: "desc" }], take: 1, select: { id: true, title: true, reasoningSummary: true, expectedImpact: true, confidence: true, route: true, evidenceJson: true, status: true } },
+      workflowEvents: { where: { eventType: { in: ["module.waived", "module.deferred", "module.resumed"] } }, orderBy: { occurredAt: "desc" }, select: { eventType: true, sourceId: true } },
+    },
+  });
+  if (!project) return null;
+
+  const approvedKeywordList = approvedKeywordEntries(project.keywordGroups);
+  const approvedKeywordSet = new Set(approvedKeywordList.map(normalizeKeywordPhrase));
+  const governedKeywordRuns = project.keywordResearchRuns.filter((run) => approvedKeywordSet.has(normalizeKeywordPhrase(run.seedKeyword)));
+  const latestKeywordRun = governedKeywordRuns[0] ?? null;
+  const completedKeywordRun = governedKeywordRuns.find((run) => run.status === "completed") ?? null;
+  const latestCrawl = project.website?.crawlJobs[0] ?? null;
+  const completedCrawl = project.website?.crawlJobs.find((crawl) => crawl.status === "completed" && crawl.pagesCrawled > 0) ?? null;
+  const latestGap = project.gapAnalysisRuns[0] ?? null;
+  const completedGap = project.gapAnalysisRuns.find((run) => run.status === "completed") ?? null;
+  const latestCompetitor = project.competitiveIntelligenceRuns[0] ?? null;
+  const completedCompetitor = project.competitiveIntelligenceRuns.find((run) => run.status === "completed") ?? null;
+  const latestLocal = project.localSeoAuditJobs[0] ?? null;
+  const completedLocal = project.localSeoAuditJobs.find((run) => run.status === "completed") ?? null;
+  const latestStrategy = project.strategyPlans[0] ?? null;
+  const activePlan = project.executionPlans[0] ?? null;
+  const terminalStatuses = new Set(["completed", "skipped", "published", "verified"]);
+  const openTasks = project.executionTasks.filter((task) => !terminalStatuses.has(task.status));
+  const completedTasks = project.executionTasks.filter((task) => terminalStatuses.has(task.status));
+  const websitePlanTask = project.executionTasks.find(isWebsitePlanTask) ?? null;
+  const websitePlanSnapshot = websitePlanTask?.approvalSnapshotJson && typeof websitePlanTask.approvalSnapshotJson === "object" && !Array.isArray(websitePlanTask.approvalSnapshotJson)
+    ? websitePlanTask.approvalSnapshotJson as Record<string, unknown>
+    : {};
+  const websitePlanContent = websitePlanSnapshot.contentPlan && typeof websitePlanSnapshot.contentPlan === "object" && !Array.isArray(websitePlanSnapshot.contentPlan)
+    ? websitePlanSnapshot.contentPlan as Record<string, unknown>
+    : {};
+  const selectedActionRequiresWebsitePlan = Boolean(project.nextBestActions[0]
+    && (project.nextBestActions[0].route === "website"
+      || project.nextBestActions[0].evidenceJson && typeof project.nextBestActions[0].evidenceJson === "object" && !Array.isArray(project.nextBestActions[0].evidenceJson) && /\/site-architect(?:\?|$)/i.test(String((project.nextBestActions[0].evidenceJson as Record<string, unknown>).destinationUrl ?? ""))));
+  const websitePlanApproved = Boolean(websitePlanTask
+    && ["completed", "approved", "ready_to_publish"].includes(websitePlanTask.status)
+    && Object.keys(websitePlanContent).length);
+  const publishingTasks = project.executionTasks.filter((task) => task.moduleName === "publishing" || task.publishedAt);
+  const publishedTasks = project.executionTasks.filter((task) => Boolean(task.publishedAt) || ["published", "verified"].includes(task.status));
+  const targetLocations = Array.isArray(project.targetLocations) ? project.targetLocations.map(String).filter(Boolean) : [];
+  const goalText = [project.projectType, project.primaryGoal, project.niche, project.businessLocation, ...(Array.isArray(project.secondaryGoals) ? project.secondaryGoals.map(String) : [])].filter(Boolean).join(" ").toLowerCase();
+  const websiteLaunched = Boolean(
+    project.websiteBuilds[0]?.deployments.some((deployment) => ["completed", "success", "success_with_warnings"].includes(deployment.status) && deployment.mode !== "draft")
+    || project.websitePublications.some((publication) => publication.status === "published" || (publication.status === "completed" && ["publish", "sftp", "live"].includes(publication.mode))),
+  );
+  const applicability = resolveProjectApplicability({ projectType: project.projectType, websiteStatus: project.websiteStatus, hasWebsite: Boolean(project.websiteId || project.websiteUrl || project.website?.rootUrl), websiteLaunched, targetMarketCount: targetLocations.length, contextText: goalText });
+  const localSeoApplicable = applicability.localSeo;
+  const existingWebsite = applicability.existingWebsite;
+  const preLaunchWebsite = applicability.preLaunchWebsite;
+  const businessLocationJson = project.businessLocationJson && typeof project.businessLocationJson === "object" && !Array.isArray(project.businessLocationJson)
+    ? project.businessLocationJson as Partial<BusinessLocation>
+    : null;
+  const keywordAnalysisLocations = projectAnalysisLocationLabels(project.targetLocations, businessLocationJson);
+  const incompleteKeywordResearchChecks = incompleteApprovedKeywordResearchChecks(project.keywordGroups, governedKeywordRuns, keywordAnalysisLocations);
+  const missingKeywordResearch = missingApprovedKeywordResearch(project.keywordGroups, governedKeywordRuns, keywordAnalysisLocations);
+  const failedKeywordResearchChecks = unresolvedApprovedKeywordResearchChecks(project.keywordGroups, governedKeywordRuns);
+  const latestGovernedKeywordChecks = latestKeywordResearchChecks(governedKeywordRuns);
+  const activeKeywordResearchChecks = [...latestGovernedKeywordChecks.values()].filter((run) => ["queued", "running", "in_progress"].includes(run.status));
+  const failedKeywordResearch = [...new Set(failedKeywordResearchChecks.map((run) => run.seedKeyword ?? "").filter(Boolean))];
+  const approvedKeywords = approvedKeywordList.length > 0 && missingKeywordResearch.length === 0;
+  const keywordEvidenceAt = newest(
+    ...project.keywordGroups.filter((group) => group.status === "approved").map((group) => group.updatedAt),
+    completedKeywordRun?.completedAt ?? completedKeywordRun?.createdAt,
+  );
+  const siteEvidenceAt = completedCrawl?.completedAt ?? completedCrawl?.createdAt ?? null;
+  const gapEvidenceAt = completedGap?.completedAt ?? completedGap?.createdAt ?? null;
+  const localEvidenceAt = completedLocal?.completedAt ?? completedLocal?.createdAt ?? null;
+  const gapAnalysisCurrent = Boolean(completedGap
+    && (!keywordEvidenceAt || (gapEvidenceAt?.getTime() ?? 0) >= keywordEvidenceAt.getTime())
+    && (!siteEvidenceAt || (gapEvidenceAt?.getTime() ?? 0) >= siteEvidenceAt.getTime()));
+  const localAnalysisCurrent = Boolean(completedLocal
+    && (!keywordEvidenceAt || (localEvidenceAt?.getTime() ?? 0) >= keywordEvidenceAt.getTime()));
+  const competitorEvidenceAt = completedCompetitor?.completedAt ?? completedCompetitor?.createdAt ?? null;
+  const citationEvidenceAt = project.citationReadinessFindings[0]?.updatedAt ?? null;
+  const authorityEvidenceAt = project.authorityOpportunities[0]?.updatedAt ?? null;
+  const citationEvidenceCurrent = Boolean(gapAnalysisCurrent || (citationEvidenceAt && (!keywordEvidenceAt || citationEvidenceAt.getTime() >= keywordEvidenceAt.getTime())));
+  const authorityEvidenceCurrent = Boolean(gapAnalysisCurrent || (authorityEvidenceAt && (!keywordEvidenceAt || authorityEvidenceAt.getTime() >= keywordEvidenceAt.getTime())));
+  const competitorComplete = Boolean(
+    gapAnalysisCurrent
+    || (completedCompetitor && (!keywordEvidenceAt || (competitorEvidenceAt?.getTime() ?? 0) >= keywordEvidenceAt.getTime()))
+    || (approvedKeywords && governedKeywordRuns.some((run) => run.status === "completed" && run.competitorCount > 0)),
+  );
+  const latestEvidenceAt = newest(
+    project.businessProfile?.updatedAt,
+    project.intakeAnswers[0]?.updatedAt,
+    keywordEvidenceAt,
+    siteEvidenceAt,
+    gapEvidenceAt,
+    completedCompetitor?.completedAt ?? completedCompetitor?.createdAt,
+    completedLocal?.completedAt ?? completedLocal?.createdAt,
+    project.citationReadinessFindings[0]?.updatedAt,
+    project.authorityOpportunities[0]?.updatedAt,
+  );
+  const projectConfigured = Boolean(project.name && project.projectType && project.primaryGoal);
+  const situationConfigured = Boolean(project.websiteStatus && (project.websiteStatus !== "existing_website" || existingWebsite));
+  const discoveryComplete = Boolean(project.businessProfile && project.intakeAnswers.length && (project.businessName || project.agencyClient?.name || project.name) && project.niche && project.primaryGoal);
+  const moduleDecisions: Record<string, "waived" | "deferred" | null> = {};
+  for (const event of project.workflowEvents) {
+    if (!event.sourceId || event.sourceId in moduleDecisions) continue;
+    moduleDecisions[event.sourceId] = event.eventType === "module.waived" ? "waived" : event.eventType === "module.deferred" ? "deferred" : null;
+  }
+
+  const evidenceSnapshot: WorkflowEvidenceSnapshot = {
+    projectId: project.id,
+    projectConfigured,
+    workspaceConfigured: Boolean(project.clientId),
+    situationConfigured,
+    discoveryComplete,
+    existingWebsite,
+    preLaunchWebsite,
+    localSeoApplicable,
+    targetLocationsConfirmed: targetLocations.length > 0,
+    approvedKeywords,
+    approvedKeywordCount: approvedKeywordList.length,
+    missingKeywordResearchCount: missingKeywordResearch.length,
+    missingKeywordResearchCheckCount: incompleteKeywordResearchChecks.length,
+    missingKeywordResearchKeywords: missingKeywordResearch,
+    failedKeywordResearchKeywords: failedKeywordResearch,
+    failedKeywordResearchCheckCount: failedKeywordResearchChecks.length,
+    keywordResearchActiveCheckCount: activeKeywordResearchChecks.length,
+    keywordResearchInProgress: activeKeywordResearchChecks.length > 0,
+    keywordResearchFailed: failedKeywordResearchChecks.length > 0 && activeKeywordResearchChecks.length === 0,
+    keywordEvidenceAt,
+    siteAnalysisComplete: !existingWebsite || Boolean(completedCrawl),
+    siteAnalysisInProgress: Boolean(latestCrawl && ["queued", "running"].includes(latestCrawl.status)),
+    siteAnalysisFailed: latestCrawl?.status === "failed",
+    siteEvidenceAt,
+    // A new website has no crawl-backed technical gaps yet, but it still needs
+    // a completed pre-website market/content gap decision before Strategy.
+    gapAnalysisComplete: gapAnalysisCurrent,
+    gapAnalysisInProgress: Boolean(latestGap && ["queued", "running", "in_progress"].includes(latestGap.status)),
+    gapAnalysisFailed: latestGap?.status === "failed",
+    gapEvidenceAt,
+    localAnalysisComplete: !localSeoApplicable || localAnalysisCurrent || gapAnalysisCurrent,
+    localAnalysisInProgress: Boolean(latestLocal && ["queued", "running", "in_progress"].includes(latestLocal.status)),
+    localAnalysisFailed: latestLocal?.status === "failed",
+    localEvidenceAt,
+    competitorAnalysisComplete: competitorComplete,
+    competitorAnalysisInProgress: Boolean(latestCompetitor && ["queued", "running", "in_progress"].includes(latestCompetitor.status)),
+    competitorAnalysisFailed: latestCompetitor?.status === "failed",
+    competitorEvidenceAt: completedCompetitor?.completedAt ?? completedCompetitor?.createdAt ?? null,
+    citationEvidenceComplete: citationEvidenceCurrent,
+    citationEvidenceAt,
+    authorityEvidenceComplete: authorityEvidenceCurrent,
+    authorityEvidenceAt,
+    selectedOpportunity: project.opportunities.some((item) => ["selected", "confirmed", "approved"].includes(item.status)),
+    latestStrategy: latestStrategy ? { id: latestStrategy.id, status: latestStrategy.status, createdAt: latestStrategy.createdAt, approvedAt: latestStrategy.approvedAt } : null,
+    latestEvidenceAt,
+    executionPlanExists: Boolean(activePlan),
+    executionTasksExist: project.executionTasks.some((task) => !["core_intake", "opportunity", "strategy", "strategy_approval"].includes(task.moduleName)),
+    executionPlanUpdatedAt: newest(activePlan?.updatedAt, ...project.executionTasks.map((task) => task.updatedAt)),
+    openExecutionTasks: openTasks.length,
+    completedExecutionTasks: completedTasks.length,
+    websitePlanRequired: Boolean(websitePlanTask || selectedActionRequiresWebsitePlan),
+    websitePlanApproved,
+    websitePlanTaskStatus: websitePlanTask?.status ?? null,
+    publishingStarted: publishingTasks.length > 0 || project.websitePublications.length > 0,
+    publishingComplete: publishedTasks.length > 0 || websiteLaunched,
+    measurementStarted: project.measurementCheckpoints.length > 0,
+    measurementComplete: project.measurementCheckpoints.some((checkpoint) => checkpoint.status === "completed"),
+    growthBlueprintStatus: project.growthBlueprint?.status ?? null,
+    nextBestActionExists: project.nextBestActions.length > 0,
+    activeNextBestAction: project.nextBestActions[0] ? {
+      title: project.nextBestActions[0].title,
+      reason: project.nextBestActions[0].reasoningSummary,
+      expectedImpact: project.nextBestActions[0].expectedImpact,
+      confidence: project.nextBestActions[0].confidence,
+      route: project.nextBestActions[0].route,
+      destinationUrl: project.nextBestActions[0].evidenceJson && typeof project.nextBestActions[0].evidenceJson === "object" && !Array.isArray(project.nextBestActions[0].evidenceJson) && typeof (project.nextBestActions[0].evidenceJson as Record<string, unknown>).destinationUrl === "string" ? String((project.nextBestActions[0].evidenceJson as Record<string, unknown>).destinationUrl) : null,
+      status: project.nextBestActions[0].status,
+    } : null,
+    latestStrategyVersion: latestStrategy?.version ?? 0,
+    executionPlanVersion: activePlan?.planVersion ?? null,
+    executionPlanStrategyVersion: activePlan?.strategyVersion ?? null,
+    growthBlueprintVersion: project.growthBlueprint?.currentVersion ?? 0,
+    moduleDecisions,
+  };
+  const view = resolveProjectWorkflow(evidenceSnapshot);
+  const businessBrainSnapshot = {
+    project: {
+      name: project.name,
+      projectType: project.projectType,
+      websiteStatus: project.websiteStatus,
+      businessName: project.businessName || project.agencyClient?.name || project.name,
+      websiteUrl: project.websiteUrl,
+      niche: project.niche,
+      businessLocation: project.businessLocation,
+      targetLocations: project.targetLocations,
+      primaryGoal: project.primaryGoal,
+      secondaryGoals: project.secondaryGoals,
+      competitors: project.competitors,
+      brandVoice: project.brandVoice,
+      preferredOutputs: project.preferredOutputs,
+      preferredPublishingMethod: project.preferredPublishingMethod,
+      analyticsPlatforms: project.analyticsPlatforms,
+      cmsPlatform: project.cmsPlatform,
+      targetLaunchTimeline: project.targetLaunchTimeline,
+      website: project.website ? { id: project.website.id, rootUrl: project.website.rootUrl } : project.websiteUrl ? { id: project.websiteId, rootUrl: project.websiteUrl } : null,
+    },
+    businessProfile: project.businessProfile ? {
+      businessSummary: project.businessProfile.businessSummary,
+      targetAudience: project.businessProfile.targetAudience,
+      offerSummary: project.businessProfile.offerSummary,
+      businessModel: project.businessProfile.businessModel,
+      strengths: project.businessProfile.strengths,
+      constraints: project.businessProfile.constraints,
+      tonePreference: project.businessProfile.tonePreference,
+      intelligence: project.businessProfile.intelligenceJson,
+    } : null,
+    intakeAnswers: project.intakeAnswers.map((answer) => ({ key: answer.questionKey, question: answer.questionText, value: answer.answerValue, module: answer.moduleContext })),
+    approvedStrategicDecision: project.opportunities.find((item) => ["selected", "confirmed", "approved"].includes(item.status)) ?? null,
+    workspaceContext: { clientId: project.clientId, agencyClientName: project.agencyClient?.name ?? null },
+  };
+  const analyticsPlatforms = Array.isArray(project.analyticsPlatforms) ? project.analyticsPlatforms.map(String).filter(Boolean) : [];
+  const latestMeasurementAt = project.measurementCheckpoints[0]?.updatedAt ?? null;
+  const evidenceSources = [
+    ...view.intelligenceModules.map((item) => ({ key: item.key, status: item.status, required: item.required, evidenceAt: item.evidenceAt, reason: item.reason })),
+    { key: "analytics_and_behavior", status: analyticsPlatforms.length ? "deferred" : "not_required", required: false, evidenceAt: null, reason: analyticsPlatforms.length ? `Analytics platform intent is recorded (${analyticsPlatforms.join(", ")}), but measured behaviour is optional for the initial Strategy until connected.` : "No analytics source is connected; this is optional for the initial Strategy and becomes important during measurement." },
+    { key: "crm_pipeline_revenue", status: "not_required", required: false, evidenceAt: null, reason: "CRM, pipeline, and revenue evidence is optional for the initial Strategy unless a permitted integration is connected." },
+    { key: "experiment_and_historical_performance", status: latestMeasurementAt ? "complete" : "deferred", required: false, evidenceAt: latestMeasurementAt?.toISOString() ?? null, reason: latestMeasurementAt ? "Recorded measurement or experiment evidence is available to Growth Intelligence." : "Historical outcomes are not yet available; confidence uses a neutral historical component until execution is measured." },
+  ];
+  const stableHash = (value: unknown) => createHash("sha256").update(JSON.stringify(value)).digest("hex");
+  const brainFingerprint = stableHash(businessBrainSnapshot);
+  const evidenceFingerprint = stableHash(evidenceSources);
+  const now = new Date();
+
+  const persisted = await prisma.$transaction(async (tx) => {
+    // Workflow reads can arrive concurrently from the page controller, AI agent,
+    // and background intelligence jobs. Serialize reconciliation per project so
+    // max(version) + 1 remains safe while unrelated projects continue in parallel.
+    await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`project-workflow:${projectId}`}, 0::bigint))::text AS lock_result`;
+    let brain = await tx.businessBrainVersion.findFirst({ where: { projectId, fingerprint: brainFingerprint }, select: { version: true } });
+    if (!brain) {
+      const aggregate = await tx.businessBrainVersion.aggregate({ where: { projectId }, _max: { version: true } });
+      brain = await tx.businessBrainVersion.create({ data: {
+        projectId,
+        version: (aggregate._max.version ?? 0) + 1,
+        fingerprint: brainFingerprint,
+        snapshotJson: businessBrainSnapshot as Prisma.InputJsonValue,
+        confidence: view.confidence.dataQuality,
+        confidenceJson: view.confidence as unknown as Prisma.InputJsonValue,
+        explainabilityJson: { reason: "Version changes only when verified Business Brain inputs change.", sources: ["project", "business_profile"] },
+      }, select: { version: true } });
+    }
+    let evidence = await tx.projectEvidenceVersion.findFirst({ where: { projectId, fingerprint: evidenceFingerprint }, select: { version: true } });
+    if (!evidence) {
+      const aggregate = await tx.projectEvidenceVersion.aggregate({ where: { projectId }, _max: { version: true } });
+      evidence = await tx.projectEvidenceVersion.create({ data: {
+        projectId,
+        version: (aggregate._max.version ?? 0) + 1,
+        fingerprint: evidenceFingerprint,
+        sourceSnapshotJson: evidenceSources as unknown as Prisma.InputJsonValue,
+        confidence: view.confidence.overall,
+        completeness: view.confidence.completeness,
+        freshness: view.confidence.freshness,
+        independentSignals: view.confidence.independentSignals,
+        conflictCount: view.confidence.conflictPenalty > 0 ? 1 : 0,
+        confidenceJson: view.confidence as unknown as Prisma.InputJsonValue,
+      }, select: { version: true } });
+    }
+    const nextView = { ...view, businessBrainVersion: brain.version, evidenceVersion: evidence.version };
+    const eventKey = `workflow-reconciled:${projectId}:${brain.version}:${evidence.version}:${view.state}:${view.strategyVersion}:${view.executionPlanVersion ?? "none"}`;
+    const workflowEvent = await tx.projectWorkflowEvent.upsert({
+      where: { idempotencyKey: eventKey },
+      update: { processedAt: now },
+      create: { projectId, eventType: "workflow.reconciled", sourceModule: "workflow_controller", idempotencyKey: eventKey, payloadJson: { state: view.state, businessBrainVersion: brain.version, evidenceVersion: evidence.version, readinessPercent: view.readinessPercent, confidence: view.confidence.overall }, occurredAt: now, processedAt: now },
+      select: { occurredAt: true },
+    });
+    await tx.projectWorkflowEvent.updateMany({ where: { projectId, processedAt: null }, data: { processedAt: now } });
+    await tx.projectWorkflowState.upsert({ where: { projectId }, update: {
+      controllerVersion: WORKFLOW_CONTROLLER_VERSION,
+      state: view.state,
+      readinessPercent: view.readinessPercent,
+      overallProgressPercent: view.overallProgressPercent,
+      confidence: view.confidence.overall,
+      businessBrainVersion: brain.version,
+      evidenceVersion: evidence.version,
+      strategyVersion: view.strategyVersion,
+      executionPlanVersion: view.executionPlanVersion,
+      growthBlueprintVersion: view.growthBlueprintVersion,
+      intelligenceReady: view.intelligenceReady,
+      strategyStale: view.strategyStale,
+      executionPlanStale: view.executionPlanStale,
+      applicabilityJson: Object.fromEntries(view.intelligenceModules.map((item) => [item.key, { required: item.required, weight: item.weight }])) as Prisma.InputJsonValue,
+      moduleStatusJson: view.intelligenceModules as unknown as Prisma.InputJsonValue,
+      confidenceJson: view.confidence as unknown as Prisma.InputJsonValue,
+      explainabilityJson: { nextBestAction: view.nextBestAction.explainability, reasons: view.confidence.reasons, cautions: view.confidence.cautions },
+      blockersJson: view.blockers as unknown as Prisma.InputJsonValue,
+      nextBestActionJson: view.nextBestAction as unknown as Prisma.InputJsonValue,
+      lastEventAt: workflowEvent.occurredAt,
+      reconciledAt: now,
+    }, create: {
+      projectId,
+      controllerVersion: WORKFLOW_CONTROLLER_VERSION,
+      state: view.state,
+      readinessPercent: view.readinessPercent,
+      overallProgressPercent: view.overallProgressPercent,
+      confidence: view.confidence.overall,
+      businessBrainVersion: brain.version,
+      evidenceVersion: evidence.version,
+      strategyVersion: view.strategyVersion,
+      executionPlanVersion: view.executionPlanVersion,
+      growthBlueprintVersion: view.growthBlueprintVersion,
+      intelligenceReady: view.intelligenceReady,
+      strategyStale: view.strategyStale,
+      executionPlanStale: view.executionPlanStale,
+      applicabilityJson: Object.fromEntries(view.intelligenceModules.map((item) => [item.key, { required: item.required, weight: item.weight }])) as Prisma.InputJsonValue,
+      moduleStatusJson: view.intelligenceModules as unknown as Prisma.InputJsonValue,
+      confidenceJson: view.confidence as unknown as Prisma.InputJsonValue,
+      explainabilityJson: { nextBestAction: view.nextBestAction.explainability, reasons: view.confidence.reasons, cautions: view.confidence.cautions },
+      blockersJson: view.blockers as unknown as Prisma.InputJsonValue,
+      nextBestActionJson: view.nextBestAction as unknown as Prisma.InputJsonValue,
+      lastEventAt: workflowEvent.occurredAt,
+      reconciledAt: now,
+    } });
+    if (latestStrategy && (latestStrategy.businessBrainVersion == null || latestStrategy.evidenceVersion == null)) {
+      await tx.strategyPlan.update({ where: { id: latestStrategy.id }, data: { businessBrainVersion: brain.version, evidenceVersion: evidence.version, confidenceJson: view.confidence as unknown as Prisma.InputJsonValue, explainabilityJson: { generatedFrom: { businessBrainVersion: brain.version, evidenceVersion: evidence.version }, reason: view.nextBestAction.explainability } } });
+    }
+    if (activePlan && (activePlan.businessBrainVersion == null || activePlan.evidenceVersion == null || activePlan.strategyVersion == null)) {
+      await tx.executionPlan.update({ where: { id: activePlan.id }, data: { strategyPlanId: latestStrategy?.id ?? null, strategyVersion: latestStrategy?.version ?? null, businessBrainVersion: brain.version, evidenceVersion: evidence.version, confidenceJson: view.confidence as unknown as Prisma.InputJsonValue, explainabilityJson: { generatedFrom: { strategyId: latestStrategy?.id ?? null, strategyVersion: latestStrategy?.version ?? null, businessBrainVersion: brain.version, evidenceVersion: evidence.version } } } });
+    }
+    if (project.growthBlueprint && (project.growthBlueprint.businessBrainVersion == null || project.growthBlueprint.evidenceVersion == null)) {
+      await tx.growthBlueprint.update({ where: { projectId }, data: { businessBrainVersion: brain.version, evidenceVersion: evidence.version, confidenceJson: view.confidence as unknown as Prisma.InputJsonValue, explainabilityJson: { role: "Continuous optimization layer activated from execution and measurement evidence.", generatedFrom: { businessBrainVersion: brain.version, evidenceVersion: evidence.version } } } });
+    }
+    return nextView;
+  }, { maxWait: 15_000, timeout: 15_000 });
+  return persisted;
+}
+
+export async function publishProjectWorkflowEvent(input: { projectId: string; eventType: string; sourceModule: string; sourceId?: string | null; idempotencyKey: string; payload?: Record<string, unknown>; occurredAt?: Date }) {
+  await prisma.projectWorkflowEvent.upsert({
+    where: { idempotencyKey: input.idempotencyKey },
+    update: {},
+    create: { projectId: input.projectId, eventType: input.eventType, sourceModule: input.sourceModule, sourceId: input.sourceId ?? null, idempotencyKey: input.idempotencyKey, payloadJson: (input.payload ?? {}) as Prisma.InputJsonValue, occurredAt: input.occurredAt ?? new Date() },
+  });
+  const invalidatesOfficialStrategy = input.eventType === "business_brain.updated" || input.eventType === "project_direction.selected" || input.eventType.startsWith("intelligence.");
+  if (invalidatesOfficialStrategy) {
+    await prisma.$transaction(async (tx) => {
+      await tx.strategyPlan.updateMany({ where: { projectId: input.projectId, status: { in: ["draft", "approved"] } }, data: { status: "stale" } });
+      await tx.executionTask.updateMany({
+        where: {
+          projectId: input.projectId,
+          executionPlanId: { not: null },
+          status: { in: ["draft", "pending", "ready", "blocked", "submitted_for_approval", "approved", "ready_to_publish"] },
+        },
+        data: {
+          status: "stale",
+          blockedReason: "Upstream Business Brain or evidence changed. Regenerate and approve Strategy, then reconcile the Execution Plan before continuing.",
+        },
+      });
+      await tx.nextBestAction.updateMany({ where: { projectId: input.projectId, sourceType: "strategy_decision_engine", status: { in: ["proposed", "recommended", "selected"] } }, data: { status: "stale", decision: "upstream_evidence_changed", selectedAt: null, decidedAt: new Date() } });
+      await tx.growthBlueprint.updateMany({ where: { projectId: input.projectId }, data: { status: "needs_refresh", nextReviewAt: new Date() } });
+    });
+  }
+  const refreshesGrowthBlueprint = input.eventType === "execution.outcome_ready" || input.eventType === "measurement.recorded" || input.eventType === "measurement.evaluated" || input.eventType === "experiment.completed" || input.eventType === "integration.connected" || input.eventType === "integration.disconnected";
+  if (refreshesGrowthBlueprint) {
+    await prisma.growthBlueprint.updateMany({ where: { projectId: input.projectId }, data: { status: "needs_refresh", nextReviewAt: new Date() } });
+  }
+  const workflow = await getProjectWorkflowController(input.projectId);
+  if (workflow?.strategyStale) {
+    const invalidationKey = `strategy.invalidated:${input.projectId}:${workflow.businessBrainVersion}:${workflow.evidenceVersion}:${workflow.strategyVersion}`;
+    await prisma.$transaction(async (tx) => {
+      await tx.nextBestAction.updateMany({ where: { projectId: input.projectId, sourceType: "strategy_decision_engine", status: { in: ["proposed", "recommended", "selected"] } }, data: { status: "stale", decision: "upstream_evidence_changed", selectedAt: null, decidedAt: new Date() } });
+      await tx.growthBlueprint.updateMany({ where: { projectId: input.projectId }, data: { status: "needs_refresh", nextReviewAt: new Date() } });
+      await tx.projectWorkflowEvent.upsert({ where: { idempotencyKey: invalidationKey }, update: { processedAt: new Date() }, create: { projectId: input.projectId, eventType: "strategy.invalidated", sourceModule: "workflow_controller", sourceId: input.sourceId ?? null, idempotencyKey: invalidationKey, payloadJson: { reason: "Upstream Business Brain or evidence changed.", businessBrainVersion: workflow.businessBrainVersion, evidenceVersion: workflow.evidenceVersion, strategyVersion: workflow.strategyVersion, refreshAction: `/strategy?projectId=${input.projectId}` }, occurredAt: new Date(), processedAt: new Date() } });
+    });
+  }
+  await prisma.projectWorkflowEvent.update({ where: { idempotencyKey: input.idempotencyKey }, data: { processedAt: new Date() } });
+  return workflow;
+}

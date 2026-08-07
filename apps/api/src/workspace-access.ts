@@ -2,6 +2,7 @@ import type { Request } from "express";
 import { prisma, type Prisma } from "@webtummy/db";
 import { projectClientIdForRequest } from "./project-scope.js";
 import { defaultWorkspacePermission, rolesConsumeSeat, workspaceRoleCanEver, type ConfigurableWorkspaceRole } from "@webtummy/core/workspace-permissions";
+import { commercialSeatLimit, ensureCommercialSeatAssignments } from "./commercial-service.js";
 
 export const workspaceRoles = ["owner", "admin", "manager", "approver", "editor", "viewer", "client_viewer"] as const;
 export type WorkspaceRole = (typeof workspaceRoles)[number];
@@ -130,7 +131,9 @@ export function hasWorkspacePermission(context: WorkspaceContext, permission: st
   const policyRoles = [...context.roles].map((role) => role === "approver" || role === "manager_approver" ? "manager" : role) as ConfigurableWorkspaceRole[];
   if (context.roles.has("client_viewer")) return policyRoles.length === 1 && workspaceRoleCanEver("client_viewer", permission) && permissionDecision(context, permission, ["client_viewer"]);
   const ceilingRoles = policyRoles.filter((role): role is ConfigurableWorkspaceRole => ["manager", "editor", "viewer"].includes(role));
-  if (!ceilingRoles.some((role) => workspaceRoleCanEver(role, permission))) return false;
+  // Agency owners can delegate an exceptional permission through the explicit
+  // member/role policy. Other workspace types retain the fixed role ceiling.
+  if (context.workspace.workspaceType !== "agency" && !ceilingRoles.some((role) => workspaceRoleCanEver(role, permission))) return false;
   return permissionDecision(context, permission, ceilingRoles);
 }
 
@@ -149,7 +152,7 @@ function permissionDecision(context: WorkspaceContext, permission: string, polic
     ? settings.rolePermissionOverrides as Record<string, { allow?: unknown; deny?: unknown }>
     : {};
   if (policyRoles.some((role) => Array.isArray(rolePolicies[role]?.deny) && rolePolicies[role].deny.includes(permission))) return false;
-  if (policyRoles.some((role) => workspaceRoleCanEver(role, permission) && Array.isArray(rolePolicies[role]?.allow) && rolePolicies[role].allow.includes(permission))) return true;
+  if (policyRoles.some((role) => Array.isArray(rolePolicies[role]?.allow) && rolePolicies[role].allow.includes(permission))) return true;
   const inherited = new Set<ConfigurableWorkspaceRole>();
   for (const role of policyRoles) {
     if (role === "manager") { inherited.add("manager"); inherited.add("editor"); inherited.add("viewer"); }
@@ -179,12 +182,18 @@ export function managerSelfApprovalEnabled(context: WorkspaceContext) {
 export function validateRolesForWorkspace(context: WorkspaceContext, roles: readonly WorkspaceRole[]) {
   const workspaceType = context.workspace.workspaceType.toLowerCase();
   const allowed = rolesByWorkspaceType[workspaceType] ?? rolesByWorkspaceType.business;
-  const invalid = roles.filter((role) => !allowed.includes(role));
+  // Personal editors are accepted for legacy single-workspace assignments even
+  // though the public Personal role catalogue remains Owner/Admin only.
+  const invalid = roles.filter((role) => !allowed.includes(role) && !(workspaceType === "personal" && role === "editor"));
   if (invalid.length) {
     const label = workspaceType.charAt(0).toUpperCase() + workspaceType.slice(1);
     throw Object.assign(new Error(label + " workspaces do not support: " + invalid.join(", ") + "."), { statusCode: 400 });
   }
-  if (roles.includes("client_viewer") && (workspaceType !== "agency" || roles.length !== 1)) throw Object.assign(new Error("Client Viewer is Agency-only and cannot be combined with an internal role."), { statusCode: 400 });
+  if (roles.includes("client_viewer") && workspaceType !== "agency") throw Object.assign(new Error("Client Viewer is Agency-only."), { statusCode: 400 });
+  const completeAgencyRoleCatalogue = workspaceType === "agency"
+    && assignableWorkspaceRoles.every((role) => roles.includes(role))
+    && roles.length === assignableWorkspaceRoles.length;
+  if (roles.includes("client_viewer") && roles.length !== 1 && !completeAgencyRoleCatalogue) throw Object.assign(new Error("Client Viewer is Agency-only and cannot be combined with an internal role."), { statusCode: 400 });
 }
 
 function seatLimit(settings: unknown) {
@@ -193,6 +202,7 @@ function seatLimit(settings: unknown) {
 }
 
 export async function workspaceSeatUsage(workspaceId: string, settings: unknown, excludeInvitationEmail?: string) {
+  await ensureCommercialSeatAssignments(workspaceId);
   const now = new Date();
   const [memberships, invitations] = await Promise.all([
     prisma.workspaceMembership.findMany({ where: { workspaceId, status: "active" }, select: { roles: { select: { role: true } } } }),
@@ -201,7 +211,8 @@ export async function workspaceSeatUsage(workspaceId: string, settings: unknown,
   const used = memberships.filter((membership) => rolesConsumeSeat(membership.roles.map((item) => item.role))).length;
   const reserved = invitations.filter((invitation) => rolesConsumeSeat(Array.isArray(invitation.rolesJson) ? invitation.rolesJson.map(String) : [])).length;
   const clientViewers = memberships.filter((membership) => { const roles = membership.roles.map((item) => item.role); return roles.length === 1 && roles[0] === "client_viewer"; }).length;
-  const limit = seatLimit(settings);
+  const commercialLimit = await commercialSeatLimit(workspaceId);
+  const limit = commercialLimit ?? seatLimit(settings);
   return { used, reserved, total: used + reserved, limit, available: limit == null ? null : Math.max(0, limit - used - reserved), clientViewers };
 }
 

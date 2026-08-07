@@ -7,6 +7,7 @@ import { requireAuth } from "../middleware.js";
 import { projectClientIdForRequest } from "../project-scope.js";
 import { socialPlatforms, socialProviderCapabilities } from "../social-provider-registry.js";
 import { canAccessProject, hasWorkspacePermission, recordWorkspaceActivity, workspaceContext } from "../workspace-access.js";
+import { approvedStrategyContext } from "../strategy-ai.js";
 
 export const socialStrategyRouter = Router();
 socialStrategyRouter.use(requireAuth);
@@ -427,7 +428,7 @@ async function getProjectIntelligence(req: Request, websiteId: string, projectId
     include: {
       businessProfile: true,
       intakeAnswers: true,
-      strategyPlans: { orderBy: { createdAt: "desc" }, take: 1 },
+      strategyPlans: { where: { status: "approved" }, orderBy: { version: "desc" }, take: 1 },
       keywordGroups: { where: { status: "approved" }, orderBy: { updatedAt: "desc" }, take: 20 },
       keywordResearchRuns: { orderBy: { createdAt: "desc" }, take: 3, include: { ideas: { orderBy: { avgMonthlySearches: "desc" }, take: 40 } } },
       websiteBuilds: {
@@ -491,6 +492,7 @@ async function getProjectIntelligence(req: Request, websiteId: string, projectId
 
 function intelligenceSnapshot(project: NonNullable<Awaited<ReturnType<typeof getProjectIntelligence>>["project"]>, sources: ContentSource[]) {
   const approvedStrategy = project.strategyPlans[0];
+  const strategyContract = approvedStrategyContext(approvedStrategy);
   const keywords = uniqueStrings([
     ...project.keywordGroups.flatMap((group) => [...jsonList(group.keywords), ...jsonList(group.gapKeywords)]),
     ...project.keywordResearchRuns.flatMap((run) => run.ideas.map((idea) => idea.keyword)),
@@ -499,9 +501,9 @@ function intelligenceSnapshot(project: NonNullable<Awaited<ReturnType<typeof get
     projectId: project.id,
     businessName: project.businessName || project.name,
     businessSummary: project.businessProfile?.businessSummary || project.notes || "",
-    audience: project.businessProfile?.targetAudience || approvedStrategy?.audienceProfile || "",
-    offer: project.businessProfile?.offerSummary || approvedStrategy?.offerRecommendation || "",
-    primaryGoal: project.primaryGoal || approvedStrategy?.businessObjectives || "",
+    audience: strategyContract?.audience || project.businessProfile?.targetAudience || approvedStrategy?.audienceProfile || "",
+    offer: strategyContract?.offer || project.businessProfile?.offerSummary || approvedStrategy?.offerRecommendation || "",
+    primaryGoal: strategyContract?.unifiedPlan?.objectives || project.primaryGoal || approvedStrategy?.businessObjectives || "",
     brandVoice: project.brandVoice || project.businessProfile?.tonePreference || "professional",
     targetMarkets: jsonList(project.targetLocations),
     competitors: jsonList(project.competitors),
@@ -510,6 +512,7 @@ function intelligenceSnapshot(project: NonNullable<Awaited<ReturnType<typeof get
     sourceCount: sources.length,
     sourceTypes: uniqueStrings(sources.map((source) => source.type)),
     approvedStrategyId: approvedStrategy?.id || null,
+    strategyContract,
   };
 }
 
@@ -670,6 +673,7 @@ async function enhanceStrategyWithAi(
     system: "You are the SEnuke AI Social Strategy and Multi-Channel Distribution Engine. Adapt approved evidence into useful channel-specific marketing content. Never invent people, results, credentials, statistics, offers, prices, locations, customer claims, or source facts.",
     prompt: [
       "Return {strategySummary, campaignThemes, captions:[{index,caption,cta,hashtags,visualSuggestion}]} for the supplied draft.",
+      "The approved Strategy contract is governing direction. Select themes, channels, CTAs, and timing that advance its focus areas and current phase; do not create a disconnected social plan.",
       "Keep each index and platform. Preserve the factual meaning and target URL. Adapt tone, length, structure, CTA, hashtags, and visual direction for each platform. Every visualSuggestion must follow the campaign-wide image direction and describe a specific subject, setting, composition, lighting, palette, and exclusions.",
       `Business evidence: ${JSON.stringify(snapshot).slice(0, 20_000)}`,
       `Time-bound campaign: ${JSON.stringify(campaign)}`,
@@ -703,6 +707,7 @@ async function enhanceRepurposingWithAi(
     system: "You are the SEnuke AI Content Repurposing Engine. Transform one verified source into channel-specific assets while preserving its message and the project's brand voice. Never invent facts, claims, people, results, statistics, offers, credentials, URLs, or source details.",
     prompt: [
       "Return {keyMessages,assets:[{index,title,content,cta,hashtags,visualSuggestion}]}.",
+      "Keep the repurposed message, CTA, and channel role aligned to the approved Strategy contract in Business evidence.",
       "Keep every supplied index. Optimize length, structure, tone, CTA, hashtags, and visual direction for that asset's channel. An X thread may contain numbered posts. Email must include a subject. Short video must be a usable script. Podcast must be a usable outline.",
       `Business evidence: ${JSON.stringify(snapshot).slice(0, 18_000)}`,
       `Canonical source: ${JSON.stringify(source).slice(0, 20_000)}`,

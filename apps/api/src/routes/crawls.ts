@@ -2,6 +2,7 @@
 import { Router } from "express";
 import { z } from "zod";
 import { prisma } from "@webtummy/db";
+import { urlAliasKey } from "@webtummy/core";
 import { requireAuth } from "../middleware.js";
 import { projectClientIdForRequest } from "../project-scope.js";
 import { config } from "../config.js";
@@ -131,6 +132,20 @@ crawlsRouter.get("/crawls/:id/status", async (req, res) => {
   });
 });
 
+crawlsRouter.post("/crawls/:id/manage", async (req, res) => {
+  z.object({ action: z.literal("cancel") }).parse(req.body ?? {});
+  const job = await getScopedCrawl(req, req.params.id);
+  if (!job) return res.status(404).json({ error: "crawl not found" });
+  if (!["queued", "running"].includes(job.status)) return res.status(409).json({ error: "Only queued or running site analysis can be cancelled." });
+  await prisma.crawlJob.update({ where: { id: job.id }, data: { status: "failed", error: "Site analysis was cancelled. Run Analyze Site again when ready.", completedAt: new Date() } });
+  const queueJob = await crawlQueue.getJob(job.id);
+  if (queueJob) {
+    const state = await queueJob.getState().catch(() => "unknown");
+    if (state !== "active") await queueJob.remove().catch(() => undefined);
+  }
+  return res.json({ crawlJob: await prisma.crawlJob.findUnique({ where: { id: job.id } }) });
+});
+
 // GET /api/crawls/:id/summary
 crawlsRouter.get("/crawls/:id/summary", async (req, res) => {
   const job = await getScopedCrawl(req, req.params.id);
@@ -186,8 +201,9 @@ crawlsRouter.get("/crawls/:id/pages", async (req, res) => {
   if (!job) return res.status(404).json({ error: "crawl not found" });
   const skip = Math.max(0, parseInt(String(req.query.skip ?? "0"), 10));
   const take = Math.min(1000, Math.max(1, parseInt(String(req.query.take ?? "50"), 10)));
+  const logical = String(req.query.logical ?? "") === "1";
 
-  const [pages, total] = await Promise.all([
+  const [rawPages, rawTotal] = await Promise.all([
     prisma.page.findMany({
       where: { crawlJobId: job.id },
       include: {
@@ -225,13 +241,54 @@ crawlsRouter.get("/crawls/:id/pages", async (req, res) => {
         },
       },
       orderBy: { depth: "asc" },
-      skip,
-      take,
+      skip: logical ? 0 : skip,
+      take: logical ? 1000 : take,
     }),
     prisma.page.count({ where: { crawlJobId: job.id } }),
   ]);
+  const preferredHost = (() => { try { return new URL(job.website.rootUrl).hostname.toLowerCase(); } catch { return ""; } })();
+  const representativeScore = (page: (typeof rawPages)[number]) => {
+    try {
+      const url = new URL(page.finalUrl || page.url);
+      return (url.hostname.toLowerCase() === preferredHost ? 100000 : 0)
+        + (page.internalLinkScore != null ? 10000 : 0)
+        + (url.protocol === "https:" ? 100 : 0)
+        + (!/\/index\.(?:html?|php)$/i.test(url.pathname) ? 50 : 0)
+        + (url.search ? 0 : 20)
+        + Math.max(0, 10 - page.depth);
+    } catch { return 0; }
+  };
+  const logicalPages = (() => {
+    if (!logical) return rawPages.map((page) => ({ ...page, aliasUrls: [page.url], aliasCount: 1 }));
+    const groups = new Map<string, typeof rawPages>();
+    for (const page of rawPages) {
+      const key = urlAliasKey(page.finalUrl || page.url);
+      const group = groups.get(key) ?? [];
+      group.push(page);
+      groups.set(key, group);
+    }
+    return [...groups.values()].map((group) => {
+      const representative = [...group].sort((left, right) => representativeScore(right) - representativeScore(left))[0];
+      const aliasUrls = [...new Set(group.map((page) => page.url))].sort();
+      const inlinkCount = group.reduce((sum, page) => sum + (page.inlinkCount ?? 0), 0);
+      const scoredPage = [...group].sort((left, right) => (right.internalLinkScore ?? -1) - (left.internalLinkScore ?? -1))[0];
+      return {
+        ...representative,
+        inlinkCount,
+        isOrphan: inlinkCount === 0,
+        internalLinkScore: representative.internalLinkScore ?? scoredPage.internalLinkScore,
+        internalLinkGrade: representative.internalLinkGrade ?? scoredPage.internalLinkGrade,
+        brokenInternalLinkCount: Math.max(...group.map((page) => page.brokenInternalLinkCount ?? 0)),
+        weakAnchorCount: Math.max(...group.map((page) => page.weakAnchorCount ?? 0)),
+        aliasUrls,
+        aliasCount: aliasUrls.length,
+      };
+    }).sort((left, right) => left.depth - right.depth || left.url.localeCompare(right.url));
+  })();
+  const pages = logical ? logicalPages.slice(skip, skip + take) : logicalPages;
   res.json({
-    total,
+    total: logical ? logicalPages.length : rawTotal,
+    rawTotal,
     skip,
     take,
     pages: pages.map((page) => ({
@@ -249,11 +306,34 @@ crawlsRouter.get("/crawls/:id/generated-sitemap.xml", async (req, res) => {
 
   const pages = await prisma.page.findMany({
     where: { crawlJobId: job.id, statusCode: 200 },
-    select: { finalUrl: true, url: true },
+    select: { finalUrl: true, url: true, depth: true, internalLinkScore: true, seo: { select: { canonicalUrl: true } } },
     orderBy: { depth: "asc" },
     take: 50000,
   });
-  const urls = [...new Set(pages.map((page) => page.finalUrl || page.url))];
+  const preferredHost = (() => { try { return new URL(job.website.rootUrl).hostname.toLowerCase(); } catch { return ""; } })();
+  const groups = new Map<string, typeof pages>();
+  for (const page of pages) {
+    const value = page.seo?.canonicalUrl || page.finalUrl || page.url;
+    const key = urlAliasKey(value);
+    const group = groups.get(key) ?? [];
+    group.push(page);
+    groups.set(key, group);
+  }
+  const urls = [...groups.values()].map((group) => {
+    const score = (page: (typeof pages)[number]) => {
+      const value = page.seo?.canonicalUrl || page.finalUrl || page.url;
+      try {
+        const url = new URL(value);
+        return (url.hostname.toLowerCase() === preferredHost ? 100000 : 0)
+          + (page.internalLinkScore != null ? 10000 : 0)
+          + (url.protocol === "https:" ? 100 : 0)
+          + (!/\/index\.(?:html?|php)$/i.test(url.pathname) ? 50 : 0)
+          + Math.max(0, 10 - page.depth);
+      } catch { return 0; }
+    };
+    const representative = [...group].sort((left, right) => score(right) - score(left))[0];
+    return representative.seo?.canonicalUrl || representative.finalUrl || representative.url;
+  });
   const body = [
     '<?xml version="1.0" encoding="UTF-8"?>',
     '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">',
@@ -692,7 +772,8 @@ crawlsRouter.get("/crawls/:id/issues", async (req, res) => {
     take: 1000,
   });
 
-  const needsDuplicateContext = issues.some((issue) => issue.issueType.startsWith("duplicate_"));
+  const duplicateIssueTypes = new Set(["duplicate_title", "duplicate_meta_description", "duplicate_h1", "exact_duplicate_content"]);
+  const needsDuplicateContext = issues.some((issue) => duplicateIssueTypes.has(issue.issueType));
   if (!needsDuplicateContext) return res.json({ issues });
 
   const seos = await prisma.pageSeo.findMany({
@@ -702,6 +783,7 @@ crawlsRouter.get("/crawls/:id/issues", async (req, res) => {
       title: true,
       metaDescription: true,
       h1Text: true,
+      contentSimhash: true,
       page: { select: { url: true } },
     },
   });
@@ -710,11 +792,13 @@ crawlsRouter.get("/crawls/:id/issues", async (req, res) => {
     duplicate_title: groupDuplicatePages(seos, (seo) => seo.title),
     duplicate_meta_description: groupDuplicatePages(seos, (seo) => seo.metaDescription),
     duplicate_h1: groupDuplicatePages(seos, (seo) => firstH1(seo.h1Text)),
+    exact_duplicate_content: groupDuplicatePages(seos, (seo) => seo.contentSimhash?.toString() ?? null),
   };
 
-  const enriched = issues.map((issue) => {
-    if (!issue.issueType.startsWith("duplicate_") || !issue.pageId) return issue;
+  const enriched = issues.flatMap((issue) => {
+    if (!duplicateIssueTypes.has(issue.issueType) || !issue.pageId) return issue;
     const pages = grouped[issue.issueType as keyof typeof grouped]?.get(issue.pageId) ?? [];
+    if (pages.length < 2) return [];
     return { ...issue, relatedPages: pages };
   });
 
@@ -953,8 +1037,14 @@ function groupDuplicatePages<T extends { pageId: string; page: { url: string }; 
 
   const byPageId = new Map<string, { url: string; title: string | null }[]>();
   for (const group of groups.values()) {
-    if (group.length < 2) continue;
-    const pages = group.map((seo) => ({ url: seo.page.url, title: seo.title }));
+    const representatives = new Map<string, T>();
+    for (const seo of group) {
+      const aliasKey = urlAliasKey(seo.page.url);
+      if (!representatives.has(aliasKey)) representatives.set(aliasKey, seo);
+    }
+    const distinctPages = [...representatives.values()];
+    if (distinctPages.length < 2) continue;
+    const pages = distinctPages.map((seo) => ({ url: seo.page.url, title: seo.title }));
     for (const seo of group) byPageId.set(seo.pageId, pages);
   }
   return byPageId;

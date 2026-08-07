@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { normalizeForDedup, resolveUrl, isSameHost } from "./url.js";
+import { fileUrlWithoutTrailingSlash, normalizeForDedup, resolveUrl, isSameHost, urlAliasKey } from "./url.js";
 
 describe("normalizeForDedup", () => {
   it("lowercases scheme and host", () => {
@@ -16,6 +16,15 @@ describe("normalizeForDedup", () => {
 
   it("strips trailing slash on non-root paths", () => {
     expect(normalizeForDedup("https://example.com/blog/")).toBe("https://example.com/blog");
+  });
+
+  it("keeps a slash after a file-style path because it can resolve differently", () => {
+    expect(normalizeForDedup("https://example.com/blog.html/")).toBe(
+      "https://example.com/blog.html/",
+    );
+    expect(normalizeForDedup("https://example.com/blog.html")).toBe(
+      "https://example.com/blog.html",
+    );
   });
 
   it("keeps the root slash", () => {
@@ -56,6 +65,30 @@ describe("resolveUrl", () => {
     expect(resolveUrl("https://example.com", "tel:+123")).toBeNull();
     expect(resolveUrl("https://example.com", "javascript:void(0)")).toBeNull();
     expect(resolveUrl("https://example.com", "#top")).toBeNull();
+  });
+});
+
+describe("fileUrlWithoutTrailingSlash", () => {
+  it("suggests the slashless counterpart only for file-style paths", () => {
+    expect(fileUrlWithoutTrailingSlash("https://example.com/blog.html/")).toBe(
+      "https://example.com/blog.html",
+    );
+    expect(fileUrlWithoutTrailingSlash("https://example.com/blog/")).toBeNull();
+    expect(fileUrlWithoutTrailingSlash("https://example.com/blog.html")).toBeNull();
+  });
+});
+
+describe("urlAliasKey", () => {
+  it("groups homepage host and index aliases", () => {
+    expect(urlAliasKey("https://www.example.com")).toBe("example.com/");
+    expect(urlAliasKey("https://example.com/")).toBe("example.com/");
+    expect(urlAliasKey("https://www.example.com/index.html")).toBe("example.com/");
+  });
+
+  it("does not merge a file URL with its slash-suffixed 404 variant", () => {
+    expect(urlAliasKey("https://example.com/blog.html/")).not.toBe(
+      urlAliasKey("https://example.com/blog.html"),
+    );
   });
 });
 

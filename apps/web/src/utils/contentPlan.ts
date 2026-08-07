@@ -1,18 +1,22 @@
 import type { GuidedExecutionTask } from "../types.js";
 
 export function isContentPlanTask(task: GuidedExecutionTask) {
+  // Before current SEO evidence is incorporated into an approved Strategy,
+  // this record is a workflow gate rather than an editable content plan.
+  if (task.status === "pending" && /(?:run seo\s*&?\s*gap analysis|update strategy|approve (?:updated )?strategy)/i.test(`${task.title} ${task.actionButtonLabel ?? ""}`)) return false;
   // Local SEO and publishing tasks may refer to the approved plan, but they are
   // downstream actions and must not reopen the planning workflow.
   if (["local_seo", "publishing"].includes(task.moduleName)) return false;
   const value = `${task.title} ${task.actionButtonLabel ?? ""}`.trim();
-  return /seo\s+page\s+map\s*(?:&|and)\s*(?:seo\s+)?content\s+plan/i.test(value)
+  return /website\s+launch\s+(?:page\s+map\s*(?:&|and)\s*content\s+plan|plan)/i.test(value)
+    || /seo\s+page\s+map\s*(?:&|and)\s*(?:seo\s+)?content\s+plan/i.test(value)
     || /(?:create|review|view)\s+(?:seo\s+)?content\s+plan/i.test(value)
     || /(?:create|review|view)\s+(?:seo\s+)?page\s+map/i.test(value)
     || /map\s+(?:seo|local)\s+keyword\s+opportunities/i.test(value);
 }
 
 export function contentPlanTitle(task: GuidedExecutionTask) {
-  return isContentPlanTask(task) ? "SEO Page Map & Content Plan" : task.title;
+  return isContentPlanTask(task) ? /website\s+launch/i.test(`${task.title} ${task.actionButtonLabel ?? ""}`) ? "Website Launch Page Map & Content Plan" : "SEO Page Map & Content Plan" : task.title;
 }
 
 export function contentPlanDescription(task: GuidedExecutionTask) {
@@ -23,10 +27,11 @@ export function contentPlanDescription(task: GuidedExecutionTask) {
 
 export function contentPlanActionLabel(task: GuidedExecutionTask) {
   if (!isContentPlanTask(task)) return task.actionButtonLabel ?? "Open Task";
+  const launchPlan = /website\s+launch/i.test(`${task.title} ${task.actionButtonLabel ?? ""}`);
   if (["submitted_for_approval", "pending_approval", "waiting_for_approval", "needs_approval"].includes(task.status)) return "Review Approval";
-  if (["completed", "approved", "ready_to_publish"].includes(task.status)) return "View Approved SEO Plan";
-  if (["in_progress", "needs_review", "changes_requested"].includes(task.status)) return "Review SEO Plan";
-  return "Create SEO Plan";
+  if (["completed", "approved", "ready_to_publish"].includes(task.status)) return launchPlan ? "View Approved Website Launch Plan" : "View Approved SEO Plan";
+  if (["in_progress", "needs_review", "changes_requested"].includes(task.status)) return launchPlan ? "Review Website Launch Plan" : "Review SEO Plan";
+  return launchPlan ? "Create Website Launch Plan" : "Create SEO Plan";
 }
 
 export function preferredContentPlanTask(left: GuidedExecutionTask, right: GuidedExecutionTask) {

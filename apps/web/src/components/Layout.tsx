@@ -26,8 +26,7 @@ const nav = [
   { to: "/strategy", label: "Strategy", icon: "plans", permission: "edit_strategy" },
   { to: "/keywords", label: "Keywords", icon: "keywords", permission: "run_ai_analysis" },
   { to: "/site-analysis", label: "Site Analysis", icon: "audits", permission: "run_ai_analysis" },
-  { to: "/backlinks", label: "Backlinks & Authority", icon: "social", permission: "run_ai_analysis" },
-  { to: "/ai-citations", label: "AI Citations", icon: "content", permission: "run_ai_analysis" },
+  { to: "/seo-growth", label: "SEO & Growth", icon: "plans", permission: "run_ai_analysis" },
   { to: "/site-architect", label: "Site Architect", icon: "overview", anyPermissions: ["run_ai_analysis", "read_internal", "read_shared_client_data"] },
   { to: "/lead-magnets", label: "Lead Magnets", icon: "billing", anyPermissions: ["run_ai_analysis", "read_internal", "read_shared_client_data"] },
   { to: "/growth", label: "Growth Engine", icon: "plans", permission: "run_ai_analysis" },
@@ -279,7 +278,7 @@ const helpByPath: Record<string, HelpContent> = {
         bullets: [
           "SEnuke AI should recommend safe authority building, not spammy automated link schemes.",
           "For Local SEO, authority tasks can include citations, local directories, chambers, local media, partnerships, and review signals.",
-          "For SEO Campaigns, authority tasks can include backlink gaps, resource pages, digital PR assets, expert content, and approved outreach drafts.",
+          "For SEO campaigns, authority tasks can include backlink gaps, resource pages, digital PR assets, expert content, and approved outreach drafts.",
         ],
       },
       {
@@ -759,16 +758,18 @@ export default function Layout({ children }: { children: ReactNode }) {
     if (!billingStatus || billingStatus.hasAccess || user?.role === "super_admin") return;
     if (plans.length > 0) return;
     let cancelled = false;
-    api.get<{ plans: BillingPlan[] }>("/api/billing/pricing")
+    api.get<{ plans: BillingPlan[] }>("/api/billing/pricing/workspace")
       .then((result) => { if (!cancelled) setPlans(result.plans); })
       .catch(() => { if (!cancelled) setPlans([]); });
     return () => { cancelled = true; };
   }, [billingStatus, plans.length, user?.role]);
 
-  const checkout = async (planCode: string) => {
-    setBusyPlan(planCode);
+  const checkout = async (plan: BillingPlan) => {
+    setBusyPlan(plan.code);
     try {
-      const result = await api.post<{ url: string }>("/api/billing/checkout-session", { planCode });
+      const price = plan.prices?.find((item) => item.billingInterval === "monthly" && item.priceClass === "standard" && item.status === "active")
+        ?? plan.prices?.find((item) => item.billingInterval === "monthly" && item.status === "active");
+      const result = await api.post<{ url: string }>("/api/billing/checkout-session", price ? { priceId: price.id } : { planCode: plan.code });
       window.location.assign(result.url);
     } catch {
       setBusyPlan(null);
@@ -900,7 +901,7 @@ export default function Layout({ children }: { children: ReactNode }) {
         {billingStatus?.status === "trialing" && billingStatus.hasAccess && (
           <div className="border-b border-amber-300 bg-amber-300 px-4 py-3 text-sm text-amber-950 shadow-sm lg:px-8">
             <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-              <span className="font-bold">Your 14-day trial is active. {billingStatus.trialDaysRemaining} day{billingStatus.trialDaysRemaining === 1 ? "" : "s"} left. Upgrade to keep SEnuke AI active after the trial.</span>
+              <span className="font-bold">Your {billingStatus.trialDurationDays ?? ""}{billingStatus.trialDurationDays ? "-day " : ""}trial is active. {billingStatus.trialDaysRemaining} day{billingStatus.trialDaysRemaining === 1 ? "" : "s"} left. Upgrade to keep SEnuke AI active after the trial.</span>
               <Link to="/pricing" className="inline-flex rounded-lg bg-charcoal-900 px-4 py-2 text-sm font-bold text-white shadow-sm hover:bg-charcoal-800">Upgrade</Link>
             </div>
           </div>
@@ -924,21 +925,21 @@ export default function Layout({ children }: { children: ReactNode }) {
             <div className="space-y-5">
               <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
                 <div>
-                  <div className="text-xs font-bold uppercase tracking-wide text-red-700">Trial period expired</div>
-                  <h2 className="mt-1 text-2xl font-bold text-charcoal-950">Choose a plan to continue using SEnuke AI</h2>
+                  <div className="text-xs font-bold uppercase tracking-wide text-red-700">Subscription action required</div>
+                  <h2 className="mt-1 text-2xl font-bold text-charcoal-950">Reactivate a plan to restore workspace actions</h2>
                   <p className="mt-2 max-w-3xl text-sm leading-6 text-red-900">
-                    Your free trial has ended. You can still open the app sections from the sidebar, but creating new audits, reports, or AI content requires an active subscription. Select a plan below to restore full access.
+                    Your workspace data remains available according to the retention policy, but new audits, reports, publishing, and AI work require active commercial access. Choose a plan below or open Billing to review the exact lifecycle status.
                   </p>
                 </div>
                 <Link to="/billing" className="inline-flex items-center justify-center rounded-lg border border-red-200 bg-white px-4 py-2 text-sm font-bold text-red-800 hover:bg-red-100">View billing</Link>
               </div>
-              <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-5">
+              <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
                 {plans.length === 0 ? (
-                  <div className="rounded-lg border border-red-200 bg-white p-4 text-sm font-medium text-red-800 xl:col-span-5">Loading plans...</div>
+                  <div className="rounded-lg border border-red-200 bg-white p-4 text-sm font-medium text-red-800 xl:col-span-3">Loading plans...</div>
                 ) : plans.map((plan) => (
                   <div key={plan.code} className="flex min-h-[210px] flex-col rounded-lg border border-red-100 bg-white p-4 shadow-sm">
                     <div className="text-lg font-bold text-charcoal-950">{plan.name}</div>
-                    <div className="mt-2 text-sm leading-5 text-charcoal-500">{plan.articleLimit} articles per month</div>
+                    <div className="mt-2 text-sm leading-5 text-charcoal-500">{plan.helperMonthlyLimit.toLocaleString()} AI Capacity per month</div>
                     <div className="mt-4 flex items-end gap-1">
                       <span className="text-3xl font-bold text-charcoal-950">${plan.priceMonthly}</span>
                       <span className="pb-1 text-xs font-medium text-charcoal-500">/mo</span>
@@ -948,7 +949,7 @@ export default function Layout({ children }: { children: ReactNode }) {
                     </div>
                     <button
                       type="button"
-                      onClick={() => void checkout(plan.code)}
+                      onClick={() => void checkout(plan)}
                       disabled={busyPlan === plan.code}
                       className="mt-4 rounded-lg bg-charcoal-900 px-3 py-2 text-sm font-bold text-white hover:bg-charcoal-800 disabled:cursor-not-allowed disabled:opacity-60"
                     >
@@ -976,7 +977,6 @@ export default function Layout({ children }: { children: ReactNode }) {
         </main>
         <Footer />
       </div>
-      {!helpOpen && <button type="button" onClick={() => setHelpOpen(true)} className="fixed bottom-5 right-5 z-[70] inline-flex items-center gap-2 rounded-full bg-gradient-to-r from-brand-600 to-emerald-500 px-5 py-3 text-sm font-black text-white shadow-[0_14px_35px_rgba(13,148,136,0.32)] transition hover:-translate-y-0.5 hover:shadow-[0_18px_40px_rgba(13,148,136,0.38)] focus:outline-none focus:ring-4 focus:ring-brand-100" aria-label="Ask SEnuke AI"><span className="grid h-6 w-6 place-items-center rounded-full bg-white/20 text-base" aria-hidden="true">✦</span><span>Ask SEnuke</span></button>}
       <ProjectAgentDrawer content={getHelpContent(location.pathname)} pathname={location.pathname} search={location.search} open={helpOpen} onClose={() => setHelpOpen(false)} />
     </div>
   );
@@ -1025,6 +1025,7 @@ function agentPage(pathname: string, search = "") {
   if (pathname.startsWith("/site-architect")) return "site-architect";
   if (pathname.startsWith("/lead-magnets")) return "lead-magnets";
   if (pathname.startsWith("/growth")) return "growth";
+  if (pathname.startsWith("/seo-growth")) return "seo-growth";
   if (pathname.startsWith("/gap-analysis")) return "gap-analysis";
   if (pathname.startsWith("/local-seo")) return "local-seo";
   if (pathname.startsWith("/ai-content")) return "publishing";
@@ -1078,7 +1079,8 @@ const agentPageHelp: Record<string, { label: string; purpose: string; prompts: s
   "site-architect": { label: "Site Architect", purpose: "Review recommended pages, hierarchy, URL structure, internal linking, keyword mapping, and dependencies before implementation.", prompts: ["Is this site structure complete?", "Which page should be created first?", "Are any keywords mapped to competing pages?", "How should these pages link together?"] },
   "lead-magnets": { label: "Lead Magnets", purpose: "Connect audience problems, offers, conversion goals, and funnel stages to the most useful lead-magnet concept.", prompts: ["Which lead magnet best fits the audience?", "What should this lead magnet include?", "How will it support the primary goal?", "What is the next production step?"] },
   growth: { label: "Growth Engine", purpose: "Interpret funnel performance, growth constraints, experiments, channel priorities, and the next measurable growth action.", prompts: ["What is the biggest growth constraint?", "Which experiment should run first?", "What metric should I watch next?", "How does this support the primary goal?"] },
-  "gap-analysis": { label: "Gap Analysis", purpose: "Compare current evidence with competitors and desired outcomes to prioritize content, keyword, authority, local, and technical gaps.", prompts: ["What is the highest-impact gap?", "Where do competitors have an advantage?", "Which gaps are realistic to close first?", "Turn the top gap into a next action"] },
+  "seo-growth": { label: "SEO & Growth", purpose: "Open the project's SEO Campaign, Local SEO, Growth Plan, Backlinks & Authority, or AI Citation workspace from one place.", prompts: ["Which SEO and growth module should I open first?", "What is the highest-impact SEO action?", "Which specialist analysis is missing?", "Show the next approved growth action"] },
+  "gap-analysis": { label: "SEO Campaign", purpose: "Combine crawl findings, keyword gaps, Local SEO intelligence, approvals, execution tasks, and measured next actions in one SEO workflow.", prompts: ["What is the highest-impact SEO action?", "Which Local SEO actions are ready for approval?", "Where do competitors have an advantage?", "Turn the top approved gap into an execution task"] },
   "local-seo": { label: "Local SEO", purpose: "Review target-market coverage, Google Business Profile readiness, citations, reviews, local rankings, and location-specific priorities.", prompts: ["Which target market needs attention first?", "What is missing from Local SEO setup?", "How can I improve local visibility?", "Which local task should I prioritize?"] },
   publishing: { label: "Content & Publishing", purpose: "Review content readiness, approval requirements, publishing targets, validation, verification, and rollback safety before anything goes live.", prompts: ["What is ready to publish?", "Which items still need approval?", "What will change when this is published?", "How will publishing be verified?"] },
   social: { label: "Social Strategy", purpose: "Connect project goals, audience, offers, content themes, channels, approvals, and publishing cadence to the next social action.", prompts: ["Which social content should I create next?", "What channel best fits this audience?", "How does this support the project goal?", "What requires approval before publishing?"] },

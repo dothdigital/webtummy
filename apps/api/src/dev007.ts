@@ -1,3 +1,5 @@
+import { splitKeywordEntries } from "@webtummy/core";
+
 export const KEYWORD_GROUP_DEFINITIONS = [
   ["primary", "Primary Keywords"],
   ["buyer_intent", "Buyer Intent"],
@@ -18,7 +20,7 @@ export type KeywordProjectInput = {
 const list = (value: unknown) => Array.isArray(value) ? value.map(String).map((item) => item.trim()).filter(Boolean) : [];
 const clean = (value?: string | null) => value?.trim().replace(/\s+/g, " ") ?? "";
 const isInstruction = (value: string) => /^(find|explore|create|suggest|expand|generate)\b/i.test(value) && /\b(keywords?|topics?|ideas?)\b/i.test(value) && value.split(/\s+/).length > 6;
-const unique = (values: string[]) => [...new Map(values.map((value) => [value.toLowerCase(), value])).values()].filter((value) => value.length >= 3 && !isInstruction(value)).slice(0, 10);
+const unique = (values: string[]) => [...new Map(splitKeywordEntries(values).map((value) => [value.toLowerCase(), value])).values()].filter((value) => value.length >= 3 && !isInstruction(value)).slice(0, 10);
 
 export function keywordIntakeSufficient(project: KeywordProjectInput) {
   const offer = clean(project.businessProfile?.offerSummary);
@@ -28,8 +30,14 @@ export function keywordIntakeSufficient(project: KeywordProjectInput) {
 }
 
 export function buildKeywordGroups(project: KeywordProjectInput, extraTopic?: string | null) {
-  const rawOffer = clean(extraTopic) || clean(project.businessProfile?.offerSummary) || clean(project.niche) || clean(project.opportunities?.find((item) => ["selected", "confirmed"].includes(item.status))?.recommendedOffer) || clean(project.name);
-  const offerTerms = unique(rawOffer.split(/[,;|]/).map((item) => clean(item)).filter(Boolean));
+  const rawOffer = clean(extraTopic) || clean(project.businessProfile?.offerSummary) || clean(project.opportunities?.find((item) => ["selected", "confirmed"].includes(item.status))?.recommendedOffer) || clean(project.name);
+  // Industry/niche terms are discovery suggestions only. They enter the
+  // governed keyword groups for user review; they do not become Website Plan
+  // page owners unless the user approves them and runs Keyword Analysis.
+  const offerTerms = unique([
+    ...rawOffer.split(/[,;|]/),
+    ...clean(project.niche).split(/[,;|]/),
+  ].map((item) => clean(item)).filter(Boolean));
   const offer = offerTerms[0] || rawOffer;
   const audience = clean(project.businessProfile?.targetAudience) || "customers";
   const markets = list(project.targetLocations);
@@ -58,5 +66,5 @@ export function buildKeywordGroups(project: KeywordProjectInput, extraTopic?: st
 }
 
 export function normalizeKeywordList(value: unknown) {
-  return unique(list(value).flatMap((item) => item.split(/[;\n]/).map((part) => part.trim()).filter(Boolean)));
+  return unique(splitKeywordEntries(value));
 }

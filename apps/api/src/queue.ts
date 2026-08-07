@@ -1,6 +1,6 @@
 // API-side BullMQ producer. Enqueues crawl jobs for the worker to consume.
 import { Queue } from "bullmq";
-import { config, CRAWL_QUEUE, KEYWORD_RESEARCH_QUEUE, WEBSITE_BUILDER_QUEUE } from "./config.js";
+import { config, CRAWL_QUEUE, KEYWORD_RESEARCH_QUEUE, LOCAL_GRID_SCAN_QUEUE, LOCAL_SEO_AUDIT_QUEUE, WEBSITE_BUILDER_QUEUE } from "./config.js";
 
 function redisConnectionOptions() {
   const url = new URL(config.redisUrl);
@@ -24,6 +24,12 @@ export type KeywordResearchQueueJobData = {
 };
 
 export const keywordResearchQueue = new Queue<KeywordResearchQueueJobData, unknown, "keyword:run">(KEYWORD_RESEARCH_QUEUE, { connection: queueConnection });
+
+export type LocalSeoAuditQueueJobData = { jobId: string };
+export const localSeoAuditQueue = new Queue<LocalSeoAuditQueueJobData, unknown, "local-seo:audit">(LOCAL_SEO_AUDIT_QUEUE, { connection: queueConnection });
+
+export type LocalGridScanQueueJobData = { scanId: string };
+export const localGridScanQueue = new Queue<LocalGridScanQueueJobData, unknown, "local-grid:scan">(LOCAL_GRID_SCAN_QUEUE, { connection: queueConnection });
 
 export type WebsiteBuilderQueueJobData = { jobId: string };
 export const websiteBuilderQueue = new Queue<WebsiteBuilderQueueJobData, unknown, "website:develop">(WEBSITE_BUILDER_QUEUE, { connection: queueConnection });

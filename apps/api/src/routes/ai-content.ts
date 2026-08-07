@@ -7,6 +7,7 @@ import { requireAuth } from "../middleware.js";
 import { projectClientIdForRequest } from "../project-scope.js";
 import { config } from "../config.js";
 import { billingPlanForClient, hasBillingAccess, normalizePlanCode, planView, requireBillingAccess } from "../billing.js";
+import { approvedStrategyContext } from "../strategy-ai.js";
 
 export const aiContentRouter = Router();
 aiContentRouter.use(requireAuth);
@@ -104,17 +105,18 @@ function schemaInstruction(type: GenerationType) {
   if (type === "page_schema") return "Return JSON with key schemaJsonLd containing valid page-level JSON-LD for this target URL/topic. Prefer WebPage, Article, FAQPage, BreadcrumbList, Service, Product, or LocalBusiness as appropriate. Do not wrap it in script tags.";
   if (type === "domain_schema") return "Return JSON with key schemaJsonLd containing valid domain-level JSON-LD. Prefer Organization, WebSite, LocalBusiness, ProfessionalService, SearchAction, sameAs, contactPoint, and service catalog where appropriate. Do not wrap it in script tags.";
   if (type === "page_llms_txt") return "Return JSON with keys llmsSection, pageSummary, keyFacts, recommendedLinks, and markdown. markdown should be a page-specific llms.txt style section for this target URL.";
-  if (type === "domain_llms_txt") return "Return JSON with keys llmsTxt, sections, priorityPages, sitemapNotes, and maintenanceNotes. llmsTxt should be a complete domain-level llms.txt markdown file.";
+  if (type === "domain_llms_txt") return "Return JSON with keys llmsTxt, sections, priorityPages, sitemapNotes, and maintenanceNotes. llmsTxt must be a complete, publication-ready domain-level llms.txt markdown file. Use only the supplied verified crawled URLs. Never invent or guess an email address, phone number, address, person, credential, claim, or URL. If a fact is not explicitly supplied as verified evidence, omit it entirely. The llmsTxt file must not contain placeholders, example values, 'please verify', TODO/TBD text, editorial instructions, maintenance reminders, or a validation checklist.";
   if (type === "robots_txt") return "Return JSON with keys robotsTxt, sitemapUrl, directives, cautions, and implementationSteps. robotsTxt must be a conservative, valid robots.txt file that keeps intended public pages crawlable, does not invent private paths, and includes the verified sitemap URL when available.";
   if (type === "sitemap") return "Return JSON with keys sitemapXml, urls, urlCount, notes, and implementationSteps. sitemapXml must be a valid XML sitemap built from the provided crawled page URLs only.";
   return "Return JSON with keys aiSearchRecommendations, entityCoverage, llmsTxtSuggestions, contentGaps, schemaSuggestions. Each key should be an array of concise recommendations.";
 }
 
-function buildPrompt(input: z.infer<typeof generationSchema>, domain?: string, verifiedPageUrls: string[] = []) {
+function buildPrompt(input: z.infer<typeof generationSchema>, domain?: string, verifiedPageUrls: string[] = [], verifiedProjectFacts: string[] = [], strategyContract: ReturnType<typeof approvedStrategyContext> = null) {
   return [
     "You are SEnuke AI Content Studio for SEO and AI-search optimization.",
     schemaInstruction(input.type),
     "Use practical, implementation-ready recommendations. Avoid unsupported claims.",
+    strategyContract ? "The approved Strategy contract is the governing direction. Align intent, audience, offer, focus area, CTA, destination, and success signal to it; do not create a disconnected asset." : "No approved Strategy contract was supplied. Keep the asset factual and avoid assuming unapproved direction.",
     `Content type: ${input.type}`,
     `Domain: ${domain ?? "not provided"}`,
     `Topic: ${input.topic}`,
@@ -123,8 +125,27 @@ function buildPrompt(input: z.infer<typeof generationSchema>, domain?: string, v
     `Language: ${input.languageCode}`,
     `Tone: ${input.tone ?? "professional"}`,
     verifiedPageUrls.length ? `Verified crawled website URLs (use only these URLs for sitemap entries and internal references):\n${verifiedPageUrls.join("\n")}` : "",
+    verifiedProjectFacts.length ? `Verified project facts (use these values exactly; omit any public fact not listed here):\n${verifiedProjectFacts.map((fact) => `- ${fact}`).join("\n")}` : "",
+    strategyContract ? `Approved Strategy contract:\n${JSON.stringify(strategyContract).slice(0, 30_000)}` : "",
     input.notes ? `Extra notes: ${input.notes}` : "",
   ].filter(Boolean).join("\n");
+}
+
+function citationValidationFailure(generation: { type: string; resultJson: unknown }) {
+  if (generation.type !== "domain_llms_txt" && generation.type !== "page_llms_txt") return null;
+  const result = generation.resultJson && typeof generation.resultJson === "object" && !Array.isArray(generation.resultJson)
+    ? generation.resultJson as Record<string, unknown>
+    : {};
+  const content = [result.llmsTxt, result.markdown, result.llmsSection].find((value) => typeof value === "string" && value.trim());
+  if (typeof content !== "string" || content.trim().length < 80) return "The generated llms.txt content is incomplete. Create a new version before validation.";
+  if (!/https?:\/\//i.test(content)) return "The generated llms.txt does not contain a verified website URL. Create a new version before validation.";
+  if (/\b(?:example|placeholder|please\s+verify|verify\s+before|todo|tbd)\b|(?:^|\D)555(?:\D|$)/i.test(content)) {
+    return "The generated llms.txt contains placeholder or unverified information. Remove invented values by creating a new version before validation.";
+  }
+  if (/(?:citation validation checklist|ensure that all links|regularly (?:review|update)|maintenance (?:note|reminder))/i.test(content)) {
+    return "The generated llms.txt contains internal review or maintenance instructions instead of a publication-ready file. Create a new version before validation.";
+  }
+  return null;
 }
 
 function exportHtmlValue(value: unknown): string {
@@ -144,7 +165,7 @@ async function openaiJson(prompt: string) {
       "Content-Type": "application/json",
     },
     body: JSON.stringify({
-      model: config.openaiModel,
+      model: config.openaiContentModel,
       temperature: 0.4,
       response_format: { type: "json_object" },
       messages: [
@@ -167,7 +188,7 @@ async function openaiJson(prompt: string) {
   }
   return {
     result: parsed,
-    model: data?.model ?? config.openaiModel,
+    model: data?.model ?? config.openaiContentModel,
     inputTokens: Number(data?.usage?.prompt_tokens ?? 0),
     outputTokens: Number(data?.usage?.completion_tokens ?? 0),
   };
@@ -233,9 +254,49 @@ aiContentRouter.patch("/ai-content/:generationId/citation-validation", async (re
       where: { id: req.params.generationId, clientId: client.id, sourceContext: "ai_citation" },
     });
     if (!generation) return res.status(404).json({ error: "Citation content was not found." });
-    const updated = await prisma.aiContentGeneration.update({
-      where: { id: generation.id },
-      data: { validatedAt: new Date() },
+    const validationFailure = citationValidationFailure(generation);
+    if (validationFailure) return res.status(409).json({ error: validationFailure });
+    const updated = await prisma.$transaction(async (tx) => {
+      const row = await tx.aiContentGeneration.update({ where: { id: generation.id }, data: { validatedAt: new Date() } });
+      if (generation.projectId) {
+        const project = await tx.project.findUnique({ where: { id: generation.projectId }, select: { id: true, clientId: true, websiteId: true } });
+        if (project) {
+          let plan = await tx.executionPlan.findFirst({ where: { projectId: project.id, status: "active" }, orderBy: { createdAt: "asc" } });
+          if (!plan) plan = await tx.executionPlan.create({ data: { projectId: project.id, title: "Publishing workflow", summary: "Shared review, approval, delivery and verification work from platform modules." } });
+          await tx.executionTask.upsert({
+            where: { dedupeKey: `publishing:ai-citation-asset:${generation.id}` },
+            create: {
+              clientId: project.clientId,
+              websiteId: project.websiteId,
+              projectId: project.id,
+              executionPlanId: plan.id,
+              moduleName: "ai_citations",
+              sourceType: "ai_citation_asset",
+              sourceId: generation.sourceRecordId,
+              dedupeKey: `publishing:ai-citation-asset:${generation.id}`,
+              title: `Publish citation asset: ${generation.topic}`,
+              description: `Review and implement the validated ${generation.type.replaceAll("_", " ")} generated from the linked AI Citation evidence block.`,
+              priority: "medium",
+              automationLevel: "prepare",
+              status: "needs_review",
+              requiresApproval: true,
+              manualRequired: true,
+              safetyCategory: "factual_review_required",
+              relatedAssetId: generation.id,
+              actionButtonLabel: "Review Citation Asset",
+              relatedUrl: `/ai-content?projectId=${project.id}&source=ai_citation&reviewOnly=1&generationId=${generation.id}&citationSourceType=${generation.sourceType ?? "recommendation"}&citationSourceId=${generation.sourceRecordId ?? ""}&open=1`,
+              manualInstructions: "Review the exact saved output, use only verified project facts and URLs, approve it, then choose WordPress or a downloadable/manual implementation in Publishing.",
+              approvalSnapshotJson: { publishingWorkflow: { enabled: true, sourceModule: "ai_citations", sourceType: generation.sourceType, sourceRecordId: generation.sourceRecordId, stage: "review" }, generatedContent: { generationId: generation.id, type: generation.type, topic: generation.topic, targetUrl: generation.targetUrl } },
+            },
+            update: {
+              relatedAssetId: generation.id,
+              relatedUrl: `/ai-content?projectId=${project.id}&source=ai_citation&reviewOnly=1&generationId=${generation.id}&citationSourceType=${generation.sourceType ?? "recommendation"}&citationSourceId=${generation.sourceRecordId ?? ""}&open=1`,
+              actionButtonLabel: "Review Citation Asset",
+            },
+          });
+        }
+      }
+      return row;
     });
     res.json({ generation: updated });
   } catch (error) {
@@ -301,9 +362,48 @@ aiContentRouter.post("/ai-content/generate", async (req, res) => {
   try {
     const client = await getClientForRequest(req);
     requireBillingAccess(client);
+    let verifiedProjectFacts: string[] = [];
+    let strategyContract: ReturnType<typeof approvedStrategyContext> = null;
     if (input.projectId) {
-      const project = await prisma.project.findFirst({ where: { id: input.projectId, clientId: client.id }, select: { id: true } });
+      const project = await prisma.project.findFirst({
+        where: { id: input.projectId, clientId: client.id },
+        select: {
+          id: true,
+          businessName: true,
+          websiteUrl: true,
+          businessLocation: true,
+          intakeAnswers: { select: { questionKey: true, answerValue: true } },
+          agencyClient: { select: { name: true, contactEmail: true, contactPhone: true, businessLocations: true } },
+          strategyPlans: { where: { status: "approved" }, orderBy: { version: "desc" }, take: 1 },
+          website: {
+            select: {
+              rootUrl: true,
+              localBusinessProfiles: { orderBy: { updatedAt: "desc" }, take: 1, select: { businessName: true, phone: true, address: true, city: true, region: true, postalCode: true, country: true } },
+            },
+          },
+        },
+      });
       if (!project) return res.status(404).json({ error: "The selected project was not found." });
+      strategyContract = approvedStrategyContext(project.strategyPlans[0]);
+      const answer = (questionKey: string) => {
+        const value = project.intakeAnswers.find((item) => item.questionKey === questionKey)?.answerValue;
+        if (typeof value === "string" && value.trim()) return value.trim();
+        if (value && typeof value === "object" && !Array.isArray(value) && "value" in value && typeof value.value === "string" && value.value.trim()) return value.value.trim();
+        return null;
+      };
+      const local = project.website?.localBusinessProfiles[0];
+      const localAddress = local ? [local.address, local.city, local.region, local.postalCode, local.country].filter(Boolean).join(", ") : null;
+      const agencyAddress = Array.isArray(project.agencyClient?.businessLocations) ? project.agencyClient.businessLocations.map(String).find((value) => value.trim()) : null;
+      const facts: Array<[string, string | null | undefined]> = [
+        ["Business name", local?.businessName || project.businessName || project.agencyClient?.name],
+        ["Public email", answer("client_email") || project.agencyClient?.contactEmail],
+        ["Public phone", local?.phone || project.agencyClient?.contactPhone],
+        ["Business address", localAddress || project.businessLocation || agencyAddress],
+        ["Website", project.website?.rootUrl || project.websiteUrl],
+      ];
+      verifiedProjectFacts = facts
+        .filter((entry): entry is [string, string] => typeof entry[1] === "string" && Boolean(entry[1].trim()))
+        .map(([label, value]) => `${label}: ${value}`);
     }
     if (input.sourceContext === "ai_citation" && input.projectId && input.sourceType && input.sourceRecordId) {
       if (!await citationSourceExists(input.projectId, input.sourceType, input.sourceRecordId)) {
@@ -353,7 +453,7 @@ aiContentRouter.post("/ai-content/generate", async (req, res) => {
     if (input.type === "sitemap" && !verifiedPageUrls.length) {
       return res.status(409).json({ error: "A sitemap cannot be generated safely without verified website URLs. Run Site Analysis first, then return to this citation signal." });
     }
-    const prompt = buildPrompt(input, website?.domain, verifiedPageUrls);
+    const prompt = buildPrompt(input, website?.domain, verifiedPageUrls, input.sourceContext === "ai_citation" ? verifiedProjectFacts : [], strategyContract);
     const generated = await openaiJson(prompt);
     const tokens = generated.inputTokens + generated.outputTokens;
 
@@ -398,6 +498,12 @@ aiContentRouter.post("/ai-content/generate", async (req, res) => {
         await prisma.growthContentOpportunity.updateMany({
           where: { id: linkedTask.sourceId, ...(linkedTask.projectId ? { projectId: linkedTask.projectId } : {}) },
           data: { generationId: record.id, lifecycleStatus: linkedTask.requiresApproval ? "needs_review" : "scheduled" },
+        });
+      }
+      if (linkedTask.sourceType === "seo_fix_queue_item" && linkedTask.sourceId) {
+        await prisma.seoFixQueueItem.updateMany({
+          where: { id: linkedTask.sourceId, ...(linkedTask.projectId ? { projectId: linkedTask.projectId } : {}) },
+          data: { aiOutputId: record.id, approvalStatus: linkedTask.requiresApproval ? "content_ready_for_review" : "ready_to_publish" },
         });
       }
     }

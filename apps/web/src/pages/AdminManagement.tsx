@@ -33,8 +33,13 @@ const adminLinks = [
     to: "/admin/usage-controls",
   },
   {
-    title: "Plan Management",
-    description: "Create and maintain billing plans, article limits, pricing, and features.",
+    title: "Commercial Admin",
+    description: "Manage JVZoo mappings, versioned plans and policies, workspace subscriptions, entitlements, reconciliation, and audit history.",
+    to: "/admin/commercial",
+  },
+  {
+    title: "Legacy Plan Management",
+    description: "Compatibility controls for the earlier client-level plan records during the workspace commercial migration.",
     to: "/admin/plans",
   },
   {

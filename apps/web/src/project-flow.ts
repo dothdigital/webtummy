@@ -31,11 +31,11 @@ export function nextProjectFlowStep(project: GuidedProject) {
 
   if (!workflowStepComplete(project, "keyword_analysis")) {
     return {
-      title: "Run Keyword Analysis",
-      description: "Next, SEnuke AI should research target keywords, buyer-intent terms, topical clusters, competitor gaps, difficulty, opportunity score, and revenue potential before strategy. A new website does not require a crawl for this step.",
-      actionLabel: "Run Keyword Analysis",
+      title: "Complete Keyword Intelligence",
+      description: "SENuke AI will discover and validate primary, supporting, long-tail, question, commercial, and local search directions, then evaluate intent, demand, competition, topic clusters, entities, AI-search opportunities, and page direction. A new website does not require a crawl for this step.",
+      actionLabel: "Start Keyword Intelligence",
       to: `/keywords?projectId=${project.id}`,
-      badge: "Step 3: Keywords",
+      badge: "Step 3: Keyword Intelligence",
     };
   }
   if (siteAnalysisRequired && !workflowStepComplete(project, "site_analysis")) {

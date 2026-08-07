@@ -20,8 +20,8 @@ export const PLAN_FEATURES = [
   "Unlimited FAQ & schema",
 ];
 
-export function trialEndsFrom(start = new Date()) {
-  return new Date(start.getTime() + TRIAL_DAYS * 24 * 60 * 60 * 1000);
+export function trialEndsFrom(start = new Date(), trialDays = TRIAL_DAYS) {
+  return new Date(start.getTime() + Math.max(1, Math.floor(trialDays)) * 24 * 60 * 60 * 1000);
 }
 
 export async function ensureDefaultBillingPlans() {

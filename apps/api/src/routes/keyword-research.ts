@@ -5,6 +5,7 @@ import { Worker } from "bullmq";
 import { z } from "zod";
 import { Prisma, prisma } from "@webtummy/db";
 import {
+  approvedKeywordEntries,
   detectKeywordLocations,
   keywordResearchRequestIdentity,
   normalizeKeywordPhrase,
@@ -15,6 +16,9 @@ import { requireAuth } from "../middleware.js";
 import { projectClientIdForRequest } from "../project-scope.js";
 import { config, KEYWORD_RESEARCH_QUEUE } from "../config.js";
 import { keywordResearchQueue, queueConnection, type KeywordResearchQueueJobData } from "../queue.js";
+import { centralAiJson } from "../central-ai-service.js";
+import { approvedStrategyContext } from "../strategy-ai.js";
+import { canonicalGeographicLocationLabel, isPlausibleGeographicTargetMarket } from "../project-location.js";
 
 export const keywordResearchRouter = Router();
 keywordResearchRouter.use(requireAuth);
@@ -22,6 +26,10 @@ keywordResearchRouter.use(requireAuth);
 const SEARCH_PROVIDER_KEY = "data" + "forseo";
 
 const KEYWORD_REFRESH_COOLDOWN_MS = 24 * 60 * 60 * 1000;
+const KEYWORD_RESEARCH_RUNNING_TIMEOUT_MS = 30 * 60 * 1000;
+const KEYWORD_RESEARCH_WAITING_TIMEOUT_MS = 2 * 60 * 60 * 1000;
+const KEYWORD_RESEARCH_PROVIDER_TIMEOUT_MS = Math.max(60_000, Math.min(300_000, config.keywordResearchProviderTimeoutMs));
+const KEYWORD_METRICS_VERSION = 4;
 const UNRESTRICTED_REFRESH_EMAILS = new Set(["manishjetly@gmail.com"]);
 const refreshableStatuses = ["queued", "running", "completed"];
 
@@ -37,6 +45,18 @@ const createSchema = z.object({
   device: z.enum(["desktop", "mobile"]).default("desktop"),
   serpDepth: z.number().int().min(1).max(100).default(20),
   keywordLimit: z.number().int().min(1).max(100).default(25),
+});
+
+const locationPreflightSchema = z.object({
+  locationNames: z.array(z.string().trim().min(2).max(180)).min(1).max(100),
+});
+
+const batchCheckSchema = createSchema.omit({ projectId: true, websiteId: true, clientId: true });
+const batchCreateSchema = z.object({
+  projectId: z.string().optional().nullable(),
+  websiteId: z.string().optional().nullable(),
+  clientId: z.string().optional().nullable(),
+  checks: z.array(batchCheckSchema).min(1).max(config.keywordResearchBatchMaxChecks),
 });
 
 const manualRankSchema = z.object({
@@ -81,6 +101,13 @@ type SearchDataPayload = {
     status_message?: string;
     result?: unknown[];
   }[];
+};
+
+type SearchProviderLocation = {
+  location_code: number;
+  location_name: string;
+  country_iso_code: string;
+  location_type: string;
 };
 
 type KeywordSuggestion = { keyword: string; reason: string };
@@ -186,6 +213,9 @@ type SearchLocation = {
   locationType: "Country" | "Region" | "State" | "City" | "Custom";
   labs: { location_code: number };
   serp: { location_code: number } | { location_name: string } | { location_coordinate: string };
+  keywordMetrics: { location_code: number } | { location_name: string };
+  metricScopeName?: string;
+  metricSource?: "selected_location" | "parent_city";
 };
 
 type ParsedCompetitor = {
@@ -214,6 +244,19 @@ type KeywordResearchExecutionInput = {
 };
 
 type ScopedKeywordWebsite = { id: string; clientId: string; domain: string; rootUrl: string };
+type KeywordCreateInput = z.infer<typeof createSchema>;
+type KeywordResearchProject = { id: string; clientId: string; websiteId: string | null; targetLocations: Prisma.JsonValue };
+type KeywordResearchScope = {
+  clientId: string;
+  project: KeywordResearchProject | null;
+  website: ScopedKeywordWebsite | null;
+};
+
+class KeywordResearchHttpError extends Error {
+  constructor(public status: number, message: string, public details?: Record<string, unknown>) {
+    super(message);
+  }
+}
 
 function cleanSuggestionText(value: string): string {
   return value.trim().replace(/,+$/g, "").replace(/\s+/g, " ").trim();
@@ -244,28 +287,12 @@ function normalizedWorkspaceType(value: string | null | undefined): KeywordSugge
 }
 
 async function openaiKeywordSuggestions(prompt: string): Promise<unknown> {
-  if (!config.openaiApiKey) throw new Error("openai_not_configured");
-  const response = await fetch("https://api.openai.com/v1/chat/completions", {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${config.openaiApiKey}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      model: config.openaiModel,
-      temperature: 0.35,
-      response_format: { type: "json_object" },
-      messages: [
-        { role: "system", content: "You return valid JSON only. No markdown fences." },
-        { role: "user", content: prompt },
-      ],
-    }),
+  const generated = await centralAiJson({
+    system: "You create evidence-grounded keyword suggestions and return valid structured JSON only.",
+    prompt,
+    temperature: 0.35,
   });
-  const data = await response.json().catch(() => ({})) as any;
-  if (!response.ok) throw new Error(typeof data?.error?.message === "string" ? data.error.message : "OpenAI request failed");
-  const content = data?.choices?.[0]?.message?.content;
-  if (typeof content !== "string") throw new Error("OpenAI returned no content");
-  return JSON.parse(content);
+  return generated.result;
 }
 
 function parseKeywordSuggestions(value: unknown, existingKeywords: Set<string>, limit: number): KeywordSuggestion[] {
@@ -514,8 +541,9 @@ async function suggestKeywordsForWebsite(
         where: { status: "approved" },
         orderBy: { updatedAt: "desc" },
         take: 1,
-        select: { strategySummary: true, audienceProfile: true, offerRecommendation: true, seoStrategy: true },
+        select: { id: true, version: true, status: true, strategySummary: true, audienceProfile: true, offerRecommendation: true, seoStrategy: true, prioritizedRecommendations: true },
       },
+      keywordGroups: { where: { status: "approved" }, select: { status: true, keywords: true } },
     },
   });
   const workspaceType = normalizedWorkspaceType(project?.client.name);
@@ -535,6 +563,8 @@ async function suggestKeywordsForWebsite(
     existingKeywords.add(normalizeSuggestionKeyword(run.seedKeyword));
     for (const idea of run.ideas) existingKeywords.add(normalizeSuggestionKeyword(idea.keyword));
   }
+  const approvedKeywords = approvedKeywordEntries(project?.keywordGroups ?? []);
+  for (const keyword of approvedKeywords) existingKeywords.add(normalizeSuggestionKeyword(keyword));
   for (const keyword of excludeKeywords) existingKeywords.add(normalizeSuggestionKeyword(keyword));
 
   const topPages = profile.crawlJobs[0]?.pages ?? [];
@@ -598,6 +628,8 @@ async function suggestKeywordsForWebsite(
     `Constraints/niches to avoid: ${jsonStringList(project?.businessProfile?.constraints).join(", ") || "not provided"}`,
     `Selected opportunity: ${project?.opportunities[0]?.name ?? "not selected"}`,
     `Approved SEO strategy: ${project?.strategyPlans[0]?.seoStrategy ?? "not approved"}`,
+    `Already approved Primary and Secondary keywords: ${approvedKeywords.join(", ") || "none"}`,
+    `Shared approved Strategy contract: ${JSON.stringify(approvedStrategyContext(project?.strategyPlans[0]))}`,
     `Selected suggestion country: ${selectedLocation.country || "not provided"}`,
     `Selected suggestion region/state: ${selectedLocation.region || "not provided"}`,
     `Selected suggestion cities: ${selectedLocation.cities || "not provided"}`,
@@ -643,6 +675,153 @@ async function keywordWebsiteForRequest(req: Request, websiteId: string, clientI
   return { website: null, mismatch: exists };
 }
 
+async function keywordResearchScopeForRequest(req: Request, input: Pick<KeywordCreateInput, "projectId" | "websiteId" | "clientId">): Promise<KeywordResearchScope> {
+  let clientId = await projectClientIdForRequest(req, input.clientId);
+  let project: KeywordResearchProject | null = null;
+  if (input.projectId) {
+    project = await prisma.project.findFirst({
+      where: { id: input.projectId, status: { not: "deleted" }, ...(clientId ? { clientId } : {}) },
+      select: { id: true, clientId: true, websiteId: true, targetLocations: true },
+    });
+    if (!project) throw new KeywordResearchHttpError(404, "project not found");
+    clientId = project.clientId;
+  }
+
+  let website: ScopedKeywordWebsite | null = null;
+  const requestedWebsiteId = input.websiteId || project?.websiteId || null;
+  if (requestedWebsiteId) {
+    const scoped = await keywordWebsiteForRequest(req, requestedWebsiteId, clientId);
+    website = scoped.website;
+    if (!website) {
+      if (scoped.mismatch) {
+        throw new KeywordResearchHttpError(403, "website belongs to another client context", {
+          domain: scoped.mismatch.domain,
+          websiteId: scoped.mismatch.id,
+        });
+      }
+      throw new KeywordResearchHttpError(404, "website not found");
+    }
+    clientId = website.clientId;
+  }
+  if (project && website && project.websiteId !== website.id) {
+    throw new KeywordResearchHttpError(400, "website does not belong to the selected project");
+  }
+  if (!clientId) throw new KeywordResearchHttpError(400, "clientId required");
+  return { clientId, project, website };
+}
+
+function keywordResearchTargets(input: KeywordCreateInput, scope: KeywordResearchScope) {
+  const connectedDomain = normalizeDomain(scope.website?.domain) || domainFromUrl(scope.website?.rootUrl);
+  const targetDomain = scope.project
+    ? connectedDomain
+    : normalizeDomain(input.targetDomain) || domainFromUrl(input.targetUrl) || connectedDomain;
+  const inputTargetUrlDomain = domainFromUrl(input.targetUrl);
+  const targetUrl = scope.project
+    ? targetDomain && input.targetUrl && inputTargetUrlDomain === targetDomain ? input.targetUrl : null
+    : input.targetUrl || null;
+  return { targetDomain, targetUrl };
+}
+
+function validateKeywordLocationPair(input: KeywordCreateInput, scope: KeywordResearchScope, location: SearchLocation) {
+  const projectMarkets = scope.project && Array.isArray(scope.project.targetLocations)
+    ? scope.project.targetLocations.map(String).flatMap((item) => item.split(",")).map((item) => item.trim()).filter(Boolean)
+    : [];
+  const explicitSeedMarkets = detectKeywordLocations(input.seedKeyword, projectMarkets);
+  const requestedMarket = normalizeKeywordPhrase(location.displayName.split(",")[0] ?? location.displayName);
+  if (explicitSeedMarkets.length && !explicitSeedMarkets.some((market) => normalizeKeywordPhrase(market) === requestedMarket)) {
+    throw new KeywordResearchHttpError(400, `The localized seed “${input.seedKeyword}” can only be analyzed in its matching market (${explicitSeedMarkets.join(", ")}). Remove the location from the seed to analyze it across multiple markets.`);
+  }
+}
+
+function keywordResearchRequestKey(input: KeywordCreateInput, scope: KeywordResearchScope, location: SearchLocation, targetDomain: string | null) {
+  const researchIdentity = keywordResearchRequestIdentity({
+    keyword: input.seedKeyword,
+    location: location.displayName,
+    languageCode: input.languageCode,
+    device: input.device,
+  });
+  return createHash("sha256").update(JSON.stringify({
+    projectId: scope.project?.id ?? null,
+    websiteId: scope.website?.id ?? null,
+    clientId: scope.clientId,
+    researchIdentity,
+    serpDepth: input.serpDepth,
+    keywordLimit: input.keywordLimit,
+    targetDomain,
+    keywordMetricsVersion: KEYWORD_METRICS_VERSION,
+  })).digest("hex");
+}
+
+async function assertKeywordResearchQueueCapacity(scope: { clientId: string; project: { id: string } | null }, newCheckCount = 1) {
+  const projectWhere = scope.project?.id ? { projectId: scope.project.id } : { clientId: scope.clientId };
+  const [projectActive, globalActive] = await Promise.all([
+    prisma.keywordResearchRun.count({ where: { ...projectWhere, status: { in: ["queued", "running"] } } }),
+    prisma.keywordResearchRun.count({ where: { status: { in: ["queued", "running"] } } }),
+  ]);
+  if (projectActive + newCheckCount > config.keywordResearchProjectActiveLimit) {
+    throw new KeywordResearchHttpError(429, `This project already has ${projectActive} keyword-location checks in progress. Wait for the queue to advance, then retry only the remaining checks.`, {
+      active: projectActive,
+      limit: config.keywordResearchProjectActiveLimit,
+    });
+  }
+  if (globalActive + newCheckCount > config.keywordResearchGlobalActiveLimit) {
+    throw new KeywordResearchHttpError(429, "Keyword research is currently at processing capacity. Your completed checks are preserved; retry the remaining checks when capacity is available.", {
+      active: globalActive,
+      limit: config.keywordResearchGlobalActiveLimit,
+    });
+  }
+  return { projectActive, globalActive };
+}
+
+async function createOrReuseKeywordResearchRun(input: KeywordCreateInput, scope: KeywordResearchScope, location: SearchLocation, bypassRefreshLimit: boolean, enforceCapacity = true) {
+  validateKeywordLocationPair(input, scope, location);
+  const { targetDomain, targetUrl } = keywordResearchTargets(input, scope);
+  const requestKey = keywordResearchRequestKey(input, scope, location, targetDomain);
+  const executionInput: KeywordResearchExecutionInput = {
+    seedKeyword: input.seedKeyword,
+    targetUrl,
+    targetDomain,
+    location,
+    languageCode: input.languageCode,
+    device: input.device,
+    serpDepth: input.serpDepth,
+    keywordLimit: input.keywordLimit,
+  };
+  const existingRun = await prisma.keywordResearchRun.findFirst({ where: { requestKey }, orderBy: { createdAt: "desc" } });
+  if (existingRun && !["failed", "cancelled", "canceled"].includes(existingRun.status)) {
+    return { run: withRefreshState(existingRun, bypassRefreshLimit), reused: true, retried: false };
+  }
+  if (enforceCapacity) await assertKeywordResearchQueueCapacity(scope);
+
+  const run = await prisma.keywordResearchRun.create({
+    data: {
+      requestKey,
+      clientId: scope.clientId,
+      projectId: scope.project?.id ?? null,
+      websiteId: scope.website?.id ?? null,
+      seedKeyword: input.seedKeyword.trim().replace(/\s+/g, " "),
+      targetUrl,
+      targetDomain,
+      locationName: canonicalGeographicLocationLabel(location.displayName),
+      languageCode: input.languageCode,
+      device: input.device,
+      serpDepth: input.serpDepth,
+      keywordLimit: input.keywordLimit,
+      status: "queued",
+    },
+  });
+  try {
+    await enqueueKeywordResearchCompletion(run.id, executionInput);
+  } catch (error) {
+    await prisma.keywordResearchRun.updateMany({
+      where: { id: run.id, status: "queued" },
+      data: { status: "failed", error: "Keyword research could not enter the processing queue. Retry this exact check.", completedAt: new Date() },
+    });
+    throw error;
+  }
+  return { run: withRefreshState(run, bypassRefreshLimit), reused: Boolean(existingRun), retried: Boolean(existingRun) };
+}
+
 async function scopedRun(req: Request, id: string) {
   const clientId = await projectClientIdForRequest(req);
   const projectId = typeof req.query.projectId === "string" ? req.query.projectId.trim() : "";
@@ -658,8 +837,19 @@ async function scopedRun(req: Request, id: string) {
   return run ? withRefreshState(withRelevantIdeas(run), bypassRefreshLimit) : null;
 }
 
-function publicKeywordResearchError(message: string): { status: number; message: string } {
+function publicKeywordResearchError(message: string, phase: "location" | "research" = "research"): { status: number; message: string } {
   const normalized = message.toLowerCase();
+  if (/timed? out|timeout|aborted due to timeout/.test(normalized)) {
+    return phase === "location"
+      ? { status: 503, message: "The search provider took too long to verify this location. No research job was started. Please retry." }
+      : { status: 503, message: "The search provider did not complete this check after automatic retries. Completed checks were preserved; retry this exact check." };
+  }
+  if (normalized.includes("unambiguous provider location") || normalized.includes("do not support the country")) {
+    return { status: 422, message: "This is not one supported exact research location. Choose one city, region, or country per location and try again." };
+  }
+  if (normalized.includes("exact location metrics")) {
+    return { status: 502, message: "Exact metrics were unavailable for this location. No country fallback was saved. Retry the location analysis." };
+  }
   if (normalized.includes("invalid field") && normalized.includes("location")) {
     return { status: 400, message: "This search location is not supported. Choose a country or a supported city, then try again." };
   }
@@ -677,109 +867,171 @@ keywordResearchRouter.post("/keyword-research", async (req, res) => {
   if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() });
   const input = parsed.data;
   const bypassRefreshLimit = await canBypassKeywordRefreshLimit(req);
-
-  let clientId = await projectClientIdForRequest(req, input.clientId);
-  let project: { id: string; clientId: string; websiteId: string | null; targetLocations: Prisma.JsonValue } | null = null;
-  if (input.projectId) {
-    project = await prisma.project.findFirst({
-      where: { id: input.projectId, status: { not: "deleted" }, ...(clientId ? { clientId } : {}) },
-      select: { id: true, clientId: true, websiteId: true, targetLocations: true },
-    });
-    if (!project) return res.status(404).json({ error: "project not found" });
-    clientId = project.clientId;
+  try {
+    const scope = await keywordResearchScopeForRequest(req, input);
+    const location = await resolveExactSearchLocation(input.locationName, input.seedKeyword);
+    const result = await createOrReuseKeywordResearchRun(input, scope, location, bypassRefreshLimit);
+    return res.status(result.run.status === "completed" ? 200 : 202).json(result);
+  } catch (error) {
+    if (error instanceof KeywordResearchHttpError) return res.status(error.status).json({ error: error.message, ...(error.details ?? {}) });
+    const publicError = publicKeywordResearchError(error instanceof Error ? error.message : "Exact location metrics could not be resolved.", "location");
+    return res.status(publicError.status).json({ error: publicError.message });
   }
-  let website: ScopedKeywordWebsite | null = null;
-  const requestedWebsiteId = input.websiteId || project?.websiteId || null;
-  if (requestedWebsiteId) {
-    const scoped = await keywordWebsiteForRequest(req, requestedWebsiteId, clientId);
-    website = scoped.website;
-    if (!website) {
-      if (scoped.mismatch) {
-        return res.status(403).json({
-          error: "website belongs to another client context",
-          domain: scoped.mismatch.domain,
-          websiteId: scoped.mismatch.id,
-        });
-      }
-      return res.status(404).json({ error: "website not found" });
+});
+
+keywordResearchRouter.post("/keyword-research/batch", async (req, res) => {
+  const parsed = batchCreateSchema.safeParse(req.body ?? {});
+  if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() });
+  const bypassRefreshLimit = await canBypassKeywordRefreshLimit(req);
+  let scope: KeywordResearchScope;
+  try {
+    scope = await keywordResearchScopeForRequest(req, parsed.data);
+  } catch (error) {
+    if (error instanceof KeywordResearchHttpError) return res.status(error.status).json({ error: error.message, ...(error.details ?? {}) });
+    throw error;
+  }
+
+  const rawChecks: KeywordCreateInput[] = parsed.data.checks.map((check) => ({
+    ...check,
+    projectId: parsed.data.projectId ?? null,
+    websiteId: parsed.data.websiteId ?? null,
+    clientId: parsed.data.clientId ?? null,
+  }));
+  const uniqueRequestedLocations = [...new Map(rawChecks.map((check) => [
+    canonicalGeographicLocationLabel(check.locationName).toLocaleLowerCase(),
+    check.locationName,
+  ])).values()];
+  const resolvedLocations = new Map<string, SearchLocation>();
+  const invalidLocations: Array<{ location: string; reason: string }> = [];
+  await Promise.all(uniqueRequestedLocations.map(async (requested) => {
+    try {
+      const location = await resolveExactSearchLocation(requested);
+      resolvedLocations.set(canonicalGeographicLocationLabel(requested).toLocaleLowerCase(), location);
+    } catch (error) {
+      const publicError = publicKeywordResearchError(error instanceof Error ? error.message : "The location could not be validated.", "location");
+      invalidLocations.push({ location: requested, reason: publicError.message });
     }
-    clientId = website.clientId;
+  }));
+  if (invalidLocations.length) {
+    return res.status(422).json({
+      error: `Review the research locations before starting this batch. ${invalidLocations.map((item) => `${item.location}: ${item.reason}`).join(" ")}`,
+      invalid: invalidLocations,
+      accepted: [],
+    });
   }
-  if (project && website && project.websiteId !== website.id) {
-    return res.status(400).json({ error: "website does not belong to the selected project" });
+
+  const validatedChecks = new Map<string, { input: KeywordCreateInput; location: SearchLocation }>();
+  const invalidChecks: Array<{ keyword: string; location: string; reason: string }> = [];
+  for (const input of rawChecks) {
+    const location = resolvedLocations.get(canonicalGeographicLocationLabel(input.locationName).toLocaleLowerCase());
+    if (!location) continue;
+    try {
+      validateKeywordLocationPair(input, scope, location);
+      const identity = keywordResearchRequestIdentity({ keyword: input.seedKeyword, location: location.displayName, languageCode: input.languageCode, device: input.device });
+      if (!validatedChecks.has(identity)) validatedChecks.set(identity, { input, location });
+    } catch (error) {
+      invalidChecks.push({
+        keyword: input.seedKeyword,
+        location: input.locationName,
+        reason: error instanceof Error ? error.message : "This keyword-location pair is invalid.",
+      });
+    }
   }
-  if (!clientId) return res.status(400).json({ error: "clientId required" });
-  const connectedDomain = normalizeDomain(website?.domain) || domainFromUrl(website?.rootUrl);
-  // Guided projects may only send ranking targets belonging to their connected website.
-  // A manually supplied or stale workspace domain must never leak into a no-website project.
-  const targetDomain = project
-    ? connectedDomain
-    : normalizeDomain(input.targetDomain) || domainFromUrl(input.targetUrl) || connectedDomain;
-  const inputTargetUrlDomain = domainFromUrl(input.targetUrl);
-  const targetUrl = project
-    ? targetDomain && input.targetUrl && inputTargetUrlDomain === targetDomain ? input.targetUrl : null
-    : input.targetUrl || null;
-  const location = resolveSearchLocation(input.locationName, input.seedKeyword);
-  const projectMarkets = project && Array.isArray(project.targetLocations)
-    ? project.targetLocations.map(String).flatMap((item) => item.split(",")).map((item) => item.trim()).filter(Boolean)
-    : [];
-  const explicitSeedMarkets = detectKeywordLocations(input.seedKeyword, projectMarkets);
-  const requestedMarket = normalizeKeywordPhrase(location.displayName.split(",")[0] ?? location.displayName);
-  if (explicitSeedMarkets.length && !explicitSeedMarkets.some((market) => normalizeKeywordPhrase(market) === requestedMarket)) {
-    return res.status(400).json({ error: `The localized seed “${input.seedKeyword}” can only be analyzed in its matching market (${explicitSeedMarkets.join(", ")}). Remove the location from the seed to analyze it across multiple markets.` });
+  if (invalidChecks.length) {
+    return res.status(422).json({
+      error: `Review the keyword and location mapping before starting this batch. ${invalidChecks.map((item) => `${item.keyword} · ${item.location}: ${item.reason}`).join(" ")}`,
+      invalid: invalidChecks,
+      accepted: [],
+    });
   }
-  const researchIdentity = keywordResearchRequestIdentity({
-    keyword: input.seedKeyword,
-    location: location.displayName,
-    languageCode: input.languageCode,
-    device: input.device,
+
+  const checks = [...validatedChecks.values()];
+  const requestKeys = checks.map(({ input, location }) => {
+    const { targetDomain } = keywordResearchTargets(input, scope);
+    return keywordResearchRequestKey(input, scope, location, targetDomain);
   });
-  const requestKey = createHash("sha256").update(JSON.stringify({
-    projectId: project?.id ?? null,
-    websiteId: website?.id ?? null,
-    clientId,
-    researchIdentity,
-    serpDepth: input.serpDepth,
-    keywordLimit: input.keywordLimit,
-    targetDomain,
-  })).digest("hex");
-
-  const existingRun = await prisma.keywordResearchRun.findFirst({ where: { requestKey }, orderBy: { createdAt: "desc" } });
-  if (existingRun) {
-    return res.status(existingRun.status === "completed" ? 200 : 202).json({ run: withRefreshState(existingRun, bypassRefreshLimit), reused: true });
+  const existingRuns = requestKeys.length ? await prisma.keywordResearchRun.findMany({
+    where: { requestKey: { in: requestKeys } },
+    orderBy: { createdAt: "desc" },
+    select: { requestKey: true, status: true },
+  }) : [];
+  const latestExistingByKey = new Map<string, { requestKey: string | null; status: string }>();
+  for (const run of existingRuns) {
+    if (run.requestKey && !latestExistingByKey.has(run.requestKey)) latestExistingByKey.set(run.requestKey, run);
+  }
+  const newCheckCount = requestKeys.filter((requestKey) => {
+    const existing = latestExistingByKey.get(requestKey);
+    return !existing || ["failed", "cancelled", "canceled"].includes(existing.status);
+  }).length;
+  const activeWhere = scope.project?.id ? { projectId: scope.project.id } : { clientId: scope.clientId };
+  const [projectActive, globalActive] = await Promise.all([
+    prisma.keywordResearchRun.count({ where: { ...activeWhere, status: { in: ["queued", "running"] } } }),
+    prisma.keywordResearchRun.count({ where: { status: { in: ["queued", "running"] } } }),
+  ]);
+  if (projectActive + newCheckCount > config.keywordResearchProjectActiveLimit) {
+    return res.status(429).json({
+      error: `This project already has ${projectActive} keyword-location checks in progress. Start at most ${Math.max(0, config.keywordResearchProjectActiveLimit - projectActive)} more after the current queue advances.`,
+      limit: config.keywordResearchProjectActiveLimit,
+      active: projectActive,
+      requested: newCheckCount,
+    });
+  }
+  if (globalActive + newCheckCount > config.keywordResearchGlobalActiveLimit) {
+    return res.status(503).json({
+      error: "Keyword research is at processing capacity. Existing checks are safe; try this batch again after the queue advances.",
+      limit: config.keywordResearchGlobalActiveLimit,
+      active: globalActive,
+      requested: newCheckCount,
+    });
   }
 
-  const run = await prisma.keywordResearchRun.create({
-    data: {
-      requestKey,
-      clientId,
-      projectId: project?.id ?? null,
-      websiteId: website?.id ?? null,
-      seedKeyword: input.seedKeyword.trim().replace(/\s+/g, " "),
-      targetUrl,
-      targetDomain,
-      locationName: location.displayName,
-      languageCode: input.languageCode,
-      device: input.device,
-      serpDepth: input.serpDepth,
-      status: "queued",
+  const accepted: Array<{ run: Awaited<ReturnType<typeof createOrReuseKeywordResearchRun>>["run"]; requestedLocation: string; resolvedLocation: string; reused: boolean; retried: boolean }> = [];
+  const failed: Array<{ keyword: string; location: string; reason: string }> = [];
+  for (const { input, location } of checks) {
+    try {
+      const result = await createOrReuseKeywordResearchRun(input, scope, location, bypassRefreshLimit, false);
+      accepted.push({
+        ...result,
+        requestedLocation: input.locationName,
+        resolvedLocation: location.displayName,
+      });
+    } catch (error) {
+      failed.push({
+        keyword: input.seedKeyword,
+        location: input.locationName,
+        reason: error instanceof Error ? error.message : "The check could not enter the processing queue.",
+      });
+    }
+  }
+  return res.status(accepted.some((item) => item.run.status !== "completed") ? 202 : 200).json({
+    accepted,
+    failed,
+    summary: {
+      requested: rawChecks.length,
+      unique: checks.length,
+      queued: accepted.filter((item) => ["queued", "running"].includes(item.run.status)).length,
+      reused: accepted.filter((item) => item.reused && !item.retried).length,
+      retried: accepted.filter((item) => item.retried).length,
+      failed: failed.length,
     },
   });
-  const executionInput: KeywordResearchExecutionInput = {
-    seedKeyword: input.seedKeyword,
-    targetUrl,
-    targetDomain,
-    location,
-    languageCode: input.languageCode,
-    device: input.device,
-    serpDepth: input.serpDepth,
-    keywordLimit: input.keywordLimit,
-  };
+});
 
-  // Return the persisted run immediately. The shared background-job center can
-  // now track it globally while provider and competitor work continues.
-  await enqueueKeywordResearchCompletion(run.id, executionInput);
-  res.status(202).json({ run: withRefreshState(run, bypassRefreshLimit) });
+keywordResearchRouter.post("/keyword-research/validate-locations", async (req, res) => {
+  const parsed = locationPreflightSchema.safeParse(req.body ?? {});
+  if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() });
+  const uniqueLocations = [...new Map(parsed.data.locationNames.map((location) => [location.toLocaleLowerCase(), location])).values()];
+  const valid: Array<{ requested: string; resolved: string; metricScope: string }> = [];
+  const invalid: Array<{ requested: string; reason: string }> = [];
+  for (const requested of uniqueLocations) {
+    try {
+      const location = await resolveExactSearchLocation(requested);
+      valid.push({ requested, resolved: location.displayName, metricScope: location.metricScopeName });
+    } catch (error) {
+      invalid.push({ requested, reason: publicKeywordResearchError(error instanceof Error ? error.message : "The location could not be validated.", "location").message });
+    }
+  }
+  return res.json({ valid, invalid, ready: invalid.length === 0 });
 });
 
 keywordResearchRouter.post("/keyword-research/suggestions", async (req, res) => {
@@ -882,7 +1134,38 @@ keywordResearchRouter.get("/keyword-research/domain-backlink-links", async (req,
 keywordResearchRouter.get("/keyword-research/:id", async (req, res) => {
   const run = await scopedRun(req, req.params.id);
   if (!run) return res.status(404).json({ error: "keyword research run not found" });
-  res.json({ run });
+  res.json({ run: { ...run, locationName: displaySearchProviderLocation(run.locationName) } });
+});
+
+keywordResearchRouter.post("/keyword-research/:id/cancel", async (req, res) => {
+  const run = await scopedRun(req, req.params.id);
+  if (!run) return res.status(404).json({ error: "keyword research run not found" });
+  if (!["queued", "running"].includes(run.status)) {
+    return res.status(409).json({ error: "Only queued or running keyword research can be cancelled." });
+  }
+  await prisma.keywordResearchRun.update({
+    where: { id: run.id },
+    data: {
+      status: "cancelled",
+      locationName: canonicalGeographicLocationLabel(run.locationName),
+      error: "Keyword research was cancelled. Start the analysis again when ready.",
+      completedAt: new Date(),
+    },
+  });
+  const queueJob = await keywordResearchQueue.getJob(run.id);
+  if (queueJob) {
+    const state = await queueJob.getState().catch(() => "unknown");
+    if (state !== "active") await queueJob.remove().catch(() => undefined);
+  }
+  return res.json({
+    run: {
+      ...run,
+      status: "cancelled",
+      locationName: displaySearchProviderLocation(run.locationName),
+      error: "Keyword research was cancelled. Start the analysis again when ready.",
+      completedAt: new Date(),
+    },
+  });
 });
 
 keywordResearchRouter.get("/keyword-research/:id/growth-plan", async (req, res) => {
@@ -968,19 +1251,36 @@ keywordResearchRouter.post("/keyword-research/:id/refresh", async (req, res) => 
     });
   }
 
-  const location = resolveSearchLocation(existing.locationName, existing.seedKeyword);
-  const keywordLimit = Math.min(100, Math.max(1, existing.keywordCount || existing.ideas?.length || 25));
+  let location: SearchLocation;
+  try {
+    location = await resolveExactSearchLocation(existing.locationName, existing.seedKeyword);
+  } catch (error) {
+    const publicError = publicKeywordResearchError(error instanceof Error ? error.message : "Exact location metrics could not be resolved.", "location");
+    return res.status(publicError.status).json({ error: publicError.message });
+  }
+  const keywordLimit = Math.min(100, Math.max(1, existing.keywordLimit || existing.keywordCount || existing.ideas?.length || 25));
+  try {
+    await assertKeywordResearchQueueCapacity({
+      clientId: existing.clientId,
+      project: existing.projectId ? { id: existing.projectId } : null,
+    });
+  } catch (error) {
+    if (error instanceof KeywordResearchHttpError) return res.status(error.status).json({ error: error.message, ...(error.details ?? {}) });
+    throw error;
+  }
   const run = await prisma.keywordResearchRun.create({
     data: {
       clientId: existing.clientId,
+      projectId: existing.projectId,
       websiteId: existing.websiteId,
       seedKeyword: existing.seedKeyword,
       targetUrl: existing.targetUrl,
       targetDomain: existing.targetDomain,
-      locationName: location.displayName,
+      locationName: canonicalGeographicLocationLabel(location.displayName),
       languageCode: existing.languageCode,
       device: existing.device === "mobile" ? "mobile" : "desktop",
       serpDepth: existing.serpDepth,
+      keywordLimit,
       status: "queued",
     },
   });
@@ -994,7 +1294,15 @@ keywordResearchRouter.post("/keyword-research/:id/refresh", async (req, res) => 
     serpDepth: existing.serpDepth,
     keywordLimit,
   };
-  await enqueueKeywordResearchCompletion(run.id, executionInput);
+  try {
+    await enqueueKeywordResearchCompletion(run.id, executionInput);
+  } catch (error) {
+    await prisma.keywordResearchRun.updateMany({
+      where: { id: run.id, status: "queued" },
+      data: { status: "failed", error: "Keyword research could not enter the processing queue. Retry this exact check.", completedAt: new Date() },
+    });
+    return res.status(503).json({ error: "Keyword research could not enter the processing queue. The previous completed result is preserved; retry this exact check." });
+  }
   res.status(202).json({ run: withRefreshState(run, bypassRefreshLimit) });
 });
 
@@ -1058,6 +1366,20 @@ keywordResearchRouter.post("/keyword-research/:id/competitors/:competitorId/comp
   });
 });
 
+async function mapWithConcurrency<T, R>(items: T[], concurrency: number, mapper: (item: T, index: number) => Promise<R>): Promise<R[]> {
+  const results = new Array<R>(items.length);
+  let nextIndex = 0;
+  const workers = Array.from({ length: Math.min(Math.max(1, concurrency), items.length) }, async () => {
+    while (nextIndex < items.length) {
+      const index = nextIndex;
+      nextIndex += 1;
+      results[index] = await mapper(items[index], index);
+    }
+  });
+  await Promise.all(workers);
+  return results;
+}
+
 async function completeKeywordResearchRun(runId: string, input: KeywordResearchExecutionInput) {
   const serpKeyword = localizedSerpKeyword(input.seedKeyword, input.location.displayName);
   const [ideas, serpResults] = await Promise.all([
@@ -1067,18 +1389,16 @@ async function completeKeywordResearchRun(runId: string, input: KeywordResearchE
   const ranking = input.targetDomain ? findDomainRank(serpResults, input.targetDomain) : null;
   const competitorsAbove = buildCompetitorsAbove(serpResults, ranking?.rank ?? null);
   const targetProfile = input.targetUrl ? await fetchCompetitorProfile(input.targetUrl, null) : null;
-  const competitorProfiles = await Promise.all(
-    serpResults.slice(0, input.serpDepth).map(async (result) => ({
+  const competitorProfiles = await mapWithConcurrency(
+    serpResults.slice(0, input.serpDepth),
+    4,
+    async (result) => ({
       result,
       profile: await fetchCompetitorProfile(result.url, targetProfile),
-    })),
+    }),
   );
 
-  await prisma.keywordIdea.deleteMany({ where: { runId } });
-  await prisma.keywordSerpCompetitor.deleteMany({ where: { runId } });
-
-  await prisma.keywordIdea.createMany({
-    data: ideas.map((idea) => ({
+  const ideaRows = ideas.map((idea) => ({
       runId,
       keyword: idea.keyword,
       avgMonthlySearches: idea.avgMonthlySearches,
@@ -1089,12 +1409,8 @@ async function completeKeywordResearchRun(runId: string, input: KeywordResearchE
       highTopOfPageBid: idea.highTopOfPageBid,
       currency: idea.currency,
       rawJson: idea.rawJson as Prisma.InputJsonValue,
-    })),
-  });
-
-  if (competitorProfiles.length > 0) {
-    await prisma.keywordSerpCompetitor.createMany({
-      data: competitorProfiles.map(({ result, profile }) => ({
+    }));
+  const competitorRows = competitorProfiles.map(({ result, profile }) => ({
         runId,
         rank: result.rank,
         url: result.url,
@@ -1114,41 +1430,50 @@ async function completeKeywordResearchRun(runId: string, input: KeywordResearchE
         recommendationsJson: profile.recommendations as Prisma.InputJsonValue,
         rawSerpJson: result.rawJson as Prisma.InputJsonValue,
         contentFetchedAt: new Date(),
-      })),
-    });
-  }
-
+      }));
   const volumes = ideas.map((idea) => idea.avgMonthlySearches).filter((value): value is number => value != null);
-  return prisma.keywordResearchRun.update({
-    where: { id: runId },
-    data: {
-      status: "completed",
-      keywordCount: ideas.length,
-      competitorCount: competitorProfiles.length,
-      averageVolume: volumes.length ? Math.round(volumes.reduce((sum, value) => sum + value, 0) / volumes.length) : null,
-      targetRank: ranking?.rank ?? null,
-      rankingUrl: ranking?.url ?? null,
-      rankFoundDepth: input.serpDepth,
-      competitorsAboveJson: competitorsAbove as Prisma.InputJsonValue,
-      error: null,
-      completedAt: new Date(),
-    },
-    include: {
-      website: { select: { id: true, domain: true, rootUrl: true } },
-      ideas: { orderBy: [{ avgMonthlySearches: "desc" }, { keyword: "asc" }], take: 100 },
-      competitors: { orderBy: { rank: "asc" }, take: 120 },
-    },
+  return prisma.$transaction(async (tx) => {
+    // Cancellation or watchdog expiry can happen while provider work is in
+    // flight. Check and write in one transaction so a late response cannot
+    // resurrect a terminal run or leave half-written report rows.
+    const currentRun = await tx.keywordResearchRun.findUnique({ where: { id: runId }, select: { status: true } });
+    if (!currentRun || ["cancelled", "canceled", "failed"].includes(currentRun.status)) return currentRun;
+    await tx.keywordIdea.deleteMany({ where: { runId } });
+    await tx.keywordSerpCompetitor.deleteMany({ where: { runId } });
+    if (ideaRows.length) await tx.keywordIdea.createMany({ data: ideaRows });
+    if (competitorRows.length) await tx.keywordSerpCompetitor.createMany({ data: competitorRows });
+    return tx.keywordResearchRun.update({
+      where: { id: runId },
+      data: {
+        status: "completed",
+        keywordCount: ideas.length,
+        competitorCount: competitorProfiles.length,
+        averageVolume: volumes.length ? Math.round(volumes.reduce((sum, value) => sum + value, 0) / volumes.length) : null,
+        targetRank: ranking?.rank ?? null,
+        rankingUrl: ranking?.url ?? null,
+        rankFoundDepth: input.serpDepth,
+        competitorsAboveJson: competitorsAbove as Prisma.InputJsonValue,
+        error: null,
+        completedAt: new Date(),
+      },
+      include: {
+        website: { select: { id: true, domain: true, rootUrl: true } },
+        ideas: { orderBy: [{ avgMonthlySearches: "desc" }, { keyword: "asc" }], take: 100 },
+        competitors: { orderBy: { rank: "asc" }, take: 120 },
+      },
+    });
   });
 }
 
-const KEYWORD_RESEARCH_CONCURRENCY = 3;
+const KEYWORD_RESEARCH_CONCURRENCY = Math.max(1, Math.min(10, config.keywordResearchConcurrency));
 let keywordResearchWorker: Worker<KeywordResearchQueueJobData> | null = null;
+let keywordResearchWatchdog: ReturnType<typeof setInterval> | null = null;
 
-async function enqueueKeywordResearchCompletion(runId: string, input: KeywordResearchExecutionInput) {
+async function enqueueKeywordResearchCompletion(runId: string, input: KeywordResearchExecutionInput): Promise<"enqueued" | "existing"> {
   const existing = await keywordResearchQueue.getJob(runId);
   if (existing) {
     const state = await existing.getState();
-    if (!["completed", "failed", "unknown"].includes(state)) return;
+    if (!["completed", "failed", "unknown"].includes(state)) return "existing";
     await existing.remove().catch(() => undefined);
   }
   await keywordResearchQueue.add("keyword:run", { runId, input }, {
@@ -1156,23 +1481,25 @@ async function enqueueKeywordResearchCompletion(runId: string, input: KeywordRes
     removeOnComplete: 500,
     removeOnFail: 500,
   });
+  return "enqueued";
 }
 
 async function executeKeywordResearchWork(work: { runId: string; input: KeywordResearchExecutionInput }) {
   try {
-    await prisma.keywordResearchRun.update({ where: { id: work.runId }, data: { status: "running", error: null } });
+    const started = await prisma.keywordResearchRun.updateMany({ where: { id: work.runId, status: { in: ["queued", "running"] } }, data: { status: "running", error: null } });
+    if (!started.count) return;
     await completeKeywordResearchRun(work.runId, work.input);
   } catch (error) {
     const message = error instanceof Error ? error.message : "Keyword research failed";
     const publicError = publicKeywordResearchError(message);
-    await prisma.keywordResearchRun.update({
-      where: { id: work.runId },
+    await prisma.keywordResearchRun.updateMany({
+      where: { id: work.runId, status: { in: ["queued", "running"] } },
       data: { status: "failed", error: publicError.message, completedAt: new Date() },
     }).catch(() => undefined);
   }
 }
 
-function executionInputFromRun(run: {
+async function executionInputFromRun(run: {
   seedKeyword: string;
   targetUrl: string | null;
   targetDomain: string | null;
@@ -1180,31 +1507,83 @@ function executionInputFromRun(run: {
   languageCode: string;
   device: string;
   serpDepth: number;
-  keywordCount: number;
+  keywordLimit: number;
 }) {
   return {
     seedKeyword: run.seedKeyword,
     targetUrl: run.targetUrl,
     targetDomain: run.targetDomain,
-    location: resolveSearchLocation(run.locationName, run.seedKeyword),
+    location: await resolveExactSearchLocation(run.locationName, run.seedKeyword),
     languageCode: run.languageCode,
     device: run.device === "mobile" ? "mobile" as const : "desktop" as const,
     serpDepth: run.serpDepth,
-    keywordLimit: Math.min(100, Math.max(1, run.keywordCount || 25)),
+    keywordLimit: Math.min(100, Math.max(1, run.keywordLimit || 25)),
   };
 }
 
 async function recoverQueuedKeywordResearchRuns() {
+  const expired = await expireStaleKeywordResearchRuns();
   const runs = await prisma.keywordResearchRun.findMany({
     where: { status: { in: ["queued", "running"] } },
     orderBy: { createdAt: "asc" },
-    select: { id: true, seedKeyword: true, targetUrl: true, targetDomain: true, locationName: true, languageCode: true, device: true, serpDepth: true, keywordCount: true },
+    select: { id: true, seedKeyword: true, targetUrl: true, targetDomain: true, locationName: true, languageCode: true, device: true, serpDepth: true, keywordLimit: true, createdAt: true },
   });
+  let recovered = 0;
+  let alreadyQueued = 0;
+  let failed = 0;
   for (const run of runs) {
-    await prisma.keywordResearchRun.update({ where: { id: run.id }, data: { status: "queued", error: null, completedAt: null } });
-    await enqueueKeywordResearchCompletion(run.id, executionInputFromRun(run));
+    try {
+      const input = await executionInputFromRun(run);
+      await prisma.keywordResearchRun.update({ where: { id: run.id }, data: { status: "queued", locationName: canonicalGeographicLocationLabel(input.location.displayName), error: null, completedAt: null } });
+      const result = await enqueueKeywordResearchCompletion(run.id, input);
+      if (result === "enqueued") recovered += 1;
+      else alreadyQueued += 1;
+    } catch (error) {
+      const publicError = publicKeywordResearchError(error instanceof Error ? error.message : "Exact location metrics could not be resolved.", "location");
+      await prisma.keywordResearchRun.update({ where: { id: run.id }, data: { status: "failed", locationName: canonicalGeographicLocationLabel(run.locationName), error: publicError.message, completedAt: new Date() } });
+      failed += 1;
+    }
   }
-  if (runs.length) console.log(`[api] recovered ${runs.length} queued keyword research run(s)`);
+  if (runs.length || expired) console.log(`[api] keyword queue recovery: ${recovered} resumed, ${alreadyQueued} already queued, ${expired} expired, ${failed} failed`);
+}
+
+async function expireStaleKeywordResearchRuns() {
+  const runningBefore = new Date(Date.now() - KEYWORD_RESEARCH_RUNNING_TIMEOUT_MS);
+  const waitingBefore = new Date(Date.now() - KEYWORD_RESEARCH_WAITING_TIMEOUT_MS);
+  const candidates = await prisma.keywordResearchRun.findMany({
+    where: { status: { in: ["queued", "running"] }, createdAt: { lt: runningBefore } },
+    select: { id: true, status: true, locationName: true, createdAt: true },
+  });
+  let expired = 0;
+  for (const run of candidates) {
+    const staleJob = await keywordResearchQueue.getJob(run.id);
+    const queueState = staleJob ? await staleJob.getState().catch(() => "unknown") : "missing";
+    const processedAt = staleJob?.processedOn ? new Date(staleJob.processedOn) : null;
+    const runningTimedOut = queueState === "active"
+      ? Boolean(processedAt && processedAt < runningBefore)
+      : run.status === "running" && run.createdAt < runningBefore;
+    const waitingTimedOut = ["waiting", "delayed", "prioritized", "waiting-children"].includes(queueState)
+      ? run.createdAt < waitingBefore
+      : run.status === "queued" && queueState === "missing" && run.createdAt < runningBefore;
+    if (!runningTimedOut && !waitingTimedOut) continue;
+    const reason = waitingTimedOut
+      ? "Keyword research waited too long for processing capacity and was stopped. Retry this exact check; completed checks are preserved."
+      : "Keyword research exceeded 30 minutes of active processing and was stopped. Retry this exact check; completed checks are preserved.";
+    await prisma.keywordResearchRun.updateMany({
+      where: { id: run.id, status: { in: ["queued", "running"] } },
+      data: {
+        status: "failed",
+        locationName: canonicalGeographicLocationLabel(run.locationName),
+        error: reason,
+        completedAt: new Date(),
+      },
+    });
+    if (staleJob) {
+      if (queueState !== "active") await staleJob.remove().catch(() => undefined);
+    }
+    expired += 1;
+  }
+  return expired;
 }
 
 export function startKeywordResearchQueueWorker() {
@@ -1229,6 +1608,12 @@ export function startKeywordResearchQueueWorker() {
     }
   });
   void recoverQueuedKeywordResearchRuns().catch((error) => console.error("[api] keyword queue recovery failed:", error));
+  if (!keywordResearchWatchdog) {
+    keywordResearchWatchdog = setInterval(() => {
+      void expireStaleKeywordResearchRuns().catch((error) => console.error("[api] keyword queue watchdog failed:", error));
+    }, 60_000);
+    keywordResearchWatchdog.unref?.();
+  }
   return keywordResearchWorker;
 }
 
@@ -1306,6 +1691,7 @@ function withRefreshState<T extends {
   if (bypassRefreshLimit) {
     return {
       ...run,
+      locationName: displaySearchProviderLocation(run.locationName),
       canRefresh: true,
       lastRefreshAt: run.createdAt,
       refreshBlockedUntil: null,
@@ -1315,6 +1701,7 @@ function withRefreshState<T extends {
   const refreshBlockedUntil = statusCountsAsRefresh ? new Date(run.createdAt.getTime() + KEYWORD_REFRESH_COOLDOWN_MS) : null;
   return {
     ...run,
+    locationName: displaySearchProviderLocation(run.locationName),
     canRefresh: !refreshBlockedUntil || refreshBlockedUntil.getTime() <= Date.now(),
     lastRefreshAt: run.createdAt,
     refreshBlockedUntil: refreshBlockedUntil && refreshBlockedUntil.getTime() > Date.now() ? refreshBlockedUntil : null,
@@ -1650,6 +2037,44 @@ function parseBacklinkSummary(target: string, payload: unknown): Omit<BacklinkSu
 }
 
 const inFlightSearchDataRequests = new Map<string, Promise<SearchDataPayload>>();
+const searchProviderLocationsPromises = new Map<string, Promise<SearchProviderLocation[]>>();
+
+function searchProviderAuthorization(): string {
+  const legacyPrefix = "DATA" + "FOR" + "SEO";
+  const login = process.env.SEARCH_DATA_PROVIDER_LOGIN || process.env[`${legacyPrefix}_LOGIN`];
+  const password = process.env.SEARCH_DATA_PROVIDER_PASSWORD || process.env[`${legacyPrefix}_PASSWORD`];
+  const auth = process.env.SEARCH_DATA_PROVIDER_AUTH_BASE64 || process.env[`${legacyPrefix}_AUTH_BASE64`] || (login && password ? Buffer.from(`${login}:${password}`).toString("base64") : null);
+  if (!auth) throw new Error("Keyword data provider credentials are not configured.");
+  return auth;
+}
+
+async function searchProviderLocations(countryIsoCode?: string | null): Promise<SearchProviderLocation[]> {
+  const country = String(countryIsoCode ?? "").trim().toUpperCase();
+  const cacheKey = country || "all";
+  const existingRequest = searchProviderLocationsPromises.get(cacheKey);
+  if (existingRequest) return existingRequest;
+  const request = (async () => {
+    const countryPath = country ? `/${encodeURIComponent(country)}` : "";
+    const response = await fetch(`https://api.${SEARCH_PROVIDER_KEY}.com/v3/keywords_data/google/locations${countryPath}`, {
+      headers: { authorization: `Basic ${searchProviderAuthorization()}`, accept: "application/json" },
+      signal: AbortSignal.timeout(45_000),
+    });
+    const payload = await response.json() as SearchDataPayload;
+    if (!response.ok || (payload.status_code && payload.status_code >= 40000)) {
+      throw new Error(`Keyword data provider locations: ${payload.status_message || `returned ${response.status}`}`);
+    }
+    return (payload.tasks?.flatMap((task) => task.result ?? []) ?? []).filter((item): item is SearchProviderLocation => {
+      if (!item || typeof item !== "object" || Array.isArray(item)) return false;
+      const location = item as Partial<SearchProviderLocation>;
+      return typeof location.location_code === "number" && typeof location.location_name === "string" && typeof location.country_iso_code === "string" && typeof location.location_type === "string";
+    });
+  })().catch((error) => {
+    searchProviderLocationsPromises.delete(cacheKey);
+    throw error;
+  });
+  searchProviderLocationsPromises.set(cacheKey, request);
+  return request;
+}
 
 async function searchDataRequest(path: string, body: unknown): Promise<SearchDataPayload> {
   const cacheKey = createHash("sha256").update(JSON.stringify({ path, body })).digest("hex");
@@ -1674,13 +2099,11 @@ async function searchDataRequest(path: string, body: unknown): Promise<SearchDat
 }
 
 async function requestSearchDataProvider(path: string, body: unknown): Promise<SearchDataPayload> {
-  const legacyPrefix = "DATA" + "FOR" + "SEO";
-  const login = process.env.SEARCH_DATA_PROVIDER_LOGIN || process.env[`${legacyPrefix}_LOGIN`];
-  const password = process.env.SEARCH_DATA_PROVIDER_PASSWORD || process.env[`${legacyPrefix}_PASSWORD`];
-  const auth = process.env.SEARCH_DATA_PROVIDER_AUTH_BASE64 || process.env[`${legacyPrefix}_AUTH_BASE64`] || (login && password ? Buffer.from(`${login}:${password}`).toString("base64") : null);
-  if (!auth) throw new Error("Keyword data provider credentials are not configured.");
+  const auth = searchProviderAuthorization();
   let lastError: Error | null = null;
-  for (let attempt = 1; attempt <= 2; attempt += 1) {
+  const maximumAttempts = 3;
+  for (let attempt = 1; attempt <= maximumAttempts; attempt += 1) {
+    const startedAt = Date.now();
     try {
       const response = await fetch(`https://api.${SEARCH_PROVIDER_KEY}.com${path}`, {
         method: "POST",
@@ -1690,19 +2113,32 @@ async function requestSearchDataProvider(path: string, body: unknown): Promise<S
           accept: "application/json",
         },
         body: JSON.stringify(body),
-        signal: AbortSignal.timeout(30_000),
+        // Live keyword endpoints occasionally need longer than the location
+        // directory. Research runs execute in the background, so prefer a
+        // bounded retry over failing a valid city after a short network stall.
+        signal: AbortSignal.timeout(KEYWORD_RESEARCH_PROVIDER_TIMEOUT_MS),
       });
       const payload = await response.json() as SearchDataPayload;
-      if (!response.ok || (payload.status_code && payload.status_code > 40000)) {
+      if (!response.ok || (payload.status_code && payload.status_code >= 40000)) {
         throw new Error(`Keyword data provider ${path}: ${payload.status_message || `returned ${response.status}`}`);
       }
-      const taskError = payload.tasks?.find((task) => task.status_code && task.status_code > 40000);
+      const taskError = payload.tasks?.find((task) => task.status_code && task.status_code >= 40000);
       if (taskError) throw new Error(`Keyword data provider ${path}: ${taskError.status_message || "task failed."}`);
       return payload;
     } catch (error) {
       lastError = error instanceof Error ? error : new Error("Keyword data provider request failed.");
-      if (attempt === 2 || !retryableSearchProviderError(lastError.message)) throw lastError;
-      await new Promise((resolve) => setTimeout(resolve, 350));
+      const retryable = retryableSearchProviderError(lastError.message);
+      console.warn("[keyword-research] search provider request failed", {
+        endpoint: path,
+        attempt,
+        maximumAttempts,
+        elapsedMs: Date.now() - startedAt,
+        errorName: lastError.name,
+        error: lastError.message,
+        retrying: attempt < maximumAttempts && retryable,
+      });
+      if (attempt === maximumAttempts || !retryable) throw lastError;
+      await new Promise((resolve) => setTimeout(resolve, 1_500 * (2 ** (attempt - 1))));
     }
   }
   throw lastError ?? new Error("Keyword data provider request failed.");
@@ -1724,7 +2160,70 @@ async function fetchKeywordIdeas(keyword: string, location: SearchLocation, lang
   const items = extractSearchDataItems(payload);
   const ideas = items.map(parseKeywordIdea).filter((idea): idea is KeywordIdeaInput => Boolean(idea?.keyword));
   const relevant = rankKeywordIdeas(keyword, ensureSeedKeywordIdea(keyword, ideas)).slice(0, limit);
-  return relevant.length ? relevant : [{ keyword, avgMonthlySearches: null, competition: null, competitionIndex: null, cpc: null, lowTopOfPageBid: null, highTopOfPageBid: null, currency: null, rawJson: {} }];
+  const selected = relevant.length ? relevant : [{ keyword, avgMonthlySearches: null, competition: null, competitionIndex: null, cpc: null, lowTopOfPageBid: null, highTopOfPageBid: null, currency: null, rawJson: {} }];
+  return enrichKeywordIdeasForLocation(selected, location, languageCode);
+}
+
+async function enrichKeywordIdeasForLocation(ideas: KeywordIdeaInput[], location: SearchLocation, languageCode: string): Promise<KeywordIdeaInput[]> {
+  if (location.locationType === "Country") {
+    return ideas.map((idea) => withKeywordMetricEvidence(idea, location.displayName, "country", null));
+  }
+
+  try {
+    const payload = await searchDataRequest("/v3/keywords_data/google/search_volume/live", [{
+      keywords: ideas.map((idea) => idea.keyword).slice(0, 700),
+      ...location.keywordMetrics,
+      language_code: languageCode,
+    }]);
+    const localMetrics = new Map(
+      extractSearchDataItems(payload)
+        .map(parseKeywordIdea)
+        .filter((idea): idea is KeywordIdeaInput => Boolean(idea?.keyword))
+        .map((idea) => [normalizeKeywordForRelevance(idea.keyword), idea] as const),
+    );
+    return ideas.map((idea) => {
+      const local = localMetrics.get(normalizeKeywordForRelevance(idea.keyword));
+      if (!local) return withKeywordMetricEvidence({
+        ...idea,
+        avgMonthlySearches: null,
+        competition: null,
+        competitionIndex: null,
+        cpc: null,
+        lowTopOfPageBid: null,
+        highTopOfPageBid: null,
+        currency: null,
+      }, location.metricScopeName ?? location.displayName, "unavailable", null);
+      return withKeywordMetricEvidence({
+        ...idea,
+        avgMonthlySearches: local.avgMonthlySearches,
+        competition: local.competition ?? idea.competition,
+        cpc: local.cpc,
+        lowTopOfPageBid: local.lowTopOfPageBid,
+        highTopOfPageBid: local.highTopOfPageBid,
+        currency: local.currency ?? idea.currency,
+      }, location.metricScopeName ?? location.displayName, location.metricSource ?? "selected_location", local.rawJson);
+    });
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : "The provider request failed.";
+    throw new Error(`Exact location metrics are required for ${location.displayName}. ${detail}`);
+  }
+}
+
+function withKeywordMetricEvidence(idea: KeywordIdeaInput, metricScope: string, metricSource: string, locationMetricJson: unknown): KeywordIdeaInput {
+  const scopeParts = metricScope.split(",").map((part) => part.trim()).filter(Boolean);
+  const countryScope = scopeParts.at(-1) ?? metricScope;
+  return {
+    ...idea,
+    rawJson: {
+      keywordIdea: idea.rawJson,
+      locationMetric: locationMetricJson,
+      metricScope,
+      metricSource,
+      volumeAndCpcScope: metricScope,
+      seoDifficultyScope: countryScope,
+      metricVersion: KEYWORD_METRICS_VERSION,
+    },
+  };
 }
 
 function keywordIdeaSeeds(keyword: string, locations: string[] = []): string[] {
@@ -1752,19 +2251,9 @@ async function fetchSerpResults(keyword: string, location: SearchLocation, langu
     depth,
     ...(googleSearchDomain(target.displayName) ? { se_domain: googleSearchDomain(target.displayName) } : {}),
   }]);
-  let payload: SearchDataPayload;
-  try {
-    payload = await request(location);
-  } catch (error) {
-    const countryFallback = location.locationType === "City" && location.countryIsoCode === "CA"
-      ? countryLocation("Canada", 2124, "CA")
-      : location.locationType === "City" && location.countryIsoCode === "US"
-        ? countryLocation("United States", 2840, "US")
-        : null;
-    if (!countryFallback || !retryableSearchProviderError(error instanceof Error ? error.message : "")) throw error;
-    // Keep the city in the keyword while broadening only the provider's SERP location.
-    payload = await request(countryFallback);
-  }
+  // The selected market is an exact evidence scope. Never broaden a city to
+  // its country while continuing to label the result as local evidence.
+  const payload: SearchDataPayload = await request(location);
   const items = extractSearchDataItems(payload);
   return items
     .map(parseSerpResult)
@@ -1779,19 +2268,21 @@ function extractSearchDataItems(payload: SearchDataPayload): unknown[] {
     if (Array.isArray(result?.items)) return result.items;
     if (Array.isArray(result?.keyword_ideas)) return result.keyword_ideas;
     if (Array.isArray(result)) return result;
+    if (result?.keyword || result?.keyword_data?.keyword) return [result];
     return [];
   });
 }
 
-function parseKeywordIdea(item: any): KeywordIdeaInput | null {
+export function parseKeywordIdea(item: any): KeywordIdeaInput | null {
   const info = item?.keyword_info ?? item?.keyword_data?.keyword_info ?? item;
+  const properties = item?.keyword_properties ?? item?.keyword_data?.keyword_properties ?? {};
   const keyword = item?.keyword ?? item?.keyword_data?.keyword ?? item?.text ?? null;
   if (!keyword) return null;
   return {
     keyword: String(keyword),
     avgMonthlySearches: numberOrNull(info?.search_volume ?? info?.avg_monthly_searches),
-    competition: stringOrNull(info?.competition_level ?? info?.competition),
-    competitionIndex: numberOrNull(info?.competition_index),
+    competition: stringOrNull(info?.competition_level),
+    competitionIndex: numberOrNull(properties?.keyword_difficulty),
     cpc: numberOrNull(info?.cpc),
     lowTopOfPageBid: numberOrNull(info?.low_top_of_page_bid ?? microsToMoney(info?.low_top_of_page_bid_micros)),
     highTopOfPageBid: numberOrNull(info?.high_top_of_page_bid ?? microsToMoney(info?.high_top_of_page_bid_micros)),
@@ -1855,7 +2346,7 @@ function canonicalSeedKeyword(value: string, locations: string[] = []): string {
   return keyword.replace(/\b\w/g, (letter) => letter.toUpperCase());
 }
 
-function keywordIdeaRelevance(seed: string, seedTokens: string[], ideaKeyword: string): number {
+export function keywordIdeaRelevance(seed: string, seedTokens: string[], ideaKeyword: string): number {
   const idea = normalizeKeywordForRelevance(ideaKeyword);
   const ideaTokens = keywordTokens(idea);
   if (!seed || !idea) return 0;
@@ -1864,11 +2355,21 @@ function keywordIdeaRelevance(seed: string, seedTokens: string[], ideaKeyword: s
   const ideaSet = new Set(ideaTokens);
   const shared = [...seedSet].filter((token) => ideaSet.has(token));
   if (!hasEnoughKeywordOverlap(seedTokens, ideaTokens, shared)) return 0;
+  if (seedTokens.length === 2) {
+    if (!containsOrderedPhrase(ideaTokens, seedTokens) && !containsOrderedPhrase(seedTokens, ideaTokens)) return 0;
+    const supportedModifiers = new Set(["software", "system", "systems", "solution", "solutions", "tool", "tools", "platform", "platforms", "online", "automation", "automated", "digital"]);
+    if (ideaTokens.some((token) => !seedSet.has(token) && !supportedModifiers.has(token))) return 0;
+  }
   if (idea.includes(seed)) return 850 - Math.abs(ideaTokens.length - seedTokens.length) * 15;
   if (seed.includes(idea) && shared.length >= Math.min(2, seedTokens.length)) return 780 - Math.abs(ideaTokens.length - seedTokens.length) * 15;
   const coverage = shared.length / Math.max(1, seedSet.size);
   const extraPenalty = Math.max(0, ideaSet.size - shared.length) * 8;
   return Math.round(coverage * 700 + shared.length * 30 - extraPenalty);
+}
+
+function containsOrderedPhrase(container: string[], phrase: string[]): boolean {
+  if (!phrase.length || phrase.length > container.length) return false;
+  return container.some((_, index) => phrase.every((token, offset) => container[index + offset] === token));
 }
 
 function hasEnoughKeywordOverlap(seedTokens: string[], ideaTokens: string[], shared: string[]): boolean {
@@ -2020,7 +2521,7 @@ function searchCountryLocationInfo(value: string): SearchCountryLocation | null 
   return SEARCH_COUNTRY_LOCATIONS.find((location) => normalizeText(location.name) === normalized || location.isoCode.toLowerCase() === normalized) ?? null;
 }
 
-function resolveSearchLocation(value: string, keyword = ""): SearchLocation {
+export function resolveSearchLocation(value: string, keyword = ""): SearchLocation {
   const trimmed = value.trim();
   const normalized = normalizeText(trimmed);
   const normalizedKeyword = normalizeText(keyword);
@@ -2029,29 +2530,33 @@ function resolveSearchLocation(value: string, keyword = ""): SearchLocation {
     "united states": countryLocation("United States", 2840),
     usa: countryLocation("United States", 2840),
     us: countryLocation("United States", 2840),
-    toronto: canadianCityLocation("Toronto,Ontario,Canada", "43.653226,-79.383184,20000"),
-    "toronto canada": canadianCityLocation("Toronto,Ontario,Canada", "43.653226,-79.383184,20000"),
-    "toronto ontario canada": canadianCityLocation("Toronto,Ontario,Canada", "43.653226,-79.383184,20000"),
-    mississauga: canadianCityLocation("Mississauga,Ontario,Canada", "43.589045,-79.644120,20000"),
-    mississagua: canadianCityLocation("Mississauga,Ontario,Canada", "43.589045,-79.644120,20000"),
-    "mississauga canada": canadianCityLocation("Mississauga,Ontario,Canada", "43.589045,-79.644120,20000"),
-    "mississagua canada": canadianCityLocation("Mississauga,Ontario,Canada", "43.589045,-79.644120,20000"),
-    "mississauga ontario canada": canadianCityLocation("Mississauga,Ontario,Canada", "43.589045,-79.644120,20000"),
-    brampton: canadianCityLocation("Brampton,Ontario,Canada", "43.731548,-79.762418,20000"),
-    "brampton canada": canadianCityLocation("Brampton,Ontario,Canada", "43.731548,-79.762418,20000"),
-    "brampton ontario canada": canadianCityLocation("Brampton,Ontario,Canada", "43.731548,-79.762418,20000"),
+    ontario: canadianProvinceLocation("Ontario,Canada", 20121),
+    "ontario canada": canadianProvinceLocation("Ontario,Canada", 20121),
+    alberta: canadianProvinceLocation("Alberta,Canada", 20113),
+    "alberta canada": canadianProvinceLocation("Alberta,Canada", 20113),
+    toronto: canadianCityLocation("Toronto,Ontario,Canada", "43.653226,-79.383184,20000", 1002451),
+    "toronto canada": canadianCityLocation("Toronto,Ontario,Canada", "43.653226,-79.383184,20000", 1002451),
+    "toronto ontario canada": canadianCityLocation("Toronto,Ontario,Canada", "43.653226,-79.383184,20000", 1002451),
+    mississauga: canadianCityLocation("Mississauga,Ontario,Canada", "43.589045,-79.644120,20000", 1002350),
+    mississagua: canadianCityLocation("Mississauga,Ontario,Canada", "43.589045,-79.644120,20000", 1002350),
+    "mississauga canada": canadianCityLocation("Mississauga,Ontario,Canada", "43.589045,-79.644120,20000", 1002350),
+    "mississagua canada": canadianCityLocation("Mississauga,Ontario,Canada", "43.589045,-79.644120,20000", 1002350),
+    "mississauga ontario canada": canadianCityLocation("Mississauga,Ontario,Canada", "43.589045,-79.644120,20000", 1002350),
+    brampton: canadianCityLocation("Brampton,Ontario,Canada", "43.731548,-79.762418,20000", 9231405),
+    "brampton canada": canadianCityLocation("Brampton,Ontario,Canada", "43.731548,-79.762418,20000", 9231405),
+    "brampton ontario canada": canadianCityLocation("Brampton,Ontario,Canada", "43.731548,-79.762418,20000", 9231405),
     vancouver: canadianCityLocation("Vancouver,British Columbia,Canada", "49.282729,-123.120738,20000"),
     "vancouver canada": canadianCityLocation("Vancouver,British Columbia,Canada", "49.282729,-123.120738,20000"),
     "vancouver british columbia canada": canadianCityLocation("Vancouver,British Columbia,Canada", "49.282729,-123.120738,20000"),
     montreal: canadianCityLocation("Montreal,Quebec,Canada", "45.501887,-73.567392,20000"),
     "montreal canada": canadianCityLocation("Montreal,Quebec,Canada", "45.501887,-73.567392,20000"),
     "montreal quebec canada": canadianCityLocation("Montreal,Quebec,Canada", "45.501887,-73.567392,20000"),
-    edmonton: canadianCityLocation("Edmonton,Alberta,Canada", "53.546124,-113.493823,20000"),
-    "edmonton canada": canadianCityLocation("Edmonton,Alberta,Canada", "53.546124,-113.493823,20000"),
-    "edmonton alberta canada": canadianCityLocation("Edmonton,Alberta,Canada", "53.546124,-113.493823,20000"),
-    calgary: canadianCityLocation("Calgary,Alberta,Canada", "51.044733,-114.071883,20000"),
-    "calgary canada": canadianCityLocation("Calgary,Alberta,Canada", "51.044733,-114.071883,20000"),
-    "calgary alberta canada": canadianCityLocation("Calgary,Alberta,Canada", "51.044733,-114.071883,20000"),
+    edmonton: canadianCityLocation("Edmonton,Alberta,Canada", "53.546124,-113.493823,20000", 1001808),
+    "edmonton canada": canadianCityLocation("Edmonton,Alberta,Canada", "53.546124,-113.493823,20000", 1001808),
+    "edmonton alberta canada": canadianCityLocation("Edmonton,Alberta,Canada", "53.546124,-113.493823,20000", 1001808),
+    calgary: canadianCityLocation("Calgary,Alberta,Canada", "51.044733,-114.071883,20000", 1001801),
+    "calgary canada": canadianCityLocation("Calgary,Alberta,Canada", "51.044733,-114.071883,20000", 1001801),
+    "calgary alberta canada": canadianCityLocation("Calgary,Alberta,Canada", "51.044733,-114.071883,20000", 1001801),
     "new york": usCityLocation("New York,New York,United States", "40.712776,-74.005974,20000"),
     "new york united states": usCityLocation("New York,New York,United States", "40.712776,-74.005974,20000"),
     "new york new york united states": usCityLocation("New York,New York,United States", "40.712776,-74.005974,20000"),
@@ -2068,8 +2573,121 @@ function resolveSearchLocation(value: string, keyword = ""): SearchLocation {
   if (normalized === "united states" || normalized === "usa" || normalized === "us") {
     if (normalizedKeyword.includes("new york")) return aliases["new york"];
   }
+  if (normalized.includes("canada")) {
+    for (const market of ["mississauga", "mississagua", "brampton", "toronto", "edmonton", "calgary", "ontario", "alberta"]) {
+      if (normalized === market || normalized.startsWith(`${market} `)) return aliases[market];
+    }
+  }
   const country = searchCountryLocationInfo(trimmed);
   return aliases[normalized] ?? (country ? countryLocation(country.name, country.locationCode, country.isoCode, country.locationType) : customLocation(trimmed));
+}
+
+export async function resolveExactSearchLocation(value: string, keyword = ""): Promise<SearchLocation> {
+  const requestedMarket = value.split(",").map((part) => part.trim()).find(Boolean) ?? "";
+  if (!isPlausibleGeographicTargetMarket(requestedMarket)) {
+    throw new Error(`Exact location metrics require an unambiguous provider location for “${value}”. Choose a named city, neighbourhood, region, province/state, or country.`);
+  }
+  const known = resolveSearchLocation(value, keyword);
+  if ("location_code" in known.keywordMetrics) return known;
+  let matched: SearchProviderLocation | null;
+  let matchedViaParentCity = false;
+  try {
+    const requestedCountryIsoCode = [...known.displayName.split(",")]
+      .reverse()
+      .map((part) => searchCountryLocationInfo(part.trim())?.isoCode ?? null)
+      .find(Boolean) ?? null;
+    const providerLocations = await searchProviderLocations(requestedCountryIsoCode);
+    matched = matchSearchProviderLocation(known.displayName, providerLocations);
+    if (!matched) {
+      const parts = known.displayName.split(",").map((part) => part.trim()).filter(Boolean);
+      const requestedMarket = parts[0] ?? "";
+      const normalizedRequestedMarket = normalizeText(requestedMarket);
+      const knownParentMarket: Record<string, string> = {
+        etobicoke: "Toronto",
+        scarborough: "Toronto",
+        "north york": "Toronto",
+        "east york": "Toronto",
+        york: "Toronto",
+      };
+      const canonicalMarket = (knownParentMarket[normalizedRequestedMarket] ?? requestedMarket)
+        .replace(/^(?:north|south|east|west|central|downtown)\s+/i, "")
+        .replace(/^greater\s+(.+?)\s+area$/i, "$1")
+        .replace(/\s+(?:metropolitan|metro)\s+area$/i, "")
+        .trim();
+      if (canonicalMarket && canonicalMarket.toLocaleLowerCase() !== requestedMarket.toLocaleLowerCase()) {
+        matched = matchSearchProviderLocation([canonicalMarket, ...parts.slice(1)].join(","), providerLocations);
+        matchedViaParentCity = Boolean(matched);
+      }
+    }
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : "The location directory could not be loaded.";
+    throw new Error(`Exact location metrics require a verified provider location. ${detail}`);
+  }
+  if (!matched) {
+    throw new Error(`Exact location metrics require an unambiguous provider location for “${value}”. Add the city, state/province, and country.`);
+  }
+  const country = SEARCH_COUNTRY_LOCATIONS.find((item) => item.isoCode === matched.country_iso_code);
+  if (!country) throw new Error(`Exact location metrics do not support the country for “${value}”.`);
+  const displayName = matchedViaParentCity ? known.displayName : displaySearchProviderLocation(matched.location_name);
+  return {
+    displayName,
+    countryIsoCode: matched.country_iso_code,
+    locationType: providerLocationType(matched.location_type),
+    labs: { location_code: country.locationCode },
+    serp: { location_code: matched.location_code },
+    keywordMetrics: { location_code: matched.location_code },
+    metricScopeName: displaySearchProviderLocation(matched.location_name),
+    metricSource: matchedViaParentCity ? "parent_city" : "selected_location",
+  };
+}
+
+export function displaySearchProviderLocation(value: string): string {
+  return canonicalGeographicLocationLabel(value);
+}
+
+export function matchSearchProviderLocation(value: string, locations: SearchProviderLocation[]): SearchProviderLocation | null {
+  const requestedParts = value.split(",").map((part) => normalizeText(part)).filter(Boolean);
+  const requestedMarket = requestedParts[0] ?? normalizeText(value);
+  if (!requestedMarket) return null;
+  const requestedCountry = [...requestedParts].reverse().map(searchCountryLocationInfo).find(Boolean)?.isoCode ?? null;
+  const middleParts = requestedParts.slice(1, -1).filter((part) => part.length > 2);
+  const candidates = locations.filter((location) => {
+    const parts = location.location_name.split(",").map((part) => normalizeText(part)).filter(Boolean);
+    return parts[0] === requestedMarket && (!requestedCountry || location.country_iso_code === requestedCountry);
+  });
+  if (!candidates.length) return null;
+
+  const preferred = middleParts.length
+    ? candidates.filter((location) => middleParts.every((part) => normalizeText(location.location_name).includes(part)))
+    : candidates;
+  const pool = preferred.length ? preferred : candidates;
+  const bestPriority = Math.min(...pool.map((location) => providerLocationTypePriority(location.location_type)));
+  const bestTypeMatches = pool.filter((location) => providerLocationTypePriority(location.location_type) === bestPriority);
+  const byCanonicalName = new Map<string, SearchProviderLocation[]>();
+  for (const location of bestTypeMatches) {
+    const key = normalizeText(location.location_name);
+    byCanonicalName.set(key, [...(byCanonicalName.get(key) ?? []), location]);
+  }
+  if (byCanonicalName.size > 1) return null;
+  const matches = [...byCanonicalName.values()][0] ?? [];
+  return matches[0] ?? null;
+}
+
+function providerLocationType(value: string): SearchLocation["locationType"] {
+  const normalized = value.toLowerCase();
+  if (normalized === "country") return "Country";
+  if (normalized === "region") return "Region";
+  if (["state", "province"].includes(normalized)) return "State";
+  if (["city", "municipality", "borough", "district", "neighborhood"].includes(normalized)) return "City";
+  return "Custom";
+}
+
+function providerLocationTypePriority(value: string): number {
+  const normalized = value.toLowerCase();
+  if (normalized === "city") return 0;
+  if (["state", "province", "country"].includes(normalized)) return 1;
+  if (normalized === "municipality") return 2;
+  return 3;
 }
 
 function countryLocation(displayName: string, locationCode: number, isoCode?: string, locationType: "Country" | "Region" = "Country"): SearchLocation {
@@ -2079,16 +2697,29 @@ function countryLocation(displayName: string, locationCode: number, isoCode?: st
     locationType,
     labs: { location_code: locationCode },
     serp: { location_code: locationCode },
+    keywordMetrics: { location_code: locationCode },
   };
 }
 
-function canadianCityLocation(displayName: string, locationCoordinate: string): SearchLocation {
+function canadianCityLocation(displayName: string, locationCoordinate: string, metricLocationCode?: number): SearchLocation {
   return {
     displayName,
     countryIsoCode: "CA",
     locationType: "City",
     labs: { location_code: 2124 },
     serp: { location_coordinate: locationCoordinate },
+    keywordMetrics: metricLocationCode ? { location_code: metricLocationCode } : { location_name: displayName },
+  };
+}
+
+function canadianProvinceLocation(displayName: string, locationCode: number): SearchLocation {
+  return {
+    displayName,
+    countryIsoCode: "CA",
+    locationType: "State",
+    labs: { location_code: 2124 },
+    serp: { location_code: locationCode },
+    keywordMetrics: { location_code: locationCode },
   };
 }
 
@@ -2099,17 +2730,20 @@ function usCityLocation(displayName: string, locationCoordinate: string): Search
     locationType: "City",
     labs: { location_code: 2840 },
     serp: { location_coordinate: locationCoordinate },
+    keywordMetrics: { location_name: displayName },
   };
 }
 
 function customLocation(displayName: string): SearchLocation {
   const country = inferCountryLocationInfo(displayName) ?? searchCountryLocationInfo("Canada")!;
+  const locationType = locationTypeFromName(displayName);
   return {
     displayName,
     countryIsoCode: country.isoCode,
-    locationType: locationTypeFromName(displayName),
+    locationType,
     labs: { location_code: country.locationCode },
     serp: { location_code: country.locationCode },
+    keywordMetrics: locationType === "Country" ? { location_code: country.locationCode } : { location_name: displayName },
   };
 }
 

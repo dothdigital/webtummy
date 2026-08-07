@@ -37,7 +37,11 @@ const num = (v: string | undefined, d: number) => (v ? parseInt(v, 10) : d);
 export const config = {
   redisUrl: process.env.REDIS_URL ?? "redis://localhost:6379",
   openaiApiKey: process.env.OPENAI_API_KEY ?? "",
-  openaiModel: process.env.OPENAI_MODEL ?? "gpt-4o-mini",
+  openaiContentModel: process.env.OPENAI_CONTENT_MODEL ?? process.env.OPENAI_MODEL ?? "gpt-4o-mini",
+  // Backward-compatible alias used by existing background content jobs.
+  openaiModel: process.env.OPENAI_CONTENT_MODEL ?? process.env.OPENAI_MODEL ?? "gpt-4o-mini",
+  openaiImageModel: process.env.OPENAI_IMAGE_MODEL ?? "gpt-image-2",
+  websiteImageQuality: process.env.WEBSITE_IMAGE_QUALITY === "medium" ? "medium" as const : "high" as const,
   userAgent:
     process.env.CRAWL_USER_AGENT ?? "SEnukeAI-Crawler/0.1 (+https://senuke-ai.local/bot)",
   webAppUrl: process.env.WEB_APP_URL ?? "http://localhost:5173",

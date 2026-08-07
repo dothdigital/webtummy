@@ -82,11 +82,27 @@ export interface GuidedExecutionTask {
   blockedReason?: string | null;
   actionButtonLabel: string | null;
   relatedUrl: string | null;
+  relatedAssetId?: string | null;
   manualInstructions: string | null;
   impact?: string | null;
+  publishedAt?: string | null;
   dueAt?: string | null;
   assignee?: { id: string; user: { name?: string | null; email: string } } | null;
   dependencies?: Array<{ requiredTask: { id: string; title: string; status: string } }>;
+  executionGovernance?: {
+    contractVersion: string;
+    module: string;
+    moduleLabel: string;
+    canonicalState: string;
+    executionMode: string;
+    prepared: boolean;
+    validated: boolean;
+    approvalStatus: string;
+    publicationStatus: string;
+    measurementStatus: string;
+    blockedReason?: string | null;
+    nextAction: { key: string; label: string; reason: string };
+  };
   createdAt: string;
 }
 
@@ -109,6 +125,78 @@ export interface ProjectWorkflowStep {
   completedAt: string | null;
   createdAt: string;
   updatedAt: string;
+}
+
+export interface ProjectWorkflowController {
+  version: string;
+  projectId: string;
+  state: string;
+  stateLabel: string;
+  readinessPercent: number;
+  overallProgressPercent: number;
+  intelligenceReady: boolean;
+  strategyStale: boolean;
+  executionPlanStale: boolean;
+  businessBrainVersion: number;
+  evidenceVersion: number;
+  strategyVersion: number;
+  executionPlanVersion: string | null;
+  growthBlueprintVersion: number;
+  confidence: {
+    overall: number;
+    completeness: number;
+    freshness: number;
+    signalCoverage: number;
+    dataQuality: number;
+    conflictPenalty: number;
+    independentSignals: number;
+    reasons: string[];
+    cautions: string[];
+  };
+  blockers: Array<{ key: string; title: string; reason: string; action: WorkflowControllerAction | null }>;
+  nextBestAction: {
+    title: string;
+    reason: string;
+    expectedResult: string;
+    action: WorkflowControllerAction;
+    aiWill: string[];
+    userWill: string;
+    confidence: number;
+    explainability: string;
+  };
+  stages: WorkflowControllerStage[];
+  intelligenceModules: WorkflowControllerModule[];
+  updatedAt: string;
+}
+
+export interface WorkflowControllerAction {
+  label: string;
+  url: string;
+  type: "navigate" | "review" | "approve" | "generate" | "implement";
+}
+
+export interface WorkflowControllerModule {
+  key: string;
+  label: string;
+  description: string;
+  status: string;
+  required: boolean;
+  weight: number;
+  reason: string;
+  evidenceAt: string | null;
+  action: WorkflowControllerAction | null;
+  ai: { mode: string; suggestion: string; implementation: string; humanRole: string };
+}
+
+export interface WorkflowControllerStage {
+  key: string;
+  label: string;
+  description: string;
+  status: string;
+  reason: string;
+  action: WorkflowControllerAction | null;
+  ai: { mode: string; suggestion: string; implementation: string; humanRole: string };
+  modules?: WorkflowControllerModule[];
 }
 
 export interface Opportunity {
@@ -160,6 +248,7 @@ export interface GuidedProject {
     name: string;
     contactPhone?: string | null;
     businessLocations?: unknown;
+    targetMarkets?: unknown;
     defaultSettings?: unknown;
   } | null;
   sourceActivitySummaries?: Array<{
@@ -279,6 +368,7 @@ export interface GrowthBlueprint {
   currentVersion: number;
   primaryGoal: string | null;
   currentPhase: string;
+  approvedStrategyId: string | null;
   nextReviewAt: string | null;
   updatedAt: string;
   versions: GrowthBlueprintVersion[];
@@ -432,6 +522,18 @@ export interface GrowthExperiment {
 
 export interface GrowthOverviewResponse {
   project: GuidedProject;
+  workflowController: ProjectWorkflowController | null;
+  strategyContext?: {
+    strategyId: string | null;
+    version: number | null;
+    status: string | null;
+    isApproved: boolean;
+    contractVersion: string;
+    summary: string | null;
+    focusAreas: Array<{ key: string; title: string; priority: string; objective: string; channels: string[] }>;
+    phases: Array<{ name: string; timeframe: string; objective: string }>;
+    topActions: string[];
+  } | null;
   signals: {
     scoreJson: Record<string, number>;
     bottleneckType: string;
@@ -481,6 +583,35 @@ export interface GrowthOverviewResponse {
     learnings: { id: string; outcome: string; summary: string; learningJson: unknown; createdAt: string }[];
     recentRuns: { id: string; status: string; promptVersion: string; inputSnapshotJson: unknown; outputJson: unknown; createdAt: string }[];
   };
+  growthIntelligence: {
+    contractVersion: string;
+    lifecycle: {
+      state: string;
+      verifiedExposures: number;
+      completedEvaluations: number;
+      dueEvaluations: number;
+      scheduledEvaluations: number;
+      nextEvaluationAt: string | null;
+    };
+    dataQuality: {
+      status: string;
+      sourceCount: number;
+      limitedSourceCount: number;
+      staleSourceCount: number;
+      limitations: string[];
+    };
+    activeWork: {
+      count: number;
+      tasks: Array<{ id: string; status: string; title: string; moduleName: string }>;
+    };
+    evaluations: Array<{ id: string; experimentId: string; title: string; metric: string; status: string; evaluation: unknown; recordedAt: string }>;
+    blueprint: {
+      version: number | null;
+      patchCount: number;
+      patches: unknown[];
+      strategyReviewRequired: boolean;
+    };
+  };
   automationPolicy: AutomationPolicy;
 }
 
@@ -488,7 +619,7 @@ export interface GrowthReadinessItem {
   key: string;
   title: string;
   description: string;
-  status: "complete" | "missing";
+  status: "complete" | "in_progress" | "missing";
   required: boolean;
   actions: { label: string; url: string }[];
 }
@@ -792,6 +923,7 @@ export interface KeywordIdea {
   lowTopOfPageBid: number | null;
   highTopOfPageBid: number | null;
   currency: string | null;
+  rawJson?: unknown;
 }
 
 export interface KeywordSerpCompetitor {
@@ -953,12 +1085,27 @@ export interface WorkspaceIntelligenceResponse {
   projects: GuidedProject[];
   websites: Website[];
   keywordRuns: KeywordResearchRun[];
+  strategyPagePriorities?: StrategyPagePriority[];
   leadMagnetGenerations?: AiContentGeneration[];
   tasks: GuidedExecutionTask[];
   notifications?: ProjectNotification[];
   backlinkSummary: DomainBacklinkSummary | null;
   backlinkLinks: DomainBacklinkLinks | null;
   intelligence: WorkspaceIntelligence;
+}
+
+export interface StrategyPagePriority {
+  url: string;
+  severity: "high" | "medium" | "low";
+  score: number;
+  categories: Array<{ key: string; label: string }>;
+  findingCount: number;
+  summary: string;
+  reasons: string[];
+  recommendedActions: string[];
+  source: "site_and_gap_analysis";
+  executionTaskId: string | null;
+  executionStatus: string;
 }
 
 export interface GeoKeywordAuditPage {
@@ -1029,6 +1176,75 @@ export interface BillingPlan {
   isActive: boolean;
   sortOrder: number;
   memberCount?: number;
+  commercialVersion?: number;
+  workspaceTypeEligibility?: unknown;
+  prices?: CommercialPrice[];
+}
+
+export interface CommercialPrice {
+  id: string;
+  code: string;
+  billingInterval: "monthly" | "annual" | string;
+  currency: string;
+  amountCents: number;
+  priceClass: "founding" | "standard" | "interim" | "legacy" | string;
+  provider: string;
+  providerProductRef: string | null;
+  checkoutUrl: string | null;
+  status: string;
+}
+
+export interface CommercialSummary {
+  workspace: {
+    id: string;
+    name: string;
+    workspaceType: string;
+    commercialState: string;
+    accessMode: string;
+    retentionEndsAt: string | null;
+    deletionScheduledAt: string | null;
+  };
+  subscription: {
+    id: string;
+    status: string;
+    provider: string;
+    billingInterval: string;
+    currentPeriodStart: string | null;
+    currentPeriodEnd: string | null;
+    cancelAtPeriodEnd: boolean;
+    foundingMember: boolean;
+    protectedPriceId: string | null;
+    plan: { code: string; name: string; version: number };
+    price: { id: string; amountCents: number; currency: string; priceClass: string } | null;
+    policy: { code: string; version: number; graceDays: number; retentionDays: number };
+  } | null;
+  entitlements: {
+    features: Record<string, unknown>;
+    limits: Record<string, unknown>;
+    seatLimit: number | null;
+  };
+  usage: {
+    activeProjects: number;
+    archivedProjects: number;
+    activeAgencyClients: number;
+    activeMemberships: number;
+    assignedSeats: number;
+    capacity: {
+      balance: number;
+      monthlyAllowance: number;
+      reserved: number;
+      periodStart: string;
+      periodEnd: string;
+    } | null;
+  };
+  recentBillingEvents: Array<{
+    id: string;
+    eventType: string;
+    status: string;
+    verified: boolean;
+    occurredAt: string | null;
+    createdAt: string;
+  }>;
 }
 
 export interface BillingInvoice {
@@ -1051,11 +1267,14 @@ export interface BillingStatus {
   trialStartedAt: string | null;
   trialEndsAt: string | null;
   trialDaysRemaining: number;
+  trialDurationDays?: number;
   manualAccessEndsAt: string | null;
   manualAccessDaysRemaining: number;
   graceEndsAt?: string | null;
   stripeCustomerId: string | null;
   stripeSubscriptionId: string | null;
+  billingProvider?: string;
+  commercial?: CommercialSummary | null;
   subscriptionCurrentPeriodEnd: string | null;
   reportEmailEnabled: boolean;
   weeklyReportEmailEnabled: boolean;

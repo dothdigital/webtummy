@@ -6,10 +6,29 @@ import { COUNTRY_OPTIONS, defaultLocationParts } from "../locationOptions.js";
 import type { GuidedProject, LocalBusinessProfile, LocalKeyword, LocalRankSnapshot, LocalSeoDashboardResponse, LocalScore, Website } from "../types.js";
 import { getActiveProjectId, resolveActiveProjectId, setActiveProjectId } from "../active-project.js";
 import LocalGridPanel from "../components/LocalGridPanel.js";
+import { registerBackgroundJob } from "../background-jobs.js";
+import { approvedKeywordEntries, splitKeywordEntries } from "@webtummy/core";
 
 type KeywordSuggestion = {
   keyword: string;
   reason: string;
+};
+
+type LocalSeoView = "overview" | "rankings" | "competitors" | "grid" | "trust";
+
+type LocalSeoAuditJob = {
+  id: string;
+  projectId: string | null;
+  businessId: string;
+  status: string;
+  stage: string;
+  progress: number;
+  totalTargets: number;
+  completedTargets: number;
+  resultCount: number;
+  error: string | null;
+  createdAt: string;
+  completedAt: string | null;
 };
 
 type BusinessForm = {
@@ -57,6 +76,62 @@ function csv(value: string): string[] {
 
 function csvValue(value: unknown): string {
   return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string").join(", ") : "";
+}
+
+function valueRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
+}
+
+function textValue(value: unknown): string {
+  return typeof value === "string" ? value.trim() : "";
+}
+
+function uniqueText(values: string[]): string[] {
+  const seen = new Set<string>();
+  return values.filter((value) => {
+    const normalized = value.trim().toLowerCase();
+    if (!normalized || seen.has(normalized)) return false;
+    seen.add(normalized);
+    return true;
+  });
+}
+
+function projectRankKeywordGroups(project: GuidedProject | null | undefined) {
+  const groups = (project?.keywordGroups ?? []).filter((group) => group.status === "approved");
+  const groupKeywords = (matcher: (category: string, title: string) => boolean) => uniqueText(groups
+    .filter((group) => matcher(group.category.toLowerCase().replace(/[\s-]+/g, "_"), group.title.toLowerCase()))
+    .flatMap((group) => splitKeywordEntries(group.keywords)));
+  const primary = groupKeywords((category, title) => category === "primary" || title.includes("primary keyword"));
+  const secondary = groupKeywords((category, title) => ["secondary", "secondary_keywords", "supporting", "supporting_topics"].includes(category) || title.includes("secondary keyword"));
+  return { primary, secondary, all: approvedKeywordEntries(groups) };
+}
+
+function projectProfileForm(website: Website | null | undefined, project: GuidedProject | null | undefined): BusinessForm {
+  const client = project?.agencyClient;
+  const clientSettings = valueRecord(client?.defaultSettings);
+  const clientLocation = valueRecord(clientSettings.businessLocationDetails);
+  const projectLocation = project?.businessLocationJson;
+  const clientLocations = Array.isArray(client?.businessLocations) ? client.businessLocations.map(String).filter(Boolean) : [];
+  const clientMarkets = Array.isArray(client?.targetMarkets) ? client.targetMarkets.map(String).filter(Boolean) : [];
+  const projectMarkets = Array.isArray(project?.targetLocations) ? project.targetLocations.map(String).filter(Boolean) : [];
+  const clientServices = textValue(clientSettings.mainProductsServices);
+  const clientCategory = textValue(clientSettings.industryNiche) || textValue(clientSettings.niche);
+
+  return {
+    ...emptyForm,
+    websiteId: website?.id ?? project?.websiteId ?? "",
+    businessName: project?.businessName || client?.name || project?.name || "",
+    domain: website?.domain ?? project?.website?.domain ?? "",
+    phone: client?.contactPhone?.trim() || "",
+    address: textValue(clientLocation.streetAddress) || projectLocation?.streetAddress || clientLocations[0] || project?.businessLocation || "",
+    city: textValue(clientLocation.city) || projectLocation?.city || "",
+    region: textValue(clientLocation.stateProvince) || projectLocation?.stateProvince || "",
+    country: textValue(clientLocation.country) || projectLocation?.country || emptyForm.country,
+    postalCode: textValue(clientLocation.postalCode) || projectLocation?.postalCode || "",
+    mainCategory: clientCategory || project?.niche || "",
+    services: clientServices || project?.businessProfile?.offerSummary || project?.niche || "",
+    targetLocations: (clientMarkets.length ? clientMarkets : projectMarkets.length ? projectMarkets : project?.targetLocation ? [project.targetLocation] : []).join(", "),
+  };
 }
 
 function domainKey(value: string | null | undefined): string {
@@ -175,7 +250,7 @@ function latestScore(business: LocalBusinessProfile | null): LocalScore | null {
 }
 
 function latestScoresByTarget(business: LocalBusinessProfile | null): LocalScore[] {
-  const scores = business?.scores ?? [];
+  const scores = (business?.scores ?? []).filter((score) => score.keyword?.active !== false);
   const seen = new Set<string>();
   const latest: LocalScore[] = [];
   for (const score of scores) {
@@ -270,13 +345,12 @@ export default function LocalSeo() {
   const [selectedId, setSelectedId] = useState("");
   const [dashboard, setDashboard] = useState<LocalSeoDashboardResponse | null>(null);
   const [form, setForm] = useState<BusinessForm>(emptyForm);
-  const [keywordText, setKeywordText] = useState("web design company, local SEO services");
+  const [keywordText, setKeywordText] = useState("");
   const [locationText, setLocationText] = useState("");
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [linkingProject, setLinkingProject] = useState(false);
   const [auditing, setAuditing] = useState(false);
-  const [addingKeywords, setAddingKeywords] = useState(false);
   const [clearingKeywords, setClearingKeywords] = useState(false);
   const [suggestingKeywords, setSuggestingKeywords] = useState(false);
   const [keywordSuggestions, setKeywordSuggestions] = useState<KeywordSuggestion[]>([]);
@@ -284,11 +358,15 @@ export default function LocalSeo() {
   const [scanningCitations, setScanningCitations] = useState(false);
   const [message, setMessage] = useState("");
   const [auditSummary, setAuditSummary] = useState<{ reviewed: number; avgRating: number | null; ranked: number; checked: number } | null>(null);
+  const [auditJob, setAuditJob] = useState<LocalSeoAuditJob | null>(null);
   const [profileOpen, setProfileOpen] = useState(false);
+  const [activeView, setActiveView] = useState<LocalSeoView>("overview");
+  const [showAllSavedTargets, setShowAllSavedTargets] = useState(false);
 
   const selectedGuidedProject = projects.find((project) => project.id === searchParams.get("projectId"))
     ?? projects.find((project) => project.id === getActiveProjectId())
     ?? null;
+  const projectKeywordTargets = projectRankKeywordGroups(selectedGuidedProject);
   const selectedProject = websites.find((website) => website.id === websiteId) ?? null;
   const business = dashboard?.business ?? businesses.find((item) => item.id === selectedId) ?? null;
   const latestTargetScores = useMemo(() => latestScoresByTarget(business), [business]);
@@ -340,35 +418,51 @@ export default function LocalSeo() {
     return { score: item, snapshot };
   });
 
-  const formForWebsite = (website: Website | null | undefined): BusinessForm => ({
-    ...emptyForm,
-    websiteId: website?.id ?? "",
-    domain: website?.domain ?? "",
-  });
+  const formForWebsite = (website: Website | null | undefined, project?: GuidedProject | null): BusinessForm => projectProfileForm(
+    website,
+    project ?? projects.find((item) => item.websiteId === website?.id) ?? null,
+  );
 
-  const loadDashboard = async (id: string) => {
-    const result = await api.get<LocalSeoDashboardResponse>(`/api/local/business/${id}/dashboard`);
+  const loadDashboard = async (id: string, projectOverride?: GuidedProject | null) => {
+    const [result, latestAudit] = await Promise.all([
+      api.get<LocalSeoDashboardResponse>(`/api/local/business/${id}/dashboard`),
+      api.get<{ job: LocalSeoAuditJob | null }>(`/api/local/business/${id}/audits/latest`),
+    ]);
+    const mappedProject = projectOverride ?? projects.find((project) => project.websiteId === result.business.websiteId) ?? null;
+    const projectKeywords = projectRankKeywordGroups(mappedProject).all;
+    const savedKeywords = uniqueText((result.business.keywords ?? []).filter((keyword) => keyword.active).map((keyword) => keyword.keyword));
+    const savedLocations = uniqueText((result.business.keywords ?? []).filter((keyword) => keyword.active).map((keyword) => keyword.city));
+    const projectLocations = csv(projectProfileForm(
+      websites.find((website) => website.id === result.business.websiteId),
+      mappedProject,
+    ).targetLocations);
     setDashboard(result);
+    setAuditJob(latestAudit.job);
+    setAuditing(Boolean(latestAudit.job && ["queued", "running"].includes(latestAudit.job.status)));
     setForm(toForm(result.business));
+    setKeywordText((projectKeywords.length ? projectKeywords : savedKeywords).join(", "));
+    setLocationText((projectLocations.length ? projectLocations : savedLocations.length ? savedLocations : result.business.targetLocations.length ? result.business.targetLocations : [result.business.city]).join(", "));
     setKeywordSuggestions([]);
     setSelectedKeywordSuggestions([]);
     return result;
   };
 
-  const applyProjectSelection = async (nextWebsiteId: string, availableWebsites: Website[], availableBusinesses: LocalBusinessProfile[]) => {
+  const applyProjectSelection = async (nextWebsiteId: string, availableWebsites: Website[], availableBusinesses: LocalBusinessProfile[], availableProjects = projects) => {
     setWebsiteId(nextWebsiteId);
-    const mappedProject = projects.find((project) => project.websiteId === nextWebsiteId);
+    const mappedProject = availableProjects.find((project) => project.websiteId === nextWebsiteId);
     if (mappedProject) setActiveProjectId(mappedProject.id);
     if (nextWebsiteId) setSearchParams({ project: nextWebsiteId, ...(mappedProject?.id || getActiveProjectId() ? { projectId: mappedProject?.id || getActiveProjectId() } : {}) });
     const nextWebsite = availableWebsites.find((website) => website.id === nextWebsiteId) ?? null;
     const nextBusiness = availableBusinesses.find((item) => item.websiteId === nextWebsiteId) ?? null;
     if (nextBusiness) {
       setSelectedId(nextBusiness.id);
-      await loadDashboard(nextBusiness.id);
+      await loadDashboard(nextBusiness.id, mappedProject);
     } else {
       setSelectedId("");
       setDashboard(null);
-      setForm(formForWebsite(nextWebsite));
+      setForm(formForWebsite(nextWebsite, mappedProject));
+      setKeywordText(projectRankKeywordGroups(mappedProject).all.join(", "));
+      setLocationText(projectProfileForm(nextWebsite, mappedProject).targetLocations);
     }
   };
 
@@ -387,7 +481,8 @@ export default function LocalSeo() {
     } else {
       setSelectedId("");
       setDashboard(null);
-      setForm(formForWebsite(websites.find((website) => website.id === preferredWebsiteId)));
+      const preferredWebsite = websites.find((website) => website.id === preferredWebsiteId);
+      setForm(formForWebsite(preferredWebsite, projects.find((project) => project.websiteId === preferredWebsiteId)));
     }
   };
 
@@ -400,6 +495,7 @@ export default function LocalSeo() {
       setProjects(projectResult.projects);
       const businessResult = await api.get<{ businesses: LocalBusinessProfile[] }>("/api/local/business");
       setBusinesses(businessResult.businesses);
+      const requestedBusinessId = searchParams.get("businessId");
       const requestedProject = searchParams.get("project");
       const activeGuidedProjectId = resolveActiveProjectId(projectResult.projects, searchParams.get("projectId"), getActiveProjectId());
       const activeGuidedProject = projectResult.projects.find((project) => project.id === activeGuidedProjectId);
@@ -410,7 +506,14 @@ export default function LocalSeo() {
         ? activeGuidedProject?.websiteId ?? ""
         : websiteResult.websites.find((website) => website.id === requestedProject)?.id ?? websiteResult.websites[0]?.id ?? "";
       if (preferredWebsiteId) {
-        await applyProjectSelection(preferredWebsiteId, websiteResult.websites, businessResult.businesses);
+        const requestedBusiness = businessResult.businesses.find((item) => item.id === requestedBusinessId && item.websiteId === preferredWebsiteId);
+        if (requestedBusiness) {
+          setWebsiteId(preferredWebsiteId);
+          setSelectedId(requestedBusiness.id);
+          await loadDashboard(requestedBusiness.id, activeGuidedProject);
+        } else {
+          await applyProjectSelection(preferredWebsiteId, websiteResult.websites, businessResult.businesses, projectResult.projects);
+        }
         if (openProfileRequested) {
           setForm((current) => ({
             ...current,
@@ -431,20 +534,10 @@ export default function LocalSeo() {
         if (activeGuidedProjectId) setSearchParams({ projectId: activeGuidedProjectId }, { replace: true });
         setSelectedId("");
         setDashboard(null);
-        const businessLocation = activeGuidedProject?.businessLocationJson;
         setWebsiteId("");
-        setForm(activeGuidedProject ? {
-          ...emptyForm,
-          businessName: activeGuidedProject.businessName || activeGuidedProject.name,
-          address: businessLocation?.streetAddress || activeGuidedProject.businessLocation || "",
-          city: businessLocation?.city || "",
-          region: businessLocation?.stateProvince || "",
-          country: businessLocation?.country || emptyForm.country,
-          postalCode: businessLocation?.postalCode || "",
-          mainCategory: activeGuidedProject.niche || "",
-          services: activeGuidedProject.businessProfile?.offerSummary || activeGuidedProject.niche || "",
-          targetLocations: Array.isArray(activeGuidedProject.targetLocations) ? activeGuidedProject.targetLocations.map(String).join(", ") : activeGuidedProject.targetLocation || "",
-        } : emptyForm);
+        setForm(activeGuidedProject ? formForWebsite(null, activeGuidedProject) : emptyForm);
+        setKeywordText(projectRankKeywordGroups(activeGuidedProject).all.join(", "));
+        setLocationText(activeGuidedProject ? projectProfileForm(null, activeGuidedProject).targetLocations : "");
       }
     } finally {
       setLoading(false);
@@ -455,6 +548,42 @@ export default function LocalSeo() {
     void load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  useEffect(() => {
+    const selectViewForHash = () => {
+      const hash = window.location.hash;
+      if (hash === "#rank-tracker") setActiveView("rankings");
+      else if (hash === "#nap-audit" || hash === "#review-snapshot") setActiveView("trust");
+      else if (hash === "#local-grid") setActiveView("grid");
+    };
+    selectViewForHash();
+    window.addEventListener("hashchange", selectViewForHash);
+    return () => window.removeEventListener("hashchange", selectViewForHash);
+  }, []);
+
+  useEffect(() => {
+    if (!auditJob || !["queued", "running"].includes(auditJob.status)) return;
+    let cancelled = false;
+    const refresh = async () => {
+      try {
+        const result = await api.get<{ job: LocalSeoAuditJob }>(`/api/local/audits/${auditJob.id}`);
+        if (cancelled) return;
+        setAuditJob(result.job);
+        setAuditing(["queued", "running"].includes(result.job.status));
+        if (result.job.status === "completed" && business) {
+          setMessage(`${result.job.resultCount} local ranking checks completed. Results are ready below.`);
+          await loadDashboard(business.id);
+        } else if (result.job.status === "failed") {
+          setMessage(`Ranking check could not be completed: ${result.job.error || "Please try again."}`);
+        }
+      } catch {
+        // The global background-job strip continues polling. A temporary page
+        // refresh failure must not cancel work that is already queued.
+      }
+    };
+    const timer = window.setInterval(() => { void refresh(); }, 3000);
+    return () => { cancelled = true; window.clearInterval(timer); };
+  }, [auditJob?.id, auditJob?.status, business?.id]);
 
   const updateForm = (patch: Partial<BusinessForm>) => setForm((current) => ({ ...current, ...patch }));
 
@@ -468,6 +597,7 @@ export default function LocalSeo() {
     try {
       const result = await api.post<{ business: LocalBusinessProfile }>("/api/local/business", {
         ...form,
+        projectId: selectedGuidedProject?.id ?? null,
         websiteId: form.websiteId,
         region: form.region || null,
         postalCode: form.postalCode || null,
@@ -491,7 +621,14 @@ export default function LocalSeo() {
 
   const useWebsiteDefaults = (websiteId: string) => {
     const website = websites.find((item) => item.id === websiteId);
-    updateForm({ websiteId, domain: website?.domain ?? form.domain });
+    const project = projects.find((item) => item.websiteId === websiteId) ?? null;
+    if (project) {
+      setActiveProjectId(project.id);
+      setSearchParams({ project: websiteId, projectId: project.id }, { replace: true });
+    }
+    setForm(formForWebsite(website, project));
+    setKeywordText(projectRankKeywordGroups(project).all.join(", "));
+    setLocationText(projectProfileForm(website, project).targetLocations);
   };
 
   const createOrLinkProject = async () => {
@@ -526,25 +663,6 @@ export default function LocalSeo() {
     }
   };
 
-  const addKeywords = async () => {
-    if (!business || addingKeywords) return;
-    setAddingKeywords(true);
-    setMessage("");
-    try {
-      const result = await api.post<{ added?: number }>(`/api/local/business/${business.id}/keywords`, {
-        keywords: csv(keywordText),
-        targetLocations: csv(locationText || form.targetLocations || form.city),
-        country: form.country || defaultLocationParts().country,
-        device: "desktop",
-        language: "en",
-      });
-      setMessage(result.added ? `Added ${result.added} keyword target${result.added === 1 ? "" : "s"}.` : "Those keyword targets already exist.");
-      await loadDashboard(business.id);
-    } finally {
-      setAddingKeywords(false);
-    }
-  };
-
   const useSelectedSuggestions = () => {
     setKeywordText((current) => {
       const existing = csv(current);
@@ -560,17 +678,15 @@ export default function LocalSeo() {
     setMessage(selectedKeywordSuggestions.length ? "Selected suggestions were added to the target keyword field." : "");
   };
 
-  const pullExistingRankTargets = () => {
-    const keywords = business?.keywords ?? [];
-    const existingKeywords = [...new Set(keywords.map((keyword) => keyword.keyword).filter(Boolean))];
-    const existingLocations = [...new Set(keywords.map((keyword) => keyword.city).filter(Boolean))];
-    if (!existingKeywords.length) {
-      setMessage("No existing rank targets found for this business yet.");
+  const loadProjectKeywordTargets = () => {
+    const projectKeywords = projectRankKeywordGroups(selectedGuidedProject);
+    if (!projectKeywords.all.length) {
+      setMessage("No Primary or Secondary keywords are available in this project yet. Add them in Keyword Intelligence first.");
       return;
     }
-    setKeywordText(existingKeywords.join(", "));
-    setLocationText(existingLocations.join(", ") || form.targetLocations || form.city);
-    setMessage(`Pulled ${existingKeywords.length} existing keyword${existingKeywords.length === 1 ? "" : "s"} into setup.`);
+    setKeywordText(projectKeywords.all.join(", "));
+    setLocationText(form.targetLocations || form.city);
+    setMessage(`Loaded ${projectKeywords.primary.length} Primary and ${projectKeywords.secondary.length} Secondary project keywords.`);
   };
 
   const toggleKeywordSuggestion = (keyword: string) => {
@@ -639,25 +755,41 @@ export default function LocalSeo() {
 
   const runAudit = async () => {
     if (!business) return;
+    const keywords = csv(keywordText);
+    const targetLocations = csv(locationText || form.targetLocations || form.city);
+    if (!keywords.length || !targetLocations.length) {
+      setMessage("Add at least one project keyword and one target location before checking rankings.");
+      return;
+    }
     setAuditing(true);
-    setMessage("");
+    setMessage(`Saving ${keywords.length * targetLocations.length} keyword-location targets before checking rankings…`);
     setAuditSummary(null);
     try {
-      const result = await api.post<{ business: LocalSeoDashboardResponse["business"] }>(`/api/local/business/${business.id}/audit`, {});
-      const updatedDashboard = await loadDashboard(result.business.id);
-      const updatedScores = updatedDashboard.business.scores ?? [];
-      const updatedScoresWithReviewData = updatedScores.filter((item) => (scoreEvidenceNumber(item, "reviewCount") ?? 0) > 0 || scoreEvidenceNumber(item, "averageRating") != null);
-      const bestReviewCount = Math.max(0, ...updatedScoresWithReviewData.map((item) => scoreEvidenceNumber(item, "reviewCount") ?? 0));
-      const bestRating = updatedScoresWithReviewData.map((item) => scoreEvidenceNumber(item, "averageRating")).find((item): item is number => typeof item === "number") ?? null;
-      const rankedCount = updatedDashboard.latestSnapshots.filter((snapshot) => snapshot.organicPosition || snapshot.mapsPosition || snapshot.localPackPosition).length;
-      setAuditSummary({ reviewed: bestReviewCount, avgRating: bestRating, ranked: rankedCount, checked: updatedDashboard.latestSnapshots.length });
-      setMessage("Local SEO audit completed. Review totals, Maps evidence, competitors, and ranking checks have been updated.");
-    } finally {
+      await api.post(`/api/local/business/${business.id}/keywords`, {
+        keywords,
+        targetLocations,
+        country: form.country || defaultLocationParts().country,
+        device: "desktop",
+        language: "en",
+        sync: true,
+      });
+      const result = await api.post<{ job: LocalSeoAuditJob; reused?: boolean }>(`/api/local/business/${business.id}/audit`, {});
+      setAuditJob(result.job);
+      setAuditing(["queued", "running"].includes(result.job.status));
+      registerBackgroundJob({ id: result.job.id, projectId: result.job.projectId ?? selectedGuidedProject?.id ?? null, type: "local-seo-audit", title: "Local ranking check", subject: business.businessName, status: result.job.status, statusUrl: `/api/local/audits/${result.job.id}`, resultUrl: `/local-seo?projectId=${encodeURIComponent(result.job.projectId ?? selectedGuidedProject?.id ?? "")}&businessId=${encodeURIComponent(business.id)}`, startedAt: result.job.createdAt, progressMessage: `${result.job.completedTargets} of ${result.job.totalTargets} keyword-location checks completed. You can continue working anywhere.`, completedMessage: `${business.businessName} local ranking results are ready`, failedMessage: "Local ranking checks need attention. Review the error and retry.", resultMetricKey: "completedTargets", resultMetricLabel: "ranking checks", resultMetric: result.job.completedTargets, resultMetricTotal: result.job.totalTargets, error: result.job.error });
+      setMessage(result.reused ? "This Local SEO audit is already running in the background." : "Local ranking checks started in the background. You can leave this page and return when notified.");
+    } catch (error) {
+      setMessage(error instanceof Error ? `Ranking check could not be completed: ${error.message}` : "Ranking check could not be completed. Please try again.");
       setAuditing(false);
     }
   };
 
   if (loading) return <div className="text-charcoal-400">Loading Local SEO...</div>;
+
+  const pendingKeywordCount = csv(keywordText).length;
+  const pendingLocationCount = csv(locationText || form.targetLocations || form.city).length;
+  const pendingAuditCount = pendingKeywordCount * pendingLocationCount;
+  const hasActiveTargets = Boolean(business?.keywords?.some((keyword) => keyword.active));
 
   return (
     <div className="space-y-6">
@@ -707,7 +839,7 @@ export default function LocalSeo() {
               <div className="text-sm font-bold text-amber-950">No Local SEO profile for this project yet</div>
               <p className="mt-1 text-sm leading-6 text-amber-900">Create a Local SEO profile for {selectedProject.domain}. The profile will be mapped to this project before it can be saved.</p>
             </div>
-            <Button onClick={() => { setSelectedId(""); setDashboard(null); setForm(formForWebsite(selectedProject)); setProfileOpen(true); }}>Create profile</Button>
+            <Button onClick={() => { setSelectedId(""); setDashboard(null); setForm(formForWebsite(selectedProject, selectedGuidedProject)); setProfileOpen(true); }}>Create profile</Button>
           </div>
         </Card>
       )}
@@ -753,6 +885,7 @@ export default function LocalSeo() {
           <div className="mb-4">
             <h2 id="business-profile-title" className="text-lg font-semibold text-charcoal-800">Local SEO Project Profile</h2>
             <p className="mt-1 text-sm text-charcoal-400">Local SEO belongs to a project. Select the project first so crawl data, website content, rankings, and local business signals stay together.</p>
+            {selectedGuidedProject?.agencyClient?.name && <div className="mt-3 rounded-lg border border-brand-100 bg-brand-50 px-3 py-2 text-xs leading-5 text-brand-800"><b>Loaded from client:</b> {selectedGuidedProject.agencyClient.name}. Shared client contact, business location, services, category, and target markets prefill this profile; edits here remain specific to Local SEO.</div>}
           </div>
           <div className="grid gap-4">
             <label className="block">
@@ -805,8 +938,37 @@ export default function LocalSeo() {
         </div>
       )}
 
+      {business && (
+        <div className="sticky top-3 z-20 rounded-xl border border-slate-200 bg-white/95 p-2 shadow-lg shadow-slate-200/40 backdrop-blur" aria-label="Local SEO workspace">
+          <div className="flex gap-1 overflow-x-auto">
+            {([
+              { id: "overview", label: "Overview", meta: score ? `${score.totalScore}/100` : "Setup" },
+              { id: "rankings", label: "Rankings", meta: `${targetCount} targets` },
+              { id: "competitors", label: "Competitors", meta: `${competitorSnapshots.length} markets` },
+              { id: "grid", label: "Local Grid", meta: "Heatmap" },
+              { id: "trust", label: "Trust & Reviews", meta: `${foundCitationCount}/${citations.length || citationSources.length} citations` },
+            ] as Array<{ id: LocalSeoView; label: string; meta: string }>).map((item) => (
+              <button
+                key={item.id}
+                type="button"
+                onClick={() => {
+                  setActiveView(item.id);
+                  window.history.replaceState(null, "", `${window.location.pathname}${window.location.search}`);
+                  window.scrollTo({ top: 0, behavior: "smooth" });
+                }}
+                aria-current={activeView === item.id ? "page" : undefined}
+                className={`min-w-max flex-1 rounded-lg px-4 py-2 text-left transition ${activeView === item.id ? "bg-charcoal-900 text-white shadow-sm" : "text-charcoal-600 hover:bg-charcoal-50"}`}
+              >
+                <span className="block text-sm font-bold">{item.label}</span>
+                <span className={`block text-[11px] ${activeView === item.id ? "text-white/70" : "text-charcoal-400"}`}>{item.meta}</span>
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
       <div className="space-y-6">
-        <Card className="p-5">
+        <Card className={activeView === "overview" ? "p-5" : "hidden"}>
           <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
             <div>
               <div className="text-xs font-semibold uppercase tracking-wide text-brand-600">Business Profile</div>
@@ -825,12 +987,12 @@ export default function LocalSeo() {
             </div>
             <div className="flex flex-col gap-2 sm:flex-row">
               {business && <Button variant="ghost" onClick={() => { setForm(toForm(business)); setProfileOpen(true); }}>Edit profile</Button>}
-              <Button onClick={() => { setSelectedId(""); setDashboard(null); setForm(formForWebsite(selectedProject)); setProfileOpen(true); }} disabled={!selectedProject}>New profile</Button>
+              <Button onClick={() => { setSelectedId(""); setDashboard(null); setForm(formForWebsite(selectedProject, selectedGuidedProject)); setProfileOpen(true); }} disabled={!selectedProject}>New profile</Button>
             </div>
           </div>
         </Card>
         <div className="space-y-6">
-          <Card className="p-5">
+          <Card className={activeView === "overview" ? "p-5" : "hidden"}>
             <div>
               <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
                 <div>
@@ -859,7 +1021,8 @@ export default function LocalSeo() {
                       <div>Average across <span className="font-semibold text-charcoal-700">{targetCount}</span> keyword/location target{targetCount === 1 ? "" : "s"}.</div>
                       <div>Best organic result: <span className="font-semibold text-charcoal-700">{position(bestOrganicSnapshot?.organicPosition)}</span></div>
                       <div className="mt-2 space-y-1">
-                        {latestTargetScores.map((item) => <div key={item.id} className="flex justify-between gap-3 rounded bg-charcoal-50 px-2 py-1"><span>{targetLabel(item.keyword)}</span><span className="font-semibold text-charcoal-700">{position(scoreEvidenceNumber(item, "organicPosition"))}</span></div>)}
+                        {latestTargetScores.slice(0, 5).map((item) => <div key={item.id} className="flex justify-between gap-3 rounded bg-charcoal-50 px-2 py-1"><span>{targetLabel(item.keyword)}</span><span className="font-semibold text-charcoal-700">{position(scoreEvidenceNumber(item, "organicPosition"))}</span></div>)}
+                        {latestTargetScores.length > 5 && <button type="button" onClick={() => setActiveView("rankings")} className="font-bold text-brand-700">View all {latestTargetScores.length} targets →</button>}
                       </div>
                     </ScorePart>
                     <ScorePart label="Google Maps" value={score.mapsScore} max={20} actionHref={googleProfileLink ?? "#rank-tracker"} actionLabel={googleProfileLink ? "Open profile" : "Maps evidence"}>
@@ -869,7 +1032,8 @@ export default function LocalSeo() {
                       <div>Category: <span className="font-semibold text-charcoal-700">{mapsCategory ?? "Not captured"}</span></div>
                       <div>Profile: <span className="font-semibold text-charcoal-700">{mapsClaimed == null ? "Claim unknown" : mapsClaimed ? "Claimed" : "Unclaimed"}</span>{mapsPhotos != null ? <span> · {mapsPhotos} photos</span> : null}</div>
                       <div className="mt-2 space-y-1">
-                        {latestTargetScores.map((item) => <div key={item.id} className="flex justify-between gap-3 rounded bg-charcoal-50 px-2 py-1"><span>{targetLabel(item.keyword)}</span><span className="font-semibold text-charcoal-700">{position(scoreEvidenceNumber(item, "mapsPosition"))}</span></div>)}
+                        {latestTargetScores.slice(0, 5).map((item) => <div key={item.id} className="flex justify-between gap-3 rounded bg-charcoal-50 px-2 py-1"><span>{targetLabel(item.keyword)}</span><span className="font-semibold text-charcoal-700">{position(scoreEvidenceNumber(item, "mapsPosition"))}</span></div>)}
+                        {latestTargetScores.length > 5 && <button type="button" onClick={() => setActiveView("rankings")} className="font-bold text-brand-700">View all {latestTargetScores.length} targets →</button>}
                       </div>
                     </ScorePart>
                     <ScorePart label="Local Pack" value={score.packScore} max={15} actionHref="#rank-tracker" actionLabel="Pack evidence">
@@ -877,11 +1041,12 @@ export default function LocalSeo() {
                       <div>Best pack position: <span className="font-semibold text-charcoal-700">{position(bestPackSnapshot?.localPackPosition)}</span></div>
                       <div>Status: <span className="font-semibold text-charcoal-700">{bestPackSnapshot?.matchStatus?.replace(/_/g, " ") ?? "No snapshot yet"}</span></div>
                       <div className="mt-2 space-y-1">
-                        {latestTargetScores.map((item) => {
+                        {latestTargetScores.slice(0, 5).map((item) => {
                           const packPosition = scoreEvidenceNumber(item, "localPackPosition");
                           const mapsPosition = scoreEvidenceNumber(item, "mapsPosition");
                           return <div key={item.id} className="rounded bg-charcoal-50 px-2 py-1"><div className="flex justify-between gap-3"><span>{targetLabel(item.keyword)}</span><span className="font-semibold text-charcoal-700">{position(packPosition)}</span></div>{!packPosition && mapsPosition ? <div className="text-[11px] text-charcoal-400">Maps visibility: {position(mapsPosition)}</div> : null}</div>;
                         })}
+                        {latestTargetScores.length > 5 && <button type="button" onClick={() => setActiveView("rankings")} className="font-bold text-brand-700">View all {latestTargetScores.length} targets →</button>}
                       </div>
                     </ScorePart>
                     <ScorePart label="Reviews" value={score.reviewScore} max={15} actionHref="#review-snapshot" actionLabel="Review evidence">
@@ -907,15 +1072,15 @@ export default function LocalSeo() {
             </div>
           </Card>
 
-          {targetScoreRows.length > 0 && (
+          {activeView === "rankings" && targetScoreRows.length > 0 && (
             <Card className="overflow-hidden">
               <div className="border-b border-charcoal-100 px-5 py-3">
                 <h2 className="font-semibold text-charcoal-800">Keyword / Location Results</h2>
                 <p className="text-xs text-charcoal-400">One row per saved target. The score cards above are the average of these latest rows.</p>
               </div>
-              <div className="overflow-x-auto">
+              <div className="max-h-[520px] overflow-auto">
                 <table className="min-w-full divide-y divide-charcoal-100 text-sm">
-                  <thead className="bg-charcoal-50 text-left text-xs uppercase tracking-wide text-charcoal-400">
+                  <thead className="sticky top-0 z-10 bg-charcoal-50 text-left text-xs uppercase tracking-wide text-charcoal-400 shadow-sm">
                     <tr>
                       <th className="px-5 py-3">Target</th>
                       <th className="px-5 py-3">Total</th>
@@ -949,25 +1114,27 @@ export default function LocalSeo() {
             </Card>
           )}
 
-          <Card className="p-5">
+          <Card className={activeView === "rankings" ? "p-5" : "hidden"}>
             <div className="mb-4 flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
               <div>
                 <h2 className="text-lg font-semibold text-charcoal-800">Rank Tracking Setup</h2>
-                <p className="mt-1 text-sm text-charcoal-400">Track organic rank, Maps rank, and local pack status by keyword, city, device, and language.</p>
+                <p className="mt-1 text-sm text-charcoal-400">Track organic rank, Maps rank, and local pack status using this project's Primary and Secondary keyword lists.</p>
+                {selectedGuidedProject && <p className="mt-2 text-xs font-semibold text-brand-700">Project keywords: {projectKeywordTargets.primary.length} Primary · {projectKeywordTargets.secondary.length} Secondary</p>}
                 {checkedSnapshotCount > 0 && rankedSnapshotCount === 0 && <p className="mt-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs leading-5 text-amber-900">Audit checked {checkedSnapshotCount} keyword/location targets, but the business was not found in the tracked ranges. Reviews can still show because they come from the Google listing aggregate, not keyword ranking.</p>}
               </div>
-              <Button onClick={() => void runAudit()} disabled={!business || auditing || !(business.keywords?.length)} className={auditing ? "animate-pulse bg-blue-700" : ""}>{auditing ? "Pulling Google data..." : "Run audit and pull data"}</Button>
+              <Button onClick={() => void runAudit()} disabled={!business || auditing || pendingAuditCount === 0} className={auditing ? "animate-pulse bg-blue-700" : ""}>{auditing ? `${auditJob?.completedTargets ?? 0} of ${auditJob?.totalTargets ?? pendingAuditCount} checked` : "Save targets & check rankings"}</Button>
             </div>
             <div className="grid gap-3 lg:grid-cols-[1fr_1fr_auto] lg:items-end">
               <Input label="Target keywords" value={keywordText} onChange={setKeywordText} placeholder="Comma-separated keywords" />
               <Input label="Target locations" value={locationText} onChange={setLocationText} placeholder={form.targetLocations || form.city || "Comma-separated cities"} />
               <div className="flex flex-wrap gap-2">
-                <Button variant="ghost" onClick={pullExistingRankTargets} disabled={!business || auditing || !(business.keywords?.length)}>Pull existing</Button>
+                <Button variant="ghost" onClick={loadProjectKeywordTargets} disabled={!selectedGuidedProject || auditing || !projectKeywordTargets.all.length}>Reload project keywords</Button>
                 <Button variant="ghost" onClick={() => void suggestKeywords()} disabled={!business || auditing || suggestingKeywords}>{suggestingKeywords ? "Suggesting..." : "Suggest keywords"}</Button>
-                <Button variant="ghost" onClick={() => void addKeywords()} disabled={!business || auditing || addingKeywords}>{addingKeywords ? "Adding..." : "Add keywords"}</Button>
-                <Button variant="ghost" onClick={() => void clearKeywords()} disabled={!business || auditing || clearingKeywords || !(business.keywords?.length)}>{clearingKeywords ? "Clearing..." : "Clear targets"}</Button>
+                <Button variant="ghost" onClick={() => void clearKeywords()} disabled={!business || auditing || clearingKeywords || !hasActiveTargets}>{clearingKeywords ? "Clearing..." : "Clear saved targets"}</Button>
               </div>
             </div>
+            <div className={`mt-3 rounded-lg border px-3 py-2 text-xs leading-5 ${pendingAuditCount ? "border-blue-100 bg-blue-50 text-blue-900" : "border-amber-200 bg-amber-50 text-amber-900"}`}>{pendingAuditCount ? <><b>{pendingAuditCount} ranking checks:</b> {pendingKeywordCount} keyword{pendingKeywordCount === 1 ? "" : "s"} × {pendingLocationCount} location{pendingLocationCount === 1 ? "" : "s"}. This saves the displayed targets and records a new read-only search snapshot; it does not change the website or Google profile.</> : "Add at least one keyword and location to enable the ranking check."}</div>
+            {auditJob && ["queued", "running"].includes(auditJob.status) && <div className="mt-3 rounded-lg border border-amber-200 bg-amber-50 p-3"><div className="flex items-center justify-between gap-3 text-xs font-bold text-amber-900"><span>{auditJob.stage.replaceAll("_", " ")}</span><span>{auditJob.completedTargets}/{auditJob.totalTargets} · {auditJob.progress}%</span></div><div className="mt-2 h-2 overflow-hidden rounded-full bg-white"><div className="h-full rounded-full bg-amber-500 transition-all" style={{ width: `${auditJob.progress}%` }} /></div><p className="mt-2 text-xs text-amber-800">This is running in the background. You can leave this page safely.</p></div>}
             {keywordSuggestions.length > 0 && (
               <div className="mt-4 rounded-lg border border-blue-100 bg-blue-50/70 p-4">
                 <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
@@ -1000,23 +1167,24 @@ export default function LocalSeo() {
             )}
 
             <div className="mt-4 flex flex-wrap gap-2">
-              {(business?.keywords ?? []).map((keyword) => (
+              {(business?.keywords ?? []).slice(0, showAllSavedTargets ? undefined : 16).map((keyword) => (
                 <span key={keyword.id} className="rounded-full border border-charcoal-200 bg-charcoal-50 px-3 py-1 text-xs text-charcoal-600">{keyword.keyword} · {keyword.city}</span>
               ))}
+              {(business?.keywords?.length ?? 0) > 16 && <button type="button" onClick={() => setShowAllSavedTargets((current) => !current)} className="rounded-full border border-brand-200 bg-brand-50 px-3 py-1 text-xs font-bold text-brand-700">{showAllSavedTargets ? "Show fewer" : `View ${(business?.keywords?.length ?? 0) - 16} more`}</button>}
             </div>
           </Card>
         </div>
       </div>
 
       <div className="grid gap-6">
-        <Card id="rank-tracker" className="overflow-hidden">
+        <Card id="rank-tracker" className={activeView === "rankings" ? "overflow-hidden" : "hidden"}>
           <div className="border-b border-charcoal-100 px-5 py-3">
             <h2 className="font-semibold text-charcoal-800">Rank Tracker</h2>
             <p className="text-xs text-charcoal-400">Domain not found in top 100 is stored as organic position empty while entity-based local signals continue.</p>
           </div>
-          <div className="overflow-x-auto">
+          <div className="max-h-[560px] overflow-auto">
             <table className="min-w-full divide-y divide-charcoal-100 text-sm">
-              <thead className="bg-charcoal-50 text-left text-xs uppercase tracking-wide text-charcoal-400">
+              <thead className="sticky top-0 z-10 bg-charcoal-50 text-left text-xs uppercase tracking-wide text-charcoal-400 shadow-sm">
                 <tr>
                   <th className="px-5 py-3">Keyword</th>
                   <th className="px-5 py-3">Organic</th>
@@ -1034,7 +1202,7 @@ export default function LocalSeo() {
           </div>
         </Card>
 
-        <div className="space-y-3">
+        <div className={activeView === "overview" ? "space-y-3" : "hidden"}>
           <div className="flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
             <div>
               <div className="text-xs font-semibold uppercase tracking-wide text-brand-600">Next Actions</div>
@@ -1072,7 +1240,7 @@ export default function LocalSeo() {
         </div>
       </div>
 
-      {competitorSnapshots.length > 0 && (
+      {activeView === "competitors" && competitorSnapshots.length > 0 && (
         <Card className="p-5">
           <div className="mb-4 flex flex-col gap-1 sm:flex-row sm:items-end sm:justify-between">
             <div>
@@ -1081,7 +1249,7 @@ export default function LocalSeo() {
             </div>
             <div className="text-xs text-charcoal-500">Targets compared: <span className="font-semibold text-charcoal-700">{competitorSnapshots.length}</span></div>
           </div>
-          <div className="space-y-4">
+          <div className="max-h-[720px] space-y-4 overflow-y-auto pr-1">
             {competitorSnapshots.map(({ snapshot, target, competitors, summary }) => {
               const hasMatchedTarget = Boolean(evidenceString(target.name) || snapshot.mapsPosition);
               const targetReviews = evidenceNumber(target.reviewCount) ?? displayReviewCount;
@@ -1155,9 +1323,17 @@ export default function LocalSeo() {
         </Card>
       )}
 
-      {business && <LocalGridPanel business={business} />}
+      {activeView === "competitors" && competitorSnapshots.length === 0 && (
+        <Card className="border-dashed p-8 text-center">
+          <h2 className="font-bold text-charcoal-800">No competitor comparisons yet</h2>
+          <p className="mt-2 text-sm text-charcoal-500">Run the ranking audit to compare this business with Google Maps competitors for each saved keyword and location.</p>
+          <Button className="mt-4" onClick={() => setActiveView("rankings")}>Open Rankings</Button>
+        </Card>
+      )}
 
-      <div className="grid gap-6 lg:grid-cols-2">
+      {business && activeView === "grid" && <LocalGridPanel business={business} />}
+
+      <div className={activeView === "trust" ? "grid gap-6 lg:grid-cols-2" : "hidden"}>
         <Card id="nap-audit" className="p-5">
           <div className="mb-3 flex items-center justify-between">
             <h2 className="font-semibold text-charcoal-800">NAP Audit</h2>

@@ -13,7 +13,7 @@ import { keywordResearchRouter, startKeywordResearchQueueWorker } from "./routes
 import { aiContentRouter } from "./routes/ai-content.js";
 import { socialStrategyRouter } from "./routes/social-strategy.js";
 import { socialConnectRouter } from "./routes/social-connect.js";
-import { localSeoRouter } from "./routes/local-seo.js";
+import { localSeoRouter, startLocalGridScanQueueWorker, startLocalSeoAuditQueueWorker } from "./routes/local-seo.js";
 import { executionTasksRouter } from "./routes/execution-tasks.js";
 import { optimizationWorkflowRouter } from "./routes/optimization-workflow.js";
 import { billingRouter } from "./routes/billing.js";
@@ -35,9 +35,34 @@ import { authorityGrowthRouter } from "./routes/authority-growth.js";
 import { aiCitationVisibilityRouter } from "./routes/ai-citation-visibility.js";
 import { publicWebsiteFormsRouter } from "./routes/website-public-forms.js";
 import { rawBodySaver } from "./billing.js";
-import { enforceArchivedReadOnly, enforceWorkspacePermissions, requireAuth } from "./middleware.js";
+import { enforceArchivedReadOnly, enforceCommercialAccess, enforceWorkspacePermissions, requireAuth } from "./middleware.js";
+import { createApiErrorCode, GENERIC_SYSTEM_ERROR, systemErrorPayload } from "./api-errors.js";
+import { queueApiErrorReport } from "./api-error-reporter.js";
 
 const app = express();
+
+// One platform-wide boundary for unexpected API failures. Individual routes can
+// keep returning useful validation and permission errors; every 5xx response is
+// assigned a support reference and generic internal-error text is never exposed.
+app.use((req, res, next) => {
+  const sendJson = res.json.bind(res);
+  res.json = ((body: unknown) => {
+    if (res.statusCode < 500) return sendJson(body);
+    const errorCode = typeof res.locals.errorCode === "string" ? res.locals.errorCode : createApiErrorCode();
+    res.locals.errorCode = errorCode;
+    res.setHeader("X-SEnuke-Error-Code", errorCode);
+    if (!res.locals.errorLogged) {
+      const diagnostic = body && typeof body === "object" && !Array.isArray(body) && "error" in body
+        ? (body as { error?: unknown }).error
+        : body;
+      console.error(`[api] ${errorCode}: ${req.method} ${req.originalUrl} returned ${res.statusCode}`, diagnostic);
+      queueApiErrorReport({ errorCode, statusCode: res.statusCode, diagnostic, request: req });
+      res.locals.errorLogged = true;
+    }
+    return sendJson(systemErrorPayload(body, errorCode, config.supportEmail, res.locals.publicError === true));
+  }) as express.Response["json"];
+  next();
+});
 
 const allowedOrigins = new Set([
   new URL(config.webAppUrl).origin,
@@ -67,9 +92,9 @@ app.use((req, res, next) => {
   if (origin && allowedOrigins.has(origin)) {
     res.setHeader("Access-Control-Allow-Origin", origin);
     res.setHeader("Vary", "Origin");
-    res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
+    res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization, X-SEnuke-AI-Client-Id, X-SEnuke-AI-Workspace-Id, X-SEnuke-Usage-Token, X-Request-Id");
     res.setHeader("Access-Control-Allow-Methods", "GET,POST,PATCH,DELETE,OPTIONS");
-    res.setHeader("Access-Control-Expose-Headers", "X-SEnuke-Session-Token");
+    res.setHeader("Access-Control-Expose-Headers", "X-SEnuke-Session-Token, X-SEnuke-Error-Code");
   }
 
   if (req.method === "OPTIONS") {
@@ -133,7 +158,7 @@ app.use("/api/billing", billingRouter);
 app.use("/api/auth", authRouter);
 app.use("/api/public", publicLeadMagnetsRouter);
 app.use("/api/public", publicWebsiteFormsRouter);
-app.use("/api", requireAuth, enforceArchivedReadOnly, enforceWorkspacePermissions);
+app.use("/api", requireAuth, enforceCommercialAccess, enforceArchivedReadOnly, enforceWorkspacePermissions);
 app.use("/api/clients", clientsRouter);
 app.use("/api/users", usersRouter);
 app.use("/api", guidedProjectsRouter);
@@ -165,15 +190,24 @@ app.use("/api", executionTasksRouter);
 app.use("/api", optimizationWorkflowRouter);
 
 // Centralized error handler.
-app.use((err: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
+app.use((err: unknown, req: express.Request, res: express.Response, _next: express.NextFunction) => {
   const statusCode = typeof err === "object" && err !== null && "statusCode" in err && typeof err.statusCode === "number" ? err.statusCode : 500;
   const publicMessage = typeof err === "object" && err !== null && "publicMessage" in err && err.publicMessage === true;
-  const message = (statusCode < 500 || publicMessage) && err instanceof Error ? err.message : "internal server error";
-  if (statusCode >= 500) console.error("[api] error:", err);
+  const message = (statusCode < 500 || publicMessage) && err instanceof Error ? err.message : GENERIC_SYSTEM_ERROR;
+  if (statusCode >= 500) {
+    const errorCode = createApiErrorCode();
+    res.locals.errorCode = errorCode;
+    res.locals.errorLogged = true;
+    console.error(`[api] ${errorCode}:`, err);
+    queueApiErrorReport({ errorCode, statusCode, diagnostic: err, request: req });
+    res.locals.publicError = publicMessage;
+  }
   res.status(statusCode).json({ error: message });
 });
 
 startKeywordResearchQueueWorker();
+startLocalSeoAuditQueueWorker();
+startLocalGridScanQueueWorker();
 
 app.listen(config.port, () => {
   console.log(`[api] SEnuke AI API listening on http://localhost:${config.port}`);

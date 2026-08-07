@@ -5,6 +5,8 @@ import { projectReportCatalog, projectReportTypes, reportFrequencies } from "@we
 import { canAccessProject, createWorkspaceNotification, hasWorkspacePermission, recordWorkspaceActivity, workspaceContext } from "../workspace-access.js";
 import { createProfessionalReportPdf } from "../report-pdf.js";
 import { agencyProposalContent } from "@webtummy/core/agency-documents";
+import { recommendationFindings } from "./gap-analysis.js";
+import { extractUnifiedStrategyPlan } from "../strategy-ai.js";
 
 export const projectReportsRouter = Router();
 
@@ -50,6 +52,7 @@ async function scopedProject(context: Awaited<ReturnType<typeof workspaceContext
       aiVisibilityQueries: { where: { status: "active" }, include: { snapshots: { include: { sourceMentions: true }, orderBy: { createdAt: "desc" }, take: 3 } }, orderBy: { priorityScore: "desc" } },
       citationRecommendations: { where: { status: { not: "superseded" } }, orderBy: [{ priorityScore: "desc" }, { createdAt: "desc" }] },
       trustSignals: { orderBy: [{ status: "asc" }, { signalType: "asc" }] },
+      gapAnalysisRuns: { orderBy: { createdAt: "desc" }, take: 1, include: { recommendations: { orderBy: [{ impactScore: "desc" }, { confidenceScore: "desc" }] } } },
       executionTasks: { orderBy: { createdAt: "desc" }, select: { id: true, title: true, moduleName: true, status: true, priority: true, requiresApproval: true, approvedAt: true, publishedAt: true, completedAt: true, dueAt: true, assignee: { select: { user: { select: { name: true, email: true } } } }, approver: { select: { user: { select: { name: true, email: true } } } } } },
       memberAssignments: { select: { membershipId: true } },
       teamAssignments: { select: { team: { select: { members: { select: { membershipId: true } } } } } },
@@ -70,6 +73,11 @@ function reportContent(project: Awaited<ReturnType<typeof scopedProject>>, repor
   const contentTasks = project.executionTasks.filter((task) => /content|page|publish/i.test(`${task.moduleName} ${task.title}`));
   const unavailable = "Connect the relevant analytics integration to populate this metric.";
   const strategy = project.strategyPlans[0];
+  const unifiedStrategyPlan = extractUnifiedStrategyPlan(strategy?.prioritizedRecommendations);
+  const unifiedStrategyEntry = Array.isArray(strategy?.prioritizedRecommendations)
+    ? strategy.prioritizedRecommendations.find((item) => item && typeof item === "object" && !Array.isArray(item) && (item as { analysisKey?: unknown }).analysisKey === "unified_strategy_plan") as { decisionSet?: unknown } | undefined
+    : undefined;
+  const strategyDecisionSet = unifiedStrategyEntry?.decisionSet ?? null;
   const crawl = project.website?.crawlJobs[0];
   const selectedOpportunity = project.opportunities[0];
   const rankingRuns = project.keywordResearchRuns;
@@ -180,7 +188,7 @@ function reportContent(project: Awaited<ReturnType<typeof scopedProject>>, repor
     reputation: { newReviews: null, negativeReviewsNeedingAttention: null, averageRating: null, ratingChange: null, responseStatus: null, trends: null, unavailableReason: unavailable },
     execution: { completed: completed.map((task) => ({ title: task.title, module: task.moduleName, completedBy: task.assignee?.user.name || task.assignee?.user.email || "Unassigned", approvedBy: task.approver?.user.name || task.approver?.user.email || null })), published: published.map((task) => task.title), awaitingApproval: awaitingApproval.map((task) => task.title), blocked: blocked.map((task) => task.title), scheduledNext: scheduled.slice(0, 20).map((task) => ({ title: task.title, dueAt: task.dueAt })) },
     contentPublishing: { created: contentTasks.length, approved: contentTasks.filter((task) => Boolean(task.approvedAt)).length, published: contentTasks.filter((task) => Boolean(task.publishedAt) || task.status === "published").map((task) => task.title), performance: null, unavailableReason: unavailable },
-    strategy: strategy ? { version: strategy.version, status: strategy.status, score: strategyScore, scoreBreakdown: strategyScoreBreakdown, summary: strategy.strategySummary, businessObjectives: strategy.businessObjectives, positioning: strategy.positioningStatement, audience: strategy.audienceProfile, offer: strategy.offerRecommendation, businessModel: strategy.businessModel, seo: strategy.seoStrategy, localSeo: strategy.localSeoStrategy, content: strategy.contentStrategy, competitors: strategy.competitorStrategy, competitiveInsights: strategy.competitiveInsights, authority: strategy.authorityStrategy, growthRecommendations: strategy.growthRecommendations, social: strategy.socialStrategy, publishing: strategy.publishingStrategy, kpis: strategy.kpis, revisionInstructions: strategy.revisionComment, approvedAt: strategy.approvedAt } : null,
+    strategy: strategy ? { version: strategy.version, status: strategy.status, score: strategyScore, scoreBreakdown: strategyScoreBreakdown, summary: strategy.strategySummary, businessObjectives: strategy.businessObjectives, positioning: strategy.positioningStatement, audience: strategy.audienceProfile, offer: strategy.offerRecommendation, businessModel: strategy.businessModel, seo: strategy.seoStrategy, localSeo: strategy.localSeoStrategy, content: strategy.contentStrategy, competitors: strategy.competitorStrategy, competitiveInsights: strategy.competitiveInsights, authority: strategy.authorityStrategy, growthRecommendations: strategy.growthRecommendations, social: strategy.socialStrategy, publishing: strategy.publishingStrategy, kpis: strategy.kpis, revisionInstructions: strategy.revisionComment, approvedAt: strategy.approvedAt, unifiedPlan: unifiedStrategyPlan, decisionSet: strategyDecisionSet, decisions: strategy.advancedAnalysis } : null,
     evidence: { selectedOpportunity: selectedOpportunity?.name ?? null, opportunityScore: selectedOpportunity?.opportunityScore ?? null, businessLocation: project.businessLocation, targetMarkets: project.targetLocations, approvedKeywordGroups: approvedKeywordGroups.map((group) => ({ title: group.title, keywords: group.keywords })), siteAnalysis: crawl ? { score: crawl.siteScore, pagesCrawled: crawl.pagesCrawled, issuesFound: crawl._count.issues, completedAt: crawl.completedAt } : null },
     ecommerce: { productAndCollectionOptimization: project.executionTasks.filter((task) => /product|collection/i.test(`${task.moduleName} ${task.title}`)).map((task) => task.title), organicProductTraffic: null, storeSeoIssues: blocked.filter((task) => /store|product|collection|shopify/i.test(`${task.moduleName} ${task.title}`)).map((task) => task.title), productPagePerformance: null, publishedStoreChanges: published.filter((task) => /store|product|collection|shopify/i.test(`${task.moduleName} ${task.title}`)).map((task) => task.title), salesAndConversions: null, unavailableReason: unavailable },
     sections: definition.sections, recommendations: blocked.length ? ["Resolve blocked work before the next milestone."] : ["Continue with the next approved execution priorities."],
@@ -188,6 +196,101 @@ function reportContent(project: Awaited<ReturnType<typeof scopedProject>>, repor
   };
   if (reportType !== "agency_proposal") return base;
   return { ...base, proposal: agencyProposalContent({ projectName: project.name, clientName: project.agencyClient?.name ?? project.businessName ?? project.name, primaryGoal: project.primaryGoal, targetMarkets: project.targetLocations, timeline: project.targetLaunchTimeline, outputs: project.preferredOutputs, strategySummary: strategy?.strategySummary, opportunityName: selectedOpportunity?.name, completedTasks: completed.length, totalTasks: project.executionTasks.length }) };
+}
+
+function reportStrings(value: Prisma.JsonValue | null | undefined) {
+  if (!Array.isArray(value)) return [];
+  return [...new Set(value.map((item) => typeof item === "string" ? item.trim() : "").filter(Boolean))];
+}
+
+async function reportContentWithFindings(
+  project: Awaited<ReturnType<typeof scopedProject>>,
+  reportType: typeof projectReportTypes[number],
+  branding: Record<string, unknown>,
+) {
+  const base = reportContent(project, reportType, branding);
+  if (reportType !== "seo_audit") return base;
+
+  const latestRun = project.gapAnalysisRuns[0];
+  const detailedCategories = new Set(["keyword_mapping", "content", "technical", "site_structure"]);
+  const exactFindings = new Map<string, Awaited<ReturnType<typeof recommendationFindings>>>();
+  await Promise.all((latestRun?.recommendations ?? [])
+    .filter((recommendation) => detailedCategories.has(recommendation.category))
+    .map(async (recommendation) => exactFindings.set(recommendation.category, await recommendationFindings(project.id, recommendation.category))));
+
+  const recommendations = (latestRun?.recommendations ?? []).map((recommendation) => {
+    const savedEvidence = reportStrings(recommendation.evidenceJson);
+    const inferredAiOpportunity = recommendation.category === "ai_citation"
+      && /inferred|not evidence|not (?:yet )?(?:observed|recorded|assessed)/i.test(`${recommendation.explanation} ${savedEvidence.join(" ")}`);
+    const exact = exactFindings.get(recommendation.category) ?? [];
+    const title = inferredAiOpportunity
+      ? `${Math.max(1, savedEvidence.length)} AI answer opportunit${Math.max(1, savedEvidence.length) === 1 ? "y" : "ies"} need validation`
+      : recommendation.title;
+    return {
+      category: recommendation.category,
+      title,
+      explanation: inferredAiOpportunity
+        ? "These buyer questions were inferred from approved project topics. No answer-engine result has been recorded, so they are opportunities rather than detected citation gaps."
+        : recommendation.explanation,
+      recommendedAction: inferredAiOpportunity
+        ? "Review each proposed question, map it to the best existing or planned page, and run a permitted visibility check before treating it as a citation gap."
+        : recommendation.recommendedAction,
+      expectedImpact: recommendation.expectedImpact,
+      priority: recommendation.priority,
+      impactScore: recommendation.impactScore,
+      confidenceScore: inferredAiOpportunity ? Math.min(68, recommendation.confidenceScore) : recommendation.confidenceScore,
+      status: recommendation.status,
+      evidenceType: inferredAiOpportunity ? "Inferred planning opportunity" : exact.length ? "Crawl-backed page findings" : "Saved project evidence",
+      evidence: savedEvidence,
+      competitorEvidence: inferredAiOpportunity ? [] : reportStrings(recommendation.competitorEvidence),
+      exactFindings: exact.map((finding) => ({
+        affectedUrl: finding.affectedUrl,
+        issueType: finding.issueType,
+        severity: finding.severity,
+        evidence: finding.evidence,
+        recommendedFix: finding.recommendedFix,
+        whyItMatters: finding.whyItMatters,
+        expectedImpact: finding.expectedImpact,
+        details: finding.details ?? [],
+      })),
+    };
+  });
+  const categoryCounts = recommendations.reduce<Record<string, number>>((counts, recommendation) => {
+    counts[recommendation.category] = recommendation.exactFindings.length || 1;
+    return counts;
+  }, {});
+  const exactFindingCount = recommendations.reduce((total, recommendation) => total + recommendation.exactFindings.length, 0);
+  const crawl = project.website?.crawlJobs[0];
+
+  return {
+    ...base,
+    title: `${project.businessName ?? project.name} - Complete SEO Findings Report`,
+    recommendations: recommendations.map((recommendation) => recommendation.recommendedAction),
+    seoAudit: {
+      generatedFromRunId: latestRun?.id ?? null,
+      analysisCompletedAt: latestRun?.completedAt ?? latestRun?.createdAt ?? null,
+      evidenceNote: latestRun
+        ? "This report uses the latest saved Gap Analysis, approved keyword and location direction, the latest completed Site Analysis, and saved project records. Exact URL findings are regenerated from the same current crawl evidence at export time."
+        : "No completed Gap Analysis is saved. Run Gap Analysis before sharing this report so its recommendations and page-level findings are populated.",
+      summary: {
+        siteScore: crawl?.siteScore ?? null,
+        pagesCrawled: crawl?.pagesCrawled ?? 0,
+        totalRecommendations: recommendations.length,
+        highImpactRecommendations: recommendations.filter((recommendation) => recommendation.impactScore >= 78).length,
+        approvedRecommendations: recommendations.filter((recommendation) => recommendation.status === "approved").length,
+        exactFindings: exactFindingCount,
+      },
+      categoryCounts,
+      recommendations,
+      methodology: [
+        "Approved keyword and target-location direction is compared with the latest completed website crawl and any saved SEO Page Map.",
+        "Crawl-backed categories include the exact affected URL, observed evidence, recommended fix, reason, and expected impact where available.",
+        "URL aliases and repeated checks are grouped by canonical page to avoid inflating issue counts or creating duplicate work.",
+        "AI answer ideas without recorded provider observations are labelled as inferred opportunities, not measured citation failures.",
+        "Scores prioritize review order. They do not guarantee rankings, traffic, leads, revenue, map-pack placement, or AI citations.",
+      ],
+    },
+  };
 }
 
 async function agencyBranding(context: Awaited<ReturnType<typeof workspaceContext>>, projectId?: string) {
@@ -226,9 +329,10 @@ projectReportsRouter.post("/project-reports/generate", async (req, res) => {
   if ("agencyOnly" in definition && definition.agencyOnly && context.workspace.workspaceType !== "agency") return res.status(400).json({ error: "Agency Client Reports are available only in Agency workspaces." });
   const approvalStatus = context.workspace.workspaceType === "agency" ? "needs_review" : "approved";
   const branding = await agencyBranding(context, project.id);
+  const content = await reportContentWithFindings(project, data.reportType, branding);
   const assignedMembershipIds = new Set([...project.memberAssignments.map((item) => item.membershipId), ...project.teamAssignments.flatMap((item) => item.team.members.map((member) => member.membershipId))]);
   const report = await prisma.$transaction(async (tx) => {
-    const created = await tx.gapReportExport.create({ data: { projectId: project.id, clientId: project.clientId, reportType: data.reportType, clientName: project.agencyClient?.name ?? project.businessName ?? project.name, approvalStatus, exportFormat: data.exportFormat, status: "ready", completedAt: new Date(), contentJson: reportContent(project, data.reportType, branding) as Prisma.InputJsonValue } });
+    const created = await tx.gapReportExport.create({ data: { projectId: project.id, clientId: project.clientId, reportType: data.reportType, clientName: project.agencyClient?.name ?? project.businessName ?? project.name, approvalStatus, exportFormat: data.exportFormat, status: "ready", completedAt: new Date(), contentJson: content as Prisma.InputJsonValue } });
     await recordWorkspaceActivity(tx, { context, action: "report.generated", entityType: "gap_report_export", entityId: created.id, agencyClientId: project.agencyClientId, projectId: project.id, nextJson: { reportType: data.reportType, approvalStatus } });
     const memberships = await tx.workspaceMembership.findMany({ where: { workspaceId: context.workspace.id, status: "active", OR: [{ id: { in: [...assignedMembershipIds] } }, { userId: context.workspace.ownerUserId }] }, include: { roles: { select: { role: true } } } });
     for (const membership of memberships) {

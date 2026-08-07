@@ -126,6 +126,7 @@ model Client {
   budgetCaps                         BudgetCap[]
   usageAlerts                        UsageAlert[]
   localBusinessProfiles              LocalBusinessProfile[]
+  localSeoAuditJobs                  LocalSeoAuditJob[]
   offlinePayments                    OfflinePayment[]
   monthlyReports                     MonthlyClientReport[]
   executionTasks                     ExecutionTask[]
@@ -140,34 +141,47 @@ model Client {
 // Agency tenancy. Client above remains the legacy billing tenant during the
 // migration; Workspace is the authorization and operational boundary.
 model Workspace {
-  id                      String   @id @default(cuid())
-  legacyClientId          String?  @unique
-  legacyClient            Client?  @relation(fields: [legacyClientId], references: [id], onDelete: SetNull)
-  name                    String   @db.VarChar(180)
-  workspaceType           String   @default("business") @db.VarChar(40)
+  id                      String    @id @default(cuid())
+  legacyClientId          String?   @unique
+  legacyClient            Client?   @relation(fields: [legacyClientId], references: [id], onDelete: SetNull)
+  name                    String    @db.VarChar(180)
+  workspaceType           String    @default("business") @db.VarChar(40)
   ownerUserId             String
-  owner                   User     @relation("WorkspaceOwner", fields: [ownerUserId], references: [id], onDelete: Restrict)
-  status                  String   @default("active") @db.VarChar(40)
-  settingsJson            Json     @default("{}")
-  securitySettingsJson    Json     @default("{}")
-  integrationSettingsJson Json     @default("{}")
-  autoApprovalPolicyJson  Json     @default("{}")
-  brandingJson            Json     @default("{}")
-  defaultTemplatesJson    Json     @default("{}")
-  createdAt               DateTime @default(now())
-  updatedAt               DateTime @updatedAt
+  owner                   User      @relation("WorkspaceOwner", fields: [ownerUserId], references: [id], onDelete: Restrict)
+  status                  String    @default("active") @db.VarChar(40)
+  commercialState         String    @default("active") @db.VarChar(40)
+  accessMode              String    @default("full") @db.VarChar(40)
+  retentionEndsAt         DateTime?
+  deletionScheduledAt     DateTime?
+  settingsJson            Json      @default("{}")
+  securitySettingsJson    Json      @default("{}")
+  integrationSettingsJson Json      @default("{}")
+  autoApprovalPolicyJson  Json      @default("{}")
+  brandingJson            Json      @default("{}")
+  defaultTemplatesJson    Json      @default("{}")
+  createdAt               DateTime  @default(now())
+  updatedAt               DateTime  @updatedAt
 
-  memberships      WorkspaceMembership[]
-  teams            WorkspaceTeam[]
-  agencyClients    AgencyClient[]
-  notifications    WorkspaceNotification[]
-  activity         WorkspaceActivity[]
-  invitations      WorkspaceInvitation[]
-  agentThreads     ProjectAgentThread[]
-  aiIntakeSessions WorkspaceAiIntakeSession[]
+  memberships             WorkspaceMembership[]
+  teams                   WorkspaceTeam[]
+  agencyClients           AgencyClient[]
+  notifications           WorkspaceNotification[]
+  activity                WorkspaceActivity[]
+  invitations             WorkspaceInvitation[]
+  agentThreads            ProjectAgentThread[]
+  aiIntakeSessions        WorkspaceAiIntakeSession[]
+  commercialSubscriptions WorkspaceSubscription[]
+  entitlementOverrides    CommercialEntitlementOverride[]
+  seatEntitlements        CommercialSeatEntitlement[]
+  seatAssignments         CommercialSeatAssignment[]
+  billingEvents           CommercialBillingEvent[]
+  providerReferences      CommercialProviderReference[]
+  commercialAuditEvents   CommercialAuditEvent[]
+  retentionCases          CommercialRetentionCase[]
 
   @@index([ownerUserId])
   @@index([status])
+  @@index([commercialState, accessMode])
 }
 
 model WorkspaceAiIntakeSession {
@@ -240,13 +254,14 @@ model WorkspaceMembership {
   createdAt           DateTime  @default(now())
   updatedAt           DateTime  @updatedAt
 
-  roles              WorkspaceMemberRole[]
-  teamMemberships    WorkspaceTeamMember[]
-  clientAssignments  AgencyClientMember[]
-  projectAssignments ProjectMemberAssignment[]
-  assignedTasks      ExecutionTask[]           @relation("TaskAssignee")
-  managedTasks       ExecutionTask[]           @relation("TaskManager")
-  approvalTasks      ExecutionTask[]           @relation("TaskApprover")
+  roles                    WorkspaceMemberRole[]
+  teamMemberships          WorkspaceTeamMember[]
+  clientAssignments        AgencyClientMember[]
+  projectAssignments       ProjectMemberAssignment[]
+  assignedTasks            ExecutionTask[]           @relation("TaskAssignee")
+  managedTasks             ExecutionTask[]           @relation("TaskManager")
+  approvalTasks            ExecutionTask[]           @relation("TaskApprover")
+  commercialSeatAssignment CommercialSeatAssignment?
 
   @@unique([workspaceId, userId])
   @@index([workspaceId, status])
@@ -475,24 +490,267 @@ model MaintenanceRun {
 }
 
 model BillingPlan {
-  id                 String   @id @default(cuid())
-  code               String   @unique @db.VarChar(40)
-  name               String   @db.VarChar(80)
-  description        String   @db.Text
+  id                 String                  @id @default(cuid())
+  code               String                  @unique @db.VarChar(40)
+  name               String                  @db.VarChar(80)
+  description        String                  @db.Text
   priceMonthlyCents  Int
   articleLimit       Int
-  helperMonthlyLimit Int      @default(1000)
-  features           Json     @default("[]")
-  stripeProductId    String?  @db.VarChar(255)
-  stripePriceId      String?  @db.VarChar(255)
-  isActive           Boolean  @default(true)
-  sortOrder          Int      @default(0)
-  createdAt          DateTime @default(now())
-  updatedAt          DateTime @updatedAt
+  helperMonthlyLimit Int                     @default(1000)
+  features           Json                    @default("[]")
+  stripeProductId    String?                 @db.VarChar(255)
+  stripePriceId      String?                 @db.VarChar(255)
+  isActive           Boolean                 @default(true)
+  sortOrder          Int                     @default(0)
+  createdAt          DateTime                @default(now())
+  updatedAt          DateTime                @updatedAt
+  commercialVersions CommercialPlanVersion[]
 
   @@index([isActive, sortOrder])
   @@index([stripeProductId])
   @@index([stripePriceId])
+}
+
+// ─── DEV-030 Commercial Architecture ───────────────────────────────────────
+// BillingPlan and the legacy Client fields remain compatibility projections
+// during rollout. WorkspaceSubscription + immutable versions are authoritative.
+
+model CommercialRegistrationPolicy {
+  id           String   @id @default("default") @db.VarChar(40)
+  trialEnabled Boolean  @default(false)
+  trialDays    Int      @default(14)
+  updatedById  String?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+}
+
+model CommercialPolicyVersion {
+  id                       String    @id @default(cuid())
+  code                     String    @db.VarChar(80)
+  version                  Int
+  effectiveFrom            DateTime
+  effectiveTo              DateTime?
+  graceDays                Int       @default(7)
+  retentionDays            Int       @default(90)
+  suspensionAfterDays      Int       @default(30)
+  foundingReactivationDays Int       @default(0)
+  capacityExpiryRules      Json      @default("{}")
+  fairUsageRules           Json      @default("{}")
+  reactivationRules        Json      @default("{}")
+  deletionRules            Json      @default("{}")
+  status                   String    @default("active") @db.VarChar(40)
+  createdAt                DateTime  @default(now())
+
+  planVersions  CommercialPlanVersion[]
+  subscriptions WorkspaceSubscription[]
+
+  @@unique([code, version])
+  @@index([status, effectiveFrom])
+}
+
+model CommercialPlanVersion {
+  id                       String                  @id @default(cuid())
+  billingPlanId            String
+  billingPlan              BillingPlan             @relation(fields: [billingPlanId], references: [id], onDelete: Restrict)
+  version                  Int
+  effectiveFrom            DateTime
+  effectiveTo              DateTime?
+  workspaceTypeEligibility Json                    @default("[]")
+  featureEntitlements      Json                    @default("{}")
+  numericLimits            Json                    @default("{}")
+  policyVersionId          String
+  policyVersion            CommercialPolicyVersion @relation(fields: [policyVersionId], references: [id], onDelete: Restrict)
+  status                   String                  @default("active") @db.VarChar(40)
+  createdAt                DateTime                @default(now())
+
+  prices        CommercialPrice[]
+  subscriptions WorkspaceSubscription[]
+
+  @@unique([billingPlanId, version])
+  @@index([status, effectiveFrom])
+  @@index([policyVersionId])
+}
+
+model CommercialPrice {
+  id                 String                @id @default(cuid())
+  code               String                @unique @db.VarChar(120)
+  planVersionId      String
+  planVersion        CommercialPlanVersion @relation(fields: [planVersionId], references: [id], onDelete: Restrict)
+  billingInterval    String                @db.VarChar(20)
+  currency           String                @default("USD") @db.VarChar(3)
+  amountCents        Int
+  priceClass         String                @default("standard") @db.VarChar(40)
+  market             String                @default("global") @db.VarChar(40)
+  provider           String                @default("jvzoo") @db.VarChar(40)
+  providerProductRef String?               @db.VarChar(191)
+  providerPriceRef   String?               @db.VarChar(191)
+  checkoutUrl        String?               @db.VarChar(1000)
+  effectiveFrom      DateTime
+  effectiveTo        DateTime?
+  status             String                @default("active") @db.VarChar(40)
+  createdAt          DateTime              @default(now())
+
+  subscriptions WorkspaceSubscription[]
+
+  @@index([provider, providerProductRef])
+  @@index([planVersionId, status])
+  @@index([priceClass, billingInterval])
+}
+
+model WorkspaceSubscription {
+  id                      String                  @id @default(cuid())
+  workspaceId             String
+  workspace               Workspace               @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  planVersionId           String
+  planVersion             CommercialPlanVersion   @relation(fields: [planVersionId], references: [id], onDelete: Restrict)
+  priceId                 String?
+  price                   CommercialPrice?        @relation(fields: [priceId], references: [id], onDelete: Restrict)
+  policyVersionId         String
+  policyVersion           CommercialPolicyVersion @relation(fields: [policyVersionId], references: [id], onDelete: Restrict)
+  provider                String                  @default("jvzoo") @db.VarChar(40)
+  providerCustomerRef     String?                 @db.VarChar(191)
+  providerSubscriptionRef String?                 @db.VarChar(191)
+  status                  String                  @default("pending") @db.VarChar(40)
+  billingInterval         String                  @default("monthly") @db.VarChar(20)
+  currentPeriodStart      DateTime?
+  currentPeriodEnd        DateTime?
+  billingAnchorAt         DateTime?
+  cancelAtPeriodEnd       Boolean                 @default(false)
+  foundingMember          Boolean                 @default(false)
+  foundingCampaignCode    String?                 @db.VarChar(80)
+  protectedPriceId        String?
+  protectionStartAt       DateTime?
+  graceEndsAt             DateTime?
+  retentionEndsAt         DateTime?
+  createdAt               DateTime                @default(now())
+  updatedAt               DateTime                @updatedAt
+
+  @@index([workspaceId, status])
+  @@index([provider, providerSubscriptionRef])
+  @@index([currentPeriodEnd])
+}
+
+model CommercialEntitlementOverride {
+  id             String    @id @default(cuid())
+  workspaceId    String
+  workspace      Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  entitlementKey String    @db.VarChar(120)
+  valueJson      Json
+  mode           String    @default("replace") @db.VarChar(20)
+  reasonCode     String    @db.VarChar(80)
+  justification  String    @db.Text
+  createdById    String
+  expiresAt      DateTime?
+  revokedAt      DateTime?
+  createdAt      DateTime  @default(now())
+
+  @@index([workspaceId, entitlementKey, revokedAt])
+  @@index([expiresAt])
+}
+
+model CommercialSeatEntitlement {
+  id            String    @id @default(cuid())
+  workspaceId   String
+  workspace     Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  source        String    @db.VarChar(40)
+  quantity      Int
+  capacityGrant Int       @default(0)
+  status        String    @default("active") @db.VarChar(40)
+  effectiveFrom DateTime  @default(now())
+  effectiveTo   DateTime?
+  providerRef   String?   @db.VarChar(191)
+  createdAt     DateTime  @default(now())
+
+  @@index([workspaceId, status])
+  @@index([providerRef])
+}
+
+model CommercialSeatAssignment {
+  id               String              @id @default(cuid())
+  workspaceId      String
+  workspace        Workspace           @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  membershipId     String              @unique
+  membership       WorkspaceMembership @relation(fields: [membershipId], references: [id], onDelete: Cascade)
+  status           String              @default("active") @db.VarChar(40)
+  assignedAt       DateTime            @default(now())
+  pendingRemovalAt DateTime?
+  removedAt        DateTime?
+
+  @@index([workspaceId, status])
+}
+
+model CommercialBillingEvent {
+  id                String     @id @default(cuid())
+  workspaceId       String?
+  workspace         Workspace? @relation(fields: [workspaceId], references: [id], onDelete: SetNull)
+  provider          String     @db.VarChar(40)
+  providerEventId   String     @db.VarChar(191)
+  eventType         String     @db.VarChar(80)
+  status            String     @default("received") @db.VarChar(40)
+  verified          Boolean    @default(false)
+  rawPayload        Json
+  normalizedPayload Json       @default("{}")
+  attempts          Int        @default(0)
+  error             String?    @db.Text
+  occurredAt        DateTime?
+  processedAt       DateTime?
+  createdAt         DateTime   @default(now())
+
+  @@unique([provider, providerEventId])
+  @@index([workspaceId, createdAt])
+  @@index([status, createdAt])
+}
+
+model CommercialProviderReference {
+  id           String    @id @default(cuid())
+  workspaceId  String
+  workspace    Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  provider     String    @db.VarChar(40)
+  objectType   String    @db.VarChar(40)
+  externalId   String    @db.VarChar(191)
+  metadataJson Json      @default("{}")
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  @@unique([provider, objectType, externalId])
+  @@index([workspaceId, objectType])
+}
+
+model CommercialAuditEvent {
+  id            String     @id @default(cuid())
+  workspaceId   String?
+  workspace     Workspace? @relation(fields: [workspaceId], references: [id], onDelete: SetNull)
+  actorType     String     @db.VarChar(40)
+  actorId       String?
+  action        String     @db.VarChar(120)
+  reasonCode    String     @db.VarChar(80)
+  source        String     @db.VarChar(40)
+  correlationId String?    @db.VarChar(191)
+  beforeJson    Json?
+  afterJson     Json?
+  metadataJson  Json       @default("{}")
+  createdAt     DateTime   @default(now())
+
+  @@index([workspaceId, createdAt])
+  @@index([action, createdAt])
+  @@index([correlationId])
+}
+
+model CommercialRetentionCase {
+  id                  String    @id @default(cuid())
+  workspaceId         String
+  workspace           Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  policyVersionId     String
+  state               String    @default("retained") @db.VarChar(40)
+  retentionEndsAt     DateTime
+  deletionScheduledAt DateTime?
+  deletedAt           DateTime?
+  reportJson          Json      @default("{}")
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
+
+  @@index([workspaceId, state])
+  @@index([retentionEndsAt])
 }
 
 // ─── Usage, Limits, Credits & Cost Control ──────────────────────────────────
@@ -606,6 +864,7 @@ model UsageEvent {
 
   creditTransactions CreditTransaction[]
   providerCostEvents ProviderCostEvent[]
+  websiteBuildJobs   WebsiteBuildJob[]
 
   @@unique([clientId, idempotencyKey])
   @@index([clientId, createdAt])
@@ -807,6 +1066,10 @@ model Project {
   strategyPlans               StrategyPlan[]
   executionTasks              ExecutionTask[]
   workflowSteps               ProjectWorkflowStep[]
+  workflowController          ProjectWorkflowState?
+  workflowEvents              ProjectWorkflowEvent[]
+  businessBrainVersions       BusinessBrainVersion[]
+  evidenceVersions            ProjectEvidenceVersion[]
   growthDiagnoses             GrowthDiagnosis[]
   growthFunnelStages          GrowthFunnelStage[]
   growthExperiments           GrowthExperiment[]
@@ -850,6 +1113,8 @@ model Project {
   wordpressPublishJobs        WordPressPublishJob[]
   gapLocalSeoProfiles         GapLocalSeoProfile[]
   gapLocalSeoTasks            GapLocalSeoTask[]
+  localBusinessProfiles       LocalBusinessProfile[]
+  localSeoAuditJobs           LocalSeoAuditJob[]
   aiVisibilityQueries         AiVisibilityQuery[]
   aiVisibilitySnapshots       AiVisibilitySnapshot[]
   authorityOpportunities      AuthorityOpportunity[]
@@ -1098,6 +1363,95 @@ model ProjectWorkflowStep {
   @@index([sortOrder])
 }
 
+model ProjectWorkflowState {
+  id                     String    @id @default(cuid())
+  projectId              String    @unique
+  project                Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  controllerVersion      String    @default("dev-046-v1") @db.VarChar(80)
+  state                  String    @default("discovery") @db.VarChar(60)
+  readinessPercent       Int       @default(0)
+  overallProgressPercent Int       @default(0)
+  confidence             Int       @default(0)
+  businessBrainVersion   Int       @default(0)
+  evidenceVersion        Int       @default(0)
+  strategyVersion        Int       @default(0)
+  executionPlanVersion   String?   @db.VarChar(40)
+  growthBlueprintVersion Int       @default(0)
+  intelligenceReady      Boolean   @default(false)
+  strategyStale          Boolean   @default(false)
+  executionPlanStale     Boolean   @default(false)
+  applicabilityJson      Json      @default("{}")
+  moduleStatusJson       Json      @default("[]")
+  confidenceJson         Json      @default("{}")
+  explainabilityJson     Json      @default("{}")
+  blockersJson           Json      @default("[]")
+  nextBestActionJson     Json      @default("{}")
+  lastEventAt            DateTime?
+  reconciledAt           DateTime  @default(now())
+  createdAt              DateTime  @default(now())
+  updatedAt              DateTime  @updatedAt
+
+  @@index([state, updatedAt])
+  @@index([strategyStale, executionPlanStale])
+}
+
+model ProjectWorkflowEvent {
+  id             String    @id @default(cuid())
+  projectId      String
+  project        Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  eventType      String    @db.VarChar(120)
+  sourceModule   String    @db.VarChar(80)
+  sourceId       String?   @db.VarChar(191)
+  idempotencyKey String    @unique @db.VarChar(191)
+  payloadJson    Json      @default("{}")
+  occurredAt     DateTime  @default(now())
+  processedAt    DateTime?
+  errorMessage   String?   @db.Text
+  createdAt      DateTime  @default(now())
+
+  @@index([projectId, occurredAt])
+  @@index([processedAt, occurredAt])
+  @@index([sourceModule, eventType])
+}
+
+model BusinessBrainVersion {
+  id                 String   @id @default(cuid())
+  projectId          String
+  project            Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  version            Int
+  fingerprint        String   @db.VarChar(64)
+  snapshotJson       Json     @default("{}")
+  confidence         Int      @default(0)
+  confidenceJson     Json     @default("{}")
+  explainabilityJson Json     @default("{}")
+  sourceEventId      String?  @db.VarChar(191)
+  createdAt          DateTime @default(now())
+
+  @@unique([projectId, version])
+  @@unique([projectId, fingerprint])
+  @@index([projectId, createdAt])
+}
+
+model ProjectEvidenceVersion {
+  id                 String   @id @default(cuid())
+  projectId          String
+  project            Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  version            Int
+  fingerprint        String   @db.VarChar(64)
+  sourceSnapshotJson Json     @default("[]")
+  confidence         Int      @default(0)
+  completeness       Int      @default(0)
+  freshness          Int      @default(0)
+  independentSignals Int      @default(0)
+  conflictCount      Int      @default(0)
+  confidenceJson     Json     @default("{}")
+  createdAt          DateTime @default(now())
+
+  @@unique([projectId, version])
+  @@unique([projectId, fingerprint])
+  @@index([projectId, createdAt])
+}
+
 model ProjectIntakeAnswer {
   id            String   @id @default(cuid())
   projectId     String
@@ -1154,14 +1508,21 @@ model AiRun {
 }
 
 model ExecutionPlan {
-  id        String   @id @default(cuid())
-  projectId String
-  project   Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  title     String   @db.VarChar(180)
-  summary   String?  @db.Text
-  status    String   @default("active") @db.VarChar(40)
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  id                   String   @id @default(cuid())
+  projectId            String
+  project              Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  title                String   @db.VarChar(180)
+  summary              String?  @db.Text
+  status               String   @default("active") @db.VarChar(40)
+  planVersion          String   @default("1.0") @db.VarChar(40)
+  strategyPlanId       String?  @db.VarChar(191)
+  strategyVersion      Int?
+  businessBrainVersion Int?
+  evidenceVersion      Int?
+  confidenceJson       Json     @default("{}")
+  explainabilityJson   Json     @default("{}")
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
 
   tasks ExecutionTask[]
 
@@ -1222,6 +1583,10 @@ model StrategyPlan {
   advancedAnalysis           Json         @default("[]")
   prioritizedRecommendations Json         @default("[]")
   status                     String       @default("draft") @db.VarChar(40)
+  businessBrainVersion       Int?
+  evidenceVersion            Int?
+  confidenceJson             Json         @default("{}")
+  explainabilityJson         Json         @default("{}")
   approvedAt                 DateTime?
   createdAt                  DateTime     @default(now())
   updatedAt                  DateTime     @updatedAt
@@ -2420,6 +2785,8 @@ model WebsiteBuildJob {
   workspaceId       String
   requestedByUserId String?
   approvalTaskId    String?      @unique
+  usageEventId      String?
+  usageEvent        UsageEvent?  @relation(fields: [usageEventId], references: [id], onDelete: SetNull)
   status            String       @default("waiting_approval") @db.VarChar(60)
   stage             String       @default("approval") @db.VarChar(80)
   progress          Int          @default(0)
@@ -2436,6 +2803,7 @@ model WebsiteBuildJob {
   @@index([buildId, status])
   @@index([projectId, createdAt])
   @@index([status, queuedAt])
+  @@index([usageEventId])
 }
 
 model WebsiteBuildPage {
@@ -2655,21 +3023,31 @@ model WordPressPublishJob {
 }
 
 model GapLocalSeoProfile {
-  id                   String   @id @default(cuid())
-  projectId            String   @unique
-  project              Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  clientId             String
-  businessName         String   @db.VarChar(180)
-  businessType         String   @db.VarChar(120)
-  primaryPhone         String?  @db.VarChar(80)
-  addressOrServiceArea String   @db.Text
-  citiesServed         Json     @default("[]")
-  services             Json     @default("[]")
-  gbpStatus            String   @default("unknown") @db.VarChar(60)
-  reviewGoal           Int?
-  citationStatus       String   @default("unknown") @db.VarChar(60)
-  createdAt            DateTime @default(now())
-  updatedAt            DateTime @updatedAt
+  id                       String    @id @default(cuid())
+  projectId                String    @unique
+  project                  Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  clientId                 String
+  businessName             String    @db.VarChar(180)
+  businessType             String    @db.VarChar(120)
+  primaryPhone             String?   @db.VarChar(80)
+  addressOrServiceArea     String    @db.Text
+  citiesServed             Json      @default("[]")
+  services                 Json      @default("[]")
+  gbpStatus                String    @default("unknown") @db.VarChar(60)
+  reviewGoal               Int?
+  citationStatus           String    @default("unknown") @db.VarChar(60)
+  canonicalBusinessId      String?   @db.VarChar(191)
+  country                  String?   @db.VarChar(120)
+  region                   String?   @db.VarChar(120)
+  postalCode               String?   @db.VarChar(40)
+  googleBusinessProfileUrl String?   @db.VarChar(512)
+  businessHours            Json      @default("{}")
+  serviceAreas             Json      @default("[]")
+  planVersion              Int       @default(0)
+  planStatus               String    @default("not_created") @db.VarChar(40)
+  planApprovedAt           DateTime?
+  createdAt                DateTime  @default(now())
+  updatedAt                DateTime  @updatedAt
 
   tasks GapLocalSeoTask[]
 
@@ -2685,6 +3063,12 @@ model GapLocalSeoTask {
   taskType        String             @db.VarChar(80)
   title           String             @db.VarChar(220)
   description     String             @db.Text
+  reason          String?            @db.Text
+  expectedImpact  String?            @db.Text
+  confidence      Int                @default(70)
+  effort          String             @default("medium") @db.VarChar(40)
+  planVersion     Int                @default(1)
+  actionRoute     String?            @db.VarChar(512)
   priority        String             @default("medium") @db.VarChar(20)
   status          String             @default("planned") @db.VarChar(60)
   executionTaskId String?            @db.VarChar(191)
@@ -2694,6 +3078,7 @@ model GapLocalSeoTask {
   @@index([projectId, status])
   @@index([profileId])
   @@index([taskType])
+  @@index([profileId, planVersion])
 }
 
 model AiVisibilityQuery {
@@ -3076,20 +3461,24 @@ model EcommerceExportGuide {
 // ─── Growth Marketing Engine ────────────────────────────────────────────────
 
 model GrowthBlueprint {
-  id                 String    @id @default(cuid())
-  projectId          String    @unique
-  project            Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  title              String    @db.VarChar(220)
-  status             String    @default("draft") @db.VarChar(40)
-  currentVersion     Int       @default(1)
-  primaryGoal        String?   @db.VarChar(255)
-  currentPhase       String    @default("now") @db.VarChar(40)
-  approvedStrategyId String?   @db.VarChar(191)
-  approvedByUserId   String?
-  approvedAt         DateTime?
-  nextReviewAt       DateTime?
-  createdAt          DateTime  @default(now())
-  updatedAt          DateTime  @updatedAt
+  id                   String    @id @default(cuid())
+  projectId            String    @unique
+  project              Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  title                String    @db.VarChar(220)
+  status               String    @default("draft") @db.VarChar(40)
+  currentVersion       Int       @default(1)
+  primaryGoal          String?   @db.VarChar(255)
+  currentPhase         String    @default("now") @db.VarChar(40)
+  approvedStrategyId   String?   @db.VarChar(191)
+  businessBrainVersion Int?
+  evidenceVersion      Int?
+  confidenceJson       Json      @default("{}")
+  explainabilityJson   Json      @default("{}")
+  approvedByUserId     String?
+  approvedAt           DateTime?
+  nextReviewAt         DateTime?
+  createdAt            DateTime  @default(now())
+  updatedAt            DateTime  @updatedAt
 
   versions GrowthBlueprintVersion[]
 
@@ -3447,29 +3836,38 @@ model KeywordAuditPage {
 // ─── Local SEO Presence ─────────────────────────────────────────────────────
 
 model LocalBusinessProfile {
-  id                       String   @id @default(cuid())
-  clientId                 String
-  client                   Client   @relation(fields: [clientId], references: [id], onDelete: Cascade)
-  websiteId                String?
-  website                  Website? @relation(fields: [websiteId], references: [id], onDelete: SetNull)
-  businessName             String   @db.VarChar(180)
-  domain                   String   @db.VarChar(255)
-  phone                    String   @db.VarChar(80)
-  address                  String   @db.VarChar(255)
-  city                     String   @db.VarChar(120)
-  region                   String?  @db.VarChar(120)
-  country                  String   @db.VarChar(120)
-  postalCode               String?  @db.VarChar(40)
-  mainCategory             String   @db.VarChar(160)
-  services                 Json     @default("[]")
-  targetLocations          Json     @default("[]")
-  googleBusinessProfileUrl String?  @db.VarChar(512)
-  googleAverageRating      Float?
-  googleReviewCount        Int?
-  latitude                 Float?
-  longitude                Float?
-  createdAt                DateTime @default(now())
-  updatedAt                DateTime @updatedAt
+  id                             String   @id @default(cuid())
+  clientId                       String
+  client                         Client   @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  projectId                      String?
+  project                        Project? @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  websiteId                      String?
+  website                        Website? @relation(fields: [websiteId], references: [id], onDelete: SetNull)
+  businessName                   String   @db.VarChar(180)
+  domain                         String   @db.VarChar(255)
+  phone                          String   @db.VarChar(80)
+  address                        String   @db.VarChar(255)
+  city                           String   @db.VarChar(120)
+  region                         String?  @db.VarChar(120)
+  country                        String   @db.VarChar(120)
+  postalCode                     String?  @db.VarChar(40)
+  mainCategory                   String   @db.VarChar(160)
+  secondaryCategories            Json     @default("[]")
+  services                       Json     @default("[]")
+  targetLocations                Json     @default("[]")
+  serviceAreas                   Json     @default("[]")
+  businessHours                  Json     @default("{}")
+  locationName                   String?  @db.VarChar(180)
+  locationType                   String   @default("physical") @db.VarChar(40)
+  googleBusinessProfileUrl       String?  @db.VarChar(512)
+  googleBusinessAccountRef       String?  @db.VarChar(191)
+  googleBusinessConnectionStatus String   @default("not_connected") @db.VarChar(40)
+  googleAverageRating            Float?
+  googleReviewCount              Int?
+  latitude                       Float?
+  longitude                      Float?
+  createdAt                      DateTime @default(now())
+  updatedAt                      DateTime @updatedAt
 
   keywords        LocalKeyword[]
   competitors     LocalCompetitor[]
@@ -3477,10 +3875,40 @@ model LocalBusinessProfile {
   citations       LocalCitation[]
   scores          LocalScore[]
   recommendations LocalRecommendation[]
+  auditJobs       LocalSeoAuditJob[]
 
   @@index([clientId])
+  @@index([projectId])
   @@index([websiteId])
   @@index([domain])
+}
+
+model LocalSeoAuditJob {
+  id               String               @id @default(cuid())
+  clientId         String
+  client           Client               @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  projectId        String?
+  project          Project?             @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  businessId       String
+  business         LocalBusinessProfile @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  workspaceId      String?
+  requestedById    String?
+  status           String               @default("queued") @db.VarChar(40)
+  stage            String               @default("queued") @db.VarChar(80)
+  progress         Int                  @default(0)
+  totalTargets     Int                  @default(0)
+  completedTargets Int                  @default(0)
+  resultCount      Int                  @default(0)
+  error            String?              @db.Text
+  queuedAt         DateTime             @default(now())
+  startedAt        DateTime?
+  completedAt      DateTime?
+  createdAt        DateTime             @default(now())
+  updatedAt        DateTime             @updatedAt
+
+  @@index([businessId, status])
+  @@index([projectId, createdAt])
+  @@index([clientId, createdAt])
 }
 
 model LocalKeyword {
@@ -3743,6 +4171,7 @@ model KeywordResearchRun {
   languageCode         String    @default("en") @db.VarChar(16)
   device               String    @default("desktop") @db.VarChar(32)
   serpDepth            Int       @default(10)
+  keywordLimit         Int       @default(25)
   status               String    @default("completed")
   source               String    @default("search_data")
   keywordCount         Int       @default(0)

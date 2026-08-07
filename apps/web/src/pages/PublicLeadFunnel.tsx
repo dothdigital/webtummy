@@ -1,4 +1,5 @@
 import { useEffect, useState, type FormEvent } from "react";
+import { apiErrorMessage } from "../api";
 
 type JsonMap = Record<string, unknown>;
 const object = (value: unknown): JsonMap => value && typeof value === "object" && !Array.isArray(value) ? value as JsonMap : {};
@@ -11,9 +12,9 @@ export default function PublicLeadFunnel({ slug }: { slug: string }) {
   const [result, setResult] = useState<{ thankYouPage: JsonMap; asset: JsonMap; downloadUrl: string } | null>(null);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
-  useEffect(() => { void fetch(`/api/public/lead-magnets/${encodeURIComponent(slug)}`).then(async (response) => { const body = await response.json(); if (!response.ok) throw new Error(body.error || "This resource is unavailable."); return body; }).then(setData).catch((cause) => setError(cause instanceof Error ? cause.message : "This resource is unavailable.")); }, [slug]);
+  useEffect(() => { void fetch(`/api/public/lead-magnets/${encodeURIComponent(slug)}`).then(async (response) => { const body = await response.json(); if (!response.ok) throw new Error(apiErrorMessage(body, "This resource is unavailable.", response)); return body; }).then(setData).catch((cause) => setError(cause instanceof Error ? cause.message : "This resource is unavailable.")); }, [slug]);
   useEffect(() => { if (!data) return; document.title = text(data.funnel.seoMetadata.title, data.funnel.title); const description = text(data.funnel.seoMetadata.description); if (description) { let meta = document.querySelector('meta[name="description"]'); if (!meta) { meta = document.createElement("meta"); meta.setAttribute("name", "description"); document.head.append(meta); } meta.setAttribute("content", description); } }, [data]);
-  const submit = async (event: FormEvent) => { event.preventDefault(); setBusy(true); setError(""); try { const response = await fetch(`/api/public/lead-magnets/${encodeURIComponent(slug)}/subscribe`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(form) }); const body = await response.json(); if (!response.ok) throw new Error(body.error || "Your request could not be completed."); setResult(body); } catch (cause) { setError(cause instanceof Error ? cause.message : "Your request could not be completed."); } finally { setBusy(false); } };
+  const submit = async (event: FormEvent) => { event.preventDefault(); setBusy(true); setError(""); try { const response = await fetch(`/api/public/lead-magnets/${encodeURIComponent(slug)}/subscribe`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(form) }); const body = await response.json(); if (!response.ok) throw new Error(apiErrorMessage(body, "Your request could not be completed.", response)); setResult(body); } catch (cause) { setError(cause instanceof Error ? cause.message : "Your request could not be completed."); } finally { setBusy(false); } };
   if (error && !data) return <main className="grid min-h-screen place-items-center bg-slate-950 p-6"><div className="max-w-lg rounded-2xl bg-white p-8 text-center"><h1 className="text-2xl font-bold text-slate-950">Resource unavailable</h1><p className="mt-3 text-sm leading-6 text-slate-600">{error}</p></div></main>;
   if (!data) return <main className="grid min-h-screen place-items-center bg-slate-950 text-sm font-semibold text-slate-300">Loading your resource…</main>;
   const landing = object(data.funnel.landingPage); const formFields = list(data.funnel.optInForm.fields);

@@ -3,11 +3,16 @@ import { Router } from "express";
 import type { Request } from "express";
 import { z } from "zod";
 import { Prisma, prisma } from "@webtummy/db";
-import { matchLocalBusinessEntity, normalizeDomain, scoreLocalSeo, type LocalBusinessEntity, type LocalListingEntity } from "@webtummy/core";
+import { Worker } from "bullmq";
+import { approvedKeywordEntries, matchLocalBusinessEntity, missingApprovedKeywordResearch, normalizeDomain, normalizeKeywordPhrase, scoreLocalSeo, type LocalBusinessEntity, type LocalListingEntity } from "@webtummy/core";
 import { requireAuth } from "../middleware.js";
 import { projectClientIdForRequest } from "../project-scope.js";
-import { config } from "../config.js";
+import { config, LOCAL_GRID_SCAN_QUEUE, LOCAL_SEO_AUDIT_QUEUE } from "../config.js";
 import { createWorkspaceNotification, recordWorkspaceActivity, workspaceContext } from "../workspace-access.js";
+import { localGridScanQueue, localSeoAuditQueue, queueConnection, type LocalGridScanQueueJobData, type LocalSeoAuditQueueJobData } from "../queue.js";
+import { publishProjectWorkflowEvent } from "../project-workflow-controller.js";
+import { centralAiJson } from "../central-ai-service.js";
+import { cleanGeographicTargetMarkets, projectAnalysisLocationLabels } from "../project-location.js";
 
 export const localSeoRouter = Router();
 localSeoRouter.use(requireAuth);
@@ -17,6 +22,7 @@ const SEARCH_PROVIDER_KEY = "data" + "forseo";
 const businessSchema = z.object({
   id: z.string().optional(),
   clientId: z.string().optional().nullable(),
+  projectId: z.string().optional().nullable(),
   websiteId: z.string().optional().nullable(),
   businessName: z.string().min(2).max(180),
   domain: z.string().min(2).max(255),
@@ -27,9 +33,16 @@ const businessSchema = z.object({
   country: z.string().min(2).max(120).default("United States"),
   postalCode: z.string().max(40).optional().nullable(),
   mainCategory: z.string().min(2).max(160),
+  secondaryCategories: z.array(z.string().max(160)).optional(),
   services: z.array(z.string().max(120)).default([]),
   targetLocations: z.array(z.string().max(120)).default([]),
+  serviceAreas: z.array(z.string().max(180)).optional(),
+  businessHours: z.record(z.unknown()).optional(),
+  locationName: z.string().max(180).optional().nullable(),
+  locationType: z.enum(["physical", "service_area", "hybrid"]).optional(),
   googleBusinessProfileUrl: z.string().max(512).optional().nullable(),
+  googleBusinessAccountRef: z.string().max(191).optional().nullable(),
+  googleBusinessConnectionStatus: z.enum(["not_connected", "pending", "connected", "failed", "revoked"]).optional(),
   googleAverageRating: z.number().min(0).max(5).optional().nullable(),
   googleReviewCount: z.number().int().min(0).optional().nullable(),
   latitude: z.number().optional().nullable(),
@@ -42,6 +55,7 @@ const keywordSchema = z.object({
   country: z.string().min(2).max(120).default("United States"),
   device: z.enum(["desktop", "mobile"]).default("desktop"),
   language: z.string().min(2).max(16).default("en"),
+  sync: z.boolean().default(false),
 });
 
 const keywordSuggestionSchema = z.object({
@@ -117,27 +131,12 @@ function normalizeKeywordText(value: string): string {
 
 async function openaiKeywordSuggestions(prompt: string): Promise<unknown> {
   if (!config.openaiApiKey) throw new Error("openai_not_configured");
-  const response = await fetch("https://api.openai.com/v1/chat/completions", {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${config.openaiApiKey}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      model: config.openaiModel,
-      temperature: 0.35,
-      response_format: { type: "json_object" },
-      messages: [
-        { role: "system", content: "You return valid JSON only. No markdown fences." },
-        { role: "user", content: prompt },
-      ],
-    }),
+  const generated = await centralAiJson({
+    system: "You create evidence-grounded Local SEO keyword suggestions. Return valid JSON only and never invent a business location, service, demand metric, or ranking.",
+    prompt,
+    temperature: 0.35,
   });
-  const data = await response.json().catch(() => ({})) as any;
-  if (!response.ok) throw new Error(typeof data?.error?.message === "string" ? data.error.message : "OpenAI request failed");
-  const content = data?.choices?.[0]?.message?.content;
-  if (typeof content !== "string") throw new Error("OpenAI returned no content");
-  return JSON.parse(content);
+  return generated.result;
 }
 
 function parseKeywordSuggestions(value: unknown, existingKeywords: Set<string>, limit: number): KeywordSuggestion[] {
@@ -161,7 +160,7 @@ function parseKeywordSuggestions(value: unknown, existingKeywords: Set<string>, 
 async function suggestLocalKeywords(business: Awaited<ReturnType<typeof scopedBusiness>>, limit: number, language: string): Promise<KeywordSuggestion[]> {
   if (!business) return [];
   const services = stringList(business.services);
-  const locations = stringList(business.targetLocations);
+  const locations = cleanGeographicTargetMarkets(stringList(business.targetLocations));
   const existingKeywords = new Set((business.keywords ?? []).map((item) => normalizeKeywordText(item.keyword)));
   const prompt = [
     "Suggest local SEO rank-tracking keywords for this business.",
@@ -204,7 +203,7 @@ async function scopedBusiness(req: Request, id: string) {
     include: {
       website: { select: { id: true, domain: true, rootUrl: true } },
       keywords: { orderBy: { createdAt: "desc" } },
-      scores: { orderBy: { scoreDate: "desc" }, take: 20, include: { keyword: true } },
+      scores: { orderBy: { scoreDate: "desc" }, take: 500, include: { keyword: true } },
       recommendations: { where: { status: "open" }, orderBy: [{ priority: "asc" }, { createdAt: "desc" }], take: 20 },
       citations: { orderBy: { source: "asc" } },
       reviews: { orderBy: { reviewDate: "desc" }, take: 20 },
@@ -219,8 +218,9 @@ async function getClientIdForRequest(req: Request, inputClientId?: string | null
 
 localSeoRouter.get("/local/business", async (req, res) => {
   const clientId = await projectClientIdForRequest(req);
+  const projectId = typeof req.query.projectId === "string" ? req.query.projectId : null;
   const businesses = await prisma.localBusinessProfile.findMany({
-    where: clientId ? { clientId } : {},
+    where: { ...(clientId ? { clientId } : {}), ...(projectId ? { projectId } : {}) },
     orderBy: { updatedAt: "desc" },
     include: {
       website: { select: { id: true, domain: true } },
@@ -241,9 +241,14 @@ localSeoRouter.post("/local/business", async (req, res) => {
   if (!input.websiteId) return res.status(400).json({ error: "Project is required for Local SEO profiles." });
   const website = await prisma.website.findFirst({ where: { id: input.websiteId, clientId } });
   if (!website) return res.status(404).json({ error: "website not found" });
+  if (input.projectId) {
+    const project = await prisma.project.findFirst({ where: { id: input.projectId, clientId, websiteId: input.websiteId } });
+    if (!project) return res.status(404).json({ error: "project not found" });
+  }
 
   const data = {
     clientId,
+    projectId: input.projectId,
     websiteId: input.websiteId,
     businessName: cleanText(input.businessName),
     domain: normalizeDomain(input.domain),
@@ -254,9 +259,16 @@ localSeoRouter.post("/local/business", async (req, res) => {
     country: cleanText(input.country),
     postalCode: input.postalCode ? cleanText(input.postalCode) : null,
     mainCategory: cleanText(input.mainCategory),
+    secondaryCategories: input.secondaryCategories,
     services: input.services,
-    targetLocations: input.targetLocations,
+    targetLocations: cleanGeographicTargetMarkets(input.targetLocations),
+    serviceAreas: input.serviceAreas,
+    businessHours: input.businessHours as Prisma.InputJsonValue | undefined,
+    locationName: input.locationName ? cleanText(input.locationName) : null,
+    locationType: input.locationType,
     googleBusinessProfileUrl: input.googleBusinessProfileUrl ?? null,
+    googleBusinessAccountRef: input.googleBusinessAccountRef ?? null,
+    googleBusinessConnectionStatus: input.googleBusinessConnectionStatus,
     googleAverageRating: input.googleAverageRating ?? null,
     googleReviewCount: input.googleReviewCount ?? null,
     latitude: input.latitude ?? null,
@@ -326,24 +338,57 @@ localSeoRouter.post("/local/business/:id/keywords", async (req, res) => {
   const business = await scopedBusiness(req, req.params.id);
   if (!business) return res.status(404).json({ error: "business not found" });
   const input = parsed.data;
+  const targetLocations = cleanGeographicTargetMarkets(input.targetLocations);
+  if (!targetLocations.length) return res.status(400).json({
+    error: "Choose at least one named city, neighbourhood, region, province or state, or country before saving Local SEO targets.",
+  });
+  if (business.projectId) {
+    const project = await prisma.project.findUnique({
+      where: { id: business.projectId },
+      select: {
+        targetLocations: true,
+        businessLocationJson: true,
+        keywordGroups: { select: { status: true, keywords: true } },
+        keywordResearchRuns: { select: { seedKeyword: true, status: true, locationName: true, languageCode: true, device: true, createdAt: true } },
+      },
+    });
+    const approvedKeywords = approvedKeywordEntries(project?.keywordGroups ?? []);
+    const missingKeywords = missingApprovedKeywordResearch(project?.keywordGroups ?? [], project?.keywordResearchRuns ?? [], projectAnalysisLocationLabels(project?.targetLocations, project?.businessLocationJson));
+    if (!approvedKeywords.length || missingKeywords.length) return res.status(409).json({
+      error: !approvedKeywords.length
+        ? "Approve Primary or Secondary keywords and complete Keyword Analysis before adding Local SEO tracking targets."
+        : `Complete Keyword Analysis for all approved Primary and Secondary keywords before adding Local SEO tracking targets. ${missingKeywords.length} still need analysis.`,
+    });
+    const approvedSet = new Set(approvedKeywords.map(normalizeKeywordPhrase));
+    const unapproved = input.keywords.filter((keyword) => !approvedSet.has(normalizeKeywordPhrase(keyword)));
+    if (unapproved.length) return res.status(409).json({ error: `Local SEO can track only approved Primary and Secondary keywords. Approve these first: ${unapproved.slice(0, 8).join(", ")}${unapproved.length > 8 ? "…" : ""}` });
+  }
   const existing = await prisma.localKeyword.findMany({ where: { businessId: business.id } });
   const existingKeys = new Set(existing.map((item) => keywordKey(item.keyword, item.city, item.country, item.device, item.language)));
-  const seenKeys = new Set(existingKeys);
-  const rows = input.keywords.flatMap((keyword) => input.targetLocations.map((city) => ({
+  const requestedRows = input.keywords.flatMap((keyword) => targetLocations.map((city) => ({
     businessId: business.id,
     keyword: keyword.trim(),
     city: city.trim(),
     country: input.country.trim(),
     device: input.device,
     language: input.language.trim().toLowerCase(),
-  }))).filter((item) => {
+  })));
+  const requestedKeys = new Set<string>();
+  const uniqueRequestedRows = requestedRows.filter((item) => {
     const key = keywordKey(item.keyword, item.city, item.country, item.device, item.language);
-    if (seenKeys.has(key)) return false;
-    seenKeys.add(key);
+    if (requestedKeys.has(key)) return false;
+    requestedKeys.add(key);
     return true;
   });
-  if (rows.length) await prisma.localKeyword.createMany({ data: rows, skipDuplicates: true });
-  res.status(201).json({ added: rows.length, keywords: await prisma.localKeyword.findMany({ where: { businessId: business.id }, orderBy: { createdAt: "desc" } }) });
+  const matchedIds = existing.filter((item) => requestedKeys.has(keywordKey(item.keyword, item.city, item.country, item.device, item.language))).map((item) => item.id);
+  const rows = uniqueRequestedRows.filter((item) => !existingKeys.has(keywordKey(item.keyword, item.city, item.country, item.device, item.language)));
+  const operations: Prisma.PrismaPromise<unknown>[] = [];
+  if (input.sync) operations.push(prisma.localKeyword.updateMany({ where: { businessId: business.id }, data: { active: false } }));
+  if (matchedIds.length) operations.push(prisma.localKeyword.updateMany({ where: { id: { in: matchedIds } }, data: { active: true } }));
+  if (rows.length) operations.push(prisma.localKeyword.createMany({ data: rows, skipDuplicates: true }));
+  if (operations.length) await prisma.$transaction(operations);
+  const keywords = await prisma.localKeyword.findMany({ where: { businessId: business.id, active: true }, orderBy: { createdAt: "desc" } });
+  res.status(201).json({ added: rows.length, synchronized: input.sync, targetCount: keywords.length, keywords });
 });
 
 localSeoRouter.get("/local/business/:id/rankings", async (req, res) => {
@@ -441,11 +486,31 @@ localSeoRouter.post("/local/business/:id/reviews", async (req, res) => {
   res.status(201).json({ reviews: await prisma.localReview.findMany({ where: { businessId: business.id }, orderBy: { reviewDate: "desc" }, take: 200 }) });
 });
 
-localSeoRouter.post("/local/business/:id/audit", async (req, res) => {
-  const business = await scopedBusiness(req, req.params.id);
-  if (!business) return res.status(404).json({ error: "business not found" });
+async function auditBusiness(businessId: string) {
+  return prisma.localBusinessProfile.findUnique({
+    where: { id: businessId },
+    include: {
+      website: { select: { id: true, domain: true, rootUrl: true } },
+      keywords: { orderBy: { createdAt: "desc" } },
+      scores: { orderBy: { scoreDate: "desc" }, take: 500, include: { keyword: true } },
+      recommendations: { where: { status: "open" }, orderBy: [{ priority: "asc" }, { createdAt: "desc" }], take: 20 },
+      citations: { orderBy: { source: "asc" } },
+      reviews: { orderBy: { reviewDate: "desc" }, take: 20 },
+      competitors: { orderBy: [{ mapsPosition: "asc" }, { reviewCount: "desc" }], take: 20 },
+    },
+  });
+}
+
+async function performLocalSeoAudit(jobId: string) {
+  const job = await prisma.localSeoAuditJob.findUnique({ where: { id: jobId } });
+  if (!job) throw new Error("Local SEO audit job not found.");
+  const business = await auditBusiness(job.businessId);
+  if (!business) throw new Error("Local SEO business profile not found.");
   const keywords = business.keywords.filter((keyword) => keyword.active);
-  if (!keywords.length) return res.status(400).json({ error: "Add at least one local keyword before running an audit." });
+  if (!keywords.length) throw new Error("Add at least one local keyword before running an audit.");
+
+  const started = await prisma.localSeoAuditJob.updateMany({ where: { id: job.id, status: { in: ["queued", "running"] } }, data: { status: "running", stage: "checking_rankings", progress: 1, totalTargets: keywords.length, completedTargets: 0, startedAt: new Date(), error: null } });
+  if (!started.count) return 0;
 
   const [reviews, citations, competitors, websiteBasicsByKeyword] = await Promise.all([
     prisma.localReview.findMany({ where: { businessId: business.id } }),
@@ -460,68 +525,475 @@ localSeoRouter.post("/local/business/:id/audit", async (req, res) => {
   const competitorMedianReviewCount = median(competitors.map((competitor) => competitor.reviewCount ?? 0).filter((count) => count > 0));
   const createdScores = [];
 
-  for (const keyword of keywords) {
-    const provider = await collectProviderSignals(business, keyword);
-    const websiteBasics = websiteBasicsByKeyword(keyword.keyword, keyword.city);
-    const score = scoreLocalSeo({
-      organicPosition: provider.organicPosition,
-      mapsPosition: provider.mapsPosition,
-      localPackPosition: provider.localPackPosition,
-      matchConfidence: provider.match.confidence,
-      listingComplete: provider.listingComplete,
-      averageRating: provider.rating ?? lastKnownReviewAggregate.rating ?? reviewStats.averageRating,
-      reviewCount: provider.reviewCount ?? lastKnownReviewAggregate.reviewCount ?? reviewStats.reviewCount,
-      competitorMedianReviewCount,
-      recentReviewCount: reviewStats.recentReviewCount,
-      negativeThemeCount: reviewStats.negativeThemeCount,
-      citationGroups,
-      websiteBasics: websiteBasics.websiteBasics,
-      contentCoverage: websiteBasics.contentCoverage,
-    });
-
-    const snapshot = await prisma.localRankSnapshot.create({
-      data: {
-        keywordId: keyword.id,
+  // A project commonly has many keyword/location combinations. Process a
+  // small number concurrently so the audit remains usable without flooding
+  // the search provider or forcing every target to wait sequentially.
+  const concurrency = 4;
+  for (let index = 0; index < keywords.length; index += concurrency) {
+    const liveJob = await prisma.localSeoAuditJob.findUnique({ where: { id: job.id }, select: { status: true } });
+    if (!liveJob || !["queued", "running"].includes(liveJob.status)) throw new Error("Local SEO audit was stopped before completion.");
+    const batch = keywords.slice(index, index + concurrency);
+    const batchScores = await Promise.all(batch.map(async (keyword) => {
+      const provider = await collectProviderSignals(business, keyword);
+      const websiteBasics = websiteBasicsByKeyword(keyword.keyword, keyword.city);
+      const score = scoreLocalSeo({
         organicPosition: provider.organicPosition,
         mapsPosition: provider.mapsPosition,
         localPackPosition: provider.localPackPosition,
-        foundDomain: Boolean(provider.organicPosition),
-        matchedBusinessName: provider.matchedBusinessName,
-        confidenceScore: provider.match.confidence,
-        matchStatus: provider.match.status,
-        rawResponseRef: provider.rawResponseRef,
-        evidenceJson: provider.evidence as Prisma.InputJsonValue,
-      },
-    });
+        matchConfidence: provider.match.confidence,
+        listingComplete: provider.listingComplete,
+        averageRating: provider.rating ?? lastKnownReviewAggregate.rating ?? reviewStats.averageRating,
+        reviewCount: provider.reviewCount ?? lastKnownReviewAggregate.reviewCount ?? reviewStats.reviewCount,
+        competitorMedianReviewCount,
+        recentReviewCount: reviewStats.recentReviewCount,
+        negativeThemeCount: reviewStats.negativeThemeCount,
+        citationGroups,
+        websiteBasics: websiteBasics.websiteBasics,
+        contentCoverage: websiteBasics.contentCoverage,
+      });
 
-    const localScore = await prisma.localScore.create({
-      data: {
-        businessId: business.id,
-        keywordId: keyword.id,
-        totalScore: score.totalScore,
-        organicScore: score.organicScore,
-        mapsScore: score.mapsScore,
-        packScore: score.packScore,
-        reviewScore: score.reviewScore,
-        napScore: score.napScore,
-        websiteScore: score.websiteScore,
-        contentScore: Math.round(score.contentScore),
-        statusLabel: score.statusLabel,
-        evidenceJson: { ...score.evidence, snapshotId: snapshot.id } as Prisma.InputJsonValue,
-      },
-    });
-    createdScores.push(localScore);
+      const snapshot = await prisma.localRankSnapshot.create({
+        data: {
+          keywordId: keyword.id,
+          organicPosition: provider.organicPosition,
+          mapsPosition: provider.mapsPosition,
+          localPackPosition: provider.localPackPosition,
+          foundDomain: Boolean(provider.organicPosition),
+          matchedBusinessName: provider.matchedBusinessName,
+          confidenceScore: provider.match.confidence,
+          matchStatus: provider.match.status,
+          rawResponseRef: provider.rawResponseRef,
+          evidenceJson: provider.evidence as Prisma.InputJsonValue,
+        },
+      });
+
+      return prisma.localScore.create({
+        data: {
+          businessId: business.id,
+          keywordId: keyword.id,
+          totalScore: score.totalScore,
+          organicScore: score.organicScore,
+          mapsScore: score.mapsScore,
+          packScore: score.packScore,
+          reviewScore: score.reviewScore,
+          napScore: score.napScore,
+          websiteScore: score.websiteScore,
+          contentScore: Math.round(score.contentScore),
+          statusLabel: score.statusLabel,
+          evidenceJson: { ...score.evidence, snapshotId: snapshot.id } as Prisma.InputJsonValue,
+        },
+      });
+    }));
+    createdScores.push(...batchScores);
+    const completedTargets = Math.min(keywords.length, index + batch.length);
+    await prisma.localSeoAuditJob.update({ where: { id: job.id }, data: { completedTargets, progress: Math.max(1, Math.min(95, Math.round(completedTargets / keywords.length * 95))) } });
   }
 
+  const jobBeforeSave = await prisma.localSeoAuditJob.findUnique({ where: { id: job.id }, select: { status: true } });
+  if (!jobBeforeSave || !["queued", "running"].includes(jobBeforeSave.status)) throw new Error("Local SEO audit was stopped before completion.");
+  await prisma.localSeoAuditJob.update({ where: { id: job.id }, data: { stage: "saving_results", progress: 97 } });
   await replaceRecommendations(business.id, createdScores);
-  res.status(201).json({ scores: createdScores, business: await scopedBusiness(req, business.id) });
+  const project = await prisma.project.findFirst({
+    where: {
+      clientId: business.clientId,
+      OR: [
+        ...(business.projectId ? [{ id: business.projectId }] : []),
+        ...(business.websiteId ? [{ websiteId: business.websiteId }] : []),
+      ],
+    },
+    orderBy: { updatedAt: "desc" },
+  });
+  if (project && createdScores.length) {
+    const average = (key: "totalScore" | "organicScore" | "mapsScore" | "packScore" | "reviewScore" | "napScore" | "websiteScore" | "contentScore") => Math.round(createdScores.reduce((sum, item) => sum + item[key], 0) / createdScores.length);
+    const scoreSummary = { total: average("totalScore"), organic: average("organicScore"), maps: average("mapsScore"), localPack: average("packScore"), reviews: average("reviewScore"), nap: average("napScore"), website: average("websiteScore"), content: average("contentScore") };
+    const weakest = Object.entries(scoreSummary).filter(([key]) => key !== "total").sort((left, right) => left[1] - right[1])[0] ?? ["local visibility", scoreSummary.total];
+    const fingerprint = `local-audit:${project.id}:${business.id}`;
+    const dedupeKey = `local-audit:${business.id}`;
+    await prisma.$transaction(async (tx) => {
+      await tx.growthSignal.upsert({
+        where: { fingerprint },
+        create: { projectId: project.id, fingerprint, category: "local_seo", signalKey: "local_visibility_audit", sourceType: "local_seo_audit", sourceId: business.id, valueJson: scoreSummary, confidence: 90, collectedAt: new Date(), effectiveDate: new Date() },
+        update: { valueJson: scoreSummary, confidence: 90, collectedAt: new Date(), effectiveDate: new Date(), freshnessStatus: "fresh" },
+      });
+      const existingNba = await tx.nextBestAction.findFirst({ where: { projectId: project.id, dedupeKey } });
+      const nbaData = { projectId: project.id, sourceType: "local_seo_audit", sourceId: business.id, title: `Improve ${String(weakest[0]).replace(/([A-Z])/g, " $1")} local signals`, recommendation: `Review the new Local Growth Plan and approve the highest-confidence action addressing ${String(weakest[0])}.`, reasoningSummary: `The latest evidence-backed Local SEO audit scored ${scoreSummary.total}/100. ${String(weakest[0])} is currently the weakest measured area.`, expectedImpact: "Improve local relevance, trust and measurable search visibility without promising rankings.", confidence: 90, estimatedEffort: "medium", route: "local_seo", priorityScore: Math.max(45, 100 - scoreSummary.total), evidenceJson: { businessId: business.id, scores: scoreSummary, weakestArea: weakest[0] }, actionType: "local_seo", approvalType: "user_approval", riskLevel: "low", dedupeKey, status: "proposed" } as const;
+      if (existingNba) await tx.nextBestAction.update({ where: { id: existingNba.id }, data: nbaData });
+      else await tx.nextBestAction.create({ data: nbaData });
+      if (job.workspaceId) await tx.workspaceActivity.create({ data: { workspaceId: job.workspaceId, actorUserId: job.requestedById, action: "local_seo.audit_completed", entityType: "local_business_profile", entityId: business.id, agencyClientId: project.agencyClientId, projectId: project.id, nextJson: { scores: scoreSummary, keywordTargets: createdScores.length, weakestArea: weakest[0] } } });
+    });
+  }
+  await prisma.localSeoAuditJob.update({ where: { id: job.id }, data: { status: "completed", stage: "completed", progress: 100, completedTargets: keywords.length, resultCount: createdScores.length, completedAt: new Date(), error: null } });
+  if (project?.id) await publishProjectWorkflowEvent({ projectId: project.id, eventType: "intelligence.local_seo_completed", sourceModule: "local_seo", sourceId: job.id, idempotencyKey: `local-seo.completed:${job.id}`, payload: { businessId: business.id, resultCount: createdScores.length } }).catch(() => undefined);
+  if (job.workspaceId && job.requestedById) await prisma.workspaceNotification.create({ data: { workspaceId: job.workspaceId, userId: job.requestedById, type: "local_seo_audit_completed", title: "Local ranking check completed", body: `${business.businessName}: ${createdScores.length} keyword-location ranking checks are ready to review.`, actionUrl: `/local-seo?projectId=${project?.id ?? job.projectId ?? ""}&businessId=${business.id}`, projectId: project?.id ?? job.projectId, agencyClientId: project?.agencyClientId, emailEligible: false, emailStatus: "disabled" } }).catch(() => undefined);
+  return createdScores.length;
+}
+
+async function enqueueLocalSeoAudit(jobId: string) {
+  const existing = await localSeoAuditQueue.getJob(jobId);
+  if (existing) {
+    const state = await existing.getState();
+    if (!["completed", "failed", "unknown"].includes(state)) return;
+    await existing.remove().catch(() => undefined);
+  }
+  await localSeoAuditQueue.add("local-seo:audit", { jobId }, { jobId, removeOnComplete: 200, removeOnFail: 200 });
+}
+
+localSeoRouter.post("/local/business/:id/audit", async (req, res) => {
+  const business = await scopedBusiness(req, req.params.id);
+  if (!business) return res.status(404).json({ error: "business not found" });
+  const keywords = business.keywords.filter((keyword) => keyword.active);
+  if (!keywords.length) return res.status(400).json({ error: "Add at least one local keyword before running an audit." });
+  const active = await prisma.localSeoAuditJob.findFirst({ where: { businessId: business.id, status: { in: ["queued", "running"] } }, orderBy: { createdAt: "desc" } });
+  if (active) return res.status(202).json({ job: active, reused: true });
+  const context = await workspaceContext(req);
+  const project = await prisma.project.findFirst({ where: { clientId: business.clientId, OR: [...(business.projectId ? [{ id: business.projectId }] : []), ...(business.websiteId ? [{ websiteId: business.websiteId }] : [])] }, orderBy: { updatedAt: "desc" } });
+  const job = await prisma.localSeoAuditJob.create({ data: { clientId: business.clientId, projectId: project?.id ?? business.projectId, businessId: business.id, workspaceId: context.workspace.id, requestedById: context.membership.userId, totalTargets: keywords.length } });
+  try { await enqueueLocalSeoAudit(job.id); }
+  catch (error) {
+    await prisma.localSeoAuditJob.update({ where: { id: job.id }, data: { status: "failed", stage: "queue_failed", error: error instanceof Error ? error.message : "Could not queue Local SEO audit", completedAt: new Date() } });
+    throw error;
+  }
+  res.status(202).json({ job });
 });
+
+localSeoRouter.get("/local/audits/:jobId", async (req, res) => {
+  const clientId = await projectClientIdForRequest(req);
+  const job = await prisma.localSeoAuditJob.findFirst({ where: { id: req.params.jobId, ...(clientId ? { clientId } : {}) } });
+  if (!job) return res.status(404).json({ error: "Local SEO audit job not found." });
+  res.json({ job });
+});
+
+localSeoRouter.post("/local/audits/:jobId/manage", async (req, res) => {
+  z.object({ action: z.literal("cancel") }).parse(req.body ?? {});
+  const clientId = await projectClientIdForRequest(req);
+  const job = await prisma.localSeoAuditJob.findFirst({ where: { id: req.params.jobId, ...(clientId ? { clientId } : {}) } });
+  if (!job) return res.status(404).json({ error: "Local SEO audit job not found." });
+  if (!["queued", "running"].includes(job.status)) return res.status(409).json({ error: "Only queued or running Local SEO work can be cancelled." });
+  await prisma.localSeoAuditJob.update({
+    where: { id: job.id },
+    data: { status: "cancelled", stage: "cancelled_by_user", error: "Local SEO audit was cancelled. Run it again when ready.", completedAt: new Date() },
+  });
+  const queueJob = await localSeoAuditQueue.getJob(job.id);
+  if (queueJob) {
+    const state = await queueJob.getState().catch(() => "unknown");
+    if (state !== "active") await queueJob.remove().catch(() => undefined);
+  }
+  return res.json({ job: await prisma.localSeoAuditJob.findUnique({ where: { id: job.id } }) });
+});
+
+localSeoRouter.get("/local/business/:id/audits/latest", async (req, res) => {
+  const business = await scopedBusiness(req, req.params.id);
+  if (!business) return res.status(404).json({ error: "business not found" });
+  const job = await prisma.localSeoAuditJob.findFirst({ where: { businessId: business.id }, orderBy: { createdAt: "desc" } });
+  res.json({ job });
+});
+
+let localSeoAuditWorker: Worker<LocalSeoAuditQueueJobData> | null = null;
+let localSeoQueueWatchdog: ReturnType<typeof setInterval> | null = null;
+const LOCAL_SEO_AUDIT_STALE_AFTER_MS = 60 * 60 * 1000;
+const LOCAL_GRID_STALE_AFTER_MS = 60 * 60 * 1000;
+
+async function expireStaleLocalSeoWork() {
+  const auditCutoff = new Date(Date.now() - LOCAL_SEO_AUDIT_STALE_AFTER_MS);
+  const gridCutoff = new Date(Date.now() - LOCAL_GRID_STALE_AFTER_MS);
+  const [audits, grids] = await Promise.all([
+    prisma.localSeoAuditJob.findMany({ where: { status: { in: ["queued", "running"] }, updatedAt: { lt: auditCutoff } }, select: { id: true } }),
+    prisma.localGridScan.findMany({ where: { status: { in: ["queued", "running"] }, createdAt: { lt: gridCutoff } }, select: { id: true } }),
+  ]);
+  for (const audit of audits) {
+    await prisma.localSeoAuditJob.updateMany({ where: { id: audit.id, status: { in: ["queued", "running"] } }, data: { status: "failed", stage: "timed_out", error: "Local SEO audit exceeded 60 minutes and was stopped. Retry the audit.", completedAt: new Date() } });
+    const queueJob = await localSeoAuditQueue.getJob(audit.id);
+    if (queueJob && await queueJob.getState().catch(() => "unknown") !== "active") await queueJob.remove().catch(() => undefined);
+  }
+  for (const grid of grids) {
+    await prisma.localGridScan.updateMany({ where: { id: grid.id, status: { in: ["queued", "running"] } }, data: { status: "failed", errorMessage: "Local grid scan exceeded 60 minutes and was stopped. Retry the scan.", completedAt: new Date() } });
+    const queueJob = await localGridScanQueue.getJob(grid.id);
+    if (queueJob && await queueJob.getState().catch(() => "unknown") !== "active") await queueJob.remove().catch(() => undefined);
+  }
+  if (audits.length || grids.length) console.info(`[api] queue watchdog expired ${audits.length} Local SEO audit(s) and ${grids.length} local grid scan(s)`);
+}
+export function startLocalSeoAuditQueueWorker() {
+  if (localSeoAuditWorker) return localSeoAuditWorker;
+  localSeoAuditWorker = new Worker<LocalSeoAuditQueueJobData>(LOCAL_SEO_AUDIT_QUEUE, async (queueJob) => {
+    const record = await prisma.localSeoAuditJob.findUnique({ where: { id: queueJob.data.jobId }, select: { status: true } });
+    if (!record || ["completed", "failed", "cancelled"].includes(record.status)) return;
+    try { await performLocalSeoAudit(queueJob.data.jobId); }
+    catch (error) {
+      await prisma.localSeoAuditJob.updateMany({ where: { id: queueJob.data.jobId, status: { in: ["queued", "running"] } }, data: { status: "failed", stage: "failed", error: error instanceof Error ? error.message : "Local ranking check failed.", completedAt: new Date() } });
+    }
+  }, { connection: queueConnection, concurrency: 1 });
+  localSeoAuditWorker.on("failed", (queueJob, error) => console.error(`[api] local SEO audit ${queueJob?.data.jobId ?? "unknown"} failed:`, error.message));
+  void expireStaleLocalSeoWork().then(() => prisma.localSeoAuditJob.findMany({ where: { status: { in: ["queued", "running"] }, updatedAt: { gte: new Date(Date.now() - LOCAL_SEO_AUDIT_STALE_AFTER_MS) } }, orderBy: { createdAt: "asc" }, select: { id: true } })).then(async (jobs) => {
+    for (const job of jobs) {
+      await prisma.localSeoAuditJob.update({ where: { id: job.id }, data: { status: "queued", stage: "queued_recovered", error: null } });
+      await enqueueLocalSeoAudit(job.id);
+    }
+  }).catch((error) => console.error("[api] local SEO audit recovery failed:", error));
+  if (!localSeoQueueWatchdog) {
+    localSeoQueueWatchdog = setInterval(() => { void expireStaleLocalSeoWork().catch((error) => console.error("[api] Local SEO queue watchdog failed:", error)); }, 60_000);
+    localSeoQueueWatchdog.unref?.();
+  }
+  return localSeoAuditWorker;
+}
+
+type GridPointInput = {
+  rowIndex: number;
+  columnIndex: number;
+  latitude: number;
+  longitude: number;
+};
+
+function gridPointsForConfiguration(configuration: { gridSize: number; radiusKm: number; centerLatitude: number; centerLongitude: number }): GridPointInput[] {
+  const half = (configuration.gridSize - 1) / 2;
+  const latStep = configuration.radiusKm / 111 / Math.max(1, half);
+  const lonStep = configuration.radiusKm / (111 * Math.max(0.2, Math.cos(configuration.centerLatitude * Math.PI / 180))) / Math.max(1, half);
+  return Array.from({ length: configuration.gridSize ** 2 }, (_, index) => {
+    const rowIndex = Math.floor(index / configuration.gridSize);
+    const columnIndex = index % configuration.gridSize;
+    return {
+      rowIndex,
+      columnIndex,
+      latitude: configuration.centerLatitude + (half - rowIndex) * latStep,
+      longitude: configuration.centerLongitude + (columnIndex - half) * lonStep,
+    };
+  });
+}
+
+function gridZoom(radiusKm: number) {
+  if (radiusKm <= 2) return 15;
+  if (radiusKm <= 5) return 14;
+  if (radiusKm <= 10) return 13;
+  if (radiusKm <= 25) return 12;
+  return 11;
+}
+
+async function performLocalGridScan(scanId: string) {
+  const scan = await prisma.localGridScan.findUnique({
+    where: { id: scanId },
+    include: { configuration: { include: { keyword: { include: { business: true } } } } },
+  });
+  if (!scan) return;
+  if (scan.status === "completed") return;
+  if (!searchDataAuth()) throw new Error("Local grid ranking provider is not configured.");
+
+  const configuration = scan.configuration;
+  const keyword = configuration.keyword;
+  const business = keyword.business;
+  const requestedPoints = gridPointsForConfiguration(configuration);
+  const started = await prisma.localGridScan.updateMany({
+    where: { id: scan.id, status: { in: ["queued", "running"] } },
+    data: {
+      status: "running",
+      errorMessage: null,
+      summaryJson: { keyword: keyword.keyword, city: keyword.city, engine: configuration.engine, pointCount: requestedPoints.length, completedPoints: 0, progress: 1 },
+    },
+  });
+  if (!started.count) return;
+
+  const points: Array<GridPointInput & { rank: number | null; found: boolean; matchedName: string | null; confidence: number; evidence: Record<string, unknown> }> = [];
+  const competitorRanks = new Map<string, { businessName: string; domain: string | null; ranks: number[]; evidence: Record<string, unknown> }>();
+
+  for (let index = 0; index < requestedPoints.length; index += 1) {
+    const liveScan = await prisma.localGridScan.findUnique({ where: { id: scan.id }, select: { status: true } });
+    if (!liveScan || !["queued", "running"].includes(liveScan.status)) throw new Error("Local grid scan was stopped before completion.");
+    const point = requestedPoints[index];
+    const locationCoordinate = `${point.latitude.toFixed(7)},${point.longitude.toFixed(7)},${gridZoom(configuration.radiusKm)}z`;
+    const payload = await cachedSearchData("google_maps_grid", {
+      keyword: keyword.keyword,
+      location_coordinate: locationCoordinate,
+      language_code: configuration.language,
+      device: configuration.device,
+      os: configuration.device === "mobile" ? "android" : "windows",
+      depth: configuration.resultDepth,
+    }, "/v3/serp/google/maps/live/advanced");
+    if (!payload) throw new Error(`The ranking provider did not return results for grid point ${index + 1}.`);
+
+    const listings = extractItems(payload.response).map(parseListingItem).filter((item): item is LocalMapsListing => Boolean(item));
+    const matches = listings
+      .map((listing) => ({ listing, match: matchLocalBusinessEntity(businessEntity(business), listing) }))
+      .filter((item) => item.match.confidence >= 40)
+      .sort((left, right) => right.match.confidence - left.match.confidence || (left.listing.rank ?? 999) - (right.listing.rank ?? 999));
+    const matched = matches[0];
+    const rank = numberOrNull(matched?.listing.rank);
+    points.push({
+      ...point,
+      rank,
+      found: rank != null,
+      matchedName: matched?.listing.name ?? null,
+      confidence: matched?.match.confidence ?? 0,
+      evidence: { cacheId: payload.cacheId, locationCoordinate, matchSignals: matched?.match.signals ?? [] },
+    });
+
+    for (const listing of listings) {
+      if (matchLocalBusinessEntity(businessEntity(business), listing).confidence >= 40) continue;
+      const listingRank = numberOrNull(listing.rank);
+      if (listingRank == null) continue;
+      const domain = normalizeDomain(listing.website ?? "") || null;
+      const key = listing.placeId || domain || normalizeText(listing.name);
+      const current = competitorRanks.get(key) ?? { businessName: listing.name, domain, ranks: [], evidence: { placeId: listing.placeId ?? null } };
+      current.ranks.push(listingRank);
+      competitorRanks.set(key, current);
+    }
+
+    if ((index + 1) % 3 === 0 || index === requestedPoints.length - 1) {
+      await prisma.localGridScan.update({
+        where: { id: scan.id },
+        data: { summaryJson: { keyword: keyword.keyword, city: keyword.city, engine: configuration.engine, pointCount: requestedPoints.length, completedPoints: index + 1, progress: Math.max(1, Math.round((index + 1) / requestedPoints.length * 95)) } },
+      });
+    }
+  }
+
+  const competitors = [...competitorRanks.values()].map((competitor) => ({
+    businessName: competitor.businessName,
+    domain: competitor.domain,
+    averageRank: competitor.ranks.reduce((sum, rank) => sum + rank, 0) / competitor.ranks.length,
+    top3Share: competitor.ranks.filter((rank) => rank <= 3).length / requestedPoints.length * 100,
+    top10Share: competitor.ranks.filter((rank) => rank <= 10).length / requestedPoints.length * 100,
+    evidence: { ...competitor.evidence, observedPoints: competitor.ranks.length },
+  })).sort((left, right) => left.averageRank - right.averageRank).slice(0, 20);
+  const ranks = points.flatMap((point) => point.rank ?? []);
+  const averageRank = ranks.length ? ranks.reduce((sum, rank) => sum + rank, 0) / ranks.length : null;
+  const top3Share = points.filter((point) => point.rank != null && point.rank <= 3).length / points.length * 100;
+  const top10Share = points.filter((point) => point.rank != null && point.rank <= 10).length / points.length * 100;
+  const weakAreaCount = points.filter((point) => point.rank == null || point.rank > 10).length;
+  const previous = await prisma.localGridScan.findFirst({ where: { configurationId: configuration.id, status: "completed", id: { not: scan.id } }, orderBy: { scanDate: "desc" } });
+  const deltaTop10Share = previous?.top10Share != null ? top10Share - previous.top10Share : null;
+
+  const scanBeforeSave = await prisma.localGridScan.findUnique({ where: { id: scan.id }, select: { status: true } });
+  if (!scanBeforeSave || !["queued", "running"].includes(scanBeforeSave.status)) throw new Error("Local grid scan was stopped before completion.");
+  await prisma.$transaction(async (tx) => {
+    await tx.localGridPoint.deleteMany({ where: { scanId: scan.id } });
+    await tx.localGridCompetitor.deleteMany({ where: { scanId: scan.id } });
+    await tx.localGridPoint.createMany({ data: points.map((point) => ({ scanId: scan.id, rowIndex: point.rowIndex, columnIndex: point.columnIndex, latitude: point.latitude, longitude: point.longitude, rank: point.rank, found: point.found, matchedName: point.matchedName, confidence: point.confidence, evidenceJson: point.evidence as Prisma.InputJsonValue })) });
+    if (competitors.length) await tx.localGridCompetitor.createMany({ data: competitors.map((competitor) => ({ scanId: scan.id, businessName: competitor.businessName, domain: competitor.domain, averageRank: competitor.averageRank, top3Share: competitor.top3Share, top10Share: competitor.top10Share, evidenceJson: competitor.evidence as Prisma.InputJsonValue })) });
+    await tx.localGridScan.update({ where: { id: scan.id }, data: { status: "completed", averageRank, top3Share, top10Share, weakAreaCount, summaryJson: { keyword: keyword.keyword, city: keyword.city, engine: configuration.engine, pointCount: points.length, completedPoints: points.length, progress: 100, deltaTop10Share }, completedAt: new Date(), errorMessage: null } });
+  });
+
+  const project = business.projectId
+    ? await prisma.project.findFirst({ where: { id: business.projectId, status: { not: "deleted" } } })
+    : business.websiteId
+      ? await prisma.project.findFirst({ where: { websiteId: business.websiteId, status: { not: "deleted" } }, orderBy: { updatedAt: "desc" } })
+      : null;
+  if (project && weakAreaCount > 0) {
+    const dedupeKey = `local-grid:${configuration.id}`;
+    const existing = await prisma.nextBestAction.findFirst({ where: { projectId: project.id, dedupeKey } });
+    const data = {
+      projectId: project.id,
+      sourceType: "local_grid_scan",
+      sourceId: scan.id,
+      title: `Improve weak local visibility for “${keyword.keyword}”`,
+      recommendation: `Review the ${weakAreaCount} weak geographic points and route the fix to the relevant location page, Google Business Profile, citation, review, technical SEO, or authority workflow.`,
+      reasoningSummary: `The ${configuration.gridSize}×${configuration.gridSize} scan found ${top3Share.toFixed(1)}% top-3 coverage and ${top10Share.toFixed(1)}% top-10 coverage across ${points.length} measured points.`,
+      expectedImpact: "Improve measurable local-pack coverage across the selected service area without promising rankings.",
+      confidence: ranks.length ? 85 : 55,
+      estimatedEffort: "medium",
+      route: "local_seo",
+      priorityScore: weakAreaCount / points.length >= 0.5 ? 85 : 65,
+      evidenceJson: { gridScanId: scan.id, configurationId: configuration.id, averageRank, top3Share, top10Share, weakAreaCount, deltaTop10Share, competitors } as Prisma.InputJsonValue,
+      actionType: "local_seo",
+      approvalType: "user_approval",
+      riskLevel: "low",
+      dedupeKey,
+      status: "proposed",
+    };
+    if (existing) await prisma.nextBestAction.update({ where: { id: existing.id }, data });
+    else await prisma.nextBestAction.create({ data });
+  }
+}
+
+async function enqueueLocalGridScan(scanId: string) {
+  const existing = await localGridScanQueue.getJob(scanId);
+  if (existing) {
+    const state = await existing.getState();
+    if (!["completed", "failed", "unknown"].includes(state)) return;
+    await existing.remove().catch(() => undefined);
+  }
+  await localGridScanQueue.add("local-grid:scan", { scanId }, { jobId: scanId, removeOnComplete: 200, removeOnFail: 200 });
+}
+
+let localGridScanWorker: Worker<LocalGridScanQueueJobData> | null = null;
+let localGridScheduleTimer: ReturnType<typeof setInterval> | null = null;
+
+async function enqueueDueLocalGridScans() {
+  if (!searchDataAuth()) return;
+  const configurations = await prisma.localGridConfiguration.findMany({
+    where: { active: true, schedule: { in: ["weekly", "biweekly", "monthly"] } },
+    include: { keyword: true, scans: { orderBy: { scanDate: "desc" }, take: 1 } },
+  });
+  const now = Date.now();
+  const intervalDays: Record<string, number> = { weekly: 7, biweekly: 14, monthly: 30 };
+  for (const configuration of configurations) {
+    const latest = configuration.scans[0];
+    if (!latest || activeStatusForGrid(latest.status)) continue;
+    const days = intervalDays[configuration.schedule] ?? 30;
+    if (now - latest.scanDate.getTime() < days * 24 * 60 * 60 * 1000) continue;
+    const requestedPoints = gridPointsForConfiguration(configuration);
+    const scan = await prisma.localGridScan.create({ data: { configurationId: configuration.id, status: "queued", summaryJson: { requestedPoints, keyword: configuration.keyword.keyword, city: configuration.keyword.city, engine: configuration.engine, resultDepth: configuration.resultDepth, scheduled: true } } });
+    await enqueueLocalGridScan(scan.id);
+  }
+}
+
+function activeStatusForGrid(status: string) {
+  return status === "queued" || status === "running";
+}
+
+export function startLocalGridScanQueueWorker() {
+  if (localGridScanWorker) return localGridScanWorker;
+  localGridScanWorker = new Worker<LocalGridScanQueueJobData>(LOCAL_GRID_SCAN_QUEUE, async (queueJob) => {
+    const record = await prisma.localGridScan.findUnique({ where: { id: queueJob.data.scanId }, select: { status: true } });
+    if (!record || ["completed", "failed", "cancelled"].includes(record.status)) return;
+    try { await performLocalGridScan(queueJob.data.scanId); }
+    catch (error) {
+      await prisma.localGridScan.updateMany({ where: { id: queueJob.data.scanId, status: { in: ["queued", "running"] } }, data: { status: "failed", errorMessage: error instanceof Error ? error.message : "Local grid scan failed.", completedAt: new Date() } });
+      throw error;
+    }
+  }, { connection: queueConnection, concurrency: 1 });
+  localGridScanWorker.on("failed", (queueJob, error) => console.error(`[api] local grid scan ${queueJob?.data.scanId ?? "unknown"} failed:`, error.message));
+  void expireStaleLocalSeoWork().then(() => prisma.localGridScan.findMany({ where: { status: { in: ["queued", "running"] }, createdAt: { gte: new Date(Date.now() - LOCAL_GRID_STALE_AFTER_MS) } }, orderBy: { scanDate: "asc" }, select: { id: true } })).then(async (scans) => {
+    for (const scan of scans) {
+      await prisma.localGridScan.update({ where: { id: scan.id }, data: { status: "queued", errorMessage: null } });
+      await enqueueLocalGridScan(scan.id);
+    }
+  }).catch((error) => console.error("[api] local grid scan recovery failed:", error));
+  void enqueueDueLocalGridScans().catch((error) => console.error("[api] scheduled local grid scan check failed:", error));
+  if (!localGridScheduleTimer) {
+    localGridScheduleTimer = setInterval(() => { void enqueueDueLocalGridScans().catch((error) => console.error("[api] scheduled local grid scan check failed:", error)); }, 15 * 60 * 1000);
+    localGridScheduleTimer.unref?.();
+  }
+  return localGridScanWorker;
+}
 
 localSeoRouter.post("/local/business/:id/recommendations/generate", async (req, res) => {
   const business = await scopedBusiness(req, req.params.id);
   if (!business) return res.status(404).json({ error: "business not found" });
   await replaceRecommendations(business.id, business.scores);
   res.json({ recommendations: await prisma.localRecommendation.findMany({ where: { businessId: business.id, status: "open" }, orderBy: [{ priority: "asc" }, { createdAt: "desc" }] }) });
+});
+
+localSeoRouter.post("/local/business/:id/grid-center", async (req, res) => {
+  const business = await scopedBusiness(req, req.params.id);
+  if (!business) return res.status(404).json({ error: "business not found" });
+  if (business.latitude != null && business.longitude != null) return res.json({ latitude: business.latitude, longitude: business.longitude, source: "saved_profile" });
+  const keyword = business.keywords.find((item) => item.active) ?? business.keywords[0];
+  const payload = await cachedSearchData("google_maps_grid_center", {
+    keyword: [business.businessName, business.address, business.city].filter(Boolean).join(" "),
+    location_name: searchLocationName(business, keyword?.city || business.city, keyword?.country || business.country),
+    language_code: keyword?.language || "en",
+    device: "desktop",
+    os: "windows",
+    depth: 20,
+  }, "/v3/serp/google/maps/live/advanced");
+  if (!payload) return res.status(503).json({ error: "Business-location lookup is unavailable. Confirm the search-data provider or enter coordinates manually." });
+  const matches = extractItems(payload.response)
+    .map(parseListingItem)
+    .filter((item): item is LocalMapsListing => Boolean(item?.latitude != null && item?.longitude != null))
+    .map((listing) => ({ listing, match: matchLocalBusinessEntity(businessEntity(business), listing) }))
+    .filter((item) => item.match.confidence >= 40)
+    .sort((left, right) => right.match.confidence - left.match.confidence);
+  const best = matches[0];
+  if (best?.listing.latitude == null || best.listing.longitude == null) return res.status(422).json({ error: "We could not confidently match this business to map coordinates. Confirm the business name, address and phone, or enter coordinates manually." });
+  await prisma.localBusinessProfile.update({ where: { id: business.id }, data: { latitude: best.listing.latitude, longitude: best.listing.longitude } });
+  res.json({ latitude: best.listing.latitude, longitude: best.listing.longitude, source: "google_maps", matchedBusinessName: best.listing.name, confidence: best.match.confidence });
 });
 
 localSeoRouter.get("/local/business/:id/grids", async (req, res) => {
@@ -557,12 +1029,32 @@ localSeoRouter.post("/local/business/:id/grids/:configurationId/scans", async (r
   if (!business) return res.status(404).json({ error: "business not found" });
   const configuration = await prisma.localGridConfiguration.findFirst({ where: { id: req.params.configurationId, active: true, keyword: { businessId: business.id } }, include: { keyword: true } });
   if (!configuration) return res.status(404).json({ error: "active grid configuration not found" });
-  const half = (configuration.gridSize - 1) / 2;
-  const latStep = configuration.radiusKm / 111 / Math.max(1, half);
-  const lonStep = configuration.radiusKm / (111 * Math.max(0.2, Math.cos(configuration.centerLatitude * Math.PI / 180))) / Math.max(1, half);
-  const requestedPoints = Array.from({ length: configuration.gridSize ** 2 }, (_, index) => { const rowIndex = Math.floor(index / configuration.gridSize); const columnIndex = index % configuration.gridSize; return { rowIndex, columnIndex, latitude: configuration.centerLatitude + (half - rowIndex) * latStep, longitude: configuration.centerLongitude + (columnIndex - half) * lonStep }; });
+  const activeScan = await prisma.localGridScan.findFirst({ where: { configurationId: configuration.id, status: { in: ["queued", "running"] } }, orderBy: { scanDate: "desc" } });
+  if (activeScan) return res.status(202).json({ scan: activeScan, reused: true });
+  const requestedPoints = gridPointsForConfiguration(configuration);
   const scan = await prisma.localGridScan.create({ data: { configurationId: configuration.id, status: "queued", summaryJson: { requestedPoints, keyword: configuration.keyword.keyword, city: configuration.keyword.city, engine: configuration.engine, resultDepth: configuration.resultDepth } } });
-  res.status(201).json({ scan, requestedPoints });
+  try { await enqueueLocalGridScan(scan.id); }
+  catch (error) {
+    await prisma.localGridScan.update({ where: { id: scan.id }, data: { status: "failed", errorMessage: error instanceof Error ? error.message : "Could not queue local grid scan.", completedAt: new Date() } });
+    throw error;
+  }
+  res.status(202).json({ scan, requestedPoints });
+});
+
+localSeoRouter.post("/local/business/:id/grids/:configurationId/scans/:scanId/manage", async (req, res) => {
+  z.object({ action: z.literal("cancel") }).parse(req.body ?? {});
+  const business = await scopedBusiness(req, req.params.id);
+  if (!business) return res.status(404).json({ error: "business not found" });
+  const scan = await prisma.localGridScan.findFirst({ where: { id: req.params.scanId, configurationId: req.params.configurationId, configuration: { keyword: { businessId: business.id } } } });
+  if (!scan) return res.status(404).json({ error: "grid scan not found" });
+  if (!["queued", "running"].includes(scan.status)) return res.status(409).json({ error: "Only queued or running grid scans can be cancelled." });
+  await prisma.localGridScan.update({ where: { id: scan.id }, data: { status: "cancelled", errorMessage: "Local grid scan was cancelled. Run it again when ready.", completedAt: new Date() } });
+  const queueJob = await localGridScanQueue.getJob(scan.id);
+  if (queueJob) {
+    const state = await queueJob.getState().catch(() => "unknown");
+    if (state !== "active") await queueJob.remove().catch(() => undefined);
+  }
+  return res.json({ scan: await prisma.localGridScan.findUnique({ where: { id: scan.id } }) });
 });
 
 localSeoRouter.post("/local/business/:id/grids/:configurationId/scans/:scanId/complete", async (req, res) => {
@@ -579,7 +1071,11 @@ localSeoRouter.post("/local/business/:id/grids/:configurationId/scans/:scanId/co
   const weakAreaCount = parsed.data.points.filter((point) => point.rank == null || point.rank > 10).length;
   const previous = await prisma.localGridScan.findFirst({ where: { configurationId: scan.configurationId, status: "completed", id: { not: scan.id } }, orderBy: { scanDate: "desc" } });
   const delta = previous?.top10Share != null ? top10Share - previous.top10Share : null;
-  const project = business.websiteId ? await prisma.project.findFirst({ where: { websiteId: business.websiteId, status: { not: "deleted" } }, orderBy: { updatedAt: "desc" } }) : null;
+  const project = business.projectId
+    ? await prisma.project.findFirst({ where: { id: business.projectId, status: { not: "deleted" } } })
+    : business.websiteId
+      ? await prisma.project.findFirst({ where: { websiteId: business.websiteId, status: { not: "deleted" } }, orderBy: { updatedAt: "desc" } })
+      : null;
   const context = await workspaceContext(req);
   const completed = await prisma.$transaction(async (tx) => {
     await tx.localGridPoint.deleteMany({ where: { scanId: scan.id } });

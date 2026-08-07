@@ -53,7 +53,7 @@ function billingState(user: AdminUser) {
   if (!client) return { label: "Internal", detail: "No subscription", className: "border-slate-200 bg-slate-50 text-slate-600" };
   const now = new Date();
   if (isLegacyActiveTrial(user)) return { label: "legacy active", detail: "no trial end set", className: "border-amber-200 bg-amber-50 text-amber-800" };
-  if (client.aiSubscriptionStatus === "active") return { label: "active", detail: client.subscriptionSource || "stripe", className: "border-green-200 bg-green-50 text-green-700" };
+  if (client.aiSubscriptionStatus === "active") return { label: "active", detail: client.subscriptionSource || "commercial", className: "border-green-200 bg-green-50 text-green-700" };
   if (client.aiSubscriptionStatus === "trialing") {
     const active = Boolean(client.trialEndsAt && new Date(client.trialEndsAt) > now);
     return { label: active ? "trial active" : "trial expired", detail: active ? `ends ${formatDate(client.trialEndsAt)}` : "upgrade required", className: active ? "border-blue-200 bg-blue-50 text-blue-700" : "border-red-200 bg-red-50 text-red-700" };
@@ -72,7 +72,7 @@ function sourceLabel(user: AdminUser) {
   if (client.subscriptionSource && client.subscriptionSource !== "trial") return client.subscriptionSource;
   if (client.aiSubscriptionStatus === "trialing") return "trial";
   if (client.aiSubscriptionStatus === "offline") return "offline";
-  if (client.aiSubscriptionStatus === "active") return "stripe/manual";
+  if (client.aiSubscriptionStatus === "active") return client.subscriptionSource || "commercial";
   return "-";
 }
 
