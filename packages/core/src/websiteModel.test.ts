@@ -9,9 +9,18 @@ import {
   validateWebsiteModel,
   websiteContentGenerationPhase,
   websitePageCompositionPolicy,
+  websiteMediaStatusHasApprovedDecision,
   type WebsiteModel,
   type WebsitePageModel,
 } from "./websiteModel.js";
+
+describe("website media lifecycle", () => {
+  it("keeps a WordPress-uploaded image approved after publication", () => {
+    expect(websiteMediaStatusHasApprovedDecision("approved")).toBe(true);
+    expect(websiteMediaStatusHasApprovedDecision("uploaded")).toBe(true);
+    expect(websiteMediaStatusHasApprovedDecision("review")).toBe(false);
+  });
+});
 
 const page = (overrides: Partial<WebsitePageModel> = {}): WebsitePageModel => ({
   pageId: "page-super-visa-brampton",

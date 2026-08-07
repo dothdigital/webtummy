@@ -5,6 +5,7 @@ import {
   normalizeGeneratedComponentInstance,
   validateComponentInstance,
   websiteContentGenerationPhase,
+  websiteMediaStatusHasApprovedDecision,
   websitePageCompositionPolicy,
   type JsonValue,
   type WebsiteContentGenerationPhase,
@@ -2593,9 +2594,9 @@ export async function executeWebsiteBuildJob(jobId: string) {
           ? { ...proposedDesignPlan, placement: "hero" as const }
           : { ...proposedDesignPlan, placement: "none" as const, prompt: "", altText: "" };
         const approvedVisual = websiteGeneration && input.regenerateImages !== true
-          ? page.mediaAssets.find((asset) => asset.id === `${page.id}-hero` && asset.status === "approved" && asset.role !== "none")
-            ?? page.mediaAssets.find((asset) => asset.status === "approved" && asset.role === "hero")
-            ?? page.mediaAssets.find((asset) => asset.status === "approved" && ["banner", "inline", "library"].includes(asset.role))
+          ? page.mediaAssets.find((asset) => asset.id === `${page.id}-hero` && websiteMediaStatusHasApprovedDecision(asset.status) && asset.role !== "none")
+            ?? page.mediaAssets.find((asset) => websiteMediaStatusHasApprovedDecision(asset.status) && asset.role === "hero")
+            ?? page.mediaAssets.find((asset) => websiteMediaStatusHasApprovedDecision(asset.status) && ["banner", "inline", "library"].includes(asset.role))
           : null;
         // Reassembling a website without image generation must preserve the
         // saved visual state. It is not an instruction to approve every

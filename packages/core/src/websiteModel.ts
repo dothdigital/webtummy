@@ -341,6 +341,14 @@ export type WebsiteModel = {
   mediaAssets: Array<{ assetId: string; status: string; altText: string; sourceUrl?: string }>;
 };
 
+/**
+ * `uploaded` is the post-publication form of an already approved website
+ * image. Publishing must never make that image look unreviewed or missing.
+ */
+export function websiteMediaStatusHasApprovedDecision(status: unknown) {
+  return status === "approved" || status === "uploaded";
+}
+
 export type WebsiteValidationSeverity = "blocking" | "warning";
 export type WebsiteValidationFinding = {
   code: string;

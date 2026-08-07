@@ -15,6 +15,7 @@ import {
   validateComponentInstance,
   validateWebsiteModel,
   websiteContentGenerationPhase,
+  websiteMediaStatusHasApprovedDecision,
   websitePageCompositionPolicy,
   type WebsiteContentGenerationPhase,
   type WebsiteComponentInstance,
@@ -6088,7 +6089,7 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/media/skip-remai
   if (!hasWorkspacePermission(context, "approve")) return res.status(403).json({ error: "Approval permission is required." });
   const build = project.websiteBuilds[0];
   if (!build) return res.status(404).json({ error: "Website build not found." });
-  const remainingAssets = build.pages.flatMap((page) => page.mediaAssets).filter((asset) => asset.status !== "approved");
+  const remainingAssets = build.pages.flatMap((page) => page.mediaAssets).filter((asset) => !websiteMediaStatusHasApprovedDecision(asset.status));
   const skippedPageIds = new Set(remainingAssets.map((asset) => asset.pageId).filter((value): value is string => Boolean(value)));
   const currentSettings = jsonRecord(build.settingsJson);
   const currentMediaSetup = jsonRecord(currentSettings.mediaSetup);
@@ -6116,7 +6117,7 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/media/skip-remai
             mode: "skip_remaining",
             skippedPageIds: [...skippedPageIds],
             explicitNoImageAssetIds,
-            preservedApprovedImages: build.pages.flatMap((page) => page.mediaAssets).filter((asset) => asset.status === "approved" && asset.role !== "none").length,
+            preservedApprovedImages: build.pages.flatMap((page) => page.mediaAssets).filter((asset) => websiteMediaStatusHasApprovedDecision(asset.status) && asset.role !== "none").length,
           },
         } as Prisma.InputJsonValue,
       },
@@ -7305,7 +7306,7 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/deploy", async (
           if (editableAsset) {
             await prisma.websiteBuildMediaAsset.update({
               where: { id: editableAsset.id },
-              data: { remoteMediaId: String(mediaId), remoteUrl, status: "uploaded" },
+              data: { remoteMediaId: String(mediaId), remoteUrl, status: "approved" },
             });
           }
           logs.push({ action: "media_uploaded", status: "success", assetId: approvedAsset.assetId, remoteMediaId: mediaId, url: remoteUrl, at: new Date().toISOString() });
