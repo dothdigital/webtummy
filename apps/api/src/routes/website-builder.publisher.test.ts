@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { SENUKE_COMPONENT_REGISTRY_V1 } from "@webtummy/core/website-model";
-import { combinedPageSchema, effectiveExistingPageRequirements, generatedPageSchema, importedWebsiteRouteAssignment, pageIsImportedExistingWebsite, publishingAssetMatchesWebsitePage, websiteSettingsWithVerifiedLocalEvidence } from "./website-builder.js";
+import { combinedPageSchema, effectiveExistingPageRequirements, generatedPageSchema, importedWebsiteRouteAssignment, pageIsImportedExistingWebsite, parseWordPressJsonResponse, publishingAssetMatchesWebsitePage, websiteSettingsWithVerifiedLocalEvidence } from "./website-builder.js";
 
 const project = {
   businessName: "Example Financial",
@@ -15,6 +15,24 @@ const project = {
 };
 
 describe("ongoing WordPress publishing schema", () => {
+  it("turns an HTML WordPress REST response into an actionable connection error", () => {
+    expect(() => parseWordPressJsonResponse("<!DOCTYPE html><html><body>Login</body></html>", {
+      endpoint: "https://example.com/wp-json/wp/v2/users/me?context=edit",
+      status: 200,
+      statusText: "OK",
+      contentType: "text/html; charset=UTF-8",
+    })).toThrow(/returned an HTML page instead of REST API JSON/);
+  });
+
+  it("parses a valid WordPress REST response", () => {
+    expect(parseWordPressJsonResponse('{"id":7,"name":"Publisher"}', {
+      endpoint: "https://example.com/wp-json/wp/v2/users/me?context=edit",
+      status: 200,
+      statusText: "OK",
+      contentType: "application/json; charset=UTF-8",
+    })).toEqual({ id: 7, name: "Publisher" });
+  });
+
   it("synchronizes verified local evidence into the matching Website Plan page", () => {
     const evidence = {
       id: "verified-local-evidence-1",

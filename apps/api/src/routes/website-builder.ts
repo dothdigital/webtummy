@@ -1025,30 +1025,87 @@ async function safeSiteUrl(value: string) {
   url.hash = "";
   return url.toString().replace(/\/$/, "");
 }
+
+type WordPressJsonResponseContext = {
+  endpoint: string;
+  status: number;
+  statusText: string;
+  contentType?: string | null;
+};
+
+export function parseWordPressJsonResponse(body: string, context: WordPressJsonResponseContext) {
+  const value = body.trim();
+  if (value) {
+    try {
+      return JSON.parse(value) as unknown;
+    } catch {
+      const looksLikeHtml = /(?:text\/html|application\/xhtml\+xml)/i.test(context.contentType || "") || /^\s*(?:<!doctype|<html|<head|<body)/i.test(value);
+      const explanation = looksLikeHtml
+        ? "WordPress returned an HTML page instead of REST API JSON. The URL may point to a login, maintenance, hosting, or security-challenge page."
+        : "WordPress returned a response that is not valid REST API JSON.";
+      throw Object.assign(new Error(`${explanation} Confirm the WordPress URL, then open ${context.endpoint} in a browser and make sure it returns JSON without a login or firewall challenge.`), {
+        statusCode: 409,
+        code: "wordpress_rest_invalid_response",
+        publicMessage: true,
+      });
+    }
+  }
+  if (context.status === 204) return null;
+  throw Object.assign(new Error(`WordPress returned an empty response (${context.status || "unknown status"}). Confirm that ${context.endpoint} is a working WordPress REST API route.`), {
+    statusCode: 409,
+    code: "wordpress_rest_empty_response",
+    publicMessage: true,
+  });
+}
+
+function wordPressRequestFailure(error: unknown, endpoint: string): never {
+  if (typeof error === "object" && error !== null && "statusCode" in error) throw error;
+  if (error instanceof Error && (error.name === "AbortError" || /aborted|timeout/i.test(error.message))) {
+    throw Object.assign(new Error(`The WordPress REST API did not respond in time. Confirm that ${endpoint} is publicly reachable, then try again.`), {
+      statusCode: 409,
+      code: "wordpress_rest_timeout",
+      publicMessage: true,
+    });
+  }
+  throw Object.assign(new Error(`SENuke AI could not reach the WordPress REST API at ${endpoint}. Confirm the exact WordPress URL and allow /wp-json/* through redirects, maintenance mode, CDN protection, and security plugins.`), {
+    statusCode: 409,
+    code: "wordpress_rest_unreachable",
+    publicMessage: true,
+  });
+}
+
 async function wpFetch(integration: { siteUrl: string; username: string | null; credentialCiphertext: string | null }, path: string, init: RequestInit = {}) {
   if (!integration.username || !integration.credentialCiphertext) throw Object.assign(new Error("WordPress credentials are not configured."), { statusCode: 409 });
   const siteUrl = await safeSiteUrl(integration.siteUrl);
+  const endpoint = `${siteUrl}${path}`;
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 20_000);
   try {
-    const response = await fetch(`${siteUrl}${path}`, { ...init, redirect: "error", signal: controller.signal, headers: { Authorization: `Basic ${Buffer.from(`${integration.username}:${decryptCredential(integration.credentialCiphertext)}`).toString("base64")}`, "Content-Type": "application/json", ...(init.headers ?? {}) } });
+    const response = await fetch(endpoint, { ...init, redirect: "error", signal: controller.signal, headers: { Authorization: `Basic ${Buffer.from(`${integration.username}:${decryptCredential(integration.credentialCiphertext)}`).toString("base64")}`, "Content-Type": "application/json", Accept: "application/json", ...(init.headers ?? {}) } });
     const body = await response.text();
-    const data = body ? JSON.parse(body) as unknown : null;
+    const data = parseWordPressJsonResponse(body, { endpoint, status: response.status, statusText: response.statusText, contentType: response.headers.get("content-type") });
     if (!response.ok) throw Object.assign(new Error(`WordPress rejected the request (${response.status}): ${jsonRecord(data).message ?? response.statusText}`), { statusCode: 409 });
     return data;
+  } catch (error) {
+    wordPressRequestFailure(error, endpoint);
   } finally { clearTimeout(timeout); }
 }
 
 async function wpUploadMedia(integration: { siteUrl: string; username: string | null; credentialCiphertext: string | null }, fileName: string, mimeType: string, bytes: Buffer, altText: string) {
   if (!integration.username || !integration.credentialCiphertext) throw Object.assign(new Error("WordPress credentials are not configured."), { statusCode: 409 });
   const siteUrl = await safeSiteUrl(integration.siteUrl);
-  const response = await fetch(`${siteUrl}/wp-json/wp/v2/media`, { method: "POST", redirect: "error", signal: AbortSignal.timeout(30_000), headers: { Authorization: `Basic ${Buffer.from(`${integration.username}:${decryptCredential(integration.credentialCiphertext)}`).toString("base64")}`, "Content-Type": mimeType, "Content-Disposition": `attachment; filename="${fileName.replace(/[^a-z0-9._-]/gi, "-")}"` }, body: bytes as unknown as BodyInit });
-  const raw = await response.text();
-  const data = raw ? JSON.parse(raw) as unknown : null;
-  if (!response.ok) throw Object.assign(new Error(`WordPress media upload failed (${response.status}): ${jsonRecord(data).message ?? response.statusText}`), { statusCode: 409 });
-  const media = jsonRecord(data);
-  if (media.id) await wpFetch(integration, `/wp-json/wp/v2/media/${media.id}`, { method: "POST", body: JSON.stringify({ alt_text: altText }) });
-  return media;
+  const endpoint = `${siteUrl}/wp-json/wp/v2/media`;
+  try {
+    const response = await fetch(endpoint, { method: "POST", redirect: "error", signal: AbortSignal.timeout(30_000), headers: { Authorization: `Basic ${Buffer.from(`${integration.username}:${decryptCredential(integration.credentialCiphertext)}`).toString("base64")}`, "Content-Type": mimeType, Accept: "application/json", "Content-Disposition": `attachment; filename="${fileName.replace(/[^a-z0-9._-]/gi, "-")}"` }, body: bytes as unknown as BodyInit });
+    const raw = await response.text();
+    const data = parseWordPressJsonResponse(raw, { endpoint, status: response.status, statusText: response.statusText, contentType: response.headers.get("content-type") });
+    if (!response.ok) throw Object.assign(new Error(`WordPress media upload failed (${response.status}): ${jsonRecord(data).message ?? response.statusText}`), { statusCode: 409 });
+    const media = jsonRecord(data);
+    if (media.id) await wpFetch(integration, `/wp-json/wp/v2/media/${media.id}`, { method: "POST", body: JSON.stringify({ alt_text: altText }) });
+    return media;
+  } catch (error) {
+    wordPressRequestFailure(error, endpoint);
+  }
 }
 
 async function scopedProject(projectId: string, req: Parameters<typeof workspaceContext>[0]) {
