@@ -17,7 +17,7 @@ import { localSeoRouter, startLocalGridScanQueueWorker, startLocalSeoAuditQueueW
 import { executionTasksRouter } from "./routes/execution-tasks.js";
 import { optimizationWorkflowRouter } from "./routes/optimization-workflow.js";
 import { billingRouter } from "./routes/billing.js";
-import { guidedProjectsRouter } from "./routes/projects-v2.js";
+import { guidedProjectsRouter, startStrategyGenerationQueueWorker } from "./routes/projects-v2.js";
 import { growthRouter } from "./routes/growth.js";
 import { automationRouter } from "./routes/automation.js";
 import { usageRouter } from "./routes/usage.js";
@@ -208,6 +208,7 @@ app.use((err: unknown, req: express.Request, res: express.Response, _next: expre
 startKeywordResearchQueueWorker();
 startLocalSeoAuditQueueWorker();
 startLocalGridScanQueueWorker();
+startStrategyGenerationQueueWorker();
 
 app.listen(config.port, () => {
   console.log(`[api] SEnuke AI API listening on http://localhost:${config.port}`);

@@ -52,6 +52,17 @@ type CrawlPageRow = {
 };
 type ScanDetailKey = "highIssues" | "brokenLinks" | "orphanPages" | "weakAnchors" | null;
 type StrategyTab = "overview" | "score" | "core" | "audience" | "growth" | "funnel" | "advanced" | "roadmap";
+type StrategyGenerationJob = {
+  id: string;
+  projectId: string;
+  status: "queued" | "running" | "completed" | "failed" | string;
+  stage: string;
+  progress: number;
+  strategyId?: string | null;
+  strategyVersion?: number | null;
+  error?: string | null;
+  errorCode?: string | null;
+};
 
 type UnifiedChannelPlan = { objective: string; actions: string[]; dependencies: string[]; destination: string; successSignal: string };
 type UnifiedGrowthFunnelStep = {
@@ -433,11 +444,13 @@ export default function ExecutionModule({ kind }: { kind: ModuleKind }) {
   const [siteAnalysisMessage, setSiteAnalysisMessage] = useState("");
   const [strategyBusy, setStrategyBusy] = useState<"generate" | "analyze" | "approve" | "execution" | null>(null);
   const [strategyMessage, setStrategyMessage] = useState("");
+  const [strategyJob, setStrategyJob] = useState<StrategyGenerationJob | null>(null);
   const [leadMagnetStartRequest, setLeadMagnetStartRequest] = useState(0);
   const [opportunityBusy, setOpportunityBusy] = useState<"generate" | string | null>(null);
   const [opportunityMessage, setOpportunityMessage] = useState("");
   const [selectedProjectId, setSelectedProjectId] = useState(searchParams.get("projectId") ?? getActiveProjectId());
   const keywordJobFingerprint = useRef("");
+  const strategyRequestKey = useRef("");
   const [workspaceLoadError, setWorkspaceLoadError] = useState("");
   const [helpOpen, setHelpOpen] = useState(false);
   const [nowMs, setNowMs] = useState(Date.now());
@@ -718,6 +731,54 @@ export default function ExecutionModule({ kind }: { kind: ModuleKind }) {
     setActiveProjectId(project.id);
   };
 
+  useEffect(() => {
+    if (kind !== "strategy" || !activeProject?.id) return;
+    let cancelled = false;
+    void api.get<{ job: StrategyGenerationJob | null }>(`/api/projects-v2/${activeProject.id}/strategy/jobs/active`).then((result) => {
+      if (cancelled || !result.job) return;
+      setStrategyJob(result.job);
+      setStrategyBusy("generate");
+      setStrategyMessage("Strategy generation is continuing in the background. This page will update automatically.");
+    }).catch(() => undefined);
+    return () => { cancelled = true; };
+  }, [kind, activeProject?.id]);
+
+  useEffect(() => {
+    if (kind !== "strategy" || !activeProject?.id || !strategyJob || !["queued", "running"].includes(strategyJob.status)) return;
+    let cancelled = false;
+    let timer: number | null = null;
+    const poll = async () => {
+      try {
+        const result = await api.get<{ job: StrategyGenerationJob; project?: GuidedProject }>(`/api/projects-v2/${activeProject.id}/strategy/jobs/${strategyJob.id}`);
+        if (cancelled) return;
+        setStrategyJob(result.job);
+        if (result.job.status === "completed") {
+          if (result.project) updateActiveProject(result.project);
+          strategyRequestKey.current = "";
+          setStrategyBusy(null);
+          setStrategyMessage(`Strategy v${result.job.strategyVersion ?? ""} is ready. Review and approve this draft before creating or updating the Execution Plan.`);
+          return;
+        }
+        if (result.job.status === "failed") {
+          strategyRequestKey.current = "";
+          setStrategyBusy(null);
+          setStrategyMessage(`${result.job.error || "Strategy generation could not be completed."}${result.job.errorCode ? ` Error code: ${result.job.errorCode}` : ""}`);
+          return;
+        }
+        timer = window.setTimeout(() => { void poll(); }, 2000);
+      } catch (error) {
+        if (cancelled) return;
+        setStrategyBusy(null);
+        setStrategyMessage(error instanceof Error ? error.message : "Strategy progress could not be checked. Refresh the page to resume.");
+      }
+    };
+    void poll();
+    return () => {
+      cancelled = true;
+      if (timer) window.clearTimeout(timer);
+    };
+  }, [kind, activeProject?.id, strategyJob?.id, strategyJob?.status]);
+
   const changeProject = (projectId: string) => {
     setSelectedProjectId(projectId);
     setActiveProjectId(projectId);
@@ -727,6 +788,8 @@ export default function ExecutionModule({ kind }: { kind: ModuleKind }) {
     setSearchParams(next, { replace: true });
     setOpportunityMessage("");
     setStrategyMessage("");
+    setStrategyJob(null);
+    strategyRequestKey.current = "";
     setSiteAnalysisMessage("");
     setLeadMagnetStartRequest(0);
     setWorkflowController(null);
@@ -744,36 +807,39 @@ export default function ExecutionModule({ kind }: { kind: ModuleKind }) {
         : `/api/projects-v2/${activeProject.id}/execution-plan/create`;
     setStrategyBusy(action);
     setStrategyMessage("");
+    let backgroundAccepted = false;
     try {
-      const request = api.post<{ project: GuidedProject }>(endpoint, action === "generate" ? options ?? {} : {});
-      const [result] = await Promise.all([
-        request,
-        action === "generate" || action === "execution" ? new Promise((resolve) => window.setTimeout(resolve, 2500)) : Promise.resolve(),
-      ]);
+      if (action === "generate") {
+        strategyRequestKey.current ||= window.crypto.randomUUID();
+        const result = await api.post<{ job: StrategyGenerationJob }>(endpoint, { ...(options ?? {}), idempotencyKey: strategyRequestKey.current });
+        backgroundAccepted = true;
+        setStrategyJob(result.job);
+        setStrategyMessage("Strategy generation is running in the background. This page will update automatically when the draft is ready.");
+        return { ok: true, message: "Strategy generation started in the background." };
+      }
+      const request = api.post<{ project: GuidedProject }>(endpoint, {});
+      const [result] = await Promise.all([request, action === "execution" ? new Promise((resolve) => window.setTimeout(resolve, 2500)) : Promise.resolve()]);
       updateActiveProject(result.project);
-      setStrategyMessage(action === "generate"
-        ? "Strategy regenerated as a new draft. Review and approve this version before creating or updating the execution plan."
-        : action === "analyze"
+      setStrategyMessage(action === "analyze"
           ? "Strategy Intelligence completed for the current version. Applicable opportunities and Execution Plan tasks are now updated."
         : action === "approve"
           ? "Strategy approved. Its recommendations were added to the Execution Plan without duplicating existing tasks."
           : "Execution plan created from the approved strategy. New execution tasks are now available in the roadmap and module pages.");
       return {
         ok: true,
-        message: action === "generate"
-          ? "Strategy regenerated as a new draft. Review and approve this version before creating or updating the execution plan."
-          : action === "analyze"
+        message: action === "analyze"
             ? "Strategy Intelligence completed for the current version without changing its approval status."
           : action === "approve"
             ? "Strategy approved. Its recommendations were added to the Execution Plan without duplicating existing tasks."
             : "Execution plan created from the approved strategy. New execution tasks are now available.",
       };
     } catch (error) {
+      if (action === "generate" && !backgroundAccepted) strategyRequestKey.current = "";
       const message = error instanceof Error ? error.message : "Strategy action failed.";
       setStrategyMessage(message);
       return { ok: false, message };
     } finally {
-      setStrategyBusy(null);
+      if (action !== "generate" || !backgroundAccepted) setStrategyBusy(null);
     }
   };
 
@@ -974,7 +1040,7 @@ export default function ExecutionModule({ kind }: { kind: ModuleKind }) {
 
   return (
     <div className="space-y-5">
-      {kind === "strategy" && strategyBusy === "generate" && <StrategyCookingOverlay />}
+      {kind === "strategy" && strategyBusy === "generate" && <StrategyCookingOverlay job={strategyJob} />}
       {kind === "strategy" && strategyBusy === "execution" && <ExecutionPlanCookingOverlay />}
       <ProjectModuleHeader eyebrow={copy.title} title={moduleTitle} subtitle={copy.subtitle} project={hasActiveProject ? activeProject : null} projects={data.projects} tasks={scopedData.tasks} notifications={scopedData.notifications} onProjectChange={changeProject} actions={headerActions} showExecution={kind !== "keywords" && kind !== "site-analysis"} />
       {hasActiveProject && activeProject && (kind === "opportunities" || kind === "strategy" || kind === "site-analysis" || kind === "lead-magnets") && <ProjectWorkflowController projectId={activeProject.id} refreshKey={`${scopedData.tasks.length}:${scopedKeywordRuns.length}:${activeSiteCrawl?.id ?? ""}:${activeSiteCrawl?.status ?? ""}:${latestSiteCrawl?.id ?? ""}:${latestSiteCrawl?.completedAt ?? ""}`} compact onLoaded={setWorkflowController} />}
@@ -1555,11 +1621,12 @@ function OpportunityScreen({
 }
 
 function OpportunityCookingOverlay() {
-  return <AiPlanningScreen eyebrow="Opportunity research in progress" title="Hang tight — we’re finding your strongest opportunities!" description="SEnuke AI is reviewing the business, audience, offer, goals, markets, competitors, and constraints to identify practical directions worth pursuing." steps={[{ title: "Review the business", detail: "Business Intake, audience, offer, goals, markets, assets, and operating constraints" }, { title: "Evaluate the market", detail: "Demand, competitor positioning, customer needs, differentiation, and evidence quality" }, { title: "Rank the opportunities", detail: "Business fit, expected value, confidence, effort, dependencies, and recommended next step" }]} checks={["Evidence is separated from inference", "Opportunities are scored consistently", "Nothing is selected without review"]} status="Creating scored opportunity recommendations…" note="You will review, compare, refine, and select an opportunity before it becomes part of the Strategy." ariaLabel="Creating opportunity recommendations" />;
+  return <AiPlanningScreen theme="dark" eyebrow="Opportunity research in progress" title="Hang tight — we’re finding your strongest opportunities!" description="SEnuke AI is reviewing the business, audience, offer, goals, markets, competitors, and constraints to identify practical directions worth pursuing." steps={[{ title: "Review the business", detail: "Business Intake, audience, offer, goals, markets, assets, and operating constraints" }, { title: "Evaluate the market", detail: "Demand, competitor positioning, customer needs, differentiation, and evidence quality" }, { title: "Rank the opportunities", detail: "Business fit, expected value, confidence, effort, dependencies, and recommended next step" }]} checks={["Evidence is separated from inference", "Opportunities are scored consistently", "Nothing is selected without review"]} status="Creating scored opportunity recommendations…" note="You will review, compare, refine, and select an opportunity before it becomes part of the Strategy." ariaLabel="Creating opportunity recommendations" />;
 }
 
-function StrategyCookingOverlay() {
-  return <AiPlanningScreen eyebrow="Strategy planning in progress" title="Hang tight — we’re building your unified strategy!" description="SEnuke AI is connecting the selected opportunity, approved keywords, target markets, project goals, audience, offer, and available website evidence into one prioritized plan of action." steps={[{ title: "Review the intelligence", detail: "Business goals, audience, offer, opportunity, approved keywords, markets, competitors, and website evidence" }, { title: "Make strategic decisions", detail: "Positioning, page and content priorities, funnel gaps, Local SEO, authority, AI visibility, and conversion direction" }, { title: "Build the action plan", detail: "Ranked focus areas, phased actions, channel responsibilities, dependencies, KPIs, and one Next Best Action" }]} checks={["Use approved evidence first", "Separate verified facts from inference", "Keep every module aligned to one Strategy"]} status="Creating an evidence-backed Unified Strategy…" note="Nothing is being executed or published. You will review the complete Strategy and approve the exact version before an Execution Plan is created." ariaLabel="Creating project strategy" />;
+function StrategyCookingOverlay({ job }: { job: StrategyGenerationJob | null }) {
+  const stage = job?.stage === "queued" ? "Waiting for an available AI worker" : job?.stage === "generating_strategy" ? "Researching and making Strategy decisions" : "Creating an evidence-backed Unified Strategy";
+  return <AiPlanningScreen theme="dark" eyebrow="Strategy planning in progress" title="Hang tight — we’re building your unified strategy!" description="SEnuke AI is connecting the selected opportunity, approved keywords, target markets, project goals, audience, offer, and available website evidence into one prioritized plan of action." steps={[{ title: "Review the intelligence", detail: "Business goals, audience, offer, opportunity, approved keywords, markets, competitors, and website evidence" }, { title: "Make strategic decisions", detail: "Positioning, page and content priorities, funnel gaps, Local SEO, authority, AI visibility, and conversion direction" }, { title: "Build the action plan", detail: "Ranked focus areas, phased actions, channel responsibilities, dependencies, KPIs, and one Next Best Action" }]} stats={job ? [{ value: `${Math.round(job.progress)}%`, label: stage, tone: "emerald" }] : []} progress={job?.progress} checks={["Runs safely in the background", "Duplicate requests reuse one job", "The completed draft loads automatically"]} status={job?.status === "queued" ? "Strategy job queued…" : "Creating an evidence-backed Unified Strategy…"} note="You can leave this page safely. The Strategy job continues in the background and the completed draft will load automatically when you return." ariaLabel="Creating project strategy" />;
 }
 
 function ExecutionPlanCookingOverlay() {

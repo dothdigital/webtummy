@@ -1,9 +1,11 @@
-import { Router, type Request } from "express";
+import { Router, type Request, type Response } from "express";
 import { z } from "zod";
-import { Prisma, prisma } from "@webtummy/db";
+import { Prisma, prisma, type Role } from "@webtummy/db";
+import { Worker } from "bullmq";
+import { createHash, randomUUID } from "node:crypto";
 import { requireAuth, requireRole } from "../middleware.js";
 import { projectClientIdForRequest } from "../project-scope.js";
-import { config } from "../config.js";
+import { config, STRATEGY_GENERATION_QUEUE } from "../config.js";
 import { commitUsage, modelForFeature, modelRouteForFeature, preflightUsage, refundUsage } from "../usage-engine.js";
 import { buildCampaignExecutionTasks, isExistingWebsiteCampaign, isPreLaunchWebsiteCampaign, projectTypeForWebsiteSituation, projectTypes, projectWorkflowDefinitions, requiresSiteAnalysisBeforeStrategy } from "../campaign-intelligence.js";
 import { canAccessAgencyClient, canAccessProject, createWorkspaceNotification, hasWorkspacePermission, recordWorkspaceActivity, requireWorkspaceRole, workspaceContext } from "../workspace-access.js";
@@ -26,6 +28,10 @@ import { marketingExecutionSummary } from "../marketing-execution-engine.js";
 import { generateAiOpportunityRecommendations, type AiOpportunityRecommendation } from "../opportunity-ai.js";
 import { centralAiJson } from "../central-ai-service.js";
 import { isWebsitePlanTask } from "../website-plan-task.js";
+import { queueConnection, strategyGenerationQueue, type StrategyGenerationQueueJobData } from "../queue.js";
+import { runCommercialRequestContext } from "../commercial-request-context.js";
+import { createApiErrorCode } from "../api-errors.js";
+import { queueApiErrorReport } from "../api-error-reporter.js";
 
 export const guidedProjectsRouter = Router();
 guidedProjectsRouter.use(requireAuth);
@@ -3693,7 +3699,7 @@ async function extendedStrategyAnalysisForProject(project: NonNullable<Awaited<R
   });
 }
 
-guidedProjectsRouter.post("/projects-v2/:projectId/strategy/generate", async (req, res) => {
+async function performStrategyGeneration(req: Request, res: Response) {
   await requireRequestPermission(req, "edit_assigned_work");
   const project = await scopedProject(req, req.params.projectId);
   if (!project) return res.status(404).json({ error: "project not found" });
@@ -3718,7 +3724,10 @@ guidedProjectsRouter.post("/projects-v2/:projectId/strategy/generate", async (re
     });
   }
   const context = await workspaceContext(req);
-  const generateInput = z.object({ revisionComment: z.string().trim().max(2000).optional() }).safeParse(req.body ?? {});
+  const generateInput = z.object({
+    revisionComment: z.string().trim().max(2000).optional(),
+    generationJobId: z.string().trim().max(191).optional(),
+  }).safeParse(req.body ?? {});
   if (!generateInput.success) return res.status(400).json({ error: generateInput.error.flatten() });
   const latestVersion = project.strategyPlans.reduce((max, item) => Math.max(max, (item as { version?: number }).version ?? 0), 0);
   const revision = generateInput.data.revisionComment?.trim() ?? "";
@@ -3874,7 +3883,7 @@ guidedProjectsRouter.post("/projects-v2/:projectId/strategy/generate", async (re
         kpis: unifiedPlan.kpis.map((kpi) => `${kpi.name}: ${kpi.measurement} (${kpi.targetDirection})`),
         revisionComment: generateInput.data.revisionComment ?? null,
         strategyScore: unifiedStrategyScore,
-        scoreBreakdown: { ...scoreBreakdown, confidence: workflowGate.confidence.overall, contractVersion: "unified-strategy-v4", decisionEngineVersion: STRATEGY_DECISION_ENGINE_VERSION, generatedByAi: true, funnelEvaluatedByAi: unifiedPlan.growthFunnel?.evaluationMethod === "ai", model: generatedStrategy.model },
+        scoreBreakdown: { ...scoreBreakdown, confidence: workflowGate.confidence.overall, contractVersion: "unified-strategy-v4", decisionEngineVersion: STRATEGY_DECISION_ENGINE_VERSION, generatedByAi: true, funnelEvaluatedByAi: unifiedPlan.growthFunnel?.evaluationMethod === "ai", model: generatedStrategy.model, generationJobId: generateInput.data.generationJobId ?? null },
         advancedAnalysis: decisionSet.decisions,
         prioritizedRecommendations: [unifiedRecommendation, ...decisionSet.decisions],
         status: personalNoApproval ? "approved" : "draft",
@@ -3902,7 +3911,7 @@ guidedProjectsRouter.post("/projects-v2/:projectId/strategy/generate", async (re
         clientId: project.clientId,
         moduleName: "strategy",
         promptVersion: "unified-strategy-v4",
-        inputSnapshotJson: { projectId: project.id, context: ctx, opportunityId: selectedOpportunity?.id ?? null, businessBrainVersion: workflowGate.businessBrainVersion, evidenceVersion: workflowGate.evidenceVersion, advancedAnalysisKeys: advanced.analyses.filter((item) => item.applicable).map((item) => item.key), approvedGapRecommendationIds: approvedGapRecommendations.map((item) => item.id), aiRoute: strategyAiRoute },
+        inputSnapshotJson: { projectId: project.id, context: ctx, opportunityId: selectedOpportunity?.id ?? null, businessBrainVersion: workflowGate.businessBrainVersion, evidenceVersion: workflowGate.evidenceVersion, advancedAnalysisKeys: advanced.analyses.filter((item) => item.applicable).map((item) => item.key), approvedGapRecommendationIds: approvedGapRecommendations.map((item) => item.id), aiRoute: strategyAiRoute, generationJobId: generateInput.data.generationJobId ?? null } as unknown as Prisma.InputJsonValue,
         outputJson: { id: row.id, status: row.status, contractVersion: "unified-strategy-v4", decisionEngineVersion: decisionSet.engineVersion, model: generatedStrategy.model, focusAreaCount: unifiedPlan.focusAreas.length, funnelStepCount: unifiedPlan.growthFunnel?.steps.length ?? 0, funnelEvaluationMethod: unifiedPlan.growthFunnel?.evaluationMethod ?? null, phaseCount: unifiedPlan.phases.length, candidateCount: decisionSet.audit.candidateCount, nextBestActionKey: decisionSet.nextBestActionKey, recommendationCount: decisionSet.decisions.length },
         outputText: row.strategySummary,
         tokenUsage: { model: generatedStrategy.model, inputTokens: generatedStrategy.inputTokens, outputTokens: generatedStrategy.outputTokens },
@@ -3981,7 +3990,275 @@ guidedProjectsRouter.post("/projects-v2/:projectId/strategy/generate", async (re
 
   const updated = await scopedProject(req, project.id);
   const workflow = await publishProjectWorkflowEvent({ projectId: project.id, eventType: "strategy.generated", sourceModule: "strategy", sourceId: strategy.id, idempotencyKey: `strategy.generated:${strategy.id}`, payload: { version: strategy.version, status: strategy.status } });
-  res.json({ strategy, project: updated, workflow });
+  res.json({
+    strategy,
+    project: updated,
+    workflow,
+    generationUsage: {
+      model: generatedStrategy.model,
+      inputTokens: generatedStrategy.inputTokens,
+      outputTokens: generatedStrategy.outputTokens,
+    },
+  });
+}
+
+type StrategyGenerationJobInput = {
+  projectId: string;
+  revisionComment: string;
+  idempotencyKey: string;
+  usageEventId: string;
+  requestedBy: {
+    userId: string;
+    role: Role;
+    clientId: string;
+    workspaceId: string;
+  };
+};
+
+type StrategyGenerationResult = {
+  strategy?: { id?: string; version?: number; status?: string };
+  project?: NonNullable<Awaited<ReturnType<typeof scopedProject>>>;
+  workflow?: unknown;
+  generationUsage?: { model?: string; inputTokens?: number; outputTokens?: number };
+  error?: unknown;
+};
+
+const strategyJobObject = (value: unknown): Record<string, unknown> => value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
+
+function strategyGenerationJobView(job: { id: string; projectId: string | null; status: string; outputJson: Prisma.JsonValue; errorMessage: string | null; createdAt: Date }) {
+  const output = strategyJobObject(job.outputJson);
+  return {
+    id: job.id,
+    projectId: job.projectId,
+    status: job.status,
+    stage: String(output.stage || (job.status === "queued" ? "queued" : job.status === "running" ? "generating_strategy" : job.status)),
+    progress: Math.max(0, Math.min(100, Number(output.progress || (job.status === "completed" ? 100 : job.status === "running" ? 35 : 5)))),
+    strategyId: String(output.strategyId || "") || null,
+    strategyVersion: Number(output.strategyVersion || 0) || null,
+    error: job.status === "failed" ? String(output.publicError || "Strategy generation could not be completed. Please retry this job.") : null,
+    errorCode: job.status === "failed" ? String(output.errorCode || "") || null : null,
+    createdAt: job.createdAt,
+  };
+}
+
+async function enqueueStrategyGenerationJob(jobId: string) {
+  const existing = await strategyGenerationQueue.getJob(jobId);
+  if (existing) {
+    const state = await existing.getState();
+    if (!["completed", "failed", "unknown"].includes(state)) return "existing" as const;
+    await existing.remove().catch(() => undefined);
+  }
+  await strategyGenerationQueue.add("strategy:generate", { jobId }, { jobId, removeOnComplete: 250, removeOnFail: 250 });
+  return "enqueued" as const;
+}
+
+async function completedStrategyForGenerationJob(projectId: string, jobId: string) {
+  const strategies = await prisma.strategyPlan.findMany({ where: { projectId }, orderBy: { createdAt: "desc" }, take: 10 });
+  return strategies.find((strategy) => strategyJobObject(strategy.scoreBreakdown).generationJobId === jobId) ?? null;
+}
+
+async function completedStrategyAiRunForJob(projectId: string, jobId: string) {
+  const runs = await prisma.aiRun.findMany({ where: { projectId, moduleName: "strategy", status: "completed" }, orderBy: { createdAt: "desc" }, take: 20 });
+  return runs.find((run) => strategyJobObject(run.inputSnapshotJson).generationJobId === jobId) ?? null;
+}
+
+function strategyWorkerRequest(input: StrategyGenerationJobInput, jobId: string): Request {
+  const headers: Record<string, string> = {
+    "x-senuke-ai-workspace-id": input.requestedBy.workspaceId,
+    "x-senuke-ai-client-id": input.requestedBy.clientId,
+    "x-workspace-id": input.requestedBy.workspaceId,
+  };
+  return {
+    method: "POST",
+    path: `/projects-v2/${input.projectId}/strategy/generate`,
+    originalUrl: `/api/projects-v2/${input.projectId}/strategy/generate`,
+    params: { projectId: input.projectId },
+    query: {},
+    body: { revisionComment: input.revisionComment || undefined, generationJobId: jobId },
+    user: { userId: input.requestedBy.userId, role: input.requestedBy.role, clientId: input.requestedBy.clientId },
+    header: (name: string) => headers[name.toLowerCase()],
+  } as unknown as Request;
+}
+
+async function executeStrategyGenerationJob(jobId: string) {
+  const job = await prisma.aiRun.findUnique({ where: { id: jobId } });
+  if (!job || job.moduleName !== "strategy_generation_job" || ["completed", "failed", "cancelled"].includes(job.status)) return;
+  const input = job.inputSnapshotJson as unknown as StrategyGenerationJobInput;
+  const existingStrategy = await completedStrategyForGenerationJob(input.projectId, jobId);
+  if (existingStrategy) {
+    const completedRun = await completedStrategyAiRunForJob(input.projectId, jobId);
+    const usage = strategyJobObject(completedRun?.tokenUsage);
+    await commitUsage({ usageEventId: input.usageEventId, provider: "openai", model: String(usage.model || "") || null, inputTokens: Number(usage.inputTokens || 0), outputTokens: Number(usage.outputTokens || 0), metadata: { source: "strategy_generation_job_recovery", strategyId: existingStrategy.id } }).catch(() => undefined);
+    await prisma.aiRun.update({ where: { id: jobId }, data: { status: "completed", outputJson: { stage: "completed", progress: 100, strategyId: existingStrategy.id, strategyVersion: existingStrategy.version, recovered: true }, outputText: existingStrategy.strategySummary, errorMessage: null } });
+    return;
+  }
+
+  // BullMQ can redeliver a stalled job, and multiple API instances can recover
+  // the same database record concurrently. Only one worker may transition the
+  // durable job from queued to running and call the AI provider.
+  const claimed = await prisma.aiRun.updateMany({ where: { id: jobId, status: "queued" }, data: { status: "running", outputJson: { stage: "generating_strategy", progress: 35, startedAt: new Date().toISOString() }, errorMessage: null } });
+  if (!claimed.count) return;
+  const request = strategyWorkerRequest(input, jobId);
+  let responseStatus = 200;
+  let responsePayload: StrategyGenerationResult | null = null;
+  const response = {
+    status(code: number) { responseStatus = code; return this; },
+    json(payload: StrategyGenerationResult) { responsePayload = payload; return this; },
+  } as unknown as Response;
+
+  try {
+    await runCommercialRequestContext({
+      workspaceId: input.requestedBy.workspaceId,
+      clientId: input.requestedBy.clientId,
+      userId: input.requestedBy.userId,
+      projectId: input.projectId,
+      featureKey: "strategy_generate",
+      actionKey: "Generate strategy",
+      requestId: jobId,
+      usageEventId: input.usageEventId,
+      manualUsageReservation: true,
+    }, () => performStrategyGeneration(request, response));
+    if (responseStatus >= 400 || !responsePayload?.strategy?.id) {
+      const errorValue = responsePayload?.error;
+      const message = typeof errorValue === "string" ? errorValue : "Strategy generation did not return a saved Strategy version.";
+      throw Object.assign(new Error(message), { statusCode: responseStatus });
+    }
+    const usage = responsePayload.generationUsage ?? {};
+    let usageWarning: string | null = null;
+    try {
+      await commitUsage({ usageEventId: input.usageEventId, provider: "openai", model: usage.model, inputTokens: usage.inputTokens, outputTokens: usage.outputTokens, metadata: { source: "strategy_generation_job", strategyId: responsePayload.strategy.id } });
+    } catch (usageError) {
+      // The Strategy is already durably saved. A bookkeeping problem must not
+      // misreport the completed AI work as a failed Strategy job or trigger a
+      // second provider request on retry.
+      usageWarning = usageError instanceof Error ? usageError.message : "Strategy usage could not be finalized.";
+      console.error(`[api] Strategy job ${jobId} completed but usage finalization needs attention:`, usageError);
+    }
+    await prisma.aiRun.update({ where: { id: jobId }, data: {
+      status: "completed",
+      outputJson: { stage: "completed", progress: 100, strategyId: responsePayload.strategy.id, strategyVersion: responsePayload.strategy.version, completedAt: new Date().toISOString(), ...(usageWarning ? { usageWarning } : {}) },
+      outputText: `Strategy v${responsePayload.strategy.version ?? ""} is ready for review.`,
+      errorMessage: null,
+    } });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Strategy generation failed.";
+    const publicMessage = error && typeof error === "object" && "publicMessage" in error && (error as { publicMessage?: unknown }).publicMessage === true;
+    const statusCode = error && typeof error === "object" && "statusCode" in error ? Number((error as { statusCode?: unknown }).statusCode || 500) : 500;
+    const errorCode = createApiErrorCode();
+    await refundUsage({ usageEventId: input.usageEventId, reason: message }).catch(() => undefined);
+    const publicError = statusCode < 500 || publicMessage
+      ? message
+      : `We could not complete Strategy generation. If the problem continues, send error code ${errorCode} to ${config.supportEmail}.`;
+    await prisma.aiRun.update({ where: { id: jobId }, data: {
+      status: "failed",
+      outputJson: { stage: "failed", progress: 100, errorCode, publicError },
+      errorMessage: message,
+    } }).catch(() => undefined);
+    if (statusCode >= 500) queueApiErrorReport({ errorCode, statusCode, diagnostic: error, request });
+  }
+}
+
+async function recoverStrategyGenerationJobs() {
+  const jobs = await prisma.aiRun.findMany({ where: { moduleName: "strategy_generation_job", status: { in: ["queued", "running"] } }, orderBy: { createdAt: "asc" }, select: { id: true } });
+  for (const job of jobs) {
+    const queuedJob = await strategyGenerationQueue.getJob(job.id);
+    const queueState = queuedJob ? await queuedJob.getState() : "unknown";
+    // An active BullMQ job belongs to another healthy worker. Do not reset its
+    // database claim. Waiting, missing, or stalled work can safely be reclaimed.
+    if (queueState === "active") continue;
+    await prisma.aiRun.updateMany({ where: { id: job.id, status: { in: ["queued", "running"] } }, data: { status: "queued", outputJson: { stage: "queued", progress: 5, recovered: true } } });
+    await enqueueStrategyGenerationJob(job.id);
+  }
+  if (jobs.length) console.log(`[api] recovered ${jobs.length} queued Strategy generation job(s)`);
+}
+
+let strategyGenerationWorker: Worker<StrategyGenerationQueueJobData> | null = null;
+export function startStrategyGenerationQueueWorker() {
+  if (strategyGenerationWorker) return strategyGenerationWorker;
+  strategyGenerationWorker = new Worker<StrategyGenerationQueueJobData>(STRATEGY_GENERATION_QUEUE, async (queueJob) => executeStrategyGenerationJob(queueJob.data.jobId), { connection: queueConnection, concurrency: 2 });
+  strategyGenerationWorker.on("failed", (queueJob, error) => {
+    const jobId = queueJob?.data.jobId;
+    console.error(`[api] Strategy generation queue job ${jobId ?? "unknown"} failed:`, error.message);
+    if (jobId) void (async () => {
+      const record = await prisma.aiRun.findFirst({ where: { id: jobId, moduleName: "strategy_generation_job", status: { in: ["queued", "running"] } } });
+      if (!record) return;
+      const input = record.inputSnapshotJson as unknown as StrategyGenerationJobInput;
+      const errorCode = createApiErrorCode();
+      await refundUsage({ usageEventId: input.usageEventId, reason: error.message }).catch(() => undefined);
+      await prisma.aiRun.updateMany({ where: { id: jobId, status: { in: ["queued", "running"] } }, data: { status: "failed", errorMessage: error.message, outputJson: { stage: "failed", progress: 100, errorCode, publicError: `We could not complete Strategy generation. If the problem continues, send error code ${errorCode} to ${config.supportEmail}.` } } });
+      queueApiErrorReport({ errorCode, statusCode: 500, diagnostic: error, request: strategyWorkerRequest(input, jobId) });
+    })().catch((reportError) => console.error(`[api] Strategy queue failure ${jobId} could not be recorded:`, reportError));
+  });
+  void recoverStrategyGenerationJobs().catch((error) => console.error("[api] Strategy generation queue recovery failed:", error));
+  return strategyGenerationWorker;
+}
+
+guidedProjectsRouter.post("/projects-v2/:projectId/strategy/generate", async (req, res) => {
+  await requireRequestPermission(req, "edit_assigned_work");
+  const project = await scopedProject(req, req.params.projectId);
+  if (!project) return res.status(404).json({ error: "project not found" });
+  const parsed = z.object({ revisionComment: z.string().trim().max(2000).optional(), idempotencyKey: z.string().trim().min(8).max(191).optional() }).safeParse(req.body ?? {});
+  if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() });
+  const active = await prisma.aiRun.findFirst({ where: { projectId: project.id, moduleName: "strategy_generation_job", status: { in: ["queued", "running"] } }, orderBy: { createdAt: "desc" } });
+  if (active) return res.status(202).json({ job: strategyGenerationJobView(active), reused: true });
+
+  const context = await workspaceContext(req);
+  const idempotencyKey = parsed.data.idempotencyKey || req.header("x-idempotency-key")?.trim() || randomUUID();
+  const digest = createHash("sha256").update(`${project.id}:${idempotencyKey}`).digest("hex").slice(0, 32);
+  const jobId = `strategy_job_${digest}`;
+  const existing = await prisma.aiRun.findUnique({ where: { id: jobId } });
+  if (existing) return res.status(202).json({ job: strategyGenerationJobView(existing), reused: true });
+
+  const usage = await preflightUsage({ clientId: project.clientId, userId: context.membership.userId, projectId: project.id, websiteId: project.websiteId, featureKey: "strategy_generate", actionKey: "Generate strategy", idempotencyKey: `strategy-job:${jobId}`, metadata: { workspaceId: context.workspace.id, source: "strategy_generation_job" } });
+  const input: StrategyGenerationJobInput = {
+    projectId: project.id,
+    revisionComment: parsed.data.revisionComment ?? "",
+    idempotencyKey,
+    usageEventId: usage.usageEventId,
+    requestedBy: { userId: context.membership.userId, role: req.user?.role ?? "client_user", clientId: project.clientId, workspaceId: context.workspace.id },
+  };
+  let job;
+  try {
+    job = await prisma.$transaction(async (tx) => {
+      // Background work may wait behind another Strategy. Keep the reservation
+      // valid for recovery and processing instead of using the 15-minute
+      // interactive-request approval window.
+      await tx.usageEvent.update({ where: { id: usage.usageEventId }, data: { approvalTokenExpiresAt: new Date(Date.now() + 24 * 60 * 60 * 1_000) } });
+      return tx.aiRun.create({ data: { id: jobId, projectId: project.id, clientId: project.clientId, moduleName: "strategy_generation_job", promptVersion: "unified-strategy-job-v1", inputSnapshotJson: input as unknown as Prisma.InputJsonValue, outputJson: { stage: "queued", progress: 5, queuedAt: new Date().toISOString() }, status: "queued" } });
+    });
+  } catch (error) {
+    await refundUsage({ usageEventId: usage.usageEventId, reason: "Duplicate Strategy job submission." }).catch(() => undefined);
+    if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002") {
+      const duplicate = await prisma.aiRun.findUnique({ where: { id: jobId } });
+      if (duplicate) return res.status(202).json({ job: strategyGenerationJobView(duplicate), reused: true });
+    }
+    throw error;
+  }
+  try {
+    await enqueueStrategyGenerationJob(job.id);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Strategy job could not be queued.";
+    await prisma.aiRun.update({ where: { id: job.id }, data: { status: "failed", errorMessage: message, outputJson: { stage: "failed", progress: 100, publicError: "Strategy generation could not be queued. Please retry." } } });
+    await refundUsage({ usageEventId: usage.usageEventId, reason: message }).catch(() => undefined);
+    throw error;
+  }
+  res.status(202).json({ job: strategyGenerationJobView(job), reused: false });
+});
+
+guidedProjectsRouter.get("/projects-v2/:projectId/strategy/jobs/active", async (req, res) => {
+  const project = await scopedProject(req, req.params.projectId);
+  if (!project) return res.status(404).json({ error: "project not found" });
+  const job = await prisma.aiRun.findFirst({ where: { projectId: project.id, moduleName: "strategy_generation_job", status: { in: ["queued", "running"] } }, orderBy: { createdAt: "desc" } });
+  res.json({ job: job ? strategyGenerationJobView(job) : null });
+});
+
+guidedProjectsRouter.get("/projects-v2/:projectId/strategy/jobs/:jobId", async (req, res) => {
+  const project = await scopedProject(req, req.params.projectId);
+  if (!project) return res.status(404).json({ error: "project not found" });
+  const job = await prisma.aiRun.findFirst({ where: { id: req.params.jobId, projectId: project.id, moduleName: "strategy_generation_job" } });
+  if (!job) return res.status(404).json({ error: "Strategy generation job not found." });
+  const view = strategyGenerationJobView(job);
+  res.json({ job: view, ...(job.status === "completed" ? { project: await scopedProject(req, project.id) } : {}) });
 });
 
 guidedProjectsRouter.post("/projects-v2/:projectId/strategy/analyze", async (req, res) => {

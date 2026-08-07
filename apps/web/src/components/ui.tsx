@@ -41,7 +41,7 @@ export type AiPlanningStep = { title: string; detail: string };
 export type AiPlanningStat = { value: ReactNode; label: string; tone?: "brand" | "violet" | "emerald" | "slate" };
 
 /** Shared explanatory screen for long-running AI research and generation. */
-export function AiPlanningScreen({ eyebrow, title, description, steps, status, stats = [], checks = [], note, ariaLabel, zIndexClass = "z-[80]", mode = "fullscreen", theme = "light" }: {
+export function AiPlanningScreen({ eyebrow, title, description, steps, status, stats = [], checks = [], note, ariaLabel, zIndexClass = "z-[80]", mode = "fullscreen", theme = "light", progress }: {
   eyebrow: string;
   title: string;
   description: string;
@@ -54,6 +54,7 @@ export function AiPlanningScreen({ eyebrow, title, description, steps, status, s
   zIndexClass?: string;
   mode?: "fullscreen" | "contained";
   theme?: "light" | "dark";
+  progress?: number;
 }) {
   const statTone = {
     brand: "border-brand-200 text-brand-800",
@@ -72,7 +73,7 @@ export function AiPlanningScreen({ eyebrow, title, description, steps, status, s
       {stats.length > 0 && <div className="mt-4 flex flex-wrap justify-center gap-2">{stats.map((stat, index) => <span key={`${stat.label}-${index}`} className={`rounded-full border bg-white px-3 py-1.5 text-[10px] font-black ${statTone[stat.tone ?? "slate"]}`}><span className="mr-1 text-xs">{stat.value}</span>{stat.label}</span>)}</div>}
       <div className="mt-5 grid gap-3 text-left sm:grid-cols-3">{steps.slice(0, 3).map((step, index) => <div key={`${step.title}-${index}`} className={`rounded-2xl border p-4 shadow-sm ${dark ? "border-white/10 bg-white/[0.06]" : "border-slate-200 bg-white"}`}><div className="flex items-center gap-3"><span className={`grid h-8 w-8 shrink-0 place-items-center rounded-lg text-xs font-black text-white ${dark ? "bg-emerald-600" : "bg-brand-600"}`}>{index + 1}</span><div className={`text-sm font-black ${dark ? "text-white" : "text-charcoal-950"}`}>{step.title}</div></div><p className={`mt-3 text-xs leading-5 ${dark ? "text-slate-300" : "text-charcoal-500"}`}>{step.detail}</p></div>)}</div>
       {checks.length > 0 && <div className={`mt-4 flex flex-wrap justify-center gap-x-5 gap-y-2 rounded-xl border px-4 py-3 text-[10px] font-bold ${dark ? "border-emerald-300/20 bg-emerald-400/10 text-emerald-200" : "border-emerald-100 bg-emerald-50/70 text-emerald-800"}`}>{checks.map((check) => <span key={check}>✓ {check}</span>)}</div>}
-      <div className={`mx-auto mt-5 h-2 max-w-md overflow-hidden rounded-full ${dark ? "bg-white/10" : "bg-slate-100"}`}><div className="h-full w-2/3 animate-pulse rounded-full bg-gradient-to-r from-emerald-400 via-violet-500 to-brand-500"/></div>
+      <div className={`mx-auto mt-5 h-2 max-w-md overflow-hidden rounded-full ${dark ? "bg-white/10" : "bg-slate-100"}`}><div className={`${progress == null ? "w-2/3 animate-pulse" : "transition-[width] duration-500"} h-full rounded-full bg-gradient-to-r from-emerald-400 via-violet-500 to-brand-500`} style={progress == null ? undefined : { width: `${Math.max(2, Math.min(100, progress))}%` }}/></div>
       <p className={`mt-3 text-xs font-black uppercase tracking-wide ${dark ? "text-emerald-300" : "text-brand-700"}`}>{status}</p>
       {note && <p className={`mx-auto mt-2 max-w-xl text-[11px] leading-5 ${dark ? "text-slate-400" : "text-charcoal-500"}`}>{note}</p>}
     </div>

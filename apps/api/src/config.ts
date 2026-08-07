@@ -102,3 +102,4 @@ export const KEYWORD_RESEARCH_QUEUE = "keyword-research";
 export const LOCAL_SEO_AUDIT_QUEUE = "local-seo-audit";
 export const LOCAL_GRID_SCAN_QUEUE = "local-grid-scan";
 export const WEBSITE_BUILDER_QUEUE = "website-builder";
+export const STRATEGY_GENERATION_QUEUE = "strategy-generation";
