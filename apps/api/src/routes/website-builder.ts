@@ -3179,7 +3179,8 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/sync-citation-as
           ? ["sitemap.xml", "robots.txt", "llms.txt"]
           : [];
   const previousContactDetails = jsonRecord(currentSettings.contactDetails);
-  const synchronizedContactDetails = verifiedContactDetails ? {
+  const websiteContactIsConfirmed = previousContactDetails.source === "website_builder_confirmed";
+  const synchronizedContactDetails = verifiedContactDetails && !websiteContactIsConfirmed ? {
     ...previousContactDetails,
     email: verifiedContactDetails.email || String(previousContactDetails.email || ""),
     phone: verifiedContactDetails.phone || String(previousContactDetails.phone || ""),
@@ -3583,6 +3584,12 @@ websiteBuilderRouter.patch("/projects/:projectId/website-builder/build", async (
   const mergedSettings = {
     ...currentSettings,
     ...(input.settings ?? {}),
+    ...(input.settings?.contactDetails && typeof input.settings.contactDetails === "object" && !Array.isArray(input.settings.contactDetails) ? {
+      contactDetails: {
+        ...jsonRecord(currentSettings.contactDetails),
+        ...jsonRecord(input.settings.contactDetails),
+      },
+    } : {}),
     selectedLayout: input.templateKey ?? currentSettings.selectedLayout ?? build.templateKey,
     ...(directionChanged ? {
       websiteDirectionHistory: directionHistory,
@@ -4072,17 +4079,20 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/submit-developme
     ...(page.parentPageId ? { parentPageId: page.parentPageId } : {}),
   }));
   if (!menu.length) return res.status(409).json({ error: "Website navigation could not be created from the approved page plan." });
+  const savedContactDetails = jsonRecord(settings.contactDetails);
   const contactEmail = String(
-    jsonRecord(project.businessProfile?.intelligenceJson).primaryContactEmail
+    savedContactDetails.email
+    || jsonRecord(project.businessProfile?.intelligenceJson).primaryContactEmail
     || project.agencyClient?.contactEmail
     || "",
   ).trim();
   const contactPhone = String(
-    jsonRecord(project.businessProfile?.intelligenceJson).primaryContactPhone
+    savedContactDetails.phone
+    || jsonRecord(project.businessProfile?.intelligenceJson).primaryContactPhone
     || project.agencyClient?.contactPhone
     || "",
   ).trim();
-  const businessAddress = formattedBusinessAddress(project);
+  const businessAddress = String(savedContactDetails.address || formattedBusinessAddress(project)).trim();
   const forms = Array.isArray(settings.forms) && settings.forms.length
     ? settings.forms
     : [{
@@ -4107,15 +4117,15 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/submit-developme
     menu,
     forms,
     contactDetails: {
-      ...jsonRecord(settings.contactDetails),
+      ...savedContactDetails,
       email: contactEmail,
       phone: contactPhone,
       address: businessAddress,
       copyrightText: String(
-        jsonRecord(settings.contactDetails).copyrightText
+        savedContactDetails.copyrightText
         || `© ${new Date().getFullYear()} ${businessIdentity(project) || build.name.replace(/\s+website$/i, "")}. All rights reserved.`,
       ),
-      source: "verified_project_and_client_intake",
+      source: String(savedContactDetails.source || "verified_project_and_client_intake"),
     },
     selectedLayout: settings.selectedLayout || build.templateKey || "local_growth",
     ...(siteFiles ? {

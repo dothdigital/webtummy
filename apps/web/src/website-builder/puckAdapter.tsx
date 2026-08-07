@@ -170,6 +170,7 @@ const VISUAL_EDITOR_CSS = `
 
 function GlobalWebsiteHeader({ chrome }: { chrome: WebsiteChrome }) {
   const [mobileOpen, setMobileOpen] = useState(false);
+  const [openRootMenuId, setOpenRootMenuId] = useState<string | null>(null);
   const renderItem = (item: WebsiteChrome["menu"][number], depth = 0): React.ReactNode => {
     const children = chrome.menu.filter((candidate) => candidate.parentPageId === item.pageId);
     const destination = item.slug
@@ -181,12 +182,24 @@ function GlobalWebsiteHeader({ chrome }: { chrome: WebsiteChrome }) {
         chrome.onNavigate(item.pageId);
       } else if (!destination) event.preventDefault();
       setMobileOpen(false);
+      setOpenRootMenuId(null);
     };
-    if (children.length) return <details key={item.pageId} style={{ position: "relative" }}><summary style={{ cursor: "pointer", listStyle: "none", padding: depth ? "8px 10px" : "10px 6px", color: "var(--senuke-text)", fontSize: depth ? 13 : 14, fontWeight: 800 }}>{item.label} <span aria-hidden="true" style={{ color: "var(--senuke-muted)", fontSize: 10 }}>▾</span></summary><div style={{ position: depth ? "static" : "absolute", right: depth ? "auto" : 0, zIndex: 30, display: "grid", minWidth: 210, gap: 2, border: "1px solid #e2e8f0", borderRadius: "var(--senuke-radius)", background: "var(--senuke-surface)", padding: 8, boxShadow: "0 18px 45px rgba(15,23,42,.14)" }}>{children.map((child) => renderItem(child, depth + 1))}</div></details>;
+    if (children.length) {
+      const controlsRootMenu = depth === 0;
+      return <details
+        key={item.pageId}
+        open={controlsRootMenu ? openRootMenuId === item.pageId : undefined}
+        onToggle={controlsRootMenu ? (event) => {
+          const isOpen = event.currentTarget.open;
+          setOpenRootMenuId((current) => isOpen ? item.pageId : current === item.pageId ? null : current);
+        } : undefined}
+        style={{ position: "relative" }}
+      ><summary style={{ cursor: "pointer", listStyle: "none", padding: depth ? "8px 10px" : "10px 6px", color: "var(--senuke-text)", fontSize: depth ? 13 : 14, fontWeight: 800 }}>{item.label} <span aria-hidden="true" style={{ color: "var(--senuke-muted)", fontSize: 10 }}>▾</span></summary><div style={{ position: depth ? "static" : "absolute", right: depth ? "auto" : 0, zIndex: 30, display: "grid", minWidth: 210, gap: 2, border: "1px solid #e2e8f0", borderRadius: "var(--senuke-radius)", background: "var(--senuke-surface)", padding: 8, boxShadow: "0 18px 45px rgba(15,23,42,.14)" }}>{children.map((child) => renderItem(child, depth + 1))}</div></details>;
+    }
     return <a key={item.pageId} href={destination || "#"} onClick={activate} style={{ display: "block", borderRadius: 8, padding: depth ? "8px 10px" : "10px 6px", color: "var(--senuke-text)", fontSize: depth ? 13 : 14, fontWeight: 800, textDecoration: "none", whiteSpace: "nowrap" }}>{item.label}</a>;
   };
   const roots = chrome.menu.filter((item) => !item.parentPageId);
-  return <header className="senuke-global-header" style={{ position: "relative", zIndex: 40, display: "flex", flexWrap: "wrap", alignItems: "center", justifyContent: "space-between", gap: "14px 28px", minHeight: 76, padding: "12px 7%", borderBottom: "1px solid #e2e8f0", background: "var(--senuke-surface)" }}><a href="/" onClick={(event) => { const home = chrome.menu.find((item) => !item.custom && (!item.slug || item.slug === "/")); if (home && chrome.onNavigate) { event.preventDefault(); chrome.onNavigate(home.pageId); setMobileOpen(false); } }} style={{ display: "flex", minWidth: 0, alignItems: "center", color: "var(--senuke-text)", fontSize: 20, fontWeight: 900, textDecoration: "none" }}>{chrome.logoUrl ? <img src={chrome.logoUrl} alt={`${chrome.businessName} logo`} style={{ display: "block", width: "auto", maxWidth: 190, height: 52, objectFit: "contain" }}/> : chrome.businessName}</a><nav className="senuke-desktop-navigation" aria-label="Primary navigation" style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: "2px 14px" }}>{roots.map((item) => renderItem(item))}</nav><button type="button" className="senuke-mobile-navigation-button" aria-label={mobileOpen ? "Close navigation menu" : "Open navigation menu"} aria-expanded={mobileOpen} onClick={() => setMobileOpen((open) => !open)}><span aria-hidden="true"><i/><i/><i/></span></button>{mobileOpen ? <div className="senuke-mobile-navigation-panel"><nav className="senuke-mobile-navigation" aria-label="Mobile navigation">{roots.map((item) => renderItem(item))}</nav></div> : null}</header>;
+  return <header className="senuke-global-header" style={{ position: "relative", zIndex: 40, display: "flex", flexWrap: "wrap", alignItems: "center", justifyContent: "space-between", gap: "14px 28px", minHeight: 76, padding: "12px 7%", borderBottom: "1px solid #e2e8f0", background: "var(--senuke-surface)" }}><a href="/" onClick={(event) => { const home = chrome.menu.find((item) => !item.custom && (!item.slug || item.slug === "/")); if (home && chrome.onNavigate) { event.preventDefault(); chrome.onNavigate(home.pageId); setMobileOpen(false); setOpenRootMenuId(null); } }} style={{ display: "flex", minWidth: 0, alignItems: "center", color: "var(--senuke-text)", fontSize: 20, fontWeight: 900, textDecoration: "none" }}>{chrome.logoUrl ? <img src={chrome.logoUrl} alt={`${chrome.businessName} logo`} style={{ display: "block", width: "auto", maxWidth: 190, height: 52, objectFit: "contain" }}/> : chrome.businessName}</a><nav className="senuke-desktop-navigation" aria-label="Primary navigation" style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: "2px 14px" }}>{roots.map((item) => renderItem(item))}</nav><button type="button" className="senuke-mobile-navigation-button" aria-label={mobileOpen ? "Close navigation menu" : "Open navigation menu"} aria-expanded={mobileOpen} onClick={() => { setMobileOpen((open) => !open); setOpenRootMenuId(null); }}><span aria-hidden="true"><i/><i/><i/></span></button>{mobileOpen ? <div className="senuke-mobile-navigation-panel"><nav className="senuke-mobile-navigation" aria-label="Mobile navigation">{roots.map((item) => renderItem(item))}</nav></div> : null}</header>;
 }
 
 function GlobalWebsiteFooter({ chrome }: { chrome: WebsiteChrome }) {
