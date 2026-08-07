@@ -626,21 +626,29 @@ export default function SiteBuilderWorkflow({projectId,architectureId,architectu
  const openVisualWindow=(mode:"preview"|"visual-editor")=>{if(!page){setMessage("Generate and select a website page first.");return}const src=`/site-architect/${mode}?projectId=${encodeURIComponent(projectId)}&pageId=${encodeURIComponent(page.id)}`;if(mode==="preview"){const previewWindow=window.open(src,"_blank");if(previewWindow)previewWindow.opener=null;else setMessage("Your browser blocked the website preview tab. Allow popups for this site and try again.");return}setWorkspaceModal({title:"SENuke Visual Website Editor",description:"Edit registered website components without leaving Site Architect.",src})};
  const openSeoContentPlan=()=>{const params=new URLSearchParams({projectId,returnTo:`/site-architect?projectId=${encodeURIComponent(projectId)}`});if(data?.seoPlanTask?.taskId)params.set("taskId",data.seoPlanTask.taskId);if(newWebsiteProject||(existingWebsiteProject&&data?.seoGapPlan))params.set("autoPrepare","1");navigate(`/seo-page-map?${params.toString()}`)};
  const publishingAssetForPage=(selectedPage:Page)=>{const pageTarget=(selectedPage.remoteUrl||`/${selectedPage.slug}`).replace(/^https?:\/\/[^/]+/i,"").replace(/\/$/,"").toLowerCase();const keywords=[selectedPage.primaryKeyword,...array(selectedPage.secondaryKeywords).map(String)].map(value=>value.toLowerCase());return publishingContent.find(asset=>{const assetTarget=asset.targetUrl.replace(/^https?:\/\/[^/]+/i,"").replace(/\/$/,"").toLowerCase();return Boolean(assetTarget&&assetTarget===pageTarget)||Boolean(asset.keyword&&keywords.includes(asset.keyword.toLowerCase()))})};
- const openPublishingWizard=(selectedPage:Page,action:"create"|"revise"="create")=>{if(action==="revise"){setMessage("");setRevisionOptions([]);setRevisionNote("");setRevisionPage(selectedPage);return}const asset=publishingAssetForPage(selectedPage),generationInstruction=contentGenerationPrompt(contentMode,contentInstruction);if(!asset){void run(`generate-${selectedPage.id}`,()=>api.post(`/api/projects/${projectId}/website-builder/pages/${selectedPage.id}/generate`,{comment:generationInstruction}),`${selectedPage.title} generated from its Site Architect page mapping and is ready to review.`);return}setContentAssetModal({taskId:asset.taskId,pageId:selectedPage.id,instruction:contentInstruction,action});setMessage(`${selectedPage.title} opened in the shared content asset dialog.`)};
+ const registerSinglePageContentJob=(result:{job:BuildJob},selectedPage:Page,revision:boolean)=>{
+  registerBackgroundJob({id:result.job.id,projectId,type:"website-builder",title:revision?`${selectedPage.title} content revision`:`${selectedPage.title} content`,subject:build?.name||data?.project.name||"Website",status:result.job.status,statusUrl:`/api/projects/${projectId}/website-builder/jobs/${result.job.id}`,resultUrl:`/site-architect?projectId=${encodeURIComponent(projectId)}&step=content&pageId=${encodeURIComponent(selectedPage.id)}`,startedAt:result.job.createdAt,progressMessage:revision?`SENuke AI is creating a new review version of ${selectedPage.title}. The approved URL, intent, evidence, and prior version are preserved.`:`SENuke AI is creating ${selectedPage.title} from its approved Website Plan contract.`,completedMessage:`${selectedPage.title} is ready to review`,failedMessage:`${selectedPage.title} content needs attention. Saved checkpoints and the previous version were preserved.`});
+ };
+ const queueSinglePageContent=async(selectedPage:Page,instruction:string,regenerate=false)=>{
+  const result=await api.post<{job:BuildJob;queuedPages?:number}>(`/api/projects/${projectId}/website-builder/generate-all`,{comment:instruction,regenerate,phase:"all",pageIds:[selectedPage.id]});
+  registerSinglePageContentJob(result,selectedPage,regenerate);
+  await load();
+  setPageId(selectedPage.id);
+  return result;
+ };
+ const openPublishingWizard=(selectedPage:Page,action:"create"|"revise"="create")=>{if(action==="revise"){setMessage("");setRevisionOptions([]);setRevisionNote("");setRevisionPage(selectedPage);return}const asset=publishingAssetForPage(selectedPage),generationInstruction=contentGenerationPrompt(contentMode,contentInstruction);if(!asset){void (async()=>{const key=`generate-${selectedPage.id}`;setBusy(key);setMessage("");try{await queueSinglePageContent(selectedPage,generationInstruction);setPageActionFeedback({pageId:selectedPage.id,status:"working",message:`${selectedPage.title} is queued in the background. You can leave this page and return when notified.`});setMessage(`${selectedPage.title} content generation started in the background.`)}catch(reason){setMessage(reason instanceof Error?reason.message:"Page content could not be queued.")}finally{setBusy("")}})();return}setContentAssetModal({taskId:asset.taskId,pageId:selectedPage.id,instruction:contentInstruction,action});setMessage(`${selectedPage.title} opened in the shared content asset dialog.`)};
  const generateCompletePage=async(selectedPage:Page)=>{
   const key=`structure-repair-${selectedPage.id}`;
   setPageId(selectedPage.id);
   setStep("content");
   setBusy(key);
   setMessage("");
-   setPageActionFeedback({pageId:selectedPage.id,status:"working",message:`SENuke AI is generating a full replacement for ${selectedPage.title}. This can take up to two minutes; keep this page open or continue working elsewhere.`});
+   setPageActionFeedback({pageId:selectedPage.id,status:"working",message:`SENuke AI is queuing a full replacement for ${selectedPage.title}. You can leave this page and return when notified.`});
   try{
-   await api.post(`/api/projects/${projectId}/website-builder/pages/${selectedPage.id}/generate`,{comment:"Create this complete page from its approved SEO brief. Preserve approved business facts and search intent. Include one opening H1, useful page-specific content, only verified trust signals, and a clear next-step CTA."});
-   const refreshed=await load();
-   if(refreshed.build?.pages.some(item=>item.id===selectedPage.id&&item.status!=="deferred"))setPageId(selectedPage.id);
-   const success=`A full replacement for ${selectedPage.title} was generated. Review every visible section before approving it and rerunning Website Quality Review.`;
-   setPageActionFeedback({pageId:selectedPage.id,status:"success",message:success});
-   setMessage(success);
+   await queueSinglePageContent(selectedPage,"Create this complete page from its approved SEO brief. Preserve approved business facts and search intent. Include one opening H1, useful page-specific content, only verified trust signals, and a clear next-step CTA.",true);
+   const queued=`A full replacement for ${selectedPage.title} is running in the background. The previous version remains available until the new draft is ready.`;
+   setPageActionFeedback({pageId:selectedPage.id,status:"working",message:queued});
+   setMessage(queued);
    window.setTimeout(()=>document.getElementById("website-page-review")?.scrollIntoView({behavior:"smooth",block:"start"}),80);
   }catch(reason){
    const error=reason instanceof Error?reason.message:"The full replacement page could not be generated.";
@@ -651,7 +659,7 @@ export default function SiteBuilderWorkflow({projectId,architectureId,architectu
  const generateTargetedUpdates=(selectedPage:Page)=>{
   const requirements=pageGapRequirements(selectedPage).map(item=>({findingKey:String(item.findingKey??""),issueType:String(item.issueType??"targeted_page_update"),evidence:String(item.evidence??""),recommendedFix:String(item.recommendedFix??"Prepare only this missing or weak page item.")}));
   if(!requirements.length){setMessage("No targeted missing content is attached to this imported page yet. Review its Gap Analysis findings first.");return}
-  void run(`targeted-update-${selectedPage.id}`,()=>api.post(`/api/projects/${projectId}/website-builder/pages/${selectedPage.id}/generate-targeted-updates`,{requirements,instruction:contentInstruction}),`${selectedPage.title} targeted update draft is ready. The existing page body was not replaced.`);
+  void (async()=>{const key=`targeted-update-${selectedPage.id}`;setBusy(key);setMessage("");try{const result=await api.post<{job?:BuildJob;alreadyPrepared?:boolean}>(`/api/projects/${projectId}/website-builder/generate-all-targeted-updates`,{instruction:contentGenerationPrompt(contentMode,contentInstruction),pageIds:[selectedPage.id]});if(result.job){registerSinglePageContentJob({job:result.job},selectedPage,false);setPageActionFeedback({pageId:selectedPage.id,status:"working",message:`Only the approved missing or weak fields for ${selectedPage.title} are being prepared in the background.`});setMessage(`${selectedPage.title} targeted updates are running in the background. The current page body remains unchanged.`)}else{await load();setMessage(`${selectedPage.title} targeted updates are already ready for review.`)}}catch(reason){setMessage(reason instanceof Error?reason.message:"Targeted updates could not be queued.")}finally{setBusy("")}})();
  };
  const approveTargetedUpdates=(selectedPage:Page)=>void run(`targeted-approve-${selectedPage.id}`,()=>api.post(`/api/projects/${projectId}/website-builder/pages/${selectedPage.id}/approve-targeted-updates`,{}),`${selectedPage.title} targeted updates approved. Download the implementation brief and apply it to the existing website.`);
  const downloadTargetedUpdates=(selectedPage:Page)=>{
@@ -673,11 +681,9 @@ export default function SiteBuilderWorkflow({projectId,architectureId,architectu
   setRevisionPage(null);setRevisionOptions([]);setRevisionNote("");
   window.setTimeout(()=>document.getElementById("website-page-review")?.scrollIntoView({behavior:"smooth",block:"start"}),80);
   try{
-   await api.post(`/api/projects/${projectId}/website-builder/pages/${selectedPage.id}/generate`,{comment:contentGenerationPrompt(contentMode,directions),forceRewrite:true,revisionScope});
-   const refreshed=await load(),rewrittenPage=refreshed.build?.pages.find(item=>item.id===selectedPage.id&&item.status!=="deferred");
-   if(rewrittenPage)setPageId(selectedPage.id);
-   const success=`${selectedPage.title} was rewritten and saved as version ${rewrittenPage?.version??"next"}. Review the changed content and approve it again when ready.`;
-   setPageActionFeedback({pageId:selectedPage.id,status:"success",message:success});setMessage(success);
+   await queueSinglePageContent(selectedPage,contentGenerationPrompt(contentMode,directions),true);
+   const queued=`${selectedPage.title} is being rewritten in the background. Its current version remains available until the new review draft is saved.`;
+   setPageActionFeedback({pageId:selectedPage.id,status:"working",message:queued});setMessage(queued);
   }catch(reason){
    const failure=reason instanceof Error?reason.message:"The new review version could not be created.";
    setPageActionFeedback({pageId:selectedPage.id,status:"error",message:failure});setMessage(failure);

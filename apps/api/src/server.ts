@@ -14,7 +14,7 @@ import { aiContentRouter } from "./routes/ai-content.js";
 import { socialStrategyRouter } from "./routes/social-strategy.js";
 import { socialConnectRouter } from "./routes/social-connect.js";
 import { localSeoRouter, startLocalGridScanQueueWorker, startLocalSeoAuditQueueWorker } from "./routes/local-seo.js";
-import { executionTasksRouter } from "./routes/execution-tasks.js";
+import { executionTasksRouter, startContentPlanGenerationQueueWorker } from "./routes/execution-tasks.js";
 import { optimizationWorkflowRouter } from "./routes/optimization-workflow.js";
 import { billingRouter } from "./routes/billing.js";
 import { guidedProjectsRouter, startStrategyGenerationQueueWorker } from "./routes/projects-v2.js";
@@ -209,6 +209,7 @@ startKeywordResearchQueueWorker();
 startLocalSeoAuditQueueWorker();
 startLocalGridScanQueueWorker();
 startStrategyGenerationQueueWorker();
+startContentPlanGenerationQueueWorker();
 
 app.listen(config.port, () => {
   console.log(`[api] SEnuke AI API listening on http://localhost:${config.port}`);

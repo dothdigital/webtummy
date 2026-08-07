@@ -66,6 +66,11 @@ export async function centralAiJson<T = unknown>(input: { system: string; prompt
     const resolvedModel = data.model || model;
     const inputTokens = Number(data.usage?.prompt_tokens || 0);
     const outputTokens = Number(data.usage?.completion_tokens || 0);
+    if (requestContext?.manualUsageReservation && requestContext.usageEventId) {
+      requestContext.providerModel = resolvedModel;
+      requestContext.inputTokens = (requestContext.inputTokens ?? 0) + inputTokens;
+      requestContext.outputTokens = (requestContext.outputTokens ?? 0) + outputTokens;
+    }
     if (automaticUsageEventId) {
       await commitUsage({ usageEventId: automaticUsageEventId, provider: "openai", model: resolvedModel, inputTokens, outputTokens, metadata: { workspaceId: requestContext?.workspaceId, source: "central_ai_service" } });
       if (requestContext) requestContext.usageEventId = null;

@@ -6,6 +6,7 @@ import StandardSeoPagePicker from "./StandardSeoPagePicker.js";
 import { useApprovalRouting } from "./ApprovalRoutingDialog.js";
 import { clusterKeywordDirections, splitKeywordEntries } from "@webtummy/core";
 import { geographicTargetMarkets } from "../utils/projectLocations.js";
+import { registerBackgroundJob } from "../background-jobs.js";
 
 type ContentPlan = {
   workflowVersion?: "seo_page_map_v7";
@@ -136,26 +137,43 @@ type KeepBothConflictDraft = {
     pagePurpose: string;
   }>;
 };
-type ContentPlanPrepareResponse = {
-  task: GuidedExecutionTask;
-  plan: ContentPlan;
-  pageCandidates?: Array<{ url: string; title: string | null }>;
+type ContentPlanGenerationJob = {
+  id: string;
+  projectId: string | null;
+  taskId: string | null;
+  status: "queued" | "running" | "completed" | "failed" | string;
+  stage: string;
+  progress: number;
+  error?: string | null;
+  errorCode?: string | null;
+  createdAt: string;
 };
+type ContentPlanJobStartResponse = { job: ContentPlanGenerationJob; reused?: boolean };
 
 // React StrictMode intentionally remounts components in development. Without
 // request sharing, opening an auto-prepared Website Plan can launch the same
 // long-running AI preparation twice. Keep one browser request per exact task
 // and planning scope; a remounted screen attaches to the existing promise.
-const inFlightInitialContentPlanRequests = new Map<string, Promise<ContentPlanPrepareResponse>>();
+const inFlightInitialContentPlanRequests = new Map<string, Promise<ContentPlanJobStartResponse>>();
+
+function stableContentPlanRequestKey(value: string) {
+  let hash = 2166136261;
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return `content-plan:${(hash >>> 0).toString(16)}`;
+}
 
 function prepareInitialContentPlan(taskId: string, input: { localSeoEnabled: boolean; targetLocations: string[] }) {
   const normalizedLocations = [...input.targetLocations].map((value) => value.trim()).filter(Boolean).sort();
   const key = `${taskId}:${input.localSeoEnabled ? "local" : "global"}:${normalizedLocations.join("|").toLocaleLowerCase()}`;
   const existing = inFlightInitialContentPlanRequests.get(key);
   if (existing) return existing;
-  const request = api.post<ContentPlanPrepareResponse>(`/api/execution-tasks/${taskId}/content-plan/prepare`, {
+  const request = api.post<ContentPlanJobStartResponse>(`/api/execution-tasks/${taskId}/content-plan/jobs`, {
     localSeoEnabled: input.localSeoEnabled,
     targetLocations: normalizedLocations,
+    idempotencyKey: stableContentPlanRequestKey(key),
   });
   inFlightInitialContentPlanRequests.set(key, request);
   const clear = () => {
@@ -600,6 +618,7 @@ export default function ContentPlanDialog({ task, onClose, onSaved, autoPrepare 
   const initialPlan = savedPlan(task);
   const [plan, setPlan] = useState<ContentPlan | null>(() => initialPlan);
   const [busy, setBusy] = useState(false);
+  const [generationJob, setGenerationJob] = useState<ContentPlanGenerationJob | null>(null);
   const [error, setError] = useState("");
   const [activePhase, setActivePhase] = useState<PlanPhaseKey>("direction");
   const [activeTab, setActiveTab] = useState<PlanTabKey>("summary");
@@ -627,6 +646,31 @@ export default function ContentPlanDialog({ task, onClose, onSaved, autoPrepare 
   const [planReopened, setPlanReopened] = useState(false);
   const [marketSaveState, setMarketSaveState] = useState<"idle" | "dirty" | "saving" | "saved">("idle");
   const automaticPreparationStarted = useRef(false);
+  const registerPlanJob = (job: ContentPlanGenerationJob) => registerBackgroundJob({
+    id: job.id,
+    projectId: task.projectId,
+    type: "website-plan",
+    title: "Website Plan generation",
+    subject: projectContext?.name || task.title,
+    status: job.status,
+    statusUrl: `/api/execution-tasks/${task.id}/content-plan/jobs/${job.id}`,
+    resultUrl: `/seo-page-map?projectId=${encodeURIComponent(task.projectId || "")}&taskId=${encodeURIComponent(task.id)}`,
+    startedAt: job.createdAt,
+    progressMessage: "SEnuke AI is building the evidence-backed page map, content briefs, Local SEO requirements, and website handoff in the background.",
+    completedMessage: "The Website Plan is ready to review",
+    failedMessage: "Website Plan generation needs attention. The failed run was retained for support diagnostics.",
+  });
+
+  useEffect(() => {
+    let active = true;
+    api.get<{ job: ContentPlanGenerationJob | null }>(`/api/execution-tasks/${task.id}/content-plan/jobs/active`).then((result) => {
+      if (!active || !result.job) return;
+      setGenerationJob(result.job);
+      setBusy(true);
+      setError("");
+    }).catch(() => undefined);
+    return () => { active = false; };
+  }, [task.id]);
 
   useEffect(() => {
     if (!task.projectId) return;
@@ -654,23 +698,62 @@ export default function ContentPlanDialog({ task, onClose, onSaved, autoPrepare 
   }, [autoPrepare, initialPlan, task.projectId]);
 
   useEffect(() => {
-    if (plan || !setupReady) return;
+    if (plan || !setupReady || generationJob) return;
     let active = true;
     setBusy(true);
     prepareInitialContentPlan(task.id, { localSeoEnabled, targetLocations: geographicTargetMarkets(lines(targetLocations)) }).then((result) => {
       if (active) {
-        const normalized = normalizePlan(result.plan);
-        setPlan(normalized);
-        setPersistedFingerprint(JSON.stringify(normalized));
-        setPersistedPageCount(normalized.pageAssignments.length);
-        setPageCandidates(result.pageCandidates ?? []);
-        setPageCandidatesLoaded(true);
+        setGenerationJob(result.job);
+        registerPlanJob(result.job);
       }
     }).catch((reason: unknown) => {
-      if (active) setError(reason instanceof Error ? reason.message : "The content plan could not be prepared.");
-    }).finally(() => { if (active) setBusy(false); });
+      if (active) {
+        setBusy(false);
+        setError(reason instanceof Error ? reason.message : "The content plan could not be prepared.");
+      }
+    });
     return () => { active = false; };
-  }, [localSeoEnabled, plan, setupReady, targetLocations, task.id]);
+  }, [generationJob, localSeoEnabled, plan, setupReady, targetLocations, task.id]);
+
+  useEffect(() => {
+    if (!generationJob || !["queued", "running"].includes(generationJob.status)) return;
+    let active = true;
+    let timer: number | null = null;
+    const poll = async () => {
+      try {
+        const result = await api.get<{ job: ContentPlanGenerationJob; task?: GuidedExecutionTask; plan?: ContentPlan | null }>(`/api/execution-tasks/${task.id}/content-plan/jobs/${generationJob.id}`);
+        if (!active) return;
+        setGenerationJob(result.job);
+        if (result.job.status === "completed") {
+          if (!result.plan || !result.task) throw new Error("The Website Plan job completed without a saved plan. Please retry generation.");
+          const normalized = normalizePlan(result.plan);
+          setPlan(normalized);
+          setPersistedFingerprint(JSON.stringify(normalized));
+          setPersistedPageCount(normalized.pageAssignments.length);
+          setPageCandidatesLoaded(false);
+          setBusy(false);
+          setSaveNotice("The AI Website Plan is ready for review.");
+          onSaved?.(result.task);
+          return;
+        }
+        if (result.job.status === "failed") {
+          setBusy(false);
+          setError(`${result.job.error || "Website Plan generation could not be completed."}${result.job.errorCode ? ` Error code: ${result.job.errorCode}` : ""}`);
+          return;
+        }
+        timer = window.setTimeout(() => { void poll(); }, 2000);
+      } catch (reason) {
+        if (!active) return;
+        setBusy(false);
+        setError(reason instanceof Error ? reason.message : "Website Plan progress could not be checked. Refresh the page to resume.");
+      }
+    };
+    void poll();
+    return () => {
+      active = false;
+      if (timer) window.clearTimeout(timer);
+    };
+  }, [generationJob?.id, generationJob?.status, onSaved, task.id]);
 
   useEffect(() => {
     if (!plan || !setupReady || pageCandidatesLoaded) return;
@@ -764,20 +847,33 @@ export default function ContentPlanDialog({ task, onClose, onSaved, autoPrepare 
     setError("");
     try {
       const savedMarkets = localSeoEnabled ? await persistProjectTargetMarkets() : [];
-      const result = await api.post<{ task: GuidedExecutionTask; plan: ContentPlan; pageCandidates?: Array<{ url: string; title: string | null }> }>(`/api/execution-tasks/${task.id}/content-plan/prepare`, { regenerate: true, localSeoEnabled, targetLocations: savedMarkets });
-      const normalized = normalizePlan(result.plan);
-      setPlan(normalized);
-      setPersistedFingerprint(JSON.stringify(normalized));
-      setPersistedPageCount(normalized.pageAssignments.length);
-      setSaveNotice("Smart plan rebuilt and stored as the latest draft.");
-      setPageCandidates(result.pageCandidates ?? []);
-      setPageCandidatesLoaded(true);
+      const result = await api.post<ContentPlanJobStartResponse>(`/api/execution-tasks/${task.id}/content-plan/jobs`, { regenerate: true, localSeoEnabled, targetLocations: savedMarkets, idempotencyKey: window.crypto.randomUUID() });
+      setGenerationJob(result.job);
+      registerPlanJob(result.job);
+      setSaveNotice("SEnuke AI is rebuilding the Website Plan in the background.");
       setActivePhase("direction");
       setActiveTab("summary");
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "The smart content plan could not be rebuilt.");
-    } finally {
       setBusy(false);
+    }
+  };
+
+  const retryPlanGeneration = async () => {
+    setBusy(true);
+    setError("");
+    try {
+      const savedMarkets = localSeoEnabled ? await persistProjectTargetMarkets() : [];
+      const result = await api.post<ContentPlanJobStartResponse>(`/api/execution-tasks/${task.id}/content-plan/jobs`, {
+        localSeoEnabled,
+        targetLocations: localSeoEnabled ? savedMarkets : [],
+        idempotencyKey: window.crypto.randomUUID(),
+      });
+      setGenerationJob(result.job);
+      registerPlanJob(result.job);
+    } catch (reason) {
+      setBusy(false);
+      setError(reason instanceof Error ? reason.message : "Website Plan generation could not be restarted.");
     }
   };
 
@@ -1950,7 +2046,7 @@ export default function ContentPlanDialog({ task, onClose, onSaved, autoPrepare 
           <div className="mt-3 grid gap-2 sm:grid-cols-[1fr_auto_1fr_auto_1fr] sm:items-center"><div className="rounded-lg border border-slate-200 bg-slate-50/60 p-3"><span className="text-[9px] font-black uppercase text-slate-500">Primary page</span><p className="mt-1 text-xs font-bold text-charcoal-800">{localizedExample}</p></div><span className="hidden h-px w-6 bg-slate-300 sm:block" /><div className="rounded-lg border border-slate-200 bg-slate-50/60 p-3"><span className="text-[9px] font-black uppercase text-slate-500">Supporting pages</span><p className="mt-1 text-xs font-bold text-charcoal-800">Cost, provider choice, process, local questions</p></div><span className="hidden h-px w-6 bg-slate-300 sm:block" /><div className="rounded-lg border border-slate-200 bg-slate-50/60 p-3"><span className="text-[9px] font-black uppercase text-slate-500">Authority signals</span><p className="mt-1 text-xs font-bold text-charcoal-800">Unique proof, FAQs, schema, CTA, internal links</p></div></div>
           <p className="mt-3 text-[11px] leading-5 text-slate-600">SEnuke AI determines the final cluster size from search intent, demand, competition, available proof, services, and business goals. It will not create thin city-swap pages.</p>
         </div>
-        <div className="mt-5"><h4 className="text-sm font-black text-charcoal-950">Should this content plan include Local SEO?</h4><p className="mt-1 text-xs leading-5 text-charcoal-500">Target cities are loaded from project intake. Confirm whether they should shape the authority clusters.</p><div className="mt-3 grid gap-3 sm:grid-cols-2"><button type="button" onClick={() => setLocalSeoEnabled(true)} className={`rounded-xl border p-4 text-left ${localSeoEnabled ? "border-brand-500 bg-brand-50 ring-1 ring-brand-500" : "border-slate-200 bg-white"}`}><div className="font-bold text-charcoal-900">Yes, include Local SEO</div><p className="mt-1 text-sm text-charcoal-500">Evaluate each selected market independently and create a complete local authority cluster where justified.</p></button><button type="button" onClick={() => setLocalSeoEnabled(false)} className={`rounded-xl border p-4 text-left ${!localSeoEnabled ? "border-brand-500 bg-brand-50 ring-1 ring-brand-500" : "border-slate-200 bg-white"}`}><div className="font-bold text-charcoal-900">No, standard SEO plan</div><p className="mt-1 text-sm text-charcoal-500">Build service and topical authority without location-specific pages.</p></button></div></div>{localSeoEnabled && <label className="mt-4 block rounded-xl border border-brand-100 bg-brand-50/40 p-4"><span className="flex flex-wrap items-center justify-between gap-2"><span className="text-sm font-bold text-charcoal-800">Target cities or service areas</span><span className={`rounded-full px-2 py-1 text-[9px] font-black uppercase ${marketSaveState === "saved" ? "bg-emerald-100 text-emerald-700" : marketSaveState === "saving" ? "bg-amber-100 text-amber-700" : "bg-brand-100 text-brand-700"}`}>{marketSaveState === "saved" ? "Saved project-wide" : marketSaveState === "saving" ? "Saving…" : "Project-wide setting"}</span></span><span className="mt-1 block text-xs leading-5 text-charcoal-500">Loaded from project intake. Changes are saved to this project before generation, so all modules use the same target-market source for new or refreshed work.</span><textarea value={targetLocations} onChange={(event) => { setTargetLocations(event.target.value); setMarketSaveState("dirty"); }} rows={3} placeholder={"Toronto\nMississauga\nGreater Toronto Area"} className="mt-3 w-full rounded-lg border border-brand-200 bg-white px-3 py-2 text-sm leading-6 outline-none focus:border-brand-500" /></label>}<div className="mt-5 flex justify-end"><button type="button" disabled={busy || (localSeoEnabled && geographicTargetMarkets(lines(targetLocations)).length === 0)} onClick={() => void startPlanSetup()} className="rounded-lg bg-brand-600 px-5 py-2.5 text-sm font-bold text-white hover:bg-brand-700 disabled:bg-slate-300">{busy || marketSaveState === "saving" ? "Saving project markets…" : localSeoEnabled ? "Save markets & generate plan →" : "Generate smart content plan →"}</button></div></div></div> : busy && !plan ? <div className="grid min-h-[34rem] flex-1 place-items-center overflow-y-auto bg-gradient-to-b from-white via-brand-50/20 to-violet-50/30 p-6" role="status" aria-live="polite" aria-label="Creating the SEO Page Map and Content Plan"><div className="w-full max-w-3xl text-center"><div className="relative mx-auto h-20 w-20"><div className="absolute inset-0 rounded-full border-4 border-brand-100" /><div className="absolute inset-0 animate-spin rounded-full border-4 border-transparent border-r-violet-400 border-t-brand-600" /><div className="absolute inset-[18px] grid place-items-center rounded-full bg-brand-50 text-2xl">✦</div></div><div className="mt-6 text-[10px] font-black uppercase tracking-[0.18em] text-brand-700">SEO planning in progress</div><h3 className="mt-2 text-2xl font-black text-slate-950">Hang tight — we’re building your content plan!</h3><p className="mx-auto mt-2 max-w-2xl text-sm leading-6 text-slate-600">SEnuke AI is turning the approved business direction, keywords, markets, website evidence, and Strategy into one practical page map. It is deciding what to reuse, what to improve, and which new pages are genuinely justified.</p><div className="mt-4 flex flex-wrap justify-center gap-2"><span className="rounded-full border border-brand-200 bg-white px-3 py-1.5 text-[10px] font-black text-brand-800">{targetKeywords.length} approved keyword{targetKeywords.length === 1 ? "" : "s"}</span><span className="rounded-full border border-violet-200 bg-white px-3 py-1.5 text-[10px] font-black text-violet-800">{selectedMarkets.length} target market{selectedMarkets.length === 1 ? "" : "s"}</span>{projectContext?.websiteUrl && <span className="rounded-full border border-emerald-200 bg-white px-3 py-1.5 text-[10px] font-black text-emerald-800">Existing website evidence included</span>}</div><div className="mt-5 grid gap-3 text-left sm:grid-cols-3">{[["1", "Review the evidence", "Business goals, approved keywords, search intent, target markets, and existing website pages"], ["2", "Assign page ownership", "Group overlapping searches, select one canonical owner, and prevent duplicate or competing pages"], ["3", "Prepare the handoff", "Create URLs, briefs, FAQs, schema, proof, CTAs, Local SEO, and internal-link requirements"]].map(([step, title, detail]) => <div key={step} className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm"><div className="flex items-center gap-3"><span className="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-brand-600 text-xs font-black text-white">{step}</span><div className="text-sm font-black text-slate-900">{title}</div></div><p className="mt-3 text-xs leading-5 text-slate-500">{detail}</p></div>)}</div><div className="mt-4 flex flex-wrap justify-center gap-x-5 gap-y-2 rounded-xl border border-emerald-100 bg-emerald-50/60 px-4 py-3 text-[10px] font-bold text-emerald-800"><span>✓ Reuse suitable existing pages first</span><span>✓ One canonical owner per intent</span><span>✓ Hold unverified location pages for review</span></div><div className="mx-auto mt-5 h-2 max-w-md overflow-hidden rounded-full bg-slate-100"><div className="h-full w-2/3 animate-pulse rounded-full bg-gradient-to-r from-brand-400 via-violet-500 to-brand-600" /></div><p className="mt-3 text-xs font-black uppercase tracking-wide text-brand-700">Creating an evidence-backed Website Plan…</p><p className="mx-auto mt-2 max-w-xl text-[11px] leading-5 text-slate-500">Nothing is being published. You will review and edit every recommended page before approval or Website Development begins.</p></div></div> : plan ? <>
+        <div className="mt-5"><h4 className="text-sm font-black text-charcoal-950">Should this content plan include Local SEO?</h4><p className="mt-1 text-xs leading-5 text-charcoal-500">Target cities are loaded from project intake. Confirm whether they should shape the authority clusters.</p><div className="mt-3 grid gap-3 sm:grid-cols-2"><button type="button" onClick={() => setLocalSeoEnabled(true)} className={`rounded-xl border p-4 text-left ${localSeoEnabled ? "border-brand-500 bg-brand-50 ring-1 ring-brand-500" : "border-slate-200 bg-white"}`}><div className="font-bold text-charcoal-900">Yes, include Local SEO</div><p className="mt-1 text-sm text-charcoal-500">Evaluate each selected market independently and create a complete local authority cluster where justified.</p></button><button type="button" onClick={() => setLocalSeoEnabled(false)} className={`rounded-xl border p-4 text-left ${!localSeoEnabled ? "border-brand-500 bg-brand-50 ring-1 ring-brand-500" : "border-slate-200 bg-white"}`}><div className="font-bold text-charcoal-900">No, standard SEO plan</div><p className="mt-1 text-sm text-charcoal-500">Build service and topical authority without location-specific pages.</p></button></div></div>{localSeoEnabled && <label className="mt-4 block rounded-xl border border-brand-100 bg-brand-50/40 p-4"><span className="flex flex-wrap items-center justify-between gap-2"><span className="text-sm font-bold text-charcoal-800">Target cities or service areas</span><span className={`rounded-full px-2 py-1 text-[9px] font-black uppercase ${marketSaveState === "saved" ? "bg-emerald-100 text-emerald-700" : marketSaveState === "saving" ? "bg-amber-100 text-amber-700" : "bg-brand-100 text-brand-700"}`}>{marketSaveState === "saved" ? "Saved project-wide" : marketSaveState === "saving" ? "Saving…" : "Project-wide setting"}</span></span><span className="mt-1 block text-xs leading-5 text-charcoal-500">Loaded from project intake. Changes are saved to this project before generation, so all modules use the same target-market source for new or refreshed work.</span><textarea value={targetLocations} onChange={(event) => { setTargetLocations(event.target.value); setMarketSaveState("dirty"); }} rows={3} placeholder={"Toronto\nMississauga\nGreater Toronto Area"} className="mt-3 w-full rounded-lg border border-brand-200 bg-white px-3 py-2 text-sm leading-6 outline-none focus:border-brand-500" /></label>}<div className="mt-5 flex justify-end"><button type="button" disabled={busy || (localSeoEnabled && geographicTargetMarkets(lines(targetLocations)).length === 0)} onClick={() => void startPlanSetup()} className="rounded-lg bg-brand-600 px-5 py-2.5 text-sm font-bold text-white hover:bg-brand-700 disabled:bg-slate-300">{busy || marketSaveState === "saving" ? "Saving project markets…" : localSeoEnabled ? "Save markets & generate plan →" : "Generate smart content plan →"}</button></div></div></div> : busy && !plan ? <div className="grid min-h-[34rem] flex-1 place-items-center overflow-y-auto bg-gradient-to-b from-white via-brand-50/20 to-violet-50/30 p-6" role="status" aria-live="polite" aria-label="Creating the SEO Page Map and Content Plan"><div className="w-full max-w-3xl text-center"><div className="relative mx-auto h-20 w-20"><div className="absolute inset-0 rounded-full border-4 border-brand-100" /><div className="absolute inset-0 animate-spin rounded-full border-4 border-transparent border-r-violet-400 border-t-brand-600" /><div className="absolute inset-[18px] grid place-items-center rounded-full bg-brand-50 text-2xl">✦</div></div><div className="mt-6 text-[10px] font-black uppercase tracking-[0.18em] text-brand-700">SEO planning in progress</div><h3 className="mt-2 text-2xl font-black text-slate-950">Hang tight — we’re building your content plan!</h3><p className="mx-auto mt-2 max-w-2xl text-sm leading-6 text-slate-600">SEnuke AI is turning the approved business direction, keywords, markets, website evidence, and Strategy into one practical page map. It is deciding what to reuse, what to improve, and which new pages are genuinely justified.</p><div className="mt-4 flex flex-wrap justify-center gap-2"><span className="rounded-full border border-brand-200 bg-white px-3 py-1.5 text-[10px] font-black text-brand-800">{targetKeywords.length} approved keyword{targetKeywords.length === 1 ? "" : "s"}</span><span className="rounded-full border border-violet-200 bg-white px-3 py-1.5 text-[10px] font-black text-violet-800">{selectedMarkets.length} target market{selectedMarkets.length === 1 ? "" : "s"}</span>{projectContext?.websiteUrl && <span className="rounded-full border border-emerald-200 bg-white px-3 py-1.5 text-[10px] font-black text-emerald-800">Existing website evidence included</span>}{generationJob && <span className="rounded-full border border-amber-200 bg-white px-3 py-1.5 text-[10px] font-black text-amber-800">{Math.round(generationJob.progress)}% · {generationJob.status === "queued" ? "queued" : "building plan"}</span>}</div><div className="mt-5 grid gap-3 text-left sm:grid-cols-3">{[["1", "Review the evidence", "Business goals, approved keywords, search intent, target markets, and existing website pages"], ["2", "Assign page ownership", "Group overlapping searches, select one canonical owner, and prevent duplicate or competing pages"], ["3", "Prepare the handoff", "Create URLs, briefs, FAQs, schema, proof, CTAs, Local SEO, and internal-link requirements"]].map(([step, title, detail]) => <div key={step} className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm"><div className="flex items-center gap-3"><span className="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-brand-600 text-xs font-black text-white">{step}</span><div className="text-sm font-black text-slate-900">{title}</div></div><p className="mt-3 text-xs leading-5 text-slate-500">{detail}</p></div>)}</div><div className="mt-4 flex flex-wrap justify-center gap-x-5 gap-y-2 rounded-xl border border-emerald-100 bg-emerald-50/60 px-4 py-3 text-[10px] font-bold text-emerald-800"><span>✓ Reuse suitable existing pages first</span><span>✓ One canonical owner per intent</span><span>✓ Hold unverified location pages for review</span></div><div className="mx-auto mt-5 h-2 max-w-md overflow-hidden rounded-full bg-slate-100"><div className={`${generationJob ? "transition-[width] duration-500" : "w-2/3 animate-pulse"} h-full rounded-full bg-gradient-to-r from-brand-400 via-violet-500 to-brand-600`} style={generationJob ? { width: `${Math.max(2, Math.min(100, generationJob.progress))}%` } : undefined} /></div><p className="mt-3 text-xs font-black uppercase tracking-wide text-brand-700">{generationJob?.status === "queued" ? "Waiting for an available AI worker…" : "Creating an evidence-backed Website Plan…"}</p><p className="mx-auto mt-2 max-w-xl text-[11px] leading-5 text-slate-500">This continues safely in the background. You can leave the page and return; nothing is published until you review and approve the completed plan.</p></div></div> : plan ? <>
         <div className="border-b border-slate-200 bg-white px-4 py-2.5">
           {saveNotice && <div className="mb-2 flex justify-end"><span className={`rounded-full px-3 py-1 text-[10px] font-black ${savingPageMap ? "bg-amber-100 text-amber-800" : planStored ? "bg-emerald-100 text-emerald-800" : "bg-rose-100 text-rose-700"}`}>{saveNotice}</span></div>}
           <div className="mx-auto flex max-w-[1180px] gap-1.5 overflow-x-auto" role="tablist" aria-label="Content plan workflow">
@@ -2018,7 +2114,7 @@ export default function ContentPlanDialog({ task, onClose, onSaved, autoPrepare 
           </div>
         </div>
         <div className="border-t border-slate-200 bg-white px-4 py-3"><div className="mx-auto flex max-w-[1180px] flex-wrap items-center justify-between gap-3"><div className="max-w-2xl flex-1">{error && <p className="mb-1 text-xs font-bold text-red-700">{error}</p>}<p className={`text-xs ${approvalPending || planApproved ? "font-semibold text-emerald-700" : planDirty || !aiSuggestionsComplete ? "font-semibold text-amber-700" : "text-charcoal-500"}`}>{planApproved ? "Plan approved. Every saved page now has an executable AI content task in Content Assets." : approvalPending ? "Plan sent for approval successfully. Content tasks will be created from this exact saved version after approval." : !aiSuggestionsComplete ? planDirty ? "Save your page changes first, then complete the missing AI page briefs." : "Complete the AI plan to generate every page brief, SEO title, meta description, outline, FAQ set, proof direction, and CTA." : planDirty ? `${newUnsavedPages ? `${newUnsavedPages} added page${newUnsavedPages === 1 ? " is" : "s are"}` : "Your changes are"} not stored yet. Save changes before closing or submitting.` : "Saved and ready for approval. Review the page assets, then select Submit Plan for Approval."}</p></div><div className="flex w-full flex-wrap justify-end gap-2 sm:w-auto"><button type="button" onClick={onClose} className="whitespace-nowrap rounded-lg border border-slate-200 bg-white px-4 py-2 text-sm font-bold text-charcoal-700">{approvalPending || planApproved ? "Close" : "Cancel"}</button><button type="button" disabled={busy || savingPageMap || approvalPending || planApproved || !planDirty} onClick={() => void save(false)} className="whitespace-nowrap rounded-lg border border-brand-200 bg-white px-4 py-2 text-sm font-bold text-brand-700 hover:bg-brand-50 disabled:bg-slate-100 disabled:text-slate-400">{busy || savingPageMap ? "Saving…" : planDirty ? "Save Changes" : "✓ Changes Saved"}</button><button type="button" disabled={busy || savingPageMap || approvalPending || planApproved || planDirty} onClick={() => void (aiSuggestionsComplete ? save(true) : rebuildSmartPlan())} className={`whitespace-nowrap rounded-lg px-4 py-2 text-sm font-bold text-white ${approvalPending || planApproved ? "bg-emerald-600 disabled:bg-emerald-600 disabled:text-white" : "bg-brand-600 hover:bg-brand-700 disabled:bg-slate-300"}`}>{busy ? aiSuggestionsComplete ? "Submitting…" : "Completing AI Plan…" : planApproved ? "✓ Approved" : approvalPending ? "✓ Sent for Approval" : planDirty ? "Save Before Continuing" : !aiSuggestionsComplete ? "Complete AI Plan" : "Submit Plan for Approval"}</button></div></div></div>
-      </> : <div className="grid min-h-72 place-items-center p-8"><div className="rounded-xl border border-red-200 bg-red-50 p-5 text-center text-red-700">{error || "The content plan could not be opened."}</div></div>}
+      </> : <div className="grid min-h-72 place-items-center p-8"><div className="max-w-xl rounded-xl border border-red-200 bg-red-50 p-5 text-center text-red-700"><div>{error || "The content plan could not be opened."}</div><button type="button" disabled={busy} onClick={() => void retryPlanGeneration()} className="mt-4 rounded-lg bg-red-700 px-4 py-2.5 text-sm font-black text-white disabled:bg-slate-300">{busy ? "Restarting…" : "Retry Website Plan Generation"}</button><p className="mt-2 text-xs leading-5 text-red-600">A retry creates a new governed job. The failed attempt is retained for support diagnostics and is not reused.</p></div></div>}
     </div>
   </div>;
 }

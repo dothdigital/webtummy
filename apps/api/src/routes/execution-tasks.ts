@@ -1,7 +1,8 @@
-import { Router, type Request } from "express";
-import { createHash } from "node:crypto";
+import { Router, type Request, type Response } from "express";
+import { createHash, randomUUID } from "node:crypto";
 import { z } from "zod";
-import { Prisma, prisma } from "@webtummy/db";
+import { Prisma, prisma, type Role } from "@webtummy/db";
+import { Worker } from "bullmq";
 import { requireAuth } from "../middleware.js";
 import { projectClientIdForRequest } from "../project-scope.js";
 import { canAccessProject, hasWorkspacePermission, recordWorkspaceActivity, workspaceContext } from "../workspace-access.js";
@@ -15,6 +16,12 @@ import { normalizeKeywordsWithAi } from "../ai-keyword-normalization.js";
 import { publishProjectWorkflowEvent } from "../project-workflow-controller.js";
 import { MARKETING_EXECUTION_CONTRACT_VERSION, marketingExecutionSummary, prepareMarketingExecution } from "../marketing-execution-engine.js";
 import { isWebsitePlanTask } from "../website-plan-task.js";
+import { config, CONTENT_PLAN_GENERATION_QUEUE } from "../config.js";
+import { contentPlanGenerationQueue, queueConnection, type ContentPlanGenerationQueueJobData } from "../queue.js";
+import { commitUsage, preflightUsage, refundUsage } from "../usage-engine.js";
+import { runCommercialRequestContext, type CommercialRequestContext } from "../commercial-request-context.js";
+import { createApiErrorCode } from "../api-errors.js";
+import { queueApiErrorReport } from "../api-error-reporter.js";
 
 export const executionTasksRouter = Router();
 executionTasksRouter.use(requireAuth);
@@ -2576,8 +2583,7 @@ executionTasksRouter.post("/projects/:projectId/seo-plan/task", async (req, res)
   res.status(201).json({ task, created: !task.createdAt || task.createdAt.getTime() === task.updatedAt.getTime() });
 });
 
-executionTasksRouter.post("/execution-tasks/:id/content-plan/prepare", (req, res, next) => {
-  void (async () => {
+async function performContentPlanPrepare(req: Request, res: Response) {
   const clientId = await executionClientScope(req);
   const task = await prisma.executionTask.findFirst({
     where: { id: req.params.id, ...(clientId ? { clientId } : {}) },
@@ -2834,7 +2840,7 @@ executionTasksRouter.post("/execution-tasks/:id/content-plan/prepare", (req, res
     if (workflowVersionUpgraded || (needsAiFaqRefresh && plan.pageAssignments.some((assignment) => assignment.faqStrategyVersion === "ai_seo_plan_v2"))) {
       await prisma.executionTask.update({
         where: { id: task.id },
-        data: { approvalSnapshotJson: { ...snapshot, contentPlan: plan, businessContextPreparedAt: new Date().toISOString(), ...(needsAiFaqRefresh ? { faqPlanPreparedAt: new Date().toISOString() } : {}), ...(workflowVersionUpgraded ? { contentPlanWorkflowUpgradedAt: new Date().toISOString() } : {}) } as Prisma.InputJsonValue },
+        data: { approvalSnapshotJson: { ...snapshot, contentPlan: plan, contentPlanGenerationJobId: typeof req.body?.generationJobId === "string" ? req.body.generationJobId : null, businessContextPreparedAt: new Date().toISOString(), ...(needsAiFaqRefresh ? { faqPlanPreparedAt: new Date().toISOString() } : {}), ...(workflowVersionUpgraded ? { contentPlanWorkflowUpgradedAt: new Date().toISOString() } : {}) } as Prisma.InputJsonValue },
       });
     }
     return res.json({ task, plan, existing: true, pageCandidates });
@@ -3005,7 +3011,7 @@ executionTasksRouter.post("/execution-tasks/:id/content-plan/prepare", (req, res
     // A project reset can legitimately remove this task while the AI request is
     // still running. Use a conditional write so that stale completions are
     // discarded cleanly instead of surfacing Prisma P2025 as an internal error.
-    const saved = await tx.executionTask.updateMany({ where: { id: task.id, projectId: task.projectId }, data: { status: "in_progress", actionButtonLabel: preLaunchWebsite ? "Review Page & Content Plan" : "Review SEO Page Map", relatedUrl: `/seo-page-map?projectId=${task.projectId}&taskId=${task.id}`, approvalSnapshotJson: { ...snapshot, contentPlan: plan, contentPlanStatus: "draft", contentPlanGeneration: "full_ai", contentPlanEvidence: { planningMode: "full_intelligence", seedKeywordsOnly: false, gapAnalysisRunId: task.project.gapAnalysisRuns[0]?.id ?? null, strategyId: strategy?.id ?? null, strategyVersion: strategy?.version ?? null, keywordResearchRunCount: task.project.keywordResearchRuns.length, siteAnalysisPageCount: sitePages.length, funnelIncluded: Object.keys(strategyFunnel).length > 0 }, preparedAt: new Date().toISOString() } as Prisma.InputJsonValue } });
+    const saved = await tx.executionTask.updateMany({ where: { id: task.id, projectId: task.projectId }, data: { status: "in_progress", actionButtonLabel: preLaunchWebsite ? "Review Page & Content Plan" : "Review SEO Page Map", relatedUrl: `/seo-page-map?projectId=${task.projectId}&taskId=${task.id}`, approvalSnapshotJson: { ...snapshot, contentPlan: plan, contentPlanStatus: "draft", contentPlanGeneration: "full_ai", contentPlanGenerationJobId: typeof req.body?.generationJobId === "string" ? req.body.generationJobId : null, contentPlanEvidence: { planningMode: "full_intelligence", seedKeywordsOnly: false, gapAnalysisRunId: task.project.gapAnalysisRuns[0]?.id ?? null, strategyId: strategy?.id ?? null, strategyVersion: strategy?.version ?? null, keywordResearchRunCount: task.project.keywordResearchRuns.length, siteAnalysisPageCount: sitePages.length, funnelIncluded: Object.keys(strategyFunnel).length > 0 }, preparedAt: new Date().toISOString() } as Prisma.InputJsonValue } });
     if (!saved.count) return null;
     const row = await tx.executionTask.findUnique({ where: { id: task.id } });
     if (!row) return null;
@@ -3014,6 +3020,297 @@ executionTasksRouter.post("/execution-tasks/:id/content-plan/prepare", (req, res
   });
   if (!updated) return res.status(409).json({ error: `This ${preLaunchWebsite ? "Website Plan" : "SEO Page Map"} request was cancelled because the project workflow was reset. Refresh the project and create a new Execution Plan when you are ready.` });
     res.json({ task: updated, plan, existing: false, pageCandidates });
+}
+
+executionTasksRouter.post("/execution-tasks/:id/content-plan/prepare", (req, res, next) => {
+  void performContentPlanPrepare(req, res).catch(next);
+});
+
+type ContentPlanGenerationJobInput = {
+  taskId: string;
+  projectId: string;
+  usageEventId: string;
+  idempotencyKey: string;
+  prepare: {
+    regenerate?: boolean;
+    localSeoEnabled?: boolean;
+    targetLocations?: string[];
+  };
+  requestedBy: {
+    userId: string;
+    role: Role;
+    clientId: string;
+    workspaceId: string;
+  };
+};
+
+type ContentPlanGenerationResponse = {
+  task?: { id?: string; projectId?: string | null; approvalSnapshotJson?: unknown };
+  plan?: unknown;
+  pageCandidates?: Array<{ url: string; title: string | null }>;
+  existing?: boolean;
+  error?: unknown;
+};
+
+const contentPlanJobRecord = (value: unknown): Record<string, unknown> => value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
+
+function contentPlanGenerationJobView(job: { id: string; projectId: string | null; status: string; outputJson: Prisma.JsonValue; createdAt: Date }) {
+  const output = contentPlanJobRecord(job.outputJson);
+  return {
+    id: job.id,
+    projectId: job.projectId,
+    taskId: String(output.taskId || "") || null,
+    status: job.status,
+    stage: String(output.stage || (job.status === "queued" ? "queued" : job.status === "running" ? "building_plan" : job.status)),
+    progress: Math.max(0, Math.min(100, Number(output.progress || (job.status === "completed" ? 100 : job.status === "running" ? 35 : 5)))),
+    error: job.status === "failed" ? String(output.publicError || "Website Plan generation could not be completed. Please retry.") : null,
+    errorCode: job.status === "failed" ? String(output.errorCode || "") || null : null,
+    createdAt: job.createdAt,
+  };
+}
+
+async function activeContentPlanJob(taskId: string, projectId: string) {
+  const jobs = await prisma.aiRun.findMany({
+    where: { projectId, moduleName: "content_plan_generation_job", status: { in: ["queued", "running"] } },
+    orderBy: { createdAt: "desc" },
+    take: 20,
+  });
+  return jobs.find((job) => contentPlanJobRecord(job.inputSnapshotJson).taskId === taskId) ?? null;
+}
+
+async function enqueueContentPlanGenerationJob(jobId: string) {
+  const existing = await contentPlanGenerationQueue.getJob(jobId);
+  if (existing) {
+    const state = await existing.getState();
+    if (!["completed", "failed", "unknown"].includes(state)) return "existing" as const;
+    await existing.remove().catch(() => undefined);
+  }
+  await contentPlanGenerationQueue.add("content-plan:generate", { jobId }, { jobId, removeOnComplete: 250, removeOnFail: 250 });
+  return "enqueued" as const;
+}
+
+function contentPlanWorkerRequest(input: ContentPlanGenerationJobInput, jobId: string): Request {
+  const headers: Record<string, string> = {
+    "x-senuke-ai-workspace-id": input.requestedBy.workspaceId,
+    "x-senuke-ai-client-id": input.requestedBy.clientId,
+    "x-workspace-id": input.requestedBy.workspaceId,
+  };
+  return {
+    method: "POST",
+    path: `/execution-tasks/${input.taskId}/content-plan/prepare`,
+    originalUrl: `/api/execution-tasks/${input.taskId}/content-plan/prepare`,
+    params: { id: input.taskId },
+    query: {},
+    body: { ...input.prepare, generationJobId: jobId },
+    user: { userId: input.requestedBy.userId, role: input.requestedBy.role, clientId: input.requestedBy.clientId },
+    header: (name: string) => headers[name.toLowerCase()],
+  } as unknown as Request;
+}
+
+async function savedContentPlanForGenerationJob(taskId: string, jobId: string) {
+  const task = await prisma.executionTask.findUnique({ where: { id: taskId } });
+  if (!task) return null;
+  const snapshot = contentPlanJobRecord(task.approvalSnapshotJson);
+  if (snapshot.contentPlanGenerationJobId !== jobId || !snapshot.contentPlan) return null;
+  return { task, plan: snapshot.contentPlan };
+}
+
+async function executeContentPlanGenerationJob(jobId: string) {
+  const job = await prisma.aiRun.findUnique({ where: { id: jobId } });
+  if (!job || job.moduleName !== "content_plan_generation_job" || ["completed", "failed", "cancelled"].includes(job.status)) return;
+  const input = job.inputSnapshotJson as unknown as ContentPlanGenerationJobInput;
+  const saved = await savedContentPlanForGenerationJob(input.taskId, jobId);
+  if (saved) {
+    await commitUsage({ usageEventId: input.usageEventId, provider: "openai", metadata: { source: "content_plan_generation_job_recovery", taskId: input.taskId } }).catch(() => undefined);
+    await prisma.aiRun.update({ where: { id: jobId }, data: { status: "completed", outputJson: { stage: "completed", progress: 100, taskId: input.taskId, recovered: true }, outputText: "Website Plan is ready for review.", errorMessage: null } });
+    return;
+  }
+
+  const claimed = await prisma.aiRun.updateMany({
+    where: { id: jobId, status: "queued" },
+    data: { status: "running", outputJson: { stage: "building_plan", progress: 35, taskId: input.taskId, startedAt: new Date().toISOString() }, errorMessage: null },
+  });
+  if (!claimed.count) return;
+
+  const request = contentPlanWorkerRequest(input, jobId);
+  let responseStatus = 200;
+  let responsePayload: ContentPlanGenerationResponse | null = null;
+  const response = {
+    status(code: number) { responseStatus = code; return this; },
+    json(payload: ContentPlanGenerationResponse) { responsePayload = payload; return this; },
+  } as unknown as Response;
+  const commercialContext: CommercialRequestContext = {
+    workspaceId: input.requestedBy.workspaceId,
+    clientId: input.requestedBy.clientId,
+    userId: input.requestedBy.userId,
+    projectId: input.projectId,
+    featureKey: "site_architect_generate",
+    actionKey: "Generate Website Plan",
+    requestId: jobId,
+    usageEventId: input.usageEventId,
+    manualUsageReservation: true,
+    inputTokens: 0,
+    outputTokens: 0,
+  };
+
+  try {
+    await runCommercialRequestContext(commercialContext, () => performContentPlanPrepare(request, response));
+    if (responseStatus >= 400 || !responsePayload?.plan || !responsePayload.task?.id) {
+      const errorValue = responsePayload?.error;
+      const message = typeof errorValue === "string" ? errorValue : "Website Plan generation did not return a saved plan.";
+      throw Object.assign(new Error(message), { statusCode: responseStatus });
+    }
+    let usageWarning: string | null = null;
+    try {
+      await commitUsage({
+        usageEventId: input.usageEventId,
+        provider: "openai",
+        model: commercialContext.providerModel,
+        inputTokens: commercialContext.inputTokens,
+        outputTokens: commercialContext.outputTokens,
+        metadata: { source: "content_plan_generation_job", taskId: input.taskId },
+      });
+    } catch (usageError) {
+      usageWarning = usageError instanceof Error ? usageError.message : "Website Plan usage could not be finalized.";
+      console.error(`[api] Website Plan job ${jobId} completed but usage finalization needs attention:`, usageError);
+    }
+    await prisma.aiRun.update({ where: { id: jobId }, data: {
+      status: "completed",
+      outputJson: { stage: "completed", progress: 100, taskId: input.taskId, completedAt: new Date().toISOString(), ...(usageWarning ? { usageWarning } : {}) },
+      outputText: "Website Plan is ready for review.",
+      tokenUsage: { model: commercialContext.providerModel, inputTokens: commercialContext.inputTokens ?? 0, outputTokens: commercialContext.outputTokens ?? 0 },
+      errorMessage: null,
+    } });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Website Plan generation failed.";
+    const publicMessage = error && typeof error === "object" && "publicMessage" in error && (error as { publicMessage?: unknown }).publicMessage === true;
+    const statusCode = error && typeof error === "object" && "statusCode" in error ? Number((error as { statusCode?: unknown }).statusCode || 500) : 500;
+    const errorCode = createApiErrorCode();
+    await refundUsage({ usageEventId: input.usageEventId, reason: message }).catch(() => undefined);
+    const publicError = statusCode < 500 || publicMessage
+      ? message
+      : `We could not complete Website Plan generation. If the problem continues, send error code ${errorCode} to ${config.supportEmail}.`;
+    await prisma.aiRun.update({ where: { id: jobId }, data: { status: "failed", outputJson: { stage: "failed", progress: 100, taskId: input.taskId, errorCode, publicError }, errorMessage: message } }).catch(() => undefined);
+    if (statusCode >= 500) queueApiErrorReport({ errorCode, statusCode, diagnostic: error, request });
+  }
+}
+
+async function recoverContentPlanGenerationJobs() {
+  const jobs = await prisma.aiRun.findMany({ where: { moduleName: "content_plan_generation_job", status: { in: ["queued", "running"] } }, orderBy: { createdAt: "asc" }, select: { id: true } });
+  for (const job of jobs) {
+    const queuedJob = await contentPlanGenerationQueue.getJob(job.id);
+    const queueState = queuedJob ? await queuedJob.getState() : "unknown";
+    if (queueState === "active") continue;
+    await prisma.aiRun.updateMany({ where: { id: job.id, status: { in: ["queued", "running"] } }, data: { status: "queued", outputJson: { stage: "queued", progress: 5, recovered: true } } });
+    await enqueueContentPlanGenerationJob(job.id);
+  }
+  if (jobs.length) console.log(`[api] recovered ${jobs.length} queued Website Plan generation job(s)`);
+}
+
+let contentPlanGenerationWorker: Worker<ContentPlanGenerationQueueJobData> | null = null;
+export function startContentPlanGenerationQueueWorker() {
+  if (contentPlanGenerationWorker) return contentPlanGenerationWorker;
+  contentPlanGenerationWorker = new Worker<ContentPlanGenerationQueueJobData>(CONTENT_PLAN_GENERATION_QUEUE, async (queueJob) => executeContentPlanGenerationJob(queueJob.data.jobId), { connection: queueConnection, concurrency: 2 });
+  contentPlanGenerationWorker.on("failed", (queueJob, error) => {
+    const jobId = queueJob?.data.jobId;
+    console.error(`[api] Website Plan generation queue job ${jobId ?? "unknown"} failed:`, error.message);
+    if (jobId) void (async () => {
+      const record = await prisma.aiRun.findFirst({ where: { id: jobId, moduleName: "content_plan_generation_job", status: { in: ["queued", "running"] } } });
+      if (!record) return;
+      const input = record.inputSnapshotJson as unknown as ContentPlanGenerationJobInput;
+      const errorCode = createApiErrorCode();
+      await refundUsage({ usageEventId: input.usageEventId, reason: error.message }).catch(() => undefined);
+      await prisma.aiRun.updateMany({ where: { id: jobId, status: { in: ["queued", "running"] } }, data: { status: "failed", errorMessage: error.message, outputJson: { stage: "failed", progress: 100, taskId: input.taskId, errorCode, publicError: `We could not complete Website Plan generation. If the problem continues, send error code ${errorCode} to ${config.supportEmail}.` } } });
+      queueApiErrorReport({ errorCode, statusCode: 500, diagnostic: error, request: contentPlanWorkerRequest(input, jobId) });
+    })().catch((reportError) => console.error(`[api] Website Plan queue failure ${jobId} could not be recorded:`, reportError));
+  });
+  void recoverContentPlanGenerationJobs().catch((error) => console.error("[api] Website Plan generation queue recovery failed:", error));
+  return contentPlanGenerationWorker;
+}
+
+const contentPlanJobSchema = z.object({
+  regenerate: z.boolean().optional(),
+  localSeoEnabled: z.boolean().optional(),
+  targetLocations: z.array(z.string().trim().min(2).max(160)).max(20).optional(),
+  idempotencyKey: z.string().trim().min(8).max(191).optional(),
+});
+
+executionTasksRouter.post("/execution-tasks/:id/content-plan/jobs", (req, res, next) => {
+  void (async () => {
+    const parsed = contentPlanJobSchema.safeParse(req.body ?? {});
+    if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() });
+    const clientId = await executionClientScope(req);
+    const task = await prisma.executionTask.findFirst({ where: { id: req.params.id, ...(clientId ? { clientId } : {}) }, select: { id: true, projectId: true, clientId: true, project: { select: { websiteId: true } } } });
+    if (!task?.projectId || !task.clientId) return res.status(404).json({ error: "Website planning task not found" });
+    const context = await workspaceContext(req);
+    if (!await canAccessProject(context, task.projectId)) return res.status(404).json({ error: "task not found" });
+    if (!hasWorkspacePermission(context, "execute_tasks")) return res.status(403).json({ error: "Task execution permission is required." });
+    const active = await activeContentPlanJob(task.id, task.projectId);
+    if (active) return res.status(202).json({ job: contentPlanGenerationJobView(active), reused: true });
+
+    const idempotencyKey = parsed.data.idempotencyKey || req.header("x-idempotency-key")?.trim() || randomUUID();
+    const digest = createHash("sha256").update(`${task.id}:${idempotencyKey}`).digest("hex").slice(0, 32);
+    const jobId = `content_plan_job_${digest}`;
+    const existing = await prisma.aiRun.findUnique({ where: { id: jobId } });
+    if (existing) return res.status(202).json({ job: contentPlanGenerationJobView(existing), reused: true });
+
+    const usage = await preflightUsage({ clientId: task.clientId, userId: context.membership.userId, projectId: task.projectId, websiteId: task.project.websiteId, featureKey: "site_architect_generate", actionKey: "Generate Website Plan", idempotencyKey: `content-plan-job:${jobId}`, metadata: { workspaceId: context.workspace.id, source: "content_plan_generation_job", taskId: task.id } });
+    const input: ContentPlanGenerationJobInput = {
+      taskId: task.id,
+      projectId: task.projectId,
+      usageEventId: usage.usageEventId,
+      idempotencyKey,
+      prepare: { regenerate: parsed.data.regenerate, localSeoEnabled: parsed.data.localSeoEnabled, targetLocations: parsed.data.targetLocations },
+      requestedBy: { userId: context.membership.userId, role: req.user?.role ?? "client_user", clientId: task.clientId, workspaceId: context.workspace.id },
+    };
+    let job;
+    try {
+      job = await prisma.$transaction(async (tx) => {
+        await tx.usageEvent.update({ where: { id: usage.usageEventId }, data: { approvalTokenExpiresAt: new Date(Date.now() + 24 * 60 * 60 * 1_000) } });
+        return tx.aiRun.create({ data: { id: jobId, projectId: task.projectId, clientId: task.clientId, moduleName: "content_plan_generation_job", promptVersion: "website-plan-job-v1", inputSnapshotJson: input as unknown as Prisma.InputJsonValue, outputJson: { stage: "queued", progress: 5, taskId: task.id, queuedAt: new Date().toISOString() }, status: "queued" } });
+      });
+    } catch (error) {
+      await refundUsage({ usageEventId: usage.usageEventId, reason: "Duplicate Website Plan job submission." }).catch(() => undefined);
+      if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002") {
+        const duplicate = await prisma.aiRun.findUnique({ where: { id: jobId } });
+        if (duplicate) return res.status(202).json({ job: contentPlanGenerationJobView(duplicate), reused: true });
+      }
+      throw error;
+    }
+    try {
+      await enqueueContentPlanGenerationJob(job.id);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Website Plan job could not be queued.";
+      await prisma.aiRun.update({ where: { id: job.id }, data: { status: "failed", errorMessage: message, outputJson: { stage: "failed", progress: 100, taskId: task.id, publicError: "Website Plan generation could not be queued. Please retry." } } });
+      await refundUsage({ usageEventId: usage.usageEventId, reason: message }).catch(() => undefined);
+      throw error;
+    }
+    res.status(202).json({ job: contentPlanGenerationJobView(job), reused: false });
+  })().catch(next);
+});
+
+executionTasksRouter.get("/execution-tasks/:id/content-plan/jobs/active", (req, res, next) => {
+  void (async () => {
+    const clientId = await executionClientScope(req);
+    const task = await prisma.executionTask.findFirst({ where: { id: req.params.id, ...(clientId ? { clientId } : {}) }, select: { id: true, projectId: true } });
+    if (!task?.projectId) return res.status(404).json({ error: "Website planning task not found" });
+    const job = await activeContentPlanJob(task.id, task.projectId);
+    res.json({ job: job ? contentPlanGenerationJobView(job) : null });
+  })().catch(next);
+});
+
+executionTasksRouter.get("/execution-tasks/:id/content-plan/jobs/:jobId", (req, res, next) => {
+  void (async () => {
+    const clientId = await executionClientScope(req);
+    const task = await prisma.executionTask.findFirst({ where: { id: req.params.id, ...(clientId ? { clientId } : {}) } });
+    if (!task?.projectId) return res.status(404).json({ error: "Website planning task not found" });
+    const job = await prisma.aiRun.findFirst({ where: { id: req.params.jobId, projectId: task.projectId, moduleName: "content_plan_generation_job" } });
+    if (!job || contentPlanJobRecord(job.inputSnapshotJson).taskId !== task.id) return res.status(404).json({ error: "Website Plan generation job not found." });
+    const view = contentPlanGenerationJobView(job);
+    if (job.status !== "completed") return res.json({ job: view });
+    const refreshedTask = await prisma.executionTask.findUnique({ where: { id: task.id } });
+    const snapshot = contentPlanJobRecord(refreshedTask?.approvalSnapshotJson);
+    res.json({ job: view, task: refreshedTask, plan: snapshot.contentPlan ?? null });
   })().catch(next);
 });
 

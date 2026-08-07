@@ -421,6 +421,16 @@ async function createOrReuseActiveWebsiteJob(
   mode: "content_generation" | "image_generation" | "website_generation",
   data: Prisma.WebsiteBuildJobCreateArgs["data"],
 ) {
+  const requestInput = jsonRecord(data.inputJson);
+  const requestSignature = JSON.stringify({
+    mode,
+    pageIds: jsonStrings(requestInput.pageIds).sort(),
+    phase: String(requestInput.phase || ""),
+    regenerate: requestInput.regenerate === true,
+    contentWorkspaceBatch: requestInput.contentWorkspaceBatch === true,
+    targetedExistingSiteUpdates: requestInput.targetedExistingSiteUpdates === true,
+    instructions: String(requestInput.instructions || "").trim(),
+  });
   for (let attempt = 0; attempt < 3; attempt += 1) {
     try {
       return await prisma.$transaction(async (tx) => {
@@ -429,7 +439,18 @@ async function createOrReuseActiveWebsiteJob(
           orderBy: { createdAt: "desc" },
           take: 20,
         });
-        const active = candidates.find((job) => String(jsonRecord(job.inputJson).mode) === mode);
+        const active = candidates.find((job) => {
+          const activeInput = jsonRecord(job.inputJson);
+          return JSON.stringify({
+            mode: String(activeInput.mode || "website_generation"),
+            pageIds: jsonStrings(activeInput.pageIds).sort(),
+            phase: String(activeInput.phase || ""),
+            regenerate: activeInput.regenerate === true,
+            contentWorkspaceBatch: activeInput.contentWorkspaceBatch === true,
+            targetedExistingSiteUpdates: activeInput.targetedExistingSiteUpdates === true,
+            instructions: String(activeInput.instructions || "").trim(),
+          }) === requestSignature;
+        });
         if (active) return { job: active, reused: true as const };
         const conflicting = candidates[0];
         if (conflicting) {
@@ -5479,6 +5500,7 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/generate-all", a
     regenerate: z.boolean().optional().default(false),
     phase: z.enum(["primary", "authority", "supporting", "all"]).optional().default("all"),
     resumeFromJobId: z.string().trim().min(1).optional(),
+    pageIds: z.array(z.string().trim().min(1).max(191)).min(1).max(500).optional(),
   }).parse(req.body ?? {});
   const build = project.websiteBuilds[0];
   if (!build?.sitemapApprovedAt) return res.status(409).json({ error: "Approve the page structure before generating the website." });
@@ -5501,8 +5523,10 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/generate-all", a
   // Imported live pages use surgical update drafts only while improving the
   // existing site. In redesign mode the crawl is evidence and every approved
   // page enters complete-page generation.
+  const requestedPageIds = new Set(input.pageIds ?? []);
   const eligiblePages = build.pages.filter((page) =>
     pageIsActive(page)
+    && (!requestedPageIds.size || requestedPageIds.has(page.id))
     && (fullPageContentMode || !pageIsImportedExistingWebsite(page))
     && (input.regenerate || !pageHasCompleteContent(page)));
   const pages = eligiblePages
@@ -5636,6 +5660,7 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/generate-all-tar
   const input = z.object({
     instruction: z.string().trim().max(2000).optional().default(""),
     regenerate: z.boolean().optional().default(false),
+    pageIds: z.array(z.string().trim().min(1).max(191)).min(1).max(500).optional(),
   }).parse(req.body ?? {});
   const build = project.websiteBuilds[0];
   if (!build?.sitemapApprovedAt) return res.status(409).json({ error: "Approve the page structure before preparing website updates." });
@@ -5646,8 +5671,10 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/generate-all-tar
     ? (jsonRecord(jsonRecord(build.settingsJson).seoPlan).pageAssignments as unknown[]).map(jsonRecord)
     : [];
   const effectiveRequirements = (page: typeof build.pages[number]) => effectiveExistingPageRequirements(page, websitePlanAssignments);
+  const requestedPageIds = new Set(input.pageIds ?? []);
   const pages = build.pages.filter((page) =>
     pageIsActive(page)
+    && (!requestedPageIds.size || requestedPageIds.has(page.id))
     && pageIsImportedExistingWebsite(page)
     && effectiveRequirements(page).length > 0
     && (input.regenerate || !targetedUpdateDraftReady(page))

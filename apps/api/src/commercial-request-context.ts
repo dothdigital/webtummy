@@ -13,6 +13,9 @@ export type CommercialRequestContext = {
   usageEventId?: string | null;
   manualUsageReservation?: boolean;
   usageSequence?: number;
+  providerModel?: string | null;
+  inputTokens?: number;
+  outputTokens?: number;
 };
 
 const storage = new AsyncLocalStorage<CommercialRequestContext>();
