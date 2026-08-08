@@ -1,0 +1,11 @@
+/*
+Theme Name: SENuke Base
+Theme URI: https://senuke.com/
+Author: SENuke AI
+Description: Lightweight WordPress runtime for websites designed and approved in SENuke AI. Page design is supplied by the approved SENuke design package.
+Version: 1.0.0
+Requires at least: 6.4
+Requires PHP: 8.0
+Text Domain: senuke-base
+*/
+:root{--senuke-primary:#2563eb;--senuke-secondary:#0f766e;--senuke-accent:#f59e0b;--senuke-background:#f8fafc;--senuke-surface:#fff;--senuke-text:#0f172a;--senuke-muted:#475569;--senuke-heading:Inter;--senuke-body:Inter}*{box-sizing:border-box}body{margin:0;background:var(--senuke-background);color:var(--senuke-text);font-family:var(--senuke-body),system-ui,sans-serif;line-height:1.65}img{max-width:100%;height:auto}.senuke-runtime-header,.senuke-runtime-footer-inner{width:min(1180px,calc(100% - 2rem));margin:auto}.senuke-runtime-header{display:flex;align-items:center;justify-content:space-between;gap:1.5rem;padding:1rem 0}.senuke-runtime-brand{font-weight:900;text-decoration:none}.senuke-runtime-brand img{max-height:52px;width:auto}.senuke-runtime-nav ul{display:flex;gap:1rem;list-style:none;margin:0;padding:0}.senuke-runtime-nav li{position:relative}.senuke-runtime-nav .sub-menu{display:none;position:absolute;background:var(--senuke-surface);padding:.75rem;min-width:220px}.senuke-runtime-nav li:hover>.sub-menu,.senuke-runtime-nav li:focus-within>.sub-menu{display:grid}.senuke-runtime-menu-toggle{display:none}.senuke-runtime-footer{margin-top:3rem;padding:2.5rem 0;background:#0f172a;color:#fff}.senuke-runtime-footer-inner{display:grid;gap:1rem}@media(max-width:860px){.senuke-runtime-menu-toggle{display:inline-flex}.senuke-runtime-nav{display:none;position:absolute;left:1rem;right:1rem;background:#fff;padding:1rem}.senuke-runtime-header[data-menu-open=true] .senuke-runtime-nav{display:block}.senuke-runtime-nav ul{flex-direction:column}.senuke-runtime-nav .sub-menu{display:grid;position:static}}
