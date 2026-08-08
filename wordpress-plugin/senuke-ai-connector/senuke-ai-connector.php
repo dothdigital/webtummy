@@ -1,121 +1,59 @@
 <?php
 /**
  * Plugin Name: SENuke AI Connector
- * Description: Secure WordPress deployment bridge for SENuke AI website builds, media, pages/posts, SEO/schema, menus, forms, managed theme runtime, backups, and rollback.
- * Version: 1.3.0
+ * Description: Secure WordPress deployment bridge for complete SENuke AI website releases: pages/posts, media, SEO/schema, menus, forms, managed runtime theme, backups and rollback.
+ * Version: 1.3.1
  * Author: SENuke AI
  */
-
 if (!defined('ABSPATH')) exit;
 
-require_once __DIR__ . '/includes/trait-theme-runtime.php';
-require_once __DIR__ . '/includes/trait-content-seo.php';
-require_once __DIR__ . '/includes/trait-menus-forms.php';
-require_once __DIR__ . '/includes/trait-backups.php';
-
 final class SENuke_AI_Connector {
-    use SENuke_AI_Theme_Runtime;
-    use SENuke_AI_Content_SEO;
-    use SENuke_AI_Menus_Forms;
-    use SENuke_AI_Backups;
+    const NS='senuke/v1';
+    const FORM_OPTION='senuke_ai_forms';
+    const STYLE_OPTION='senuke_ai_design_package';
+    const BACKUP_OPTION='senuke_ai_deployment_backups';
+    const IDENTITY_OPTION='senuke_ai_site_identity';
+    const THEME_STYLESHEET='senuke-base';
+    const VERSION='1.3.1';
 
-    const NS = 'senuke/v1';
-    const FORM_OPTION = 'senuke_ai_forms';
-    const STYLE_OPTION = 'senuke_ai_design_package';
-    const BACKUP_OPTION = 'senuke_ai_deployment_backups';
-    const IDENTITY_OPTION = 'senuke_ai_site_identity';
-    const THEME_STYLESHEET = 'senuke-base';
-    const VERSION = '1.3.0';
-
-    public static function boot() {
-        add_action('rest_api_init', [__CLASS__, 'routes']);
-        add_action('wp_head', [__CLASS__, 'head_meta'], 2);
-        add_action('wp_enqueue_scripts', [__CLASS__, 'enqueue_design_package'], 30);
-        add_filter('pre_get_document_title', [__CLASS__, 'document_title']);
-        add_shortcode('senuke_form', [__CLASS__, 'form_shortcode']);
-        add_action('admin_post_senuke_form_submit', [__CLASS__, 'form_submit']);
-        add_action('admin_post_nopriv_senuke_form_submit', [__CLASS__, 'form_submit']);
+    public static function boot(){add_action('rest_api_init',[__CLASS__,'routes']);add_action('wp_head',[__CLASS__,'head_meta'],2);add_action('wp_enqueue_scripts',[__CLASS__,'enqueue_design_package'],30);add_filter('pre_get_document_title',[__CLASS__,'document_title']);add_shortcode('senuke_form',[__CLASS__,'form_shortcode']);add_action('admin_post_senuke_form_submit',[__CLASS__,'form_submit']);add_action('admin_post_nopriv_senuke_form_submit',[__CLASS__,'form_submit']);}
+    public static function routes(){
+        register_rest_route(self::NS,'/capabilities',['methods'=>'GET','permission_callback'=>fn()=>current_user_can('edit_pages'),'callback'=>[__CLASS__,'capabilities']]);
+        register_rest_route(self::NS,'/pages/(?P<id>\d+)/optimize',['methods'=>'POST','permission_callback'=>fn($r)=>current_user_can('edit_post',(int)$r['id']),'callback'=>[__CLASS__,'optimize_page']]);
+        register_rest_route(self::NS,'/menus',['methods'=>'POST','permission_callback'=>fn()=>current_user_can('edit_theme_options'),'callback'=>[__CLASS__,'create_menu']]);
+        register_rest_route(self::NS,'/forms',['methods'=>'POST','permission_callback'=>fn()=>current_user_can('edit_pages'),'callback'=>[__CLASS__,'save_form']]);
+        register_rest_route(self::NS,'/backups',['methods'=>'POST','permission_callback'=>fn()=>current_user_can('manage_options'),'callback'=>[__CLASS__,'create_backup']]);
+        register_rest_route(self::NS,'/backups/(?P<id>[a-zA-Z0-9_-]+)/restore',['methods'=>'POST','permission_callback'=>fn()=>current_user_can('manage_options'),'callback'=>[__CLASS__,'restore_backup']]);
+        register_rest_route(self::NS,'/site-package',['methods'=>'POST','permission_callback'=>fn()=>current_user_can('edit_theme_options'),'callback'=>[__CLASS__,'save_design_package']]);
+        register_rest_route(self::NS,'/site-identity',['methods'=>'POST','permission_callback'=>fn()=>current_user_can('edit_theme_options'),'callback'=>[__CLASS__,'save_site_identity']]);
+        register_rest_route(self::NS,'/theme-status',['methods'=>'GET','permission_callback'=>fn()=>current_user_can('edit_theme_options'),'callback'=>fn()=>rest_ensure_response(self::theme_state())]);
+        register_rest_route(self::NS,'/theme-install',['methods'=>'POST','permission_callback'=>fn()=>current_user_can('manage_options')&&current_user_can('switch_themes'),'callback'=>[__CLASS__,'install_theme']]);
+        register_rest_route(self::NS,'/theme-activate',['methods'=>'POST','permission_callback'=>fn()=>current_user_can('switch_themes'),'callback'=>[__CLASS__,'activate_theme']]);
     }
+    public static function capabilities(){return rest_ensure_response(['connected'=>true,'version'=>self::VERSION,'features'=>['seo_meta','schema','menus','forms','site_backup','design_package','rollback','theme_runtime','theme_install','site_identity'],'managedDeploymentReady'=>current_user_can('publish_pages')&&current_user_can('upload_files')&&current_user_can('edit_theme_options')&&current_user_can('manage_options')&&current_user_can('switch_themes'),'permissions'=>['publishPages'=>current_user_can('publish_pages'),'uploadMedia'=>current_user_can('upload_files'),'manageNavigationAndDesign'=>current_user_can('edit_theme_options'),'backupAndRollback'=>current_user_can('manage_options'),'switchTheme'=>current_user_can('switch_themes')],'theme'=>self::theme_state()]);}
 
-    public static function routes() {
-        register_rest_route(self::NS, '/capabilities', [
-            'methods' => 'GET',
-            'permission_callback' => fn() => current_user_can('edit_pages'),
-            'callback' => [__CLASS__, 'capabilities'],
-        ]);
-        register_rest_route(self::NS, '/pages/(?P<id>\\d+)/optimize', [
-            'methods' => 'POST',
-            'permission_callback' => fn($r) => current_user_can('edit_post', (int)$r['id']),
-            'callback' => [__CLASS__, 'optimize_page'],
-        ]);
-        register_rest_route(self::NS, '/menus', [
-            'methods' => 'POST',
-            'permission_callback' => fn() => current_user_can('edit_theme_options'),
-            'callback' => [__CLASS__, 'create_menu'],
-        ]);
-        register_rest_route(self::NS, '/forms', [
-            'methods' => 'POST',
-            'permission_callback' => fn() => current_user_can('edit_pages'),
-            'callback' => [__CLASS__, 'save_form'],
-        ]);
-        register_rest_route(self::NS, '/backups', [
-            'methods' => 'POST',
-            'permission_callback' => fn() => current_user_can('manage_options'),
-            'callback' => [__CLASS__, 'create_backup'],
-        ]);
-        register_rest_route(self::NS, '/backups/(?P<id>[a-zA-Z0-9_-]+)/restore', [
-            'methods' => 'POST',
-            'permission_callback' => fn() => current_user_can('manage_options'),
-            'callback' => [__CLASS__, 'restore_backup'],
-        ]);
-        register_rest_route(self::NS, '/site-package', [
-            'methods' => 'POST',
-            'permission_callback' => fn() => current_user_can('edit_theme_options'),
-            'callback' => [__CLASS__, 'save_design_package'],
-        ]);
-        register_rest_route(self::NS, '/site-identity', [
-            'methods' => 'POST',
-            'permission_callback' => fn() => current_user_can('edit_theme_options'),
-            'callback' => [__CLASS__, 'save_site_identity'],
-        ]);
-        register_rest_route(self::NS, '/theme-status', [
-            'methods' => 'GET',
-            'permission_callback' => fn() => current_user_can('edit_theme_options'),
-            'callback' => fn() => rest_ensure_response(self::theme_state()),
-        ]);
-        register_rest_route(self::NS, '/theme-install', [
-            'methods' => 'POST',
-            'permission_callback' => fn() => current_user_can('manage_options') && current_user_can('switch_themes'),
-            'callback' => [__CLASS__, 'install_theme'],
-        ]);
-        register_rest_route(self::NS, '/theme-activate', [
-            'methods' => 'POST',
-            'permission_callback' => fn() => current_user_can('switch_themes'),
-            'callback' => [__CLASS__, 'activate_theme'],
-        ]);
-    }
+    public static function optimize_page(WP_REST_Request $r){$id=(int)$r['id'];$d=$r->get_json_params();$fields=['_senuke_meta_title'=>sanitize_text_field($d['metaTitle']??''),'_senuke_meta_description'=>sanitize_textarea_field($d['metaDescription']??''),'_senuke_canonical_url'=>esc_url_raw($d['canonicalUrl']??''),'_senuke_schema_json'=>wp_json_encode($d['schemaJsonLd']??new stdClass()),'_senuke_aeo_reviewed'=>!empty($d['aeoReviewed'])?'1':'0','_senuke_geo_reviewed'=>!empty($d['geoReviewed'])?'1':'0','_senuke_release_id'=>sanitize_text_field($d['approvedReleaseId']??''),'_senuke_snapshot_hash'=>sanitize_text_field($d['snapshotHash']??''),'_senuke_page_id'=>sanitize_text_field($d['senukePageId']??'')];foreach($fields as $k=>$v)update_post_meta($id,$k,$v);self::identity_from_schema($d['schemaJsonLd']??null,$d);return rest_ensure_response(['updated'=>true,'postId'=>$id]);}
+    public static function head_meta(){if(!is_singular())return;$id=get_queried_object_id();$description=get_post_meta($id,'_senuke_meta_description',true);$canonical=get_post_meta($id,'_senuke_canonical_url',true);$schema=get_post_meta($id,'_senuke_schema_json',true);if($description)echo '<meta name="description" content="'.esc_attr($description).'">'."\n";if($canonical)echo '<link rel="canonical" href="'.esc_url($canonical).'">'."\n";if($schema&&json_decode($schema))echo '<script type="application/ld+json">'.wp_json_encode(json_decode($schema)).'</script>'."\n";}
+    public static function document_title($title){if(!is_singular())return $title;$saved=get_post_meta(get_queried_object_id(),'_senuke_meta_title',true);return $saved?:$title;}
+    public static function enqueue_design_package(){$p=get_option(self::STYLE_OPTION,[]);$css=is_array($p)?($p['css']??''):'';if(!$css)return;wp_register_style('senuke-ai-approved-release',false,[],(string)($p['snapshotHash']??self::VERSION));wp_enqueue_style('senuke-ai-approved-release');wp_add_inline_style('senuke-ai-approved-release',$css);}
 
-    public static function capabilities() {
-        $features = ['seo_meta', 'schema', 'menus', 'forms', 'site_backup', 'design_package', 'rollback', 'theme_runtime', 'theme_install', 'site_identity'];
-        return rest_ensure_response([
-            'connected' => true,
-            'version' => self::VERSION,
-            'features' => $features,
-            'managedDeploymentReady' => current_user_can('publish_pages')
-                && current_user_can('upload_files')
-                && current_user_can('edit_theme_options')
-                && current_user_can('manage_options')
-                && current_user_can('switch_themes'),
-            'permissions' => [
-                'publishPages' => current_user_can('publish_pages'),
-                'uploadMedia' => current_user_can('upload_files'),
-                'manageNavigationAndDesign' => current_user_can('edit_theme_options'),
-                'backupAndRollback' => current_user_can('manage_options'),
-                'switchTheme' => current_user_can('switch_themes'),
-            ],
-            'theme' => self::theme_state(),
-        ]);
-    }
+    public static function create_menu(WP_REST_Request $r){$d=$r->get_json_params();$name=sanitize_text_field($d['name']??'SENuke Primary Navigation');$menu=wp_get_nav_menu_object($name);$id=$menu?(int)$menu->term_id:wp_create_nav_menu($name);if(is_wp_error($id))return $id;foreach(wp_get_nav_menu_items($id)?:[] as $old)wp_delete_post($old->ID,true);$created=[];$pending=array_values((array)($d['items']??[]));$pos=1;for($pass=0;$pass<100&&$pending;$pass++){$remaining=[];foreach($pending as $item){if(!is_array($item))continue;$source=sanitize_key($item['id']??'');$parent=sanitize_key($item['parentId']??'');if($parent&&empty($created[$parent])){$remaining[]=$item;continue;}$new=wp_update_nav_menu_item($id,0,['menu-item-title'=>sanitize_text_field($item['label']??'Page'),'menu-item-url'=>esc_url_raw($item['url']??home_url('/')),'menu-item-parent-id'=>$parent?(int)$created[$parent]:0,'menu-item-status'=>'publish','menu-item-position'=>$pos++]);if(!is_wp_error($new)&&$source)$created[$source]=(int)$new;}if(count($remaining)===count($pending))break;$pending=$remaining;}$locations=get_theme_mod('nav_menu_locations',[]);$registered=get_registered_nav_menus();$requested=sanitize_key($d['location']??'');$preferred=($requested&&isset($registered[$requested]))?$requested:null;if(!$preferred&&$requested==='footer')foreach(array_keys($registered) as $loc)if(preg_match('/footer|bottom|secondary/i',$loc)){$preferred=$loc;break;}if(!$preferred&&$requested!=='footer')$preferred=isset($registered['primary'])?'primary':array_key_first($registered);if($preferred){$locations[$preferred]=$id;set_theme_mod('nav_menu_locations',$locations);}return rest_ensure_response(['menuId'=>$id,'location'=>$preferred,'itemCount'=>count($created)]);}
+
+    public static function save_form(WP_REST_Request $r){$d=$r->get_json_params();$key=sanitize_key($d['key']??'primary_contact');$forms=get_option(self::FORM_OPTION,[]);if(!is_array($forms))$forms=[];$fields=[];foreach((array)($d['fields']??[]) as $f){if(is_array($f)){$label=sanitize_text_field($f['label']??$f['name']??'Field');$name=sanitize_key($f['name']??$label);$type=sanitize_key($f['inputType']??$f['type']??'text');if(!in_array($type,['text','email','tel','textarea','checkbox'],true))$type='text';$fields[]=['label'=>$label,'name'=>$name,'inputType'=>$type,'required'=>!empty($f['required'])];}else{$label=sanitize_text_field($f);$fields[]=['label'=>$label,'name'=>sanitize_key($label),'inputType'=>preg_match('/message|details/i',$label)?'textarea':(stripos($label,'email')!==false?'email':'text'),'required'=>true];}}$forms[$key]=['name'=>sanitize_text_field($d['name']??'Contact form'),'fields'=>$fields,'submitLabel'=>sanitize_text_field($d['submitLabel']??'Submit'),'successMessage'=>sanitize_text_field($d['successMessage']??'Thank you. Your enquiry has been received.'),'destination'=>sanitize_email($d['destination']??get_option('admin_email'))];update_option(self::FORM_OPTION,$forms,false);return rest_ensure_response(['key'=>$key,'shortcode'=>'[senuke_form id="'.esc_attr($key).'"]']);}
+    public static function form_shortcode($atts){$id=sanitize_key(shortcode_atts(['id'=>'primary_contact'],$atts)['id']);$forms=get_option(self::FORM_OPTION,[]);$form=is_array($forms)?($forms[$id]??null):null;if(!$form)return'';ob_start();?><form class="senuke-ai-form" method="post" action="<?php echo esc_url(admin_url('admin-post.php'));?>"><input type="hidden" name="action" value="senuke_form_submit"><input type="hidden" name="senuke_form_id" value="<?php echo esc_attr($id);?>"><?php wp_nonce_field('senuke_form_'.$id,'senuke_nonce');foreach($form['fields'] as $f):$name=sanitize_key($f['name']??$f['label']);$type=$f['inputType']??'text';$req=!empty($f['required']);?><p><label><?php echo esc_html($f['label']);?><br><?php if($type==='textarea'):?><textarea name="<?php echo esc_attr($name);?>" <?php echo $req?'required':'';?>></textarea><?php elseif($type==='checkbox'):?><input name="<?php echo esc_attr($name);?>" type="checkbox" value="yes" <?php echo $req?'required':'';?>><?php else:?><input name="<?php echo esc_attr($name);?>" type="<?php echo esc_attr(in_array($type,['email','tel'],true)?$type:'text');?>" <?php echo $req?'required':'';?>><?php endif;?></label></p><?php endforeach;?><button type="submit"><?php echo esc_html($form['submitLabel']);?></button></form><?php return ob_get_clean();}
+    public static function form_submit(){$id=sanitize_key($_POST['senuke_form_id']??'');if(!$id||!wp_verify_nonce($_POST['senuke_nonce']??'','senuke_form_'.$id))wp_die('Invalid form request.',403);$forms=get_option(self::FORM_OPTION,[]);$form=is_array($forms)?($forms[$id]??null):null;if(!$form)wp_die('Form unavailable.',404);$lines=[];foreach($form['fields'] as $f){$name=sanitize_key($f['name']??$f['label']);$lines[]=$f['label'].': '.sanitize_textarea_field(wp_unslash($_POST[$name]??''));}wp_mail($form['destination'],'Website enquiry: '.$form['name'],implode("\n",$lines));wp_safe_redirect(add_query_arg('senuke_enquiry','received',wp_get_referer()?:home_url('/')));exit;}
+
+    public static function create_backup(WP_REST_Request $r){$d=$r->get_json_params();$id=sanitize_key('senuke-'.gmdate('Ymd-His').'-'.wp_generate_password(6,false,false));$theme=wp_get_theme();$snapshot=['backupId'=>$id,'createdAt'=>gmdate('c'),'releaseId'=>sanitize_text_field($d['releaseId']??''),'snapshotHash'=>sanitize_text_field($d['snapshotHash']??''),'site'=>['blogname'=>get_option('blogname'),'blogdescription'=>get_option('blogdescription'),'show_on_front'=>get_option('show_on_front'),'page_on_front'=>(int)get_option('page_on_front'),'page_for_posts'=>(int)get_option('page_for_posts'),'permalink_structure'=>get_option('permalink_structure')],'theme'=>['stylesheet'=>$theme->get_stylesheet()],'navigationLocations'=>get_theme_mod('nav_menu_locations',[]),'designPackage'=>get_option(self::STYLE_OPTION,[]),'forms'=>get_option(self::FORM_OPTION,[]),'identity'=>get_option(self::IDENTITY_OPTION,[])];$backups=get_option(self::BACKUP_OPTION,[]);if(!is_array($backups))$backups=[];$backups[$id]=$snapshot;if(count($backups)>20)$backups=array_slice($backups,-20,null,true);update_option(self::BACKUP_OPTION,$backups,false);return rest_ensure_response(['backupId'=>$id,'createdAt'=>$snapshot['createdAt']]);}
+    public static function restore_backup(WP_REST_Request $r){$id=sanitize_key($r['id']);$backups=get_option(self::BACKUP_OPTION,[]);$s=is_array($backups)?($backups[$id]??null):null;if(!$s)return new WP_Error('senuke_backup_not_found','The requested SENuke deployment backup was not found.',['status'=>404]);foreach((array)($s['site']??[]) as $k=>$v)update_option(sanitize_key($k),$v);$previous=sanitize_key($s['theme']['stylesheet']??'');if($previous&&wp_get_theme($previous)->exists()&&current_user_can('switch_themes'))switch_theme($previous);set_theme_mod('nav_menu_locations',(array)($s['navigationLocations']??[]));update_option(self::STYLE_OPTION,(array)($s['designPackage']??[]),false);update_option(self::FORM_OPTION,(array)($s['forms']??[]),false);update_option(self::IDENTITY_OPTION,(array)($s['identity']??[]),false);flush_rewrite_rules(false);return rest_ensure_response(['restored'=>true,'backupId'=>$id,'restoredAt'=>gmdate('c')]);}
+
+    public static function save_design_package(WP_REST_Request $r){$d=$r->get_json_params();$css=(string)($d['css']??'');if(strlen($css)>350000)return new WP_Error('senuke_css_too_large','The approved design package exceeds 350 KB.',['status'=>413]);if(preg_match('/<|@import|javascript\s*:|expression\s*\(|behavior\s*:|-moz-binding/i',$css))return new WP_Error('senuke_css_rejected','The design package contains an unsupported CSS construct.',['status'=>400]);$p=['releaseId'=>sanitize_text_field($d['releaseId']??''),'snapshotHash'=>sanitize_text_field($d['snapshotHash']??''),'css'=>$css,'savedAt'=>gmdate('c')];update_option(self::STYLE_OPTION,$p,false);$theme=self::theme_state();if(current_user_can('manage_options')&&current_user_can('switch_themes')){$installed=self::ensure_base_theme();if(is_wp_error($installed))return $installed;if(wp_get_theme()->get_stylesheet()!==self::THEME_STYLESHEET)switch_theme(self::THEME_STYLESHEET);$theme=self::theme_state();}return rest_ensure_response(['installed'=>true,'releaseId'=>$p['releaseId'],'snapshotHash'=>$p['snapshotHash'],'bytes'=>strlen($css),'theme'=>$theme]);}
+    public static function theme_state(){$t=wp_get_theme(self::THEME_STYLESHEET);$a=wp_get_theme();return['stylesheet'=>self::THEME_STYLESHEET,'installed'=>$t->exists(),'active'=>$a->get_stylesheet()===self::THEME_STYLESHEET,'version'=>$t->exists()?(string)$t->get('Version'):'','activeStylesheet'=>$a->get_stylesheet(),'activeTheme'=>$a->get('Name')];}
+    public static function install_theme(WP_REST_Request $r){$d=$r->get_json_params();$encoded=preg_replace('/\s+/','',(string)($d['packageBase64']??''));if(!$encoded){$result=self::ensure_base_theme();if(is_wp_error($result))return$result;if(!empty($d['activate']))switch_theme(self::THEME_STYLESHEET);return rest_ensure_response(['installed'=>true,'activated'=>wp_get_theme()->get_stylesheet()===self::THEME_STYLESHEET,'theme'=>self::theme_state()]);}$bytes=base64_decode($encoded,true);if($bytes===false||strlen($bytes)<100)return new WP_Error('senuke_theme_package_invalid','The SENuke Base theme package is invalid.',['status'=>400]);require_once ABSPATH.'wp-admin/includes/file.php';if(!WP_Filesystem())return new WP_Error('senuke_filesystem_unavailable','WordPress could not initialize filesystem access.',['status'=>409]);$tmp=wp_tempnam('senuke-base.zip');if(!$tmp||file_put_contents($tmp,$bytes)===false)return new WP_Error('senuke_theme_temp_failed','WordPress could not create a temporary theme package.',['status'=>500]);$result=unzip_file($tmp,get_theme_root());@unlink($tmp);if(is_wp_error($result))return$result;clean_theme_cache(true);if(!empty($d['activate']))switch_theme(self::THEME_STYLESHEET);return rest_ensure_response(['installed'=>true,'activated'=>wp_get_theme()->get_stylesheet()===self::THEME_STYLESHEET,'theme'=>self::theme_state()]);}
+    public static function activate_theme(){if(!wp_get_theme(self::THEME_STYLESHEET)->exists())return new WP_Error('senuke_theme_not_installed','Install SENuke Base first.',['status'=>409]);switch_theme(self::THEME_STYLESHEET);return rest_ensure_response(['activated'=>true,'theme'=>self::theme_state()]);}
+    private static function ensure_base_theme(){require_once ABSPATH.'wp-admin/includes/file.php';if(!WP_Filesystem())return new WP_Error('senuke_filesystem_unavailable','WordPress could not initialize filesystem access.',['status'=>409]);global $wp_filesystem;$root=trailingslashit(get_theme_root()).self::THEME_STYLESHEET;if(!$wp_filesystem->is_dir($root)&&!$wp_filesystem->mkdir($root,FS_CHMOD_DIR))return new WP_Error('senuke_theme_directory_failed','WordPress could not create the SENuke Base theme directory.',['status'=>409]);$files=self::theme_files();foreach($files as $path=>$content){$target=$root.'/'.$path;$dir=dirname($target);if(!$wp_filesystem->is_dir($dir))$wp_filesystem->mkdir($dir,FS_CHMOD_DIR);if(!$wp_filesystem->put_contents($target,$content,FS_CHMOD_FILE))return new WP_Error('senuke_theme_write_failed','WordPress could not write SENuke Base.',['status'=>409]);}clean_theme_cache(true);return['installed'=>true];}
+    private static function theme_files(){return['style.css'=>"/*\nTheme Name: SENuke Base\nAuthor: SENuke AI\nVersion: 1.0.0\n*/\nbody{margin:0}.senuke-runtime-header{display:flex;justify-content:space-between;align-items:center}.senuke-runtime-nav ul{display:flex;gap:1rem;list-style:none}.senuke-runtime-footer{margin-top:3rem;padding:2rem;background:#0f172a;color:#fff}",'functions.php'=>"<?php if(!defined('ABSPATH'))exit;function senuke_base_setup(){add_theme_support('title-tag');add_theme_support('post-thumbnails');register_nav_menus(['primary'=>'Primary Navigation','footer'=>'Footer Navigation']);}add_action('after_setup_theme','senuke_base_setup');function senuke_base_identity(){\$v=get_option('senuke_ai_site_identity',[]);return is_array(\$v)?\$v:[];}function senuke_base_brand_name(){\$v=senuke_base_identity();return trim((string)(\$v['businessName']??''))?:get_bloginfo('name');}\n",'header.php'=>"<!doctype html><html <?php language_attributes();?>><head><?php wp_head();?></head><body <?php body_class();?>><header class=\"senuke-runtime-header\"><a href=\"<?php echo esc_url(home_url('/'));?>\"><?php echo esc_html(senuke_base_brand_name());?></a><nav class=\"senuke-runtime-nav\"><?php wp_nav_menu(['theme_location'=>'primary','container'=>false,'fallback_cb'=>false,'depth'=>8]);?></nav></header><main>",'footer.php'=>"</main><footer class=\"senuke-runtime-footer\"><?php wp_nav_menu(['theme_location'=>'footer','container'=>false,'fallback_cb'=>false,'depth'=>8]);?></footer><?php wp_footer();?></body></html>",'index.php'=>"<?php get_header();while(have_posts()):the_post();the_content();endwhile;get_footer();",'page.php'=>"<?php get_header();while(have_posts()):the_post();the_content();endwhile;get_footer();",'single.php'=>"<?php get_header();while(have_posts()):the_post();the_content();endwhile;get_footer();"] ;}
+
+    public static function save_site_identity(WP_REST_Request $r){$d=$r->get_json_params();$identity=['releaseId'=>sanitize_text_field($d['releaseId']??''),'snapshotHash'=>sanitize_text_field($d['snapshotHash']??''),'businessName'=>sanitize_text_field($d['businessName']??get_option('blogname')),'logoUrl'=>esc_url_raw($d['logoUrl']??''),'contactEmail'=>sanitize_email($d['contactEmail']??''),'contactPhone'=>sanitize_text_field($d['contactPhone']??''),'businessAddress'=>sanitize_text_field($d['businessAddress']??''),'copyrightText'=>sanitize_text_field($d['copyrightText']??''),'socialProfiles'=>(array)($d['socialProfiles']??[])];update_option(self::IDENTITY_OPTION,$identity,false);if($identity['businessName'])update_option('blogname',$identity['businessName']);return rest_ensure_response(['saved'=>true]);}
+    private static function identity_from_schema($schema,$request=[]){if(is_string($schema))$schema=json_decode($schema,true);if(!is_array($schema))return;$items=isset($schema['@graph'])&&is_array($schema['@graph'])?$schema['@graph']:[$schema];foreach($items as $item){if(!is_array($item))continue;$types=(array)($item['@type']??[]);if(!array_intersect($types,['Organization','LocalBusiness','ProfessionalService','Corporation']))continue;$current=get_option(self::IDENTITY_OPTION,[]);if(!is_array($current))$current=[];$current['businessName']=sanitize_text_field($item['name']??($current['businessName']??''));$current['contactEmail']=sanitize_email($item['email']??($current['contactEmail']??''));$current['contactPhone']=sanitize_text_field($item['telephone']??($current['contactPhone']??''));$current['releaseId']=sanitize_text_field($request['approvedReleaseId']??($current['releaseId']??''));$current['snapshotHash']=sanitize_text_field($request['snapshotHash']??($current['snapshotHash']??''));update_option(self::IDENTITY_OPTION,$current,false);if(!empty($current['businessName']))update_option('blogname',$current['businessName']);break;}}
 }
-
 SENuke_AI_Connector::boot();
