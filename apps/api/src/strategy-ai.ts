@@ -255,6 +255,33 @@ function titleKey(value: string) {
   return value.replace(/([a-z])([A-Z])/g, "$1 $2").replace(/[_-]+/g, " ").replace(/\b\w/g, (character) => character.toUpperCase());
 }
 
+function normalizeFunnelEvidenceType(value: unknown) {
+  if (typeof value !== "string") return value;
+  const normalized = value.trim().toLowerCase().replace(/[\s-]+/g, "_");
+  if (["measured", "verified_project_data", "inferred"].includes(normalized)) return normalized;
+  // Private or otherwise unavailable evidence cannot support a verified fact.
+  // Preserve the model's intended safeguard by treating these known aliases as
+  // inferred, while leaving unrelated invalid values for strict validation to
+  // reject instead of silently weakening the contract.
+  if ([
+    "unavailable_private_evidence",
+    "private_evidence_unavailable",
+    "unavailable_evidence",
+    "unmeasured",
+    "not_measured",
+  ].includes(normalized)) return "inferred";
+  return value;
+}
+
+function schemaRepairFeedback(error: unknown) {
+  if (!(error instanceof z.ZodError)) return null;
+  return error.issues
+    .slice(0, 12)
+    .map((issue) => `${issue.path.join(".") || "response"}: ${issue.message}`)
+    .join("; ")
+    .slice(0, 4_000);
+}
+
 export function completeUnifiedStrategyPlan(value: unknown) {
   const root = record(value);
   const audience = record(root.audience);
@@ -355,6 +382,7 @@ export function completeUnifiedStrategyPlan(value: unknown) {
       key: boundedText(step.key, 80, "funnel_step"),
       planningTimeEstimate: step.planningTimeEstimate == null ? null : boundedText(step.planningTimeEstimate, 120, "To be planned"),
       destination: normalizeFunnelDestination(step.destination),
+      evidenceType: normalizeFunnelEvidenceType(step.evidenceType),
       sourceSignals: strings(step.sourceSignals).slice(0, 10).map((signal) => boundedText(signal, 120)),
       affectedPages: strings(step.affectedPages).slice(0, 30).map((page) => boundedText(page, 2000)),
       dependencies: strings(step.dependencies).slice(0, 10).map((dependency) => boundedText(dependency, 500)),
@@ -596,17 +624,19 @@ async function generateFocusedGrowthFunnelWithAi(input: { evidence: Record<strin
     "For each stage, explain the customer intent, evidence-backed gap, exact recommended improvement, handoff to the next stage, observable success metric, expected direction of impact, impact score, confidence and basis, effort, destination, source signals, affected pages, dependencies, bounded experiment, and validation requirement.",
     "Select nextBestActionKey by impact, confidence, urgency, dependencies, and the approved business goal. It does not need to be the first stage.",
     "Use only supplied evidence. Never invent traffic, rankings, conversions, URLs, people, credentials, reviews, competitor behavior, or numeric outcome forecasts. Mark conclusions as inferred when direct measurement is unavailable.",
+    "For every growthFunnel.steps[].evidenceType, use exactly measured, verified_project_data, or inferred. If private or direct evidence is unavailable, use inferred and explain the validation requirement; never invent another evidenceType label.",
     `Required structure: ${JSON.stringify({ growthFunnel: outputShape.growthFunnel })}`,
     `Reviewer revision request: ${input.revision || "No additional revision request."}`,
     `Unified Strategy: ${JSON.stringify(input.plan).slice(0, 40_000)}`,
     `Approved project evidence: ${JSON.stringify(input.evidence).slice(0, 60_000)}`,
   ].join("\n\n");
   let lastError: unknown;
+  let repairFeedback: string | null = null;
   for (let attempt = 0; attempt < 2; attempt += 1) {
     try {
       return await centralAiJson({
         system: "You are the SEnuke AI Funnel Decision Engine. Diagnose one connected, evidence-grounded customer journey and return valid JSON for the requested six-stage funnel only.",
-        prompt: attempt ? `${prompt}\n\nThe previous funnel response failed validation. Return all required fields for all six stages and no unrelated Strategy sections.` : prompt,
+        prompt: attempt ? `${prompt}\n\nThe previous funnel response failed schema validation. Repair these exact fields and return all required fields for all six stages with no unrelated Strategy sections. Validation feedback: ${repairFeedback}` : prompt,
         model: input.model,
         temperature: 0.25,
         timeoutMs: 180_000,
@@ -614,6 +644,8 @@ async function generateFocusedGrowthFunnelWithAi(input: { evidence: Record<strin
       });
     } catch (error) {
       lastError = error;
+      repairFeedback = schemaRepairFeedback(error);
+      if (!repairFeedback) break;
     }
   }
   throw lastError;
@@ -634,6 +666,7 @@ export async function generateUnifiedStrategyWithAi(input: { evidence: Record<st
     "Lead-magnet actions must connect a specific audience need and high-intent page to capture, delivery, follow-up, and measurement. AI-citation actions must connect answer-first content, entities, verified sources, schema, and monitoring without promising citations.",
     "Evaluate the actual customer journey using all supplied evidence. This is not the project execution roadmap. Return exactly these six stages in this exact order: discover, evaluate, trust, convert, delight, grow_refer. Show how a customer discovers the business, evaluates the solution, builds trust, converts, experiences delivery, and becomes a retained customer or appropriate advocate.",
     "For every funnel stage, provide the audience intent, applicable traffic sources, exact existing or proposed entry assets, the stage conversion action, the handoff into the next stage, success metric, current leak or gap, recommended improvement, expected direction of impact, AI impact score, confidence and evidence type, execution horizon, a bounded recommended experiment, its validation requirement, qualitative effort, source signals, affected pages, dependencies, destination, and executable details.",
+    "For every growthFunnel.steps[].evidenceType, use exactly measured, verified_project_data, or inferred. If private or direct evidence is unavailable, use inferred and explain the validation requirement; never invent another evidenceType label.",
     "Select nextBestActionKey by locating the highest-impact evidence-backed growth opportunity—not simply the first stage. Lead magnets may support evaluation, delivery and email follow-up may support trust, the primary CTA belongs in convert, onboarding belongs in delight, and analytics, retention, referrals, Growth Intelligence, and Next Best Action belong in grow_refer. Do not disguise a prioritized task list as a customer journey.",
     "Apply these decision rules before proposing work: improve or map an existing page when it already satisfies an intent; create a new page only when demand exists, the page adds unique value, architecture supports it, and cannibalization and capacity are acceptable. Recommend a lead magnet only when a specific audience value exchange, capture path, delivery method, follow-up path, and measurement plan are viable. Refresh content only when the page still supports the business goal and intent; otherwise recommend consolidation, redirection, or retirement. Recommend CTA experiments only with a baseline, measurable outcome, sufficient traffic or a reasonable proxy, acceptable risk, and approval. Defer experiments when the sample, permissions, delivery capacity, or measurement path is insufficient.",
     "Return the exact JSON structure below. localSeo may be null only when local visibility is genuinely not applicable. growthFunnel.evaluationMethod must be ai. Return 2-8 audience journey stages, 4-10 focus areas, 3-5 phases, 5-12 top actions, 3-12 KPIs, exactly 6 funnel stages, and complete every required field.",
@@ -642,12 +675,13 @@ export async function generateUnifiedStrategyWithAi(input: { evidence: Record<st
     `Approved project evidence: ${JSON.stringify(input.evidence).slice(0, 100_000)}`,
   ].join("\n\n");
   let lastError: unknown;
+  let repairFeedback: string | null = null;
   let generatedCore: Awaited<ReturnType<typeof centralAiJson<UnifiedStrategyPlan>>> | null = null;
   for (let attempt = 0; attempt < 2; attempt += 1) {
     try {
       generatedCore = await centralAiJson({
         system: "You are the SEnuke AI Integrated Strategy Engine. Produce an evidence-grounded, cross-platform plan of action for review. Make clear strategic choices and preserve factual safeguards.",
-        prompt: attempt ? `${prompt}\n\nThe previous response failed core Strategy validation. Return every required Strategy field exactly and keep localSeo either a complete object or null.` : prompt,
+        prompt: attempt ? `${prompt}\n\nThe previous response failed core Strategy schema validation. Repair these exact fields, return every required Strategy field, and keep localSeo either a complete object or null. Validation feedback: ${repairFeedback}` : prompt,
         model: input.model,
         temperature: 0.3,
         timeoutMs: 180_000,
@@ -659,6 +693,8 @@ export async function generateUnifiedStrategyWithAi(input: { evidence: Record<st
       break;
     } catch (error) {
       lastError = error;
+      repairFeedback = schemaRepairFeedback(error);
+      if (!repairFeedback) break;
     }
   }
   if (!generatedCore) throw lastError;

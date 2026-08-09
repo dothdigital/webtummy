@@ -4151,7 +4151,13 @@ async function executeStrategyGenerationJob(jobId: string) {
     const publicMessage = error && typeof error === "object" && "publicMessage" in error && (error as { publicMessage?: unknown }).publicMessage === true;
     const statusCode = error && typeof error === "object" && "statusCode" in error ? Number((error as { statusCode?: unknown }).statusCode || 500) : 500;
     const errorCode = createApiErrorCode();
-    await refundUsage({ usageEventId: input.usageEventId, reason: message }).catch(() => undefined);
+    let refundFailure: unknown = null;
+    try {
+      await refundUsage({ usageEventId: input.usageEventId, reason: message });
+    } catch (refundError) {
+      refundFailure = refundError;
+      console.error(`[api] Strategy job ${jobId} credit refund failed:`, refundError);
+    }
     const publicError = statusCode < 500 || publicMessage
       ? message
       : `We could not complete Strategy generation. If the problem continues, send error code ${errorCode} to ${config.supportEmail}.`;
@@ -4160,7 +4166,12 @@ async function executeStrategyGenerationJob(jobId: string) {
       outputJson: { stage: "failed", progress: 100, errorCode, publicError },
       errorMessage: message,
     } }).catch(() => undefined);
-    if (statusCode >= 500) queueApiErrorReport({ errorCode, statusCode, diagnostic: error, request });
+    if (statusCode >= 500 || refundFailure) {
+      const diagnostic = refundFailure
+        ? new AggregateError([error, refundFailure], `Strategy generation and credit refund failed for job ${jobId}.`)
+        : error;
+      queueApiErrorReport({ errorCode, statusCode: Math.max(statusCode, 500), diagnostic, request });
+    }
   }
 }
 
@@ -4190,9 +4201,18 @@ export function startStrategyGenerationQueueWorker() {
       if (!record) return;
       const input = record.inputSnapshotJson as unknown as StrategyGenerationJobInput;
       const errorCode = createApiErrorCode();
-      await refundUsage({ usageEventId: input.usageEventId, reason: error.message }).catch(() => undefined);
+      let refundFailure: unknown = null;
+      try {
+        await refundUsage({ usageEventId: input.usageEventId, reason: error.message });
+      } catch (refundError) {
+        refundFailure = refundError;
+        console.error(`[api] Strategy queue job ${jobId} credit refund failed:`, refundError);
+      }
       await prisma.aiRun.updateMany({ where: { id: jobId, status: { in: ["queued", "running"] } }, data: { status: "failed", errorMessage: error.message, outputJson: { stage: "failed", progress: 100, errorCode, publicError: `We could not complete Strategy generation. If the problem continues, send error code ${errorCode} to ${config.supportEmail}.` } } });
-      queueApiErrorReport({ errorCode, statusCode: 500, diagnostic: error, request: strategyWorkerRequest(input, jobId) });
+      const diagnostic = refundFailure
+        ? new AggregateError([error, refundFailure], `Strategy queue execution and credit refund failed for job ${jobId}.`)
+        : error;
+      queueApiErrorReport({ errorCode, statusCode: 500, diagnostic, request: strategyWorkerRequest(input, jobId) });
     })().catch((reportError) => console.error(`[api] Strategy queue failure ${jobId} could not be recorded:`, reportError));
   });
   void recoverStrategyGenerationJobs().catch((error) => console.error("[api] Strategy generation queue recovery failed:", error));

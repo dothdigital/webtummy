@@ -114,6 +114,17 @@ describe("unified Strategy contract", () => {
     expect(normalizedAliasesAndLabels.growthFunnel?.steps[2]?.planningTimeEstimate?.length).toBeLessThanOrEqual(120);
     expect(normalizedAliasesAndLabels.growthFunnel?.evidenceSummary[0]?.length).toBeLessThanOrEqual(120);
 
+    const normalizedUnavailablePrivateEvidence = validateAiGeneratedUnifiedStrategyPlan({
+      ...plan,
+      growthFunnel: {
+        ...aiPlan.growthFunnel,
+        steps: aiPlan.growthFunnel.steps.map((step, index) => index === 5
+          ? { ...step, evidenceType: "unavailable_private_evidence" }
+          : step),
+      },
+    });
+    expect(normalizedUnavailablePrivateEvidence.growthFunnel?.steps[5]?.evidenceType).toBe("inferred");
+
     const focusedFunnel = validateAiGrowthFunnelResponse({
       growthFunnel: {
         ...aiPlan.growthFunnel,
@@ -131,5 +142,15 @@ describe("unified Strategy contract", () => {
       },
     });
     expect(focusedFunnel.steps.map((step) => step.destination)).toEqual(["website", "website", "website", "website", "website", "measurement"]);
+
+    const focusedUnavailablePrivateEvidence = validateAiGrowthFunnelResponse({
+      growthFunnel: {
+        ...aiPlan.growthFunnel,
+        steps: aiPlan.growthFunnel.steps.map((step, index) => index === 5
+          ? { ...step, evidenceType: "unavailable_private_evidence" }
+          : step),
+      },
+    });
+    expect(focusedUnavailablePrivateEvidence.steps[5]?.evidenceType).toBe("inferred");
   });
 });

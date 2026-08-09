@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { expectedSuccessfulWorkflowCost, selectLowestSuccessfulWorkflowCostRoute } from "./usage-engine.js";
+import { creditTransactionReason, expectedSuccessfulWorkflowCost, selectLowestSuccessfulWorkflowCostRoute } from "./usage-engine.js";
 
 describe("AI Orchestrator successful-workflow cost routing", () => {
   it("includes initial, retry, validation, and correction cost", () => {
@@ -22,5 +22,18 @@ describe("AI Orchestrator successful-workflow cost routing", () => {
       { model: "available", planCode: "pro", sortOrder: 1, configJson: { initialApiCost: 1 } },
     ], "pro");
     expect(selected?.model).toBe("available");
+  });
+});
+
+describe("usage refund ledger reasons", () => {
+  it("bounds long validation errors to the database column without losing a valid reason", () => {
+    const validationError = "growthFunnel.steps[5].evidenceType failed strict validation. ".repeat(20);
+    const reason = creditTransactionReason(validationError);
+    expect(Array.from(reason)).toHaveLength(255);
+    expect(reason).toBe(validationError.slice(0, 255));
+  });
+
+  it("uses a stable fallback when no diagnostic reason is supplied", () => {
+    expect(creditTransactionReason("  ")).toBe("usage refunded");
   });
 });

@@ -6,6 +6,12 @@ import { currentCommercialRequestContext } from "./commercial-request-context.js
 import { aiModelTierForFeature, defaultAiModelForFeature } from "./ai-model-policy.js";
 
 export const USAGE_APPROVAL_HEADER = "x-senuke-usage-token";
+const CREDIT_TRANSACTION_REASON_MAX_LENGTH = 255;
+
+export function creditTransactionReason(value: string | null | undefined, fallback = "usage refunded") {
+  const reason = value?.trim() || fallback;
+  return Array.from(reason).slice(0, CREDIT_TRANSACTION_REASON_MAX_LENGTH).join("");
+}
 
 type Db = typeof prisma | Prisma.TransactionClient;
 
@@ -402,8 +408,9 @@ export async function refundUsage(input: { usageEventId: string; reason?: string
   const usageEvent = await prisma.usageEvent.findUnique({ where: { id: input.usageEventId } });
   if (!usageEvent) throw new Error("usage event not found");
   if (usageEvent.status === "refunded") return usageEvent;
+  const fullReason = input.reason?.trim() || "usage refunded";
   if (usageEvent.creditsReserved <= 0 || usageEvent.status === "committed") {
-    return prisma.usageEvent.update({ where: { id: usageEvent.id }, data: { status: "failed", error: input.reason ?? "failed after commit check" } });
+    return prisma.usageEvent.update({ where: { id: usageEvent.id }, data: { status: "failed", error: input.reason?.trim() || "failed after commit check" } });
   }
   const creditAccountId = usageEvent.metadataJson && typeof usageEvent.metadataJson === "object" && !Array.isArray(usageEvent.metadataJson)
     ? String((usageEvent.metadataJson as Record<string, unknown>).creditAccountId ?? "")
@@ -415,7 +422,7 @@ export async function refundUsage(input: { usageEventId: string; reason?: string
   return prisma.$transaction(async (tx) => {
     const released = await tx.usageEvent.updateMany({
       where: { id: usageEvent.id, status: "reserved" },
-      data: { status: "refunded", refundedAt: new Date(), error: input.reason ?? null },
+      data: { status: "refunded", refundedAt: new Date(), error: fullReason },
     });
     if (!released.count) return tx.usageEvent.findUniqueOrThrow({ where: { id: usageEvent.id } });
     const updatedAccount = await tx.creditAccount.update({
@@ -429,7 +436,10 @@ export async function refundUsage(input: { usageEventId: string; reason?: string
         type: "refund",
         amount: usageEvent.creditsReserved,
         balanceAfter: updatedAccount.balance,
-        reason: input.reason ?? "usage refunded",
+        // The full diagnostic remains on UsageEvent.error (Text). The ledger's
+        // reason column is VarChar(255), so bound it without rolling back the
+        // otherwise valid credit refund transaction.
+        reason: creditTransactionReason(fullReason),
       },
     });
     return tx.usageEvent.findUniqueOrThrow({ where: { id: usageEvent.id } });
