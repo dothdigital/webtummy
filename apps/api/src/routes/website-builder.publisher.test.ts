@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { SENUKE_COMPONENT_REGISTRY_V1 } from "@webtummy/core/website-model";
-import { combinedPageSchema, effectiveExistingPageRequirements, generatedPageSchema, importedWebsiteRouteAssignment, pageIsImportedExistingWebsite, parseWordPressJsonResponse, publishingAssetMatchesWebsitePage, websiteSettingsWithVerifiedLocalEvidence } from "./website-builder.js";
+import { combinedPageSchema, effectiveExistingPageRequirements, generatedPageSchema, importedWebsiteRouteAssignment, pageIsImportedExistingWebsite, parseWordPressJsonResponse, publishingAssetMatchesWebsitePage, shouldDeployWordPressDesignPackage, websiteSettingsWithVerifiedLocalEvidence, wordPressConnectorVersionAtLeast, wordpressConnectorSafeCss, wordpressMenuDestination } from "./website-builder.js";
 
 const project = {
   businessName: "Example Financial",
@@ -31,6 +31,43 @@ describe("ongoing WordPress publishing schema", () => {
       statusText: "OK",
       contentType: "application/json; charset=UTF-8",
     })).toEqual({ id: 7, name: "Publisher" });
+  });
+
+  it("keeps generated CSS compatible with older connector safety filters", () => {
+    const css = ".menu{overflow-y:auto;overscroll-behavior:contain;border:1px solid #ddd}.card{color:#111}";
+    const compatible = wordpressConnectorSafeCss(css);
+
+    expect(compatible).not.toContain("overscroll-behavior");
+    expect(compatible).toContain("overflow-y:auto");
+    expect(compatible).toContain("border:1px solid #ddd");
+    expect(compatible).toContain(".card{color:#111}");
+  });
+
+  it("uses release-scoped design CSS for drafts only with a compatible connector", () => {
+    expect(shouldDeployWordPressDesignPackage({ mode: "draft", managedConnectorReady: true, deployDesignPackage: true, connectorVersion: "1.3.4" })).toBe(false);
+    expect(shouldDeployWordPressDesignPackage({ mode: "draft", managedConnectorReady: true, deployDesignPackage: true, connectorVersion: "1.3.6" })).toBe(false);
+    expect(shouldDeployWordPressDesignPackage({ mode: "draft", managedConnectorReady: true, deployDesignPackage: true, connectorVersion: "1.3.7" })).toBe(false);
+    expect(shouldDeployWordPressDesignPackage({ mode: "draft", managedConnectorReady: true, deployDesignPackage: true, connectorVersion: "1.4.5" })).toBe(false);
+    expect(shouldDeployWordPressDesignPackage({ mode: "draft", managedConnectorReady: true, deployDesignPackage: true, connectorVersion: "1.5.0" })).toBe(false);
+    expect(shouldDeployWordPressDesignPackage({ mode: "draft", managedConnectorReady: true, deployDesignPackage: true, connectorVersion: "1.5.2" })).toBe(false);
+    expect(shouldDeployWordPressDesignPackage({ mode: "draft", managedConnectorReady: true, deployDesignPackage: true, connectorVersion: "1.5.3" })).toBe(true);
+    expect(shouldDeployWordPressDesignPackage({ mode: "pending", managedConnectorReady: true, deployDesignPackage: true, connectorVersion: "1.5.3" })).toBe(true);
+    expect(shouldDeployWordPressDesignPackage({ mode: "publish", managedConnectorReady: true, deployDesignPackage: true, connectorVersion: "1.5.3" })).toBe(true);
+  });
+
+  it("requires the connector version that separates draft creation from theme activation", () => {
+    expect(wordPressConnectorVersionAtLeast("1.4.4", "1.4.5")).toBe(false);
+    expect(wordPressConnectorVersionAtLeast("1.4.5", "1.4.5")).toBe(true);
+    expect(wordPressConnectorVersionAtLeast("1.5.0", "1.4.5")).toBe(true);
+  });
+
+  it("uses the exact WordPress permalink for hierarchical menu pages", () => {
+    expect(wordpressMenuDestination("https://example.com/", {
+      remoteUrl: "https://example.com/services/critical-illness-insurance/",
+      slug: "critical-illness-insurance",
+    })).toBe("https://example.com/services/critical-illness-insurance/");
+    expect(wordpressMenuDestination("https://example.com/", { slug: "about" })).toBe("https://example.com/about");
+    expect(wordpressMenuDestination("https://example.com/", {})).toBe("#");
   });
 
   it("synchronizes verified local evidence into the matching Website Plan page", () => {

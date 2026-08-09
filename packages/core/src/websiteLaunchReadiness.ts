@@ -1,5 +1,11 @@
 import { createStaticWebsiteFiles, renderWebsitePageDocument } from "./websiteRenderer.js";
 import { validateWebsiteModel, type WebsiteModel } from "./websiteModel.js";
+import {
+  evaluateWebsiteQualityGovernance,
+  type WebsiteClaimRecord,
+  type WebsiteQualityEnvironment,
+  type WebsiteQualityIssue,
+} from "./websiteQualityGovernance.js";
 
 export type WebsiteLaunchCheck = {
   key: string;
@@ -29,6 +35,13 @@ export type WebsiteLaunchReadiness = {
     cssBytes: number;
     mediaBytes: number;
   };
+  qualityGate: {
+    environment: WebsiteQualityEnvironment;
+    status: "passed" | "needs_review" | "blocked";
+    counts: { blocker: number; high: number; medium: number; low: number };
+    issues: WebsiteQualityIssue[];
+    claims: WebsiteClaimRecord[];
+  };
 };
 
 export type WebsiteLaunchReadinessOptions = {
@@ -37,6 +50,9 @@ export type WebsiteLaunchReadinessOptions = {
   baseUrl?: string;
   existingWebsite?: boolean;
   redirectCount?: number;
+  environment?: WebsiteQualityEnvironment;
+  industry?: string;
+  waivedIssues?: Record<string, string>;
 };
 
 const byteLength = (value: string, base64 = false) =>
@@ -68,7 +84,23 @@ export function evaluateWebsiteLaunchReadiness(
   ) => checks.push({ key, category, label, status, detail });
 
   const registryValidation = validateWebsiteModel(model);
+  const qualityGate = evaluateWebsiteQualityGovernance(model, {
+    environment: options.environment ?? "staging",
+    industry: options.industry,
+    waivedIssues: options.waivedIssues,
+  });
   const registryBlockers = registryValidation.findings.filter((finding) => finding.severity === "blocking");
+  add(
+    "quality_governance",
+    "content",
+    "Customer-facing quality and evidence gate",
+    qualityGate.openBlockingCount ? "blocking" : qualityGate.counts.medium || qualityGate.counts.low ? "warning" : "passed",
+    qualityGate.openBlockingCount
+      ? `${qualityGate.counts.blocker} blocker(s) and ${qualityGate.counts.high} unresolved high-severity issue(s) must be fixed or formally waived.`
+      : qualityGate.counts.medium || qualityGate.counts.low
+        ? `${qualityGate.counts.medium} medium and ${qualityGate.counts.low} low issue(s) remain visible for review.`
+        : "No instruction leakage, unsupported claim, intent-alignment, homepage, or conversion issue was found.",
+  );
   add(
     "approved_release",
     "release",
@@ -119,6 +151,7 @@ export function evaluateWebsiteLaunchReadiness(
     approvedReleaseId: options.approvedReleaseId,
     snapshotHash: options.snapshotHash,
     ...(options.baseUrl ? { baseUrl: options.baseUrl } : {}),
+    environmentType: options.environment ?? "staging",
   });
   const requiredFiles = ["sitemap.xml", "robots.txt", "llms.txt", "senuke-release.json"];
   const missingFiles = requiredFiles.filter((path) => !files.some((file) => file.path === path && file.content.trim()));
@@ -188,6 +221,7 @@ export function evaluateWebsiteLaunchReadiness(
       approvedReleaseId: options.approvedReleaseId,
       snapshotHash: options.snapshotHash,
       ...(options.baseUrl ? { baseUrl: options.baseUrl } : {}),
+      environmentType: options.environment ?? "staging",
     });
     const htmlBytes = byteLength(html);
     const findings: string[] = [];
@@ -237,5 +271,12 @@ export function evaluateWebsiteLaunchReadiness(
     checks,
     pageResults,
     output: { pageCount: model.pages.length, fileCount: files.length, htmlBytes, cssBytes, mediaBytes },
+    qualityGate: {
+      environment: qualityGate.environment,
+      status: qualityGate.status,
+      counts: qualityGate.counts,
+      issues: qualityGate.issues,
+      claims: qualityGate.claims,
+    },
   };
 }

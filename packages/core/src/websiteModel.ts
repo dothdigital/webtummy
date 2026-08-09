@@ -293,6 +293,8 @@ export type WebsiteDesignSystem = {
   };
   spacingScale: string;
   radiusScale: string;
+  /** Global horizontal canvas used by previews and every publishing target. */
+  layoutMode?: "full" | "wide" | "fixed";
 };
 
 export type WebsiteLocationAuthorityCluster = {
@@ -321,7 +323,9 @@ export type WebsiteModel = {
   componentRegistryVersion: string;
   identity?: {
     businessName: string;
+    businessSummary?: string;
     logoAssetId?: string;
+    faviconAssetId?: string;
     contactEmail?: string;
     contactPhone?: string;
     businessAddress?: string;
@@ -1114,6 +1118,7 @@ const stableFingerprint = (value: string) => {
 
 const pageNavigationGroup = (page: WebsitePageModel) => {
   const value = `${page.pageType} ${page.name}`.toLowerCase();
+  if (/^(?:home|homepage)(?:\s|$)/.test(value) || page.slug === "/") return "quick-links";
   if (/location|city|province|service area/.test(value) || pageIsLocal(page)) return "locations";
   if (/resource|blog|article|guide|support|faq/.test(value) || pageIsSupport(page)) return "resources";
   if (/about|team|case|trust|portfolio/.test(value)) return "company";
@@ -1182,10 +1187,10 @@ export function applyWebsiteGovernance(
     ...topLevel,
     ...candidateNavigation.filter((item) => item.parentPageId && topIds.has(item.parentPageId)),
   ];
-  const automaticFooterGroups = ["services", "locations", "resources", "company", "legal", "contact"]
+  const automaticFooterGroups = ["quick-links", "services", "locations", "resources", "company", "legal", "contact"]
     .map((groupId) => ({
       groupId,
-      label: groupId === "company" ? "Company" : groupId.charAt(0).toUpperCase() + groupId.slice(1),
+      label: groupId === "quick-links" ? "Quick links" : groupId === "company" ? "Company" : groupId.charAt(0).toUpperCase() + groupId.slice(1),
       items: footerPages
         .filter((page) => page.navVisibility?.footerMenu && page.menuGroupId === groupId)
         .map((page) => ({ pageId: page.pageId, label: page.navLabel || page.name })),
@@ -1197,6 +1202,11 @@ export function applyWebsiteGovernance(
     .map((page) => ({ pageId: page.pageId, label: page.navLabel || page.name }));
   if (automaticallyUngroupedPages.length) automaticFooterGroups.push({ groupId: "all-pages", label: "More", items: automaticallyUngroupedPages });
   const validSavedFooter = savedFooterNavigation.filter((item) => item.custom || (byId.has(item.pageId) && !excludedFooterIds.has(item.pageId)));
+  const savedFooterPageCounts = new Map<string, number>();
+  for (const item of validSavedFooter.filter((item) => !item.custom)) {
+    savedFooterPageCounts.set(item.pageId, (savedFooterPageCounts.get(item.pageId) ?? 0) + 1);
+  }
+  const savedFooterRepeatsPages = [...savedFooterPageCounts.values()].some((count) => count > 1);
   const footerParentIds = new Set(validSavedFooter.map((item) => item.parentPageId).filter((value): value is string => Boolean(value)));
   const savedFooterGroups = validSavedFooter
     .filter((item) => !item.parentPageId && footerParentIds.has(item.pageId))
@@ -1213,7 +1223,7 @@ export function applyWebsiteGovernance(
   const missingSavedFooterPages = footerPages
     .filter((page) => !savedFooterPageIds.has(page.pageId))
     .map((page) => ({ pageId: page.pageId, label: page.navLabel || page.name }));
-  const footerGroups = validSavedFooter.length
+  const footerGroups = validSavedFooter.length && !savedFooterRepeatsPages
     ? [
         ...savedFooterGroups,
         ...(standaloneFooterItems.length ? [{ groupId: "footer-links", label: "Quick links", items: standaloneFooterItems }] : []),

@@ -1,1 +1,0 @@
-</main><footer class="senuke-runtime-footer"><div class="senuke-runtime-footer-inner"><?php wp_nav_menu(['theme_location'=>'footer','container'=>false,'fallback_cb'=>false,'depth'=>8]);?><p>© <?php echo esc_html(gmdate('Y').' '.senuke_base_brand_name());?></p></div></footer><?php wp_footer();?></body></html>

@@ -1,1 +1,0 @@
-(()=>{const h=document.querySelector('[data-senuke-runtime-header]'),b=document.querySelector('[data-senuke-menu-toggle]');if(!h||!b)return;b.addEventListener('click',()=>{const o=h.getAttribute('data-menu-open')==='true';h.setAttribute('data-menu-open',o?'false':'true');b.setAttribute('aria-expanded',o?'false':'true')})})();

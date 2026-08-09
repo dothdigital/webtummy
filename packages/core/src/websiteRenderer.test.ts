@@ -3,6 +3,8 @@ import {
   createStaticWebsiteFiles,
   renderWebsiteComponentHtml,
   renderWebsitePageDocument,
+  renderWebsitePageWordPressBlocks,
+  websiteLayoutCssVariables,
 } from "./websiteRenderer.js";
 import {
   SENUKE_COMPONENT_REGISTRY_V1,
@@ -148,6 +150,11 @@ describe("Approved Release website renderer", () => {
     const css = String(createStaticWebsiteFiles(layoutModel).find((file) => file.path === "assets/senuke.css")?.content ?? "");
     expect(css).toContain(".senuke-layout-two_left_wide");
     expect(css).toContain(".senuke-layout-background-image");
+    const wordpressBlocks = renderWebsitePageWordPressBlocks(layoutModel, layoutModel.pages[0]);
+    expect(wordpressBlocks).toContain("<!-- wp:senuke/section-layout");
+    expect(wordpressBlocks).toContain("<!-- wp:columns");
+    expect(wordpressBlocks).toContain("<!-- wp:column -->");
+    expect(wordpressBlocks).not.toContain('"lock":{"move":true,"remove":true}');
   });
 
   it("rejects unsupported components at the renderer boundary", () => {
@@ -160,6 +167,73 @@ describe("Approved Release website renderer", () => {
     expect(html).toContain('type="application/ld+json"');
     expect(html).toContain("All rights reserved.");
     expect(html).not.toContain("approved SENuke AI release");
+  });
+
+  it("publishes each governed page section as a separate Gutenberg block", () => {
+    const content = renderWebsitePageWordPressBlocks(model, model.pages[0]);
+    expect(content).toContain("<!-- wp:senuke/local-service-hero");
+    expect(content).toContain("<!-- wp:senuke/rich-text");
+    expect(content).not.toContain('"lock":{"move":true,"remove":true}');
+    expect(content).toContain('"isSecondFold":true');
+    expect(content).not.toContain('<!-- wp:html -->\n<section class="senuke-component senuke-hero');
+  });
+
+  it("does not append automatic related-page and CTA navigation to the homepage", () => {
+    const destination = {
+      ...model.pages[0],
+      pageId: "page-2",
+      name: "Contact Us",
+      slug: "/contact/",
+      pageType: "contact",
+      seo: { ...model.pages[0].seo, internalLinks: [] },
+    };
+    const homeModel: WebsiteModel = {
+      ...model,
+      pages: [{
+        ...model.pages[0],
+        name: "Home",
+        slug: "/",
+        pageType: "home",
+        seo: {
+          ...model.pages[0].seo,
+          internalLinks: [
+            { targetPageId: "page-2", anchorText: "Contact Us", placement: "related_pages", linkType: "related", status: "approved" },
+            { targetPageId: "page-2", anchorText: "Contact us today", placement: "cta", linkType: "cta", status: "approved" },
+          ],
+        },
+      }, destination],
+    };
+    const content = renderWebsitePageWordPressBlocks(homeModel, homeModel.pages[0]);
+    expect(content).not.toContain("senuke-related-pages");
+    expect(content).not.toContain("senuke-link-cta");
+    expect(content).not.toContain("Contact us today");
+  });
+
+  it("adds the approved favicon to every rendered page document", () => {
+    const withFavicon: WebsiteModel = {
+      ...model,
+      identity: { businessName: "Example Insurance", faviconAssetId: "favicon-1" },
+      mediaAssets: [{ assetId: "favicon-1", status: "approved", altText: "Example Insurance favicon", sourceUrl: "https://example.com/favicon.png" }],
+    };
+    const html = renderWebsitePageDocument(withFavicon, withFavicon.pages[0]);
+    expect(html).toContain('<link rel="icon" href="https://example.com/favicon.png">');
+  });
+
+  it("renders fixed, wide, and full-screen website canvas variables", () => {
+    expect(websiteLayoutCssVariables("fixed")).toContain("--senuke-layout-max:1120px");
+    expect(websiteLayoutCssVariables("wide")).toContain("--senuke-layout-max:1440px");
+    expect(websiteLayoutCssVariables("full")).toContain("--senuke-layout-max:100%");
+    const wideModel: WebsiteModel = {
+      ...model,
+      designSystem: { ...model.designSystem, layoutMode: "wide" },
+    };
+    const html = renderWebsitePageDocument(wideModel, wideModel.pages[0]);
+    expect(html).toContain("--senuke-layout-max:1440px");
+    expect(html).toContain("--senuke-layout-gutter:1.25rem");
+    expect(html).toContain("--senuke-reading-max:90ch");
+    const css = String(createStaticWebsiteFiles(wideModel).find((file) => file.path === "assets/senuke.css")?.content ?? "");
+    expect(css).toContain(".senuke-rich-text{display:block;width:min(var(--senuke-layout-max,1120px)");
+    expect(css).not.toContain(".senuke-rich-text{display:block;width:min(900px");
   });
 
   it("merges duplicate legacy footer columns while preserving their links", () => {
@@ -180,7 +254,7 @@ describe("Approved Release website renderer", () => {
       },
     };
     const html = renderWebsitePageDocument(legacyModel, legacyModel.pages[0]);
-    expect(html.match(/<h2>Services<\/h2>/g)).toHaveLength(1);
+    expect(html.match(/<h2>Our Services<\/h2>/g)).toHaveLength(1);
     expect(html).toContain(">Super Visa Insurance in Brampton</a>");
     expect(html).toContain(">Critical Illness Insurance</a>");
   });
@@ -229,6 +303,7 @@ describe("Approved Release website renderer", () => {
       ...model,
       identity: {
         businessName: "Example Insurance",
+        businessSummary: "Clear insurance guidance for families and business owners.",
         contactPhone: "+1 905 555 0100",
         contactEmail: "hello@example.com",
         businessAddress: "Brampton, Ontario",
@@ -239,7 +314,11 @@ describe("Approved Release website renderer", () => {
     expect(html).toContain('href="tel:+19055550100"');
     expect(html).toContain('href="mailto:hello@example.com"');
     expect(html).toContain("Brampton, Ontario");
+    expect(html).toContain('class="senuke-site-topbar"');
+    expect(html).toContain('class="senuke-footer-main"');
+    expect(html).toContain("Clear insurance guidance for families and business owners.");
     expect(html).toContain("© 2026 Example Insurance. Coverage subject to policy terms.");
+    expect(html).not.toContain("Powered by");
   });
 
   it("renders only confirmed social profiles as accessible global-footer icons", () => {
@@ -254,7 +333,9 @@ describe("Approved Release website renderer", () => {
       },
     };
     const html = renderWebsitePageDocument(withSocialProfiles, withSocialProfiles.pages[0]);
-    expect(html).toContain('class="senuke-social-links"');
+    expect(html).toContain("senuke-social-links");
+    expect(html).toContain("senuke-header-social");
+    expect(html).toContain("senuke-footer-social");
     expect(html).toContain('href="https://linkedin.com/company/example-insurance"');
     expect(html).toContain('aria-label="LinkedIn"');
     expect(html).not.toContain('aria-label="Instagram"');

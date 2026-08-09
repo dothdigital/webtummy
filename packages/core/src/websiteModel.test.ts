@@ -218,6 +218,26 @@ describe("SENuke canonical Website Model", () => {
     ]);
   });
 
+  it("rebuilds a duplicated saved footer into one appropriate group per page", () => {
+    const home = page({ pageId: "home", name: "Home", slug: "/", pageType: "home" });
+    const service = page({ pageId: "life", name: "Life Insurance", slug: "/life-insurance/", pageType: "service" });
+    const governed = applyWebsiteGovernance(
+      [home, service],
+      [],
+      undefined,
+      [
+        { pageId: "quick", label: "Quick links", custom: true },
+        { pageId: "home", label: "Home", parentPageId: "quick" },
+        { pageId: "life", label: "Life Insurance", parentPageId: "quick" },
+        { pageId: "services", label: "Services", custom: true },
+        { pageId: "life", label: "Life Insurance", parentPageId: "services" },
+      ],
+    );
+
+    expect(governed.navigationModel.footerMenus.flatMap((group) => group.items).map((item) => item.pageId)).toEqual(["home", "life"]);
+    expect(governed.navigationModel.footerMenus).toHaveLength(2);
+  });
+
   it("supports intentionally removing a page from the footer", () => {
     const home = page({ pageId: "home", name: "Home", slug: "/", pageType: "home" });
     const contact = page({ pageId: "contact", name: "Contact Us", slug: "/contact/", pageType: "contact" });

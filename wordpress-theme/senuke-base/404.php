@@ -1,1 +1,0 @@
-<?php get_header();?><section><h1><?php esc_html_e('Page not found','senuke-base');?></h1><a href="<?php echo esc_url(home_url('/'));?>"><?php esc_html_e('Return home','senuke-base');?></a></section><?php get_footer();

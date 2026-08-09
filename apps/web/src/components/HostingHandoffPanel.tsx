@@ -73,9 +73,14 @@ export default function HostingHandoffPanel({
   onSave: (draft: HostingHandoffDraft) => Promise<void>;
 }) {
   const [draft, setDraft] = useState<HostingHandoffDraft>(() => draftFromSaved(saved));
+  const [editing, setEditing] = useState(() => !text(saved.savedAt));
   const savedAt = text(saved.savedAt);
-  useEffect(() => setDraft(draftFromSaved(saved)), [savedAt]);
+  useEffect(() => {
+    setDraft(draftFromSaved(saved));
+    if (savedAt) setEditing(false);
+  }, [savedAt]);
   const missing = hostingHandoffMissing(draft);
+  const savedReady = Boolean(savedAt) && !missing.length;
 
   const choose = (destination: HostingDestination) => {
     setDraft({
@@ -87,6 +92,16 @@ export default function HostingHandoffPanel({
     });
   };
 
+  if (savedReady && !editing) return <section id="hosting-handoff" className="scroll-mt-6 rounded-xl border border-emerald-200 bg-emerald-50/70 px-4 py-3">
+    <div className="flex flex-wrap items-center justify-between gap-3">
+      <div className="flex min-w-0 items-center gap-3">
+        <span className="grid h-8 w-8 shrink-0 place-items-center rounded-full bg-emerald-600 text-sm font-black text-white">✓</span>
+        <div className="min-w-0"><div className="text-[9px] font-black uppercase tracking-wide text-emerald-700">Deployment destination</div><b className="block truncate text-sm text-emerald-950">{draft.destination === "wordpress" ? "WordPress" : draft.destination === "developer_handoff" ? "Developer handoff" : `Static server · ${draft.sftp.host || draft.domain}`}</b></div>
+      </div>
+      <button type="button" onClick={() => setEditing(true)} className="rounded-lg border border-emerald-300 bg-white px-3 py-2 text-xs font-black text-emerald-800">Change</button>
+    </div>
+  </section>;
+
   return <section id="hosting-handoff" className="scroll-mt-6 rounded-xl border border-indigo-200 bg-white p-5">
     <div className="flex flex-wrap items-start justify-between gap-3">
       <div>
@@ -94,7 +109,7 @@ export default function HostingHandoffPanel({
         <h3 className="mt-1 text-lg font-black text-slate-950">How should the Approved Release be delivered?</h3>
         <p className="mt-1 max-w-3xl text-sm leading-6 text-slate-500">Choose only the deployment path. SENuke asks for server details only when it needs a server path.</p>
       </div>
-      <span className={`rounded-full px-3 py-1 text-[10px] font-black uppercase ${savedAt && !missing.length ? "bg-emerald-100 text-emerald-700" : "bg-amber-100 text-amber-700"}`}>{savedAt && !missing.length ? "Destination ready" : "Choose destination"}</span>
+      <div className="flex items-center gap-2">{savedAt&&<button type="button" onClick={()=>{setDraft(draftFromSaved(saved));setEditing(false)}} className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-black text-slate-600">Cancel</button>}<span className={`rounded-full px-3 py-1 text-[10px] font-black uppercase ${savedAt && !missing.length ? "bg-emerald-100 text-emerald-700" : "bg-amber-100 text-amber-700"}`}>{savedAt && !missing.length ? "Destination ready" : "Choose destination"}</span></div>
     </div>
 
     <div className="mt-5 grid gap-3 lg:grid-cols-3">

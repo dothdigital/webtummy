@@ -7,6 +7,8 @@ import {
   type WebsiteModel,
   type WebsitePageModel,
 } from "./websiteModel.js";
+import { load } from "cheerio";
+import type { WebsiteQualityEnvironment } from "./websiteQualityGovernance.js";
 
 export type WebsiteRenderFile = {
   path: string;
@@ -25,6 +27,8 @@ export type WebsiteRenderOptions = {
   assetUrls?: Record<string, string>;
   internalUrlMap?: Record<string, string>;
   formAction?: string;
+  /** Preview and staging output are never indexable. */
+  environmentType?: WebsiteQualityEnvironment;
 };
 
 const escapeHtml = (value: unknown) =>
@@ -58,6 +62,14 @@ const propComponents = (component: WebsiteComponentInstance, name: string): Webs
     && typeof (item as Record<string, JsonValue>).instanceId === "string",
   ));
 };
+
+const isComponentInstance = (value: JsonValue): value is WebsiteComponentInstance => Boolean(
+  value
+  && typeof value === "object"
+  && !Array.isArray(value)
+  && typeof (value as Record<string, JsonValue>).componentId === "string"
+  && typeof (value as Record<string, JsonValue>).instanceId === "string",
+);
 
 const componentAlignmentClass = (component: WebsiteComponentInstance) => {
   const value = propString(component, "alignment");
@@ -170,7 +182,7 @@ const formHoneypot = () =>
 export function renderWebsiteComponentHtml(
   component: WebsiteComponentInstance,
   options: WebsiteRenderOptions = {},
-) {
+): string {
   const findings = validateComponentInstance(component, SENUKE_COMPONENT_REGISTRY_V1);
   if (findings.some((finding) => finding.severity === "blocking")) {
     throw new Error(`Unsupported website component ${component.componentId}@${component.componentVersion}.`);
@@ -193,7 +205,7 @@ export function renderWebsiteComponentHtml(
         const overlay = typeof rawOverlay === "number" ? Math.max(0, Math.min(90, rawOverlay)) : 40;
         const overlayHtml = image && overlay ? `<span class="senuke-layout-background-overlay" style="opacity:${overlay / 100}"></span>` : "";
         const slotNames = ["columnOne", "columnTwo", "columnThree"].slice(0, count);
-        const columns = slotNames.map((slotName, index) => `<div class="senuke-layout-column" data-column="${index + 1}">${propComponents(component, slotName).map((child) => renderWebsiteComponentHtml(child, options)).join("")}</div>`).join("");
+        const columns: string = slotNames.map((slotName, index) => `<div class="senuke-layout-column" data-column="${index + 1}">${propComponents(component, slotName).map((child) => renderWebsiteComponentHtml(child, options)).join("")}</div>`).join("");
         return `<section class="senuke-component senuke-layout-section senuke-layout-${escapeHtml(variant)} senuke-layout-bg-${escapeHtml(background)} senuke-layout-text-${escapeHtml(textColor)} senuke-layout-spacing-${escapeHtml(spacing)}">${image}${overlayHtml}<div class="senuke-layout-columns">${columns}</div></section>`;
       }
     case "global.header":
@@ -286,8 +298,17 @@ export function renderWebsitePageBodyHtml(
   const sections = renderedSections.length
     ? `${renderedSections[0]}${introLinks}${renderedSections.slice(1).join("")}`
     : introLinks;
-  const relatedLinks = renderInternalLinkList(model, page, ["related_pages", "service_area", "faq", "card"], componentOptions, "senuke-related-pages", pageIsLocalRender(page) ? "Related service areas" : "Related pages");
-  const conversionLinks = renderInternalLinkList(model, page, ["cta"], componentOptions, "senuke-link-cta", "Next step");
+  const isHomePage = normalizedPath(page.slug) === "/" || page.pageType === "home";
+  // The homepage already carries its primary calls to action in the designed
+  // sections and global navigation. Appending an automatic page index and a
+  // second plain CTA immediately above the footer creates a duplicate,
+  // uncomposed strip that looks like broken navigation.
+  const relatedLinks = isHomePage
+    ? ""
+    : renderInternalLinkList(model, page, ["related_pages", "service_area", "faq", "card"], componentOptions, "senuke-related-pages", pageIsLocalRender(page) ? "Related service areas" : "Related pages");
+  const conversionLinks = isHomePage
+    ? ""
+    : renderInternalLinkList(model, page, ["cta"], componentOptions, "senuke-link-cta", "Next step");
   const form = model.forms[0];
   const hasRegisteredForm = flattenWebsiteComponents(page.sections).some((section) => section.componentId === "conversion.contact_form");
   const isContactPage = page.pageType === "contact"
@@ -304,6 +325,126 @@ export function renderWebsitePageBodyHtml(
       }).join("")}<button class="senuke-button" type="submit">Send enquiry</button><p class="senuke-form-status" role="status" aria-live="polite" hidden></p></form></section>`
     : "";
   return `${breadcrumbHtml(model, page, componentOptions)}${sections}${relatedLinks}${conversionLinks}${formHtml}`;
+}
+
+/**
+ * Preserve the governed SENuke page design while exposing each top-level page
+ * section as an independent Gutenberg block. WordPress previously received the
+ * complete body as one HTML value, which made the editor display a single large
+ * Custom HTML block. Keeping the generated section markup intact avoids visual
+ * drift while giving users a practical section-by-section editing surface.
+ */
+export function renderWebsitePageWordPressBlocks(
+  model: WebsiteModel,
+  page: WebsitePageModel,
+  options: WebsiteRenderOptions = {},
+) {
+  let body = renderWebsitePageBodyHtml(model, page, options);
+  const heroIndex = page.sections.findIndex((component) => component.componentId === "hero.local_service");
+  const secondFoldIndex = page.sections.findIndex((component, index) => index > heroIndex && Boolean(propString(component, "heading")));
+  const blockPayloads = page.sections.map((component, index) => {
+    const blockMarkup = serializeWordPressComponentBlock(component, options, index === secondFoldIndex);
+    let rendered = renderWebsiteComponentHtml(component, options);
+    if (index === secondFoldIndex) rendered = rendered.replace('class="senuke-component ', 'class="senuke-component senuke-second-fold ');
+    const placeholder = `<senuke-gutenberg-block data-index="${index}"></senuke-gutenberg-block>`;
+    body = body.replace(rendered, placeholder);
+    return blockMarkup;
+  });
+  const $ = load(`<div id="senuke-wordpress-block-root">${body}</div>`, null, false);
+  const fragments = $("#senuke-wordpress-block-root")
+    .contents()
+    .toArray()
+    .map((node) => {
+      if (node.type === "tag" && node.tagName === "senuke-gutenberg-block") {
+        const index = Number($(node).attr("data-index"));
+        return blockPayloads[index] || "";
+      }
+      return $.html(node).trim();
+    })
+    .filter(Boolean);
+
+  return fragments.map((fragment) => {
+    if (/^<!-- wp:senuke\//.test(fragment)) return fragment;
+    if (/^\[senuke_form\b[\s\S]*\]$/i.test(fragment)) {
+      return `<!-- wp:shortcode -->\n${fragment}\n<!-- /wp:shortcode -->`;
+    }
+    return `<!-- wp:html -->\n${fragment}\n<!-- /wp:html -->`;
+  }).join("\n\n");
+}
+
+function serializeWordPressComponentBlock(
+  component: WebsiteComponentInstance,
+  options: WebsiteRenderOptions,
+  isSecondFold = false,
+): string {
+  const definition = SENUKE_COMPONENT_REGISTRY_V1.components.find((candidate) => candidate.componentId === component.componentId);
+  const blockName = definition?.rendererMappings.wordpress || "senuke/rich-text";
+  const enrichedComponent = enrichWordPressComponent(component, options);
+  if (isSecondFold) enrichedComponent.props.isSecondFold = true;
+  if (enrichedComponent.componentId !== "layout.section") {
+    const attributes = safeWordPressBlockJson({
+      componentId: enrichedComponent.componentId,
+      instanceId: enrichedComponent.instanceId,
+      componentVersion: enrichedComponent.componentVersion,
+      variant: enrichedComponent.variant,
+      props: enrichedComponent.props,
+    });
+    return `<!-- wp:${blockName} ${attributes} /-->`;
+  }
+
+  const layoutProps = { ...enrichedComponent.props } as Record<string, JsonValue>;
+  const slots = enrichedComponent.variant === "one_column"
+    ? ["columnOne"]
+    : enrichedComponent.variant === "three_equal"
+      ? ["columnOne", "columnTwo", "columnThree"]
+      : ["columnOne", "columnTwo"];
+  const columns = slots.map((slot) => {
+    const children = Array.isArray(layoutProps[slot])
+      ? layoutProps[slot].filter(isComponentInstance)
+      : [];
+    delete layoutProps[slot];
+    return `<!-- wp:column -->\n${children.map((child) => serializeWordPressComponentBlock(child, options)).join("\n\n")}\n<!-- /wp:column -->`;
+  }).join("\n\n");
+  const attributes = safeWordPressBlockJson({
+    componentId: enrichedComponent.componentId,
+    instanceId: enrichedComponent.instanceId,
+    componentVersion: enrichedComponent.componentVersion,
+    variant: enrichedComponent.variant,
+    props: layoutProps,
+  });
+  return `<!-- wp:${blockName} ${attributes} -->\n<!-- wp:columns {"className":"senuke-layout-columns"} -->\n${columns}\n<!-- /wp:columns -->\n<!-- /wp:${blockName} -->`;
+}
+
+function safeWordPressBlockJson(value: unknown) {
+  return JSON.stringify(value).replace(/</g, "\\u003c").replace(/--/g, "\\u002d\\u002d");
+}
+
+function enrichWordPressComponent(component: WebsiteComponentInstance, options: WebsiteRenderOptions): WebsiteComponentInstance {
+  const props = { ...component.props } as Record<string, JsonValue>;
+  for (const slot of ["columnOne", "columnTwo", "columnThree"]) {
+    const children = props[slot];
+    if (Array.isArray(children)) {
+      props[slot] = children.map((child) => isComponentInstance(child) ? enrichWordPressComponent(child, options) : child);
+    }
+  }
+  for (const key of ["primaryCtaUrl", "buttonUrl"]) {
+    if (typeof props[key] === "string") props[key] = resolvedComponentUrl(props[key], options);
+  }
+  const imageAssetId = typeof props.imageAssetId === "string" ? props.imageAssetId : "";
+  if (imageAssetId) {
+    const asset = options.mediaAssets?.find((candidate) => candidate.assetId === imageAssetId);
+    const sourceUrl = options.assetUrls?.[imageAssetId] || asset?.sourceUrl || "";
+    if (sourceUrl) props.imageUrl = sourceUrl;
+    if (asset?.altText) props.imageAltText = asset.altText;
+  }
+  const backgroundImageAssetId = typeof props.backgroundImageAssetId === "string" ? props.backgroundImageAssetId : "";
+  if (backgroundImageAssetId) {
+    const asset = options.mediaAssets?.find((candidate) => candidate.assetId === backgroundImageAssetId);
+    const sourceUrl = options.assetUrls?.[backgroundImageAssetId] || asset?.sourceUrl || "";
+    if (sourceUrl) props.backgroundImageUrl = sourceUrl;
+  }
+  if (component.componentId === "conversion.contact_form" && options.formShortcode) props.formShortcode = options.formShortcode;
+  return { ...component, props };
 }
 
 const pageIsLocalRender = (page: WebsitePageModel) =>
@@ -342,32 +483,60 @@ const utilityNavigationHtml = (model: WebsiteModel, options: WebsiteRenderOption
   }).join("")}</ul></nav>`;
 };
 
-const footerNavigationHtml = (model: WebsiteModel, options: WebsiteRenderOptions = {}) => {
+export function curatedWebsiteFooterMenus(model: WebsiteModel) {
   const sourceGroups = model.navigationModel?.footerMenus ?? [];
-  const groups = [...sourceGroups.reduce((merged, group) => {
-    const key = group.label.trim().toLowerCase();
-    const current = merged.get(key);
-    if (!current) {
-      merged.set(key, { ...group, items: [...group.items] });
-      return merged;
+  const choices = new Map<string, { item: (typeof sourceGroups)[number]["items"][number]; groupText: string }>();
+  for (const group of sourceGroups) {
+    for (const item of group.items) {
+      const page = pageById(model, item.pageId);
+      const groupText = `${group.groupId} ${group.label}`.toLowerCase();
+      const pageText = `${page?.menuGroupId || ""} ${page?.pageType || ""} ${page?.name || item.label}`.toLowerCase();
+      const key = item.pageId || `${item.label}:${item.url || ""}`;
+      const candidate = { item: page ? { ...item, label: page.navLabel || page.name } : item, groupText: `${groupText} ${pageText}` };
+      const existing = choices.get(key);
+      if (!existing || (/service|location|product/.test(candidate.groupText) && !/service|location|product/.test(existing.groupText))) choices.set(key, candidate);
     }
-    const existingPageIds = new Set(current.items.map((item) => item.pageId));
-    current.items.push(...group.items.filter((item) => !existingPageIds.has(item.pageId)));
-    return merged;
-  }, new Map<string, (typeof sourceGroups)[number]>()).values()];
-  if (!groups.length) return "";
-  const labelCounts = new Map<string, number>();
-  for (const item of groups.flatMap((group) => group.items)) {
-    const key = item.label.trim().toLowerCase();
-    labelCounts.set(key, (labelCounts.get(key) ?? 0) + 1);
   }
+  const quickLinks: typeof sourceGroups[number]["items"] = [];
+  const services: typeof sourceGroups[number]["items"] = [];
+  const legal: typeof sourceGroups[number]["items"] = [];
+  for (const { item, groupText } of choices.values()) {
+    const page = pageById(model, item.pageId);
+    const homeOrCompany = page?.slug === "/" || /(?:^|\s)(?:home|homepage|about|company|team|contact|resource|blog|article|guide|support|faq)(?:\s|$)/.test(groupText);
+    if (/(?:^|\s)(?:legal|privacy|terms|cookie|sitemap)(?:\s|$)/.test(groupText)) legal.push(item);
+    else if (!homeOrCompany && /(?:^|\s)(?:service|services|location|locations|product|products|plan|planning|investment)(?:\s|$)/.test(groupText)) services.push(item);
+    else quickLinks.push(item);
+  }
+  return {
+    mainGroups: [
+      ...(quickLinks.length ? [{ groupId: "quick-links", label: "Quick link", items: quickLinks }] : []),
+      ...(services.length ? [{ groupId: "services", label: "Our Services", items: services }] : []),
+    ],
+    legalItems: legal,
+  };
+}
+
+const footerNavigationHtml = (model: WebsiteModel, options: WebsiteRenderOptions = {}) => {
+  const groups = curatedWebsiteFooterMenus(model).mainGroups;
+  if (!groups.length) return "";
   return `<nav class="senuke-footer-navigation" aria-label="Footer navigation">${groups.map((group) => `<section><h2>${escapeHtml(group.label)}</h2><ul>${group.items.map((item) => {
     const page = pageById(model, item.pageId);
     const path = page ? normalizedPath(page.slug) : item.url || "";
     const href = page ? options.internalUrlMap?.[path] || path : resolvedComponentUrl(path, options);
-    const label = page && (labelCounts.get(item.label.trim().toLowerCase()) ?? 0) > 1 ? page.name : item.label;
-    return href ? `<li><a href="${escapeHtml(href)}">${escapeHtml(label)}</a></li>` : "";
+    return href ? `<li><a href="${escapeHtml(href)}">${escapeHtml(item.label)}</a></li>` : "";
   }).join("")}</ul></section>`).join("")}</nav>`;
+};
+
+const footerLegalNavigationHtml = (model: WebsiteModel, options: WebsiteRenderOptions = {}) => {
+  const items = curatedWebsiteFooterMenus(model).legalItems;
+  const links = [`<a href="${escapeHtml(options.internalUrlMap?.["/sitemap.xml"] || "/sitemap.xml")}">Sitemap</a>`];
+  for (const item of items) {
+    const page = pageById(model, item.pageId);
+    const path = page ? normalizedPath(page.slug) : item.url || "";
+    const href = page ? options.internalUrlMap?.[path] || path : resolvedComponentUrl(path, options);
+    if (href) links.push(`<a href="${escapeHtml(href)}">${escapeHtml(item.label)}</a>`);
+  }
+  return `<nav class="senuke-footer-legal" aria-label="Legal">${links.join("")}</nav>`;
 };
 
 const socialProfileMeta = {
@@ -379,39 +548,61 @@ const socialProfileMeta = {
   tiktok: { label: "TikTok", icon: '<path class="senuke-social-fill" d="M19 4c.5 3.2 2.3 5.1 5.5 5.8v4.1a11 11 0 0 1-5.5-1.7v7.6A8.2 8.2 0 1 1 12 11.7v4.4a3.9 3.9 0 1 0 2.7 3.7V4Z"/>' },
 } as const;
 
-const socialNavigationHtml = (model: WebsiteModel) => {
+const socialNavigationHtml = (model: WebsiteModel, placement: "header" | "footer" = "footer") => {
   const profiles = (model.identity?.socialProfiles ?? []).filter((profile) => /^https:\/\//i.test(profile.url) && socialProfileMeta[profile.network]);
   if (!profiles.length) return "";
-  return `<nav class="senuke-social-links" aria-label="Social media">${profiles.map((profile) => {
+  return `<nav class="senuke-social-links senuke-${placement}-social" aria-label="Social media">${profiles.map((profile) => {
     const meta = socialProfileMeta[profile.network];
     return `<a href="${escapeHtml(profile.url)}" target="_blank" rel="noopener noreferrer" aria-label="${meta.label}" title="${meta.label}"><svg viewBox="0 0 32 32" aria-hidden="true">${meta.icon}</svg></a>`;
   }).join("")}</nav>`;
 };
+
+const headerContactHtml = (model: WebsiteModel) => {
+  const items = [
+    model.identity?.contactEmail ? `<a href="mailto:${escapeHtml(model.identity.contactEmail)}"><span aria-hidden="true">✉</span>${escapeHtml(model.identity.contactEmail)}</a>` : "",
+    model.identity?.contactPhone ? `<a href="tel:${escapeHtml(model.identity.contactPhone.replace(/[^\d+]/g, ""))}"><span aria-hidden="true">☎</span>${escapeHtml(model.identity.contactPhone)}</a>` : "",
+    model.identity?.businessAddress ? `<span><span aria-hidden="true">●</span>${escapeHtml(model.identity.businessAddress)}</span>` : "",
+  ].filter(Boolean);
+  return items.length ? `<div class="senuke-header-contact">${items.join("")}</div>` : "";
+};
+
+export function websiteLayoutCssVariables(mode: WebsiteModel["designSystem"]["layoutMode"] = "fixed") {
+  if (mode === "full") return "--senuke-layout-max:100%;--senuke-layout-gutter:clamp(1rem,2vw,2.5rem);--senuke-layout-inset:clamp(2rem,4vw,5rem);--senuke-reading-max:105ch;";
+  if (mode === "wide") return "--senuke-layout-max:1440px;--senuke-layout-gutter:1.25rem;--senuke-layout-inset:2.5rem;--senuke-reading-max:90ch;";
+  return "--senuke-layout-max:1120px;--senuke-layout-gutter:1rem;--senuke-layout-inset:2rem;--senuke-reading-max:72ch;";
+}
 
 export function renderWebsitePageDocument(
   model: WebsiteModel,
   page: WebsitePageModel,
   options: WebsiteRenderOptions = {},
 ) {
+  const environmentType = options.environmentType ?? "preview";
+  const production = environmentType === "production";
   const colors = model.designSystem.colors;
-  const canonical = /^https:\/\//i.test(page.seo.canonicalUrl)
+  const canonical = production && /^https:\/\//i.test(page.seo.canonicalUrl)
     ? page.seo.canonicalUrl
-    : options.baseUrl
+    : production && options.baseUrl
       ? `${options.baseUrl.replace(/\/+$/, "")}${normalizedPath(page.seo.canonicalUrl || page.slug)}`
       : normalizedPath(page.seo.canonicalUrl || page.slug);
-  const cssVariables = `--senuke-primary:${escapeHtml(colors.primary)};--senuke-secondary:${escapeHtml(colors.secondary)};--senuke-accent:${escapeHtml(colors.accent)};--senuke-background:${escapeHtml(colors.background)};--senuke-surface:${escapeHtml(colors.surface)};--senuke-text:${escapeHtml(colors.text)};--senuke-muted:${escapeHtml(colors.mutedText)};--senuke-heading:${escapeHtml(model.designSystem.typography.headingFont)};--senuke-body:${escapeHtml(model.designSystem.typography.bodyFont)}`;
+  const robots = production ? (page.seo.robots || "index, follow") : "noindex, nofollow";
+  const cssVariables = `--senuke-primary:${escapeHtml(colors.primary)};--senuke-secondary:${escapeHtml(colors.secondary)};--senuke-accent:${escapeHtml(colors.accent)};--senuke-background:${escapeHtml(colors.background)};--senuke-surface:${escapeHtml(colors.surface)};--senuke-text:${escapeHtml(colors.text)};--senuke-muted:${escapeHtml(colors.mutedText)};--senuke-heading:${escapeHtml(model.designSystem.typography.headingFont)};--senuke-body:${escapeHtml(model.designSystem.typography.bodyFont)};${websiteLayoutCssVariables(model.designSystem.layoutMode)}`;
   const logoAssetId = model.identity?.logoAssetId || "";
   const logoAsset = model.mediaAssets.find((asset) => asset.assetId === logoAssetId);
   const logoUrl = options.assetUrls?.[logoAssetId] || logoAsset?.sourceUrl || "";
+  const faviconAssetId = model.identity?.faviconAssetId || "";
+  const faviconAsset = model.mediaAssets.find((asset) => asset.assetId === faviconAssetId);
+  const faviconUrl = options.assetUrls?.[faviconAssetId] || faviconAsset?.sourceUrl || "";
   const brandName = model.identity?.businessName || model.pages[0]?.name || "Website";
   const brandMarkup = logoUrl && renderableImageUrl(logoUrl)
     ? `<img class="senuke-brand-logo" src="${escapeHtml(logoUrl)}" alt="${escapeHtml(logoAsset?.altText || `${brandName} logo`)}">`
     : escapeHtml(brandName);
   const contactItems = [
+    model.identity?.businessAddress ? `<span>${escapeHtml(model.identity.businessAddress)}</span>` : "",
     model.identity?.contactPhone ? `<a href="tel:${escapeHtml(model.identity.contactPhone.replace(/[^\d+]/g, ""))}">${escapeHtml(model.identity.contactPhone)}</a>` : "",
     model.identity?.contactEmail ? `<a href="mailto:${escapeHtml(model.identity.contactEmail)}">${escapeHtml(model.identity.contactEmail)}</a>` : "",
-    model.identity?.businessAddress ? `<span>${escapeHtml(model.identity.businessAddress)}</span>` : "",
   ].filter(Boolean);
+  const businessSummary = model.identity?.businessSummary?.trim() || "";
   const copyrightText = model.identity?.copyrightText || `© ${new Date().getFullYear()} ${brandName}. All rights reserved.`;
   const homeHref = options.internalUrlMap?.["/"] || "/";
   const formDeliveryScript = options.formAction
@@ -447,15 +638,17 @@ document.querySelectorAll("[data-senuke-managed-form]").forEach(function(form){
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>${escapeHtml(page.seo.title)}</title>
 <meta name="description" content="${escapeHtml(page.seo.metaDescription)}">
-<meta name="robots" content="${escapeHtml(page.seo.robots)}">
+<meta name="robots" content="${escapeHtml(robots)}">
 <link rel="canonical" href="${escapeHtml(canonical)}">
+${faviconUrl && renderableImageUrl(faviconUrl) ? `<link rel="icon" href="${escapeHtml(faviconUrl)}">` : ""}
 <link rel="stylesheet" href="${escapeHtml(options.stylesheetHref || "/assets/senuke.css")}">
 <script type="application/ld+json">${safeJsonLd(page.seo.schemaJsonLd)}</script>
 </head>
 <body>
-<header class="senuke-site-header"><a class="senuke-brand" href="${escapeHtml(homeHref)}">${brandMarkup}</a><div class="senuke-header-navigation">${utilityNavigationHtml(model, options)}${navigationHtml(model, options)}</div><details class="senuke-mobile-menu"><summary aria-label="Open navigation menu"><span class="senuke-menu-icon" aria-hidden="true"><i></i><i></i><i></i></span><span class="senuke-visually-hidden">Menu</span></summary><div class="senuke-mobile-menu-panel">${utilityNavigationHtml(model, options)}${navigationHtml(model, options)}</div></details></header>
+<div class="senuke-site-topbar"><div class="senuke-site-topbar-inner">${socialNavigationHtml(model, "header")}${headerContactHtml(model)}</div></div>
+<header class="senuke-site-header"><a class="senuke-brand" href="${escapeHtml(homeHref)}">${brandMarkup}</a><div class="senuke-header-navigation">${navigationHtml(model, options)}${utilityNavigationHtml(model, options)}</div><details class="senuke-mobile-menu"><summary aria-label="Open navigation menu"><span class="senuke-menu-icon" aria-hidden="true"><i></i><i></i><i></i></span><span class="senuke-visually-hidden">Menu</span></summary><div class="senuke-mobile-menu-panel">${navigationHtml(model, options)}${utilityNavigationHtml(model, options)}</div></details></header>
 <main>${renderWebsitePageBodyHtml(model, page, { ...options, mediaAssets: options.mediaAssets || model.mediaAssets })}</main>
-<footer class="senuke-site-footer"><strong>${escapeHtml(brandName)}</strong>${contactItems.length ? `<div class="senuke-footer-contact">${contactItems.join("<span aria-hidden=\"true\"> · </span>")}</div>` : ""}${socialNavigationHtml(model)}${footerNavigationHtml(model, options)}<p class="senuke-footer-copyright">${escapeHtml(copyrightText)}</p></footer>
+<footer class="senuke-site-footer"><div class="senuke-footer-main"><section class="senuke-footer-brand"><a class="senuke-footer-logo" href="${escapeHtml(homeHref)}">${brandMarkup}</a>${businessSummary ? `<p>${escapeHtml(businessSummary)}</p>` : ""}${socialNavigationHtml(model)}</section><div class="senuke-footer-navigation-column">${footerNavigationHtml(model, options)}</div><section class="senuke-footer-contact-column"><h2>Get in touch</h2>${contactItems.length ? `<div class="senuke-footer-contact">${contactItems.join("")}</div>` : ""}</section></div><div class="senuke-footer-bottom"><p class="senuke-footer-copyright">${escapeHtml(copyrightText)}</p>${footerLegalNavigationHtml(model, options)}</div></footer>
 ${formDeliveryScript}
 </body>
 </html>`;
@@ -467,9 +660,16 @@ body{margin:0;overflow-x:hidden;background:var(--senuke-background);color:var(--
 h1,h2,h3{font-family:var(--senuke-heading),system-ui,sans-serif;line-height:1.15}
 h1{max-width:18ch;font-size:clamp(2.2rem,6vw,4.8rem)}
 .senuke-visually-hidden{position:absolute!important;width:1px!important;height:1px!important;padding:0!important;margin:-1px!important;overflow:hidden!important;clip:rect(0,0,0,0)!important;white-space:nowrap!important;border:0!important}
-.senuke-site-header,.senuke-component,.senuke-breadcrumbs,.senuke-contextual-links,.senuke-related-pages,.senuke-link-cta{width:min(1120px,calc(100% - 2rem));margin-inline:auto}
+.senuke-site-header,.senuke-component,.senuke-breadcrumbs,.senuke-contextual-links,.senuke-related-pages,.senuke-link-cta{width:min(var(--senuke-layout-max,1120px),calc(100% - var(--senuke-layout-inset,2rem)));margin-inline:auto}
+.senuke-site-topbar{background:linear-gradient(110deg,var(--senuke-text) 0 22%,var(--senuke-primary) 22% 100%);color:#fff}
+.senuke-site-topbar-inner{display:flex;width:min(var(--senuke-layout-max,1120px),calc(100% - var(--senuke-layout-inset,2rem)));min-height:42px;margin-inline:auto;align-items:center;justify-content:space-between;gap:1rem}
+.senuke-header-social{flex:none;margin:0}
+.senuke-header-social a{width:30px;height:30px;border:0;background:transparent}
+.senuke-header-contact{display:flex;flex-wrap:wrap;justify-content:flex-end;gap:clamp(.8rem,2.5vw,1.75rem);font-size:.82rem;font-weight:750}
+.senuke-header-contact a,.senuke-header-contact>span{display:inline-flex;align-items:center;gap:.45rem;color:inherit;text-decoration:none}
+.senuke-header-contact a>span,.senuke-header-contact>span>span{color:#fff;font-size:1rem}
 .senuke-site-header{display:flex;align-items:center;justify-content:space-between;gap:2rem;padding:1.25rem 0}
-.senuke-header-navigation{display:grid;justify-items:end;gap:.35rem}
+.senuke-header-navigation{display:flex;align-items:center;justify-content:flex-end;gap:1rem}
 .senuke-mobile-menu{display:none}
 .senuke-utility-nav{font-size:.78rem;color:var(--senuke-muted)}
 .senuke-brand{display:flex;align-items:center;font-weight:900;color:var(--senuke-text);text-decoration:none}
@@ -480,6 +680,7 @@ h1{max-width:18ch;font-size:clamp(2.2rem,6vw,4.8rem)}
 .senuke-site-header li:hover>ul,.senuke-site-header li:focus-within>ul{display:grid}
 .senuke-site-header a{color:inherit}
 .senuke-site-header span{font-weight:700}
+.senuke-header-navigation>.senuke-utility-nav a,.senuke-header-navigation>nav:first-child>ul>li:last-child>a{display:inline-flex;align-items:center;min-height:42px;border-radius:.15rem;background:var(--senuke-text);padding:.65rem 1rem;color:#fff;text-decoration:none;font-weight:850}
 .senuke-breadcrumbs{padding-top:1rem}
 .senuke-breadcrumbs ol{display:flex;flex-wrap:wrap;gap:.45rem;list-style:none;padding:0;color:var(--senuke-muted);font-size:.86rem}
 .senuke-breadcrumbs li+li:before{content:"›";margin-right:.45rem}
@@ -490,7 +691,7 @@ h1{max-width:18ch;font-size:clamp(2.2rem,6vw,4.8rem)}
 .senuke-link-cta ul{display:flex;flex-wrap:wrap;gap:.75rem;list-style:none;margin:0;padding:0}
 .senuke-link-cta a{display:inline-flex;border-radius:.75rem;background:var(--senuke-accent);padding:.8rem 1rem;color:var(--senuke-text);font-weight:850;text-decoration:none}
 .senuke-component{padding:clamp(3rem,7vw,7rem) 0}
-.senuke-layout-section{position:relative;isolation:isolate;overflow:hidden;width:100%;max-width:none;padding-inline:max(1rem,calc((100% - 1120px)/2))}
+.senuke-layout-section{position:relative;isolation:isolate;overflow:hidden;width:100%;max-width:none;padding-inline:max(var(--senuke-layout-gutter,1rem),calc((100% - var(--senuke-layout-max,1120px))/2))}
 .senuke-layout-background-image{position:absolute;z-index:-2;inset:0;width:100%;height:100%;object-fit:cover}
 .senuke-layout-background-overlay{position:absolute;z-index:-1;inset:0;background:#020617}
 .senuke-layout-columns{display:grid;gap:clamp(1.1rem,3vw,2.25rem);align-items:stretch}
@@ -510,10 +711,10 @@ h1{max-width:18ch;font-size:clamp(2.2rem,6vw,4.8rem)}
 .senuke-layout-spacing-compact{padding-block:1.75rem}.senuke-layout-spacing-comfortable{padding-block:clamp(3rem,6vw,5rem)}.senuke-layout-spacing-spacious{padding-block:clamp(4.5rem,9vw,7.5rem)}
 .senuke-second-fold{text-align:center}
 .senuke-second-fold>h2,.senuke-second-fold>div>h2{max-width:30ch;margin:0 auto 1.15rem;text-align:center;text-wrap:balance}
-.senuke-second-fold>p,.senuke-second-fold>div>p{max-width:72ch;margin:.8rem auto 0;text-align:center}
-.senuke-rich-text{width:min(900px,calc(100% - 2rem));padding-block:clamp(3rem,5vw,4.5rem);text-align:center}
+.senuke-second-fold>p,.senuke-second-fold>div>p{max-width:var(--senuke-reading-max,72ch);margin:.8rem auto 0;text-align:center}
+.senuke-rich-text{width:min(var(--senuke-layout-max,1120px),calc(100% - var(--senuke-layout-inset,2rem)));padding-block:clamp(3rem,5vw,4.5rem);text-align:center}
 .senuke-rich-text h2{max-width:30ch;margin:0 auto 1.15rem;font-size:clamp(1.75rem,3vw,2.35rem);letter-spacing:-.02em;text-wrap:balance}
-.senuke-rich-text p{max-width:72ch;margin:.8rem auto 0;color:var(--senuke-muted);font-size:1rem;line-height:1.75}
+.senuke-rich-text p{max-width:var(--senuke-reading-max,72ch);margin:.8rem auto 0;color:var(--senuke-muted);font-size:1rem;line-height:1.75}
 .senuke-align-left{text-align:left}.senuke-align-center{text-align:center}.senuke-align-right{text-align:right}
 .senuke-align-left>h1,.senuke-align-left>h2,.senuke-align-left>p,.senuke-align-left>div>h1,.senuke-align-left>div>h2,.senuke-align-left>div>p{margin-left:0;margin-right:auto;text-align:left}
 .senuke-align-center>h1,.senuke-align-center>h2,.senuke-align-center>p,.senuke-align-center>div>h1,.senuke-align-center>div>h2,.senuke-align-center>div>p{margin-left:auto;margin-right:auto;text-align:center}
@@ -548,24 +749,58 @@ h1{max-width:18ch;font-size:clamp(2.2rem,6vw,4.8rem)}
 .senuke-form-error{color:#b91c1c}
 .senuke-faq details+details{margin-top:.75rem}
 .senuke-faq summary{cursor:pointer;font-weight:800}
-.senuke-site-footer{margin-top:4rem;background:var(--senuke-text);padding:3rem max(1rem,calc((100% - 1120px)/2));color:#cbd5e1;font-size:.85rem}
-.senuke-site-footer>strong{color:#fff;font-size:1.2rem}
-.senuke-footer-contact{display:flex;flex-wrap:wrap;gap:.45rem;margin-top:.75rem}
-.senuke-footer-contact a{color:inherit}
-.senuke-social-links{display:flex;flex-wrap:wrap;gap:.65rem;margin-top:1.25rem}
-.senuke-social-links a{display:grid;width:40px;height:40px;place-items:center;border:1px solid rgba(255,255,255,.2);border-radius:999px;background:rgba(255,255,255,.08);color:#fff;transition:transform .18s ease,background .18s ease}
-.senuke-social-links a:hover,.senuke-social-links a:focus-visible{transform:translateY(-2px);background:var(--senuke-primary)}
+.senuke-site-footer{position:relative;margin-top:4rem;overflow:hidden;background:color-mix(in srgb,var(--senuke-primary) 78%,#003f38);color:#f6fbfa;font-size:.9rem}
+.senuke-site-footer:after{position:absolute;right:-120px;bottom:-220px;width:520px;height:420px;border-radius:55% 45% 0 0;background:color-mix(in srgb,var(--senuke-secondary) 5%,transparent);content:"";pointer-events:none;transform:rotate(-12deg)}
+.senuke-footer-main{position:relative;z-index:1;display:grid!important;width:min(var(--senuke-layout-max,1120px),calc(100% - var(--senuke-layout-inset,2rem)))!important;margin-inline:auto;padding:clamp(4.5rem,7vw,6.75rem) 0 clamp(3.5rem,5vw,5rem);grid-template-columns:minmax(250px,1.35fr) minmax(420px,1.65fr) minmax(260px,1fr);gap:clamp(2.5rem,5vw,5.5rem);align-items:start}
+.senuke-footer-brand{min-width:0}
+.senuke-footer-brand .wp-block-site-logo{display:inline-flex;margin:0 0 2rem}
+.senuke-footer-brand .wp-block-site-title,.senuke-footer-brand .wp-block-site-title a{color:#fff!important;text-decoration:none}
+.senuke-footer-logo{display:inline-flex;max-width:100%;color:#fff;font-size:1.3rem;font-weight:900;text-decoration:none}
+.senuke-footer-logo .senuke-brand-logo{width:auto;max-width:min(220px,100%);height:72px;object-fit:contain}
+.senuke-footer-brand .custom-logo{width:220px!important;max-width:100%!important;height:auto!important;filter:none!important}
+.senuke-footer-brand p{max-width:38ch;margin:2rem 0 0;color:rgba(255,255,255,.82);font-size:.98rem;line-height:1.9}
+.senuke-footer-contact-column{min-width:0}
+.senuke-footer-contact-column h2,.senuke-footer-contact-column h3{margin:0 0 1.75rem;color:#fff;font-size:clamp(1.15rem,1.7vw,1.45rem)!important;letter-spacing:-.025em}
+.senuke-footer-contact{display:grid;gap:1rem}
+.senuke-footer-contact a,.senuke-footer-contact>span{display:flex;align-items:center;min-width:0;color:rgba(255,255,255,.86);line-height:1.55;text-decoration:none;overflow-wrap:break-word}
+.senuke-footer-contact>a:before,.senuke-footer-contact>span:before{display:grid;width:38px;height:38px;margin-right:.85rem;flex:0 0 38px;place-items:center;border-radius:999px;background:rgba(255,255,255,.07);color:var(--senuke-secondary);font-weight:900}
+.senuke-footer-contact>a[href^="mailto:"]:before{content:"✉"}
+.senuke-footer-contact>a[href^="tel:"]:before{content:"☎"}
+.senuke-footer-contact>span:before{content:"⌖"}
+.senuke-footer-contact a:hover{color:#fff}
+.senuke-social-links{display:flex;flex-wrap:wrap;gap:.65rem;margin-top:2rem}
+.senuke-social-links a{display:grid;width:40px;height:40px;place-items:center;border:2px solid rgba(255,255,255,.24);border-radius:999px;background:transparent;color:rgba(255,255,255,.76);transition:border-color .18s ease,color .18s ease,transform .18s ease}
+.senuke-social-links a:hover,.senuke-social-links a:focus-visible{border-color:var(--senuke-secondary);color:var(--senuke-secondary);transform:translateY(-2px)}
 .senuke-social-links svg{width:20px;height:20px;fill:none;stroke:currentColor;stroke-width:1.8}
 .senuke-social-links svg .senuke-social-fill{fill:currentColor;stroke:none}
-.senuke-footer-navigation{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:1.5rem;margin-block:2rem}
-.senuke-footer-navigation h2{font-size:.9rem;color:#fff}
+.senuke-footer-navigation-column{min-width:0}
+.senuke-footer-navigation{display:grid;width:100%;grid-template-columns:repeat(2,minmax(170px,1fr));gap:2.5rem clamp(2rem,5vw,5rem);margin:0}
+.senuke-footer-navigation>section{min-width:0}
 .senuke-footer-navigation ul{list-style:none;margin:0;padding:0}
-.senuke-footer-navigation li+li{margin-top:.4rem}
-.senuke-footer-navigation a{color:inherit;text-decoration:none}
-.senuke-footer-copyright{border-top:1px solid rgba(255,255,255,.16);margin-top:2rem;padding-top:1rem;color:#94a3b8}
+.senuke-footer-navigation li+li{margin-top:1rem}
+.senuke-footer-navigation a,.senuke-footer-navigation .senuke-menu-heading{white-space:normal;word-break:normal;overflow-wrap:break-word;hyphens:none}
+.senuke-footer-navigation a{display:inline-flex;align-items:center;color:rgba(255,255,255,.82);font-size:.96rem;line-height:1.55;text-decoration:none;transition:color .18s ease,transform .18s ease}
+.senuke-footer-navigation a:hover,.senuke-footer-navigation a:focus-visible{color:var(--senuke-secondary);transform:translateX(4px)}
+.senuke-footer-navigation>section>h2{margin:0 0 1.75rem;color:#fff;font-size:clamp(1.15rem,1.7vw,1.45rem);font-weight:850;letter-spacing:-.025em;text-transform:none}
+.senuke-footer-navigation>ul.senuke-menu{display:grid;width:100%;grid-template-columns:repeat(2,minmax(170px,1fr));gap:2.5rem clamp(2rem,5vw,5rem);list-style:none;margin:0;padding:0}
+.senuke-footer-navigation>ul.senuke-menu>li{min-width:0;margin:0}
+.senuke-footer-navigation>ul.senuke-menu>li>a,.senuke-footer-navigation>ul.senuke-menu>li>.senuke-menu-heading{display:block;margin-bottom:1.75rem;color:#fff;font-family:var(--senuke-heading),system-ui,sans-serif;font-size:clamp(1.15rem,1.7vw,1.45rem);font-weight:850;letter-spacing:-.025em;text-transform:none}
+.senuke-footer-navigation>ul.senuke-menu>li>a:before{display:none}
+.senuke-footer-navigation>ul.senuke-menu .sub-menu{display:grid;gap:1rem;list-style:none;margin:0;padding:0}
+.senuke-footer-navigation>ul.senuke-menu .sub-menu li{margin:0}
+.senuke-footer-bottom{position:relative;z-index:1;display:flex!important;width:min(var(--senuke-layout-max,1120px),calc(100% - var(--senuke-layout-inset,2rem)))!important;margin:0 auto 1.5rem!important;padding:1.35rem 1.75rem;align-items:center;justify-content:space-between;gap:1rem 2rem;border-radius:.5rem;background:rgba(255,255,255,.08)}
+.senuke-footer-bottom>*,.senuke-footer-copyright{width:auto;margin:0;padding:0;color:rgba(255,255,255,.78);font-size:.86rem}
+.senuke-footer-legal{display:flex;flex-wrap:wrap;justify-content:flex-end;gap:.5rem 1.4rem}
+.senuke-footer-legal a{color:rgba(255,255,255,.85);text-decoration:none}
+.senuke-footer-legal a+a:before{margin-right:1.4rem;color:rgba(255,255,255,.4);content:"•"}
 @media(max-width:860px){
  .senuke-layout-columns{grid-template-columns:1fr!important}
  .senuke-site-header{position:sticky!important;top:0!important;display:flex;min-height:68px;flex-direction:row;align-items:center;padding-block:.65rem}
+ .senuke-site-topbar-inner{align-items:flex-start;padding-block:.65rem}
+ .senuke-header-contact{gap:.55rem 1rem;font-size:.74rem}
+ .senuke-footer-main{grid-template-columns:1fr 1fr;align-items:start}
+ .senuke-footer-brand{grid-column:1/-1}
+ .senuke-footer-navigation,.senuke-footer-navigation>ul.senuke-menu{grid-template-columns:repeat(2,minmax(150px,1fr))}
  .senuke-header-navigation{display:none}
  .senuke-mobile-menu{display:block;margin-left:auto}
  .senuke-mobile-menu>summary{display:grid;width:46px;height:46px;cursor:pointer;place-items:center;border:1px solid color-mix(in srgb,var(--senuke-muted) 25%,transparent);border-radius:.75rem;background:var(--senuke-surface);list-style:none}
@@ -592,9 +827,8 @@ h1{max-width:18ch;font-size:clamp(2.2rem,6vw,4.8rem)}
  .senuke-contact-form form>*{grid-column:1!important}
  .senuke-cta{margin-inline:1rem}
  .senuke-site-footer{margin-top:2rem}
- .senuke-footer-contact{display:grid;gap:.65rem}
- .senuke-footer-contact>span{display:none}
 }
+@media(max-width:540px){.senuke-footer-main,.senuke-footer-navigation,.senuke-footer-navigation>ul.senuke-menu{grid-template-columns:1fr}.senuke-footer-bottom{align-items:flex-start;flex-direction:column}.senuke-footer-legal{justify-content:flex-start}.senuke-site-topbar{background:var(--senuke-primary)}.senuke-site-topbar-inner{display:grid}.senuke-header-social{display:none}.senuke-header-contact{justify-content:flex-start}.senuke-header-contact>span{display:none}}
 @media(max-width:540px){
  .senuke-grid{grid-template-columns:1fr}
  .senuke-component{padding-block:2.75rem}
@@ -602,21 +836,20 @@ h1{max-width:18ch;font-size:clamp(2.2rem,6vw,4.8rem)}
  .senuke-hero-image,.senuke-media img{max-height:340px}
  .senuke-card,.senuke-faq details{padding:1rem}
  .senuke-cta{width:calc(100% - 1rem);margin-inline:.5rem;padding-inline:1.25rem}
- .senuke-footer-navigation{grid-template-columns:1fr 1fr}
 }
 `;
 
 const SENUKE_PROFESSIONAL_CSS = `
 body{background:linear-gradient(180deg,var(--senuke-background),var(--senuke-surface) 30%,var(--senuke-background))}
-.senuke-site-header{position:sticky;top:0;z-index:50;width:100%;max-width:none;padding-inline:max(1rem,calc((100% - 1120px)/2));background:color-mix(in srgb,var(--senuke-surface) 92%,transparent);border-bottom:1px solid color-mix(in srgb,var(--senuke-muted) 16%,transparent);backdrop-filter:blur(16px);box-shadow:0 10px 35px rgba(15,23,42,.06)}
+.senuke-site-header{position:sticky;top:0;z-index:50;width:100%;max-width:none;padding-inline:max(var(--senuke-layout-gutter,1rem),calc((100% - var(--senuke-layout-max,1120px))/2));background:color-mix(in srgb,var(--senuke-surface) 92%,transparent);border-bottom:1px solid color-mix(in srgb,var(--senuke-muted) 16%,transparent);backdrop-filter:blur(16px);box-shadow:0 10px 35px rgba(15,23,42,.06)}
 .senuke-site-header>nav>ul{align-items:center}.senuke-site-header a{text-decoration:none;font-weight:750}
-.senuke-hero{position:relative;isolation:isolate;width:100%;max-width:none;padding-inline:max(1rem,calc((100% - 1120px)/2));background:radial-gradient(circle at 90% 10%,color-mix(in srgb,var(--senuke-accent) 25%,transparent),transparent 28%),linear-gradient(135deg,var(--senuke-background),var(--senuke-surface) 55%,color-mix(in srgb,var(--senuke-secondary) 10%,white))}
+.senuke-hero{position:relative;isolation:isolate;width:100%;max-width:none;padding-inline:max(var(--senuke-layout-gutter,1rem),calc((100% - var(--senuke-layout-max,1120px))/2));background:radial-gradient(circle at 90% 10%,color-mix(in srgb,var(--senuke-accent) 25%,transparent),transparent 28%),linear-gradient(135deg,var(--senuke-background),var(--senuke-surface) 55%,color-mix(in srgb,var(--senuke-secondary) 10%,white))}
 .senuke-hero h1{letter-spacing:-.045em;text-wrap:balance}.senuke-hero-image{aspect-ratio:3/2;box-shadow:0 30px 80px rgba(15,23,42,.2)}
-.senuke-rich-text{display:block;width:min(900px,calc(100% - 2rem));padding-block:clamp(3rem,5vw,4.5rem);text-align:center}.senuke-rich-text h2{max-width:30ch;margin:0 auto 1.15rem;font-size:clamp(1.75rem,3vw,2.35rem);letter-spacing:-.02em;text-wrap:balance}.senuke-rich-text p{max-width:72ch;margin:.8rem auto 0;color:var(--senuke-muted);font-size:1rem;line-height:1.75}
+.senuke-rich-text{display:block;width:min(var(--senuke-layout-max,1120px),calc(100% - var(--senuke-layout-inset,2rem)));padding-block:clamp(3rem,5vw,4.5rem);text-align:center}.senuke-rich-text h2{max-width:30ch;margin:0 auto 1.15rem;font-size:clamp(1.75rem,3vw,2.35rem);letter-spacing:-.02em;text-wrap:balance}.senuke-rich-text p{max-width:var(--senuke-reading-max,72ch);margin:.8rem auto 0;color:var(--senuke-muted);font-size:1rem;line-height:1.75}
 .senuke-align-left{text-align:left}.senuke-align-center{text-align:center}.senuke-align-right{text-align:right}.senuke-align-left>h1,.senuke-align-left>h2,.senuke-align-left>p,.senuke-align-left>div>h1,.senuke-align-left>div>h2,.senuke-align-left>div>p{margin-left:0;margin-right:auto;text-align:left}.senuke-align-center>h1,.senuke-align-center>h2,.senuke-align-center>p,.senuke-align-center>div>h1,.senuke-align-center>div>h2,.senuke-align-center>div>p{margin-left:auto;margin-right:auto;text-align:center}.senuke-align-right>h1,.senuke-align-right>h2,.senuke-align-right>p,.senuke-align-right>div>h1,.senuke-align-right>div>h2,.senuke-align-right>div>p{margin-left:auto;margin-right:0;text-align:right}
 .senuke-heading-small h1,.senuke-heading-small h2{font-size:clamp(1.55rem,3vw,2.35rem)}.senuke-heading-medium h1,.senuke-heading-medium h2{font-size:clamp(2rem,4vw,3.15rem)}.senuke-heading-large h1,.senuke-heading-large h2{font-size:clamp(2.6rem,6vw,4.5rem)}.senuke-heading-regular h1,.senuke-heading-regular h2{font-weight:500}.senuke-heading-semibold h1,.senuke-heading-semibold h2{font-weight:650}.senuke-heading-bold h1,.senuke-heading-bold h2{font-weight:800}.senuke-heading-black h1,.senuke-heading-black h2{font-weight:950}.senuke-heading-color-primary h1,.senuke-heading-color-primary h2{color:var(--senuke-primary)}.senuke-heading-color-secondary h1,.senuke-heading-color-secondary h2{color:var(--senuke-secondary)}.senuke-heading-color-accent h1,.senuke-heading-color-accent h2{color:var(--senuke-accent)}.senuke-heading-color-text h1,.senuke-heading-color-text h2{color:var(--senuke-text)}
 .senuke-services .senuke-card{position:relative;overflow:hidden;min-height:210px;padding:1.75rem;border:0;box-shadow:0 18px 55px rgba(15,23,42,.08)}.senuke-services .senuke-card:before{content:"";position:absolute;inset:0 auto 0 0;width:5px;background:linear-gradient(var(--senuke-primary),var(--senuke-accent))}
-.senuke-benefits{width:100%;max-width:none;padding-inline:max(1rem,calc((100% - 1120px)/2));background:var(--senuke-secondary);color:#fff}.senuke-benefits .senuke-card{border-color:rgba(255,255,255,.16);background:rgba(255,255,255,.1)}.senuke-benefits .senuke-card p{color:rgba(255,255,255,.75)}
+.senuke-benefits{width:100%;max-width:none;padding-inline:max(var(--senuke-layout-gutter,1rem),calc((100% - var(--senuke-layout-max,1120px))/2));background:var(--senuke-secondary);color:#fff}.senuke-benefits .senuke-card{border-color:rgba(255,255,255,.16);background:rgba(255,255,255,.1)}.senuke-benefits .senuke-card p{color:rgba(255,255,255,.75)}
 .senuke-process .senuke-steps{grid-template-columns:repeat(auto-fit,minmax(220px,1fr));padding:0;list-style:none}.senuke-process .senuke-steps li{padding:1.5rem;border-radius:1rem;background:var(--senuke-surface);box-shadow:0 16px 45px rgba(15,23,42,.07)}
 .senuke-proof{padding-inline:clamp(1.5rem,5vw,4rem);background:linear-gradient(135deg,color-mix(in srgb,var(--senuke-accent) 13%,white),var(--senuke-surface))}
 .senuke-cta{position:relative;overflow:hidden;margin-block:3rem 5rem;background:linear-gradient(135deg,var(--senuke-secondary),color-mix(in srgb,var(--senuke-secondary) 76%,var(--senuke-primary)));box-shadow:0 28px 80px color-mix(in srgb,var(--senuke-secondary) 35%,transparent)}
@@ -683,6 +916,8 @@ export function createStaticWebsiteFiles(
     websiteModelId: model.modelId,
     websiteModelVersion: model.version,
     componentRegistryVersion: model.componentRegistryVersion,
+    environment: options.environmentType ?? "preview",
+    canonicalBaseUrl: options.environmentType === "production" ? options.baseUrl ?? null : null,
     pageCount: model.pages.length,
     pages: model.pages.map((page) => ({ pageId: page.pageId, name: page.name, path: normalizedPath(page.slug) })),
   };
@@ -691,7 +926,9 @@ export function createStaticWebsiteFiles(
     ...mediaFiles,
     { path: "assets/senuke.css", content: `${SENUKE_STATIC_CSS}\n${SENUKE_PROFESSIONAL_CSS}`, mimeType: "text/css" },
     { path: "sitemap.xml", content: `<?xml version="1.0" encoding="UTF-8"?><urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">${sitemapUrls}</urlset>`, mimeType: "application/xml" },
-    { path: "robots.txt", content: `User-agent: *\nAllow: /\nSitemap: ${options.baseUrl ? `${options.baseUrl.replace(/\/+$/, "")}/sitemap.xml` : "/sitemap.xml"}\n`, mimeType: "text/plain" },
+    { path: "robots.txt", content: options.environmentType === "production"
+      ? `User-agent: *\nAllow: /\nSitemap: ${options.baseUrl ? `${options.baseUrl.replace(/\/+$/, "")}/sitemap.xml` : "/sitemap.xml"}\n`
+      : "User-agent: *\nDisallow: /\n", mimeType: "text/plain" },
     { path: "llms.txt", content: `# Website pages\n\n${llmsPages}\n`, mimeType: "text/plain" },
     { path: "senuke-release.json", content: JSON.stringify(manifest, null, 2), mimeType: "application/json" },
   ];

@@ -1,8 +1,8 @@
 import { createCipheriv, createDecipheriv, createHash, randomBytes } from "node:crypto";
 import { lookup } from "node:dns/promises";
-import { readFile } from "node:fs/promises";
+import { readFile, readdir } from "node:fs/promises";
 import { isIP } from "node:net";
-import { dirname, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Router } from "express";
 import { Prisma, prisma } from "@webtummy/db";
@@ -24,12 +24,19 @@ import {
 } from "@webtummy/core/website-model";
 import {
   createStaticWebsiteFiles,
-  renderWebsitePageBodyHtml,
+  curatedWebsiteFooterMenus,
+  renderWebsitePageWordPressBlocks,
+  websiteLayoutCssVariables,
 } from "@webtummy/core/website-renderer";
 import {
   evaluateWebsiteLaunchReadiness,
   type WebsiteLaunchReadiness,
 } from "@webtummy/core/website-launch-readiness";
+import {
+  evaluateWebsiteQualityGovernance,
+  findWebsitePublicContentLeakage,
+  findWebsiteUnsupportedClaims,
+} from "@webtummy/core/website-quality-governance";
 import { approvedStrategyContext } from "../strategy-ai.js";
 import { isWebsitePlanTask } from "../website-plan-task.js";
 import { cleanGeographicTargetMarkets, projectAnalysisLocationLabels } from "../project-location.js";
@@ -66,7 +73,19 @@ import { isPreLaunchWebsiteCampaign } from "../campaign-intelligence.js";
 
 export const websiteBuilderRouter = Router();
 const WEBSITE_SEO_PLAN_NORMALIZATION_VERSION = "keyword-owner-v2";
-const WORDPRESS_CONNECTOR_SOURCE = resolve(dirname(fileURLToPath(import.meta.url)), "../../../../wordpress-plugin/senuke-ai-connector/senuke-ai-connector.php");
+const WORDPRESS_CONNECTOR_DIRECTORY = resolve(dirname(fileURLToPath(import.meta.url)), "../../../../wordpress-plugin/senuke-ai-connector");
+const WORDPRESS_CONNECTOR_SOURCE = resolve(WORDPRESS_CONNECTOR_DIRECTORY, "senuke-ai-connector.php");
+const WORDPRESS_THEME_DIRECTORY = resolve(dirname(fileURLToPath(import.meta.url)), "../../../../wordpress-theme/senuke-theme");
+
+async function addDirectoryToZip(zip: JSZip, sourceDirectory: string, archiveDirectory: string) {
+  const entries = await readdir(sourceDirectory, { withFileTypes: true });
+  for (const entry of entries) {
+    const sourcePath = join(sourceDirectory, entry.name);
+    const archivePath = `${archiveDirectory}/${entry.name}`;
+    if (entry.isDirectory()) await addDirectoryToZip(zip, sourcePath, archivePath);
+    else if (entry.isFile()) zip.file(archivePath, await readFile(sourcePath));
+  }
+}
 
 const jsonRecord = (value: unknown): Record<string, unknown> => value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
 const jsonStrings = (value: unknown) => Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
@@ -534,6 +553,12 @@ function qualityWebsiteModel(project: { id: string; businessLocationJson?: Prism
   });
   const logoSource = String(brand.logoDataUrl || brand.logoUrl || "").trim();
   const logoAssetId = logoSource ? "senuke-brand-logo" : "";
+  const explicitFaviconSource = String(brand.faviconDataUrl || brand.faviconUrl || "").trim();
+  // A separate square favicon remains preferred. When one was not supplied,
+  // reuse the approved brand mark so a generated release never ships without
+  // a browser/site icon merely because the user uploaded only one brand asset.
+  const faviconSource = explicitFaviconSource || logoSource;
+  const faviconAssetId = explicitFaviconSource ? "senuke-site-favicon" : logoAssetId;
   const savedForms = Array.isArray(settings.forms) ? settings.forms.map(jsonRecord) : [];
   const primaryForm = savedForms[0] || {
     key: "primary-contact",
@@ -748,7 +773,11 @@ function qualityWebsiteModel(project: { id: string; businessLocationJson?: Prism
     componentRegistryVersion: String(settings.componentRegistryVersion || SENUKE_COMPONENT_REGISTRY_V1.version),
     identity: {
       businessName: String(brand.businessName || build.name.replace(/\s+website$/i, "") || "Website"),
+      ...(String(contactDetails.businessSummary || jsonRecord(settings.analysis).businessSummary || jsonRecord(settings.analysis).offer || "").trim()
+        ? { businessSummary: String(contactDetails.businessSummary || jsonRecord(settings.analysis).businessSummary || jsonRecord(settings.analysis).offer).trim() }
+        : {}),
       ...(logoAssetId ? { logoAssetId } : {}),
+      ...(faviconAssetId ? { faviconAssetId } : {}),
       ...(contactDetails.email ? { contactEmail: String(contactDetails.email) } : {}),
       ...(contactDetails.phone ? { contactPhone: String(contactDetails.phone) } : {}),
       ...(contactDetails.address ? { businessAddress: String(contactDetails.address) } : {}),
@@ -772,6 +801,9 @@ function qualityWebsiteModel(project: { id: string; businessLocationJson?: Prism
       typography: { headingFont: String(brand.headingFont || "Inter"), bodyFont: String(brand.bodyFont || "Inter") },
       spacingScale: String(brand.spacingScale || "comfortable"),
       radiusScale: String(brand.radiusScale || "medium"),
+      layoutMode: ["full", "wide", "fixed"].includes(String(brand.layoutMode))
+        ? String(brand.layoutMode) as "full" | "wide" | "fixed"
+        : "fixed",
     },
     pages: governance.pages,
     navigation: governance.navigation,
@@ -786,6 +818,7 @@ function qualityWebsiteModel(project: { id: string; businessLocationJson?: Prism
     })),
     mediaAssets: [
       ...(logoAssetId ? [{ assetId: logoAssetId, status: "approved", altText: `${String(brand.businessName || build.name.replace(/\s+website$/i, "") || "Business")} logo`, sourceUrl: logoSource }] : []),
+      ...(faviconAssetId && faviconAssetId !== logoAssetId ? [{ assetId: faviconAssetId, status: "approved", altText: `${String(brand.businessName || build.name.replace(/\s+website$/i, "") || "Business")} favicon`, sourceUrl: faviconSource }] : []),
       ...buildPages.flatMap((page) => page.mediaAssets
         .filter((asset) => asset.role !== "none")
         .map((asset) => ({ assetId: asset.id, status: ["approved", "uploaded"].includes(asset.status) ? "approved" : asset.status, altText: asset.altText || "", ...(asset.sourceUrl ? { sourceUrl: asset.sourceUrl } : {}) }))),
@@ -797,6 +830,8 @@ type CanonicalWebsiteBuild = Parameters<typeof qualityWebsiteModel>[1];
 type CanonicalWebsiteProject = {
   id: string;
   clientId: string;
+  industry?: string | null;
+  niche?: string | null;
   executionTasks: Array<{ id: string; moduleName: string; sourceType: string }>;
 };
 
@@ -858,27 +893,42 @@ async function validateAndPersistWebsiteModel(
 ) {
   const canonical = await persistCanonicalWebsiteModel(project, build, createdById);
   const validation = validateWebsiteModel(canonical.model);
+  const qualityGovernance = evaluateWebsiteQualityGovernance(canonical.model, {
+    environment: "staging",
+    industry: project.industry || project.niche || "",
+    waivedIssues: jsonRecord(jsonRecord(build.settingsJson).websiteQualityWaivers) as Record<string, string>,
+  });
+  const governanceFindings = qualityGovernance.issues.filter((issue) => issue.status === "open").map((issue) => ({
+    code: `governance.${issue.code}`,
+    severity: issue.severity === "blocker" || issue.severity === "high" ? "blocking" as const : "warning" as const,
+    path: issue.pageId ? `pages.${issue.pageId}.${issue.field}` : issue.field,
+    message: `${issue.message} Found: ${issue.evidence}. Fix: ${issue.suggestedFix}`,
+    issueId: issue.issueId,
+    governanceSeverity: issue.severity,
+  }));
+  const combinedFindings = [...validation.findings, ...governanceFindings];
   const pageScores = canonical.model.pages.map((page) => ({ pageId: page.pageId, title: page.name, ...scoreSeoPage(page, canonical.model, validation) }));
-  const overallScore = pageScores.length ? Math.round(pageScores.reduce((sum, page) => sum + page.score, 0) / pageScores.length) : 0;
-  const blockingCount = validation.findings.filter((finding) => finding.severity === "blocking").length
+  const baseScore = pageScores.length ? Math.round(pageScores.reduce((sum, page) => sum + page.score, 0) / pageScores.length) : 0;
+  const overallScore = Math.max(0, baseScore - qualityGovernance.counts.blocker * 10 - qualityGovernance.counts.high * 5 - qualityGovernance.counts.medium * 2 - qualityGovernance.counts.low);
+  const blockingCount = combinedFindings.filter((finding) => finding.severity === "blocking").length
     + pageScores.filter((page) => (page.status === "blocked" || page.status === "revision_required") && page.blockingReasons.length === 0).length;
-  const warningCount = validation.findings.filter((finding) => finding.severity === "warning").length + pageScores.filter((page) => page.status === "recommendations").length;
+  const warningCount = combinedFindings.filter((finding) => finding.severity === "warning").length + pageScores.filter((page) => page.status === "recommendations").length;
   const status = blockingCount ? "failed" : warningCount ? "passed_with_warnings" : "passed";
   const result = await prisma.websiteValidationResult.create({
     data: {
       modelVersionId: canonical.record.id,
-      validatorVersion: "senuke-site-quality-1.0.0",
+      validatorVersion: "senuke-site-quality-1.1.0",
       status,
       overallScore,
       blockingCount,
       warningCount,
-      findingsJson: validation.findings as unknown as Prisma.InputJsonValue,
+      findingsJson: combinedFindings as unknown as Prisma.InputJsonValue,
       pageScoresJson: pageScores as unknown as Prisma.InputJsonValue,
       validatedSnapshotHash: canonical.record.snapshotHash,
     },
   });
   await prisma.websiteModelVersion.update({ where: { id: canonical.record.id }, data: { status: blockingCount ? "needs_review" : "validated" } });
-  return { canonical, validation: result, pageScores };
+  return { canonical, validation: result, pageScores, qualityGovernance };
 }
 
 async function createApprovedWebsiteRelease(
@@ -1057,6 +1107,55 @@ export function parseWordPressJsonResponse(body: string, context: WordPressJsonR
     code: "wordpress_rest_empty_response",
     publicMessage: true,
   });
+}
+
+/**
+ * Keep the renderer output compatible with both the current SENuke connector
+ * and older installed connector versions. Some older versions rejected any
+ * declaration containing the token `behavior:`, which incorrectly included
+ * the safe CSS property `overscroll-behavior`. Removing that progressive
+ * enhancement does not change the page structure or approved design, and it
+ * prevents an otherwise valid draft deployment from being blocked.
+ */
+export function wordpressConnectorSafeCss(css: string) {
+  return css.replace(/(^|[;{])\s*overscroll-behavior(?:-[xy])?\s*:[^;}]+;?/gi, "$1");
+}
+
+// Bump whenever WordPress synchronization behavior changes so an already
+// successful draft is not returned before the connector can refresh its theme
+// files and managed navigation.
+const WORDPRESS_RENDERER_VERSION = "senuke-wordpress-2.14.0";
+
+export function shouldDeployWordPressDesignPackage(input: {
+  mode: "draft" | "pending" | "publish";
+  managedConnectorReady: boolean;
+  deployDesignPackage: boolean;
+  connectorVersion?: string;
+}) {
+  if (!input.managedConnectorReady || !input.deployDesignPackage) return false;
+  if (input.mode === "publish") return true;
+  // Connector 1.5.3 installs and refreshes the independent SENuke block theme with recoverable
+  // filesystem handling and exposes page SEO controls while preserving
+  // release-scoped design and deployment governance.
+  return wordPressConnectorVersionAtLeast(input.connectorVersion || "0.0.0", "1.5.3");
+}
+
+export function wordPressConnectorVersionAtLeast(current: string, required: string) {
+  const parts = (value: string) => value.split(".").slice(0, 3).map((part) => Number.parseInt(part, 10) || 0);
+  const left = parts(current);
+  const right = parts(required);
+  for (let index = 0; index < 3; index += 1) {
+    if ((left[index] ?? 0) > (right[index] ?? 0)) return true;
+    if ((left[index] ?? 0) < (right[index] ?? 0)) return false;
+  }
+  return true;
+}
+
+export function wordpressMenuDestination(baseUrl: string, item: { remoteUrl?: unknown; slug?: unknown; url?: unknown }) {
+  const destination = String(item.remoteUrl || item.slug || item.url || "").trim();
+  if (!destination) return "#";
+  if (/^https?:\/\//i.test(destination) || destination.startsWith("#") || destination.startsWith("mailto:") || destination.startsWith("tel:")) return destination;
+  return `${baseUrl.replace(/\/$/, "")}/${destination.replace(/^\//, "")}`;
 }
 
 function wordPressRequestFailure(error: unknown, endpoint: string): never {
@@ -1596,7 +1695,7 @@ export function builderView(project: Awaited<ReturnType<typeof scopedProject>>["
             : "validation_required",
         }
         : null,
-      publications: project.websitePublications.map((publication) => ({ id: publication.id, releaseId: publication.releaseId, target: publication.target, mode: publication.mode, status: publication.status, createdAt: publication.createdAt, publishedAt: publication.publishedAt })),
+      publications: project.websitePublications.map((publication) => ({ id: publication.id, releaseId: publication.releaseId, target: publication.target, mode: publication.mode, status: publication.status, rendererVersion: publication.rendererVersion, createdAt: publication.createdAt, publishedAt: publication.publishedAt })),
     },
     approvedSeoPlan: approvedPlan ? { taskId: approvedPlan.task.id, updatedAt: approvedPlan.task.updatedAt.toISOString(), approvedAt: approvedPlan.task.approvedAt?.toISOString() ?? null, pageCount: Array.isArray(approvedPlan.plan.pageAssignments) ? approvedPlan.plan.pageAssignments.length : 0, normalizationVersion: WEBSITE_SEO_PLAN_NORMALIZATION_VERSION } : null,
     seoGapPlan: seoGapPlanTask ? { taskId: seoGapPlanTask.id, title: seoGapPlanTask.title, status: seoGapPlanTask.status, updatedAt: seoGapPlanTask.updatedAt.toISOString() } : null,
@@ -2998,12 +3097,31 @@ async function generatePage(page: { title: string; pageType: string; primaryKeyw
       const missingBlocks = composition.requiredComponentIds.filter((componentId) => !required.has(componentId));
       const metaDescription = parsed.seo.metaDescription.trim();
       const findings: string[] = [];
+      const generatedH1 = generatedPageH1(parsed.content.components);
       if (parsed.content.components.length < composition.minimumComponentCount) findings.push(`${parsed.content.components.length} components returned; at least ${composition.minimumComponentCount} required`);
       if (componentWords > composition.maximumWords) findings.push(`${componentWords} visible words returned; maximum ${composition.maximumWords}`);
+      if (composition.archetype === "home" && componentWords > 850) findings.push(`${componentWords} homepage words returned; keep the homepage under 850 words and move service depth to dedicated pages`);
       if (missingBlocks.length) findings.push(`missing required components: ${missingBlocks.join(", ")}`);
       if (metaDescription.length < 90 || metaDescription.length > 180) findings.push(`meta description is ${metaDescription.length} characters; 90–180 required`);
       if (/review capabilities,\s*process,\s*proof,\s*faqs/i.test(metaDescription)) findings.push("meta description repeats prohibited blueprint wording");
+      if (/^(?:welcome(?: to)?|home|homepage|our website|your trusted partner|quality you can trust|solutions for every need|tailored (?:insurance )?strategies|we are here to help)[.!\s]*$/i.test(generatedH1)) findings.push(`generic H1 is not publishable: ${generatedH1}`);
+      if (keywordTopicSimilarity(page.primaryKeyword, generatedH1, targetLocationStrings(project.targetLocations)) < 55) findings.push(`H1 does not align with the approved primary keyword: ${generatedH1}`);
+      if (keywordTopicSimilarity(parsed.seo.metaTitle, generatedH1, targetLocationStrings(project.targetLocations)) < 45) findings.push(`SEO title and H1 describe different subjects: ${parsed.seo.metaTitle} / ${generatedH1}`);
       if (composition.archetype === "faq" && visibleFaqs.length < 8) findings.push(`${visibleFaqs.length} complete FAQ answers returned; at least 8 required for a dedicated FAQ page`);
+      for (const leak of findWebsitePublicContentLeakage(parsed.content.components)) {
+        findings.push(`${leak.path} contains public instruction or placeholder leakage: ${leak.evidence}`);
+      }
+      const evidenceAvailable = Boolean(
+        intakeEvidence.approvedWebsiteEvidence
+        || intakeEvidence.approvedBusinessDiscovery
+        || (Array.isArray(intakeEvidence.strengths) && intakeEvidence.strengths.length),
+      );
+      for (const claim of findWebsiteUnsupportedClaims(parsed.content.components, {
+        regulatedIndustry: /\b(?:insurance|financial|finance|investment|mortgage|bank|legal|law|medical|health|healthcare|pharma|real estate|accounting|tax)\b/i.test(businessContext.industry),
+        evidenceAvailable,
+      })) {
+        findings.push(`unsupported ${claim.classification.replaceAll("_", " ")}: ${claim.statement}`);
+      }
       for (const collision of websitePageUniquenessCollisions({ seoTitle: parsed.seo.metaTitle, metaDescription: parsed.seo.metaDescription, h1: generatedPageH1(parsed.content.components) }, reservedSignals)) {
         findings.push(`${collision.field.replaceAll("_", " ")} duplicates ${collision.pageTitle}; write a distinct page-specific value`);
       }
@@ -3578,7 +3696,7 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/initialize", asy
     const seoPlan = contentTask ? seoPlanSummary(contentTask.id, plan, withRequiredHome(project, assignments)) : null;
     const businessContext = interpretedBusinessContext(seoPlan, project);
     const footerBusinessName = businessContext.businessName || project.name;
-    const build = await tx.websiteBuild.create({ data: { projectId: project.id, clientId: project.clientId, name: `${footerBusinessName} website`, templateKey: "local_growth", createdByUserId: context.membership.userId, brandJson: { tone: project.brandVoice || "Professional, practical, and confident", businessName: footerBusinessName, personality: ["credible", "clear", "modern"], primaryColor: "#2563eb", secondaryColor: "#0f766e", accentColor: "#f59e0b", backgroundColor: "#f8fafc", textColor: "#0f172a", headingFont: "Inter", bodyFont: "Inter", radius: "14px", logoMode: "none" }, settingsJson: { sourceTaskId: contentTask?.id ?? null, seoPlan, existingSiteImport: existingWebsite ? { mode: "crawl_and_sitemap", crawlId: latestCrawl?.id ?? null, importedPageCount: crawlAssignments.length, suggestedPageCount: Math.max(0, pages.length - crawlAssignments.length), importedAt: new Date().toISOString(), liveWebsiteRemainsUnchanged: true } : null, selectedLayout: "local_growth", analysis: { business: footerBusinessName || "Business name requires confirmation", industry: businessContext.industry || project.niche || "Professional services", audience: businessContext.audience || "Approved project audience", offer: businessContext.coreBusinessValue || "Approved SEO page direction", services: businessContext.primaryServices, goal: project.primaryGoal || "Generate qualified leads", markets: targetLocationStrings(project.targetLocations) }, contactDetails: { email: verifiedEmail, phone: verifiedPhone, address: verifiedAddress, copyrightText: `© ${new Date().getFullYear()} ${footerBusinessName}. All rights reserved.`, source: "verified_project_and_client_intake" }, previewMode: "responsive", defaultDeployMode: "draft" } } });
+    const build = await tx.websiteBuild.create({ data: { projectId: project.id, clientId: project.clientId, name: `${footerBusinessName} website`, templateKey: "local_growth", createdByUserId: context.membership.userId, brandJson: { tone: project.brandVoice || "Professional, practical, and confident", businessName: footerBusinessName, personality: ["credible", "clear", "modern"], primaryColor: "#2563eb", secondaryColor: "#0f766e", accentColor: "#f59e0b", backgroundColor: "#f8fafc", textColor: "#0f172a", headingFont: "Inter", bodyFont: "Inter", radius: "14px", logoMode: "none" }, settingsJson: { sourceTaskId: contentTask?.id ?? null, seoPlan, existingSiteImport: existingWebsite ? { mode: "crawl_and_sitemap", crawlId: latestCrawl?.id ?? null, importedPageCount: crawlAssignments.length, suggestedPageCount: Math.max(0, pages.length - crawlAssignments.length), importedAt: new Date().toISOString(), liveWebsiteRemainsUnchanged: true } : null, selectedLayout: "local_growth", analysis: { business: footerBusinessName || "Business name requires confirmation", businessSummary: businessContext.brandDescription || businessContext.coreBusinessValue || "", industry: businessContext.industry || project.niche || "Professional services", audience: businessContext.audience || "Approved project audience", offer: businessContext.coreBusinessValue || "Approved SEO page direction", services: businessContext.primaryServices, goal: project.primaryGoal || "Generate qualified leads", markets: targetLocationStrings(project.targetLocations) }, contactDetails: { businessSummary: businessContext.brandDescription || businessContext.coreBusinessValue || "", email: verifiedEmail, phone: verifiedPhone, address: verifiedAddress, copyrightText: `© ${new Date().getFullYear()} ${footerBusinessName}. All rights reserved.`, source: "verified_project_and_client_intake" }, previewMode: "responsive", defaultDeployMode: "draft" } } });
     const approvalTask = await tx.executionTask.create({ data: { clientId: project.clientId, websiteId: project.websiteId, projectId: project.id, dedupeKey: `website-builder:${build.id}:development`, moduleName: "site_architect", sourceType: "website_builder_request", sourceId: build.id, title: existingWebsite ? `Prepare ${project.name} website improvements` : `Create ${project.name} website preview`, description: existingWebsite ? "Review the imported website pages, SEO Campaign evidence, Local SEO requirements, content updates, navigation, design, and images as one governed improvement workflow." : "Approve every page and save the final navigation. The Create Website action then runs in the background to assemble registered sections, approved content, brand styling, forms, and AI-generated images into a responsive preview.", expectedOutcome: existingWebsite ? "A complete, reviewable update package is ready without changing the live website until approval and deployment." : "A complete responsive website is ready for company review before any WordPress or Static HTML publishing.", priority: "high", automationLevel: "automatic", status: "in_progress", requiresApproval: false, manualRequired: false, safetyCategory: "safe_draft", approvalRisk: "low", actionButtonLabel: existingWebsite ? "Review Website Improvement Plan" : "Prepare Website", relatedUrl: `/site-architect?projectId=${project.id}`, manualInstructions: existingWebsite ? "Review SEO, Local SEO, imported and suggested pages, Content, Navigation, Design & Images, then run Quality Review. Foundation is inherited from the existing website and is not a required step." : "Complete Foundation, Pages, Content, and Navigation, then choose Create Website. You may continue working while SENuke AI prepares the preview.", impact: existingWebsite ? "Turns crawl, SEO, and Local SEO evidence into controlled existing-site updates without publishing externally." : "Creates a complete reviewable website draft without publishing externally." } });
     await tx.websiteBuild.update({ where: { id: build.id }, data: { settingsJson: { ...jsonRecord(build.settingsJson), developmentApprovalTaskId: approvalTask.id } as Prisma.InputJsonValue } });
     await tx.websiteBuildPage.createMany({ data: pages.slice(0, 500).map((item, index) => assignmentPageData(build.id, item, index)) });
@@ -3705,7 +3823,7 @@ websiteBuilderRouter.patch("/projects/:projectId/website-builder/build", async (
   if (!build) return res.status(404).json({ error: "Website build not found." });
   const input = z.object({
     templateKey: z.enum(["service_modern", "authority_editorial", "local_growth"]).optional(),
-    brand: z.object({ primaryColor: z.string().regex(/^#[0-9a-f]{6}$/i), secondaryColor: z.string().regex(/^#[0-9a-f]{6}$/i), accentColor: z.string().regex(/^#[0-9a-f]{6}$/i), backgroundColor: z.string().regex(/^#[0-9a-f]{6}$/i), textColor: z.string().regex(/^#[0-9a-f]{6}$/i), headingFont: z.string().max(80), bodyFont: z.string().max(80), radius: z.string().max(20), tone: z.string().max(500), personality: z.array(z.string().max(80)).max(10), logoUrl: z.string().url().max(2000).or(z.literal("")), logoDataUrl: z.string().max(800_000).refine((value) => !value || /^data:image\/(png|jpeg|webp|svg\+xml);base64,/i.test(value), "Logo must be a PNG, JPEG, WebP, or SVG data URL."), logoMode: z.enum(["uploaded", "url", "none"]) }).partial().optional(),
+    brand: z.object({ primaryColor: z.string().regex(/^#[0-9a-f]{6}$/i), secondaryColor: z.string().regex(/^#[0-9a-f]{6}$/i), accentColor: z.string().regex(/^#[0-9a-f]{6}$/i), backgroundColor: z.string().regex(/^#[0-9a-f]{6}$/i), textColor: z.string().regex(/^#[0-9a-f]{6}$/i), headingFont: z.string().max(80), bodyFont: z.string().max(80), radius: z.string().max(20), layoutMode: z.enum(["full", "wide", "fixed"]), tone: z.string().max(500), personality: z.array(z.string().max(80)).max(10), logoUrl: z.string().url().max(2000).or(z.literal("")), logoDataUrl: z.string().max(800_000).refine((value) => !value || /^data:image\/(png|jpeg|webp|svg\+xml);base64,/i.test(value), "Logo must be a PNG, JPEG, WebP, or SVG data URL."), logoMode: z.enum(["uploaded", "url", "none"]), faviconUrl: z.string().url().max(2000).or(z.literal("")), faviconDataUrl: z.string().max(400_000).refine((value) => !value || /^data:image\/(png|jpeg|webp|x-icon|vnd\.microsoft\.icon);base64,/i.test(value), "Favicon must be a PNG, JPEG, WebP, or ICO data URL."), faviconMode: z.enum(["uploaded", "url", "none"]) }).partial().optional(),
     settings: z.record(z.unknown()).optional(),
     workflowChange: z.object({
       category: z.string().trim().min(2).max(80),
@@ -6775,9 +6893,11 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/wordpress/connec
     ? jsonRecord(await wpFetch(candidate, "/wp-json/senuke/v1/capabilities"))
     : {};
   const connectorFeatures = jsonStrings(connectorCapabilities.features);
-  const completeConnector = ["seo_meta", "schema", "menus", "forms", "site_backup", "design_package", "rollback"]
+  const connectorVersion = String(connectorCapabilities.version || "0.0.0");
+  const completeConnector = ["seo_meta", "robots_meta", "schema", "favicon", "gutenberg_blocks", "full_site_editing", "editable_theme", "senuke_theme", "menus", "forms", "site_backup", "design_package", "rollback"]
     .every((feature) => connectorFeatures.includes(feature))
-    && connectorCapabilities.managedDeploymentReady === true;
+    && connectorCapabilities.managedDeploymentReady === true
+    && wordPressConnectorVersionAtLeast(connectorVersion, "1.5.3");
   const integration = await prisma.wordPressIntegration.create({
     data: {
       projectId: project.id,
@@ -6790,7 +6910,7 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/wordpress/connec
         "media",
         "draft",
         ...(input.defaultPublishMode === "publish" ? ["publish"] : []),
-        ...(connector ? ["senuke_connector", ...(completeConnector ? connectorFeatures : [])] : []),
+        ...(connector ? ["senuke_connector", `connector_version:${connectorVersion}`, ...(completeConnector ? connectorFeatures : [])] : []),
       ],
       defaultPublishMode: input.defaultPublishMode,
       username: input.username,
@@ -6810,7 +6930,7 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/wordpress/connec
     wordpressUser: { id: me.id, name: me.name },
     connector: {
       installed: connector,
-      version: String(connectorCapabilities.version || ""),
+      version: connectorVersion,
       features: connectorFeatures,
       permissions: jsonRecord(connectorCapabilities.permissions),
       complete: completeConnector,
@@ -6828,12 +6948,20 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/wordpress/:integ
     const connectorInstalled = Array.isArray(root.namespaces) && root.namespaces.map(String).includes("senuke/v1");
     const connector = connectorInstalled ? jsonRecord(await wpFetch(integration, "/wp-json/senuke/v1/capabilities")) : {};
     const features = jsonStrings(connector.features);
-    const complete = ["seo_meta", "schema", "menus", "forms", "site_backup", "design_package", "rollback"]
+    const connectorVersion = String(connector.version || "0.0.0");
+    const complete = ["seo_meta", "robots_meta", "schema", "favicon", "gutenberg_blocks", "full_site_editing", "editable_theme", "senuke_theme", "menus", "forms", "site_backup", "design_package", "rollback"]
       .every((feature) => features.includes(feature))
-      && connector.managedDeploymentReady === true;
+      && connector.managedDeploymentReady === true
+      && wordPressConnectorVersionAtLeast(connectorVersion, "1.5.3");
     const managedConnectorFeatures = new Set([
       "seo_meta",
+      "robots_meta",
       "schema",
+      "favicon",
+      "gutenberg_blocks",
+      "full_site_editing",
+      "editable_theme",
+      "senuke_theme",
       "menus",
       "forms",
       "site_backup",
@@ -6842,9 +6970,9 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/wordpress/:integ
     ]);
     const permissionScope = [
       ...jsonStrings(integration.permissionScope).filter(
-        (scope) => scope !== "senuke_connector" && !managedConnectorFeatures.has(scope),
+        (scope) => scope !== "senuke_connector" && !scope.startsWith("connector_version:") && !managedConnectorFeatures.has(scope),
       ),
-      ...(connectorInstalled ? ["senuke_connector", ...(complete ? features : [])] : []),
+      ...(connectorInstalled ? ["senuke_connector", `connector_version:${connectorVersion}`, ...(complete ? features : [])] : []),
     ];
     await prisma.wordPressIntegration.update({
       where: { id: integration.id },
@@ -6859,7 +6987,7 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/wordpress/:integ
             : "Install the SENuke AI Connector before a managed live deployment.",
       },
     });
-    res.json({ connected: true, user: { id: me.id, name: me.name }, connector: { installed: connectorInstalled, version: String(connector.version || ""), features, permissions: jsonRecord(connector.permissions), complete } });
+    res.json({ connected: true, user: { id: me.id, name: me.name }, connector: { installed: connectorInstalled, version: connectorVersion, features, permissions: jsonRecord(connector.permissions), complete } });
   } catch (error) {
     await prisma.wordPressIntegration.update({ where: { id: integration.id }, data: { connectionStatus: "error", lastConnectionCheckAt: new Date(), lastError: error instanceof Error ? error.message : "Connection failed" } });
     throw error;
@@ -6870,8 +6998,13 @@ websiteBuilderRouter.get("/projects/:projectId/website-builder/wordpress/connect
   const { context } = await scopedProject(req.params.projectId, req);
   if (!hasWorkspacePermission(context, "manage_integrations")) return res.status(403).json({ error: "Integration management permission is required." });
   const source = await readFile(WORDPRESS_CONNECTOR_SOURCE);
+  const blocksScript = await readFile(resolve(WORDPRESS_CONNECTOR_DIRECTORY, "senuke-blocks.js"));
+  const blocksStyle = await readFile(resolve(WORDPRESS_CONNECTOR_DIRECTORY, "senuke-blocks.css"));
   const zip = new JSZip();
   zip.file("senuke-ai-connector/senuke-ai-connector.php", source);
+  zip.file("senuke-ai-connector/senuke-blocks.js", blocksScript);
+  zip.file("senuke-ai-connector/senuke-blocks.css", blocksStyle);
+  await addDirectoryToZip(zip, WORDPRESS_THEME_DIRECTORY, "senuke-ai-connector/theme/senuke-theme");
   const archive = await zip.generateAsync({
     type: "nodebuffer",
     compression: "DEFLATE",
@@ -6943,6 +7076,39 @@ function wordpressRestCollection(postType: string) {
   return postType === "post" ? "posts" : "pages";
 }
 
+websiteBuilderRouter.post("/projects/:projectId/website-builder/quality-waivers", async (req, res) => {
+  const { context, project } = await scopedProject(req.params.projectId, req);
+  if (!hasWorkspacePermission(context, "approve")) return res.status(403).json({ error: "Approval permission is required to waive a high-severity website quality issue." });
+  const input = z.object({ issueId: z.string().trim().min(5).max(1000), reason: z.string().trim().min(10).max(1000) }).parse(req.body ?? {});
+  const build = project.websiteBuilds[0];
+  if (!build) return res.status(409).json({ error: "Create the website build first." });
+  const currentModel = qualityWebsiteModel(project, build);
+  const currentQuality = evaluateWebsiteQualityGovernance(currentModel, {
+    environment: "staging",
+    industry: project.industry || project.niche || "",
+  });
+  const issue = currentQuality.issues.find((candidate) => candidate.issueId === input.issueId && candidate.status === "open");
+  if (!issue) return res.status(409).json({ error: "This quality issue no longer exists on the current website version. Run Quality Review again." });
+  if (issue.severity !== "high") return res.status(409).json({ error: "Only high-severity issues may be waived. Blockers must be corrected; medium and low findings do not lock approval." });
+  const waivers = { ...jsonRecord(jsonRecord(build.settingsJson).websiteQualityWaivers), [issue.issueId]: input.reason };
+  await prisma.websiteBuild.update({
+    where: { id: build.id },
+    data: { settingsJson: { ...jsonRecord(build.settingsJson), websiteQualityWaivers: waivers } as Prisma.InputJsonValue },
+  });
+  const fresh = await canonicalWebsiteInputs(project.id, build.id);
+  const checked = await validateAndPersistWebsiteModel(fresh.project, fresh.build, context.membership.userId);
+  await recordWorkspaceActivity(prisma, {
+    context,
+    action: "website_builder.quality_issue_waived",
+    entityType: "website_build",
+    entityId: build.id,
+    agencyClientId: project.agencyClientId,
+    projectId: project.id,
+    nextJson: { issueId: issue.issueId, code: issue.code, severity: issue.severity, reason: input.reason, validationId: checked.validation.id },
+  });
+  res.json({ issue: { ...issue, status: "waived", waiverReason: input.reason }, validation: checked.validation });
+});
+
 websiteBuilderRouter.post("/projects/:projectId/website-builder/launch-readiness", async (req, res) => {
   const { context, project } = await scopedProject(req.params.projectId, req);
   if (!hasWorkspacePermission(context, "execute_tasks")) return res.status(403).json({ error: "Task execution permission is required." });
@@ -6960,25 +7126,44 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/launch-readiness
   const redirectCount = Array.isArray(jsonRecord(build.settingsJson).redirects)
     ? (jsonRecord(build.settingsJson).redirects as unknown[]).length
     : 0;
+  const launchInput = z.object({ waivers: z.record(z.string(), z.string().trim().min(10).max(1000)).optional() }).parse(req.body ?? {});
+  if (launchInput.waivers && Object.keys(launchInput.waivers).length && !hasWorkspacePermission(context, "approve")) {
+    return res.status(403).json({ error: "Approval permission is required to waive a high-severity website quality issue." });
+  }
+  const savedWaivers = jsonRecord(jsonRecord(build.settingsJson).websiteQualityWaivers);
+  const waivedIssues = { ...savedWaivers, ...(launchInput.waivers ?? {}) } as Record<string, string>;
   const result = evaluateWebsiteLaunchReadiness(model, {
     approvedReleaseId: release.id,
     snapshotHash: release.snapshotHash,
     ...(baseUrl ? { baseUrl } : {}),
     existingWebsite: project.websiteStatus === "existing_website",
     redirectCount,
+    environment: "staging",
+    industry: project.industry || project.niche || "",
+    waivedIssues,
   });
   const checkedAt = new Date().toISOString();
+  const workflowEvents = [
+    { event: "qa_started", at: checkedAt },
+    ...result.qualityGate.issues.map((issue) => ({ event: "issue_detected", issueId: issue.issueId, severity: issue.severity, at: checkedAt })),
+    ...result.qualityGate.issues.filter((issue) => issue.status === "open" && issue.severity === "blocker").map((issue) => ({ event: "blocker_created", issueId: issue.issueId, at: checkedAt })),
+    ...result.qualityGate.issues.filter((issue) => issue.autoFixable).map((issue) => ({ event: "auto_fix_applied", issueId: issue.issueId, at: checkedAt })),
+    ...(result.blockingCount === 0 ? [{ event: "qa_passed", at: checkedAt }] : []),
+    { event: "approval_recorded", releaseId: release.id, at: release.approvedAt.toISOString() },
+  ];
   const launchReadiness: WebsiteLaunchReadiness & {
     releaseId: string;
     snapshotHash: string;
     checkedAt: string;
     validatorVersion: string;
+    workflowEvents: Array<Record<string, unknown>>;
   } = {
     ...result,
     releaseId: release.id,
     snapshotHash: release.snapshotHash,
     checkedAt,
     validatorVersion: "senuke-launch-readiness-1.0.0",
+    workflowEvents,
   };
   await prisma.websiteBuild.update({
     where: { id: build.id },
@@ -6986,6 +7171,7 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/launch-readiness
       settingsJson: {
         ...jsonRecord(build.settingsJson),
         launchReadiness,
+        websiteQualityWaivers: waivedIssues,
       } as unknown as Prisma.InputJsonValue,
     },
   });
@@ -7003,6 +7189,8 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/launch-readiness
       score: result.score,
       blockingCount: result.blockingCount,
       warningCount: result.warningCount,
+      qualityCounts: result.qualityGate.counts,
+      workflowEvents,
     },
   });
   res.json({ launchReadiness, release: { id: release.id, snapshotHash: release.snapshotHash } });
@@ -7051,8 +7239,19 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/deploy", async (
   if (!integration) return res.status(409).json({ error: "Select a connected WordPress site." });
   const connectorFeatures = jsonStrings(integration.permissionScope);
   const connectorEnabled = connectorFeatures.includes("senuke_connector");
-  const managedConnectorReady = ["seo_meta", "schema", "menus", "forms", "site_backup", "design_package", "rollback"]
+  const managedConnectorReady = ["seo_meta", "robots_meta", "schema", "favicon", "gutenberg_blocks", "full_site_editing", "editable_theme", "senuke_theme", "menus", "forms", "site_backup", "design_package", "rollback"]
     .every((feature) => connectorFeatures.includes(feature));
+  const deploymentConnectorCapabilities = connectorEnabled
+    ? jsonRecord(await wpFetch(integration, "/wp-json/senuke/v1/capabilities"))
+    : {};
+  const deploymentConnectorVersion = String(deploymentConnectorCapabilities.version || "0.0.0");
+  if (input.mode === "publish" && connectorEnabled) {
+    if (!wordPressConnectorVersionAtLeast(deploymentConnectorVersion, "1.5.3")) {
+      return res.status(409).json({
+        error: `Update the SENuke AI Connector before publishing live. Version ${deploymentConnectorVersion} is installed; version 1.5.3 or newer is required so an active SENuke Theme is refreshed and its header/footer cannot be overridden by stale release CSS.`,
+      });
+    }
+  }
   if (input.mode === "publish" && !managedConnectorReady) {
     return res.status(409).json({
       error: "Install or update the SENuke AI Connector before publishing live. Managed live publishing requires backup, design package, SEO/schema, menus, forms, and rollback support.",
@@ -7066,6 +7265,7 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/deploy", async (
         destinationId: integration.id,
         mode: "draft",
         status: "completed",
+        rendererVersion: WORDPRESS_RENDERER_VERSION,
       },
       orderBy: { completedAt: "desc" },
       take: 20,
@@ -7083,8 +7283,10 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/deploy", async (
       });
     }
   }
-  const deployDesignPackage = input.deployDesignPackage ?? (!requestedPageIds.size && project.websiteStatus !== "existing_website");
-  const wordpressRendererVersion = "senuke-wordpress-2.1.0";
+  const websiteDirection = String(jsonRecord(build.settingsJson).existingWebsiteDirection || "");
+  const completeWebsiteDesign = project.websiteStatus !== "existing_website" || ["replace", "redesign"].includes(websiteDirection);
+  const deployDesignPackage = input.deployDesignPackage ?? (!requestedPageIds.size && completeWebsiteDesign);
+  const wordpressRendererVersion = WORDPRESS_RENDERER_VERSION;
   const deploymentScope = requestedPageIds.size
     ? createHash("sha256").update([...requestedPageIds, input.publishingJobId || ""].sort().join("|")).digest("hex").slice(0, 16)
     : "complete-site";
@@ -7116,10 +7318,34 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/deploy", async (
       },
     })
     : await prisma.websiteDeployment.create({ data: { projectId: project.id, buildId: build.id, clientId: project.clientId, wordpressIntegrationId: integration.id, mode: input.mode, status: "processing", idempotencyKey, requestedByUserId: context.membership.userId, startedAt: new Date() } });
+  const reusableDraftPageIds = new Map<string, string>();
+  if (input.mode === "draft") {
+    const existingDraftPublication = await prisma.websitePublication.findFirst({
+      where: {
+        releaseId: release.id,
+        target: "wordpress",
+        destinationId: integration.id,
+        mode: "draft",
+        status: "completed",
+      },
+      orderBy: { completedAt: "desc" },
+    });
+    const savedMappings = jsonRecord(existingDraftPublication?.remoteMappingsJson).pages;
+    const existingMappings = Array.isArray(savedMappings) ? savedMappings.map(jsonRecord) : [];
+    for (const mapping of existingMappings) {
+      const pageId = String(mapping.pageId || "");
+      const remotePostId = String(mapping.remotePostId || "");
+      if (pageId && remotePostId) reusableDraftPageIds.set(pageId, remotePostId);
+    }
+  }
   const logs: Array<Record<string, unknown>> = [];
   const snapshots: Array<Record<string, unknown>> = [];
   let wordpressHomePageId: number | null = null;
-  const wordpressPageIds = new Map(build.pages.flatMap((page) => page.remotePostId ? [[page.id, Number(page.remotePostId)] as const] : []));
+  // Remote IDs are release-specific. Reusing the build's last remote ID here
+  // could attach a new draft to a live parent (or a live page to a draft
+  // parent), so this deployment builds its own mapping in page order.
+  const wordpressPageIds = new Map<string, number>();
+  const wordpressPageUrls = new Map<string, string>();
   const wordpressAssetUrls: Record<string, string> = {};
   const wordpressMediaIds = new Map<string, number>();
   try {
@@ -7178,21 +7404,23 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/deploy", async (
       if (!editablePage) throw new Error(`Approved page ${page.name} is no longer mapped to this website build.`);
       const isHomePage = websitePagePath(page.slug) === "/";
       const wordpressSlug = isHomePage ? "home" : slugify(page.slug.split("/").filter(Boolean).at(-1) || page.name);
+      const deploymentSlug = input.mode === "publish" ? wordpressSlug : `${wordpressSlug}-senuke-${release.id.slice(-8).toLowerCase()}`;
       const remotePostType = wordpressPostTypeForPage(page);
       const remoteCollection = wordpressRestCollection(remotePostType);
       remotePostTypes.set(page.pageId, remotePostType);
       let remote: Record<string, unknown> = {};
-      if (editablePage.remotePostId) {
+      const reusableDraftId = reusableDraftPageIds.get(page.pageId);
+      if (input.mode === "draft" && reusableDraftId) {
         try {
-          remote = jsonRecord(await wpFetch(integration, `/wp-json/wp/v2/${remoteCollection}/${editablePage.remotePostId}?context=edit`));
+          const candidate = jsonRecord(await wpFetch(integration, `/wp-json/wp/v2/${remoteCollection}/${reusableDraftId}?context=edit`));
+          if (candidate.status === "draft") remote = candidate;
         } catch {
-          // The remote record may have been deleted after a prior deployment.
-          // Fall back to a slug lookup so a stale local mapping cannot stop the
-          // complete backup and retry workflow.
+          // The prior draft may have been deleted in WordPress. The scoped
+          // release slug lookup below safely recreates only that missing draft.
         }
       }
       if (!remote.id) {
-        remote = jsonRecord((await wpFetch(integration, `/wp-json/wp/v2/${remoteCollection}?slug=${encodeURIComponent(wordpressSlug)}&context=edit&per_page=1`) as unknown[])[0]);
+        remote = jsonRecord((await wpFetch(integration, `/wp-json/wp/v2/${remoteCollection}?slug=${encodeURIComponent(deploymentSlug)}&context=edit&per_page=1`) as unknown[])[0]);
       }
       remotePages.set(page.pageId, remote);
       if (remote.id) {
@@ -7219,22 +7447,40 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/deploy", async (
       at: new Date().toISOString(),
     });
 
-    if (managedConnectorReady && deployDesignPackage) {
+    const deployDesignPackageNow = shouldDeployWordPressDesignPackage({
+      mode: input.mode,
+      managedConnectorReady,
+      deployDesignPackage,
+      connectorVersion: deploymentConnectorVersion,
+    });
+    if (deployDesignPackageNow) {
       const renderedFiles = createStaticWebsiteFiles(releaseModel, {
         approvedReleaseId: release.id,
         snapshotHash: release.snapshotHash,
         baseUrl: integration.siteUrl,
+        environmentType: input.mode === "publish" ? "production" : "staging",
       });
       const approvedCss = renderedFiles.find((file) => file.path === "assets/senuke.css")?.content || "";
       const colors = releaseModel.designSystem.colors;
       const typography = releaseModel.designSystem.typography;
-      const variables = `:root{--senuke-primary:${colors.primary};--senuke-secondary:${colors.secondary};--senuke-accent:${colors.accent};--senuke-background:${colors.background};--senuke-surface:${colors.surface};--senuke-text:${colors.text};--senuke-muted:${colors.mutedText};--senuke-heading:${typography.headingFont};--senuke-body:${typography.bodyFont}}`;
+      const variables = `:root{--senuke-primary:${colors.primary};--senuke-secondary:${colors.secondary};--senuke-accent:${colors.accent};--senuke-background:${colors.background};--senuke-surface:${colors.surface};--senuke-text:${colors.text};--senuke-muted:${colors.mutedText};--senuke-heading:${typography.headingFont};--senuke-body:${typography.bodyFont};${websiteLayoutCssVariables(releaseModel.designSystem.layoutMode)}}`;
+      logs.push({
+        action: "design_package_started",
+        status: "processing",
+        at: new Date().toISOString(),
+      });
       const designPackage = jsonRecord(await wpFetch(integration, "/wp-json/senuke/v1/site-package", {
         method: "POST",
         body: JSON.stringify({
           releaseId: release.id,
           snapshotHash: release.snapshotHash,
-          css: `${variables}\n${approvedCss}`,
+          css: wordpressConnectorSafeCss(`${variables}\n${approvedCss}`),
+          scope: "release_pages",
+          // A new site needs the editable block theme during staging. An
+          // existing live site keeps its current theme while drafts are being
+          // reviewed and changes theme only when the complete redesign is
+          // explicitly published.
+          activateTheme: completeWebsiteDesign && (input.mode === "publish" || project.websiteStatus !== "existing_website"),
         }),
       }));
       logs.push({
@@ -7247,8 +7493,10 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/deploy", async (
       logs.push({
         action: "design_package_skipped",
         status: "success",
-        detail: deployDesignPackage
-          ? "The connected WordPress site does not have the managed connector; the active theme will style the draft content."
+        detail: input.mode === "draft" && deployDesignPackage
+          ? `WordPress drafts were created without changing the active theme. Update the SENuke AI Connector from version ${deploymentConnectorVersion} to 1.5.3 or newer, then synchronize the drafts again to apply SENuke Theme, approved header/footer navigation, favicon, and page SEO output.`
+          : deployDesignPackage
+          ? "The connected WordPress site does not have the managed connector; the active theme will style the content."
           : "The project uses an existing WordPress design, so SENuke preserved the active theme and did not install the approved design package.",
         at: new Date().toISOString(),
       });
@@ -7263,7 +7511,7 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/deploy", async (
       const createdForm = jsonRecord(await wpFetch(integration, "/wp-json/senuke/v1/forms", {
         method: "POST",
         body: JSON.stringify({
-          key: approvedForm.formId,
+          key: `${approvedForm.formId}-${release.id}`,
           name: "Website enquiry",
           type: approvedForm.type,
           fields: formComponent?.props.fields || approvedForm.fields,
@@ -7322,6 +7570,34 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/deploy", async (
       featuredMediaCount: wordpressMediaIds.size,
       at: new Date().toISOString(),
     });
+    if (connectorEnabled) {
+      const approvedLogoId = String(releaseModel.identity?.logoAssetId || "");
+      const approvedFaviconId = String(releaseModel.identity?.faviconAssetId || "");
+      const identityResult = jsonRecord(await wpFetch(integration, "/wp-json/senuke/v1/site-identity", {
+        method: "POST",
+        body: JSON.stringify({
+          releaseId: release.id,
+          snapshotHash: release.snapshotHash,
+          businessName: releaseModel.identity?.businessName || project.name,
+          businessSummary: releaseModel.identity?.businessSummary || "",
+          logoUrl: approvedLogoId ? wordpressAssetUrls[approvedLogoId] || "" : "",
+          logoMediaId: approvedLogoId ? wordpressMediaIds.get(approvedLogoId) || 0 : 0,
+          faviconUrl: approvedFaviconId ? wordpressAssetUrls[approvedFaviconId] || "" : "",
+          faviconMediaId: approvedFaviconId ? wordpressMediaIds.get(approvedFaviconId) || 0 : 0,
+          contactEmail: releaseModel.identity?.contactEmail || "",
+          contactPhone: releaseModel.identity?.contactPhone || "",
+          businessAddress: releaseModel.identity?.businessAddress || "",
+          copyrightText: releaseModel.identity?.copyrightText || "",
+          socialProfiles: releaseModel.identity?.socialProfiles || [],
+          applySiteSettings: input.mode === "publish" || project.websiteStatus !== "existing_website",
+        }),
+      }));
+      logs.push({
+        action: "site_identity_synchronized",
+        status: identityResult.saved ? "success" : "warning",
+        at: new Date().toISOString(),
+      });
+    }
     for (const page of pages) {
       const editablePage = build.pages.find((candidate) => candidate.id === page.pageId);
       if (!editablePage) throw new Error(`Approved page ${page.name} is no longer mapped to this website build.`);
@@ -7329,17 +7605,19 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/deploy", async (
       const featuredMedia = wordpressMediaIds.get(approvedHeroId);
       const isHomePage = websitePagePath(page.slug) === "/";
       const wordpressSlug = isHomePage ? "home" : slugify(page.slug.split("/").filter(Boolean).at(-1) || page.name);
+      const deploymentSlug = input.mode === "publish" ? wordpressSlug : `${wordpressSlug}-senuke-${release.id.slice(-8).toLowerCase()}`;
       const wordpressParentId = page.parentPageId ? wordpressPageIds.get(page.parentPageId) : undefined;
       const remotePostType = remotePostTypes.get(page.pageId) || wordpressPostTypeForPage(page);
       const remoteCollection = wordpressRestCollection(remotePostType);
       const remote = remotePages.get(page.pageId) || {};
-      const remoteId = editablePage.remotePostId || (remote.id ? String(remote.id) : null);
-      const payload = { title: page.name, slug: wordpressSlug, content: renderWebsitePageBodyHtml(releaseModel, page, { approvedReleaseId: release.id, snapshotHash: release.snapshotHash, formShortcode, mediaAssets: releaseModel.mediaAssets, assetUrls: wordpressAssetUrls }), status: input.mode, excerpt: page.seo.metaDescription, ...(remotePostType === "page" && wordpressParentId ? { parent: wordpressParentId } : {}), ...(featuredMedia ? { featured_media: featuredMedia } : {}) };
+      const remoteId = remote.id ? String(remote.id) : null;
+      const payload = { title: page.name, slug: deploymentSlug, content: renderWebsitePageWordPressBlocks(releaseModel, page, { approvedReleaseId: release.id, snapshotHash: release.snapshotHash, formShortcode, mediaAssets: releaseModel.mediaAssets, assetUrls: wordpressAssetUrls }), status: input.mode, excerpt: page.seo.metaDescription, ...(remotePostType === "page" && wordpressParentId ? { parent: wordpressParentId } : {}), ...(featuredMedia ? { featured_media: featuredMedia } : {}) };
       const result = jsonRecord(await wpFetch(integration, remoteId ? `/wp-json/wp/v2/${remoteCollection}/${remoteId}` : `/wp-json/wp/v2/${remoteCollection}`, { method: "POST", body: JSON.stringify(payload) }));
       if (result.id) wordpressPageIds.set(page.pageId, Number(result.id));
+      if (result.link) wordpressPageUrls.set(page.pageId, String(result.link));
       if (isHomePage && result.id) wordpressHomePageId = Number(result.id);
       if (connectorEnabled && result.id) {
-        await wpFetch(integration, `/wp-json/senuke/v1/pages/${result.id}/optimize`, { method: "POST", body: JSON.stringify({ metaTitle: page.seo.title, metaDescription: page.seo.metaDescription, canonicalUrl: page.seo.canonicalUrl || result.link, schemaJsonLd: page.seo.schemaJsonLd, aeoReviewed: true, geoReviewed: true, approvedReleaseId: release.id, snapshotHash: release.snapshotHash }) });
+        await wpFetch(integration, `/wp-json/senuke/v1/pages/${result.id}/optimize`, { method: "POST", body: JSON.stringify({ metaTitle: page.seo.title, metaDescription: page.seo.metaDescription, canonicalUrl: input.mode === "publish" ? page.seo.canonicalUrl || result.link : result.link, robots: input.mode === "publish" ? page.seo.robots || "index, follow" : "noindex, nofollow", schemaJsonLd: page.seo.schemaJsonLd, aeoReviewed: true, geoReviewed: true, approvedReleaseId: release.id, snapshotHash: release.snapshotHash, senukePageId: page.pageId }) });
       }
       await prisma.websiteBuildPage.update({ where: { id: editablePage.id }, data: { status: input.mode === "publish" ? "published" : "deployed", remotePostId: String(result.id), remoteUrl: String(result.link ?? "") } });
       logs.push({ pageId: page.pageId, action: remoteId ? "updated" : "created", status: "success", remotePostType, remotePostId: result.id, url: result.link, approvedReleaseId: release.id, at: new Date().toISOString() });
@@ -7370,34 +7648,29 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/deploy", async (
     }
     const menu = releaseModel.navigation.map((item) => {
       const page = releaseModel.pages.find((candidate) => candidate.pageId === item.pageId);
-      return { pageId: item.pageId, label: item.label, parentPageId: item.parentPageId, slug: page?.slug || item.url || "" };
+      return { pageId: item.pageId, label: item.label, parentPageId: item.parentPageId, remoteUrl: wordpressPageUrls.get(item.pageId), slug: page?.slug || item.url || "" };
     });
-    const footerMenu = releaseModel.navigationModel.footerMenus.flatMap((group) => {
+    const footerMenu = curatedWebsiteFooterMenus(releaseModel).mainGroups.flatMap((group) => {
       const parentId = `footer-group-${group.groupId}`;
       return [
         { pageId: parentId, label: group.label, parentPageId: undefined, slug: "", custom: true },
         ...group.items.map((item, index) => {
           const page = releaseModel.pages.find((candidate) => candidate.pageId === item.pageId);
-          return { pageId: `footer-${group.groupId}-${item.pageId}-${index}`, label: item.label, parentPageId: parentId, slug: page?.slug || item.url || "" };
+          return { pageId: `footer-${group.groupId}-${item.pageId}-${index}`, label: item.label, parentPageId: parentId, remoteUrl: wordpressPageUrls.get(item.pageId), slug: page?.slug || item.url || "" };
         }),
       ];
     });
     if (menu.length || footerMenu.length) {
       try {
         const base = integration.siteUrl.replace(/\/$/, "");
-        const menuUrl = (item: Record<string, unknown>) => {
-          const destination = String(item.slug ?? "").trim();
-          if (!destination) return "#";
-          if (/^https?:\/\//i.test(destination) || destination.startsWith("#") || destination.startsWith("mailto:") || destination.startsWith("tel:")) return destination;
-          return `${base}/${destination.replace(/^\//, "")}`;
-        };
+        const menuUrl = (item: Record<string, unknown>) => wordpressMenuDestination(base, item);
         if (connectorEnabled) {
           if (menu.length) {
-            const connectorMenu = jsonRecord(await wpFetch(integration, "/wp-json/senuke/v1/menus", { method: "POST", body: JSON.stringify({ name: "SENuke Primary Navigation", location: "primary", items: menu.map((item) => ({ id: String(item.pageId ?? ""), parentId: item.parentPageId ? String(item.parentPageId) : null, label: String(item.label ?? "Page"), url: menuUrl(item) })) }) }));
+            const connectorMenu = jsonRecord(await wpFetch(integration, "/wp-json/senuke/v1/menus", { method: "POST", body: JSON.stringify({ name: `SENuke Primary Navigation ${release.id}`, location: "primary", assignLocation: input.mode === "publish", items: menu.map((item) => ({ id: String(item.pageId ?? ""), parentId: item.parentPageId ? String(item.parentPageId) : null, label: String(item.label ?? "Page"), url: menuUrl(item) })) }) }));
             logs.push({ action: "primary_menu_created", status: "success", remoteNavigationId: connectorMenu.menuId, location: connectorMenu.location, at: new Date().toISOString() });
           }
           if (footerMenu.length) {
-            const connectorFooterMenu = jsonRecord(await wpFetch(integration, "/wp-json/senuke/v1/menus", { method: "POST", body: JSON.stringify({ name: "SENuke Footer Navigation", location: "footer", items: footerMenu.map((item) => ({ id: String(item.pageId ?? ""), parentId: item.parentPageId ? String(item.parentPageId) : null, label: String(item.label ?? "Page"), url: menuUrl(item) })) }) }));
+            const connectorFooterMenu = jsonRecord(await wpFetch(integration, "/wp-json/senuke/v1/menus", { method: "POST", body: JSON.stringify({ name: `SENuke Footer Navigation ${release.id}`, location: "footer", assignLocation: input.mode === "publish", items: footerMenu.map((item) => ({ id: String(item.pageId ?? ""), parentId: item.parentPageId ? String(item.parentPageId) : null, label: String(item.label ?? "Page"), url: menuUrl(item) })) }) }));
             logs.push({ action: "footer_menu_created", status: "success", remoteNavigationId: connectorFooterMenu.menuId, location: connectorFooterMenu.location, at: new Date().toISOString() });
           }
         } else {
@@ -7449,14 +7722,48 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/deploy", async (
           const url = await safeSiteUrl(mapping.remoteUrl);
           const response = await fetch(url, { signal: AbortSignal.timeout(15_000), redirect: "error" });
           const html = await response.text();
+          const canonicalMatch = html.match(/<link[^>]+rel=["'][^"']*canonical[^"']*["'][^>]+href=["']([^"']+)["']|<link[^>]+href=["']([^"']+)["'][^>]+rel=["'][^"']*canonical[^"']*["']/i);
+          const canonicalValue = canonicalMatch?.[1] || canonicalMatch?.[2] || "";
+          const canonicalMatchesProduction = (() => {
+            try {
+              const canonicalUrl = new URL(canonicalValue, url);
+              const liveUrl = new URL(url);
+              return canonicalUrl.origin === liveUrl.origin
+                && canonicalUrl.pathname.replace(/\/+$/, "") === liveUrl.pathname.replace(/\/+$/, "");
+            } catch { return false; }
+          })();
+          const headerRobots = response.headers.get("x-robots-tag") || "";
+          const internalTargets = [...html.matchAll(/<(?:a|img|script|link)\b[^>]+(?:href|src)=["']([^"']+)["']/gi)]
+            .map((match) => match[1])
+            .filter((target) => target && !/^(?:#|mailto:|tel:|javascript:|data:)/i.test(target))
+            .map((target) => { try { return new URL(target, url).toString(); } catch { return ""; } })
+            .filter((target) => { try { return new URL(target).origin === new URL(url).origin; } catch { return false; } });
+          const sampledTargets = [...new Set(internalTargets)].filter((target) => target !== url).slice(0, 4);
+          const sampledResponses = await Promise.all(sampledTargets.map(async (target) => {
+            try {
+              const targetUrl = await safeSiteUrl(target);
+              const targetResponse = await fetch(targetUrl, { signal: AbortSignal.timeout(8_000), redirect: "follow" });
+              return { target, passed: targetResponse.ok, status: targetResponse.status };
+            } catch { return { target, passed: false, status: 0 }; }
+          }));
+          const brokenTargets = sampledResponses.filter((item) => !item.passed);
+          const leakedProductionCopy = /\b(?:lorem ipsum|placeholder(?: text| copy)?|content goes here|TODO|TBD|not approved|requires? confirmation|proof required|evidence (?:needed|required)|reviewer instruction|content brief|do not publish)\b/i.test(html.replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, " ").replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, " "));
+          const invalidFormAction = /<form\b(?![^>]*(?:action=["'][^"'#]+["']|data-senuke-managed-form))[^>]*>/i.test(html);
           checks.push(
             { key: "http", passed: response.ok, detail: `HTTP ${response.status}` },
             { key: "title", passed: /<title[^>]*>.+?<\/title>/is.test(html), detail: "HTML title" },
             { key: "h1", passed: (html.match(/<h1\b/gi) ?? []).length === 1, detail: "Exactly one H1" },
             { key: "meta_description", passed: /<meta[^>]+name=["']description["']/i.test(html), detail: "Meta description" },
+            { key: "canonical", passed: (html.match(/<link[^>]+rel=["'][^"']*canonical[^"']*["']/gi) ?? []).length === 1 && canonicalMatchesProduction, detail: canonicalMatchesProduction ? `Production canonical: ${canonicalValue}` : `Canonical does not match live URL: ${canonicalValue || "missing"}` },
             { key: "schema", passed: /<script[^>]+application\/ld\+json/i.test(html), detail: "JSON-LD schema" },
+            { key: "approved_design", passed: /id=["']senuke-ai-approved-release-inline-css["']/i.test(html), detail: "Approved SENuke design package" },
+            { key: "editable_theme_layout", passed: /class=["'][^"']*senuke-theme-main/i.test(html), detail: "Editable SENuke header, page and footer template" },
             { key: "images_alt", passed: !/<img\b(?![^>]*\balt=)[^>]*>/i.test(html), detail: "Image alt attributes" },
-            { key: "indexability", passed: !/noindex/i.test(html), detail: "No noindex directive" },
+            { key: "indexability", passed: !/noindex/i.test(html) && !/noindex/i.test(headerRobots), detail: "No HTML or HTTP noindex directive" },
+            { key: "instruction_leakage", passed: !leakedProductionCopy, detail: leakedProductionCopy ? "Visitor-visible placeholder or internal workflow language found" : "No placeholder or internal instruction leakage" },
+            { key: "draft_urls", passed: !/-senuke-[a-z0-9]{4,}/i.test(html), detail: "No release-scoped draft URL leaked into production" },
+            { key: "internal_links_and_assets", passed: brokenTargets.length === 0, detail: brokenTargets.length ? `${brokenTargets.length} sampled internal link or asset request(s) failed` : `${sampledResponses.length} sampled internal link and asset request(s) passed` },
+            { key: "forms", passed: !invalidFormAction, detail: invalidFormAction ? "A form has no functional delivery action" : "Rendered forms expose a managed or explicit delivery action" },
           );
         } catch (error) {
           checks.push({ key: "fetch", passed: false, detail: error instanceof Error ? error.message : "Could not fetch live page" });
@@ -7497,6 +7804,16 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/deploy", async (
     }
     const verificationPassed = verificationResults.length === pages.length
       && verificationResults.every((result) => result.status === "passed");
+    if (input.mode === "publish") {
+      logs.push({ action: "published", status: "success", releaseId: release.id, pageCount: pageMappings.length, at: new Date().toISOString() });
+      logs.push({
+        action: verificationPassed ? "production_validation_passed" : "production_validation_failed",
+        status: verificationPassed ? "success" : "warning",
+        releaseId: release.id,
+        checkedPageCount: verificationResults.length,
+        at: new Date().toISOString(),
+      });
+    }
     logs.push({
       action: input.mode === "publish" ? "live_urls_verified" : "wordpress_drafts_verified",
       status: verificationPassed ? "success" : "warning",
@@ -7512,24 +7829,28 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/deploy", async (
       newlyCreatedPageCount: pages.length - snapshots.filter((snapshot) => snapshot.kind === "page").length,
       at: new Date().toISOString(),
     });
+    const deploymentHasWarnings = logs.some((log) => log.status === "warning");
     const updated = await prisma.websiteDeployment.update({
       where: { id: deployment.id },
       data: {
-        status: verificationPassed ? "success" : "success_with_warnings",
+        status: verificationPassed && !deploymentHasWarnings ? "success" : "success_with_warnings",
         logsJson: logs as unknown as Prisma.InputJsonValue,
         snapshotsJson: snapshots as unknown as Prisma.InputJsonValue,
         completedAt: new Date(),
       },
     });
     const publicationCompletedAt = new Date();
+    const productionStatus = input.mode === "publish"
+      ? verificationPassed ? "published" : "published_validation_failed"
+      : "completed";
     await prisma.websitePublication.update({
       where: { id: publication.id },
       data: {
-        status: input.mode === "publish" ? "published" : "completed",
+        status: productionStatus,
         remoteMappingsJson: { deploymentId: updated.id, pages: pageMappings } as Prisma.InputJsonValue,
         deploymentLogsJson: logs as Prisma.InputJsonValue,
         verificationJson: {
-          status: verificationPassed ? "verified" : "issues_found",
+          status: verificationPassed ? deploymentHasWarnings ? "verified_with_warnings" : "verified" : "production_validation_failed",
           checkedAt: publicationCompletedAt.toISOString(),
           passedPageCount: verificationResults.filter((result) => result.status === "passed").length,
           pageCount: verificationResults.length,
@@ -7543,15 +7864,44 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/deploy", async (
         completedAt: publicationCompletedAt,
       },
     });
+    if (input.mode === "publish" && verificationPassed && !requestedPageIds.size) {
+      const measurementTask = project.executionTasks.find((task) => task.sourceType === "website_builder_request" && task.sourceId === build.id);
+      if (measurementTask) {
+        const addDays = (days: number) => new Date(publicationCompletedAt.getTime() + days * 86_400_000);
+        const baseline = {
+          source: "verified_website_release",
+          releaseId: release.id,
+          snapshotHash: release.snapshotHash,
+          publishedAt: publicationCompletedAt.toISOString(),
+          deploymentId: updated.id,
+          pageCount: pageMappings.length,
+          liveUrls: pageMappings.map((mapping) => mapping.remoteUrl),
+          productionValidationScore: Math.round(verificationResults.reduce((sum, result) => sum + result.score, 0) / Math.max(1, verificationResults.length)),
+        };
+        await prisma.measurementCheckpoint.createMany({ data: [
+          { projectId: project.id, taskId: measurementTask.id, checkpointType: "post_publish", dueAt: publicationCompletedAt, baselineJson: baseline },
+          { projectId: project.id, taskId: measurementTask.id, checkpointType: "day_30", dueAt: addDays(30), baselineJson: baseline },
+          { projectId: project.id, taskId: measurementTask.id, checkpointType: "day_60", dueAt: addDays(60), baselineJson: baseline },
+          { projectId: project.id, taskId: measurementTask.id, checkpointType: "day_90", dueAt: addDays(90), baselineJson: baseline },
+          { projectId: project.id, taskId: measurementTask.id, checkpointType: "recurring_180", dueAt: addDays(180), baselineJson: baseline },
+        ], skipDuplicates: true });
+        const homeMapping = pageMappings.find((mapping) => mapping.pageId === releaseModel.pages.find((page) => page.pageType === "home")?.pageId) || pageMappings[0];
+        if (homeMapping?.remoteUrl) await prisma.contentDiscoveryCheck.create({
+          data: { projectId: project.id, taskId: measurementTask.id, liveUrl: homeMapping.remoteUrl, status: "pending", evidenceJson: { releaseId: release.id, deploymentId: updated.id, source: "post_publish_crawl" } },
+        });
+        logs.push({ action: "baseline_created", status: "success", taskId: measurementTask.id, checkpointCount: 5, at: publicationCompletedAt.toISOString() });
+        await prisma.websiteDeployment.update({ where: { id: updated.id }, data: { logsJson: logs as unknown as Prisma.InputJsonValue } });
+      }
+    }
     if (!requestedPageIds.size) {
-      await prisma.websiteBuild.update({ where: { id: build.id }, data: { status: input.mode === "publish" ? "published" : "deployed" } });
+      await prisma.websiteBuild.update({ where: { id: build.id }, data: { status: input.mode === "publish" ? verificationPassed ? "published" : "needs_attention" : "deployed" } });
     }
     if (publishingJob) {
       const mapping = pageMappings.find((item) => item.pageId === publishingJob.targetPageId);
       await prisma.wordPressPublishJob.update({
         where: { id: publishingJob.id },
         data: {
-          status: input.mode === "publish" ? "published" : "draft_ready",
+          status: input.mode === "publish" ? verificationPassed ? "published" : "needs_attention" : "draft_ready",
           publishMode: input.mode,
           externalPostId: mapping?.remotePostId ?? null,
           remoteUrl: mapping?.remoteUrl ?? null,
@@ -7563,6 +7913,15 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/deploy", async (
         },
       });
     }
+    await recordWorkspaceActivity(prisma, {
+      context,
+      action: input.mode === "publish" ? verificationPassed ? "website_builder.production_validation_passed" : "website_builder.production_validation_failed" : "website_builder.wordpress_drafts_verified",
+      entityType: "website_publication",
+      entityId: publication.id,
+      agencyClientId: project.agencyClientId,
+      projectId: project.id,
+      nextJson: { releaseId: release.id, deploymentId: updated.id, pageCount: verificationResults.length, verificationPassed, productionStatus },
+    });
     res.json({ deployment: updated, publication: await prisma.websitePublication.findUnique({ where: { id: publication.id } }), release, idempotent: false });
   } catch (error) {
     const message = error instanceof Error ? error.message : "WordPress deployment failed.";
@@ -7595,6 +7954,7 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/static-export", 
     snapshotHash: release.snapshotHash,
     formAction: staticWebsiteFormAction(release),
     ...(baseUrl ? { baseUrl } : {}),
+    environmentType: "production",
   });
   const zip = new JSZip();
   const releaseDate = release.approvedAt;
@@ -7690,6 +8050,7 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/static-deploy", 
     snapshotHash: release.snapshotHash,
     formAction: staticWebsiteFormAction(release),
     ...(baseUrl ? { baseUrl } : {}),
+    environmentType: "production",
   });
   const rendererVersion = "senuke-static-sftp-1.0.0";
   const destinationSignature = createHash("sha256")
@@ -7819,6 +8180,7 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/quality-export",
   const files = createStaticWebsiteFiles(canonical.model, {
     snapshotHash: canonical.record.snapshotHash,
     ...(baseUrl ? { baseUrl } : {}),
+    environmentType: "preview",
   });
   const qualityReport = {
     artifactType: "website_quality_review",
