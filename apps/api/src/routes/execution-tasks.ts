@@ -891,6 +891,40 @@ const aiPageFaqPlanSchema = z.object({
   })).max(100),
 });
 
+const AI_PAGE_CTA_MAX_LENGTH = 120;
+
+/**
+ * AI occasionally returns a useful CTA direction as a full sentence that is
+ * longer than the governed Website Plan field. Preserve the wording when it
+ * fits; otherwise shorten at a word boundary before strict schema validation.
+ */
+export function normalizeAiPageCtaSuggestion(value: unknown) {
+  if (typeof value !== "string") return value;
+  const compact = value.trim().replace(/\s+/g, " ");
+  if (compact.length <= AI_PAGE_CTA_MAX_LENGTH) return compact;
+  const clipped = compact.slice(0, AI_PAGE_CTA_MAX_LENGTH);
+  const lastSpace = clipped.lastIndexOf(" ");
+  const shortened = lastSpace >= Math.floor(AI_PAGE_CTA_MAX_LENGTH * 0.6)
+    ? clipped.slice(0, lastSpace)
+    : clipped;
+  return shortened.replace(/[,:;\-–—]+$/g, "").trim();
+}
+
+export function parseAiPageFaqPlanResponse(value: unknown) {
+  const root = value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : value;
+  if (!root || typeof root !== "object" || Array.isArray(root) || !Array.isArray(root.pages)) {
+    return aiPageFaqPlanSchema.parse(value);
+  }
+  const pages = root.pages.map((item) => {
+    if (!item || typeof item !== "object" || Array.isArray(item)) return item;
+    const page = item as Record<string, unknown>;
+    return { ...page, ctaSuggestion: normalizeAiPageCtaSuggestion(page.ctaSuggestion) };
+  });
+  return aiPageFaqPlanSchema.parse({ ...root, pages });
+}
+
 async function applyAiPageFaqSuggestions(plan: ContentPlan, context: {
   business: AiBusinessContext;
   goal: string;
@@ -916,7 +950,7 @@ async function applyAiPageFaqSuggestions(plan: ContentPlan, context: {
         try {
           const generated = await centralAiJson({
         system: "You are the SENuke AI SEO content planner. Create useful, natural FAQ topic suggestions from the approved keyword-to-page map. Never invent business facts, prices, credentials, guarantees, reviews, statistics, eligibility rules, or service availability.",
-        prompt: `Return {"pages":[{"targetUrl":"exact supplied target URL","seoTitle":"unique SEO title","metaDescription":"unique search description","contentOutline":["4 to 8 page sections"],"contentBrief":"complete page-specific writing direction","supportingContentIdeas":["2 to 4 useful supporting assets"],"proofRequirements":["1 to 4 evidence requirements"],"ctaSuggestion":"page-specific conversion action","faqTopics":["3 or 4 question topics"]}]}.
+        prompt: `Return {"pages":[{"targetUrl":"exact supplied target URL","seoTitle":"unique SEO title","metaDescription":"unique search description","contentOutline":["4 to 8 page sections"],"contentBrief":"complete page-specific writing direction","supportingContentIdeas":["2 to 4 useful supporting assets"],"proofRequirements":["1 to 4 evidence requirements"],"ctaSuggestion":"page-specific conversion action of 3 to 120 characters","faqTopics":["3 or 4 question topics"]}]}.
 
 Approved business evidence:
 Confirmed business name: ${context.business.businessName || "Not confirmed; do not invent or use the internal project name"}
@@ -946,6 +980,7 @@ Rules:
 - Return 3 or 4 concise FAQ questions for every supplied page.
 - Return one unique SEO title, one useful meta description, and a 4–8 section content outline for every page.
 - Return a substantive page-specific content brief, useful supporting-content ideas, verified-evidence requirements, and an intent-matched CTA suggestion for every page.
+- ctaSuggestion MUST be one plain-text string between 3 and 120 characters. Keep it concise and never return an object or explanation.
 - Questions must serve the exact page purpose, primary keyword, secondary cluster, dominant intent, audience, and approved location.
 - Home at "/" is the primary brand and website-routing page. "Home" is never its keyword and must not become "Home in [city]". Use the approved business/brand as its primary entity, the umbrella service keyword as supporting direction, and make its title, description, outline, and FAQs introduce the offer, audience, service areas, trust, priority service routes, and main conversion step.
 - Do not append a city when the primary keyword already contains that city.
@@ -958,7 +993,7 @@ Rules:
 ${attempt ? "REPAIR REQUIRED: The previous response was incomplete or invalid. Return every supplied targetUrl exactly once and include every requested field with the required arrays." : ""}`,
         temperature: 0.25,
         timeoutMs: 90_000,
-        validate: (value) => aiPageFaqPlanSchema.parse(value),
+        validate: parseAiPageFaqPlanResponse,
       });
           parsedBatch = generated.result;
           break;
@@ -983,7 +1018,7 @@ ${attempt ? "REPAIR REQUIRED: The previous response was incomplete or invalid. R
           try {
             const retry = await centralAiJson({
               system: "You are the SENuke AI SEO content planner completing pages omitted from a prior structured response. Return every supplied page exactly once. Never invent business facts, claims, prices, credentials, guarantees, reviews, statistics, eligibility rules, or service availability.",
-              prompt: `Return {"pages":[{"targetUrl":"exact supplied target URL","seoTitle":"unique SEO title","metaDescription":"unique search description","contentOutline":["3 to 8 page sections"],"contentBrief":"complete page-specific writing direction","supportingContentIdeas":["2 to 4 useful supporting assets"],"proofRequirements":["1 to 4 evidence requirements"],"ctaSuggestion":"page-specific conversion action","faqTopics":["3 or 4 question topics"]}]}.
+              prompt: `Return {"pages":[{"targetUrl":"exact supplied target URL","seoTitle":"unique SEO title","metaDescription":"unique search description","contentOutline":["3 to 8 page sections"],"contentBrief":"complete page-specific writing direction","supportingContentIdeas":["2 to 4 useful supporting assets"],"proofRequirements":["1 to 4 evidence requirements"],"ctaSuggestion":"page-specific conversion action of 3 to 120 characters","faqTopics":["3 or 4 question topics"]}]}.
 
 Business: ${context.business.businessName || "Business name not confirmed"}
 Industry: ${context.business.industry}
@@ -1005,7 +1040,7 @@ ${JSON.stringify(missingAssignments.map((assignment) => ({
 })))}${attempt ? "\nREPAIR REQUIRED: Include every field and return only the missing target URLs above." : ""}`,
               temperature: 0.2,
               timeoutMs: 90_000,
-              validate: (value) => aiPageFaqPlanSchema.parse(value),
+              validate: parseAiPageFaqPlanResponse,
             });
             repairedPages = retry.result.pages;
             break;
@@ -1020,7 +1055,7 @@ ${JSON.stringify(missingAssignments.map((assignment) => ({
         generatedPages.push(...reconciledRepair.items);
       }
     }
-    const parsed = aiPageFaqPlanSchema.parse({ pages: generatedPages });
+    const parsed = parseAiPageFaqPlanResponse({ pages: generatedPages });
     return {
       ...plan,
       pageAssignments: plan.pageAssignments.map((assignment) => {

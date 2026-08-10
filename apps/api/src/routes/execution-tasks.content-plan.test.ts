@@ -6,7 +6,7 @@ vi.mock("../queue.js", () => ({
   keywordResearchQueue: { add: vi.fn() },
 }));
 
-import { contentPlanFor, includeEveryCrawledPageInContentPlan, parseAiUnifiedWebsitePlanResponse, reconcileAiWebsitePlanBatch, repairContentPlanPageIdentities, websitePlanEvidencePages } from "./execution-tasks.js";
+import { contentPlanFor, includeEveryCrawledPageInContentPlan, normalizeAiPageCtaSuggestion, parseAiPageFaqPlanResponse, parseAiUnifiedWebsitePlanResponse, reconcileAiWebsitePlanBatch, repairContentPlanPageIdentities, websitePlanEvidencePages } from "./execution-tasks.js";
 
 const baseInput = {
   projectName: "Growth Project",
@@ -320,5 +320,30 @@ describe("AI Website Plan batch reconciliation", () => {
       summary: "The invalid page decision must remain blocked by the strict Website Plan contract.",
       decisions: [{ ...decision("/invalid-intent"), searchIntent: "regional purchase" }],
     })).toThrow();
+  });
+
+  it("shortens overlong page CTA suggestions before the 120-character schema validation", () => {
+    const longCta = "Schedule a personalized consultation with our experienced advisory team to review your goals, compare the available options, and choose the most appropriate next step today";
+    const pageSuggestion = (index: number) => ({
+      targetUrl: `/page-${index + 1}`,
+      seoTitle: `Complete page-specific SEO title ${index + 1}`,
+      metaDescription: `A complete search description for page ${index + 1} that provides useful context and a clear reason to continue.`,
+      contentOutline: ["Introduction", "Available options", "Decision guidance", "Next steps"],
+      contentBrief: `Write a complete page-specific brief for governed page ${index + 1}.`,
+      supportingContentIdeas: ["Practical buyer checklist", "Common decision questions"],
+      proofRequirements: ["Use only verified business evidence"],
+      ctaSuggestion: [0, 3, 4].includes(index) ? longCta : "Request a consultation",
+      faqTopics: ["What does this option include?", "Who is this option suitable for?", "How can someone get started?"],
+    });
+
+    const parsed = parseAiPageFaqPlanResponse({ pages: Array.from({ length: 5 }, (_, index) => pageSuggestion(index)) });
+    expect(parsed.pages).toHaveLength(5);
+    for (const index of [0, 3, 4]) {
+      const cta = parsed.pages[index]?.ctaSuggestion ?? "";
+      expect(cta.length).toBeLessThanOrEqual(120);
+      expect(cta).toBe(normalizeAiPageCtaSuggestion(longCta));
+      expect(longCta.startsWith(cta)).toBe(true);
+    }
+    expect(parsed.pages[1]?.ctaSuggestion).toBe("Request a consultation");
   });
 });
