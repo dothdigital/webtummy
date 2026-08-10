@@ -42,6 +42,7 @@ import { isWebsitePlanTask } from "../website-plan-task.js";
 import { cleanGeographicTargetMarkets, projectAnalysisLocationLabels } from "../project-location.js";
 import {
   ensurePageSpecificFirstH2,
+  compactWebsiteAiPrompt,
   fitWebsiteComponentsToWordBudget,
   websiteContentBatchPageMode,
   websiteDraftAcceptanceWords,
@@ -2980,7 +2981,7 @@ async function expandGeneratedRichText(
   const businessContext = interpretedBusinessContext(seoPlan, project);
   const generated = await centralAiJson({
     system: "Expand website sections with original, useful buyer-focused content. Preserve every useful verified statement already present. Return JSON only. Never invent claims, prices, reviews, credentials, guarantees, statistics, local proof, or case-study results.",
-    prompt: `Return {"sections":[{"instanceId":"exact supplied id","body":"complete section copy"}]}.
+    prompt: compactWebsiteAiPrompt(`Return {"sections":[{"instanceId":"exact supplied id","body":"complete section copy"}]}.
 Write each body as ${Math.max(expansionBudget.minimumAcceptedWordsPerSection, expansionBudget.targetWordsPerSection - 15)}–${Math.min(expansionBudget.maximumWordsPerSection, expansionBudget.targetWordsPerSection + 15)} words in 3–5 short paragraphs separated by blank lines.
 The combined returned section bodies must not exceed ${expansionBudget.maximumCombinedWords} words.
 Do not include headings, HTML, markdown, notes, or additional sections. Preserve the verified meaning of each currentBody and add only decision-useful detail; do not pad the page or repeat city names.
@@ -2995,7 +2996,7 @@ Primary keyword: ${page.primaryKeyword}
 Intent: ${page.searchIntent}
 User instruction: ${instruction || "Help the visitor make an informed decision."}
 Shared approved Strategy contract: ${JSON.stringify(sharedWebsiteStrategy(project))}
-Sections: ${JSON.stringify(plan)}`,
+Sections: ${JSON.stringify(plan)}`, 80_000),
     temperature: 0.35,
     timeoutMs: 120_000,
   });
@@ -3046,7 +3047,7 @@ async function generatePage(page: { title: string; pageType: string; primaryKeyw
         : "";
       const generated = await centralAiJson({
         system: "You are the SEnuke AI Website Generation Service. Return safe structured JSON only. The approved Strategy and page-specific Execution contract are governing requirements. Generate only components and props permitted by the supplied Component Registry. Do not invent testimonials, metrics, credentials, addresses, awards, guarantees, or citations. Write a complete useful SEO page through registered website sections and never return arbitrary scripts, PHP, WordPress code, generic placeholder copy, or a thin outline.",
-        prompt: `${basePrompt}${correctivePrompt}\nFIRST SUPPORTING SECTION: Return an original first post-hero H2 that names this page's assigned topic or intent and differs from every sibling page. Never use “A solution aligned to your goals”, “How we can help”, “What we offer”, “Overview”, or “Why choose us”. Keep the follow-up overview concise at 70–130 words in 2–3 short paragraphs before deeper sections.`,
+        prompt: compactWebsiteAiPrompt(`${basePrompt}${correctivePrompt}\nFIRST SUPPORTING SECTION: Return an original first post-hero H2 that names this page's assigned topic or intent and differs from every sibling page. Never use “A solution aligned to your goals”, “How we can help”, “What we offer”, “Overview”, or “Why choose us”. Keep the follow-up overview concise at 70–130 words in 2–3 short paragraphs before deeper sections.`, 80_000),
         temperature: 0.35,
         timeoutMs: 120_000,
       });
@@ -3757,8 +3758,8 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/foundation", asy
 
 const logoPaletteSchema = z.object({
   paletteName: z.preprocess((value) => String(value ?? "").trim().slice(0, 80), z.string().min(2).max(80)),
-  rationale: z.preprocess((value) => String(value ?? "").trim().slice(0, 1200), z.string().min(10).max(1200)),
-  accessibilityNotes: z.preprocess((value) => Array.isArray(value) ? value.slice(0, 5).map((item) => String(item ?? "").trim().slice(0, 400)).filter((item) => item.length >= 3) : [], z.array(z.string().min(3).max(400)).max(5)),
+  rationale: z.preprocess((value) => String(value ?? "").trim().slice(0, 500), z.string().min(10).max(500)),
+  accessibilityNotes: z.preprocess((value) => Array.isArray(value) ? value.slice(0, 3).map((item) => String(item ?? "").trim().slice(0, 200)).filter((item) => item.length >= 3) : [], z.array(z.string().min(3).max(200)).max(3)),
   colours: z.object({
     primaryColor: z.string().regex(/^#[0-9a-f]{6}$/i),
     secondaryColor: z.string().regex(/^#[0-9a-f]{6}$/i),
@@ -3775,29 +3776,49 @@ const logoPaletteLuminance = (hex: string) => {
 };
 const logoPaletteContrast = (left: string, right: string) => { const values = [logoPaletteLuminance(left), logoPaletteLuminance(right)].sort((a, b) => b - a); return (values[0] + 0.05) / (values[1] + 0.05); };
 
+/**
+ * The saved brand object may contain the uploaded logo as a multi-megabyte
+ * data URL. A palette suggestion needs the current colour/font choices, never
+ * the image bytes—the browser has already measured the logo into hex colours.
+ */
+export function logoPalettePromptBrand(value: unknown) {
+  const brand = jsonRecord(value);
+  const colour = (key: string) => {
+    const candidate = String(brand[key] ?? "").trim();
+    return /^#[0-9a-f]{6}$/i.test(candidate) ? candidate.toLowerCase() : undefined;
+  };
+  return Object.fromEntries(Object.entries({
+    primaryColor: colour("primaryColor"),
+    secondaryColor: colour("secondaryColor"),
+    accentColor: colour("accentColor"),
+    backgroundColor: colour("backgroundColor"),
+    textColor: colour("textColor"),
+  }).filter(([, item]) => item !== undefined));
+}
+
+export const LOGO_PALETTE_AI_SYSTEM_PROMPT = "Create an accessible website palette from measured logo colours. Return JSON only. Keep the logo recognizable, avoid unsupported claims, and maintain WCAG AA contrast for text and primary buttons.";
+
+export function logoPaletteAiPrompt(dominantColours: string[], brand: unknown, tone: unknown) {
+  const measured = [...new Set(dominantColours.map((colour) => colour.toLowerCase()))].slice(0, 8);
+  const approvedTone = String(tone ?? "Professional, clear, trustworthy").replace(/\s+/g, " ").trim().slice(0, 160);
+  return `Return {"paletteName":"short name","rationale":"one concise sentence","accessibilityNotes":["short note"],"colours":{"primaryColor":"#000000","secondaryColor":"#000000","accentColor":"#000000","backgroundColor":"#ffffff","textColor":"#111111"}}.
+Logo colours: ${measured.join(", ")}
+Current colours: ${JSON.stringify(logoPalettePromptBrand(brand))}
+Tone: ${approvedTone || "Professional, clear, trustworthy"}
+Rules: six-digit hex only; prefer a light neutral background; keep primary, secondary and accent distinct; make background/text and primary/white WCAG AA; explain measured-colour influence; review draft only.`;
+}
+
 websiteBuilderRouter.post("/projects/:projectId/website-builder/logo-palette", async (req, res) => {
   const { context, project } = await scopedProject(req.params.projectId, req);
   if (!hasWorkspacePermission(context, "run_ai_analysis")) return res.status(403).json({ error: "AI generation permission is required." });
   const build = project.websiteBuilds[0];
   if (!build) return res.status(409).json({ error: "Initialize the Site Architect build first." });
   const input = z.object({ dominantColors: z.array(z.string().regex(/^#[0-9a-f]{6}$/i)).min(1).max(12) }).parse(req.body);
-  const businessContext = interpretedBusinessContext(jsonRecord(build.settingsJson).seoPlan || {}, project);
   const response = await centralAiJson({
-    system: "You are SEnuke AI's website brand-colour advisor. Turn measured logo colours into a professional, accessible website palette. Return JSON only. Keep the logo identity recognizable, but do not force every sampled colour into the final palette. Background and text must have WCAG AA contrast. Primary must work for important buttons with white text. Accent must remain readable against the selected text colour. Do not invent brand claims.",
-    prompt: `Return this exact JSON shape: {"paletteName":"short descriptive name","rationale":"plain-language explanation of the palette decisions","accessibilityNotes":["short note"],"colours":{"primaryColor":"#000000","secondaryColor":"#000000","accentColor":"#000000","backgroundColor":"#ffffff","textColor":"#111111"}}.
-Measured dominant logo colours: ${input.dominantColors.join(", ")}
-Business: ${businessIdentity(project) || "Business name requires confirmation"}
-Industry: ${businessContext.industry || project.niche || "Not confirmed"}
-Audience: ${businessContext.audience || "Not confirmed"}
-Approved brand tone: ${project.brandVoice || String(jsonRecord(build.brandJson).tone || "Professional, clear, and trustworthy")}
-Current website palette: ${JSON.stringify(jsonRecord(build.brandJson))}
-Rules:
-- Use six-digit hexadecimal colours only.
-- Prefer a light neutral background unless the measured logo and approved tone strongly justify a dark theme.
-- Avoid choosing near-identical primary, secondary, and accent roles.
-- Explain which measured colours influenced the result.
-- Return a review draft only; do not claim that it has been applied.`,
+    system: LOGO_PALETTE_AI_SYSTEM_PROMPT,
+    prompt: logoPaletteAiPrompt(input.dominantColors, build.brandJson, project.brandVoice || jsonRecord(build.brandJson).tone),
     temperature: 0.25,
+    maxOutputTokens: 600,
     timeoutMs: 90_000,
     validate: (value) => logoPaletteSchema.parse(value),
   });

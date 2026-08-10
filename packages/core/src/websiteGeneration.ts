@@ -168,6 +168,71 @@ export function strictWebsiteJsonResponseFormat(name: string, shapeOrSchema: unk
   };
 }
 
+export const WEBSITE_AI_REQUEST_BYTE_BUDGET = 96_000;
+
+const websiteAiUtf8Bytes = (value: string) => new TextEncoder().encode(value).byteLength;
+
+/**
+ * Keeps the governing beginning and final requirements of a prompt while
+ * dropping repeated middle evidence. The byte ceiling is deliberately more
+ * conservative than a token estimate: even pathological one-byte tokens plus
+ * the requested completion remain safely below a 128k model context.
+ */
+export function compactWebsiteAiPrompt(value: string, maxBytes: number) {
+  if (websiteAiUtf8Bytes(value) <= maxBytes) return value;
+  const notice = "\n\n[Repeated or lower-priority Website Builder evidence omitted to stay within the model context limit. Use the supplied structured-output schema and the remaining verified evidence.]\n\n";
+  const noticeBytes = websiteAiUtf8Bytes(notice);
+  const available = Math.max(0, maxBytes - noticeBytes);
+  const encoded = new TextEncoder().encode(value);
+  const headBytes = Math.floor(available * 0.68);
+  const tailBytes = available - headBytes;
+  const decoder = new TextDecoder();
+  const head = decoder.decode(encoded.slice(0, headBytes)).replace(/\uFFFD+$/g, "");
+  const tail = decoder.decode(encoded.slice(Math.max(headBytes, encoded.byteLength - tailBytes))).replace(/^\uFFFD+/g, "");
+  return `${head}${notice}${tail}`;
+}
+
+type WebsiteAiChatRequest = {
+  messages: Array<{ role: string; content: string; [key: string]: unknown }>;
+  [key: string]: unknown;
+};
+
+/**
+ * Applies a hard serialized-request budget to Website Builder chat calls.
+ * Structured-output schemas are never truncated. Only message text is
+ * compacted, so output validation and the approved SEO Plan remain intact.
+ */
+export function fitWebsiteAiChatRequest<T extends WebsiteAiChatRequest>(
+  request: T,
+  maxBytes = WEBSITE_AI_REQUEST_BYTE_BUDGET,
+): T {
+  const next = {
+    ...request,
+    messages: request.messages.map((message) => ({ ...message })),
+  } as T;
+  const serializedBytes = () => websiteAiUtf8Bytes(JSON.stringify(next));
+  if (serializedBytes() <= maxBytes) return next;
+
+  for (let attempt = 0; attempt < next.messages.length * 2 + 2 && serializedBytes() > maxBytes; attempt += 1) {
+    const candidate = next.messages
+      .map((message, index) => ({ index, bytes: websiteAiUtf8Bytes(message.content) }))
+      .filter((item) => item.bytes > 512)
+      .sort((left, right) => right.bytes - left.bytes)[0];
+    if (!candidate) break;
+    const excess = serializedBytes() - maxBytes;
+    const targetBytes = Math.max(512, candidate.bytes - excess - 512);
+    next.messages[candidate.index].content = compactWebsiteAiPrompt(next.messages[candidate.index].content, targetBytes);
+  }
+
+  if (serializedBytes() > maxBytes) {
+    throw Object.assign(
+      new Error("The Website Builder structured-output contract exceeds its safe AI context budget before page evidence is added."),
+      { code: "website_ai_context_contract_too_large" },
+    );
+  }
+  return next;
+}
+
 /**
  * BullMQ owns the live execution state. Database rows are the durable audit
  * record, but a worker restart must never reset a job that BullMQ still owns.

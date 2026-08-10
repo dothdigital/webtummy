@@ -7,10 +7,13 @@ export function modelUsesDefaultTemperature(model: string) {
   return /^(?:gpt-5(?:[.-]|$)|o\d(?:[.-]|$))/i.test(model.trim());
 }
 
-export function chatCompletionBody(input: { model: string; system: string; prompt: string; temperature?: number }) {
+export function chatCompletionBody(input: { model: string; system: string; prompt: string; temperature?: number; maxOutputTokens?: number }) {
+  const maxOutputTokens = input.maxOutputTokens ? Math.max(64, Math.min(16_000, Math.round(input.maxOutputTokens))) : undefined;
+  const usesDefaultTemperature = modelUsesDefaultTemperature(input.model);
   return {
     model: input.model,
-    ...(!modelUsesDefaultTemperature(input.model) ? { temperature: input.temperature ?? 0.25 } : {}),
+    ...(!usesDefaultTemperature ? { temperature: input.temperature ?? 0.25 } : {}),
+    ...(maxOutputTokens ? usesDefaultTemperature ? { max_completion_tokens: maxOutputTokens } : { max_tokens: maxOutputTokens } : {}),
     response_format: { type: "json_object" },
     messages: [
       { role: "system", content: `${input.system}\nReturn valid JSON only without markdown fences.` },
@@ -19,7 +22,7 @@ export function chatCompletionBody(input: { model: string; system: string; promp
   };
 }
 
-export async function centralAiJson<T = unknown>(input: { system: string; prompt: string; model?: string; temperature?: number; timeoutMs?: number; validate?: (value: unknown) => T }) {
+export async function centralAiJson<T = unknown>(input: { system: string; prompt: string; model?: string; temperature?: number; maxOutputTokens?: number; timeoutMs?: number; validate?: (value: unknown) => T }) {
   if (!config.openaiApiKey) throw Object.assign(new Error("SEnuke AI is not configured."), { code: "ai_not_configured", statusCode: 503, publicMessage: true });
   const requestContext = currentCommercialRequestContext();
   const policyDefault = defaultAiModelForFeature(requestContext?.featureKey, config.openaiContentModel);
@@ -44,7 +47,7 @@ export async function centralAiJson<T = unknown>(input: { system: string; prompt
       requestContext.manualUsageReservation = false;
     }
 
-    const response = await fetch("https://api.openai.com/v1/chat/completions", { method: "POST", headers: { Authorization: `Bearer ${config.openaiApiKey}`, "Content-Type": "application/json" }, body: JSON.stringify(chatCompletionBody({ model, system: input.system, prompt: input.prompt, temperature: input.temperature })), signal: AbortSignal.timeout(input.timeoutMs ?? 120_000) });
+    const response = await fetch("https://api.openai.com/v1/chat/completions", { method: "POST", headers: { Authorization: `Bearer ${config.openaiApiKey}`, "Content-Type": "application/json" }, body: JSON.stringify(chatCompletionBody({ model, system: input.system, prompt: input.prompt, temperature: input.temperature, maxOutputTokens: input.maxOutputTokens })), signal: AbortSignal.timeout(input.timeoutMs ?? 120_000) });
     const data = await response.json().catch(() => ({})) as { error?: { message?: string }; choices?: Array<{ message?: { content?: string } }>; usage?: { prompt_tokens?: number; completion_tokens?: number }; model?: string };
     if (!response.ok) {
       if (response.status === 401 || response.status === 403) {

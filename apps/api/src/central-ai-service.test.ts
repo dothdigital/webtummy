@@ -11,4 +11,9 @@ describe("central AI model compatibility", () => {
     expect(modelUsesDefaultTemperature("gpt-4o-mini")).toBe(false);
     expect(chatCompletionBody({ model: "gpt-4o-mini", system: "system", prompt: "prompt", temperature: 0.4 })).toMatchObject({ temperature: 0.4 });
   });
+
+  it("uses the model-compatible output token limit", () => {
+    expect(chatCompletionBody({ model: "gpt-5", system: "system", prompt: "prompt", maxOutputTokens: 600 })).toMatchObject({ max_completion_tokens: 600 });
+    expect(chatCompletionBody({ model: "gpt-4o-mini", system: "system", prompt: "prompt", maxOutputTokens: 600 })).toMatchObject({ max_tokens: 600 });
+  });
 });

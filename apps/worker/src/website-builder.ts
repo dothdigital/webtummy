@@ -13,6 +13,7 @@ import {
 } from "@webtummy/core/website-model";
 import {
   ensurePageSpecificFirstH2,
+  fitWebsiteAiChatRequest,
   fitWebsiteComponentsToWordBudget,
   strictWebsiteJsonResponseFormat,
   websiteDraftAcceptanceWords,
@@ -550,7 +551,7 @@ async function aiExistingPageUpdates(
     method: "POST",
     signal: AbortSignal.timeout(120_000),
     headers: { Authorization: `Bearer ${config.openaiApiKey}`, "Content-Type": "application/json" },
-    body: JSON.stringify({
+    body: JSON.stringify(fitWebsiteAiChatRequest({
       model: config.openaiContentModel,
       response_format: { type: "json_object" },
       temperature: 0.25,
@@ -573,7 +574,7 @@ For a dedicated FAQ page, return 8–12 verified question-and-answer pairs rathe
 For Contact and About pages, use the verified Project Intake evidence above. Omit or flag missing or conflicting facts; never invent them.
 Return currentValue, proposedValue, and implementationNotes as text; serialize FAQ or schema JSON as text.` },
       ],
-    }),
+    })),
   });
   if (!response.ok) throw new Error(`AI existing-page update request failed (${response.status}).`);
   const payload = record(await response.json());
@@ -822,7 +823,7 @@ async function expandRichTextComponents(
         method: "POST",
         signal: AbortSignal.timeout(180_000),
         headers: { Authorization: `Bearer ${config.openaiApiKey}`, "Content-Type": "application/json" },
-        body: JSON.stringify({
+        body: JSON.stringify(fitWebsiteAiChatRequest({
           model: config.openaiModel,
           response_format: strictWebsiteJsonResponseFormat("website_content_expansion", {
             sections: sectionPlan.map((section) => ({ instanceId: section.instanceId, body: "" })),
@@ -854,7 +855,7 @@ Sections to expand: ${promptJson(sectionPlan, 16_000)}
 ${attempt ? "The previous expansion was still too short. Meet the requested word range for every body." : ""}`,
             },
           ],
-        }),
+        })),
       });
       const raw = record(await response.json());
       if (!response.ok) throw new Error(String(record(raw.error).message || `OpenAI returned HTTP ${response.status}.`));
@@ -1248,7 +1249,7 @@ async function planPageComposition(
       method: "POST",
       signal: AbortSignal.timeout(60_000),
       headers: { Authorization: `Bearer ${config.openaiApiKey}`, "Content-Type": "application/json" },
-      body: JSON.stringify({
+      body: JSON.stringify(fitWebsiteAiChatRequest({
         model: config.openaiModel,
         response_format: strictWebsiteJsonResponseFormat("website_page_composition", {
           type: "object",
@@ -1306,7 +1307,7 @@ Rules:
 - Do not select sections merely to fill space.`,
           },
         ],
-      }),
+      })),
     });
     const raw = record(await response.json());
     if (!response.ok) throw new Error(String(record(raw.error).message || `OpenAI returned HTTP ${response.status}.`));
@@ -1375,7 +1376,7 @@ async function generateSectionGroup(
         method: "POST",
         signal: AbortSignal.timeout(120_000),
         headers: { Authorization: `Bearer ${config.openaiApiKey}`, "Content-Type": "application/json" },
-        body: JSON.stringify({
+        body: JSON.stringify(fitWebsiteAiChatRequest({
           model: config.openaiModel,
           response_format: strictWebsiteJsonResponseFormat(`website_${groupName}_sections`, responseShape),
           temperature: 0.35,
@@ -1406,7 +1407,7 @@ Aim for approximately ${targetWords} substantive visible words in this group. At
 ${prior ? `The previous result was incomplete. Expand and correct it while preserving the exact shape: ${promptJson(prior, 24_000)}` : ""}`,
             },
           ],
-        }),
+        })),
       });
       const raw = record(await response.json());
       if (!response.ok) throw new Error(String(record(raw.error).message || `OpenAI returned HTTP ${response.status}.`));
@@ -1676,7 +1677,7 @@ Page uniqueness contract: return an original SEO title, H1, first post-hero H2, 
   let previousFailure = "";
   for (let attempt = 0; attempt < 3; attempt++) {
     try {
-      const response = await fetch("https://api.openai.com/v1/chat/completions", { method: "POST", signal: AbortSignal.timeout(180_000), headers: { Authorization: `Bearer ${config.openaiApiKey}`, "Content-Type": "application/json" }, body: JSON.stringify({ model: config.openaiModel, response_format: strictWebsiteJsonResponseFormat("website_page_model", basic), temperature: 0.35, max_tokens: 8000, messages: [{ role: "system", content: `You are the SEnuke AI website development worker. Follow the approved SEO content plan as the controlling specification. Return structured JSON only. Generate only component IDs, versions, variants, and fields present in the supplied SENuke Component Registry. Never generate arbitrary components, scripts, PHP, WordPress code, fake claims, metrics, testimonials, credentials, offices, addresses, service availability, response times, local statistics, business relationships, awards, guarantees, or citations. Write only for the assigned intent owner and do not target prohibited competing keywords. Write a complete useful page section by section using the supplied registered-component blueprint. Every page needs one primary keyword, one dominant intent, exactly one hero headline mapped to H1, a specific CTA, appropriate schema, internal links, and image alt text. Use FAQs and process sections only when they serve the page intent. Local content must use only supplied evidence IDs, be meaningfully specific, and must not be a city-name swap. A failed or thin response is invalid; never return placeholder copy.` }, { role: "user", content: `Return the same JSON structure as this page blueprint, but rewrite every sample content value with original page-specific copy: ${promptJson(basic, 42_000)}\nActive Component Registry: ${promptJson(activeRegistry, 24_000)}\nPage composition policy: ${promptJson(policy, 4_000)}\nBusiness: ${businessContext.businessName || "business name not approved"}\nIndustry: ${businessContext.industry}\nCore customer value: ${businessContext.coreBusinessValue}\nApproved services: ${businessContext.primaryServices.join(", ")}\nAudience: ${businessContext.audience}\nLocations: ${promptStrings(project.targetLocations, 12, 200).join(", ")}\nBrand: ${promptJson(promptBrand(brand), 4_000)}\nRelevant approved SEO evidence: ${promptJson(relevantSeoEvidence(seoPlan, page), 14_000)}\nMapped page brief: ${promptJson(mappedBrief, 24_000)}\nAssigned primary intent: ${String(mappedSeoPlan.primaryIntent || page.searchIntent)}\nIntent owner: ${String(mappedSeoPlan.intentOwner || `/${page.slug}`)}\nAllowed local evidence IDs: ${promptStrings(mappedSeoPlan.localEvidenceIds, 16, 200).join(", ") || "none"}\nRequired internal links: ${promptStrings(mappedSeoPlan.requiredInternalLinks, 20, 500).join(", ") || "approved page map only"}\nProhibited competing keywords: ${promptStrings(mappedSeoPlan.prohibitedCompetingKeywords, 20, 300).join(", ") || "none supplied"}\nReserved titles, H1s, and meta descriptions already used by other planned or crawled pages: ${promptJson(uniquenessSignals, 20_000)}\nPage: ${page.title}\nPage type: ${page.pageType}\nPrimary keyword: ${page.primaryKeyword}\nSecondary: ${promptStrings(page.secondaryKeywords, 20, 300).join(", ")}\nIntent: ${page.searchIntent}\nSlug: ${page.slug}\nInstructions: ${promptText(instructions || "Build a complete conversion-focused page.", 4_000)}\nRequirements:\n- Write useful, substantive content up to ${policy.maximumWords} words across ${policy.minimumComponentCount}–10 registered component instances. Treat ${policy.minimumWords} words as a planning target, not permission to add filler.\n- Follow this page-specific direction: ${policy.guidance}\n- Keep the selected section sequence and rewrite every field with substantive page-specific content.\n- Give service, benefit, process, and proof item descriptions useful depth when those sections are selected.\n- Include page-specific FAQs only when the blueprint contains an FAQ block.\n- Return a unique SEO title, H1, and 120–160 character meta description. None may duplicate any reserved value above. Never write “Explore ... Review capabilities, process, proof, FAQs, and next steps.”\n- Do not copy any sentence from the supplied blueprint.\n- content.components is the complete and only editable page-content model. Do not return duplicate hero, section, or CTA fields outside content.components.` }, ...(previousCandidate ? [{ role: "user", content: `Expand and correct this prior candidate rather than starting over. Preserve valid component IDs and rewrite thin props with substantive copy.\nValidation failure: ${promptText(previousFailure, 2_000)}\nPrior candidate: ${promptJson(previousCandidate, 30_000)}` }] : [])] }) });
+      const response = await fetch("https://api.openai.com/v1/chat/completions", { method: "POST", signal: AbortSignal.timeout(180_000), headers: { Authorization: `Bearer ${config.openaiApiKey}`, "Content-Type": "application/json" }, body: JSON.stringify(fitWebsiteAiChatRequest({ model: config.openaiModel, response_format: strictWebsiteJsonResponseFormat("website_page_model", basic), temperature: 0.35, max_tokens: 8000, messages: [{ role: "system", content: `You are the SEnuke AI website development worker. Follow the approved SEO content plan as the controlling specification. Return structured JSON only. Generate only component IDs, versions, variants, and fields present in the supplied SENuke Component Registry. Never generate arbitrary components, scripts, PHP, WordPress code, fake claims, metrics, testimonials, credentials, offices, addresses, service availability, response times, local statistics, business relationships, awards, guarantees, or citations. Write only for the assigned intent owner and do not target prohibited competing keywords. Write a complete useful page section by section using the supplied registered-component blueprint. Every page needs one primary keyword, one dominant intent, exactly one hero headline mapped to H1, a specific CTA, appropriate schema, internal links, and image alt text. Use FAQs and process sections only when they serve the page intent. Local content must use only supplied evidence IDs, be meaningfully specific, and must not be a city-name swap. A failed or thin response is invalid; never return placeholder copy.` }, { role: "user", content: `Return the same JSON structure as this page blueprint, but rewrite every sample content value with original page-specific copy: ${promptJson(basic, 42_000)}\nActive Component Registry: ${promptJson(activeRegistry, 24_000)}\nPage composition policy: ${promptJson(policy, 4_000)}\nBusiness: ${businessContext.businessName || "business name not approved"}\nIndustry: ${businessContext.industry}\nCore customer value: ${businessContext.coreBusinessValue}\nApproved services: ${businessContext.primaryServices.join(", ")}\nAudience: ${businessContext.audience}\nLocations: ${promptStrings(project.targetLocations, 12, 200).join(", ")}\nBrand: ${promptJson(promptBrand(brand), 4_000)}\nRelevant approved SEO evidence: ${promptJson(relevantSeoEvidence(seoPlan, page), 14_000)}\nMapped page brief: ${promptJson(mappedBrief, 24_000)}\nAssigned primary intent: ${String(mappedSeoPlan.primaryIntent || page.searchIntent)}\nIntent owner: ${String(mappedSeoPlan.intentOwner || `/${page.slug}`)}\nAllowed local evidence IDs: ${promptStrings(mappedSeoPlan.localEvidenceIds, 16, 200).join(", ") || "none"}\nRequired internal links: ${promptStrings(mappedSeoPlan.requiredInternalLinks, 20, 500).join(", ") || "approved page map only"}\nProhibited competing keywords: ${promptStrings(mappedSeoPlan.prohibitedCompetingKeywords, 20, 300).join(", ") || "none supplied"}\nReserved titles, H1s, and meta descriptions already used by other planned or crawled pages: ${promptJson(uniquenessSignals, 20_000)}\nPage: ${page.title}\nPage type: ${page.pageType}\nPrimary keyword: ${page.primaryKeyword}\nSecondary: ${promptStrings(page.secondaryKeywords, 20, 300).join(", ")}\nIntent: ${page.searchIntent}\nSlug: ${page.slug}\nInstructions: ${promptText(instructions || "Build a complete conversion-focused page.", 4_000)}\nRequirements:\n- Write useful, substantive content up to ${policy.maximumWords} words across ${policy.minimumComponentCount}–10 registered component instances. Treat ${policy.minimumWords} words as a planning target, not permission to add filler.\n- Follow this page-specific direction: ${policy.guidance}\n- Keep the selected section sequence and rewrite every field with substantive page-specific content.\n- Give service, benefit, process, and proof item descriptions useful depth when those sections are selected.\n- Include page-specific FAQs only when the blueprint contains an FAQ block.\n- Return a unique SEO title, H1, and 120–160 character meta description. None may duplicate any reserved value above. Never write “Explore ... Review capabilities, process, proof, FAQs, and next steps.”\n- Do not copy any sentence from the supplied blueprint.\n- content.components is the complete and only editable page-content model. Do not return duplicate hero, section, or CTA fields outside content.components.` }, ...(previousCandidate ? [{ role: "user", content: `Expand and correct this prior candidate rather than starting over. Preserve valid component IDs and rewrite thin props with substantive copy.\nValidation failure: ${promptText(previousFailure, 2_000)}\nPrior candidate: ${promptJson(previousCandidate, 30_000)}` }] : [])] })) });
       const body = record(await response.json());
       if (!response.ok) throw new Error(String(record(body.error).message || `OpenAI returned HTTP ${response.status}.`));
       const choice = record(Array.isArray(body.choices) ? body.choices[0] : null);
@@ -2119,7 +2120,7 @@ async function aiVisualPlan(
       method: "POST",
       signal: AbortSignal.timeout(60_000),
       headers: { Authorization: `Bearer ${config.openaiApiKey}`, "Content-Type": "application/json" },
-      body: JSON.stringify({
+      body: JSON.stringify(fitWebsiteAiChatRequest({
         model: config.openaiModel,
         response_format: strictWebsiteJsonResponseFormat("website_visual_plan", {
           placement: "",
@@ -2163,7 +2164,7 @@ Rules:
 - The alt text must describe the visual naturally and must not stuff keywords.`,
           },
         ],
-      }),
+      })),
     });
     const raw = record(await response.json());
     if (!response.ok) throw new Error(String(record(raw.error).message || `OpenAI returned HTTP ${response.status}.`));

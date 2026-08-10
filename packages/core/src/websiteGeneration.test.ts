@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   ensurePageSpecificFirstH2,
+  fitWebsiteAiChatRequest,
   fitWebsiteComponentsToWordBudget,
   jsonSchemaFromWebsiteShape,
   strictWebsiteJsonResponseFormat,
@@ -13,6 +14,7 @@ import {
   websiteRichTextExpansionBudget,
   websiteSectionGroupBudgets,
   websiteFirstSupportingHeading,
+  WEBSITE_AI_REQUEST_BYTE_BUDGET,
 } from "./websiteGeneration.js";
 import {
   SENUKE_COMPONENT_REGISTRY_V1,
@@ -21,6 +23,33 @@ import {
 } from "./websiteModel.js";
 
 describe("website generation workflow contracts", () => {
+  it("compacts the exact oversized Website Builder failure class before the AI request", () => {
+    const request = {
+      model: "website-model",
+      max_tokens: 8_000,
+      response_format: { type: "json_schema", json_schema: { name: "website_page", strict: true, schema: { type: "object" } } },
+      messages: [
+        { role: "system", content: "Return governed website JSON only." },
+        {
+          role: "user",
+          content: `BEGIN GOVERNING CONTRACT\n${"approved SEO evidence ".repeat(130_126)}\nFINAL REQUIREMENTS: preserve the approved SEO Plan and return the required schema.`,
+        },
+      ],
+    };
+
+    const bounded = fitWebsiteAiChatRequest(request);
+    expect(new TextEncoder().encode(JSON.stringify(bounded)).byteLength).toBeLessThanOrEqual(WEBSITE_AI_REQUEST_BYTE_BUDGET);
+    expect(bounded.messages[1].content).toContain("BEGIN GOVERNING CONTRACT");
+    expect(bounded.messages[1].content).toContain("evidence omitted to stay within the model context limit");
+    expect(bounded.messages[1].content).toContain("FINAL REQUIREMENTS");
+    expect(bounded.response_format).toEqual(request.response_format);
+  });
+
+  it("does not alter Website Builder requests already inside the safe context budget", () => {
+    const request = { model: "website-model", messages: [{ role: "user", content: "small page request" }] };
+    expect(fitWebsiteAiChatRequest(request)).toEqual(request);
+  });
+
   it("repairs a generic or repeated first H2 with a page-specific supporting heading", () => {
     const components: WebsiteComponentInstance[] = [
       {

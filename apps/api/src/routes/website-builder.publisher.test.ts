@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { SENUKE_COMPONENT_REGISTRY_V1 } from "@webtummy/core/website-model";
-import { combinedPageSchema, effectiveExistingPageRequirements, generatedPageSchema, importedWebsiteRouteAssignment, pageIsImportedExistingWebsite, parseWordPressJsonResponse, publishingAssetMatchesWebsitePage, shouldDeployWordPressDesignPackage, websiteSettingsWithVerifiedLocalEvidence, wordPressConnectorVersionAtLeast, wordpressConnectorSafeCss, wordpressMenuDestination } from "./website-builder.js";
+import { combinedPageSchema, effectiveExistingPageRequirements, generatedPageSchema, importedWebsiteRouteAssignment, logoPaletteAiPrompt, logoPalettePromptBrand, pageIsImportedExistingWebsite, parseWordPressJsonResponse, publishingAssetMatchesWebsitePage, shouldDeployWordPressDesignPackage, websiteSettingsWithVerifiedLocalEvidence, wordPressConnectorVersionAtLeast, wordpressConnectorSafeCss, wordpressMenuDestination } from "./website-builder.js";
 
 const project = {
   businessName: "Example Financial",
@@ -15,6 +15,49 @@ const project = {
 };
 
 describe("ongoing WordPress publishing schema", () => {
+  it("never sends an embedded logo image in the logo colour-advisor prompt", () => {
+    const embeddedLogo = `data:image/png;base64,${"A".repeat(520_504)}`;
+    const context = logoPalettePromptBrand({
+      logoUrl: embeddedLogo,
+      logoData: embeddedLogo,
+      primaryColor: "#0F766E",
+      secondaryColor: "#14b8a6",
+      accentColor: "not-a-colour",
+      backgroundColor: "#f8fafc",
+      textColor: "#0f172a",
+      headingFont: "Inter",
+      tone: "Professional and trustworthy",
+    });
+
+    const serialized = JSON.stringify(context);
+    expect(serialized).not.toContain("data:image");
+    expect(serialized).not.toContain("AAAA");
+    expect(serialized.length).toBeLessThan(1_000);
+    expect(context).toMatchObject({
+      primaryColor: "#0f766e",
+      secondaryColor: "#14b8a6",
+      backgroundColor: "#f8fafc",
+      textColor: "#0f172a",
+    });
+    expect(context).not.toHaveProperty("accentColor");
+    expect(context).not.toHaveProperty("headingFont");
+  });
+
+  it("keeps the complete logo colour-advisor prompt compact", () => {
+    const embeddedLogo = `data:image/png;base64,${"B".repeat(520_504)}`;
+    const prompt = logoPaletteAiPrompt(
+      ["#0f766e", "#14b8a6", "#0F766E", "#f59e0b"],
+      { logoUrl: embeddedLogo, primaryColor: "#0f766e", secondaryColor: "#14b8a6", backgroundColor: "#f8fafc", textColor: "#0f172a", headingFont: "Inter" },
+      `Professional and trustworthy ${"very ".repeat(500)}`,
+    );
+
+    expect(new TextEncoder().encode(prompt).byteLength).toBeLessThan(1_200);
+    expect(prompt).not.toContain("data:image");
+    expect(prompt).not.toContain("BBBB");
+    expect(prompt.match(/#0f766e/g)).toHaveLength(2);
+    expect(prompt).toContain("WCAG AA");
+  });
+
   it("turns an HTML WordPress REST response into an actionable connection error", () => {
     expect(() => parseWordPressJsonResponse("<!DOCTYPE html><html><body>Login</body></html>", {
       endpoint: "https://example.com/wp-json/wp/v2/users/me?context=edit",
