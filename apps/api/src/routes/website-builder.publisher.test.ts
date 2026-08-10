@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { SENUKE_COMPONENT_REGISTRY_V1 } from "@webtummy/core/website-model";
-import { combinedPageSchema, compactWebsiteBuilderMediaAsset, compactWebsiteBuilderOverviewPage, effectiveExistingPageRequirements, generatedPageSchema, importedWebsiteRouteAssignment, logoPaletteAiPrompt, logoPalettePromptBrand, pageIsImportedExistingWebsite, parseWordPressJsonResponse, publishingAssetMatchesWebsitePage, shouldDeployWordPressDesignPackage, websiteSettingsWithVerifiedLocalEvidence, wordPressConnectorVersionAtLeast, wordpressConnectorSafeCss, wordpressMenuDestination } from "./website-builder.js";
+import { combinedPageSchema, compactWebsiteBuilderMediaAsset, compactWebsiteBuilderOverviewPage, effectiveExistingPageRequirements, generatedPageSchema, importedWebsiteRouteAssignment, logoPaletteAiPrompt, logoPalettePromptBrand, pageIsImportedExistingWebsite, parseWordPressJsonResponse, publishingAssetMatchesWebsitePage, replaceWebsitePublicStatements, shouldDeployWordPressDesignPackage, websiteSettingsWithVerifiedLocalEvidence, wordPressConnectorVersionAtLeast, wordpressConnectorSafeCss, wordpressMenuDestination } from "./website-builder.js";
 
 const project = {
   businessName: "Example Financial",
@@ -15,6 +15,21 @@ const project = {
 };
 
 describe("ongoing WordPress publishing schema", () => {
+  it("replaces only the flagged public sentence inside registered component props", () => {
+    const original = "Evaluate your needs to find the best fit for your situation.";
+    const replacement = "Learn about the factors commonly considered when reviewing available options.";
+    const components = [{
+      instanceId: "body",
+      componentId: "content.rich_text",
+      componentVersion: "1.0.0",
+      variant: "answer_first",
+      props: { heading: "Reviewing options", body: `Start here. ${original} Keep this sentence.` },
+    }] as Parameters<typeof replaceWebsitePublicStatements>[0];
+    const repaired = replaceWebsitePublicStatements(components, [{ original, replacement }]);
+    expect(repaired[0].props.body).toBe(`Start here. ${replacement} Keep this sentence.`);
+    expect(repaired[0].props.heading).toBe("Reviewing options");
+  });
+
   it("keeps image bodies out of page-media summaries", () => {
     const compact = compactWebsiteBuilderMediaAsset({
       id: "media-1",

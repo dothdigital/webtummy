@@ -954,16 +954,23 @@ async function validateAndPersistWebsiteModel(
     industry: project.industry || project.niche || "",
     waivedIssues: jsonRecord(jsonRecord(build.settingsJson).websiteQualityWaivers) as Record<string, string>,
   });
+  const pageIndexById = new Map(canonical.model.pages.map((page, index) => [page.pageId, index]));
   const governanceFindings = qualityGovernance.issues.filter((issue) => issue.status === "open").map((issue) => ({
     code: `governance.${issue.code}`,
     severity: issue.severity === "blocker" || issue.severity === "high" ? "blocking" as const : "warning" as const,
-    path: issue.pageId ? `pages.${issue.pageId}.${issue.field}` : issue.field,
+    path: issue.pageId && pageIndexById.has(issue.pageId) ? `pages.${pageIndexById.get(issue.pageId)}.${issue.field}` : issue.field,
     message: `${issue.message} Found: ${issue.evidence}. Fix: ${issue.suggestedFix}`,
     issueId: issue.issueId,
     governanceSeverity: issue.severity,
+    pageId: issue.pageId,
+    pageName: issue.pageName,
+    evidence: issue.evidence,
+    suggestedFix: issue.suggestedFix,
+    autoFixable: issue.autoFixable,
   }));
   const combinedFindings = [...validation.findings, ...governanceFindings];
-  const pageScores = canonical.model.pages.map((page) => ({ pageId: page.pageId, title: page.name, ...scoreSeoPage(page, canonical.model, validation) }));
+  const combinedValidation = { ...validation, findings: combinedFindings };
+  const pageScores = canonical.model.pages.map((page) => ({ pageId: page.pageId, title: page.name, ...scoreSeoPage(page, canonical.model, combinedValidation) }));
   const baseScore = pageScores.length ? Math.round(pageScores.reduce((sum, page) => sum + page.score, 0) / pageScores.length) : 0;
   const overallScore = Math.max(0, baseScore - qualityGovernance.counts.blocker * 10 - qualityGovernance.counts.high * 5 - qualityGovernance.counts.medium * 2 - qualityGovernance.counts.low);
   const blockingCount = combinedFindings.filter((finding) => finding.severity === "blocking").length
@@ -3232,6 +3239,26 @@ function updateCanonicalComponent(
   return canonicalContentFromComponents(existing, components);
 }
 
+export function replaceWebsitePublicStatements(
+  components: WebsiteComponentInstance[],
+  replacements: Array<{ original: string; replacement: string }>,
+) {
+  const replaceValue = (value: unknown): unknown => {
+    if (typeof value === "string") {
+      return replacements.reduce((result, item) => result.replaceAll(item.original, item.replacement), value);
+    }
+    if (Array.isArray(value)) return value.map(replaceValue);
+    if (value && typeof value === "object") {
+      return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, replaceValue(item)]));
+    }
+    return value;
+  };
+  return components.map((component) => ({
+    ...component,
+    props: replaceValue(component.props) as Record<string, unknown>,
+  }));
+}
+
 function seoFromVisualComponents(existing: Prisma.JsonValue, components: WebsiteComponentInstance[]) {
   const current = jsonRecord(existing);
   const faq = components.find((component) => component.componentId === "content.faq");
@@ -3695,14 +3722,13 @@ async function generatePage(page: { title: string; pageType: string; primaryKeyw
       for (const leak of findWebsitePublicContentLeakage(parsed.content.components)) {
         findings.push(`${leak.path} contains public instruction or placeholder leakage: ${leak.evidence}`);
       }
-      const evidenceAvailable = Boolean(
-        intakeEvidence.approvedWebsiteEvidence
-        || intakeEvidence.approvedBusinessDiscovery
-        || (Array.isArray(intakeEvidence.strengths) && intakeEvidence.strengths.length),
-      );
       for (const claim of findWebsiteUnsupportedClaims(parsed.content.components, {
         regulatedIndustry: /\b(?:insurance|financial|finance|investment|mortgage|bank|legal|law|medical|health|healthcare|pharma|real estate|accounting|tax)\b/i.test(businessContext.industry),
-        evidenceAvailable,
+        // General project evidence must not be treated as proof for a specific
+        // public ranking, suitability, credential, or performance sentence.
+        // Generated copy must stay safely qualified unless the exact claim is
+        // explicitly linked to approved evidence later.
+        evidenceAvailable: false,
       })) {
         findings.push(`unsupported ${claim.classification.replaceAll("_", " ")}: ${claim.statement}`);
       }
@@ -6491,6 +6517,104 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/pages/:pageId/re
     return updatedPage;
   });
   res.json({ page: updated, previousWords: currentWords, currentWords: expandedWords, targetRange: { minimum: composition.minimumWords, maximum: composition.maximumWords } });
+});
+
+websiteBuilderRouter.post("/projects/:projectId/website-builder/pages/:pageId/repair-claims", async (req, res) => {
+  const context = await workspaceContext(req);
+  if (!await canAccessProject(context, req.params.projectId)) return res.status(404).json({ error: "Project not found." });
+  if (!hasWorkspacePermission(context, "execute_tasks")) return res.status(403).json({ error: "Task execution permission is required." });
+  if (!hasWorkspacePermission(context, "run_ai_analysis")) return res.status(403).json({ error: "AI generation permission is required." });
+  const project = await prisma.project.findUnique({
+    where: { id: req.params.projectId },
+    select: { id: true, clientId: true, agencyClientId: true, name: true, businessName: true, industry: true, niche: true },
+  });
+  const build = await prisma.websiteBuild.findFirst({
+    where: { projectId: req.params.projectId },
+    orderBy: { updatedAt: "desc" },
+    select: {
+      id: true,
+      settingsJson: true,
+      pages: { orderBy: { sortOrder: "asc" }, select: { id: true, version: true } },
+      jobs: { orderBy: { createdAt: "desc" }, take: 10, select: { id: true, status: true, inputJson: true, resultJson: true } },
+    },
+  });
+  if (!project || !build) return res.status(404).json({ error: "Website build not found." });
+  const page = await prisma.websiteBuildPage.findFirst({ where: { id: req.params.pageId, buildId: build.id } });
+  if (!page || !pageHasCompleteContent(page)) return res.status(409).json({ error: "Generate the page before repairing its public claims." });
+  const components = canonicalComponents(page.contentJson);
+  const unsupported = findWebsiteUnsupportedClaims(components, {
+    regulatedIndustry: /\b(?:insurance|financial|finance|investment|mortgage|bank|legal|law|medical|health|healthcare|pharma|real estate|accounting|tax)\b/i.test(String(project.industry || project.niche || "")),
+    // The repair path deliberately qualifies or removes the claim. It never
+    // assumes that unrelated project evidence supports this exact sentence.
+    evidenceAvailable: false,
+  });
+  const statements = [...new Set(unsupported.map((claim) => claim.statement))];
+  if (!statements.length) return res.json({ page, alreadyReady: true, repairedClaims: 0 });
+  const replacementSchema = z.object({
+    replacements: z.array(z.object({
+      original: z.string().trim().min(12).max(3000),
+      replacement: z.string().trim().min(20).max(3000),
+    })).min(statements.length).max(statements.length),
+  });
+  let replacements: z.infer<typeof replacementSchema>["replacements"] | null = null;
+  let repairedComponents: WebsiteComponentInstance[] | null = null;
+  for (let attempt = 0; attempt < 2 && !repairedComponents; attempt += 1) {
+    const response = await centralAiJson({
+      system: "Rewrite only the supplied unsupported public website claims as neutral, educational copy. Return JSON only. Preserve the useful subject, but remove rankings, guarantees, superlatives, suitability conclusions, performance promises, unsupported credentials, and invented facts. Do not add new services, policy facts, insurer ratings, legal conclusions, statistics, locations, or outcomes.",
+      prompt: `Return {"replacements":[{"original":"exact supplied sentence","replacement":"safe customer-facing sentence"}]} with exactly one replacement for every supplied sentence.
+Business: ${businessIdentity(project) || "Approved business identity unavailable"}
+Industry: ${project.industry || project.niche || "Not specified"}
+Page: ${page.title}
+Primary keyword: ${page.primaryKeyword}
+Unsupported sentences: ${JSON.stringify(statements)}
+Rules:
+- Copy each original sentence exactly, including punctuation.
+- Keep the replacement useful and specific to the sentence's topic.
+- Prefer language such as learn, review, consider, may, can, and questions to discuss.
+- Do not use best, leading, guaranteed, risk-free, always, never, top-rated, highest, lowest, trusted, expert, proven, licensed, certified, or similar unsupported claims.
+- Do not recommend a particular product or say it is suitable for the visitor.
+${attempt ? "The previous response was incomplete or remained unsafe. Replace every sentence and remove every unsupported claim." : ""}`,
+      temperature: 0.2,
+      maxInputBytes: 24_000,
+      maxOutputTokens: 2_500,
+      timeoutMs: 60_000,
+    });
+    const candidate = replacementSchema.parse(response.result).replacements;
+    const byOriginal = new Map(candidate.map((item) => [item.original, item]));
+    if (statements.some((statement) => !byOriginal.has(statement))) continue;
+    const ordered = statements.map((statement) => byOriginal.get(statement)!);
+    const candidateComponents = replaceWebsitePublicStatements(components, ordered);
+    if (findWebsiteUnsupportedClaims(candidateComponents, { regulatedIndustry: true, evidenceAvailable: false }).length) continue;
+    if (findWebsitePublicContentLeakage(candidateComponents).length) continue;
+    replacements = ordered;
+    repairedComponents = candidateComponents;
+  }
+  if (!replacements || !repairedComponents) {
+    return res.status(502).json({ error: "SENuke AI could not produce an evidence-safe replacement for every flagged claim. No page change was saved; use Edit Page for a manual correction or retry." });
+  }
+  const contentJson = canonicalContentFromComponents(page.contentJson, repairedComponents) as Prisma.InputJsonValue;
+  const nextVersion = page.version + 1;
+  const updated = await prisma.$transaction(async (tx) => {
+    await tx.websiteBuildPageVersion.upsert({
+      where: { pageId_version: { pageId: page.id, version: nextVersion } },
+      update: { briefJson: page.briefJson, contentJson, seoJson: page.seoJson, layoutJson: page.layoutJson, comment: `AI safely rewrote ${replacements.length} unsupported public claim${replacements.length === 1 ? "" : "s"}.`, createdById: context.membership.userId },
+      create: { pageId: page.id, version: nextVersion, briefJson: page.briefJson, contentJson, seoJson: page.seoJson, layoutJson: page.layoutJson, comment: `AI safely rewrote ${replacements.length} unsupported public claim${replacements.length === 1 ? "" : "s"}.`, createdById: context.membership.userId },
+    });
+    const row = await tx.websiteBuildPage.update({ where: { id: page.id }, data: { contentJson, version: nextVersion, status: "review", approvedAt: null } });
+    await markWebsiteContentExecutionNeedsReview(tx, page.briefJson);
+    await preserveCompletedAssemblyAfterQualityCorrection(tx, build, new Map([[page.id, nextVersion]]), "regulated_claim_repair");
+    return row;
+  });
+  await recordWorkspaceActivity(prisma, {
+    context,
+    action: "website_builder.public_claims_repaired",
+    entityType: "website_build_page",
+    entityId: page.id,
+    agencyClientId: project.agencyClientId,
+    projectId: project.id,
+    nextJson: { pageId: page.id, pageVersion: nextVersion, repairedClaims: replacements.length },
+  });
+  res.json({ page: updated, repairedClaims: replacements.length, replacements });
 });
 
 websiteBuilderRouter.post("/projects/:projectId/website-builder/pages/:pageId/guided-optimize", async (req, res) => {

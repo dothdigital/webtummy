@@ -27,7 +27,7 @@ describe("website quality governance", () => {
 
   it("blocks unsupported regulated guarantees", () => {
     const result = evaluateWebsiteQualityGovernance(model("We guarantee the best returns for every client."), { industry: "Insurance and financial services" });
-    expect(result.issues).toEqual(expect.arrayContaining([expect.objectContaining({ code: "regulated_or_guaranteed_claim", severity: "blocker", status: "open" })]));
+    expect(result.issues).toEqual(expect.arrayContaining([expect.objectContaining({ code: "regulated_or_guaranteed_claim", severity: "blocker", status: "open", autoFixable: true })]));
   });
 
   it("allows a written waiver for high issues but never for blockers", () => {

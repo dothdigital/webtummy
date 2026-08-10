@@ -274,7 +274,10 @@ export function evaluateWebsiteQualityGovernance(
           : "A trust or business-quality claim is not connected to approved evidence.",
         evidence: statement,
         suggestedFix: "Attach approved evidence to the exact claim, qualify it accurately, or remove the claim.",
-        autoFixable: false,
+        // The claim itself remains blocking, but it can be safely resolved by
+        // rewriting only this sentence as neutral educational copy. Evidence
+        // attachment and manual removal remain available human choices.
+        autoFixable: true,
       });
     }
     if (!claims.some((claim) => claim.pageId === page.pageId) && educationalPattern.test(pageText)) {
