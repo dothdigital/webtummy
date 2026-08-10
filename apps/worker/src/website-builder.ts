@@ -1001,6 +1001,8 @@ function fallbackComponents(page: { title: string; primaryKeyword: string; targe
         items: [
           { question: `What does ${page.primaryKeyword} include?`, answer: "The final scope depends on the approved requirements and selected service." },
           { question: "How do I get started?", answer: "Begin with a consultation to confirm fit, requirements, and the next step." },
+          { question: `How do I compare ${page.primaryKeyword} options?`, answer: "Compare the relevant scope, fit, process, support, and approved cost factors before choosing an option." },
+          { question: "What information should I prepare?", answer: "Prepare your goals, priorities, constraints, questions, and any relevant details needed to confirm a suitable next step." },
         ],
       },
     },
@@ -1547,7 +1549,7 @@ SEO and navigation governance:
   const savedFinalIds = new Set(savedFinalComponents.map((component) => component.componentId));
   const savedFinalValid = savedFinalComponents.length >= composition.policy.minimumComponentCount
     && composition.policy.requiredComponentIds.every((componentId) => savedFinalIds.has(componentId))
-    && (composition.policy.archetype !== "faq" || faqsFromComponents(savedFinalComponents).length >= 8)
+    && faqsFromComponents(savedFinalComponents).length >= (composition.policy.archetype === "faq" ? 8 : 4)
     && savedFinalComponents.every((component, index) =>
       validateComponentInstance(component, SENUKE_COMPONENT_REGISTRY_V1, `checkpoint.final.${index}`).length === 0);
   if (savedFinalValid) {
@@ -1575,8 +1577,9 @@ SEO and navigation governance:
     composition.policy.minimumComponentCount,
     composition.policy.maximumWords,
   );
-  if (composition.policy.archetype === "faq" && faqsFromComponents(generatedComponents).length < 8) {
-    throw new Error("A dedicated FAQ page requires at least 8 complete, visible question-and-answer pairs grounded in approved evidence.");
+  const minimumFaqs = composition.policy.archetype === "faq" ? 8 : 4;
+  if (faqsFromComponents(generatedComponents).length < minimumFaqs) {
+    throw new Error(`${page.title} requires at least ${minimumFaqs} complete, visible, page-specific FAQ answers grounded in approved evidence.`);
   }
   if (checkpoint && !savedFinalValid) {
     await savePageCheckpoint(checkpoint, "content:final", "content_final", { components: generatedComponents });
@@ -1722,7 +1725,8 @@ Page uniqueness contract: return an original SEO title, H1, first post-hero H2, 
       proposedContent.components = ensureConciseFirstSupportingOverview(proposedContent.components as WebsiteComponentInstance[]);
       proposedContent.componentRegistryVersion = SENUKE_COMPONENT_REGISTRY_V1.version;
       const faqs = faqsFromComponents(proposedContent.components as WebsiteComponentInstance[]);
-      if (policy.archetype === "faq" && faqs.length < 8) throw new Error("A dedicated FAQ page requires at least 8 complete, visible question-and-answer pairs grounded in approved evidence.");
+      const minimumFaqs = policy.archetype === "faq" ? 8 : 4;
+      if (faqs.length < minimumFaqs) throw new Error(`${page.title} requires at least ${minimumFaqs} complete, visible, page-specific FAQ answers grounded in approved evidence.`);
       const seo = { ...basic.seo, ...parsedSeo, metaDescription, ...(faqs.length ? { faqs } : {}) };
       const collisions = websitePageUniquenessCollisions({ seoTitle: seo.metaTitle, metaDescription: seo.metaDescription, h1: generatedWorkerH1(proposedContent.components as WebsiteComponentInstance[]) }, uniquenessSignals);
       if (collisions.length) throw new Error(`Generated page identity duplicates existing pages: ${collisions.map((collision) => `${collision.field.replaceAll("_", " ")} matches ${collision.pageTitle}`).join("; ")}. Return distinct page-specific values.`);

@@ -91,6 +91,25 @@ describe("Approved Release website renderer", () => {
     expect(html).not.toContain("<script>alert");
   });
 
+  it("renders an optional editable internal-link section as page content", () => {
+    const section: WebsiteComponentInstance = {
+      instanceId: "links-1",
+      componentId: "content.link_section",
+      componentVersion: "1.0.0",
+      variant: "editorial",
+      props: {
+        heading: "Insurance services for nearby communities",
+        introduction: "Use these pages when your question is location-specific.",
+        links: [{ label: "Insurance planning in Mississauga", url: "/mississauga/", targetPageId: "page-2" }],
+        closingText: "Return to this page for the broader coverage comparison.",
+      },
+    };
+    const html = renderWebsiteComponentHtml(section);
+    expect(html).toContain("senuke-internal-link-section");
+    expect(html).toContain('<a href="/mississauga/">Insurance planning in Mississauga</a>');
+    expect(html).toContain("Return to this page for the broader coverage comparison.");
+  });
+
   it("renders a saved section alignment into publishable website HTML and CSS", () => {
     const aligned = {
       ...model.pages[0].sections[1],

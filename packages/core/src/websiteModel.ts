@@ -429,7 +429,7 @@ export function websitePageCompositionPolicy(page: {
   const about = /about|team|company|our story/.test(`${pageType} ${title}`);
   const local = pageType === "location" || pageType === "local_service" || intent.includes("local");
   const supporting = ["supporting", "blog", "article", "resource"].includes(pageType) || intent.includes("informational");
-  const base = ["hero.local_service", "content.rich_text"] as const;
+  const base = ["hero.local_service", "content.rich_text", "content.faq"] as const;
 
   if (utility) return {
     archetype: "utility",
@@ -529,6 +529,7 @@ const headingStyleFields = {
 
 const layoutChildComponents = [
   "content.rich_text",
+  "content.link_section",
   "media.image",
   "service.grid",
   "service.benefits",
@@ -607,6 +608,21 @@ export const SENUKE_COMPONENT_REGISTRY_V1: ComponentRegistry = {
         ...headingStyleFields,
       },
       rendererMappings: commonMappings("rich-text"),
+    },
+    {
+      componentId: "content.link_section",
+      version: "1.0.0",
+      category: "content",
+      lifecycleStatus: "active",
+      variants: ["editorial", "cards"],
+      fields: {
+        heading: { type: "string", required: true, maxLength: 120 },
+        introduction: { type: "rich_text", required: true, maxLength: 1600 },
+        links: { type: "object_list", required: true, maxItems: 12 },
+        closingText: { type: "rich_text", maxLength: 1600 },
+        ...headingStyleFields,
+      },
+      rendererMappings: commonMappings("internal-link-section"),
     },
     {
       componentId: "media.image",
@@ -1427,6 +1443,19 @@ export function validateWebsiteModel(
         message: `${page.name} requires ${componentId} for its ${composition.archetype.replace("_", " ")} page structure.`,
       });
     }
+    const visibleFaqs = flattenedSections
+      .filter((section) => section.componentId === "content.faq")
+      .flatMap((section) => Array.isArray(section.props.items) ? section.props.items : [])
+      .filter((item) => item && typeof item === "object" && !Array.isArray(item))
+      .map((item) => item as Record<string, JsonValue>)
+      .filter((item) => typeof item.question === "string" && item.question.trim() && typeof item.answer === "string" && item.answer.trim());
+    const minimumFaqs = composition.archetype === "faq" ? 8 : 4;
+    if (visibleFaqs.length < minimumFaqs) findings.push({
+      code: "insufficient_page_faqs",
+      severity: "blocking",
+      path: `${path}.sections`,
+      message: `${page.name} has ${visibleFaqs.length} complete visible FAQ${visibleFaqs.length === 1 ? "" : "s"}; at least ${minimumFaqs} page-specific FAQs are required.`,
+    });
     const meaningfulComponentCount = flattenedSections.filter((section) => section.componentId !== "layout.section").length;
     if (meaningfulComponentCount < composition.minimumComponentCount) findings.push({
       code: "thin_page_composition",
@@ -1657,7 +1686,7 @@ export function scoreSeoPage(
     qualityCheck("local_relevance", "Local relevance", hasLocalEvidence, 10, "Local pages require meaningful local proof, FAQs, services, or examples."),
     qualityCheck("internal_links", "Internal links", page.seo.internalLinks.length > 0 || model.pages.length === 1, 10, "Add valid contextual links to related project pages."),
     qualityCheck("schema", "Schema", Object.keys(page.seo.schemaJsonLd).length > 0, 10, "Add verified page-appropriate JSON-LD."),
-    qualityCheck("faq", "FAQ usefulness", page.seo.faqs.length >= 2, 5, "Include useful buyer FAQs when appropriate.", page.seo.faqs.length === 1),
+    qualityCheck("faq", "FAQ usefulness", page.seo.faqs.length >= 4, 5, "Include at least four useful, page-specific buyer FAQs.", page.seo.faqs.length > 0 && page.seo.faqs.length < 4),
     qualityCheck("duplicate", "Duplicate content risk", !duplicate, 10, "Avoid repeated or city-swap content."),
     qualityCheck("claims", "Unsupported claims", !unsupportedClaims, 10, "Use only verified or safely qualified claims."),
     qualityCheck("cta", "CTA clarity", Boolean(page.primaryCta.label && urlIsSafe(page.primaryCta.url)), 5, "Provide one clear next step."),

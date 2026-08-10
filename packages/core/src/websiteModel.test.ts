@@ -72,6 +72,8 @@ const page = (overrides: Partial<WebsitePageModel> = {}): WebsitePageModel => ({
         items: [
           { question: "What coverage is required?", answer: "Confirm current requirements before purchasing." },
           { question: "How can I compare policies?", answer: "Review limits, deductibles, exclusions, and eligibility." },
+          { question: "What information should I prepare?", answer: "Prepare the visitor details and the requirements needed to compare suitable options." },
+          { question: "When should I request guidance?", answer: "Request guidance before choosing coverage when policy terms or eligibility need clarification." },
         ],
       },
     },
@@ -101,6 +103,8 @@ const page = (overrides: Partial<WebsitePageModel> = {}): WebsitePageModel => ({
     faqs: [
       { question: "What coverage is required?", answer: "Confirm current requirements before purchasing." },
       { question: "How can I compare policies?", answer: "Review limits, deductibles, exclusions, and eligibility." },
+      { question: "What information should I prepare?", answer: "Prepare the visitor details and the requirements needed to compare suitable options." },
+      { question: "When should I request guidance?", answer: "Request guidance before choosing coverage when policy terms or eligibility need clarification." },
     ],
     schemaJsonLd: { "@context": "https://schema.org", "@type": "Service" },
     imageAltText: ["Family discussing Super Visa insurance options in Brampton"],
@@ -282,7 +286,7 @@ describe("SENuke canonical Website Model", () => {
     expect(faq.archetype).toBe("faq");
     expect(faq.requiredComponentIds).toContain("content.faq");
     expect(faq.guidance).toContain("8–12");
-    expect(legal.requiredComponentIds).toEqual(["hero.local_service", "content.rich_text"]);
+    expect(legal.requiredComponentIds).toEqual(["hero.local_service", "content.rich_text", "content.faq"]);
   });
 
   it("does not require Service schema for a transactional Contact page", () => {
