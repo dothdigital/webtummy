@@ -639,6 +639,8 @@ async function generateFocusedGrowthFunnelWithAi(input: { evidence: Record<strin
         prompt: attempt ? `${prompt}\n\nThe previous funnel response failed schema validation. Repair these exact fields and return all required fields for all six stages with no unrelated Strategy sections. Validation feedback: ${repairFeedback}` : prompt,
         model: input.model,
         temperature: 0.25,
+        maxInputBytes: 100_000,
+        maxOutputTokens: 12_000,
         timeoutMs: 180_000,
         validate: validateAiGrowthFunnelResponse,
       });
@@ -684,6 +686,8 @@ export async function generateUnifiedStrategyWithAi(input: { evidence: Record<st
         prompt: attempt ? `${prompt}\n\nThe previous response failed core Strategy schema validation. Repair these exact fields, return every required Strategy field, and keep localSeo either a complete object or null. Validation feedback: ${repairFeedback}` : prompt,
         model: input.model,
         temperature: 0.3,
+        maxInputBytes: 110_000,
+        maxOutputTokens: 16_000,
         timeoutMs: 180_000,
         // Validate the complete cross-platform Strategy first. If the model
         // omits the large funnel block, a focused AI pass below generates it;

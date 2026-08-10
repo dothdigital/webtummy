@@ -41,6 +41,7 @@ import { approvedStrategyContext } from "../strategy-ai.js";
 import { isWebsitePlanTask } from "../website-plan-task.js";
 import { cleanGeographicTargetMarkets, projectAnalysisLocationLabels } from "../project-location.js";
 import {
+  ensureConciseFirstSupportingOverview,
   ensurePageSpecificFirstH2,
   compactWebsiteAiPrompt,
   fitWebsiteComponentsToWordBudget,
@@ -2998,6 +2999,8 @@ User instruction: ${instruction || "Help the visitor make an informed decision."
 Shared approved Strategy contract: ${JSON.stringify(sharedWebsiteStrategy(project))}
 Sections: ${JSON.stringify(plan)}`, 80_000),
     temperature: 0.35,
+    maxInputBytes: 80_000,
+    maxOutputTokens: 5_000,
     timeoutMs: 120_000,
   });
   const rows = Array.isArray(jsonRecord(generated.result).sections) ? (jsonRecord(generated.result).sections as unknown[]).map(jsonRecord) : [];
@@ -3049,6 +3052,8 @@ async function generatePage(page: { title: string; pageType: string; primaryKeyw
         system: "You are the SEnuke AI Website Generation Service. Return safe structured JSON only. The approved Strategy and page-specific Execution contract are governing requirements. Generate only components and props permitted by the supplied Component Registry. Do not invent testimonials, metrics, credentials, addresses, awards, guarantees, or citations. Write a complete useful SEO page through registered website sections and never return arbitrary scripts, PHP, WordPress code, generic placeholder copy, or a thin outline.",
         prompt: compactWebsiteAiPrompt(`${basePrompt}${correctivePrompt}\nFIRST SUPPORTING SECTION: Return an original first post-hero H2 that names this page's assigned topic or intent and differs from every sibling page. Never use “A solution aligned to your goals”, “How we can help”, “What we offer”, “Overview”, or “Why choose us”. Keep the follow-up overview concise at 70–130 words in 2–3 short paragraphs before deeper sections.`, 80_000),
         temperature: 0.35,
+        maxInputBytes: 80_000,
+        maxOutputTokens: 12_000,
         timeoutMs: 120_000,
       });
       const generatedRoot = jsonRecord(generated.result);
@@ -3091,6 +3096,7 @@ async function generatePage(page: { title: string; pageType: string; primaryKeyw
         businessContext.businessName ?? businessIdentity(project),
         reservedSignals,
       );
+      parsed.content.components = ensureConciseFirstSupportingOverview(parsed.content.components);
       parsed.content.components = fitWebsiteComponentsToWordBudget(parsed.content.components, composition.maximumWords);
       const componentWords = generatedComponentWordCount(parsed.content.components);
       const visibleFaqs = generatedFaqRows(parsed.content.components);
@@ -3818,6 +3824,7 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/logo-palette", a
     system: LOGO_PALETTE_AI_SYSTEM_PROMPT,
     prompt: logoPaletteAiPrompt(input.dominantColors, build.brandJson, project.brandVoice || jsonRecord(build.brandJson).tone),
     temperature: 0.25,
+    maxInputBytes: 6000,
     maxOutputTokens: 600,
     timeoutMs: 90_000,
     validate: (value) => logoPaletteSchema.parse(value),
@@ -5318,6 +5325,8 @@ Rules:
 - Return every currentValue, proposedValue, and implementationNotes value as text. For FAQ or schema updates, serialize the structured proposal as JSON text instead of returning a nested object.
 - For metadata, obey natural language and normal search-result lengths without stuffing keywords.`,
     temperature: 0.25,
+    maxInputBytes: 72_000,
+    maxOutputTokens: 8_000,
     timeoutMs: 90_000,
   });
   const generated = outputSchema.parse(response.result);
@@ -5674,6 +5683,8 @@ SEO titles already used by other pages:\n${reservedTitles.map((title) => `- ${ti
 
 Create a natural title that uniquely represents this page. Do not reuse any listed title. Do not keyword-stuff. ${attempt ? "The previous suggestion was not unique or valid; make this version materially different." : ""}`,
       temperature: 0.25,
+      maxInputBytes: 20_000,
+      maxOutputTokens: 800,
       timeoutMs: 60_000,
       validate: (value) => resultSchema.parse(value),
     });
@@ -6690,6 +6701,8 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/wordpress-publis
         system: "You are the SENuke AI FAQ editor. Return safe structured JSON only. Use approved business facts, the assigned page intent, and useful buyer questions. Never invent claims.",
         prompt: `Return {"faqs":[{"question":"...","answer":"..."}]} with 3–5 page-specific FAQs.\nPage: ${page.title}\nPrimary keyword: ${page.primaryKeyword}\nIntent: ${page.searchIntent}\nLocation: ${request.location || "not location-specific"}\nExisting content: ${JSON.stringify(page.contentJson).slice(0, 20_000)}\nInstruction: ${request.instructions}`,
         temperature: 0.3,
+        maxInputBytes: 28_000,
+        maxOutputTokens: 3_000,
       });
       const parsed = z.object({ faqs: z.array(z.object({ question: z.string().min(8).max(180), answer: z.string().min(25).max(800) })).min(3).max(6) }).parse(generated.result);
       const currentSeo = jsonRecord(page.seoJson);
@@ -6720,6 +6733,8 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/wordpress-publis
         system: "You are the SENuke AI SEO metadata editor. Return JSON only. Keep the exact page intent and do not make unsupported claims.",
         prompt: `Return {"metaTitle":"...","metaDescription":"..."}.\nMeta title should normally be 45–65 characters. Meta description must be 120–160 characters.\nPage: ${page.title}\nKeyword: ${page.primaryKeyword}\nIntent: ${page.searchIntent}\nLocation: ${request.location || "none"}\nInstruction: ${request.instructions}`,
         temperature: 0.25,
+        maxInputBytes: 12_000,
+        maxOutputTokens: 600,
       });
       const parsed = z.object({ metaTitle: z.string().min(20).max(80), metaDescription: z.string().min(100).max(180) }).parse(generated.result);
       updatedPage = await savePublisherPageChange(page, context, { seoJson: { ...jsonRecord(page.seoJson), ...parsed } as Prisma.InputJsonValue, comment: `Updated SEO metadata through WordPress publishing request ${job.id}.` });
@@ -6734,6 +6749,8 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/wordpress-publis
         system: "You are the SENuke AI internal-link editor. Return JSON only. Select only supplied destination page IDs and write natural, non-spammy anchors.",
         prompt: `Return {"links":[{"targetPageId":"id","anchorText":"text","reason":"short reason"}]} with 2–5 useful contextual links.\nSource page: ${page.title}\nKeyword: ${page.primaryKeyword}\nIntent: ${page.searchIntent}\nAvailable destinations: ${JSON.stringify(destinations)}\nInstruction: ${request.instructions}`,
         temperature: 0.2,
+        maxInputBytes: 28_000,
+        maxOutputTokens: 2_000,
       });
       const parsed = z.object({ links: z.array(z.object({ targetPageId: z.string(), anchorText: z.string().min(2).max(120), reason: z.string().max(300) })).min(1).max(6) }).parse(generated.result);
       const destinationsById = new Map(destinations.map((destination) => [destination.pageId, destination]));

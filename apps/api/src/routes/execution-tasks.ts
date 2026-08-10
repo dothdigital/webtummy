@@ -341,6 +341,8 @@ Rules:
 - homepagePrimaryTopic must be the clearest umbrella commercial topic supported by the evidence.
 - Keep evidenceSources as labels only; do not copy raw responses into them.`,
       temperature: 0.15,
+      maxInputBytes: 48_000,
+      maxOutputTokens: 2_500,
       timeoutMs: 90_000,
     });
     const raw = rawAiBusinessContextSchema.parse(generated.result);
@@ -868,7 +870,7 @@ ${repair ? `\nREPAIR REQUIRED: Return only the ${requestedAssignments.length} mi
     let decisionIssues = new Map<string, Array<{ field: string; message: string }>>();
     for (let attempt = 0; attempt < 3; attempt += 1) {
       try {
-        const generated = await centralAiJson({ system: "You are the SENuke AI Unified Website Planning Engine. Make complete, evidence-grounded page ownership, content, conversion, and funnel decisions. Never omit a requested JSON field. Return valid structured JSON only.", prompt: promptFor(pendingAssignments, attempt > 0), temperature: 0.2, timeoutMs: 120_000, validate: inspectAiUnifiedWebsitePlanResponse });
+        const generated = await centralAiJson({ system: "You are the SENuke AI Unified Website Planning Engine. Make complete, evidence-grounded page ownership, content, conversion, and funnel decisions. Never omit a requested JSON field. Return valid structured JSON only.", prompt: promptFor(pendingAssignments, attempt > 0), temperature: 0.2, maxInputBytes: 100_000, maxOutputTokens: 16_000, timeoutMs: 120_000, validate: inspectAiUnifiedWebsitePlanResponse });
         const parsed = generated.result;
         const reconciledRaw = reconcileAiTargetUrlBatch(pendingAssignments, parsed.decisions);
         const validDecisions: AiWebsitePlanDecision[] = [];
@@ -1078,6 +1080,8 @@ Rules:
 - Return topics only, without answers or explanations.
 ${attempt ? "REPAIR REQUIRED: The previous response was incomplete or invalid. Return every supplied targetUrl exactly once and include every requested field with the required arrays." : ""}`,
         temperature: 0.25,
+        maxInputBytes: 80_000,
+        maxOutputTokens: 12_000,
         timeoutMs: 90_000,
         validate: inspectAiPageFaqPlanResponse,
       });
@@ -1143,6 +1147,8 @@ ${JSON.stringify(repairTargets.map((assignment) => ({
 
 Do not omit faqTopics, contentBrief, supportingContentIdeas, proofRequirements, or ctaSuggestion. Use only the approved evidence above. Return valid JSON only.${repairAttempt ? " This is the final focused repair; check every field and array before responding." : ""}`,
             temperature: 0.2,
+            maxInputBytes: 72_000,
+            maxOutputTokens: 10_000,
             timeoutMs: 90_000,
             validate: inspectAiPageFaqPlanResponse,
           });

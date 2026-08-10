@@ -8,6 +8,7 @@ import { projectClientIdForRequest } from "../project-scope.js";
 import { config } from "../config.js";
 import { billingPlanForClient, hasBillingAccess, normalizePlanCode, planView, requireBillingAccess } from "../billing.js";
 import { approvedStrategyContext } from "../strategy-ai.js";
+import { chatCompletionBody } from "../central-ai-service.js";
 
 export const aiContentRouter = Router();
 aiContentRouter.use(requireAuth);
@@ -156,7 +157,7 @@ function exportHtmlValue(value: unknown): string {
   return `<p>${escape(String(value)).replace(/\n/g, "<br>")}</p>`;
 }
 
-async function openaiJson(prompt: string) {
+async function openaiJson(prompt: string, maxOutputTokens = 4_000) {
   if (!config.openaiApiKey) throw new Error("openai_not_configured");
   const response = await fetch("https://api.openai.com/v1/chat/completions", {
     method: "POST",
@@ -164,15 +165,14 @@ async function openaiJson(prompt: string) {
       Authorization: `Bearer ${config.openaiApiKey}`,
       "Content-Type": "application/json",
     },
-    body: JSON.stringify({
+    body: JSON.stringify(chatCompletionBody({
       model: config.openaiContentModel,
       temperature: 0.4,
-      response_format: { type: "json_object" },
-      messages: [
-        { role: "system", content: "You return valid JSON only. No markdown fences." },
-        { role: "user", content: prompt },
-      ],
-    }),
+      system: "You return valid JSON only. No markdown fences.",
+      prompt,
+      maxInputBytes: 72_000,
+      maxOutputTokens,
+    })),
   });
   const data = await response.json().catch(() => ({})) as any;
   if (!response.ok) {
@@ -454,7 +454,7 @@ aiContentRouter.post("/ai-content/generate", async (req, res) => {
       return res.status(409).json({ error: "A sitemap cannot be generated safely without verified website URLs. Run Site Analysis first, then return to this citation signal." });
     }
     const prompt = buildPrompt(input, website?.domain, verifiedPageUrls, input.sourceContext === "ai_citation" ? verifiedProjectFacts : [], strategyContract);
-    const generated = await openaiJson(prompt);
+    const generated = await openaiJson(prompt, ["article", "domain_llms_txt", "sitemap"].includes(input.type) ? 8_000 : 4_000);
     const tokens = generated.inputTokens + generated.outputTokens;
 
     const record = await prisma.aiContentGeneration.create({

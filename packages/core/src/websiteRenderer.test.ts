@@ -86,6 +86,7 @@ describe("Approved Release website renderer", () => {
   it("renders only registered component data and escapes content", () => {
     const html = renderWebsiteComponentHtml(model.pages[0].sections[1]);
     expect(html).toContain("<h2>What to compare</h2>");
+    expect(html.match(/<p>/g)).toHaveLength(2);
     expect(html).toContain("&lt;script&gt;");
     expect(html).not.toContain("<script>alert");
   });

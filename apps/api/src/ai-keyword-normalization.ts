@@ -96,6 +96,8 @@ Rules:
 - Do not turn an internal project name into a public keyword or business entity.
 - Do not infer licences, availability, demand, competitors, proof, or compliance claims.`,
     temperature: 0.1,
+    maxInputBytes: 48_000,
+    maxOutputTokens: 6_000,
     timeoutMs: 90_000,
   });
 

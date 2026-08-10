@@ -165,11 +165,12 @@ const canonicalWebsiteTarget = (value:unknown) => {
  try{return new URL(raw,"https://senuke.local").pathname.replace(/\/+$/,"").toLowerCase()||"/"}catch{return raw.replace(/^https?:\/\/[^/]+/i,"").replace(/\/+$/,"").toLowerCase()||"/"}
 };
 const html = (v:unknown) => String(v??"").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");
+const paragraphHtml = (v:unknown) => String(v??"").split(/\n{2,}/).map(paragraph=>paragraph.replace(/\s+/g," ").trim()).filter(Boolean).map(paragraph=>`<p>${html(paragraph)}</p>`).join("");
 function canonicalPageContent(value:unknown){
  const content=object(value),components=array(content.components).map(object),hero=components.find(component=>component.componentId==="hero.local_service"),cta=components.find(component=>component.componentId==="conversion.cta"),faq=components.find(component=>component.componentId==="content.faq");
  const sections=components.flatMap((component,componentIndex)=>{
   const props=object(component.props),componentId=String(component.componentId||"");
-  if(componentId==="content.rich_text")return[{componentIndex,heading:string(props.heading,"Page content"),headingLevel:"h2",bodyHtml:`<p>${html(props.body)}</p>`}];
+  if(componentId==="content.rich_text")return[{componentIndex,heading:string(props.heading,"Page content"),headingLevel:"h2",bodyHtml:paragraphHtml(props.body)}];
   if(["service.grid","service.benefits","trust.proof"].includes(componentId)){
    const items=array(props.items).map(object),body=[props.introduction,...items.flatMap(item=>[item.title,item.description])].filter(Boolean).map(item=>`<p>${html(item)}</p>`).join("");
    return[{componentIndex,heading:string(props.heading,"More information"),headingLevel:"h2",bodyHtml:body}];

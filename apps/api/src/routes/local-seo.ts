@@ -135,6 +135,8 @@ async function openaiKeywordSuggestions(prompt: string): Promise<unknown> {
     system: "You create evidence-grounded Local SEO keyword suggestions. Return valid JSON only and never invent a business location, service, demand metric, or ranking.",
     prompt,
     temperature: 0.35,
+    maxInputBytes: 48_000,
+    maxOutputTokens: 4_000,
   });
   return generated.result;
 }

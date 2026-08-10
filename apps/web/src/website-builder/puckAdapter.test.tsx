@@ -139,4 +139,17 @@ describe("SENuke Puck adapter", () => {
     expect(html).toContain("Send enquiry");
     expect(html).not.toContain("Thank you. Your enquiry has been received.");
   });
+
+  it("renders rich text blank-line breaks as separate paragraphs", () => {
+    const config = createSenukePuckConfig();
+    const definition = config.components["content.rich_text"] as { render: (props: Record<string, unknown>) => ReactNode };
+    const html = renderToStaticMarkup(createElement(() => definition.render({
+      heading: "A page-specific supporting heading",
+      body: "First concise overview paragraph.\n\nSecond concise overview paragraph.",
+      variant: "answer_first",
+    })));
+    expect(html.match(/<p/g)).toHaveLength(2);
+    expect(html).toContain("First concise overview paragraph.");
+    expect(html).toContain("Second concise overview paragraph.");
+  });
 });

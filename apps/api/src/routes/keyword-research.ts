@@ -291,6 +291,8 @@ async function openaiKeywordSuggestions(prompt: string): Promise<unknown> {
     system: "You create evidence-grounded keyword suggestions and return valid structured JSON only.",
     prompt,
     temperature: 0.35,
+    maxInputBytes: 48_000,
+    maxOutputTokens: 4_000,
   });
   return generated.result;
 }

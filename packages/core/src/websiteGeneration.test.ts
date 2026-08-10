@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  ensureConciseFirstSupportingOverview,
   ensurePageSpecificFirstH2,
   fitWebsiteAiChatRequest,
   fitWebsiteComponentsToWordBudget,
@@ -95,6 +96,32 @@ describe("website generation workflow contracts", () => {
       h1s: [],
       h2s: ["Choose coverage around your family's priorities"],
     }])[0].props.heading).toBe("life insurance: what to know before you decide");
+  });
+
+  it("shrinks and separates an oversized second-fold overview into short paragraphs", () => {
+    const body = [
+      "Start by identifying the protection gap, the people affected, and the financial result the coverage should support.",
+      "Compare eligibility, waiting periods, exclusions, benefit definitions, and how the policy responds when circumstances change.",
+      "Review affordability over time instead of choosing only by the first quoted premium or the largest headline amount.",
+      "Ask how personal savings, workplace benefits, existing insurance, and other resources affect the amount that may be suitable.",
+      "Document the assumptions used in the comparison so they can be revisited when income, family responsibilities, or business needs change.",
+      "A licensed advisor can then explain the available options and help identify questions that still require evidence.",
+      "The final choice should reflect the approved need, budget, policy terms, and the applicant's actual information.",
+      "No general website explanation replaces an individual assessment or the terms of an issued policy.",
+    ].join(" ");
+    const components: WebsiteComponentInstance[] = [{
+      instanceId: "overview",
+      componentId: "content.rich_text",
+      componentVersion: "1.0.0",
+      variant: "answer_first",
+      props: { heading: "Coverage decisions for your circumstances", body: `${body} ${body}` },
+    }];
+    const formatted = ensureConciseFirstSupportingOverview(components);
+    const paragraphs = String(formatted[0].props.body).split("\n\n");
+    expect(String(formatted[0].props.body).split(/\s+/)).toHaveLength(130);
+    expect(paragraphs).toHaveLength(3);
+    expect(paragraphs.every((paragraph) => paragraph.length > 0)).toBe(true);
+    expect(String(components[0].props.body)).not.toContain("\n\n");
   });
 
   it("rejects duplicate generated SEO titles, descriptions, and H1s before save", () => {

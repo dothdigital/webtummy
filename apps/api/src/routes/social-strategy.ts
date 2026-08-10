@@ -304,6 +304,8 @@ async function reviseSocialPostContent(post: {
       "Make the content useful, platform-appropriate, clear, and action-oriented. Preserve factual safeguards.",
     ].join("\n"),
     temperature: 0.35,
+    maxInputBytes: 16_000,
+    maxOutputTokens: 2_000,
   });
   return socialPostRevisionSchema.parse(generated.result);
 }
@@ -681,6 +683,8 @@ async function enhanceStrategyWithAi(
       `Draft posts: ${JSON.stringify(posts.map((post, index) => ({ index, platform: post.platform, topic: post.topic, caption: post.caption, cta: post.cta, targetUrl: post.targetUrl, sourceType: post.sourceType }))).slice(0, 50_000)}`,
     ].join("\n"),
     temperature: 0.35,
+    maxInputBytes: 100_000,
+    maxOutputTokens: 16_000,
   });
   return { ...generated, result: aiStrategySchema.parse(generated.result) };
 }
@@ -714,6 +718,8 @@ async function enhanceRepurposingWithAi(
       `Draft assets: ${JSON.stringify(assets.map((asset, index) => ({ index, channel: asset.channel, assetType: asset.assetType, title: asset.title, content: asset.content, cta: asset.cta }))).slice(0, 45_000)}`,
     ].join("\n"),
     temperature: 0.35,
+    maxInputBytes: 96_000,
+    maxOutputTokens: 16_000,
   });
   return { ...generated, result: aiRepurposingSchema.parse(generated.result) };
 }

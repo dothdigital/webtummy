@@ -121,6 +121,62 @@ export function ensurePageSpecificFirstH2(
   return next;
 }
 
+const websiteParagraphs = (value: string) => value
+  .replace(/<br\s*\/?>/gi, "\n")
+  .replace(/<\/p>\s*<p[^>]*>/gi, "\n\n")
+  .replace(/<[^>]+>/g, " ")
+  .split(/\n{2,}/)
+  .map((paragraph) => paragraph.replace(/\s+/g, " ").trim())
+  .filter(Boolean);
+
+const websiteSentenceGroups = (value: string, groupCount: number) => {
+  const sentences = value.match(/[^.!?]+(?:[.!?]+["')\]]*|$)/g)?.map((sentence) => sentence.trim()).filter(Boolean) ?? [];
+  if (sentences.length < groupCount) return [];
+  const groups = Array.from({ length: groupCount }, () => [] as string[]);
+  sentences.forEach((sentence, index) => {
+    groups[Math.min(groupCount - 1, Math.floor(index * groupCount / sentences.length))].push(sentence);
+  });
+  return groups.map((group) => group.join(" ").trim()).filter(Boolean);
+};
+
+/**
+ * The overview immediately beneath the first supporting H2 is deliberately
+ * scannable. AI instructions request this shape, while this guardrail makes
+ * the saved page deterministic when a model returns one oversized paragraph.
+ */
+export function ensureConciseFirstSupportingOverview(
+  components: WebsiteComponentInstance[],
+  maximumWords = 130,
+) {
+  const next = components.map((component) => ({
+    ...component,
+    props: JSON.parse(JSON.stringify(component.props)) as WebsiteComponentInstance["props"],
+  }));
+  const overview = next.find((component) => component.componentId === "content.rich_text");
+  if (!overview || typeof overview.props.body !== "string") return next;
+  const sourceParagraphs = websiteParagraphs(overview.props.body);
+  if (!sourceParagraphs.length) return next;
+  const concise = trimWebsiteTextToWordLimit(sourceParagraphs.join(" "), maximumWords);
+  const wordCount = concise.split(/\s+/).filter(Boolean).length;
+  if (wordCount < 40) {
+    overview.props.body = concise;
+    return next;
+  }
+  const requestedParagraphs = wordCount >= 90 ? 3 : 2;
+  const paragraphCount = Math.min(3, Math.max(2, requestedParagraphs));
+  const sentenceGroups = websiteSentenceGroups(concise, paragraphCount);
+  if (sentenceGroups.length >= 2) {
+    overview.props.body = sentenceGroups.join("\n\n");
+    return next;
+  }
+  const words = concise.split(/\s+/).filter(Boolean);
+  const chunkSize = Math.ceil(words.length / paragraphCount);
+  overview.props.body = Array.from({ length: paragraphCount }, (_, index) => words.slice(index * chunkSize, (index + 1) * chunkSize).join(" ").trim())
+    .filter(Boolean)
+    .join("\n\n");
+  return next;
+}
+
 function jsonSchemaFromWebsiteShapeAt(value: unknown, propertyName = ""): Record<string, unknown> {
   if (Array.isArray(value)) {
     const itemSchemas = value.map((item) => jsonSchemaFromWebsiteShapeAt(item));

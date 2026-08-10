@@ -12,6 +12,7 @@ import {
   type WebsiteComponentInstance,
 } from "@webtummy/core/website-model";
 import {
+  ensureConciseFirstSupportingOverview,
   ensurePageSpecificFirstH2,
   fitWebsiteAiChatRequest,
   fitWebsiteComponentsToWordBudget,
@@ -1656,6 +1657,7 @@ Page uniqueness contract: return an original SEO title, H1, first post-hero H2, 
   try {
     const grouped = await aiPageBySectionGroups(page, project, brand, seoPlan, instructions, basic, checkpoint);
     grouped.content.components = ensurePageSpecificFirstH2(grouped.content.components, page, businessIdentity(project), uniquenessSignals);
+    grouped.content.components = ensureConciseFirstSupportingOverview(grouped.content.components);
     const groupedCollisions = websitePageUniquenessCollisions({ seoTitle: grouped.seo.metaTitle, metaDescription: grouped.seo.metaDescription, h1: generatedWorkerH1(grouped.content.components) }, uniquenessSignals);
     if (groupedCollisions.length) throw new Error(`Generated page identity duplicates existing pages: ${groupedCollisions.map((collision) => `${collision.field.replaceAll("_", " ")} matches ${collision.pageTitle}`).join("; ")}.`);
     return grouped;
@@ -1717,6 +1719,7 @@ Page uniqueness contract: return an original SEO title, H1, first post-hero H2, 
         businessIdentity(project),
         uniquenessSignals,
       );
+      proposedContent.components = ensureConciseFirstSupportingOverview(proposedContent.components as WebsiteComponentInstance[]);
       proposedContent.componentRegistryVersion = SENUKE_COMPONENT_REGISTRY_V1.version;
       const faqs = faqsFromComponents(proposedContent.components as WebsiteComponentInstance[]);
       if (policy.archetype === "faq" && faqs.length < 8) throw new Error("A dedicated FAQ page requires at least 8 complete, visible question-and-answer pairs grounded in approved evidence.");

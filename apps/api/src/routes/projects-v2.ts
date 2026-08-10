@@ -26,7 +26,7 @@ import { buildStrategyDecisionSet, composeStrategyDecisionExplainability, STRATE
 import { getProjectWorkflowController, publishProjectWorkflowEvent } from "../project-workflow-controller.js";
 import { marketingExecutionSummary } from "../marketing-execution-engine.js";
 import { generateAiOpportunityRecommendations, type AiOpportunityRecommendation } from "../opportunity-ai.js";
-import { centralAiJson } from "../central-ai-service.js";
+import { centralAiJson, prepareCentralAiPrompt } from "../central-ai-service.js";
 import { isWebsitePlanTask } from "../website-plan-task.js";
 import { queueConnection, strategyGenerationQueue, type StrategyGenerationQueueJobData } from "../queue.js";
 import { runCommercialRequestContext } from "../commercial-request-context.js";
@@ -1873,7 +1873,8 @@ async function researchFreshLeadMagnetAngles(input: {
       tools: [{ type: "web_search", search_context_size: "medium" }],
       tool_choice: "auto",
       include: ["web_search_call.action.sources"],
-      input: [
+      max_output_tokens: 4_000,
+      input: prepareCentralAiPrompt([
         "Use live web search to discover genuinely different lead-magnet opportunities for this business.",
         "Research adjacent keyword themes, buyer questions, pain points, comparison intent, geographic concerns, regulatory or seasonal topics, and competitor content patterns that are not represented by the previous concepts.",
         "Do not repeat or merely rename an earlier recommendation. Do not invent keyword volume, traffic, conversion data, or customer behaviour.",
@@ -1889,7 +1890,7 @@ async function researchFreshLeadMagnetAngles(input: {
         `Unused, gap, or lower-ranked keywords to explore: ${JSON.stringify(input.alternativeKeywords)}`,
         `Previous concepts that must not be repeated: ${JSON.stringify(input.previousConcepts)}`,
         "Return a concise research memo with 6–10 alternative keyword/question angles and explain the evidence for each with inline citations.",
-      ].join("\n"),
+      ].join("\n"), 48_000),
     }),
   });
   const data = await response.json().catch(() => ({})) as unknown;
@@ -1975,7 +1976,8 @@ async function researchLeadMagnetVisualSource(item: Record<string, unknown>, con
       tools: [{ type: "web_search", search_context_size: "medium" }],
       tool_choice: "auto",
       include: ["web_search_call.action.sources"],
-      input: [
+      max_output_tokens: 1_500,
+      input: prepareCentralAiPrompt([
         "Use live web search to research one visual for a business lead magnet.",
         "Find the strongest credible, publicly accessible primary or authoritative source that supports the visual. Prefer government, academic, industry-regulator, standards-body, or original publisher sources.",
         "Do not ask the user for a source. Do not invent facts, statistics, titles, or URLs. Do not recommend copying a copyrighted image; the application will generate original artwork from the researched evidence.",
@@ -1984,7 +1986,7 @@ async function researchLeadMagnetVisualSource(item: Record<string, unknown>, con
         `Research question: ${String(item.sourceQuery ?? item.sourceNote ?? "")}`,
         `Project context: ${context.slice(0, 12_000)}`,
         "Return a concise evidence summary with inline citations. Include any exact data needed for a chart only when directly supported by the cited source.",
-      ].join("\n"),
+      ].join("\n"), 20_000),
     }),
   });
   const data = await response.json().catch(() => ({})) as unknown;
