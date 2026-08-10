@@ -609,31 +609,38 @@ function defaultPageFaqTopics(assignment: ContentPlan["pageAssignments"][number]
   ];
 }
 
+const aiUnifiedWebsitePlanDecisionSchema = z.object({
+  targetUrl: z.string().trim().min(1).max(512),
+  pageName: z.string().trim().min(2).max(255),
+  canonicalKeyword: z.string().trim().min(2).max(255),
+  secondaryKeywords: z.array(z.string().trim().min(2).max(255)).max(30),
+  searchIntent: z.enum(["commercial", "transactional", "informational", "local", "navigational"]),
+  pagePurpose: z.string().trim().min(20).max(800),
+  gapAnalysis: z.string().trim().min(20).max(1200),
+  recommendedAction: z.enum(["update_existing", "create_new", "consolidate", "support_only"]),
+  intentOwner: z.string().trim().max(500),
+  decisionReason: z.string().trim().min(20).max(1200),
+  funnelStage: z.enum(["discover", "evaluate", "trust", "convert", "delight", "grow_refer"]),
+  strategyRole: z.string().trim().min(2).max(800),
+  requiredInternalLinks: z.array(z.string().trim().min(1).max(512)).max(20),
+  prohibitedCompetingKeywords: z.array(z.string().trim().min(2).max(255)).max(30),
+  contentBrief: z.string().trim().min(40).max(1500),
+  ctaSuggestion: z.string().trim().min(3).max(160),
+  evidenceSources: z.array(z.string().trim().min(2).max(300)).min(1).max(20),
+}).superRefine((decision, context) => {
+  if (["consolidate", "support_only"].includes(decision.recommendedAction) && !decision.intentOwner) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ["intentOwner"], message: "Consolidated and supporting pages must identify their canonical owner URL." });
+  }
+});
+
 const aiUnifiedWebsitePlanSchema = z.object({
   summary: z.string().trim().min(20).max(3000),
-  decisions: z.array(z.object({
-    targetUrl: z.string().trim().min(1).max(512),
-    pageName: z.string().trim().min(2).max(255),
-    canonicalKeyword: z.string().trim().min(2).max(255),
-    secondaryKeywords: z.array(z.string().trim().min(2).max(255)).max(30),
-    searchIntent: z.enum(["commercial", "transactional", "informational", "local", "navigational"]),
-    pagePurpose: z.string().trim().min(20).max(800),
-    gapAnalysis: z.string().trim().min(20).max(1200),
-    recommendedAction: z.enum(["update_existing", "create_new", "consolidate", "support_only"]),
-    intentOwner: z.string().trim().max(500),
-    decisionReason: z.string().trim().min(20).max(1200),
-    funnelStage: z.enum(["discover", "evaluate", "trust", "convert", "delight", "grow_refer"]),
-    strategyRole: z.string().trim().min(2).max(800),
-    requiredInternalLinks: z.array(z.string().trim().min(1).max(512)).max(20),
-    prohibitedCompetingKeywords: z.array(z.string().trim().min(2).max(255)).max(30),
-    contentBrief: z.string().trim().min(40).max(1500),
-    ctaSuggestion: z.string().trim().min(3).max(160),
-    evidenceSources: z.array(z.string().trim().min(2).max(300)).min(1).max(20),
-  }).superRefine((decision, context) => {
-    if (["consolidate", "support_only"].includes(decision.recommendedAction) && !decision.intentOwner) {
-      context.addIssue({ code: z.ZodIssueCode.custom, path: ["intentOwner"], message: "Consolidated and supporting pages must identify their canonical owner URL." });
-    }
-  })).min(1).max(100),
+  decisions: z.array(aiUnifiedWebsitePlanDecisionSchema).min(1).max(100),
+});
+
+const aiUnifiedWebsitePlanInspectionSchema = z.object({
+  summary: z.string().trim().min(20).max(3000),
+  decisions: z.array(z.object({ targetUrl: z.string().trim().min(1).max(512) }).passthrough()).min(1).max(100),
 });
 
 type AiWebsitePlanDecision = z.infer<typeof aiUnifiedWebsitePlanSchema>["decisions"][number];
@@ -689,30 +696,45 @@ export function normalizeAiWebsitePlanCtaSuggestion(value: unknown) {
   return normalizeAiCtaSuggestion(value, AI_WEBSITE_PLAN_CTA_MAX_LENGTH);
 }
 
+function normalizeAiWebsitePlanDecision(decision: Record<string, unknown>) {
+  const contentBrief = decision.contentBrief && typeof decision.contentBrief === "object" && !Array.isArray(decision.contentBrief)
+    ? structuredBriefValue(decision.contentBrief).slice(0, 1500)
+    : decision.contentBrief;
+  return {
+    ...decision,
+    searchIntent: normalizeWebsitePlanSearchIntent(decision.searchIntent),
+    contentBrief,
+    ctaSuggestion: normalizeAiWebsitePlanCtaSuggestion(decision.ctaSuggestion),
+  };
+}
+
 /**
  * Preserve useful structured AI brief content while enforcing the public
  * Website Plan contract, where each page owns one readable plain-text brief.
  * Empty or unrelated invalid values remain invalid and are rejected by Zod.
  */
 export function parseAiUnifiedWebsitePlanResponse(value: unknown) {
-  const root = value && typeof value === "object" && !Array.isArray(value)
-    ? value as Record<string, unknown>
-    : value;
-  if (!root || typeof root !== "object" || Array.isArray(root) || !Array.isArray(root.decisions)) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
     return aiUnifiedWebsitePlanSchema.parse(value);
   }
+  const root = value as Record<string, unknown>;
+  if (!Array.isArray(root.decisions)) return aiUnifiedWebsitePlanSchema.parse(value);
   const decisions = root.decisions.map((item) => {
     if (!item || typeof item !== "object" || Array.isArray(item)) return item;
-    const decision = item as Record<string, unknown>;
-    const searchIntent = normalizeWebsitePlanSearchIntent(decision.searchIntent);
-    const ctaSuggestion = normalizeAiWebsitePlanCtaSuggestion(decision.ctaSuggestion);
-    if (!decision.contentBrief || typeof decision.contentBrief !== "object" || Array.isArray(decision.contentBrief)) {
-      return { ...decision, searchIntent, ctaSuggestion };
-    }
-    const contentBrief = structuredBriefValue(decision.contentBrief).slice(0, 1500);
-    return { ...decision, searchIntent, contentBrief, ctaSuggestion };
+    return normalizeAiWebsitePlanDecision(item as Record<string, unknown>);
   });
   return aiUnifiedWebsitePlanSchema.parse({ ...root, decisions });
+}
+
+export function inspectAiUnifiedWebsitePlanResponse(value: unknown) {
+  const parsed = aiUnifiedWebsitePlanInspectionSchema.parse(value);
+  return { ...parsed, decisions: parsed.decisions.map((decision) => ({ ...normalizeAiWebsitePlanDecision(decision), targetUrl: decision.targetUrl })) };
+}
+
+export function aiWebsitePlanDecisionIssueSummary(value: unknown) {
+  const parsed = aiUnifiedWebsitePlanDecisionSchema.safeParse(value);
+  if (parsed.success) return [];
+  return parsed.error.issues.map((issue) => ({ field: issue.path.join(".") || "decision", message: issue.message }));
 }
 
 function reconcileAiTargetUrlBatch<T extends { targetUrl: string }>(
@@ -843,29 +865,46 @@ ${repair ? `\nREPAIR REQUIRED: Return only the ${requestedAssignments.length} mi
     let pendingAssignments = assignmentBatch;
     const acceptedBatchDecisions: AiWebsitePlanDecision[] = [];
     let batchSummary = "";
+    let decisionIssues = new Map<string, Array<{ field: string; message: string }>>();
     for (let attempt = 0; attempt < 3; attempt += 1) {
       try {
-        const generated = await centralAiJson({ system: "You are the SENuke AI Unified Website Planning Engine. Make complete, evidence-grounded page ownership, content, conversion, and funnel decisions. Never omit a requested JSON field. Return valid structured JSON only.", prompt: promptFor(pendingAssignments, attempt > 0), temperature: 0.2, timeoutMs: 120_000, validate: parseAiUnifiedWebsitePlanResponse });
+        const generated = await centralAiJson({ system: "You are the SENuke AI Unified Website Planning Engine. Make complete, evidence-grounded page ownership, content, conversion, and funnel decisions. Never omit a requested JSON field. Return valid structured JSON only.", prompt: promptFor(pendingAssignments, attempt > 0), temperature: 0.2, timeoutMs: 120_000, validate: inspectAiUnifiedWebsitePlanResponse });
         const parsed = generated.result;
-        const reconciled = reconcileAiWebsitePlanBatch(pendingAssignments, parsed.decisions);
-        acceptedBatchDecisions.push(...reconciled.decisions);
+        const reconciledRaw = reconcileAiTargetUrlBatch(pendingAssignments, parsed.decisions);
+        const validDecisions: AiWebsitePlanDecision[] = [];
+        const nextIssues = new Map<string, Array<{ field: string; message: string }>>();
+        for (const item of reconciledRaw.items) {
+          const validated = aiUnifiedWebsitePlanDecisionSchema.safeParse(item);
+          if (validated.success) validDecisions.push(validated.data);
+          else nextIssues.set(item.targetUrl.trim().toLocaleLowerCase(), aiWebsitePlanDecisionIssueSummary(item));
+        }
+        const reconciledValid = reconcileAiWebsitePlanBatch(pendingAssignments, validDecisions);
+        acceptedBatchDecisions.push(...reconciledValid.decisions);
         batchSummary ||= parsed.summary;
-        if (reconciled.unexpected.length) {
+        if (reconciledRaw.unexpected.length) {
           console.warn("[content-plan] ignored unrequested AI Website Plan page decisions", {
             batch: batchNumber,
-            count: reconciled.unexpected.length,
-            targetUrls: reconciled.unexpected,
+            count: reconciledRaw.unexpected.length,
+            targetUrls: reconciledRaw.unexpected,
           });
         }
-        if (reconciled.missing.length) {
-          const missingTargets = new Set(reconciled.missing.map((targetUrl) => targetUrl.trim().toLocaleLowerCase()));
-          pendingAssignments = pendingAssignments.filter((assignment) => missingTargets.has(assignment.targetUrl.trim().toLocaleLowerCase()));
-          lastError = new Error(`AI returned an incomplete Website Plan batch: ${pendingAssignments.length} required page decision${pendingAssignments.length === 1 ? " is" : "s are"} missing.`);
-          console.warn("[content-plan] retrying only missing AI Website Plan page decisions", {
+        const missingTargets = new Set(reconciledRaw.missing.map((targetUrl) => targetUrl.trim().toLocaleLowerCase()));
+        const attemptedAssignments = pendingAssignments;
+        pendingAssignments = attemptedAssignments.filter((assignment) => {
+          const key = assignment.targetUrl.trim().toLocaleLowerCase();
+          return missingTargets.has(key) || nextIssues.has(key);
+        });
+        decisionIssues = nextIssues;
+        if (pendingAssignments.length) {
+          lastError = new Error(`AI returned an incomplete Website Plan batch: ${pendingAssignments.length} required page decision${pendingAssignments.length === 1 ? " needs" : "s need"} focused repair.`);
+          console.warn("[content-plan] retrying only missing or incomplete AI Website Plan page decisions", {
             batch: batchNumber,
             attempt: attempt + 1,
             count: pendingAssignments.length,
-            targetUrls: pendingAssignments.map((assignment) => assignment.targetUrl),
+            pages: pendingAssignments.map((assignment) => ({
+              targetUrl: assignment.targetUrl,
+              missingOrInvalidFields: decisionIssues.get(assignment.targetUrl.trim().toLocaleLowerCase())?.map((issue) => issue.field) ?? ["decision"],
+            })),
           });
           continue;
         }
@@ -877,7 +916,13 @@ ${repair ? `\nREPAIR REQUIRED: Return only the ${requestedAssignments.length} mi
         lastError = error;
       }
     }
-    if (!completed) throw lastError;
+    if (!completed) {
+      const diagnostic = pendingAssignments.map((assignment) => {
+        const issues = decisionIssues.get(assignment.targetUrl.trim().toLocaleLowerCase()) ?? [{ field: "decision", message: "Decision was omitted" }];
+        return `${assignment.targetUrl}: ${issues.map((issue) => `${issue.field} ${issue.message}`).join(", ")}`;
+      }).join("; ");
+      throw new Error(`AI returned incomplete Website Plan decisions after focused repair. ${diagnostic}${lastError instanceof Error ? ` Last repair error: ${lastError.message}` : ""}`);
+    }
   }
   const decisionsByUrl = new Map(generatedDecisions.map((decision) => [canonicalContentPlanTarget(decision.targetUrl), decision]));
   const pageAssignments = plan.pageAssignments.map((assignment) => {
@@ -898,18 +943,24 @@ ${repair ? `\nREPAIR REQUIRED: Return only the ${requestedAssignments.length} mi
   return contentPlanSchema.parse({ ...plan, summary, pageAssignments, pageUpdates: pageAssignments.map((assignment) => `${assignment.recommendedAction.replaceAll("_", " ")}: ${assignment.pageName} · ${assignment.targetUrl} · ${assignment.funnelStage ?? "evaluate"} stage`), keywordMapping: pageAssignments.map((assignment) => `“${assignment.canonicalKeyword}” → ${assignment.intentOwner || assignment.targetUrl}${assignment.secondaryKeywords.length ? ` · Supporting: ${assignment.secondaryKeywords.join(", ")}` : ""}`), pageMap: pageAssignments.map((assignment) => `${assignment.pageName} → ${assignment.targetUrl} · ${assignment.searchIntent} · ${assignment.recommendedAction.replaceAll("_", " ")}`), planningChecks: pageAssignments.map((assignment) => `${assignment.pageName}: ${assignment.decisionReason || assignment.gapAnalysis}`) });
 }
 
+const aiPageFaqPlanPageSchema = z.object({
+  targetUrl: z.string().trim().min(1).max(512),
+  faqTopics: z.array(z.string().trim().min(8).max(300)).min(3).max(4),
+  seoTitle: z.string().trim().min(10).max(180),
+  metaDescription: z.string().trim().min(40).max(320),
+  contentOutline: z.array(z.string().trim().min(2).max(180)).min(3).max(12),
+  contentBrief: z.string().trim().min(20).max(1500),
+  supportingContentIdeas: z.array(z.string().trim().min(8).max(240)).min(2).max(4),
+  proofRequirements: z.array(z.string().trim().min(8).max(240)).min(1).max(4),
+  ctaSuggestion: z.string().trim().min(3).max(120),
+});
+
 const aiPageFaqPlanSchema = z.object({
-  pages: z.array(z.object({
-    targetUrl: z.string().trim().min(1).max(512),
-    faqTopics: z.array(z.string().trim().min(8).max(300)).min(3).max(4),
-    seoTitle: z.string().trim().min(10).max(180),
-    metaDescription: z.string().trim().min(40).max(320),
-    contentOutline: z.array(z.string().trim().min(2).max(180)).min(3).max(12),
-    contentBrief: z.string().trim().min(20).max(1500),
-    supportingContentIdeas: z.array(z.string().trim().min(8).max(240)).min(2).max(4),
-    proofRequirements: z.array(z.string().trim().min(8).max(240)).min(1).max(4),
-    ctaSuggestion: z.string().trim().min(3).max(120),
-  })).max(100),
+  pages: z.array(aiPageFaqPlanPageSchema).max(100),
+});
+
+const aiPageFaqPlanInspectionSchema = z.object({
+  pages: z.array(z.object({ targetUrl: z.string().trim().min(1).max(512) }).passthrough()).max(100),
 });
 
 const AI_PAGE_CTA_MAX_LENGTH = 120;
@@ -924,18 +975,40 @@ export function normalizeAiPageCtaSuggestion(value: unknown) {
 }
 
 export function parseAiPageFaqPlanResponse(value: unknown) {
-  const root = value && typeof value === "object" && !Array.isArray(value)
-    ? value as Record<string, unknown>
-    : value;
-  if (!root || typeof root !== "object" || Array.isArray(root) || !Array.isArray(root.pages)) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
     return aiPageFaqPlanSchema.parse(value);
   }
+  const root = value as Record<string, unknown>;
+  if (!Array.isArray(root.pages)) return aiPageFaqPlanSchema.parse(value);
   const pages = root.pages.map((item) => {
     if (!item || typeof item !== "object" || Array.isArray(item)) return item;
     const page = item as Record<string, unknown>;
     return { ...page, ctaSuggestion: normalizeAiPageCtaSuggestion(page.ctaSuggestion) };
   });
   return aiPageFaqPlanSchema.parse({ ...root, pages });
+}
+
+export function inspectAiPageFaqPlanResponse(value: unknown) {
+  const parsed = aiPageFaqPlanInspectionSchema.parse(value);
+  return {
+    pages: parsed.pages.map((page) => ({
+      ...page,
+      contentBrief: page.contentBrief && typeof page.contentBrief === "object" && !Array.isArray(page.contentBrief)
+        ? structuredBriefValue(page.contentBrief).slice(0, 1500)
+        : page.contentBrief,
+      ctaSuggestion: normalizeAiPageCtaSuggestion(page.ctaSuggestion),
+    })),
+  };
+}
+
+function validateInspectedAiPage(value: unknown) {
+  return aiPageFaqPlanPageSchema.safeParse(value);
+}
+
+export function aiPageSuggestionIssueSummary(value: unknown) {
+  const parsed = validateInspectedAiPage(value);
+  if (parsed.success) return [];
+  return parsed.error.issues.map((issue) => ({ field: issue.path.join(".") || "page", message: issue.message }));
 }
 
 async function applyAiPageFaqSuggestions(plan: ContentPlan, context: {
@@ -957,7 +1030,7 @@ async function applyAiPageFaqSuggestions(plan: ContentPlan, context: {
     const generatedPages: z.infer<typeof aiPageFaqPlanSchema>["pages"] = [];
     for (let start = 0; start < assignments.length; start += 8) {
       const assignmentBatch = assignments.slice(start, start + 8);
-      let parsedBatch: z.infer<typeof aiPageFaqPlanSchema> | null = null;
+      let parsedBatch: ReturnType<typeof inspectAiPageFaqPlanResponse> | null = null;
       let batchValidationError: unknown;
       for (let attempt = 0; attempt < 2; attempt += 1) {
         try {
@@ -990,7 +1063,7 @@ ${JSON.stringify(assignmentBatch.map((assignment) => ({
 })))}
 
 Rules:
-- Return 3 or 4 concise FAQ questions for every supplied page.
+- Return the faqTopics field with 3 or 4 concise FAQ questions for every supplied page. Never omit faqTopics.
 - Return one unique SEO title, one useful meta description, and a 4–8 section content outline for every page.
 - Return a substantive page-specific content brief, useful supporting-content ideas, verified-evidence requirements, and an intent-matched CTA suggestion for every page.
 - ctaSuggestion MUST be one plain-text string between 3 and 120 characters. Keep it concise and never return an object or explanation.
@@ -1006,7 +1079,7 @@ Rules:
 ${attempt ? "REPAIR REQUIRED: The previous response was incomplete or invalid. Return every supplied targetUrl exactly once and include every requested field with the required arrays." : ""}`,
         temperature: 0.25,
         timeoutMs: 90_000,
-        validate: parseAiPageFaqPlanResponse,
+        validate: inspectAiPageFaqPlanResponse,
       });
           parsedBatch = generated.result;
           break;
@@ -1016,22 +1089,37 @@ ${attempt ? "REPAIR REQUIRED: The previous response was incomplete or invalid. R
       }
       if (!parsedBatch) throw batchValidationError;
       const reconciledBatch = reconcileAiTargetUrlBatch(assignmentBatch, parsedBatch.pages);
-      generatedPages.push(...reconciledBatch.items);
       if (reconciledBatch.unexpected.length) console.warn("[content-plan] ignored unrequested AI page-content suggestions", {
         batch: Math.floor(start / 8) + 1,
         count: reconciledBatch.unexpected.length,
         targetUrls: reconciledBatch.unexpected,
       });
       const missingTargets = new Set(reconciledBatch.missing.map((targetUrl) => targetUrl.trim().toLocaleLowerCase()));
-      const missingAssignments = assignmentBatch.filter((assignment) => missingTargets.has(assignment.targetUrl.trim().toLocaleLowerCase()));
-      if (missingAssignments.length) {
-        let repairedPages: z.infer<typeof aiPageFaqPlanSchema>["pages"] | null = null;
-        let repairError: unknown;
-        for (let attempt = 0; attempt < 2; attempt += 1) {
-          try {
-            const retry = await centralAiJson({
-              system: "You are the SENuke AI SEO content planner completing pages omitted from a prior structured response. Return every supplied page exactly once. Never invent business facts, claims, prices, credentials, guarantees, reviews, statistics, eligibility rules, or service availability.",
-              prompt: `Return {"pages":[{"targetUrl":"exact supplied target URL","seoTitle":"unique SEO title","metaDescription":"unique search description","contentOutline":["3 to 8 page sections"],"contentBrief":"complete page-specific writing direction","supportingContentIdeas":["2 to 4 useful supporting assets"],"proofRequirements":["1 to 4 evidence requirements"],"ctaSuggestion":"page-specific conversion action of 3 to 120 characters","faqTopics":["3 or 4 question topics"]}]}.
+      const issuesByTarget = new Map<string, Array<{ field: string; message: string }>>();
+      for (const item of reconciledBatch.items) {
+        const validated = validateInspectedAiPage(item);
+        if (validated.success) generatedPages.push(validated.data);
+        else issuesByTarget.set(item.targetUrl.trim().toLocaleLowerCase(), aiPageSuggestionIssueSummary(item));
+      }
+      let pendingAssignments = assignmentBatch.filter((assignment) => {
+        const key = assignment.targetUrl.trim().toLocaleLowerCase();
+        return missingTargets.has(key) || issuesByTarget.has(key);
+      });
+      let repairError: unknown;
+      for (let repairAttempt = 0; repairAttempt < 2 && pendingAssignments.length; repairAttempt += 1) {
+        console.warn("[content-plan] retrying only incomplete AI page-content suggestions", {
+          batch: Math.floor(start / 8) + 1,
+          attempt: repairAttempt + 1,
+          pages: pendingAssignments.map((assignment) => ({
+            targetUrl: assignment.targetUrl,
+            missingOrInvalidFields: issuesByTarget.get(assignment.targetUrl.trim().toLocaleLowerCase())?.map((issue) => issue.field) ?? ["page"],
+          })),
+        });
+        try {
+          const repairTargets = pendingAssignments;
+          const retry = await centralAiJson({
+            system: "You are the SENuke AI SEO content planner repairing only incomplete pages from a prior structured response. Return every supplied targetUrl exactly once and every required field. Never invent business facts, claims, prices, credentials, guarantees, reviews, statistics, eligibility rules, or service availability.",
+            prompt: `Return {"pages":[{"targetUrl":"exact supplied target URL","seoTitle":"unique SEO title","metaDescription":"unique search description","contentOutline":["3 to 8 page sections"],"contentBrief":"complete page-specific writing direction","supportingContentIdeas":["2 to 4 useful supporting assets"],"proofRequirements":["1 to 4 evidence requirements"],"ctaSuggestion":"page-specific conversion action of 3 to 120 characters","faqTopics":["3 or 4 page-specific question topics"]}]}.
 
 Business: ${context.business.businessName || "Business name not confirmed"}
 Industry: ${context.business.industry}
@@ -1040,8 +1128,8 @@ Approved services: ${context.business.primaryServices.join(", ")}
 Audience: ${context.business.audienceSummary}
 Primary goal: ${context.goal}
 
-You omitted these required pages. Return all ${missingAssignments.length} pages, using each targetUrl exactly:
-${JSON.stringify(missingAssignments.map((assignment) => ({
+Repair only these ${repairTargets.length} incomplete required pages. Return every field for each page. faqTopics is mandatory and must contain 3 or 4 concise, page-specific questions. Do not return already accepted pages:
+${JSON.stringify(repairTargets.map((assignment) => ({
   targetUrl: assignment.targetUrl,
   pageName: assignment.pageName,
   primaryKeyword: assignment.canonicalKeyword,
@@ -1050,22 +1138,42 @@ ${JSON.stringify(missingAssignments.map((assignment) => ({
   location: assignment.location || null,
   pagePurpose: assignment.pagePurpose,
   prohibitedCompetingKeywords: assignment.prohibitedCompetingKeywords || [],
-})))}${attempt ? "\nREPAIR REQUIRED: Include every field and return only the missing target URLs above." : ""}`,
-              temperature: 0.2,
-              timeoutMs: 90_000,
-              validate: parseAiPageFaqPlanResponse,
-            });
-            repairedPages = retry.result.pages;
-            break;
-          } catch (error) {
-            repairError = error;
+  missingOrInvalidFields: issuesByTarget.get(assignment.targetUrl.trim().toLocaleLowerCase()) ?? [{ field: "page", message: "Page was omitted" }],
+})))}
+
+Do not omit faqTopics, contentBrief, supportingContentIdeas, proofRequirements, or ctaSuggestion. Use only the approved evidence above. Return valid JSON only.${repairAttempt ? " This is the final focused repair; check every field and array before responding." : ""}`,
+            temperature: 0.2,
+            timeoutMs: 90_000,
+            validate: inspectAiPageFaqPlanResponse,
+          });
+          const reconciledRepair = reconcileAiTargetUrlBatch(repairTargets, retry.result.pages);
+          if (reconciledRepair.unexpected.length) console.warn("[content-plan] ignored unrequested AI page-content repair suggestions", { count: reconciledRepair.unexpected.length, targetUrls: reconciledRepair.unexpected });
+          const nextIssues = new Map<string, Array<{ field: string; message: string }>>();
+          const missingRepairTargets = new Set(reconciledRepair.missing.map((targetUrl) => targetUrl.trim().toLocaleLowerCase()));
+          for (const item of reconciledRepair.items) {
+            const validated = validateInspectedAiPage(item);
+            if (validated.success) generatedPages.push(validated.data);
+            else nextIssues.set(item.targetUrl.trim().toLocaleLowerCase(), aiPageSuggestionIssueSummary(item));
           }
+          pendingAssignments = repairTargets.filter((assignment) => {
+            const key = assignment.targetUrl.trim().toLocaleLowerCase();
+            return missingRepairTargets.has(key) || nextIssues.has(key);
+          });
+          issuesByTarget.clear();
+          for (const assignment of pendingAssignments) {
+            const key = assignment.targetUrl.trim().toLocaleLowerCase();
+            issuesByTarget.set(key, nextIssues.get(key) ?? [{ field: "page", message: "Page was omitted" }]);
+          }
+        } catch (error) {
+          repairError = error;
         }
-        if (!repairedPages) throw repairError;
-        const reconciledRepair = reconcileAiTargetUrlBatch(missingAssignments, repairedPages);
-        if (reconciledRepair.missing.length) throw new Error(`AI omitted ${reconciledRepair.missing.length} required page suggestion${reconciledRepair.missing.length === 1 ? "" : "s"} after a focused retry.`);
-        if (reconciledRepair.unexpected.length) console.warn("[content-plan] ignored unrequested AI page-content repair suggestions", { count: reconciledRepair.unexpected.length, targetUrls: reconciledRepair.unexpected });
-        generatedPages.push(...reconciledRepair.items);
+      }
+      if (pendingAssignments.length) {
+        const diagnostic = pendingAssignments.map((assignment) => {
+          const issues = issuesByTarget.get(assignment.targetUrl.trim().toLocaleLowerCase()) ?? [{ field: "page", message: "Page was omitted" }];
+          return `${assignment.targetUrl}: ${issues.map((issue) => `${issue.field} ${issue.message}`).join(", ")}`;
+        }).join("; ");
+        throw new Error(`AI returned incomplete page suggestions after focused repair. ${diagnostic}${repairError instanceof Error ? ` Last repair error: ${repairError.message}` : ""}`);
       }
     }
     const parsed = parseAiPageFaqPlanResponse({ pages: generatedPages });

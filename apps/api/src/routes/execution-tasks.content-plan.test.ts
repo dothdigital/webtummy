@@ -6,7 +6,7 @@ vi.mock("../queue.js", () => ({
   keywordResearchQueue: { add: vi.fn() },
 }));
 
-import { contentPlanFor, includeEveryCrawledPageInContentPlan, normalizeAiPageCtaSuggestion, normalizeAiWebsitePlanCtaSuggestion, parseAiPageFaqPlanResponse, parseAiUnifiedWebsitePlanResponse, reconcileAiWebsitePlanBatch, repairContentPlanPageIdentities, websitePlanEvidencePages } from "./execution-tasks.js";
+import { aiPageSuggestionIssueSummary, aiWebsitePlanDecisionIssueSummary, contentPlanFor, includeEveryCrawledPageInContentPlan, inspectAiPageFaqPlanResponse, inspectAiUnifiedWebsitePlanResponse, normalizeAiPageCtaSuggestion, normalizeAiWebsitePlanCtaSuggestion, parseAiPageFaqPlanResponse, parseAiUnifiedWebsitePlanResponse, reconcileAiWebsitePlanBatch, repairContentPlanPageIdentities, websitePlanEvidencePages } from "./execution-tasks.js";
 
 const baseInput = {
   projectName: "Growth Project",
@@ -322,6 +322,20 @@ describe("AI Website Plan batch reconciliation", () => {
     })).toThrow();
   });
 
+  it("inspects incomplete Website Plan decisions so only affected pages need focused repair", () => {
+    const incomplete = { ...decision("/missing-evidence"), evidenceSources: undefined, requiredInternalLinks: undefined };
+    const inspected = inspectAiUnifiedWebsitePlanResponse({
+      summary: "The batch can be inspected without accepting incomplete governed page decisions.",
+      decisions: [incomplete],
+    });
+    expect(inspected.decisions).toHaveLength(1);
+    expect(aiWebsitePlanDecisionIssueSummary(inspected.decisions[0]).map((issue) => issue.field)).toEqual(expect.arrayContaining(["evidenceSources", "requiredInternalLinks"]));
+    expect(() => parseAiUnifiedWebsitePlanResponse({
+      summary: "The incomplete decision remains blocked by final strict validation.",
+      decisions: [incomplete],
+    })).toThrow();
+  });
+
   it("shortens overlong Website Plan decision CTAs before the 160-character schema validation", () => {
     const longCta = "Schedule a personalized planning consultation with our experienced advisory team to review your goals, compare every available option, understand the relevant tradeoffs, identify the right coverage structure, and agree on a practical next step for your family or business today";
     const parsed = parseAiUnifiedWebsitePlanResponse({
@@ -357,5 +371,24 @@ describe("AI Website Plan batch reconciliation", () => {
       expect(longCta.startsWith(cta)).toBe(true);
     }
     expect(parsed.pages[1]?.ctaSuggestion).toBe("Request a consultation");
+  });
+
+  it("inspects pages missing FAQ topics so only incomplete pages need focused repair", () => {
+    const incompletePages = Array.from({ length: 3 }, (_, index) => ({
+      targetUrl: `/missing-faq-${index + 1}`,
+      seoTitle: `Complete page-specific SEO title ${index + 1}`,
+      metaDescription: `A complete search description for page ${index + 1} that provides useful context and a clear reason to continue.`,
+      contentOutline: ["Introduction", "Available options", "Decision guidance", "Next steps"],
+      contentBrief: `Write a complete page-specific brief for governed page ${index + 1}.`,
+      supportingContentIdeas: ["Practical buyer checklist", "Common decision questions"],
+      proofRequirements: ["Use only verified business evidence"],
+      ctaSuggestion: "Request a consultation",
+    }));
+    const inspected = inspectAiPageFaqPlanResponse({ pages: incompletePages });
+    expect(inspected.pages).toHaveLength(3);
+    for (const page of inspected.pages) {
+      expect(aiPageSuggestionIssueSummary(page).map((issue) => issue.field)).toContain("faqTopics");
+    }
+    expect(() => parseAiPageFaqPlanResponse({ pages: incompletePages })).toThrow();
   });
 });
