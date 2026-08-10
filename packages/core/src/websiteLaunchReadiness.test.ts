@@ -40,6 +40,20 @@ const validModel: WebsiteModel = {
       variant: "answer_first",
       props: { heading: "Coverage guidance", body: "Review current eligibility, coverage, limits, exclusions, deductibles, and application requirements before choosing a policy." },
     }, {
+      instanceId: "faq-1",
+      componentId: "content.faq",
+      componentVersion: "1.0.0",
+      variant: "accordion",
+      props: {
+        heading: "Super Visa insurance questions",
+        items: [
+          { question: "What should I compare before choosing coverage?", answer: "Review current eligibility, coverage limits, exclusions, deductibles, policy duration, and application requirements with a qualified professional." },
+          { question: "Can coverage needs differ by visitor?", answer: "Yes. Age, health information, travel plans, existing protection, and current program requirements can affect the options that should be reviewed." },
+          { question: "When should I request insurance guidance?", answer: "Request guidance before finalizing an application so there is time to review current requirements, documentation, coverage terms, and effective dates." },
+          { question: "What can a consultation clarify?", answer: "A consultation can explain available considerations, while eligibility, acceptance, pricing, and policy terms remain subject to verified insurer requirements." },
+        ],
+      },
+    }, {
       instanceId: "proof-1",
       componentId: "trust.proof",
       componentVersion: "1.0.0",
@@ -61,8 +75,18 @@ const validModel: WebsiteModel = {
       secondaryKeywords: [],
       dominantIntent: "commercial",
       internalLinks: [],
-      faqs: [],
-      schemaJsonLd: { "@context": "https://schema.org", "@type": "Service", name: "Super Visa Insurance" },
+      faqs: [
+        { question: "What should I compare before choosing coverage?", answer: "Review current eligibility, coverage limits, exclusions, deductibles, policy duration, and application requirements with a qualified professional." },
+        { question: "Can coverage needs differ by visitor?", answer: "Yes. Age, health information, travel plans, existing protection, and current program requirements can affect the options that should be reviewed." },
+        { question: "When should I request insurance guidance?", answer: "Request guidance before finalizing an application so there is time to review current requirements, documentation, coverage terms, and effective dates." },
+        { question: "What can a consultation clarify?", answer: "A consultation can explain available considerations, while eligibility, acceptance, pricing, and policy terms remain subject to verified insurer requirements." },
+      ],
+      schemaJsonLd: { "@context": "https://schema.org", "@graph": [{ "@type": "Service", name: "Super Visa Insurance" }, { "@type": "FAQPage", mainEntity: [
+        { "@type": "Question", name: "What should I compare before choosing coverage?", acceptedAnswer: { "@type": "Answer", text: "Review current eligibility, coverage limits, exclusions, deductibles, policy duration, and application requirements with a qualified professional." } },
+        { "@type": "Question", name: "Can coverage needs differ by visitor?", acceptedAnswer: { "@type": "Answer", text: "Yes. Age, health information, travel plans, existing protection, and current program requirements can affect the options that should be reviewed." } },
+        { "@type": "Question", name: "When should I request insurance guidance?", acceptedAnswer: { "@type": "Answer", text: "Request guidance before finalizing an application so there is time to review current requirements, documentation, coverage terms, and effective dates." } },
+        { "@type": "Question", name: "What can a consultation clarify?", acceptedAnswer: { "@type": "Answer", text: "A consultation can explain available considerations, while eligibility, acceptance, pricing, and policy terms remain subject to verified insurer requirements." } },
+      ] }] },
       imageAltText: [],
     },
   }],
@@ -74,8 +98,8 @@ const validModel: WebsiteModel = {
 describe("website launch readiness", () => {
   it("checks an immutable release and all renderer outputs", () => {
     const result = evaluateWebsiteLaunchReadiness(validModel, { approvedReleaseId: "release-1", snapshotHash: "abc123" });
+    expect(result.blockingCount, JSON.stringify({ checks: result.checks, qualityGate: result.qualityGate }, null, 2)).toBe(0);
     expect(result.status).toBe("ready_with_warnings");
-    expect(result.blockingCount).toBe(0);
     expect(result.output.fileCount).toBeGreaterThanOrEqual(6);
     expect(result.checks.find((check) => check.key === "technical_files")?.status).toBe("passed");
   });

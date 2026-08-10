@@ -456,6 +456,21 @@ describe("website generation workflow contracts", () => {
             body: "This page explains the approved website privacy information.",
           },
         },
+        {
+          instanceId: "utility-faq",
+          componentId: "content.faq",
+          componentVersion: "1.0.0",
+          variant: "accordion",
+          props: {
+            heading: "Privacy questions",
+            items: [
+              { question: "What information can this website collect?", answer: "The policy explains the categories of information collected through approved website forms and normal site operation." },
+              { question: "Why is personal information used?", answer: "Personal information is used only for the purposes described in the approved privacy policy, such as responding to an enquiry." },
+              { question: "How can a privacy question be submitted?", answer: "Visitors can use the approved contact method to ask how their information is handled or request further clarification." },
+              { question: "Can this privacy policy change?", answer: "The published policy can be updated when practices or legal requirements change, with the current version remaining available on this page." },
+            ],
+          },
+        },
       ],
     };
 
