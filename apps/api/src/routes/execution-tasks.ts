@@ -637,6 +637,22 @@ const aiUnifiedWebsitePlanSchema = z.object({
 });
 
 type AiWebsitePlanDecision = z.infer<typeof aiUnifiedWebsitePlanSchema>["decisions"][number];
+const websitePlanSearchIntents = ["commercial", "transactional", "informational", "local", "navigational"] as const;
+
+function normalizeWebsitePlanSearchIntent(value: unknown) {
+  if (typeof value !== "string") return value;
+  const normalized = value.trim().toLowerCase().replace(/[_/-]+/g, " ").replace(/\s+/g, " ");
+  if ((websitePlanSearchIntents as readonly string[]).includes(normalized)) return normalized;
+  const tokens = normalized.split(" ").filter(Boolean);
+  if (tokens.length < 2 || tokens.some((token) => !(websitePlanSearchIntents as readonly string[]).includes(token))) return value;
+  // A combined local intent still represents a geographically qualified page.
+  // For other recognized combinations, prefer the intent closest to action.
+  if (tokens.includes("local")) return "local";
+  if (tokens.includes("transactional")) return "transactional";
+  if (tokens.includes("commercial")) return "commercial";
+  if (tokens.includes("informational")) return "informational";
+  return "navigational";
+}
 
 function structuredBriefValue(value: unknown, depth = 0): string {
   if (typeof value === "string") return value.trim();
@@ -669,9 +685,12 @@ export function parseAiUnifiedWebsitePlanResponse(value: unknown) {
   const decisions = root.decisions.map((item) => {
     if (!item || typeof item !== "object" || Array.isArray(item)) return item;
     const decision = item as Record<string, unknown>;
-    if (!decision.contentBrief || typeof decision.contentBrief !== "object" || Array.isArray(decision.contentBrief)) return decision;
+    const searchIntent = normalizeWebsitePlanSearchIntent(decision.searchIntent);
+    if (!decision.contentBrief || typeof decision.contentBrief !== "object" || Array.isArray(decision.contentBrief)) {
+      return { ...decision, searchIntent };
+    }
     const contentBrief = structuredBriefValue(decision.contentBrief).slice(0, 1500);
-    return { ...decision, contentBrief };
+    return { ...decision, searchIntent, contentBrief };
   });
   return aiUnifiedWebsitePlanSchema.parse({ ...root, decisions });
 }
@@ -778,7 +797,7 @@ ${JSON.stringify(evidence.funnel).slice(0, 12_000)}`;
     const batchCount = Math.ceil(suppliedAssignments.length / 6);
     const promptFor = (requestedAssignments: typeof assignmentBatch, repair: boolean) => `Create ${repair ? "the missing decisions from" : "this batch of"} the final unified SEO Page Map and Website Improvement Plan. This is an AI decision task, not a generic rewrite and not a keyword-to-page fallback.
 
-Return {"summary":"20+ character batch decision summary","decisions":[...]} with exactly one complete decision for every supplied targetUrl. Every decision object MUST contain all of these fields: targetUrl, pageName, canonicalKeyword, secondaryKeywords, searchIntent, pagePurpose, gapAnalysis, recommendedAction, intentOwner, decisionReason, funnelStage, strategyRole, requiredInternalLinks, prohibitedCompetingKeywords, contentBrief, ctaSuggestion, evidenceSources. Use [] for an empty array; never omit a field. contentBrief MUST be one plain-text string between 40 and 1500 characters—never an object, array, or nested JSON. Format any internal headings into that single string. recommendedAction must be update_existing, create_new, consolidate, or support_only. funnelStage must be discover, evaluate, trust, convert, delight, or grow_refer.
+Return {"summary":"20+ character batch decision summary","decisions":[...]} with exactly one complete decision for every supplied targetUrl. Every decision object MUST contain all of these fields: targetUrl, pageName, canonicalKeyword, secondaryKeywords, searchIntent, pagePurpose, gapAnalysis, recommendedAction, intentOwner, decisionReason, funnelStage, strategyRole, requiredInternalLinks, prohibitedCompetingKeywords, contentBrief, ctaSuggestion, evidenceSources. Use [] for an empty array; never omit a field. searchIntent MUST be exactly one of commercial, transactional, informational, local, or navigational—never combine labels such as "local commercial". contentBrief MUST be one plain-text string between 40 and 1500 characters—never an object, array, or nested JSON. Format any internal headings into that single string. recommendedAction must be update_existing, create_new, consolidate, or support_only. funnelStage must be discover, evaluate, trust, convert, delight, or grow_refer.
 
 ${sharedEvidence}
 

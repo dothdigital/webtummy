@@ -306,4 +306,19 @@ describe("AI Website Plan batch reconciliation", () => {
       expect(item.contentBrief.length).toBeLessThanOrEqual(1500);
     }
   });
+
+  it("normalizes the exact combined local commercial search intent before strict validation", () => {
+    const parsed = parseAiUnifiedWebsitePlanResponse({
+      summary: "The governed local page has one normalized intent and a complete evidence-backed decision.",
+      decisions: [{ ...decision("/local-service"), searchIntent: "local commercial" }],
+    });
+    expect(parsed.decisions[0]?.searchIntent).toBe("local");
+  });
+
+  it("continues to reject search intent labels containing unknown values", () => {
+    expect(() => parseAiUnifiedWebsitePlanResponse({
+      summary: "The invalid page decision must remain blocked by the strict Website Plan contract.",
+      decisions: [{ ...decision("/invalid-intent"), searchIntent: "regional purchase" }],
+    })).toThrow();
+  });
 });
