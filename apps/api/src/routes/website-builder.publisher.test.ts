@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { SENUKE_COMPONENT_REGISTRY_V1 } from "@webtummy/core/website-model";
-import { combinedPageSchema, effectiveExistingPageRequirements, generatedPageSchema, importedWebsiteRouteAssignment, logoPaletteAiPrompt, logoPalettePromptBrand, pageIsImportedExistingWebsite, parseWordPressJsonResponse, publishingAssetMatchesWebsitePage, shouldDeployWordPressDesignPackage, websiteSettingsWithVerifiedLocalEvidence, wordPressConnectorVersionAtLeast, wordpressConnectorSafeCss, wordpressMenuDestination } from "./website-builder.js";
+import { combinedPageSchema, compactWebsiteBuilderOverviewPage, effectiveExistingPageRequirements, generatedPageSchema, importedWebsiteRouteAssignment, logoPaletteAiPrompt, logoPalettePromptBrand, pageIsImportedExistingWebsite, parseWordPressJsonResponse, publishingAssetMatchesWebsitePage, shouldDeployWordPressDesignPackage, websiteSettingsWithVerifiedLocalEvidence, wordPressConnectorVersionAtLeast, wordpressConnectorSafeCss, wordpressMenuDestination } from "./website-builder.js";
 
 const project = {
   businessName: "Example Financial",
@@ -15,6 +15,45 @@ const project = {
 };
 
 describe("ongoing WordPress publishing schema", () => {
+  it("keeps page bodies and media bytes out of the Website Builder overview", () => {
+    const largeBody = `PRIVATE_PAGE_BODY_${"x".repeat(250_000)}`;
+    const largeImage = `data:image/webp;base64,PRIVATE_IMAGE_BYTES_${"y".repeat(500_000)}`;
+    const compact = compactWebsiteBuilderOverviewPage({
+      id: "page-1",
+      buildId: "build-1",
+      parentPageId: null,
+      pageType: "service",
+      title: "Service",
+      slug: "service",
+      primaryKeyword: "service",
+      secondaryKeywords: [],
+      searchIntent: "commercial",
+      targetUrl: "/service",
+      targetCta: "Contact us",
+      status: "review",
+      sortOrder: 0,
+      briefJson: {},
+      contentJson: { components: [{ componentId: "content.rich_text", props: { body: largeBody } }] },
+      seoJson: {},
+      layoutJson: {},
+      version: 1,
+      approvedAt: null,
+      remotePostId: null,
+      remoteUrl: null,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+      generationPhase: "primary",
+      seoQuality: undefined,
+      approvalReadiness: undefined,
+      mediaAssets: [{ id: "media-1", buildId: "build-1", pageId: "page-1", role: "hero", status: "review", prompt: "A useful hero image", sourceUrl: largeImage, storageKey: null, fileName: null, altText: "Service", mimeType: "image/webp", width: null, height: null, remoteMediaId: null, remoteUrl: null, approvedAt: null, createdAt: new Date(), updatedAt: new Date() }],
+    });
+    const serialized = JSON.stringify(compact);
+    expect(serialized).not.toContain("PRIVATE_PAGE_BODY");
+    expect(serialized).not.toContain("PRIVATE_IMAGE_BYTES");
+    expect(serialized.length).toBeLessThan(5_000);
+    expect(compact.mediaAssets[0]).toMatchObject({ sourceUrl: null, sourceAvailable: true });
+  });
+
   it("never sends an embedded logo image in the logo colour-advisor prompt", () => {
     const embeddedLogo = `data:image/png;base64,${"A".repeat(520_504)}`;
     const context = logoPalettePromptBrand({

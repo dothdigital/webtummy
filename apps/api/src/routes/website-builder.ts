@@ -1417,6 +1417,102 @@ async function scopedProject(projectId: string, req: Parameters<typeof workspace
 }
 
 /**
+ * Read model for the frequently-polled Website Builder overview. Large page
+ * media, job results, deployment logs, publication payloads, and WordPress
+ * previews must never be loaded by this query. Page content is retained only
+ * long enough to derive compact completion summaries and is removed from the
+ * response by builderOverviewView().
+ */
+async function scopedOverviewProject(projectId: string, req: Parameters<typeof workspaceContext>[0]) {
+  const context = await workspaceContext(req);
+  if (!await canAccessProject(context, projectId)) throw Object.assign(new Error("Project not found."), { statusCode: 404 });
+  const workflowBuild = await prisma.websiteBuild.findFirst({ where: { projectId }, orderBy: { updatedAt: "desc" }, select: { id: true, settingsJson: true } });
+  const workflowSettings = jsonRecord(workflowBuild?.settingsJson);
+  const hasActiveWorkflowSnapshot = Boolean(workflowSettings.currentValidationResultId || workflowSettings.currentApprovedReleaseId);
+  const activeModelId = hasActiveWorkflowSnapshot ? String(workflowSettings.currentWebsiteModelVersionId || "") : "";
+  const activeValidationId = hasActiveWorkflowSnapshot ? String(workflowSettings.currentValidationResultId || "") : "";
+  const activeReleaseId = String(workflowSettings.currentApprovedReleaseId || "");
+  const project = await prisma.project.findUnique({
+    where: { id: projectId },
+    include: {
+      agencyClient: true,
+      businessProfile: true,
+      strategyPlans: { where: { status: "approved" }, orderBy: { version: "desc" }, take: 1 },
+      keywordGroups: { where: { status: "approved" } },
+      siteArchitectureVersions: { where: { status: "approved" }, orderBy: { version: "desc" }, take: 1, include: { pages: { orderBy: { sortOrder: "asc" } }, links: true } },
+      executionTasks: { orderBy: { updatedAt: "desc" }, take: 100 },
+      websiteBuilds: {
+        orderBy: { updatedAt: "desc" },
+        take: 1,
+        include: {
+          pages: {
+            orderBy: { sortOrder: "asc" },
+            include: {
+              mediaAssets: {
+                select: { id: true, buildId: true, pageId: true, role: true, status: true, prompt: true, storageKey: true, fileName: true, altText: true, mimeType: true, width: true, height: true, remoteMediaId: true, remoteUrl: true, approvedAt: true, createdAt: true, updatedAt: true },
+              },
+            },
+          },
+          generationCheckpoints: { orderBy: { updatedAt: "desc" }, take: 1000, select: { runId: true, unitType: true, pageId: true } },
+          jobs: {
+            orderBy: { createdAt: "desc" },
+            take: 10,
+            select: { id: true, buildId: true, projectId: true, clientId: true, workspaceId: true, requestedByUserId: true, approvalTaskId: true, usageEventId: true, status: true, stage: true, progress: true, errorMessage: true, attempts: true, queuedAt: true, startedAt: true, completedAt: true, createdAt: true, updatedAt: true },
+          },
+          deployments: { orderBy: { createdAt: "desc" }, take: 10, select: { id: true, wordpressIntegrationId: true, mode: true, status: true, errorMessage: true, createdAt: true, completedAt: true, qaResults: { select: { id: true, liveUrl: true, score: true, status: true } } } },
+        },
+      },
+      websiteModelVersions: activeModelId
+        ? { where: { id: activeModelId }, take: 1, select: { id: true, version: true, status: true, snapshotHash: true, createdAt: true, validationResults: activeValidationId ? { where: { id: activeValidationId }, take: 1, select: { id: true, status: true, overallScore: true, blockingCount: true, warningCount: true, validatedAt: true, validatedSnapshotHash: true, findingsJson: true, pageScoresJson: true } } : { orderBy: { validatedAt: "desc" }, take: 1, select: { id: true, status: true, overallScore: true, blockingCount: true, warningCount: true, validatedAt: true, validatedSnapshotHash: true, findingsJson: true, pageScoresJson: true } } } }
+        : { orderBy: { version: "desc" }, take: 1, select: { id: true, version: true, status: true, snapshotHash: true, createdAt: true, validationResults: { orderBy: { validatedAt: "desc" }, take: 1, select: { id: true, status: true, overallScore: true, blockingCount: true, warningCount: true, validatedAt: true, validatedSnapshotHash: true, findingsJson: true, pageScoresJson: true } } } },
+      websiteApprovedReleases: activeReleaseId
+        ? { where: { id: activeReleaseId }, take: 1, select: { id: true, approvalStatus: true, modelVersionId: true, snapshotHash: true, approvedAt: true, approverId: true, revokedAt: true } }
+        : { orderBy: { approvedAt: "desc" }, take: 1, select: { id: true, approvalStatus: true, modelVersionId: true, snapshotHash: true, approvedAt: true, approverId: true, revokedAt: true } },
+      websitePublications: { orderBy: { createdAt: "desc" }, take: 5, select: { id: true, releaseId: true, target: true, mode: true, status: true, rendererVersion: true, createdAt: true, publishedAt: true } },
+      wordpressIntegrations: { orderBy: { updatedAt: "desc" }, take: 5 },
+      wordpressPublishJobs: { orderBy: { updatedAt: "desc" }, take: 50, select: { id: true, integrationId: true, targetType: true, actionType: true, targetPostType: true, targetPageId: true, publishMode: true, title: true, slug: true, internalLinksJson: true, validationJson: true, approvalStatus: true, approvedAt: true, approvedByUserId: true, version: true, externalPostId: true, remoteUrl: true, releaseId: true, status: true, errorMessage: true, createdAt: true, updatedAt: true, publishedAt: true, completedAt: true } },
+    },
+  });
+  if (!project) throw Object.assign(new Error("Project not found."), { statusCode: 404 });
+  const availableMediaIds = workflowBuild?.id
+    ? new Set((await prisma.websiteBuildMediaAsset.findMany({ where: { buildId: workflowBuild.id, sourceUrl: { not: null } }, select: { id: true } })).map((asset) => asset.id))
+    : new Set<string>();
+  const compactJobPayloads = workflowBuild?.id
+    ? await prisma.$queryRaw<Array<{ id: string; inputJson: Prisma.JsonValue; resultJson: Prisma.JsonValue }>>(Prisma.sql`
+        SELECT "id",
+          jsonb_strip_nulls(jsonb_build_object(
+            'mode', "inputJson"->'mode',
+            'pageIds', "inputJson"->'pageIds',
+            'automaticSetup', "inputJson"->'automaticSetup',
+            'checkpointRunId', "inputJson"->'checkpointRunId'
+          )) AS "inputJson",
+          jsonb_strip_nulls(jsonb_build_object(
+            'automaticSetup', "resultJson"->'automaticSetup',
+            'assembledPageVersionSignature', "resultJson"->'assembledPageVersionSignature',
+            'navigationSignature', "resultJson"->'navigationSignature',
+            'failedPages', "resultJson"->'failedPages'
+          )) AS "resultJson"
+        FROM "WebsiteBuildJob"
+        WHERE "buildId" = ${workflowBuild.id}
+        ORDER BY "createdAt" DESC
+        LIMIT 10
+      `)
+    : [];
+  const compactJobPayloadById = new Map(compactJobPayloads.map((job) => [job.id, job]));
+  const compatibleProject = {
+    ...project,
+    websiteBuilds: project.websiteBuilds.map((build) => ({
+      ...build,
+      pages: build.pages.map((page) => ({ ...page, mediaAssets: page.mediaAssets.map((asset) => ({ ...asset, sourceUrl: availableMediaIds.has(asset.id) ? "available://media" : null })) })),
+      jobs: build.jobs.map((job) => ({ ...job, inputJson: compactJobPayloadById.get(job.id)?.inputJson ?? {}, resultJson: compactJobPayloadById.get(job.id)?.resultJson ?? {} })),
+      deployments: build.deployments.map((deployment) => ({ ...deployment, logsJson: [] })),
+    })),
+    wordpressPublishJobs: project.wordpressPublishJobs.map((job) => ({ ...job, mediaJson: {}, previewJson: {} })),
+  } as unknown as Awaited<ReturnType<typeof scopedProject>>["project"];
+  return { context, project: compatibleProject };
+}
+
+/**
  * Page approval needs the current page set for cross-page quality checks, but
  * it does not need deployment history, checkpoints, WordPress jobs, model
  * snapshots, architecture versions, or the full execution-task collection.
@@ -1460,7 +1556,7 @@ async function scopedPageApprovalProject(projectId: string, req: Parameters<type
               contentJson: true,
               seoJson: true,
               version: true,
-              mediaAssets: { select: { id: true, role: true, status: true, altText: true, sourceUrl: true } },
+              mediaAssets: { select: { id: true, role: true, status: true, altText: true } },
             },
           },
         },
@@ -1468,7 +1564,23 @@ async function scopedPageApprovalProject(projectId: string, req: Parameters<type
     },
   });
   if (!project) throw Object.assign(new Error("Project not found."), { statusCode: 404 });
-  return { context, project };
+  const build = project.websiteBuilds[0];
+  const availableMediaIds = build
+    ? new Set((await prisma.websiteBuildMediaAsset.findMany({ where: { buildId: build.id, sourceUrl: { not: null } }, select: { id: true } })).map((asset) => asset.id))
+    : new Set<string>();
+  return {
+    context,
+    project: {
+      ...project,
+      websiteBuilds: project.websiteBuilds.map((websiteBuild) => ({
+        ...websiteBuild,
+        pages: websiteBuild.pages.map((page) => ({
+          ...page,
+          mediaAssets: page.mediaAssets.map((asset) => ({ ...asset, sourceUrl: availableMediaIds.has(asset.id) ? "available://media" : null })),
+        })),
+      })),
+    },
+  };
 }
 
 function businessIdentity(project: { name?: string | null; businessName: string | null; agencyClient?: { name: string } | null }) {
@@ -1938,6 +2050,58 @@ export function builderView(project: Awaited<ReturnType<typeof scopedProject>>["
       updatedAt: job.updatedAt,
       publishedAt: job.publishedAt,
     })),
+  };
+}
+
+type BuilderViewPage = NonNullable<ReturnType<typeof builderView>["build"]>["pages"][number];
+
+export function compactWebsiteBuilderOverviewPage(page: BuilderViewPage) {
+  const components = canonicalComponents(page.contentJson);
+  const faqComponent = components.find((component) => component.componentId === "content.faq");
+  return {
+    ...page,
+    contentJson: {},
+    contentSummary: {
+      complete: pageHasCompleteContent(page),
+      componentCount: components.length,
+      faqCount: Array.isArray(jsonRecord(faqComponent?.props).items) ? (jsonRecord(faqComponent?.props).items as unknown[]).length : 0,
+      placeholder: isEarlierPlaceholderPage(page.seoJson),
+      contactFormApplied: components.some((component) => component.componentId === "conversion.contact_form"),
+    },
+    mediaAssets: page.mediaAssets.map((asset) => ({
+      id: asset.id,
+      role: asset.role,
+      status: asset.status,
+      prompt: asset.prompt,
+      sourceUrl: null,
+      sourceAvailable: Boolean(asset.sourceUrl),
+      altText: asset.altText,
+    })),
+  };
+}
+
+function builderOverviewView(project: Awaited<ReturnType<typeof scopedProject>>["project"]) {
+  const view = builderView(project);
+  if (!view.build) return view;
+  return {
+    ...view,
+    build: {
+      ...view.build,
+      pages: view.build.pages.map(compactWebsiteBuilderOverviewPage),
+      jobs: view.build.jobs.map((job) => {
+        const input = jsonRecord(job.inputJson);
+        return {
+          ...job,
+          inputJson: {
+            mode: input.mode,
+            pageIds: jsonStrings(input.pageIds),
+            automaticSetup: input.automaticSetup === true,
+          },
+          resultJson: job.resultJson,
+        };
+      }),
+      deployments: view.build.deployments.map((deployment) => ({ ...deployment, logsJson: [], snapshotsJson: undefined })),
+    },
   };
 }
 
@@ -3448,9 +3612,22 @@ async function saveGeneratedPage(page: { id: string; buildId: string; slug: stri
 }
 
 websiteBuilderRouter.get("/projects/:projectId/website-builder", async (req, res) => {
-  const { project } = await scopedProject(req.params.projectId, req);
-  const payload = { ...builderView(project), publishingContent: await publishingContentFor(project, { includeResultJson: false }), siteFiles: await siteFilesFor(project) };
+  const { project } = await scopedOverviewProject(req.params.projectId, req);
+  const payload = { ...builderOverviewView(project), publishingContent: await publishingContentFor(project, { includeResultJson: false }), siteFiles: await siteFilesFor(project) };
   sendMeasuredJson(res, payload, "website_builder_overview");
+});
+
+websiteBuilderRouter.get("/projects/:projectId/website-builder/pages/:pageId", async (req, res) => {
+  const context = await workspaceContext(req);
+  if (!await canAccessProject(context, req.params.projectId)) return res.status(404).json({ error: "Project not found." });
+  const build = await prisma.websiteBuild.findFirst({ where: { projectId: req.params.projectId }, orderBy: { updatedAt: "desc" }, select: { id: true } });
+  if (!build) return res.status(404).json({ error: "Website build not found." });
+  const page = await prisma.websiteBuildPage.findFirst({
+    where: { id: req.params.pageId, buildId: build.id },
+    include: { mediaAssets: true },
+  });
+  if (!page) return res.status(404).json({ error: "Website page not found." });
+  sendMeasuredJson(res, { page: { ...page, generationPhase: contentPhaseForPage(page) } }, "website_builder_page_detail");
 });
 
 websiteBuilderRouter.post("/projects/:projectId/website-builder/sync-publishing-content", async (req, res) => {
