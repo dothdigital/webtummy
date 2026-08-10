@@ -21,6 +21,7 @@ import {
   websiteContentBatchPageMode,
   websiteJobRecoveryAction,
   websitePageHasCompleteContent,
+  websitePageMissingContentKinds,
   websitePageUniquenessCollisions,
   websiteRichTextExpansionBudget,
   websiteSectionGroupBudgets,
@@ -106,6 +107,21 @@ const pageHasCompleteContent = (page: {
   searchIntent: string;
 }) => websitePageHasCompleteContent({
   content: page.contentJson,
+  status: page.status,
+  pageType: page.pageType,
+  title: page.title,
+  searchIntent: page.searchIntent,
+});
+const pageMissingContentKinds = (page: {
+  contentJson: Prisma.JsonValue;
+  seoJson: Prisma.JsonValue;
+  status: string;
+  pageType: string;
+  title: string;
+  searchIntent: string;
+}) => websitePageMissingContentKinds({
+  content: page.contentJson,
+  seo: page.seoJson,
   status: page.status,
   pageType: page.pageType,
   title: page.title,
@@ -1103,6 +1119,141 @@ function pageSchema(page: { title: string; pageType?: string; searchIntent?: str
   const faqRows = Array.isArray(faqs) ? faqs.map(record).filter((faq) => faq.question && faq.answer) : [];
   if (faqRows.length) graph.push({ "@type": "FAQPage", mainEntity: faqRows.map((faq) => ({ "@type": "Question", name: String(faq.question), acceptedAnswer: { "@type": "Answer", text: String(faq.answer) } })) });
   return { "@context": "https://schema.org", "@graph": graph };
+}
+
+const compactGeneratedText = (value: unknown, maximum: number) => {
+  const text = String(value ?? "").replace(/\s+/g, " ").trim();
+  if (text.length <= maximum) return text;
+  const clipped = text.slice(0, maximum + 1);
+  const boundary = clipped.lastIndexOf(" ");
+  return `${clipped.slice(0, boundary > maximum * 0.7 ? boundary : maximum).replace(/[\s,;:.-]+$/g, "")}.`;
+};
+
+async function aiRepairMissingPageContent(
+  page: {
+    title: string;
+    slug: string;
+    pageType: string;
+    primaryKeyword: string;
+    searchIntent: string;
+    briefJson: Prisma.JsonValue;
+    contentJson: Prisma.JsonValue;
+    seoJson: Prisma.JsonValue;
+    status: string;
+  },
+  project: {
+    name: string;
+    businessName: string | null;
+    agencyClient?: { name: string } | null;
+    websiteUrl: string | null;
+    businessLocationJson: Prisma.JsonValue | null;
+    targetLocations: Prisma.JsonValue;
+  },
+  requirements: string[],
+  siblingPages: Array<{ id: string; title: string; seoJson: Prisma.JsonValue }>,
+) {
+  if (!config.openaiApiKey) throw new Error("Configure OPENAI_API_KEY before preparing missing page content.");
+  const components = componentRows(record(page.contentJson).components).map((component) => normalizeAiComponentInstance(component));
+  const faqIndex = components.findIndex((component) => component.componentId === "content.faq");
+  const currentFaqs = faqsFromComponents(components);
+  const policy = websitePageCompositionPolicy(page);
+  const minimumFaqs = policy.archetype === "faq" ? 8 : 4;
+  const currentSeo = record(page.seoJson);
+  const shape = {
+    metaTitle: "Unique SEO title",
+    metaDescription: "Unique page-specific search description",
+    faqs: Array.from({ length: minimumFaqs }, (_, index) => ({
+      question: `Page-specific buyer question ${index + 1}?`,
+      answer: "A concise, useful answer grounded only in the approved page and project evidence.",
+    })),
+  };
+  const reservedMetadata = siblingPages
+    .filter((candidate) => candidate.title !== page.title)
+    .map((candidate) => ({ title: candidate.title, metaTitle: promptText(record(candidate.seoJson).metaTitle, 100), metaDescription: promptText(record(candidate.seoJson).metaDescription, 220) }))
+    .filter((candidate) => candidate.metaTitle || candidate.metaDescription)
+    .slice(0, 80);
+  let lastError: unknown;
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    try {
+      const response = await fetch("https://api.openai.com/v1/chat/completions", {
+        method: "POST",
+        signal: AbortSignal.timeout(120_000),
+        headers: { Authorization: `Bearer ${config.openaiApiKey}`, "Content-Type": "application/json" },
+        body: JSON.stringify(fitWebsiteAiChatRequest({
+          model: config.openaiModel,
+          response_format: strictWebsiteJsonResponseFormat("website_missing_content_repair", shape),
+          temperature: 0.3,
+          max_tokens: 3_200,
+          messages: [
+            {
+              role: "system",
+              content: "You repair only missing website content fields. Return JSON only. Preserve all supplied existing copy. Use approved evidence only and never invent claims, prices, guarantees, credentials, addresses, offices, reviews, statistics, or service availability.",
+            },
+            {
+              role: "user",
+              content: `Return ${promptJson(shape, 8_000)}.
+Only these fields are missing or invalid and will be applied: ${requirements.join(", ")}.
+Business: ${businessIdentity(project) || "business identity not approved"}
+Page: ${page.title}
+URL: /${page.slug}
+Primary keyword: ${page.primaryKeyword}
+Intent: ${page.searchIntent}
+Approved page evidence: ${promptJson(pageBriefEvidence(page.briefJson), 12_000)}
+Current SEO: ${promptJson(currentSeo, 5_000)}
+Existing visible FAQs to preserve or improve: ${promptJson(currentFaqs, 8_000)}
+Metadata already used by sibling pages: ${promptJson(reservedMetadata, 10_000)}
+Rules:
+- Return ${minimumFaqs}${policy.archetype === "faq" ? "–12" : "–6"} complete, distinct, page-specific FAQs. Each answer must be useful and at least 25 characters.
+- Return a natural unique SEO title of 15–60 characters.
+- Return a unique meta description of 120–160 characters explaining this page's value and next step.
+- Do not repeat a sibling page's title or description.
+- Do not rewrite or return the rest of the page.${attempt ? " The prior result was invalid; verify the item count, uniqueness, and all length limits before responding." : ""}`,
+            },
+          ],
+        })),
+      });
+      const raw = record(await response.json());
+      if (!response.ok) throw new Error(String(record(raw.error).message || `OpenAI returned HTTP ${response.status}.`));
+      const parsed = record(JSON.parse(String(record(record(Array.isArray(raw.choices) ? raw.choices[0] : null).message).content || "{}")));
+      const faqs = (Array.isArray(parsed.faqs) ? parsed.faqs : [])
+        .map(record)
+        .map((item) => ({ question: compactGeneratedText(item.question, 300), answer: compactGeneratedText(item.answer, 1_500) }))
+        .filter((item) => item.question.length >= 8 && item.answer.length >= 25)
+        .filter((item, index, rows) => rows.findIndex((candidate) => candidate.question.toLowerCase() === item.question.toLowerCase()) === index)
+        .slice(0, policy.archetype === "faq" ? 12 : 6);
+      const metaTitle = compactGeneratedText(parsed.metaTitle, 60);
+      const metaDescription = compactGeneratedText(parsed.metaDescription, 160);
+      if (requirements.includes("faq") && faqs.length < minimumFaqs) throw new Error(`AI returned ${faqs.length} usable FAQs; ${minimumFaqs} are required.`);
+      if (requirements.includes("meta_title") && (metaTitle.length < 15 || metaTitle.length > 60)) throw new Error("AI returned an invalid SEO title length.");
+      if (requirements.includes("meta_description") && (metaDescription.length < 90 || metaDescription.length > 170)) throw new Error("AI returned an invalid meta description length.");
+
+      let nextComponents = components;
+      const nextSeo = { ...currentSeo };
+      if (requirements.includes("faq")) {
+        const faqComponent: WebsiteComponentInstance = faqIndex >= 0
+          ? { ...components[faqIndex], props: { ...components[faqIndex].props, heading: String(components[faqIndex].props.heading || "Frequently asked questions"), items: faqs } }
+          : { instanceId: `${page.slug || "home"}-faq-repair`, componentId: "content.faq", componentVersion: "1.0.0", variant: "accordion", props: { heading: "Frequently asked questions", items: faqs } };
+        nextComponents = [...components];
+        if (faqIndex >= 0) nextComponents.splice(faqIndex, 1, faqComponent);
+        else {
+          const ctaIndex = nextComponents.findIndex((component) => component.componentId === "conversion.cta");
+          nextComponents.splice(ctaIndex < 0 ? nextComponents.length : ctaIndex, 0, faqComponent);
+        }
+        nextSeo.faqs = faqs;
+        nextSeo.schemaJsonLd = pageSchema(page, project, faqs);
+      }
+      if (requirements.includes("meta_title")) nextSeo.metaTitle = metaTitle;
+      if (requirements.includes("meta_description")) nextSeo.metaDescription = metaDescription;
+      return {
+        brief: page.briefJson,
+        content: contentWithComponents(page.contentJson, nextComponents),
+        seo: nextSeo,
+      };
+    } catch (error) {
+      lastError = error;
+    }
+  }
+  throw new Error(`AI could not prepare the missing content for ${page.title}. ${lastError instanceof Error ? lastError.message : ""}`.trim());
 }
 
 type FallbackPage = {
@@ -2389,6 +2540,7 @@ export async function executeWebsiteBuildJob(jobId: string) {
   const contentWorkspaceBatch = mode === "content_generation" && input.contentWorkspaceBatch === true;
   const fullPageContentMode = ["redesign", "replace"].includes(String(record(build.settingsJson).existingWebsiteDirection || "").trim().toLowerCase());
   const targetedRequirementsByPage = record(input.targetedRequirementsByPage);
+  const missingContentRequirementsByPage = record(input.missingContentRequirementsByPage);
   const requirementsForTargetedPage = (page: { id: string; briefJson: Prisma.JsonValue; pageType?: string; title?: string }) => {
     const saved = targetedRequirementsByPage[page.id];
     return Array.isArray(saved) ? saved.map(record) : existingPageRequirements(page);
@@ -2400,6 +2552,7 @@ export async function executeWebsiteBuildJob(jobId: string) {
     hasTargetedRequirements: Array.isArray(targetedRequirementsByPage[page.id]) && requirementsForTargetedPage(page).length > 0,
   });
   const contentPageEligible = (page: { id: string; briefJson: Prisma.JsonValue; contentJson: Prisma.JsonValue; status: string; pageType: string; title: string; searchIntent: string }) => {
+    if (strings(missingContentRequirementsByPage[page.id]).length > 0) return true;
     const pageMode = contentModeForPage(page);
     if (pageMode === "skip") return false;
     if (pageMode === "targeted_update") return regenerateContent || !existingPageTargetedDraftReady(page);
@@ -2475,6 +2628,7 @@ export async function executeWebsiteBuildJob(jobId: string) {
       const baseProgress = 10 + Math.round(index / total * 75);
       const nextPageProgress = 10 + Math.round((index + 1) / total * 75);
       const pageNeedsGeneration = !pageHasCompleteContent(page);
+      const missingContentRequirements = strings(missingContentRequirementsByPage[page.id]);
       const pageNeedsManualApproval = !["approved", "deployed", "published"].includes(page.status);
       try {
       if (contentModeForPage(page) === "targeted_update") {
@@ -2520,6 +2674,34 @@ export async function executeWebsiteBuildJob(jobId: string) {
           completedPageIds.add(page.id);
           const currentJob = await tx.websiteBuildJob.findUnique({ where: { id: job.id }, select: { resultJson: true } });
           await tx.websiteBuildJob.update({ where: { id: job.id }, data: { resultJson: { ...record(currentJob?.resultJson), completedPageIds: [...completedPageIds], lastCompletedPageId: page.id, lastCompletedPageTitle: page.title, checkpointedAt: new Date().toISOString(), updateMode: "targeted_existing_pages" } as Prisma.InputJsonValue } });
+        });
+        continue;
+      }
+      if (mode === "content_generation" && missingContentRequirements.length > 0 && !missingContentRequirements.includes("page_content")) {
+        await prisma.websiteBuildJob.update({ where: { id: job.id }, data: { stage: `repairing_missing_content:${page.slug || "home"}`.slice(0, 80), progress: baseProgress } });
+        const generated = await withGenerationHeartbeat(
+          job.id,
+          `repairing_missing_content:${page.slug || "home"}`,
+          baseProgress,
+          Math.max(baseProgress, nextPageProgress - 1),
+          () => aiRepairMissingPageContent(page, project, missingContentRequirements, build.pages),
+        );
+        const nextVersion = page.version + 1;
+        const contentJson = generated.content as Prisma.InputJsonValue;
+        const seoJson = generated.seo as Prisma.InputJsonValue;
+        await prisma.$transaction(async (tx) => {
+          await tx.websiteBuildPageVersion.upsert({
+            where: { pageId_version: { pageId: page.id, version: nextVersion } },
+            update: { briefJson: page.briefJson, contentJson, seoJson, layoutJson: page.layoutJson, source: "worker", comment: `Prepared missing content only: ${missingContentRequirements.join(", ")}.`, createdById: job.requestedByUserId },
+            create: { pageId: page.id, version: nextVersion, briefJson: page.briefJson, contentJson, seoJson, layoutJson: page.layoutJson, source: "worker", comment: `Prepared missing content only: ${missingContentRequirements.join(", ")}.`, createdById: job.requestedByUserId },
+          });
+          await tx.websiteBuildPage.update({ where: { id: page.id }, data: { contentJson, seoJson, version: nextVersion, status: "review", approvedAt: null } });
+          const executionContract = record(record(page.briefJson).seoPlan);
+          const executionTaskIds = [...new Set([String(executionContract.executionTaskId ?? "").trim(), ...strings(executionContract.executionTaskIds)].filter(Boolean))];
+          if (executionTaskIds.length) await tx.executionTask.updateMany({ where: { id: { in: executionTaskIds } }, data: { status: "needs_review", submittedAt: new Date(), completedAt: null, approvedAt: null, approvalDecision: null, actionButtonLabel: "Review Prepared Website Content", relatedUrl: `/site-architect?projectId=${project.id}&step=content&pageId=${page.id}`, blockedReason: null } });
+          completedPageIds.add(page.id);
+          const currentJob = await tx.websiteBuildJob.findUnique({ where: { id: job.id }, select: { resultJson: true } });
+          await tx.websiteBuildJob.update({ where: { id: job.id }, data: { resultJson: { ...record(currentJob?.resultJson), completedPageIds: [...completedPageIds], lastCompletedPageId: page.id, lastCompletedPageTitle: page.title, checkpointedAt: new Date().toISOString(), updateMode: "missing_content_only" } as Prisma.InputJsonValue } });
         });
         continue;
       }

@@ -11,6 +11,7 @@ import {
   websiteDraftAcceptanceWords,
   websiteJobRecoveryAction,
   websitePageHasCompleteContent,
+  websitePageMissingContentKinds,
   websitePageUniquenessCollisions,
   websiteRichTextExpansionBudget,
   websiteSectionGroupBudgets,
@@ -483,5 +484,19 @@ describe("website generation workflow contracts", () => {
     })).toBe(false);
     expect(websitePageHasCompleteContent({ content, status: "planned", pageType: "utility", title: "Privacy Policy" })).toBe(false);
     expect(websitePageHasCompleteContent({ content, status: "review", pageType: "utility", title: "Privacy Policy" })).toBe(true);
+
+    const completeSeo = {
+      metaTitle: "Privacy Policy | Example Business",
+      metaDescription: "Read how Example Business collects, uses, protects, and responds to questions about personal information submitted through this website.",
+    };
+    expect(websitePageMissingContentKinds({ content, seo: completeSeo, status: "review", pageType: "utility", title: "Privacy Policy" })).toEqual([]);
+    const twoFaqContent = {
+      ...content,
+      components: content.components.map((component) => component.componentId === "content.faq"
+        ? { ...component, props: { ...component.props, items: component.props.items.slice(0, 2) } }
+        : component),
+    };
+    expect(websitePageMissingContentKinds({ content: twoFaqContent, seo: completeSeo, status: "review", pageType: "utility", title: "Privacy Policy" })).toEqual(["faq"]);
+    expect(websitePageMissingContentKinds({ content, seo: {}, status: "review", pageType: "utility", title: "Privacy Policy" })).toEqual(["meta_title", "meta_description"]);
   });
 });

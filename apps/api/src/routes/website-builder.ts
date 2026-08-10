@@ -48,6 +48,7 @@ import {
   websiteContentBatchPageMode,
   websiteDraftAcceptanceWords,
   websitePageHasCompleteContent,
+  websitePageMissingContentKinds,
   websitePageUniquenessCollisions,
   websiteRichTextExpansionBudget,
   websiteFirstSupportingHeading,
@@ -452,6 +453,21 @@ const pageHasCompleteContent = (page: {
   title: page.title,
   searchIntent: page.searchIntent,
 });
+const pageMissingContentKinds = (page: {
+  contentJson: Prisma.JsonValue;
+  seoJson: Prisma.JsonValue;
+  status: string;
+  pageType: string;
+  title: string;
+  searchIntent: string;
+}) => websitePageMissingContentKinds({
+  content: page.contentJson,
+  seo: page.seoJson,
+  status: page.status,
+  pageType: page.pageType,
+  title: page.title,
+  searchIntent: page.searchIntent,
+});
 
 async function createOrReuseActiveWebsiteJob(
   buildId: string,
@@ -466,6 +482,7 @@ async function createOrReuseActiveWebsiteJob(
     regenerate: requestInput.regenerate === true,
     contentWorkspaceBatch: requestInput.contentWorkspaceBatch === true,
     targetedExistingSiteUpdates: requestInput.targetedExistingSiteUpdates === true,
+    missingContentRequirementsByPage: jsonRecord(requestInput.missingContentRequirementsByPage),
     instructions: String(requestInput.instructions || "").trim(),
   });
   for (let attempt = 0; attempt < 3; attempt += 1) {
@@ -485,6 +502,7 @@ async function createOrReuseActiveWebsiteJob(
             regenerate: activeInput.regenerate === true,
             contentWorkspaceBatch: activeInput.contentWorkspaceBatch === true,
             targetedExistingSiteUpdates: activeInput.targetedExistingSiteUpdates === true,
+            missingContentRequirementsByPage: jsonRecord(activeInput.missingContentRequirementsByPage),
             instructions: String(activeInput.instructions || "").trim(),
           }) === requestSignature;
         });
@@ -1398,6 +1416,61 @@ async function scopedProject(projectId: string, req: Parameters<typeof workspace
   return { context, project };
 }
 
+/**
+ * Page approval needs the current page set for cross-page quality checks, but
+ * it does not need deployment history, checkpoints, WordPress jobs, model
+ * snapshots, architecture versions, or the full execution-task collection.
+ * Keeping this query focused prevents every approval click from rebuilding
+ * the heavyweight Website Builder overview response first.
+ */
+async function scopedPageApprovalProject(projectId: string, req: Parameters<typeof workspaceContext>[0]) {
+  const context = await workspaceContext(req);
+  if (!await canAccessProject(context, projectId)) throw Object.assign(new Error("Project not found."), { statusCode: 404 });
+  const project = await prisma.project.findUnique({
+    where: { id: projectId },
+    select: {
+      id: true,
+      clientId: true,
+      agencyClientId: true,
+      businessLocationJson: true,
+      agencyClient: { select: { id: true, defaultSettings: true } },
+      websiteBuilds: {
+        orderBy: { updatedAt: "desc" },
+        take: 1,
+        select: {
+          id: true,
+          name: true,
+          status: true,
+          brandJson: true,
+          settingsJson: true,
+          pages: {
+            orderBy: { sortOrder: "asc" },
+            select: {
+              id: true,
+              status: true,
+              title: true,
+              slug: true,
+              pageType: true,
+              parentPageId: true,
+              primaryKeyword: true,
+              secondaryKeywords: true,
+              searchIntent: true,
+              targetCta: true,
+              briefJson: true,
+              contentJson: true,
+              seoJson: true,
+              version: true,
+              mediaAssets: { select: { id: true, role: true, status: true, altText: true, sourceUrl: true } },
+            },
+          },
+        },
+      },
+    },
+  });
+  if (!project) throw Object.assign(new Error("Project not found."), { statusCode: 404 });
+  return { context, project };
+}
+
 function businessIdentity(project: { name?: string | null; businessName: string | null; agencyClient?: { name: string } | null }) {
   return project.businessName?.trim() || project.name?.trim() || project.agencyClient?.name?.trim() || null;
 }
@@ -1709,7 +1782,7 @@ export function builderView(project: Awaited<ReturnType<typeof scopedProject>>["
     return String(jsonRecord(jsonRecord(jsonRecord(page.briefJson).seoPlan).targetedUpdateDraft).status ?? "") !== "approved_for_implementation";
   });
   const existingUpdatesApproved = existingContentPages.filter((page) => requirementsForViewPage(page).length === 0 || String(jsonRecord(jsonRecord(jsonRecord(page.briefJson).seoPlan).targetedUpdateDraft).status ?? "") === "approved_for_implementation");
-  const allNewPagesMissingContent = newContentPages.filter((page) => !pageHasCompleteContent(page) || isEarlierPlaceholderPage(page.seoJson));
+  const allNewPagesMissingContent = newContentPages.filter((page) => pageMissingContentKinds(page).length > 0 || isEarlierPlaceholderPage(page.seoJson));
   // Local evidence is an approval/publishing gate, not a drafting gate. Keep
   // every approved new page in the generation queue and report the evidence
   // requirement separately so it can be resolved before approval.
@@ -1748,7 +1821,7 @@ export function builderView(project: Awaited<ReturnType<typeof scopedProject>>["
     },
     newPages: {
       total: newContentPages.length,
-      missingContent: newPagesMissingContent.map((page) => ({ id: page.id, title: page.title, phase: contentPhaseForPage(page) })),
+      missingContent: newPagesMissingContent.map((page) => ({ id: page.id, title: page.title, phase: contentPhaseForPage(page), missingKinds: pageMissingContentKinds(page) })),
       blockedByEvidence: newPagesBlockedByEvidence.map((page) => ({
         id: page.id,
         title: page.title,
@@ -6167,10 +6240,15 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/prepare-all-cont
     targetedRequirementsByPage[page.id] = requirements;
     return true;
   });
-  const newPages = build.pages.filter((page) =>
-    pageIsActive(page)
-    && (fullPageContentMode || !pageIsImportedExistingWebsite(page))
-    && (!pageHasCompleteContent(page) || isEarlierPlaceholderPage(page.seoJson)));
+  const missingContentRequirementsByPage: Record<string, string[]> = {};
+  const newPages = build.pages.filter((page) => {
+    if (!pageIsActive(page) || (!fullPageContentMode && pageIsImportedExistingWebsite(page))) return false;
+    const missingKinds = pageMissingContentKinds(page);
+    if (isEarlierPlaceholderPage(page.seoJson) && !missingKinds.includes("page_content")) missingKinds.push("page_content");
+    if (!missingKinds.length) return false;
+    missingContentRequirementsByPage[page.id] = missingKinds;
+    return true;
+  });
   const pages = [...importedPages, ...newPages].slice(0, 500);
   if (!pages.length) return res.json({ alreadyPrepared: true, queuedPages: 0, reviewRequired: true });
   const pageIdSet = new Set(pages.map((page) => page.id));
@@ -6200,6 +6278,7 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/prepare-all-cont
       contentWorkspaceBatch: true,
       targetedExistingSiteUpdates: false,
       targetedRequirementsByPage,
+      missingContentRequirementsByPage,
       pageIds: pages.map((page) => page.id),
       seoPlan: jsonRecord(build.settingsJson).seoPlan,
       ...(checkpointRunId ? { checkpointRunId, resumedFromJobId: resumeSource?.id } : {}),
@@ -6216,10 +6295,10 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/prepare-all-cont
       entityId: job.id,
       agencyClientId: project.agencyClientId,
       projectId: project.id,
-      nextJson: { pageCount: pages.length, existingPageUpdates: importedPages.length, newPages: newPages.length },
+      nextJson: { pageCount: pages.length, existingPageUpdates: importedPages.length, newPages: newPages.length, missingContentRequirementsByPage },
     });
   }
-  res.status(202).json({ job, reused: queued.reused, queuedPages, existingPageUpdates: importedPages.length, newPages: newPages.length });
+  res.status(202).json({ job, reused: queued.reused, queuedPages, existingPageUpdates: importedPages.length, newPages: newPages.length, missingContentRequirementsByPage });
 });
 
 websiteBuilderRouter.post("/projects/:projectId/website-builder/generate-all-targeted-updates", async (req, res) => {
@@ -6387,7 +6466,7 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/approve-image-pl
 });
 
 websiteBuilderRouter.post("/projects/:projectId/website-builder/approve-all-pages", async (req, res) => {
-  const { context, project } = await scopedProject(req.params.projectId, req);
+  const { context, project } = await scopedPageApprovalProject(req.params.projectId, req);
   if (!hasWorkspacePermission(context, "approve")) return res.status(403).json({ error: "Approval permission is required." });
   const build = project.websiteBuilds[0];
   if (!build) return res.status(404).json({ error: "Website build not found." });
@@ -6633,7 +6712,7 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/media/:mediaId/a
 });
 
 websiteBuilderRouter.post("/projects/:projectId/website-builder/pages/:pageId/approve", async (req, res) => {
-  const { context, project } = await scopedProject(req.params.projectId, req);
+  const { context, project } = await scopedPageApprovalProject(req.params.projectId, req);
   if (!hasWorkspacePermission(context, "approve")) return res.status(403).json({ error: "Approval permission is required." });
   const input = z.object({
     ignoreQualityWarnings: z.boolean().optional().default(false),

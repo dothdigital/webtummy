@@ -517,3 +517,51 @@ export function websitePageHasCompleteContent(input: {
   return components.every((component, index) =>
     validateComponentInstance(component, SENUKE_COMPONENT_REGISTRY_V1, `content.components.${index}`).length === 0);
 }
+
+export type WebsiteMissingContentKind = "page_content" | "faq" | "meta_title" | "meta_description";
+
+/**
+ * Detect the page-level writing gaps that can be prepared safely without
+ * asking the user to open every page. Structural gaps require full page
+ * generation; FAQ and metadata gaps can be repaired surgically while all
+ * existing approved copy remains unchanged.
+ */
+export function websitePageMissingContentKinds(input: {
+  content: unknown;
+  seo: unknown;
+  status?: string | null;
+  pageType?: string | null;
+  title?: string | null;
+  searchIntent?: string | null;
+}): WebsiteMissingContentKind[] {
+  const missing: WebsiteMissingContentKind[] = [];
+  if (!websitePageHasCompleteContent(input)) missing.push("page_content");
+
+  const content = input.content && typeof input.content === "object" && !Array.isArray(input.content)
+    ? input.content as Record<string, unknown>
+    : {};
+  const components = Array.isArray(content.components)
+    ? content.components.filter((component): component is WebsiteComponentInstance =>
+        Boolean(component && typeof component === "object" && !Array.isArray(component)))
+    : [];
+  const faqItems = components
+    .filter((component) => component.componentId === "content.faq")
+    .flatMap((component) => Array.isArray(component.props?.items) ? component.props.items : [])
+    .filter((item) => item && typeof item === "object" && !Array.isArray(item))
+    .map((item) => item as Record<string, unknown>)
+    .filter((item) => typeof item.question === "string" && item.question.trim().length >= 8
+      && typeof item.answer === "string" && item.answer.trim().length >= 20);
+  const composition = websitePageCompositionPolicy(input);
+  const minimumFaqs = composition.archetype === "faq" ? 8 : 4;
+  if (faqItems.length < minimumFaqs) missing.push("faq");
+
+  const seo = input.seo && typeof input.seo === "object" && !Array.isArray(input.seo)
+    ? input.seo as Record<string, unknown>
+    : {};
+  const metaTitle = String(seo.metaTitle ?? seo.title ?? "").replace(/\s+/g, " ").trim();
+  const metaDescription = String(seo.metaDescription ?? "").replace(/\s+/g, " ").trim();
+  if (metaTitle.length < 10 || metaTitle.length > 70) missing.push("meta_title");
+  if (metaDescription.length < 70 || metaDescription.length > 170
+    || /review capabilities,\s*process,\s*proof,\s*faqs/i.test(metaDescription)) missing.push("meta_description");
+  return missing;
+}
