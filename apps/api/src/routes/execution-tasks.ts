@@ -670,6 +670,25 @@ function structuredBriefValue(value: unknown, depth = 0): string {
   }).filter(Boolean).join("\n");
 }
 
+function normalizeAiCtaSuggestion(value: unknown, maxLength: number) {
+  if (typeof value !== "string") return value;
+  const compact = value.trim().replace(/\s+/g, " ");
+  if (compact.length <= maxLength) return compact;
+  const clipped = compact.slice(0, maxLength);
+  const lastSpace = clipped.lastIndexOf(" ");
+  const shortened = lastSpace >= Math.floor(maxLength * 0.6)
+    ? clipped.slice(0, lastSpace)
+    : clipped;
+  return shortened.replace(/[,:;\-–—]+$/g, "").trim();
+}
+
+const AI_WEBSITE_PLAN_CTA_MAX_LENGTH = 160;
+
+/** Normalize the earlier Website Plan decision CTA before its strict schema. */
+export function normalizeAiWebsitePlanCtaSuggestion(value: unknown) {
+  return normalizeAiCtaSuggestion(value, AI_WEBSITE_PLAN_CTA_MAX_LENGTH);
+}
+
 /**
  * Preserve useful structured AI brief content while enforcing the public
  * Website Plan contract, where each page owns one readable plain-text brief.
@@ -686,11 +705,12 @@ export function parseAiUnifiedWebsitePlanResponse(value: unknown) {
     if (!item || typeof item !== "object" || Array.isArray(item)) return item;
     const decision = item as Record<string, unknown>;
     const searchIntent = normalizeWebsitePlanSearchIntent(decision.searchIntent);
+    const ctaSuggestion = normalizeAiWebsitePlanCtaSuggestion(decision.ctaSuggestion);
     if (!decision.contentBrief || typeof decision.contentBrief !== "object" || Array.isArray(decision.contentBrief)) {
-      return { ...decision, searchIntent };
+      return { ...decision, searchIntent, ctaSuggestion };
     }
     const contentBrief = structuredBriefValue(decision.contentBrief).slice(0, 1500);
-    return { ...decision, searchIntent, contentBrief };
+    return { ...decision, searchIntent, contentBrief, ctaSuggestion };
   });
   return aiUnifiedWebsitePlanSchema.parse({ ...root, decisions });
 }
@@ -812,6 +832,7 @@ Decision rules:
 - Preserve existing URLs whenever the crawl shows a credible page. Create a page only when no existing page serves the approved intent.
 - Assign discover, evaluate, trust, convert, delight, or grow_refer according to the approved funnel, not a generic marketing sequence.
 - Give each page an intent-matched CTA and complete writing brief. Trust and informational pages should not all use a sales CTA.
+- ctaSuggestion MUST be one plain-text string between 3 and 160 characters. Keep it concise and put supporting explanation in contentBrief.
 - Include specific evidence source labels such as Gap Analysis, Keyword Research, Site Analysis, Strategy, Funnel, Local SEO, or AI Citation.
 - Never invent services, locations, addresses, claims, proof, credentials, reviews, statistics, prices, or guarantees.
 - When projectType is ecommerce, treat primaryServices as approved products or product families. Prefer product, collection/category, buying-guide, comparison, FAQ, brand, trust, and conversion roles over service-business assumptions. Preserve the full Growth Operating System, but do not create a service page merely because generic fallback wording says services.
@@ -899,15 +920,7 @@ const AI_PAGE_CTA_MAX_LENGTH = 120;
  * fits; otherwise shorten at a word boundary before strict schema validation.
  */
 export function normalizeAiPageCtaSuggestion(value: unknown) {
-  if (typeof value !== "string") return value;
-  const compact = value.trim().replace(/\s+/g, " ");
-  if (compact.length <= AI_PAGE_CTA_MAX_LENGTH) return compact;
-  const clipped = compact.slice(0, AI_PAGE_CTA_MAX_LENGTH);
-  const lastSpace = clipped.lastIndexOf(" ");
-  const shortened = lastSpace >= Math.floor(AI_PAGE_CTA_MAX_LENGTH * 0.6)
-    ? clipped.slice(0, lastSpace)
-    : clipped;
-  return shortened.replace(/[,:;\-–—]+$/g, "").trim();
+  return normalizeAiCtaSuggestion(value, AI_PAGE_CTA_MAX_LENGTH);
 }
 
 export function parseAiPageFaqPlanResponse(value: unknown) {

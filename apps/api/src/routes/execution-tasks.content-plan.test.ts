@@ -6,7 +6,7 @@ vi.mock("../queue.js", () => ({
   keywordResearchQueue: { add: vi.fn() },
 }));
 
-import { contentPlanFor, includeEveryCrawledPageInContentPlan, normalizeAiPageCtaSuggestion, parseAiPageFaqPlanResponse, parseAiUnifiedWebsitePlanResponse, reconcileAiWebsitePlanBatch, repairContentPlanPageIdentities, websitePlanEvidencePages } from "./execution-tasks.js";
+import { contentPlanFor, includeEveryCrawledPageInContentPlan, normalizeAiPageCtaSuggestion, normalizeAiWebsitePlanCtaSuggestion, parseAiPageFaqPlanResponse, parseAiUnifiedWebsitePlanResponse, reconcileAiWebsitePlanBatch, repairContentPlanPageIdentities, websitePlanEvidencePages } from "./execution-tasks.js";
 
 const baseInput = {
   projectName: "Growth Project",
@@ -320,6 +320,18 @@ describe("AI Website Plan batch reconciliation", () => {
       summary: "The invalid page decision must remain blocked by the strict Website Plan contract.",
       decisions: [{ ...decision("/invalid-intent"), searchIntent: "regional purchase" }],
     })).toThrow();
+  });
+
+  it("shortens overlong Website Plan decision CTAs before the 160-character schema validation", () => {
+    const longCta = "Schedule a personalized planning consultation with our experienced advisory team to review your goals, compare every available option, understand the relevant tradeoffs, identify the right coverage structure, and agree on a practical next step for your family or business today";
+    const parsed = parseAiUnifiedWebsitePlanResponse({
+      summary: "The governed Website Plan decision retains its useful CTA direction within the strict decision contract.",
+      decisions: [{ ...decision("/services"), ctaSuggestion: longCta }],
+    });
+    const cta = parsed.decisions[0]?.ctaSuggestion ?? "";
+    expect(cta.length).toBeLessThanOrEqual(160);
+    expect(cta).toBe(normalizeAiWebsitePlanCtaSuggestion(longCta));
+    expect(longCta.startsWith(cta)).toBe(true);
   });
 
   it("shortens overlong page CTA suggestions before the 120-character schema validation", () => {
