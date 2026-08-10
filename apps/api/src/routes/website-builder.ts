@@ -1619,6 +1619,61 @@ async function scopedPageApprovalProject(projectId: string, req: Parameters<type
   };
 }
 
+/**
+ * Deferring or activating supporting pages is a small structure mutation. It
+ * needs page briefs/content to classify and restore those pages, but it must
+ * never load media bodies, model snapshots, deployments, checkpoints, or
+ * publishing history.
+ */
+async function scopedPageLifecycleProject(projectId: string, req: Parameters<typeof workspaceContext>[0]) {
+  const context = await workspaceContext(req);
+  if (!await canAccessProject(context, projectId)) throw Object.assign(new Error("Project not found."), { statusCode: 404 });
+  const project = await prisma.project.findUnique({
+    where: { id: projectId },
+    select: {
+      id: true,
+      clientId: true,
+      agencyClientId: true,
+      websiteId: true,
+      websiteUrl: true,
+      name: true,
+      businessName: true,
+      agencyClient: { select: { name: true } },
+      websiteBuilds: {
+        orderBy: { updatedAt: "desc" },
+        take: 1,
+        select: {
+          id: true,
+          settingsJson: true,
+          sitemapApprovedAt: true,
+          jobs: {
+            where: { status: { in: ["queued", "processing"] } },
+            orderBy: { createdAt: "desc" },
+            take: 1,
+            select: { id: true, status: true },
+          },
+          pages: {
+            orderBy: { sortOrder: "asc" },
+            select: {
+              id: true,
+              status: true,
+              title: true,
+              slug: true,
+              pageType: true,
+              searchIntent: true,
+              primaryKeyword: true,
+              briefJson: true,
+              contentJson: true,
+            },
+          },
+        },
+      },
+    },
+  });
+  if (!project) throw Object.assign(new Error("Project not found."), { statusCode: 404 });
+  return { context, project };
+}
+
 function businessIdentity(project: { name?: string | null; businessName: string | null; agencyClient?: { name: string } | null }) {
   return project.businessName?.trim() || project.name?.trim() || project.agencyClient?.name?.trim() || null;
 }
@@ -5347,7 +5402,7 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/pages", async (r
 });
 
 websiteBuilderRouter.post(["/projects/:projectId/website-builder/authority-pages/lifecycle", "/projects/:projectId/website-builder/secondary-pages/lifecycle"], async (req, res) => {
-  const { context, project } = await scopedProject(req.params.projectId, req);
+  const { context, project } = await scopedPageLifecycleProject(req.params.projectId, req);
   if (!hasWorkspacePermission(context, "execute_tasks")) return res.status(403).json({ error: "Task execution permission is required." });
   const input = z.object({
     action: z.enum(["defer", "activate"]),
@@ -5462,9 +5517,9 @@ websiteBuilderRouter.post(["/projects/:projectId/website-builder/authority-pages
       },
     });
   });
-  const refreshed = await scopedProject(project.id, req);
+  const refreshed = await scopedPageLifecycleProject(project.id, req);
   const refreshedBuild = refreshed.project.websiteBuilds[0];
-  let siteFiles = await siteFilesFor(refreshed.project);
+  const siteFiles = await siteFilesFor(refreshed.project as unknown as Awaited<ReturnType<typeof scopedProject>>["project"]);
   if (input.action === "defer" && build.sitemapApprovedAt && refreshedBuild) {
     await prisma.websiteBuild.update({
       where: { id: refreshedBuild.id },
@@ -5482,11 +5537,7 @@ websiteBuilderRouter.post(["/projects/:projectId/website-builder/authority-pages
       },
     });
   }
-  const finalProject = await scopedProject(project.id, req);
-  siteFiles = await siteFilesFor(finalProject.project);
   res.json({
-    ...builderView(finalProject.project),
-    publishingContent: await publishingContentFor(finalProject.project, { includeResultJson: false }),
     siteFiles,
     affected: authorityPages.length,
     message: input.action === "defer"
