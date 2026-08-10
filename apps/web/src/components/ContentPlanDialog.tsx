@@ -7,6 +7,7 @@ import { useApprovalRouting } from "./ApprovalRoutingDialog.js";
 import { clusterKeywordDirections, splitKeywordEntries } from "@webtummy/core";
 import { geographicTargetMarkets } from "../utils/projectLocations.js";
 import { registerBackgroundJob } from "../background-jobs.js";
+import { contentPlanJobAction, contentPlanJobFailureMessage } from "./contentPlanJobState.js";
 
 type ContentPlan = {
   workflowVersion?: "seo_page_map_v7";
@@ -716,7 +717,18 @@ export default function ContentPlanDialog({ task, onClose, onSaved, autoPrepare 
   }, [generationJob, localSeoEnabled, plan, setupReady, targetLocations, task.id]);
 
   useEffect(() => {
-    if (!generationJob || !["queued", "running"].includes(generationJob.status)) return;
+    if (!generationJob) return;
+    const initialAction = contentPlanJobAction(generationJob);
+    if (initialAction === "show_failure") {
+      setBusy(false);
+      setError(contentPlanJobFailureMessage(generationJob));
+      return;
+    }
+    if (initialAction === "show_unexpected_status") {
+      setBusy(false);
+      setError(`Website Plan generation returned an unexpected status: ${generationJob.status}. Please retry generation.`);
+      return;
+    }
     let active = true;
     let timer: number | null = null;
     const poll = async () => {
@@ -724,7 +736,8 @@ export default function ContentPlanDialog({ task, onClose, onSaved, autoPrepare 
         const result = await api.get<{ job: ContentPlanGenerationJob; task?: GuidedExecutionTask; plan?: ContentPlan | null }>(`/api/execution-tasks/${task.id}/content-plan/jobs/${generationJob.id}`);
         if (!active) return;
         setGenerationJob(result.job);
-        if (result.job.status === "completed") {
+        const nextAction = contentPlanJobAction(result.job);
+        if (nextAction === "fetch_result") {
           if (!result.plan || !result.task) throw new Error("The Website Plan job completed without a saved plan. Please retry generation.");
           const normalized = normalizePlan(result.plan);
           setPlan(normalized);
@@ -736,9 +749,14 @@ export default function ContentPlanDialog({ task, onClose, onSaved, autoPrepare 
           onSaved?.(result.task);
           return;
         }
-        if (result.job.status === "failed") {
+        if (nextAction === "show_failure") {
           setBusy(false);
-          setError(`${result.job.error || "Website Plan generation could not be completed."}${result.job.errorCode ? ` Error code: ${result.job.errorCode}` : ""}`);
+          setError(contentPlanJobFailureMessage(result.job));
+          return;
+        }
+        if (nextAction === "show_unexpected_status") {
+          setBusy(false);
+          setError(`Website Plan generation returned an unexpected status: ${result.job.status}. Please retry generation.`);
           return;
         }
         timer = window.setTimeout(() => { void poll(); }, 2000);
