@@ -6,7 +6,7 @@ vi.mock("../queue.js", () => ({
   keywordResearchQueue: { add: vi.fn() },
 }));
 
-import { contentPlanFor, includeEveryCrawledPageInContentPlan, reconcileAiWebsitePlanBatch, repairContentPlanPageIdentities, websitePlanEvidencePages } from "./execution-tasks.js";
+import { contentPlanFor, includeEveryCrawledPageInContentPlan, parseAiUnifiedWebsitePlanResponse, reconcileAiWebsitePlanBatch, repairContentPlanPageIdentities, websitePlanEvidencePages } from "./execution-tasks.js";
 
 const baseInput = {
   projectName: "Growth Project",
@@ -281,5 +281,29 @@ describe("AI Website Plan batch reconciliation", () => {
     expect(result.missing).toEqual(["/contact"]);
     expect(result.unexpected).toEqual(["/unrequested"]);
     expect(result.decisions.map((item) => item.targetUrl)).toEqual(["/services"]);
+  });
+
+  it("converts structured contentBrief objects for every decision into validated plain text", () => {
+    const decisions = Array.from({ length: 5 }, (_, index) => ({
+      ...decision(`/page-${index + 1}`),
+      contentBrief: {
+        objective: `Explain the approved intent for page ${index + 1}`,
+        sections: ["Audience need and context", "Verified proof and differentiators", "Clear next action"],
+        safeguards: { claims: "Use only verified business facts", outcome: "Do not promise rankings or conversions" },
+      },
+    }));
+    const parsed = parseAiUnifiedWebsitePlanResponse({
+      summary: "Five governed pages have complete evidence-grounded decisions and readable writing briefs.",
+      decisions,
+    });
+    expect(parsed.decisions).toHaveLength(5);
+    for (const item of parsed.decisions) {
+      expect(typeof item.contentBrief).toBe("string");
+      expect(item.contentBrief).toContain("Objective:");
+      expect(item.contentBrief).toContain("Sections:");
+      expect(item.contentBrief).toContain("Safeguards:");
+      expect(item.contentBrief.length).toBeGreaterThanOrEqual(40);
+      expect(item.contentBrief.length).toBeLessThanOrEqual(1500);
+    }
   });
 });
