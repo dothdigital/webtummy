@@ -6552,45 +6552,58 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/pages/:pageId/re
   if (!statements.length) return res.json({ page, alreadyReady: true, repairedClaims: 0 });
   const replacementSchema = z.object({
     replacements: z.array(z.object({
-      original: z.string().trim().min(12).max(3000),
       replacement: z.string().trim().min(20).max(3000),
     })).min(statements.length).max(statements.length),
   });
-  let replacements: z.infer<typeof replacementSchema>["replacements"] | null = null;
+  let replacements: Array<{ original: string; replacement: string }> | null = null;
   let repairedComponents: WebsiteComponentInstance[] | null = null;
   for (let attempt = 0; attempt < 2 && !repairedComponents; attempt += 1) {
-    const response = await centralAiJson({
-      system: "Rewrite only the supplied unsupported public website claims as neutral, educational copy. Return JSON only. Preserve the useful subject, but remove rankings, guarantees, superlatives, suitability conclusions, performance promises, unsupported credentials, and invented facts. Do not add new services, policy facts, insurer ratings, legal conclusions, statistics, locations, or outcomes.",
-      prompt: `Return {"replacements":[{"original":"exact supplied sentence","replacement":"safe customer-facing sentence"}]} with exactly one replacement for every supplied sentence.
+    try {
+      const response = await centralAiJson({
+        system: "Rewrite only the supplied unsupported public website claims as neutral, educational copy. Return JSON only. Preserve the useful subject, but remove rankings, guarantees, superlatives, suitability conclusions, performance promises, unsupported credentials, and invented facts. Do not add new services, policy facts, insurer ratings, legal conclusions, statistics, locations, or outcomes.",
+        prompt: `Return {"replacements":[{"replacement":"safe customer-facing sentence"}]} with exactly one replacement for every numbered sentence, in the same order.
 Business: ${businessIdentity(project) || "Approved business identity unavailable"}
 Industry: ${project.niche || "Not specified"}
 Page: ${page.title}
 Primary keyword: ${page.primaryKeyword}
-Unsupported sentences: ${JSON.stringify(statements)}
+Unsupported sentences:
+${statements.map((statement, index) => `${index + 1}. ${statement}`).join("\n")}
 Rules:
-- Copy each original sentence exactly, including punctuation.
+- Return replacements in the same numbered order. Do not echo the originals.
 - Keep the replacement useful and specific to the sentence's topic.
 - Prefer language such as learn, review, consider, may, can, and questions to discuss.
 - Do not use best, leading, guaranteed, risk-free, always, never, top-rated, highest, lowest, trusted, expert, proven, licensed, certified, or similar unsupported claims.
 - Do not recommend a particular product or say it is suitable for the visitor.
 ${attempt ? "The previous response was incomplete or remained unsafe. Replace every sentence and remove every unsupported claim." : ""}`,
-      temperature: 0.2,
-      maxInputBytes: 24_000,
-      maxOutputTokens: 2_500,
-      timeoutMs: 60_000,
-    });
-    const candidate = replacementSchema.parse(response.result).replacements;
-    const byOriginal = new Map(candidate.map((item) => [item.original, item]));
-    if (statements.some((statement) => !byOriginal.has(statement))) continue;
-    const ordered = statements.map((statement) => byOriginal.get(statement)!);
-    const candidateComponents = replaceWebsitePublicStatements(components, ordered);
-    if (findWebsiteUnsupportedClaims(candidateComponents, { regulatedIndustry: true, evidenceAvailable: false }).length) continue;
-    if (findWebsitePublicContentLeakage(candidateComponents).length) continue;
-    replacements = ordered;
-    repairedComponents = candidateComponents;
+        temperature: 0.2,
+        maxInputBytes: 24_000,
+        maxOutputTokens: 2_500,
+        timeoutMs: 60_000,
+      });
+      const candidate = replacementSchema.parse(response.result).replacements;
+      const ordered = statements.map((original, index) => ({ original, replacement: candidate[index].replacement }));
+      const candidateComponents = replaceWebsitePublicStatements(components, ordered);
+      if (findWebsiteUnsupportedClaims(candidateComponents, { regulatedIndustry: true, evidenceAvailable: false }).length) continue;
+      if (findWebsitePublicContentLeakage(candidateComponents).length) continue;
+      replacements = ordered;
+      repairedComponents = candidateComponents;
+    } catch {
+      // A malformed or temporarily unavailable AI response must not escape as
+      // a generic 500. The second attempt remains governed, and the verified
+      // local fallback below keeps the user from being trapped by AI format.
+    }
   }
   if (!replacements || !repairedComponents) {
-    return res.status(502).json({ error: "SENuke AI could not produce an evidence-safe replacement for every flagged claim. No page change was saved; use Edit Page for a manual correction or retry." });
+    const fallbackSentence = "Review the available information, relevant costs, limitations, and questions to discuss before making a decision.";
+    const fallbackReplacements = statements.map((original) => ({ original, replacement: fallbackSentence }));
+    const fallbackComponents = replaceWebsitePublicStatements(components, fallbackReplacements);
+    const fallbackIsSafe = !findWebsiteUnsupportedClaims(fallbackComponents, { regulatedIndustry: true, evidenceAvailable: false }).length
+      && !findWebsitePublicContentLeakage(fallbackComponents).length;
+    if (!fallbackIsSafe) {
+      throw Object.assign(new Error("The flagged claim could not be rewritten safely. No page change was saved; use Edit Page for a manual correction."), { statusCode: 409, publicMessage: true });
+    }
+    replacements = fallbackReplacements;
+    repairedComponents = fallbackComponents;
   }
   const contentJson = canonicalContentFromComponents(page.contentJson, repairedComponents) as Prisma.InputJsonValue;
   const nextVersion = page.version + 1;
