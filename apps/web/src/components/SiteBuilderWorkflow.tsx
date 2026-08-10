@@ -1273,9 +1273,19 @@ export default function SiteBuilderWorkflow({projectId,architectureId,architectu
 }
 function ImageReview({page,busy,generationState,idea,setIdea,hasText,setHasText,overlayText,setOverlayText,onGenerate,onUpload,onPlace,onOpenEditor}:{page:Page;busy:string;generationState:"generating"|"queued"|"idle";idea:string;setIdea:(value:string)=>void;hasText:boolean;setHasText:(value:boolean)=>void;overlayText:string;setOverlayText:(value:string)=>void;onGenerate:(asset:MediaAsset)=>void;onUpload:(asset:MediaAsset,file:File|undefined)=>void;onPlace:(asset:MediaAsset,placement:ImagePlacement)=>void;onOpenEditor:()=>void}){
   const [assetId,setAssetId]=useState(page.mediaAssets[0]?.id??"");
-  const asset=page.mediaAssets.find(item=>item.id===assetId)??page.mediaAssets[0];
+  const assetSummary=page.mediaAssets.find(item=>item.id===assetId)??page.mediaAssets[0];
+  const [loadedAsset,setLoadedAsset]=useState<MediaAsset|null>(null);
+  const asset=loadedAsset?.id===assetSummary?.id?{...assetSummary,...loadedAsset}:assetSummary;
+  const projectId=new URLSearchParams(window.location.search).get("projectId")||"";
   const [placement,setPlacement]=useState<ImagePlacement>(()=>asset?.id===`${page.id}-hero`&&asset.role!=="none"?"hero":asset&&["hero","banner","inline","library","none"].includes(asset.role)?asset.role as ImagePlacement:"hero");
   useEffect(()=>{if(!page.mediaAssets.some(item=>item.id===assetId))setAssetId(page.mediaAssets[0]?.id??"")},[page.id,page.mediaAssets.map(item=>item.id).join("|"),assetId]);
+  useEffect(()=>{
+    if(!assetSummary?.sourceAvailable||assetSummary.sourceUrl){setLoadedAsset(assetSummary??null);return}
+    let cancelled=false;
+    setLoadedAsset(null);
+    void api.get<{asset:MediaAsset}>(`/api/projects/${projectId}/website-builder/pages/${page.id}/media/${assetSummary.id}`).then(result=>{if(!cancelled)setLoadedAsset({...result.asset,sourceAvailable:Boolean(result.asset.sourceUrl)})}).catch(()=>undefined);
+    return()=>{cancelled=true};
+  },[projectId,page.id,assetSummary?.id,assetSummary?.sourceAvailable,assetSummary?.sourceUrl]);
   useEffect(()=>{if(asset?.id===`${page.id}-hero`&&asset.role!=="none")setPlacement("hero");else if(asset&&["hero","banner","inline","library","none"].includes(asset.role))setPlacement(asset.role as ImagePlacement)},[page.id,asset?.id,asset?.role]);
   useEffect(()=>{setIdea("");setHasText(false);setOverlayText("")},[asset?.id]);
   if(!asset)return <div className={`rounded-xl border border-dashed p-8 text-center ${generationState==="generating"?"border-indigo-300 bg-indigo-50":"border-slate-300 bg-slate-50"}`}><div className={`mx-auto grid h-11 w-11 place-items-center rounded-full text-lg font-black ${generationState==="generating"?"animate-pulse bg-indigo-600 text-white":"bg-white text-slate-400"}`}>{generationState==="generating"?"…":"◇"}</div><b className={`mt-3 block text-sm ${generationState==="generating"?"text-indigo-950":"text-slate-800"}`}>{generationState==="generating"?"SENuke AI is creating this page’s image":generationState==="queued"?"This page is waiting in the image queue":"Image generation has not started for this page"}</b><p className="mx-auto mt-1 max-w-xl text-xs leading-5 text-slate-500">{generationState==="generating"?"The image will appear here automatically as soon as it is saved.":generationState==="queued"?"Its page-specific brief, title, H1, intent, content, business context, and verified location will be used when its turn begins.":"Start Design & Images from the banner above."}</p></div>;

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { SENUKE_COMPONENT_REGISTRY_V1 } from "@webtummy/core/website-model";
-import { combinedPageSchema, compactWebsiteBuilderOverviewPage, effectiveExistingPageRequirements, generatedPageSchema, importedWebsiteRouteAssignment, logoPaletteAiPrompt, logoPalettePromptBrand, pageIsImportedExistingWebsite, parseWordPressJsonResponse, publishingAssetMatchesWebsitePage, shouldDeployWordPressDesignPackage, websiteSettingsWithVerifiedLocalEvidence, wordPressConnectorVersionAtLeast, wordpressConnectorSafeCss, wordpressMenuDestination } from "./website-builder.js";
+import { combinedPageSchema, compactWebsiteBuilderMediaAsset, compactWebsiteBuilderOverviewPage, effectiveExistingPageRequirements, generatedPageSchema, importedWebsiteRouteAssignment, logoPaletteAiPrompt, logoPalettePromptBrand, pageIsImportedExistingWebsite, parseWordPressJsonResponse, publishingAssetMatchesWebsitePage, shouldDeployWordPressDesignPackage, websiteSettingsWithVerifiedLocalEvidence, wordPressConnectorVersionAtLeast, wordpressConnectorSafeCss, wordpressMenuDestination } from "./website-builder.js";
 
 const project = {
   businessName: "Example Financial",
@@ -15,6 +15,21 @@ const project = {
 };
 
 describe("ongoing WordPress publishing schema", () => {
+  it("keeps image bodies out of page-media summaries", () => {
+    const compact = compactWebsiteBuilderMediaAsset({
+      id: "media-1",
+      role: "hero",
+      prompt: "A page-specific hero image",
+      sourceUrl: `data:image/webp;base64,PRIVATE_MEDIA_BYTES_${"A".repeat(9_000_000)}`,
+      altText: "Service consultation",
+    }, true);
+
+    const serialized = JSON.stringify(compact);
+    expect(serialized).not.toContain("PRIVATE_MEDIA_BYTES");
+    expect(serialized.length).toBeLessThan(500);
+    expect(compact).toMatchObject({ id: "media-1", sourceUrl: null, sourceAvailable: true });
+  });
+
   it("keeps page bodies and media bytes out of the Website Builder overview", () => {
     const largeBody = `PRIVATE_PAGE_BODY_${"x".repeat(250_000)}`;
     const largeImage = `data:image/webp;base64,PRIVATE_IMAGE_BYTES_${"y".repeat(500_000)}`;

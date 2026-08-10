@@ -91,13 +91,24 @@ async function addDirectoryToZip(zip: JSZip, sourceDirectory: string, archiveDir
 }
 
 const jsonRecord = (value: unknown): Record<string, unknown> => value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
+export function compactWebsiteBuilderMediaAsset<T extends Record<string, unknown>>(asset: T, sourceAvailable: boolean) {
+  return { ...asset, sourceUrl: null, sourceAvailable };
+}
 function sendMeasuredJson(res: Response, value: unknown, label: string) {
   const before = process.memoryUsage();
   const payload = JSON.stringify(value);
   const bytes = Buffer.byteLength(payload);
   const after = process.memoryUsage();
   res.setHeader("X-SENuke-Response-Bytes", String(bytes));
-  const safeLimit = label === "website_builder_overview" ? 5_000_000 : label === "website_builder_job_status" ? 1_000_000 : 0;
+  const safeLimit = label === "website_builder_overview"
+    ? 5_000_000
+    : label === "website_builder_job_status"
+      ? 1_000_000
+      : label === "website_builder_page_detail"
+        ? 2_000_000
+        : label === "website_builder_page_media"
+          ? 500_000
+          : 0;
   if (safeLimit && bytes > safeLimit) {
     console.error("api_response_size_guard", { label, bytes, safeLimit, rss: after.rss, heapUsed: after.heapUsed });
     return res.status(500).json({ error: "The workspace summary exceeded its safe response limit. Heavy detail was not returned. Refresh after the current operation finishes." });
@@ -857,7 +868,16 @@ function qualityWebsiteModel(project: { id: string; businessLocationJson?: Prism
       ...(faviconAssetId && faviconAssetId !== logoAssetId ? [{ assetId: faviconAssetId, status: "approved", altText: `${String(brand.businessName || build.name.replace(/\s+website$/i, "") || "Business")} favicon`, sourceUrl: faviconSource }] : []),
       ...buildPages.flatMap((page) => page.mediaAssets
         .filter((asset) => asset.role !== "none")
-        .map((asset) => ({ assetId: asset.id, status: ["approved", "uploaded"].includes(asset.status) ? "approved" : asset.status, altText: asset.altText || "", ...(asset.sourceUrl ? { sourceUrl: asset.sourceUrl } : {}) }))),
+        .map((asset) => ({
+          assetId: asset.id,
+          status: ["approved", "uploaded"].includes(asset.status) ? "approved" : asset.status,
+          altText: asset.altText || "",
+          // Canonical versions and Approved Releases record stable media
+          // references instead of copying multi-megabyte base64 bodies. The
+          // actual source is resolved only at an explicit export or publish
+          // boundary.
+          ...(asset.sourceUrl ? { sourceUrl: /^https:\/\//i.test(asset.sourceUrl) ? asset.sourceUrl : `asset://${asset.id}` } : {}),
+        }))),
     ],
   };
 }
@@ -1065,13 +1085,23 @@ async function canonicalWebsiteInputs(projectId: string, buildId: string) {
       include: {
         pages: {
           orderBy: { sortOrder: "asc" },
-          include: { mediaAssets: true },
+          include: { mediaAssets: { select: { id: true, role: true, status: true, altText: true } } },
         },
       },
     }),
   ]);
   if (!project || !build) throw Object.assign(new Error("Website build not found for release approval."), { statusCode: 404 });
-  return { project, build };
+  const availableMediaIds = new Set((await prisma.websiteBuildMediaAsset.findMany({ where: { buildId, sourceUrl: { not: null } }, select: { id: true } })).map((asset) => asset.id));
+  return {
+    project,
+    build: {
+      ...build,
+      pages: build.pages.map((page) => ({
+        ...page,
+        mediaAssets: page.mediaAssets.map((asset) => ({ ...asset, sourceUrl: availableMediaIds.has(asset.id) ? `asset://${asset.id}` : null })),
+      })),
+    },
+  };
 }
 
 function encryptionKey() {
@@ -1535,6 +1565,7 @@ async function scopedPageApprovalProject(projectId: string, req: Parameters<type
       agencyClientId: true,
       businessLocationJson: true,
       agencyClient: { select: { id: true, defaultSettings: true } },
+      executionTasks: { select: { id: true, moduleName: true, sourceType: true }, take: 500 },
       websiteBuilds: {
         orderBy: { updatedAt: "desc" },
         take: 1,
@@ -3745,7 +3776,7 @@ websiteBuilderRouter.get("/projects/:projectId/website-builder/pages/:pageId", a
   });
   if (!page) return res.status(404).json({ error: "Website page not found." });
   const availableMediaIds = new Set((await prisma.websiteBuildMediaAsset.findMany({ where: { pageId: page.id, sourceUrl: { not: null } }, select: { id: true } })).map((asset) => asset.id));
-  sendMeasuredJson(res, { page: { ...page, generationPhase: contentPhaseForPage(page), mediaAssets: page.mediaAssets.map((asset) => ({ ...asset, sourceUrl: null, sourceAvailable: availableMediaIds.has(asset.id) })) } }, "website_builder_page_detail");
+  sendMeasuredJson(res, { page: { ...page, generationPhase: contentPhaseForPage(page), mediaAssets: page.mediaAssets.map((asset) => compactWebsiteBuilderMediaAsset(asset, availableMediaIds.has(asset.id))) } }, "website_builder_page_detail");
 });
 
 websiteBuilderRouter.get("/projects/:projectId/website-builder/pages/:pageId/media", async (req, res) => {
@@ -3755,8 +3786,24 @@ websiteBuilderRouter.get("/projects/:projectId/website-builder/pages/:pageId/med
   if (!build) return res.status(404).json({ error: "Website build not found." });
   const page = await prisma.websiteBuildPage.findFirst({ where: { id: req.params.pageId, buildId: build.id }, select: { id: true } });
   if (!page) return res.status(404).json({ error: "Website page not found." });
-  const mediaAssets = await prisma.websiteBuildMediaAsset.findMany({ where: { pageId: page.id }, orderBy: { createdAt: "asc" } });
-  sendMeasuredJson(res, { mediaAssets }, "website_builder_page_media");
+  const mediaAssets = await prisma.websiteBuildMediaAsset.findMany({
+    where: { pageId: page.id },
+    orderBy: { createdAt: "asc" },
+    select: { id: true, role: true, status: true, prompt: true, altText: true },
+  });
+  const availableMediaIds = new Set((await prisma.websiteBuildMediaAsset.findMany({ where: { pageId: page.id, sourceUrl: { not: null } }, select: { id: true } })).map((asset) => asset.id));
+  sendMeasuredJson(res, { mediaAssets: mediaAssets.map((asset) => compactWebsiteBuilderMediaAsset(asset, availableMediaIds.has(asset.id))) }, "website_builder_page_media");
+});
+
+websiteBuilderRouter.get("/projects/:projectId/website-builder/pages/:pageId/media/:assetId", async (req, res) => {
+  const context = await workspaceContext(req);
+  if (!await canAccessProject(context, req.params.projectId)) return res.status(404).json({ error: "Project not found." });
+  const asset = await prisma.websiteBuildMediaAsset.findFirst({
+    where: { id: req.params.assetId, pageId: req.params.pageId, page: { build: { projectId: req.params.projectId } } },
+    select: { id: true, role: true, status: true, prompt: true, sourceUrl: true, altText: true },
+  });
+  if (!asset) return res.status(404).json({ error: "Website image not found." });
+  sendMeasuredJson(res, { asset }, "website_builder_media_asset");
 });
 
 websiteBuilderRouter.post("/projects/:projectId/website-builder/sync-publishing-content", async (req, res) => {
@@ -4788,7 +4835,7 @@ websiteBuilderRouter.put("/projects/:projectId/website-builder/contact-form", as
 });
 
 websiteBuilderRouter.post("/projects/:projectId/website-builder/company-approve", async (req, res) => {
-  const { context, project } = await scopedProject(req.params.projectId, req);
+  const { context, project } = await scopedPageApprovalProject(req.params.projectId, req);
   if (!hasWorkspacePermission(context, "approve")) return res.status(403).json({ error: "Company approval permission is required." });
   const build = project.websiteBuilds[0];
   if (!build) return res.status(404).json({ error: "Website build not found." });
@@ -4803,7 +4850,7 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/company-approve"
 });
 
 websiteBuilderRouter.post("/projects/:projectId/website-builder/validate", async (req, res) => {
-  const { context, project } = await scopedProject(req.params.projectId, req);
+  const { context, project } = await scopedPageApprovalProject(req.params.projectId, req);
   if (!hasWorkspacePermission(context, "execute_tasks")) return res.status(403).json({ error: "Task execution permission is required." });
   const build = project.websiteBuilds[0];
   if (!build) return res.status(404).json({ error: "Website build not found." });
@@ -5155,7 +5202,7 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/jobs/:jobId/mana
 });
 
 websiteBuilderRouter.post("/projects/:projectId/website-builder/submit-review", async (req, res) => {
-  const { context, project } = await scopedProject(req.params.projectId, req);
+  const { context, project } = await scopedPageApprovalProject(req.params.projectId, req);
   const build = project.websiteBuilds[0];
   if (!build) return res.status(404).json({ error: "Website build not found." });
   const reviewTaskId = String(jsonRecord(build.settingsJson).reviewTaskId ?? "");
@@ -7704,6 +7751,23 @@ function approvedReleaseWebsiteModel(release: { immutableSnapshot: Prisma.JsonVa
   return model;
 }
 
+function resolveWebsiteModelMediaSources(
+  model: WebsiteModel,
+  build: { pages: Array<{ mediaAssets: Array<{ id: string; sourceUrl: string | null }> }> },
+): WebsiteModel {
+  const sourceByAssetId = new Map(
+    build.pages.flatMap((page) => page.mediaAssets.map((asset) => [asset.id, asset.sourceUrl] as const)),
+  );
+  return {
+    ...model,
+    mediaAssets: model.mediaAssets.map((asset) => {
+      if (!asset.sourceUrl?.startsWith("asset://")) return asset;
+      const sourceUrl = sourceByAssetId.get(asset.assetId);
+      return sourceUrl ? { ...asset, sourceUrl } : { ...asset, sourceUrl: undefined };
+    }),
+  };
+}
+
 function savedLaunchReadinessFor(
   build: { settingsJson: Prisma.JsonValue },
   release: { id: string; snapshotHash: string },
@@ -8130,7 +8194,7 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/deploy", async (
       connectorVersion: deploymentConnectorVersion,
     });
     if (deployDesignPackageNow) {
-      const renderedFiles = createStaticWebsiteFiles(releaseModel, {
+      const renderedFiles = createStaticWebsiteFiles(resolveWebsiteModelMediaSources(releaseModel, build), {
         approvedReleaseId: release.id,
         snapshotHash: release.snapshotHash,
         baseUrl: integration.siteUrl,
@@ -8202,16 +8266,18 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/deploy", async (
     const editableMedia = new Map(build.pages.flatMap((page) => page.mediaAssets.map((asset) => [asset.id, asset] as const)));
     for (const approvedAsset of releaseModel.mediaAssets.filter((asset) => asset.status === "approved" && asset.sourceUrl)) {
       const editableAsset = editableMedia.get(approvedAsset.assetId);
+      const sourceUrl = approvedAsset.sourceUrl?.startsWith("asset://") ? editableAsset?.sourceUrl : approvedAsset.sourceUrl;
+      if (!sourceUrl) continue;
       if (
         editableAsset?.remoteMediaId
         && editableAsset.remoteUrl
-        && editableAsset.sourceUrl === approvedAsset.sourceUrl
+        && (approvedAsset.sourceUrl?.startsWith("asset://") || editableAsset.sourceUrl === approvedAsset.sourceUrl)
       ) {
         wordpressMediaIds.set(approvedAsset.assetId, Number(editableAsset.remoteMediaId));
         wordpressAssetUrls[approvedAsset.assetId] = editableAsset.remoteUrl;
         continue;
       }
-      const encoded = approvedAsset.sourceUrl?.match(/^data:(image\/(?:png|jpeg|webp|gif));base64,([a-z0-9+/=\s]+)$/i);
+      const encoded = sourceUrl.match(/^data:(image\/(?:png|jpeg|webp|gif));base64,([a-z0-9+/=\s]+)$/i);
       if (encoded) {
         const extension = encoded[1].toLowerCase() === "image/jpeg" ? "jpg" : encoded[1].split("/")[1];
         const fileName = editableAsset?.fileName || `${slugify(approvedAsset.assetId)}.${extension}`;
@@ -8235,8 +8301,8 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/deploy", async (
           }
           logs.push({ action: "media_uploaded", status: "success", assetId: approvedAsset.assetId, remoteMediaId: mediaId, url: remoteUrl, at: new Date().toISOString() });
         }
-      } else if (/^https:\/\//i.test(approvedAsset.sourceUrl || "")) {
-        wordpressAssetUrls[approvedAsset.assetId] = approvedAsset.sourceUrl!;
+      } else if (/^https:\/\//i.test(sourceUrl)) {
+        wordpressAssetUrls[approvedAsset.assetId] = sourceUrl;
       }
     }
     logs.push({
@@ -8625,7 +8691,7 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/static-export", 
     : rawWebsiteUrl
       ? `https://${rawWebsiteUrl.replace(/^https?:\/\//i, "")}`
       : "";
-  const files = createStaticWebsiteFiles(releaseModel, {
+  const files = createStaticWebsiteFiles(resolveWebsiteModelMediaSources(releaseModel, build), {
     approvedReleaseId: release.id,
     snapshotHash: release.snapshotHash,
     formAction: staticWebsiteFormAction(release),
@@ -8721,7 +8787,7 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/static-deploy", 
     : rawWebsiteUrl
       ? `https://${rawWebsiteUrl.replace(/^https?:\/\//i, "")}`
       : "";
-  const files = createStaticWebsiteFiles(releaseModel, {
+  const files = createStaticWebsiteFiles(resolveWebsiteModelMediaSources(releaseModel, build), {
     approvedReleaseId: release.id,
     snapshotHash: release.snapshotHash,
     formAction: staticWebsiteFormAction(release),
@@ -8853,7 +8919,7 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/quality-export",
     : rawWebsiteUrl
       ? `https://${rawWebsiteUrl.replace(/^https?:\/\//i, "")}`
       : "";
-  const files = createStaticWebsiteFiles(canonical.model, {
+  const files = createStaticWebsiteFiles(resolveWebsiteModelMediaSources(canonical.model, build), {
     snapshotHash: canonical.record.snapshotHash,
     ...(baseUrl ? { baseUrl } : {}),
     environmentType: "preview",
