@@ -40,7 +40,7 @@ async function readJson(res: Response) {
   }
 }
 
-type ApiErrorEnvelope = { error?: unknown; errorCode?: unknown; supportEmail?: unknown };
+type ApiErrorEnvelope = { error?: unknown; errorCode?: unknown };
 
 function firstErrorText(value: unknown, depth = 0): string | null {
   if (typeof value === "string" && value.trim()) return value;
@@ -63,13 +63,19 @@ function firstErrorText(value: unknown, depth = 0): string | null {
 
 export function apiErrorMessage(data: unknown, fallback: string, res?: Response) {
   const envelope = data && typeof data === "object" && !Array.isArray(data) ? data as ApiErrorEnvelope : {};
+  if (res?.status === 502) {
+    const errorCode = typeof envelope.errorCode === "string" ? envelope.errorCode : res.headers.get("X-SEnuke-Error-Code");
+    return [
+      "The service is temporarily unavailable while the server recovers (502 Bad Gateway). Your action may still have completed. Wait a moment, refresh, and check its status before retrying.",
+      errorCode ? `Error code: ${errorCode}` : null,
+    ].filter(Boolean).join("\n");
+  }
   const message = firstErrorText(envelope.error) ?? fallback;
   const errorCode = typeof envelope.errorCode === "string"
     ? envelope.errorCode
     : res?.headers.get("X-SEnuke-Error-Code");
-  const supportEmail = typeof envelope.supportEmail === "string" ? envelope.supportEmail : null;
-  if (!errorCode && !supportEmail) return message;
-  return [message, errorCode ? `Error code: ${errorCode}` : null, supportEmail ? `Support: ${supportEmail}` : null].filter(Boolean).join("\n");
+  if (!errorCode) return message;
+  return [message, `Error code: ${errorCode}`].join("\n");
 }
 
 function notifySessionExpired() {

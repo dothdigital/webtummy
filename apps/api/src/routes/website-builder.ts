@@ -97,6 +97,11 @@ function sendMeasuredJson(res: Response, value: unknown, label: string) {
   const bytes = Buffer.byteLength(payload);
   const after = process.memoryUsage();
   res.setHeader("X-SENuke-Response-Bytes", String(bytes));
+  const safeLimit = label === "website_builder_overview" ? 5_000_000 : label === "website_builder_job_status" ? 1_000_000 : 0;
+  if (safeLimit && bytes > safeLimit) {
+    console.error("api_response_size_guard", { label, bytes, safeLimit, rss: after.rss, heapUsed: after.heapUsed });
+    return res.status(500).json({ error: "The workspace summary exceeded its safe response limit. Heavy detail was not returned. Refresh after the current operation finishes." });
+  }
   if (bytes > 8_000_000 || after.rss - before.rss > 64 * 1024 * 1024) {
     console.warn("oversized_api_response", { label, bytes, rssBefore: before.rss, rssAfter: after.rss, heapUsed: after.heapUsed });
   }
@@ -2055,12 +2060,73 @@ export function builderView(project: Awaited<ReturnType<typeof scopedProject>>["
 
 type BuilderViewPage = NonNullable<ReturnType<typeof builderView>["build"]>["pages"][number];
 
+function compactOverviewValue(value: unknown, depth = 0): unknown {
+  if (typeof value === "string") {
+    if (/^data:(?:image|application)\//i.test(value)) return "embedded-asset-available";
+    return value.length > 20_000 ? `${value.slice(0, 20_000)}…` : value;
+  }
+  if (depth > 12) return null;
+  if (Array.isArray(value)) return value.slice(0, 200).map((item) => compactOverviewValue(item, depth + 1));
+  if (value && typeof value === "object") return Object.fromEntries(Object.entries(value as Record<string, unknown>).slice(0, 300).map(([key, item]) => [key, compactOverviewValue(item, depth + 1)]));
+  return value;
+}
+
 export function compactWebsiteBuilderOverviewPage(page: BuilderViewPage) {
   const components = canonicalComponents(page.contentJson);
   const faqComponent = components.find((component) => component.componentId === "content.faq");
+  const brief = jsonRecord(page.briefJson);
+  const seoPlan = jsonRecord(brief.seoPlan);
+  const importSource = jsonRecord(brief.importSource);
+  const targetedDraft = jsonRecord(seoPlan.targetedUpdateDraft);
+  const seo = jsonRecord(page.seoJson);
   return {
-    ...page,
+    id: page.id,
+    parentPageId: page.parentPageId,
+    title: page.title,
+    slug: page.slug,
+    targetUrl: page.targetUrl,
+    pageType: page.pageType,
+    primaryKeyword: page.primaryKeyword,
+    secondaryKeywords: page.secondaryKeywords,
+    searchIntent: page.searchIntent,
+    targetCta: page.targetCta,
+    status: page.status,
+    version: page.version,
+    remoteUrl: page.remoteUrl,
+    generationPhase: page.generationPhase,
+    seoQuality: page.seoQuality,
+    approvalReadiness: page.approvalReadiness,
+    briefJson: {
+      authorityCluster: brief.authorityCluster,
+      internalLinkTargets: jsonStrings(brief.internalLinkTargets),
+      importSource: {
+        type: importSource.type,
+        source: importSource.source,
+        crawlPageId: importSource.crawlPageId,
+        statusCode: importSource.statusCode,
+        importedFromExistingWebsite: importSource.importedFromExistingWebsite,
+      },
+      seoPlan: {
+        gapRequirements: compactOverviewValue(Array.isArray(seoPlan.gapRequirements) ? seoPlan.gapRequirements : []),
+        suggestedGapRequirements: compactOverviewValue(Array.isArray(seoPlan.suggestedGapRequirements) ? seoPlan.suggestedGapRequirements : []),
+        serviceAvailabilityVerified: seoPlan.serviceAvailabilityVerified,
+        targetedUpdateDraft: {
+          status: targetedDraft.status,
+          updates: Array.isArray(targetedDraft.updates) && targetedDraft.updates.length ? [{}] : [],
+        },
+      },
+    },
     contentJson: {},
+    seoJson: {
+      metaTitle: seo.metaTitle,
+      metaDescription: seo.metaDescription,
+      metaKeywords: compactOverviewValue(seo.metaKeywords),
+      canonicalUrl: seo.canonicalUrl,
+      robots: seo.robots,
+      imageAltText: seo.imageAltText,
+      internalLinks: compactOverviewValue(seo.internalLinks),
+      schemaJsonLd: compactOverviewValue(seo.schemaJsonLd),
+    },
     contentSummary: {
       complete: pageHasCompleteContent(page),
       componentCount: components.length,
@@ -2072,12 +2138,52 @@ export function compactWebsiteBuilderOverviewPage(page: BuilderViewPage) {
       id: asset.id,
       role: asset.role,
       status: asset.status,
-      prompt: asset.prompt,
+      prompt: asset.role === "none" && asset.prompt.trim() ? "saved" : "",
       sourceUrl: null,
       sourceAvailable: Boolean(asset.sourceUrl),
       altText: asset.altText,
     })),
   };
+}
+
+function compactWebsiteBuilderSettings(settingsJson: unknown) {
+  const settings = jsonRecord(settingsJson);
+  const siteFiles = jsonRecord(settings.siteFiles);
+  const compactFile = (value: unknown) => {
+    const file = jsonRecord(value);
+    return { status: file.status, source: file.source, itemCount: file.itemCount };
+  };
+  const trustAssets = jsonRecord(settings.trustAssets);
+  return compactOverviewValue({
+    ...settings,
+    siteFiles: {
+      ...siteFiles,
+      sitemap: compactFile(siteFiles.sitemap),
+      llms: compactFile(siteFiles.llms),
+      robots: compactFile(siteFiles.robots),
+    },
+    trustAssets: {
+      ...trustAssets,
+      citationContent: Object.fromEntries(Object.keys(jsonRecord(trustAssets.citationContent)).map((key) => [key, true])),
+      schemas: Object.fromEntries(Object.keys(jsonRecord(trustAssets.schemas)).map((key) => [key, true])),
+    },
+  });
+}
+
+function siteFileOverviewFor(project: Awaited<ReturnType<typeof scopedProject>>["project"]) {
+  const build = project.websiteBuilds[0];
+  const files = jsonRecord(jsonRecord(build?.settingsJson).siteFiles);
+  const activePageCount = build?.pages.filter(pageIsActive).length ?? 0;
+  const summary = (key: "sitemap" | "llms" | "robots") => {
+    const file = jsonRecord(files[key]);
+    return {
+      status: String(file.status || (activePageCount ? "ready" : "waiting")),
+      source: String(file.source || "Site Architect"),
+      content: "",
+      ...(key === "sitemap" ? { itemCount: Number(file.itemCount || activePageCount) } : {}),
+    };
+  };
+  return { sitemap: summary("sitemap"), llms: summary("llms"), robots: summary("robots") };
 }
 
 function builderOverviewView(project: Awaited<ReturnType<typeof scopedProject>>["project"]) {
@@ -2086,7 +2192,13 @@ function builderOverviewView(project: Awaited<ReturnType<typeof scopedProject>>[
   return {
     ...view,
     build: {
-      ...view.build,
+      id: view.build.id,
+      status: view.build.status,
+      name: view.build.name,
+      templateKey: view.build.templateKey,
+      brandJson: view.build.brandJson,
+      settingsJson: compactWebsiteBuilderSettings(view.build.settingsJson),
+      sitemapApprovedAt: view.build.sitemapApprovedAt,
       pages: view.build.pages.map(compactWebsiteBuilderOverviewPage),
       jobs: view.build.jobs.map((job) => {
         const input = jsonRecord(job.inputJson);
@@ -3613,8 +3725,13 @@ async function saveGeneratedPage(page: { id: string; buildId: string; slug: stri
 
 websiteBuilderRouter.get("/projects/:projectId/website-builder", async (req, res) => {
   const { project } = await scopedOverviewProject(req.params.projectId, req);
-  const payload = { ...builderOverviewView(project), publishingContent: await publishingContentFor(project, { includeResultJson: false }), siteFiles: await siteFilesFor(project) };
+  const payload = { ...builderOverviewView(project), publishingContent: await publishingContentFor(project, { includeResultJson: false }), siteFiles: siteFileOverviewFor(project) };
   sendMeasuredJson(res, payload, "website_builder_overview");
+});
+
+websiteBuilderRouter.get("/projects/:projectId/website-builder/site-files", async (req, res) => {
+  const { project } = await scopedOverviewProject(req.params.projectId, req);
+  sendMeasuredJson(res, { siteFiles: await siteFilesFor(project) }, "website_builder_site_files");
 });
 
 websiteBuilderRouter.get("/projects/:projectId/website-builder/pages/:pageId", async (req, res) => {
@@ -3624,10 +3741,22 @@ websiteBuilderRouter.get("/projects/:projectId/website-builder/pages/:pageId", a
   if (!build) return res.status(404).json({ error: "Website build not found." });
   const page = await prisma.websiteBuildPage.findFirst({
     where: { id: req.params.pageId, buildId: build.id },
-    include: { mediaAssets: true },
+    include: { mediaAssets: { select: { id: true, role: true, status: true, prompt: true, altText: true } } },
   });
   if (!page) return res.status(404).json({ error: "Website page not found." });
-  sendMeasuredJson(res, { page: { ...page, generationPhase: contentPhaseForPage(page) } }, "website_builder_page_detail");
+  const availableMediaIds = new Set((await prisma.websiteBuildMediaAsset.findMany({ where: { pageId: page.id, sourceUrl: { not: null } }, select: { id: true } })).map((asset) => asset.id));
+  sendMeasuredJson(res, { page: { ...page, generationPhase: contentPhaseForPage(page), mediaAssets: page.mediaAssets.map((asset) => ({ ...asset, sourceUrl: null, sourceAvailable: availableMediaIds.has(asset.id) })) } }, "website_builder_page_detail");
+});
+
+websiteBuilderRouter.get("/projects/:projectId/website-builder/pages/:pageId/media", async (req, res) => {
+  const context = await workspaceContext(req);
+  if (!await canAccessProject(context, req.params.projectId)) return res.status(404).json({ error: "Project not found." });
+  const build = await prisma.websiteBuild.findFirst({ where: { projectId: req.params.projectId }, orderBy: { updatedAt: "desc" }, select: { id: true } });
+  if (!build) return res.status(404).json({ error: "Website build not found." });
+  const page = await prisma.websiteBuildPage.findFirst({ where: { id: req.params.pageId, buildId: build.id }, select: { id: true } });
+  if (!page) return res.status(404).json({ error: "Website page not found." });
+  const mediaAssets = await prisma.websiteBuildMediaAsset.findMany({ where: { pageId: page.id }, orderBy: { createdAt: "asc" } });
+  sendMeasuredJson(res, { mediaAssets }, "website_builder_page_media");
 });
 
 websiteBuilderRouter.post("/projects/:projectId/website-builder/sync-publishing-content", async (req, res) => {
@@ -4905,9 +5034,29 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/submit-developme
 websiteBuilderRouter.get("/projects/:projectId/website-builder/jobs/:jobId", async (req, res) => {
   const context = await workspaceContext(req);
   if (!await canAccessProject(context, req.params.projectId)) return res.status(404).json({ error: "Project not found." });
-  const job = await prisma.websiteBuildJob.findFirst({ where: { id: req.params.jobId, projectId: req.params.projectId } });
+  const job = await prisma.websiteBuildJob.findFirst({
+    where: { id: req.params.jobId, projectId: req.params.projectId },
+    select: { id: true, status: true, stage: true, progress: true, errorMessage: true, createdAt: true, completedAt: true },
+  });
   if (!job) return res.status(404).json({ error: "Website development job not found." });
-  res.json({ job });
+  const payload = await prisma.$queryRaw<Array<{ inputJson: Prisma.JsonValue; resultJson: Prisma.JsonValue }>>(Prisma.sql`
+    SELECT
+      jsonb_strip_nulls(jsonb_build_object(
+        'mode', "inputJson"->'mode',
+        'pageIds', "inputJson"->'pageIds',
+        'automaticSetup', "inputJson"->'automaticSetup'
+      )) AS "inputJson",
+      jsonb_strip_nulls(jsonb_build_object(
+        'automaticSetup', "resultJson"->'automaticSetup',
+        'assembledPageVersionSignature', "resultJson"->'assembledPageVersionSignature',
+        'navigationSignature', "resultJson"->'navigationSignature',
+        'failedPages', "resultJson"->'failedPages'
+      )) AS "resultJson"
+    FROM "WebsiteBuildJob"
+    WHERE "id" = ${job.id}
+    LIMIT 1
+  `);
+  sendMeasuredJson(res, { job: { ...job, inputJson: payload[0]?.inputJson ?? {}, resultJson: payload[0]?.resultJson ?? {} } }, "website_builder_job_status");
 });
 
 websiteBuilderRouter.post("/projects/:projectId/website-builder/jobs/:jobId/manage", async (req, res) => {
