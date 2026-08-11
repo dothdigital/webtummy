@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { SENUKE_COMPONENT_REGISTRY_V1 } from "@webtummy/core/website-model";
-import { combinedPageSchema, compactWebsiteBuilderMediaAsset, compactWebsiteBuilderOverviewPage, effectiveExistingPageRequirements, generatedPageSchema, importedWebsiteRouteAssignment, logoPaletteAiPrompt, logoPalettePromptBrand, pageIsImportedExistingWebsite, parseWordPressJsonResponse, publishingAssetMatchesWebsitePage, replaceWebsitePublicStatements, shouldDeployWordPressDesignPackage, websiteSettingsWithVerifiedLocalEvidence, wordPressConnectorVersionAtLeast, wordpressConnectorSafeCss, wordpressMenuDestination } from "./website-builder.js";
+import { canonicalComponents, combinedPageSchema, compactWebsiteBuilderMediaAsset, compactWebsiteBuilderOverviewPage, effectiveExistingPageRequirements, generatedPageSchema, importedWebsiteRouteAssignment, logoPaletteAiPrompt, logoPalettePromptBrand, pageIsImportedExistingWebsite, parseWordPressJsonResponse, publishingAssetMatchesWebsitePage, replaceWebsitePublicStatements, shouldDeployWordPressDesignPackage, websiteSettingsWithVerifiedLocalEvidence, wordPressConnectorVersionAtLeast, wordpressConnectorSafeCss, wordpressMenuDestination } from "./website-builder.js";
 
 const project = {
   businessName: "Example Financial",
@@ -15,6 +15,26 @@ const project = {
 };
 
 describe("ongoing WordPress publishing schema", () => {
+  it("imports an earlier page record into visual-editor components without another AI generation", () => {
+    const components = canonicalComponents({
+      heroEyebrow: "Protection planning",
+      heroTitle: "Insurance planning for your priorities",
+      heroSummary: "Review relevant options and prepare questions for an initial consultation.",
+      sections: [{ heading: "A practical planning conversation", bodyHtml: "<p>Discuss your circumstances, goals, and existing arrangements.</p>" }],
+      ctaTitle: "Start a conversation",
+      ctaBody: "Contact the team to discuss what you would like to plan.",
+      ctaLabel: "Contact us",
+    });
+
+    expect(components.map((component) => component.componentId)).toEqual([
+      "hero.local_service",
+      "content.rich_text",
+      "conversion.cta",
+    ]);
+    expect(components[0].props.headline).toBe("Insurance planning for your priorities");
+    expect(components[1].props.body).toContain("Discuss your circumstances");
+  });
+
   it("replaces only the flagged public sentence inside registered component props", () => {
     const original = "Evaluate your needs to find the best fit for your situation.";
     const replacement = "Learn about the factors commonly considered when reviewing available options.";
