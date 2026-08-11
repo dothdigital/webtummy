@@ -30,6 +30,22 @@ describe("website quality governance", () => {
     expect(result.issues).toEqual(expect.arrayContaining([expect.objectContaining({ code: "regulated_or_guaranteed_claim", severity: "blocker", status: "open", autoFixable: true })]));
   });
 
+  it("treats advisory best-fit wording as an acknowledgeable warning", () => {
+    const statement = "Evaluate your coverage needs, budget, and the financial stability of the insurer to find the best fit for your situation.";
+    const result = evaluateWebsiteQualityGovernance(model(statement), { industry: "Insurance and financial services" });
+    expect(result.status).toBe("needs_review");
+    expect(result.openBlockingCount).toBe(0);
+    expect(result.issues).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        code: "regulated_or_guaranteed_claim",
+        severity: "medium",
+        status: "open",
+        autoFixable: true,
+        evidence: statement,
+      }),
+    ]));
+  });
+
   it("allows a written waiver for high issues but never for blockers", () => {
     const draft = evaluateWebsiteQualityGovernance(model("Our experienced team explains the available options."));
     const high = draft.issues.find((issue) => issue.severity === "high");

@@ -8006,7 +8006,7 @@ function wordpressRestCollection(postType: string) {
 
 websiteBuilderRouter.post("/projects/:projectId/website-builder/quality-waivers", async (req, res) => {
   const { context, project } = await scopedProject(req.params.projectId, req);
-  if (!hasWorkspacePermission(context, "approve")) return res.status(403).json({ error: "Approval permission is required to waive a high-severity website quality issue." });
+  if (!hasWorkspacePermission(context, "approve")) return res.status(403).json({ error: "Approval permission is required to acknowledge or waive a website quality issue." });
   const input = z.object({ issueId: z.string().trim().min(5).max(1000), reason: z.string().trim().min(10).max(1000) }).parse(req.body ?? {});
   const build = project.websiteBuilds[0];
   if (!build) return res.status(409).json({ error: "Create the website build first." });
@@ -8017,7 +8017,7 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/quality-waivers"
   });
   const issue = currentQuality.issues.find((candidate) => candidate.issueId === input.issueId && candidate.status === "open");
   if (!issue) return res.status(409).json({ error: "This quality issue no longer exists on the current website version. Run Quality Review again." });
-  if (issue.severity !== "high") return res.status(409).json({ error: "Only high-severity issues may be waived. Blockers must be corrected; medium and low findings do not lock approval." });
+  if (issue.severity === "blocker") return res.status(409).json({ error: "Publishing blockers must be corrected. High-severity issues and non-blocking warnings may be acknowledged with an audit reason." });
   const waivers = { ...jsonRecord(jsonRecord(build.settingsJson).websiteQualityWaivers), [issue.issueId]: input.reason };
   await prisma.websiteBuild.update({
     where: { id: build.id },
