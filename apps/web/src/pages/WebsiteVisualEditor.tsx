@@ -17,7 +17,8 @@ type Page = {
   status: string;
   version: number;
   contentJson: unknown;
-  mediaAssets: Array<{ id: string; role: string; status: string; sourceUrl: string | null; altText: string | null }>;
+  visualComponents?: WebsiteComponentInstance[];
+  mediaAssets: Array<{ id: string; role: string; status: string; sourceUrl: string | null; sourceAvailable?: boolean; altText: string | null }>;
 };
 type Build = { id: string; name: string; brandJson: unknown; settingsJson: unknown; pages: Page[] };
 type Response = { project: { id: string; name: string; businessName: string | null }; build: Build | null; websiteWorkflow: { model: { version: number } | null } };
@@ -26,7 +27,7 @@ type ViewMode = "desktop" | "tablet" | "mobile";
 
 const object = (value: unknown): Record<string, unknown> => value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
 const componentsFromPage = (page: Page | null) => {
-  const value = object(page?.contentJson).components;
+  const value = page?.visualComponents?.length ? page.visualComponents : object(page?.contentJson).components;
   let components = Array.isArray(value) ? value.filter((item): item is WebsiteComponentInstance => Boolean(item && typeof item === "object" && !Array.isArray(item))) : [];
   const primaryHeroAsset = page?.mediaAssets.find((asset) => asset.id === `${page.id}-hero` && asset.role !== "none" && Boolean(asset.sourceUrl))
     ?? page?.mediaAssets.find((asset) => asset.role === "hero" && Boolean(asset.sourceUrl));
@@ -74,12 +75,14 @@ export default function WebsiteVisualEditor({ mode }: { mode: "editor" | "previe
   const embedded = params.get("embedded") === "1";
   const [response, setResponse] = useState<Response | null>(null);
   const [pageId, setPageId] = useState(requestedPageId);
+  const [pageDetails, setPageDetails] = useState<Record<string, Page>>({});
   const [draft, setDraft] = useState<Data<PuckRecord> | null>(null);
   const [view, setView] = useState<ViewMode>("desktop");
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState("");
   const [loadAttempt, setLoadAttempt] = useState(0);
   const [loadingSlow, setLoadingSlow] = useState(false);
+  const [loadingPageId, setLoadingPageId] = useState("");
   const closeWorkspace = () => {
     if (embedded && window.parent !== window) {
       window.parent.postMessage({ type: "senuke:close-workspace-modal" }, window.location.origin);
@@ -98,12 +101,11 @@ export default function WebsiteVisualEditor({ mode }: { mode: "editor" | "previe
     if (!projectId) throw new Error("A project is required.");
     const result = await api.get<Response>(`/api/projects/${projectId}/website-builder`);
     setResponse(result);
+    setPageDetails({});
+    setDraft(null);
     const activePages = result.build?.pages.filter((page) => page.status !== "deferred") ?? [];
     const selected = activePages.find((page) => page.id === (pageId || requestedPageId)) ?? activePages[0] ?? null;
-    if (selected) {
-      setPageId(selected.id);
-      setDraft(websiteComponentsToPuck(componentsFromPage(selected)) as Data<PuckRecord>);
-    }
+    if (selected) setPageId(selected.id);
   };
 
   useEffect(() => {
@@ -123,7 +125,9 @@ export default function WebsiteVisualEditor({ mode }: { mode: "editor" | "previe
   }, [loadAttempt, projectId]);
   const build = response?.build ?? null;
   const activePages = build?.pages.filter((item) => item.status !== "deferred") ?? [];
-  const page = activePages.find((item) => item.id === pageId) ?? activePages[0] ?? null;
+  const pageSummary = activePages.find((item) => item.id === pageId) ?? activePages[0] ?? null;
+  const page = pageSummary && pageDetails[pageSummary.id]?.version === pageSummary.version ? pageDetails[pageSummary.id] : pageSummary;
+  const pageDetailReady = Boolean(pageSummary && pageDetails[pageSummary.id]?.version === pageSummary.version);
   const brand = object(build?.brandJson);
   const settings = object(build?.settingsJson);
   const themeInput = {
@@ -170,9 +174,26 @@ export default function WebsiteVisualEditor({ mode }: { mode: "editor" | "previe
   const theme = themeVariables(themeInput);
 
   useEffect(() => {
-    if (!page) return;
-    setDraft(websiteComponentsToPuck(componentsFromPage(page)) as Data<PuckRecord>);
-  }, [page?.id, page?.version]);
+    if (!projectId || !pageSummary) return;
+    const selectedPageId = pageSummary.id;
+    let cancelled = false;
+    setLoadingPageId(selectedPageId);
+    setDraft(null);
+    setMessage("");
+    void api.get<{ page: Page }>(`/api/projects/${projectId}/website-builder/pages/${selectedPageId}`)
+      .then((result) => {
+        if (cancelled) return;
+        setPageDetails((current) => ({ ...current, [selectedPageId]: result.page }));
+        setDraft(websiteComponentsToPuck(componentsFromPage(result.page)) as Data<PuckRecord>);
+      })
+      .catch((error) => {
+        if (!cancelled) setMessage(error instanceof Error ? error.message : "The selected page content could not be loaded.");
+      })
+      .finally(() => {
+        if (!cancelled) setLoadingPageId("");
+      });
+    return () => { cancelled = true; };
+  }, [projectId, pageSummary?.id, pageSummary?.version, loadAttempt]);
 
   const save = async () => {
     if (!draft || !page) return;
@@ -195,6 +216,7 @@ export default function WebsiteVisualEditor({ mode }: { mode: "editor" | "previe
 
   if (!response) return <div className="grid min-h-screen place-items-center bg-slate-950 p-8 text-white"><div className="max-w-md text-center"><div className="mx-auto h-9 w-9 animate-spin rounded-full border-4 border-white/20 border-t-white"/><p className="mt-4 text-sm font-black">{message || (loadingSlow ? "The Website Model is taking longer than expected…" : "Loading the SENuke Website Model…")}</p><p className="mt-1 text-xs leading-5 text-slate-400">{message ? "Check the project data and retry the preview." : loadingSlow ? "The preview is still connected. You can wait or safely retry the request." : "Preparing the selected page, design theme, and responsive components."}</p>{(message || loadingSlow) && <div className="mt-4 flex justify-center gap-2"><button type="button" onClick={() => setLoadAttempt((value) => value + 1)} className="rounded-lg bg-white px-4 py-2.5 text-xs font-black text-slate-950">Retry Loading</button><button type="button" onClick={closeWorkspace} className="rounded-lg border border-white/20 px-4 py-2.5 text-xs font-black text-white">Close</button></div>}</div></div>;
   if (!build || !page) return <div className="grid min-h-screen place-items-center bg-slate-50 p-8 text-center"><div><h1 className="text-2xl font-black">No generated page is ready</h1><p className="mt-2 text-sm text-slate-500">Return to Site Architect and generate page content before opening the visual editor.</p><button onClick={closeWorkspace} className="mt-4 rounded-lg bg-slate-950 px-4 py-2 text-sm font-black text-white">Close</button></div></div>;
+  if (!pageDetailReady || loadingPageId === page.id) return <div className="grid min-h-screen place-items-center bg-slate-950 p-8 text-white"><div className="max-w-md text-center"><div className={`mx-auto h-9 w-9 rounded-full border-4 border-white/20 border-t-white ${message ? "" : "animate-spin"}`}/><p className="mt-4 text-sm font-black">{message || `Loading ${page.title}…`}</p><p className="mt-1 text-xs leading-5 text-slate-400">{message ? "The overview loaded, but the selected page body did not. Retry the page request." : "Loading this page separately keeps Website Builder fast and prevents oversized responses."}</p>{message&&<div className="mt-4 flex justify-center gap-2"><button type="button" onClick={() => setLoadAttempt((value) => value + 1)} className="rounded-lg bg-white px-4 py-2.5 text-xs font-black text-slate-950">Retry Page</button><button type="button" onClick={closeWorkspace} className="rounded-lg border border-white/20 px-4 py-2.5 text-xs font-black text-white">Close</button></div>}</div></div>;
   if (!draft?.content.length) return <div className="grid min-h-screen place-items-center bg-slate-50 p-8 text-center"><div><h1 className="text-2xl font-black">This page uses the earlier content format</h1><p className="mt-2 max-w-xl text-sm leading-6 text-slate-500">Regenerate {page.title} once in Site Architect. SENuke AI will convert it into approved registered components that can be edited visually.</p><button onClick={closeWorkspace} className="mt-4 rounded-lg bg-slate-950 px-4 py-2 text-sm font-black text-white">Return to Site Architect</button></div></div>;
 
   if (mode === "preview") {

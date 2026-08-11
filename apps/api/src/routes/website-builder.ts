@@ -3182,7 +3182,7 @@ function canonicalContentFromComponents(existing: Prisma.JsonValue, components: 
   };
 }
 
-function canonicalComponents(existing: unknown) {
+export function canonicalComponents(existing: unknown) {
   const current = jsonRecord(existing);
   if (Array.isArray(current.components) && current.components.length) {
     return current.components
@@ -3861,7 +3861,7 @@ websiteBuilderRouter.get("/projects/:projectId/website-builder/pages/:pageId", a
   });
   if (!page) return res.status(404).json({ error: "Website page not found." });
   const availableMediaIds = new Set((await prisma.websiteBuildMediaAsset.findMany({ where: { pageId: page.id, sourceUrl: { not: null } }, select: { id: true } })).map((asset) => asset.id));
-  sendMeasuredJson(res, { page: { ...page, generationPhase: contentPhaseForPage(page), mediaAssets: page.mediaAssets.map((asset) => compactWebsiteBuilderMediaAsset(asset, availableMediaIds.has(asset.id))) } }, "website_builder_page_detail");
+  sendMeasuredJson(res, { page: { ...page, visualComponents: canonicalComponents(page.contentJson), generationPhase: contentPhaseForPage(page), mediaAssets: page.mediaAssets.map((asset) => compactWebsiteBuilderMediaAsset(asset, availableMediaIds.has(asset.id))) } }, "website_builder_page_detail");
 });
 
 websiteBuilderRouter.get("/projects/:projectId/website-builder/pages/:pageId/media", async (req, res) => {
