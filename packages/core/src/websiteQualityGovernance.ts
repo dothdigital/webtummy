@@ -251,7 +251,7 @@ export function evaluateWebsiteQualityGovernance(
       const reviewableSuitability = regulatedOrPerformance
         && !hardGuaranteeOrRankingPattern.test(statement)
         && !evidenceDependentCredentialPattern.test(statement);
-      const reviewableBusinessQuality = regulated && businessClaim && !evidenceIds.length;
+      const reviewableBusinessQuality = businessClaim && !evidenceIds.length;
       const nonBlockingSubjectiveClaim = reviewableSuitability || reviewableBusinessQuality;
       const classification: WebsiteClaimClassification = reviewableSuitability
         ? "generic_educational"

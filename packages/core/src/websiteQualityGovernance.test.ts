@@ -47,10 +47,28 @@ describe("website quality governance", () => {
   });
 
   it("keeps subjective regulated business-quality wording non-blocking", () => {
-    const result = evaluateWebsiteQualityGovernance(model("Our trusted team helps clients review available coverage options."), { industry: "Insurance and financial services" });
+    const result = evaluateWebsiteQualityGovernance(model("Key Outcomes of a Trusted Insurance Advisory."), { industry: "Insurance and financial services" });
     expect(result.openBlockingCount).toBe(0);
     expect(result.issues).toEqual(expect.arrayContaining([
-      expect.objectContaining({ code: "unsupported_business_claim", severity: "medium", status: "open" }),
+      expect.objectContaining({
+        code: "unsupported_business_claim",
+        severity: "medium",
+        status: "open",
+        evidence: "Key Outcomes of a Trusted Insurance Advisory.",
+      }),
+    ]));
+  });
+
+  it("keeps an expert service heading non-blocking when industry metadata is missing", () => {
+    const result = evaluateWebsiteQualityGovernance(model("Expert RRSP Planning Services."));
+    expect(result.openBlockingCount).toBe(0);
+    expect(result.issues).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        code: "unsupported_business_claim",
+        severity: "medium",
+        status: "open",
+        evidence: "Expert RRSP Planning Services.",
+      }),
     ]));
   });
 
@@ -63,10 +81,11 @@ describe("website quality governance", () => {
   });
 
   it("allows a written waiver for high issues but never for blockers", () => {
-    const draft = evaluateWebsiteQualityGovernance(model("Our experienced team explains the available options."));
+    const highIssueModel = model("Coverage may depend on eligibility and policy terms.", "Business Support Services");
+    const draft = evaluateWebsiteQualityGovernance(highIssueModel);
     const high = draft.issues.find((issue) => issue.severity === "high");
     expect(high).toBeTruthy();
-    const waived = evaluateWebsiteQualityGovernance(model("Our experienced team explains the available options."), { waivedIssues: { [high!.issueId]: "Approved as a documented exception by the manager." } });
+    const waived = evaluateWebsiteQualityGovernance(highIssueModel, { waivedIssues: { [high!.issueId]: "Approved as a documented exception by the manager." } });
     expect(waived.issues.find((issue) => issue.issueId === high!.issueId)?.status).toBe("waived");
 
     const blockerDraft = evaluateWebsiteQualityGovernance(model("Content goes here."));
