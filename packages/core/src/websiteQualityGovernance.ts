@@ -130,6 +130,14 @@ function heroHeading(page: WebsitePageModel) {
   return typeof value === "string" ? value.trim() : "";
 }
 
+function headingMatchesPageSemantics(page: WebsitePageModel, heading: string) {
+  const context = normalize(`${page.pageType} ${page.name} ${page.seo.primaryKeyword || page.primaryKeyword || ""} ${page.seo.dominantIntent || page.primaryIntent || page.pageIntent || ""}`);
+  const normalizedHeading = normalize(heading);
+  if (/\b(?:about|company|team|story)\b/.test(context) && /^(?:who we are|about us|our story|meet the team)$/.test(normalizedHeading)) return true;
+  if (/\bcontact\b/.test(context) && /^(?:contact us|get in touch|talk to us|lets talk)$/.test(normalizedHeading)) return true;
+  return false;
+}
+
 function similarity(left: string, right: string) {
   const a = tokens(left);
   const b = tokens(right);
@@ -157,6 +165,7 @@ export function evaluateWebsiteQualityGovernance(
     const visible = pageStrings(page);
     const pageText = visible.map((item) => item.value).join("\n");
     const heading = heroHeading(page);
+    const semanticHeadingMatch = headingMatchesPageSemantics(page, heading);
     const evidenceIds = [...new Set([...(page.allowedFactIds ?? []), ...(page.localEvidenceIds ?? [])])];
 
     for (const entry of visible) {
@@ -196,15 +205,15 @@ export function evaluateWebsiteQualityGovernance(
       const target = `${page.seo.primaryKeyword || page.primaryKeyword || ""} ${page.seo.dominantIntent || page.primaryIntent || page.pageIntent || ""}`;
       const targetTokens = tokens(target);
       const overlap = [...targetTokens].filter((token) => headingTokens.has(token)).length;
-      if (targetTokens.size && overlap === 0) {
+      if (targetTokens.size && overlap === 0 && !semanticHeadingMatch) {
         addIssue({
           code: "h1_intent_mismatch",
-          severity: "high",
+          severity: "medium",
           category: "search_intent",
           pageId: page.pageId,
           pageName: page.name,
           field: "hero.heading",
-          message: "The H1 does not align with the approved primary keyword or dominant intent.",
+          message: "The H1 could align more closely with the approved page topic.",
           evidence: `H1: ${heading}; target: ${target}`,
           suggestedFix: "Revise the H1 so its subject matches the approved keyword and customer intent without keyword stuffing.",
           autoFixable: false,
@@ -213,15 +222,15 @@ export function evaluateWebsiteQualityGovernance(
     }
 
     const titleHeadingOverlap = [...tokens(page.seo.title)].filter((token) => tokens(heading).has(token)).length;
-    if (heading && titleHeadingOverlap === 0) {
+    if (heading && titleHeadingOverlap === 0 && !semanticHeadingMatch) {
       addIssue({
         code: "title_h1_mismatch",
-        severity: "high",
+        severity: "medium",
         category: "search_intent",
         pageId: page.pageId,
         pageName: page.name,
         field: "seo.title",
-        message: "The SEO title and visible H1 describe different subjects.",
+        message: "The SEO title and visible H1 could be aligned more closely.",
         evidence: `Title: ${page.seo.title}; H1: ${heading}`,
         suggestedFix: "Align the title and H1 around the same page subject while keeping their wording natural and distinct.",
         autoFixable: false,

@@ -81,7 +81,8 @@ describe("website quality governance", () => {
   });
 
   it("allows a written waiver for high issues but never for blockers", () => {
-    const highIssueModel = model("Coverage may depend on eligibility and policy terms.", "Business Support Services");
+    const highIssueModel = model("Coverage may depend on eligibility and policy terms.");
+    highIssueModel.pages[0].primaryCta = { label: "", url: "" };
     const draft = evaluateWebsiteQualityGovernance(highIssueModel);
     const high = draft.issues.find((issue) => issue.severity === "high");
     expect(high).toBeTruthy();
@@ -92,6 +93,35 @@ describe("website quality governance", () => {
     const blocker = blockerDraft.issues.find((issue) => issue.severity === "blocker")!;
     const notWaived = evaluateWebsiteQualityGovernance(model("Content goes here."), { waivedIssues: { [blocker.issueId]: "This must not bypass the blocker." } });
     expect(notWaived.issues.find((issue) => issue.issueId === blocker.issueId)?.status).toBe("open");
+  });
+
+  it("accepts Who We Are as a semantically aligned About-page H1", () => {
+    const about = model("Our team consists of experienced professionals who help visitors review insurance and financial-planning questions.", "Who We Are");
+    about.pages[0].name = "About LifeX Insurance";
+    about.pages[0].slug = "/about/";
+    about.pages[0].pageType = "about";
+    about.pages[0].seo.title = "LifeX Insurance | Your Trusted Insurance Advisors";
+    about.pages[0].seo.primaryKeyword = "About LifeX Insurance";
+    about.pages[0].seo.dominantIntent = "navigational";
+    const result = evaluateWebsiteQualityGovernance(about, { industry: "Insurance and financial services" });
+    expect(result.openBlockingCount).toBe(0);
+    expect(result.issues.some((issue) => issue.code === "h1_intent_mismatch" || issue.code === "title_h1_mismatch")).toBe(false);
+    expect(result.issues).toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: "unsupported_business_claim", severity: "medium", status: "open" }),
+    ]));
+  });
+
+  it("accepts Get in Touch as a semantically aligned Contact-page H1", () => {
+    const contact = model("Contact LifeX Insurance to discuss your questions and available next steps.", "Get in Touch");
+    contact.pages[0].name = "Contact LifeX Insurance";
+    contact.pages[0].slug = "/contact/";
+    contact.pages[0].pageType = "contact";
+    contact.pages[0].seo.title = "Contact LifeX Insurance for Your Insurance Needs";
+    contact.pages[0].seo.primaryKeyword = "Contact LifeX Insurance";
+    contact.pages[0].seo.dominantIntent = "navigational";
+    const result = evaluateWebsiteQualityGovernance(contact, { industry: "Insurance and financial services" });
+    expect(result.openBlockingCount).toBe(0);
+    expect(result.issues.some((issue) => issue.code === "h1_intent_mismatch" || issue.code === "title_h1_mismatch")).toBe(false);
   });
 
   it("forces noindex on staging and restores production directives", () => {
