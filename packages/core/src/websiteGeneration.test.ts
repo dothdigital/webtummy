@@ -5,6 +5,7 @@ import {
   fitWebsiteAiChatRequest,
   fitWebsiteComponentsToWordBudget,
   jsonSchemaFromWebsiteShape,
+  normalizeWebsiteFooterMenu,
   strictWebsiteJsonResponseFormat,
   websiteContentProgress,
   websiteContentBatchPageMode,
@@ -498,5 +499,29 @@ describe("website generation workflow contracts", () => {
     };
     expect(websitePageMissingContentKinds({ content: twoFaqContent, seo: completeSeo, status: "review", pageType: "utility", title: "Privacy Policy" })).toEqual(["faq"]);
     expect(websitePageMissingContentKinds({ content, seo: {}, status: "review", pageType: "utility", title: "Privacy Policy" })).toEqual(["meta_title", "meta_description"]);
+  });
+
+  it("repairs duplicate footer column IDs and keeps assignments independent", () => {
+    const duplicateId = "home";
+    const pages = [
+      { id: "home", title: "Home", slug: "", pageType: "home", searchIntent: "commercial" },
+      { id: "service", title: "Life Insurance", slug: "life-insurance", pageType: "service", searchIntent: "commercial" },
+      { id: "privacy", title: "Privacy Policy", slug: "privacy-policy", pageType: "utility", searchIntent: "informational" },
+    ];
+    const normalized = normalizeWebsiteFooterMenu([
+      { pageId: duplicateId, label: "Explore", slug: "", parentPageId: null, custom: true },
+      { pageId: duplicateId, label: "Information", slug: "", parentPageId: null, custom: true },
+      ...pages.map((page) => ({ pageId: page.id, label: page.title, slug: page.slug, parentPageId: duplicateId, custom: false })),
+    ], pages);
+    const columns = normalized.filter((item) => item.custom);
+    expect(columns.map((column) => column.pageId)).toEqual(["custom-footer-explore", "custom-footer-information"]);
+    expect(new Set(columns.map((column) => column.pageId)).size).toBe(2);
+    expect(normalized.find((item) => item.pageId === "service")?.parentPageId).toBe("custom-footer-explore");
+    expect(normalized.find((item) => item.pageId === "privacy")?.parentPageId).toBe("custom-footer-information");
+    expect(normalized.find((item) => item.pageId === "home" && !item.custom)?.parentPageId).toBe("custom-footer-information");
+    const moved = normalized.map((item) => item.pageId === "privacy"
+      ? { ...item, parentPageId: "custom-footer-explore" }
+      : item);
+    expect(normalizeWebsiteFooterMenu(moved, pages).find((item) => item.pageId === "privacy")?.parentPageId).toBe("custom-footer-explore");
   });
 });

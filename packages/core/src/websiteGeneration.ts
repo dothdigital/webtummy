@@ -565,3 +565,97 @@ export function websitePageMissingContentKinds(input: {
     || /review capabilities,\s*process,\s*proof,\s*faqs/i.test(metaDescription)) missing.push("meta_description");
   return missing;
 }
+
+export type WebsiteFooterMenuItem = {
+  pageId: string;
+  label: string;
+  slug: string;
+  parentPageId: string | null;
+  custom: boolean;
+};
+
+type WebsiteFooterPage = {
+  id: string;
+  title: string;
+  slug: string;
+  pageType?: string | null;
+  searchIntent?: string | null;
+};
+
+/**
+ * Keep the two editable footer columns addressable independently. Older
+ * footer data could give both headings the same ID (and even reuse a page ID),
+ * which made both select options save the same value. Canonical IDs also make
+ * legacy data safe before the user saves it again.
+ */
+export function normalizeWebsiteFooterMenu(
+  value: unknown,
+  pages: WebsiteFooterPage[],
+  options: { includeMissingPages?: boolean } = {},
+): WebsiteFooterMenuItem[] {
+  const rows = Array.isArray(value) ? value : [];
+  const items = rows.flatMap((row): WebsiteFooterMenuItem[] => {
+    if (!row || typeof row !== "object" || Array.isArray(row)) return [];
+    const item = row as Record<string, unknown>;
+    const pageId = String(item.pageId ?? "").trim();
+    if (!pageId) return [];
+    return [{
+      pageId,
+      label: String(item.label ?? "Menu item").trim() || "Menu item",
+      slug: String(item.slug ?? ""),
+      parentPageId: item.parentPageId ? String(item.parentPageId) : null,
+      custom: item.custom === true || pageId.startsWith("custom-"),
+    }];
+  });
+  const fallbackColumns: WebsiteFooterMenuItem[] = [
+    { pageId: "custom-footer-explore", label: "Explore", slug: "", parentPageId: null, custom: true },
+    { pageId: "custom-footer-information", label: "Information", slug: "", parentPageId: null, custom: true },
+  ];
+  const savedColumns = items.filter((item) => item.custom && !item.parentPageId).slice(0, 2);
+  const columns = fallbackColumns.map((fallback, index) => ({
+    ...fallback,
+    label: savedColumns[index]?.label || fallback.label,
+    slug: savedColumns[index]?.slug || "",
+  }));
+  const pageById = new Map(pages.map((page) => [page.id, page]));
+  const suggestedColumnIndex = (page: WebsiteFooterPage) =>
+    /(service|product|location|local|plan|solution)/i.test(`${page.pageType ?? ""} ${page.title} ${page.searchIntent ?? ""}`) ? 0 : 1;
+  const normalizedPage = (item: WebsiteFooterMenuItem, page: WebsiteFooterPage): WebsiteFooterMenuItem => {
+    const matchingColumns = savedColumns
+      .map((column, index) => column.pageId === item.parentPageId ? index : -1)
+      .filter((index) => index >= 0);
+    const canonicalIndex = columns.findIndex((column) => column.pageId === item.parentPageId);
+    const columnIndex = canonicalIndex >= 0
+      ? canonicalIndex
+      : matchingColumns.length === 1
+        ? matchingColumns[0]
+        : suggestedColumnIndex(page);
+    return {
+      ...item,
+      pageId: page.id,
+      slug: page.slug,
+      custom: false,
+      parentPageId: columns[columnIndex].pageId,
+    };
+  };
+  const savedPages = new Map<string, WebsiteFooterMenuItem>();
+  for (const item of items) {
+    if (item.custom) continue;
+    const page = pageById.get(item.pageId);
+    if (page) savedPages.set(page.id, normalizedPage(item, page));
+  }
+  if (options.includeMissingPages) {
+    for (const page of pages) {
+      if (savedPages.has(page.id)) continue;
+      const columnIndex = suggestedColumnIndex(page);
+      savedPages.set(page.id, {
+        pageId: page.id,
+        label: page.title,
+        slug: page.slug,
+        parentPageId: columns[columnIndex].pageId,
+        custom: false,
+      });
+    }
+  }
+  return [...columns, ...savedPages.values()];
+}

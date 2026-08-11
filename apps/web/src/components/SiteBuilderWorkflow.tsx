@@ -23,7 +23,7 @@ import {
   websiteMediaStatusHasApprovedDecision,
   type WebsiteContentGenerationPhase,
 } from "@webtummy/core/website-model";
-import { websitePageHasCompleteContent } from "@webtummy/core/website-generation";
+import { normalizeWebsiteFooterMenu, websitePageHasCompleteContent } from "@webtummy/core/website-generation";
 import { AiPlanningScreen } from "./ui.js";
 
 type MediaAsset = {id:string;role:string;status:string;prompt:string;sourceUrl:string|null;sourceAvailable?:boolean;altText:string|null};
@@ -351,28 +351,8 @@ function previewHtml(build:Build,page:Page|null){
 }
 function centeredPreviewSections(html:string){return html.replace("</style>",`.section{text-align:center}.section h2{max-width:30ch;margin:14px auto 18px;font-size:clamp(26px,3vw,34px);line-height:1.16;text-wrap:balance}.section p,.section ul,.section ol{max-width:760px;margin-left:auto;margin-right:auto}.section .line{margin-left:auto;margin-right:auto}.hero+.section{padding-top:50px;padding-bottom:50px}</style>`)}
 function websiteNavigationSignature(settings:Record<string,unknown>){return JSON.stringify({primaryMenu:array(settings.menu).map(object),footerMenu:array(settings.footerMenu).map(object)})}
-function suggestedFooterMenuItems(pages:Page[]):MenuItem[]{
- const columns:MenuItem[]=[
-  {pageId:"custom-footer-explore",label:"Explore",slug:"",parentPageId:null,custom:true},
-  {pageId:"custom-footer-information",label:"Information",slug:"",parentPageId:null,custom:true},
- ];
- const columnFor=(page:Page)=>/(service|product|location|local|plan|solution)/i.test(`${page.pageType} ${page.title} ${page.searchIntent}`)?columns[0].pageId:columns[1].pageId;
- return [...columns,...pages.map(page=>({pageId:page.id,label:page.title,slug:page.slug,parentPageId:columnFor(page)}))];
-}
 function footerMenuIncludingAllPages(saved:Record<string,unknown>[],pages:Page[]):MenuItem[]{
- const suggested=suggestedFooterMenuItems(pages);
- if(!saved.length)return suggested;
- const savedItems:MenuItem[]=saved.map(item=>({pageId:String(item.pageId??""),label:string(item.label,"Menu item"),slug:String(item.slug??""),parentPageId:item.parentPageId?String(item.parentPageId):null,custom:item.custom===true||String(item.pageId??"").startsWith("custom-")})).filter(item=>item.pageId);
- const savedColumns=savedItems.filter(item=>item.custom&&!item.parentPageId);
- const columns=[...savedColumns.slice(0,2)];
- for(const fallback of suggested.filter(item=>item.custom&&!item.parentPageId)){if(columns.length===2)break;if(!columns.some(item=>item.label.trim().toLowerCase()===fallback.label.trim().toLowerCase()))columns.push(fallback)}
- const oldColumnIndex=new Map(savedColumns.map((column,index)=>[column.pageId,index%2]));
- const pageIds=new Set(pages.map(page=>page.id));
- const savedPages=savedItems.filter(item=>!item.custom&&pageIds.has(item.pageId));
- const included=new Set(savedPages.map(item=>item.pageId));
- const normalizedPages=savedPages.map(item=>{const directIndex=columns.findIndex(column=>column.pageId===item.parentPageId);const columnIndex=directIndex>=0?directIndex:oldColumnIndex.get(item.parentPageId||"")??0;return{...item,parentPageId:columns[columnIndex]?.pageId??columns[0].pageId}});
- for(const suggestion of suggested.filter(item=>!item.custom&&!included.has(item.pageId))){const suggestedIndex=suggestion.parentPageId==="custom-footer-explore"?0:1;normalizedPages.push({...suggestion,parentPageId:columns[suggestedIndex]?.pageId??columns[0].pageId});included.add(suggestion.pageId)}
- const normalizedItems=[...columns,...normalizedPages];
+ const normalizedItems=normalizeWebsiteFooterMenu(saved,pages,{includeMissingPages:true});
  const duplicateLabels=new Map<string,number>();
  for(const item of normalizedItems.filter(item=>!item.custom))duplicateLabels.set(item.label.trim().toLowerCase(),(duplicateLabels.get(item.label.trim().toLowerCase())??0)+1);
  return normalizedItems.map(item=>{

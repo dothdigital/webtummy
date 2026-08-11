@@ -47,6 +47,7 @@ import {
   fitWebsiteComponentsToWordBudget,
   websiteContentBatchPageMode,
   websiteDraftAcceptanceWords,
+  normalizeWebsiteFooterMenu,
   websitePageHasCompleteContent,
   websitePageMissingContentKinds,
   websitePageUniquenessCollisions,
@@ -762,7 +763,7 @@ function qualityWebsiteModel(project: { id: string; businessLocationJson?: Prism
       ...(item.parentPageId && savedNavigationIds.has(String(item.parentPageId)) ? { parentPageId: String(item.parentPageId) } : {}),
       ...((item.custom === true || String(item.pageId || "").startsWith("custom-")) ? { custom: true, url: String(item.slug || "") } : {}),
     }));
-  const savedFooterNavigation = Array.isArray(settings.footerMenu) ? settings.footerMenu.map(jsonRecord) : [];
+  const savedFooterNavigation = normalizeWebsiteFooterMenu(settings.footerMenu, buildPages);
   const savedFooterNavigationIds = new Set(savedFooterNavigation.map((item) => String(item.pageId || "")).filter(Boolean));
   const footerNavigation = savedFooterNavigation
     .filter((item) => pageIds.has(String(item.pageId || "")) || item.custom === true || String(item.pageId || "").startsWith("custom-"))
@@ -4517,6 +4518,12 @@ websiteBuilderRouter.patch("/projects/:projectId/website-builder/build", async (
   }).parse(req.body);
   const nextBrand = { ...jsonRecord(build.brandJson), ...(input.brand ?? {}) };
   const currentSettings = jsonRecord(build.settingsJson);
+  const requestedSettings = {
+    ...(input.settings ?? {}),
+    ...(Array.isArray(input.settings?.footerMenu) ? {
+      footerMenu: normalizeWebsiteFooterMenu(input.settings.footerMenu, build.pages.filter(pageIsActive)),
+    } : {}),
+  };
   const requestedDirection = String(input.settings?.existingWebsiteDirection ?? "").trim().toLowerCase();
   const previousDirection = String(currentSettings.existingWebsiteDirection ?? currentSettings.previousExistingWebsiteDirection ?? "").trim().toLowerCase();
   const directionChanged = ["improve", "redesign", "replace"].includes(requestedDirection)
@@ -4545,7 +4552,7 @@ websiteBuilderRouter.patch("/projects/:projectId/website-builder/build", async (
   }, {});
   const mergedSettings = {
     ...currentSettings,
-    ...(input.settings ?? {}),
+    ...requestedSettings,
     ...(input.settings?.contactDetails && typeof input.settings.contactDetails === "object" && !Array.isArray(input.settings.contactDetails) ? {
       contactDetails: {
         ...jsonRecord(currentSettings.contactDetails),

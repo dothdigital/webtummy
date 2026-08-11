@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { ActionBar, Puck, Render, legacySideBarPlugin, type Data } from "@puckeditor/core";
 import { flattenWebsiteComponents, type WebsiteComponentInstance } from "@webtummy/core/website-model";
+import { normalizeWebsiteFooterMenu } from "@webtummy/core/website-generation";
 import { api } from "../api.js";
 import {
   createSenukePuckConfig,
@@ -157,10 +158,7 @@ export default function WebsiteVisualEditor({ mode }: { mode: "editor" | "previe
     };
   }).filter((item) => item.custom || activePages.some((candidate) => candidate.id === item.pageId));
   const savedFooterMenu = Array.isArray(settings.footerMenu) ? settings.footerMenu.map(object) : [];
-  const rawFooterMenu = savedFooterMenu.map((item) => {
-    const linkedPage = activePages.find((candidate) => candidate.id === String(item.pageId ?? ""));
-    return { pageId: String(item.pageId ?? linkedPage?.id ?? ""), label: String(item.label ?? linkedPage?.title ?? "Page"), slug: String(item.slug ?? linkedPage?.slug ?? ""), parentPageId: item.parentPageId ? String(item.parentPageId) : null, custom: item.custom === true || String(item.pageId ?? "").startsWith("custom-") };
-  }).filter((item) => item.custom || activePages.some((candidate) => candidate.id === item.pageId));
+  const rawFooterMenu = normalizeWebsiteFooterMenu(savedFooterMenu, activePages);
   const footerColumns = rawFooterMenu.filter((item) => item.custom && !item.parentPageId).slice(0, 2);
   const footerFallbacks = [{ pageId: "custom-footer-explore", label: "Explore", slug: "", parentPageId: null, custom: true }, { pageId: "custom-footer-information", label: "Information", slug: "", parentPageId: null, custom: true }];
   for (const fallback of footerFallbacks) if (footerColumns.length < 2) footerColumns.push(fallback);
