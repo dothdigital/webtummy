@@ -113,8 +113,8 @@ const pageHasCompleteContent = (page: {
   searchIntent: page.searchIntent,
 });
 const pageMissingContentKinds = (page: {
-  contentJson: Prisma.JsonValue;
-  seoJson: Prisma.JsonValue;
+  contentJson: unknown;
+  seoJson: unknown;
   status: string;
   pageType: string;
   title: string;
@@ -2689,6 +2689,15 @@ export async function executeWebsiteBuildJob(jobId: string) {
         const nextVersion = page.version + 1;
         const contentJson = generated.content as Prisma.InputJsonValue;
         const seoJson = generated.seo as Prisma.InputJsonValue;
+        const remainingMissingContent = pageMissingContentKinds({
+          ...page,
+          status: "review",
+          contentJson,
+          seoJson,
+        });
+        if (remainingMissingContent.length) {
+          throw new Error(`${page.title} still has missing content after repair: ${remainingMissingContent.join(", ")}. Nothing incomplete was saved.`);
+        }
         await prisma.$transaction(async (tx) => {
           await tx.websiteBuildPageVersion.upsert({
             where: { pageId_version: { pageId: page.id, version: nextVersion } },
@@ -2872,6 +2881,17 @@ export async function executeWebsiteBuildJob(jobId: string) {
       const briefJson = generated.brief as Prisma.InputJsonValue;
       const contentJson = generated.content as Prisma.InputJsonValue;
       const seoJson = generated.seo as Prisma.InputJsonValue;
+      if (mode === "content_generation") {
+        const remainingMissingContent = pageMissingContentKinds({
+          ...page,
+          status: "review",
+          contentJson,
+          seoJson,
+        });
+        if (remainingMissingContent.length) {
+          throw new Error(`${page.title} still has missing content after full-page generation: ${remainingMissingContent.join(", ")}. Nothing incomplete was saved.`);
+        }
+      }
       await prisma.$transaction(async (tx) => {
         await tx.websiteBuildPageVersion.upsert({ where: { pageId_version: { pageId: page.id, version: nextVersion } }, update: { briefJson, contentJson, seoJson, source: "worker", comment: instructions || null, createdById: job.requestedByUserId }, create: { pageId: page.id, version: nextVersion, briefJson, contentJson, seoJson, layoutJson: { template: build.templateKey }, source: "worker", comment: instructions || null, createdById: job.requestedByUserId } });
         const pageWasApproved = ["approved", "deployed", "published"].includes(page.status);

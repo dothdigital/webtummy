@@ -6728,12 +6728,14 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/generate-all", a
   }
   // Imported live pages use surgical update drafts only while improving the
   // existing site. In redesign mode the crawl is evidence and every approved
-  // page enters complete-page generation.
+  // page enters complete-page generation. A user can still explicitly choose
+  // Generate Full Replacement Page for one imported page; bulk regeneration
+  // must never opt imported pages into a rewrite implicitly.
   const requestedPageIds = new Set(input.pageIds ?? []);
   const eligiblePages = build.pages.filter((page) =>
     pageIsActive(page)
     && (!requestedPageIds.size || requestedPageIds.has(page.id))
-    && (fullPageContentMode || !pageIsImportedExistingWebsite(page))
+    && (fullPageContentMode || !pageIsImportedExistingWebsite(page) || (input.regenerate && requestedPageIds.has(page.id)))
     && (input.regenerate || !pageHasCompleteContent(page)));
   const pages = eligiblePages
     .filter((page) => input.phase === "all" || contentPhaseForPage(page) === input.phase)
