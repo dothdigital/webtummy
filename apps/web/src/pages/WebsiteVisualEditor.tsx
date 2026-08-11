@@ -27,6 +27,14 @@ type PuckRecord = Record<string, Record<string, unknown>>;
 type ViewMode = "desktop" | "tablet" | "mobile";
 
 const object = (value: unknown): Record<string, unknown> => value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
+async function pageWithImageSources(projectId: string, page: Page): Promise<Page> {
+  const mediaAssets = await Promise.all(page.mediaAssets.map(async (asset) => {
+    if (asset.sourceUrl || !asset.sourceAvailable) return asset;
+    const result = await api.get<{ asset: Page["mediaAssets"][number] }>(`/api/projects/${projectId}/website-builder/pages/${page.id}/media/${asset.id}`);
+    return { ...asset, ...result.asset, sourceAvailable: Boolean(result.asset.sourceUrl) };
+  }));
+  return { ...page, mediaAssets };
+}
 const componentsFromPage = (page: Page | null) => {
   const value = page?.visualComponents?.length ? page.visualComponents : object(page?.contentJson).components;
   let components = Array.isArray(value) ? value.filter((item): item is WebsiteComponentInstance => Boolean(item && typeof item === "object" && !Array.isArray(item))) : [];
@@ -191,10 +199,11 @@ export default function WebsiteVisualEditor({ mode }: { mode: "editor" | "previe
     setDraft(null);
     setMessage("");
     void api.get<{ page: Page }>(`/api/projects/${projectId}/website-builder/pages/${selectedPageId}`)
-      .then((result) => {
+      .then((result) => pageWithImageSources(projectId, result.page))
+      .then((loadedPage) => {
         if (cancelled) return;
-        setPageDetails((current) => ({ ...current, [selectedPageId]: result.page }));
-        setDraft(websiteComponentsToPuck(componentsFromPage(result.page)) as Data<PuckRecord>);
+        setPageDetails((current) => ({ ...current, [selectedPageId]: loadedPage }));
+        setDraft(websiteComponentsToPuck(componentsFromPage(loadedPage)) as Data<PuckRecord>);
       })
       .catch((error) => {
         if (!cancelled) setMessage(error instanceof Error ? error.message : "The selected page content could not be loaded.");
