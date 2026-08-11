@@ -942,6 +942,8 @@ async function persistCanonicalWebsiteModel(
   return { record, model: snapshot, created: true };
 }
 
+const WEBSITE_QUALITY_VALIDATOR_VERSION = "senuke-site-quality-1.2.0";
+
 async function validateAndPersistWebsiteModel(
   project: CanonicalWebsiteProject,
   build: CanonicalWebsiteBuild,
@@ -980,7 +982,7 @@ async function validateAndPersistWebsiteModel(
   const result = await prisma.websiteValidationResult.create({
     data: {
       modelVersionId: canonical.record.id,
-      validatorVersion: "senuke-site-quality-1.1.0",
+      validatorVersion: WEBSITE_QUALITY_VALIDATOR_VERSION,
       status,
       overallScore,
       blockingCount,
@@ -1350,11 +1352,12 @@ async function scopedProject(projectId: string, req: Parameters<typeof workspace
               createdAt: true,
               validationResults: activeValidationId
                 ? {
-                    where: { id: activeValidationId },
+                    where: { id: activeValidationId, validatorVersion: WEBSITE_QUALITY_VALIDATOR_VERSION },
                     take: 1,
                     select: { id: true, status: true, overallScore: true, blockingCount: true, warningCount: true, validatedAt: true, validatedSnapshotHash: true, findingsJson: true, pageScoresJson: true },
                   }
                 : {
+                    where: { validatorVersion: WEBSITE_QUALITY_VALIDATOR_VERSION },
                     orderBy: { validatedAt: "desc" },
                     take: 1,
                     select: { id: true, status: true, overallScore: true, blockingCount: true, warningCount: true, validatedAt: true, validatedSnapshotHash: true, findingsJson: true, pageScoresJson: true },
@@ -1371,6 +1374,7 @@ async function scopedProject(projectId: string, req: Parameters<typeof workspace
               snapshotHash: true,
               createdAt: true,
               validationResults: {
+                where: { validatorVersion: WEBSITE_QUALITY_VALIDATOR_VERSION },
                 orderBy: { validatedAt: "desc" },
                 take: 1,
                 select: { id: true, status: true, overallScore: true, blockingCount: true, warningCount: true, validatedAt: true, validatedSnapshotHash: true, findingsJson: true, pageScoresJson: true },
@@ -1505,8 +1509,8 @@ async function scopedOverviewProject(projectId: string, req: Parameters<typeof w
         },
       },
       websiteModelVersions: activeModelId
-        ? { where: { id: activeModelId }, take: 1, select: { id: true, version: true, status: true, snapshotHash: true, createdAt: true, validationResults: activeValidationId ? { where: { id: activeValidationId }, take: 1, select: { id: true, status: true, overallScore: true, blockingCount: true, warningCount: true, validatedAt: true, validatedSnapshotHash: true, findingsJson: true, pageScoresJson: true } } : { orderBy: { validatedAt: "desc" }, take: 1, select: { id: true, status: true, overallScore: true, blockingCount: true, warningCount: true, validatedAt: true, validatedSnapshotHash: true, findingsJson: true, pageScoresJson: true } } } }
-        : { orderBy: { version: "desc" }, take: 1, select: { id: true, version: true, status: true, snapshotHash: true, createdAt: true, validationResults: { orderBy: { validatedAt: "desc" }, take: 1, select: { id: true, status: true, overallScore: true, blockingCount: true, warningCount: true, validatedAt: true, validatedSnapshotHash: true, findingsJson: true, pageScoresJson: true } } } },
+        ? { where: { id: activeModelId }, take: 1, select: { id: true, version: true, status: true, snapshotHash: true, createdAt: true, validationResults: activeValidationId ? { where: { id: activeValidationId, validatorVersion: WEBSITE_QUALITY_VALIDATOR_VERSION }, take: 1, select: { id: true, status: true, overallScore: true, blockingCount: true, warningCount: true, validatedAt: true, validatedSnapshotHash: true, findingsJson: true, pageScoresJson: true } } : { where: { validatorVersion: WEBSITE_QUALITY_VALIDATOR_VERSION }, orderBy: { validatedAt: "desc" }, take: 1, select: { id: true, status: true, overallScore: true, blockingCount: true, warningCount: true, validatedAt: true, validatedSnapshotHash: true, findingsJson: true, pageScoresJson: true } } } }
+        : { orderBy: { version: "desc" }, take: 1, select: { id: true, version: true, status: true, snapshotHash: true, createdAt: true, validationResults: { where: { validatorVersion: WEBSITE_QUALITY_VALIDATOR_VERSION }, orderBy: { validatedAt: "desc" }, take: 1, select: { id: true, status: true, overallScore: true, blockingCount: true, warningCount: true, validatedAt: true, validatedSnapshotHash: true, findingsJson: true, pageScoresJson: true } } } },
       websiteApprovedReleases: activeReleaseId
         ? { where: { id: activeReleaseId }, take: 1, select: { id: true, approvalStatus: true, modelVersionId: true, snapshotHash: true, approvedAt: true, approverId: true, revokedAt: true } }
         : { orderBy: { approvedAt: "desc" }, take: 1, select: { id: true, approvalStatus: true, modelVersionId: true, snapshotHash: true, approvedAt: true, approverId: true, revokedAt: true } },
