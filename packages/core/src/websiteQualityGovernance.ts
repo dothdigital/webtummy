@@ -74,7 +74,6 @@ const regulatedClaimPattern = /\b(?:guarantee(?:d|s)?|risk[- ]free|no risk|alway
 const inherentlyUnsafeClaimPattern = /\b(?:guarantee(?:d|s)?|risk[- ]free|no risk|always|never|100%|best|#\s*1|number one|leading|top[- ]rated|highest returns?|lowest (?:rate|price)|save \$?\d|earn \$?\d)\b/i;
 const hardGuaranteeOrRankingPattern = /\b(?:guarantee(?:d|s)?|risk[- ]free|no risk|always|never|100%|#\s*1|number one|leading|top[- ]rated|highest returns?|lowest (?:rate|price)|save \$?\d|earn \$?\d)\b/i;
 const evidenceDependentCredentialPattern = /\b(?:approved by|certified|licensed|award[- ]winning|years? of experience)\b/i;
-const reviewableSuitabilityPattern = /\b(?:evaluate|compare|consider|review|choose|find)\b[^.!?]{0,180}\bbest fit\b/i;
 const businessClaimPattern = /\b(?:trusted|experienced|expert|specialist|premier|industry[- ]leading|proven|exceptional|unmatched)\b/i;
 const educationalPattern = /\b(?:may|can|often|typically|generally|helps?|designed to|depending on|consider)\b/i;
 const stopWords = new Set(["a", "an", "and", "are", "as", "at", "be", "by", "for", "from", "in", "is", "it", "of", "on", "or", "our", "the", "this", "to", "we", "with", "you", "your"]);
@@ -250,9 +249,10 @@ export function evaluateWebsiteQualityGovernance(
       const businessClaim = businessClaimPattern.test(statement);
       if (!regulatedOrPerformance && !businessClaim) continue;
       const reviewableSuitability = regulatedOrPerformance
-        && reviewableSuitabilityPattern.test(statement)
         && !hardGuaranteeOrRankingPattern.test(statement)
         && !evidenceDependentCredentialPattern.test(statement);
+      const reviewableBusinessQuality = regulated && businessClaim && !evidenceIds.length;
+      const nonBlockingSubjectiveClaim = reviewableSuitability || reviewableBusinessQuality;
       const classification: WebsiteClaimClassification = reviewableSuitability
         ? "generic_educational"
         : regulatedOrPerformance
@@ -260,7 +260,7 @@ export function evaluateWebsiteQualityGovernance(
         : evidenceIds.length
           ? "verified_fact"
           : "missing_trust_evidence";
-      const publishable = classification === "verified_fact" || reviewableSuitability;
+      const publishable = classification === "verified_fact" || nonBlockingSubjectiveClaim;
       const id = `${page.pageId}:claim:${claims.length + 1}`;
       claims.push({
         claimId: id,
@@ -269,27 +269,27 @@ export function evaluateWebsiteQualityGovernance(
         classification,
         evidenceIds,
         publishable,
-        reason: reviewableSuitability
-          ? "This is advisory suitability wording rather than a promised outcome; it remains visible as a reviewer-acknowledgeable warning when evidence is unavailable."
+        reason: nonBlockingSubjectiveClaim
+          ? "This is subjective advisory or business-quality wording rather than a promised outcome; it remains visible as an optional reviewer-acknowledgeable refinement."
           : publishable
             ? "The page links this business claim to approved evidence."
             : "No approved evidence supports this public business or performance claim.",
       });
-      if (!publishable || reviewableSuitability) addIssue({
+      if (!publishable || nonBlockingSubjectiveClaim) addIssue({
         code: regulatedOrPerformance ? "regulated_or_guaranteed_claim" : "unsupported_business_claim",
-        severity: reviewableSuitability ? "medium" : regulatedOrPerformance || regulated ? "blocker" : "high",
+        severity: nonBlockingSubjectiveClaim ? "medium" : regulatedOrPerformance || regulated ? "blocker" : "high",
         category: regulated ? "regulated_industry" : "claims_and_evidence",
         pageId: page.pageId,
         pageName: page.name,
         field: "sections",
-        message: reviewableSuitability
-          ? "This advisory suitability wording has no specific approved evidence. It is a warning, not a publishing blocker."
+        message: nonBlockingSubjectiveClaim
+          ? "This sentence uses subjective advisory or business-quality wording. It is an optional content refinement and does not block approval or publishing."
           : regulatedOrPerformance
           ? "A regulated, ranking, performance, or guarantee claim cannot be published without specific approved evidence."
           : "A trust or business-quality claim is not connected to approved evidence.",
         evidence: statement,
-        suggestedFix: reviewableSuitability
-          ? "Continue without evidence and record the decision, rewrite it as neutral educational guidance, or remove it."
+        suggestedFix: nonBlockingSubjectiveClaim
+          ? "Keep the current wording, rewrite it as neutral educational guidance, or remove it."
           : "Attach approved evidence to the exact claim, qualify it accurately, or remove the claim.",
         autoFixable: true,
       });

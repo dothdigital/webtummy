@@ -46,6 +46,22 @@ describe("website quality governance", () => {
     ]));
   });
 
+  it("keeps subjective regulated business-quality wording non-blocking", () => {
+    const result = evaluateWebsiteQualityGovernance(model("Our trusted team helps clients review available coverage options."), { industry: "Insurance and financial services" });
+    expect(result.openBlockingCount).toBe(0);
+    expect(result.issues).toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: "unsupported_business_claim", severity: "medium", status: "open" }),
+    ]));
+  });
+
+  it("continues to block unsupported rankings and guarantees", () => {
+    const result = evaluateWebsiteQualityGovernance(model("We are the #1 top-rated provider and guarantee the highest returns."), { industry: "Insurance and financial services" });
+    expect(result.status).toBe("blocked");
+    expect(result.issues).toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: "regulated_or_guaranteed_claim", severity: "blocker", status: "open" }),
+    ]));
+  });
+
   it("allows a written waiver for high issues but never for blockers", () => {
     const draft = evaluateWebsiteQualityGovernance(model("Our experienced team explains the available options."));
     const high = draft.issues.find((issue) => issue.severity === "high");
