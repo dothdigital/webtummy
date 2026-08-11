@@ -491,6 +491,23 @@ const utilityNavigationHtml = (model: WebsiteModel, options: WebsiteRenderOption
 
 export function curatedWebsiteFooterMenus(model: WebsiteModel) {
   const sourceGroups = model.navigationModel?.footerMenus ?? [];
+  const configuredGroups = [...sourceGroups.reduce((groups, group) => {
+    const key = group.label.trim().toLowerCase();
+    const existing = groups.get(key);
+    if (!existing) groups.set(key, { ...group, items: [...group.items] });
+    else {
+      const existingIds = new Set(existing.items.map((item) => item.pageId));
+      existing.items.push(...group.items.filter((item) => !existingIds.has(item.pageId)));
+    }
+    return groups;
+  }, new Map<string, (typeof sourceGroups)[number]>()).values()];
+  if (configuredGroups.length > 0 && configuredGroups.length <= 2 && configuredGroups.length === sourceGroups.length) {
+    const legalItems = configuredGroups.flatMap((group) => group.items.filter((item) => {
+      const page = pageById(model, item.pageId);
+      return /(?:^|\s)(?:legal|privacy|terms|cookie|sitemap)(?:\s|$)/.test(`${page?.menuGroupId || ""} ${page?.pageType || ""} ${page?.name || item.label}`.toLowerCase());
+    }));
+    return { mainGroups: configuredGroups, legalItems };
+  }
   const choices = new Map<string, { item: (typeof sourceGroups)[number]["items"][number]; groupText: string }>();
   for (const group of sourceGroups) {
     for (const item of group.items) {

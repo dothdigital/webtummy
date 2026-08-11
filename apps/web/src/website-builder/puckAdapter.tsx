@@ -33,8 +33,10 @@ export type WebsiteChrome = {
   contactPhone?: string;
   businessAddress?: string;
   copyrightText?: string;
+  footerAboutText?: string;
   socialProfiles?: Array<{ network: SocialNetwork; url: string }>;
   menu: Array<{ pageId: string; label: string; slug: string; parentPageId: string | null; custom?: boolean }>;
+  footerMenu?: Array<{ pageId: string; label: string; slug: string; parentPageId: string | null; custom?: boolean }>;
   onNavigate?: (pageId: string) => void;
 };
 
@@ -291,9 +293,9 @@ function GlobalWebsiteHeader({ chrome }: { chrome: WebsiteChrome }) {
 
 function GlobalWebsiteFooter({ chrome }: { chrome: WebsiteChrome }) {
   const contact = [
-    chrome.contactPhone ? <a key="phone" href={`tel:${chrome.contactPhone.replace(/[^\d+]/g, "")}`} style={{ color: "inherit" }}>{chrome.contactPhone}</a> : null,
-    chrome.contactEmail ? <a key="email" href={`mailto:${chrome.contactEmail}`} style={{ color: "inherit" }}>{chrome.contactEmail}</a> : null,
     chrome.businessAddress ? <span key="address">{chrome.businessAddress}</span> : null,
+    chrome.contactEmail ? <a key="email" href={`mailto:${chrome.contactEmail}`} style={{ color: "inherit" }}>{chrome.contactEmail}</a> : null,
+    chrome.contactPhone ? <a key="phone" href={`tel:${chrome.contactPhone.replace(/[^\d+]/g, "")}`} style={{ color: "inherit" }}>{chrome.contactPhone}</a> : null,
   ].filter(Boolean);
   const socialProfiles = (chrome.socialProfiles ?? []).filter((profile) => /^https:\/\//i.test(profile.url));
   const socialMeta: Record<SocialNetwork, { label: string; mark: string }> = {
@@ -304,14 +306,22 @@ function GlobalWebsiteFooter({ chrome }: { chrome: WebsiteChrome }) {
     x: { label: "X", mark: "𝕏" },
     tiktok: { label: "TikTok", mark: "♪" },
   };
-  const footerItems = chrome.menu.filter((item) => !item.parentPageId).slice(0, 8);
+  const footerMenu = chrome.footerMenu?.length ? chrome.footerMenu : chrome.menu;
+  const configuredColumns = footerMenu.filter((item) => item.custom && !item.parentPageId).slice(0, 2);
+  const fallbackColumns = [
+    { pageId: "footer-links-one", label: "Explore", slug: "", parentPageId: null, custom: true },
+    { pageId: "footer-links-two", label: "Information", slug: "", parentPageId: null, custom: true },
+  ];
+  const footerColumns = [...configuredColumns];
+  for (const fallback of fallbackColumns) if (footerColumns.length < 2) footerColumns.push(fallback);
   const activate = (item: WebsiteChrome["menu"][number], event: React.MouseEvent<HTMLAnchorElement>) => {
     if (!item.custom && chrome.onNavigate) {
       event.preventDefault();
       chrome.onNavigate(item.pageId);
     }
   };
-  return <footer className="senuke-global-footer" style={{ padding: "48px 7% 24px", background: "var(--senuke-text)", color: "#fff" }}><div style={{ display: "grid", gridTemplateColumns: "minmax(220px,1fr) minmax(260px,1fr)", gap: "30px 64px", alignItems: "start" }}><div><b style={{ fontSize: 22 }}>{chrome.businessName}</b>{contact.length ? <div style={{ display: "grid", gap: 8, marginTop: 14, color: "#cbd5e1", fontSize: 14 }}>{contact}</div> : <p style={{ marginTop: 14, color: "#fbbf24", fontSize: 13, fontWeight: 750 }}>Add the verified phone and email in Brand Foundation before approval.</p>}{socialProfiles.length ? <nav aria-label="Social media" style={{ display: "flex", flexWrap: "wrap", gap: 10, marginTop: 18 }}>{socialProfiles.map((profile) => { const meta = socialMeta[profile.network]; return <a key={profile.network} href={profile.url} target="_blank" rel="noreferrer" aria-label={meta.label} title={meta.label} style={{ display: "grid", width: 40, height: 40, placeItems: "center", border: "1px solid rgba(255,255,255,.22)", borderRadius: 999, background: "rgba(255,255,255,.08)", color: "#fff", fontSize: profile.network === "linkedin" ? 12 : 17, fontWeight: 900, lineHeight: 1, textDecoration: "none" }}>{meta.mark}</a>; })}</nav> : null}</div>{footerItems.length ? <nav aria-label="Footer navigation" style={{ display: "flex", flexWrap: "wrap", justifyContent: "flex-end", gap: "10px 22px" }}>{footerItems.map((item) => { const href = item.slug ? (/^(?:https?:\/\/|mailto:|tel:|#)/i.test(item.slug) ? item.slug : `/${item.slug.replace(/^\/+|\/+$/g, "")}${item.slug === "/" ? "" : "/"}`) : "#"; return <a key={item.pageId} href={href} onClick={(event) => activate(item, event)} style={{ color: "#e2e8f0", fontSize: 13, fontWeight: 750, textDecoration: "none" }}>{item.label}</a>; })}</nav> : null}</div><div style={{ marginTop: 34, borderTop: "1px solid rgba(255,255,255,.16)", paddingTop: 18, color: "#94a3b8", fontSize: 12 }}>{chrome.copyrightText || `© ${new Date().getFullYear()} ${chrome.businessName}. All rights reserved.`}</div></footer>;
+  const renderLink = (item: WebsiteChrome["menu"][number]) => { const href = item.slug ? (/^(?:https?:\/\/|mailto:|tel:|#)/i.test(item.slug) ? item.slug : `/${item.slug.replace(/^\/+|\/+$/g, "")}${item.slug === "/" ? "" : "/"}`) : "#"; return <a key={item.pageId} href={href} onClick={(event) => activate(item, event)} style={{ color: "#cbd5e1", fontSize: 13, fontWeight: 700, lineHeight: 1.5, textDecoration: "none" }}>{item.label}</a>; };
+  return <footer className="senuke-global-footer" style={{ padding: "48px 7% 24px", background: "var(--senuke-text)", color: "#fff" }}><div style={{ display: "grid", gridTemplateColumns: "minmax(210px,1.2fr) repeat(2,minmax(140px,.8fr)) minmax(210px,1fr)", gap: "30px 42px", alignItems: "start" }}><section aria-label="Brand information">{chrome.logoUrl ? <img src={chrome.logoUrl} alt={`${chrome.businessName} logo`} style={{ display: "block", width: "auto", maxWidth: 190, height: 54, objectFit: "contain" }}/> : <b style={{ fontSize: 22 }}>{chrome.businessName}</b>}<p style={{ maxWidth: 300, margin: "16px 0 0", color: "#cbd5e1", fontSize: 14, lineHeight: 1.65 }}>{(chrome.footerAboutText || `Learn more about ${chrome.businessName}.`).slice(0, 50)}</p></section>{footerColumns.map((column, index) => { const links = footerMenu.filter((item) => !item.custom && (item.parentPageId === column.pageId || (!item.parentPageId && index === 0))); return <nav key={column.pageId} aria-label={`${column.label} footer links`}><b style={{ display: "block", borderBottom: "1px solid rgba(255,255,255,.16)", paddingBottom: 10, fontSize: 14 }}>{column.label}</b><div style={{ display: "grid", gap: 10, marginTop: 14 }}>{links.map(renderLink)}</div></nav>; })}<section aria-label="Contact information"><b style={{ display: "block", borderBottom: "1px solid rgba(255,255,255,.16)", paddingBottom: 10, fontSize: 14 }}>Contact</b>{contact.length ? <div style={{ display: "grid", gap: 8, marginTop: 14, color: "#cbd5e1", fontSize: 14 }}>{contact}</div> : <p style={{ marginTop: 14, color: "#fbbf24", fontSize: 13, fontWeight: 750 }}>Add the verified address and email in Brand Foundation.</p>}{socialProfiles.length ? <nav aria-label="Social media" style={{ display: "flex", flexWrap: "wrap", gap: 10, marginTop: 18 }}>{socialProfiles.map((profile) => { const meta = socialMeta[profile.network]; return <a key={profile.network} href={profile.url} target="_blank" rel="noreferrer" aria-label={meta.label} title={meta.label} style={{ display: "grid", width: 36, height: 36, placeItems: "center", border: "1px solid rgba(255,255,255,.22)", borderRadius: 999, background: "rgba(255,255,255,.08)", color: "#fff", fontSize: profile.network === "linkedin" ? 11 : 15, fontWeight: 900, lineHeight: 1, textDecoration: "none" }}>{meta.mark}</a>; })}</nav> : null}</section></div><div style={{ marginTop: 34, borderTop: "1px solid rgba(255,255,255,.16)", paddingTop: 18, color: "#94a3b8", fontSize: 12 }}>{chrome.copyrightText || `© ${new Date().getFullYear()} ${chrome.businessName}. All rights reserved.`}</div></footer>;
 }
 
 const normalizedInternalPath = (value: string) => {

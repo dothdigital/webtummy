@@ -820,8 +820,8 @@ function qualityWebsiteModel(project: { id: string; businessLocationJson?: Prism
     componentRegistryVersion: String(settings.componentRegistryVersion || SENUKE_COMPONENT_REGISTRY_V1.version),
     identity: {
       businessName: String(brand.businessName || build.name.replace(/\s+website$/i, "") || "Website"),
-      ...(String(contactDetails.businessSummary || jsonRecord(settings.analysis).businessSummary || jsonRecord(settings.analysis).offer || "").trim()
-        ? { businessSummary: String(contactDetails.businessSummary || jsonRecord(settings.analysis).businessSummary || jsonRecord(settings.analysis).offer).trim() }
+      ...(String(settings.footerAboutText || contactDetails.businessSummary || jsonRecord(settings.analysis).businessSummary || jsonRecord(settings.analysis).offer || "").trim()
+        ? { businessSummary: String(settings.footerAboutText || contactDetails.businessSummary || jsonRecord(settings.analysis).businessSummary || jsonRecord(settings.analysis).offer).trim().slice(0, 50) }
         : {}),
       ...(logoAssetId ? { logoAssetId } : {}),
       ...(faviconAssetId ? { faviconAssetId } : {}),

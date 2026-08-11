@@ -146,7 +146,7 @@ export default function WebsiteVisualEditor({ mode }: { mode: "editor" | "previe
     return `${asset.id}:${source.length}:${source.slice(-24)}:${asset.altText || ""}`;
   }).join("|") ?? "";
   const savedMenu = Array.isArray(settings.menu) ? settings.menu.map(object) : [];
-  const websiteMenu = (savedMenu.length ? savedMenu : activePages.map((item) => ({ pageId: item.id, label: item.title, slug: item.slug, parentPageId: null }))).map((item) => {
+  const websiteMenu = (savedMenu.length ? savedMenu : activePages.map((item) => ({ pageId: item.id, label: item.title, slug: item.slug, parentPageId: null, custom: false }))).map((item) => {
     const linkedPage = activePages.find((candidate) => candidate.id === String(item.pageId ?? ""));
     return {
       pageId: String(item.pageId ?? linkedPage?.id ?? ""),
@@ -156,7 +156,17 @@ export default function WebsiteVisualEditor({ mode }: { mode: "editor" | "previe
       custom: item.custom === true || String(item.pageId ?? "").startsWith("custom-"),
     };
   }).filter((item) => item.custom || activePages.some((candidate) => candidate.id === item.pageId));
-  const chromeSignature = websiteMenu.map((item) => `${item.pageId}:${item.parentPageId || ""}:${item.label}:${item.slug}:${item.custom ? 1 : 0}`).join("|");
+  const savedFooterMenu = Array.isArray(settings.footerMenu) ? settings.footerMenu.map(object) : [];
+  const rawFooterMenu = savedFooterMenu.map((item) => {
+    const linkedPage = activePages.find((candidate) => candidate.id === String(item.pageId ?? ""));
+    return { pageId: String(item.pageId ?? linkedPage?.id ?? ""), label: String(item.label ?? linkedPage?.title ?? "Page"), slug: String(item.slug ?? linkedPage?.slug ?? ""), parentPageId: item.parentPageId ? String(item.parentPageId) : null, custom: item.custom === true || String(item.pageId ?? "").startsWith("custom-") };
+  }).filter((item) => item.custom || activePages.some((candidate) => candidate.id === item.pageId));
+  const footerColumns = rawFooterMenu.filter((item) => item.custom && !item.parentPageId).slice(0, 2);
+  const footerFallbacks = [{ pageId: "custom-footer-explore", label: "Explore", slug: "", parentPageId: null, custom: true }, { pageId: "custom-footer-information", label: "Information", slug: "", parentPageId: null, custom: true }];
+  for (const fallback of footerFallbacks) if (footerColumns.length < 2) footerColumns.push(fallback);
+  const footerColumnIds = new Set(footerColumns.map((item) => item.pageId));
+  const footerWebsiteMenu = [...footerColumns, ...rawFooterMenu.filter((item) => !item.custom).map((item, index) => ({ ...item, parentPageId: item.parentPageId && footerColumnIds.has(item.parentPageId) ? item.parentPageId : footerColumns[index % 2].pageId }))];
+  const chromeSignature = [...websiteMenu, ...footerWebsiteMenu].map((item) => `${item.pageId}:${item.parentPageId || ""}:${item.label}:${item.slug}:${item.custom ? 1 : 0}`).join("|");
   const logoUrl = String(brand.logoDataUrl || brand.logoUrl || "");
   const businessName = String(brand.businessName || response?.project.businessName || response?.project.name || build?.name.replace(/\s+website$/i, "") || "Website");
   const contactDetails = object(settings.contactDetails);
@@ -164,13 +174,15 @@ export default function WebsiteVisualEditor({ mode }: { mode: "editor" | "previe
   const contactPhone = String(contactDetails.phone || "");
   const businessAddress = String(contactDetails.address || "");
   const copyrightText = String(contactDetails.copyrightText || `© ${new Date().getFullYear()} ${businessName}. All rights reserved.`);
+  const analysis = object(settings.analysis);
+  const footerAboutText = String(settings.footerAboutText || contactDetails.businessSummary || analysis.businessSummary || `Learn more about ${businessName}.`).slice(0, 50);
   const socialLinks = object(contactDetails.socialLinks);
   const socialProfiles = (["facebook", "instagram", "linkedin", "youtube", "x", "tiktok"] as const).flatMap((network) => {
     const url = String(socialLinks[network] || "").trim();
     return /^https:\/\//i.test(url) ? [{ network, url }] : [];
   });
   const socialSignature = socialProfiles.map((profile) => `${profile.network}:${profile.url}`).join("|");
-  const config = useMemo(() => createSenukePuckConfig(themeInput, page?.mediaAssets ?? [], { businessName, previewMode: view, logoUrl, contactEmail, contactPhone, businessAddress, copyrightText, socialProfiles, menu: websiteMenu, onNavigate: setPageId }), [themeInput.primary, themeInput.secondary, themeInput.accent, themeInput.background, themeInput.text, themeInput.mutedText, themeInput.headingFont, themeInput.bodyFont, themeInput.radius, mediaSignature, chromeSignature, logoUrl, businessName, contactEmail, contactPhone, businessAddress, copyrightText, socialSignature, view]);
+  const config = useMemo(() => createSenukePuckConfig(themeInput, page?.mediaAssets ?? [], { businessName, previewMode: view, logoUrl, contactEmail, contactPhone, businessAddress, copyrightText, footerAboutText, socialProfiles, menu: websiteMenu, footerMenu: footerWebsiteMenu, onNavigate: setPageId }), [themeInput.primary, themeInput.secondary, themeInput.accent, themeInput.background, themeInput.text, themeInput.mutedText, themeInput.headingFont, themeInput.bodyFont, themeInput.radius, mediaSignature, chromeSignature, logoUrl, businessName, contactEmail, contactPhone, businessAddress, copyrightText, footerAboutText, socialSignature, view]);
   const theme = themeVariables(themeInput);
 
   useEffect(() => {

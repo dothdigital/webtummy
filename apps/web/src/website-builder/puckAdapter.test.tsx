@@ -152,4 +152,31 @@ describe("SENuke Puck adapter", () => {
     expect(html).toContain("First concise overview paragraph.");
     expect(html).toContain("Second concise overview paragraph.");
   });
+
+  it("renders a fixed four-column footer with two configured link columns", () => {
+    const config = createSenukePuckConfig({}, [], {
+      businessName: "Example Insurance",
+      logoUrl: "https://example.com/logo.png",
+      footerAboutText: "Clear advice for families.",
+      businessAddress: "Brampton, Ontario",
+      contactEmail: "hello@example.com",
+      socialProfiles: [{ network: "linkedin", url: "https://www.linkedin.com/company/example" }],
+      menu: [],
+      footerMenu: [
+        { pageId: "footer-services", label: "Services", slug: "", parentPageId: null, custom: true },
+        { pageId: "footer-company", label: "Company", slug: "", parentPageId: null, custom: true },
+        { pageId: "life", label: "Life insurance", slug: "life-insurance", parentPageId: "footer-services" },
+        { pageId: "about", label: "About us", slug: "about", parentPageId: "footer-company" },
+      ],
+    });
+    const root = config.root as { render: (props: { children: ReactNode }) => ReactNode };
+    const html = renderToStaticMarkup(createElement(() => root.render({ children: createElement("main", null, "Page") })));
+    expect(html).toContain("Clear advice for families.");
+    expect(html).toContain("Services");
+    expect(html).toContain("Company");
+    expect(html).toContain("Life insurance");
+    expect(html).toContain("About us");
+    expect(html).toContain("Brampton, Ontario");
+    expect(html).toContain('aria-label="Social media"');
+  });
 });
