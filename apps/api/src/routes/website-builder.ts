@@ -6537,7 +6537,7 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/pages/:pageId/re
   if (!hasWorkspacePermission(context, "run_ai_analysis")) return res.status(403).json({ error: "AI generation permission is required." });
   const project = await prisma.project.findUnique({
     where: { id: req.params.projectId },
-    select: { id: true, clientId: true, agencyClientId: true, name: true, businessName: true, industry: true, niche: true },
+    select: { id: true, clientId: true, agencyClientId: true, name: true, businessName: true, niche: true },
   });
   const build = await prisma.websiteBuild.findFirst({
     where: { projectId: req.params.projectId },
@@ -6554,7 +6554,7 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/pages/:pageId/re
   if (!page || !pageHasCompleteContent(page)) return res.status(409).json({ error: "Generate the page before repairing its public claims." });
   const components = canonicalComponents(page.contentJson);
   const unsupported = findWebsiteUnsupportedClaims(components, {
-    regulatedIndustry: /\b(?:insurance|financial|finance|investment|mortgage|bank|legal|law|medical|health|healthcare|pharma|real estate|accounting|tax)\b/i.test(String(project.industry || project.niche || "")),
+    regulatedIndustry: /\b(?:insurance|financial|finance|investment|mortgage|bank|legal|law|medical|health|healthcare|pharma|real estate|accounting|tax)\b/i.test(String(project.niche || "")),
     // The repair path deliberately qualifies or removes the claim. It never
     // assumes that unrelated project evidence supports this exact sentence.
     evidenceAvailable: false,
@@ -6574,7 +6574,7 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/pages/:pageId/re
         system: "Rewrite only the supplied unsupported public website claims as neutral, educational copy. Return JSON only. Preserve the useful subject, but remove rankings, guarantees, superlatives, suitability conclusions, performance promises, unsupported credentials, and invented facts. Do not add new services, policy facts, insurer ratings, legal conclusions, statistics, locations, or outcomes.",
         prompt: `Return {"replacements":[{"replacement":"safe customer-facing sentence"}]} with exactly one replacement for every numbered sentence, in the same order.
 Business: ${businessIdentity(project) || "Approved business identity unavailable"}
-Industry: ${project.industry || project.niche || "Not specified"}
+Industry: ${project.niche || "Not specified"}
 Page: ${page.title}
 Primary keyword: ${page.primaryKeyword}
 Unsupported sentences:
