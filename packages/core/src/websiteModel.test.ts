@@ -511,6 +511,19 @@ describe("SENuke canonical Website Model", () => {
     expect(score.checks.find((check) => check.key === "h1")?.status).toBe("pass");
   });
 
+  it("does not penalize a contact page without body-level internal links", () => {
+    const contact = page({
+      pageId: "contact-page",
+      name: "Contact Example Insurance",
+      slug: "/contact/",
+      pageType: "contact",
+      seo: { ...page().seo, internalLinks: [], canonicalUrl: "/contact/" },
+    });
+    const website = model([page(), contact]);
+    const score = scoreSeoPage(contact, website);
+    expect(score.checks.find((check) => check.key === "internal_links")).toEqual(expect.objectContaining({ status: "pass", score: 10 }));
+  });
+
   it("blocks release quality when the canonical is missing", () => {
     const invalidPage = page({ seo: { ...page().seo, canonicalUrl: "" } });
     const website = model([invalidPage]);

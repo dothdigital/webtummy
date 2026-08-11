@@ -1678,13 +1678,14 @@ export function scoreSeoPage(
   const unsupportedClaims = pageFindings.some((finding) => finding.code === "unsupported_claim");
   const heroCount = page.sections.filter((section) => section.componentId.startsWith("hero.") && typeof section.props.headline === "string").length;
   const hasLocalEvidence = !page.seo.location?.city || page.sections.some((section) => ["trust.proof", "content.faq", "service.grid"].includes(section.componentId));
+  const internalLinksOptional = /^(?:contact|conversion|utility|legal|privacy|terms|thank[_ -]?you)$/i.test(String(page.pageType || ""));
   const checks = [
     qualityCheck("title", "Title", page.seo.title.length >= 20 && page.seo.title.length <= 65, 10, "Use a unique, readable title aligned with the primary intent."),
     qualityCheck("meta_description", "Meta description", page.seo.metaDescription.length >= 70 && page.seo.metaDescription.length <= 170, 10, "Use a unique description that explains the page value."),
     qualityCheck("h1", "H1", heroCount === 1, 10, "Every page requires exactly one hero headline mapped to H1."),
     qualityCheck("keyword_intent", "Keyword intent", Boolean(page.seo.primaryKeyword && page.seo.dominantIntent), 10, "Assign one primary keyword and one dominant intent."),
     qualityCheck("local_relevance", "Local relevance", hasLocalEvidence, 10, "Local pages require meaningful local proof, FAQs, services, or examples."),
-    qualityCheck("internal_links", "Internal links", page.seo.internalLinks.length > 0 || model.pages.length === 1, 10, "Add valid contextual links to related project pages."),
+    qualityCheck("internal_links", "Internal links", page.seo.internalLinks.length > 0 || model.pages.length === 1 || internalLinksOptional, 10, internalLinksOptional ? "Body-level internal links are optional for this page type." : "Add valid contextual links to related project pages."),
     qualityCheck("schema", "Schema", Object.keys(page.seo.schemaJsonLd).length > 0, 10, "Add verified page-appropriate JSON-LD."),
     qualityCheck("faq", "FAQ usefulness", page.seo.faqs.length >= 4, 5, "Include at least four useful, page-specific buyer FAQs.", page.seo.faqs.length > 0 && page.seo.faqs.length < 4),
     qualityCheck("duplicate", "Duplicate content risk", !duplicate, 10, "Avoid repeated or city-swap content."),
