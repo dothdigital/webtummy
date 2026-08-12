@@ -6,7 +6,7 @@ vi.mock("../queue.js", () => ({
   keywordResearchQueue: { add: vi.fn() },
 }));
 
-import { aiPageSuggestionIssueSummary, aiWebsitePlanDecisionIssueSummary, contentPlanFor, includeEveryCrawledPageInContentPlan, inspectAiPageFaqPlanResponse, inspectAiUnifiedWebsitePlanResponse, normalizeAiPageCtaSuggestion, normalizeAiWebsitePlanCtaSuggestion, parseAiPageFaqPlanResponse, parseAiUnifiedWebsitePlanResponse, reconcileAiWebsitePlanBatch, repairContentPlanPageIdentities, websitePlanEvidencePages } from "./execution-tasks.js";
+import { aiPageSuggestionIssueSummary, aiWebsitePlanDecisionIssueSummary, contentPlanFor, includeEveryCrawledPageInContentPlan, inspectAiPageFaqPlanResponse, inspectAiUnifiedWebsitePlanResponse, normalizeAiPageCtaSuggestion, normalizeAiWebsitePlanCtaSuggestion, normalizeGeneratedContentBrief, parseAiPageFaqPlanResponse, parseAiUnifiedWebsitePlanResponse, reconcileAiWebsitePlanBatch, repairContentPlanPageIdentities, websitePlanEvidencePages } from "./execution-tasks.js";
 
 const baseInput = {
   projectName: "Growth Project",
@@ -371,6 +371,20 @@ describe("AI Website Plan batch reconciliation", () => {
       expect(longCta.startsWith(cta)).toBe(true);
     }
     expect(parsed.pages[1]?.ctaSuggestion).toBe("Request a consultation");
+  });
+
+  it("shortens oversized generated briefs before Website Plan validation", () => {
+    const oversizedBriefs = Array.from({ length: 18 }, (_, index) =>
+      `AI brief for “governed page ${index + 1}” · ${"Use approved evidence and page-specific buyer guidance. ".repeat(index >= 16 ? 30 : 3)}`,
+    );
+    const normalized = oversizedBriefs.map((brief) => normalizeGeneratedContentBrief(brief));
+    expect(normalized).toHaveLength(18);
+    expect(normalized[16]?.length).toBeLessThanOrEqual(1000);
+    expect(normalized[17]?.length).toBeLessThanOrEqual(1000);
+    expect(normalized[16]).toMatch(/^AI brief for “governed page 17”/);
+    expect(normalized[17]).toMatch(/^AI brief for “governed page 18”/);
+    expect(normalized[16]?.endsWith("…")).toBe(true);
+    expect(normalizeGeneratedContentBrief("Keep this concise.")).toBe("Keep this concise.");
   });
 
   it("inspects pages missing FAQ topics so only incomplete pages need focused repair", () => {

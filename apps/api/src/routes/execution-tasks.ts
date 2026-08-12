@@ -679,6 +679,21 @@ function structuredBriefValue(value: unknown, depth = 0): string {
   }).filter(Boolean).join("\n");
 }
 
+/**
+ * AI writing directions are useful even when they exceed a downstream field
+ * limit. Normalize them before strict validation and shorten at a word
+ * boundary so one verbose page cannot fail the entire governed Website Plan.
+ */
+export function normalizeGeneratedContentBrief(value: unknown, maxLength = 1000) {
+  const text = structuredBriefValue(value).trim().replace(/\s+/g, " ");
+  if (!text || text.length <= maxLength) return text;
+  const available = Math.max(1, maxLength - 1);
+  const candidate = text.slice(0, available);
+  const wordBoundary = candidate.lastIndexOf(" ");
+  const shortened = candidate.slice(0, wordBoundary >= Math.floor(available * 0.7) ? wordBoundary : available).trimEnd();
+  return `${shortened}…`;
+}
+
 function normalizeAiCtaSuggestion(value: unknown, maxLength: number) {
   if (typeof value !== "string") return value;
   const compact = value.trim().replace(/\s+/g, " ");
@@ -699,9 +714,7 @@ export function normalizeAiWebsitePlanCtaSuggestion(value: unknown) {
 }
 
 function normalizeAiWebsitePlanDecision(decision: Record<string, unknown>) {
-  const contentBrief = decision.contentBrief && typeof decision.contentBrief === "object" && !Array.isArray(decision.contentBrief)
-    ? structuredBriefValue(decision.contentBrief).slice(0, 1500)
-    : decision.contentBrief;
+  const contentBrief = normalizeGeneratedContentBrief(decision.contentBrief, 1500);
   return {
     ...decision,
     searchIntent: normalizeWebsitePlanSearchIntent(decision.searchIntent),
@@ -985,7 +998,11 @@ export function parseAiPageFaqPlanResponse(value: unknown) {
   const pages = root.pages.map((item) => {
     if (!item || typeof item !== "object" || Array.isArray(item)) return item;
     const page = item as Record<string, unknown>;
-    return { ...page, ctaSuggestion: normalizeAiPageCtaSuggestion(page.ctaSuggestion) };
+    return {
+      ...page,
+      contentBrief: normalizeGeneratedContentBrief(page.contentBrief, 1500),
+      ctaSuggestion: normalizeAiPageCtaSuggestion(page.ctaSuggestion),
+    };
   });
   return aiPageFaqPlanSchema.parse({ ...root, pages });
 }
@@ -995,9 +1012,7 @@ export function inspectAiPageFaqPlanResponse(value: unknown) {
   return {
     pages: parsed.pages.map((page) => ({
       ...page,
-      contentBrief: page.contentBrief && typeof page.contentBrief === "object" && !Array.isArray(page.contentBrief)
-        ? structuredBriefValue(page.contentBrief).slice(0, 1500)
-        : page.contentBrief,
+      contentBrief: normalizeGeneratedContentBrief(page.contentBrief, 1500),
       ctaSuggestion: normalizeAiPageCtaSuggestion(page.ctaSuggestion),
     })),
   };
@@ -1202,7 +1217,7 @@ Do not omit faqTopics, contentBrief, supportingContentIdeas, proofRequirements, 
       }),
       contentBriefs: parsed.pages.flatMap((suggestion) => {
         const assignment = plan.pageAssignments.find((page) => page.targetUrl.trim().toLocaleLowerCase() === suggestion.targetUrl.trim().toLocaleLowerCase());
-        return assignment ? [`AI brief for “${assignment.canonicalKeyword}” · ${suggestion.contentBrief}`] : [];
+        return assignment ? [normalizeGeneratedContentBrief(`AI brief for “${assignment.canonicalKeyword}” · ${suggestion.contentBrief}`)] : [];
       }).slice(0, 500),
       supportingContent: parsed.pages.flatMap((suggestion) => {
         const assignment = plan.pageAssignments.find((page) => page.targetUrl.trim().toLocaleLowerCase() === suggestion.targetUrl.trim().toLocaleLowerCase());
@@ -3229,7 +3244,11 @@ async function performContentPlanPrepare(req: Request, res: Response) {
       planningChecks: [...generatedPlan.planningChecks, ...customPlanningChecks].slice(0, 500),
     };
   })() : generatedPlan;
-  const plan = contentPlanSchema.parse(reconcileContentPlanConflicts(repairContentPlanPageIdentities(generatedCandidatePlan)));
+  const reconciledCandidatePlan = reconcileContentPlanConflicts(repairContentPlanPageIdentities(generatedCandidatePlan));
+  const plan = contentPlanSchema.parse({
+    ...reconciledCandidatePlan,
+    contentBriefs: reconciledCandidatePlan.contentBriefs.map((brief) => normalizeGeneratedContentBrief(brief)),
+  });
   const updated = await prisma.$transaction(async (tx) => {
     // A project reset can legitimately remove this task while the AI request is
     // still running. Use a conditional write so that stale completions are
