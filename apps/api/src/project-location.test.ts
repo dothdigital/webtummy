@@ -32,6 +32,8 @@ describe("DEV-004 business location and target markets", () => {
 
   it("separates a natural-language composite service area into researchable markets", () => {
     expect(cleanGeographicTargetMarkets(["Etobicoke and west Toronto"])).toEqual(["Etobicoke", "west Toronto"]);
+    expect(cleanGeographicTargetMarkets(["Edmonton and Calgary", "edmonton"])).toEqual(["Edmonton", "Calgary"]);
+    expect(cleanGeographicTargetMarkets(["Newfoundland and Labrador"])).toEqual(["Newfoundland and Labrador"]);
   });
 
   it("removes vague AI area labels while preserving a named market", () => {

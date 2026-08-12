@@ -13,4 +13,16 @@ describe("projectAnalysisLocations", () => {
       locationNames: ["Milton, Ontario, Canada", "Oakville, Ontario, Canada"],
     });
   });
+
+  it("splits compound city input and removes a repeated canonical city", () => {
+    expect(projectAnalysisLocations({
+      targetLocations: ["Edmonton and Calgary", "edmonton"],
+      businessLocationJson: { city: "Edmonton", stateProvince: "Alberta", country: "Canada" },
+    })).toEqual({
+      country: "Canada",
+      region: "Alberta",
+      markets: ["Edmonton", "Calgary"],
+      locationNames: ["Edmonton, Alberta, Canada", "Calgary, Alberta, Canada"],
+    });
+  });
 });

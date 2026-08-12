@@ -134,6 +134,7 @@ const projectLocationsSchema = z.object({
 });
 const projectTargetMarketsSchema = z.object({
   targetMarkets: z.array(z.string().trim().min(1).max(180)).min(1).max(100),
+  source: z.enum(["keyword_research", "seo_content_plan", "project_settings"]).default("project_settings"),
 });
 const projectGoalsSchema = z.object({
   primaryGoal: z.string().trim().min(1).max(255),
@@ -3063,7 +3064,7 @@ guidedProjectsRouter.patch("/projects-v2/:projectId/target-markets", async (req,
         agencyClientId: project.agencyClientId,
         projectId: project.id,
         previousJson: { targetMarkets: previousTargetMarkets },
-        nextJson: { targetMarkets, source: "seo_content_plan" },
+        nextJson: { targetMarkets, source: parsed.data.source },
       });
     }
     if (changed && strategyApproved) {
@@ -3072,7 +3073,7 @@ guidedProjectsRouter.patch("/projects-v2/:projectId/target-markets", async (req,
         userId: context.workspace.ownerUserId,
         type: "project_target_markets_changed",
         title: "Project target markets updated",
-        body: `${project.name}'s target markets were updated from the SEO Content Plan. Existing approved research remains historical; refresh it when you want those reports regenerated.`,
+        body: `${project.name}'s target markets were updated. Existing research for removed markets remains available as history, while readiness now follows the current project markets.`,
         actionUrl: `/guided-projects/${project.id}`,
         agencyClientId: project.agencyClientId,
         projectId: project.id,

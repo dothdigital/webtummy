@@ -795,7 +795,7 @@ export default function ContentPlanDialog({ task, onClose, onSaved, autoPrepare 
     try {
       const result = await api.patch<{ targetMarkets: string[]; changed: boolean; refreshRecommended: boolean }>(
         `/api/projects-v2/${task.projectId}/target-markets`,
-        { targetMarkets: markets },
+        { targetMarkets: markets, source: "seo_content_plan" },
       );
       setTargetLocations(result.targetMarkets.join("\n"));
       setProjectContext((current) => current ? {

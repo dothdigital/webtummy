@@ -62,6 +62,15 @@ export function projectAnalysisLocationLabels(
 
 const nonGeographicMarketTerms = /\b(?:startup|startups|enterprise|enterprises|business|businesses|company|companies|customer|customers|client|clients|buyer|buyers|audience|audiences|people|person|individual|individuals|family|families|homeowner|homeowners|organization|organizations|team|teams|professional|professionals|industry|industries|looking|seeking|wanting|needing|integration|solution|solutions|service|services|product|products|insurance|software|technology|marketing|development)\b/i;
 const vagueGeographicMarket = /^(?:(?:nearby|surrounding|adjacent|local|other)\s+)?(?:areas?|neighbou?rhoods?|cities|towns|communities|regions?|markets?|service areas?)$/i;
+const protectedCompositeGeographicMarkets = new Set([
+  "antigua and barbuda",
+  "bosnia and herzegovina",
+  "brighton and hove",
+  "newfoundland and labrador",
+  "saint kitts and nevis",
+  "saint vincent and the grenadines",
+  "trinidad and tobago",
+]);
 
 /**
  * Target Markets are geographic records used by keyword localization, Local
@@ -89,10 +98,14 @@ export function cleanGeographicTargetMarkets(values: string[]) {
     const namedCandidates = hasVagueSuffix && withoutVagueSuffix.includes(",")
       ? withoutVagueSuffix.split(",")
       : [withoutVagueSuffix];
-    return namedCandidates.flatMap((market) => market
-      .split(/\s+(?:and|&)\s+(?=(?:north|south|east|west|central|downtown|greater)\b)/i)
-      .map((item) => item.trim())
-      .filter(Boolean));
+    return namedCandidates.flatMap((market) => {
+      const normalizedMarket = market.trim().replace(/\s+/g, " ");
+      if (protectedCompositeGeographicMarkets.has(normalizedMarket.toLocaleLowerCase())) return [normalizedMarket];
+      return normalizedMarket
+        .split(/\s+(?:and|&)\s+/i)
+        .map((item) => item.trim())
+        .filter(Boolean);
+    });
   });
   return cleanTargetMarkets(expanded).filter(isPlausibleGeographicTargetMarket);
 }

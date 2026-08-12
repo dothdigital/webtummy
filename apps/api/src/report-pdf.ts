@@ -1,6 +1,6 @@
 import PDFDocument from "pdfkit";
 
-type PdfBrand = { workspaceName: string; workspaceType: string; clientName?: string | null; preparedByName?: string | null; contactEmail?: string | null; primaryColor?: string | null; footerDisclaimer?: string | null };
+type PdfBrand = { workspaceName: string; workspaceType: string; clientName?: string | null; logoDataUrl?: string | null; preparedByName?: string | null; contactEmail?: string | null; contactPhone?: string | null; websiteUrl?: string | null; address?: string | null; primaryColor?: string | null; secondaryColor?: string | null; footerDisclaimer?: string | null; senderSignature?: string | null; minimizeSenukeBranding?: boolean };
 
 const titleCase = (value: string) => value.replace(/_/g, " ").replace(/\b\w/g, (character) => character.toUpperCase());
 const values = (value: unknown) => Array.isArray(value) ? value : [];
@@ -17,11 +17,13 @@ export function createProfessionalReportPdf(contentValue: unknown, brand: PdfBra
   const health = record(content.health);
   const execution = record(content.execution);
   const reportType = String(content.reportType || "");
+  const reportSections = values(content.sections).map(record);
+  const sectionEnabled = (...needles: string[]) => !reportSections.length || reportSections.some((item) => item.enabled !== false && needles.some((needle) => `${item.key || ""} ${item.title || ""}`.toLowerCase().includes(needle.toLowerCase())));
   const chunks: Buffer[] = [];
   const doc = new PDFDocument({ size: "A4", margins: { top: 54, bottom: 58, left: 54, right: 54 }, bufferPages: true, info: { Title: display(content.title), Author: brand.workspaceName, Subject: workspaceHeading(brand.workspaceType) } });
   doc.on("data", (chunk) => chunks.push(Buffer.from(chunk)));
 
-  const navy = "#0F172A"; const teal = /^#[0-9a-f]{6}$/i.test(brand.primaryColor ?? "") ? brand.primaryColor! : "#0F9F8F"; const muted = "#64748B"; const pale = "#F1F5F9"; const white = "#FFFFFF";
+  const navy = /^#[0-9a-f]{6}$/i.test(brand.secondaryColor ?? "") ? brand.secondaryColor! : "#0F172A"; const teal = /^#[0-9a-f]{6}$/i.test(brand.primaryColor ?? "") ? brand.primaryColor! : "#0F9F8F"; const muted = "#64748B"; const pale = "#F1F5F9"; const white = "#FFFFFF";
   const ensure = (height: number) => { if (doc.y + height > doc.page.height - 100) doc.addPage(); };
   const section = (heading: string, rows: [string, unknown][]) => {
     ensure(70 + rows.length * 24);
@@ -235,13 +237,17 @@ export function createProfessionalReportPdf(contentValue: unknown, brand: PdfBra
   };
 
   doc.rect(0, 0, doc.page.width, 245).fill(navy);
-  doc.fillColor(teal).font("Helvetica-Bold").fontSize(12).text("SENUKE AI", 54, 48, { characterSpacing: 1.5 });
+  doc.fillColor(teal).font("Helvetica-Bold").fontSize(12).text(brand.minimizeSenukeBranding === false ? "SENUKE AI" : "CLIENT DOCUMENT", 54, 48, { characterSpacing: 1.5 });
+  const logoMatch = brand.logoDataUrl?.match(/^data:image\/(?:png|jpeg);base64,(.+)$/i);
+  if (logoMatch) { try { doc.image(Buffer.from(logoMatch[1], "base64"), 410, 35, { fit: [130, 48], align: "right", valign: "center" }); } catch { /* Invalid saved logo data is omitted without breaking the document. */ } }
   doc.fillColor(white).font("Helvetica-Bold").fontSize(28).text(reportType === "agency_proposal" ? "Agency Growth Proposal" : reportType === "seo_audit" ? "Complete SEO Findings Report" : reportType === "strategy" ? "Complete Strategy Report" : workspaceHeading(brand.workspaceType), 54, 83, { width: 480 });
   doc.fillColor("#CBD5E1").font("Helvetica").fontSize(12).text(display(content.title), 54, 127, { width: 480 });
   doc.fillColor(white).font("Helvetica-Bold").fontSize(11).text(brand.workspaceName, 54, 177);
   if (brand.clientName) doc.fillColor("#CBD5E1").font("Helvetica").fontSize(10).text(`Prepared for ${brand.clientName}`, 54, 197);
-  if (brand.preparedByName || brand.contactEmail) doc.fillColor("#CBD5E1").font("Helvetica").fontSize(9).text(`Prepared by ${[brand.preparedByName, brand.contactEmail].filter(Boolean).join(" - ")}`, 54, 215, { width: 480 });
-  doc.fillColor(muted).font("Helvetica").fontSize(9).text(`Generated ${new Date(String(content.generatedAt || Date.now())).toLocaleDateString("en-CA", { year: "numeric", month: "long", day: "numeric" })}`, 54, 268);
+  if (brand.preparedByName || brand.contactEmail || brand.contactPhone || brand.address) doc.fillColor("#CBD5E1").font("Helvetica").fontSize(9).text(`Prepared by ${[brand.preparedByName, brand.contactEmail, brand.contactPhone, brand.address].filter(Boolean).join(" - ")}`, 54, 215, { width: 480, height: 20, ellipsis: true });
+  const period = record(content.reportingPeriod);
+  const periodText = period.start && period.end ? `Reporting period ${new Date(String(period.start)).toLocaleDateString("en-CA")} to ${new Date(String(period.end)).toLocaleDateString("en-CA")}` : `Generated ${new Date(String(content.generatedAt || Date.now())).toLocaleDateString("en-CA", { year: "numeric", month: "long", day: "numeric" })}`;
+  doc.fillColor(muted).font("Helvetica").fontSize(9).text(periodText, 54, 268);
   doc.fillColor(navy).font("Helvetica-Bold").fontSize(21).text(display(project.name || project.businessName || "Project Report"), 54, 294, { width: 480 });
   doc.fillColor(muted).font("Helvetica").fontSize(10).text([project.website, project.primaryGoal].filter(Boolean).map(String).join("  -  ") || "Project performance and delivery summary", 54, 324, { width: 480 });
   doc.y = 365;
@@ -260,26 +266,30 @@ export function createProfessionalReportPdf(contentValue: unknown, brand: PdfBra
   if (reportType === "agency_proposal") {
     const proposal = record(content.proposal); const investment = record(proposal.investment); const evidence = record(proposal.evidenceSummary);
     pageHeading("01 · Executive Proposal", display(proposal.title), `Prepared for ${brand.clientName || display(project.businessName || project.name)}. This document translates the saved project evidence into a reviewable scope, delivery plan, and investment framework.`);
-    narrative("Executive summary", proposal.executiveSummary);
+    if (sectionEnabled("executive_summary")) narrative("Executive summary", proposal.executiveSummary);
     columnList("Client objectives", proposal.objectives);
-    narrative("Recommended opportunity", proposal.opportunity, "#3B82F6");
+    if (sectionEnabled("what_we_found")) bullets("What we found", proposal.findings);
+    if (sectionEnabled("priority_growth_opportunities")) narrative("Recommended opportunity", proposal.opportunity, "#3B82F6");
+    if (sectionEnabled("recommended_approach")) columnList("Recommended approach and services", proposal.recommendedApproach);
     metricCards([{ label: "Project tasks", value: evidence.totalTasks, note: "Current evidence base" }, { label: "Completed", value: evidence.completedTasks, note: "Work already recorded" }, { label: "Target markets", value: values(evidence.targetMarkets).length, note: display(evidence.targetMarkets) }]);
 
     pageHeading("02 · Scope & Deliverables", "What the engagement includes", "Every deliverable should support the approved objectives. Scope changes require a revised proposal so expectations, pricing, and approvals remain clear.");
-    columnList("Scope of work", proposal.scope);
-    columnList("Client deliverables", proposal.deliverables);
-    narrative("Delivery timeline", proposal.timeline, "#8B5CF6");
+    if (sectionEnabled("scope_and_deliverables")) { columnList("Scope of work", proposal.scope); columnList("Client deliverables", proposal.deliverables); }
+    if (sectionEnabled("initial_roadmap")) columnList("Initial roadmap", proposal.roadmap);
+    if (sectionEnabled("timeline")) narrative("Delivery timeline", proposal.timeline, "#8B5CF6");
 
     pageHeading("03 · Investment", "Commercial framework", "Pricing remains editable until the proposal is approved. ‘TBD’ values are intentional placeholders and must be confirmed before sending the final proposal.");
-    metricCards([{ label: "Setup investment", value: investment.setupFee, note: display(investment.currency) }, { label: "Monthly investment", value: investment.monthlyFee, note: display(investment.currency) }, { label: "Timeline", value: proposal.timeline, note: "Subject to access and approvals" }]);
+    if (sectionEnabled("investment")) metricCards([{ label: "Setup investment", value: investment.setupFee, note: display(investment.currency) }, { label: "Monthly investment", value: investment.monthlyFee, note: display(investment.currency) }, { label: "Timeline", value: proposal.timeline, note: "Subject to access and approvals" }]);
     const lineItems = values(investment.lineItems).map((item) => { const row = record(item); return `${display(row.label)} — ${display(row.amount)} ${display(investment.currency)}`; });
-    columnList("Investment breakdown", lineItems);
+    if (sectionEnabled("investment")) columnList("Investment breakdown", lineItems);
+    if (sectionEnabled("optional_add_ons")) columnList("Optional add-ons", proposal.addOns);
+    if (sectionEnabled("expected_outcomes")) bullets("Expected outcomes", proposal.expectedOutcomes);
     doc.fillColor("#92400E").font("Helvetica").fontSize(8.5).text("Investment excludes taxes and third-party platform, advertising, media, hosting, or integration costs unless explicitly included above.", 54, doc.y + 8, { width: 487, lineGap: 2 });
 
     pageHeading("04 · Assumptions & Next Steps", "A clear path to approval", "This proposal remains a draft until approved. Approval confirms the documented scope and authorizes the agency to proceed according to the agreed workflow.");
-    bullets("Engagement assumptions", proposal.assumptions);
-    columnList("Next steps", proposal.nextSteps);
-    narrative("Approval", "Review the scope, deliverables, timeline, and investment. Request changes where needed, then approve the final version before work begins or the proposal is shared externally.", "#10B981");
+    if (sectionEnabled("assumptions")) { bullets("Engagement assumptions", proposal.assumptions); bullets("Exclusions", proposal.exclusions); bullets("Terms", proposal.terms); }
+    if (sectionEnabled("next_step")) { columnList("Next steps", proposal.nextSteps); narrative("Acceptance", "Review the scope, deliverables, timeline, investment, exclusions, and terms. Request changes where needed, then record acceptance of the final proposal before delivery begins.", "#10B981"); }
+    if (brand.senderSignature) narrative("Agency signature", brand.senderSignature, teal);
   } else if (reportType === "strategy") {
     const strategy = record(content.strategy); const evidence = record(content.evidence); const breakdown = record(strategy.scoreBreakdown); const site = record(evidence.siteAnalysis); const unified = record(strategy.unifiedPlan); const decisionSet = record(strategy.decisionSet);
     const diagnosis = record(unified.diagnosis); const positioning = record(unified.positioning); const audience = record(unified.audience);
@@ -525,12 +535,15 @@ export function createProfessionalReportPdf(contentValue: unknown, brand: PdfBra
     ]);
     narrative("Measurement note", "Search, map, traffic, lead, revenue, and AI citation outcomes require connected measurement and sufficient observation time. The recommendations improve readiness and implementation quality but do not guarantee a specific result.", "#F59E0B");
   } else {
-    const strategy = record(content.strategy); const evidence = record(content.evidence); const site = record(evidence.siteAnalysis);
+    const strategy = record(content.strategy); const evidence = record(content.evidence); const site = record(evidence.siteAnalysis); const clientNarrative = record(content.clientNarrative); const growth = record(content.growth); const blueprint = record(growth.blueprint);
     const rankingRows = values(performance.keywordRankingChanges).map((item) => { const row = record(item); const rank = row.rank == null ? "Not found" : `#${row.rank}`; const movement = row.change == null ? "new baseline" : Number(row.change) > 0 ? `up ${row.change}` : Number(row.change) < 0 ? `down ${Math.abs(Number(row.change))}` : "no change"; return `${display(row.keyword)} · ${display(row.location)} · ${rank} · ${movement}`; });
     pageHeading("01 · Executive Summary", display(content.title), "A concise client-facing view of current performance, completed work, important issues, and the next recommended actions. Values come from saved project evidence and connected integrations.");
     metricCards([{ label: "Site health", value: site.score ?? "Pending", note: site.pagesCrawled ? `${site.pagesCrawled} pages` : "Site Analysis" }, { label: "Tracked keywords", value: performance.trackedKeywords ?? 0, note: display(performance.rankingLocations) }, { label: "Tasks completed", value: health.completedTasks ?? 0, note: `of ${display(health.totalTasks)} total` }]);
     narrative("Project objective", project.primaryGoal, "#8B5CF6");
-    narrative("AI summary", strategy.summary || "The AI summary will appear after Strategy generation.", "#3B82F6");
+    narrative("Executive explanation", clientNarrative.executiveNarrative || strategy.summary || "A client explanation is not available for this snapshot.", "#3B82F6");
+    if (values(clientNarrative.wins).length) bullets("Wins and positive movement", clientNarrative.wins);
+    if (values(clientNarrative.risks).length) bullets("Risks and uncertainty", clientNarrative.risks);
+    if (clientNarrative.interpretation) narrative("What this means", clientNarrative.interpretation, "#8B5CF6");
     columnList("Target markets", project.targetMarkets);
 
     pageHeading("02 · Search Performance", "SEO, rankings and authority", "Keyword and crawl metrics are shown only when saved evidence exists. Traffic and backlink sections remain clearly marked until their relevant integrations are connected.");
@@ -544,8 +557,22 @@ export function createProfessionalReportPdf(contentValue: unknown, brand: PdfBra
     columnList("Scheduled next", execution.scheduledNext);
     metricCards([{ label: "Awaiting approval", value: values(execution.awaitingApproval).length, note: "Review required" }, { label: "Blocked", value: values(execution.blocked).length, note: "Needs attention" }, { label: "Published", value: values(execution.published).length, note: "Verified work" }]);
     bullets("AI recommendations", content.recommendations);
+    if (blueprint.id) {
+      pageHeading("04 · Growth Direction", "Growth Blueprint and next priorities", "This section uses the saved Growth Blueprint, experiments, and current Next Best Actions recorded in the report snapshot.", false);
+      narrative("Growth Blueprint", `${display(blueprint.title)} · ${display(blueprint.status)} · Version ${display(blueprint.currentVersion)} · Current phase ${display(blueprint.currentPhase)}`, "#8B5CF6");
+      bullets("Current priorities", growth.nextBestActions);
+      bullets("Experiments in this period", growth.experiments);
+    }
+    if (content.agencyNotes) narrative("Agency notes", content.agencyNotes, "#3B82F6");
+    const sourceSnapshot = record(content.sourceSnapshot);
+    pageHeading("Sources", "Evidence and snapshot record", "Important values remain tied to the evidence identifiers and timestamps captured when this document version was generated.", false);
+    section("Source versions", [["Business Brain", JSON.stringify(sourceSnapshot.businessBrain ?? null)], ["Evidence", JSON.stringify(sourceSnapshot.evidence ?? null)], ["Strategy", JSON.stringify(sourceSnapshot.strategy ?? null)], ["Growth Blueprint", JSON.stringify(sourceSnapshot.growthBlueprint ?? null)], ["Site Analysis", JSON.stringify(sourceSnapshot.siteAnalysis ?? null)]]);
   }
   if (reportType === "local_seo") { const local = record(content.localSeo); section("Local SEO", [["Google Business Profile", local.googleBusinessProfilePerformance], ["Local grid rankings", local.localGridRankings], ["Citation and NAP issues", local.citationsAndNapIssues], ["Recommendations", local.recommendations]]); }
+  if (reportType === "ai_search_citation") { const citation = record(content.aiCitationVisibility); const monitoring = record(citation.monitoring); section("AI Search & Citation", [["Assessment", citation.assessmentStatus], ["Latest audit", citation.latestAuditAt], ["Observed prompts", monitoring.prompts], ["Observed mentions", monitoring.observedMentions], ["Inaccurate mentions", monitoring.inaccurateMentions], ["Important caveat", citation.disclaimer]]); bullets("Current citation recommendations", citation.recommendations); }
+  if (reportType === "growth_marketing_cro") { const growth = record(content.growth); bullets("Funnel stages", growth.funnelStages); bullets("Experiments", growth.experiments); bullets("Prioritized next actions", growth.nextBestActions); }
+  if (reportType === "social_email") { const social = record(content.socialEmail); section("Social & Email Performance", [["Evidence sources", social.sources], ["Impressions", social.impressions], ["Reach", social.reach], ["Engagements", social.engagements], ["Clicks", social.clicks], ["Leads", social.leads], ["Conversions", social.conversions], ["Revenue", social.revenue], ["Email data", "Not connected"], ["Availability", social.message]]); }
+  if (reportType === "lead_crm") { section("Lead & CRM", [["Lead data", "Not connected"], ["Pipeline", "Not connected"], ["Conversion", "Not connected"], ["Revenue attribution", "Not connected"], ["Explanation", "Connect a supported CRM and verified attribution source before including lead, pipeline, conversion, or revenue metrics."]]); }
   if (reportType === "reputation") { const reputation = record(content.reputation); section("Reputation", [["New reviews", reputation.newReviews], ["Negative reviews requiring attention", reputation.negativeReviewsNeedingAttention], ["Average rating", reputation.averageRating], ["Rating change", reputation.ratingChange], ["Response status", reputation.responseStatus], ["Trends", reputation.trends]]); }
   if (reportType === "content_publishing") { const publishing = record(content.contentPublishing); section("Content and Publishing", [["Content created", publishing.created], ["Content approved", publishing.approved], ["Content published", publishing.published], ["Content performance", publishing.performance]]); }
   if (reportType === "ecommerce") { const ecommerce = record(content.ecommerce); section("Ecommerce Performance", [["Product and collection optimization", ecommerce.productAndCollectionOptimization], ["Organic product traffic", ecommerce.organicProductTraffic], ["Store SEO issues", ecommerce.storeSeoIssues], ["Product page performance", ecommerce.productPagePerformance], ["Published store changes", ecommerce.publishedStoreChanges], ["Sales and conversions", ecommerce.salesAndConversions]]); }
@@ -556,7 +583,8 @@ export function createProfessionalReportPdf(contentValue: unknown, brand: PdfBra
     const footerLineY = doc.page.height - 82;
     const footerTextY = doc.page.height - 72;
     doc.strokeColor("#E2E8F0").lineWidth(1).moveTo(54, footerLineY).lineTo(541, footerLineY).stroke();
-    doc.fillColor(muted).font("Helvetica").fontSize(8).text(`${brand.workspaceName}  •  ${brand.footerDisclaimer || "Confidential"}`, 54, footerTextY, { width: 350, height: 12, ellipsis: true, lineBreak: false });
+    const footerContact = [brand.contactEmail, brand.contactPhone, brand.websiteUrl].filter(Boolean).join(" · ");
+    doc.fillColor(muted).font("Helvetica").fontSize(8).text(`${brand.workspaceName}  •  ${brand.footerDisclaimer || "Confidential"}${footerContact ? `  •  ${footerContact}` : ""}`, 54, footerTextY, { width: 350, height: 12, ellipsis: true, lineBreak: false });
     doc.text(`Page ${index + 1} of ${range.count}`, 430, footerTextY, { width: 110, align: "right", lineBreak: false });
   }
   doc.end();

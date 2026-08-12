@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
+import { readFileSync } from "node:fs";
 import { createProfessionalReportPdf } from "./report-pdf.js";
+
+const agencyLogoDataUrl = `data:image/png;base64,${readFileSync(new URL("../../web/public/senuke-logo.png", import.meta.url)).toString("base64")}`;
 
 const customerFunnelStages = [
   { funnelStage: "discover", title: "Help customers discover the business", destination: "seo", asset: "Priority search landing pages" },
@@ -94,7 +97,7 @@ describe("professional project report PDF", () => {
       project: { name: "Acme Growth", businessName: "Acme", website: "acme.test", primaryGoal: "Generate leads", targetMarkets: ["Toronto"] },
       health: { workflowStep: "strategy", strategyStatus: "approved", completedTasks: 4, totalTasks: 12, blockedTasks: 0 }, seo: {}, performance: {}, execution: {},
       proposal: { title: "Acme Growth Proposal", executiveSummary: "A focused search and conversion engagement based on the approved client evidence.", objectives: ["Generate qualified leads"], opportunity: "Build local buyer-intent coverage.", scope: ["SEO strategy", "Landing pages", "Reporting"], deliverables: ["Approved Strategy", "Execution Plan", "Monthly report"], timeline: "90 days", investment: { currency: "CAD", setupFee: "$2,500", monthlyFee: "$1,500", lineItems: [{ label: "Strategy and setup", amount: "$2,500" }] }, assumptions: ["Client access is provided before implementation."], nextSteps: ["Review scope", "Approve proposal", "Begin onboarding"], evidenceSummary: { completedTasks: 4, totalTasks: 12, targetMarkets: ["Toronto"] } },
-    }, { workspaceName: "North Star Agency", workspaceType: "agency", clientName: "Acme", preparedByName: "Manish", contactEmail: "hello@example.com", primaryColor: "#2563EB", footerDisclaimer: "Confidential client proposal" });
+    }, { workspaceName: "North Star Agency", workspaceType: "agency", clientName: "Acme", logoDataUrl: agencyLogoDataUrl, preparedByName: "Manish", contactEmail: "hello@example.com", contactPhone: "416-555-0100", websiteUrl: "https://agency.example", primaryColor: "#2563EB", secondaryColor: "#111827", footerDisclaimer: "Confidential client proposal", minimizeSenukeBranding: true });
     const pageCount = (pdf.toString("latin1").match(/\/Type\s*\/Page\b/g) ?? []).length;
     expect(pageCount).toBeGreaterThanOrEqual(5);
     expect(pageCount).toBeLessThanOrEqual(6);

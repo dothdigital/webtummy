@@ -160,6 +160,7 @@ export default function KeywordReports() {
   const [keywordLimit, setKeywordLimit] = useState("25");
   const [loading, setLoading] = useState(true);
   const [creating, setCreating] = useState(false);
+  const [savingMarkets, setSavingMarkets] = useState(false);
   const [refreshingId, setRefreshingId] = useState<string | null>(null);
   const [showAddKeyword, setShowAddKeyword] = useState(searchParams.get("add") === "1");
   const [showManualKeywordForm, setShowManualKeywordForm] = useState(false);
@@ -335,7 +336,21 @@ export default function KeywordReports() {
     setCreating(true);
     setFormError(null);
     try {
-      const checks = queuedKeywords.flatMap((queued) => queued.locationNames.map((locationName) => ({
+      let submittedKeywords = queuedKeywords;
+      if (guidedProject && !retryQueueMode) {
+        const savedMarkets = await persistAnalysisMarkets();
+        const savedLocations = projectMarketLocationNames(savedMarkets, locationRegion, locationCountry);
+        submittedKeywords = queuedKeywords.map((queued) => ({
+          ...queued,
+          locationCity: savedMarkets.join(", "),
+          locationNames: selectKeywordAnalysisLocations(queued.keyword, savedLocations),
+        }));
+        if (submittedKeywords.some((queued) => queued.locationNames.length === 0)) {
+          throw new Error("One or more localized keywords do not match the selected project markets. Add the matching market or remove the location name from the keyword.");
+        }
+        setQueuedKeywords(submittedKeywords);
+      }
+      const checks = submittedKeywords.flatMap((queued) => queued.locationNames.map((locationName) => ({
         seedKeyword: queued.keyword,
         targetUrl: queued.targetUrl || null,
         targetDomain: queued.targetDomain || null,
@@ -563,7 +578,7 @@ export default function KeywordReports() {
   const addTargetMarket = () => {
     const candidates = marketDraft
       .split(/[;\n]/)
-      .map((entry) => geographicTargetMarkets([entry])[0] ?? "")
+      .flatMap((entry) => geographicTargetMarkets([entry]))
       .filter(Boolean);
     if (!candidates.length) {
       setMessage("Enter a named city, neighbourhood, region, province or state, or country.");
@@ -580,15 +595,45 @@ export default function KeywordReports() {
     setSelectedTargetMarkets((current) => current.filter((item) => item !== market));
   };
 
-  const applyTargetMarkets = () => {
+  const persistAnalysisMarkets = async () => {
+    const normalizedMarkets = geographicTargetMarkets(selectedTargetMarkets);
+    if (!normalizedMarkets.length) throw new Error("Select at least one named project market before running analysis.");
+    if (!guidedProject) return normalizedMarkets;
+    const currentMarkets = projectAnalysisLocations(guidedProject).markets;
+    const marketKey = (values: string[]) => [...new Set(values.map((value) => value.trim().toLocaleLowerCase()).filter(Boolean))].sort().join("|");
+    if (marketKey(currentMarkets) === marketKey(normalizedMarkets)) return normalizedMarkets;
+    const result = await api.patch<{ targetMarkets: string[]; changed: boolean }>(
+      `/api/projects-v2/${guidedProject.id}/target-markets`,
+      { targetMarkets: normalizedMarkets, source: "keyword_research" },
+    );
+    setTargetMarkets(result.targetMarkets);
+    setSelectedTargetMarkets(result.targetMarkets);
+    setGuidedProject((current) => current ? {
+      ...current,
+      targetLocations: result.targetMarkets,
+      targetLocation: result.targetMarkets.join(", "),
+    } : current);
+    return result.targetMarkets;
+  };
+
+  const applyTargetMarkets = async () => {
     if (!selectedTargetMarkets.length) return;
-    const selectedLocations = projectMarketLocationNames(selectedTargetMarkets, locationRegion, locationCountry);
-    setQueuedKeywords((current) => current.map((item) => ({
-      ...item,
-      locationCity: selectedTargetMarkets.join(", "),
-      locationNames: selectKeywordAnalysisLocations(item.keyword, selectedLocations),
-    })));
-    setMessage(`Applied ${selectedTargetMarkets.join(", ")} as analysis locations. Keyword text was not changed.`);
+    setSavingMarkets(true);
+    setFormError(null);
+    try {
+      const savedMarkets = await persistAnalysisMarkets();
+      const selectedLocations = projectMarketLocationNames(savedMarkets, locationRegion, locationCountry);
+      setQueuedKeywords((current) => current.map((item) => ({
+        ...item,
+        locationCity: savedMarkets.join(", "),
+        locationNames: selectKeywordAnalysisLocations(item.keyword, selectedLocations),
+      })));
+      setMessage(`Saved ${savedMarkets.join(", ")} as the project analysis market${savedMarkets.length === 1 ? "" : "s"}. The required-check total now follows this market list; removed markets remain available only in historical reports.`);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "The project analysis markets could not be saved.");
+    } finally {
+      setSavingMarkets(false);
+    }
   };
 
   const selectedWebsite = websites.find((website) => website.id === websiteId) ?? (guidedProject ? undefined : websites[0]);
@@ -940,9 +985,9 @@ export default function KeywordReports() {
                 <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
                   <div>
                     <div className="text-sm font-bold text-charcoal-900">Analysis markets</div>
-                    <p className="mt-1 max-w-2xl text-xs leading-5 text-charcoal-600">Choose and edit the exact named markets for this research. Locations stay separate from keyword text.</p>
+                    <p className="mt-1 max-w-2xl text-xs leading-5 text-charcoal-600">Choose the current project markets used by both this research run and the completion gate. Saving a new list removes old markets from required checks without deleting their historical reports.</p>
                   </div>
-                  <Button type="button" onClick={applyTargetMarkets} disabled={!selectedTargetMarkets.length || !queuedKeywords.length}>Apply Analysis Markets</Button>
+                  <Button type="button" onClick={() => void applyTargetMarkets()} disabled={savingMarkets || !selectedTargetMarkets.length || !queuedKeywords.length}>{savingMarkets ? "Saving markets…" : "Save & Apply Project Markets"}</Button>
                 </div>
                 <div className="mt-4 flex flex-wrap gap-2">
                   {targetMarkets.map((market) => {

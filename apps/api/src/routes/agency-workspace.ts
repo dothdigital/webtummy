@@ -514,21 +514,22 @@ agencyWorkspaceRouter.post("/agency/reports/:reportId/send-to-client", (req, res
   const agencyClient = report?.project.agencyClient;
   if (!report || !agencyClient || !await canAccessAgencyClient(context, agencyClient.id)) throw Object.assign(new Error("Report not found."), { statusCode: 404 });
   if (report.approvalStatus !== "approved") throw Object.assign(new Error("Only approved reports can be sent to a client."), { statusCode: 409 });
+  if (report.qaStatus !== "passed") throw Object.assign(new Error("Document QA must pass before client delivery."), { statusCode: 409 });
   const clientViewers = await prisma.agencyClientMember.findMany({
     where: { agencyClientId: agencyClient.id, membership: { status: "active", roles: { some: { role: "client_viewer" } } } },
     include: { membership: { include: { user: { select: { id: true, name: true, email: true } } } } },
   });
   const updated = await prisma.$transaction(async (tx) => {
-    const next = await tx.gapReportExport.update({ where: { id: report.id }, data: { clientVisible: true, sentToClientAt: new Date(), sentByUserId: context.membership.userId } });
-    await recordWorkspaceActivity(tx, { context, action: "report.sent_to_client", entityType: "gap_report_export", entityId: report.id, agencyClientId: agencyClient.id, projectId: report.projectId, nextJson: { recipients: clientViewers.map((item) => item.membership.user.email) } });
+    const next = await tx.gapReportExport.update({ where: { id: report.id }, data: { clientVisible: true, documentStatus: "sent", sentToClientAt: new Date(), sentByUserId: context.membership.userId } });
+    await recordWorkspaceActivity(tx, { context, action: report.reportType === "agency_proposal" ? "proposal.sent" : "report.sent_to_client", entityType: "gap_report_export", entityId: report.id, agencyClientId: agencyClient.id, projectId: report.projectId, nextJson: { documentStatus: "sent", version: report.currentVersion, recipients: clientViewers.map((item) => item.membership.user.email) } });
     for (const viewer of clientViewers) await createWorkspaceNotification(tx, { context, userId: viewer.membership.user.id, type: "report_sent", title: "New client report", body: `${report.reportType.replace(/_/g, " ")} is ready to view.`, actionUrl: `/agency/clients/${agencyClient.id}`, agencyClientId: agencyClient.id, projectId: report.projectId });
     return next;
   });
   for (const viewer of clientViewers) await sendMail({
     to: viewer.membership.user.email,
     subject: `New report from ${context.workspace.name}`,
-    text: `Your ${report.reportType.replace(/_/g, " ")} is ready in SEnuke AI.`,
-    html: `<p>Your <strong>${report.reportType.replace(/_/g, " ")}</strong> is ready in SEnuke AI.</p>`,
+    text: `Your ${report.reportType.replace(/_/g, " ")} from ${context.workspace.name} is ready in your secure client workspace.`,
+    html: `<p>Your <strong>${report.reportType.replace(/_/g, " ")}</strong> from <strong>${context.workspace.name}</strong> is ready in your secure client workspace.</p>`,
   });
   return { report: updated, recipients: clientViewers.length };
 }));

@@ -1,34 +1,148 @@
 import { Router } from "express";
 import { Prisma, prisma } from "@webtummy/db";
 import { z } from "zod";
-import { projectReportCatalog, projectReportTypes, reportFrequencies } from "@webtummy/core/reporting";
+import { agencyProposalTemplateIds, agencyProposalTemplates, projectReportCatalog, projectReportTypes, reportFrequencies } from "@webtummy/core/reporting";
 import { canAccessProject, createWorkspaceNotification, hasWorkspacePermission, recordWorkspaceActivity, workspaceContext } from "../workspace-access.js";
 import { createProfessionalReportPdf } from "../report-pdf.js";
 import { agencyProposalContent } from "@webtummy/core/agency-documents";
 import { recommendationFindings } from "./gap-analysis.js";
 import { extractUnifiedStrategyPlan } from "../strategy-ai.js";
+import { centralAiJson } from "../central-ai-service.js";
+import { config } from "../config.js";
 
 export const projectReportsRouter = Router();
 
-const generateSchema = z.object({ projectId: z.string().min(1), reportType: z.enum(projectReportTypes), exportFormat: z.enum(["pdf", "html", "secure_link"]).default("secure_link") });
+const generateSchema = z.object({
+  projectId: z.string().min(1), reportType: z.enum(projectReportTypes), exportFormat: z.enum(["pdf", "html", "secure_link"]).default("secure_link"),
+  templateId: z.enum(agencyProposalTemplateIds).optional(), selectedServices: z.array(z.string().trim().min(1).max(500)).max(50).default([]), selectedFindings: z.array(z.string().trim().min(1).max(1000)).max(50).default([]),
+  enabledSections: z.array(z.string().trim().min(1).max(100)).max(50).optional(), agencyNotes: z.string().trim().max(10000).optional().nullable(),
+  periodStart: z.coerce.date().optional(), periodEnd: z.coerce.date().optional(), useAiNarrative: z.boolean().default(true),
+}).superRefine((value, ctx) => { if (value.periodStart && value.periodEnd && value.periodStart > value.periodEnd) ctx.addIssue({ code: "custom", path: ["periodEnd"], message: "Reporting period end must be after its start." }); });
 const approvalSchema = z.object({ decision: z.enum(["approved", "rejected"]), notes: z.string().trim().max(5000).optional() });
+const proposalStatusSchema = z.object({ status: z.enum(["draft", "ready", "sent", "accepted", "declined", "archived", "expired"]), accepterName: z.string().trim().max(180).optional().nullable(), accepterEmail: z.string().email().optional().nullable(), note: z.string().trim().max(5000).optional().nullable(), actedAt: z.coerce.date().optional() });
 const scheduleSchema = z.object({ projectId: z.string().min(1), reportType: z.enum(projectReportTypes), frequency: z.enum(reportFrequencies), automaticClientDelivery: z.boolean().default(false) });
 const preferencesSchema = z.object({ nonCriticalEmail: z.boolean(), emailFrequency: z.enum(["immediate", "daily", "weekly", "monthly"]), reportEmails: z.boolean(), inAppNotifications: z.literal(true).default(true) });
 const brandingSchema = z.object({
   agencyName: z.string().trim().min(1).max(180), preparedByName: z.string().trim().max(180).optional().nullable(),
   contactEmail: z.string().email().optional().nullable(), colorPreference: z.string().regex(/^#[0-9a-f]{6}$/i).default("#0F9F8F"),
-  footerDisclaimer: z.string().trim().max(1000).optional().nullable(),
+  contactPhone: z.string().trim().max(80).optional().nullable(), websiteUrl: z.string().url().optional().nullable(), address: z.string().trim().max(500).optional().nullable(),
+  agencyLogoFileId: z.string().trim().max(191).optional().nullable(), agencyLogoDataUrl: z.string().max(800000).regex(/^data:image\/(?:png|jpeg);base64,/i).optional().nullable(), secondaryColor: z.string().regex(/^#[0-9a-f]{6}$/i).default("#0F172A"),
+  footerDisclaimer: z.string().trim().max(1000).optional().nullable(), defaultTerms: z.string().trim().max(10000).optional().nullable(), senderSignature: z.string().trim().max(5000).optional().nullable(), minimizeSenukeBranding: z.boolean().default(true),
 });
 const proposalEditSchema = z.object({
-  title: z.string().trim().min(1).max(255), executiveSummary: z.string().trim().min(20).max(10000),
+  templateId: z.enum(agencyProposalTemplateIds).default("growth_strategy"), title: z.string().trim().min(1).max(255), executiveSummary: z.string().trim().min(20).max(10000),
   objectives: z.array(z.string().trim().min(1).max(500)).min(1).max(20), opportunity: z.string().trim().min(1).max(5000),
+  findings: z.array(z.string().trim().min(1).max(1000)).max(50).default([]), recommendedApproach: z.array(z.string().trim().min(1).max(1000)).max(50).default([]),
   scope: z.array(z.string().trim().min(1).max(1000)).min(1).max(50), deliverables: z.array(z.string().trim().min(1).max(1000)).min(1).max(50),
+  roadmap: z.array(z.string().trim().min(1).max(1000)).max(30).default([]),
   timeline: z.string().trim().min(1).max(1000), investment: z.object({ currency: z.string().trim().min(3).max(8), setupFee: z.string().trim().min(1).max(80), monthlyFee: z.string().trim().min(1).max(80), lineItems: z.array(z.object({ label: z.string().trim().min(1).max(255), amount: z.string().trim().min(1).max(80) })).max(30) }),
-  assumptions: z.array(z.string().trim().min(1).max(1000)).max(30), nextSteps: z.array(z.string().trim().min(1).max(1000)).min(1).max(20),
+  addOns: z.array(z.string().trim().min(1).max(1000)).max(30).default([]), expectedOutcomes: z.array(z.string().trim().min(1).max(1000)).max(30).default([]),
+  assumptions: z.array(z.string().trim().min(1).max(1000)).max(30), exclusions: z.array(z.string().trim().min(1).max(1000)).max(30).default([]), terms: z.array(z.string().trim().min(1).max(2000)).max(30).default([]), nextSteps: z.array(z.string().trim().min(1).max(1000)).min(1).max(20),
 });
+const reportEditSchema = z.object({ executiveNarrative: z.string().trim().min(20).max(20000), agencyNotes: z.string().trim().max(10000).optional().nullable(), enabledSections: z.array(z.string().trim().min(1).max(100)).max(50) });
 
 function fail(message: string, statusCode = 403) {
   throw Object.assign(new Error(message), { statusCode });
+}
+
+type GenerateInput = z.infer<typeof generateSchema>;
+
+function sectionKey(value: string) {
+  return value.toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_|_$/g, "");
+}
+
+function reportingPeriod(data: GenerateInput) {
+  if (data.reportType === "agency_proposal") return { periodStart: null, periodEnd: null };
+  const now = new Date();
+  return {
+    periodStart: data.periodStart ?? new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1)),
+    periodEnd: data.periodEnd ?? now,
+  };
+}
+
+function currentSourceSnapshot(project: Awaited<ReturnType<typeof scopedProject>>, periodStart: Date | null, periodEnd: Date | null) {
+  const strategy = project.strategyPlans[0];
+  const businessBrain = project.businessBrainVersions[0];
+  const evidence = project.evidenceVersions[0];
+  const blueprintVersion = project.growthBlueprint?.versions[0];
+  const nextBestAction = project.nextBestActions[0];
+  const crawl = project.website?.crawlJobs[0];
+  const gap = project.gapAnalysisRuns[0];
+  return {
+    capturedAt: new Date().toISOString(),
+    reportingPeriod: { start: periodStart?.toISOString() ?? null, end: periodEnd?.toISOString() ?? null },
+    businessBrain: businessBrain ? { id: businessBrain.id, version: businessBrain.version, createdAt: businessBrain.createdAt } : null,
+    evidence: evidence ? { id: evidence.id, version: evidence.version, createdAt: evidence.createdAt, freshness: evidence.freshness, completeness: evidence.completeness } : null,
+    strategy: strategy ? { id: strategy.id, version: strategy.version, status: strategy.status, updatedAt: strategy.updatedAt } : null,
+    growthBlueprint: project.growthBlueprint ? { id: project.growthBlueprint.id, version: blueprintVersion?.version ?? project.growthBlueprint.currentVersion, status: project.growthBlueprint.status, updatedAt: project.growthBlueprint.updatedAt } : null,
+    nextBestAction: nextBestAction ? { id: nextBestAction.id, status: nextBestAction.status, title: nextBestAction.title, updatedAt: nextBestAction.updatedAt } : null,
+    siteAnalysis: crawl ? { completedAt: crawl.completedAt, score: crawl.siteScore, pagesCrawled: crawl.pagesCrawled } : null,
+    gapAnalysis: gap ? { id: gap.id, completedAt: gap.completedAt, createdAt: gap.createdAt } : null,
+    rankingEvidenceAt: project.keywordResearchRuns[0]?.createdAt ?? null,
+    aiCitationEvidenceAt: project.aiRuns[0]?.createdAt ?? null,
+    authorityEvidenceAt: project.backlinkProfileSnapshots[0]?.capturedAt ?? project.authorityPerformanceMetrics[0]?.periodEnd ?? null,
+    socialEvidenceAt: project.socialPerformanceMetrics[0]?.recordedAt ?? null,
+    growthEvidenceAt: project.growthExperiments[0]?.updatedAt ?? project.growthBlueprint?.updatedAt ?? null,
+    executionEvidenceAt: project.executionTasks[0]?.completedAt ?? project.executionTasks[0]?.publishedAt ?? project.executionTasks[0]?.dueAt ?? null,
+  };
+}
+
+function fallbackNarrative(content: Record<string, unknown>) {
+  const project = content.project && typeof content.project === "object" && !Array.isArray(content.project) ? content.project as Record<string, unknown> : {};
+  const health = content.health && typeof content.health === "object" && !Array.isArray(content.health) ? content.health as Record<string, unknown> : {};
+  const execution = content.execution && typeof content.execution === "object" && !Array.isArray(content.execution) ? content.execution as Record<string, unknown> : {};
+  const completed = Array.isArray(execution.completed) ? execution.completed.length : 0;
+  const blocked = Array.isArray(execution.blocked) ? execution.blocked.length : Number(health.blockedTasks ?? 0);
+  return `${String(project.name || "This project")} recorded ${completed} completed action${completed === 1 ? "" : "s"} during the selected reporting period. ${blocked ? `${blocked} blocked item${blocked === 1 ? " requires" : "s require"} attention before the next milestone.` : "No blocked work is currently recorded for this report."} The next priorities below are taken from the current saved project evidence and should be reviewed by the agency before delivery.`;
+}
+
+const aiNarrativeSchema = z.object({ executiveNarrative: z.string().trim().min(40).max(10000), wins: z.array(z.string().trim().min(1).max(500)).max(8), risks: z.array(z.string().trim().min(1).max(500)).max(8), interpretation: z.string().trim().min(20).max(5000) });
+const aiProposalCopySchema = z.object({ executiveSummary: z.string().trim().min(40).max(10000), findings: z.array(z.string().trim().min(1).max(1000)).max(12), opportunity: z.string().trim().min(20).max(5000), recommendedApproach: z.array(z.string().trim().min(1).max(1000)).max(12), roadmap: z.array(z.string().trim().min(1).max(1000)).max(12), expectedOutcomes: z.array(z.string().trim().min(1).max(1000)).max(12) });
+
+async function addClientNarrative(content: Record<string, unknown>, enabled: boolean) {
+  const fallback = { executiveNarrative: fallbackNarrative(content), wins: [], risks: [], interpretation: "Review the recorded work, source-labelled metrics, and current priorities together. Missing integrations remain clearly marked and are not treated as zero performance." };
+  if (!enabled || !config.openaiApiKey) return { ...content, clientNarrative: fallback, narrativeGeneration: { mode: "evidence_template", generatedAt: new Date().toISOString() } };
+  try {
+    const generated = await centralAiJson({
+      system: "You write concise Agency client reports from a supplied immutable evidence snapshot. Never invent metrics, causality, credentials, results, rankings, traffic, leads, revenue, or guarantees. Treat null as missing. Use cautious attribution and plain client-facing language. Never mention prompts, hidden reasoning, tokens, or internal workflow instructions.",
+      prompt: `Return {"executiveNarrative":"...","wins":string[],"risks":string[],"interpretation":"..."}. Explain performance, relevant completed work, business interpretation, uncertainty, and a small set of current priorities. Evidence snapshot:\n${JSON.stringify(content)}`,
+      temperature: 0.2, maxInputBytes: 72_000, maxOutputTokens: 2_500, validate: (value) => aiNarrativeSchema.parse(value),
+    });
+    return { ...content, clientNarrative: generated.result, narrativeGeneration: { mode: "ai", model: generated.model, generatedAt: new Date().toISOString() } };
+  } catch {
+    return { ...content, clientNarrative: fallback, narrativeGeneration: { mode: "evidence_template_fallback", generatedAt: new Date().toISOString() } };
+  }
+}
+
+async function addProposalNarrative(content: Record<string, unknown>, enabled: boolean) {
+  if (!enabled || !config.openaiApiKey) return { ...content, narrativeGeneration: { mode: "evidence_template", generatedAt: new Date().toISOString() } };
+  const proposal = content.proposal && typeof content.proposal === "object" && !Array.isArray(content.proposal) ? content.proposal as Record<string, unknown> : {};
+  try {
+    const generated = await centralAiJson({
+      system: "You write persuasive but cautious Agency proposals using only supplied project evidence. Never invent findings, rankings, traffic, revenue, conversions, competitors, credentials, customer counts, pricing, guarantees, or commercial terms. Do not convert the proposal into an approved Strategy. Use plain client-facing language and directional outcomes only.",
+      prompt: `Return {"executiveSummary":"...","findings":string[],"opportunity":"...","recommendedApproach":string[],"roadmap":string[],"expectedOutcomes":string[]}. Preserve the selected proposal type and selected services. Only include findings supported by the snapshot. Do not write pricing or terms. Proposal draft and immutable evidence snapshot:\n${JSON.stringify({ proposal, sourceSnapshot: content.sourceSnapshot, project: content.project, evidence: content.evidence, seo: content.seo, aiCitationVisibility: content.aiCitationVisibility, growth: content.growth })}`,
+      temperature: 0.25, maxInputBytes: 72_000, maxOutputTokens: 3_000, validate: (value) => aiProposalCopySchema.parse(value),
+    });
+    return { ...content, proposal: { ...proposal, ...generated.result }, narrativeGeneration: { mode: "ai", model: generated.model, generatedAt: new Date().toISOString() } };
+  } catch {
+    return { ...content, narrativeGeneration: { mode: "evidence_template_fallback", generatedAt: new Date().toISOString() } };
+  }
+}
+
+export function documentQa(content: Record<string, unknown>, reportType: typeof projectReportTypes[number], documentStatus = "draft") {
+  const serialized = JSON.stringify(content);
+  const project = content.project && typeof content.project === "object" && !Array.isArray(content.project) ? content.project as Record<string, unknown> : {};
+  const branding = content.branding && typeof content.branding === "object" && !Array.isArray(content.branding) ? content.branding as Record<string, unknown> : {};
+  const sourceSnapshot = content.sourceSnapshot && typeof content.sourceSnapshot === "object" && !Array.isArray(content.sourceSnapshot) ? content.sourceSnapshot as Record<string, unknown> : {};
+  const checks = [
+    { key: "identity", status: project.name && branding.agencyName ? "passed" : "failed", message: project.name && branding.agencyName ? "Agency and client/project identity are present." : "Agency or client/project identity is missing." },
+    { key: "period", status: reportType === "agency_proposal" || (content.reportingPeriod && typeof content.reportingPeriod === "object") ? "passed" : "failed", message: reportType === "agency_proposal" ? "A proposal does not require a reporting period." : "A reporting period is recorded." },
+    { key: "sources", status: Object.keys(sourceSnapshot).length ? "passed" : "failed", message: Object.keys(sourceSnapshot).length ? "Source identifiers and timestamps are recorded." : "The evidence snapshot is missing." },
+    { key: "internal_content", status: /system prompt|chain[- ]of[- ]thought|hidden reasoning|return valid json/i.test(serialized) ? "failed" : "passed", message: "No internal prompts or hidden reasoning may appear." },
+    { key: "pricing", status: reportType !== "agency_proposal" || !/\bTBD\b/i.test(serialized) ? "passed" : "failed", message: reportType === "agency_proposal" && /\bTBD\b/i.test(serialized) ? "Pricing placeholders must be replaced before approval or delivery." : "No unresolved pricing placeholders block delivery." },
+    { key: "narrative", status: reportType === "agency_proposal" || (content.clientNarrative && typeof content.clientNarrative === "object") ? "passed" : "failed", message: "A client-facing narrative is present." },
+  ];
+  return { status: checks.some((check) => check.status === "failed") ? "failed" : "passed", checkedAt: new Date().toISOString(), checks };
 }
 
 async function scopedProject(context: Awaited<ReturnType<typeof workspaceContext>>, projectId: string) {
@@ -36,11 +150,19 @@ async function scopedProject(context: Awaited<ReturnType<typeof workspaceContext
   const project = await prisma.project.findFirst({
     where: { id: projectId, ...(context.workspace.legacyClientId ? { clientId: context.workspace.legacyClientId } : {}) },
     include: {
-      agencyClient: { select: { id: true, name: true } }, website: { select: { id: true, domain: true, crawlJobs: { where: { status: "completed" }, orderBy: { completedAt: "desc" }, take: 1, select: { siteScore: true, pagesCrawled: true, completedAt: true, _count: { select: { issues: true } } } } } },
+      agencyClient: { select: { id: true, name: true, brandingJson: true } }, website: { select: { id: true, domain: true, crawlJobs: { where: { status: "completed" }, orderBy: { completedAt: "desc" }, take: 1, select: { siteScore: true, pagesCrawled: true, completedAt: true, _count: { select: { issues: true } } } } } },
       keywordResearchRuns: { where: { status: "completed" }, orderBy: { createdAt: "desc" }, take: 100, select: { seedKeyword: true, locationName: true, targetRank: true, manualRank: true, averageVolume: true, competitorCount: true, createdAt: true } },
       opportunities: { where: { status: { in: ["selected", "confirmed"] } }, orderBy: { createdAt: "desc" }, take: 1 },
       keywordGroups: { select: { id: true, title: true, status: true, keywords: true } },
       strategyPlans: { orderBy: { updatedAt: "desc" }, take: 1 },
+      workflowController: { select: { strategyStale: true, executionPlanStale: true, reconciledAt: true } },
+      businessBrainVersions: { orderBy: { version: "desc" }, take: 1 },
+      evidenceVersions: { orderBy: { version: "desc" }, take: 1 },
+      growthBlueprint: { include: { versions: { orderBy: { version: "desc" }, take: 1 } } },
+      nextBestActions: { where: { status: { in: ["proposed", "selected", "approved", "in_progress"] } }, orderBy: [{ selectedAt: "desc" }, { priorityScore: "desc" }, { createdAt: "desc" }], take: 5 },
+      growthExperiments: { include: { results: { orderBy: { recordedAt: "desc" }, take: 2 } }, orderBy: { updatedAt: "desc" }, take: 30 },
+      growthFunnelStages: { orderBy: { sortOrder: "asc" } },
+      socialPerformanceMetrics: { orderBy: { recordedAt: "desc" }, take: 200 },
       backlinkProfileSnapshots: { orderBy: { capturedAt: "desc" }, take: 2 },
       authorityOpportunities: { where: { status: { not: "superseded" } }, orderBy: [{ priorityScore: "desc" }, { createdAt: "desc" }] },
       authorityAssets: { orderBy: { createdAt: "desc" } },
@@ -62,10 +184,11 @@ async function scopedProject(context: Awaited<ReturnType<typeof workspaceContext
   return project;
 }
 
-function reportContent(project: Awaited<ReturnType<typeof scopedProject>>, reportType: typeof projectReportTypes[number], branding: Record<string, unknown>) {
+function reportContent(project: Awaited<ReturnType<typeof scopedProject>>, reportType: typeof projectReportTypes[number], branding: Record<string, unknown>, options: { periodStart: Date | null; periodEnd: Date | null; templateId?: z.infer<typeof generateSchema>["templateId"]; selectedServices?: string[]; selectedFindings?: string[]; enabledSections?: string[]; agencyNotes?: string | null }) {
   const definition = projectReportCatalog.find((item) => item.type === reportType)!;
-  const completed = project.executionTasks.filter((task) => task.completedAt || task.status === "completed");
-  const published = project.executionTasks.filter((task) => task.publishedAt || task.status === "published");
+  const inPeriod = (value: Date | null | undefined) => Boolean(value && (!options.periodStart || value >= options.periodStart) && (!options.periodEnd || value <= options.periodEnd));
+  const completed = project.executionTasks.filter((task) => reportType === "agency_proposal" ? Boolean(task.completedAt || task.status === "completed") : inPeriod(task.completedAt));
+  const published = project.executionTasks.filter((task) => reportType === "agency_proposal" ? Boolean(task.publishedAt || task.status === "published") : inPeriod(task.publishedAt));
   const awaitingApproval = project.executionTasks.filter((task) => task.requiresApproval && !task.approvedAt);
   const blocked = project.executionTasks.filter((task) => ["blocked", "failed"].includes(task.status));
   const scheduled = project.executionTasks.filter((task) => task.dueAt && !task.completedAt && !task.publishedAt);
@@ -80,7 +203,14 @@ function reportContent(project: Awaited<ReturnType<typeof scopedProject>>, repor
   const strategyDecisionSet = unifiedStrategyEntry?.decisionSet ?? null;
   const crawl = project.website?.crawlJobs[0];
   const selectedOpportunity = project.opportunities[0];
-  const rankingRuns = project.keywordResearchRuns;
+  const sourceSnapshot = currentSourceSnapshot(project, options.periodStart, options.periodEnd);
+  const enabled = new Set(options.enabledSections?.length ? options.enabledSections : definition.sections.map(sectionKey));
+  const reportSections = definition.sections.map((title, index) => ({ key: sectionKey(title), title, order: index, enabled: enabled.has(sectionKey(title)) }));
+  const blueprintVersion = project.growthBlueprint?.versions[0];
+  const nextBestActions = project.workflowController?.strategyStale ? [] : project.nextBestActions.map((action) => ({ id: action.id, title: action.title, recommendation: action.recommendation, expectedImpact: action.expectedImpact, status: action.status, priorityScore: action.priorityScore, evidence: action.evidenceJson, updatedAt: action.updatedAt }));
+  const experiments = project.growthExperiments.filter((experiment) => reportType === "agency_proposal" || inPeriod(experiment.completedAt) || inPeriod(experiment.startedAt) || inPeriod(experiment.updatedAt)).map((experiment) => ({ id: experiment.id, title: experiment.title, hypothesis: experiment.hypothesis, metric: experiment.metric, status: experiment.status, completedAt: experiment.completedAt, result: experiment.results[0] ? { baselineValue: experiment.results[0].baselineValue, currentValue: experiment.results[0].currentValue, status: experiment.results[0].resultStatus, evaluatedAt: experiment.results[0].evaluatedAt } : null }));
+  const socialMetrics = project.socialPerformanceMetrics.filter((metric) => reportType === "agency_proposal" || inPeriod(metric.recordedAt));
+  const rankingRuns = reportType === "agency_proposal" ? project.keywordResearchRuns : project.keywordResearchRuns.filter((run) => inPeriod(run.createdAt));
   const latestRankings = new Map<string, typeof rankingRuns[number]>();
   const previousRankings = new Map<string, typeof rankingRuns[number]>();
   for (const run of rankingRuns) {
@@ -128,12 +258,15 @@ function reportContent(project: Awaited<ReturnType<typeof scopedProject>>, repor
     executionComplexity: typeof storedScoreBreakdown.executionComplexity === "number" ? storedScoreBreakdown.executionComplexity : selectedOpportunity?.executionScore ?? 50,
     confidence: typeof storedScoreBreakdown.confidence === "number" ? storedScoreBreakdown.confidence : selectedOpportunity?.opportunityScore ?? strategyScore,
   };
+  const clientBrand = project.agencyClient?.brandingJson && typeof project.agencyClient.brandingJson === "object" && !Array.isArray(project.agencyClient.brandingJson) ? project.agencyClient.brandingJson as Record<string, unknown> : {};
   const base = {
-    title: definition.title, reportType, project: { id: project.id, name: project.name, businessName: project.businessName, website: project.website?.domain ?? project.websiteUrl, primaryGoal: project.primaryGoal, targetMarkets: project.targetLocations },
+    title: definition.title, reportType, project: { id: project.id, name: project.name, businessName: project.businessName, website: project.website?.domain ?? project.websiteUrl, primaryGoal: project.primaryGoal, targetMarkets: project.targetLocations }, clientIdentity: { name: project.agencyClient?.name ?? project.businessName ?? project.name, logoFileId: typeof clientBrand.logoFileId === "string" ? clientBrand.logoFileId : null },
     branding,
+    reportingPeriod: reportType === "agency_proposal" ? null : { start: options.periodStart?.toISOString() ?? null, end: options.periodEnd?.toISOString() ?? null },
+    sourceSnapshot,
     generatedAt: new Date().toISOString(), health: { workflowStep: project.currentStep, strategyStatus: project.strategyPlans[0]?.status ?? "not_started", completedTasks: completed.length, totalTasks: project.executionTasks.length, blockedTasks: blocked.length },
     seo: { approvedKeywordGroups: approvedKeywordGroups.length, approvedKeywords: approvedKeywordGroups.flatMap((group) => Array.isArray(group.keywords) ? group.keywords.map(String) : []).length, websiteConnected: Boolean(project.websiteId) },
-    performance: { keywordRankingChanges: rankingChanges, trackedKeywords: rankingChanges.length, rankingLocations: [...new Set(rankingChanges.map((item) => item.location))], averageSearchVolume: rankingRuns.length ? Math.round(rankingRuns.reduce((sum, run) => sum + (run.averageVolume ?? 0), 0) / rankingRuns.length) : null, serpCompetitors: Math.max(0, ...rankingRuns.map((run) => run.competitorCount)), organicTraffic: null, searchImpressions: null, searchClicks: null, indexedPages: crawl?.pagesCrawled ?? null, backlinkProgress, competitorVisibilityChanges: null, unavailableReason: unavailable },
+    performance: { keywordRankingChanges: rankingChanges, trackedKeywords: rankingRuns.length ? rankingChanges.length : null, rankingLocations: rankingRuns.length ? [...new Set(rankingChanges.map((item) => item.location))] : null, averageSearchVolume: rankingRuns.length ? Math.round(rankingRuns.reduce((sum, run) => sum + (run.averageVolume ?? 0), 0) / rankingRuns.length) : null, serpCompetitors: rankingRuns.length ? Math.max(...rankingRuns.map((run) => run.competitorCount)) : null, organicTraffic: null, searchImpressions: null, searchClicks: null, indexedPages: crawl?.pagesCrawled ?? null, backlinkProgress, competitorVisibilityChanges: null, unavailableReason: unavailable },
     authorityGrowth: {
       profile: backlinkProgress,
       opportunities: {
@@ -188,14 +321,24 @@ function reportContent(project: Awaited<ReturnType<typeof scopedProject>>, repor
     reputation: { newReviews: null, negativeReviewsNeedingAttention: null, averageRating: null, ratingChange: null, responseStatus: null, trends: null, unavailableReason: unavailable },
     execution: { completed: completed.map((task) => ({ title: task.title, module: task.moduleName, completedBy: task.assignee?.user.name || task.assignee?.user.email || "Unassigned", approvedBy: task.approver?.user.name || task.approver?.user.email || null })), published: published.map((task) => task.title), awaitingApproval: awaitingApproval.map((task) => task.title), blocked: blocked.map((task) => task.title), scheduledNext: scheduled.slice(0, 20).map((task) => ({ title: task.title, dueAt: task.dueAt })) },
     contentPublishing: { created: contentTasks.length, approved: contentTasks.filter((task) => Boolean(task.approvedAt)).length, published: contentTasks.filter((task) => Boolean(task.publishedAt) || task.status === "published").map((task) => task.title), performance: null, unavailableReason: unavailable },
+    growth: {
+      blueprint: project.growthBlueprint ? { id: project.growthBlueprint.id, title: project.growthBlueprint.title, status: project.growthBlueprint.status, currentVersion: blueprintVersion?.version ?? project.growthBlueprint.currentVersion, currentPhase: project.growthBlueprint.currentPhase, primaryGoal: project.growthBlueprint.primaryGoal, goals: blueprintVersion?.goalsJson ?? [], now: blueprintVersion?.nowJson ?? [], next: blueprintVersion?.nextJson ?? [], later: blueprintVersion?.laterJson ?? [], nextReviewAt: project.growthBlueprint.nextReviewAt } : null,
+      nextBestActions,
+      prioritiesStatus: project.workflowController?.strategyStale ? "reassessment_required" : "current",
+      experiments,
+      funnelStages: project.growthFunnelStages.map((stage) => ({ title: stage.title, status: stage.status, conversionMetric: stage.conversionMetric, issueSummary: stage.issueSummary })),
+    },
+    socialEmail: socialMetrics.length ? { sources: [...new Set(socialMetrics.map((metric) => `${metric.platform}:${metric.sourceType}`))], impressions: socialMetrics.reduce((sum, metric) => sum + metric.impressions, 0), reach: socialMetrics.reduce((sum, metric) => sum + metric.reach, 0), engagements: socialMetrics.reduce((sum, metric) => sum + metric.engagements, 0), clicks: socialMetrics.reduce((sum, metric) => sum + metric.clicks, 0), leads: socialMetrics.reduce((sum, metric) => sum + metric.leads, 0), conversions: socialMetrics.reduce((sum, metric) => sum + metric.conversions, 0), revenue: socialMetrics.some((metric) => metric.revenue != null) ? socialMetrics.reduce((sum, metric) => sum + (metric.revenue ?? 0), 0) : null } : { status: "not_connected", message: "No social or email performance evidence is recorded for this reporting period." },
     strategy: strategy ? { version: strategy.version, status: strategy.status, score: strategyScore, scoreBreakdown: strategyScoreBreakdown, summary: strategy.strategySummary, businessObjectives: strategy.businessObjectives, positioning: strategy.positioningStatement, audience: strategy.audienceProfile, offer: strategy.offerRecommendation, businessModel: strategy.businessModel, seo: strategy.seoStrategy, localSeo: strategy.localSeoStrategy, content: strategy.contentStrategy, competitors: strategy.competitorStrategy, competitiveInsights: strategy.competitiveInsights, authority: strategy.authorityStrategy, growthRecommendations: strategy.growthRecommendations, social: strategy.socialStrategy, publishing: strategy.publishingStrategy, kpis: strategy.kpis, revisionInstructions: strategy.revisionComment, approvedAt: strategy.approvedAt, unifiedPlan: unifiedStrategyPlan, decisionSet: strategyDecisionSet, decisions: strategy.advancedAnalysis } : null,
     evidence: { selectedOpportunity: selectedOpportunity?.name ?? null, opportunityScore: selectedOpportunity?.opportunityScore ?? null, businessLocation: project.businessLocation, targetMarkets: project.targetLocations, approvedKeywordGroups: approvedKeywordGroups.map((group) => ({ title: group.title, keywords: group.keywords })), siteAnalysis: crawl ? { score: crawl.siteScore, pagesCrawled: crawl.pagesCrawled, issuesFound: crawl._count.issues, completedAt: crawl.completedAt } : null },
     ecommerce: { productAndCollectionOptimization: project.executionTasks.filter((task) => /product|collection/i.test(`${task.moduleName} ${task.title}`)).map((task) => task.title), organicProductTraffic: null, storeSeoIssues: blocked.filter((task) => /store|product|collection|shopify/i.test(`${task.moduleName} ${task.title}`)).map((task) => task.title), productPagePerformance: null, publishedStoreChanges: published.filter((task) => /store|product|collection|shopify/i.test(`${task.moduleName} ${task.title}`)).map((task) => task.title), salesAndConversions: null, unavailableReason: unavailable },
-    sections: definition.sections, recommendations: blocked.length ? ["Resolve blocked work before the next milestone."] : ["Continue with the next approved execution priorities."],
+    sections: reportSections, agencyNotes: options.agencyNotes ?? null, recommendations: project.workflowController?.strategyStale ? ["Strategy is being reassessed because newer project evidence exists. Refresh and approve Strategy before presenting priorities as current."] : nextBestActions.length ? nextBestActions.slice(0, 3).map((action) => action.recommendation) : blocked.length ? ["Resolve blocked work before the next milestone."] : ["Continue with the next approved execution priorities."],
     clientSafe: "clientSafe" in definition && definition.clientSafe === true,
   };
   if (reportType !== "agency_proposal") return base;
-  return { ...base, proposal: agencyProposalContent({ projectName: project.name, clientName: project.agencyClient?.name ?? project.businessName ?? project.name, primaryGoal: project.primaryGoal, targetMarkets: project.targetLocations, timeline: project.targetLaunchTimeline, outputs: project.preferredOutputs, strategySummary: strategy?.strategySummary, opportunityName: selectedOpportunity?.name, completedTasks: completed.length, totalTasks: project.executionTasks.length }) };
+  const proposal = agencyProposalContent({ projectName: project.name, clientName: project.agencyClient?.name ?? project.businessName ?? project.name, primaryGoal: project.primaryGoal, targetMarkets: project.targetLocations, timeline: project.targetLaunchTimeline, outputs: project.preferredOutputs, strategySummary: strategy?.strategySummary, opportunityName: selectedOpportunity?.name, completedTasks: completed.length, totalTasks: project.executionTasks.length, templateId: options.templateId, selectedServices: options.selectedServices, selectedFindings: options.selectedFindings });
+  const defaultTerms = typeof branding.defaultTerms === "string" && branding.defaultTerms.trim() ? [branding.defaultTerms.trim()] : [];
+  return { ...base, proposal: { ...proposal, terms: defaultTerms.length ? defaultTerms : proposal.terms } };
 }
 
 function reportStrings(value: Prisma.JsonValue | null | undefined) {
@@ -207,8 +350,9 @@ async function reportContentWithFindings(
   project: Awaited<ReturnType<typeof scopedProject>>,
   reportType: typeof projectReportTypes[number],
   branding: Record<string, unknown>,
+  options: Parameters<typeof reportContent>[3],
 ) {
-  const base = reportContent(project, reportType, branding);
+  const base = reportContent(project, reportType, branding, options);
   if (reportType !== "seo_audit") return base;
 
   const latestRun = project.gapAnalysisRuns[0];
@@ -295,18 +439,27 @@ async function reportContentWithFindings(
 
 async function agencyBranding(context: Awaited<ReturnType<typeof workspaceContext>>, projectId?: string) {
   const workspaceBrand = context.workspace.brandingJson && typeof context.workspace.brandingJson === "object" ? context.workspace.brandingJson as Record<string, unknown> : {};
-  const profiles = await prisma.whiteLabelProfile.findMany({ where: { clientId: context.workspace.legacyClientId ?? "", OR: [{ projectId: projectId ?? "__none__" }, { projectId: null }] }, orderBy: { updatedAt: "desc" } });
+  const profiles = await prisma.whiteLabelProfile.findMany({ where: { OR: [{ workspaceId: context.workspace.id }, { clientId: context.workspace.legacyClientId ?? "__none__", projectId: { in: [projectId ?? "__none__"] } }, { clientId: context.workspace.legacyClientId ?? "__none__", projectId: null }] }, orderBy: { updatedAt: "desc" } });
   const profile = profiles.find((item) => item.projectId === projectId) ?? profiles.find((item) => item.projectId == null);
   return {
     agencyName: profile?.agencyName || String(workspaceBrand.agencyName || context.workspace.name),
+    agencyLogoFileId: profile?.agencyLogoFileId || (typeof workspaceBrand.agencyLogoFileId === "string" ? workspaceBrand.agencyLogoFileId : null),
+    agencyLogoDataUrl: profile?.agencyLogoDataUrl || (typeof workspaceBrand.agencyLogoDataUrl === "string" ? workspaceBrand.agencyLogoDataUrl : null),
+    websiteUrl: profile?.websiteUrl || (typeof workspaceBrand.websiteUrl === "string" ? workspaceBrand.websiteUrl : null),
+    address: profile?.address || (typeof workspaceBrand.address === "string" ? workspaceBrand.address : null),
+    contactPhone: profile?.contactPhone || (typeof workspaceBrand.contactPhone === "string" ? workspaceBrand.contactPhone : null),
     preparedByName: profile?.preparedByName || (typeof workspaceBrand.preparedByName === "string" ? workspaceBrand.preparedByName : null),
     contactEmail: profile?.contactEmail || (typeof workspaceBrand.contactEmail === "string" ? workspaceBrand.contactEmail : null),
     colorPreference: profile?.colorPreference || (typeof workspaceBrand.primaryColor === "string" ? workspaceBrand.primaryColor : "#0F9F8F"),
+    secondaryColor: profile?.secondaryColor || (typeof workspaceBrand.secondaryColor === "string" ? workspaceBrand.secondaryColor : "#0F172A"),
     footerDisclaimer: profile?.footerDisclaimer || (typeof workspaceBrand.footerDisclaimer === "string" ? workspaceBrand.footerDisclaimer : "Confidential — prepared for the named client only."),
+    defaultTerms: profile?.defaultTerms || (typeof workspaceBrand.defaultTerms === "string" ? workspaceBrand.defaultTerms : null),
+    senderSignature: profile?.senderSignature || (typeof workspaceBrand.senderSignature === "string" ? workspaceBrand.senderSignature : null),
+    minimizeSenukeBranding: profile?.minimizeSenukeBranding ?? (typeof workspaceBrand.minimizeSenukeBranding === "boolean" ? workspaceBrand.minimizeSenukeBranding : true),
   };
 }
 
-projectReportsRouter.get("/project-reports/catalog", (_req, res) => res.json({ reports: projectReportCatalog, frequencies: reportFrequencies }));
+projectReportsRouter.get("/project-reports/catalog", (_req, res) => res.json({ reports: projectReportCatalog, proposalTemplates: agencyProposalTemplates, frequencies: reportFrequencies }));
 
 projectReportsRouter.get("/project-reports", async (req, res) => {
   const context = await workspaceContext(req);
@@ -314,7 +467,7 @@ projectReportsRouter.get("/project-reports", async (req, res) => {
   const projectId = typeof req.query.projectId === "string" ? req.query.projectId : "";
   if (!projectId || !await canAccessProject(context, projectId)) return res.status(404).json({ error: "Project not found." });
   const clientViewer = context.roles.has("client_viewer") && context.roles.size === 1;
-  const reports = await prisma.gapReportExport.findMany({ where: { projectId, ...(clientViewer ? { approvalStatus: "approved", clientVisible: true } : {}) }, orderBy: { createdAt: "desc" } });
+  const reports = await prisma.gapReportExport.findMany({ where: { projectId, ...(clientViewer ? { approvalStatus: "approved", clientVisible: true } : {}) }, include: { versions: { orderBy: { version: "desc" }, take: 1, include: { sections: { orderBy: { sortOrder: "asc" } } } }, acceptances: { orderBy: { actedAt: "desc" }, take: 1 } }, orderBy: { createdAt: "desc" } });
   res.json({ reports });
 });
 
@@ -329,11 +482,21 @@ projectReportsRouter.post("/project-reports/generate", async (req, res) => {
   if ("agencyOnly" in definition && definition.agencyOnly && context.workspace.workspaceType !== "agency") return res.status(400).json({ error: "Agency Client Reports are available only in Agency workspaces." });
   const approvalStatus = context.workspace.workspaceType === "agency" ? "needs_review" : "approved";
   const branding = await agencyBranding(context, project.id);
-  const content = await reportContentWithFindings(project, data.reportType, branding);
+  const period = reportingPeriod(data);
+  const generatedContent = await reportContentWithFindings(project, data.reportType, branding, { ...period, templateId: data.templateId, selectedServices: data.selectedServices, selectedFindings: data.selectedFindings, enabledSections: data.enabledSections, agencyNotes: data.agencyNotes });
+  const content = data.reportType === "agency_proposal" ? await addProposalNarrative(generatedContent as Record<string, unknown>, data.useAiNarrative) : await addClientNarrative(generatedContent as Record<string, unknown>, data.useAiNarrative);
+  const qa = documentQa(content as Record<string, unknown>, data.reportType);
+  const sections = Array.isArray((content as { sections?: unknown }).sections) ? (content as { sections: Array<{ key: string; title: string; order: number; enabled: boolean }> }).sections : [];
+  const sourceSnapshot = (content as { sourceSnapshot?: Prisma.InputJsonValue }).sourceSnapshot ?? {};
   const assignedMembershipIds = new Set([...project.memberAssignments.map((item) => item.membershipId), ...project.teamAssignments.flatMap((item) => item.team.members.map((member) => member.membershipId))]);
   const report = await prisma.$transaction(async (tx) => {
-    const created = await tx.gapReportExport.create({ data: { projectId: project.id, clientId: project.clientId, reportType: data.reportType, clientName: project.agencyClient?.name ?? project.businessName ?? project.name, approvalStatus, exportFormat: data.exportFormat, status: "ready", completedAt: new Date(), contentJson: content as Prisma.InputJsonValue } });
-    await recordWorkspaceActivity(tx, { context, action: "report.generated", entityType: "gap_report_export", entityId: created.id, agencyClientId: project.agencyClientId, projectId: project.id, nextJson: { reportType: data.reportType, approvalStatus } });
+    const created = await tx.gapReportExport.create({ data: {
+      workspaceId: context.workspace.id, agencyClientId: project.agencyClientId, projectId: project.id, clientId: project.clientId, reportType: data.reportType, templateId: data.reportType === "agency_proposal" ? data.templateId ?? "growth_strategy" : null,
+      clientName: project.agencyClient?.name ?? project.businessName ?? project.name, approvalStatus, documentStatus: "draft", exportFormat: data.exportFormat, status: "ready", completedAt: new Date(), periodStart: period.periodStart, periodEnd: period.periodEnd,
+      qaStatus: qa.status, qaJson: qa as Prisma.InputJsonValue, agencyNotes: data.agencyNotes, createdByUserId: context.membership.userId, contentJson: content as Prisma.InputJsonValue,
+      versions: { create: { version: 1, contentJson: content as Prisma.InputJsonValue, sourceEvidenceJson: sourceSnapshot, sourceTimestampsJson: sourceSnapshot, strategyVersion: project.strategyPlans[0]?.version, growthBlueprintVersion: project.growthBlueprint?.versions[0]?.version ?? project.growthBlueprint?.currentVersion, nextBestActionId: project.nextBestActions[0]?.id, createdByUserId: context.membership.userId, sections: { create: sections.map((section) => ({ sectionType: section.key, sortOrder: section.order, enabled: section.enabled, contentJson: { title: section.title } })) } } },
+    }, include: { versions: { include: { sections: true } } } });
+    await recordWorkspaceActivity(tx, { context, action: data.reportType === "agency_proposal" ? "proposal.created" : "report.generated", entityType: "gap_report_export", entityId: created.id, agencyClientId: project.agencyClientId, projectId: project.id, nextJson: { reportType: data.reportType, templateId: created.templateId, approvalStatus, documentStatus: "draft", version: 1, periodStart: period.periodStart, periodEnd: period.periodEnd, qaStatus: qa.status } });
     const memberships = await tx.workspaceMembership.findMany({ where: { workspaceId: context.workspace.id, status: "active", OR: [{ id: { in: [...assignedMembershipIds] } }, { userId: context.workspace.ownerUserId }] }, include: { roles: { select: { role: true } } } });
     for (const membership of memberships) {
       const roles = membership.roles.map((item) => item.role === "owner" ? "admin" : item.role === "approver" ? "manager" : item.role);
@@ -342,23 +505,81 @@ projectReportsRouter.post("/project-reports/generate", async (req, res) => {
     }
     return created;
   });
-  res.status(201).json({ report });
+  res.status(201).json({ report, qa });
 });
 
 projectReportsRouter.patch("/agency-proposals/:proposalId", async (req, res) => {
   const context = await workspaceContext(req);
   if (context.roles.has("client_viewer") || context.workspace.workspaceType !== "agency" || !hasWorkspacePermission(context, "export_reports")) return res.status(403).json({ error: "Agency proposal editing permission is required." });
-  const proposal = await prisma.gapReportExport.findUnique({ where: { id: req.params.proposalId }, include: { project: true } });
+  const proposal = await prisma.gapReportExport.findUnique({ where: { id: req.params.proposalId }, include: { project: true, versions: { orderBy: { version: "desc" }, take: 1 } } });
   if (!proposal || proposal.reportType !== "agency_proposal" || !await canAccessProject(context, proposal.projectId)) return res.status(404).json({ error: "Proposal not found." });
   if (proposal.sentToClientAt) return res.status(409).json({ error: "A sent proposal is locked. Generate a new version before editing." });
   const data = proposalEditSchema.parse(req.body);
   const previous = proposal.contentJson && typeof proposal.contentJson === "object" ? proposal.contentJson as Record<string, unknown> : {};
+  const content = { ...previous, proposal: data };
+  const qa = documentQa(content, "agency_proposal", "draft");
+  const version = proposal.currentVersion + 1;
+  const sourceSnapshot = previous.sourceSnapshot && typeof previous.sourceSnapshot === "object" && !Array.isArray(previous.sourceSnapshot) ? previous.sourceSnapshot as Prisma.InputJsonValue : {};
   const updated = await prisma.$transaction(async (tx) => {
-    const next = await tx.gapReportExport.update({ where: { id: proposal.id }, data: { contentJson: { ...previous, proposal: data } as Prisma.InputJsonValue, approvalStatus: "needs_review", clientVisible: false } });
-    await recordWorkspaceActivity(tx, { context, action: "proposal.edited", entityType: "gap_report_export", entityId: proposal.id, agencyClientId: proposal.project.agencyClientId, projectId: proposal.projectId, previousJson: { approvalStatus: proposal.approvalStatus, proposal: (previous.proposal ?? null) as Prisma.InputJsonValue }, nextJson: { approvalStatus: "needs_review", proposal: data } });
+    const sections = Array.isArray(previous.sections) ? previous.sections.map((section, index) => { const row = section && typeof section === "object" && !Array.isArray(section) ? section as Record<string, unknown> : {}; return { sectionType: String(row.key ?? `section_${index + 1}`), sortOrder: Number(row.order ?? index), enabled: row.enabled !== false, contentJson: { title: String(row.title ?? row.key ?? `Section ${index + 1}`) } }; }) : [];
+    const createdVersion = await tx.agencyDocumentVersion.create({ data: { documentId: proposal.id, version, contentJson: content as Prisma.InputJsonValue, sourceEvidenceJson: sourceSnapshot, sourceTimestampsJson: sourceSnapshot, createdByUserId: context.membership.userId, sections: { create: sections } } });
+    const next = await tx.gapReportExport.update({ where: { id: proposal.id }, data: { templateId: data.templateId, contentJson: content as Prisma.InputJsonValue, currentVersion: version, documentStatus: "draft", approvalStatus: "needs_review", qaStatus: qa.status, qaJson: qa as Prisma.InputJsonValue, clientVisible: false } });
+    await recordWorkspaceActivity(tx, { context, action: "proposal.version_created", entityType: "gap_report_export", entityId: proposal.id, agencyClientId: proposal.project.agencyClientId, projectId: proposal.projectId, previousJson: { version: proposal.currentVersion, approvalStatus: proposal.approvalStatus, proposal: (previous.proposal ?? null) as Prisma.InputJsonValue }, nextJson: { version, versionId: createdVersion.id, approvalStatus: "needs_review", proposal: data } });
     return next;
   });
-  res.json({ proposal: updated });
+  res.json({ proposal: updated, qa });
+});
+
+projectReportsRouter.patch("/project-reports/:reportId/content", async (req, res) => {
+  const context = await workspaceContext(req);
+  if (context.roles.has("client_viewer") || context.workspace.workspaceType !== "agency" || !hasWorkspacePermission(context, "export_reports")) return res.status(403).json({ error: "Agency report editing permission is required." });
+  const data = reportEditSchema.parse(req.body);
+  const report = await prisma.gapReportExport.findUnique({ where: { id: req.params.reportId }, include: { project: true } });
+  if (!report || report.reportType === "agency_proposal" || !await canAccessProject(context, report.projectId)) return res.status(404).json({ error: "Report not found." });
+  if (report.sentToClientAt) return res.status(409).json({ error: "A delivered report is locked. Generate a new report version instead." });
+  const previous = report.contentJson && typeof report.contentJson === "object" && !Array.isArray(report.contentJson) ? report.contentJson as Record<string, unknown> : {};
+  const existingSections = Array.isArray(previous.sections) ? previous.sections as Array<Record<string, unknown>> : [];
+  const enabled = new Set(data.enabledSections);
+  const content = { ...previous, clientNarrative: { ...(previous.clientNarrative && typeof previous.clientNarrative === "object" ? previous.clientNarrative as Record<string, unknown> : {}), executiveNarrative: data.executiveNarrative }, agencyNotes: data.agencyNotes ?? null, sections: existingSections.map((section) => ({ ...section, enabled: enabled.has(String(section.key)) })) };
+  const qa = documentQa(content, report.reportType as typeof projectReportTypes[number], "draft");
+  const version = report.currentVersion + 1;
+  const sourceSnapshot = previous.sourceSnapshot && typeof previous.sourceSnapshot === "object" && !Array.isArray(previous.sourceSnapshot) ? previous.sourceSnapshot as Prisma.InputJsonValue : {};
+  const updated = await prisma.$transaction(async (tx) => {
+    const createdVersion = await tx.agencyDocumentVersion.create({ data: { documentId: report.id, version, contentJson: content as Prisma.InputJsonValue, sourceEvidenceJson: sourceSnapshot, sourceTimestampsJson: sourceSnapshot, createdByUserId: context.membership.userId, sections: { create: (content.sections as Array<Record<string, unknown>>).map((section, index) => ({ sectionType: String(section.key), sortOrder: Number(section.order ?? index), enabled: Boolean(section.enabled), contentJson: { title: String(section.title ?? section.key) } })) } } });
+    const next = await tx.gapReportExport.update({ where: { id: report.id }, data: { contentJson: content as Prisma.InputJsonValue, agencyNotes: data.agencyNotes, currentVersion: version, documentStatus: "draft", approvalStatus: "needs_review", qaStatus: qa.status, qaJson: qa as Prisma.InputJsonValue, clientVisible: false } });
+    await recordWorkspaceActivity(tx, { context, action: "report.version_created", entityType: "gap_report_export", entityId: report.id, agencyClientId: report.project.agencyClientId, projectId: report.projectId, previousJson: { version: report.currentVersion }, nextJson: { version, versionId: createdVersion.id, enabledSections: data.enabledSections } });
+    return next;
+  });
+  res.json({ report: updated, qa });
+});
+
+projectReportsRouter.post("/project-reports/:reportId/qa", async (req, res) => {
+  const context = await workspaceContext(req);
+  if (!hasWorkspacePermission(context, "export_reports")) return res.status(403).json({ error: "Report QA permission is required." });
+  const report = await prisma.gapReportExport.findUnique({ where: { id: req.params.reportId } });
+  if (!report || !await canAccessProject(context, report.projectId)) return res.status(404).json({ error: "Document not found." });
+  const content = report.contentJson && typeof report.contentJson === "object" && !Array.isArray(report.contentJson) ? report.contentJson as Record<string, unknown> : {};
+  const qa = documentQa(content, report.reportType as typeof projectReportTypes[number], report.documentStatus);
+  await prisma.gapReportExport.update({ where: { id: report.id }, data: { qaStatus: qa.status, qaJson: qa as Prisma.InputJsonValue } });
+  res.json({ qa });
+});
+
+projectReportsRouter.patch("/agency-proposals/:proposalId/status", async (req, res) => {
+  const context = await workspaceContext(req);
+  if (context.roles.has("client_viewer") || context.workspace.workspaceType !== "agency" || !hasWorkspacePermission(context, "export_reports")) return res.status(403).json({ error: "Proposal status permission is required." });
+  const data = proposalStatusSchema.parse(req.body);
+  const proposal = await prisma.gapReportExport.findUnique({ where: { id: req.params.proposalId }, include: { project: true } });
+  if (!proposal || proposal.reportType !== "agency_proposal" || !await canAccessProject(context, proposal.projectId)) return res.status(404).json({ error: "Proposal not found." });
+  const content = proposal.contentJson && typeof proposal.contentJson === "object" && !Array.isArray(proposal.contentJson) ? proposal.contentJson as Record<string, unknown> : {};
+  const qa = documentQa(content, "agency_proposal", data.status);
+  if (["ready", "sent", "accepted"].includes(data.status) && qa.status !== "passed") return res.status(409).json({ error: "Proposal QA must pass and all pricing placeholders must be replaced before this status can be recorded.", qa });
+  const updated = await prisma.$transaction(async (tx) => {
+    const next = await tx.gapReportExport.update({ where: { id: proposal.id }, data: { documentStatus: data.status, qaStatus: qa.status, qaJson: qa as Prisma.InputJsonValue, ...(data.status === "sent" ? { sentToClientAt: data.actedAt ?? new Date(), sentByUserId: context.membership.userId } : {}), ...(["archived", "expired"].includes(data.status) ? { clientVisible: false } : {}) } });
+    if (["accepted", "declined"].includes(data.status)) await tx.proposalAcceptance.create({ data: { documentId: proposal.id, decision: data.status, accepterName: data.accepterName, accepterEmail: data.accepterEmail, note: data.note, actedAt: data.actedAt ?? new Date(), recordedByUserId: context.membership.userId } });
+    await recordWorkspaceActivity(tx, { context, action: `proposal.${data.status}`, entityType: "gap_report_export", entityId: proposal.id, agencyClientId: proposal.project.agencyClientId, projectId: proposal.projectId, previousJson: { documentStatus: proposal.documentStatus }, nextJson: { documentStatus: data.status, accepterName: data.accepterName, accepterEmail: data.accepterEmail, actedAt: data.actedAt ?? new Date() } });
+    return next;
+  });
+  res.json({ proposal: updated, qa });
 });
 
 projectReportsRouter.get("/agency-report-branding", async (req, res) => {
@@ -374,8 +595,8 @@ projectReportsRouter.put("/agency-report-branding", async (req, res) => {
   if (context.workspace.workspaceType !== "agency" || !hasWorkspacePermission(context, "manage_settings")) return res.status(403).json({ error: "Owner/Admin permission is required to manage report branding." });
   if (!context.workspace.legacyClientId) return res.status(409).json({ error: "Workspace billing identity is required before saving branding." });
   const data = brandingSchema.parse(req.body);
-  const current = await prisma.whiteLabelProfile.findFirst({ where: { clientId: context.workspace.legacyClientId, projectId: null }, orderBy: { updatedAt: "desc" } });
-  const branding = current ? await prisma.whiteLabelProfile.update({ where: { id: current.id }, data }) : await prisma.whiteLabelProfile.create({ data: { clientId: context.workspace.legacyClientId, projectId: null, ...data } });
+  const current = await prisma.whiteLabelProfile.findFirst({ where: { OR: [{ workspaceId: context.workspace.id }, { clientId: context.workspace.legacyClientId, projectId: null }] }, orderBy: { updatedAt: "desc" } });
+  const branding = current ? await prisma.whiteLabelProfile.update({ where: { id: current.id }, data: { workspaceId: context.workspace.id, ...data } }) : await prisma.whiteLabelProfile.create({ data: { workspaceId: context.workspace.id, clientId: context.workspace.legacyClientId, projectId: null, ...data } });
   await prisma.workspaceActivity.create({ data: { workspaceId: context.workspace.id, actorUserId: context.membership.userId, action: "report_branding.updated", entityType: "white_label_profile", entityId: branding.id, nextJson: data } });
   res.json({ branding: data });
 });
@@ -386,10 +607,12 @@ projectReportsRouter.patch("/project-reports/:reportId/approval", async (req, re
   const data = approvalSchema.parse(req.body);
   const report = await prisma.gapReportExport.findUnique({ where: { id: req.params.reportId }, include: { project: true } });
   if (!report || !await canAccessProject(context, report.projectId)) return res.status(404).json({ error: "Report not found." });
+  const content = report.contentJson && typeof report.contentJson === "object" && !Array.isArray(report.contentJson) ? report.contentJson as Record<string, unknown> : {};
+  const qa = documentQa(content, report.reportType as typeof projectReportTypes[number], report.reportType === "agency_proposal" ? "ready" : report.documentStatus);
+  if (data.decision === "approved" && qa.status !== "passed") return res.status(409).json({ error: "Document QA must pass before approval.", qa });
   const updated = await prisma.$transaction(async (tx) => {
-    const next = await tx.gapReportExport.update({ where: { id: report.id }, data: { approvalStatus: data.decision } });
-    if (data.decision === "approved") {
-      const content = report.contentJson && typeof report.contentJson === "object" ? report.contentJson as Record<string, unknown> : {};
+    const next = await tx.gapReportExport.update({ where: { id: report.id }, data: { approvalStatus: data.decision, qaStatus: qa.status, qaJson: qa as Prisma.InputJsonValue, ...(data.decision === "approved" ? { documentStatus: "ready" } : { documentStatus: "draft" }) } });
+    if (data.decision === "approved" && report.reportType !== "agency_proposal") {
       const recommendations = Array.isArray(content.recommendations) ? content.recommendations.map(String).filter(Boolean) : [];
       if (recommendations.length) {
         let plan = await tx.executionPlan.findFirst({ where: { projectId: report.projectId, status: "active" }, orderBy: { createdAt: "asc" } });
@@ -404,18 +627,31 @@ projectReportsRouter.patch("/project-reports/:reportId/approval", async (req, re
     await recordWorkspaceActivity(tx, { context, action: `report.${data.decision}`, entityType: "gap_report_export", entityId: report.id, agencyClientId: report.project.agencyClientId, projectId: report.projectId, previousJson: { approvalStatus: report.approvalStatus }, nextJson: { approvalStatus: data.decision, notes: data.notes ?? null } });
     return next;
   });
-  res.json({ report: updated });
+  res.json({ report: updated, qa });
+});
+
+projectReportsRouter.get("/project-reports/:reportId/preview", async (req, res) => {
+  const context = await workspaceContext(req);
+  if (!hasWorkspacePermission(context, "view_reports")) return res.status(403).json({ error: "Report viewing permission is required." });
+  const clientViewer = context.roles.has("client_viewer") && context.roles.size === 1;
+  const report = await prisma.gapReportExport.findUnique({ where: { id: req.params.reportId }, include: { versions: { orderBy: { version: "desc" }, include: { sections: { orderBy: { sortOrder: "asc" } } } }, acceptances: { orderBy: { actedAt: "desc" } } } });
+  if (!report || !await canAccessProject(context, report.projectId) || (clientViewer && (report.approvalStatus !== "approved" || !report.clientVisible))) return res.status(404).json({ error: "Document not found." });
+  res.json({ report: clientViewer ? { ...report, versions: report.versions.slice(0, 1) } : report });
 });
 
 projectReportsRouter.get("/project-reports/:reportId/download", async (req, res) => {
   const context = await workspaceContext(req);
   const clientViewer = context.roles.has("client_viewer") && context.roles.size === 1;
   if (clientViewer ? !hasWorkspacePermission(context, "view_reports") : !hasWorkspacePermission(context, "export_reports")) return res.status(403).json({ error: "Report download permission is required." });
-  const report = await prisma.gapReportExport.findUnique({ where: { id: req.params.reportId }, include: { project: { include: { agencyClient: { select: { name: true } } } } } });
+  const report = await prisma.gapReportExport.findUnique({ where: { id: req.params.reportId }, include: { project: { include: { agencyClient: { select: { name: true } } } }, versions: { orderBy: { version: "desc" }, take: 1 } } });
   if (!report || !await canAccessProject(context, report.projectId) || (clientViewer && (report.approvalStatus !== "approved" || !report.clientVisible))) return res.status(404).json({ error: "Report not found." });
   const content = report.contentJson && typeof report.contentJson === "object" ? report.contentJson as Record<string, unknown> : {};
   const branding = content.branding && typeof content.branding === "object" ? content.branding as Record<string, unknown> : {};
-  const pdf = await createProfessionalReportPdf(report.contentJson, { workspaceName: String(branding.agencyName || context.workspace.name), workspaceType: context.workspace.workspaceType, clientName: report.project.agencyClient?.name ?? report.clientName, preparedByName: typeof branding.preparedByName === "string" ? branding.preparedByName : null, contactEmail: typeof branding.contactEmail === "string" ? branding.contactEmail : null, primaryColor: typeof branding.colorPreference === "string" ? branding.colorPreference : null, footerDisclaimer: typeof branding.footerDisclaimer === "string" ? branding.footerDisclaimer : null });
+  const pdf = await createProfessionalReportPdf(report.contentJson, { workspaceName: String(branding.agencyName || context.workspace.name), workspaceType: context.workspace.workspaceType, clientName: report.project.agencyClient?.name ?? report.clientName, logoDataUrl: typeof branding.agencyLogoDataUrl === "string" ? branding.agencyLogoDataUrl : null, preparedByName: typeof branding.preparedByName === "string" ? branding.preparedByName : null, contactEmail: typeof branding.contactEmail === "string" ? branding.contactEmail : null, contactPhone: typeof branding.contactPhone === "string" ? branding.contactPhone : null, websiteUrl: typeof branding.websiteUrl === "string" ? branding.websiteUrl : null, address: typeof branding.address === "string" ? branding.address : null, primaryColor: typeof branding.colorPreference === "string" ? branding.colorPreference : null, secondaryColor: typeof branding.secondaryColor === "string" ? branding.secondaryColor : null, footerDisclaimer: typeof branding.footerDisclaimer === "string" ? branding.footerDisclaimer : null, senderSignature: typeof branding.senderSignature === "string" ? branding.senderSignature : null, minimizeSenukeBranding: branding.minimizeSenukeBranding !== false });
+  await prisma.$transaction(async (tx) => {
+    await tx.documentExportEvent.create({ data: { documentId: report.id, versionId: report.versions[0]?.id, format: "pdf", outputFileId: report.outputFileId, exportedByUserId: context.membership.userId } });
+    await recordWorkspaceActivity(tx, { context, action: report.reportType === "agency_proposal" ? "proposal.exported" : "report.exported", entityType: "gap_report_export", entityId: report.id, agencyClientId: report.agencyClientId, projectId: report.projectId, nextJson: { format: "pdf", version: report.currentVersion } });
+  });
   const safeName = `${report.project.name}-${report.reportType}`.replace(/[^a-z0-9-_]+/gi, "-").replace(/-+/g, "-").replace(/^-|-$/g, "").toLowerCase();
   res.setHeader("Content-Type", "application/pdf");
   res.setHeader("Content-Disposition", `attachment; filename="${safeName || "project-report"}.pdf"`);
@@ -439,10 +675,10 @@ projectReportsRouter.put("/project-reports/schedules", async (req, res) => {
   const data = scheduleSchema.parse(req.body);
   if (data.reportType === "agency_proposal") return res.status(400).json({ error: "Proposals must be generated, edited, reviewed, and sent manually." });
   await scopedProject(context, data.projectId);
-  if (data.automaticClientDelivery && !hasWorkspacePermission(context, "manage_settings")) return res.status(403).json({ error: "Only Owner/Admin can enable automatic client delivery." });
+  if (data.automaticClientDelivery) return res.status(400).json({ error: "V1 scheduled reports require Agency review and approval before delivery. Advanced automatic delivery remains disabled." });
   const previous = context.workspace.settingsJson && typeof context.workspace.settingsJson === "object" ? context.workspace.settingsJson as Record<string, unknown> : {};
   const schedules = (Array.isArray(previous.reportSchedules) ? previous.reportSchedules : []).filter((item) => !(item && typeof item === "object" && "projectId" in item && "reportType" in item && item.projectId === data.projectId && item.reportType === data.reportType));
-  if (data.frequency !== "on_demand") schedules.push(data);
+  if (data.frequency !== "on_demand") schedules.push({ ...data, automaticClientDelivery: false });
   await prisma.workspace.update({ where: { id: context.workspace.id }, data: { settingsJson: { ...previous, reportSchedules: schedules } as Prisma.InputJsonValue } });
   res.json({ schedules });
 });

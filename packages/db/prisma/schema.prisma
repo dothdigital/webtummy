@@ -178,6 +178,8 @@ model Workspace {
   providerReferences      CommercialProviderReference[]
   commercialAuditEvents   CommercialAuditEvent[]
   retentionCases          CommercialRetentionCase[]
+  whiteLabelProfiles      WhiteLabelProfile[]
+  agencyDocuments         GapReportExport[]
 
   @@index([ownerUserId])
   @@index([status])
@@ -340,6 +342,7 @@ model AgencyClient {
   teamAssignments   AgencyClientTeam[]
   activity          WorkspaceActivity[]
   notifications     WorkspaceNotification[]
+  agencyDocuments   GapReportExport[]
 
   @@unique([workspaceId, normalizedName])
   @@index([workspaceId, status])
@@ -3362,15 +3365,25 @@ model AuthorityPerformanceMetric {
 
 model WhiteLabelProfile {
   id               String   @id @default(cuid())
+  workspaceId      String?  @unique
+  workspace        Workspace? @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
   projectId        String?
   project          Project? @relation(fields: [projectId], references: [id], onDelete: Cascade)
   clientId         String
   agencyName       String?  @db.VarChar(180)
   agencyLogoFileId String?  @db.VarChar(191)
+  agencyLogoDataUrl String? @db.Text
+  websiteUrl       String?  @db.VarChar(512)
+  address          String?  @db.VarChar(500)
+  contactPhone     String?  @db.VarChar(80)
   preparedByName   String?  @db.VarChar(180)
   contactEmail     String?  @db.VarChar(180)
   colorPreference  String?  @db.VarChar(80)
+  secondaryColor   String?  @db.VarChar(80)
   footerDisclaimer String?  @db.Text
+  defaultTerms     String?  @db.Text
+  senderSignature  String?  @db.Text
+  minimizeSenukeBranding Boolean @default(true)
   createdAt        DateTime @default(now())
   updatedAt        DateTime @updatedAt
 
@@ -3380,25 +3393,111 @@ model WhiteLabelProfile {
 
 model GapReportExport {
   id             String    @id @default(cuid())
+  workspaceId    String?
+  workspace      Workspace? @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  agencyClientId String?
+  agencyClient   AgencyClient? @relation(fields: [agencyClientId], references: [id], onDelete: Cascade)
   projectId      String
   project        Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
   clientId       String
   reportType     String    @db.VarChar(80)
+  templateId     String?   @db.VarChar(80)
   clientName     String?   @db.VarChar(180)
   approvalStatus String    @default("needs_review") @db.VarChar(60)
+  documentStatus String    @default("draft") @db.VarChar(60)
   exportFormat   String    @db.VarChar(40)
   outputFileId   String?   @db.VarChar(191)
   contentJson    Json      @default("{}")
+  periodStart    DateTime?
+  periodEnd      DateTime?
+  currentVersion Int       @default(1)
+  qaStatus       String    @default("pending") @db.VarChar(40)
+  qaJson         Json      @default("{}")
+  agencyNotes    String?   @db.Text
+  createdByUserId String?  @db.VarChar(191)
   status         String    @default("queued") @db.VarChar(60)
   createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
   completedAt    DateTime?
   clientVisible  Boolean   @default(false)
   sentToClientAt DateTime?
   sentByUserId   String?   @db.VarChar(191)
 
+  versions       AgencyDocumentVersion[]
+  acceptances    ProposalAcceptance[]
+  exportEvents   DocumentExportEvent[]
+
   @@index([projectId, status])
+  @@index([workspaceId, createdAt])
+  @@index([agencyClientId, createdAt])
   @@index([clientId, createdAt])
   @@index([reportType])
+}
+
+model AgencyDocumentVersion {
+  id                     String          @id @default(cuid())
+  documentId             String
+  document               GapReportExport @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  version                Int
+  contentJson            Json            @default("{}")
+  sourceEvidenceJson     Json            @default("{}")
+  sourceTimestampsJson   Json            @default("{}")
+  strategyVersion        Int?
+  growthBlueprintVersion Int?
+  nextBestActionId       String?         @db.VarChar(191)
+  createdByUserId        String?         @db.VarChar(191)
+  createdAt              DateTime        @default(now())
+
+  sections     AgencyDocumentSection[]
+  exportEvents DocumentExportEvent[]
+
+  @@unique([documentId, version])
+  @@index([documentId, createdAt])
+}
+
+model AgencyDocumentSection {
+  id          String                @id @default(cuid())
+  versionId   String
+  version     AgencyDocumentVersion @relation(fields: [versionId], references: [id], onDelete: Cascade)
+  sectionType String                @db.VarChar(100)
+  sortOrder   Int
+  enabled     Boolean               @default(true)
+  contentJson Json                  @default("{}")
+  createdAt   DateTime              @default(now())
+  updatedAt   DateTime              @updatedAt
+
+  @@unique([versionId, sectionType])
+  @@index([versionId, sortOrder])
+}
+
+model ProposalAcceptance {
+  id               String          @id @default(cuid())
+  documentId       String
+  document         GapReportExport @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  decision         String          @db.VarChar(40)
+  accepterName     String?         @db.VarChar(180)
+  accepterEmail    String?         @db.VarChar(320)
+  note             String?         @db.Text
+  recordedByUserId String?         @db.VarChar(191)
+  actedAt          DateTime        @default(now())
+  createdAt        DateTime        @default(now())
+
+  @@index([documentId, actedAt])
+}
+
+model DocumentExportEvent {
+  id               String                 @id @default(cuid())
+  documentId       String
+  document         GapReportExport        @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  versionId        String?
+  version          AgencyDocumentVersion? @relation(fields: [versionId], references: [id], onDelete: SetNull)
+  format           String                 @db.VarChar(40)
+  outputFileId     String?                @db.VarChar(191)
+  exportedByUserId String?                @db.VarChar(191)
+  exportedAt       DateTime               @default(now())
+
+  @@index([documentId, exportedAt])
+  @@index([versionId])
 }
 
 model DemoProject {

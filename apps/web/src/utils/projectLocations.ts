@@ -1,6 +1,15 @@
 const nonGeographicMarketTerms = /\b(?:startup|startups|enterprise|enterprises|business|businesses|company|companies|customer|customers|client|clients|buyer|buyers|audience|audiences|people|person|individual|individuals|family|families|homeowner|homeowners|organization|organizations|team|teams|professional|professionals|industry|industries|looking|seeking|wanting|needing|integration|solution|solutions|service|services|product|products|insurance|software|technology|marketing|development)\b/i;
 const vagueGeographicMarket = /^(?:(?:and|&|nearby|surrounding|adjacent|local|other)\s+)*(?:areas?|neighbou?rhoods?|cities|towns|communities|regions?|markets?|service areas?)$/i;
 const vagueMarketSuffix = /(?:(?:,?\s+(?:and|&)\s+|\s+)|^(?:and|&)\s+)(?:nearby|surrounding|adjacent|local|other)\s+(?:areas?|neighbou?rhoods?|cities|towns|communities|regions?|markets?|service areas?).*$/i;
+const protectedCompositeGeographicMarkets = new Set([
+  "antigua and barbuda",
+  "bosnia and herzegovina",
+  "brighton and hove",
+  "newfoundland and labrador",
+  "saint kitts and nevis",
+  "saint vincent and the grenadines",
+  "trinidad and tobago",
+]);
 
 function values(value: unknown) {
   const raw = Array.isArray(value) ? value.map(String) : typeof value === "string" ? value.split(/[;\n]/) : [];
@@ -8,8 +17,11 @@ function values(value: unknown) {
     .replace(vagueMarketSuffix, "")
     .replace(/,\s*$/, "")
     .split(",")
-    .flatMap((part) => part
-      .split(/\s+(?:and|&)\s+(?=(?:north|south|east|west|central|downtown|greater)\b)/i))
+    .flatMap((part) => {
+      const normalizedMarket = part.trim().replace(/\s+/g, " ");
+      if (protectedCompositeGeographicMarkets.has(normalizedMarket.toLocaleLowerCase())) return [normalizedMarket];
+      return normalizedMarket.split(/\s+(?:and|&)\s+/i);
+    })
     .map((market) => market.trim())
     .filter(Boolean));
 }
