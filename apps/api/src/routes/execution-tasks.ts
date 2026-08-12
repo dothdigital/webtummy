@@ -278,7 +278,10 @@ const contentPlanSchema = z.object({
   workflowStages: z.array(z.string().trim().min(2).max(500)).min(1).max(12).default([]),
 });
 type ContentPlan = z.infer<typeof contentPlanSchema>;
-const contentPlanSaveSchema = z.object({ plan: contentPlanSchema, reviewComment: z.string().trim().max(3000).optional().default("") });
+const contentPlanSaveSchema = z.object({
+  plan: z.preprocess(normalizeContentPlanCompatibility, contentPlanSchema),
+  reviewComment: z.string().trim().max(3000).optional().default(""),
+});
 
 function businessEvidenceFingerprint(value: unknown) {
   return createHash("sha256").update(JSON.stringify(value)).digest("hex");
@@ -692,6 +695,63 @@ export function normalizeGeneratedContentBrief(value: unknown, maxLength = 1000)
   const wordBoundary = candidate.lastIndexOf(" ");
   const shortened = candidate.slice(0, wordBoundary >= Math.floor(available * 0.7) ? wordBoundary : available).trimEnd();
   return `${shortened}…`;
+}
+
+/**
+ * Older failed or draft Website Plans may contain AI briefs written before
+ * length normalization was enforced. Repair only the governed brief fields
+ * at API boundaries so those retained plans can be inspected and saved while
+ * every unrelated validation rule remains strict.
+ */
+export function normalizeContentPlanCompatibility(value: unknown) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return value;
+  const plan = value as Record<string, unknown>;
+  const rawAssignments = Array.isArray(plan.pageAssignments) ? plan.pageAssignments : [];
+  const assignments = rawAssignments.map((assignment) => {
+    if (!assignment || typeof assignment !== "object" || Array.isArray(assignment)) return assignment;
+    const page = assignment as Record<string, unknown>;
+    const normalized = {
+      ...page,
+      ...(page.contentBrief === undefined ? {} : { contentBrief: normalizeGeneratedContentBrief(page.contentBrief, 1500) }),
+    };
+    for (const field of ["contentOutline", "supportingContentIdeas", "proofRequirements"] as const) {
+      if (Array.isArray(normalized[field]) && normalized[field].length === 0) delete normalized[field];
+    }
+    return normalized;
+  });
+  const assignmentRecords = assignments.filter((assignment): assignment is Record<string, unknown> => Boolean(assignment && typeof assignment === "object" && !Array.isArray(assignment)));
+  const assignmentText = (assignment: Record<string, unknown>, field: string, fallback: string) => typeof assignment[field] === "string" && assignment[field].trim() ? assignment[field].trim() : fallback;
+  const nonEmpty = (current: unknown, fallback: string[]) => Array.isArray(current) && current.length ? current : fallback;
+  const pageUpdates = assignmentRecords.map((assignment) => `${assignmentText(assignment, "recommendedAction", "create_new").replaceAll("_", " ")}: ${assignmentText(assignment, "pageName", "Website page")} · ${assignmentText(assignment, "targetUrl", "/")}`);
+  const keywordMapping = assignmentRecords.map((assignment) => `“${assignmentText(assignment, "canonicalKeyword", assignmentText(assignment, "pageName", "Website page"))}” → ${assignmentText(assignment, "targetUrl", "/")}`);
+  const pageMap = assignmentRecords.map((assignment) => `${assignmentText(assignment, "pageName", "Website page")} → ${assignmentText(assignment, "targetUrl", "/")} · ${assignmentText(assignment, "searchIntent", "commercial")}`);
+  const planningChecks = assignmentRecords.map((assignment) => `${assignmentText(assignment, "pageName", "Website page")}: ${assignmentText(assignment, "gapAnalysis", "Confirm the page intent, evidence, links, and conversion action before drafting.")}`);
+  const fallbackBriefs = assignmentRecords.map((assignment) => normalizeGeneratedContentBrief(
+    assignment.contentBrief ?? `Brief for “${assignmentText(assignment, "canonicalKeyword", assignmentText(assignment, "pageName", "Website page"))}” · Use approved evidence, useful buyer guidance, proof, FAQs, internal links, and one clear next action.`,
+  ));
+  const supportingContent = assignmentRecords.flatMap((assignment) => Array.isArray(assignment.supportingContentIdeas)
+    ? assignment.supportingContentIdeas.filter((item): item is string => typeof item === "string" && Boolean(item.trim()))
+    : []).map((item) => item.trim());
+  const locationAuthorityClusters = Array.isArray(plan.locationAuthorityClusters)
+    ? plan.locationAuthorityClusters.filter((cluster) => {
+      if (!cluster || typeof cluster !== "object" || Array.isArray(cluster)) return true;
+      return !Array.isArray((cluster as Record<string, unknown>).servicePageKeys) || ((cluster as Record<string, unknown>).servicePageKeys as unknown[]).length > 0;
+    })
+    : plan.locationAuthorityClusters;
+  return {
+    ...plan,
+    pageAssignments: assignments,
+    pageUpdates: nonEmpty(plan.pageUpdates, pageUpdates),
+    keywordMapping: nonEmpty(plan.keywordMapping, keywordMapping),
+    pageMap: nonEmpty(plan.pageMap, pageMap),
+    planningChecks: nonEmpty(plan.planningChecks, planningChecks),
+    supportingContent: nonEmpty(plan.supportingContent, supportingContent.length ? supportingContent : assignmentRecords.map((assignment) => `Support “${assignmentText(assignment, "canonicalKeyword", "this page")}” with approved proof, FAQs, internal links, and buyer guidance.`)),
+    contentBriefs: nonEmpty(plan.contentBriefs, fallbackBriefs).map((brief) => normalizeGeneratedContentBrief(brief)),
+    publishingSequence: nonEmpty(plan.publishingSequence, assignmentRecords.map((assignment) => `Create, review, approve, and release ${assignmentText(assignment, "pageName", "the website page")} at ${assignmentText(assignment, "targetUrl", "/")}.`)),
+    kpis: nonEmpty(plan.kpis, ["Approved pages and briefs completed", "Organic visibility and qualified conversions monitored after publication"]),
+    workflowStages: nonEmpty(plan.workflowStages, ["Confirm keyword intent and canonical page ownership", "Create and review evidence-backed content", "Approve, publish, verify, and monitor the released pages"]),
+    locationAuthorityClusters,
+  };
 }
 
 function normalizeAiCtaSuggestion(value: unknown, maxLength: number) {
@@ -2920,7 +2980,7 @@ async function performContentPlanPrepare(req: Request, res: Response) {
     approvedKeywords,
     verifiedServices,
   });
-  const saved = contentPlanSchema.safeParse(snapshot.contentPlan);
+  const saved = contentPlanSchema.safeParse(normalizeContentPlanCompatibility(snapshot.contentPlan));
   // A domain may already be attached to a pre-launch project, and old crawl
   // records may even survive a change in project direction. They are not
   // existing-site page candidates for a New Website plan. Existing-site
@@ -2934,7 +2994,11 @@ async function performContentPlanPrepare(req: Request, res: Response) {
   // load crawl page choices without triggering AI generation, migration, or a
   // database update. Rebuild and save remain explicit user actions.
   if (req.body?.inspectOnly === true) {
-    if (!saved.success) return res.status(409).json({ error: "No saved Website Plan is available to inspect. Prepare the plan first." });
+    if (!saved.success) {
+      const issue = saved.error.issues[0];
+      const field = issue?.path.length ? issue.path.join(".") : "plan";
+      return res.status(409).json({ error: snapshot.contentPlan ? `The saved Website Plan needs repair at ${field}: ${issue?.message ?? "invalid saved value"}` : "No saved Website Plan is available to inspect. Prepare the plan first." });
+    }
     return res.json({ task, plan: saved.data, existing: true, pageCandidates });
   }
   const savedBusinessContext = saved.success ? aiBusinessContextSchema.safeParse(saved.data.aiBusinessContext) : null;
@@ -3559,7 +3623,11 @@ executionTasksRouter.get("/execution-tasks/:id/content-plan/jobs/:jobId", (req, 
 executionTasksRouter.post("/execution-tasks/:id/content-plan/save", (req, res, next) => {
   void (async () => {
   const parsed = contentPlanSaveSchema.safeParse(req.body ?? {});
-  if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() });
+  if (!parsed.success) {
+    const issue = parsed.error.issues[0];
+    const field = issue?.path.length ? issue.path.join(".") : "plan";
+    return res.status(400).json({ error: `${field}: ${issue?.message ?? "invalid value"}`, fieldErrors: parsed.error.flatten().fieldErrors });
+  }
   const clientId = await executionClientScope(req);
   const task = await prisma.executionTask.findFirst({ where: { id: req.params.id, ...(clientId ? { clientId } : {}) }, include: { project: { select: { id: true, name: true, businessName: true, niche: true, projectType: true, websiteStatus: true, websiteId: true, websiteUrl: true, targetLocations: true, businessLocationJson: true, agencyClientId: true, agencyClient: { select: { name: true } }, businessProfile: { select: { offerSummary: true } }, keywordGroups: { where: { status: "approved" }, select: { status: true, keywords: true } }, keywordResearchRuns: { select: { seedKeyword: true, status: true, locationName: true, languageCode: true, device: true, createdAt: true } } } } } });
   if (!task?.project || !task.projectId || !isWebsitePlanTask(task)) return res.status(404).json({ error: "Website planning task not found" });
@@ -3568,7 +3636,7 @@ executionTasksRouter.post("/execution-tasks/:id/content-plan/save", (req, res, n
   if (!hasWorkspacePermission(context, "execute_tasks")) return res.status(403).json({ error: "Task execution permission is required." });
   const snapshot = recordJson(task.approvalSnapshotJson);
   const preLaunchWebsite = isPreLaunchWebsiteCampaign(task.project);
-  const preparedPlan = contentPlanSchema.safeParse(snapshot.contentPlan);
+  const preparedPlan = contentPlanSchema.safeParse(normalizeContentPlanCompatibility(snapshot.contentPlan));
   if (!preparedPlan.success || preparedPlan.data.workflowVersion !== CONTENT_PLAN_WORKFLOW_VERSION || parsed.data.plan.workflowVersion !== CONTENT_PLAN_WORKFLOW_VERSION) return res.status(409).json({ error: "This Website Plan predates the governed keyword workflow. Regenerate it from the latest approved keyword evidence before saving." });
   const approvedKeywords = approvedKeywordEntries(task.project.keywordGroups);
   const missingKeywords = missingApprovedKeywordResearch(task.project.keywordGroups, task.project.keywordResearchRuns, projectAnalysisLocationLabels(task.project.targetLocations, task.project.businessLocationJson));

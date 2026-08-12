@@ -6,7 +6,7 @@ vi.mock("../queue.js", () => ({
   keywordResearchQueue: { add: vi.fn() },
 }));
 
-import { aiPageSuggestionIssueSummary, aiWebsitePlanDecisionIssueSummary, contentPlanFor, includeEveryCrawledPageInContentPlan, inspectAiPageFaqPlanResponse, inspectAiUnifiedWebsitePlanResponse, normalizeAiPageCtaSuggestion, normalizeAiWebsitePlanCtaSuggestion, normalizeGeneratedContentBrief, parseAiPageFaqPlanResponse, parseAiUnifiedWebsitePlanResponse, reconcileAiWebsitePlanBatch, repairContentPlanPageIdentities, websitePlanEvidencePages } from "./execution-tasks.js";
+import { aiPageSuggestionIssueSummary, aiWebsitePlanDecisionIssueSummary, contentPlanFor, includeEveryCrawledPageInContentPlan, inspectAiPageFaqPlanResponse, inspectAiUnifiedWebsitePlanResponse, normalizeAiPageCtaSuggestion, normalizeAiWebsitePlanCtaSuggestion, normalizeContentPlanCompatibility, normalizeGeneratedContentBrief, parseAiPageFaqPlanResponse, parseAiUnifiedWebsitePlanResponse, reconcileAiWebsitePlanBatch, repairContentPlanPageIdentities, websitePlanEvidencePages } from "./execution-tasks.js";
 
 const baseInput = {
   projectName: "Growth Project",
@@ -385,6 +385,44 @@ describe("AI Website Plan batch reconciliation", () => {
     expect(normalized[17]).toMatch(/^AI brief for “governed page 18”/);
     expect(normalized[16]?.endsWith("…")).toBe(true);
     expect(normalizeGeneratedContentBrief("Keep this concise.")).toBe("Keep this concise.");
+  });
+
+  it("repairs retained Website Plan briefs when they are inspected or saved", () => {
+    const retainedPlan = {
+      summary: "Retained governed Website Plan",
+      contentBriefs: Array.from({ length: 18 }, (_, index) => index >= 16
+        ? `AI brief ${index + 1}: ${"Evidence-backed page direction. ".repeat(50)}`
+        : `AI brief ${index + 1}: concise direction.`),
+      pageAssignments: [{ targetUrl: "/page-18", contentBrief: "Detailed page direction. ".repeat(100) }],
+    };
+    const repaired = normalizeContentPlanCompatibility(retainedPlan) as typeof retainedPlan;
+    expect(repaired.contentBriefs[16]?.length).toBeLessThanOrEqual(1000);
+    expect(repaired.contentBriefs[17]?.length).toBeLessThanOrEqual(1000);
+    expect(repaired.pageAssignments[0]?.contentBrief.length).toBeLessThanOrEqual(1500);
+    expect(retainedPlan.contentBriefs[16]?.length).toBeGreaterThan(1000);
+  });
+
+  it("reconstructs empty derived arrays and removes incomplete retained local clusters", () => {
+    const assignment = {
+      canonicalKeyword: "life insurance",
+      pageName: "Life Insurance",
+      targetUrl: "/life-insurance",
+      recommendedAction: "create_new",
+      searchIntent: "commercial",
+      gapAnalysis: "Create a complete evidence-backed service page.",
+      contentBrief: "Use approved evidence and one clear consultation action.",
+      proofRequirements: [],
+    };
+    const repaired = normalizeContentPlanCompatibility({
+      pageAssignments: [assignment],
+      pageUpdates: [], keywordMapping: [], pageMap: [], planningChecks: [], supportingContent: [], contentBriefs: [], publishingSequence: [], kpis: [], workflowStages: [],
+      locationAuthorityClusters: [{ clusterKey: "edmonton", servicePageKeys: [] }],
+    }) as Record<string, unknown>;
+    for (const field of ["pageUpdates", "keywordMapping", "pageMap", "planningChecks", "supportingContent", "contentBriefs", "publishingSequence", "kpis", "workflowStages"]) {
+      expect(Array.isArray(repaired[field]) && (repaired[field] as unknown[]).length > 0, field).toBe(true);
+    }
+    expect(repaired.locationAuthorityClusters).toEqual([]);
+    expect((repaired.pageAssignments as Array<Record<string, unknown>>)[0]).not.toHaveProperty("proofRequirements");
   });
 
   it("inspects pages missing FAQ topics so only incomplete pages need focused repair", () => {
