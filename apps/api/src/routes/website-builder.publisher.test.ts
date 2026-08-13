@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { SENUKE_COMPONENT_REGISTRY_V1 } from "@webtummy/core/website-model";
-import { canonicalComponents, combinedPageSchema, compactWebsiteBuilderMediaAsset, compactWebsiteBuilderOverviewPage, effectiveExistingPageRequirements, generatedPageSchema, importedWebsiteRouteAssignment, logoPaletteAiPrompt, logoPalettePromptBrand, pageIsImportedExistingWebsite, parseWordPressJsonResponse, publishingAssetMatchesWebsitePage, replaceWebsitePublicStatements, shouldDeployWordPressDesignPackage, websiteSettingsWithVerifiedLocalEvidence, wordPressConnectorVersionAtLeast, wordpressConnectorSafeCss, wordpressMenuDestination } from "./website-builder.js";
+import { canonicalComponents, combinedPageSchema, compactWebsiteBuilderMediaAsset, compactWebsiteBuilderOverviewPage, effectiveExistingPageRequirements, generatedPageSchema, importedWebsiteRouteAssignment, logoPaletteAiPrompt, logoPalettePromptBrand, pageIsImportedExistingWebsite, parseWordPressJsonResponse, productionWebsiteUrl, publishingAssetMatchesWebsitePage, replaceWebsitePublicStatements, shouldDeployWordPressDesignPackage, websiteReleaseDeploymentScope, websiteSettingsWithVerifiedLocalEvidence, wordPressConnectorVersionAtLeast, wordpressConnectorSafeCss, wordpressMenuDestination, wordpressPageWritePayload, wordpressRemotePageIds } from "./website-builder.js";
 
 const project = {
   businessName: "Example Financial",
@@ -15,6 +15,47 @@ const project = {
 };
 
 describe("ongoing WordPress publishing schema", () => {
+  const releaseModel = (overrides: Record<string, unknown> = {}) => ({
+    modelId: "model-1", websiteId: "website-1", projectId: "project-1", version: 1, status: "validated",
+    componentRegistryVersion: "1.0.0", identity: { businessName: "Example" }, designSystem: { colors: { primary: "#000" } },
+    pages: [
+      { pageId: "home", name: "Home", slug: "/", pageType: "home", sections: [{ componentId: "hero.local_service", props: { headline: "Original", imageAssetId: "hero-image" } }], seo: { title: "Home" } },
+      { pageId: "about", name: "About", slug: "about", pageType: "page", sections: [{ componentId: "content.rich_text", props: { body: "About us" } }], seo: { title: "About" } },
+    ],
+    navigation: [{ pageId: "home", label: "Home", url: "/" }, { pageId: "about", label: "About", url: "/about" }],
+    forms: [], mediaAssets: [{ assetId: "hero-image", status: "approved", altText: "Hero", sourceUrl: "asset://hero-image?revision=1" }],
+    ...overrides,
+  }) as never;
+
+  it("scopes an H1-style page edit to only that page", () => {
+    const previous = releaseModel();
+    const current = releaseModel({ pages: [
+      { pageId: "home", name: "Home", slug: "/", pageType: "home", sections: [{ componentId: "hero.local_service", props: { headline: "Updated", imageAssetId: "hero-image" } }], seo: { title: "Home" } },
+      { pageId: "about", name: "About", slug: "about", pageType: "page", sections: [{ componentId: "content.rich_text", props: { body: "About us" } }], seo: { title: "About" } },
+    ] });
+    expect(websiteReleaseDeploymentScope(current, previous)).toMatchObject({ mode: "incremental", pageIds: ["home"], changedAssetIds: [] });
+  });
+
+  it("uploads a replaced image and republishes only its page", () => {
+    const previous = releaseModel();
+    const current = releaseModel({ mediaAssets: [{ assetId: "hero-image", status: "approved", altText: "Hero", sourceUrl: "asset://hero-image?revision=2" }] });
+    expect(websiteReleaseDeploymentScope(current, previous)).toMatchObject({ mode: "incremental", pageIds: ["home"], changedAssetIds: ["hero-image"] });
+  });
+
+  it("forces a complete release for navigation changes", () => {
+    const previous = releaseModel();
+    const current = releaseModel({ navigation: [{ pageId: "about", label: "About", url: "/about" }, { pageId: "home", label: "Home", url: "/" }] });
+    expect(websiteReleaseDeploymentScope(current, previous)).toMatchObject({ mode: "full", pageIds: ["home", "about"], globalChanges: ["Navigation"] });
+  });
+
+  it("derives a production website from a domain-shaped project name", () => {
+    expect(productionWebsiteUrl({ name: "lifexinsurance.ca", websiteUrl: null })).toEqual({ domain: "lifexinsurance.ca", rootUrl: "https://lifexinsurance.ca" });
+  });
+
+  it("prefers the real publishing destination for tracking identity", () => {
+    expect(productionWebsiteUrl({ name: "Client website", websiteUrl: null }, "https://www.example.ca/path")).toEqual({ domain: "www.example.ca", rootUrl: "https://www.example.ca" });
+  });
+
   it("imports an earlier page record into visual-editor components without another AI generation", () => {
     const components = canonicalComponents({
       heroEyebrow: "Protection planning",
@@ -200,6 +241,40 @@ describe("ongoing WordPress publishing schema", () => {
     })).toBe("https://example.com/services/critical-illness-insurance/");
     expect(wordpressMenuDestination("https://example.com/", { slug: "about" })).toBe("https://example.com/about");
     expect(wordpressMenuDestination("https://example.com/", {})).toBe("#");
+  });
+
+  it("reuses every reviewed WordPress draft when publishing the exact release", () => {
+    const remoteIds = wordpressRemotePageIds({ pages: [
+      { pageId: "home", remotePostId: "101", remoteUrl: "https://example.com/home-senuke-release/" },
+      { pageId: "about", remotePostId: 102, remoteUrl: "https://example.com/about-senuke-release/" },
+    ] }, ["home", "about"]);
+
+    expect([...remoteIds ?? []]).toEqual([["home", "101"], ["about", "102"]]);
+  });
+
+  it("does not accept an incomplete draft mapping for live publication", () => {
+    expect(wordpressRemotePageIds({ pages: [
+      { pageId: "home", remotePostId: "101" },
+      { pageId: "about", remotePostId: "" },
+    ] }, ["home", "about"])).toBeNull();
+  });
+
+  it("promotes a reviewed draft without posting its page files and content again", () => {
+    const payload = wordpressPageWritePayload({
+      mode: "publish",
+      promotingReviewedDraft: true,
+      title: "About",
+      slug: "about",
+      content: "<!-- reviewed page blocks -->",
+      excerpt: "Reviewed description",
+      parent: 101,
+      featuredMedia: 202,
+    });
+
+    expect(payload).toEqual({ status: "publish", slug: "about", parent: 101, featured_media: 202 });
+    expect(payload).not.toHaveProperty("content");
+    expect(payload).not.toHaveProperty("title");
+    expect(payload).not.toHaveProperty("excerpt");
   });
 
   it("synchronizes verified local evidence into the matching Website Plan page", () => {

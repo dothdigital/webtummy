@@ -14,6 +14,7 @@ import { aiContentRouter } from "./routes/ai-content.js";
 import { socialStrategyRouter } from "./routes/social-strategy.js";
 import { socialConnectRouter } from "./routes/social-connect.js";
 import { localSeoRouter, startLocalGridScanQueueWorker, startLocalSeoAuditQueueWorker } from "./routes/local-seo.js";
+import { googleBusinessProfileCallbackRouter, googleBusinessProfileRouter } from "./routes/google-business-profile.js";
 import { executionTasksRouter, startContentPlanGenerationQueueWorker } from "./routes/execution-tasks.js";
 import { optimizationWorkflowRouter } from "./routes/optimization-workflow.js";
 import { billingRouter } from "./routes/billing.js";
@@ -35,6 +36,7 @@ import { ecommerceIntelligenceRouter } from "./routes/ecommerce-intelligence.js"
 import { authorityGrowthRouter } from "./routes/authority-growth.js";
 import { aiCitationVisibilityRouter } from "./routes/ai-citation-visibility.js";
 import { publicWebsiteFormsRouter } from "./routes/website-public-forms.js";
+import { publicWebsiteTrackingRouter } from "./routes/website-tracking-public.js";
 import { rawBodySaver } from "./billing.js";
 import { enforceArchivedReadOnly, enforceCommercialAccess, enforceWorkspacePermissions, requireAuth } from "./middleware.js";
 import { createApiErrorCode, GENERIC_SYSTEM_ERROR, systemErrorPayload } from "./api-errors.js";
@@ -82,10 +84,13 @@ app.use((req, res, next) => {
   const origin = req.headers.origin;
   const isPublicWebsiteForm = req.path.startsWith("/api/public/website-forms/");
   const isPublicLeadMagnet = req.path.startsWith("/api/public/lead-magnets/");
-  if (isPublicWebsiteForm || isPublicLeadMagnet) {
-    res.setHeader("Access-Control-Allow-Origin", "*");
+  const isPublicWebsiteTracking = req.path.startsWith("/api/public/website-tracking/");
+  const isGoogleBusinessProfileCallback = req.path === "/api/integrations/google-business-profile/callback" || req.path === "/api/integrations/google-business-profile/callback/";
+  if (isPublicWebsiteForm || isPublicLeadMagnet || isPublicWebsiteTracking) {
+    res.setHeader("Access-Control-Allow-Origin", isPublicWebsiteTracking && origin ? origin : "*");
+    if (isPublicWebsiteTracking && origin) res.setHeader("Vary", "Origin");
     res.setHeader("Access-Control-Allow-Headers", "Content-Type");
-    res.setHeader("Access-Control-Allow-Methods", isPublicLeadMagnet ? "GET,POST,OPTIONS" : "POST,OPTIONS");
+    res.setHeader("Access-Control-Allow-Methods", isPublicLeadMagnet || isPublicWebsiteTracking ? "GET,POST,OPTIONS" : "POST,OPTIONS");
     if (req.method === "OPTIONS") return res.sendStatus(204);
     return next();
   }
@@ -103,7 +108,7 @@ app.use((req, res, next) => {
   }
 
   const fetchSite = req.headers["sec-fetch-site"];
-  if (fetchSite === "cross-site" || (origin && !allowedOrigins.has(origin))) {
+  if (!isGoogleBusinessProfileCallback && (fetchSite === "cross-site" || (origin && !allowedOrigins.has(origin)))) {
     return res.status(403).json({ error: "forbidden origin" });
   }
 
@@ -160,6 +165,8 @@ app.use("/api/billing", billingRouter);
 app.use("/api/auth", authRouter);
 app.use("/api/public", publicLeadMagnetsRouter);
 app.use("/api/public", publicWebsiteFormsRouter);
+app.use("/api/public", publicWebsiteTrackingRouter);
+app.use("/api/integrations/google-business-profile/callback", googleBusinessProfileCallbackRouter);
 app.use("/api", requireAuth, enforceCommercialAccess, enforceArchivedReadOnly, enforceWorkspacePermissions);
 app.use("/api/clients", clientsRouter);
 app.use("/api/users", usersRouter);
@@ -189,6 +196,7 @@ app.use("/api", aiContentRouter);
 app.use("/api", socialStrategyRouter);
 app.use("/api", socialConnectRouter);
 app.use("/api", localSeoRouter);
+app.use("/api", googleBusinessProfileRouter);
 app.use("/api", executionTasksRouter);
 app.use("/api", optimizationWorkflowRouter);
 

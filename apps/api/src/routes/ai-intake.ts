@@ -29,6 +29,16 @@ const conversationConfidenceSchema = z.preprocess((value) => {
   }
   return value;
 }, z.enum(["high", "medium", "low"]));
+
+/**
+ * Models occasionally return one extra otherwise-valid list item. Array size is
+ * a presentation/contract limit, so keep the first allowed items instead of
+ * failing the entire intake turn. Element schemas still reject invalid values.
+ */
+export function boundedAiArray<T extends z.ZodTypeAny>(item: T, maximum: number) {
+  return z.array(item).transform((value) => value.slice(0, maximum));
+}
+
 const conversationSchema = z.object({
   messages: z.array(z.object({ role: z.enum(["user", "assistant"]), text: z.string().trim().min(1).max(5000) })).min(1).max(30),
   totalUserTurns: z.number().int().min(1).max(100),
@@ -41,14 +51,14 @@ const conversationSchema = z.object({
   directSelection: z.object({ field: conversationFieldSchema, values: z.array(z.string().trim().min(1).max(500)).min(1).max(20) }).optional(),
   intakeMode: z.enum(["legacy", "business_discovery"]).default("legacy"),
 });
-const conversationOutputSchema = z.object({
+export const conversationOutputSchema = z.object({
   message: z.string().trim().min(1).max(3000),
   questionField: conversationFieldSchema.optional(),
   question: z.string().trim().min(3).max(600).optional(),
-  questionOptions: z.array(z.string().trim().min(2).max(500)).max(5).optional(),
-  fieldUpdates: z.array(z.object({ field: conversationFieldSchema, value: z.unknown(), confidence: conversationConfidenceSchema, reason: z.string().trim().max(500) })).max(20).default([]),
-  keywordSuggestions: z.object({ primary: z.array(z.string().trim().min(2).max(255)).max(8).default([]), secondary: z.array(z.string().trim().min(2).max(255)).max(15).default([]) }).default({ primary: [], secondary: [] }),
-  missingFields: z.array(z.string().trim().min(1).max(80)).max(20).default([]),
+  questionOptions: boundedAiArray(z.string().trim().min(2).max(500), 5).optional(),
+  fieldUpdates: boundedAiArray(z.object({ field: conversationFieldSchema, value: z.unknown(), confidence: conversationConfidenceSchema, reason: z.string().trim().max(500) }), 20).default([]),
+  keywordSuggestions: z.object({ primary: boundedAiArray(z.string().trim().min(2).max(255), 8).default([]), secondary: boundedAiArray(z.string().trim().min(2).max(255), 15).default([]) }).default({ primary: [], secondary: [] }),
+  missingFields: boundedAiArray(z.string().trim().min(1).max(80), 20).default([]),
   readyForReview: z.boolean().default(false),
 });
 
@@ -951,7 +961,7 @@ AI keyword directions: ${JSON.stringify(semanticKeywordSuggestions).slice(0, 10_
             maxInputBytes: 64_000,
             maxOutputTokens: 1_500,
             timeoutMs: 45_000,
-            validate: (value) => z.object({ questionField: z.literal(nextMandatory), question: z.string().trim().min(3).max(600), questionOptions: z.array(z.string().trim().min(2).max(500)).min(2).max(5) }).parse(value),
+            validate: (value) => z.object({ questionField: z.literal(nextMandatory), question: z.string().trim().min(3).max(600), questionOptions: boundedAiArray(z.string().trim().min(2).max(500), 5).pipe(z.array(z.string()).min(2)) }).parse(value),
           });
           totalInputTokens += correction.inputTokens;
           totalOutputTokens += correction.outputTokens;

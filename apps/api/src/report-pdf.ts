@@ -6,6 +6,7 @@ const titleCase = (value: string) => value.replace(/_/g, " ").replace(/\b\w/g, (
 const values = (value: unknown) => Array.isArray(value) ? value : [];
 const record = (value: unknown): Record<string, unknown> => value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
 const display = (value: unknown) => value == null || value === "" ? "Data pending" : typeof value === "boolean" ? (value ? "Yes" : "No") : Array.isArray(value) ? (value.length ? value.map((item) => typeof item === "object" ? JSON.stringify(item) : String(item)).join(", ") : "None") : String(value);
+const clientItem = (value: unknown) => { if (!value || typeof value !== "object") return display(value); const item = record(value); const title = display(item.title ?? item.keyword ?? item.name ?? item.recommendation ?? item.issueSummary ?? "Recorded item"); const detail = item.location ? ` · ${display(item.location)}` : item.status ? ` · ${titleCase(display(item.status))}` : ""; return `${title}${detail}`; };
 
 function workspaceHeading(type: string) {
   return type === "agency" ? "Agency Performance Report" : type === "ecommerce" ? "Ecommerce Performance Report" : type === "personal" ? "Individual Project Report" : "Business Performance Report";
@@ -534,6 +535,22 @@ export function createProfessionalReportPdf(contentValue: unknown, brand: PdfBra
       "Regenerate this report to share the updated client-facing result.",
     ]);
     narrative("Measurement note", "Search, map, traffic, lead, revenue, and AI citation outcomes require connected measurement and sufficient observation time. The recommendations improve readiness and implementation quality but do not guarantee a specific result.", "#F59E0B");
+  } else if (values(content.clientSections).length) {
+    if (content.openingNote || content.agencyNotes) narrative("Opening note", content.openingNote ?? content.agencyNotes, "#3B82F6");
+    const enabledSections = new Map(reportSections.map((item) => [String(item.key), item.enabled !== false]));
+    const clientSections = values(content.clientSections).map(record).filter((item) => enabledSections.get(String(item.key)) !== false);
+    clientSections.forEach((clientSection, index) => {
+      pageHeading(`${String(index + 1).padStart(2, "0")} · ${display(clientSection.title)}`, display(clientSection.title), index === 0 ? `This ${titleCase(reportType)} uses only saved evidence for the selected reporting period. Missing integrations remain clearly labelled.` : undefined, index > 0);
+      if (clientSection.summary) narrative("Summary", clientSection.summary, index === 0 ? "#3B82F6" : teal);
+      const metrics = values(clientSection.metrics).map(record).map((metric) => ({ label: display(metric.label), value: metric.value, note: metric.note ? display(metric.note) : undefined }));
+      if (metrics.length) metricCards(metrics);
+      const items = values(clientSection.items).map(clientItem);
+      if (items.length) bullets(display(clientSection.title), items);
+      else if (clientSection.emptyMessage) narrative("Data status", clientSection.emptyMessage, "#F59E0B");
+    });
+    const sourceSnapshot = record(content.sourceSnapshot);
+    pageHeading("Sources", "Evidence and snapshot record", "Values remain tied to the identifiers and timestamps captured for this report version.", false);
+    section("Source versions", [["Business Brain", JSON.stringify(sourceSnapshot.businessBrain ?? null)], ["Evidence", JSON.stringify(sourceSnapshot.evidence ?? null)], ["Strategy", JSON.stringify(sourceSnapshot.strategy ?? null)], ["Growth Blueprint", JSON.stringify(sourceSnapshot.growthBlueprint ?? null)], ["Site Analysis", JSON.stringify(sourceSnapshot.siteAnalysis ?? null)]]);
   } else {
     const strategy = record(content.strategy); const evidence = record(content.evidence); const site = record(evidence.siteAnalysis); const clientNarrative = record(content.clientNarrative); const growth = record(content.growth); const blueprint = record(growth.blueprint);
     const rankingRows = values(performance.keywordRankingChanges).map((item) => { const row = record(item); const rank = row.rank == null ? "Not found" : `#${row.rank}`; const movement = row.change == null ? "new baseline" : Number(row.change) > 0 ? `up ${row.change}` : Number(row.change) < 0 ? `down ${Math.abs(Number(row.change))}` : "no change"; return `${display(row.keyword)} · ${display(row.location)} · ${rank} · ${movement}`; });
@@ -563,19 +580,14 @@ export function createProfessionalReportPdf(contentValue: unknown, brand: PdfBra
       bullets("Current priorities", growth.nextBestActions);
       bullets("Experiments in this period", growth.experiments);
     }
-    if (content.agencyNotes) narrative("Agency notes", content.agencyNotes, "#3B82F6");
+    if (content.openingNote || content.agencyNotes) narrative("Opening note", content.openingNote ?? content.agencyNotes, "#3B82F6");
     const sourceSnapshot = record(content.sourceSnapshot);
     pageHeading("Sources", "Evidence and snapshot record", "Important values remain tied to the evidence identifiers and timestamps captured when this document version was generated.", false);
     section("Source versions", [["Business Brain", JSON.stringify(sourceSnapshot.businessBrain ?? null)], ["Evidence", JSON.stringify(sourceSnapshot.evidence ?? null)], ["Strategy", JSON.stringify(sourceSnapshot.strategy ?? null)], ["Growth Blueprint", JSON.stringify(sourceSnapshot.growthBlueprint ?? null)], ["Site Analysis", JSON.stringify(sourceSnapshot.siteAnalysis ?? null)]]);
   }
-  if (reportType === "local_seo") { const local = record(content.localSeo); section("Local SEO", [["Google Business Profile", local.googleBusinessProfilePerformance], ["Local grid rankings", local.localGridRankings], ["Citation and NAP issues", local.citationsAndNapIssues], ["Recommendations", local.recommendations]]); }
-  if (reportType === "ai_search_citation") { const citation = record(content.aiCitationVisibility); const monitoring = record(citation.monitoring); section("AI Search & Citation", [["Assessment", citation.assessmentStatus], ["Latest audit", citation.latestAuditAt], ["Observed prompts", monitoring.prompts], ["Observed mentions", monitoring.observedMentions], ["Inaccurate mentions", monitoring.inaccurateMentions], ["Important caveat", citation.disclaimer]]); bullets("Current citation recommendations", citation.recommendations); }
-  if (reportType === "growth_marketing_cro") { const growth = record(content.growth); bullets("Funnel stages", growth.funnelStages); bullets("Experiments", growth.experiments); bullets("Prioritized next actions", growth.nextBestActions); }
-  if (reportType === "social_email") { const social = record(content.socialEmail); section("Social & Email Performance", [["Evidence sources", social.sources], ["Impressions", social.impressions], ["Reach", social.reach], ["Engagements", social.engagements], ["Clicks", social.clicks], ["Leads", social.leads], ["Conversions", social.conversions], ["Revenue", social.revenue], ["Email data", "Not connected"], ["Availability", social.message]]); }
-  if (reportType === "lead_crm") { section("Lead & CRM", [["Lead data", "Not connected"], ["Pipeline", "Not connected"], ["Conversion", "Not connected"], ["Revenue attribution", "Not connected"], ["Explanation", "Connect a supported CRM and verified attribution source before including lead, pipeline, conversion, or revenue metrics."]]); }
-  if (reportType === "reputation") { const reputation = record(content.reputation); section("Reputation", [["New reviews", reputation.newReviews], ["Negative reviews requiring attention", reputation.negativeReviewsNeedingAttention], ["Average rating", reputation.averageRating], ["Rating change", reputation.ratingChange], ["Response status", reputation.responseStatus], ["Trends", reputation.trends]]); }
-  if (reportType === "content_publishing") { const publishing = record(content.contentPublishing); section("Content and Publishing", [["Content created", publishing.created], ["Content approved", publishing.approved], ["Content published", publishing.published], ["Content performance", publishing.performance]]); }
-  if (reportType === "ecommerce") { const ecommerce = record(content.ecommerce); section("Ecommerce Performance", [["Product and collection optimization", ecommerce.productAndCollectionOptimization], ["Organic product traffic", ecommerce.organicProductTraffic], ["Store SEO issues", ecommerce.storeSeoIssues], ["Product page performance", ecommerce.productPagePerformance], ["Published store changes", ecommerce.publishedStoreChanges], ["Sales and conversions", ecommerce.salesAndConversions]]); }
+  if (!values(content.clientSections).length && reportType === "local_visibility") { const local = record(content.localSeo); section("Local Visibility", [["Google Business Profile", local.googleBusinessProfilePerformance], ["Local grid rankings", local.localGridRankings], ["Citation and NAP issues", local.citationsAndNapIssues], ["Recommendations", local.recommendations]]); }
+  if (!values(content.clientSections).length && reportType === "leads_conversion") { section("Leads & Conversion", [["Lead data", "Not connected"], ["Forms and calls", "Not connected"], ["Lead quality", "Not connected"], ["Revenue attribution", "Not connected"], ["Explanation", "Connect a supported CRM and verified attribution source before including lead, conversion, or revenue metrics."]]); }
+  if (!values(content.clientSections).length && reportType === "campaign_project") { const growth = record(content.growth); bullets("Campaign tests and learnings", growth.experiments); bullets("Recommended next step", growth.nextBestActions); }
 
   const range = doc.bufferedPageRange();
   for (let index = range.start; index < range.start + range.count; index++) {

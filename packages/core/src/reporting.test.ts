@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { agencyProposalTemplates, notificationEventCatalog, projectReportCatalog, projectReportTypes } from "./reporting.js";
+import { agencyProposalTemplates, clientReportTypes, notificationEventCatalog, projectReportCatalog, projectReportTypes } from "./reporting.js";
 
 describe("project reporting catalog", () => {
   it("defines every launch report exactly once", () => {
@@ -7,9 +7,8 @@ describe("project reporting catalog", () => {
     expect(new Set(projectReportCatalog.map((report) => report.type)).size).toBe(projectReportTypes.length);
   });
 
-  it("keeps Agency Client Report client-safe and Ecommerce Report store-only", () => {
-    expect(projectReportCatalog.find((report) => report.type === "agency_client")).toMatchObject({ agencyOnly: true, clientSafe: true });
-    expect(projectReportCatalog.find((report) => report.type === "ecommerce")).toMatchObject({ ecommerceOnly: true });
+  it("keeps every V1 client report Agency-scoped and client-safe", () => {
+    for (const type of clientReportTypes) expect(projectReportCatalog.find((report) => report.type === type)).toMatchObject({ agencyOnly: true, clientSafe: true });
     expect(projectReportCatalog.find((report) => report.type === "agency_proposal")).toMatchObject({ agencyOnly: true, clientSafe: true });
   });
 
@@ -18,11 +17,12 @@ describe("project reporting catalog", () => {
     expect(notificationEventCatalog.report_ready.roles).toContain("client_viewer");
   });
 
-  it("defines all seven V1 Agency proposal templates", () => {
-    expect(agencyProposalTemplates.map((template) => template.id)).toEqual(["growth_strategy", "seo_website", "local_growth", "website_build", "content_authority_ai", "growth_campaign", "custom"]);
+  it("defines exactly the six approved V1 Agency proposal templates", () => {
+    expect(agencyProposalTemplates.map((template) => template.id)).toEqual(["seo_organic", "website_build", "local_seo", "content_authority", "website_seo", "custom"]);
   });
 
-  it("includes every V1 Agency white-label report family", () => {
-    expect(projectReportTypes).toEqual(expect.arrayContaining(["executive_summary", "monthly_growth", "seo_performance", "local_seo", "ai_search_citation", "content_publishing", "growth_marketing_cro", "lead_crm", "social_email", "project_campaign"]));
+  it("defines exactly the five approved client reports plus the separate proposal workflow", () => {
+    expect(clientReportTypes).toEqual(["monthly_growth", "seo_website", "local_visibility", "leads_conversion", "campaign_project"]);
+    expect(projectReportTypes).toEqual([...clientReportTypes, "agency_proposal"]);
   });
 });

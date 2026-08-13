@@ -27,6 +27,7 @@ export type WebsiteRenderOptions = {
   assetUrls?: Record<string, string>;
   internalUrlMap?: Record<string, string>;
   formAction?: string;
+  tracking?: { siteId: string; scriptUrl: string; releaseId?: string };
   /** Preview and staging output are never indexable. */
   environmentType?: WebsiteQualityEnvironment;
 };
@@ -369,13 +370,15 @@ export function renderWebsitePageWordPressBlocks(
     })
     .filter(Boolean);
 
-  return fragments.map((fragment) => {
+  const blocks = fragments.map((fragment) => {
     if (/^<!-- wp:senuke\//.test(fragment)) return fragment;
     if (/^\[senuke_form\b[\s\S]*\]$/i.test(fragment)) {
       return `<!-- wp:shortcode -->\n${fragment}\n<!-- /wp:shortcode -->`;
     }
     return `<!-- wp:html -->\n${fragment}\n<!-- /wp:html -->`;
-  }).join("\n\n");
+  });
+  if (options.tracking) blocks.push(`<!-- wp:html -->\n<script async src="${escapeHtml(options.tracking.scriptUrl)}" data-senuke-site="${escapeHtml(options.tracking.siteId)}"${options.tracking.releaseId ? ` data-senuke-release="${escapeHtml(options.tracking.releaseId)}"` : ""}></script>\n<!-- /wp:html -->`);
+  return blocks.join("\n\n");
 }
 
 function serializeWordPressComponentBlock(
@@ -645,14 +648,19 @@ document.querySelectorAll("[data-senuke-managed-form]").forEach(function(form){
       if(!response.ok)throw new Error(result.error||"We could not send your enquiry. Please try again.");
       form.reset();
       if(status)status.textContent=result.message||"Thank you. Your enquiry has been received.";
+      document.dispatchEvent(new CustomEvent("senuke:track",{detail:{eventName:"form_success",metadata:{formId:form.dataset.senukeFormId||form.id||"form"}}}));
     }catch(error){
       if(status){status.classList.add("senuke-form-error");status.textContent=error instanceof Error?error.message:"We could not send your enquiry. Please try again.";}
+      document.dispatchEvent(new CustomEvent("senuke:track",{detail:{eventName:"form_error",metadata:{formId:form.dataset.senukeFormId||form.id||"form"}}}));
     }finally{
       if(button)button.disabled=false;
     }
   });
 });
 </script>`
+    : "";
+  const trackingScript = production && options.tracking
+    ? `<script async src="${escapeHtml(options.tracking.scriptUrl)}" data-senuke-site="${escapeHtml(options.tracking.siteId)}"${options.tracking.releaseId ? ` data-senuke-release="${escapeHtml(options.tracking.releaseId)}"` : ""}></script>`
     : "";
   return `<!doctype html>
 <html lang="en" style="${cssVariables}">
@@ -666,6 +674,7 @@ document.querySelectorAll("[data-senuke-managed-form]").forEach(function(form){
 ${faviconUrl && renderableImageUrl(faviconUrl) ? `<link rel="icon" href="${escapeHtml(faviconUrl)}">` : ""}
 <link rel="stylesheet" href="${escapeHtml(options.stylesheetHref || "/assets/senuke.css")}">
 <script type="application/ld+json">${safeJsonLd(page.seo.schemaJsonLd)}</script>
+${trackingScript}
 </head>
 <body>
 <div class="senuke-site-topbar"><div class="senuke-site-topbar-inner">${socialNavigationHtml(model, "header")}${headerContactHtml(model)}</div></div>

@@ -754,6 +754,22 @@ export function normalizeContentPlanCompatibility(value: unknown) {
   };
 }
 
+/** Validate generated or retained Website Plans through one compatibility
+ * boundary. If strict validation still fails, expose the exact field to the
+ * user and preserve the full Zod diagnostic in the governed failed job. */
+export function parseCompatibleContentPlan(value: unknown): ContentPlan {
+  const parsed = contentPlanSchema.safeParse(normalizeContentPlanCompatibility(value));
+  if (parsed.success) return parsed.data;
+  const issue = parsed.error.issues[0];
+  const field = issue?.path.length ? issue.path.join(".") : "plan";
+  throw Object.assign(new Error(`Website Plan validation failed at ${field}: ${issue?.message ?? "invalid generated value"}`), {
+    statusCode: 502,
+    code: "ai_content_plan_invalid",
+    publicMessage: true,
+    validationIssues: parsed.error.issues,
+  });
+}
+
 function normalizeAiCtaSuggestion(value: unknown, maxLength: number) {
   if (typeof value !== "string") return value;
   const compact = value.trim().replace(/\s+/g, " ");
@@ -3309,10 +3325,7 @@ async function performContentPlanPrepare(req: Request, res: Response) {
     };
   })() : generatedPlan;
   const reconciledCandidatePlan = reconcileContentPlanConflicts(repairContentPlanPageIdentities(generatedCandidatePlan));
-  const plan = contentPlanSchema.parse({
-    ...reconciledCandidatePlan,
-    contentBriefs: reconciledCandidatePlan.contentBriefs.map((brief) => normalizeGeneratedContentBrief(brief)),
-  });
+  const plan = parseCompatibleContentPlan(reconciledCandidatePlan);
   const updated = await prisma.$transaction(async (tx) => {
     // A project reset can legitimately remove this task while the AI request is
     // still running. Use a conditional write so that stale completions are

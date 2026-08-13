@@ -6,7 +6,7 @@ vi.mock("../queue.js", () => ({
   keywordResearchQueue: { add: vi.fn() },
 }));
 
-import { aiPageSuggestionIssueSummary, aiWebsitePlanDecisionIssueSummary, contentPlanFor, includeEveryCrawledPageInContentPlan, inspectAiPageFaqPlanResponse, inspectAiUnifiedWebsitePlanResponse, normalizeAiPageCtaSuggestion, normalizeAiWebsitePlanCtaSuggestion, normalizeContentPlanCompatibility, normalizeGeneratedContentBrief, parseAiPageFaqPlanResponse, parseAiUnifiedWebsitePlanResponse, reconcileAiWebsitePlanBatch, repairContentPlanPageIdentities, websitePlanEvidencePages } from "./execution-tasks.js";
+import { aiPageSuggestionIssueSummary, aiWebsitePlanDecisionIssueSummary, contentPlanFor, includeEveryCrawledPageInContentPlan, inspectAiPageFaqPlanResponse, inspectAiUnifiedWebsitePlanResponse, normalizeAiPageCtaSuggestion, normalizeAiWebsitePlanCtaSuggestion, normalizeContentPlanCompatibility, normalizeGeneratedContentBrief, parseAiPageFaqPlanResponse, parseAiUnifiedWebsitePlanResponse, parseCompatibleContentPlan, reconcileAiWebsitePlanBatch, repairContentPlanPageIdentities, websitePlanEvidencePages } from "./execution-tasks.js";
 
 const baseInput = {
   projectName: "Growth Project",
@@ -423,6 +423,34 @@ describe("AI Website Plan batch reconciliation", () => {
     }
     expect(repaired.locationAuthorityClusters).toEqual([]);
     expect((repaired.pageAssignments as Array<Record<string, unknown>>)[0]).not.toHaveProperty("proofRequirements");
+  });
+
+  it("repairs fresh generated plan arrays before the final governed schema", () => {
+    const generated = contentPlanFor({ ...baseInput, websitePages: [] });
+    const parsed = parseCompatibleContentPlan({
+      ...generated,
+      pageUpdates: [],
+      keywordMapping: [],
+      pageMap: [],
+      planningChecks: [],
+      supportingContent: [],
+      contentBriefs: [],
+      publishingSequence: [],
+      kpis: [],
+      workflowStages: [],
+      locationAuthorityClusters: [{
+        location: "Edmonton", clusterKey: "edmonton", authorityScore: 70, competitionLevel: "medium", demandLevel: "medium", evidenceConfidence: "moderate", requiredPageCount: 2, hubPageKey: "edmonton-hub", servicePageKeys: [], supportingPageKeys: [], neighbourhoodPageKeys: [], rationale: "Retained incomplete cluster awaiting a governed child service page.", schemaTypes: ["Organization"], internalLinkRules: ["Link the location owner to verified service pages."],
+      }],
+    });
+    expect(parsed.pageAssignments.length).toBeGreaterThan(0);
+    expect(parsed.pageUpdates.length).toBeGreaterThan(0);
+    expect(parsed.contentBriefs.length).toBeGreaterThan(0);
+    expect(parsed.workflowStages.length).toBeGreaterThan(0);
+    expect(parsed.locationAuthorityClusters).toEqual([]);
+  });
+
+  it("reports the exact field when a generated plan remains invalid", () => {
+    expect(() => parseCompatibleContentPlan({ summary: "Missing governed page assignments" })).toThrow(/pageUpdates|pageAssignments/);
   });
 
   it("inspects pages missing FAQ topics so only incomplete pages need focused repair", () => {

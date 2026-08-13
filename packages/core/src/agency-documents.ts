@@ -14,7 +14,7 @@ export function agencyProposalContent(input: AgencyProposalInput) {
   const outputs = strings(input.outputs);
   const selectedServices = strings(input.selectedServices);
   const selectedFindings = strings(input.selectedFindings);
-  const templateId = input.templateId ?? "growth_strategy";
+  const templateId = input.templateId ?? "seo_organic";
   const template = agencyProposalTemplates.find((item) => item.id === templateId) ?? agencyProposalTemplates[0];
   const goal = input.primaryGoal?.trim() || "Improve measurable digital performance";
   const services = selectedServices.length ? selectedServices : outputs.length ? outputs : [...template.defaultServices];

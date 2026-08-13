@@ -74,12 +74,45 @@ import { canAccessProject, hasWorkspacePermission, recordWorkspaceActivity, work
 import { commitUsage, preflightUsage, refundUsage } from "../usage-engine.js";
 import { refundWebsiteJobUsage, reserveWebsiteJobUsage } from "../website-job-usage.js";
 import { isPreLaunchWebsiteCampaign } from "../campaign-intelligence.js";
+import { captureWebsiteTracking, trackingEmbed, websiteTrackingMetrics } from "../website-tracking.js";
 
 export const websiteBuilderRouter = Router();
 const WEBSITE_SEO_PLAN_NORMALIZATION_VERSION = "keyword-owner-v2";
 const WORDPRESS_CONNECTOR_DIRECTORY = resolve(dirname(fileURLToPath(import.meta.url)), "../../../../wordpress-plugin/senuke-ai-connector");
 const WORDPRESS_CONNECTOR_SOURCE = resolve(WORDPRESS_CONNECTOR_DIRECTORY, "senuke-ai-connector.php");
 const WORDPRESS_THEME_DIRECTORY = resolve(dirname(fileURLToPath(import.meta.url)), "../../../../wordpress-theme/senuke-theme");
+
+export function productionWebsiteUrl(project: { name?: string | null; websiteUrl?: string | null }, destinationUrl?: string | null) {
+  const candidates = [destinationUrl, project.websiteUrl, project.name && /^(?:[a-z0-9-]+\.)+[a-z]{2,}(?:\/.*)?$/i.test(project.name.trim()) ? project.name.trim() : null];
+  for (const candidate of candidates) {
+    if (!candidate) continue;
+    try {
+      const parsed = new URL(/^https?:\/\//i.test(candidate) ? candidate : `https://${candidate}`);
+      if (!parsed.hostname || ["localhost", "localhost.localdomain"].includes(parsed.hostname.toLowerCase())) continue;
+      return { domain: parsed.hostname.toLowerCase(), rootUrl: `${parsed.protocol}//${parsed.hostname.toLowerCase()}` };
+    } catch {
+      // Try the next explicit production destination.
+    }
+  }
+  return null;
+}
+
+async function trackingForProject(project: { id: string; clientId: string; name?: string | null; websiteUrl?: string | null; primaryGoal?: string | null; analyticsPlatforms?: unknown; cmsPlatform?: string | null; preferredPublishingMethod?: string | null; website?: { id: string; domain: string; rootUrl: string; trackingSite?: { id: string } | null } | null }, userId?: string | null, destinationUrl?: string | null) {
+  let website = project.website;
+  const productionUrl = productionWebsiteUrl(project, destinationUrl);
+  if (!website && productionUrl) {
+    website = await prisma.$transaction(async (tx) => {
+      const existing = await tx.website.findFirst({ where: { clientId: project.clientId, domain: productionUrl.domain, status: "active" } });
+      const row = existing ?? await tx.website.create({ data: { clientId: project.clientId, domain: productionUrl.domain, rootUrl: productionUrl.rootUrl, status: "active" } });
+      await tx.project.update({ where: { id: project.id }, data: { websiteId: row.id, websiteUrl: productionUrl.rootUrl } });
+      return row;
+    });
+  }
+  if (!website) return undefined;
+  const captured = await captureWebsiteTracking(prisma, { websiteId: website.id, clientId: project.clientId, domain: website.domain, rootUrl: website.rootUrl, project, createdByUserId: userId });
+  const embed = trackingEmbed(captured.site.id);
+  return embed ? { ...embed, rootUrl: website.rootUrl, site: captured.site, plan: captured.plan } : undefined;
+}
 
 async function addDirectoryToZip(zip: JSZip, sourceDirectory: string, archiveDirectory: string) {
   const entries = await readdir(sourceDirectory, { withFileTypes: true });
@@ -877,7 +910,11 @@ function qualityWebsiteModel(project: { id: string; businessLocationJson?: Prism
           // references instead of copying multi-megabyte base64 bodies. The
           // actual source is resolved only at an explicit export or publish
           // boundary.
-          ...(asset.sourceUrl ? { sourceUrl: /^https:\/\//i.test(asset.sourceUrl) ? asset.sourceUrl : `asset://${asset.id}` } : {}),
+          ...(asset.sourceUrl ? {
+            sourceUrl: /^https:\/\//i.test(asset.sourceUrl) || asset.sourceUrl.startsWith("asset://")
+              ? asset.sourceUrl
+              : `asset://${asset.id}`,
+          } : {}),
         }))),
     ],
   };
@@ -954,7 +991,7 @@ async function validateAndPersistWebsiteModel(
   const validation = validateWebsiteModel(canonical.model);
   const qualityGovernance = evaluateWebsiteQualityGovernance(canonical.model, {
     environment: "staging",
-    industry: project.industry || project.niche || "",
+    industry: project.niche || "",
     waivedIssues: jsonRecord(jsonRecord(build.settingsJson).websiteQualityWaivers) as Record<string, string>,
   });
   const pageIndexById = new Map(canonical.model.pages.map((page, index) => [page.pageId, index]));
@@ -1095,7 +1132,7 @@ async function canonicalWebsiteInputs(projectId: string, buildId: string) {
       include: {
         pages: {
           orderBy: { sortOrder: "asc" },
-          include: { mediaAssets: { select: { id: true, role: true, status: true, altText: true } } },
+          include: { mediaAssets: { select: { id: true, role: true, status: true, altText: true, approvedAt: true } } },
         },
       },
     }),
@@ -1108,7 +1145,12 @@ async function canonicalWebsiteInputs(projectId: string, buildId: string) {
       ...build,
       pages: build.pages.map((page) => ({
         ...page,
-        mediaAssets: page.mediaAssets.map((asset) => ({ ...asset, sourceUrl: availableMediaIds.has(asset.id) ? `asset://${asset.id}` : null })),
+        mediaAssets: page.mediaAssets.map((asset) => ({
+          ...asset,
+          sourceUrl: availableMediaIds.has(asset.id)
+            ? `asset://${asset.id}?revision=${encodeURIComponent(asset.approvedAt?.toISOString() ?? "unapproved")}`
+            : null,
+        })),
       })),
     },
   };
@@ -1234,6 +1276,37 @@ export function wordpressMenuDestination(baseUrl: string, item: { remoteUrl?: un
   return `${baseUrl.replace(/\/$/, "")}/${destination.replace(/^\//, "")}`;
 }
 
+export function wordpressRemotePageIds(value: unknown, requiredPageIds: string[] = []) {
+  const savedPages = jsonRecord(value).pages;
+  const mappings = Array.isArray(savedPages) ? savedPages.map(jsonRecord) : [];
+  const remoteIds = new Map<string, string>();
+  for (const mapping of mappings) {
+    const pageId = String(mapping.pageId || "").trim();
+    const remotePostId = String(mapping.remotePostId || "").trim();
+    if (pageId && remotePostId) remoteIds.set(pageId, remotePostId);
+  }
+  return requiredPageIds.every((pageId) => remoteIds.has(pageId)) ? remoteIds : null;
+}
+
+export function wordpressPageWritePayload(input: {
+  mode: "draft" | "pending" | "publish";
+  promotingReviewedDraft: boolean;
+  title: string;
+  slug: string;
+  content: string;
+  excerpt: string;
+  parent?: number;
+  featuredMedia?: number;
+}) {
+  const placement = {
+    ...(input.parent ? { parent: input.parent } : {}),
+    ...(input.featuredMedia ? { featured_media: input.featuredMedia } : {}),
+  };
+  return input.promotingReviewedDraft
+    ? { status: "publish" as const, slug: input.slug, ...placement }
+    : { title: input.title, slug: input.slug, content: input.content, status: input.mode, excerpt: input.excerpt, ...placement };
+}
+
 function wordPressRequestFailure(error: unknown, endpoint: string): never {
   if (typeof error === "object" && error !== null && "statusCode" in error) throw error;
   if (error instanceof Error && (error.name === "AbortError" || /aborted|timeout/i.test(error.message))) {
@@ -1303,6 +1376,7 @@ async function scopedProject(projectId: string, req: Parameters<typeof workspace
     where: { id: projectId },
     include: {
       agencyClient: true,
+      website: { include: { trackingSite: true, measurementPlans: { where: { active: true }, orderBy: { version: "desc" }, take: 1 } } },
       businessProfile: true,
       strategyPlans: { where: { status: "approved" }, orderBy: { version: "desc" }, take: 1 },
       keywordGroups: { where: { status: "approved" } },
@@ -1483,6 +1557,12 @@ async function scopedOverviewProject(projectId: string, req: Parameters<typeof w
     where: { id: projectId },
     include: {
       agencyClient: true,
+      website: {
+        include: {
+          trackingSite: true,
+          measurementPlans: { where: { active: true }, orderBy: { version: "desc" }, take: 1 },
+        },
+      },
       businessProfile: true,
       strategyPlans: { where: { status: "approved" }, orderBy: { version: "desc" }, take: 1 },
       keywordGroups: { where: { status: "approved" } },
@@ -2096,6 +2176,17 @@ export function builderView(project: Awaited<ReturnType<typeof scopedProject>>["
     : null;
   return {
     project: { id: project.id, name: project.name, businessName: businessContext.businessName, websiteUrl: project.websiteUrl, websiteStatus: project.websiteStatus, projectType: project.projectType, brandVoice: project.brandVoice, industry: businessContext.industry || project.niche, audience: businessContext.audience || null, offer: businessContext.coreBusinessValue || null, services: businessContext.primaryServices, businessSummary: businessContext.brandDescription || null, primaryGoal: project.primaryGoal, targetLocations: targetLocationStrings(project.targetLocations), preferredPublishingMethod: project.preferredPublishingMethod },
+    measurement: project.website ? {
+      websiteId: project.website.id,
+      rootUrl: project.website.rootUrl,
+      domain: project.website.domain,
+      siteId: project.website.trackingSite?.id ?? null,
+      installation: project.website.trackingSite?.installation ?? "pending",
+      lastEventAt: project.website.trackingSite?.lastEventAt ?? null,
+      lastVerifiedAt: project.website.trackingSite?.lastVerifiedAt ?? null,
+      trackingState: project.website.measurementPlans[0]?.trackingState ?? "CONNECTION_REQUIRED",
+      planVersion: project.website.measurementPlans[0]?.version ?? null,
+    } : null,
     build: buildWithQuality ? { ...buildWithQuality, generationCheckpoints: undefined } : null,
     contentWorkspace,
     websiteWorkflow: {
@@ -6571,7 +6662,7 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/pages/:pageId/re
   for (let attempt = 0; attempt < 2 && !repairedComponents; attempt += 1) {
     try {
       const response = await centralAiJson({
-        system: "Rewrite only the supplied unsupported public website claims as neutral, educational copy. Return JSON only. Preserve the useful subject, but remove rankings, guarantees, superlatives, suitability conclusions, performance promises, unsupported credentials, and invented facts. Do not add new services, policy facts, insurer ratings, legal conclusions, statistics, locations, or outcomes.",
+        system: "Rewrite only the supplied public website wording as neutral, educational copy. Return JSON only. Preserve the useful subject and any credential wording already supplied, but remove rankings, guarantees, superlatives, suitability conclusions, and performance promises. Do not ask for credential evidence or add new credentials, services, policy facts, insurer ratings, legal conclusions, statistics, locations, or outcomes.",
         prompt: `Return {"replacements":[{"replacement":"safe customer-facing sentence"}]} with exactly one replacement for every numbered sentence, in the same order.
 Business: ${businessIdentity(project) || "Approved business identity unavailable"}
 Industry: ${project.niche || "Not specified"}
@@ -6583,7 +6674,7 @@ Rules:
 - Return replacements in the same numbered order. Do not echo the originals.
 - Keep the replacement useful and specific to the sentence's topic.
 - Prefer language such as learn, review, consider, may, can, and questions to discuss.
-- Do not use best, leading, guaranteed, risk-free, always, never, top-rated, highest, lowest, trusted, expert, proven, licensed, certified, or similar unsupported claims.
+- Do not use best, leading, guaranteed, risk-free, always, never, top-rated, highest, lowest, trusted, expert, proven, or similar promotional claims. Preserve existing licensed or certified wording without requesting credentials.
 - Do not recommend a particular product or say it is suitable for the visitor.
 ${attempt ? "The previous response was incomplete or remained unsafe. Replace every sentence and remove every unsupported claim." : ""}`,
         temperature: 0.2,
@@ -7952,6 +8043,107 @@ function approvedReleaseWebsiteModel(release: { immutableSnapshot: Prisma.JsonVa
   return model;
 }
 
+export type WebsiteReleaseDeploymentScope = {
+  mode: "initial" | "incremental" | "full";
+  pageIds: string[];
+  pages: Array<{ pageId: string; name: string; reasons: string[] }>;
+  changedAssetIds: string[];
+  globalChanges: string[];
+  removedPageIds: string[];
+};
+
+const comparableJson = (value: unknown) => JSON.stringify(value ?? null);
+
+/**
+ * Compare immutable releases without treating model bookkeeping (version,
+ * status, IDs) as a website-wide design change. Page and media references are
+ * stable, so a one-page edit remains a one-page deployment.
+ */
+export function websiteReleaseDeploymentScope(
+  current: WebsiteModel,
+  previous?: WebsiteModel | null,
+): WebsiteReleaseDeploymentScope {
+  if (!previous) {
+    return {
+      mode: "initial",
+      pageIds: current.pages.map((page) => page.pageId),
+      pages: current.pages.map((page) => ({ pageId: page.pageId, name: page.name, reasons: ["Initial website release"] })),
+      changedAssetIds: current.mediaAssets.map((asset) => asset.assetId),
+      globalChanges: ["Initial website release"],
+      removedPageIds: [],
+    };
+  }
+
+  const globalChanges = [
+    ["Website identity", current.identity, previous.identity],
+    ["Design system", current.designSystem, previous.designSystem],
+    ["Navigation", current.navigation, previous.navigation],
+    ["Navigation structure", current.navigationModel, previous.navigationModel],
+    ["Forms", current.forms, previous.forms],
+    ["Renderer components", current.componentRegistryVersion, previous.componentRegistryVersion],
+  ].filter(([, currentValue, previousValue]) => comparableJson(currentValue) !== comparableJson(previousValue))
+    .map(([label]) => String(label));
+  const previousPages = new Map(previous.pages.map((page) => [page.pageId, page]));
+  const currentPageIds = new Set(current.pages.map((page) => page.pageId));
+  const removedPageIds = previous.pages.filter((page) => !currentPageIds.has(page.pageId)).map((page) => page.pageId);
+  if (removedPageIds.length) globalChanges.push("Removed pages");
+
+  const previousAssets = new Map(previous.mediaAssets.map((asset) => [asset.assetId, asset]));
+  const changedAssetIds = current.mediaAssets
+    .filter((asset) => comparableJson(asset) !== comparableJson(previousAssets.get(asset.assetId)))
+    .map((asset) => asset.assetId);
+  const changedAssetSet = new Set(changedAssetIds);
+  const pages = current.pages.flatMap((page) => {
+    const reasons: string[] = [];
+    const priorPage = previousPages.get(page.pageId);
+    if (!priorPage) reasons.push("New page");
+    else if (comparableJson(page) !== comparableJson(priorPage)) reasons.push("Page content or SEO changed");
+    const pageJson = comparableJson(page);
+    const pageAssetChanges = [...changedAssetSet].filter((assetId) => pageJson.includes(assetId));
+    if (pageAssetChanges.length) reasons.push(`${pageAssetChanges.length} image${pageAssetChanges.length === 1 ? "" : "s"} changed`);
+    return reasons.length ? [{ pageId: page.pageId, name: page.name, reasons }] : [];
+  });
+
+  if (globalChanges.length) {
+    return {
+      mode: "full",
+      pageIds: current.pages.map((page) => page.pageId),
+      pages: current.pages.map((page) => ({ pageId: page.pageId, name: page.name, reasons: ["Required by a website-wide change"] })),
+      changedAssetIds,
+      globalChanges,
+      removedPageIds,
+    };
+  }
+  return { mode: "incremental", pageIds: pages.map((page) => page.pageId), pages, changedAssetIds, globalChanges, removedPageIds };
+}
+
+async function releaseDeploymentScopeFor(
+  projectId: string,
+  release: { id: string; immutableSnapshot: Prisma.JsonValue; snapshotHash: string },
+  target: "wordpress" | "static_html",
+) {
+  const previousPublication = await prisma.websitePublication.findFirst({
+    where: {
+      projectId,
+      releaseId: { not: release.id },
+      target,
+      ...(target === "wordpress"
+        ? { mode: "publish", publishedAt: { not: null } }
+        : { status: "completed" }),
+    },
+    orderBy: target === "wordpress" ? { publishedAt: "desc" } : { completedAt: "desc" },
+    include: { release: { select: { immutableSnapshot: true, snapshotHash: true } } },
+  });
+  const currentModel = approvedReleaseWebsiteModel(release);
+  const previousModel = previousPublication ? approvedReleaseWebsiteModel(previousPublication.release) : null;
+  return {
+    ...websiteReleaseDeploymentScope(currentModel, previousModel),
+    baselineReleaseId: previousPublication?.releaseId ?? null,
+    currentReleaseId: release.id,
+    target,
+  };
+}
+
 function resolveWebsiteModelMediaSources(
   model: WebsiteModel,
   build: { pages: Array<{ mediaAssets: Array<{ id: string; sourceUrl: string | null }> }> },
@@ -8017,6 +8209,203 @@ function wordpressRestCollection(postType: string) {
   return postType === "post" ? "posts" : "pages";
 }
 
+type MeasurementReadinessCheck = {
+  key: string;
+  label: string;
+  status: "passed" | "warning" | "blocking";
+  detail: string;
+  required: boolean;
+};
+
+function measurementReadinessFor(model: WebsiteModel, tracking: Awaited<ReturnType<typeof trackingForProject>>) {
+  const plan = tracking?.plan;
+  const site = tracking?.site;
+  const sources = Array.isArray(plan?.dataSourcesJson) ? plan.dataSourcesJson.map(jsonRecord) : [];
+  const source = (key: string) => sources.find((item) => item.key === key);
+  const sourceCheck = (key: string, label: string): MeasurementReadinessCheck => {
+    const row = source(key);
+    const connected = row?.status === "connected";
+    const required = row?.required === true;
+    return {
+      key,
+      label,
+      status: connected ? "passed" : required ? "blocking" : "warning",
+      detail: connected ? `${label} is connected.` : required ? `${label} is required but not connected.` : `${label} is optional and not connected; related metrics will be unavailable.`,
+      required,
+    };
+  };
+  const modelText = JSON.stringify(model.pages);
+  const conversion = String(plan?.primaryConversion || "");
+  const conversionMapped = conversion === "form_success"
+    ? model.forms.length > 0 || modelText.includes("conversion.contact_form")
+    : conversion === "phone_click"
+      ? /tel:|telephone|phone/i.test(modelText)
+      : conversion === "booking_success"
+        ? /book|appointment|schedule/i.test(modelText)
+        : conversion === "purchase_success"
+          ? /purchase|checkout|cart/i.test(modelText)
+          : Boolean(plan && Array.isArray(plan.pagesAndFormsJson) && plan.pagesAndFormsJson.length);
+  const installation = jsonRecord(plan?.installationJson);
+  const checks: MeasurementReadinessCheck[] = [
+    {
+      key: "goal",
+      label: "Website goal and primary conversion",
+      status: plan?.businessGoal && plan.primaryConversion && plan.primaryMeasurement ? "passed" : "blocking",
+      detail: plan?.businessGoal && plan.primaryConversion ? `${String(plan.businessGoal).replaceAll("_", " ")} · ${String(plan.primaryConversion).replaceAll("_", " ")}` : "Define the website goal and primary conversion before launch.",
+      required: true,
+    },
+    {
+      key: "conversion_mapping",
+      label: "Forms, buttons and calls mapped",
+      status: conversionMapped ? "passed" : "blocking",
+      detail: conversionMapped ? "The primary conversion has a matching approved page element." : `No approved website element currently maps to ${conversion.replaceAll("_", " ") || "the primary conversion"}.`,
+      required: true,
+    },
+    {
+      key: "senuke_tag",
+      label: "SEnuke AI tracking",
+      status: tracking?.siteId && installation.measurementTagEnabled !== false ? "passed" : "blocking",
+      detail: tracking?.siteId ? "The production publisher is configured to install the project tracking identity." : "A production website URL is required before the tracking identity can be installed.",
+      required: true,
+    },
+    sourceCheck("ga4", "Google Analytics 4"),
+    sourceCheck("search_console", "Google Search Console"),
+    {
+      key: "consent",
+      label: "Consent settings",
+      status: installation.consentModeEnabled === true || (Array.isArray(plan?.consentRequirementsJson) && plan.consentRequirementsJson.length === 0) ? "passed" : "warning",
+      detail: installation.consentModeEnabled === true ? "Consent-aware collection is enabled." : "Confirm the live consent banner before relying on optional analytics sources.",
+      required: false,
+    },
+    {
+      key: "test_events",
+      label: "Test events received",
+      status: site?.lastVerifiedAt ? "passed" : "warning",
+      detail: site?.lastVerifiedAt ? `A valid event was received ${site.lastVerifiedAt.toISOString()}.` : "No live event has been received yet. Publish and verify the live URL to complete this check.",
+      required: false,
+    },
+  ];
+  const blockingCount = checks.filter((check) => check.status === "blocking").length;
+  const warningCount = checks.filter((check) => check.status === "warning").length;
+  return {
+    status: blockingCount ? "blocked" as const : warningCount ? "ready_with_limitations" as const : "ready" as const,
+    blockingCount,
+    warningCount,
+    checks,
+    limitations: checks.filter((check) => check.status === "warning").map((check) => check.detail),
+    measurementPlanVersion: plan?.version ?? null,
+  };
+}
+
+websiteBuilderRouter.get("/projects/:projectId/website-builder/publication-scope", async (req, res) => {
+  const context = await workspaceContext(req);
+  if (!await canAccessProject(context, req.params.projectId)) return res.status(404).json({ error: "Project not found." });
+  const build = await prisma.websiteBuild.findFirst({
+    where: { projectId: req.params.projectId },
+    orderBy: { updatedAt: "desc" },
+    select: { id: true, settingsJson: true },
+  });
+  if (!build) return res.status(409).json({ error: "Create the website build first." });
+  const release = await activeApprovedReleaseForBuild(build);
+  if (!release) return res.status(409).json({ error: "Approve the current website version before reviewing its publishing scope." });
+  const [wordpress, staticHtml] = await Promise.all([
+    releaseDeploymentScopeFor(req.params.projectId, release, "wordpress"),
+    releaseDeploymentScopeFor(req.params.projectId, release, "static_html"),
+  ]);
+  res.json({ wordpress, staticHtml });
+});
+
+websiteBuilderRouter.get("/projects/:projectId/website-performance", async (req, res) => {
+  const context = await workspaceContext(req);
+  if (!await canAccessProject(context, req.params.projectId)) return res.status(404).json({ error: "Project not found." });
+  const periodDays = Math.min(365, Math.max(7, Number(req.query.days) || 28));
+  const periodStart = new Date(Date.now() - periodDays * 86_400_000);
+  const project = await prisma.project.findUnique({
+    where: { id: req.params.projectId },
+    select: {
+      id: true, name: true, businessName: true, websiteUrl: true, websiteId: true, status: true,
+      website: { select: {
+        id: true, domain: true, rootUrl: true, status: true, trackingSite: true,
+        measurementPlans: { where: { active: true }, orderBy: { version: "desc" }, take: 1 },
+        trackingEvents: { where: { occurredAt: { gte: periodStart } }, orderBy: { occurredAt: "desc" }, take: 10000, select: { eventName: true, sessionId: true, metadataJson: true, occurredAt: true, path: true } },
+      } },
+      websitePublications: { orderBy: { createdAt: "desc" }, take: 50, include: { release: { select: { id: true, approvedAt: true, immutableSnapshot: true } } } },
+      executionTasks: { where: { OR: [{ completedAt: { not: null } }, { publishedAt: { not: null } }] }, orderBy: { updatedAt: "desc" }, take: 12, select: { id: true, title: true, moduleName: true, status: true, completedAt: true, publishedAt: true } },
+      nextBestActions: { where: { status: { in: ["proposed", "selected", "approved", "in_progress"] } }, orderBy: [{ selectedAt: "desc" }, { priorityScore: "desc" }, { createdAt: "desc" }], take: 1, select: { id: true, title: true, recommendation: true, expectedImpact: true, status: true, priorityScore: true, route: true, updatedAt: true } },
+      measurementCheckpoints: { orderBy: { createdAt: "desc" }, take: 30, select: { id: true, checkpointType: true, dueAt: true, status: true, baselineJson: true, metricsJson: true, diagnosis: true, completedAt: true, createdAt: true } },
+      keywordResearchRuns: { where: { status: "completed" }, orderBy: { createdAt: "desc" }, take: 100, select: { seedKeyword: true, locationName: true, manualRank: true, targetRank: true, createdAt: true } },
+    },
+  });
+  if (!project) return res.status(404).json({ error: "Project not found." });
+  const website = project.website;
+  const events = website?.trackingEvents ?? [];
+  const metrics = websiteTrackingMetrics(events);
+  const plan = website?.measurementPlans[0] ?? null;
+  const sources = Array.isArray(plan?.dataSourcesJson) ? plan.dataSourcesJson.map(jsonRecord) : [];
+  const sourceStatus = (key: string) => String(sources.find((source) => source.key === key)?.status || "not_connected");
+  const trackingVerified = Boolean(website?.trackingSite?.lastVerifiedAt);
+  const growthStatus = !website
+    ? { key: "setup_required", label: "Website URL required", detail: "Connect the production website before performance can be collected." }
+    : !trackingVerified
+      ? { key: "waiting_for_live_event", label: "Waiting for live verification", detail: "The tag is prepared; visit the live website after publishing to verify collection." }
+      : metrics.formErrors > metrics.formSuccesses && metrics.formErrors > 0
+        ? { key: "needs_attention", label: "Needs attention", detail: "Recorded form errors currently exceed successful form completions." }
+        : { key: "collecting", label: "Collecting performance", detail: `First-party website activity is available for the last ${periodDays} days.` };
+  const problems: Array<{ type: "problem" | "opportunity" | "limitation"; title: string; detail: string }> = [];
+  if (!trackingVerified) problems.push({ type: "limitation", title: "Live tracking not verified", detail: "Publish the production release and open the live website to send the first valid event." });
+  if (sourceStatus("search_console") !== "connected") problems.push({ type: "limitation", title: "Search Console not connected", detail: "Search clicks, impressions and query data are unavailable until this optional source is connected." });
+  if (sourceStatus("ga4") !== "connected") problems.push({ type: "limitation", title: "GA4 not connected", detail: "GA4 audience and acquisition metrics are unavailable; first-party page and conversion events continue to work." });
+  if (metrics.formErrors > 0) problems.push({ type: "problem", title: "Form errors recorded", detail: `${metrics.formErrors} form error event${metrics.formErrors === 1 ? " was" : "s were"} received during this period.` });
+  if (metrics.averageLoadMs != null && metrics.averageLoadMs > 3000) problems.push({ type: "opportunity", title: "Page-load opportunity", detail: `Average recorded load time is ${metrics.averageLoadMs} ms.` });
+  const releases = new Map<string, typeof project.websitePublications[number]>();
+  for (const publication of project.websitePublications) {
+    const live = publication.publishedAt || (publication.target === "static_html" && publication.status === "completed");
+    if (live && !releases.has(publication.releaseId)) releases.set(publication.releaseId, publication);
+  }
+  const eventRelease = (event: typeof events[number]) => String(jsonRecord(event.metadataJson).releaseId || "");
+  const performanceHistory = [...releases.values()].map((publication) => {
+    const releaseEvents = events.filter((event) => eventRelease(event) === publication.releaseId);
+    const snapshot = jsonRecord(publication.release.immutableSnapshot);
+    return {
+      releaseId: publication.releaseId,
+      version: Number(snapshot.version || 1),
+      target: publication.target,
+      publishedAt: publication.publishedAt ?? publication.completedAt ?? publication.createdAt,
+      status: publication.status,
+      metrics: websiteTrackingMetrics(releaseEvents),
+      eventCount: releaseEvents.length,
+    };
+  });
+  const latestRankings = new Map<string, typeof project.keywordResearchRuns[number]>();
+  for (const run of project.keywordResearchRuns) {
+    const key = `${run.seedKeyword.toLowerCase()}|${run.locationName.toLowerCase()}`;
+    if (!latestRankings.has(key)) latestRankings.set(key, run);
+  }
+  res.json({
+    project: { id: project.id, name: project.name, businessName: project.businessName },
+    website: website ? { id: website.id, domain: website.domain, rootUrl: website.rootUrl, status: website.status } : null,
+    periodDays,
+    growthStatus,
+    importantResults: [
+      { key: "page_views", label: "Page views", value: trackingVerified ? metrics.pageViews : null },
+      { key: "sessions", label: "Sessions", value: trackingVerified ? metrics.sessions : null },
+      { key: "form_leads", label: "Form leads", value: trackingVerified ? metrics.formSuccesses : null },
+      { key: "cta_clicks", label: "CTA clicks", value: trackingVerified ? metrics.ctaClicks : null },
+      { key: "phone_clicks", label: "Phone clicks", value: trackingVerified ? metrics.phoneClicks : null },
+    ],
+    metrics,
+    searchPerformance: { searchConsoleStatus: sourceStatus("search_console"), ga4Status: sourceStatus("ga4"), trackedKeywords: latestRankings.size, rankings: [...latestRankings.values()].slice(0, 12).map((run) => ({ keyword: run.seedKeyword, location: run.locationName, rank: run.manualRank ?? run.targetRank, observedAt: run.createdAt })) },
+    leadsAndConversions: { formStarts: metrics.formStarts, formLeads: metrics.formSuccesses, formErrors: metrics.formErrors, phoneClicks: metrics.phoneClicks, bookings: metrics.bookings, purchases: metrics.purchases },
+    workCompleted: project.executionTasks,
+    problemsAndOpportunities: problems,
+    trackingHealth: { state: plan?.trackingState ?? "CONNECTION_REQUIRED", planVersion: plan?.version ?? null, lastVerifiedAt: website?.trackingSite?.lastVerifiedAt ?? null, lastEventAt: website?.trackingSite?.lastEventAt ?? null, installation: website?.trackingSite?.installation ?? "pending", sources: sources.map((source) => ({ key: String(source.key || "source"), status: String(source.status || "not_connected"), required: source.required === true })) },
+    nextBestAction: project.nextBestActions[0] ?? null,
+    performanceHistory,
+    checkpoints: project.measurementCheckpoints,
+    reportUrl: `/reports?projectId=${encodeURIComponent(project.id)}`,
+  });
+});
+
 websiteBuilderRouter.post("/projects/:projectId/website-builder/quality-waivers", async (req, res) => {
   const { context, project } = await scopedProject(req.params.projectId, req);
   if (!hasWorkspacePermission(context, "approve")) return res.status(403).json({ error: "Approval permission is required to acknowledge or waive a website quality issue." });
@@ -8026,7 +8415,7 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/quality-waivers"
   const currentModel = qualityWebsiteModel(project, build);
   const currentQuality = evaluateWebsiteQualityGovernance(currentModel, {
     environment: "staging",
-    industry: project.industry || project.niche || "",
+    industry: project.niche || "",
   });
   const issue = currentQuality.issues.find((candidate) => candidate.issueId === input.issueId && candidate.status === "open");
   if (!issue) return res.status(409).json({ error: "This quality issue no longer exists on the current website version. Run Quality Review again." });
@@ -8064,6 +8453,9 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/launch-readiness
     : rawWebsiteUrl
       ? `https://${rawWebsiteUrl.replace(/^https?:\/\//i, "")}`
       : undefined;
+  const connectedWordPressUrl = project.wordpressIntegrations.find((integration) => integration.connectionStatus === "connected")?.siteUrl;
+  const websiteTracking = await trackingForProject(project, context.membership.userId, connectedWordPressUrl);
+  const measurementReadiness = measurementReadinessFor(model, websiteTracking);
   const redirectCount = Array.isArray(jsonRecord(build.settingsJson).redirects)
     ? (jsonRecord(build.settingsJson).redirects as unknown[]).length
     : 0;
@@ -8073,7 +8465,7 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/launch-readiness
   }
   const savedWaivers = jsonRecord(jsonRecord(build.settingsJson).websiteQualityWaivers);
   const waivedIssues = { ...savedWaivers, ...(launchInput.waivers ?? {}) } as Record<string, string>;
-  const result = evaluateWebsiteLaunchReadiness(model, {
+  const websiteResult = evaluateWebsiteLaunchReadiness(model, {
     approvedReleaseId: release.id,
     snapshotHash: release.snapshotHash,
     ...(baseUrl ? { baseUrl } : {}),
@@ -8083,6 +8475,14 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/launch-readiness
     industry: project.industry || project.niche || "",
     waivedIssues,
   });
+  const result = {
+    ...websiteResult,
+    score: Math.max(0, websiteResult.score - measurementReadiness.blockingCount * 8 - measurementReadiness.warningCount),
+    blockingCount: websiteResult.blockingCount + measurementReadiness.blockingCount,
+    warningCount: websiteResult.warningCount + measurementReadiness.warningCount,
+    status: websiteResult.blockingCount + measurementReadiness.blockingCount > 0 ? "blocked" as const : websiteResult.status,
+    measurementReadiness,
+  };
   const checkedAt = new Date().toISOString();
   const workflowEvents = [
     { event: "qa_started", at: checkedAt },
@@ -8131,6 +8531,8 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/launch-readiness
       blockingCount: result.blockingCount,
       warningCount: result.warningCount,
       qualityCounts: result.qualityGate.counts,
+      measurementStatus: measurementReadiness.status,
+      measurementLimitations: measurementReadiness.limitations,
       workflowEvents,
     },
   });
@@ -8144,6 +8546,7 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/deploy", async (
     integrationId: z.string(),
     mode: z.enum(["draft", "pending", "publish"]).default("draft"),
     confirmed: z.boolean().default(false),
+    scope: z.enum(["auto", "full"]).default("auto"),
     deployDesignPackage: z.boolean().optional(),
     pageIds: z.array(z.string()).max(100).optional(),
     publishingJobId: z.string().optional(),
@@ -8155,12 +8558,17 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/deploy", async (
   if (!release) return res.status(409).json({ error: "Approve the current validated website version before creating WordPress output. The editable website has changed or has no Approved Release." });
   const releaseModel = approvedReleaseWebsiteModel(release);
   requireLaunchReadiness(build, release);
-  if (!["approved", "deployed", "published"].includes(build.status)) return res.status(409).json({ error: "Company approval is required before WordPress draft or live publishing." });
-  const requestedPageIds = new Set(input.pageIds ?? []);
+  // The immutable Approved Release is the approval authority. A later deployment
+  // verification may set the mutable build to `needs_attention`; that must not
+  // revoke the release or prevent its launch check and safe retry.
+  const automaticScope = await releaseDeploymentScopeFor(project.id, release, "wordpress");
+  const automaticPageIds = automaticScope.mode === "incremental" ? automaticScope.pageIds : [];
+  const requestedPageIds = new Set(input.pageIds ?? (input.scope === "auto" ? automaticPageIds : []));
+  const incrementalDeployment = Boolean(input.pageIds?.length) || (input.scope === "auto" && automaticScope.mode === "incremental");
   const pages = requestedPageIds.size
     ? releaseModel.pages.filter((page) => requestedPageIds.has(page.pageId))
     : releaseModel.pages;
-  if (!pages.length) return res.status(409).json({ error: "The Approved Release has no pages to publish." });
+  if (!pages.length) return res.status(409).json({ error: automaticScope.mode === "incremental" ? "This Approved Release has no changed pages or images to publish." : "The Approved Release has no pages to publish." });
   if (requestedPageIds.size && pages.length !== requestedPageIds.size) {
     return res.status(409).json({ error: "One or more requested pages are not part of this Approved Release." });
   }
@@ -8178,6 +8586,9 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/deploy", async (
   }
   const integration = project.wordpressIntegrations.find((item) => item.id === input.integrationId && item.connectionStatus === "connected");
   if (!integration) return res.status(409).json({ error: "Select a connected WordPress site." });
+  // Put the production tag into the reviewed draft. The tag ignores WordPress
+  // preview URLs, so promoting the reviewed record can remain content-immutable.
+  const websiteTracking = await trackingForProject(project, context.membership.userId, integration.siteUrl);
   const connectorFeatures = jsonStrings(integration.permissionScope);
   const connectorEnabled = connectorFeatures.includes("senuke_connector");
   const managedConnectorReady = ["seo_meta", "robots_meta", "schema", "favicon", "gutenberg_blocks", "full_site_editing", "editable_theme", "senuke_theme", "menus", "forms", "site_backup", "design_package", "rollback"]
@@ -8198,6 +8609,8 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/deploy", async (
       error: "Install or update the SENuke AI Connector before publishing live. Managed live publishing requires backup, design package, SEO/schema, menus, forms, and rollback support.",
     });
   }
+  const reviewedDraftPageIds = new Map<string, string>();
+  const reviewedDraftMediaAssetIds = new Set<string>();
   if (input.mode === "publish") {
     const draftCandidates = await prisma.websitePublication.findMany({
       where: {
@@ -8211,24 +8624,26 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/deploy", async (
       orderBy: { completedAt: "desc" },
       take: 20,
     });
-    const reviewedDraft = draftCandidates.find((candidate) => {
-      const mappedPages = Array.isArray(jsonRecord(candidate.remoteMappingsJson).pages)
-        ? (jsonRecord(candidate.remoteMappingsJson).pages as unknown[]).map(jsonRecord)
-        : [];
-      const mappedIds = new Set(mappedPages.map((mapping) => String(mapping.pageId || "")).filter(Boolean));
-      return pages.every((page) => mappedIds.has(page.pageId));
-    });
+    const reviewedDraft = draftCandidates.find((candidate) => Boolean(wordpressRemotePageIds(
+      candidate.remoteMappingsJson,
+      pages.map((page) => page.pageId),
+    )));
     if (!reviewedDraft) {
       return res.status(409).json({
         error: "Create and review WordPress drafts for these exact Approved Release pages before publishing them live.",
       });
     }
+    for (const log of Array.isArray(reviewedDraft.deploymentLogsJson) ? reviewedDraft.deploymentLogsJson.map(jsonRecord) : []) {
+      if (log.action === "media_uploaded" && log.assetId) reviewedDraftMediaAssetIds.add(String(log.assetId));
+    }
+    const mappedDraftIds = wordpressRemotePageIds(reviewedDraft.remoteMappingsJson, pages.map((page) => page.pageId));
+    for (const [pageId, remotePostId] of mappedDraftIds ?? []) reviewedDraftPageIds.set(pageId, remotePostId);
   }
   const websiteDirection = String(jsonRecord(build.settingsJson).existingWebsiteDirection || "");
   const completeWebsiteDesign = project.websiteStatus !== "existing_website" || ["replace", "redesign"].includes(websiteDirection);
-  const deployDesignPackage = input.deployDesignPackage ?? (!requestedPageIds.size && completeWebsiteDesign);
+  const deployDesignPackage = input.deployDesignPackage ?? (!incrementalDeployment && completeWebsiteDesign);
   const wordpressRendererVersion = WORDPRESS_RENDERER_VERSION;
-  const deploymentScope = requestedPageIds.size
+  const deploymentScope = incrementalDeployment
     ? createHash("sha256").update([...requestedPageIds, input.publishingJobId || ""].sort().join("|")).digest("hex").slice(0, 16)
     : "complete-site";
   const idempotencyKey = `${release.id}:${input.integrationId}:${input.mode}:wordpress:${wordpressRendererVersion}:${deploymentScope}`;
@@ -8259,7 +8674,7 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/deploy", async (
       },
     })
     : await prisma.websiteDeployment.create({ data: { projectId: project.id, buildId: build.id, clientId: project.clientId, wordpressIntegrationId: integration.id, mode: input.mode, status: "processing", idempotencyKey, requestedByUserId: context.membership.userId, startedAt: new Date() } });
-  const reusableDraftPageIds = new Map<string, string>();
+  const reusableDraftPageIds = new Map<string, string>(reviewedDraftPageIds);
   if (input.mode === "draft") {
     const existingDraftPublication = await prisma.websitePublication.findFirst({
       where: {
@@ -8271,12 +8686,8 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/deploy", async (
       },
       orderBy: { completedAt: "desc" },
     });
-    const savedMappings = jsonRecord(existingDraftPublication?.remoteMappingsJson).pages;
-    const existingMappings = Array.isArray(savedMappings) ? savedMappings.map(jsonRecord) : [];
-    for (const mapping of existingMappings) {
-      const pageId = String(mapping.pageId || "");
-      const remotePostId = String(mapping.remotePostId || "");
-      if (pageId && remotePostId) reusableDraftPageIds.set(pageId, remotePostId);
+    for (const [pageId, remotePostId] of wordpressRemotePageIds(existingDraftPublication?.remoteMappingsJson) ?? []) {
+      reusableDraftPageIds.set(pageId, remotePostId);
     }
   }
   const logs: Array<Record<string, unknown>> = [];
@@ -8286,6 +8697,19 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/deploy", async (
   // could attach a new draft to a live parent (or a live page to a draft
   // parent), so this deployment builds its own mapping in page order.
   const wordpressPageIds = new Map<string, number>();
+  let priorLivePageMappings: Array<Record<string, unknown>> = [];
+  if (incrementalDeployment) {
+    const latestLivePublication = await prisma.websitePublication.findFirst({
+      where: { projectId: project.id, target: "wordpress", mode: "publish", destinationId: integration.id, publishedAt: { not: null } },
+      orderBy: { publishedAt: "desc" },
+    });
+    priorLivePageMappings = Array.isArray(jsonRecord(latestLivePublication?.remoteMappingsJson).pages)
+      ? (jsonRecord(latestLivePublication?.remoteMappingsJson).pages as unknown[]).map(jsonRecord)
+      : [];
+    for (const [mappedPageId, remotePostId] of wordpressRemotePageIds(latestLivePublication?.remoteMappingsJson) ?? []) {
+      wordpressPageIds.set(mappedPageId, Number(remotePostId));
+    }
+  }
   const wordpressPageUrls = new Map<string, string>();
   const wordpressAssetUrls: Record<string, string> = {};
   const wordpressMediaIds = new Map<string, number>();
@@ -8296,6 +8720,9 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/deploy", async (
       approvedReleaseId: release.id,
       snapshotHash: release.snapshotHash,
       websiteModelVersion: releaseModel.version,
+      deploymentScope: incrementalDeployment ? "changed_pages_and_images" : "complete_site",
+      changedPageIds: pages.map((page) => page.pageId),
+      changedAssetIds: automaticScope.changedAssetIds,
       at: new Date().toISOString(),
     });
     await wpFetch(integration, "/wp-json/wp/v2/users/me?context=edit");
@@ -8351,14 +8778,17 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/deploy", async (
       remotePostTypes.set(page.pageId, remotePostType);
       let remote: Record<string, unknown> = {};
       const reusableDraftId = reusableDraftPageIds.get(page.pageId);
-      if (input.mode === "draft" && reusableDraftId) {
+      if (reusableDraftId) {
         try {
           const candidate = jsonRecord(await wpFetch(integration, `/wp-json/wp/v2/${remoteCollection}/${reusableDraftId}?context=edit`));
-          if (candidate.status === "draft") remote = candidate;
+          if (["draft", "pending"].includes(String(candidate.status))) remote = candidate;
         } catch {
-          // The prior draft may have been deleted in WordPress. The scoped
-          // release slug lookup below safely recreates only that missing draft.
+          // Draft mode can recreate a deleted review draft. Publish mode must
+          // stop instead of creating a second copy that was never reviewed.
         }
+      }
+      if (input.mode === "publish" && !remote.id) {
+        throw Object.assign(new Error(`The reviewed WordPress draft for ${page.name} is missing. Create the drafts again, review them, then publish.`), { statusCode: 409, publicMessage: true });
       }
       if (!remote.id) {
         remote = jsonRecord((await wpFetch(integration, `/wp-json/wp/v2/${remoteCollection}?slug=${encodeURIComponent(deploymentSlug)}&context=edit&per_page=1`) as unknown[])[0]);
@@ -8400,6 +8830,7 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/deploy", async (
         snapshotHash: release.snapshotHash,
         baseUrl: integration.siteUrl,
         environmentType: input.mode === "publish" ? "production" : "staging",
+        ...(websiteTracking ? { tracking: { ...websiteTracking, releaseId: release.id } } : {}),
       });
       const approvedCss = renderedFiles.find((file) => file.path === "assets/senuke.css")?.content || "";
       const colors = releaseModel.designSystem.colors;
@@ -8444,7 +8875,7 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/deploy", async (
     }
 
     let formShortcode = "";
-    if (connectorEnabled && releaseModel.forms[0]) {
+    if (!incrementalDeployment && connectorEnabled && releaseModel.forms[0]) {
       const approvedForm = releaseModel.forms[0];
       const formComponent = releaseModel.pages
         .flatMap((page) => page.sections)
@@ -8465,13 +8896,19 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/deploy", async (
       logs.push({ action: "form_created", status: "success", key: createdForm.key, at: new Date().toISOString() });
     }
     const editableMedia = new Map(build.pages.flatMap((page) => page.mediaAssets.map((asset) => [asset.id, asset] as const)));
-    for (const approvedAsset of releaseModel.mediaAssets.filter((asset) => asset.status === "approved" && asset.sourceUrl)) {
+    const selectedPagesJson = JSON.stringify(pages);
+    const requiredAssetIds = new Set(releaseModel.mediaAssets
+      .filter((asset) => !incrementalDeployment || selectedPagesJson.includes(asset.assetId))
+      .map((asset) => asset.assetId));
+    const changedAssetIds = new Set(automaticScope.changedAssetIds);
+    for (const approvedAsset of releaseModel.mediaAssets.filter((asset) => asset.status === "approved" && asset.sourceUrl && requiredAssetIds.has(asset.assetId))) {
       const editableAsset = editableMedia.get(approvedAsset.assetId);
       const sourceUrl = approvedAsset.sourceUrl?.startsWith("asset://") ? editableAsset?.sourceUrl : approvedAsset.sourceUrl;
       if (!sourceUrl) continue;
       if (
         editableAsset?.remoteMediaId
         && editableAsset.remoteUrl
+        && (!changedAssetIds.has(approvedAsset.assetId) || reviewedDraftMediaAssetIds.has(approvedAsset.assetId))
         && (approvedAsset.sourceUrl?.startsWith("asset://") || editableAsset.sourceUrl === approvedAsset.sourceUrl)
       ) {
         wordpressMediaIds.set(approvedAsset.assetId, Number(editableAsset.remoteMediaId));
@@ -8513,7 +8950,7 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/deploy", async (
       featuredMediaCount: wordpressMediaIds.size,
       at: new Date().toISOString(),
     });
-    if (connectorEnabled) {
+    if (!incrementalDeployment && connectorEnabled) {
       const approvedLogoId = String(releaseModel.identity?.logoAssetId || "");
       const approvedFaviconId = String(releaseModel.identity?.faviconAssetId || "");
       const identityResult = jsonRecord(await wpFetch(integration, "/wp-json/senuke/v1/site-identity", {
@@ -8554,7 +8991,17 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/deploy", async (
       const remoteCollection = wordpressRestCollection(remotePostType);
       const remote = remotePages.get(page.pageId) || {};
       const remoteId = remote.id ? String(remote.id) : null;
-      const payload = { title: page.name, slug: deploymentSlug, content: renderWebsitePageWordPressBlocks(releaseModel, page, { approvedReleaseId: release.id, snapshotHash: release.snapshotHash, formShortcode, mediaAssets: releaseModel.mediaAssets, assetUrls: wordpressAssetUrls }), status: input.mode, excerpt: page.seo.metaDescription, ...(remotePostType === "page" && wordpressParentId ? { parent: wordpressParentId } : {}), ...(featuredMedia ? { featured_media: featuredMedia } : {}) };
+      const promotingReviewedDraft = input.mode === "publish" && reviewedDraftPageIds.get(page.pageId) === remoteId;
+      const payload = wordpressPageWritePayload({
+        mode: input.mode,
+        promotingReviewedDraft,
+        title: page.name,
+        slug: deploymentSlug,
+        content: renderWebsitePageWordPressBlocks(releaseModel, page, { approvedReleaseId: release.id, snapshotHash: release.snapshotHash, formShortcode, mediaAssets: releaseModel.mediaAssets, assetUrls: wordpressAssetUrls, ...(websiteTracking ? { tracking: { ...websiteTracking, releaseId: release.id } } : {}) }),
+        excerpt: page.seo.metaDescription,
+        parent: remotePostType === "page" ? wordpressParentId : undefined,
+        featuredMedia,
+      });
       const result = jsonRecord(await wpFetch(integration, remoteId ? `/wp-json/wp/v2/${remoteCollection}/${remoteId}` : `/wp-json/wp/v2/${remoteCollection}`, { method: "POST", body: JSON.stringify(payload) }));
       if (result.id) wordpressPageIds.set(page.pageId, Number(result.id));
       if (result.link) wordpressPageUrls.set(page.pageId, String(result.link));
@@ -8563,7 +9010,7 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/deploy", async (
         await wpFetch(integration, `/wp-json/senuke/v1/pages/${result.id}/optimize`, { method: "POST", body: JSON.stringify({ metaTitle: page.seo.title, metaDescription: page.seo.metaDescription, canonicalUrl: input.mode === "publish" ? page.seo.canonicalUrl || result.link : result.link, robots: input.mode === "publish" ? page.seo.robots || "index, follow" : "noindex, nofollow", schemaJsonLd: page.seo.schemaJsonLd, aeoReviewed: true, geoReviewed: true, approvedReleaseId: release.id, snapshotHash: release.snapshotHash, senukePageId: page.pageId }) });
       }
       await prisma.websiteBuildPage.update({ where: { id: editablePage.id }, data: { status: input.mode === "publish" ? "published" : "deployed", remotePostId: String(result.id), remoteUrl: String(result.link ?? "") } });
-      logs.push({ pageId: page.pageId, action: remoteId ? "updated" : "created", status: "success", remotePostType, remotePostId: result.id, url: result.link, approvedReleaseId: release.id, at: new Date().toISOString() });
+      logs.push({ pageId: page.pageId, action: promotingReviewedDraft ? "promoted_reviewed_draft" : remoteId ? "updated" : "created", status: "success", remotePostType, remotePostId: result.id, url: result.link, approvedReleaseId: release.id, at: new Date().toISOString() });
     }
     logs.push({
       action: "wordpress_pages_synchronized",
@@ -8581,7 +9028,7 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/deploy", async (
         : "Internal links were included in page content. Install the connector to manage metadata, canonical URLs, and JSON-LD independently of the active theme.",
       at: new Date().toISOString(),
     });
-    if (wordpressHomePageId && input.mode === "publish") {
+    if (!incrementalDeployment && wordpressHomePageId && input.mode === "publish") {
       try {
         await wpFetch(integration, "/wp-json/wp/v2/settings", { method: "POST", body: JSON.stringify({ show_on_front: "page", page_on_front: wordpressHomePageId }) });
         logs.push({ action: "homepage_assigned", status: "success", remotePostId: wordpressHomePageId, at: new Date().toISOString() });
@@ -8603,7 +9050,7 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/deploy", async (
         }),
       ];
     });
-    if (menu.length || footerMenu.length) {
+    if (!incrementalDeployment && (menu.length || footerMenu.length)) {
       try {
         const base = integration.siteUrl.replace(/\/$/, "");
         const menuUrl = (item: Record<string, unknown>) => wordpressMenuDestination(base, item);
@@ -8651,6 +9098,10 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/deploy", async (
         remotePostId: String(log.remotePostId),
         remoteUrl: String(log.url || ""),
       }));
+    const changedPageIdSet = new Set(pageMappings.map((mapping) => mapping.pageId));
+    const storedPageMappings = incrementalDeployment
+      ? [...priorLivePageMappings.filter((mapping) => !changedPageIdSet.has(String(mapping.pageId || ""))), ...pageMappings]
+      : pageMappings;
     const verificationResults: Array<{
       pageId: string;
       liveUrl: string;
@@ -8790,7 +9241,7 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/deploy", async (
       where: { id: publication.id },
       data: {
         status: productionStatus,
-        remoteMappingsJson: { deploymentId: updated.id, pages: pageMappings } as Prisma.InputJsonValue,
+        remoteMappingsJson: { deploymentId: updated.id, scope: incrementalDeployment ? "changed_pages_and_images" : "complete_site", pages: storedPageMappings } as Prisma.InputJsonValue,
         deploymentLogsJson: logs as Prisma.InputJsonValue,
         verificationJson: {
           status: verificationPassed ? deploymentHasWarnings ? "verified_with_warnings" : "verified" : "production_validation_failed",
@@ -8833,6 +9284,29 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/deploy", async (
           data: { projectId: project.id, taskId: measurementTask.id, liveUrl: homeMapping.remoteUrl, status: "pending", evidenceJson: { releaseId: release.id, deploymentId: updated.id, source: "post_publish_crawl" } },
         });
         logs.push({ action: "baseline_created", status: "success", taskId: measurementTask.id, checkpointCount: 5, at: publicationCompletedAt.toISOString() });
+        await prisma.websiteDeployment.update({ where: { id: updated.id }, data: { logsJson: logs as unknown as Prisma.InputJsonValue } });
+      }
+    }
+    if (input.mode === "publish" && verificationPassed && requestedPageIds.size) {
+      const measurementTask = project.executionTasks.find((task) => task.sourceType === "website_builder_request" && task.sourceId === build.id);
+      if (measurementTask) {
+        const changeBaseline = {
+          source: "verified_incremental_website_release",
+          releaseId: release.id,
+          previousReleaseId: automaticScope.baselineReleaseId,
+          snapshotHash: release.snapshotHash,
+          publishedAt: publicationCompletedAt.toISOString(),
+          deploymentId: updated.id,
+          scope: "changed_pages_and_images",
+          pageIds: pageMappings.map((mapping) => mapping.pageId),
+          liveUrls: pageMappings.map((mapping) => mapping.remoteUrl),
+          changedAssetIds: automaticScope.changedAssetIds,
+          productionValidationScore: Math.round(verificationResults.reduce((sum, result) => sum + result.score, 0) / Math.max(1, verificationResults.length)),
+        };
+        await prisma.measurementCheckpoint.create({
+          data: { projectId: project.id, taskId: measurementTask.id, checkpointType: "post_publish_change", dueAt: publicationCompletedAt, baselineJson: changeBaseline },
+        });
+        logs.push({ action: "change_measurement_checkpoint_created", status: "success", taskId: measurementTask.id, pageCount: pageMappings.length, at: publicationCompletedAt.toISOString() });
         await prisma.websiteDeployment.update({ where: { id: updated.id }, data: { logsJson: logs as unknown as Prisma.InputJsonValue } });
       }
     }
@@ -8886,7 +9360,8 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/static-export", 
   if (!release) return res.status(409).json({ error: "Approve the current validated website version before exporting Static HTML. The editable website has changed or has no Approved Release." });
   const releaseModel = approvedReleaseWebsiteModel(release);
   requireLaunchReadiness(build, release);
-  const rawWebsiteUrl = String(project.websiteUrl || "").trim();
+  const websiteTracking = await trackingForProject(project, context.membership.userId);
+  const rawWebsiteUrl = String(websiteTracking?.rootUrl || project.websiteUrl || "").trim();
   const baseUrl = /^https:\/\//i.test(rawWebsiteUrl)
     ? rawWebsiteUrl
     : rawWebsiteUrl
@@ -8898,6 +9373,7 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/static-export", 
     formAction: staticWebsiteFormAction(release),
     ...(baseUrl ? { baseUrl } : {}),
     environmentType: "production",
+    ...(websiteTracking ? { tracking: { ...websiteTracking, releaseId: release.id } } : {}),
   });
   const zip = new JSZip();
   const releaseDate = release.approvedAt;
@@ -8961,7 +9437,7 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/static-export", 
 websiteBuilderRouter.post("/projects/:projectId/website-builder/static-deploy", async (req, res) => {
   const { context, project } = await scopedProject(req.params.projectId, req);
   if (!hasWorkspacePermission(context, "publish")) return res.status(403).json({ error: "Publishing permission is required." });
-  z.object({ confirmed: z.literal(true) }).parse(req.body ?? {});
+  const input = z.object({ confirmed: z.literal(true), scope: z.enum(["auto", "full"]).default("auto") }).parse(req.body ?? {});
   const build = project.websiteBuilds[0];
   if (!build) return res.status(409).json({ error: "Create the website build first." });
   const release = await activeApprovedReleaseForBuild(build);
@@ -8982,7 +9458,8 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/static-deploy", 
   }
 
   const releaseModel = approvedReleaseWebsiteModel(release);
-  const rawWebsiteUrl = String(project.websiteUrl || "").trim();
+  const websiteTracking = await trackingForProject(project, context.membership.userId);
+  const rawWebsiteUrl = String(websiteTracking?.rootUrl || project.websiteUrl || "").trim();
   const baseUrl = /^https:\/\//i.test(rawWebsiteUrl)
     ? rawWebsiteUrl
     : rawWebsiteUrl
@@ -8994,13 +9471,30 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/static-deploy", 
     formAction: staticWebsiteFormAction(release),
     ...(baseUrl ? { baseUrl } : {}),
     environmentType: "production",
+    ...(websiteTracking ? { tracking: { ...websiteTracking, releaseId: release.id } } : {}),
   });
+  const automaticScope = await releaseDeploymentScopeFor(project.id, release, "static_html");
+  const fileHash = (file: typeof files[number]) => createHash("sha256")
+    .update(Buffer.from(file.content, file.base64 ? "base64" : "utf8"))
+    .digest("hex");
+  const changedPagePaths = new Set(automaticScope.pageIds.flatMap((pageId) => {
+    const page = releaseModel.pages.find((candidate) => candidate.pageId === pageId);
+    if (!page) return [];
+    const path = websitePagePath(page.slug);
+    return [path === "/" ? "index.html" : `${path.replace(/^\/|\/$/g, "")}/index.html`];
+  }));
+  const changedMediaPrefixes = automaticScope.changedAssetIds.map((assetId) => `assets/media/${assetId.replace(/[^a-z0-9_-]+/gi, "-")}.`);
+  const deployFiles = input.scope === "auto" && automaticScope.mode === "incremental"
+    ? files.filter((file) => changedPagePaths.has(file.path) || changedMediaPrefixes.some((prefix) => file.path.startsWith(prefix)) || file.path === "senuke-release.json")
+    : files;
+  if (!deployFiles.length) return res.status(409).json({ error: "No changed website files were found for this Approved Release." });
   const rendererVersion = "senuke-static-sftp-1.0.0";
   const destinationSignature = createHash("sha256")
     .update(`${transfer.host}:${transfer.port}:${transfer.rootPath}`)
     .digest("hex")
     .slice(0, 16);
-  const idempotencyKey = `release:${release.id}:static_html:sftp:${transfer.id}:${destinationSignature}:${rendererVersion}`;
+  const deploymentScope = input.scope === "auto" && automaticScope.mode === "incremental" ? "changed-files" : "complete-site";
+  const idempotencyKey = `release:${release.id}:static_html:sftp:${transfer.id}:${destinationSignature}:${rendererVersion}:${deploymentScope}`;
   const prior = await prisma.websitePublication.findUnique({ where: { idempotencyKey } });
   if (prior?.status === "completed") return res.json({ publication: prior, release, idempotent: true });
   const publication = prior
@@ -9040,7 +9534,7 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/static-deploy", 
         password: decryptCredential(transfer.credentialCiphertext),
         rootPath: transfer.rootPath,
       },
-      files,
+      files: deployFiles,
       releaseId: release.id,
     });
     const completedAt = new Date();
@@ -9052,13 +9546,19 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/static-deploy", 
           protocol: "sftp",
           host: transfer.host,
           rootPath: result.rootPath,
-          files: result.files,
+          files: files.map((file) => ({
+            path: file.path,
+            bytes: Buffer.from(file.content, file.base64 ? "base64" : "utf8").length,
+            sha256: fileHash(file),
+          })),
         } as Prisma.InputJsonValue,
         deploymentLogsJson: [{
           action: "static_sftp_release_deployed",
           status: "success",
           approvedReleaseId: release.id,
           snapshotHash: release.snapshotHash,
+          deploymentScope,
+          totalReleaseFileCount: files.length,
           fileCount: result.fileCount,
           uploadedBytes: result.uploadedBytes,
           backupPath: result.backupPath,

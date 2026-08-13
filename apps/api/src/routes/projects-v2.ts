@@ -32,6 +32,7 @@ import { queueConnection, strategyGenerationQueue, type StrategyGenerationQueueJ
 import { runCommercialRequestContext } from "../commercial-request-context.js";
 import { createApiErrorCode } from "../api-errors.js";
 import { queueApiErrorReport } from "../api-error-reporter.js";
+import { captureWebsiteTracking } from "../website-tracking.js";
 
 export const guidedProjectsRouter = Router();
 guidedProjectsRouter.use(requireAuth);
@@ -2774,6 +2775,7 @@ guidedProjectsRouter.post("/projects-v2", async (req, res) => {
         preferredPublishingMethod: clean(data.preferredPublishingMethod),
       },
     });
+    if (website) await captureWebsiteTracking(tx, { websiteId: website.id, clientId, domain: website.domain, rootUrl: website.rootUrl, project, createdByUserId: workspace.membership.userId });
     if (aiIntakeSession || finalConversationTranscript.length || Object.keys(defaults.aiBusinessIntelligence).length || data.businessDescription || data.targetAudience || data.productsServices || data.primaryKeywords.length || data.secondaryKeywords.length) {
       const baseFields = new Set(["businessDescription", "industryNiche", "targetAudience", "productsServices", "primaryGoal", "businessLocation", "targetMarkets", "competitors", "seedKeywords", "brandVoice", "cms", "technologyStack"]);
       const intelligence = aiIntakeSession ? Object.fromEntries(Object.entries(acceptedAi).filter(([field]) => !baseFields.has(field))) : defaults.aiBusinessIntelligence;
@@ -2943,7 +2945,8 @@ guidedProjectsRouter.patch("/projects-v2/:projectId/settings", async (req, res) 
     let website = normalized ? await tx.website.findFirst({ where: { clientId: project.clientId, domain: normalized.domain, status: "active" } }) : null;
     if (!website && normalized && effectiveProjectType !== "new_business") website = await tx.website.create({ data: { clientId: project.clientId, domain: normalized.domain, rootUrl: normalized.rootUrl, status: "active", targetCountry: targetMarkets[0], targetCities: targetMarkets } });
     else if (website) website = await tx.website.update({ where: { id: website.id }, data: { rootUrl: normalized?.rootUrl, targetCountry: targetMarkets[0], targetCities: targetMarkets } });
-    await tx.project.update({ where: { id: project.id }, data: { status: "active", agencyClientId: agencyClient?.id ?? null, websiteId: website?.id ?? null, name: data.name.trim(), projectType: effectiveProjectType, websiteStatus: data.websiteStatus, websiteUrl: normalized?.rootUrl ?? (data.websiteUrl?.trim() || null), businessName: agencyClient ? null : (data.businessName?.trim() || null), niche: data.niche?.trim() || null, businessLocation: location, businessLocationJson: data.businessLocationDetails, targetLocations: targetMarkets, targetLocation: targetMarkets.join(", ").slice(0, 180), primaryGoal: goals.primaryGoal, secondaryGoals: goals.secondaryGoals, competitors: data.competitors, notes: data.notes, brandVoice: data.brandVoice, analyticsPlatforms: data.analyticsPlatforms, cmsPlatform: data.cmsPlatform, targetLaunchTimeline: data.targetLaunchTimeline, preferredOutputs: data.preferredOutputs, preferredPublishingMethod: data.preferredPublishingMethod } });
+    const updatedProject = await tx.project.update({ where: { id: project.id }, data: { status: "active", agencyClientId: agencyClient?.id ?? null, websiteId: website?.id ?? null, name: data.name.trim(), projectType: effectiveProjectType, websiteStatus: data.websiteStatus, websiteUrl: normalized?.rootUrl ?? (data.websiteUrl?.trim() || null), businessName: agencyClient ? null : (data.businessName?.trim() || null), niche: data.niche?.trim() || null, businessLocation: location, businessLocationJson: data.businessLocationDetails, targetLocations: targetMarkets, targetLocation: targetMarkets.join(", ").slice(0, 180), primaryGoal: goals.primaryGoal, secondaryGoals: goals.secondaryGoals, competitors: data.competitors, notes: data.notes, brandVoice: data.brandVoice, analyticsPlatforms: data.analyticsPlatforms, cmsPlatform: data.cmsPlatform, targetLaunchTimeline: data.targetLaunchTimeline, preferredOutputs: data.preferredOutputs, preferredPublishingMethod: data.preferredPublishingMethod } });
+    if (website) await captureWebsiteTracking(tx, { websiteId: website.id, clientId: project.clientId, domain: website.domain, rootUrl: website.rootUrl, project: updatedProject, createdByUserId: context.membership.userId });
     if (data.businessDescription || data.targetAudience || data.productsServices || conversationSession || projectLaunchSession) {
       const previousIntelligence = project.businessProfile?.intelligenceJson && typeof project.businessProfile.intelligenceJson === "object" && !Array.isArray(project.businessProfile.intelligenceJson) ? project.businessProfile.intelligenceJson as Record<string, unknown> : {};
       const sessionInput = conversationSession?.inputJson && typeof conversationSession.inputJson === "object" && !Array.isArray(conversationSession.inputJson) ? conversationSession.inputJson as Record<string, unknown> : {};

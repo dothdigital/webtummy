@@ -6,6 +6,7 @@ import { COUNTRY_OPTIONS, defaultLocationParts } from "../locationOptions.js";
 import type { GuidedProject, LocalBusinessProfile, LocalKeyword, LocalRankSnapshot, LocalSeoDashboardResponse, LocalScore, Website } from "../types.js";
 import { getActiveProjectId, resolveActiveProjectId, setActiveProjectId } from "../active-project.js";
 import LocalGridPanel from "../components/LocalGridPanel.js";
+import GoogleBusinessProfilePanel from "../components/GoogleBusinessProfilePanel.js";
 import { registerBackgroundJob } from "../background-jobs.js";
 import { approvedKeywordEntries, splitKeywordEntries } from "@webtummy/core";
 
@@ -14,7 +15,7 @@ type KeywordSuggestion = {
   reason: string;
 };
 
-type LocalSeoView = "overview" | "rankings" | "competitors" | "grid" | "trust";
+type LocalSeoView = "overview" | "rankings" | "competitors" | "grid" | "profile" | "trust";
 
 type LocalSeoAuditJob = {
   id: string;
@@ -555,6 +556,7 @@ export default function LocalSeo() {
       if (hash === "#rank-tracker") setActiveView("rankings");
       else if (hash === "#nap-audit" || hash === "#review-snapshot") setActiveView("trust");
       else if (hash === "#local-grid") setActiveView("grid");
+      else if (hash === "#business-profile") setActiveView("profile");
     };
     selectViewForHash();
     window.addEventListener("hashchange", selectViewForHash);
@@ -803,14 +805,17 @@ export default function LocalSeo() {
             </div>
             <p className="mt-2 max-w-3xl text-sm leading-6 text-charcoal-500">Project-level Local SEO for organic search, Maps, local pack, reviews, citations, website basics, and content coverage.</p>
           </div>
-          <label className="block min-w-[280px]">
-            <span className="mb-1 block text-sm font-medium text-slate-600">Project</span>
-            <select value={websiteId} onChange={(event) => void selectProject(event.target.value)} className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-100">
-              {!selectedProject && selectedGuidedProject && <option value="">{selectedGuidedProject.businessName || selectedGuidedProject.name} · no website connected</option>}
-              {websites.length === 0 && !selectedGuidedProject && <option value="">No projects yet</option>}
-              {websites.map((website) => <option key={website.id} value={website.id}>{website.domain}</option>)}
-            </select>
-          </label>
+          <div className="flex min-w-[280px] flex-col gap-2">
+            <label className="block">
+              <span className="mb-1 block text-sm font-medium text-slate-600">Project</span>
+              <select value={websiteId} onChange={(event) => void selectProject(event.target.value)} className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-100">
+                {!selectedProject && selectedGuidedProject && <option value="">{selectedGuidedProject.businessName || selectedGuidedProject.name} · no website connected</option>}
+                {websites.length === 0 && !selectedGuidedProject && <option value="">No projects yet</option>}
+                {websites.map((website) => <option key={website.id} value={website.id}>{website.domain}</option>)}
+              </select>
+            </label>
+            {business && <Button variant={business.googleBusinessConnectionStatus === "connected" ? "ghost" : "primary"} onClick={() => { setActiveView("profile"); window.history.replaceState(null, "", `${window.location.pathname}${window.location.search}#business-profile`); }}>{business.googleBusinessConnectionStatus === "connected" ? "Open Google Business Profile" : "Connect Google Business Profile"}</Button>}
+          </div>
         </div>
       </div>
 
@@ -946,6 +951,7 @@ export default function LocalSeo() {
               { id: "rankings", label: "Rankings", meta: `${targetCount} targets` },
               { id: "competitors", label: "Competitors", meta: `${competitorSnapshots.length} markets` },
               { id: "grid", label: "Local Grid", meta: "Heatmap" },
+              { id: "profile", label: "Business Profile", meta: business?.googleBusinessConnectionStatus === "connected" ? "Connected" : "Connect" },
               { id: "trust", label: "Trust & Reviews", meta: `${foundCitationCount}/${citations.length || citationSources.length} citations` },
             ] as Array<{ id: LocalSeoView; label: string; meta: string }>).map((item) => (
               <button
@@ -953,7 +959,7 @@ export default function LocalSeo() {
                 type="button"
                 onClick={() => {
                   setActiveView(item.id);
-                  window.history.replaceState(null, "", `${window.location.pathname}${window.location.search}`);
+                  window.history.replaceState(null, "", `${window.location.pathname}${window.location.search}${item.id === "profile" ? "#business-profile" : ""}`);
                   window.scrollTo({ top: 0, behavior: "smooth" });
                 }}
                 aria-current={activeView === item.id ? "page" : undefined}
@@ -965,6 +971,22 @@ export default function LocalSeo() {
             ))}
           </div>
         </div>
+      )}
+
+      {business && activeView === "overview" && (
+        <Card className={`overflow-hidden p-0 ${business.googleBusinessConnectionStatus === "connected" ? "border-emerald-200" : "border-blue-200"}`}>
+          <div className="flex flex-col gap-4 bg-[linear-gradient(110deg,#eff6ff_0%,#ffffff_55%,#f0fdf4_100%)] p-5 md:flex-row md:items-center md:justify-between">
+            <div>
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="rounded-full bg-blue-600 px-2.5 py-1 text-[10px] font-black uppercase tracking-[0.15em] text-white">Google Business Profile</span>
+                <StatusPill status={business.googleBusinessConnectionStatus === "connected" ? "connected" : "not connected"} />
+              </div>
+              <h2 className="mt-3 text-lg font-black text-charcoal-900">Connect the owner-managed Google location</h2>
+              <p className="mt-1 max-w-3xl text-sm leading-6 text-charcoal-600">Choose the exact client location, sync its current profile, reviews and 28-day performance, audit gaps, then create versioned content that must be approved before sending or handing it off.</p>
+            </div>
+            <Button className="shrink-0" onClick={() => { setActiveView("profile"); window.history.replaceState(null, "", `${window.location.pathname}${window.location.search}#business-profile`); }}>{business.googleBusinessConnectionStatus === "connected" ? "View Business Profile" : "Set up Google connection"}</Button>
+          </div>
+        </Card>
       )}
 
       <div className="space-y-6">
@@ -1332,6 +1354,8 @@ export default function LocalSeo() {
       )}
 
       {business && activeView === "grid" && <LocalGridPanel business={business} />}
+
+      {business && activeView === "profile" && <GoogleBusinessProfilePanel business={business} onBusinessRefresh={() => loadDashboard(business.id)} onMessage={setMessage} />}
 
       <div className={activeView === "trust" ? "grid gap-6 lg:grid-cols-2" : "hidden"}>
         <Card id="nap-audit" className="p-5">

@@ -70,10 +70,9 @@ const instructionLeakPatterns: Array<[string, RegExp]> = [
 
 const genericHeadingPattern = /^(?:welcome(?: to)?|home|homepage|our website|your trusted partner|quality you can trust|solutions for every need|tailored (?:insurance )?strategies|we are here to help)[.!\s]*$/i;
 const regulatedIndustryPattern = /\b(?:insurance|financial|finance|investment|mortgage|bank|legal|law|medical|health|healthcare|pharma|pharmaceutical|real estate|accounting|tax)\b/i;
-const regulatedClaimPattern = /\b(?:guarantee(?:d|s)?|risk[- ]free|no risk|always|never|100%|best|#\s*1|number one|leading|top[- ]rated|highest returns?|lowest (?:rate|price)|save \$?\d|earn \$?\d|approved by|certified|licensed|award[- ]winning|years? of experience)\b/i;
-const inherentlyUnsafeClaimPattern = /\b(?:guarantee(?:d|s)?|risk[- ]free|no risk|always|never|100%|best|#\s*1|number one|leading|top[- ]rated|highest returns?|lowest (?:rate|price)|save \$?\d|earn \$?\d)\b/i;
-const hardGuaranteeOrRankingPattern = /\b(?:guarantee(?:d|s)?|risk[- ]free|no risk|always|never|100%|#\s*1|number one|leading|top[- ]rated|highest returns?|lowest (?:rate|price)|save \$?\d|earn \$?\d)\b/i;
-const evidenceDependentCredentialPattern = /\b(?:approved by|certified|licensed|award[- ]winning|years? of experience)\b/i;
+const regulatedClaimPattern = /\b(?:guarantee(?:d|s)?|risk[- ]free|no risk|always|never|100%|best|#\s*1|number one|leading|top[- ]rated|highest returns?|lowest (?:rate|price)|save \$?\d|earn \$?\d|better (?:financial )?outcomes?|ensur(?:e|es|ed|ing) compliance with all regulatory standards)\b/i;
+const inherentlyUnsafeClaimPattern = /\b(?:guarantee(?:d|s)?|risk[- ]free|no risk|always|never|100%|best|#\s*1|number one|leading|top[- ]rated|highest returns?|lowest (?:rate|price)|save \$?\d|earn \$?\d|better (?:financial )?outcomes?|ensur(?:e|es|ed|ing) compliance with all regulatory standards)\b/i;
+const hardGuaranteeOrRankingPattern = /\b(?:guarantee(?:d|s)?|risk[- ]free|no risk|always|never|100%|#\s*1|number one|leading|top[- ]rated|highest returns?|lowest (?:rate|price)|save \$?\d|earn \$?\d|better (?:financial )?outcomes?|ensur(?:e|es|ed|ing) compliance with all regulatory standards)\b/i;
 const businessClaimPattern = /\b(?:trusted|experienced|expert|specialist|premier|industry[- ]leading|proven|exceptional|unmatched)\b/i;
 const educationalPattern = /\b(?:may|can|often|typically|generally|helps?|designed to|depending on|consider)\b/i;
 const stopWords = new Set(["a", "an", "and", "are", "as", "at", "be", "by", "for", "from", "in", "is", "it", "of", "on", "or", "our", "the", "this", "to", "we", "with", "you", "your"]);
@@ -118,7 +117,8 @@ export function findWebsiteUnsupportedClaims(
 ) {
   const text = components.flatMap((section, index) => publicStrings(section.props, `sections[${index}].props`)).map((entry) => entry.value).join("\n");
   return sentenceParts(text).flatMap((statement) => {
-    if (regulatedClaimPattern.test(statement) && (inherentlyUnsafeClaimPattern.test(statement) || !options.evidenceAvailable)) return [{ statement, classification: "regulated_performance_or_guarantee" as const }];
+    if (regulatedClaimPattern.test(statement) && inherentlyUnsafeClaimPattern.test(statement)) return [{ statement, classification: "regulated_performance_or_guarantee" as const }];
+    if (regulatedClaimPattern.test(statement) && !options.evidenceAvailable) return [{ statement, classification: "regulated_performance_or_guarantee" as const }];
     if (businessClaimPattern.test(statement) && !options.evidenceAvailable) return [{ statement, classification: "unverified_business_claim" as const }];
     return [];
   });
@@ -258,10 +258,12 @@ export function evaluateWebsiteQualityGovernance(
       const businessClaim = businessClaimPattern.test(statement);
       if (!regulatedOrPerformance && !businessClaim) continue;
       const reviewableSuitability = regulatedOrPerformance
-        && !hardGuaranteeOrRankingPattern.test(statement)
-        && !evidenceDependentCredentialPattern.test(statement);
+        && !hardGuaranteeOrRankingPattern.test(statement);
       const reviewableBusinessQuality = businessClaim && !evidenceIds.length;
-      const nonBlockingSubjectiveClaim = reviewableSuitability || reviewableBusinessQuality;
+      // Claim language is advisory governance. It must remain visible to the
+      // reviewer, but wording alone never revokes page approval or blocks a
+      // production release. Users may keep, confirm, edit, or safely rewrite it.
+      const nonBlockingSubjectiveClaim = true;
       const classification: WebsiteClaimClassification = reviewableSuitability
         ? "generic_educational"
         : regulatedOrPerformance
@@ -278,28 +280,22 @@ export function evaluateWebsiteQualityGovernance(
         classification,
         evidenceIds,
         publishable,
-        reason: nonBlockingSubjectiveClaim
-          ? "This is subjective advisory or business-quality wording rather than a promised outcome; it remains visible as an optional reviewer-acknowledgeable refinement."
-          : publishable
-            ? "The page links this business claim to approved evidence."
-            : "No approved evidence supports this public business or performance claim.",
+        reason: hardGuaranteeOrRankingPattern.test(statement)
+              ? "This wording may be too absolute. It remains an advisory review item and does not block publishing."
+              : "This is subjective advisory or business-quality wording rather than a promised outcome; it remains visible as an optional reviewer-acknowledgeable refinement.",
       });
       if (!publishable || nonBlockingSubjectiveClaim) addIssue({
         code: regulatedOrPerformance ? "regulated_or_guaranteed_claim" : "unsupported_business_claim",
-        severity: nonBlockingSubjectiveClaim ? "medium" : regulatedOrPerformance || regulated ? "blocker" : "high",
+        severity: "medium",
         category: regulated ? "regulated_industry" : "claims_and_evidence",
         pageId: page.pageId,
         pageName: page.name,
         field: "sections",
-        message: nonBlockingSubjectiveClaim
-          ? "This sentence uses subjective advisory or business-quality wording. It is an optional content refinement and does not block approval or publishing."
-          : regulatedOrPerformance
-          ? "A regulated, ranking, performance, or guarantee claim cannot be published without specific approved evidence."
-          : "A trust or business-quality claim is not connected to approved evidence.",
+        message: hardGuaranteeOrRankingPattern.test(statement)
+              ? "This sentence uses absolute compliance, ranking, guarantee, or outcome wording. Review is recommended, but it does not block approval or publishing."
+              : "This sentence uses subjective advisory or business-quality wording. It is an optional content refinement and does not block approval or publishing.",
         evidence: statement,
-        suggestedFix: nonBlockingSubjectiveClaim
-          ? "Keep the current wording, rewrite it as neutral educational guidance, or remove it."
-          : "Attach approved evidence to the exact claim, qualify it accurately, or remove the claim.",
+        suggestedFix: "Keep the current wording, rewrite it as qualified language, or remove it.",
         autoFixable: true,
       });
     }

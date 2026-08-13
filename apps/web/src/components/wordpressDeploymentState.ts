@@ -20,3 +20,7 @@ export function wordpressDeploymentBlocker(input: {
 export function showWordPressConnection(connected: boolean) {
   return !connected;
 }
+
+export function websiteApprovalComplete(release: unknown) {
+  return Boolean(release);
+}

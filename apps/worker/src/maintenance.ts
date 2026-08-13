@@ -3,7 +3,6 @@ import { crawlQueue } from "./queue.js";
 import { config } from "./config.js";
 import { sendMail } from "./email.js";
 import { approvalEscalationStage } from "@webtummy/core/approvals";
-import { projectReportCatalog, projectReportTypes } from "@webtummy/core/reporting";
 import { lookup } from "node:dns/promises";
 import { isIP } from "node:net";
 
@@ -772,6 +771,9 @@ export async function scheduledLocalGridScans(now = new Date()) {
 }
 
 export async function scheduledProjectReportGeneration(now = new Date()) {
+  void now;
+  return { generated: 0, delivered: 0, disabled: true as const };
+  /* Legacy scheduler retained as migration reference only. DEV-049 V1 reports are on demand.
   return runLogged("scheduled_project_report_generation", async () => {
     const workspaces = await prisma.workspace.findMany({ where: { status: "active" }, select: { id: true, legacyClientId: true, name: true, workspaceType: true, ownerUserId: true, settingsJson: true } });
     let generated = 0; let delivered = 0;
@@ -817,6 +819,7 @@ export async function scheduledProjectReportGeneration(now = new Date()) {
     }
     return { generated, delivered };
   });
+  */
 }
 
 let running = false;
@@ -838,7 +841,6 @@ export async function runMaintenanceSuite() {
     await measurementCheckpointNotifications();
     await scheduledGrowthBlueprintReviews();
     await scheduledLocalGridScans();
-    await scheduledProjectReportGeneration();
     await workspaceNotificationEmailDelivery();
   } finally {
     running = false;

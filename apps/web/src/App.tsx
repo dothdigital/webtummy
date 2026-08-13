@@ -43,6 +43,7 @@ import ProjectReports from "./pages/ProjectReports.js";
 import Approvals from "./pages/Approvals.js";
 import PublicLeadFunnel from "./pages/PublicLeadFunnel.js";
 import EcommerceIntelligence from "./pages/EcommerceIntelligence.js";
+import WebsitePerformance from "./pages/WebsitePerformance.js";
 
 const WebsiteVisualEditor = lazy(() => import("./pages/WebsiteVisualEditor.js"));
 
@@ -112,7 +113,7 @@ function Shell() {
   const landingPath = platformOnlySuperAdmin ? "/admin" : user.workspace?.landingPath ?? "/";
   if (location.pathname === "/login") return <Navigate to={landingPath} replace />;
   if (platformOnlySuperAdmin && location.pathname !== "/users" && !location.pathname.startsWith("/admin")) return <Navigate to="/admin" replace />;
-  if (workspaceRole === "client_viewer" && location.pathname !== "/workspace" && location.pathname !== "/reports" && !location.pathname.startsWith("/site-architect") && location.pathname !== "/seo-page-map" && location.pathname !== "/lead-magnets" && !location.pathname.startsWith("/agency/clients/")) return <Navigate to="/workspace" replace />;
+  if (workspaceRole === "client_viewer" && location.pathname !== "/workspace" && location.pathname !== "/reports" && !location.pathname.startsWith("/site-architect") && !/^\/projects\/[^/]+\/website\/performance$/.test(location.pathname) && location.pathname !== "/seo-page-map" && location.pathname !== "/lead-magnets" && !location.pathname.startsWith("/agency/clients/")) return <Navigate to="/workspace" replace />;
 
   const paymentRequired = Boolean(user.workspace?.primaryOwner && user.workspace.commercialState === "payment_required");
   if (paymentRequired && location.pathname !== "/pricing" && location.pathname !== "/billing") return <Navigate to="/pricing?payment=required" replace />;
@@ -134,6 +135,8 @@ function Shell() {
         <Route path="/users" element={<PlatformAdminOnly><Users /></PlatformAdminOnly>} />
         <Route path="/projects" element={<GuidedProjects />} />
         <Route path="/projects/new" element={<PermissionRoute permission="create_projects"><GuidedProjectNew /></PermissionRoute>} />
+        <Route path="/projects/:projectId/website/performance" element={<PermissionRoute anyOf={["view_reports", "read_internal", "read_shared_client_data"]}><WebsitePerformance /></PermissionRoute>} />
+        <Route path="/agency/clients/:clientId/projects/:projectId/website/performance" element={<PermissionRoute anyOf={["view_reports", "read_internal", "read_shared_client_data"]}><WebsitePerformance /></PermissionRoute>} />
         <Route path="/guided-projects" element={<GuidedProjects />} />
         <Route path="/guided-projects/:id" element={<GuidedProjectDetail />} />
         <Route path="/guided-projects/:id/intake" element={<PermissionRoute permission="edit_project_settings"><GuidedProjectIntake /></PermissionRoute>} />

@@ -574,4 +574,14 @@ describe("Approved Release website renderer", () => {
     expect(files[0].content).toContain('src="../assets/media/hero-media-1.png"');
     expect(files[0].content).toContain('alt="Family reviewing Super Visa insurance"');
   });
+
+  it("installs first-party tracking only in production output", () => {
+    const tracking = { siteId: "site-123456789", scriptUrl: "https://api.example.test/api/public/website-tracking/tag.js?site=site-123456789" };
+    const production = renderWebsitePageDocument(model, model.pages[0], { environmentType: "production", tracking });
+    const staging = renderWebsitePageDocument(model, model.pages[0], { environmentType: "staging", tracking });
+    const wordpress = renderWebsitePageWordPressBlocks(model, model.pages[0], { tracking });
+    expect(production).toContain('data-senuke-site="site-123456789"');
+    expect(staging).not.toContain("website-tracking/tag.js");
+    expect(wordpress).toContain('data-senuke-site="site-123456789"');
+  });
 });

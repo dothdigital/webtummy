@@ -30,8 +30,10 @@ function usableOpenAiKey(value: string | undefined) {
 
 loadEnv();
 
+const apiPort = process.env.API_PORT ? parseInt(process.env.API_PORT, 10) : 4000;
+
 export const config = {
-  port: process.env.API_PORT ? parseInt(process.env.API_PORT, 10) : 4000,
+  port: apiPort,
   redisUrl: process.env.REDIS_URL ?? "redis://localhost:6379",
   jwtSecret: process.env.JWT_SECRET ?? "dev-only-change-me",
   appEncryptionKey: process.env.APP_ENCRYPTION_KEY ?? process.env.JWT_SECRET ?? "dev-only-change-me",
@@ -39,7 +41,7 @@ export const config = {
   // client that stops using the application naturally expires after this TTL.
   jwtExpiresIn: process.env.JWT_IDLE_TIMEOUT ?? "8h",
   webAppUrl: process.env.WEB_APP_URL ?? "http://localhost:5173",
-  publicApiUrl: process.env.PUBLIC_API_URL ?? process.env.WEB_APP_URL ?? "http://localhost:4000",
+  publicApiUrl: process.env.PUBLIC_API_URL ?? `http://localhost:${apiPort}`,
   emailProvider: (process.env.EMAIL_PROVIDER ?? "").toLowerCase(),
   emailFrom: process.env.EMAIL_FROM ?? "SEnuke AI <no-reply@senuke.com>",
   supportEmail: process.env.SUPPORT_EMAIL ?? "info@dothdigital.com",
@@ -68,6 +70,9 @@ export const config = {
   socialConnectApiKey: process.env.SOCIAL_CONNECT_API_KEY ?? "",
   socialConnectAppKey: process.env.SOCIAL_CONNECT_APP_KEY ?? "",
   socialConnectMasterApiKey: process.env.SOCIAL_CONNECT_MASTER_API_KEY ?? "",
+  googleBusinessProfileClientId: process.env.GOOGLE_BUSINESS_PROFILE_CLIENT_ID ?? "",
+  googleBusinessProfileClientSecret: process.env.GOOGLE_BUSINESS_PROFILE_CLIENT_SECRET ?? "",
+  googleBusinessProfileWritesEnabled: process.env.GOOGLE_BUSINESS_PROFILE_WRITES_ENABLED?.toLowerCase() === "true",
   jvzooSecretKey: process.env.JVZOO_SECRET_KEY ?? "",
   jvzooCustomerPortalUrl: process.env.JVZOO_CUSTOMER_PORTAL_URL ?? "https://customer.jvzoo.com/",
   // Legacy read-only adapter configuration. New commercial checkout and

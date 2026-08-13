@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   showWordPressConnection,
+  websiteApprovalComplete,
   wordpressDeploymentBlocker,
 } from "./wordpressDeploymentState.js";
 
@@ -37,5 +38,10 @@ describe("WordPress deployment controls", () => {
       connected: true,
       draftReady: true,
     })).toBeNull();
+  });
+
+  it("keeps Approval complete from its immutable release after deployment state changes", () => {
+    expect(websiteApprovalComplete({ id: "release-1", status: "approved" })).toBe(true);
+    expect(websiteApprovalComplete(null)).toBe(false);
   });
 });

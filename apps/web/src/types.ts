@@ -46,6 +46,8 @@ export interface Website {
   _count?: { crawlJobs: number };
   hasCompletedCrawl?: boolean;
   localBusinessProfiles?: LocalBusinessProfile[];
+  trackingPlan?: WebsiteMeasurementPlan | null;
+  trackingSite?: WebsiteTrackingSite | null;
   crawlJobs?: {
     id: string;
     status: "queued" | "running" | "completed" | "failed";
@@ -58,6 +60,41 @@ export interface Website {
     completedAt: string | null;
     error?: string | null;
   }[];
+}
+
+export interface WebsiteTrackingSite {
+  id: string;
+  websiteId: string;
+  enabled: boolean;
+  allowedHost: string;
+  installation: string;
+  lastEventAt?: string | null;
+  lastVerifiedAt?: string | null;
+}
+
+export interface WebsiteMeasurementPlan {
+  id: string;
+  websiteId: string;
+  projectId?: string | null;
+  version: number;
+  active: boolean;
+  status: string;
+  businessGoal: string;
+  primaryConversion: string;
+  primaryMeasurement: string;
+  supportingActionsJson: string[] | unknown;
+  guardrailsJson: string[] | unknown;
+  pagesAndFormsJson: string[] | unknown;
+  dataSourcesJson: Array<{ key: string; status: string; required: boolean; identifier?: string | null }> | unknown;
+  baselineRule: string;
+  evaluationWindowDays: number;
+  consentRequirementsJson: string[] | unknown;
+  installationMethod: string;
+  installationJson: { ga4MeasurementId?: string | null; searchConsoleProperty?: string | null; measurementTagEnabled?: boolean; excludeStaging?: boolean; consentModeEnabled?: boolean } | unknown;
+  trackingState: string;
+  lastVerifiedAt?: string | null;
+  createdAt: string;
+  updatedAt: string;
 }
 
 export interface GuidedExecutionTask {
@@ -1572,6 +1609,7 @@ export interface SocialStrategyResponse {
 export interface LocalBusinessProfile {
   id: string;
   clientId: string;
+  projectId: string | null;
   websiteId: string | null;
   website?: { id: string; domain: string; rootUrl?: string } | null;
   businessName: string;
@@ -1586,6 +1624,8 @@ export interface LocalBusinessProfile {
   services: string[];
   targetLocations: string[];
   googleBusinessProfileUrl: string | null;
+  googleBusinessAccountRef: string | null;
+  googleBusinessConnectionStatus: string;
   googleAverageRating: number | null;
   googleReviewCount: number | null;
   latitude: number | null;
@@ -1721,6 +1761,105 @@ export interface LocalCompetitor {
 export interface LocalSeoDashboardResponse {
   business: LocalBusinessProfile;
   latestSnapshots: LocalRankSnapshot[];
+}
+
+export type GoogleBusinessCapabilityStatus = "SUPPORTED" | "UNSUPPORTED" | "UNKNOWN" | "TEMPORARILY_UNAVAILABLE" | "REAUTH_REQUIRED";
+
+export interface GoogleBusinessCapability {
+  status: GoogleBusinessCapabilityStatus;
+  reason: string;
+  source: string;
+  lastCheckedAt: string;
+  providerVersion: string;
+  recoverable: boolean;
+}
+
+export interface GoogleBusinessProfileConnection {
+  id: string;
+  businessId: string;
+  status: string;
+  grantedScopesJson: string[];
+  googleAccountName: string | null;
+  googleAccountLabel: string | null;
+  googleLocationName: string | null;
+  googleLocationLabel: string | null;
+  googleLocationMetadata: unknown;
+  capabilitiesJson: Record<string, GoogleBusinessCapability>;
+  lastCapabilityCheckAt: string | null;
+  lastSyncedAt: string | null;
+  errorMessage: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface GoogleBusinessProfileSnapshot {
+  id: string;
+  connectionId: string;
+  kind: string;
+  providerRef: string | null;
+  dataJson: unknown;
+  sourceFetchedAt: string;
+  expiresAt: string;
+  createdAt: string;
+}
+
+export interface GoogleBusinessProfileDraft {
+  id: string;
+  businessId: string;
+  subjectKey: string;
+  contentType: "business_description" | "local_post" | "review_reply" | "profile_update" | string;
+  version: number;
+  title: string | null;
+  body: string;
+  callToActionJson: unknown;
+  status: string;
+  reviewNote: string | null;
+  approvedAt: string | null;
+  rejectedAt: string | null;
+  supersededAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface GoogleBusinessProfileAction {
+  id: string;
+  businessId: string;
+  draftId: string | null;
+  actionType: string;
+  capabilityKey: string;
+  status: string;
+  payloadJson: unknown;
+  providerReceiptJson: unknown;
+  handoffUrl: string | null;
+  handoffInstructions: string | null;
+  executedAt: string | null;
+  verifiedAt: string | null;
+  errorMessage: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface GoogleBusinessProfileAudit {
+  score: number;
+  status: "strong" | "needs_attention" | "incomplete";
+  checks: Array<{ key: string; label: string; passed: boolean; weight: number; detail: string }>;
+  recommendations: Array<{ priority: "high" | "medium" | "low"; category: string; recommendation: string; expectedImpact: string }>;
+}
+
+export interface GoogleBusinessProfileResponse {
+  configured: boolean;
+  writesEnabled: boolean;
+  authorizationReady: boolean;
+  providerProjectNumber: string | null;
+  connection: GoogleBusinessProfileConnection | null;
+  availableLocations: Array<{ accountName: string; accountLabel: string; accountRole?: string | null; locationName: string; locationLabel: string; storeCode?: string | null }>;
+  profile: GoogleBusinessProfileSnapshot | null;
+  reviews: GoogleBusinessProfileSnapshot | null;
+  performance: GoogleBusinessProfileSnapshot | null;
+  performanceHistory: GoogleBusinessProfileSnapshot[];
+  audit: GoogleBusinessProfileAudit;
+  drafts: GoogleBusinessProfileDraft[];
+  actions: GoogleBusinessProfileAction[];
 }
 
 export interface ExecutionTask {

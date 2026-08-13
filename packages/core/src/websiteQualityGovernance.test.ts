@@ -25,9 +25,11 @@ describe("website quality governance", () => {
     expect(result.issues.filter((issue) => issue.category === "content_leakage").every((issue) => issue.severity === "blocker")).toBe(true);
   });
 
-  it("blocks unsupported regulated guarantees", () => {
+  it("keeps regulated guarantees as non-blocking wording advisories", () => {
     const result = evaluateWebsiteQualityGovernance(model("We guarantee the best returns for every client."), { industry: "Insurance and financial services" });
-    expect(result.issues).toEqual(expect.arrayContaining([expect.objectContaining({ code: "regulated_or_guaranteed_claim", severity: "blocker", status: "open", autoFixable: true })]));
+    expect(result.status).toBe("needs_review");
+    expect(result.openBlockingCount).toBe(0);
+    expect(result.issues).toEqual(expect.arrayContaining([expect.objectContaining({ code: "regulated_or_guaranteed_claim", severity: "medium", status: "open", autoFixable: true })]));
   });
 
   it("treats advisory best-fit wording as an acknowledgeable warning", () => {
@@ -72,11 +74,26 @@ describe("website quality governance", () => {
     ]));
   });
 
-  it("continues to block unsupported rankings and guarantees", () => {
+  it("keeps unsupported rankings and guarantees visible without blocking", () => {
     const result = evaluateWebsiteQualityGovernance(model("We are the #1 top-rated provider and guarantee the highest returns."), { industry: "Insurance and financial services" });
-    expect(result.status).toBe("blocked");
+    expect(result.status).toBe("needs_review");
+    expect(result.openBlockingCount).toBe(0);
     expect(result.issues).toEqual(expect.arrayContaining([
-      expect.objectContaining({ code: "regulated_or_guaranteed_claim", severity: "blocker", status: "open" }),
+      expect.objectContaining({ code: "regulated_or_guaranteed_claim", severity: "medium", status: "open" }),
+    ]));
+  });
+
+  it("does not request credentials or flag credential wording", () => {
+    const result = evaluateWebsiteQualityGovernance(model("We are licensed and certified professionals."), { industry: "Insurance and financial services" });
+    expect(result.issues.some((issue) => issue.code === "regulated_or_guaranteed_claim")).toBe(false);
+    expect(result.issues.some((issue) => /credential|licen[cs]e|certif/i.test(issue.message))).toBe(false);
+  });
+
+  it("treats absolute compliance wording as an optional copy advisory", () => {
+    const result = evaluateWebsiteQualityGovernance(model("We are licensed and certified, ensuring compliance with all regulatory standards."), { industry: "Insurance and financial services" });
+    expect(result.openBlockingCount).toBe(0);
+    expect(result.issues).toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: "regulated_or_guaranteed_claim", severity: "medium" }),
     ]));
   });
 
