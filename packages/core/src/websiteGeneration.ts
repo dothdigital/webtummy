@@ -54,7 +54,20 @@ export function websitePageUniquenessCollisions(
   });
 }
 
-const genericFirstSectionHeading = (value: string) => /^(?:a solution aligned to your goals|how (?:we|our team) can help|what we (?:do|offer)|our (?:services|solutions)|learn more|overview|introduction|welcome|why choose us|your (?:solution|path forward|next step))\??$/i.test(value.trim());
+const genericSectionHeadingPattern = /^(?:a solution aligned to your goals|how (?:we|our team) can help|how the process works|tell us how we can help|what we (?:do|offer)|our (?:services|solutions)|services|solutions|benefits|evidence and trust|learn more|overview|introduction|welcome(?: to .+)?|why choose us|frequently asked questions|common questions|ready to get started|ready to take the next step|ready to discuss your requirements|your (?:solution|path forward|next step)|solutions? for (?:every|your) need|discover the difference|quality (?:service|services|you can trust))\??[.!]?$/i;
+
+export function isGenericWebsiteSectionHeading(value: unknown) {
+  return genericSectionHeadingPattern.test(String(value ?? "").replace(/\s+/g, " ").trim());
+}
+
+export function isGenericWebsiteHeroHeading(value: unknown, businessName: unknown = "") {
+  const heading = normalizeWebsiteUniquenessSignal(value);
+  if (!heading) return true;
+  if (/^welcome(?: to)?\b/.test(heading)) return true;
+  if (/^(?:home|homepage|website page|our website|your trusted partner|quality you can trust|solutions for every need|tailored (?:insurance )?strategies|we are here to help|discover the difference)$/.test(heading)) return true;
+  const business = normalizeWebsiteUniquenessSignal(businessName);
+  return Boolean(business && [business, `${business} home`, `${business} homepage`, `${business} official website`].includes(heading));
+}
 
 const cleanHeadingSubject = (value: unknown) => String(value ?? "")
   .replace(/[.!?]+$/g, "")
@@ -110,7 +123,7 @@ export function ensurePageSpecificFirstH2(
   const current = cleanHeadingSubject(firstHeadingSection.props.heading);
   const normalized = normalizeWebsiteUniquenessSignal(current);
   const reservedH2s = reserved.flatMap((signal) => signal.h2s ?? []).map(normalizeWebsiteUniquenessSignal);
-  if (!current || genericFirstSectionHeading(current) || (normalized && reservedH2s.includes(normalized))) {
+  if (!current || isGenericWebsiteSectionHeading(current) || (normalized && reservedH2s.includes(normalized))) {
     firstHeadingSection.props.heading = websiteFirstSupportingHeading({
       pageTitle: page.title,
       pageType: page.pageType,

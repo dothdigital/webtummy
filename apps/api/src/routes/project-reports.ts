@@ -244,7 +244,7 @@ async function scopedProject(context: Awaited<ReturnType<typeof workspaceContext
       businessBrainVersions: { orderBy: { version: "desc" }, take: 1 },
       evidenceVersions: { orderBy: { version: "desc" }, take: 1 },
       growthBlueprint: { include: { versions: { orderBy: { version: "desc" }, take: 1 } } },
-      nextBestActions: { where: { status: { in: ["proposed", "selected", "approved", "in_progress"] } }, orderBy: [{ selectedAt: "desc" }, { priorityScore: "desc" }, { createdAt: "desc" }], take: 5 },
+      nextBestActions: { where: { status: { in: ["proposed", "recommended", "selected", "approved", "accepted", "in_progress"] } }, orderBy: [{ selectedAt: "desc" }, { priorityScore: "desc" }, { createdAt: "desc" }], take: 5 },
       growthExperiments: { include: { results: { orderBy: { recordedAt: "desc" }, take: 2 } }, orderBy: { updatedAt: "desc" }, take: 30 },
       growthFunnelStages: { orderBy: { sortOrder: "asc" } },
       socialPerformanceMetrics: { orderBy: { recordedAt: "desc" }, take: 200 },

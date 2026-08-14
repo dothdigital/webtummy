@@ -19,6 +19,21 @@ const model = (body: string, headline = "Super Visa Insurance in Brampton"): Web
 });
 
 describe("website quality governance", () => {
+  it("blocks welcome and company-name-only hero headings", () => {
+    for (const headline of ["Welcome to Example Insurance", "Example Insurance"]) {
+      const result = evaluateWebsiteQualityGovernance(model("Compare coverage and choose the next step.", headline));
+      expect(result.issues).toEqual(expect.arrayContaining([expect.objectContaining({ code: "generic_or_missing_h1", severity: "blocker", evidence: headline })]));
+    }
+  });
+
+  it("flags generic H2 copy as a high-priority website-quality issue", () => {
+    const website = model("Compare coverage and choose the next step.");
+    website.pages[0].sections[1].props.heading = "Our Services";
+    const result = evaluateWebsiteQualityGovernance(website);
+    expect(result.issues).toEqual(expect.arrayContaining([expect.objectContaining({ code: "generic_h2", severity: "high", evidence: "Our Services" })]));
+    expect(result.status).toBe("needs_review");
+    expect(result.openBlockingCount).toBe(0);
+  });
   it("blocks visitor-visible placeholders and internal instructions", () => {
     const result = evaluateWebsiteQualityGovernance(model("Insert the business phone here. Lorem ipsum."));
     expect(result.status).toBe("blocked");

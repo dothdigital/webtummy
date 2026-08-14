@@ -21,6 +21,11 @@ describe("central AI model compatibility", () => {
     expect(chatCompletionBody({ model: "gpt-5", system: "system", prompt: "prompt" })).toMatchObject({ max_completion_tokens: 8_000 });
   });
 
+  it("uses low reasoning effort only when requested by a compatible reasoning model", () => {
+    expect(chatCompletionBody({ model: "gpt-5.6-luna", system: "system", prompt: "prompt", reasoningEffort: "low" })).toMatchObject({ reasoning_effort: "low" });
+    expect(chatCompletionBody({ model: "gpt-4o-mini", system: "system", prompt: "prompt", reasoningEffort: "low" })).not.toHaveProperty("reasoning_effort");
+  });
+
   it("removes embedded assets from every central text-AI prompt", () => {
     const prompt = `Brand: {"logoUrl":"data:image/png;base64,${"A".repeat(200_000)}","primaryColor":"#123456"}`;
     const prepared = prepareCentralAiPrompt(prompt);

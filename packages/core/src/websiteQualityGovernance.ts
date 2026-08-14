@@ -1,4 +1,5 @@
 import type { JsonValue, WebsiteModel, WebsitePageModel } from "./websiteModel.js";
+import { isGenericWebsiteHeroHeading, isGenericWebsiteSectionHeading } from "./websiteGeneration.js";
 
 export type WebsiteQualityEnvironment = "preview" | "staging" | "production";
 export type WebsiteQualitySeverity = "blocker" | "high" | "medium" | "low";
@@ -68,7 +69,6 @@ const instructionLeakPatterns: Array<[string, RegExp]> = [
   ["prompt_language", /\b(?:as an ai|generate (?:a|the|this) (?:page|section|website)|follow (?:these|the) instructions|return (?:valid )?json)\b/i],
 ];
 
-const genericHeadingPattern = /^(?:welcome(?: to)?|home|homepage|our website|your trusted partner|quality you can trust|solutions for every need|tailored (?:insurance )?strategies|we are here to help)[.!\s]*$/i;
 const regulatedIndustryPattern = /\b(?:insurance|financial|finance|investment|mortgage|bank|legal|law|medical|health|healthcare|pharma|pharmaceutical|real estate|accounting|tax)\b/i;
 const regulatedClaimPattern = /\b(?:guarantee(?:d|s)?|risk[- ]free|no risk|always|never|100%|best|#\s*1|number one|leading|top[- ]rated|highest returns?|lowest (?:rate|price)|save \$?\d|earn \$?\d|better (?:financial )?outcomes?|ensur(?:e|es|ed|ing) compliance with all regulatory standards)\b/i;
 const inherentlyUnsafeClaimPattern = /\b(?:guarantee(?:d|s)?|risk[- ]free|no risk|always|never|100%|best|#\s*1|number one|leading|top[- ]rated|highest returns?|lowest (?:rate|price)|save \$?\d|earn \$?\d|better (?:financial )?outcomes?|ensur(?:e|es|ed|ing) compliance with all regulatory standards)\b/i;
@@ -187,7 +187,7 @@ export function evaluateWebsiteQualityGovernance(
       }
     }
 
-    if (!heading || genericHeadingPattern.test(heading)) {
+    if (isGenericWebsiteHeroHeading(heading, model.identity?.businessName || "")) {
       addIssue({
         code: "generic_or_missing_h1",
         severity: "blocker",
@@ -219,6 +219,24 @@ export function evaluateWebsiteQualityGovernance(
           autoFixable: false,
         });
       }
+    }
+
+    for (const [sectionIndex, section] of page.sections.entries()) {
+      if (section.componentId === "hero.local_service") continue;
+      const sectionHeading = typeof section.props.heading === "string" ? section.props.heading.trim() : "";
+      if (!sectionHeading || !isGenericWebsiteSectionHeading(sectionHeading)) continue;
+      addIssue({
+        code: "generic_h2",
+        severity: "high",
+        category: "customer_language",
+        pageId: page.pageId,
+        pageName: page.name,
+        field: `sections[${sectionIndex}].props.heading`,
+        message: "This section heading is generic and does not help the visitor understand the page-specific value or decision.",
+        evidence: sectionHeading,
+        suggestedFix: "Write a specific H2 around the approved topic, buyer question, benefit, objection, process, proof, or next step. Use keywords naturally without repeating the same phrase in every heading.",
+        autoFixable: false,
+      });
     }
 
     const titleHeadingOverlap = [...tokens(page.seo.title)].filter((token) => tokens(heading).has(token)).length;
@@ -378,9 +396,12 @@ export function evaluateWebsiteQualityGovernance(
 
   const counts: Record<WebsiteQualitySeverity, number> = { blocker: 0, high: 0, medium: 0, low: 0 };
   for (const issue of issues.filter((item) => item.status === "open")) counts[issue.severity] += 1;
-  const openBlockingCount = counts.blocker + counts.high;
+  // Only findings explicitly classified as blockers can stop approval or
+  // publishing. High-priority copy/SEO findings stay prominent for review,
+  // but they are recommendations rather than a hidden release lock.
+  const openBlockingCount = counts.blocker;
   return {
-    status: openBlockingCount ? "blocked" : counts.medium || counts.low ? "needs_review" : "passed",
+    status: openBlockingCount ? "blocked" : counts.high || counts.medium || counts.low ? "needs_review" : "passed",
     environment,
     issues,
     claims,

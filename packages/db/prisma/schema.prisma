@@ -170,6 +170,7 @@ model Workspace {
   invitations             WorkspaceInvitation[]
   agentThreads            ProjectAgentThread[]
   aiIntakeSessions        WorkspaceAiIntakeSession[]
+  discoveryDrafts         DiscoveryDraft[]
   commercialSubscriptions WorkspaceSubscription[]
   entitlementOverrides    CommercialEntitlementOverride[]
   seatEntitlements        CommercialSeatEntitlement[]
@@ -215,6 +216,64 @@ model WorkspaceAiIntakeSession {
   @@index([userId, createdAt])
   @@index([websiteDomain])
   @@index([status])
+}
+
+model DiscoveryDraft {
+  id                      String    @id @default(cuid())
+  workspaceId             String
+  workspace               Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  agencyClientId          String?
+  agencyClient            AgencyClient? @relation(fields: [agencyClientId], references: [id], onDelete: Cascade)
+  createdByUserId         String    @db.VarChar(191)
+  title                   String    @db.VarChar(180)
+  startPath               String    @db.VarChar(40)
+  status                  String    @default("DRAFT") @db.VarChar(40)
+  sourceText              String?   @db.Text
+  answersJson             Json      @default("{}")
+  factsJson               Json      @default("[]")
+  questionHistoryJson     Json      @default("[]")
+  aiSummaryJson           Json      @default("{}")
+  selectedDirectionJson   Json      @default("{}")
+  nextBestActionJson      Json      @default("{}")
+  aiConversationSessionId String?   @db.VarChar(191)
+  convertedProjectId      String?   @unique
+  convertedProject        Project?  @relation("DiscoveryDraftConvertedProject", fields: [convertedProjectId], references: [id], onDelete: SetNull)
+  convertedAt             DateTime?
+  createdAt               DateTime  @default(now())
+  updatedAt               DateTime  @updatedAt
+
+  ideas DiscoveryIdea[]
+
+  @@index([workspaceId, status, updatedAt])
+  @@index([agencyClientId, status, updatedAt])
+  @@index([createdByUserId, updatedAt])
+}
+
+model DiscoveryIdea {
+  id              String         @id @default(cuid())
+  discoveryDraftId String
+  discoveryDraft  DiscoveryDraft @relation(fields: [discoveryDraftId], references: [id], onDelete: Cascade)
+  position        Int            @default(0)
+  title           String         @db.VarChar(180)
+  description     String         @db.Text
+  whyFit          String         @db.Text
+  targetAudience  String?        @db.Text
+  problemSolved   String?        @db.Text
+  revenueModel    String?        @db.VarChar(180)
+  businessModel   String?        @db.VarChar(120)
+  evidenceJson    Json           @default("[]")
+  validationSteps Json           @default("[]")
+  difficulty      String?        @db.VarChar(40)
+  timeCostBand    String?        @db.VarChar(180)
+  majorRisk       String?        @db.Text
+  confidence      Int?
+  detailsJson     Json           @default("{}")
+  status          String         @default("GENERATED") @db.VarChar(40)
+  userFeedback    String?        @db.Text
+  createdAt       DateTime       @default(now())
+  updatedAt       DateTime       @updatedAt
+
+  @@index([discoveryDraftId, status, position])
 }
 
 model WorkspaceInvitation {
@@ -343,6 +402,7 @@ model AgencyClient {
   activity          WorkspaceActivity[]
   notifications     WorkspaceNotification[]
   agencyDocuments   GapReportExport[]
+  discoveryDrafts   DiscoveryDraft[]
 
   @@unique([workspaceId, normalizedName])
   @@index([workspaceId, status])
@@ -1221,6 +1281,7 @@ model Project {
   websiteSftpIntegrations     WebsiteSftpIntegration[]
   measurementCheckpoints      MeasurementCheckpoint[]
   nextBestActions             NextBestAction[]
+  originDiscoveryDraft        DiscoveryDraft? @relation("DiscoveryDraftConvertedProject")
 
   @@index([clientId, status])
   @@index([agencyClientId, status])

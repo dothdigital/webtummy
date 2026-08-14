@@ -29,12 +29,15 @@ export function prepareCentralAiPrompt(value: string, maxBytes = CENTRAL_AI_PROM
   return `${head}${notice}${tail}`;
 }
 
-export function chatCompletionBody(input: { model: string; system: string; prompt: string; temperature?: number; maxOutputTokens?: number; maxInputBytes?: number }) {
+type CentralAiReasoningEffort = "low" | "medium" | "high";
+
+export function chatCompletionBody(input: { model: string; system: string; prompt: string; temperature?: number; maxOutputTokens?: number; maxInputBytes?: number; reasoningEffort?: CentralAiReasoningEffort }) {
   const maxOutputTokens = Math.max(64, Math.min(16_000, Math.round(input.maxOutputTokens ?? 8_000)));
   const usesDefaultTemperature = modelUsesDefaultTemperature(input.model);
   return {
     model: input.model,
     ...(!usesDefaultTemperature ? { temperature: input.temperature ?? 0.25 } : {}),
+    ...(usesDefaultTemperature && input.reasoningEffort ? { reasoning_effort: input.reasoningEffort } : {}),
     ...(usesDefaultTemperature ? { max_completion_tokens: maxOutputTokens } : { max_tokens: maxOutputTokens }),
     response_format: { type: "json_object" },
     messages: [
@@ -44,7 +47,7 @@ export function chatCompletionBody(input: { model: string; system: string; promp
   };
 }
 
-export async function centralAiJson<T = unknown>(input: { system: string; prompt: string; model?: string; temperature?: number; maxOutputTokens?: number; maxInputBytes?: number; timeoutMs?: number; validate?: (value: unknown) => T }) {
+export async function centralAiJson<T = unknown>(input: { system: string; prompt: string; model?: string; temperature?: number; maxOutputTokens?: number; maxInputBytes?: number; reasoningEffort?: CentralAiReasoningEffort; timeoutMs?: number; validate?: (value: unknown) => T }) {
   if (!config.openaiApiKey) throw Object.assign(new Error("SEnuke AI is not configured."), { code: "ai_not_configured", statusCode: 503, publicMessage: true });
   const requestContext = currentCommercialRequestContext();
   const policyDefault = defaultAiModelForFeature(requestContext?.featureKey, config.openaiContentModel);
@@ -69,16 +72,20 @@ export async function centralAiJson<T = unknown>(input: { system: string; prompt
       requestContext.manualUsageReservation = false;
     }
 
-    const response = await fetch("https://api.openai.com/v1/chat/completions", { method: "POST", headers: { Authorization: `Bearer ${config.openaiApiKey}`, "Content-Type": "application/json" }, body: JSON.stringify(chatCompletionBody({ model, system: input.system, prompt: input.prompt, temperature: input.temperature, maxOutputTokens: input.maxOutputTokens, maxInputBytes: input.maxInputBytes })), signal: AbortSignal.timeout(input.timeoutMs ?? 120_000) });
-    const data = await response.json().catch(() => ({})) as { error?: { message?: string }; choices?: Array<{ message?: { content?: string } }>; usage?: { prompt_tokens?: number; completion_tokens?: number }; model?: string };
+    const response = await fetch("https://api.openai.com/v1/chat/completions", { method: "POST", headers: { Authorization: `Bearer ${config.openaiApiKey}`, "Content-Type": "application/json" }, body: JSON.stringify(chatCompletionBody({ model, system: input.system, prompt: input.prompt, temperature: input.temperature, maxOutputTokens: input.maxOutputTokens, maxInputBytes: input.maxInputBytes, reasoningEffort: input.reasoningEffort })), signal: AbortSignal.timeout(input.timeoutMs ?? 120_000) });
+    const data = await response.json().catch(() => ({})) as { error?: { message?: string }; choices?: Array<{ finish_reason?: string | null; message?: { content?: string; refusal?: string | null } }>; usage?: { prompt_tokens?: number; completion_tokens?: number }; model?: string };
     if (!response.ok) {
       if (response.status === 401 || response.status === 403) {
         throw Object.assign(new Error("SEnuke AI could not authenticate with the configured AI provider. Ask an administrator to update OPENAI_API_KEY and restart the API."), { code: "ai_provider_auth_error", statusCode: 503, publicMessage: true });
       }
       throw Object.assign(new Error(data.error?.message || "SEnuke AI could not complete the request."), { code: "ai_provider_error", statusCode: 502 });
     }
-    const content = data.choices?.[0]?.message?.content;
-    if (!content) throw Object.assign(new Error("SEnuke AI returned no structured suggestions."), { code: "ai_output_empty", statusCode: 502 });
+    const choice = data.choices?.[0];
+    const content = choice?.message?.content?.trim();
+    if (!content) {
+      const reason = choice?.finish_reason || (choice?.message?.refusal ? "refusal" : "unknown");
+      throw Object.assign(new Error(`SEnuke AI returned no structured suggestions (provider finish reason: ${reason}).`), { code: "ai_output_empty", statusCode: 502, providerFinishReason: reason });
+    }
     let parsedResult: unknown;
     try {
       parsedResult = JSON.parse(content) as unknown;

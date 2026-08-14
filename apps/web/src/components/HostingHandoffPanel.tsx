@@ -1,6 +1,7 @@
 import { useEffect, useState, type ReactNode } from "react";
 import {
   emptyHostingHandoff,
+  hostingHandoffDraftChanged,
   hostingHandoffMissing,
   hostingHandoffReady,
   type HostingDestination,
@@ -81,8 +82,10 @@ export default function HostingHandoffPanel({
   }, [savedAt]);
   const missing = hostingHandoffMissing(draft);
   const savedReady = Boolean(savedAt) && !missing.length;
+  const changed = Boolean(savedAt) && hostingHandoffDraftChanged(draft, draftFromSaved(saved));
 
   const choose = (destination: HostingDestination) => {
+    if (draft.destination === destination) return;
     setDraft({
       ...draft,
       destination,
@@ -157,7 +160,9 @@ export default function HostingHandoffPanel({
         <b className="text-sm text-slate-950">{missing.length ? `${missing.length} detail${missing.length === 1 ? "" : "s"} required` : "Deployment path is ready"}</b>
         <p className="mt-1 text-xs text-slate-500">{missing.length ? missing.join(" · ") : draft.destination === "wordpress" ? "Continue to the WordPress connection below." : "The release can continue through this delivery path."}</p>
       </div>
-      <button type="button" disabled={busy || !hostingHandoffReady(draft)} onClick={() => void onSave(draft)} className="rounded-lg bg-indigo-700 px-5 py-2.5 text-sm font-black text-white disabled:bg-slate-300">{busy ? "Saving…" : savedAt ? "Update Destination" : draft.destination === "wordpress" ? "Use WordPress" : "Save Destination"}</button>
+      {savedAt&&!changed
+        ?<div className="flex flex-wrap items-center gap-2"><span className="rounded-full bg-emerald-100 px-3 py-2 text-xs font-black text-emerald-800">✓ Destination already saved</span><button type="button" onClick={()=>setEditing(false)} className="rounded-lg border border-slate-300 bg-white px-4 py-2.5 text-sm font-black text-slate-700">Done</button></div>
+        :<button type="button" disabled={busy || !hostingHandoffReady(draft)} onClick={() => void onSave(draft)} className="rounded-lg bg-indigo-700 px-5 py-2.5 text-sm font-black text-white disabled:bg-slate-300">{busy ? "Saving…" : savedAt ? "Save Destination Changes" : draft.destination === "wordpress" ? "Use WordPress" : "Save Destination"}</button>}
     </div>}
   </section>;
 }

@@ -2,6 +2,7 @@ import { Router, type Request } from "express";
 import { Prisma, prisma } from "@webtummy/db";
 import { z } from "zod";
 import { hostMatchesWebsite } from "../website-tracking.js";
+import { activatePostLaunchGrowthLifecycle } from "../post-launch-growth.js";
 
 export const publicWebsiteTrackingRouter = Router();
 
@@ -69,5 +70,10 @@ publicWebsiteTrackingRouter.post("/website-tracking/events", async (req, res) =>
     await tx.websiteTrackingSite.update({ where: { id: site.id }, data: { installation: "verified", lastEventAt: now, lastVerifiedAt: site.lastVerifiedAt ?? now } });
     if (activePlan) await tx.websiteMeasurementPlan.update({ where: { id: activePlan.id }, data: { dataSourcesJson: connectedSources as Prisma.InputJsonValue, trackingState: "COLLECTING_INITIAL_DATA", lastVerifiedAt: now } });
   });
+  if (activePlan?.projectId && (!site.lastVerifiedAt || activePlan.trackingState === "TRACKING_REVIEW_REQUIRED")) {
+    await activatePostLaunchGrowthLifecycle({ projectId: activePlan.projectId, launchVerified: true }).catch((error) => {
+      console.error("[website-tracking] post-launch Growth lifecycle refresh failed", error);
+    });
+  }
   res.status(202).json({ accepted: true });
 });

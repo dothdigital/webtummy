@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import {
   ensureConciseFirstSupportingOverview,
   ensurePageSpecificFirstH2,
+  isGenericWebsiteHeroHeading,
+  isGenericWebsiteSectionHeading,
   fitWebsiteAiChatRequest,
   fitWebsiteComponentsToWordBudget,
   jsonSchemaFromWebsiteShape,
@@ -26,6 +28,14 @@ import {
 } from "./websiteModel.js";
 
 describe("website generation workflow contracts", () => {
+  it("rejects welcome, company-name-only, and generic section headings", () => {
+    expect(isGenericWebsiteHeroHeading("Welcome to Example Insurance", "Example Insurance")).toBe(true);
+    expect(isGenericWebsiteHeroHeading("Example Insurance", "Example Insurance")).toBe(true);
+    expect(isGenericWebsiteHeroHeading("Super Visa Insurance Options for Families in Brampton", "Example Insurance")).toBe(false);
+    expect(isGenericWebsiteSectionHeading("Our Services")).toBe(true);
+    expect(isGenericWebsiteSectionHeading("Frequently Asked Questions")).toBe(true);
+    expect(isGenericWebsiteSectionHeading("Compare Super Visa coverage options for visiting parents")).toBe(false);
+  });
   it("compacts the exact oversized Website Builder failure class before the AI request", () => {
     const request = {
       model: "website-model",

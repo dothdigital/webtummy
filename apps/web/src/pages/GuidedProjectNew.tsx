@@ -9,6 +9,7 @@ import { canonicalPrimaryGoal, primaryGoalsForWorkspace, standardSecondaryGoals 
 import AiAssistedIntake from "../components/AiAssistedIntake.js";
 import ConversationalProjectIntake from "../components/ConversationalProjectIntake.js";
 import { geographicTargetMarkets } from "../utils/projectLocations.js";
+import AdaptiveBusinessDiscovery, { DiscoveryDraftList, type DiscoveryDraft, type DiscoveryStartPath } from "../components/AdaptiveBusinessDiscovery.js";
 
 const clientProjectTypes = [
   { value: "local_business", label: "Local Business", description: "City or service-area business that needs local rankings, maps visibility, reviews, and local pages.", projectType: "local_seo" },
@@ -104,6 +105,9 @@ export default function GuidedProjectNew() {
   const [workspaceLoaded, setWorkspaceLoaded] = useState(false);
   const [workspaceLocationDefaults, setWorkspaceLocationDefaults] = useState<{ businessLocation: string; businessLocationDetails: { country: string; stateProvince: string; city: string; streetAddress?: string; postalCode?: string } | null } | null>(null);
   const [agencyClients, setAgencyClients] = useState<{ id: string; name: string; status: string; websites: unknown; businessLocations: unknown; targetMarkets: unknown; defaultSettings: unknown }[]>([]);
+  const [discoveryDrafts, setDiscoveryDrafts] = useState<DiscoveryDraft[]>([]);
+  const [activeDiscoveryDraft, setActiveDiscoveryDraft] = useState<DiscoveryDraft | null>(null);
+  const [startingDiscovery, setStartingDiscovery] = useState(false);
   const [form, setForm] = useState({
     agencyClientId: searchParams.get("agencyClientId") ?? "",
     name: "",
@@ -248,6 +252,35 @@ export default function GuidedProjectNew() {
     })();
     return () => { cancelled = true; };
   }, [creationMode]);
+
+  useEffect(() => {
+    if (!workspaceLoaded || editProjectId || creationMode !== "choose") return;
+    void api.get<{ drafts: DiscoveryDraft[] }>("/api/discovery-drafts")
+      .then((result) => setDiscoveryDrafts(result.drafts))
+      .catch(() => setDiscoveryDrafts([]));
+  }, [workspaceLoaded, editProjectId, creationMode]);
+
+  const startDiscovery = async (startPath: DiscoveryStartPath) => {
+    if (startingDiscovery) return;
+    if (isAgency && !form.agencyClientId) {
+      setMessage("Select a client before starting Agency Business Discovery.");
+      return;
+    }
+    setStartingDiscovery(true); setMessage(null);
+    try {
+      const result = await api.post<{ draft: DiscoveryDraft }>("/api/discovery-drafts", { startPath, agencyClientId: isAgency ? form.agencyClientId : null });
+      setActiveDiscoveryDraft(result.draft);
+    } catch (error) { setMessage(error instanceof Error ? error.message : "Discovery Draft could not be created."); }
+    finally { setStartingDiscovery(false); }
+  };
+
+  const deleteDiscoveryDraft = async (draft: DiscoveryDraft) => {
+    if (!window.confirm(`Delete “${draft.title}”? This removes its saved answers and ideas.`)) return;
+    try {
+      await api.delete(`/api/discovery-drafts/${draft.id}`);
+      setDiscoveryDrafts((items) => items.filter((item) => item.id !== draft.id));
+    } catch (error) { setMessage(error instanceof Error ? error.message : "Discovery Draft could not be deleted."); }
+  };
 
   useEffect(() => {
     const loadProjectId = editProjectId || resumeConversationId;
@@ -441,6 +474,8 @@ export default function GuidedProjectNew() {
 
   if (!workspaceLoaded) return <Card className="p-8 text-center text-sm text-slate-500">Loading project setup…</Card>;
 
+  if (activeDiscoveryDraft) return <AdaptiveBusinessDiscovery draft={activeDiscoveryDraft} isAgency={isAgency} clients={agencyClients} onBack={() => { setActiveDiscoveryDraft(null); setCreationMode("choose"); }} />;
+
   if (isAgency && agencyClients.length === 0) return (
     <div className="space-y-5">
       <div className="text-sm font-semibold text-brand-700"><Link to="/projects">‹ Projects</Link> <span className="mx-2 text-slate-300">›</span> Create New Project</div>
@@ -456,14 +491,17 @@ export default function GuidedProjectNew() {
   if (!editProjectId && creationMode === "choose") return <div className="space-y-6">
     <div className="text-sm font-semibold text-brand-700"><Link to="/projects">‹ Projects</Link><span className="mx-2 text-slate-300">›</span>Create Project</div>
     <section className="relative overflow-hidden rounded-[28px] bg-slate-950 px-6 py-10 text-white shadow-2xl sm:px-10 sm:py-12"><div className="absolute inset-0 bg-[radial-gradient(circle_at_15%_15%,rgba(52,211,153,.2),transparent_34%),radial-gradient(circle_at_85%_20%,rgba(139,92,246,.2),transparent_32%)]" /><div className="relative max-w-4xl"><div className="text-xs font-black uppercase tracking-[0.22em] text-emerald-300">Start a new project</div><h1 className="mt-4 text-3xl font-black leading-tight sm:text-5xl">Choose how you want to begin</h1><p className="mt-4 max-w-3xl text-sm leading-7 text-slate-300 sm:text-base">If you are new, describe the idea in your own words and let SEnuke AI turn it into a researched project direction. If you already know the details, use the structured setup.</p></div></section>
-    <div className="grid gap-5 md:grid-cols-2">
+    {message && <Card className="border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">{message}</Card>}
+    {isAgency && <Card className="p-5"><label className="block"><span className="mb-1 block text-sm font-black text-slate-950">Client *</span><select value={form.agencyClientId} onChange={(event) => patch({ agencyClientId: event.target.value })} className="h-11 w-full rounded-xl border bg-white px-3 text-sm"><option value="">Select the client that owns this discovery</option>{agencyClients.map((client) => <option key={client.id} value={client.id}>{client.name}</option>)}</select><span className="mt-1 block text-xs text-slate-500">Known client information can be reused, but the Discovery Draft will not count as a client Project.</span></label></Card>}
+    <div className="grid gap-5 md:grid-cols-3">
       {[
-        { key:"new_website", icon:"✦", badge:"Recommended for a new launch", title:"Create a new website", detail:"Start with a domain and business information. SEnuke builds the Business Brain, researches the opportunity, market and keywords, creates Website and Unified Strategy, then generates the approved website.", points:["No website crawl is required before Strategy","Website Intelligence baseline starts automatically after publishing"], tone:"border-emerald-300 bg-gradient-to-br from-emerald-50 via-white to-cyan-50", iconTone:"bg-slate-950 text-white" },
-        { key:"existing_growth", icon:"↗", badge:"Live website", title:"Improve an existing website", detail:"Provide the current website and goals. SEnuke collects keyword and crawl evidence, finds the gaps, creates the Unified Strategy, and prepares controlled website updates.", points:["Website Intelligence and Gap Analysis before Strategy","Existing pages are preserved and updated selectively"], tone:"border-cyan-200 bg-gradient-to-br from-cyan-50 via-white to-blue-50", iconTone:"bg-cyan-700 text-white" },
-        { key:"research_only", icon:"⌕", badge:"Explore before committing", title:"Research a business idea", detail:"Have an open AI discussion about a market, audience, offer, geography, competitors, risks, and opportunities. Review the research proposal before deciding whether to create a project.", points:["No project is created until approval","Approved research can become a project without re-entering it"], tone:"border-violet-200 bg-gradient-to-br from-violet-50 via-white to-fuchsia-50", iconTone:"bg-violet-700 text-white" },
-      ].map((option)=><button key={option.key} type="button" onClick={()=>openAiCreation(option.key)} className={`group rounded-[24px] border-2 p-7 text-left shadow-sm transition hover:-translate-y-1 hover:shadow-xl sm:p-8 ${option.tone}`}><div className="flex items-start justify-between gap-4"><span className={`grid h-14 w-14 place-items-center rounded-2xl text-2xl shadow-lg ${option.iconTone}`}>{option.icon}</span><span className="rounded-full bg-white/90 px-3 py-1.5 text-[10px] font-black uppercase tracking-wide text-slate-600 shadow-sm">{option.badge}</span></div><h2 className="mt-6 text-2xl font-black text-slate-950">{option.title}</h2><p className="mt-2 text-sm leading-7 text-slate-600">{option.detail}</p><div className="mt-5 space-y-2">{option.points.map((item)=><div key={item} className="flex items-start gap-3 text-xs font-bold leading-5 text-slate-700"><span className="mt-0.5 grid h-5 w-5 shrink-0 place-items-center rounded-full bg-white text-[10px] text-emerald-700">✓</span>{item}</div>)}</div><div className="mt-7 flex items-center justify-between border-t border-slate-200/80 pt-5"><span className="text-xs font-bold text-slate-500">AI-guided project path</span><span className="text-sm font-black text-slate-950 transition group-hover:translate-x-1">Continue →</span></div></button>)}
-      <button type="button" onClick={() => rememberCreationMode("classic", "detailed_setup")} className="group rounded-[24px] border-2 border-slate-200 bg-white p-7 text-left shadow-sm transition hover:-translate-y-1 hover:border-brand-300 hover:shadow-xl sm:p-8"><div className="flex items-start justify-between gap-4"><span className="grid h-14 w-14 place-items-center rounded-2xl bg-brand-50 text-2xl text-brand-700">▦</span><span className="rounded-full bg-slate-100 px-3 py-1.5 text-[10px] font-black uppercase tracking-wide text-slate-600">Advanced control</span></div><h2 className="mt-6 text-2xl font-black text-slate-950">Detailed project setup</h2><p className="mt-2 text-sm leading-7 text-slate-600">Enter the business type, website situation, locations, goals, deliverables, client ownership, and advanced preferences directly.</p><div className="mt-5 space-y-2">{["Best for agencies and experienced users","The same workflow rules still apply"].map((item)=><div key={item} className="flex items-start gap-3 text-xs font-bold leading-5 text-slate-700"><span className="mt-0.5 grid h-5 w-5 shrink-0 place-items-center rounded-full bg-brand-50 text-[10px] text-brand-700">✓</span>{item}</div>)}</div><div className="mt-7 flex items-center justify-between border-t pt-5"><span className="text-xs font-bold text-slate-500">Structured project setup</span><span className="text-sm font-black text-slate-950 transition group-hover:translate-x-1">Open setup →</span></div></button>
+        { key:"EXISTING_BUSINESS" as const, icon:"↗", badge:"Already operating", title:"I have an existing business", detail:"Describe the business or provide an optional website, store or profile. Receive a concise understanding and the best practical directions.", points:["Known facts are reused","Location is asked only when relevant"], tone:"border-cyan-200 bg-gradient-to-br from-cyan-50 via-white to-blue-50", iconTone:"bg-cyan-700 text-white" },
+        { key:"IDEA_TO_EXPLORE" as const, icon:"⌕", badge:"Explore first", title:"I have an idea to explore", detail:"Refine an incomplete idea, audience, revenue model and first validation step before deciding whether to create a project.", points:["Autosaved Pre-Project Brief","No Project until Use This Idea"], tone:"border-violet-200 bg-gradient-to-br from-violet-50 via-white to-fuchsia-50", iconTone:"bg-violet-700 text-white" },
+        { key:"SKILLS_FIRST" as const, icon:"✦", badge:"Help me decide", title:"I do not know what to start", detail:"Start with your skills, knowledge, interests and constraints. Compare three to five realistic opportunity ideas.", points:["No business details required","Save, shortlist or reject ideas"], tone:"border-emerald-300 bg-gradient-to-br from-emerald-50 via-white to-cyan-50", iconTone:"bg-slate-950 text-white" },
+      ].map((option)=><button key={option.key} type="button" disabled={startingDiscovery || (isAgency && !form.agencyClientId)} onClick={()=>void startDiscovery(option.key)} className={`group rounded-[24px] border-2 p-7 text-left shadow-sm transition hover:-translate-y-1 hover:shadow-xl disabled:cursor-not-allowed disabled:opacity-50 sm:p-8 ${option.tone}`}><div className="flex items-start justify-between gap-4"><span className={`grid h-14 w-14 place-items-center rounded-2xl text-2xl shadow-lg ${option.iconTone}`}>{option.icon}</span><span className="rounded-full bg-white/90 px-3 py-1.5 text-[10px] font-black uppercase tracking-wide text-slate-600 shadow-sm">{option.badge}</span></div><h2 className="mt-6 text-2xl font-black text-slate-950">{option.title}</h2><p className="mt-2 text-sm leading-7 text-slate-600">{option.detail}</p><div className="mt-5 space-y-2">{option.points.map((item)=><div key={item} className="flex items-start gap-3 text-xs font-bold leading-5 text-slate-700"><span className="mt-0.5 grid h-5 w-5 shrink-0 place-items-center rounded-full bg-white text-[10px] text-emerald-700">✓</span>{item}</div>)}</div><div className="mt-7 flex items-center justify-between border-t border-slate-200/80 pt-5"><span className="text-xs font-bold text-slate-500">Business Discovery</span><span className="text-sm font-black text-slate-950 transition group-hover:translate-x-1">{startingDiscovery ? "Starting…" : "Continue →"}</span></div></button>)}
     </div>
+    <DiscoveryDraftList drafts={discoveryDrafts} onResume={(draft) => setActiveDiscoveryDraft(draft)} onDelete={(draft) => void deleteDiscoveryDraft(draft)} />
+    <Card className="p-4 text-center"><button type="button" onClick={() => rememberCreationMode("classic", "detailed_setup")} className="text-xs font-black text-brand-700">I already know every project detail · Open Detailed Project Setup →</button></Card>
     <Card className="border-slate-200 bg-slate-50 p-4 text-center text-xs leading-5 text-slate-600">The selected path controls the intake and valid next action. Every path still produces one governed Business Brain and preserves approved research.</Card>
   </div>;
 

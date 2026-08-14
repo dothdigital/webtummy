@@ -1039,7 +1039,9 @@ export default function ExecutionModule({ kind }: { kind: ModuleKind }) {
   else if (kind !== "site-architect" && kind !== "keywords" && !(kind === "site-analysis" && !latestSiteCrawl)) headerActions.push({ key: "primary", label: primaryLabel, disabled: primaryDisabled, onClick: runHeaderPrimaryAction });
 
   return (
-    <div className="space-y-5">
+    <div className={kind === "keywords"
+      ? "-m-4 min-h-[calc(100vh-4rem)] space-y-5 bg-gradient-to-br from-cyan-50 via-[#f7fbff] to-blue-50 p-4 lg:-m-8 lg:min-h-screen lg:p-8"
+      : "space-y-5"}>
       {kind === "strategy" && strategyBusy === "generate" && <StrategyCookingOverlay job={strategyJob} />}
       {kind === "strategy" && strategyBusy === "execution" && <ExecutionPlanCookingOverlay />}
       <ProjectModuleHeader eyebrow={copy.title} title={moduleTitle} subtitle={copy.subtitle} project={hasActiveProject ? activeProject : null} projects={data.projects} tasks={scopedData.tasks} notifications={scopedData.notifications} onProjectChange={changeProject} actions={headerActions} showExecution={kind !== "keywords" && kind !== "site-analysis"} />

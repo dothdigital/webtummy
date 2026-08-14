@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   emptyHostingHandoff,
+  hostingHandoffDraftChanged,
   hostingHandoffMissing,
   hostingHandoffReady,
 } from "./hostingHandoffState.js";
@@ -43,5 +44,15 @@ describe("hosting handoff readiness", () => {
       },
     };
     expect(hostingHandoffReady(draft)).toBe(true);
+  });
+
+  it("does not treat the same saved destination as an update", () => {
+    const saved = {
+      ...emptyHostingHandoff(),
+      destination: "wordpress" as const,
+      accessMethod: "wordpress" as const,
+    };
+    expect(hostingHandoffDraftChanged({ ...saved }, saved)).toBe(false);
+    expect(hostingHandoffDraftChanged({ ...saved, destination: "developer_handoff" }, saved)).toBe(true);
   });
 });

@@ -122,6 +122,27 @@ describe("website launch readiness", () => {
     expect(result.checks.find((check) => check.key === "unique_metadata")?.status).toBe("blocking");
   });
 
+  it("keeps high-priority copy recommendations visible without locking publication", () => {
+    const recommendationOnly: WebsiteModel = {
+      ...validModel,
+      pages: [{
+        ...validModel.pages[0],
+        sections: validModel.pages[0].sections.map((section) => section.instanceId === "overview-1"
+          ? { ...section, props: { ...section.props, heading: "Our Services" } }
+          : section),
+      }],
+    };
+    const result = evaluateWebsiteLaunchReadiness(recommendationOnly, {
+      approvedReleaseId: "release-recommendations",
+      snapshotHash: "recommendations-snapshot",
+    });
+
+    expect(result.qualityGate.counts.high).toBeGreaterThan(0);
+    expect(result.qualityGate.status).toBe("needs_review");
+    expect(result.checks.find((check) => check.key === "quality_governance")?.status).toBe("warning");
+    expect(result.blockingCount).toBe(0);
+  });
+
   it("reports large generated media without blocking its own release", () => {
     const generatedMedia: WebsiteModel = {
       ...validModel,

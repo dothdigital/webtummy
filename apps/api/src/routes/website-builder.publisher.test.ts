@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { SENUKE_COMPONENT_REGISTRY_V1 } from "@webtummy/core/website-model";
-import { canonicalComponents, combinedPageSchema, compactWebsiteBuilderMediaAsset, compactWebsiteBuilderOverviewPage, effectiveExistingPageRequirements, generatedPageSchema, importedWebsiteRouteAssignment, logoPaletteAiPrompt, logoPalettePromptBrand, pageIsImportedExistingWebsite, parseWordPressJsonResponse, productionWebsiteUrl, publishingAssetMatchesWebsitePage, replaceWebsitePublicStatements, shouldDeployWordPressDesignPackage, websiteReleaseDeploymentScope, websiteSettingsWithVerifiedLocalEvidence, wordPressConnectorVersionAtLeast, wordpressConnectorSafeCss, wordpressMenuDestination, wordpressPageWritePayload, wordpressRemotePageIds } from "./website-builder.js";
+import { canonicalComponents, combinedPageSchema, compactWebsiteBuilderMediaAsset, compactWebsiteBuilderOverviewPage, effectiveExistingPageRequirements, generatedPageSchema, hasReleaseScopedDraftUrl, importedWebsiteRouteAssignment, logoPaletteAiPrompt, logoPalettePromptBrand, pageIsImportedExistingWebsite, parseWordPressJsonResponse, productionWebsiteUrl, publishingAssetMatchesWebsitePage, replaceWebsitePublicStatements, shouldDeployWordPressDesignPackage, websitePublicationPageMappings, websiteReleaseComparisonModel, websiteReleaseDeploymentScope, websiteSettingsWithVerifiedLocalEvidence, wordPressConnectorVersionAtLeast, wordpressConnectorSafeCss, wordpressMenuDestination, wordpressPageWritePayload, wordpressRemotePageIds } from "./website-builder.js";
 
 const project = {
   businessName: "Example Financial",
@@ -46,6 +46,28 @@ describe("ongoing WordPress publishing schema", () => {
     const previous = releaseModel();
     const current = releaseModel({ navigation: [{ pageId: "about", label: "About", url: "/about" }, { pageId: "home", label: "Home", url: "/" }] });
     expect(websiteReleaseDeploymentScope(current, previous)).toMatchObject({ mode: "full", pageIds: ["home", "about"], globalChanges: ["Navigation"] });
+  });
+
+  it("uses a structurally intact historical release as a comparison baseline without reapplying newer editorial rules", () => {
+    const historical = releaseModel();
+    expect(websiteReleaseComparisonModel({ immutableSnapshot: historical })).toBe(historical);
+    expect(websiteReleaseComparisonModel({ immutableSnapshot: { pages: [] } as never })).toBeNull();
+  });
+
+  it("reads stored publication page mappings without relying on browser helpers", () => {
+    expect(websitePublicationPageMappings({ pages: [{ pageId: "home", remoteUrl: "https://example.test/" }] })).toEqual([
+      { pageId: "home", remoteUrl: "https://example.test/" },
+    ]);
+    expect(websitePublicationPageMappings({ pages: "invalid" })).toEqual([]);
+  });
+
+  it("checks only URL paths for leaked release-scoped WordPress draft slugs", () => {
+    expect(hasReleaseScopedDraftUrl([
+      "https://example.com/wp-content/themes/example/style.css?ver=1",
+      "https://example.com/about/",
+    ])).toBe(false);
+    expect(hasReleaseScopedDraftUrl(["https://example.com/about-senuke-a1b2c3/"])).toBe(true);
+    expect(hasReleaseScopedDraftUrl(["senuke-ai-approved-release-inline-css"])).toBe(false);
   });
 
   it("derives a production website from a domain-shaped project name", () => {

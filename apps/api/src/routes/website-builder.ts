@@ -43,6 +43,8 @@ import { cleanGeographicTargetMarkets, projectAnalysisLocationLabels } from "../
 import {
   ensureConciseFirstSupportingOverview,
   ensurePageSpecificFirstH2,
+  isGenericWebsiteHeroHeading,
+  isGenericWebsiteSectionHeading,
   compactWebsiteAiPrompt,
   fitWebsiteComponentsToWordBudget,
   websiteContentBatchPageMode,
@@ -71,6 +73,7 @@ import { websiteBuilderQueue } from "../queue.js";
 import { staticWebsiteFormAction } from "./website-public-forms.js";
 import { deployStaticFilesOverSftp } from "../static-sftp-deployment.js";
 import { canAccessProject, hasWorkspacePermission, recordWorkspaceActivity, workspaceContext } from "../workspace-access.js";
+import { activatePostLaunchGrowthLifecycle, postLaunchBaselineStatus } from "../post-launch-growth.js";
 import { commitUsage, preflightUsage, refundUsage } from "../usage-engine.js";
 import { refundWebsiteJobUsage, reserveWebsiteJobUsage } from "../website-job-usage.js";
 import { isPreLaunchWebsiteCampaign } from "../campaign-intelligence.js";
@@ -286,7 +289,7 @@ function configuredContactForm(
     componentVersion: "1.0.0",
     variant: "split",
     props: {
-      heading: String(form.heading || "Tell us how we can help").slice(0, 100),
+      heading: String(form.heading || `Discuss your ${page.primaryKeyword} requirements`).slice(0, 100),
       introduction: String(form.introduction || `Send your enquiry to ${businessName}. The team will respond using the contact details you provide.`).slice(0, 280),
       formId: String(form.key || form.formId || "primary-contact").slice(0, 80),
       fields: fields.length ? fields.slice(0, 10) : ["Name", "Email", "Phone", "Message", "Consent"].map(websiteFormField),
@@ -1379,6 +1382,8 @@ async function scopedProject(projectId: string, req: Parameters<typeof workspace
       website: { include: { trackingSite: true, measurementPlans: { where: { active: true }, orderBy: { version: "desc" }, take: 1 } } },
       businessProfile: true,
       strategyPlans: { where: { status: "approved" }, orderBy: { version: "desc" }, take: 1 },
+      growthBlueprint: { include: { versions: { orderBy: { version: "desc" }, take: 1 } } },
+      nextBestActions: { where: { status: { in: ["proposed", "recommended", "selected", "approved", "accepted", "in_progress"] } }, orderBy: [{ selectedAt: "desc" }, { priorityScore: "desc" }, { createdAt: "desc" }], take: 1, include: { followupTask: { select: { id: true, title: true, status: true, relatedUrl: true } } } },
       keywordGroups: { where: { status: "approved" } },
       siteArchitectureVersions: {
         where: { status: "approved" },
@@ -1410,7 +1415,7 @@ async function scopedProject(projectId: string, req: Parameters<typeof workspace
               errorMessage: true,
               createdAt: true,
               completedAt: true,
-              qaResults: { select: { id: true, liveUrl: true, score: true, status: true } },
+              qaResults: { select: { id: true, liveUrl: true, score: true, status: true, checksJson: true } },
             },
           },
         },
@@ -1565,6 +1570,8 @@ async function scopedOverviewProject(projectId: string, req: Parameters<typeof w
       },
       businessProfile: true,
       strategyPlans: { where: { status: "approved" }, orderBy: { version: "desc" }, take: 1 },
+      growthBlueprint: { include: { versions: { orderBy: { version: "desc" }, take: 1 } } },
+      nextBestActions: { where: { status: { in: ["proposed", "recommended", "selected", "approved", "accepted", "in_progress"] } }, orderBy: [{ selectedAt: "desc" }, { priorityScore: "desc" }, { createdAt: "desc" }], take: 1, include: { followupTask: { select: { id: true, title: true, status: true, relatedUrl: true } } } },
       keywordGroups: { where: { status: "approved" } },
       siteArchitectureVersions: { where: { status: "approved" }, orderBy: { version: "desc" }, take: 1, include: { pages: { orderBy: { sortOrder: "asc" } }, links: true } },
       executionTasks: { orderBy: { updatedAt: "desc" }, take: 100 },
@@ -1586,7 +1593,7 @@ async function scopedOverviewProject(projectId: string, req: Parameters<typeof w
             take: 10,
             select: { id: true, buildId: true, projectId: true, clientId: true, workspaceId: true, requestedByUserId: true, approvalTaskId: true, usageEventId: true, status: true, stage: true, progress: true, errorMessage: true, attempts: true, queuedAt: true, startedAt: true, completedAt: true, createdAt: true, updatedAt: true },
           },
-          deployments: { orderBy: { createdAt: "desc" }, take: 10, select: { id: true, wordpressIntegrationId: true, mode: true, status: true, errorMessage: true, createdAt: true, completedAt: true, qaResults: { select: { id: true, liveUrl: true, score: true, status: true } } } },
+          deployments: { orderBy: { createdAt: "desc" }, take: 10, select: { id: true, wordpressIntegrationId: true, mode: true, status: true, errorMessage: true, createdAt: true, completedAt: true, qaResults: { select: { id: true, liveUrl: true, score: true, status: true, checksJson: true } } } },
         },
       },
       websiteModelVersions: activeModelId
@@ -2174,6 +2181,11 @@ export function builderView(project: Awaited<ReturnType<typeof scopedProject>>["
     && savedLaunchReadiness.snapshotHash === latestRelease.snapshotHash
     ? savedLaunchReadiness
     : null;
+  const livePublication = project.websitePublications.find((publication) => ["published", "completed"].includes(publication.status) && publication.publishedAt) ?? null;
+  const activeMeasurementPlan = project.website?.measurementPlans[0] ?? null;
+  const postLaunchBaseline = postLaunchBaselineStatus({ publishedAt: livePublication?.publishedAt ?? null, trackingVerifiedAt: project.website?.trackingSite?.lastVerifiedAt ?? null, evaluationWindowDays: activeMeasurementPlan?.evaluationWindowDays ?? 28 });
+  const growthBlueprint = project.growthBlueprint;
+  const nextBestAction = project.nextBestActions[0] ?? null;
   return {
     project: { id: project.id, name: project.name, businessName: businessContext.businessName, websiteUrl: project.websiteUrl, websiteStatus: project.websiteStatus, projectType: project.projectType, brandVoice: project.brandVoice, industry: businessContext.industry || project.niche, audience: businessContext.audience || null, offer: businessContext.coreBusinessValue || null, services: businessContext.primaryServices, businessSummary: businessContext.brandDescription || null, primaryGoal: project.primaryGoal, targetLocations: targetLocationStrings(project.targetLocations), preferredPublishingMethod: project.preferredPublishingMethod },
     measurement: project.website ? {
@@ -2186,6 +2198,15 @@ export function builderView(project: Awaited<ReturnType<typeof scopedProject>>["
       lastVerifiedAt: project.website.trackingSite?.lastVerifiedAt ?? null,
       trackingState: project.website.measurementPlans[0]?.trackingState ?? "CONNECTION_REQUIRED",
       planVersion: project.website.measurementPlans[0]?.version ?? null,
+    } : null,
+    postLaunch: livePublication ? {
+      status: "website_live",
+      releaseId: livePublication.releaseId,
+      publishedAt: livePublication.publishedAt,
+      tracking: { verified: Boolean(project.website?.trackingSite?.lastVerifiedAt), state: activeMeasurementPlan?.trackingState ?? "CONNECTION_REQUIRED" },
+      baseline: postLaunchBaseline,
+      growthBlueprint: growthBlueprint ? { id: growthBlueprint.id, title: growthBlueprint.title, status: growthBlueprint.status, currentVersion: growthBlueprint.currentVersion, approvedStrategyId: growthBlueprint.approvedStrategyId, nextReviewAt: growthBlueprint.nextReviewAt } : null,
+      nextBestAction: nextBestAction ? { id: nextBestAction.id, title: nextBestAction.title, recommendation: nextBestAction.recommendation, expectedImpact: nextBestAction.expectedImpact, status: nextBestAction.status, route: nextBestAction.route, priorityScore: nextBestAction.priorityScore, followupTask: nextBestAction.followupTask } : null,
     } : null,
     build: buildWithQuality ? { ...buildWithQuality, generationCheckpoints: undefined } : null,
     contentWorkspace,
@@ -2534,6 +2555,8 @@ function publishingArticleComponents(
 ) {
   const key = slugify(page.title);
   const cta = (page.targetCta || "Request a consultation").slice(0, 40);
+  const requestedHeadline = String(result.title || page.title).trim();
+  const heroHeadline = isGenericWebsiteHeroHeading(requestedHeadline, business) ? page.primaryKeyword : requestedHeadline;
   const policy = websitePageCompositionPolicy(page);
   const selectedPolicyComponents = new Set([...policy.requiredComponentIds, ...policy.recommendedComponentIds]);
   const metaDescription = String(result.metaDescription || "").trim();
@@ -2548,7 +2571,7 @@ function publishingArticleComponents(
       variant: "split",
       props: {
         eyebrow: page.primaryKeyword.slice(0, 80),
-        headline: String(result.title || page.title).slice(0, 90),
+        headline: heroHeadline.slice(0, 90),
         summary: (metaDescription || `${business} provides clear guidance about ${page.primaryKeyword} and the next step.`).slice(0, 240),
         primaryCtaLabel: cta,
         primaryCtaUrl: "/contact/",
@@ -2599,7 +2622,7 @@ function publishingArticleComponents(
       componentVersion: "1.0.0",
       variant: "accordion",
       props: {
-        heading: "Frequently asked questions",
+        heading: `Questions buyers ask about ${page.primaryKeyword}`.slice(0, 100),
         items: (faqs.length ? faqs : [
           { question: `What should I consider when reviewing ${page.primaryKeyword}?`, answer: "Start with your needs, priorities, eligibility or fit, available options, delivery process, supporting evidence, and the next step you would be expected to take." },
           { question: `How do I know whether ${page.primaryKeyword} is suitable?`, answer: "Suitability depends on the approved requirements and the visitor’s circumstances. Review the relevant facts and ask for clarification before making a decision." },
@@ -2613,7 +2636,7 @@ function publishingArticleComponents(
       componentVersion: "1.0.0",
       variant: "split",
       props: {
-        heading: "Tell us how we can help",
+        heading: `Discuss your ${page.primaryKeyword} requirements`.slice(0, 100),
         introduction: `Share your questions about ${page.primaryKeyword}. ${business} will respond using the verified contact details supplied with this website.`,
         formId: "primary-contact",
         fields: [
@@ -3514,16 +3537,16 @@ export function combinedPageSchema(page: Parameters<typeof serviceSchema>[0], pr
 function registeredPageComponents(page: { title: string; pageType?: string; searchIntent?: string; primaryKeyword: string; targetCta: string | null }, business: string): WebsiteComponentInstance[] {
   const cta = (page.targetCta || "Request a consultation").slice(0, 40);
   const all: WebsiteComponentInstance[] = [
-    { instanceId: `${slugify(page.title)}-hero`, componentId: "hero.local_service", componentVersion: "1.0.0", variant: "split", props: { eyebrow: page.primaryKeyword, headline: page.title, summary: `${business} helps visitors understand ${page.primaryKeyword}, compare the available approach, and choose an appropriate next step.`, primaryCtaLabel: cta, primaryCtaUrl: "/contact/" } },
+    { instanceId: `${slugify(page.title)}-hero`, componentId: "hero.local_service", componentVersion: "1.0.0", variant: "split", props: { eyebrow: page.primaryKeyword, headline: isGenericWebsiteHeroHeading(page.title, business) ? `${page.primaryKeyword}: options and next steps` : page.title, summary: `Understand how ${page.primaryKeyword} addresses the buyer's need, compare the approved approach, and choose an appropriate next step with ${business}.`, primaryCtaLabel: cta, primaryCtaUrl: "/contact/" } },
     { instanceId: `${slugify(page.title)}-overview`, componentId: "content.rich_text", componentVersion: "1.0.0", variant: "answer_first", props: { heading: websiteFirstSupportingHeading({ pageTitle: page.title, pageType: page.pageType, primaryKeyword: page.primaryKeyword, businessName: business }), body: "Understand the requirements, priorities, and desired outcome before selecting the appropriate service." } },
     { instanceId: `${slugify(page.title)}-services`, componentId: "service.grid", componentVersion: "1.0.0", variant: "three_column", props: { heading: `Understanding ${page.primaryKeyword}`.slice(0, 100), introduction: "Explain the relevant options, scope, eligibility or fit, and how a visitor can compare them.", items: [{ title: "Relevant option", description: "Provide useful, page-specific detail grounded in approved evidence." }, { title: "How it differs", description: "Explain when this option may be relevant and what a buyer should compare." }, { title: "What to prepare", description: "Help the visitor understand information, documents, timing, and next steps." }] } },
-    { instanceId: `${slugify(page.title)}-benefits`, componentId: "service.benefits", componentVersion: "1.0.0", variant: "checklist", props: { heading: "What a suitable solution should help you achieve", items: [{ title: "Clear fit", description: "Understand how the option relates to the visitor's needs." }, { title: "Informed comparison", description: "Review meaningful differences before taking action." }, { title: "Practical next step", description: "Know what to prepare and what happens next." }] } },
-    { instanceId: `${slugify(page.title)}-process`, componentId: "content.process", componentVersion: "1.0.0", variant: "steps", props: { heading: "How the process works", steps: [{ title: "Understand the requirement", description: "Confirm the need and desired result." }, { title: "Review the options", description: "Compare the suitable service and delivery approach." }, { title: "Take the next step", description: "Continue with a clear recommendation." }] } },
+    { instanceId: `${slugify(page.title)}-benefits`, componentId: "service.benefits", componentVersion: "1.0.0", variant: "checklist", props: { heading: `What ${page.primaryKeyword} should help buyers achieve`.slice(0, 100), items: [{ title: "Clear fit", description: "Understand how the option relates to the visitor's needs." }, { title: "Informed comparison", description: "Review meaningful differences before taking action." }, { title: "Practical next step", description: "Know what to prepare and what happens next." }] } },
+    { instanceId: `${slugify(page.title)}-process`, componentId: "content.process", componentVersion: "1.0.0", variant: "steps", props: { heading: `How to evaluate and start ${page.primaryKeyword}`.slice(0, 100), steps: [{ title: "Understand the requirement", description: "Confirm the need and desired result." }, { title: "Review the options", description: "Compare the suitable service and delivery approach." }, { title: "Take the next step", description: "Continue with a clear recommendation." }] } },
     { instanceId: `${slugify(page.title)}-guidance`, componentId: "content.rich_text", componentVersion: "1.0.0", variant: "standard", props: { heading: `What to consider before choosing ${page.primaryKeyword}`.slice(0, 100), body: "Explain cost factors, eligibility or fit, alternatives, documentation, timing, common mistakes, and useful questions to ask." } },
-    { instanceId: `${slugify(page.title)}-proof`, componentId: "trust.proof", componentVersion: "1.0.0", variant: "credentials", props: { heading: "Evidence and trust", introduction: "Use only approved credentials, reviews, and outcomes supplied by the business.", items: [{ title: "Verified evidence", description: "Add approved project-specific proof before publication." }] } },
-    { instanceId: `${slugify(page.title)}-faq`, componentId: "content.faq", componentVersion: "1.0.0", variant: "accordion", props: { heading: "Frequently asked questions", items: [{ question: `What does ${page.primaryKeyword} include?`, answer: "The final scope depends on the approved requirements and selected service." }, { question: "How do I get started?", answer: "Begin with a consultation to confirm fit and next steps." }, { question: `How do I compare ${page.primaryKeyword} options?`, answer: "Compare the relevant scope, fit, process, support, and approved cost factors before choosing an option." }, { question: "What information should I prepare?", answer: "Prepare your goals, priorities, constraints, questions, and the details needed to confirm a suitable next step." }] } },
-    { instanceId: `${slugify(page.title)}-contact-form`, componentId: "conversion.contact_form", componentVersion: "1.0.0", variant: "split", props: { heading: "Tell us how we can help", introduction: `Share your questions about ${page.primaryKeyword}. ${business} will respond using the verified contact details supplied with this website.`, formId: "primary-contact", fields: [{ label: "Name", name: "name", inputType: "text", required: true }, { label: "Email", name: "email", inputType: "email", required: true }, { label: "Phone", name: "phone", inputType: "tel", required: false }, { label: "How can we help?", name: "message", inputType: "textarea", required: true }, { label: "I agree to be contacted about this enquiry.", name: "consent", inputType: "checkbox", required: true }], submitLabel: "Send enquiry", successMessage: "Thank you. Your enquiry has been received and the team will follow up using the contact details you provided." } },
-    { instanceId: `${slugify(page.title)}-cta`, componentId: "conversion.cta", componentVersion: "1.0.0", variant: "banner", props: { heading: "Ready to discuss your requirements?", body: "Share what you are trying to achieve and receive a practical recommendation.", buttonLabel: cta, buttonUrl: "/contact/" } },
+    { instanceId: `${slugify(page.title)}-proof`, componentId: "trust.proof", componentVersion: "1.0.0", variant: "credentials", props: { heading: `What to verify when choosing ${page.primaryKeyword}`.slice(0, 100), introduction: "Use only approved credentials, reviews, and outcomes supplied by the business.", items: [{ title: "Verified evidence", description: "Add approved project-specific proof before publication." }] } },
+    { instanceId: `${slugify(page.title)}-faq`, componentId: "content.faq", componentVersion: "1.0.0", variant: "accordion", props: { heading: `Questions buyers ask about ${page.primaryKeyword}`.slice(0, 100), items: [{ question: `What does ${page.primaryKeyword} include?`, answer: "The final scope depends on the approved requirements and selected service." }, { question: "How do I get started?", answer: "Begin with a consultation to confirm fit and next steps." }, { question: `How do I compare ${page.primaryKeyword} options?`, answer: "Compare the relevant scope, fit, process, support, and approved cost factors before choosing an option." }, { question: "What information should I prepare?", answer: "Prepare your goals, priorities, constraints, questions, and the details needed to confirm a suitable next step." }] } },
+    { instanceId: `${slugify(page.title)}-contact-form`, componentId: "conversion.contact_form", componentVersion: "1.0.0", variant: "split", props: { heading: `Discuss your ${page.primaryKeyword} requirements`.slice(0, 100), introduction: `Share your questions about ${page.primaryKeyword}. ${business} will respond using the verified contact details supplied with this website.`, formId: "primary-contact", fields: [{ label: "Name", name: "name", inputType: "text", required: true }, { label: "Email", name: "email", inputType: "email", required: true }, { label: "Phone", name: "phone", inputType: "tel", required: false }, { label: "How can we help?", name: "message", inputType: "textarea", required: true }, { label: "I agree to be contacted about this enquiry.", name: "consent", inputType: "checkbox", required: true }], submitLabel: "Send enquiry", successMessage: "Thank you. Your enquiry has been received and the team will follow up using the contact details you provided." } },
+    { instanceId: `${slugify(page.title)}-cta`, componentId: "conversion.cta", componentVersion: "1.0.0", variant: "banner", props: { heading: `Take the next step with ${page.primaryKeyword}`.slice(0, 100), body: "Share what you are trying to achieve and receive a practical recommendation.", buttonLabel: cta, buttonUrl: "/contact/" } },
   ];
   const policy = websitePageCompositionPolicy(page);
   const selectedIds = [...policy.requiredComponentIds, ...policy.recommendedComponentIds];
@@ -3739,7 +3762,7 @@ async function generatePage(page: { title: string; pageType: string; primaryKeyw
     const rewriteContract = options.forceRewrite
       ? `\nMANDATORY SAVED-PAGE REVISION:\n- This is a revision of an existing saved page, not first-time generation.\n- Current saved content: ${JSON.stringify({ content: page.contentJson, seo: page.seoJson ?? {} })}\n- Requested revision scope: ${options.revisionScope?.join(" | ") || comment || "General evidence-preserving improvement"}.\n- Return a genuinely changed review version. Do not return the current copy unchanged or make only cosmetic punctuation changes.\n- Preserve approved facts, URL, keyword ownership, intent, safeguards, and useful evidence; rewrite the visible sections needed to satisfy the requested scope.\n- If complete-page recreation was requested, substantially rewrite every visible section while preserving verified facts.\n- The API compares the new registered content with the saved version and rejects an unchanged or trivially changed result.`
       : "";
-    const basePrompt = `Generate one complete website page as structured JSON with keys brief, content, seo matching this registered page blueprint. Rewrite every sample content value with original page-specific content: ${JSON.stringify(fallback)}${rewriteContract}\nActive Component Registry: ${JSON.stringify(SENUKE_COMPONENT_REGISTRY_V1)}\nPage composition policy: ${JSON.stringify(composition)}\nShared approved Strategy contract: ${JSON.stringify(sharedWebsiteStrategy(project))}\nPage-specific Gap Analysis and Execution contract: ${JSON.stringify(executionContract)}\nBusiness: ${businessContext.businessName ?? "business name not approved"}\nIndustry: ${businessContext.industry}\nCore customer value: ${businessContext.coreBusinessValue}\nApproved services: ${businessContext.primaryServices.join(", ")}\nAudience: ${businessContext.audience}\nLocations: ${targetLocationStrings(project.targetLocations).join(", ")}\nTone: ${project.brandVoice ?? "professional"}\nPage: ${page.title}\nPage type: ${page.pageType}\nPrimary keyword: ${page.primaryKeyword}\nSecondary keywords: ${jsonStrings(page.secondaryKeywords).join(", ")}\nIntent: ${page.searchIntent}\nSlug: ${page.slug}\nCTA: ${page.targetCta ?? "Request a consultation"}\nReviewer instruction: ${comment || "none"}\nReserved titles, H1s, and meta descriptions already used by other planned or crawled pages: ${JSON.stringify(reservedSignals)}\nRequirements:\n- Resolve the cited gapAnalysis plus every approved item in gapRequirements. Follow each recommendedFix and preserve its evidence link in the saved page contract.\n- Follow recommendedAction, contentBrief, strategyRole, funnelStage, contentOutline, proofRequirements, and CTA direction in the page-specific contract.\n- Include every requiredInternalLink naturally and do not optimize this page for prohibitedCompetingKeywords.\n- Use evidenceSources only as planning evidence; never convert an unverified item into a public claim.\n- Write useful content up to ${composition.maximumWords} visible words across all selected registered components. The ${composition.minimumWords}-word figure is a planning target, not permission to add filler. Never exceed ${composition.maximumWords} words.\n- Follow this page-specific direction: ${composition.guidance}\n- Include every required component ID exactly once: ${composition.requiredComponentIds.join(", ") || "none"}.\n- Return at least ${composition.minimumComponentCount} registered components.\n- Preserve the selected component sequence. Every page must contain one visible FAQ section with at least four complete, page-specific questions and answers; a dedicated FAQ page requires at least eight.\n- Give every selected service, benefit, process, and proof item a useful explanation.\n- Produce an original SEO title, H1, and 120–160 character meta description. None may duplicate a reserved value from another page.\n- Never use the template “Explore ... Review capabilities, process, proof, FAQs, and next steps.”\n- Do not copy sentences from the blueprint. content.components is the complete and only editable page-content model.\n- Do not return duplicate hero, section, or CTA fields outside content.components.${localDraftGuardrail}`;
+    const basePrompt = `Generate one complete website page as structured JSON with keys brief, content, seo matching this registered page blueprint. Rewrite every sample content value with original page-specific content: ${JSON.stringify(fallback)}${rewriteContract}\nActive Component Registry: ${JSON.stringify(SENUKE_COMPONENT_REGISTRY_V1)}\nPage composition policy: ${JSON.stringify(composition)}\nShared approved Strategy contract: ${JSON.stringify(sharedWebsiteStrategy(project))}\nPage-specific Gap Analysis and Execution contract: ${JSON.stringify(executionContract)}\nBusiness: ${businessContext.businessName ?? "business name not approved"}\nIndustry: ${businessContext.industry}\nCore customer value: ${businessContext.coreBusinessValue}\nApproved services: ${businessContext.primaryServices.join(", ")}\nAudience: ${businessContext.audience}\nLocations: ${targetLocationStrings(project.targetLocations).join(", ")}\nTone: ${project.brandVoice ?? "professional"}\nPage: ${page.title}\nPage type: ${page.pageType}\nPrimary keyword: ${page.primaryKeyword}\nSecondary keywords: ${jsonStrings(page.secondaryKeywords).join(", ")}\nIntent: ${page.searchIntent}\nSlug: ${page.slug}\nCTA: ${page.targetCta ?? "Request a consultation"}\nReviewer instruction: ${comment || "none"}\nReserved titles, H1s, and meta descriptions already used by other planned or crawled pages: ${JSON.stringify(reservedSignals)}\nRequirements:\n- Resolve the cited gapAnalysis plus every approved item in gapRequirements. Follow each recommendedFix and preserve its evidence link in the saved page contract.\n- Follow recommendedAction, contentBrief, strategyRole, funnelStage, contentOutline, proofRequirements, and CTA direction in the page-specific contract.\n- Include every requiredInternalLink naturally and do not optimize this page for prohibitedCompetingKeywords.\n- Use evidenceSources only as planning evidence; never convert an unverified item into a public claim.\n- Write useful content up to ${composition.maximumWords} visible words across all selected registered components. The ${composition.minimumWords}-word figure is a planning target, not permission to add filler. Never exceed ${composition.maximumWords} words.\n- Follow this page-specific direction: ${composition.guidance}\n- Include every required component ID exactly once: ${composition.requiredComponentIds.join(", ") || "none"}.\n- Return at least ${composition.minimumComponentCount} registered components.\n- Preserve the selected component sequence. Every page must contain one visible FAQ section with at least four complete, page-specific questions and answers; a dedicated FAQ page requires at least eight.\n- Give every selected service, benefit, process, and proof item a useful explanation.\n- HERO H1: lead with the approved service, product, category, or customer outcome. Naturally include the primary keyword/topic and the approved location only when this is a local page. Make the value clear to a buyer and support the intended CTA. Never write “Welcome”, “Welcome to [company]”, the company name by itself, “Home”, “Your trusted partner”, or an unsupported “best”, “leading”, “#1”, guarantee, ranking, or superlative claim.\n- HERO SUMMARY: identify the intended customer, problem or decision, concrete offer, useful differentiator supported by approved facts, and next step. Do not merely describe the company.\n- H2/H3: make every heading page-specific and useful for a buyer. Organize the page around benefits, options, objections, cost or eligibility factors, process, proof, FAQs, and conversion decisions. Use the primary or secondary topics naturally where relevant, but do not repeat the exact keyword in every heading or keyword-stuff. Never use generic headings such as “Our Services”, “What We Offer”, “How We Can Help”, “Overview”, “Why Choose Us”, “How the Process Works”, or “Frequently Asked Questions”.\n- Produce an original SEO title, H1, and 120–160 character meta description. None may duplicate a reserved value from another page.\n- Never use the template “Explore ... Review capabilities, process, proof, FAQs, and next steps.”\n- Do not copy sentences from the blueprint. content.components is the complete and only editable page-content model.\n- Do not return duplicate hero, section, or CTA fields outside content.components.${localDraftGuardrail}`;
     let repairFeedback = "";
     let previousResponse: Record<string, unknown> | null = null;
 
@@ -3748,7 +3771,7 @@ async function generatePage(page: { title: string; pageType: string; primaryKeyw
         ? `\n\nCORRECTIVE PASS REQUIRED\nThe prior response was not saved because it failed validation. Return the entire corrected page JSON, not a patch. Preserve usable copy while resolving every finding below.\nValidation findings:\n- ${repairFeedback}\nPrior response to repair: ${JSON.stringify(previousResponse)}`
         : "";
       const generated = await centralAiJson({
-        system: "You are the SEnuke AI Website Generation Service. Return safe structured JSON only. The approved Strategy and page-specific Execution contract are governing requirements. Generate only components and props permitted by the supplied Component Registry. Never generate content.link_section automatically; it is added only after the user selects approved internal-link targets. Do not invent testimonials, metrics, credentials, addresses, awards, guarantees, or citations. Write a complete useful SEO page through registered website sections and never return arbitrary scripts, PHP, WordPress code, generic placeholder copy, or a thin outline.",
+        system: "You are the SEnuke AI Website Generation Service and conversion-focused website copywriter. Return safe structured JSON only. The approved Strategy, keyword ownership, audience, offer, page intent, and page-specific Execution contract are governing requirements. Generate only components and props permitted by the supplied Component Registry. Never generate content.link_section automatically; it is added only after the user selects approved internal-link targets. Do not invent testimonials, metrics, credentials, addresses, awards, guarantees, or citations. Write persuasive, specific, evidence-safe website copy that helps the intended buyer understand the offer and act. Never use a welcome message, a company-name-only hero, generic placeholder headings, arbitrary scripts, PHP, WordPress code, or a thin outline.",
         prompt: compactWebsiteAiPrompt(`${basePrompt}${correctivePrompt}\nFIRST SUPPORTING SECTION: Return an original first post-hero H2 that names this page's assigned topic or intent and differs from every sibling page. Never use “A solution aligned to your goals”, “How we can help”, “What we offer”, “Overview”, or “Why choose us”. Keep the follow-up overview concise at 70–130 words in 2–3 short paragraphs before deeper sections.`, 80_000),
         temperature: 0.35,
         maxInputBytes: 80_000,
@@ -3810,9 +3833,13 @@ async function generatePage(page: { title: string; pageType: string; primaryKeyw
       if (missingBlocks.length) findings.push(`missing required components: ${missingBlocks.join(", ")}`);
       if (metaDescription.length < 90 || metaDescription.length > 180) findings.push(`meta description is ${metaDescription.length} characters; 90–180 required`);
       if (/review capabilities,\s*process,\s*proof,\s*faqs/i.test(metaDescription)) findings.push("meta description repeats prohibited blueprint wording");
-      if (/^(?:welcome(?: to)?|home|homepage|our website|your trusted partner|quality you can trust|solutions for every need|tailored (?:insurance )?strategies|we are here to help)[.!\s]*$/i.test(generatedH1)) findings.push(`generic H1 is not publishable: ${generatedH1}`);
+      if (isGenericWebsiteHeroHeading(generatedH1, businessContext.businessName ?? businessIdentity(project))) findings.push(`generic or company-name-only H1 is not publishable: ${generatedH1}`);
       if (keywordTopicSimilarity(page.primaryKeyword, generatedH1, targetLocationStrings(project.targetLocations)) < 55) findings.push(`H1 does not align with the approved primary keyword: ${generatedH1}`);
       if (keywordTopicSimilarity(parsed.seo.metaTitle, generatedH1, targetLocationStrings(project.targetLocations)) < 45) findings.push(`SEO title and H1 describe different subjects: ${parsed.seo.metaTitle} / ${generatedH1}`);
+      for (const component of flattenWebsiteComponents(parsed.content.components)) {
+        if (component.componentId === "hero.local_service" || typeof component.props.heading !== "string") continue;
+        if (isGenericWebsiteSectionHeading(component.props.heading)) findings.push(`generic H2/H3 is not publishable: ${component.props.heading}`);
+      }
       const minimumFaqs = composition.archetype === "faq" ? 8 : 4;
       if (visibleFaqs.length < minimumFaqs) findings.push(`${visibleFaqs.length} complete FAQ answers returned; at least ${minimumFaqs} required for ${page.title}`);
       for (const leak of findWebsitePublicContentLeakage(parsed.content.components)) {
@@ -6073,7 +6100,7 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/pages/:pageId/ge
     })).min(1).max(30),
   });
   const response = await centralAiJson({
-    system: "You prepare surgical existing-website updates. Return JSON only. Change only the supplied missing or weak fields. Preserve all other page content. Never invent business facts, claims, reviews, credentials, addresses, prices, statistics, legal promises, or source URLs.",
+      system: "You prepare surgical existing-website updates. Return JSON only. Change only the supplied missing or weak fields. Preserve all other page content. H1 and H2 replacements must be specific, buyer-focused, aligned to the supplied keyword and intent, and conversion-aware without keyword stuffing. Never write Welcome to [company], a company-name-only H1, or generic headings such as Our Services, What We Offer, How We Can Help, Overview, Why Choose Us, or Frequently Asked Questions. Never invent business facts, claims, reviews, credentials, addresses, prices, statistics, legal promises, or source URLs.",
     prompt: `Return JSON matching this shape: {"summary":"what will change and what remains untouched","updates":[{"findingKey":"source key","field":"seo_title|meta_description|h1|h2_heading|page_section|faq|internal_link|canonical_url|schema|other","label":"clear update name","currentValue":"exact current value when available","proposedValue":"complete replacement field or missing content only","implementationNotes":"where and how to apply it"}]}.
 Business: ${businessIdentity(project) || "Business identity requires confirmation"}
 Page: ${page.title}
@@ -6351,9 +6378,15 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/pages/:pageId/op
   if (!page || !pageHasCompleteContent(page)) return res.status(409).json({ error: "Generate the page before editing optimization values." });
   let value = input.value.trim(), secondaryValue = input.secondaryValue.trim();
   if (input.useAi && input.field !== "schemaJsonLd") {
-    const response = await centralAiJson({ system: "Revise one SEO, AEO, or GEO website value. Return JSON with value and secondaryValue only. Do not invent business facts, addresses, claims, credentials, reviews, or metrics.", prompt: `Business: ${businessIdentity(project) || "business name not approved"}\nPage: ${page.title}\nKeyword: ${page.primaryKeyword}\nField: ${input.field}\nCurrent value: ${value}\nSupporting value: ${secondaryValue}\nInstruction: ${input.instruction || "Improve this value for clarity, relevance, and user usefulness without keyword stuffing."}`, temperature: 0.3, timeoutMs: 60_000 });
+    const response = await centralAiJson({ system: "Revise one SEO, AEO, or GEO website value. Return JSON with value and secondaryValue only. For H1 or question-heading fields, lead with the approved topic, buyer value, question, or decision and support the intended conversion without keyword stuffing. Never write Welcome to [company], the company name alone, or a generic heading such as Our Services, How We Can Help, Overview, or Why Choose Us. Do not invent business facts, addresses, claims, credentials, reviews, or metrics.", prompt: `Business: ${businessIdentity(project) || "business name not approved"}\nPage: ${page.title}\nKeyword: ${page.primaryKeyword}\nField: ${input.field}\nCurrent value: ${value}\nSupporting value: ${secondaryValue}\nInstruction: ${input.instruction || "Improve this value for clarity, relevance, buyer usefulness, and the intended next step without keyword stuffing."}`, temperature: 0.3, timeoutMs: 60_000 });
     const ai = z.object({ value: z.string().max(30_000), secondaryValue: z.string().max(30_000).default("") }).parse(response.result);
     value = ai.value.trim(); secondaryValue = ai.secondaryValue.trim();
+  }
+  if (input.field === "h1" && isGenericWebsiteHeroHeading(value, businessIdentity(project))) {
+    return res.status(422).json({ error: "The H1 must lead with the approved service, topic, customer value, or decision. Welcome wording and a company-name-only headline are not allowed." });
+  }
+  if (input.field === "questionHeading" && isGenericWebsiteSectionHeading(value)) {
+    return res.status(422).json({ error: "The heading must be specific to this page's buyer question, benefit, process, proof, or next step." });
   }
   let content = canonicalContentFromComponents(page.contentJson, canonicalComponents(page.contentJson));
   const seo = jsonRecord(page.seoJson), brief = jsonRecord(page.briefJson);
@@ -6378,7 +6411,7 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/pages/:pageId/op
           componentId: "content.faq",
           componentVersion: "1.0.0",
           variant: "accordion",
-          props: { heading: "Frequently asked questions", items: currentItems },
+          props: { heading: `Questions buyers ask about ${page.primaryKeyword}`.slice(0, 100), items: currentItems },
         };
     if (faqIndex >= 0) components.splice(faqIndex, 1, faqComponent);
     else components.push(faqComponent);
@@ -6482,9 +6515,10 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/pages/:pageId/re
   const response = await centralAiJson({ system: "You are the SENuke AI FAQ repair service. Return structured JSON only. Preserve useful existing FAQs, add distinct page-specific buyer questions, and use only approved project facts. Never invent claims, prices, coverage, offices, credentials, statistics, guarantees, reviews, or availability.", prompt: `Return {"faqs":[{"question":"...","answer":"..."}]} with ${minimumFaqs} complete FAQs.\nBusiness: ${businessIdentity(project) || "business name not approved"}\nPage: ${page.title}\nPrimary keyword: ${page.primaryKeyword}\nIntent: ${page.searchIntent}\nApproved page brief: ${JSON.stringify(jsonRecord(page.briefJson)).slice(0, 12_000)}\nExisting visible FAQs to preserve or improve: ${JSON.stringify(currentFaqs)}\nEach answer should be useful, concise, and specific to this page. Do not repeat another question with different wording.`, temperature: 0.3, maxOutputTokens: 2_500, timeoutMs: 90_000 });
   const faqSchema = z.object({ faqs: z.array(z.object({ question: z.string().trim().min(8).max(300), answer: z.string().trim().min(25).max(1500) })).min(minimumFaqs).max(dedicatedFaqPage ? 12 : 6) });
   const faqs = faqSchema.parse(response.result).faqs;
+  const faqHeading = `Questions buyers ask about ${page.primaryKeyword}`.slice(0, 100);
   const faqComponent: WebsiteComponentInstance = faqIndex >= 0
-    ? { ...components[faqIndex], props: { ...components[faqIndex].props, heading: String(components[faqIndex].props.heading || "Frequently asked questions"), items: faqs } }
-    : { instanceId: `${slugify(page.title)}-faq-${page.version + 1}`, componentId: "content.faq", componentVersion: "1.0.0", variant: "accordion", props: { heading: "Frequently asked questions", items: faqs } };
+    ? { ...components[faqIndex], props: { ...components[faqIndex].props, heading: isGenericWebsiteSectionHeading(components[faqIndex].props.heading) ? faqHeading : String(components[faqIndex].props.heading || faqHeading), items: faqs } }
+    : { instanceId: `${slugify(page.title)}-faq-${page.version + 1}`, componentId: "content.faq", componentVersion: "1.0.0", variant: "accordion", props: { heading: `Questions buyers ask about ${page.primaryKeyword}`.slice(0, 100), items: faqs } };
   if (faqIndex >= 0) components.splice(faqIndex, 1, faqComponent);
   else {
     const ctaIndex = components.findIndex((component) => component.componentId === "conversion.cta");
@@ -6748,11 +6782,15 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/pages/:pageId/gu
     const business = businessIdentity(project) || "the business";
     const fallback = { heroTitle: `${page.primaryKeyword} | ${business}`.slice(0, 100), heroSummary: `Learn how ${business} helps people evaluate ${page.primaryKeyword}, understand their options, and take a clear next step.`, metaTitle: `${page.primaryKeyword} | ${business}`.slice(0, 60), metaDescription: `Explore ${page.primaryKeyword} from ${business}. Compare options, get answers to common questions, and choose the right next step.`.slice(0, 160), canonicalUrl: `/${page.slug}`, imageAltText: `${business} ${page.primaryKeyword}`, robots: "index, follow", faqs: [{ question: `What should I know about ${page.primaryKeyword}?`, answer: "Review the available options, eligibility or fit, costs, process, and support before deciding." }, { question: `How do I get started with ${page.primaryKeyword}?`, answer: "Start with a conversation to confirm your needs, available options, and the most appropriate next step." }, { question: `How do I compare ${page.primaryKeyword} options?`, answer: "Compare scope, fit, process, support, and approved cost factors before choosing an option." }, { question: `What information is useful when discussing ${page.primaryKeyword}?`, answer: "Prepare your goals, priorities, constraints, questions, and the details needed to confirm a suitable next step." }], questionSections: [{ heading: `How does ${page.primaryKeyword} work?`, headingLevel: "h2" as const, bodyText: "The process begins by understanding your needs, comparing suitable options, and confirming the next steps clearly." }], rationale: { seo: "Clarifies the page topic and search result message.", aeo: "Adds direct answers and common buyer questions.", geo: "Connects the service, provider, and approved project location through structured data." } };
     try {
-      const response = await centralAiJson({ system: "You are a beginner-friendly SEO, AEO, and GEO optimization assistant. Return the requested JSON only. Improve clarity and buyer usefulness. Use verified project facts. Never invent addresses, claims, prices, credentials, testimonials, guarantees, or statistics.", prompt: `Return this exact JSON shape: ${JSON.stringify(fallback)}\nBusiness: ${business}\nPage: ${page.title}\nPrimary keyword: ${page.primaryKeyword}\nSecondary keywords: ${jsonStrings(page.secondaryKeywords).join(", ")}\nSearch intent: ${page.searchIntent}\nTarget markets: ${targetLocationStrings(project.targetLocations).join(", ")}\nCurrent H1: ${currentHeroTitle}\nCurrent summary: ${currentHeroSummary}\nCurrent SEO title: ${String(currentSeo.metaTitle ?? "")}\nCurrent meta description: ${String(currentSeo.metaDescription ?? "")}\nUser priorities: ${input.priorities.join(", ")}\nUser's plain-language guidance: ${input.guidance || "Make this page clear, specific, trustworthy, and useful to a buyer."}\nWrite for a non-SEO business owner. Avoid vague phrases such as best solutions, unlock potential, or tailored excellence.`, temperature: 0.35, timeoutMs: 60_000 });
-      return res.json({ proposal: guidedOptimizationProposalSchema.parse(response.result), current: { heroTitle: currentHeroTitle, heroSummary: currentHeroSummary, metaTitle: currentSeo.metaTitle, metaDescription: currentSeo.metaDescription } });
+      const response = await centralAiJson({ system: "You are a beginner-friendly SEO, AEO, GEO, and conversion-copy optimization assistant. Return the requested JSON only. Improve clarity, buyer usefulness, keyword alignment, and the next-step value. The H1 must lead with the service, topic, customer outcome, or decision—not Welcome to [company] or the company name alone. Use verified project facts. Never invent addresses, claims, prices, credentials, testimonials, guarantees, or statistics.", prompt: `Return this exact JSON shape: ${JSON.stringify(fallback)}\nBusiness: ${business}\nPage: ${page.title}\nPrimary keyword: ${page.primaryKeyword}\nSecondary keywords: ${jsonStrings(page.secondaryKeywords).join(", ")}\nSearch intent: ${page.searchIntent}\nTarget markets: ${targetLocationStrings(project.targetLocations).join(", ")}\nCurrent H1: ${currentHeroTitle}\nCurrent summary: ${currentHeroSummary}\nCurrent SEO title: ${String(currentSeo.metaTitle ?? "")}\nCurrent meta description: ${String(currentSeo.metaDescription ?? "")}\nUser priorities: ${input.priorities.join(", ")}\nUser's plain-language guidance: ${input.guidance || "Make this page clear, specific, trustworthy, useful to a buyer, and supportive of the intended conversion."}\nWrite for a non-SEO business owner. Avoid welcome messages, company-name-only headlines, and vague phrases such as best solutions, unlock potential, or tailored excellence.`, temperature: 0.35, timeoutMs: 60_000 });
+      const proposal = guidedOptimizationProposalSchema.parse(response.result);
+      if (isGenericWebsiteHeroHeading(proposal.heroTitle, business) || proposal.questionSections.some((section) => isGenericWebsiteSectionHeading(section.heading))) throw new Error("AI returned generic website headings.");
+      return res.json({ proposal, current: { heroTitle: currentHeroTitle, heroSummary: currentHeroSummary, metaTitle: currentSeo.metaTitle, metaDescription: currentSeo.metaDescription } });
     } catch { return res.json({ proposal: guidedOptimizationProposalSchema.parse(fallback), current: { heroTitle: currentHeroTitle, heroSummary: currentHeroSummary, metaTitle: currentSeo.metaTitle, metaDescription: currentSeo.metaDescription } }); }
   }
   const proposal = guidedOptimizationProposalSchema.parse(input.proposal);
+  if (isGenericWebsiteHeroHeading(proposal.heroTitle, businessIdentity(project))) return res.status(422).json({ error: "The optimized H1 must lead with the approved service, topic, customer value, or decision—not a welcome message or the company name alone." });
+  if (proposal.questionSections.some((section) => isGenericWebsiteSectionHeading(section.heading))) return res.status(422).json({ error: "Optimization headings must be page-specific and buyer-focused rather than generic." });
   let components = currentComponents.map((component) => component.componentId === "hero.local_service"
     ? { ...component, props: { ...component.props, headline: proposal.heroTitle, summary: proposal.heroSummary } }
     : component);
@@ -6776,7 +6814,7 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/pages/:pageId/gu
         componentId: "content.faq",
         componentVersion: "1.0.0",
         variant: "accordion",
-        props: { heading: "Frequently asked questions", items: proposal.faqs },
+        props: { heading: `Questions buyers ask about ${page.primaryKeyword}`.slice(0, 100), items: proposal.faqs },
       };
   if (faqIndex >= 0) components.splice(faqIndex, 1, faqComponent);
   else components.push(faqComponent);
@@ -7696,11 +7734,11 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/wordpress-publis
         componentId: "content.faq",
         componentVersion: "1.0.0",
         variant: "accordion",
-        props: { heading: "Frequently Asked Questions", items: faqs },
+        props: { heading: `Questions buyers ask about ${page.primaryKeyword}`.slice(0, 100), items: faqs },
       };
       const faqIndex = components.findIndex((component) => component.componentId === "content.faq");
       const nextComponents = faqIndex >= 0
-        ? components.map((component, index) => index === faqIndex ? { ...component, props: { ...component.props, items: faqs } } : component)
+        ? components.map((component, index) => index === faqIndex ? { ...component, props: { ...component.props, heading: `Questions buyers ask about ${page.primaryKeyword}`.slice(0, 100), items: faqs } } : component)
         : [...components.slice(0, -1), faqComponent, ...components.slice(-1)];
       const contentJson = canonicalContentFromComponents(page.contentJson, nextComponents) as Prisma.InputJsonValue;
       const seoJson = { ...currentSeo, faqs, schemaJsonLd: combinedPageSchema(page, project, faqs, currentSeo.schemaJsonLd) } as Prisma.InputJsonValue;
@@ -8043,6 +8081,37 @@ function approvedReleaseWebsiteModel(release: { immutableSnapshot: Prisma.JsonVa
   return model;
 }
 
+/**
+ * Historical releases are immutable records of what was publishable under the
+ * registry and policy active when they were approved. They are used only as a
+ * comparison baseline for incremental publishing, so a later editorial rule
+ * (for example a higher FAQ minimum) must not invalidate that history.
+ * Malformed snapshots are ignored, which safely falls back to an initial/full
+ * deployment scope instead of attempting to render them.
+ */
+export function websiteReleaseComparisonModel(release: { immutableSnapshot: Prisma.JsonValue }): WebsiteModel | null {
+  const model = release.immutableSnapshot as unknown as Partial<WebsiteModel> | null;
+  if (!model || !Array.isArray(model.pages) || !Array.isArray(model.navigation) || !Array.isArray(model.forms) || !Array.isArray(model.mediaAssets)) return null;
+  if (!model.pages.every((page) => page && typeof page === "object" && typeof page.pageId === "string" && typeof page.name === "string" && Array.isArray(page.sections))) return null;
+  if (!model.mediaAssets.every((asset) => asset && typeof asset === "object" && typeof asset.assetId === "string")) return null;
+  return model as WebsiteModel;
+}
+
+export function websitePublicationPageMappings(remoteMappingsJson: Prisma.JsonValue) {
+  const pages = jsonRecord(remoteMappingsJson).pages;
+  return Array.isArray(pages) ? pages.map(jsonRecord) : [];
+}
+
+export function hasReleaseScopedDraftUrl(targets: string[]) {
+  return targets.some((target) => {
+    try {
+      return /-senuke-[a-z0-9]{4,}/i.test(new URL(target).pathname);
+    } catch {
+      return false;
+    }
+  });
+}
+
 export type WebsiteReleaseDeploymentScope = {
   mode: "initial" | "incremental" | "full";
   pageIds: string[];
@@ -8122,20 +8191,41 @@ async function releaseDeploymentScopeFor(
   release: { id: string; immutableSnapshot: Prisma.JsonValue; snapshotHash: string },
   target: "wordpress" | "static_html",
 ) {
+  const currentModel = approvedReleaseWebsiteModel(release);
+  const currentPublication = await prisma.websitePublication.findFirst({
+    where: {
+      projectId,
+      releaseId: release.id,
+      target,
+      ...(target === "wordpress"
+        ? { mode: "publish", status: { in: ["published", "published_validation_failed"] }, publishedAt: { not: null } }
+        : { status: "completed" }),
+    },
+    orderBy: target === "wordpress" ? { publishedAt: "desc" } : { completedAt: "desc" },
+  });
+  // The immutable release has already been delivered. A verification warning
+  // needs a verification retry, not another upload of the same website.
+  if (currentPublication) {
+    return {
+      ...websiteReleaseDeploymentScope(currentModel, currentModel),
+      baselineReleaseId: release.id,
+      currentReleaseId: release.id,
+      target,
+    };
+  }
   const previousPublication = await prisma.websitePublication.findFirst({
     where: {
       projectId,
       releaseId: { not: release.id },
       target,
       ...(target === "wordpress"
-        ? { mode: "publish", publishedAt: { not: null } }
+        ? { mode: "publish", status: "published", publishedAt: { not: null } }
         : { status: "completed" }),
     },
     orderBy: target === "wordpress" ? { publishedAt: "desc" } : { completedAt: "desc" },
     include: { release: { select: { immutableSnapshot: true, snapshotHash: true } } },
   });
-  const currentModel = approvedReleaseWebsiteModel(release);
-  const previousModel = previousPublication ? approvedReleaseWebsiteModel(previousPublication.release) : null;
+  const previousModel = previousPublication ? websiteReleaseComparisonModel(previousPublication.release) : null;
   return {
     ...websiteReleaseDeploymentScope(currentModel, previousModel),
     baselineReleaseId: previousPublication?.releaseId ?? null,
@@ -8331,28 +8421,41 @@ websiteBuilderRouter.get("/projects/:projectId/website-performance", async (req,
       } },
       websitePublications: { orderBy: { createdAt: "desc" }, take: 50, include: { release: { select: { id: true, approvedAt: true, immutableSnapshot: true } } } },
       executionTasks: { where: { OR: [{ completedAt: { not: null } }, { publishedAt: { not: null } }] }, orderBy: { updatedAt: "desc" }, take: 12, select: { id: true, title: true, moduleName: true, status: true, completedAt: true, publishedAt: true } },
-      nextBestActions: { where: { status: { in: ["proposed", "selected", "approved", "in_progress"] } }, orderBy: [{ selectedAt: "desc" }, { priorityScore: "desc" }, { createdAt: "desc" }], take: 1, select: { id: true, title: true, recommendation: true, expectedImpact: true, status: true, priorityScore: true, route: true, updatedAt: true } },
+      growthBlueprint: { include: { versions: { orderBy: { version: "desc" }, take: 1, select: { version: true, status: true, reason: true, evidenceJson: true, createdAt: true } } } },
+      nextBestActions: { where: { status: { in: ["proposed", "recommended", "selected", "approved", "accepted", "in_progress"] } }, orderBy: [{ selectedAt: "desc" }, { priorityScore: "desc" }, { createdAt: "desc" }], take: 1, select: { id: true, title: true, recommendation: true, expectedImpact: true, reasoningSummary: true, status: true, priorityScore: true, route: true, sourceType: true, followupTaskId: true, followupTask: { select: { id: true, title: true, status: true, relatedUrl: true } }, updatedAt: true } },
       measurementCheckpoints: { orderBy: { createdAt: "desc" }, take: 30, select: { id: true, checkpointType: true, dueAt: true, status: true, baselineJson: true, metricsJson: true, diagnosis: true, completedAt: true, createdAt: true } },
       keywordResearchRuns: { where: { status: "completed" }, orderBy: { createdAt: "desc" }, take: 100, select: { seedKeyword: true, locationName: true, manualRank: true, targetRank: true, createdAt: true } },
     },
   });
   if (!project) return res.status(404).json({ error: "Project not found." });
   const website = project.website;
+  const plan = website?.measurementPlans[0] ?? null;
+  const latestLivePublication = project.websitePublications.find((publication) => Boolean(publication.publishedAt) && ["published", "completed"].includes(publication.status)) ?? null;
+  let lifecycle = null;
+  if (latestLivePublication) {
+    lifecycle = await activatePostLaunchGrowthLifecycle({ projectId: project.id, releaseId: latestLivePublication.releaseId, publishedAt: latestLivePublication.publishedAt, launchVerified: true, actorUserId: context.membership.userId }).catch(() => null);
+  }
   const events = website?.trackingEvents ?? [];
   const metrics = websiteTrackingMetrics(events);
-  const plan = website?.measurementPlans[0] ?? null;
   const sources = Array.isArray(plan?.dataSourcesJson) ? plan.dataSourcesJson.map(jsonRecord) : [];
   const sourceStatus = (key: string) => String(sources.find((source) => source.key === key)?.status || "not_connected");
   const trackingVerified = Boolean(website?.trackingSite?.lastVerifiedAt);
+  const baseline = postLaunchBaselineStatus({ publishedAt: latestLivePublication?.publishedAt ?? null, trackingVerifiedAt: website?.trackingSite?.lastVerifiedAt ?? null, evaluationWindowDays: plan?.evaluationWindowDays ?? 28, observedSessions: metrics.sessions });
   const growthStatus = !website
     ? { key: "setup_required", label: "Website URL required", detail: "Connect the production website before performance can be collected." }
+    : !latestLivePublication
+      ? { key: "launch_verification_required", label: "Launch verification required", detail: "Verify the production release before starting the post-launch lifecycle." }
     : !trackingVerified
       ? { key: "waiting_for_live_event", label: "Waiting for live verification", detail: "The tag is prepared; visit the live website after publishing to verify collection." }
+      : ["collecting_initial_baseline", "collecting_extended_baseline"].includes(baseline.state)
+        ? { key: "collecting_initial_baseline", label: baseline.label, detail: `${baseline.completeVerifiedDays} of ${baseline.evaluationWindowDays} complete verified days collected. Growth work continues while this baseline is established.` }
       : metrics.formErrors > metrics.formSuccesses && metrics.formErrors > 0
         ? { key: "needs_attention", label: "Needs attention", detail: "Recorded form errors currently exceed successful form completions." }
         : { key: "collecting", label: "Collecting performance", detail: `First-party website activity is available for the last ${periodDays} days.` };
   const problems: Array<{ type: "problem" | "opportunity" | "limitation"; title: string; detail: string }> = [];
   if (!trackingVerified) problems.push({ type: "limitation", title: "Live tracking not verified", detail: "Publish the production release and open the live website to send the first valid event." });
+  if (plan?.trackingState === "TRACKING_REVIEW_REQUIRED") problems.push({ type: "problem", title: "Tracking health needs verification", detail: "No recent first-party event has been observed. Run a controlled live test before relying on new performance measurements." });
+  if (trackingVerified && !baseline.performanceClaimsAllowed) problems.push({ type: "limitation", title: "Initial baseline is still collecting", detail: `SEnuke AI has ${baseline.completeVerifiedDays} of ${baseline.evaluationWindowDays} complete verified days. It will not claim that traffic, rankings, or conversions improved during this period.` });
   if (sourceStatus("search_console") !== "connected") problems.push({ type: "limitation", title: "Search Console not connected", detail: "Search clicks, impressions and query data are unavailable until this optional source is connected." });
   if (sourceStatus("ga4") !== "connected") problems.push({ type: "limitation", title: "GA4 not connected", detail: "GA4 audience and acquisition metrics are unavailable; first-party page and conversion events continue to work." });
   if (metrics.formErrors > 0) problems.push({ type: "problem", title: "Form errors recorded", detail: `${metrics.formErrors} form error event${metrics.formErrors === 1 ? " was" : "s were"} received during this period.` });
@@ -8399,7 +8502,15 @@ websiteBuilderRouter.get("/projects/:projectId/website-performance", async (req,
     workCompleted: project.executionTasks,
     problemsAndOpportunities: problems,
     trackingHealth: { state: plan?.trackingState ?? "CONNECTION_REQUIRED", planVersion: plan?.version ?? null, lastVerifiedAt: website?.trackingSite?.lastVerifiedAt ?? null, lastEventAt: website?.trackingSite?.lastEventAt ?? null, installation: website?.trackingSite?.installation ?? "pending", sources: sources.map((source) => ({ key: String(source.key || "source"), status: String(source.status || "not_connected"), required: source.required === true })) },
-    nextBestAction: project.nextBestActions[0] ?? null,
+    nextBestAction: lifecycle?.nextBestAction ?? project.nextBestActions[0] ?? null,
+    postLaunch: {
+      workflow: ["Website launched", "Verify tracking", "Establish baseline", "Activate Growth Blueprint", "Select Next Best Action", "Execute", "Measure", "Learn", "Repeat"],
+      websiteLive: Boolean(latestLivePublication),
+      releaseId: latestLivePublication?.releaseId ?? null,
+      tracking: { verified: trackingVerified, state: plan?.trackingState ?? "CONNECTION_REQUIRED" },
+      baseline,
+      growthBlueprint: lifecycle?.blueprint ? { id: lifecycle.blueprint.id, title: lifecycle.blueprint.title, status: lifecycle.blueprint.status, currentVersion: lifecycle.blueprint.currentVersion, approvedStrategyId: lifecycle.blueprint.approvedStrategyId, nextReviewAt: lifecycle.blueprint.nextReviewAt } : project.growthBlueprint ? { id: project.growthBlueprint.id, title: project.growthBlueprint.title, status: project.growthBlueprint.status, currentVersion: project.growthBlueprint.currentVersion, approvedStrategyId: project.growthBlueprint.approvedStrategyId, nextReviewAt: project.growthBlueprint.nextReviewAt } : null,
+    },
     performanceHistory,
     checkpoints: project.measurementCheckpoints,
     reportUrl: `/reports?projectId=${encodeURIComponent(project.id)}`,
@@ -9114,7 +9225,7 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/deploy", async (
       if (input.mode === "publish" && mapping.remoteUrl) {
         try {
           const url = await safeSiteUrl(mapping.remoteUrl);
-          const response = await fetch(url, { signal: AbortSignal.timeout(15_000), redirect: "error" });
+          const response = await fetch(url, { signal: AbortSignal.timeout(20_000), redirect: "follow" });
           const html = await response.text();
           const canonicalMatch = html.match(/<link[^>]+rel=["'][^"']*canonical[^"']*["'][^>]+href=["']([^"']+)["']|<link[^>]+href=["']([^"']+)["'][^>]+rel=["'][^"']*canonical[^"']*["']/i);
           const canonicalValue = canonicalMatch?.[1] || canonicalMatch?.[2] || "";
@@ -9155,7 +9266,7 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/deploy", async (
             { key: "images_alt", passed: !/<img\b(?![^>]*\balt=)[^>]*>/i.test(html), detail: "Image alt attributes" },
             { key: "indexability", passed: !/noindex/i.test(html) && !/noindex/i.test(headerRobots), detail: "No HTML or HTTP noindex directive" },
             { key: "instruction_leakage", passed: !leakedProductionCopy, detail: leakedProductionCopy ? "Visitor-visible placeholder or internal workflow language found" : "No placeholder or internal instruction leakage" },
-            { key: "draft_urls", passed: !/-senuke-[a-z0-9]{4,}/i.test(html), detail: "No release-scoped draft URL leaked into production" },
+            { key: "draft_urls", passed: !hasReleaseScopedDraftUrl(internalTargets), detail: "No release-scoped draft URL leaked into production" },
             { key: "internal_links_and_assets", passed: brokenTargets.length === 0, detail: brokenTargets.length ? `${brokenTargets.length} sampled internal link or asset request(s) failed` : `${sampledResponses.length} sampled internal link and asset request(s) passed` },
             { key: "forms", passed: !invalidFormAction, detail: invalidFormAction ? "A form has no functional delivery action" : "Rendered forms expose a managed or explicit delivery action" },
           );
@@ -9274,7 +9385,7 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/deploy", async (
         };
         await prisma.measurementCheckpoint.createMany({ data: [
           { projectId: project.id, taskId: measurementTask.id, checkpointType: "post_publish", dueAt: publicationCompletedAt, baselineJson: baseline },
-          { projectId: project.id, taskId: measurementTask.id, checkpointType: "day_30", dueAt: addDays(30), baselineJson: baseline },
+          { projectId: project.id, taskId: measurementTask.id, checkpointType: "initial_baseline_day_28", dueAt: addDays(28), baselineJson: baseline },
           { projectId: project.id, taskId: measurementTask.id, checkpointType: "day_60", dueAt: addDays(60), baselineJson: baseline },
           { projectId: project.id, taskId: measurementTask.id, checkpointType: "day_90", dueAt: addDays(90), baselineJson: baseline },
           { projectId: project.id, taskId: measurementTask.id, checkpointType: "recurring_180", dueAt: addDays(180), baselineJson: baseline },
@@ -9286,6 +9397,13 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/deploy", async (
         logs.push({ action: "baseline_created", status: "success", taskId: measurementTask.id, checkpointCount: 5, at: publicationCompletedAt.toISOString() });
         await prisma.websiteDeployment.update({ where: { id: updated.id }, data: { logsJson: logs as unknown as Prisma.InputJsonValue } });
       }
+      try {
+        const lifecycle = await activatePostLaunchGrowthLifecycle({ projectId: project.id, releaseId: release.id, publishedAt: publicationCompletedAt, launchVerified: true, actorUserId: context.membership.userId });
+        logs.push({ action: "post_launch_growth_activated", status: "success", growthBlueprintId: lifecycle?.blueprint.id ?? null, nextBestActionId: lifecycle?.nextBestAction.id ?? null, baselineState: lifecycle?.baseline.state ?? null, at: new Date().toISOString() });
+      } catch (error) {
+        logs.push({ action: "post_launch_growth_activation", status: "warning", detail: error instanceof Error ? error.message : "Post-launch Growth activation needs attention.", at: new Date().toISOString() });
+      }
+      await prisma.websiteDeployment.update({ where: { id: updated.id }, data: { logsJson: logs as unknown as Prisma.InputJsonValue } });
     }
     if (input.mode === "publish" && verificationPassed && requestedPageIds.size) {
       const measurementTask = project.executionTasks.find((task) => task.sourceType === "website_builder_request" && task.sourceId === build.id);
@@ -9309,6 +9427,12 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/deploy", async (
         logs.push({ action: "change_measurement_checkpoint_created", status: "success", taskId: measurementTask.id, pageCount: pageMappings.length, at: publicationCompletedAt.toISOString() });
         await prisma.websiteDeployment.update({ where: { id: updated.id }, data: { logsJson: logs as unknown as Prisma.InputJsonValue } });
       }
+      await activatePostLaunchGrowthLifecycle({ projectId: project.id, releaseId: release.id, publishedAt: publicationCompletedAt, launchVerified: true, actorUserId: context.membership.userId }).then((lifecycle) => {
+        logs.push({ action: "post_launch_growth_refreshed", status: "success", growthBlueprintId: lifecycle?.blueprint.id ?? null, nextBestActionId: lifecycle?.nextBestAction.id ?? null, at: new Date().toISOString() });
+      }).catch((error) => {
+        logs.push({ action: "post_launch_growth_refresh", status: "warning", detail: error instanceof Error ? error.message : "Post-launch Growth refresh needs attention.", at: new Date().toISOString() });
+      });
+      await prisma.websiteDeployment.update({ where: { id: updated.id }, data: { logsJson: logs as unknown as Prisma.InputJsonValue } });
     }
     if (!requestedPageIds.size) {
       await prisma.websiteBuild.update({ where: { id: build.id }, data: { status: input.mode === "publish" ? verificationPassed ? "published" : "needs_attention" : "deployed" } });
@@ -9496,7 +9620,12 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/static-deploy", 
   const deploymentScope = input.scope === "auto" && automaticScope.mode === "incremental" ? "changed-files" : "complete-site";
   const idempotencyKey = `release:${release.id}:static_html:sftp:${transfer.id}:${destinationSignature}:${rendererVersion}:${deploymentScope}`;
   const prior = await prisma.websitePublication.findUnique({ where: { idempotencyKey } });
-  if (prior?.status === "completed") return res.json({ publication: prior, release, idempotent: true });
+  if (prior?.status === "completed") {
+    const publishedAt = prior.publishedAt ?? prior.completedAt ?? prior.createdAt;
+    const restored = prior.publishedAt ? prior : await prisma.websitePublication.update({ where: { id: prior.id }, data: { publishedAt } });
+    await activatePostLaunchGrowthLifecycle({ projectId: project.id, releaseId: release.id, publishedAt, launchVerified: true, actorUserId: context.membership.userId }).catch(() => null);
+    return res.json({ publication: restored, release, idempotent: true });
+  }
   const publication = prior
     ? await prisma.websitePublication.update({
         where: { id: prior.id },
@@ -9571,6 +9700,7 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/static-deploy", 
           snapshotHash: release.snapshotHash,
           backupPath: result.backupPath,
         } as Prisma.InputJsonValue,
+        publishedAt: completedAt,
         completedAt,
         errorMessage: null,
       },
@@ -9578,6 +9708,9 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/static-deploy", 
     await prisma.websiteSftpIntegration.update({
       where: { id: transfer.id },
       data: { connectionStatus: "connected", lastConnectionCheckAt: completedAt, lastError: null },
+    });
+    await activatePostLaunchGrowthLifecycle({ projectId: project.id, releaseId: release.id, publishedAt: completedAt, launchVerified: true, actorUserId: context.membership.userId }).catch((error) => {
+      console.error("[website-builder] static post-launch Growth activation failed", error);
     });
     res.json({ publication: updated, release, deployment: result, idempotent: false });
   } catch (error) {
@@ -9693,23 +9826,95 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/quality-export",
 });
 
 websiteBuilderRouter.post("/projects/:projectId/website-builder/deployments/:deploymentId/qa", async (req, res) => {
-  const { project } = await scopedProject(req.params.projectId, req);
+  const { context, project } = await scopedProject(req.params.projectId, req);
+  if (!hasWorkspacePermission(context, "publish")) return res.status(403).json({ error: "Publishing permission is required." });
   const deployment = project.websiteBuilds[0]?.deployments.find((item) => item.id === req.params.deploymentId);
   if (!deployment) return res.status(404).json({ error: "Deployment not found." });
-  const pages = project.websiteBuilds[0]?.pages.filter((page) => page.remoteUrl) ?? [];
-  const results = [];
+  const publication = project.websitePublications.find((item) => String(jsonRecord(item.remoteMappingsJson).deploymentId || "") === deployment.id && item.mode === "publish");
+  const storedMappings = publication ? websitePublicationPageMappings(publication.remoteMappingsJson) : [];
+  const pages = storedMappings.length
+    ? storedMappings.map((mapping) => ({ id: String(mapping.pageId || ""), remoteUrl: String(mapping.remoteUrl || "") })).filter((page) => page.id && page.remoteUrl)
+    : project.websiteBuilds[0]?.pages.filter((page) => page.remoteUrl).map((page) => ({ id: page.id, remoteUrl: page.remoteUrl! })) ?? [];
+  if (!pages.length) return res.status(409).json({ error: "No published WordPress page URLs are available to verify." });
+  const resultData: Array<{ deploymentId: string; pageId: string; liveUrl: string; score: number; status: string; checksJson: Prisma.InputJsonValue }> = [];
   for (const page of pages) {
     const checks: Array<{ key: string; passed: boolean; detail: string }> = [];
     try {
-      const url = await safeSiteUrl(page.remoteUrl!);
-      const response = await fetch(url, { signal: AbortSignal.timeout(15_000), redirect: "error" });
+      const url = await safeSiteUrl(page.remoteUrl);
+      const response = await fetch(url, { signal: AbortSignal.timeout(20_000), redirect: "follow" });
       const html = await response.text();
-      checks.push({ key: "http", passed: response.ok, detail: `HTTP ${response.status}` }, { key: "title", passed: /<title[^>]*>.+?<\/title>/is.test(html), detail: "HTML title" }, { key: "h1", passed: (html.match(/<h1\b/gi) ?? []).length === 1, detail: "Exactly one H1" }, { key: "meta_description", passed: /<meta[^>]+name=["']description["']/i.test(html), detail: "Meta description" }, { key: "images_alt", passed: !/<img\b(?![^>]*\balt=)[^>]*>/i.test(html), detail: "Image alt attributes" }, { key: "indexability", passed: !/noindex/i.test(html), detail: "No noindex directive" });
+      const headerRobots = response.headers.get("x-robots-tag") || "";
+      const finalUrl = response.url || url;
+      const canonicalMatch = html.match(/<link[^>]+rel=["'][^"']*canonical[^"']*["'][^>]+href=["']([^"']+)["']|<link[^>]+href=["']([^"']+)["'][^>]+rel=["'][^"']*canonical[^"']*["']/i);
+      const canonicalValue = canonicalMatch?.[1] || canonicalMatch?.[2] || "";
+      const canonicalMatchesProduction = (() => {
+        try {
+          const canonicalUrl = new URL(canonicalValue, finalUrl);
+          const liveUrl = new URL(finalUrl);
+          return canonicalUrl.origin === liveUrl.origin && canonicalUrl.pathname.replace(/\/+$/, "") === liveUrl.pathname.replace(/\/+$/, "");
+        } catch { return false; }
+      })();
+      const internalTargets = [...html.matchAll(/<(?:a|img|script|link)\b[^>]+(?:href|src)=["']([^"']+)["']/gi)]
+        .map((match) => match[1])
+        .filter((target) => target && !/^(?:#|mailto:|tel:|javascript:|data:)/i.test(target))
+        .map((target) => { try { return new URL(target, finalUrl).toString(); } catch { return ""; } })
+        .filter((target) => { try { return new URL(target).origin === new URL(finalUrl).origin; } catch { return false; } });
+      const sampledTargets = [...new Set(internalTargets)].filter((target) => target !== finalUrl).slice(0, 4);
+      const sampledResponses = await Promise.all(sampledTargets.map(async (target) => {
+        try {
+          const targetUrl = await safeSiteUrl(target);
+          const targetResponse = await fetch(targetUrl, { signal: AbortSignal.timeout(8_000), redirect: "follow" });
+          return targetResponse.ok;
+        } catch { return false; }
+      }));
+      const leakedProductionCopy = /\b(?:lorem ipsum|placeholder(?: text| copy)?|content goes here|TODO|TBD|not approved|requires? confirmation|proof required|evidence (?:needed|required)|reviewer instruction|content brief|do not publish)\b/i.test(html.replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, " ").replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, " "));
+      const invalidFormAction = /<form\b(?![^>]*(?:action=["'][^"'#]+["']|data-senuke-managed-form))[^>]*>/i.test(html);
+      checks.push(
+        { key: "http", passed: response.ok, detail: `HTTP ${response.status}${response.redirected ? ` · followed redirect to ${response.url}` : ""}` },
+        { key: "title", passed: /<title[^>]*>.+?<\/title>/is.test(html), detail: "HTML title" },
+        { key: "h1", passed: (html.match(/<h1\b/gi) ?? []).length === 1, detail: "Exactly one H1" },
+        { key: "meta_description", passed: /<meta[^>]+name=["']description["']/i.test(html), detail: "Meta description" },
+        { key: "canonical", passed: (html.match(/<link[^>]+rel=["'][^"']*canonical[^"']*["']/gi) ?? []).length === 1 && canonicalMatchesProduction, detail: canonicalMatchesProduction ? `Production canonical: ${canonicalValue}` : `Canonical does not match live URL: ${canonicalValue || "missing"}` },
+        { key: "schema", passed: /<script[^>]+application\/ld\+json/i.test(html), detail: "JSON-LD schema" },
+        { key: "approved_design", passed: /id=["']senuke-ai-approved-release-inline-css["']/i.test(html), detail: "Approved SENuke design package" },
+        { key: "editable_theme_layout", passed: /class=["'][^"']*senuke-theme-main/i.test(html), detail: "Editable SENuke header, page and footer template" },
+        { key: "images_alt", passed: !/<img\b(?![^>]*\balt=)[^>]*>/i.test(html), detail: "Image alt attributes" },
+        { key: "indexability", passed: !/noindex/i.test(html) && !/noindex/i.test(headerRobots), detail: "No HTML or HTTP noindex directive" },
+        { key: "instruction_leakage", passed: !leakedProductionCopy, detail: leakedProductionCopy ? "Visitor-visible placeholder or internal workflow language found" : "No placeholder or internal instruction leakage" },
+        { key: "draft_urls", passed: !hasReleaseScopedDraftUrl(internalTargets), detail: "No release-scoped draft URL leaked into production" },
+        { key: "internal_links_and_assets", passed: sampledResponses.every(Boolean), detail: sampledResponses.every(Boolean) ? `${sampledResponses.length} sampled internal link and asset request(s) passed` : `${sampledResponses.filter((passed) => !passed).length} sampled internal link or asset request(s) failed` },
+        { key: "forms", passed: !invalidFormAction, detail: invalidFormAction ? "A form has no functional delivery action" : "Rendered forms expose a managed or explicit delivery action" },
+      );
     } catch (error) { checks.push({ key: "fetch", passed: false, detail: error instanceof Error ? error.message : "Could not fetch live page" }); }
     const score = Math.round(checks.filter((check) => check.passed).length / Math.max(1, checks.length) * 100);
-    results.push(await prisma.websiteQaResult.create({ data: { deploymentId: deployment.id, pageId: page.id, liveUrl: page.remoteUrl!, score, status: checks.every((check) => check.passed) ? "passed" : "issues_found", checksJson: checks } }));
+    resultData.push({ deploymentId: deployment.id, pageId: page.id, liveUrl: page.remoteUrl, score, status: checks.every((check) => check.passed) ? "passed" : "issues_found", checksJson: checks as Prisma.InputJsonValue });
   }
-  res.json({ results });
+  const passed = resultData.every((result) => result.status === "passed");
+  const verifiedAt = new Date();
+  await prisma.$transaction(async (tx) => {
+    await tx.websiteQaResult.deleteMany({ where: { deploymentId: deployment.id } });
+    await tx.websiteQaResult.createMany({ data: resultData });
+    await tx.websiteDeployment.update({ where: { id: deployment.id }, data: { status: passed ? "success" : "success_with_warnings", errorMessage: null, completedAt: verifiedAt } });
+    if (publication) {
+      const priorVerification = jsonRecord(publication.verificationJson);
+      const priorLogs = Array.isArray(publication.deploymentLogsJson) ? publication.deploymentLogsJson : [];
+      await tx.websitePublication.update({
+        where: { id: publication.id },
+        data: {
+          status: passed ? "published" : "published_validation_failed",
+          verificationJson: { ...priorVerification, status: passed ? "verified" : "production_validation_failed", checkedAt: verifiedAt.toISOString(), passedPageCount: resultData.filter((result) => result.status === "passed").length, pageCount: resultData.length } as Prisma.InputJsonValue,
+          deploymentLogsJson: [...priorLogs, { action: "production_verification_retried", status: passed ? "success" : "warning", checkedPageCount: resultData.length, passedPageCount: resultData.filter((result) => result.status === "passed").length, at: verifiedAt.toISOString() }] as Prisma.InputJsonValue,
+          errorMessage: passed ? null : "The website was published, but one or more live verification checks still need attention.",
+        },
+      });
+    }
+    if (project.websiteBuilds[0]) await tx.websiteBuild.update({ where: { id: project.websiteBuilds[0].id }, data: { status: passed ? "published" : "needs_attention" } });
+  });
+  if (publication && passed) {
+    await activatePostLaunchGrowthLifecycle({ projectId: project.id, releaseId: publication.releaseId, publishedAt: publication.publishedAt ?? verifiedAt, launchVerified: true, actorUserId: context.membership.userId }).catch(() => null);
+  }
+  const results = await prisma.websiteQaResult.findMany({ where: { deploymentId: deployment.id }, orderBy: { createdAt: "asc" } });
+  res.json({ results, passed, publicationStatus: publication ? passed ? "published" : "published_validation_failed" : null });
 });
 
 websiteBuilderRouter.post("/projects/:projectId/website-builder/deployments/:deploymentId/rollback", async (req, res) => {

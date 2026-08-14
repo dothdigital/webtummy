@@ -658,6 +658,56 @@ export async function measurementCheckpointNotifications(now = new Date()) {
   });
 }
 
+export async function scheduledWebsiteTrackingHealthChecks(now = new Date()) {
+  return runLogged("scheduled_website_tracking_health_checks", async () => {
+    const projects = await prisma.project.findMany({
+      where: { growthBlueprint: { is: { status: "active" } }, website: { isNot: null } },
+      take: 500,
+      select: {
+        id: true,
+        primaryGoal: true,
+        website: { select: { trackingSite: true, measurementPlans: { where: { active: true }, orderBy: { version: "desc" }, take: 1 } } },
+      },
+    });
+    let healthy = 0; let attention = 0; let recovered = 0;
+    const dateKey = now.toISOString().slice(0, 10);
+    for (const project of projects) {
+      const site = project.website?.trackingSite;
+      const plan = project.website?.measurementPlans[0];
+      if (!site || !plan || !site.lastVerifiedAt) continue;
+      const lastObservedAt = site.lastEventAt ?? site.lastVerifiedAt;
+      const stale = now.getTime() - lastObservedAt.getTime() > 3 * DAY_MS;
+      await prisma.growthSignal.upsert({
+        where: { fingerprint: `tracking-health:${project.id}:${dateKey}` },
+        create: { projectId: project.id, fingerprint: `tracking-health:${project.id}:${dateKey}`, category: "measurement", signalKey: "website_tracking_health", sourceType: "website_tracking_site", sourceId: site.id, valueJson: { status: stale ? "review_required" : "healthy", lastEventAt: site.lastEventAt, lastVerifiedAt: site.lastVerifiedAt, checkedAt: now } as Prisma.InputJsonValue, confidence: stale ? 70 : 95, collectedAt: now, effectiveDate: now, expiresAt: new Date(now.getTime() + 2 * DAY_MS), engineVersion: "post-launch-growth-v1" },
+        update: { valueJson: { status: stale ? "review_required" : "healthy", lastEventAt: site.lastEventAt, lastVerifiedAt: site.lastVerifiedAt, checkedAt: now } as Prisma.InputJsonValue, confidence: stale ? 70 : 95, collectedAt: now, effectiveDate: now, expiresAt: new Date(now.getTime() + 2 * DAY_MS), freshnessStatus: "fresh" },
+      });
+      if (stale) {
+        attention += 1;
+        await prisma.$transaction(async (tx) => {
+          await tx.websiteMeasurementPlan.update({ where: { id: plan.id }, data: { trackingState: "TRACKING_REVIEW_REQUIRED" } });
+          await tx.nextBestAction.updateMany({ where: { projectId: project.id, engineVersion: "post-launch-growth-v1", status: "selected", actionType: { not: "tracking_verification" } }, data: { status: "superseded", decision: "tracking_health_priority", decidedAt: now, selectedAt: null } });
+          const dedupeKey = `post-launch:${project.id}:verify-live-tracking`.slice(0, 191);
+          const existing = await tx.nextBestAction.findFirst({ where: { projectId: project.id, dedupeKey }, orderBy: { createdAt: "asc" } });
+          const data = { sourceType: "growth_engine", sourceId: site.id, title: "Verify tracking on the live website", recommendation: "Run a controlled production page-view and primary-conversion test. Confirm that SEnuke AI receives the events, then correct the tag, allowed host, consent, or form mapping if collection has stopped.", reasoningSummary: "The daily tracking-health check did not observe a recent event. Low traffic may be the cause, so verify with a controlled test before treating this as a failure.", expectedImpact: "A verified measurement stream that can continue collecting trustworthy baseline and outcome data.", confidence: 70, estimatedEffort: "low", route: "technical", priorityScore: 99, evidenceJson: { source: "daily_tracking_health", lastEventAt: site.lastEventAt, checkedAt: now, evidenceLimitation: "No recent event does not by itself prove that tracking is broken." } as Prisma.InputJsonValue, actionType: "tracking_verification", businessGoal: (project.primaryGoal || "Reliable growth measurement").slice(0, 255), targetEntitiesJson: [site.id] as Prisma.InputJsonValue, estimatedImpactJson: { statement: "Restore or confirm reliable tracking." } as Prisma.InputJsonValue, scoreJson: { priorityScore: 99, confidence: 70 } as Prisma.InputJsonValue, dependencyIdsJson: [] as Prisma.InputJsonValue, approvalType: "user_approval", riskLevel: "medium", urgency: 99, engineVersion: "post-launch-growth-v1", selectedAt: now, status: "selected" };
+          if (existing) await tx.nextBestAction.update({ where: { id: existing.id }, data });
+          else await tx.nextBestAction.create({ data: { projectId: project.id, dedupeKey, ...data } });
+        });
+      } else {
+        healthy += 1;
+        if (plan.trackingState === "TRACKING_REVIEW_REQUIRED") {
+          recovered += 1;
+          await prisma.$transaction(async (tx) => {
+            await tx.websiteMeasurementPlan.update({ where: { id: plan.id }, data: { trackingState: "COLLECTING_INITIAL_DATA", lastVerifiedAt: now } });
+            await tx.nextBestAction.updateMany({ where: { projectId: project.id, engineVersion: "post-launch-growth-v1", actionType: "tracking_verification", status: "selected" }, data: { status: "completed", decision: "tracking_recovered", decidedAt: now, selectedAt: null } });
+          });
+        }
+      }
+    }
+    return { checked: projects.length, healthy, attention, recovered };
+  });
+}
+
 export async function scheduledGrowthBlueprintReviews(now = new Date()) {
   return runLogged("scheduled_growth_blueprint_reviews", async () => {
     const blueprints = await prisma.growthBlueprint.findMany({
@@ -838,6 +888,7 @@ export async function runMaintenanceSuite() {
     await taskDeadlineNotifications();
     await approvalReminderEscalations();
     await pendingContentDiscoveryChecks();
+    await scheduledWebsiteTrackingHealthChecks();
     await measurementCheckpointNotifications();
     await scheduledGrowthBlueprintReviews();
     await scheduledLocalGridScans();

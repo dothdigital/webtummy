@@ -37,6 +37,7 @@ import { authorityGrowthRouter } from "./routes/authority-growth.js";
 import { aiCitationVisibilityRouter } from "./routes/ai-citation-visibility.js";
 import { publicWebsiteFormsRouter } from "./routes/website-public-forms.js";
 import { publicWebsiteTrackingRouter } from "./routes/website-tracking-public.js";
+import { discoveryDraftsRouter } from "./routes/discovery-drafts.js";
 import { rawBodySaver } from "./billing.js";
 import { enforceArchivedReadOnly, enforceCommercialAccess, enforceWorkspacePermissions, requireAuth } from "./middleware.js";
 import { createApiErrorCode, GENERIC_SYSTEM_ERROR, systemErrorPayload } from "./api-errors.js";
@@ -197,6 +198,7 @@ app.use("/api", socialStrategyRouter);
 app.use("/api", socialConnectRouter);
 app.use("/api", localSeoRouter);
 app.use("/api", googleBusinessProfileRouter);
+app.use("/api", discoveryDraftsRouter);
 app.use("/api", executionTasksRouter);
 app.use("/api", optimizationWorkflowRouter);
 

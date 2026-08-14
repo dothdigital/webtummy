@@ -80,3 +80,7 @@ export function hostingHandoffReady(draft: HostingHandoffDraft) {
   return hostingHandoffMissing(draft).length === 0
     && (draft.destination !== "developer_handoff" || /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(draft.technicalContactEmail));
 }
+
+export function hostingHandoffDraftChanged(current: HostingHandoffDraft, saved: HostingHandoffDraft) {
+  return JSON.stringify(current) !== JSON.stringify(saved);
+}

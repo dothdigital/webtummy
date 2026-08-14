@@ -94,11 +94,11 @@ export function evaluateWebsiteLaunchReadiness(
     "quality_governance",
     "content",
     "Customer-facing quality and evidence gate",
-    qualityGate.openBlockingCount ? "blocking" : qualityGate.counts.medium || qualityGate.counts.low ? "warning" : "passed",
+    qualityGate.openBlockingCount ? "blocking" : qualityGate.counts.high || qualityGate.counts.medium || qualityGate.counts.low ? "warning" : "passed",
     qualityGate.openBlockingCount
-      ? `${qualityGate.counts.blocker} blocker(s) and ${qualityGate.counts.high} unresolved high-severity issue(s) must be fixed or formally waived.`
-      : qualityGate.counts.medium || qualityGate.counts.low
-        ? `${qualityGate.counts.medium} medium and ${qualityGate.counts.low} low issue(s) remain visible for review.`
+      ? `${qualityGate.counts.blocker} genuine publishing blocker(s) must be corrected.`
+      : qualityGate.counts.high || qualityGate.counts.medium || qualityGate.counts.low
+        ? `${qualityGate.counts.high} high, ${qualityGate.counts.medium} medium, and ${qualityGate.counts.low} low issue(s) remain visible as non-blocking review guidance.`
         : "No instruction leakage, unsupported claim, intent-alignment, homepage, or conversion issue was found.",
   );
   add(
