@@ -8311,7 +8311,7 @@ function wordpressRestCollection(postType: string) {
 type MeasurementReadinessCheck = {
   key: string;
   label: string;
-  status: "passed" | "warning" | "blocking";
+  status: "passed" | "warning";
   detail: string;
   required: boolean;
 };
@@ -8328,8 +8328,8 @@ function measurementReadinessFor(model: WebsiteModel, tracking: Awaited<ReturnTy
     return {
       key,
       label,
-      status: connected ? "passed" : required ? "blocking" : "warning",
-      detail: connected ? `${label} is connected.` : required ? `${label} is required but not connected.` : `${label} is optional and not connected; related metrics will be unavailable.`,
+      status: connected ? "passed" : "warning",
+      detail: connected ? `${label} is connected.` : required ? `${label} is marked as required but is not connected. Launch can continue; related metrics will remain unavailable until it is connected.` : `${label} is optional and not connected; related metrics will be unavailable.`,
       required,
     };
   };
@@ -8349,22 +8349,22 @@ function measurementReadinessFor(model: WebsiteModel, tracking: Awaited<ReturnTy
     {
       key: "goal",
       label: "Website goal and primary conversion",
-      status: plan?.businessGoal && plan.primaryConversion && plan.primaryMeasurement ? "passed" : "blocking",
-      detail: plan?.businessGoal && plan.primaryConversion ? `${String(plan.businessGoal).replaceAll("_", " ")} · ${String(plan.primaryConversion).replaceAll("_", " ")}` : "Define the website goal and primary conversion before launch.",
+      status: plan?.businessGoal && plan.primaryConversion && plan.primaryMeasurement ? "passed" : "warning",
+      detail: plan?.businessGoal && plan.primaryConversion ? `${String(plan.businessGoal).replaceAll("_", " ")} · ${String(plan.primaryConversion).replaceAll("_", " ")}` : "The website goal or primary conversion is incomplete. Launch can continue, but measurement reporting will remain limited until it is defined.",
       required: true,
     },
     {
       key: "conversion_mapping",
       label: "Forms, buttons and calls mapped",
-      status: conversionMapped ? "passed" : "blocking",
-      detail: conversionMapped ? "The primary conversion has a matching approved page element." : `No approved website element currently maps to ${conversion.replaceAll("_", " ") || "the primary conversion"}.`,
+      status: conversionMapped ? "passed" : "warning",
+      detail: conversionMapped ? "The primary conversion has a matching approved page element." : `No approved website element currently maps to ${conversion.replaceAll("_", " ") || "the primary conversion"}. Launch can continue, but conversion reporting will remain incomplete until this is mapped and verified.`,
       required: true,
     },
     {
       key: "senuke_tag",
       label: "SEnuke AI tracking",
-      status: tracking?.siteId && installation.measurementTagEnabled !== false ? "passed" : "blocking",
-      detail: tracking?.siteId ? "The production publisher is configured to install the project tracking identity." : "A production website URL is required before the tracking identity can be installed.",
+      status: tracking?.siteId && installation.measurementTagEnabled !== false ? "passed" : "warning",
+      detail: tracking?.siteId ? "The production publisher is configured to install the project tracking identity." : "The tracking identity is not ready. Launch can continue, but SEnuke performance reporting will remain unavailable until a production website URL is connected.",
       required: true,
     },
     sourceCheck("ga4", "Google Analytics 4"),
@@ -8384,7 +8384,9 @@ function measurementReadinessFor(model: WebsiteModel, tracking: Awaited<ReturnTy
       required: false,
     },
   ];
-  const blockingCount = checks.filter((check) => check.status === "blocking").length;
+  // Measurement readiness is advisory. It records reporting limitations but
+  // never prevents an otherwise valid approved release from being published.
+  const blockingCount = 0;
   const warningCount = checks.filter((check) => check.status === "warning").length;
   return {
     status: blockingCount ? "blocked" as const : warningCount ? "ready_with_limitations" as const : "ready" as const,
