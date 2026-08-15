@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { SENUKE_COMPONENT_REGISTRY_V1 } from "@webtummy/core/website-model";
-import { canonicalComponents, combinedPageSchema, compactWebsiteBuilderMediaAsset, compactWebsiteBuilderOverviewPage, effectiveExistingPageRequirements, generatedPageSchema, hasReleaseScopedDraftUrl, importedWebsiteRouteAssignment, logoPaletteAiPrompt, logoPalettePromptBrand, pageIsImportedExistingWebsite, parseWordPressJsonResponse, productionWebsiteUrl, publishingAssetMatchesWebsitePage, replaceWebsitePublicStatements, shouldDeployWordPressDesignPackage, websitePublicationPageMappings, websiteReleaseComparisonModel, websiteReleaseDeploymentScope, websiteSettingsWithVerifiedLocalEvidence, wordPressConnectorVersionAtLeast, wordpressConnectorSafeCss, wordpressMenuDestination, wordpressPageWritePayload, wordpressRemotePageIds } from "./website-builder.js";
+import { canonicalComponents, combinedPageSchema, compactWebsiteBuilderMediaAsset, compactWebsiteBuilderOverviewPage, effectiveExistingPageRequirements, generatedPageSchema, hasReleaseScopedDraftUrl, importedWebsiteRouteAssignment, logoPaletteAiPrompt, logoPalettePromptBrand, pageIsImportedExistingWebsite, parseWordPressJsonResponse, productionWebsiteUrl, publishingAssetMatchesWebsitePage, replaceWebsitePublicStatements, shouldDeployWordPressDesignPackage, websitePublicationPageMappings, websiteReleaseComparisonModel, websiteReleaseDeploymentScope, websiteSettingsWithVerifiedLocalEvidence, wordPressConnectorVersionAtLeast, wordpressConnectorSafeCss, wordpressMenuDestination, wordpressPageWritePayload, wordpressProductionCanonicalUrl, wordpressRemotePageIds } from "./website-builder.js";
 
 const project = {
   businessName: "Example Financial",
@@ -68,6 +68,11 @@ describe("ongoing WordPress publishing schema", () => {
     ])).toBe(false);
     expect(hasReleaseScopedDraftUrl(["https://example.com/about-senuke-a1b2c3/"])).toBe(true);
     expect(hasReleaseScopedDraftUrl(["senuke-ai-approved-release-inline-css"])).toBe(false);
+  });
+
+  it("uses the final WordPress permalink for production canonicals", () => {
+    expect(wordpressProductionCanonicalUrl("https://example.com", "https://example.com/services/rrsp/", false)).toBe("https://example.com/services/rrsp/");
+    expect(wordpressProductionCanonicalUrl("https://example.com/", "https://example.com/home/", true)).toBe("https://example.com/");
   });
 
   it("derives a production website from a domain-shaped project name", () => {

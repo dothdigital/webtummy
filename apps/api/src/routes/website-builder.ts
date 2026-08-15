@@ -1279,6 +1279,11 @@ export function wordpressMenuDestination(baseUrl: string, item: { remoteUrl?: un
   return `${baseUrl.replace(/\/$/, "")}/${destination.replace(/^\//, "")}`;
 }
 
+export function wordpressProductionCanonicalUrl(siteUrl: string, resultLink: unknown, homePage: boolean) {
+  if (homePage) return `${siteUrl.replace(/\/+$/, "")}/`;
+  return String(resultLink || siteUrl).trim();
+}
+
 export function wordpressRemotePageIds(value: unknown, requiredPageIds: string[] = []) {
   const savedPages = jsonRecord(value).pages;
   const mappings = Array.isArray(savedPages) ? savedPages.map(jsonRecord) : [];
@@ -8103,7 +8108,11 @@ export function websitePublicationPageMappings(remoteMappingsJson: Prisma.JsonVa
 }
 
 export function hasReleaseScopedDraftUrl(targets: string[]) {
-  return targets.some((target) => {
+  return releaseScopedDraftUrls(targets).length > 0;
+}
+
+function releaseScopedDraftUrls(targets: string[]) {
+  return targets.filter((target) => {
     try {
       return /-senuke-[a-z0-9]{4,}/i.test(new URL(target).pathname);
     } catch {
@@ -9118,7 +9127,10 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/deploy", async (
       if (result.link) wordpressPageUrls.set(page.pageId, String(result.link));
       if (isHomePage && result.id) wordpressHomePageId = Number(result.id);
       if (connectorEnabled && result.id) {
-        await wpFetch(integration, `/wp-json/senuke/v1/pages/${result.id}/optimize`, { method: "POST", body: JSON.stringify({ metaTitle: page.seo.title, metaDescription: page.seo.metaDescription, canonicalUrl: input.mode === "publish" ? page.seo.canonicalUrl || result.link : result.link, robots: input.mode === "publish" ? page.seo.robots || "index, follow" : "noindex, nofollow", schemaJsonLd: page.seo.schemaJsonLd, aeoReviewed: true, geoReviewed: true, approvedReleaseId: release.id, snapshotHash: release.snapshotHash, senukePageId: page.pageId }) });
+        const canonicalUrl = input.mode === "publish"
+          ? wordpressProductionCanonicalUrl(integration.siteUrl, result.link, isHomePage)
+          : result.link;
+        await wpFetch(integration, `/wp-json/senuke/v1/pages/${result.id}/optimize`, { method: "POST", body: JSON.stringify({ metaTitle: page.seo.title, metaDescription: page.seo.metaDescription, canonicalUrl, robots: input.mode === "publish" ? page.seo.robots || "index, follow" : "noindex, nofollow", schemaJsonLd: page.seo.schemaJsonLd, aeoReviewed: true, geoReviewed: true, approvedReleaseId: release.id, snapshotHash: release.snapshotHash, senukePageId: page.pageId }) });
       }
       await prisma.websiteBuildPage.update({ where: { id: editablePage.id }, data: { status: input.mode === "publish" ? "published" : "deployed", remotePostId: String(result.id), remoteUrl: String(result.link ?? "") } });
       logs.push({ pageId: page.pageId, action: promotingReviewedDraft ? "promoted_reviewed_draft" : remoteId ? "updated" : "created", status: "success", remotePostType, remotePostId: result.id, url: result.link, approvedReleaseId: release.id, at: new Date().toISOString() });
@@ -9252,6 +9264,7 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/deploy", async (
             } catch { return { target, passed: false, status: 0 }; }
           }));
           const brokenTargets = sampledResponses.filter((item) => !item.passed);
+          const draftTargets = releaseScopedDraftUrls(internalTargets);
           const leakedProductionCopy = /\b(?:lorem ipsum|placeholder(?: text| copy)?|content goes here|TODO|TBD|not approved|requires? confirmation|proof required|evidence (?:needed|required)|reviewer instruction|content brief|do not publish)\b/i.test(html.replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, " ").replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, " "));
           const invalidFormAction = /<form\b(?![^>]*(?:action=["'][^"'#]+["']|data-senuke-managed-form))[^>]*>/i.test(html);
           checks.push(
@@ -9266,7 +9279,7 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/deploy", async (
             { key: "images_alt", passed: !/<img\b(?![^>]*\balt=)[^>]*>/i.test(html), detail: "Image alt attributes" },
             { key: "indexability", passed: !/noindex/i.test(html) && !/noindex/i.test(headerRobots), detail: "No HTML or HTTP noindex directive" },
             { key: "instruction_leakage", passed: !leakedProductionCopy, detail: leakedProductionCopy ? "Visitor-visible placeholder or internal workflow language found" : "No placeholder or internal instruction leakage" },
-            { key: "draft_urls", passed: !hasReleaseScopedDraftUrl(internalTargets), detail: "No release-scoped draft URL leaked into production" },
+            { key: "draft_urls", passed: draftTargets.length === 0, detail: draftTargets.length ? `Release-scoped draft URL found: ${draftTargets.slice(0, 2).join(", ")}` : "No release-scoped draft URL leaked into production" },
             { key: "internal_links_and_assets", passed: brokenTargets.length === 0, detail: brokenTargets.length ? `${brokenTargets.length} sampled internal link or asset request(s) failed` : `${sampledResponses.length} sampled internal link and asset request(s) passed` },
             { key: "forms", passed: !invalidFormAction, detail: invalidFormAction ? "A form has no functional delivery action" : "Rendered forms expose a managed or explicit delivery action" },
           );
@@ -9864,9 +9877,11 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/deployments/:dep
         try {
           const targetUrl = await safeSiteUrl(target);
           const targetResponse = await fetch(targetUrl, { signal: AbortSignal.timeout(8_000), redirect: "follow" });
-          return targetResponse.ok;
-        } catch { return false; }
+          return { target, passed: targetResponse.ok, status: targetResponse.status };
+        } catch { return { target, passed: false, status: 0 }; }
       }));
+      const brokenTargets = sampledResponses.filter((item) => !item.passed);
+      const draftTargets = releaseScopedDraftUrls(internalTargets);
       const leakedProductionCopy = /\b(?:lorem ipsum|placeholder(?: text| copy)?|content goes here|TODO|TBD|not approved|requires? confirmation|proof required|evidence (?:needed|required)|reviewer instruction|content brief|do not publish)\b/i.test(html.replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, " ").replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, " "));
       const invalidFormAction = /<form\b(?![^>]*(?:action=["'][^"'#]+["']|data-senuke-managed-form))[^>]*>/i.test(html);
       checks.push(
@@ -9881,8 +9896,8 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/deployments/:dep
         { key: "images_alt", passed: !/<img\b(?![^>]*\balt=)[^>]*>/i.test(html), detail: "Image alt attributes" },
         { key: "indexability", passed: !/noindex/i.test(html) && !/noindex/i.test(headerRobots), detail: "No HTML or HTTP noindex directive" },
         { key: "instruction_leakage", passed: !leakedProductionCopy, detail: leakedProductionCopy ? "Visitor-visible placeholder or internal workflow language found" : "No placeholder or internal instruction leakage" },
-        { key: "draft_urls", passed: !hasReleaseScopedDraftUrl(internalTargets), detail: "No release-scoped draft URL leaked into production" },
-        { key: "internal_links_and_assets", passed: sampledResponses.every(Boolean), detail: sampledResponses.every(Boolean) ? `${sampledResponses.length} sampled internal link and asset request(s) passed` : `${sampledResponses.filter((passed) => !passed).length} sampled internal link or asset request(s) failed` },
+        { key: "draft_urls", passed: draftTargets.length === 0, detail: draftTargets.length ? `Release-scoped draft URL found: ${draftTargets.slice(0, 2).join(", ")}` : "No release-scoped draft URL leaked into production" },
+        { key: "internal_links_and_assets", passed: brokenTargets.length === 0, detail: brokenTargets.length ? `Failed internal request: ${brokenTargets.slice(0, 2).map((item) => `${item.target} (HTTP ${item.status || "fetch failed"})`).join(", ")}` : `${sampledResponses.length} sampled internal link and asset request(s) passed` },
         { key: "forms", passed: !invalidFormAction, detail: invalidFormAction ? "A form has no functional delivery action" : "Rendered forms expose a managed or explicit delivery action" },
       );
     } catch (error) { checks.push({ key: "fetch", passed: false, detail: error instanceof Error ? error.message : "Could not fetch live page" }); }
