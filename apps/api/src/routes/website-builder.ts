@@ -8111,6 +8111,25 @@ export function hasReleaseScopedDraftUrl(targets: string[]) {
   return releaseScopedDraftUrls(targets).length > 0;
 }
 
+export function isWebsiteQaRequestTarget(target: string, liveUrl: string) {
+  try {
+    const candidate = new URL(target, liveUrl);
+    const live = new URL(liveUrl);
+    candidate.hash = "";
+    live.hash = "";
+    if (candidate.origin !== live.origin || candidate.href === live.href) return false;
+    // WordPress advertises these API discovery endpoints in every page head.
+    // They are neither visitor links nor page assets and may briefly return 400
+    // while a newly published URL is propagating through WordPress caches.
+    if (/^\/wp-json\/oembed(?:\/|$)/i.test(candidate.pathname)) return false;
+    const restRoute = candidate.searchParams.get("rest_route") ?? "";
+    if (/^\/?oembed(?:\/|$)/i.test(restRoute)) return false;
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function releaseScopedDraftUrls(targets: string[]) {
   return targets.filter((target) => {
     try {
@@ -9241,12 +9260,13 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/deploy", async (
           const url = await safeSiteUrl(mapping.remoteUrl);
           const response = await fetch(url, { signal: AbortSignal.timeout(20_000), redirect: "follow" });
           const html = await response.text();
+          const finalUrl = response.url || url;
           const canonicalMatch = html.match(/<link[^>]+rel=["'][^"']*canonical[^"']*["'][^>]+href=["']([^"']+)["']|<link[^>]+href=["']([^"']+)["'][^>]+rel=["'][^"']*canonical[^"']*["']/i);
           const canonicalValue = canonicalMatch?.[1] || canonicalMatch?.[2] || "";
           const canonicalMatchesProduction = (() => {
             try {
-              const canonicalUrl = new URL(canonicalValue, url);
-              const liveUrl = new URL(url);
+              const canonicalUrl = new URL(canonicalValue, finalUrl);
+              const liveUrl = new URL(finalUrl);
               return canonicalUrl.origin === liveUrl.origin
                 && canonicalUrl.pathname.replace(/\/+$/, "") === liveUrl.pathname.replace(/\/+$/, "");
             } catch { return false; }
@@ -9255,9 +9275,9 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/deploy", async (
           const internalTargets = [...html.matchAll(/<(?:a|img|script|link)\b[^>]+(?:href|src)=["']([^"']+)["']/gi)]
             .map((match) => match[1])
             .filter((target) => target && !/^(?:#|mailto:|tel:|javascript:|data:)/i.test(target))
-            .map((target) => { try { return new URL(target, url).toString(); } catch { return ""; } })
-            .filter((target) => { try { return new URL(target).origin === new URL(url).origin; } catch { return false; } });
-          const sampledTargets = [...new Set(internalTargets)].filter((target) => target !== url).slice(0, 4);
+            .map((target) => { try { return new URL(target, finalUrl).toString(); } catch { return ""; } })
+            .filter((target) => { try { return new URL(target).origin === new URL(finalUrl).origin; } catch { return false; } });
+          const sampledTargets = [...new Set(internalTargets)].filter((target) => isWebsiteQaRequestTarget(target, finalUrl)).slice(0, 4);
           const sampledResponses = await Promise.all(sampledTargets.map(async (target) => {
             try {
               const targetUrl = await safeSiteUrl(target);
@@ -9874,7 +9894,7 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/deployments/:dep
         .filter((target) => target && !/^(?:#|mailto:|tel:|javascript:|data:)/i.test(target))
         .map((target) => { try { return new URL(target, finalUrl).toString(); } catch { return ""; } })
         .filter((target) => { try { return new URL(target).origin === new URL(finalUrl).origin; } catch { return false; } });
-      const sampledTargets = [...new Set(internalTargets)].filter((target) => target !== finalUrl).slice(0, 4);
+      const sampledTargets = [...new Set(internalTargets)].filter((target) => isWebsiteQaRequestTarget(target, finalUrl)).slice(0, 4);
       const sampledResponses = await Promise.all(sampledTargets.map(async (target) => {
         try {
           const targetUrl = await safeSiteUrl(target);

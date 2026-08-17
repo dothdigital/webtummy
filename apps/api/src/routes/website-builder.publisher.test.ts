@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { SENUKE_COMPONENT_REGISTRY_V1 } from "@webtummy/core/website-model";
-import { canonicalComponents, combinedPageSchema, compactWebsiteBuilderMediaAsset, compactWebsiteBuilderOverviewPage, effectiveExistingPageRequirements, generatedPageSchema, hasReleaseScopedDraftUrl, importedWebsiteRouteAssignment, logoPaletteAiPrompt, logoPalettePromptBrand, pageIsImportedExistingWebsite, parseWordPressJsonResponse, productionWebsiteUrl, publishingAssetMatchesWebsitePage, replaceWebsitePublicStatements, shouldDeployWordPressDesignPackage, websitePublicationPageMappings, websiteReleaseComparisonModel, websiteReleaseDeploymentScope, websiteSettingsWithVerifiedLocalEvidence, wordPressConnectorVersionAtLeast, wordpressConnectorSafeCss, wordpressMenuDestination, wordpressPageWritePayload, wordpressProductionCanonicalUrl, wordpressRemotePageIds } from "./website-builder.js";
+import { canonicalComponents, combinedPageSchema, compactWebsiteBuilderMediaAsset, compactWebsiteBuilderOverviewPage, effectiveExistingPageRequirements, generatedPageSchema, hasReleaseScopedDraftUrl, importedWebsiteRouteAssignment, isWebsiteQaRequestTarget, logoPaletteAiPrompt, logoPalettePromptBrand, pageIsImportedExistingWebsite, parseWordPressJsonResponse, productionWebsiteUrl, publishingAssetMatchesWebsitePage, replaceWebsitePublicStatements, shouldDeployWordPressDesignPackage, websitePublicationPageMappings, websiteReleaseComparisonModel, websiteReleaseDeploymentScope, websiteSettingsWithVerifiedLocalEvidence, wordPressConnectorVersionAtLeast, wordpressConnectorSafeCss, wordpressMenuDestination, wordpressPageWritePayload, wordpressProductionCanonicalUrl, wordpressRemotePageIds } from "./website-builder.js";
 
 const project = {
   businessName: "Example Financial",
@@ -68,6 +68,16 @@ describe("ongoing WordPress publishing schema", () => {
     ])).toBe(false);
     expect(hasReleaseScopedDraftUrl(["https://example.com/about-senuke-a1b2c3/"])).toBe(true);
     expect(hasReleaseScopedDraftUrl(["senuke-ai-approved-release-inline-css"])).toBe(false);
+  });
+
+  it("checks visitor-facing internal links and assets without sampling WordPress oEmbed discovery APIs", () => {
+    const liveUrl = "https://example.com/services/";
+    expect(isWebsiteQaRequestTarget("https://example.com/about/", liveUrl)).toBe(true);
+    expect(isWebsiteQaRequestTarget("https://example.com/wp-content/themes/senuke/style.css", liveUrl)).toBe(true);
+    expect(isWebsiteQaRequestTarget("https://example.com/wp-json/oembed/1.0/embed?url=https%3A%2F%2Fexample.com%2Fservices%2F", liveUrl)).toBe(false);
+    expect(isWebsiteQaRequestTarget("https://example.com/?rest_route=%2Foembed%2F1.0%2Fembed", liveUrl)).toBe(false);
+    expect(isWebsiteQaRequestTarget("https://example.com/services/#details", liveUrl)).toBe(false);
+    expect(isWebsiteQaRequestTarget("https://external.example/services/", liveUrl)).toBe(false);
   });
 
   it("uses the final WordPress permalink for production canonicals", () => {
