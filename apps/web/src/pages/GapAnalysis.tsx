@@ -591,6 +591,9 @@ export default function GapAnalysis() {
   const highImpactGapCount = gapRecommendations.filter((item) => item.impactScore >= 78).length;
   const approvedGapCount = gapRecommendations.filter((item) => item.status === "approved").length;
   const canRunGapAnalysis = overview?.capabilities?.canRun !== false;
+  const latestGapAt = overview?.latestGapRun ? new Date(overview.latestGapRun.completedAt || overview.latestGapRun.createdAt).getTime() : 0;
+  const latestCrawlAt = overview?.latestCompletedCrawl ? new Date(overview.latestCompletedCrawl.completedAt || overview.latestCompletedCrawl.createdAt).getTime() : 0;
+  const gapAnalysisStale = Boolean(latestGapAt && latestCrawlAt && latestGapAt < latestCrawlAt);
   const strategyWorkflow = overview?.strategyWorkflow;
   const currentLocalTasks = (overview?.localProfile?.tasks ?? []).filter((item) => item.planVersion === (overview?.localProfile?.planVersion ?? 0));
   const pendingLocalTasks = currentLocalTasks.filter((item) => item.status === "needs_review");
@@ -667,6 +670,20 @@ export default function GapAnalysis() {
         <>
           {error && <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm font-semibold text-red-700">{error}</div>}
           {notice && <div className="rounded-lg border border-[#9fc7d6] bg-[#eff8fb] px-4 py-3 text-sm font-semibold text-[#1f4f7a]">{notice}</div>}
+          {gapAnalysisStale && (
+            <Card className="border-amber-200 bg-amber-50 p-5">
+              <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+                <div>
+                  <div className="text-xs font-bold uppercase tracking-wide text-amber-700">Refresh required</div>
+                  <h2 className="mt-1 text-lg font-bold text-slate-950">Gap Analysis was completed earlier and now needs to run again</h2>
+                  <p className="mt-1 max-w-3xl text-sm leading-6 text-amber-900">The previous analysis is preserved, but it was completed before the latest website crawl. Refresh once to include the new live-site evidence and update Growth readiness.</p>
+                </div>
+                <button type="button" disabled={!canRunGapAnalysis || busyAction === "gap-run"} onClick={() => void runAction("gap-run", () => api.post(gapApi(selectedProjectId, "/run"), {}))} className="shrink-0 rounded-lg bg-brand-600 px-4 py-2.5 text-sm font-black text-white hover:bg-brand-700 disabled:cursor-not-allowed disabled:bg-slate-300">
+                  {busyAction === "gap-run" ? "Refreshing analysis…" : "Refresh Gap Analysis · Run Again"}
+                </button>
+              </div>
+            </Card>
+          )}
           {needsSiteAnalysis && (
             <Card className="border-amber-200 bg-amber-50 p-5">
               <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">

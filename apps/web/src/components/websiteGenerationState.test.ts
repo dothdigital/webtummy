@@ -1,8 +1,11 @@
 import { describe, expect, it } from "vitest";
 import {
+  qualityWaiverDestination,
+  reconcileWebsitePageDetail,
   websiteContentActionsAreLocked,
   websiteGenerationJobCoversPage,
   websiteGenerationJobIsActive,
+  websitePageContentIsProcessing,
 } from "./websiteGenerationState.js";
 
 describe("website page generation UI state", () => {
@@ -38,5 +41,47 @@ describe("website page generation UI state", () => {
       inputJson: { mode: "website_generation" },
       resultJson: {},
     }, "any-page")).toBe(true);
+  });
+
+  it("shows completed page content as ready for review while the batch continues", () => {
+    const jobs = [{
+      status: "processing",
+      inputJson: { mode: "website_generation" },
+      resultJson: {},
+    }];
+
+    expect(websitePageContentIsProcessing(jobs, "completed-page", true)).toBe(false);
+    expect(websitePageContentIsProcessing(jobs, "queued-page", false)).toBe(true);
+  });
+
+  it("uses the current summary approval after a same-version page approval", () => {
+    const detail = {
+      id: "home",
+      version: 3,
+      status: "review",
+      approvalReadiness: { state: "ready" },
+      contentJson: { components: ["full detail payload"] },
+    };
+    const summary = {
+      id: "home",
+      version: 3,
+      status: "approved",
+      approvalReadiness: { state: "approved" },
+      contentJson: { components: [] },
+    };
+
+    expect(reconcileWebsitePageDetail(summary, detail)).toEqual({
+      ...detail,
+      status: "approved",
+      approvalReadiness: { state: "approved" },
+      seoQuality: undefined,
+      contentSummary: undefined,
+    });
+  });
+
+  it("continues to approval after the last quality blocker is cleared", () => {
+    expect(qualityWaiverDestination(0)).toBe("review");
+    expect(qualityWaiverDestination(2)).toBe("optimization");
+    expect(qualityWaiverDestination(undefined)).toBe("optimization");
   });
 });

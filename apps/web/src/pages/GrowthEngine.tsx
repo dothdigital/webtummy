@@ -220,6 +220,73 @@ function ReadinessChecklist({ items }: { items: GrowthReadinessItem[] }) {
   );
 }
 
+function IntelligenceReadiness({ controller }: { controller: NonNullable<GrowthOverviewResponse["workflowController"]> }) {
+  const incomplete = controller.intelligenceModules.filter((item) =>
+    item.required && !["complete", "approved", "waived"].includes(item.status),
+  );
+  const consolidatedGapAction = incomplete.find((item) =>
+    ["technical_seo", "content_gap_analysis"].includes(item.key) && item.action?.url.includes("/gap-analysis"),
+  )?.action ?? null;
+
+  if (!incomplete.length && !controller.strategyStale) return null;
+
+  return (
+    <Card className="overflow-hidden border-amber-200">
+      <div className="border-b border-amber-100 bg-amber-50 p-5">
+        <div className="text-xs font-bold uppercase tracking-wide text-amber-700">Growth readiness</div>
+        <h2 className="mt-2 text-xl font-bold text-charcoal-950">
+          {incomplete.length ? "Gap Analysis was completed earlier and now needs a refresh" : `Strategy v${controller.strategyVersion || 1} was completed earlier and now needs regeneration`}
+        </h2>
+        <p className="mt-2 text-sm leading-6 text-slate-700">
+          {incomplete.length
+            ? consolidatedGapAction
+              ? "The website crawl is complete. Run the consolidated SEO & Gap Analysis once to refresh the Technical SEO, Content Gap, AI Citation, and Authority evidence below."
+              : "The website crawl is complete, but Growth needs the post-crawl findings below so it does not recommend work from older pre-launch evidence."
+            : "The live-site evidence is newer than the approved Strategy. Regenerate and approve the Strategy so Growth uses the current website."}
+        </p>
+        {consolidatedGapAction && (
+          <Link
+            to={consolidatedGapAction.url}
+            className="mt-4 inline-flex items-center justify-center rounded-lg bg-brand-600 px-3 py-2 text-sm font-bold text-white hover:bg-brand-700"
+          >
+            Refresh Gap Analysis · Run Again
+          </Link>
+        )}
+      </div>
+      {incomplete.length > 0 && (
+        <div className="grid gap-4 p-5 lg:grid-cols-2">
+          {incomplete.map((item) => (
+            <div key={item.key} className="rounded-xl border border-amber-200 bg-amber-50 p-4">
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <h3 className="font-bold text-amber-950">{item.label}</h3>
+                  <p className="mt-2 text-sm leading-6 text-amber-900">{item.reason}</p>
+                </div>
+                <span className="rounded-full bg-white px-2 py-1 text-xs font-bold text-amber-700">Required</span>
+              </div>
+              {item.action && !consolidatedGapAction && (
+                <Link
+                  to={item.action.url}
+                  className="mt-4 inline-flex items-center justify-center rounded-lg bg-brand-600 px-3 py-2 text-sm font-bold text-white hover:bg-brand-700"
+                >
+                  {item.action.label}
+                </Link>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+      {!incomplete.length && controller.strategyStale && (
+        <div className="p-5">
+          <Link to={`/strategy?projectId=${controller.projectId}`} className="inline-flex items-center justify-center rounded-lg bg-brand-600 px-3 py-2 text-sm font-bold text-white hover:bg-brand-700">
+            Regenerate Strategy · Create New Version
+          </Link>
+        </div>
+      )}
+    </Card>
+  );
+}
+
 export default function GrowthEngine() {
   const [params, setParams] = useSearchParams();
   const navigate = useNavigate();
@@ -378,7 +445,9 @@ export default function GrowthEngine() {
     );
   }
   if (!data) return <Card className="p-4 text-sm text-red-700">{error || "Growth data unavailable"}</Card>;
-  const canRunGrowth = data.readiness.canRun;
+  const foundationReady = data.readiness.canRun;
+  const workflowReady = Boolean(data.workflowController?.intelligenceReady && !data.workflowController.strategyStale);
+  const canRunGrowth = foundationReady && workflowReady;
   const blueprintVersion = data.growth.blueprint?.versions[0] ?? null;
   const contentRoadmap = data.growth.contentRoadmap;
   const contentQueueOrder = { now: 0, next: 1, later: 2, conditional: 3 };
@@ -417,7 +486,8 @@ export default function GrowthEngine() {
 
       {error && <Card className="border-red-200 bg-red-50 p-4 text-sm text-red-800">{error}</Card>}
 
-      {!canRunGrowth && <ReadinessChecklist items={data.readiness.items} />}
+      {!foundationReady && <ReadinessChecklist items={data.readiness.items} />}
+      {foundationReady && data.workflowController && !workflowReady && <IntelligenceReadiness controller={data.workflowController} />}
 
       {!canRunGrowth ? null : (
       <>

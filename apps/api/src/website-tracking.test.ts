@@ -1,13 +1,20 @@
 import { describe, expect, it } from "vitest";
-import { hostMatchesWebsite } from "./website-tracking.js";
+import { productionTrackingEndpointIssue } from "./website-tracking.js";
 
-describe("website tracking source validation", () => {
-  it("accepts the configured website host and its www equivalent", () => {
-    expect(hostMatchesWebsite("https://www.example.com/contact", "example.com")).toBe(true);
-    expect(hostMatchesWebsite("https://example.com", "www.example.com")).toBe(true);
+describe("production website tracking endpoint", () => {
+  it("rejects a localhost collector on a public website", () => {
+    expect(productionTrackingEndpointIssue(
+      "http://localhost:4000/api/public/website-tracking/tag.js?site=site-1",
+      "https://example.com",
+    )).toContain("localhost");
   });
 
-  it("rejects events sent from a different website", () => {
-    expect(hostMatchesWebsite("https://attacker.example/path", "example.com")).toBe(false);
+  it("rejects mixed-content tracking and accepts a public HTTPS collector", () => {
+    expect(productionTrackingEndpointIssue("http://api.example.com/tag.js", "https://example.com")).toContain("mixed content");
+    expect(productionTrackingEndpointIssue("https://api.example.com/tag.js", "https://example.com")).toBeNull();
+  });
+
+  it("allows localhost collectors for localhost websites", () => {
+    expect(productionTrackingEndpointIssue("http://localhost:4000/tag.js", "http://localhost:5173")).toBeNull();
   });
 });

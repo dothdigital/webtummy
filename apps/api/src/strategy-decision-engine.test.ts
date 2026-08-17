@@ -61,4 +61,31 @@ describe("DEV-047 Strategy Decision Engine", () => {
     expect(result.decisions.some((decision) => decision.key === "unsupported_action")).toBe(false);
     expect(result.audit.invalidCandidates).toEqual(expect.arrayContaining([expect.objectContaining({ key: "unsupported_action", reason: expect.stringContaining("No applicable evidence") })]));
   });
+
+  it("does not recommend rebuilding an approved website foundation after launch", () => {
+    const postLaunchPlan = {
+      ...plan,
+      focusAreas: [{
+        ...plan.focusAreas[0],
+        key: "canonical_foundation",
+        title: "Build the focused canonical website foundation",
+        priority: "critical" as const,
+        objective: "Approve one canonical owner per intent before copy production.",
+        actions: ["Approve the launch sitemap", "Build the canonical owner pages"],
+        channels: ["Website"],
+      }, ...plan.focusAreas.slice(1)],
+    };
+    const result = buildStrategyDecisionSet({
+      projectId: "project-1",
+      plan: postLaunchPlan,
+      businessBrainVersion: 3,
+      evidenceVersion: 4,
+      completionState: { websiteLaunched: true, websitePlanApproved: true },
+      workflowConfidence: { overall: 88, completeness: 90, freshness: 92, signalCoverage: 85, dataQuality: 87, conflictPenalty: 0, independentSignals: 5, reasons: [], cautions: [] },
+    });
+    expect(result.decisions.some((decision) => decision.key === "focus_canonical_foundation")).toBe(false);
+    expect(result.audit.invalidCandidates).toEqual(expect.arrayContaining([
+      expect.objectContaining({ key: "focus_canonical_foundation", reason: expect.stringContaining("already published") }),
+    ]));
+  });
 });

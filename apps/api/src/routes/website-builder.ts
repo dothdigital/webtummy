@@ -39,11 +39,13 @@ import {
 } from "@webtummy/core/website-quality-governance";
 import { approvedStrategyContext } from "../strategy-ai.js";
 import { isWebsitePlanTask } from "../website-plan-task.js";
+import { isCompletedWebsiteLaunchFoundationAction } from "../completed-work.js";
 import { cleanGeographicTargetMarkets, projectAnalysisLocationLabels } from "../project-location.js";
 import { normalizeComplianceAdvisories } from "../compliance-advisories.js";
 import {
   ensureConciseFirstSupportingOverview,
   ensurePageSpecificFirstH2,
+  ensureSeoFocusedHeroHeading,
   isGenericWebsiteHeroHeading,
   isGenericWebsiteSectionHeading,
   compactWebsiteAiPrompt,
@@ -78,7 +80,7 @@ import { activatePostLaunchGrowthLifecycle, postLaunchBaselineStatus } from "../
 import { commitUsage, preflightUsage, refundUsage } from "../usage-engine.js";
 import { refundWebsiteJobUsage, reserveWebsiteJobUsage } from "../website-job-usage.js";
 import { isPreLaunchWebsiteCampaign } from "../campaign-intelligence.js";
-import { captureWebsiteTracking, trackingEmbed, websiteTrackingMetrics } from "../website-tracking.js";
+import { captureWebsiteTracking, productionTrackingEndpointIssue, trackingEmbed, websiteTrackingMetrics } from "../website-tracking.js";
 
 export const websiteBuilderRouter = Router();
 const WEBSITE_SEO_PLAN_NORMALIZATION_VERSION = "keyword-owner-v2";
@@ -115,6 +117,8 @@ async function trackingForProject(project: { id: string; clientId: string; name?
   if (!website) return undefined;
   const captured = await captureWebsiteTracking(prisma, { websiteId: website.id, clientId: project.clientId, domain: website.domain, rootUrl: website.rootUrl, project, createdByUserId: userId });
   const embed = trackingEmbed(captured.site.id);
+  const endpointIssue = embed ? productionTrackingEndpointIssue(embed.scriptUrl, website.rootUrl) : null;
+  if (endpointIssue) throw Object.assign(new Error(endpointIssue), { statusCode: 409, code: "TRACKING_PUBLIC_ENDPOINT_REQUIRED" });
   return embed ? { ...embed, rootUrl: website.rootUrl, site: captured.site, plan: captured.plan } : undefined;
 }
 
@@ -859,7 +863,7 @@ function qualityWebsiteModel(project: { id: string; businessLocationJson?: Prism
     identity: {
       businessName: String(brand.businessName || build.name.replace(/\s+website$/i, "") || "Website"),
       ...(String(settings.footerAboutText || contactDetails.businessSummary || jsonRecord(settings.analysis).businessSummary || jsonRecord(settings.analysis).offer || "").trim()
-        ? { businessSummary: String(settings.footerAboutText || contactDetails.businessSummary || jsonRecord(settings.analysis).businessSummary || jsonRecord(settings.analysis).offer).trim().slice(0, 50) }
+        ? { businessSummary: String(settings.footerAboutText || contactDetails.businessSummary || jsonRecord(settings.analysis).businessSummary || jsonRecord(settings.analysis).offer).trim().slice(0, 100) }
         : {}),
       ...(logoAssetId ? { logoAssetId } : {}),
       ...(faviconAssetId ? { faviconAssetId } : {}),
@@ -1389,7 +1393,7 @@ async function scopedProject(projectId: string, req: Parameters<typeof workspace
       businessProfile: true,
       strategyPlans: { where: { status: "approved" }, orderBy: { version: "desc" }, take: 1 },
       growthBlueprint: { include: { versions: { orderBy: { version: "desc" }, take: 1 } } },
-      nextBestActions: { where: { status: { in: ["proposed", "recommended", "selected", "approved", "accepted", "in_progress"] } }, orderBy: [{ selectedAt: "desc" }, { priorityScore: "desc" }, { createdAt: "desc" }], take: 1, include: { followupTask: { select: { id: true, title: true, status: true, relatedUrl: true } } } },
+      nextBestActions: { where: { status: { in: ["proposed", "recommended", "selected", "approved", "accepted", "in_progress"] } }, orderBy: [{ selectedAt: "desc" }, { priorityScore: "desc" }, { createdAt: "desc" }], take: 10, include: { followupTask: { select: { id: true, title: true, status: true, relatedUrl: true } } } },
       keywordGroups: { where: { status: "approved" } },
       siteArchitectureVersions: {
         where: { status: "approved" },
@@ -1577,7 +1581,7 @@ async function scopedOverviewProject(projectId: string, req: Parameters<typeof w
       businessProfile: true,
       strategyPlans: { where: { status: "approved" }, orderBy: { version: "desc" }, take: 1 },
       growthBlueprint: { include: { versions: { orderBy: { version: "desc" }, take: 1 } } },
-      nextBestActions: { where: { status: { in: ["proposed", "recommended", "selected", "approved", "accepted", "in_progress"] } }, orderBy: [{ selectedAt: "desc" }, { priorityScore: "desc" }, { createdAt: "desc" }], take: 1, include: { followupTask: { select: { id: true, title: true, status: true, relatedUrl: true } } } },
+      nextBestActions: { where: { status: { in: ["proposed", "recommended", "selected", "approved", "accepted", "in_progress"] } }, orderBy: [{ selectedAt: "desc" }, { priorityScore: "desc" }, { createdAt: "desc" }], take: 10, include: { followupTask: { select: { id: true, title: true, status: true, relatedUrl: true } } } },
       keywordGroups: { where: { status: "approved" } },
       siteArchitectureVersions: { where: { status: "approved" }, orderBy: { version: "desc" }, take: 1, include: { pages: { orderBy: { sortOrder: "asc" } }, links: true } },
       executionTasks: { orderBy: { updatedAt: "desc" }, take: 100 },
@@ -2194,7 +2198,13 @@ export function builderView(project: Awaited<ReturnType<typeof scopedProject>>["
   const activeMeasurementPlan = project.website?.measurementPlans[0] ?? null;
   const postLaunchBaseline = postLaunchBaselineStatus({ publishedAt: livePublication?.publishedAt ?? null, trackingVerifiedAt: project.website?.trackingSite?.lastVerifiedAt ?? null, evaluationWindowDays: activeMeasurementPlan?.evaluationWindowDays ?? 28 });
   const growthBlueprint = project.growthBlueprint;
-  const nextBestAction = project.nextBestActions[0] ?? null;
+  const websitePlanApproved = Boolean(seoPlanTask
+    && ["completed", "approved", "ready_to_publish"].includes(seoPlanTask.status)
+    && Object.keys(seoPlanTaskPlan).length);
+  const nextBestAction = project.nextBestActions.find((candidate) => !isCompletedWebsiteLaunchFoundationAction(candidate, {
+    websiteLaunched: Boolean(livePublication),
+    websitePlanApproved,
+  })) ?? null;
   return {
     project: { id: project.id, name: project.name, businessName: businessContext.businessName, websiteUrl: project.websiteUrl, websiteStatus: project.websiteStatus, projectType: project.projectType, brandVoice: project.brandVoice, industry: businessContext.industry || project.niche, audience: businessContext.audience || null, offer: businessContext.coreBusinessValue || null, services: businessContext.primaryServices, businessSummary: businessContext.brandDescription || null, primaryGoal: project.primaryGoal, targetLocations: targetLocationStrings(project.targetLocations), preferredPublishingMethod: project.preferredPublishingMethod, complianceAdvisories },
     measurement: project.website ? {
@@ -3821,8 +3831,19 @@ async function generatePage(page: { title: string; pageType: string; primaryKeyw
           // short but otherwise valid page for revision.
         }
       }
-      parsed.content.components = ensurePageSpecificFirstH2(
+      parsed.content.components = ensureSeoFocusedHeroHeading(
         parsed.content.components as WebsiteComponentInstance[],
+        {
+          pageTitle: page.title,
+          pageType: page.pageType,
+          primaryKeyword: page.primaryKeyword,
+          businessName: businessContext.businessName ?? businessIdentity(project),
+          locations: targetLocationStrings(project.targetLocations),
+          serviceTopics: businessContext.primaryServices,
+        },
+      );
+      parsed.content.components = ensurePageSpecificFirstH2(
+        parsed.content.components,
         page,
         businessContext.businessName ?? businessIdentity(project),
         reservedSignals,

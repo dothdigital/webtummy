@@ -37,6 +37,7 @@ import { authorityGrowthRouter } from "./routes/authority-growth.js";
 import { aiCitationVisibilityRouter } from "./routes/ai-citation-visibility.js";
 import { publicWebsiteFormsRouter } from "./routes/website-public-forms.js";
 import { publicWebsiteTrackingRouter } from "./routes/website-tracking-public.js";
+import { jvZooRouter, startJvZooQueueWorker } from "./routes/jvzoo.js";
 import { discoveryDraftsRouter } from "./routes/discovery-drafts.js";
 import { rawBodySaver } from "./billing.js";
 import { enforceArchivedReadOnly, enforceCommercialAccess, enforceWorkspacePermissions, requireAuth } from "./middleware.js";
@@ -115,6 +116,11 @@ app.use((req, res, next) => {
 
   next();
 });
+app.use(
+  ["/api/integrations/jvzoo/ipn", "/api/billing/webhooks/jvzoo"],
+  express.json({ limit: "64kb", verify: rawBodySaver }),
+  express.urlencoded({ extended: false, limit: "32kb" }),
+);
 app.use(express.json({ limit: "1mb", verify: rawBodySaver }));
 app.use(express.urlencoded({ extended: false, limit: "32kb" }));
 
@@ -163,6 +169,7 @@ app.get("/", (_req, res) =>
 );
 
 app.use("/api/billing", billingRouter);
+app.use("/api/integrations/jvzoo", jvZooRouter);
 app.use("/api/auth", authRouter);
 app.use("/api/public", publicLeadMagnetsRouter);
 app.use("/api/public", publicWebsiteFormsRouter);
@@ -223,6 +230,7 @@ startLocalSeoAuditQueueWorker();
 startLocalGridScanQueueWorker();
 startStrategyGenerationQueueWorker();
 startContentPlanGenerationQueueWorker();
+startJvZooQueueWorker();
 
 app.listen(config.port, () => {
   console.log(`[api] SEnuke AI API listening on http://localhost:${config.port}`);

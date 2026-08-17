@@ -928,7 +928,7 @@ async function gapEvidence(projectId: string) {
     findLegacyLocalProfile(projectId),
     findCanonicalLocalProfile(project),
     prisma.keywordResearchRun.findMany({ where: { projectId, status: "completed" }, orderBy: { createdAt: "desc" }, take: 100, include: { competitors: { take: 15 }, ideas: { take: 30 } } }),
-    prisma.executionTask.findMany({ where: { projectId, OR: [{ title: { contains: "SEO Page Map", mode: "insensitive" } }, { title: { contains: "Content Plan", mode: "insensitive" } }] }, orderBy: { updatedAt: "desc" }, take: 10, select: { status: true, approvalSnapshotJson: true } }),
+    prisma.executionTask.findMany({ where: { projectId, OR: [{ title: { contains: "SEO Page Map", mode: "insensitive" } }, { title: { contains: "Content Plan", mode: "insensitive" } }, { title: { contains: "Website Plan", mode: "insensitive" } }, { actionButtonLabel: { contains: "SEO Page Map", mode: "insensitive" } }, { sourceType: { in: ["seo_plan", "website_launch_plan"] } }] }, orderBy: { updatedAt: "desc" }, take: 10, select: { status: true, approvalSnapshotJson: true } }),
   ]);
   const localProfile = mergedLocalProfile(legacyLocalProfile, canonicalLocalProfile);
   const rootUrl = project.website?.rootUrl ?? project.websiteUrl ?? crawl?.pages[0]?.url ?? "";
@@ -958,7 +958,7 @@ export async function recommendationFindings(projectId: string, category: string
   const rootUrl = project.website?.rootUrl ?? project.websiteUrl ?? "";
   const pages = logicalCrawlPages(crawl.pages, rootUrl);
   const canonicalAssignments = category === "keyword_mapping" ? canonicalAssignmentsFromTasks(await prisma.executionTask.findMany({
-    where: { projectId, OR: [{ title: { contains: "SEO Page Map", mode: "insensitive" } }, { title: { contains: "Content Plan", mode: "insensitive" } }] },
+    where: { projectId, OR: [{ title: { contains: "SEO Page Map", mode: "insensitive" } }, { title: { contains: "Content Plan", mode: "insensitive" } }, { title: { contains: "Website Plan", mode: "insensitive" } }, { actionButtonLabel: { contains: "SEO Page Map", mode: "insensitive" } }, { sourceType: { in: ["seo_plan", "website_launch_plan"] } }] },
     orderBy: { updatedAt: "desc" },
     take: 10,
     select: { status: true, approvalSnapshotJson: true },

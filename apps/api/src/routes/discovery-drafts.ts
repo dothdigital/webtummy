@@ -10,6 +10,7 @@ import { commitUsage, modelForFeature, preflightUsage, refundUsage } from "../us
 import { canAccessAgencyClient, hasWorkspacePermission, recordWorkspaceActivity, requireWorkspaceRole, workspaceContext, type WorkspaceContext } from "../workspace-access.js";
 import { createDiscoveryIdeaPdf } from "../discovery-idea-pdf.js";
 import { normalizeComplianceAdvisories } from "../compliance-advisories.js";
+import { discoveryTargetMarkets } from "../discovery-target-markets.js";
 
 export const discoveryDraftsRouter = Router();
 
@@ -42,6 +43,7 @@ const discoveryResearchSchema = z.object({
     description: z.string().trim().min(10).max(1600),
     audience: z.string().trim().min(3).max(1000),
     productsServices: z.array(z.string().trim().min(2).max(180)).max(20).default([]),
+    targetMarkets: z.array(z.string().trim().min(2).max(120)).max(50).default([]),
     revenueModel: z.string().trim().min(2).max(180),
     businessModel: z.string().trim().min(2).max(120),
     deliveryMode: z.enum(["local", "online", "hybrid", "unclear"]),
@@ -353,6 +355,7 @@ function normalizeDiscoveryResearch(value: unknown, fallback: DiscoveryFallback)
     description: understoodDescription.slice(0, 1600),
     audience: audience.slice(0, 1000),
     productsServices: textList(understanding.productsServices ?? understanding.services ?? understanding.offerings ?? root.productsServices ?? root.services, 20),
+    targetMarkets: discoveryTargetMarkets({ understanding, facts: root.facts ?? root.confirmedFacts, sourceText: fallback.sourceText }),
     revenueModel: revenueModel.slice(0, 180),
     businessModel: businessModel.slice(0, 120),
     deliveryMode,
@@ -598,6 +601,7 @@ discoveryDraftsRouter.post("/discovery-drafts/:draftId/generate", async (req, re
     "description": "string",
     "audience": "string",
     "productsServices": ["each distinct product or service explicitly stated by the user"],
+    "targetMarkets": ["each city, region, or country the user explicitly says the business targets or serves"],
     "revenueModel": "string",
     "businessModel": "string",
     "deliveryMode": "local | online | hybrid | unclear",
@@ -650,6 +654,7 @@ Rules:
 - A domain, website, address, postal code, phone, business hours, analytics, CMS and Google Business Profile are deferred unless explicitly supplied and essential to this result.
 - Every inferred fact must be AI_SUGGESTED. A fact may be CONFIRMED only when it is directly present in the user's answers.
 - Extract understanding.productsServices only from products or services the user explicitly says the business offers. Preserve every distinct offering as its own concise entry. Never put website pages, educational explanations, forms, calls to action, consultation requests, follow-up steps, funnels, branding, marketing, or project deliverables in productsServices.
+- Extract understanding.targetMarkets whenever the user names locations they target, serve, cover, or can sell to. Keep Edmonton and Calgary as separate entries. Never substitute a workspace default, client default, inferred nearby city, audience description, or physical business address. Return an empty array only when the user did not state a target market.
 - Confidence is directional, not a probability of success. Evidence must state what supports the idea or what still needs validation.
 - Make each opportunity feel like an actionable business brief: include 3-6 specific pros, 3-6 specific cons, the customer and payer, value proposition, acquisition channels, delivery, pricing approach, likely costs, partners, and measurable validation signals.
 - Highlight 2-5 key constraints specific to the idea and the user's stated time, budget, skills, geography, or operating model. For each, explain the impact and a practical response.
@@ -867,6 +872,7 @@ discoveryDraftsRouter.post("/discovery-drafts/:draftId/convert", async (req, res
     // belong to the selected direction, not the customer-facing offer.
     const productsServices = Array.isArray(summary.productsServices) ? summary.productsServices.map(String).map((item) => item.trim()).filter(Boolean).slice(0, 20) : [];
     const offerSummary = productsServices.join(", ");
+    const targetMarkets = discoveryTargetMarkets({ understanding: summary, facts: draft.factsJson, answers, sourceText: draft.sourceText });
     const project = await prisma.$transaction(async (tx) => {
       const row = await tx.project.create({ data: {
         clientId,
@@ -877,6 +883,8 @@ discoveryDraftsRouter.post("/discovery-drafts/:draftId/convert", async (req, res
         websiteUrl,
         businessName: draft.agencyClientId ? null : businessName,
         niche,
+        targetLocations: targetMarkets,
+        targetLocation: targetMarkets.join(", ").slice(0, 180) || null,
         primaryGoal,
         status: "active",
         currentStep: "intake",
@@ -889,11 +897,12 @@ discoveryDraftsRouter.post("/discovery-drafts/:draftId/convert", async (req, res
         offerSummary,
         businessModel: idea.businessModel,
         constraints: Array.isArray(summary.constraints) ? summary.constraints as Prisma.InputJsonValue : [],
-        intelligenceJson: { discoveryDraftId: draft.id, selectedIdeaId: idea.id, factSource: "discovery_draft", facts: draft.factsJson, revenueModel: idea.revenueModel, businessIdeaDetails: idea.detailsJson } as Prisma.InputJsonValue,
+        intelligenceJson: { discoveryDraftId: draft.id, selectedIdeaId: idea.id, factSource: "discovery_draft", facts: draft.factsJson, targetMarkets, revenueModel: idea.revenueModel, businessIdeaDetails: idea.detailsJson } as Prisma.InputJsonValue,
       } });
       await tx.projectIntakeAnswer.createMany({ data: [
         { projectId: row.id, questionKey: "discovery_start_path", questionText: "How did this project begin?", answerValue: draft.startPath, answerType: "select", moduleContext: "adaptive_business_discovery" },
         { projectId: row.id, questionKey: "products_services", questionText: "Which products and services were stated in discovery?", answerValue: productsServices, answerType: "multiselect", moduleContext: "adaptive_business_discovery" },
+        { projectId: row.id, questionKey: "target_location", questionText: "Which target markets were stated in discovery?", answerValue: targetMarkets, answerType: "multiselect", moduleContext: "adaptive_business_discovery" },
         { projectId: row.id, questionKey: "selected_direction", questionText: "Which discovery direction was confirmed?", answerValue: { ideaId: idea.id, title: idea.title, description: idea.description, userConfirmed: true }, answerType: "structured", moduleContext: "adaptive_business_discovery" },
       ] });
       await tx.opportunity.create({ data: {

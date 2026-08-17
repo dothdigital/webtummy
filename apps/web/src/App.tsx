@@ -43,6 +43,7 @@ import ProjectReports from "./pages/ProjectReports.js";
 import Approvals from "./pages/Approvals.js";
 import PublicLeadFunnel from "./pages/PublicLeadFunnel.js";
 import EcommerceIntelligence from "./pages/EcommerceIntelligence.js";
+import JvZooActivation from "./pages/JvZooActivation.js";
 import WebsitePerformance from "./pages/WebsitePerformance.js";
 
 const WebsiteVisualEditor = lazy(() => import("./pages/WebsiteVisualEditor.js"));
@@ -100,6 +101,7 @@ function Shell() {
   }
   if (location.pathname.startsWith("/lead/")) return <PublicLeadFunnel slug={decodeURIComponent(location.pathname.slice("/lead/".length))} />;
   if (!user) {
+    if (location.pathname === "/activate/jvzoo") return <JvZooActivation />;
     if (location.pathname === "/terms") return <Legal kind="terms" />;
     if (location.pathname === "/privacy") return <Legal kind="privacy" />;
     if (location.pathname === "/accept-invitation") return <AcceptInvitation />;
@@ -177,6 +179,7 @@ function Shell() {
         <Route path="/pricing" element={<Pricing />} />
         <Route path="/terms" element={<Legal kind="terms" />} />
         <Route path="/privacy" element={<Legal kind="privacy" />} />
+        <Route path="/activate/jvzoo" element={<JvZooActivation />} />
         <Route path="/admin" element={<PlatformAdminOnly><AdminManagement /></PlatformAdminOnly>} />
         <Route path="/admin/automation" element={<PlatformAdminOnly><AutomationCenter /></PlatformAdminOnly>} />
         <Route path="/admin/usage-controls" element={<PlatformAdminOnly><AdminUsageConfig /></PlatformAdminOnly>} />

@@ -181,7 +181,7 @@ export default function WebsiteVisualEditor({ mode }: { mode: "editor" | "previe
   const businessAddress = String(contactDetails.address || "");
   const copyrightText = String(contactDetails.copyrightText || `© ${new Date().getFullYear()} ${businessName}. All rights reserved.`);
   const analysis = object(settings.analysis);
-  const footerAboutText = String(settings.footerAboutText || contactDetails.businessSummary || analysis.businessSummary || `Learn more about ${businessName}.`).slice(0, 50);
+  const footerAboutText = String(settings.footerAboutText || contactDetails.businessSummary || analysis.businessSummary || `Learn more about ${businessName}.`).slice(0, 100);
   const socialLinks = object(contactDetails.socialLinks);
   const socialProfiles = (["facebook", "instagram", "linkedin", "youtube", "x", "tiktok"] as const).flatMap((network) => {
     const url = String(socialLinks[network] || "").trim();

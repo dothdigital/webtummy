@@ -48,6 +48,7 @@ model User {
   notifications           WorkspaceNotification[]
   activityEvents          WorkspaceActivity[]      @relation("ActivityActor")
   projectAgentThreads     ProjectAgentThread[]
+  externalSubscriptions   ExternalSubscription[]
 
   @@index([clientId])
 }
@@ -179,6 +180,7 @@ model Workspace {
   providerReferences      CommercialProviderReference[]
   commercialAuditEvents   CommercialAuditEvent[]
   retentionCases          CommercialRetentionCase[]
+  externalSubscriptions   ExternalSubscription[]
   whiteLabelProfiles      WhiteLabelProfile[]
   agencyDocuments         GapReportExport[]
 
@@ -606,6 +608,7 @@ model CommercialPolicyVersion {
 
   planVersions  CommercialPlanVersion[]
   subscriptions WorkspaceSubscription[]
+  externalSubscriptions ExternalSubscription[]
 
   @@unique([code, version])
   @@index([status, effectiveFrom])
@@ -628,6 +631,7 @@ model CommercialPlanVersion {
 
   prices        CommercialPrice[]
   subscriptions WorkspaceSubscription[]
+  externalSubscriptions ExternalSubscription[]
 
   @@unique([billingPlanId, version])
   @@index([status, effectiveFrom])
@@ -653,9 +657,10 @@ model CommercialPrice {
   status             String                @default("active") @db.VarChar(40)
   createdAt          DateTime              @default(now())
 
-  subscriptions WorkspaceSubscription[]
+  subscriptions         WorkspaceSubscription[]
+  externalSubscriptions ExternalSubscription[]
 
-  @@index([provider, providerProductRef])
+  @@index([provider, providerProductRef, status])
   @@index([planVersionId, status])
   @@index([priceClass, billingInterval])
 }
@@ -743,25 +748,98 @@ model CommercialSeatAssignment {
 }
 
 model CommercialBillingEvent {
-  id                String     @id @default(cuid())
-  workspaceId       String?
-  workspace         Workspace? @relation(fields: [workspaceId], references: [id], onDelete: SetNull)
-  provider          String     @db.VarChar(40)
-  providerEventId   String     @db.VarChar(191)
-  eventType         String     @db.VarChar(80)
-  status            String     @default("received") @db.VarChar(40)
-  verified          Boolean    @default(false)
-  rawPayload        Json
-  normalizedPayload Json       @default("{}")
-  attempts          Int        @default(0)
-  error             String?    @db.Text
-  occurredAt        DateTime?
-  processedAt       DateTime?
-  createdAt         DateTime   @default(now())
+  id                     String                @id @default(cuid())
+  workspaceId            String?
+  workspace              Workspace?            @relation(fields: [workspaceId], references: [id], onDelete: SetNull)
+  provider               String                @db.VarChar(40)
+  providerEventId        String                @db.VarChar(191)
+  eventFingerprint       String?               @db.VarChar(64)
+  providerTransactionId  String?               @db.VarChar(191)
+  providerStatus         String?               @db.VarChar(80)
+  externalSubscriptionId String?
+  externalSubscription   ExternalSubscription? @relation(fields: [externalSubscriptionId], references: [id], onDelete: SetNull)
+  eventType              String                @db.VarChar(80)
+  status                 String                @default("received") @db.VarChar(40)
+  verified               Boolean               @default(false)
+  rawPayload             Json
+  normalizedPayload      Json                  @default("{}")
+  attempts               Int                   @default(0)
+  error                  String?               @db.Text
+  occurredAt             DateTime?
+  processedAt            DateTime?
+  createdAt              DateTime              @default(now())
 
-  @@unique([provider, providerEventId])
+  @@unique([provider, eventFingerprint])
+  @@index([provider, providerEventId])
+  @@index([externalSubscriptionId, createdAt])
   @@index([workspaceId, createdAt])
   @@index([status, createdAt])
+}
+
+// Provider-owned purchases exist before a SEnuke account or Workspace does.
+// Browser-selected plan data is never authoritative; only a verified provider
+// event can create or change one of these records.
+model ExternalSubscription {
+  id                      String     @id @default(cuid())
+  provider                String     @default("jvzoo") @db.VarChar(40)
+  providerTransactionId   String     @db.VarChar(191)
+  providerSubscriptionRef String?    @db.VarChar(191)
+  providerCustomerEmail   String     @db.VarChar(320)
+  providerCustomerName    String?    @db.VarChar(180)
+  providerProductRef      String     @db.VarChar(191)
+  priceId                 String?
+  price                   CommercialPrice? @relation(fields: [priceId], references: [id], onDelete: Restrict)
+  planVersionId           String?
+  planVersion             CommercialPlanVersion? @relation(fields: [planVersionId], references: [id], onDelete: Restrict)
+  policyVersionId         String?
+  policyVersion           CommercialPolicyVersion? @relation(fields: [policyVersionId], references: [id], onDelete: Restrict)
+  planCode                String?    @db.VarChar(40)
+  billingInterval         String?    @db.VarChar(20)
+  currency                String     @default("USD") @db.VarChar(3)
+  amountCents             Int?
+  status                  String     @default("unclaimed") @db.VarChar(40)
+  activationStatus        String     @default("unclaimed") @db.VarChar(40)
+  workspaceId             String?
+  workspace               Workspace? @relation(fields: [workspaceId], references: [id], onDelete: SetNull)
+  userId                  String?
+  user                    User?      @relation(fields: [userId], references: [id], onDelete: SetNull)
+  purchasedAt             DateTime
+  currentPeriodStart      DateTime?
+  currentPeriodEnd        DateTime?
+  cancelAtPeriodEnd       Boolean    @default(false)
+  foundingMember          Boolean    @default(false)
+  foundingCampaignCode    String?    @db.VarChar(80)
+  protectedPriceId        String?
+  lastEventAt             DateTime?
+  activatedAt             DateTime?
+  cancelledAt             DateTime?
+  refundedAt              DateTime?
+  chargebackAt            DateTime?
+  activationEmailSentAt   DateTime?
+  activationEmailError    String?    @db.Text
+  createdAt               DateTime   @default(now())
+  updatedAt               DateTime   @updatedAt
+
+  activationTokens ExternalSubscriptionActivationToken[]
+  billingEvents    CommercialBillingEvent[]
+
+  @@unique([provider, providerTransactionId])
+  @@index([provider, providerSubscriptionRef])
+  @@index([providerCustomerEmail, activationStatus])
+  @@index([workspaceId, status])
+  @@index([status, currentPeriodEnd])
+}
+
+model ExternalSubscriptionActivationToken {
+  id                     String               @id @default(cuid())
+  externalSubscriptionId String
+  externalSubscription   ExternalSubscription @relation(fields: [externalSubscriptionId], references: [id], onDelete: Cascade)
+  tokenHash              String               @unique @db.VarChar(64)
+  expiresAt              DateTime
+  usedAt                 DateTime?
+  createdAt              DateTime             @default(now())
+
+  @@index([externalSubscriptionId, expiresAt])
 }
 
 model CommercialProviderReference {

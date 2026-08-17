@@ -1,7 +1,6 @@
 import crypto from "node:crypto";
 import { prisma, type Prisma } from "@webtummy/db";
 import { config } from "./config.js";
-import { normalizePlanCode } from "./billing.js";
 
 type JsonObject = Record<string, unknown>;
 type Db = typeof prisma | Prisma.TransactionClient;
@@ -9,6 +8,13 @@ type Db = typeof prisma | Prisma.TransactionClient;
 export const COMMERCIAL_PROVIDER = "jvzoo";
 export const COMMERCIAL_POLICY_CODE = "senuke-default";
 export const COMMERCIAL_REGISTRATION_POLICY_ID = "default";
+
+export function workspaceTypeForCommercialPlan(planCode: string | null | undefined) {
+  if (planCode === "starter") return "personal";
+  if (planCode === "business") return "business";
+  if (planCode === "agency") return "agency";
+  throw Object.assign(new Error("The commercial plan does not map to a supported workspace type."), { statusCode: 409, code: "unsupported_plan_mapping" });
+}
 
 const BASELINE_PLANS = [
   {
@@ -80,7 +86,8 @@ function dateValue(value: unknown) {
 }
 
 function legacyCommercialCode(value: string | null | undefined) {
-  return LEGACY_PLAN_MAP[normalizePlanCode(value)] ?? "starter";
+  const code = (value ?? "mini").trim().toLowerCase();
+  return LEGACY_PLAN_MAP[code === "standard" ? "basic" : code] ?? "starter";
 }
 
 function accessModeForStatus(status: string) {
@@ -554,19 +561,39 @@ export function verifyJvZooIpn(payload: JsonObject, secret = config.jvzooSecretK
 
 export function normalizeJvZooIpn(payload: JsonObject) {
   const v2 = "customer_email" in payload || "transaction_type" in payload || "product_id" in payload;
-  const transactionType = String(v2 ? payload.transaction_type ?? payload.status ?? "" : payload.ctransaction ?? "").trim().toUpperCase();
-  const providerEventId = String(v2 ? payload.transaction_id ?? payload.receipt ?? payload.paykey ?? "" : payload.ctransreceipt ?? "").trim();
+  const transactionType = String(v2 ? payload.transaction_type ?? "" : payload.ctransaction ?? "").trim().toUpperCase();
+  const providerStatus = String(v2 ? payload.status ?? "" : payload.cstatus ?? "").trim().toUpperCase();
+  const providerTransactionId = String(v2 ? payload.transaction_id ?? payload.receipt ?? payload.paykey ?? "" : payload.ctransreceipt ?? "").trim();
+  const productId = String(v2 ? payload.product_id ?? "" : payload.cproditem ?? "").trim();
+  const occurredAt = dateValue(v2 ? payload.date : payload.ctranstime);
+  const fingerprintSource = [
+    `v${v2 ? 2 : 1}`,
+    providerTransactionId,
+    transactionType,
+    providerStatus,
+    productId,
+    occurredAt?.toISOString() ?? "",
+  ].join("|");
+  const eventFingerprint = crypto.createHash("sha256").update(
+    providerTransactionId ? fingerprintSource : JSON.stringify(payload),
+  ).digest("hex");
   return {
     version: v2 ? 2 : 1,
-    providerEventId: providerEventId || crypto.createHash("sha256").update(JSON.stringify(payload)).digest("hex"),
+    providerEventId: providerTransactionId || eventFingerprint,
+    providerTransactionId: providerTransactionId || eventFingerprint,
+    providerTransactionIdProvided: Boolean(providerTransactionId),
+    eventFingerprint,
     transactionType,
-    productId: String(v2 ? payload.product_id ?? "" : payload.cproditem ?? "").trim(),
+    providerStatus,
+    productId,
     productName: String(v2 ? payload.product_name ?? "" : payload.cprodtitle ?? "").trim(),
     customerEmail: String(v2 ? payload.customer_email ?? "" : payload.ccustemail ?? "").trim().toLowerCase(),
     customerName: String(v2 ? `${payload.customer_first_name ?? ""} ${payload.customer_last_name ?? ""}`.trim() : payload.ccustname ?? "").trim(),
     amount: String(v2 ? payload.total ?? payload.amount ?? "" : payload.ctransamount ?? "").trim(),
     currency: String(payload.currency ?? "USD").trim().toUpperCase(),
-    occurredAt: dateValue(v2 ? payload.date : payload.ctranstime),
+    currencyProvided: Boolean(stringValue(payload.currency)),
+    occurredAt,
+    currentPeriodEnd: dateValue(payload.current_period_end ?? payload.next_payment_date ?? payload.next_rebill_date ?? payload.rebill_date),
     providerSubscriptionRef: stringValue(payload.subscription_id) ?? stringValue(payload.rebill_id) ?? stringValue(payload.ctransreceipt),
     workspaceId: workspaceIdFromJvZooPayload(payload),
   };
@@ -588,22 +615,55 @@ function workspaceIdFromJvZooPayload(payload: JsonObject) {
   return params.get("workspaceId") ?? params.get("workspace_id") ?? (/^[a-z0-9_-]{10,}$/i.test(passthrough) ? passthrough : null);
 }
 
-async function resolveJvZooWorkspace(normalized: ReturnType<typeof normalizeJvZooIpn>) {
+async function resolveJvZooWorkspace(normalized: ReturnType<typeof normalizeJvZooIpn>, eligibleWorkspaceTypes: string[]) {
   if (normalized.workspaceId) {
-    const workspace = await prisma.workspace.findUnique({ where: { id: normalized.workspaceId } });
-    if (workspace) return workspace;
+    const workspace = await prisma.workspace.findUnique({
+      where: { id: normalized.workspaceId },
+      include: { owner: { select: { email: true } } },
+    });
+    const hasActiveJvZooEntitlement = workspace ? await prisma.externalSubscription.findFirst({
+      where: { workspaceId: workspace.id, provider: COMMERCIAL_PROVIDER, status: { in: ["active", "past_due", "cancel_at_period_end"] } },
+      select: { id: true },
+    }) : null;
+    if (workspace
+      && normalized.customerEmail
+      && workspace.owner.email.toLowerCase() === normalized.customerEmail
+      && !hasActiveJvZooEntitlement
+      && (!eligibleWorkspaceTypes.length || eligibleWorkspaceTypes.includes(workspace.workspaceType))) return workspace;
   }
   if (!normalized.customerEmail) return null;
-  const membership = await prisma.workspaceMembership.findFirst({
-    where: { user: { email: normalized.customerEmail }, status: "active", roles: { some: { role: "owner" } } },
+  const memberships = await prisma.workspaceMembership.findMany({
+    where: {
+      user: { email: { equals: normalized.customerEmail, mode: "insensitive" } },
+      status: "active",
+      roles: { some: { role: "owner" } },
+      workspace: {
+        ...(eligibleWorkspaceTypes.length ? { workspaceType: { in: eligibleWorkspaceTypes } } : {}),
+        externalSubscriptions: { none: { provider: COMMERCIAL_PROVIDER, status: { in: ["active", "past_due", "cancel_at_period_end"] } } },
+      },
+    },
     orderBy: { createdAt: "asc" },
+    take: 2,
     include: { workspace: true },
   });
-  return membership?.workspace ?? null;
+  // Automatic attachment is safe only when the verified purchase email has a
+  // single owned destination. Multiple workspaces require activation-time
+  // confirmation instead of silently choosing the oldest one.
+  return memberships.length === 1 ? memberships[0].workspace : null;
 }
 
-function stateFromJvZooType(transactionType: string) {
-  if (["SALE", "BILL", "REBILL", "COMPLETED", "TEST"].includes(transactionType)) return { status: "active", accessMode: "full", cancelAtPeriodEnd: false };
+export function stateFromJvZooEvent(transactionType: string, providerStatus = "", version = 2) {
+  const successStatuses = new Set(["COMPLETED", "COMPLETE", "PAID", "SETTLED", "SUCCESS", "SUCCESSFUL", "TEST"]);
+  const failedStatuses = new Set(["FAIL", "FAILED", "ERROR", "PAYMENT ERROR", "PAYMENT_ERROR", "UNPAID", "DECLINED"]);
+  if (["SALE", "BILL", "REBILL", "COMPLETED", "TEST"].includes(transactionType)) {
+    if (version >= 2 && !successStatuses.has(providerStatus)) {
+      if (failedStatuses.has(providerStatus)) return transactionType === "BILL" || transactionType === "REBILL"
+        ? { status: "past_due", accessMode: "grace", cancelAtPeriodEnd: false }
+        : { status: "payment_required", accessMode: "read_only", cancelAtPeriodEnd: false };
+      return null;
+    }
+    return { status: "active", accessMode: "full", cancelAtPeriodEnd: false };
+  }
   if (["FAIL", "PAYMENT-FAILED", "REBILL-FAILED"].includes(transactionType)) return { status: "past_due", accessMode: "grace", cancelAtPeriodEnd: false };
   if (transactionType === "CANCEL-REBILL") return { status: "cancel_at_period_end", accessMode: "full", cancelAtPeriodEnd: true };
   if (["RFND", "REFUND"].includes(transactionType)) return { status: "cancelled", accessMode: "read_only", cancelAtPeriodEnd: false };
@@ -611,192 +671,449 @@ function stateFromJvZooType(transactionType: string) {
   return null;
 }
 
-export async function processJvZooIpn(payload: JsonObject) {
-  await ensureCommercialDefaults();
-  const verified = verifyJvZooIpn(payload);
-  const normalized = normalizeJvZooIpn(payload);
-  const workspace = verified ? await resolveJvZooWorkspace(normalized) : null;
-  const existing = await prisma.commercialBillingEvent.findUnique({
-    where: { provider_providerEventId: { provider: COMMERCIAL_PROVIDER, providerEventId: normalized.providerEventId } },
+function periodEndFrom(interval: string | null | undefined, start: Date) {
+  const end = new Date(start);
+  if (interval === "annual") end.setUTCFullYear(end.getUTCFullYear() + 1);
+  else end.setUTCMonth(end.getUTCMonth() + 1);
+  return end;
+}
+
+function amountCents(value: string) {
+  if (!value.trim()) return null;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? Math.round(parsed * 100) : null;
+}
+
+type JvZooPriceCandidate = {
+  id: string;
+  status: string;
+  currency: string;
+  amountCents: number;
+  effectiveFrom: Date;
+  effectiveTo: Date | null;
+};
+
+export function selectJvZooPriceMapping<T extends JvZooPriceCandidate>(
+  candidates: T[],
+  input: { amount: string; currency: string; occurredAt: Date | null },
+): { price: T | null; error: string | null } {
+  const at = input.occurredAt ?? new Date();
+  const effective = candidates.filter((candidate) => (
+    candidate.effectiveFrom <= at
+    && (!candidate.effectiveTo || candidate.effectiveTo > at)
+    && (candidate.status === "active" || Boolean(candidate.effectiveTo))
+  ));
+  if (!effective.length) return { price: null, error: "product_not_mapped" };
+  const currency = input.currency.trim().toUpperCase();
+  const currencyMatches = effective.filter((candidate) => candidate.currency.toUpperCase() === currency);
+  if (!currencyMatches.length) return { price: null, error: "currency_mismatch" };
+  const cents = amountCents(input.amount);
+  if (cents === null) {
+    return currencyMatches.length === 1
+      ? { price: currencyMatches[0], error: null }
+      : { price: null, error: "price_mapping_ambiguous" };
+  }
+  const exact = currencyMatches.filter((candidate) => candidate.amountCents === cents);
+  if (!exact.length) return { price: null, error: "amount_mismatch" };
+  if (exact.length > 1) return { price: null, error: "price_mapping_ambiguous" };
+  return { price: exact[0], error: null };
+}
+
+function lifecycleRank(status: string) {
+  return ({ payment_required: 5, active: 10, cancel_at_period_end: 20, past_due: 30, cancelled: 40, refunded: 45, chargeback: 50 } as Record<string, number>)[status] ?? 0;
+}
+
+async function mappedJvZooPrice(normalized: ReturnType<typeof normalizeJvZooIpn>) {
+  if (!normalized.productId) return { price: null, error: "product_not_mapped" } as const;
+  const candidates = await prisma.commercialPrice.findMany({
+    where: { provider: COMMERCIAL_PROVIDER, providerProductRef: normalized.productId },
+    include: { planVersion: { include: { billingPlan: true, policyVersion: true } } },
+    orderBy: { effectiveFrom: "desc" },
   });
+  return selectJvZooPriceMapping(candidates, normalized);
+}
+
+export async function receiveJvZooIpn(payload: JsonObject) {
+  const verified = verifyJvZooIpn(payload)
+    || (Boolean(config.jvzooPreviousSecretKey) && verifyJvZooIpn(payload, config.jvzooPreviousSecretKey));
+  const normalized = normalizeJvZooIpn(payload);
+  const existing = await prisma.commercialBillingEvent.findUnique({
+    where: { provider_eventFingerprint: { provider: COMMERCIAL_PROVIDER, eventFingerprint: normalized.eventFingerprint } },
+  });
+  if (!verified) {
+    if (!existing) {
+      await prisma.commercialBillingEvent.create({
+        data: {
+          provider: COMMERCIAL_PROVIDER,
+          providerEventId: normalized.providerEventId,
+          eventFingerprint: normalized.eventFingerprint,
+          providerTransactionId: normalized.providerTransactionId,
+          providerStatus: normalized.providerStatus || null,
+          eventType: normalized.transactionType || "UNKNOWN",
+          verified: false,
+          rawPayload: payload as Prisma.InputJsonValue,
+          normalizedPayload: normalized as unknown as Prisma.InputJsonValue,
+          occurredAt: normalized.occurredAt,
+          attempts: 1,
+          status: "rejected",
+          error: "signature_verification_failed",
+        },
+      });
+    }
+    throw Object.assign(new Error("Invalid JVZoo IPN signature."), { statusCode: 400, code: "invalid_jvzoo_signature" });
+  }
   if (existing?.status === "processed") return { event: existing, duplicate: true, workspaceId: existing.workspaceId };
 
   const event = await prisma.commercialBillingEvent.upsert({
-    where: { provider_providerEventId: { provider: COMMERCIAL_PROVIDER, providerEventId: normalized.providerEventId } },
+    where: { provider_eventFingerprint: { provider: COMMERCIAL_PROVIDER, eventFingerprint: normalized.eventFingerprint } },
     update: {
       attempts: { increment: 1 },
-      verified,
-      workspaceId: workspace?.id ?? undefined,
+      verified: true,
       rawPayload: payload as Prisma.InputJsonValue,
       normalizedPayload: normalized as unknown as Prisma.InputJsonValue,
-      status: verified ? "received" : "rejected",
-      error: verified ? null : "signature_verification_failed",
+      status: "queued",
+      error: null,
     },
     create: {
-      workspaceId: workspace?.id ?? null,
       provider: COMMERCIAL_PROVIDER,
       providerEventId: normalized.providerEventId,
+      eventFingerprint: normalized.eventFingerprint,
+      providerTransactionId: normalized.providerTransactionId,
+      providerStatus: normalized.providerStatus || null,
       eventType: normalized.transactionType || "UNKNOWN",
-      verified,
+      verified: true,
       rawPayload: payload as Prisma.InputJsonValue,
       normalizedPayload: normalized as unknown as Prisma.InputJsonValue,
       occurredAt: normalized.occurredAt,
       attempts: 1,
-      status: verified ? "received" : "rejected",
-      error: verified ? null : "signature_verification_failed",
+      status: "queued",
+      error: null,
     },
   });
-  if (!verified) throw Object.assign(new Error("Invalid JVZoo IPN signature."), { statusCode: 400, code: "invalid_jvzoo_signature" });
-  if (!workspace) {
-    const unresolved = await prisma.commercialBillingEvent.update({
-      where: { id: event.id },
-      data: { status: "unresolved", error: "workspace_not_resolved" },
-    });
-    return { event: unresolved, duplicate: false, workspaceId: null };
-  }
-  const nextState = stateFromJvZooType(normalized.transactionType);
-  if (!nextState) {
-    const ignored = await prisma.commercialBillingEvent.update({ where: { id: event.id }, data: { status: "ignored", processedAt: new Date() } });
-    return { event: ignored, duplicate: false, workspaceId: workspace.id };
-  }
+  return { event, duplicate: Boolean(existing), workspaceId: event.workspaceId };
+}
 
-  const current = await authoritativePlanVersion(workspace.id);
-  const priceCandidates = normalized.productId
-    ? await prisma.commercialPrice.findMany({
-        where: { provider: COMMERCIAL_PROVIDER, providerProductRef: normalized.productId },
-        include: { planVersion: true },
-        orderBy: { effectiveFrom: "desc" },
-      })
-    : [];
-  const numericAmount = Number(normalized.amount);
-  const possibleAmountCents = Number.isFinite(numericAmount)
-    ? new Set([Math.round(numericAmount * 100), Math.round(numericAmount)])
-    : new Set<number>();
-  const amountMatches = (candidate: { amountCents: number }) => !possibleAmountCents.size || possibleAmountCents.has(candidate.amountCents);
-  const price = priceCandidates.find((candidate) => candidate.id === current?.priceId && amountMatches(candidate))
-    ?? priceCandidates.find((candidate) => candidate.status === "active" && amountMatches(candidate))
-    ?? priceCandidates.find(amountMatches)
-    ?? priceCandidates.find((candidate) => candidate.status === "active")
-    ?? null;
-  if (!price && !current) {
-    const unresolved = await prisma.commercialBillingEvent.update({ where: { id: event.id }, data: { status: "unresolved", error: "product_not_mapped" } });
-    return { event: unresolved, duplicate: false, workspaceId: workspace.id };
-  }
-  const eligibleWorkspaceTypes = price && Array.isArray(price.planVersion.workspaceTypeEligibility)
-    ? price.planVersion.workspaceTypeEligibility.map(String)
-    : [];
-  if (eligibleWorkspaceTypes.length && !eligibleWorkspaceTypes.includes(workspace.workspaceType)) {
-    const unresolved = await prisma.commercialBillingEvent.update({
-      where: { id: event.id },
-      data: { workspaceId: workspace.id, status: "unresolved", error: "workspace_type_not_eligible" },
+async function externalSubscriptionForEvent(normalized: ReturnType<typeof normalizeJvZooIpn>) {
+  if (normalized.providerSubscriptionRef) {
+    const bySubscription = await prisma.externalSubscription.findFirst({
+      where: { provider: COMMERCIAL_PROVIDER, providerSubscriptionRef: normalized.providerSubscriptionRef },
+      orderBy: { createdAt: "desc" },
     });
-    return { event: unresolved, duplicate: false, workspaceId: workspace.id };
+    if (bySubscription) return bySubscription;
   }
-  const targetPlanVersionId = price?.planVersionId ?? current!.planVersionId;
-  const targetPolicyVersionId = price?.planVersion.policyVersionId ?? current!.policyVersionId;
-  const targetPlanVersion = await prisma.commercialPlanVersion.findUniqueOrThrow({
-    where: { id: targetPlanVersionId },
-    include: { billingPlan: true },
+  const byTransaction = await prisma.externalSubscription.findUnique({
+    where: { provider_providerTransactionId: { provider: COMMERCIAL_PROVIDER, providerTransactionId: normalized.providerTransactionId } },
   });
-  const policy = await prisma.commercialPolicyVersion.findUniqueOrThrow({ where: { id: targetPolicyVersionId } });
-  const retentionEndsAt = ["cancelled", "suspended"].includes(nextState.status)
+  if (byTransaction) return byTransaction;
+  return prisma.externalSubscription.findFirst({
+    where: {
+      provider: COMMERCIAL_PROVIDER,
+      providerCustomerEmail: normalized.customerEmail,
+      providerProductRef: normalized.productId,
+      status: { in: ["active", "past_due", "cancel_at_period_end"] },
+    },
+    orderBy: { createdAt: "desc" },
+  });
+}
+
+async function syncExternalToWorkspace(tx: Prisma.TransactionClient, externalId: string, workspaceId: string) {
+  const external = await tx.externalSubscription.findUniqueOrThrow({ where: { id: externalId } });
+  if (!external.planVersionId || !external.policyVersionId) return null;
+  const state = external.status === "refunded"
+    ? { status: "cancelled", accessMode: "read_only" }
+    : external.status === "chargeback"
+      ? { status: "suspended", accessMode: "suspended" }
+      : { status: external.status, accessMode: accessModeForStatus(external.status) };
+  const policy = await tx.commercialPolicyVersion.findUniqueOrThrow({ where: { id: external.policyVersionId } });
+  const retentionEndsAt = ["cancelled", "suspended"].includes(state.status)
     ? new Date(Date.now() + policy.retentionDays * 86_400_000)
     : null;
-  const graceEndsAt = nextState.status === "past_due"
-    ? new Date(Date.now() + policy.graceDays * 86_400_000)
-    : null;
-
-  await prisma.$transaction(async (tx) => {
-    const before = current ? { id: current.id, status: current.status, planVersionId: current.planVersionId, priceId: current.priceId } : null;
-    const subscription = current
-      ? await tx.workspaceSubscription.update({
-          where: { id: current.id },
-          data: {
-            planVersionId: targetPlanVersionId,
-            priceId: price?.id ?? current.priceId,
-            policyVersionId: targetPolicyVersionId,
-            provider: COMMERCIAL_PROVIDER,
-            providerCustomerRef: normalized.customerEmail || current.providerCustomerRef,
-            providerSubscriptionRef: normalized.providerSubscriptionRef ?? current.providerSubscriptionRef,
-            status: nextState.status,
-            billingInterval: price?.billingInterval ?? current.billingInterval,
-            cancelAtPeriodEnd: nextState.cancelAtPeriodEnd,
-            foundingMember: price?.priceClass === "founding" ? true : current.foundingMember,
-            protectedPriceId: price?.priceClass === "founding" ? price.id : current.protectedPriceId,
-            currentPeriodStart: nextState.status === "active" ? normalized.occurredAt ?? new Date() : current.currentPeriodStart,
-            graceEndsAt,
-            retentionEndsAt,
-          },
-        })
-      : await tx.workspaceSubscription.create({
-          data: {
-            workspaceId: workspace.id,
-            planVersionId: targetPlanVersionId,
-            priceId: price?.id ?? null,
-            policyVersionId: targetPolicyVersionId,
-            provider: COMMERCIAL_PROVIDER,
-            providerCustomerRef: normalized.customerEmail || null,
-            providerSubscriptionRef: normalized.providerSubscriptionRef,
-            status: nextState.status,
-            billingInterval: price?.billingInterval ?? "monthly",
-            cancelAtPeriodEnd: nextState.cancelAtPeriodEnd,
-            foundingMember: price?.priceClass === "founding",
-            protectedPriceId: price?.priceClass === "founding" ? price.id : null,
-            currentPeriodStart: normalized.occurredAt ?? new Date(),
-            graceEndsAt,
-            retentionEndsAt,
-          },
-        });
-    await tx.workspace.update({
-      where: { id: workspace.id },
+  const graceEndsAt = state.status === "past_due" ? new Date(Date.now() + policy.graceDays * 86_400_000) : null;
+  const current = await tx.workspaceSubscription.findFirst({
+    where: { workspaceId, provider: COMMERCIAL_PROVIDER },
+    orderBy: { createdAt: "desc" },
+  });
+  const data = {
+    planVersionId: external.planVersionId,
+    priceId: external.priceId,
+    policyVersionId: external.policyVersionId,
+    provider: COMMERCIAL_PROVIDER,
+    providerCustomerRef: external.providerCustomerEmail,
+    providerSubscriptionRef: external.providerSubscriptionRef,
+    status: state.status,
+    billingInterval: external.billingInterval ?? "monthly",
+    cancelAtPeriodEnd: external.cancelAtPeriodEnd,
+    foundingMember: external.foundingMember,
+    foundingCampaignCode: external.foundingCampaignCode,
+    protectedPriceId: external.protectedPriceId,
+    protectionStartAt: external.foundingMember ? external.purchasedAt : null,
+    currentPeriodStart: external.currentPeriodStart,
+    currentPeriodEnd: external.currentPeriodEnd,
+    graceEndsAt,
+    retentionEndsAt,
+  };
+  const subscription = current
+    ? await tx.workspaceSubscription.update({ where: { id: current.id }, data })
+    : await tx.workspaceSubscription.create({ data: { workspaceId, ...data } });
+  const workspace = await tx.workspace.update({
+    where: { id: workspaceId },
+    data: { commercialState: state.status, accessMode: state.accessMode, retentionEndsAt },
+  });
+  if (workspace.legacyClientId) {
+    await tx.client.update({
+      where: { id: workspace.legacyClientId },
       data: {
-        commercialState: nextState.status,
-        accessMode: nextState.accessMode,
-        retentionEndsAt,
-        deletionScheduledAt: nextState.status === "active" ? null : undefined,
+        plan: external.planCode ?? undefined,
+        aiSubscriptionStatus: state.status === "cancelled" ? "canceled" : state.status,
+        subscriptionSource: COMMERCIAL_PROVIDER,
+        subscriptionCurrentPeriodEnd: external.currentPeriodEnd,
+        graceEndsAt,
       },
     });
-    if (workspace.legacyClientId) {
-      await tx.client.update({
-        where: { id: workspace.legacyClientId },
-        data: {
-          plan: price ? targetPlanVersion.billingPlan.code : undefined,
-          aiSubscriptionStatus: nextState.status === "cancelled" ? "canceled" : nextState.status,
-          subscriptionSource: COMMERCIAL_PROVIDER,
-          graceEndsAt,
-        },
+  }
+  return subscription;
+}
+
+export async function attachExternalSubscriptionInTransaction(
+  tx: Prisma.TransactionClient,
+  input: { externalSubscriptionId: string; workspaceId: string; userId?: string | null },
+) {
+  const current = await tx.externalSubscription.findUniqueOrThrow({ where: { id: input.externalSubscriptionId } });
+  if (!["active", "cancel_at_period_end"].includes(current.status)) {
+    throw Object.assign(new Error("This JVZoo purchase is not currently eligible for activation."), { statusCode: 409, code: "purchase_not_eligible" });
+  }
+  if (current.workspaceId && current.workspaceId !== input.workspaceId) {
+    throw Object.assign(new Error("This JVZoo purchase is already attached to another workspace."), { statusCode: 409, code: "purchase_already_attached" });
+  }
+  if (current.activationStatus === "activated" && current.workspaceId === input.workspaceId) {
+    await syncExternalToWorkspace(tx, current.id, input.workspaceId);
+    return current;
+  }
+  const existingEntitlement = await tx.externalSubscription.findFirst({
+    where: {
+      id: { not: current.id },
+      provider: COMMERCIAL_PROVIDER,
+      workspaceId: input.workspaceId,
+      status: { in: ["active", "past_due", "cancel_at_period_end"] },
+    },
+    select: { id: true, planCode: true },
+  });
+  if (existingEntitlement) {
+    throw Object.assign(new Error(`This workspace already has an active JVZoo ${existingEntitlement.planCode ?? "subscription"}. Contact support to review an upgrade or additional purchase safely.`), { statusCode: 409, code: "workspace_subscription_conflict" });
+  }
+  const external = await tx.externalSubscription.update({
+    where: { id: input.externalSubscriptionId },
+    data: {
+      workspaceId: input.workspaceId,
+      userId: input.userId ?? undefined,
+      activationStatus: "activated",
+      activatedAt: current.activatedAt ?? new Date(),
+    },
+  });
+  await syncExternalToWorkspace(tx, external.id, input.workspaceId);
+  await tx.commercialAuditEvent.create({
+    data: {
+      workspaceId: input.workspaceId,
+      actorType: input.userId ? "user" : "system",
+      actorId: input.userId ?? null,
+      action: "billing.jvzoo_purchase_activated",
+      reasonCode: "verified_purchase_activation",
+      source: "activation",
+      correlationId: external.id,
+      beforeJson: { activationStatus: current.activationStatus, workspaceId: current.workspaceId },
+      afterJson: { activationStatus: external.activationStatus, workspaceId: external.workspaceId, planCode: external.planCode },
+    },
+  });
+  return external;
+}
+
+export async function attachExternalSubscription(input: { externalSubscriptionId: string; workspaceId: string; userId?: string | null }) {
+  return prisma.$transaction((tx) => attachExternalSubscriptionInTransaction(tx, input));
+}
+
+export async function processStoredJvZooEvent(eventId: string) {
+  await ensureCommercialDefaults();
+  let event = await prisma.commercialBillingEvent.findUniqueOrThrow({ where: { id: eventId } });
+  if (!event.verified) throw Object.assign(new Error("Unverified JVZoo event cannot be processed."), { statusCode: 400 });
+  if (event.status === "processed") return { event, duplicate: true, workspaceId: event.workspaceId };
+  const claim = await prisma.commercialBillingEvent.updateMany({
+    where: { id: event.id, status: { notIn: ["processed", "processing"] } },
+    data: { status: "processing", attempts: { increment: 1 } },
+  });
+  if (claim.count !== 1) {
+    event = await prisma.commercialBillingEvent.findUniqueOrThrow({ where: { id: eventId } });
+    return { event, duplicate: true, workspaceId: event.workspaceId };
+  }
+  const normalized = normalizeJvZooIpn(objectValue(event.rawPayload));
+  const nextState = stateFromJvZooEvent(normalized.transactionType, normalized.providerStatus, normalized.version);
+  if (!nextState) {
+    const unresolved = await prisma.commercialBillingEvent.update({ where: { id: event.id }, data: { status: "unresolved", error: normalized.version >= 2 ? "unsupported_transaction_status" : "unsupported_transaction_type" } });
+    return { event: unresolved, duplicate: false, workspaceId: null };
+  }
+  let external = await externalSubscriptionForEvent(normalized);
+  const isPurchase = ["SALE", "TEST", "COMPLETED"].includes(normalized.transactionType);
+  if (!normalized.transactionType
+    || !normalized.providerTransactionIdProvided
+    || (isPurchase && (!normalized.customerEmail || !normalized.productId || amountCents(normalized.amount) === null))) {
+    const unresolved = await prisma.commercialBillingEvent.update({ where: { id: event.id }, data: { status: "unresolved", error: "missing_required_provider_fields" } });
+    return { event: unresolved, duplicate: false, workspaceId: external?.workspaceId ?? null };
+  }
+  if (!external && !isPurchase) {
+    const unresolved = await prisma.commercialBillingEvent.update({ where: { id: event.id }, data: { status: "unresolved", error: "subscription_not_found" } });
+    return { event: unresolved, duplicate: false, workspaceId: null };
+  }
+  if (external && normalized.productId && external.providerProductRef !== normalized.productId) {
+    const unresolved = await prisma.commercialBillingEvent.update({ where: { id: event.id }, data: { status: "unresolved", error: "subscription_product_mismatch", externalSubscriptionId: external.id } });
+    return { event: unresolved, duplicate: false, workspaceId: external.workspaceId };
+  }
+  if (external && ["refunded", "chargeback", "cancelled"].includes(external.status) && nextState.status === "active") {
+    if (isPurchase && normalized.providerTransactionId !== external.providerTransactionId) {
+      // A genuinely new sale creates a new provider-owned purchase instead of
+      // mutating the terminal audit history of the old subscription.
+      external = null;
+    } else {
+      const stale = await prisma.commercialBillingEvent.update({
+        where: { id: event.id },
+        data: { status: "stale", processedAt: new Date(), externalSubscriptionId: external.id, error: "terminal_subscription_cannot_reactivate" },
       });
+      return { event: stale, duplicate: false, workspaceId: external.workspaceId };
     }
-    await tx.commercialBillingEvent.update({ where: { id: event.id }, data: { workspaceId: workspace.id, status: "processed", processedAt: new Date(), error: null } });
-    await tx.commercialProviderReference.upsert({
-      where: { provider_objectType_externalId: { provider: COMMERCIAL_PROVIDER, objectType: "customer", externalId: normalized.customerEmail || `workspace:${workspace.id}` } },
-      update: { workspaceId: workspace.id },
-      create: { workspaceId: workspace.id, provider: COMMERCIAL_PROVIDER, objectType: "customer", externalId: normalized.customerEmail || `workspace:${workspace.id}`, metadataJson: { customerName: normalized.customerName } },
+  }
+  const mapping = external?.priceId
+    ? { price: await prisma.commercialPrice.findUnique({ where: { id: external.priceId }, include: { planVersion: { include: { billingPlan: true, policyVersion: true } } } }), error: null }
+    : await mappedJvZooPrice(normalized);
+  const price = mapping.price;
+  if (!price) {
+    const error = mapping.error ?? "product_not_mapped";
+    const unresolved = await prisma.commercialBillingEvent.update({ where: { id: event.id }, data: { status: error === "product_not_mapped" ? "unmapped_product" : "unresolved", error } });
+    return { event: unresolved, duplicate: false, workspaceId: external?.workspaceId ?? null };
+  }
+  const occurredAt = normalized.occurredAt ?? event.createdAt;
+  const externalStatus = nextState.status === "cancelled" ? "refunded" : nextState.status === "suspended" ? "chargeback" : nextState.status;
+  if (external?.lastEventAt && (occurredAt < external.lastEventAt || (occurredAt.getTime() === external.lastEventAt.getTime() && lifecycleRank(externalStatus) < lifecycleRank(external.status)))) {
+    const stale = await prisma.commercialBillingEvent.update({ where: { id: event.id }, data: { status: "stale", processedAt: new Date(), externalSubscriptionId: external.id, error: "out_of_order_event" } });
+    return { event: stale, duplicate: false, workspaceId: external.workspaceId };
+  }
+  const currentPeriodEnd = normalized.currentPeriodEnd
+    ?? (nextState.status === "active"
+      ? periodEndFrom(price.billingInterval, occurredAt)
+      : nextState.status === "cancel_at_period_end"
+        ? external?.currentPeriodEnd ?? periodEndFrom(external?.billingInterval ?? price.billingInterval, external?.currentPeriodStart ?? external?.purchasedAt ?? occurredAt)
+        : external?.currentPeriodEnd ?? null);
+  const workspace = await resolveJvZooWorkspace(normalized, [workspaceTypeForCommercialPlan(price.planVersion.billingPlan.code)]);
+  external = await prisma.$transaction(async (tx) => {
+    const data = {
+      providerSubscriptionRef: normalized.providerSubscriptionRef ?? external?.providerSubscriptionRef,
+      providerCustomerEmail: normalized.customerEmail || external?.providerCustomerEmail || "",
+      providerCustomerName: normalized.customerName || external?.providerCustomerName || null,
+      providerProductRef: normalized.productId || external?.providerProductRef || "",
+      priceId: price.id,
+      planVersionId: price.planVersionId,
+      policyVersionId: price.planVersion.policyVersionId,
+      planCode: price.planVersion.billingPlan.code,
+      billingInterval: price.billingInterval,
+      currency: normalized.currencyProvided ? normalized.currency : external?.currency ?? price.currency,
+      amountCents: amountCents(normalized.amount) ?? external?.amountCents ?? price.amountCents,
+      status: externalStatus,
+      currentPeriodStart: nextState.status === "active" ? occurredAt : external?.currentPeriodStart ?? occurredAt,
+      currentPeriodEnd,
+      cancelAtPeriodEnd: nextState.cancelAtPeriodEnd,
+      foundingMember: price.priceClass === "founding" || external?.foundingMember === true,
+      foundingCampaignCode: price.priceClass === "founding" ? "jvzoo-founding" : external?.foundingCampaignCode,
+      protectedPriceId: price.priceClass === "founding" ? price.id : external?.protectedPriceId,
+      lastEventAt: occurredAt,
+      cancelledAt: nextState.status === "cancel_at_period_end" ? occurredAt : external?.cancelledAt,
+      refundedAt: externalStatus === "refunded" ? occurredAt : external?.refundedAt,
+      chargebackAt: externalStatus === "chargeback" ? occurredAt : external?.chargebackAt,
+      workspaceId: workspace?.id ?? external?.workspaceId,
+      userId: workspace?.ownerUserId ?? external?.userId,
+      activationStatus: workspace ? "activated" : external?.activationStatus ?? "unclaimed",
+      activatedAt: workspace ? external?.activatedAt ?? occurredAt : external?.activatedAt,
+    };
+    const updated = external
+      ? await tx.externalSubscription.update({ where: { id: external.id }, data })
+      : await tx.externalSubscription.create({
+          data: {
+            provider: COMMERCIAL_PROVIDER,
+            providerTransactionId: normalized.providerTransactionId,
+            purchasedAt: occurredAt,
+            ...data,
+          },
+        });
+    if (updated.workspaceId) await syncExternalToWorkspace(tx, updated.id, updated.workspaceId);
+    await tx.commercialBillingEvent.update({
+      where: { id: event.id },
+      data: { externalSubscriptionId: updated.id, workspaceId: workspace?.id ?? updated.workspaceId, status: "processed", processedAt: new Date(), error: null },
     });
     await tx.commercialAuditEvent.create({
       data: {
-        workspaceId: workspace.id,
+        workspaceId: workspace?.id ?? updated.workspaceId,
         actorType: "provider",
         actorId: COMMERCIAL_PROVIDER,
         action: `billing.${normalized.transactionType.toLowerCase() || "unknown"}`,
-        reasonCode: "provider_event",
+        reasonCode: "verified_provider_event",
         source: "provider",
-        correlationId: normalized.providerEventId,
-        beforeJson: before ?? undefined,
-        afterJson: { subscriptionId: subscription.id, status: subscription.status, planVersionId: subscription.planVersionId, priceId: subscription.priceId },
+        correlationId: normalized.eventFingerprint,
+        afterJson: { externalSubscriptionId: updated.id, status: updated.status, planCode: updated.planCode },
       },
     });
+    return updated;
   });
+  if (external.activationStatus === "unclaimed" && external.status === "active" && !external.activationEmailSentAt && ["SALE", "TEST", "COMPLETED"].includes(normalized.transactionType)) {
+    const { issueJvZooActivationEmail } = await import("./jvzoo-activation.js");
+    await issueJvZooActivationEmail(external.id).catch((error) => {
+      console.error("[jvzoo] activation email could not be sent", { errorType: error instanceof Error ? error.name : "unknown" });
+    });
+  }
   return {
     event: await prisma.commercialBillingEvent.findUniqueOrThrow({ where: { id: event.id } }),
     duplicate: false,
-    workspaceId: workspace.id,
+    workspaceId: external.workspaceId,
   };
 }
 
+export async function processJvZooIpn(payload: JsonObject) {
+  const received = await receiveJvZooIpn(payload);
+  if (received.duplicate && received.event.status === "processed") return received;
+  return processStoredJvZooEvent(received.event.id);
+}
+
+export async function reconcileJvZooLifecycle(now = new Date()) {
+  const expiring = await prisma.externalSubscription.findMany({
+    where: { provider: COMMERCIAL_PROVIDER, status: "cancel_at_period_end", currentPeriodEnd: { lte: now } },
+    take: 250,
+  });
+  let cancelled = 0;
+  for (const external of expiring) {
+    const changed = await prisma.$transaction(async (tx) => {
+      const claimed = await tx.externalSubscription.updateMany({
+        where: { id: external.id, status: "cancel_at_period_end", currentPeriodEnd: { lte: now } },
+        data: { status: "cancelled", cancelAtPeriodEnd: false, cancelledAt: external.cancelledAt ?? now, lastEventAt: now },
+      });
+      if (claimed.count !== 1) return false;
+      const updated = await tx.externalSubscription.findUniqueOrThrow({ where: { id: external.id } });
+      if (updated.workspaceId) await syncExternalToWorkspace(tx, updated.id, updated.workspaceId);
+      await tx.commercialAuditEvent.create({
+        data: {
+          workspaceId: updated.workspaceId,
+          actorType: "system",
+          action: "billing.cancellation_effective",
+          reasonCode: "paid_term_ended",
+          source: "scheduler",
+          correlationId: updated.id,
+          afterJson: { externalSubscriptionId: updated.id, status: updated.status },
+        },
+      });
+      return true;
+    });
+    if (changed) cancelled += 1;
+  }
+  return { cancelled };
+}
+
 export async function reconcilePendingJvZooEventsForUser(userId: string) {
-  const user = await prisma.user.findUnique({ where: { id: userId }, select: { email: true } });
-  if (!user) return { matched: 0, processed: 0 };
+  const user = await prisma.user.findUnique({ where: { id: userId }, select: { email: true, emailVerifiedAt: true } });
+  if (!user?.emailVerifiedAt) return { matched: 0, processed: 0, activated: 0 };
   const email = user.email.trim().toLowerCase();
   const candidates = await prisma.commercialBillingEvent.findMany({
     where: { provider: COMMERCIAL_PROVIDER, verified: true, status: "unresolved" },
@@ -809,16 +1126,63 @@ export async function reconcilePendingJvZooEventsForUser(userId: string) {
   });
   let processed = 0;
   for (const event of matching) {
-    const payload = objectValue(event.rawPayload);
-    if (!Object.keys(payload).length) continue;
-    const result = await processJvZooIpn(payload);
+    const result = await processStoredJvZooEvent(event.id);
     if (result.event.status === "processed") processed += 1;
   }
-  return { matched: matching.length, processed };
+  const purchases = await prisma.externalSubscription.findMany({
+    where: {
+      provider: COMMERCIAL_PROVIDER,
+      providerCustomerEmail: { equals: email, mode: "insensitive" },
+      activationStatus: "unclaimed",
+      status: { in: ["active", "cancel_at_period_end"] },
+    },
+    orderBy: { purchasedAt: "asc" },
+  });
+  const purchaseTypeCounts = purchases.reduce((counts, purchase) => {
+    const workspaceType = workspaceTypeForCommercialPlan(purchase.planCode);
+    counts.set(workspaceType, (counts.get(workspaceType) ?? 0) + 1);
+    return counts;
+  }, new Map<string, number>());
+  let activated = 0;
+  for (const purchase of purchases) {
+    const workspaceType = workspaceTypeForCommercialPlan(purchase.planCode);
+    if ((purchaseTypeCounts.get(workspaceType) ?? 0) !== 1) continue;
+    const destinations = await prisma.workspaceMembership.findMany({
+      where: {
+        userId,
+        status: "active",
+        workspace: {
+          workspaceType,
+          externalSubscriptions: { none: { provider: COMMERCIAL_PROVIDER, status: { in: ["active", "past_due", "cancel_at_period_end"] } } },
+        },
+        roles: { some: { role: "owner" } },
+      },
+      orderBy: { createdAt: "asc" },
+      take: 2,
+    });
+    if (destinations.length !== 1) continue;
+    await attachExternalSubscription({ externalSubscriptionId: purchase.id, workspaceId: destinations[0].workspaceId, userId });
+    await prisma.externalSubscriptionActivationToken.updateMany({
+      where: { externalSubscriptionId: purchase.id, usedAt: null },
+      data: { usedAt: new Date() },
+    });
+    activated += 1;
+  }
+  return { matched: matching.length + purchases.length, processed, activated };
 }
 
 export function checkoutUrlForPrice(price: { checkoutUrl: string | null }, workspaceId: string, email: string) {
   if (!price.checkoutUrl) throw Object.assign(new Error("JVZoo checkout has not been configured for this price."), { statusCode: 409, code: "jvzoo_checkout_not_configured" });
+  let configuredUrl: URL;
+  try {
+    configuredUrl = new URL(price.checkoutUrl);
+  } catch {
+    throw Object.assign(new Error("The configured checkout destination is not a valid URL."), { statusCode: 409, code: "invalid_jvzoo_checkout_url" });
+  }
+  const hostname = configuredUrl.hostname.toLowerCase();
+  if (configuredUrl.protocol !== "https:" || (hostname !== "jvzoo.com" && !hostname.endsWith(".jvzoo.com"))) {
+    throw Object.assign(new Error("The configured checkout destination is not an official JVZoo HTTPS URL."), { statusCode: 409, code: "invalid_jvzoo_checkout_url" });
+  }
   const expanded = price.checkoutUrl
     .replaceAll("{workspaceId}", encodeURIComponent(workspaceId))
     .replaceAll("{email}", encodeURIComponent(email));

@@ -110,6 +110,32 @@ export function trackingEmbed(siteId: string | null | undefined) {
   };
 }
 
+function nonPublicTrackingHost(hostname: string) {
+  const host = hostname.toLowerCase().replace(/^\[|\]$/g, "");
+  if (["localhost", "0.0.0.0", "::1"].includes(host) || host.endsWith(".localhost") || host.endsWith(".local")) return true;
+  if (/^127\./.test(host) || /^10\./.test(host) || /^192\.168\./.test(host)) return true;
+  const private172 = host.match(/^172\.(\d{1,3})\./);
+  return Boolean(private172 && Number(private172[1]) >= 16 && Number(private172[1]) <= 31);
+}
+
+/** Prevents a public release from embedding a collector that visitors cannot reach. */
+export function productionTrackingEndpointIssue(scriptUrl: string, websiteUrl: string) {
+  try {
+    const script = new URL(scriptUrl);
+    const website = new URL(websiteUrl);
+    if (nonPublicTrackingHost(website.hostname)) return null;
+    if (nonPublicTrackingHost(script.hostname)) {
+      return "The live website tracking collector points to localhost or a private address. Configure PUBLIC_API_URL with the public HTTPS API URL, restart the API, and update the live tracking installation.";
+    }
+    if (website.protocol === "https:" && script.protocol !== "https:") {
+      return "The live HTTPS website tracking collector is not HTTPS, so browsers will block it as mixed content. Configure PUBLIC_API_URL with the public HTTPS API URL before publishing.";
+    }
+    return null;
+  } catch {
+    return "The production tracking URL is invalid. Configure PUBLIC_API_URL with the public HTTPS API URL before publishing.";
+  }
+}
+
 export function websiteTrackingMetrics(events: Array<{ eventName: string; sessionId: string | null; metadataJson: unknown; occurredAt: Date }>) {
   const performance = events.filter((event) => event.eventName === "page_performance").map((event) => event.metadataJson && typeof event.metadataJson === "object" && !Array.isArray(event.metadataJson) ? Number((event.metadataJson as Record<string, unknown>).loadMs) : NaN).filter(Number.isFinite);
   const count = (name: string) => events.filter((event) => event.eventName === name).length;

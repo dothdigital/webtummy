@@ -33,6 +33,7 @@ import { runCommercialRequestContext } from "../commercial-request-context.js";
 import { createApiErrorCode } from "../api-errors.js";
 import { queueApiErrorReport } from "../api-error-reporter.js";
 import { captureWebsiteTracking } from "../website-tracking.js";
+import { discoveryTargetMarkets, latestExplicitConversationTargetMarkets, sameGeographicTargetMarkets } from "../discovery-target-markets.js";
 
 export const guidedProjectsRouter = Router();
 guidedProjectsRouter.use(requireAuth);
@@ -378,6 +379,7 @@ async function scopedProject(req: Request, projectId: string) {
       gapAnalysisRuns: { orderBy: { createdAt: "desc" }, take: 1, select: { id: true, completedAt: true, createdAt: true } },
       aiRuns: { where: { moduleName: "ecommerce_intelligence", status: "completed" }, orderBy: { createdAt: "desc" }, take: 1, select: { id: true, outputJson: true, createdAt: true } },
       websiteBuilds: { orderBy: { updatedAt: "desc" }, take: 1, select: { id: true } },
+      websitePublications: { orderBy: { createdAt: "desc" }, take: 10, select: { status: true, mode: true, publishedAt: true, completedAt: true } },
     },
   });
   if (!project) return null;
@@ -495,6 +497,22 @@ async function scopedProject(req: Request, projectId: string) {
   return inheritedDetails && typeof inheritedDetails === "object" && locationIsComplete(inheritedDetails as Record<string, unknown>)
     ? { ...normalizedProject, businessLocationJson: inheritedDetails }
     : normalizedProject;
+}
+
+function strategyCompletionState(project: {
+  executionTasks: Array<{ title?: string | null; actionButtonLabel?: string | null; sourceType?: string | null; dedupeKey?: string | null; status: string; approvedAt?: Date | null; approvalSnapshotJson?: unknown }>;
+  websitePublications: Array<{ status: string; mode: string; publishedAt: Date | null; completedAt: Date | null }>;
+}) {
+  const websitePlanApproved = project.executionTasks.some((task) => {
+    if (!isWebsitePlanTask(task) || !["completed", "approved", "ready_to_publish"].includes(task.status)) return false;
+    const snapshot = task.approvalSnapshotJson && typeof task.approvalSnapshotJson === "object" && !Array.isArray(task.approvalSnapshotJson)
+      ? task.approvalSnapshotJson as Record<string, unknown>
+      : {};
+    return Boolean(task.approvedAt || snapshot.contentPlan);
+  });
+  const websiteLaunched = project.websitePublications.some((publication) => Boolean(publication.publishedAt || publication.completedAt)
+    && (publication.status === "published" || (publication.status === "completed" && ["publish", "sftp", "live"].includes(publication.mode))));
+  return { websiteLaunched, websitePlanApproved };
 }
 
 async function projectSourceActivitySummaries(project: NonNullable<Awaited<ReturnType<typeof scopedProject>>>) {
@@ -2972,9 +2990,68 @@ guidedProjectsRouter.post("/projects-v2", async (req, res) => {
   res.status(201).json({ project: result });
 });
 
+async function recoverExplicitProjectTargetMarkets(
+  project: NonNullable<Awaited<ReturnType<typeof scopedProject>>>,
+  context: Awaited<ReturnType<typeof workspaceContext>>,
+) {
+  const currentMarkets = cleanGeographicTargetMarkets(Array.isArray(project.targetLocations) ? project.targetLocations.map(String) : []);
+  if (!hasWorkspacePermission(context, "edit_assigned_work")) return false;
+  const intelligence = project.businessProfile?.intelligenceJson && typeof project.businessProfile.intelligenceJson === "object" && !Array.isArray(project.businessProfile.intelligenceJson)
+    ? project.businessProfile.intelligenceJson as Record<string, unknown>
+    : {};
+  const discoveryDraftId = typeof intelligence.discoveryDraftId === "string" ? intelligence.discoveryDraftId : "";
+  const conversationalIntake = intelligence.conversationalIntake && typeof intelligence.conversationalIntake === "object" && !Array.isArray(intelligence.conversationalIntake)
+    ? intelligence.conversationalIntake as Record<string, unknown>
+    : {};
+  const savedConversationMarkets = latestExplicitConversationTargetMarkets(conversationalIntake.messages);
+  const [draft, conversationThreads] = await Promise.all([
+    prisma.discoveryDraft.findFirst({
+      where: {
+        workspaceId: context.workspace.id,
+        OR: [{ convertedProjectId: project.id }, ...(discoveryDraftId ? [{ id: discoveryDraftId }] : [])],
+      },
+      select: { id: true, sourceText: true, answersJson: true, factsJson: true, aiSummaryJson: true },
+    }),
+    savedConversationMarkets.length ? Promise.resolve([]) : prisma.projectAgentThread.findMany({
+      where: { projectId: project.id, workspaceId: context.workspace.id },
+      select: { messages: { where: { role: "user", pageContext: "project-intake" }, orderBy: { createdAt: "asc" }, take: 250, select: { role: true, content: true, createdAt: true } } },
+    }),
+  ]);
+  const discoveryMarkets = draft ? discoveryTargetMarkets({ understanding: draft.aiSummaryJson, facts: draft.factsJson, answers: draft.answersJson, sourceText: draft.sourceText }) : [];
+  const storedMessages = conversationThreads.flatMap((thread) => thread.messages).sort((left, right) => left.createdAt.getTime() - right.createdAt.getTime());
+  const conversationMarkets = savedConversationMarkets.length ? savedConversationMarkets : latestExplicitConversationTargetMarkets(storedMessages);
+  const recoveredMarkets = discoveryMarkets.length ? discoveryMarkets : conversationMarkets;
+  if (!recoveredMarkets.length || sameGeographicTargetMarkets(currentMarkets, recoveredMarkets)) return false;
+
+  // An explicit intake statement may replace no scope or an inherited
+  // workspace/client default. Preserve an unrelated market because it may be a
+  // deliberate manual edit made after intake.
+  const workspaceMarkets = locationDefaultsFromSettings(context.workspace.settingsJson).targetMarkets;
+  const clientMarkets = cleanGeographicTargetMarkets(Array.isArray(project.agencyClient?.targetMarkets) ? project.agencyClient.targetMarkets.map(String) : []);
+  const inheritedCurrentMarkets = !currentMarkets.length
+    || sameGeographicTargetMarkets(currentMarkets, workspaceMarkets)
+    || sameGeographicTargetMarkets(currentMarkets, clientMarkets);
+  if (!inheritedCurrentMarkets) return false;
+  const recoverySource = discoveryMarkets.length ? "adaptive_business_discovery" : "conversational_intake";
+  await prisma.$transaction(async (tx) => {
+    await tx.project.update({ where: { id: project.id }, data: { targetLocations: recoveredMarkets, targetLocation: recoveredMarkets.join(", ").slice(0, 180) } });
+    await tx.projectIntakeAnswer.upsert({
+      where: { projectId_questionKey: { projectId: project.id, questionKey: "target_location" } },
+      create: { projectId: project.id, questionKey: "target_location", questionText: "Which target markets were stated during intake?", answerValue: recoveredMarkets, answerType: "multiselect", moduleContext: recoverySource },
+      update: { answerValue: recoveredMarkets, answerType: "multiselect", moduleContext: recoverySource },
+    });
+    if (project.businessProfile) await tx.businessProfile.update({ where: { projectId: project.id }, data: { intelligenceJson: { ...intelligence, targetMarkets: recoveredMarkets } as Prisma.InputJsonValue } });
+    if (project.websiteId) await tx.website.update({ where: { id: project.websiteId }, data: { targetCities: recoveredMarkets } });
+    await recordWorkspaceActivity(tx, { context, action: "project.target_markets_recovered_from_intake", entityType: "project", entityId: project.id, agencyClientId: project.agencyClientId, projectId: project.id, previousJson: { targetMarkets: currentMarkets }, nextJson: { targetMarkets: recoveredMarkets, recoverySource, ...(draft ? { discoveryDraftId: draft.id } : {}) } });
+  });
+  return true;
+}
+
 guidedProjectsRouter.get("/projects-v2/:projectId", async (req, res) => {
   const accessible = await scopedProject(req, req.params.projectId);
   if (!accessible) return res.status(404).json({ error: "project not found" });
+  const context = await workspaceContext(req);
+  await recoverExplicitProjectTargetMarkets(accessible, context);
   await prisma.$transaction((tx) => syncProjectWorkflow(tx, accessible.id));
   const project = await scopedProject(req, accessible.id);
   if (!project) return res.status(404).json({ error: "project not found" });
@@ -3916,6 +3993,7 @@ async function performStrategyGeneration(req: Request, res: Response) {
     evidenceVersion: workflowGate.evidenceVersion,
     workflowConfidence: workflowGate.confidence,
     externalRecommendations: [...gapStrategyRecommendations, ...advanced.recommendations],
+    completionState: strategyCompletionState(project),
   });
   const unifiedStrategyScore = clampScore(workflowGate.confidence.overall * 0.65 + decisionSet.nextBestAction.confidence * 0.25 + (workflowGate.intelligenceReady ? 10 : 0));
   const unifiedRecommendation = {
@@ -4388,7 +4466,7 @@ guidedProjectsRouter.post("/projects-v2/:projectId/strategy/analyze", async (req
   const unifiedEntry = priorEntries.find((item) => item && typeof item === "object" && !Array.isArray(item) && (item as { analysisKey?: unknown }).analysisKey === "unified_strategy_plan") as Record<string, unknown> | undefined;
   const retainedGapRecommendations = priorEntries.filter((item) => item && typeof item === "object" && !Array.isArray(item) && /^gap_/.test(String((item as { analysisKey?: unknown }).analysisKey ?? ""))) as StrategyRecommendation[];
   const previousScoreBreakdown = strategy.scoreBreakdown && typeof strategy.scoreBreakdown === "object" && !Array.isArray(strategy.scoreBreakdown) ? strategy.scoreBreakdown as Record<string, unknown> : {};
-  const decisionSet = buildStrategyDecisionSet({ projectId: project.id, workspaceId: context.workspace.id, modelPipelineReference: String(previousScoreBreakdown.model ?? "saved-strategy-candidates"), approval: { status: "pending" }, plan: unifiedPlan, businessBrainVersion: workflowGate.businessBrainVersion, evidenceVersion: workflowGate.evidenceVersion, workflowConfidence: workflowGate.confidence, externalRecommendations: [...retainedGapRecommendations, ...advanced.recommendations] });
+  const decisionSet = buildStrategyDecisionSet({ projectId: project.id, workspaceId: context.workspace.id, modelPipelineReference: String(previousScoreBreakdown.model ?? "saved-strategy-candidates"), approval: { status: "pending" }, plan: unifiedPlan, businessBrainVersion: workflowGate.businessBrainVersion, evidenceVersion: workflowGate.evidenceVersion, workflowConfidence: workflowGate.confidence, externalRecommendations: [...retainedGapRecommendations, ...advanced.recommendations], completionState: strategyCompletionState(project) });
   const nextUnifiedEntry = { ...(unifiedEntry ?? { analysisKey: "unified_strategy_plan", plan: unifiedPlan }), decisionSet: { engineVersion: decisionSet.engineVersion, businessBrainVersion: decisionSet.businessBrainVersion, evidenceVersion: decisionSet.evidenceVersion, generatedAt: decisionSet.generatedAt, formula: decisionSet.formula, nextBestActionKey: decisionSet.nextBestActionKey, nextBestAction: decisionSet.nextBestAction, audit: decisionSet.audit } };
   const nextRecommendations = [nextUnifiedEntry, ...decisionSet.decisions];
   await prisma.$transaction(async (tx) => {

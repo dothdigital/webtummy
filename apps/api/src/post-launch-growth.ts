@@ -1,4 +1,5 @@
 import { Prisma, prisma } from "@webtummy/db";
+import { isCompletedWebsiteLaunchFoundationAction } from "./completed-work.js";
 
 export const POST_LAUNCH_GROWTH_ENGINE_VERSION = "post-launch-growth-v1";
 const DAY_MS = 86_400_000;
@@ -43,9 +44,9 @@ export function selectPostLaunchNextBestAction(input: PostLaunchActionInput): Po
   if (!input.trackingVerified || ["CONNECTION_REQUIRED", "TRACKING_ERROR", "TRACKING_REVIEW_REQUIRED"].includes(input.trackingState)) return {
     key: "verify-live-tracking",
     title: "Verify tracking on the live website",
-    recommendation: "Open the production website, complete a test page view and primary conversion journey, then confirm that SEnuke AI receives the events. Correct the tag, allowed host, consent, or form event mapping if verification fails.",
-    expectedImpact: "A verified measurement stream and a defensible start date for the initial baseline.",
-    reason: "Tracking verification is the first post-launch dependency and must precede performance claims.",
+    recommendation: "Open the production website once in a normal browser, then refresh Performance. Your controlled page view is enough to verify the production tag; customer traffic and a test conversion are not required for this first check. After verification, the 28-day baseline records actual activity, including days with no visits.",
+    expectedImpact: "A verified measurement stream and a defensible start date for the initial baseline without requiring pre-existing traffic.",
+    reason: "One valid production page view verifies installation. Conversion-journey testing is a separate follow-up check, and performance claims remain disabled until the initial baseline is established.",
     route: "technical", priorityScore: 99, confidence: 100, effort: "low", actionType: "tracking_verification",
   };
   if (input.indexingIssueCount > 0) return {
@@ -156,7 +157,7 @@ export async function activatePostLaunchGrowthLifecycle(input: { projectId: stri
       discoveryChecks: { orderBy: { createdAt: "desc" }, take: 20, select: { status: true, indexable: true, robotsAllowed: true, canonicalMatches: true, sitemapPresent: true } },
       executionTasks: { where: { status: { in: ["ready", "planned", "approved", "pending", "needs_review"] } }, orderBy: [{ priority: "asc" }, { createdAt: "asc" }], take: 100, select: { id: true, title: true, moduleName: true, sourceType: true, status: true } },
       growthBlueprint: { include: { versions: { orderBy: { version: "desc" }, take: 1 } } },
-      nextBestActions: { where: { engineVersion: POST_LAUNCH_GROWTH_ENGINE_VERSION }, orderBy: { createdAt: "desc" }, take: 20 },
+      nextBestActions: { where: { status: { in: ["proposed", "recommended", "selected", "approved", "accepted", "in_progress"] } }, orderBy: { createdAt: "desc" }, take: 50 },
       localBusinessProfiles: { take: 1, select: { id: true } },
     },
   });
@@ -233,6 +234,12 @@ export async function activatePostLaunchGrowthLifecycle(input: { projectId: stri
     let blueprint = project.growthBlueprint;
     const latestEvidence = record(blueprint?.versions[0]?.evidenceJson);
     const releaseAlreadyActivated = latestEvidence.releaseId === releaseId;
+    const blueprintNeedsRefresh = Boolean(blueprint && (
+      blueprint.status === "needs_refresh"
+      || blueprint.approvedStrategyId !== (strategy?.id ?? null)
+      || blueprint.businessBrainVersion !== (strategy?.businessBrainVersion ?? null)
+      || blueprint.evidenceVersion !== (strategy?.evidenceVersion ?? null)
+    ));
     if (!blueprint) {
       blueprint = await tx.growthBlueprint.create({
         data: {
@@ -249,15 +256,32 @@ export async function activatePostLaunchGrowthLifecycle(input: { projectId: stri
         },
         include: { versions: { orderBy: { version: "desc" }, take: 1 } },
       });
-    } else if (!releaseAlreadyActivated) {
+    } else if (!releaseAlreadyActivated || blueprintNeedsRefresh) {
       const version = blueprint.currentVersion + 1;
-      await tx.growthBlueprintVersion.create({ data: { blueprintId: blueprint.id, version, status: "active", goalsJson: [{ title: primaryGoal, status: "baseline_collecting" }], nowJson: nowItems, nextJson: nextItems, laterJson: laterItems, conditionalJson: conditionalItems, evidenceJson: blueprintEvidence as Prisma.InputJsonValue, reason: `Activated post-launch lifecycle for verified website release ${releaseId}. The approved Strategy remains the foundation.`, engineVersion: POST_LAUNCH_GROWTH_ENGINE_VERSION, createdByUserId: input.actorUserId } });
+      await tx.growthBlueprintVersion.create({ data: { blueprintId: blueprint.id, version, status: "active", goalsJson: [{ title: primaryGoal, status: "baseline_collecting" }], nowJson: nowItems, nextJson: nextItems, laterJson: laterItems, conditionalJson: conditionalItems, evidenceJson: blueprintEvidence as Prisma.InputJsonValue, reason: blueprintNeedsRefresh ? "Refreshed the post-launch Growth Blueprint from the latest approved Strategy and live website evidence." : `Activated post-launch lifecycle for verified website release ${releaseId}. The approved Strategy remains the foundation.`, engineVersion: POST_LAUNCH_GROWTH_ENGINE_VERSION, createdByUserId: input.actorUserId } });
       blueprint = await tx.growthBlueprint.update({ where: { id: blueprint.id }, data: { status: "active", currentVersion: version, primaryGoal: primaryGoal.slice(0, 255), approvedStrategyId: strategy?.id, businessBrainVersion: strategy?.businessBrainVersion, evidenceVersion: strategy?.evidenceVersion, nextReviewAt: new Date(Date.now() + 7 * DAY_MS) }, include: { versions: { orderBy: { version: "desc" }, take: 1 } } });
     }
 
     const dedupeKey = `post-launch:${project.id}:${action.key}`.slice(0, 191);
     const existing = project.nextBestActions.find((item) => item.dedupeKey === dedupeKey);
-    const current = project.nextBestActions.find((item) => item.status === "selected");
+    const completedFoundationActions = project.nextBestActions.filter((item) => isCompletedWebsiteLaunchFoundationAction(item, {
+      websiteLaunched: true,
+      websitePlanApproved: true,
+    }));
+    for (const completedAction of completedFoundationActions) {
+      await tx.nextBestAction.update({
+        where: { id: completedAction.id },
+        data: { status: "superseded", decision: "website_foundation_already_published", selectedAt: null, decidedAt: new Date() },
+      });
+      if (completedAction.followupTaskId) {
+        await tx.executionTask.updateMany({
+          where: { id: completedAction.followupTaskId, status: { notIn: ["completed", "skipped", "published", "verified", "cancelled", "canceled"] } },
+          data: { status: "skipped", completedAt: new Date(), skippedAt: new Date(), internalNotes: "The approved Website Plan was already published before this duplicate foundation action was selected." },
+        });
+      }
+    }
+    const completedFoundationIds = new Set(completedFoundationActions.map((item) => item.id));
+    const current = project.nextBestActions.find((item) => item.status === "selected" && !completedFoundationIds.has(item.id));
     if (current && current.dedupeKey !== dedupeKey) await tx.nextBestAction.update({ where: { id: current.id }, data: { status: current.actionType === "tracking_verification" && trackingVerifiedAt ? "completed" : "superseded", decision: trackingVerifiedAt && current.actionType === "tracking_verification" ? "verified_automatically" : "priority_changed", decidedAt: new Date() } });
     const actionData = {
       sourceType: "growth_engine",
@@ -285,7 +309,14 @@ export async function activatePostLaunchGrowthLifecycle(input: { projectId: stri
       status: "selected",
     };
     const nextBestAction = existing && ["accepted", "in_progress", "completed"].includes(existing.status)
-      ? existing
+      ? await tx.nextBestAction.update({ where: { id: existing.id }, data: {
+          title: action.title,
+          recommendation: action.recommendation,
+          reasoningSummary: action.reason,
+          expectedImpact: action.expectedImpact,
+          confidence: action.confidence,
+          priorityScore: action.priorityScore,
+        } })
       : existing && existing.status === "selected" && existing.title === action.title && existing.recommendation === action.recommendation && existing.expectedImpact === action.expectedImpact
         ? existing
       : existing

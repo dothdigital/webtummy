@@ -50,6 +50,12 @@ export function keywordMarketOptions<T extends { locationName: string }>(runs: T
   return [...options.entries()].map(([value, label]) => ({ value, label })).sort((a, b) => a.label.localeCompare(b.label));
 }
 
+export function keywordRunsForProjectLocations<T extends { locationName: string }>(runs: T[], projectLocations: string[]): T[] {
+  const allowedMarkets = new Set(projectLocations.map(keywordMarketKey).filter(Boolean));
+  if (!allowedMarkets.size) return [];
+  return runs.filter((run) => allowedMarkets.has(keywordMarketKey(run.locationName)));
+}
+
 export function keywordOpportunityScore(volume: number | null | undefined, difficulty: number | null | undefined): number | null {
   if (volume == null || difficulty == null) return null;
   const volumeSignal = Math.min(100, Math.log10(volume + 1) * 32);

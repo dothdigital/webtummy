@@ -33,6 +33,7 @@ type AdminCommercialData = {
     commercialSubscriptions: Array<{ id: string; status: string; provider: string; currentPeriodEnd: string | null; planVersion: { version: number; billingPlan: { code: string; name: string } } }>;
     _count: { memberships: number; agencyClients: number };
   }>;
+  externalSubscriptions: Array<{ id: string; providerCustomerEmail: string; providerProductRef: string; planCode: string | null; billingInterval: string | null; status: string; activationStatus: string; workspaceId: string | null; currentPeriodEnd: string | null; activationEmailSentAt: string | null; activationEmailError: string | null; createdAt: string }>;
 };
 
 function dateLabel(value: string | null | undefined) {
@@ -69,7 +70,7 @@ export default function AdminCommercial() {
     void load();
   }, []);
 
-  const unresolvedEvents = useMemo(() => data?.events.filter((event) => ["unresolved", "rejected"].includes(event.status)) ?? [], [data]);
+  const unresolvedEvents = useMemo(() => data?.events.filter((event) => ["unresolved", "unmapped_product", "failed", "rejected"].includes(event.status)) ?? [], [data]);
 
   const savePrice = async (priceId: string) => {
     const draft = priceDrafts[priceId];
@@ -124,6 +125,17 @@ export default function AdminCommercial() {
     } finally {
       setBusy(null);
     }
+  };
+
+  const resendActivation = async (subscriptionId: string) => {
+    setBusy(subscriptionId); setMessage(null);
+    try {
+      await api.post(`/api/billing/admin/commercial/external-subscriptions/${subscriptionId}/resend-activation`, {});
+      setMessage("A new single-use JVZoo activation link was sent.");
+      await load();
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Could not resend the activation link.");
+    } finally { setBusy(null); }
   };
 
   const saveAdjustment = async () => {
@@ -255,6 +267,14 @@ export default function AdminCommercial() {
             </tbody>
           </table>
         </div>
+      </Card>
+
+      <Card className="overflow-hidden">
+        <div className="border-b border-slate-200 p-5"><h2 className="text-lg font-bold text-charcoal-950">JVZoo purchases and activation</h2><p className="text-sm text-charcoal-500">Provider-owned purchases remain here even before a user or workspace exists.</p></div>
+        <div className="overflow-x-auto"><table className="min-w-full divide-y divide-slate-200 text-sm">
+          <thead className="bg-slate-50 text-left text-xs font-bold uppercase tracking-wide text-charcoal-500"><tr><th className="px-4 py-3">Customer</th><th className="px-4 py-3">Plan</th><th className="px-4 py-3">Lifecycle</th><th className="px-4 py-3">Activation</th><th className="px-4 py-3">Period end</th><th className="px-4 py-3">Action</th></tr></thead>
+          <tbody className="divide-y divide-slate-100">{data?.externalSubscriptions.map((subscription) => <tr key={subscription.id}><td className="px-4 py-3"><b>{subscription.providerCustomerEmail}</b><div className="text-xs text-charcoal-500">{subscription.providerProductRef}</div></td><td className="px-4 py-3 capitalize">{subscription.planCode ?? "Unmapped"} · {subscription.billingInterval ?? "—"}</td><td className="px-4 py-3"><StatusPill status={subscription.status} /></td><td className="px-4 py-3"><StatusPill status={subscription.activationStatus} />{subscription.activationEmailError && <div className="mt-1 max-w-xs text-xs text-rose-700">{subscription.activationEmailError}</div>}</td><td className="px-4 py-3">{dateLabel(subscription.currentPeriodEnd)}</td><td className="px-4 py-3">{subscription.activationStatus !== "activated" && <Button variant="ghost" onClick={() => void resendActivation(subscription.id)} disabled={busy === subscription.id}>{busy === subscription.id ? "Sending…" : "Resend activation"}</Button>}</td></tr>)}</tbody>
+        </table>{!data?.externalSubscriptions.length && <div className="p-5 text-sm text-charcoal-500">No JVZoo purchases received yet.</div>}</div>
       </Card>
 
       <div className="grid gap-5 xl:grid-cols-2">

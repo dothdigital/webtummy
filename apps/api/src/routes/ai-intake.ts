@@ -11,6 +11,7 @@ import { canAccessProject, createWorkspaceNotification, hasWorkspacePermission, 
 import { config } from "../config.js";
 import { canonicalPrimaryGoal, canonicalSecondaryGoal, primaryGoalsForWorkspace, standardSecondaryGoals } from "@webtummy/core/project-goals";
 import { cleanGeographicTargetMarkets, explicitlyTargetsGeographicMarket } from "../project-location.js";
+import { discoveryTargetMarkets } from "../discovery-target-markets.js";
 
 export const aiIntakeRouter = Router();
 aiIntakeRouter.use(requireAuth);
@@ -835,7 +836,18 @@ Industry proposed by the first AI response: ${JSON.stringify(proposedIndustry?.v
       const unsupportedPrimaryGoal = Boolean(normalizedSuppliedPrimaryGoal && !allowedPrimaryGoals.has(normalizedSuppliedPrimaryGoal));
       const latestUserText = [...input.messages].reverse().find((message) => message.role === "user")?.text ?? "";
       const latestAssistantText = [...input.messages].reverse().find((message) => message.role === "assistant")?.text ?? "";
-      const answeringTargetMarkets = input.directSelection?.field === "targetMarkets" || coreFieldAskedBy(latestAssistantText) === "targetMarkets";
+      // Geographic scope controls paid provider calls, so do not depend only on
+      // the model remembering to return targetMarkets. Explicit labels such as
+      // “Location: Edmonton and Calgary” are authoritative user input.
+      const explicitTurnMarkets = input.directSelection ? [] : discoveryTargetMarkets({ sourceText: latestUserText });
+      if (explicitTurnMarkets.length) output = {
+        ...output,
+        fieldUpdates: [
+          ...output.fieldUpdates.filter((update) => update.field !== "targetMarkets"),
+          { field: "targetMarkets", value: explicitTurnMarkets, confidence: "high", reason: "Captured directly from the user's stated target or service locations." },
+        ],
+      };
+      const answeringTargetMarkets = input.directSelection?.field === "targetMarkets" || coreFieldAskedBy(latestAssistantText) === "targetMarkets" || explicitTurnMarkets.length > 0;
       output = { ...output, fieldUpdates: output.fieldUpdates.flatMap((update) => {
         if (update.field === "websiteUrl" && update.value === NO_CURRENT_WEBSITE) return [{ ...update, field: "websiteStatus", value: "new_website_required", reason: "The user confirmed there is no current public website." }];
         if (update.field === "primaryGoal") { const goal = canonicalPrimaryGoal(String(update.value ?? "")); return allowedPrimaryGoals.has(goal) ? [{ ...update, value: goal }] : []; }

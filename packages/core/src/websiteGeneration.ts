@@ -64,7 +64,9 @@ export function isGenericWebsiteHeroHeading(value: unknown, businessName: unknow
   const heading = normalizeWebsiteUniquenessSignal(value);
   if (!heading) return true;
   if (/^welcome(?: to)?\b/.test(heading)) return true;
-  if (/^(?:home|homepage|website page|our website|your trusted partner|quality you can trust|solutions for every need|tailored (?:insurance )?strategies|we are here to help|discover the difference)$/.test(heading)) return true;
+  if (/^(?:explore|discover|understanding|learn about)\b/.test(heading)) return true;
+  if (/^(?:expert|best|leading|top|number one|1)\b/.test(heading)) return true;
+  if (/^(?:home|homepage|website page|our website|your trusted partner|your privacy matters|quality you can trust|solutions for every need|tailored (?:insurance )?strategies|we are here to help|discover the difference)$/.test(heading)) return true;
   const business = normalizeWebsiteUniquenessSignal(businessName);
   return Boolean(business && [business, `${business} home`, `${business} homepage`, `${business} official website`].includes(heading));
 }
@@ -73,6 +75,66 @@ const cleanHeadingSubject = (value: unknown) => String(value ?? "")
   .replace(/[.!?]+$/g, "")
   .replace(/\s+/g, " ")
   .trim();
+
+const formatSeoHeadingTopic = (value: unknown) => {
+  const subject = cleanHeadingSubject(value)
+    .replace(/^life insurance$/i, "Life Insurance")
+    .replace(/^critical insurance$/i, "Critical Illness Insurance")
+    .replace(/^financial planning(?: services?)?$/i, "Financial Planning")
+    .replace(/^investments?$/i, "Investment Planning")
+    .replace(/^group benefit services?$/i, "Group Benefits")
+    .replace(/\b(rrsp|resp|tfsa|fhsa|rrif)\b/gi, (match) => match.toUpperCase());
+  return subject ? `${subject.charAt(0).toUpperCase()}${subject.slice(1)}` : "";
+};
+
+export function websiteSeoHeroHeading(input: {
+  pageTitle: string;
+  pageType?: string;
+  primaryKeyword?: string;
+  businessName?: string;
+  locations?: unknown[];
+  serviceTopics?: unknown[];
+}) {
+  const pageTitle = formatSeoHeadingTopic(input.pageTitle) || "Website";
+  const business = cleanHeadingSubject(input.businessName);
+  const identity = `${input.pageType ?? ""} ${pageTitle}`.toLowerCase();
+  if (/privacy|terms|legal|accessibility|cookie/.test(identity)) return pageTitle;
+  if (/about|our team|company|who we are/.test(identity)) return business ? `About ${business}` : pageTitle;
+  if (/contact|enquir|book|appointment/.test(identity)) return business ? `Contact ${business}` : pageTitle;
+
+  let topic = formatSeoHeadingTopic(input.primaryKeyword) || pageTitle;
+  if (/^(?:services?|solutions?)$/i.test(topic)) {
+    const services = (input.serviceTopics ?? [])
+      .map(formatSeoHeadingTopic)
+      .filter((value) => value && !/^(?:services?|solutions?)$/i.test(value));
+    topic = services.length >= 2
+      ? `${services[0]} and ${services[1]} Services`
+      : services[0] || "Professional Services";
+  }
+  const location = (input.locations ?? []).map(cleanHeadingSubject).find(Boolean) || "";
+  const includesLocation = location && normalizeWebsiteUniquenessSignal(topic).includes(normalizeWebsiteUniquenessSignal(location));
+  return `${topic}${location && !includesLocation ? ` in ${location}` : ""}`.slice(0, 120).trim();
+}
+
+/**
+ * Preserve a strong AI-written H1, but replace generic, unsupported, or
+ * company-first headings with a deterministic keyword-and-market heading.
+ */
+export function ensureSeoFocusedHeroHeading(
+  components: WebsiteComponentInstance[],
+  input: Parameters<typeof websiteSeoHeroHeading>[0],
+) {
+  const next = components.map((component) => ({
+    ...component,
+    props: JSON.parse(JSON.stringify(component.props)) as WebsiteComponentInstance["props"],
+  }));
+  const hero = next.find((component) => component.componentId === "hero.local_service");
+  if (!hero) return next;
+  if (isGenericWebsiteHeroHeading(hero.props.headline, input.businessName)) {
+    hero.props.headline = websiteSeoHeroHeading(input);
+  }
+  return next;
+}
 
 /**
  * The first H2 is the bridge between the hero and the substantive page copy.

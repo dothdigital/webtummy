@@ -231,7 +231,10 @@ describe("DEV-046 project workflow controller", () => {
     const result = resolveProjectWorkflow(snapshot({ latestStrategy: { id: "strategy-1", status: "approved", createdAt: strategyAt, approvedAt: strategyAt }, latestStrategyVersion: 6, latestEvidenceAt: evidenceAt }));
     expect(result.strategyStale).toBe(true);
     expect(result.state).toBe("strategy_ready");
-    expect(result.nextBestAction.title).toContain("Regenerate Strategy");
+    expect(result.nextBestAction.title).toContain("was completed");
+    expect(result.nextBestAction.action.label).toBe("Regenerate Strategy");
+    expect(result.nextBestAction.explainability).toContain("preserves the previous version");
+    expect(result.stages.find((item) => item.key === "unified_strategy")?.reason).toContain("completed previously");
   });
 
   it("allows an authorized waiver to satisfy one evidence cycle", () => {
@@ -247,6 +250,26 @@ describe("DEV-046 project workflow controller", () => {
     expect(keywords?.status).toBe("stale");
     expect(keywords?.reason).toContain("freshness window");
     expect(result.intelligenceReady).toBe(false);
+  });
+
+  it("labels a completed Gap Analysis as stale when a newer website crawl exists", () => {
+    const gapAt = new Date("2026-08-01T12:00:00.000Z");
+    const crawlAt = new Date("2026-08-01T13:00:00.000Z");
+    const result = resolveProjectWorkflow(snapshot({
+      gapAnalysisComplete: false,
+      gapEvidenceAt: gapAt,
+      siteEvidenceAt: crawlAt,
+      citationEvidenceComplete: false,
+      authorityEvidenceComplete: false,
+    }));
+
+    for (const key of ["technical_seo", "content_gap_analysis", "ai_citation_analysis", "authority_analysis"]) {
+      const module = result.intelligenceModules.find((item) => item.key === key);
+      expect(module?.status).toBe("stale");
+      expect(module?.reason).toContain("predates newer");
+      expect(module?.action?.url).toContain("/gap-analysis?");
+    }
+    expect(result.nextBestAction.action.label).toBe("Refresh gap analysis");
   });
 
   it("routes approved work through execution and measurement", () => {

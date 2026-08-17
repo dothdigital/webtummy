@@ -15,7 +15,7 @@ const ready = {
 describe("post-launch website growth lifecycle", () => {
   it("prioritizes launch and tracking integrity before growth work", () => {
     expect(selectPostLaunchNextBestAction({ ...ready, launchVerified: false }).key).toBe("fix-launch-verification");
-    expect(selectPostLaunchNextBestAction({ ...ready, trackingVerified: false }).key).toBe("verify-live-tracking");
+    expect(selectPostLaunchNextBestAction({ ...ready, trackingVerified: false })).toMatchObject({ key: "verify-live-tracking", recommendation: expect.stringContaining("customer traffic") });
     expect(selectPostLaunchNextBestAction({ ...ready, indexingIssueCount: 2 }).key).toBe("resolve-indexing-crawl-issues");
     expect(selectPostLaunchNextBestAction({ ...ready, searchConsoleConnected: false }).key).toBe("submit-sitemap-search-console");
     expect(selectPostLaunchNextBestAction({ ...ready, formErrors: 2, formSuccesses: 1 }).key).toBe("fix-live-form-conversion");

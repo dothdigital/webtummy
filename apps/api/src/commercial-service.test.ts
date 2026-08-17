@@ -1,11 +1,11 @@
 import crypto from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { checkoutUrlForPrice, normalizeJvZooIpn, verifyJvZooIpn } from "./commercial-service.js";
+import { checkoutUrlForPrice, normalizeJvZooIpn, selectJvZooPriceMapping, stateFromJvZooEvent, verifyJvZooIpn, workspaceTypeForCommercialPlan } from "./commercial-service.js";
 
 const sha1 = (value: string) => crypto.createHash("sha1").update(value, "utf8").digest("hex").slice(0, 8).toUpperCase();
 
 describe("JVZoo commercial adapter", () => {
-  it("verifies a JVZIPN v2 signature using the documented field order", () => {
+  it("verifies a JVZIPN v2 signature using the configured Complete Processing field order", () => {
     const secret = "test-secret";
     const payload: Record<string, unknown> = {
       paykey: "PA-123",
@@ -48,16 +48,72 @@ describe("JVZoo commercial adapter", () => {
       product_id: "98211",
       transaction_id: "TX-55",
       transaction_type: "REBILL",
+      status: "COMPLETED",
       cvendthru: JSON.stringify({ workspaceId: "workspace-123456" }),
     });
     expect(normalized).toMatchObject({
       version: 2,
       providerEventId: "TX-55",
       transactionType: "REBILL",
+      providerStatus: "COMPLETED",
       customerEmail: "owner@example.com",
       customerName: "Ava Patel",
       workspaceId: "workspace-123456",
     });
+  });
+
+  it("uses both JVZIPN v2 transaction type and payment status before granting access", () => {
+    expect(stateFromJvZooEvent("SALE", "COMPLETED", 2)).toMatchObject({ status: "active", accessMode: "full" });
+    expect(stateFromJvZooEvent("SALE", "FAILED", 2)).toMatchObject({ status: "payment_required", accessMode: "read_only" });
+    expect(stateFromJvZooEvent("REBILL", "FAILED", 2)).toMatchObject({ status: "past_due", accessMode: "grace" });
+    expect(stateFromJvZooEvent("SALE", "", 2)).toBeNull();
+    expect(stateFromJvZooEvent("SALE", "", 1)).toMatchObject({ status: "active" });
+  });
+
+  it("maps cancellation, refund, and chargeback events to distinct access states", () => {
+    expect(stateFromJvZooEvent("CANCEL-REBILL", "COMPLETED", 2)).toEqual({ status: "cancel_at_period_end", accessMode: "full", cancelAtPeriodEnd: true });
+    expect(stateFromJvZooEvent("RFND", "COMPLETED", 2)).toEqual({ status: "cancelled", accessMode: "read_only", cancelAtPeriodEnd: false });
+    expect(stateFromJvZooEvent("CGBK", "COMPLETED", 2)).toEqual({ status: "suspended", accessMode: "suspended", cancelAtPeriodEnd: false });
+  });
+
+  it("fingerprints lifecycle events independently even when JVZoo reuses a transaction id", () => {
+    const base = { customer_email: "owner@example.com", product_id: "98211", transaction_id: "TX-55", date: "2026-08-10T12:00:00Z" };
+    const sale = normalizeJvZooIpn({ ...base, transaction_type: "SALE", status: "COMPLETED" });
+    const refund = normalizeJvZooIpn({ ...base, transaction_type: "RFND", status: "COMPLETED" });
+    expect(sale.eventFingerprint).not.toBe(refund.eventFingerprint);
+    expect(sale.providerTransactionId).toBe(refund.providerTransactionId);
+  });
+
+  it("distinguishes a real JVZoo transaction reference from the audit fallback", () => {
+    expect(normalizeJvZooIpn({ transaction_type: "SALE", product_id: "98211" }).providerTransactionIdProvided).toBe(false);
+    expect(normalizeJvZooIpn({ transaction_type: "SALE", transaction_id: "TX-55", product_id: "98211" }).providerTransactionIdProvided).toBe(true);
+  });
+
+  it("requires an exact amount and currency match before selecting a product mapping", () => {
+    const effectiveFrom = new Date("2026-01-01T00:00:00Z");
+    const candidates = [
+      { id: "usd", status: "active", currency: "USD", amountCents: 9700, effectiveFrom, effectiveTo: null },
+      { id: "cad", status: "active", currency: "CAD", amountCents: 12900, effectiveFrom, effectiveTo: null },
+    ];
+    expect(selectJvZooPriceMapping(candidates, { amount: "97.00", currency: "USD", occurredAt: new Date("2026-08-01T00:00:00Z") })).toMatchObject({ price: { id: "usd" }, error: null });
+    expect(selectJvZooPriceMapping(candidates, { amount: "98.00", currency: "USD", occurredAt: new Date("2026-08-01T00:00:00Z") })).toEqual({ price: null, error: "amount_mismatch" });
+    expect(selectJvZooPriceMapping(candidates, { amount: "97.00", currency: "EUR", occurredAt: new Date("2026-08-01T00:00:00Z") })).toEqual({ price: null, error: "currency_mismatch" });
+  });
+
+  it("rejects an ambiguous product mapping when the provider omits the amount", () => {
+    const effectiveFrom = new Date("2026-01-01T00:00:00Z");
+    const candidates = [
+      { id: "monthly", status: "active", currency: "USD", amountCents: 9700, effectiveFrom, effectiveTo: null },
+      { id: "annual", status: "active", currency: "USD", amountCents: 97000, effectiveFrom, effectiveTo: null },
+    ];
+    expect(selectJvZooPriceMapping(candidates, { amount: "", currency: "USD", occurredAt: new Date("2026-08-01T00:00:00Z") })).toEqual({ price: null, error: "price_mapping_ambiguous" });
+  });
+
+  it("maps only the three approved commercial plans to workspace types", () => {
+    expect(workspaceTypeForCommercialPlan("starter")).toBe("personal");
+    expect(workspaceTypeForCommercialPlan("business")).toBe("business");
+    expect(workspaceTypeForCommercialPlan("agency")).toBe("agency");
+    expect(() => workspaceTypeForCommercialPlan("unknown")).toThrow(/does not map/i);
   });
 
   it("builds the configured JVZoo checkout URL without exposing raw identifiers", () => {
@@ -76,5 +132,13 @@ describe("JVZoo commercial adapter", () => {
       "owner@example.com",
     );
     expect(url).toBe("https://www.jvzoo.com/b/0/98211?workspaceId=workspace-123456#checkout");
+  });
+
+  it("rejects a configured checkout URL outside JVZoo", () => {
+    expect(() => checkoutUrlForPrice(
+      { checkoutUrl: "https://checkout.example.test/jvzoo" },
+      "workspace-123456",
+      "owner@example.com",
+    )).toThrow(/official JVZoo/i);
   });
 });

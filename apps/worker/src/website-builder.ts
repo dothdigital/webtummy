@@ -14,6 +14,7 @@ import {
 import {
   ensureConciseFirstSupportingOverview,
   ensurePageSpecificFirstH2,
+  ensureSeoFocusedHeroHeading,
   fitWebsiteAiChatRequest,
   fitWebsiteComponentsToWordBudget,
   strictWebsiteJsonResponseFormat,
@@ -1810,6 +1811,14 @@ Page uniqueness contract: return an original SEO title, H1, first post-hero H2, 
   let lastError: unknown;
   try {
     const grouped = await aiPageBySectionGroups(page, project, brand, seoPlan, instructions, basic, checkpoint);
+    grouped.content.components = ensureSeoFocusedHeroHeading(grouped.content.components, {
+      pageTitle: page.title,
+      pageType: page.pageType,
+      primaryKeyword: page.primaryKeyword,
+      businessName: businessContext.businessName || businessIdentity(project),
+      locations: strings(project.targetLocations),
+      serviceTopics: businessContext.primaryServices,
+    });
     grouped.content.components = ensurePageSpecificFirstH2(grouped.content.components, page, businessIdentity(project), uniquenessSignals);
     grouped.content.components = ensureConciseFirstSupportingOverview(grouped.content.components);
     const groupedCollisions = websitePageUniquenessCollisions({ seoTitle: grouped.seo.metaTitle, metaDescription: grouped.seo.metaDescription, h1: generatedWorkerH1(grouped.content.components) }, uniquenessSignals);
@@ -1867,8 +1876,19 @@ Page uniqueness contract: return an original SEO title, H1, first post-hero H2, 
           // Review recommendation instead of failing the generation job.
         }
       }
-      proposedContent.components = ensurePageSpecificFirstH2(
+      proposedContent.components = ensureSeoFocusedHeroHeading(
         requiredRegisteredComponents(generatedComponents, 0, policy.requiredComponentIds, policy.minimumComponentCount, maximumWords),
+        {
+          pageTitle: page.title,
+          pageType: page.pageType,
+          primaryKeyword: page.primaryKeyword,
+          businessName: businessContext.businessName || businessIdentity(project),
+          locations: strings(project.targetLocations),
+          serviceTopics: businessContext.primaryServices,
+        },
+      );
+      proposedContent.components = ensurePageSpecificFirstH2(
+        proposedContent.components as WebsiteComponentInstance[],
         page,
         businessIdentity(project),
         uniquenessSignals,

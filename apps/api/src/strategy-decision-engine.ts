@@ -1,4 +1,5 @@
 import type { UnifiedStrategyPlan } from "./strategy-ai.js";
+import { isCompletedWebsiteLaunchFoundationAction } from "./completed-work.js";
 
 export const STRATEGY_DECISION_ENGINE_VERSION = "dev-047-part2-v1";
 
@@ -382,7 +383,7 @@ function candidateValidation(candidate: StrategyDecisionCandidate) {
   return failures;
 }
 
-export function generateStrategyDecisionCandidates(input: { projectId: string; plan: UnifiedStrategyPlan; externalRecommendations?: ExternalRecommendation[] }) {
+export function generateStrategyDecisionCandidates(input: { projectId: string; plan: UnifiedStrategyPlan; externalRecommendations?: ExternalRecommendation[]; completionState?: { websiteLaunched: boolean; websitePlanApproved: boolean } }) {
   const primaryObjective = input.plan.objectives[0] ?? input.plan.positioning.offer;
   const candidates = [
     ...(input.plan.growthFunnel?.steps ?? []).map((step) => candidateFromFunnel(step, primaryObjective, input.projectId)),
@@ -391,10 +392,17 @@ export function generateStrategyDecisionCandidates(input: { projectId: string; p
   ];
   const deduped = [...new Map(candidates.map((candidate) => [`${candidate.analysisKey}:${candidate.title.toLowerCase()}`, candidate])).values()];
   const invalidCandidates = deduped.flatMap((candidate) => {
+    if (input.completionState && isCompletedWebsiteLaunchFoundationAction(candidate, input.completionState)) {
+      return [{ key: candidate.analysisKey, reason: "The approved Website Plan and canonical website foundation are already published." }];
+    }
     const failures = candidateValidation(candidate);
     return failures.length ? [{ key: candidate.analysisKey, reason: failures.join(" ") }] : [];
   });
-  return { validCandidates: deduped.filter((candidate) => candidateValidation(candidate).length === 0), invalidCandidates };
+  return {
+    validCandidates: deduped.filter((candidate) => candidateValidation(candidate).length === 0
+      && !(input.completionState && isCompletedWebsiteLaunchFoundationAction(candidate, input.completionState))),
+    invalidCandidates,
+  };
 }
 
 export function composeStrategyDecisionExplainability(decision: StrategyDecisionRecord) {
@@ -427,6 +435,7 @@ export function buildStrategyDecisionSet(input: {
   evidenceVersion: number;
   workflowConfidence: WorkflowConfidenceInput;
   externalRecommendations?: ExternalRecommendation[];
+  completionState?: { websiteLaunched: boolean; websitePlanApproved: boolean };
 }): StrategyDecisionSet {
   const { validCandidates, invalidCandidates } = generateStrategyDecisionCandidates(input);
   const ranked = validCandidates.map((candidate) => {

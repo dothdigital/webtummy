@@ -40,7 +40,7 @@ async function readJson(res: Response) {
   }
 }
 
-type ApiErrorEnvelope = { error?: unknown; errorCode?: unknown };
+type ApiErrorEnvelope = { error?: unknown; message?: unknown; errorCode?: unknown };
 
 function firstErrorText(value: unknown, depth = 0): string | null {
   if (typeof value === "string" && value.trim()) return value;
@@ -70,7 +70,10 @@ export function apiErrorMessage(data: unknown, fallback: string, res?: Response)
       errorCode ? `Error code: ${errorCode}` : null,
     ].filter(Boolean).join("\n");
   }
-  const message = firstErrorText(envelope.error) ?? fallback;
+  // Some endpoints return a stable machine-readable `error` key alongside a
+  // user-facing `message`. Prefer the explanation so internal identifiers such
+  // as `growth_intelligence_stale_or_incomplete` never become the UI copy.
+  const message = firstErrorText(envelope.message) ?? firstErrorText(envelope.error) ?? fallback;
   const errorCode = typeof envelope.errorCode === "string"
     ? envelope.errorCode
     : res?.headers.get("X-SEnuke-Error-Code");

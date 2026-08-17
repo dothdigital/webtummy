@@ -31,6 +31,8 @@ import {
   syncSubscriptionFromStripe,
   verifyStripeSignature,
 } from "../billing.js";
+import { issueJvZooActivationEmail } from "../jvzoo-activation.js";
+import { acceptJvZooWebhook } from "../jvzoo-intake.js";
 
 export const billingRouter = Router();
 
@@ -93,7 +95,11 @@ const commercialCheckoutSchema = z.object({
 
 const commercialPriceSchema = z.object({
   providerProductRef: z.string().trim().max(191).nullable().optional(),
-  checkoutUrl: z.string().trim().url().max(1000).nullable().optional(),
+  checkoutUrl: z.string().trim().url().max(1000).refine((value) => {
+    const url = new URL(value);
+    const hostname = url.hostname.toLowerCase();
+    return url.protocol === "https:" && (hostname === "jvzoo.com" || hostname.endsWith(".jvzoo.com"));
+  }, "Use an official HTTPS JVZoo checkout URL.").nullable().optional(),
   amountCents: z.number().int().min(0).max(100_000_000).optional(),
   effectiveFrom: z.string().datetime().optional(),
   status: z.enum(["active", "inactive"]).optional(),
@@ -360,7 +366,7 @@ billingRouter.get("/commercial-summary", requireAuth, async (req, res) => {
 
 billingRouter.get("/admin/commercial", requireAuth, requireRole("super_admin"), async (_req, res) => {
   await ensureCommercialDefaults();
-  const [catalog, policies, events, audits, workspaces, registrationPolicy] = await Promise.all([
+  const [catalog, policies, events, audits, workspaces, registrationPolicy, externalSubscriptions] = await Promise.all([
     commercialCatalog({ includeInactive: true }),
     prisma.commercialPolicyVersion.findMany({ orderBy: [{ code: "asc" }, { version: "desc" }] }),
     prisma.commercialBillingEvent.findMany({ orderBy: { createdAt: "desc" }, take: 100 }),
@@ -390,8 +396,28 @@ billingRouter.get("/admin/commercial", requireAuth, requireRole("super_admin"), 
       },
     }),
     commercialRegistrationPolicy(),
+    prisma.externalSubscription.findMany({ orderBy: { createdAt: "desc" }, take: 100 }),
   ]);
-  res.json({ catalog, policies, events, audits, workspaces, registrationPolicy });
+  res.json({ catalog, policies, events, audits, workspaces, registrationPolicy, externalSubscriptions });
+});
+
+billingRouter.post("/admin/commercial/external-subscriptions/:subscriptionId/resend-activation", requireAuth, requireRole("super_admin"), async (req, res) => {
+  const subscription = await prisma.externalSubscription.findUnique({ where: { id: req.params.subscriptionId } });
+  if (!subscription || subscription.provider !== "jvzoo") return res.status(404).json({ error: "JVZoo purchase not found." });
+  if (subscription.activationStatus === "activated") return res.status(409).json({ error: "This purchase is already activated." });
+  const result = await issueJvZooActivationEmail(subscription.id);
+  await prisma.commercialAuditEvent.create({
+    data: {
+      actorType: "admin",
+      actorId: req.user!.userId,
+      action: "commercial.activation_resent",
+      reasonCode: "purchase_recovery",
+      source: "admin",
+      correlationId: subscription.id,
+      afterJson: { providerCustomerEmail: subscription.providerCustomerEmail, result },
+    },
+  });
+  res.json(result);
 });
 
 billingRouter.patch("/admin/commercial/registration-policy", requireAuth, requireRole("super_admin"), async (req, res) => {
@@ -426,9 +452,29 @@ billingRouter.patch("/admin/commercial/prices/:priceId", requireAuth, requireRol
   if (!previous) return res.status(404).json({ error: "Commercial price not found." });
   const amountChanged = parsed.data.amountCents !== undefined && parsed.data.amountCents !== previous.amountCents;
   const price = await prisma.$transaction(async (tx) => {
+    const nextProviderProductRef = parsed.data.providerProductRef !== undefined ? parsed.data.providerProductRef || null : previous.providerProductRef;
+    const nextStatus = parsed.data.status ?? previous.status;
+    if (nextProviderProductRef && nextStatus === "active") {
+      const conflict = await tx.commercialPrice.findFirst({
+        where: {
+          id: { not: previous.id },
+          provider: previous.provider,
+          providerProductRef: nextProviderProductRef,
+          status: "active",
+        },
+        select: { id: true, code: true },
+      });
+      if (conflict) {
+        throw Object.assign(new Error(`JVZoo product ${nextProviderProductRef} is already mapped to active price ${conflict.code}. Deactivate that mapping before reusing the product ID.`), { statusCode: 409, code: "jvzoo_product_mapping_conflict" });
+      }
+    }
     if (amountChanged) {
       const effectiveFrom = parsed.data.effectiveFrom ? new Date(parsed.data.effectiveFrom) : new Date();
       const codeRoot = previous.code.replace(/-r\d+$/i, "").slice(0, 98);
+      await tx.commercialPrice.update({
+        where: { id: previous.id },
+        data: { status: "inactive", effectiveTo: effectiveFrom },
+      });
       const revised = await tx.commercialPrice.create({
         data: {
           code: `${codeRoot}-r${effectiveFrom.getTime()}`,
@@ -445,10 +491,6 @@ billingRouter.patch("/admin/commercial/prices/:priceId", requireAuth, requireRol
           effectiveFrom,
           status: parsed.data.status ?? "active",
         },
-      });
-      await tx.commercialPrice.update({
-        where: { id: previous.id },
-        data: { status: "inactive", effectiveTo: effectiveFrom },
       });
       await tx.commercialAuditEvent.create({
         data: {
@@ -521,13 +563,13 @@ billingRouter.post("/admin/commercial/events/:eventId/replay", requireAuth, requ
 });
 
 billingRouter.post("/webhooks/jvzoo", async (req, res) => {
+  res.setHeader("Deprecation", "true");
+  res.setHeader("Link", "</api/integrations/jvzoo/ipn>; rel=\"successor-version\"");
   const payload = req.body && typeof req.body === "object" && !Array.isArray(req.body)
     ? req.body as Record<string, unknown>
     : {};
   try {
-    const result = await processJvZooIpn(payload);
-    // JVZoo retries non-200 responses. Verified unresolved events are accepted
-    // and surfaced in Commercial Admin for reconciliation.
+    const result = await acceptJvZooWebhook(payload);
     res.status(200).json({ received: true, duplicate: result.duplicate, status: result.event.status });
   } catch (error) {
     const statusCode = typeof error === "object" && error !== null && "statusCode" in error && typeof error.statusCode === "number"

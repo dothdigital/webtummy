@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { keywordMarketKey, keywordMarketOptions, keywordOpportunityScore, latestSuccessfulKeywordRuns, uniqueSerpDomains } from "./keyword-runs.js";
+import { keywordMarketKey, keywordMarketOptions, keywordOpportunityScore, keywordRunsForProjectLocations, latestSuccessfulKeywordRuns, uniqueSerpDomains } from "./keyword-runs.js";
 
 describe("keyword report scope", () => {
   it("uses only the latest completed run for each keyword, location, device and website", () => {
@@ -31,6 +31,16 @@ describe("keyword report scope", () => {
       { value: "oakville", label: "Oakville" },
       { value: "toronto", label: "Toronto" },
     ]);
+  });
+
+  it("does not retry a failed run from a location outside the current project markets", () => {
+    const runs = [
+      { locationName: "Mississauga, Ontario, Canada" },
+      { locationName: "Edmonton, Alberta, Canada" },
+      { locationName: "Calgary, Alberta, Canada" },
+    ];
+    expect(keywordRunsForProjectLocations(runs, ["Edmonton, Alberta, Canada", "Calgary, Alberta, Canada"])).toEqual([runs[1], runs[2]]);
+    expect(keywordRunsForProjectLocations(runs, [])).toEqual([]);
   });
 
   it("does not invent an opportunity score from incomplete provider metrics", () => {

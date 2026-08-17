@@ -1051,11 +1051,24 @@ export default function ExecutionModule({ kind }: { kind: ModuleKind }) {
           {backlinkMessage || (activeWebsite ? backlinkCooldown.helpText : "Connect a website before refreshing backlinks.")}
         </div>
       )}
-      {hasActiveProject && kind === "strategy" && (
+      {hasActiveProject && kind === "strategy" && workflowController?.strategyStale && activeProject?.strategyPlans?.[0] ? (
+        <div className="flex flex-col gap-4 rounded-xl border border-amber-200 bg-amber-50 px-5 py-4 text-sm lg:flex-row lg:items-center lg:justify-between">
+          <div>
+            <div className="text-xs font-black uppercase tracking-wide text-amber-700">Previously completed · refresh required</div>
+            <div className="mt-1 text-base font-bold text-slate-950">Strategy v{activeProject.strategyPlans[0].version ?? 1} was completed, but newer evidence is now available</div>
+            <p className="mt-1 leading-6 text-amber-900">The existing version remains in history. {workflowController.intelligenceReady ? "Regenerate Strategy to create a new reviewable version from the latest evidence." : "Complete the evidence refresh shown above first; then regenerate Strategy as a new version."}</p>
+          </div>
+          {workflowController.intelligenceReady ? (
+            <button type="button" onClick={() => { setStrategyMessage("Regenerating strategy from the latest project data..."); void runStrategyAction("generate"); }} disabled={Boolean(strategyBusy)} className="shrink-0 rounded-lg bg-brand-600 px-4 py-2.5 text-sm font-black text-white hover:bg-brand-700 disabled:bg-slate-300">{strategyBusy === "generate" ? "Regenerating…" : "Regenerate Strategy · New Version"}</button>
+          ) : (
+            <Link to={workflowController.nextBestAction.action.url} className="shrink-0 rounded-lg bg-brand-600 px-4 py-2.5 text-center text-sm font-black text-white hover:bg-brand-700">{workflowController.nextBestAction.action.label}</Link>
+          )}
+        </div>
+      ) : hasActiveProject && kind === "strategy" ? (
         <div className={`rounded-lg border px-4 py-3 text-sm ${strategyMessage ? "border-brand-100 bg-brand-50 text-brand-700" : "border-slate-200 bg-white text-charcoal-500"}`}>
           {strategyMessage || (activeProject ? "Approve the generated strategy before creating the execution plan." : "Create a guided project before approving a strategy.")}
         </div>
-      )}
+      ) : null}
       {hasActiveProject && kind === "site-analysis" && (activeSiteCrawl || siteAnalysisBusy || siteAnalysisMessage) && (
         <div className={`rounded-lg border px-5 py-4 text-sm shadow-sm ${activeSiteCrawl || siteAnalysisBusy || siteAnalysisMessage.includes("started") ? "border-amber-200 bg-amber-50 text-amber-900" : siteAnalysisMessage ? "border-brand-100 bg-brand-50 text-brand-700" : "border-slate-200 bg-white text-charcoal-500"}`}>
           {activeSiteCrawl || siteAnalysisBusy || siteAnalysisMessage.includes("started") ? (

@@ -74,6 +74,7 @@ export const config = {
   googleBusinessProfileClientSecret: process.env.GOOGLE_BUSINESS_PROFILE_CLIENT_SECRET ?? "",
   googleBusinessProfileWritesEnabled: process.env.GOOGLE_BUSINESS_PROFILE_WRITES_ENABLED?.toLowerCase() === "true",
   jvzooSecretKey: process.env.JVZOO_SECRET_KEY ?? "",
+  jvzooPreviousSecretKey: process.env.JVZOO_PREVIOUS_SECRET_KEY ?? "",
   jvzooCustomerPortalUrl: process.env.JVZOO_CUSTOMER_PORTAL_URL ?? "https://customer.jvzoo.com/",
   // Legacy read-only adapter configuration. New commercial checkout and
   // lifecycle events use JVZoo.
@@ -109,3 +110,4 @@ export const LOCAL_GRID_SCAN_QUEUE = "local-grid-scan";
 export const WEBSITE_BUILDER_QUEUE = "website-builder";
 export const STRATEGY_GENERATION_QUEUE = "strategy-generation";
 export const CONTENT_PLAN_GENERATION_QUEUE = "content-plan-generation";
+export const JVZOO_PROCESSING_QUEUE = "jvzoo-processing";

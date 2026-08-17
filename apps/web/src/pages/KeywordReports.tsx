@@ -6,7 +6,7 @@ import { getActiveProjectId, setActiveProjectId } from "../active-project.js";
 import { ActionIconButton, ActionIconLink, Button, Card, Input } from "../components/ui.js";
 import { COUNTRY_OPTIONS, buildLocationNames, defaultLocationParts, projectAnalysisLocations } from "../locationOptions.js";
 import { isBackgroundJobFinished, registerBackgroundJob } from "../background-jobs.js";
-import { latestSuccessfulKeywordRuns } from "../keyword-runs.js";
+import { keywordRunsForProjectLocations, latestSuccessfulKeywordRuns } from "../keyword-runs.js";
 import { incompleteApprovedKeywordResearchChecks, keywordResearchRequestIdentity, normalizeKeywordPhrase, selectKeywordAnalysisLocations, splitKeywordEntries } from "@webtummy/core";
 import { geographicTargetMarkets } from "../utils/projectLocations.js";
 
@@ -245,7 +245,8 @@ export default function KeywordReports() {
             if (!latest.has(identity)) latest.set(identity, run);
             return latest;
           }, new Map<string, KeywordResearchRun>());
-        const failedChecks = [...latestRunByCheck.values()].filter((run) => ["failed", "cancelled", "canceled"].includes(run.status.toLocaleLowerCase()));
+        const failedChecks = keywordRunsForProjectLocations([...latestRunByCheck.values()], projectLocation.locationNames)
+          .filter((run) => ["failed", "cancelled", "canceled"].includes(run.status.toLocaleLowerCase()));
         const failedKeywords = new Set(failedChecks.map((run) => normalizeKeywordPhrase(run.seedKeyword)));
         const requestedKeyword = searchParams.get("keyword");
         const remainingOnly = searchParams.get("remaining") === "1";

@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   ensureConciseFirstSupportingOverview,
   ensurePageSpecificFirstH2,
+  ensureSeoFocusedHeroHeading,
   isGenericWebsiteHeroHeading,
   isGenericWebsiteSectionHeading,
   fitWebsiteAiChatRequest,
@@ -19,6 +20,7 @@ import {
   websiteRichTextExpansionBudget,
   websiteSectionGroupBudgets,
   websiteFirstSupportingHeading,
+  websiteSeoHeroHeading,
   WEBSITE_AI_REQUEST_BYTE_BUDGET,
 } from "./websiteGeneration.js";
 import {
@@ -31,10 +33,40 @@ describe("website generation workflow contracts", () => {
   it("rejects welcome, company-name-only, and generic section headings", () => {
     expect(isGenericWebsiteHeroHeading("Welcome to Example Insurance", "Example Insurance")).toBe(true);
     expect(isGenericWebsiteHeroHeading("Example Insurance", "Example Insurance")).toBe(true);
+    expect(isGenericWebsiteHeroHeading("Explore Our Services", "Example Insurance")).toBe(true);
+    expect(isGenericWebsiteHeroHeading("Understanding RRSPs", "Example Insurance")).toBe(true);
+    expect(isGenericWebsiteHeroHeading("Expert Financial Planning Services", "Example Insurance")).toBe(true);
     expect(isGenericWebsiteHeroHeading("Super Visa Insurance Options for Families in Brampton", "Example Insurance")).toBe(false);
     expect(isGenericWebsiteSectionHeading("Our Services")).toBe(true);
     expect(isGenericWebsiteSectionHeading("Frequently Asked Questions")).toBe(true);
     expect(isGenericWebsiteSectionHeading("Compare Super Visa coverage options for visiting parents")).toBe(false);
+  });
+
+  it("repairs generic H1s with the assigned SEO topic and market", () => {
+    const components: WebsiteComponentInstance[] = [{
+      instanceId: "rrsp-hero",
+      componentId: "hero.local_service",
+      componentVersion: "1.0.0",
+      variant: "split",
+      props: { eyebrow: "RRSP", headline: "Understanding RRSPs", summary: "Review savings choices.", primaryCtaLabel: "Ask a question", primaryCtaUrl: "/contact/" },
+    }];
+    expect(ensureSeoFocusedHeroHeading(components, {
+      pageTitle: "RRSP",
+      pageType: "supporting",
+      primaryKeyword: "rrsp",
+      businessName: "Example Insurance",
+      locations: ["Edmonton"],
+    })[0].props.headline).toBe("RRSP in Edmonton");
+    expect(components[0].props.headline).toBe("Understanding RRSPs");
+    expect(websiteSeoHeroHeading({
+      pageTitle: "Services",
+      pageType: "hub",
+      primaryKeyword: "Services",
+      locations: ["Edmonton"],
+      serviceTopics: ["Life insurance", "Critical insurance"],
+    })).toBe("Life Insurance and Critical Illness Insurance Services in Edmonton");
+    expect(websiteSeoHeroHeading({ pageTitle: "Privacy Policy", pageType: "legal", primaryKeyword: "privacy policy", locations: ["Edmonton"] }))
+      .toBe("Privacy Policy");
   });
   it("compacts the exact oversized Website Builder failure class before the AI request", () => {
     const request = {
