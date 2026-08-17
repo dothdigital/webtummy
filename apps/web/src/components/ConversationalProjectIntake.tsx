@@ -175,7 +175,8 @@ export default function ConversationalProjectIntake(props: Props) {
       if (update.value == null || (Array.isArray(update.value) && update.value.length === 0)) continue;
       setCaptured((current) => ({ ...current, [update.field]: update }));
       if (update.field === "industryNiche") next.niche = text(update.value);
-      if (update.field === "projectName") next.name = text(update.value);
+      // The user confirms the project name before intake. AI may use it as
+      // context, but it must not replace the project's identity with a goal.
       if (update.field === "businessName") next.businessName = text(update.value);
       if (update.field === "websiteUrl") next.websiteUrl = text(update.value);
       if (update.field === "websiteStatus") { next.websiteStatus = text(update.value); if (next.websiteStatus !== "existing_website") next.websiteUrl = ""; }

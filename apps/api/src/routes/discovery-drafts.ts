@@ -17,7 +17,7 @@ const draftStatusSchema = z.enum(["DRAFT", "AI_SUMMARY_READY", "IDEAS_GENERATED"
 
 const createDraftSchema = z.object({
   startPath: startPathSchema,
-  title: z.string().trim().min(2).max(180).optional(),
+  title: z.string().trim().min(2).max(180),
   agencyClientId: z.string().trim().min(1).optional().nullable(),
 });
 
@@ -428,12 +428,6 @@ function normalizeDiscoveryResearch(value: unknown, fallback: DiscoveryFallback)
   });
 }
 
-function defaultTitle(startPath: z.infer<typeof startPathSchema>) {
-  if (startPath === "EXISTING_BUSINESS") return "Existing business discovery";
-  if (startPath === "SKILLS_FIRST") return "Skills and opportunity discovery";
-  return "Business idea discovery";
-}
-
 function jsonRecord(value: unknown) {
   return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
 }
@@ -483,7 +477,7 @@ discoveryDraftsRouter.post("/discovery-drafts", async (req, res, next) => {
         workspaceId: context.workspace.id,
         agencyClientId: input.agencyClientId ?? null,
         createdByUserId: context.membership.userId,
-        title: input.title || defaultTitle(input.startPath),
+        title: input.title,
         startPath: input.startPath,
       } });
       await recordWorkspaceActivity(tx, { context, action: "discovery.draft_created", entityType: "discovery_draft", entityId: row.id, agencyClientId: row.agencyClientId, nextJson: { startPath: row.startPath, status: row.status } });
@@ -871,12 +865,14 @@ discoveryDraftsRouter.post("/discovery-drafts/:draftId/convert", async (req, res
     // Search and strategy seeds must describe what the customer is looking
     // for. Monetization mechanics (fees, packages, commissions) belong in
     // business-model metadata and must never become the customer-facing offer.
-    const offerSummary = idea.title;
+    const ideaDetails = jsonRecord(idea.detailsJson);
+    const businessModelCanvas = jsonRecord(ideaDetails.businessModelCanvas);
+    const offerSummary = firstText(businessModelCanvas.offer);
     const project = await prisma.$transaction(async (tx) => {
       const row = await tx.project.create({ data: {
         clientId,
         agencyClientId: draft.agencyClientId,
-        name: idea.title,
+        name: draft.title,
         projectType,
         websiteStatus,
         websiteUrl,

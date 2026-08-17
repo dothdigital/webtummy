@@ -693,6 +693,7 @@ Business Discovery mode:
 Rules:
 ${businessDiscoveryRules}
 - ${businessDiscovery ? "Extract every fact supported by the user's narrative or by a reliable, clearly labelled geographic inference. The initial narrative may be normalized into structured fields." : "Extract only information the user stated or clearly confirmed into fieldUpdates. Do not overwrite a populated draft field unless the user explicitly changed it."}
+- projectName is already confirmed before intake. Use it only as context; never ask for it, suggest a replacement, or include it in fieldUpdates.
 - Rewrite each confirmed answer as a concise, professional project fact in fieldUpdates rather than copying the user's full conversational wording. Preserve the client's intended meaning and important services, audiences, locations, constraints, and intent; correct obvious grammar or speech-to-text errors, remove repetition and filler, and never invent facts the client did not provide.
 - Suggestions must remain suggestions. Put proposed search phrases in keywordSuggestions, not fieldUpdates, unless the user explicitly selected or supplied those keywords.
 - Every keyword must be a complete, natural, location-neutral search phrase. Store cities, regions, provinces/states, and countries only in targetMarkets; never repeat them inside primary or secondary keyword text. For example, return “life insurance broker”, not “life insurance broker in Brampton”, and “physiotherapy clinic”, not “Mississauga physiotherapy clinic”. Keyword Intelligence will apply each approved seed to the selected Target Markets later. Parse comma-heavy service descriptions into meaningful service phrases rather than fragments.
@@ -728,7 +729,7 @@ ${businessDiscoveryRules}
 - A Business Location is not automatically a Target Market. Add a place to targetMarkets only when the user explicitly says the business targets, serves, markets to, or wants search visibility in that place, or when answering the Target Markets question.
 - Target Market suggestions must be named, researchable geographic places such as a city, neighbourhood name, region, province/state, or country. Never suggest vague labels such as “nearby neighbourhoods”, “surrounding areas”, “local communities”, or “other cities”. If the intended area is unknown, ask the user to name it.
 - Never say that a summary follows unless the message actually lists the current project details. A project summary must show labeled values for the available identity, niche, website, audience, offer, location, target markets, goals, competitors, and selected keywords.
-- Use these core field names whenever applicable: projectName, businessName, industryNiche, businessDescription, targetAudience, productsServices, businessLocation, streetAddress, targetMarkets, primaryGoal, secondaryGoals, primaryKeywords, secondaryKeywords, competitors, brandVoice, preferredOutputs, targetLaunchTimeline, websiteUrl, websiteStatus, clientProjectType.
+- Use these core field names whenever applicable: businessName, industryNiche, businessDescription, targetAudience, productsServices, businessLocation, streetAddress, targetMarkets, primaryGoal, secondaryGoals, primaryKeywords, secondaryKeywords, competitors, brandVoice, preferredOutputs, targetLaunchTimeline, websiteUrl, websiteStatus, clientProjectType.
 - websiteStatus must be exactly existing_website, new_website_required, website_planned, or no_website_required once confirmed. Never preserve undecided as a completed answer.
 - Use the exact snake_case key from the Advanced Setup field guide for advanced fieldUpdates.
 - Return JSON: {message,questionField,question,questionOptions,fieldUpdates:[{field,value,confidence,reason}],keywordSuggestions:{primary,secondary},missingFields,readyForReview}. questionField is the single core or Advanced Setup field being asked. question contains only the question. questionOptions contains 3-5 contextual selectable answers. Omit all three only when no question is asked.
@@ -743,6 +744,7 @@ Recent conversation window: ${JSON.stringify(input.messages.slice(-30)).slice(0,
         timeoutMs: 45_000,
       });
       let output = conversationOutputSchema.parse(generated.result);
+      output = { ...output, fieldUpdates: output.fieldUpdates.filter((update) => update.field !== "projectName") };
       if (output.questionField === "targetMarkets" && output.questionOptions?.length) {
         output = { ...output, questionOptions: cleanGeographicTargetMarkets(output.questionOptions) };
       }
@@ -793,7 +795,7 @@ Industry proposed by the first AI response: ${JSON.stringify(proposedIndustry?.v
       }
       const allowedPrimaryGoals = new Set<string>(primaryGoalsForWorkspace(input.workspaceType || context.workspace.workspaceType));
       const allowedSecondaryGoals = new Set<string>(standardSecondaryGoals);
-      const coreConversationFields = new Set(["projectName", "businessName", "industryNiche", "businessDescription", "targetAudience", "productsServices", "businessLocation", "streetAddress", "targetMarkets", "primaryGoal", "secondaryGoals", "primaryKeywords", "secondaryKeywords", "competitors", "brandVoice", "preferredOutputs", "targetLaunchTimeline", "websiteUrl", "websiteStatus", "clientProjectType"]);
+      const coreConversationFields = new Set(["businessName", "industryNiche", "businessDescription", "targetAudience", "productsServices", "businessLocation", "streetAddress", "targetMarkets", "primaryGoal", "secondaryGoals", "primaryKeywords", "secondaryKeywords", "competitors", "brandVoice", "preferredOutputs", "targetLaunchTimeline", "websiteUrl", "websiteStatus", "clientProjectType"]);
       const applicableAdvancedByKey = new Map(applicableAdvancedFields.map((field) => [field.key, field]));
       for (let index = input.messages.length - 2; index >= 0; index -= 1) {
         const question = input.messages[index];
@@ -1052,7 +1054,7 @@ AI keyword directions: ${JSON.stringify(semanticKeywordSuggestions).slice(0, 10_
           const formattedLocation = locationJson && locationJson.country && locationJson.stateProvince && locationJson.city ? [locationJson.streetAddress, locationJson.city, locationJson.stateProvince, locationJson.postalCode, locationJson.country].filter(Boolean).join(", ") : undefined;
           const advancedFieldUpdates = output.fieldUpdates.flatMap((update) => { const field = applicableAdvancedByKey.get(update.field); return field ? [{ field, value: update.value }] : []; });
           await tx.project.update({ where: { id: project.id }, data: {
-            ...(stringValue("projectName") ? { name: stringValue("projectName") } : {}), ...(stringValue("businessName") ? { businessName: stringValue("businessName") } : {}),
+            ...(stringValue("businessName") ? { businessName: stringValue("businessName") } : {}),
             ...(stringValue("industryNiche") ? { niche: stringValue("industryNiche") } : {}), ...(stringValue("websiteUrl") ? { websiteUrl: stringValue("websiteUrl") } : {}),
             ...(stringValue("websiteStatus") ? { websiteStatus: stringValue("websiteStatus"), ...(stringValue("websiteStatus") !== "existing_website" ? { websiteUrl: null } : {}) } : {}), ...(formattedLocation ? { businessLocation: formattedLocation, businessLocationJson: locationJson as Prisma.InputJsonValue } : {}),
             ...(arrayValue("targetMarkets") ? { targetLocations: arrayValue("targetMarkets"), targetLocation: arrayValue("targetMarkets")!.join(", ").slice(0, 180) } : {}),

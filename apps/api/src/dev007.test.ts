@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildKeywordGroups, keywordIntakeSufficient, normalizeKeywordList } from "./dev007.js";
+import { buildKeywordGroups, isCustomerSearchKeyword, keywordIntakeSufficient, normalizeKeywordList } from "./dev007.js";
 
 describe("DEV-007 Keyword Intelligence", () => {
   const project = { name: "Acme SEO", niche: "Roofing", primaryGoal: "Generate More Leads", businessLocation: "Toronto", targetLocations: ["Toronto", "Mississauga"], businessProfile: { offerSummary: "Roof repair", targetAudience: "Homeowners" }, opportunities: [{ status: "selected", name: "Local lead growth" }] };
@@ -10,8 +10,8 @@ describe("DEV-007 Keyword Intelligence", () => {
     expect(groups.find((group) => group.category === "local")?.keywords).toContain("roof repair Toronto");
     expect(groups[0].goalSupport).toContain("Generate More Leads");
   });
-  it("suggests comma-separated niche terms individually for user approval", () => {
-    const groups = buildKeywordGroups({ ...project, niche: "Insurtech, Insurance CRM" });
+  it("suggests comma-separated niche terms individually only when intake has no offer", () => {
+    const groups = buildKeywordGroups({ ...project, niche: "Insurtech, Insurance CRM", businessProfile: { offerSummary: null, targetAudience: "Insurance agencies" }, opportunities: [] });
     expect(groups.find((group) => group.category === "primary")?.keywords).toEqual(expect.arrayContaining(["insurtech", "insurance crm"]));
     expect(groups.find((group) => group.category === "primary")?.keywords).not.toContain("insurtech, insurance crm");
   });
@@ -26,5 +26,36 @@ describe("DEV-007 Keyword Intelligence", () => {
     expect(primary.join(" ")).not.toContain("per-listing fee");
     expect(buyerIntent).toContain("self-serve homeowner auction software pricing");
     expect(buyerIntent.join(" ")).not.toContain("hire self-serve homeowner auction software expert");
+  });
+  it("keeps the confirmed intake offer authoritative over niche and AI direction text", () => {
+    const groups = buildKeywordGroups({
+      ...project,
+      niche: "Insurance, Build a trustworthy brand and lead-generation website",
+      businessProfile: { offerSummary: "Life insurance, critical illness coverage", targetAudience: "Families" },
+      opportunities: [{ status: "confirmed", name: "Build a trustworthy insurance website", recommendedOffer: "Website lead generation" }],
+    });
+    expect(groups.find((group) => group.category === "primary")?.keywords).toEqual(["life insurance", "critical illness coverage"]);
+  });
+  it("does not turn a website-build objective into LifeX customer keywords", () => {
+    const groups = buildKeywordGroups({
+      name: "LifeX website",
+      niche: "Insurance, Financial planning and registered investment products, Build a trustworthy LifeX insurance brand and lead-generation website",
+      primaryGoal: "Build New Website",
+      businessLocation: "Edmonton",
+      targetLocations: ["Edmonton"],
+      businessProfile: {
+        offerSummary: "Insurance, financial planning and registered investment products",
+        targetAudience: "Edmonton-area families",
+      },
+      opportunities: [{ status: "selected", name: "Build a trustworthy LifeX insurance brand and lead-generation website" }],
+    });
+    const keywords = groups.flatMap((group) => group.keywords);
+    expect(groups.find((group) => group.category === "primary")?.keywords).toEqual(["insurance", "financial planning", "registered investment products"]);
+    expect(groups.find((group) => group.category === "buyer_intent")?.keywords).toEqual(expect.arrayContaining(["insurance quotes", "insurance broker", "financial planning advisor"]));
+    expect(keywords.some((keyword) => /build a|lead-generation website|hire insurance|buy insurance|insurance pricing/.test(keyword))).toBe(false);
+    expect(isCustomerSearchKeyword("Build a trustworthy LifeX insurance brand and lead-generation website")).toBe(false);
+  });
+  it("requires a real customer-facing offer rather than a generic growth direction", () => {
+    expect(keywordIntakeSufficient({ name: "Acme", opportunities: [{ status: "selected", name: "Local lead growth" }] })).toBe(false);
   });
 });
