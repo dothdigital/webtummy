@@ -712,7 +712,7 @@ function SocialPublisher({ websiteId, strategy, onPostUpdated }: SocialPublisher
                 <div className="flex items-center justify-between gap-3">
                   <div>
                     <div className="text-sm font-semibold text-charcoal-800">Social Connect calendar</div>
-                    <p className="mt-1 text-xs leading-5 text-charcoal-400">Loads this month from Dot H Social Connect.</p>
+                    <p className="mt-1 text-xs leading-5 text-charcoal-400">Loads this month from Social Connect.</p>
                   </div>
                   <Button variant="ghost" onClick={() => void loadCalendar()} disabled={busy}>Load calendar</Button>
                 </div>

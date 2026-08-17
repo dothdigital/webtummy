@@ -84,10 +84,10 @@ describe("website generation workflow contracts", () => {
       title: "Life Insurance",
       pageType: "service",
       primaryKeyword: "life insurance in Edmonton",
-    }, "Lifex Insurance");
+    }, "Example Insurance");
     expect(repaired[1].props.heading).toBe("life insurance in Edmonton: what to know before you decide");
     expect(components[1].props.heading).toBe("A solution aligned to your goals");
-    expect(websiteFirstSupportingHeading({ pageTitle: "About Us", pageType: "about", businessName: "Lifex Insurance" })).toBe("A closer look at Lifex Insurance");
+    expect(websiteFirstSupportingHeading({ pageTitle: "About Us", pageType: "about", businessName: "Example Insurance" })).toBe("A closer look at Example Insurance");
   });
 
   it("preserves a useful original first H2 that is not duplicated", () => {

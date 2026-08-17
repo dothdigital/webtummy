@@ -9,6 +9,7 @@ import { projectClientIdForRequest } from "../project-scope.js";
 import { commitUsage, modelForFeature, preflightUsage, refundUsage } from "../usage-engine.js";
 import { canAccessAgencyClient, hasWorkspacePermission, recordWorkspaceActivity, requireWorkspaceRole, workspaceContext, type WorkspaceContext } from "../workspace-access.js";
 import { createDiscoveryIdeaPdf } from "../discovery-idea-pdf.js";
+import { normalizeComplianceAdvisories } from "../compliance-advisories.js";
 
 export const discoveryDraftsRouter = Router();
 
@@ -40,6 +41,7 @@ const discoveryResearchSchema = z.object({
     industry: z.string().trim().min(2).max(180),
     description: z.string().trim().min(10).max(1600),
     audience: z.string().trim().min(3).max(1000),
+    productsServices: z.array(z.string().trim().min(2).max(180)).max(20).default([]),
     revenueModel: z.string().trim().min(2).max(180),
     businessModel: z.string().trim().min(2).max(120),
     deliveryMode: z.enum(["local", "online", "hybrid", "unclear"]),
@@ -206,12 +208,7 @@ function ideaDetails(idea: Record<string, unknown>, fallback: { audience: string
       verification: firstText(item.verification).toUpperCase() === "KNOWN_CATEGORY" ? "KNOWN_CATEGORY" as const : "REQUIRES_RESEARCH" as const,
     }];
   });
-  const compliance = (Array.isArray(complianceValue) ? complianceValue : []).slice(0, 8).flatMap((raw) => {
-    const item = jsonRecord(raw);
-    const area = firstText(item.area, item.title, item.name);
-    if (!area) return [];
-    return [{ area: area.slice(0, 180), whyItMatters: firstText(item.whyItMatters, item.reason, item.detail, "Confirm whether this applies before launch.").slice(0, 600), action: firstText(item.action, item.nextStep, item.mitigation, "Verify the requirement with an appropriate professional or authority.").slice(0, 600), blocking: item.blocking === true }];
-  });
+  const compliance = normalizeComplianceAdvisories(complianceValue);
   const suppliedConstraints = Array.isArray(constraintsValue) && constraintsValue.length ? constraintsValue : fallback.constraints;
   const keyConstraints = suppliedConstraints.slice(0, 8).flatMap((raw) => {
     const item = jsonRecord(raw);
@@ -355,6 +352,7 @@ function normalizeDiscoveryResearch(value: unknown, fallback: DiscoveryFallback)
     industry: firstText(understanding.industry, understanding.niche, root.industry, "Business opportunity").slice(0, 180),
     description: understoodDescription.slice(0, 1600),
     audience: audience.slice(0, 1000),
+    productsServices: textList(understanding.productsServices ?? understanding.services ?? understanding.offerings ?? root.productsServices ?? root.services, 20),
     revenueModel: revenueModel.slice(0, 180),
     businessModel: businessModel.slice(0, 120),
     deliveryMode,
@@ -599,6 +597,7 @@ discoveryDraftsRouter.post("/discovery-drafts/:draftId/generate", async (req, re
     "industry": "string",
     "description": "string",
     "audience": "string",
+    "productsServices": ["each distinct product or service explicitly stated by the user"],
     "revenueModel": "string",
     "businessModel": "string",
     "deliveryMode": "local | online | hybrid | unclear",
@@ -650,6 +649,7 @@ Rules:
 - Physical location is relevant only for local or hybrid directions. Never invent it and never require it for an online direction.
 - A domain, website, address, postal code, phone, business hours, analytics, CMS and Google Business Profile are deferred unless explicitly supplied and essential to this result.
 - Every inferred fact must be AI_SUGGESTED. A fact may be CONFIRMED only when it is directly present in the user's answers.
+- Extract understanding.productsServices only from products or services the user explicitly says the business offers. Preserve every distinct offering as its own concise entry. Never put website pages, educational explanations, forms, calls to action, consultation requests, follow-up steps, funnels, branding, marketing, or project deliverables in productsServices.
 - Confidence is directional, not a probability of success. Evidence must state what supports the idea or what still needs validation.
 - Make each opportunity feel like an actionable business brief: include 3-6 specific pros, 3-6 specific cons, the customer and payer, value proposition, acquisition channels, delivery, pricing approach, likely costs, partners, and measurable validation signals.
 - Highlight 2-5 key constraints specific to the idea and the user's stated time, budget, skills, geography, or operating model. For each, explain the impact and a practical response.
@@ -659,7 +659,7 @@ Rules:
 - Create a concise risk register across market, financial, operational, delivery, compliance, and dependency risks when applicable. Rank each using likelihood and impact, provide a measurable early-warning sign and practical mitigation, and assign the responsible role. Ensure majorRisk matches the most material item.
 - Recommend a narrow initial product positioning: category, first audience, urgent problem, evidence-safe promise, meaningful differentiation, a usable positioning statement, proof still needed, and claims to avoid. Do not use guaranteed, best, leading, licensed, certified, regulated, performance, or outcome claims unless directly supported by user-confirmed facts.
 - Include 2-5 relevant competitors or competitor categories. Never pretend current market research was performed; mark named or uncertain competitors REQUIRES_RESEARCH and explain how the idea could differentiate.
-- Include applicable compliance areas only (for example privacy, consumer protection, professional licensing, marketplace payments, advertising, sector rules, or local permits). Compliance is guidance for validation, not legal advice. Mark blocking only when the business should not launch that part before verification.
+- Include applicable compliance areas only (for example privacy, consumer protection, professional licensing, marketplace payments, advertising, sector rules, or local permits). Compliance is advisory guidance for the later quality and approval checklist, not legal advice and not a project, approval, or publishing blocker. Always return blocking as false. Unsafe or unsupported website copy is evaluated separately by Website Quality.
 - Include a small ordered validation workflow with concrete success signals. Do not turn it into the downstream Project workflow.
 - Include a lean launch strategy for after validation: a narrow beachhead market, evidence-safe positioning, first offer, launch channels, budget guardrail, 2-4 phases with actions and success signals, and measurable go/no-go criteria. Keep it appropriate to the user's constraints; do not assume validation has passed.
 - Choose one Primary Goal using an exact value from the allowed list.
@@ -858,16 +858,15 @@ discoveryDraftsRouter.post("/discovery-drafts/:draftId/convert", async (req, res
     const allowedGoals = primaryGoalsForWorkspace(context.workspace.workspaceType);
     const canonicalGoal = canonicalPrimaryGoal(String(summary.primaryGoal ?? ""));
     const primaryGoal = allowedGoals.includes(canonicalGoal as (typeof allowedGoals)[number]) ? canonicalGoal : projectType === "local_seo" ? "Improve Local SEO" : projectType === "ecommerce" ? "Increase Sales" : "Generate More Leads";
-    const businessName = String(summary.businessName ?? "").trim() || idea.title;
+    const businessName = String(summary.businessName ?? "").trim() || draft.title;
     const niche = String(summary.industry ?? idea.businessModel ?? "Business opportunity").slice(0, 180);
     const businessSummary = idea.description;
     const targetAudience = idea.targetAudience || String(summary.audience ?? "");
-    // Search and strategy seeds must describe what the customer is looking
-    // for. Monetization mechanics (fees, packages, commissions) belong in
-    // business-model metadata and must never become the customer-facing offer.
-    const ideaDetails = jsonRecord(idea.detailsJson);
-    const businessModelCanvas = jsonRecord(ideaDetails.businessModelCanvas);
-    const offerSummary = firstText(businessModelCanvas.offer);
+    // Only the products and services extracted from the user's intake may
+    // seed Keyword Intelligence. Website deliverables and funnel mechanics
+    // belong to the selected direction, not the customer-facing offer.
+    const productsServices = Array.isArray(summary.productsServices) ? summary.productsServices.map(String).map((item) => item.trim()).filter(Boolean).slice(0, 20) : [];
+    const offerSummary = productsServices.join(", ");
     const project = await prisma.$transaction(async (tx) => {
       const row = await tx.project.create({ data: {
         clientId,
@@ -894,6 +893,7 @@ discoveryDraftsRouter.post("/discovery-drafts/:draftId/convert", async (req, res
       } });
       await tx.projectIntakeAnswer.createMany({ data: [
         { projectId: row.id, questionKey: "discovery_start_path", questionText: "How did this project begin?", answerValue: draft.startPath, answerType: "select", moduleContext: "adaptive_business_discovery" },
+        { projectId: row.id, questionKey: "products_services", questionText: "Which products and services were stated in discovery?", answerValue: productsServices, answerType: "multiselect", moduleContext: "adaptive_business_discovery" },
         { projectId: row.id, questionKey: "selected_direction", questionText: "Which discovery direction was confirmed?", answerValue: { ideaId: idea.id, title: idea.title, description: idea.description, userConfirmed: true }, answerType: "structured", moduleContext: "adaptive_business_discovery" },
       ] });
       await tx.opportunity.create({ data: {
@@ -901,7 +901,7 @@ discoveryDraftsRouter.post("/discovery-drafts/:draftId/convert", async (req, res
         name: idea.title,
         targetAudience: idea.targetAudience,
         problemSolved: idea.problemSolved,
-        recommendedOffer: idea.title,
+        recommendedOffer: offerSummary || null,
         businessModel: idea.businessModel,
         opportunityScore: idea.confidence,
         userFitScore: idea.confidence,

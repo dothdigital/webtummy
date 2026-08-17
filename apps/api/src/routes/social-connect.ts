@@ -45,7 +45,7 @@ const publishNowSchema = z.object({ sourceId: z.string().min(1).max(191) });
 
 function requireSocialConnectConfig() {
   if (!config.socialConnectApiKey || !config.socialConnectAppKey) {
-    throw new Error("Dot H Social Connect is not configured. Set SOCIAL_CONNECT_API_KEY and SOCIAL_CONNECT_APP_KEY.");
+    throw new Error("Social Connect is not configured. Set SOCIAL_CONNECT_API_KEY and SOCIAL_CONNECT_APP_KEY.");
   }
 }
 
@@ -60,7 +60,7 @@ function clientHeaders(extra?: Record<string, string>) {
 
 function masterHeaders() {
   if (!config.socialConnectMasterApiKey) {
-    throw new Error("Dot H Social Connect worker is not configured. Set SOCIAL_CONNECT_MASTER_API_KEY.");
+    throw new Error("Social Connect worker is not configured. Set SOCIAL_CONNECT_MASTER_API_KEY.");
   }
   return {
     Authorization: `Bearer ${config.socialConnectMasterApiKey}`,

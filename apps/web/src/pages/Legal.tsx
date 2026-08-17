@@ -43,8 +43,8 @@ export default function Legal({ kind }: { kind: LegalKind }) {
     return (
       <Shell title="Privacy Policy">
         <Section title="1. Who We Are">
-          <p>SEnuke AI is an SEO and AI-search audit platform operated by Dot H Digital. This Privacy Policy explains how we collect, use, disclose, and protect information when you use the SEnuke AI website, dashboard, crawler, reports, billing flows, and related services.</p>
-          <p>Contact: info@dothdigital.com.</p>
+          <p>SEnuke AI is an SEO and AI-search audit platform. This Privacy Policy explains how we collect, use, disclose, and protect information when you use the SEnuke AI website, dashboard, crawler, reports, billing flows, and related services.</p>
+          <p>Contact: support@senuke.ai.</p>
         </Section>
 
         <Section title="2. Information We Collect">
@@ -83,7 +83,7 @@ export default function Legal({ kind }: { kind: LegalKind }) {
         </Section>
 
         <Section title="9. Your Choices">
-          <p>You may update account and project information in the dashboard where available. You may request access, correction, deletion, or restriction of personal information by contacting info@dothdigital.com. Some requests may be limited by security, billing, legal, or backup retention requirements.</p>
+          <p>You may update account and project information in the dashboard where available. You may request access, correction, deletion, or restriction of personal information by contacting support@senuke.ai. Some requests may be limited by security, billing, legal, or backup retention requirements.</p>
         </Section>
 
         <Section title="10. Changes">
@@ -96,7 +96,7 @@ export default function Legal({ kind }: { kind: LegalKind }) {
   return (
     <Shell title="Terms and Conditions">
       <Section title="1. Agreement">
-        <p>These Terms and Conditions govern access to and use of SEnuke AI, an SEO and AI-search audit platform operated by Dot H Digital. By creating an account, signing in, or using the service, you agree to these Terms.</p>
+        <p>These Terms and Conditions govern access to and use of the SEnuke AI SEO and AI-search audit platform. By creating an account, signing in, or using the service, you agree to these Terms.</p>
         <p>If you use SEnuke AI for a company or client, you confirm that you have authority to bind that organization and to submit websites, data, and content for analysis.</p>
       </Section>
 
@@ -135,13 +135,13 @@ export default function Legal({ kind }: { kind: LegalKind }) {
       </Section>
 
       <Section title="9. Intellectual Property">
-        <p>SEnuke AI, its software, user interface, workflows, branding, and platform technology are owned by Dot H Digital or its licensors. These Terms do not transfer ownership of the platform to you.</p>
+        <p>SEnuke AI, its software, user interface, workflows, branding, and platform technology are owned by the platform operator or its licensors. These Terms do not transfer ownership of the platform to you.</p>
         <p>You may use reports and outputs generated for your authorized client work, subject to these Terms and your responsibility to review them.</p>
       </Section>
 
       <Section title="10. Disclaimers and Limitation of Liability">
         <p>SEnuke AI is provided on an “as is” and “as available” basis. To the maximum extent permitted by law, we disclaim warranties of merchantability, fitness for a particular purpose, non-infringement, and uninterrupted or error-free operation.</p>
-        <p>To the maximum extent permitted by law, Dot H Digital will not be liable for indirect, incidental, special, consequential, exemplary, or punitive damages, or for lost profits, lost rankings, lost traffic, lost data, or business interruption.</p>
+        <p>To the maximum extent permitted by law, the platform operator will not be liable for indirect, incidental, special, consequential, exemplary, or punitive damages, or for lost profits, lost rankings, lost traffic, lost data, or business interruption.</p>
       </Section>
 
       <Section title="11. Termination">
@@ -149,7 +149,7 @@ export default function Legal({ kind }: { kind: LegalKind }) {
       </Section>
 
       <Section title="12. Contact">
-        <p>Questions about these Terms can be sent to info@dothdigital.com.</p>
+        <p>Questions about these Terms can be sent to support@senuke.ai.</p>
       </Section>
     </Shell>
   );

@@ -129,11 +129,11 @@ describe("website quality governance", () => {
 
   it("accepts Who We Are as a semantically aligned About-page H1", () => {
     const about = model("Our team consists of experienced professionals who help visitors review insurance and financial-planning questions.", "Who We Are");
-    about.pages[0].name = "About LifeX Insurance";
+    about.pages[0].name = "About Example Insurance";
     about.pages[0].slug = "/about/";
     about.pages[0].pageType = "about";
-    about.pages[0].seo.title = "LifeX Insurance | Your Trusted Insurance Advisors";
-    about.pages[0].seo.primaryKeyword = "About LifeX Insurance";
+    about.pages[0].seo.title = "Example Insurance | Your Trusted Insurance Advisors";
+    about.pages[0].seo.primaryKeyword = "About Example Insurance";
     about.pages[0].seo.dominantIntent = "navigational";
     const result = evaluateWebsiteQualityGovernance(about, { industry: "Insurance and financial services" });
     expect(result.openBlockingCount).toBe(0);
@@ -144,12 +144,12 @@ describe("website quality governance", () => {
   });
 
   it("accepts Get in Touch as a semantically aligned Contact-page H1", () => {
-    const contact = model("Contact LifeX Insurance to discuss your questions and available next steps.", "Get in Touch");
-    contact.pages[0].name = "Contact LifeX Insurance";
+    const contact = model("Contact Example Insurance to discuss your questions and available next steps.", "Get in Touch");
+    contact.pages[0].name = "Contact Example Insurance";
     contact.pages[0].slug = "/contact/";
     contact.pages[0].pageType = "contact";
-    contact.pages[0].seo.title = "Contact LifeX Insurance for Your Insurance Needs";
-    contact.pages[0].seo.primaryKeyword = "Contact LifeX Insurance";
+    contact.pages[0].seo.title = "Contact Example Insurance for Your Insurance Needs";
+    contact.pages[0].seo.primaryKeyword = "Contact Example Insurance";
     contact.pages[0].seo.dominantIntent = "navigational";
     const result = evaluateWebsiteQualityGovernance(contact, { industry: "Insurance and financial services" });
     expect(result.openBlockingCount).toBe(0);

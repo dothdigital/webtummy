@@ -86,7 +86,7 @@ describe("ongoing WordPress publishing schema", () => {
   });
 
   it("derives a production website from a domain-shaped project name", () => {
-    expect(productionWebsiteUrl({ name: "lifexinsurance.ca", websiteUrl: null })).toEqual({ domain: "lifexinsurance.ca", rootUrl: "https://lifexinsurance.ca" });
+    expect(productionWebsiteUrl({ name: "exampleinsurance.ca", websiteUrl: null })).toEqual({ domain: "exampleinsurance.ca", rootUrl: "https://exampleinsurance.ca" });
   });
 
   it("prefers the real publishing destination for tracking identity", () => {

@@ -3,18 +3,18 @@ import { GENERIC_SYSTEM_ERROR, isGenericInternalError, systemErrorPayload } from
 
 describe("platform API error responses", () => {
   it("replaces generic internal errors with a support-safe response", () => {
-    expect(systemErrorPayload({ error: "internal server error" }, "SEN-TEST-1234", "info@dothdigital.com")).toEqual({
+    expect(systemErrorPayload({ error: "internal server error" }, "SEN-TEST-1234", "support@senuke.ai")).toEqual({
       error: GENERIC_SYSTEM_ERROR,
       errorCode: "SEN-TEST-1234",
-      supportEmail: "info@dothdigital.com",
+      supportEmail: "support@senuke.ai",
     });
   });
 
   it("preserves an intentional public failure message and adds its support reference", () => {
-    expect(systemErrorPayload({ error: "Report generation failed. Please retry." }, "SEN-TEST-5678", "info@dothdigital.com", true)).toMatchObject({
+    expect(systemErrorPayload({ error: "Report generation failed. Please retry." }, "SEN-TEST-5678", "support@senuke.ai", true)).toMatchObject({
       error: "Report generation failed. Please retry.",
       errorCode: "SEN-TEST-5678",
-      supportEmail: "info@dothdigital.com",
+      supportEmail: "support@senuke.ai",
     });
   });
 

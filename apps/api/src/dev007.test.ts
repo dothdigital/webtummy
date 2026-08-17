@@ -36,10 +36,10 @@ describe("DEV-007 Keyword Intelligence", () => {
     });
     expect(groups.find((group) => group.category === "primary")?.keywords).toEqual(["life insurance", "critical illness coverage"]);
   });
-  it("does not turn a website-build objective into LifeX customer keywords", () => {
+  it("does not turn a website-build objective into customer keywords", () => {
     const groups = buildKeywordGroups({
-      name: "LifeX website",
-      niche: "Insurance, Financial planning and registered investment products, Build a trustworthy LifeX insurance brand and lead-generation website",
+      name: "Insurance website project",
+      niche: "Insurance, Financial planning and registered investment products, Build a trustworthy insurance brand and lead-generation website",
       primaryGoal: "Build New Website",
       businessLocation: "Edmonton",
       targetLocations: ["Edmonton"],
@@ -47,13 +47,45 @@ describe("DEV-007 Keyword Intelligence", () => {
         offerSummary: "Insurance, financial planning and registered investment products",
         targetAudience: "Edmonton-area families",
       },
-      opportunities: [{ status: "selected", name: "Build a trustworthy LifeX insurance brand and lead-generation website" }],
+      opportunities: [{ status: "selected", name: "Build a trustworthy insurance brand and lead-generation website" }],
     });
     const keywords = groups.flatMap((group) => group.keywords);
     expect(groups.find((group) => group.category === "primary")?.keywords).toEqual(["insurance", "financial planning", "registered investment products"]);
     expect(groups.find((group) => group.category === "buyer_intent")?.keywords).toEqual(expect.arrayContaining(["insurance quotes", "insurance broker", "financial planning advisor"]));
     expect(keywords.some((keyword) => /build a|lead-generation website|hire insurance|buy insurance|insurance pricing/.test(keyword))).toBe(false);
-    expect(isCustomerSearchKeyword("Build a trustworthy LifeX insurance brand and lead-generation website")).toBe(false);
+    expect(isCustomerSearchKeyword("Build a trustworthy insurance brand and lead-generation website")).toBe(false);
+  });
+  it("uses the complete insurance and investment service list from intake", () => {
+    const groups = buildKeywordGroups({
+      name: "Insurance project",
+      primaryGoal: "Build New Website",
+      targetLocations: ["Alberta"],
+      businessProfile: {
+        offerSummary: "Life Insurance, Critical Illness Insurance, Income Protection Insurance, RRSPs, TFSAs, FHSAs, RRIF, Open Investment Accounts, Key Person Insurance, Buy/Sell Agreements, Business Interruption Insurance, Group Health Benefits, Group Investment Benefits",
+        targetAudience: "Alberta individuals and business owners",
+      },
+      opportunities: [{ status: "confirmed", name: "Create service-specific pages with educational explanations and structured follow-up", recommendedOffer: "Consultation request" }],
+    });
+    const primary = groups.find((group) => group.category === "primary")?.keywords ?? [];
+    expect(primary).toEqual(expect.arrayContaining(["life insurance", "critical illness insurance", "income protection insurance", "rrsp", "tfsa", "fhsa", "rrif", "open investment accounts", "key person insurance", "buy/sell agreements", "business interruption insurance", "group health benefits", "group investment benefits"]));
+    expect(groups.flatMap((group) => group.keywords).some((keyword) => /service-specific pages|educational explanations|consultation request|structured follow-up/.test(keyword))).toBe(false);
+  });
+  it("understands labelled multiline services and does not treat audience or location as services", () => {
+    const groups = buildKeywordGroups({
+      name: "Insurance project",
+      targetLocations: ["Alberta"],
+      businessProfile: {
+        offerSummary: "Services you are offering to your clients\nLife Insurance\nCritical Illness Insurance\nBusiness: Key Person Insurance\nTarget audience: Alberta families and business owners\nLocation: Alberta",
+        targetAudience: "Alberta families and business owners",
+      },
+    });
+    const primary = groups.find((group) => group.category === "primary")?.keywords ?? [];
+    expect(primary).toEqual(expect.arrayContaining(["life insurance", "critical illness insurance", "key person insurance"]));
+    expect(primary.some((keyword) => /target audience|alberta families|location/.test(keyword))).toBe(false);
+  });
+  it("does not strip the word service from a real service name", () => {
+    const groups = buildKeywordGroups({ name: "Consulting project", businessProfile: { offerSummary: "Service design", targetAudience: "Product teams" } });
+    expect(groups.find((group) => group.category === "primary")?.keywords).toContain("service design");
   });
   it("requires a real customer-facing offer rather than a generic growth direction", () => {
     expect(keywordIntakeSufficient({ name: "Acme", opportunities: [{ status: "selected", name: "Local lead growth" }] })).toBe(false);

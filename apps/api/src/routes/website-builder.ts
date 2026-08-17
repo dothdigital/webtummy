@@ -40,6 +40,7 @@ import {
 import { approvedStrategyContext } from "../strategy-ai.js";
 import { isWebsitePlanTask } from "../website-plan-task.js";
 import { cleanGeographicTargetMarkets, projectAnalysisLocationLabels } from "../project-location.js";
+import { normalizeComplianceAdvisories } from "../compliance-advisories.js";
 import {
   ensureConciseFirstSupportingOverview,
   ensurePageSpecificFirstH2,
@@ -2001,6 +2002,9 @@ export function builderView(project: Awaited<ReturnType<typeof scopedProject>>["
     ?? null;
   const seoPlanTaskPlan = jsonRecord(jsonRecord(seoPlanTask?.approvalSnapshotJson).contentPlan);
   const businessContext = interpretedBusinessContext(approvedPlan?.plan ?? seoPlanTaskPlan, project);
+  const businessIntelligence = jsonRecord(project.businessProfile?.intelligenceJson);
+  const businessIdeaDetails = jsonRecord(businessIntelligence.businessIdeaDetails);
+  const complianceAdvisories = normalizeComplianceAdvisories(businessIdeaDetails.compliance);
   const seoPlanTaskPageCount = Array.isArray(seoPlanTaskPlan.pageAssignments) ? seoPlanTaskPlan.pageAssignments.length : 0;
   const build = project.websiteBuilds[0] ?? null;
   const currentWorkflowSettings = jsonRecord(build?.settingsJson);
@@ -2192,7 +2196,7 @@ export function builderView(project: Awaited<ReturnType<typeof scopedProject>>["
   const growthBlueprint = project.growthBlueprint;
   const nextBestAction = project.nextBestActions[0] ?? null;
   return {
-    project: { id: project.id, name: project.name, businessName: businessContext.businessName, websiteUrl: project.websiteUrl, websiteStatus: project.websiteStatus, projectType: project.projectType, brandVoice: project.brandVoice, industry: businessContext.industry || project.niche, audience: businessContext.audience || null, offer: businessContext.coreBusinessValue || null, services: businessContext.primaryServices, businessSummary: businessContext.brandDescription || null, primaryGoal: project.primaryGoal, targetLocations: targetLocationStrings(project.targetLocations), preferredPublishingMethod: project.preferredPublishingMethod },
+    project: { id: project.id, name: project.name, businessName: businessContext.businessName, websiteUrl: project.websiteUrl, websiteStatus: project.websiteStatus, projectType: project.projectType, brandVoice: project.brandVoice, industry: businessContext.industry || project.niche, audience: businessContext.audience || null, offer: businessContext.coreBusinessValue || null, services: businessContext.primaryServices, businessSummary: businessContext.brandDescription || null, primaryGoal: project.primaryGoal, targetLocations: targetLocationStrings(project.targetLocations), preferredPublishingMethod: project.preferredPublishingMethod, complianceAdvisories },
     measurement: project.website ? {
       websiteId: project.website.id,
       rootUrl: project.website.rootUrl,

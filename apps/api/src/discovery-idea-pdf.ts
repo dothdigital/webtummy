@@ -125,7 +125,7 @@ export function createDiscoveryIdeaPdf(input: IdeaPdfInput): Promise<Buffer> {
 
   heading("Compliance and operating checks", amber);
   const compliance = array(details.compliance);
-  compliance.length ? compliance.forEach((raw) => { const item = record(raw); labelled(`${item.blocking === true ? "VERIFY BEFORE LAUNCH - " : "Check - "}${text(item.area)}`, `${text(item.whyItMatters)} Action: ${text(item.action)}`); }) : paragraph("No specific compliance area was identified. This is not confirmation that no rules apply; verify privacy, consumer, tax, advertising, licensing, payment, and sector requirements relevant to the launch market.", muted);
+  compliance.length ? compliance.forEach((raw) => { const item = record(raw); labelled(`ADVISORY WARNING - ${text(item.area)}`, `${text(item.whyItMatters)} Action: ${text(item.action)}`); }) : paragraph("No specific compliance area was identified. This is not confirmation that no rules apply; verify privacy, consumer, tax, advertising, licensing, payment, and sector requirements relevant to the launch market.", muted);
 
   heading("Validation workflow");
   const workflow = array(details.validationWorkflow);

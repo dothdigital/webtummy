@@ -15,7 +15,7 @@ import { canonicalGeographicLocationLabel, cleanGeographicTargetMarkets, formatB
 import { locationDefaultsFromSettings, resolveProjectLocations, withLocationDefaults } from "../dev004.js";
 import { goalContext, normalizeProjectGoals } from "../dev005.js";
 import { opportunityDecisionStatus, opportunityInputSummary, opportunityRunMode, rankedOpportunityRecommendations } from "../dev006.js";
-import { buildKeywordGroups, keywordIntakeSufficient, normalizeKeywordList } from "../dev007.js";
+import { buildKeywordGroups, isCustomerSearchKeyword, KEYWORD_GROUP_DEFINITIONS, keywordIntakeSufficient, normalizeKeywordList } from "../dev007.js";
 import { buildExtendedStrategyAnalysis } from "../dev014.js";
 import { buildIntelligentExecutionTasks, type StrategyRecommendation } from "../dev015.js";
 import { assertWorkspaceResourceAvailable } from "../commercial-service.js";
@@ -1594,7 +1594,7 @@ function validSemanticKeyword(keyword: string, locations: string[]) {
   if (/^(?:and|or)\b|^(?:and\s+)?others?\b|\b(?:and\s+)?others?\.?\s+(?:company|provider|services?)\b/.test(lower)) return false;
   if (/\bincluding\s+\S+$/.test(lower) || /\bservices?\s+services?\b/.test(lower)) return false;
   if (/\b(?:vista|things|stuff)\b/.test(lower)) return false;
-  return true;
+  return isCustomerSearchKeyword(normalized);
 }
 
 function semanticPreviewGroups(value: unknown, locations: string[]) {
@@ -1605,15 +1605,106 @@ function semanticPreviewGroups(value: unknown, locations: string[]) {
     const record = raw as Record<string, unknown>;
     const category = String(record.category ?? "supporting").trim().toLocaleLowerCase();
     if (!allowed.has(category)) return [];
-    const keywords = normalizeKeywordList(record.keywords).filter((item) => validSemanticKeyword(item, locations)).slice(0, 10);
+    const keywords = normalizeKeywordList(record.keywords).filter((item) => validSemanticKeyword(item, locations)).slice(0, category === "primary" ? 20 : 10);
     return keywords.length ? [{ category, title: String(record.title ?? category.replaceAll("_", " ")).trim(), keywords }] : [];
+  });
+}
+
+function semanticKeywordPrompt(input: {
+  project: NonNullable<Awaited<ReturnType<typeof scopedProject>>>;
+  locations: string[];
+  instruction?: string | null;
+  topic?: string | null;
+  referenceGroups?: Array<{ title: string; keywords: unknown }>;
+  existingKeywords?: string[];
+}) {
+  const { project, locations, instruction, topic, referenceGroups = [], existingKeywords = [] } = input;
+  return [
+    "Interpret the client's intake semantically and recommend natural customer search phrases. Return JSON only: {groups:[{category,title,keywords:[string]}]}.",
+    "Allowed categories: primary, buyer_intent, local, informational, supporting, questions, long_tail.",
+    "Treat text introduced by labels such as 'services offered', 'service offering', 'products and services', and 'we provide' as the authoritative customer-facing offer. Treat 'target audience', 'ideal customer', and 'we serve' as audience facts used to shape search intent.",
+    "First extract the real distinct products or services. Then infer how the stated audience would naturally search for each service at awareness, comparison, and purchase/enquiry stages.",
+    "Primary keywords must name the actual services or recognized service categories. Buyer-intent keywords must sound like searches a prospective customer would genuinely type. Questions and informational phrases must be grammatically natural and useful.",
+    "Do not use the project name, business-building objective, website scope, page types, content format, CTA, consultation request, form, funnel, follow-up process, branding task, marketing deliverable, or internal workflow as a keyword unless it is explicitly sold to customers as a service.",
+    "Do not invent services. Do not turn sentences or comma fragments into keywords. Never mechanically append company, services, pricing, buy, hire, or expert to every phrase.",
+    "Correct obvious grammar and speech-to-text errors only when the intended service is clear. Preserve regulated product names and common acronyms such as RRSP, TFSA, FHSA, and RRIF.",
+    "Local keywords must combine one real service with one selected market; never return a city or region alone.",
+    "Return 5-20 primary phrases when the intake supports them and up to 10 useful phrases for each other category. Prefer quality and natural intent over filling a quota.",
+    `Industry/niche: ${project.niche ?? "not provided"}`,
+    `Business description: ${project.businessProfile?.businessSummary ?? "not provided"}`,
+    `Services/products from intake: ${project.businessProfile?.offerSummary ?? "not provided"}`,
+    `Target audience from intake: ${project.businessProfile?.targetAudience ?? "not provided"}`,
+    `Target markets: ${locations.join(", ") || "not provided"}`,
+    referenceGroups.length
+      ? `User-reviewed keyword groups to expand: ${referenceGroups.map((group) => `${group.title}: ${normalizeKeywordList(group.keywords).filter((keyword) => validSemanticKeyword(keyword, locations)).join(" | ")}`).join(" || ")}`
+      : "No user-reviewed keyword groups exist yet. Derive them from the intake services and audience.",
+    instruction ? `User direction: ${instruction}` : "User direction: create the initial intent-based keyword recommendations.",
+    `Topic hint: ${topic ?? "derive from the actual services in intake"}`,
+    `Do not repeat: ${existingKeywords.join(", ") || "none"}`,
+  ].join("\n");
+}
+
+function completeSemanticKeywordGroups(
+  semanticGroups: ReturnType<typeof semanticPreviewGroups>,
+  fallbackGroups: ReturnType<typeof buildKeywordGroups>,
+) {
+  return KEYWORD_GROUP_DEFINITIONS.flatMap(([category, title]) => {
+    const semantic = semanticGroups.find((group) => group.category === category);
+    const fallback = fallbackGroups.find((group) => group.category === category);
+    const keywords = category === "primary"
+      ? normalizeKeywordList([...(fallback?.keywords ?? []), ...(semantic?.keywords ?? [])]).slice(0, 20)
+      : semantic?.keywords?.length ? semantic.keywords : fallback?.keywords ?? [];
+    if (!keywords.length) return [];
+    return [{
+      category,
+      title,
+      keywords,
+      explanation: `${title} are recommended by interpreting the confirmed intake services, target audience, and customer search intent.`,
+      expectedValue: fallback?.expectedValue ?? (category === "buyer_intent" ? "Prioritizes searches closest to a purchase or enquiry." : category === "local" ? "Connects the offer to the markets where customers are being targeted." : "Builds relevant search coverage around the confirmed services."),
+      goalSupport: fallback?.goalSupport ?? "Supports the confirmed project goal.",
+    }];
   });
 }
 
 async function generateProjectKeywordGroups(project: NonNullable<Awaited<ReturnType<typeof scopedProject>>>, context: Awaited<ReturnType<typeof workspaceContext>>, manualSeed?: string | null, regenerate = false, append = false, expansionInstruction?: string | null) {
   if (!keywordIntakeSufficient(project) && !manualSeed) throw Object.assign(new Error("Project intake does not yet include a product/service, niche, or selected direction. Add that information or provide a manual seed keyword."), { statusCode: 409 });
   const expansionTopic = keywordTopicFromInstruction(expansionInstruction);
-  const groups = buildKeywordGroups(project, manualSeed || expansionTopic);
+  const fallbackGroups = buildKeywordGroups(project, manualSeed || expansionTopic);
+  const locations = Array.isArray(project.targetLocations) ? project.targetLocations.map(String) : [];
+  let groups = fallbackGroups;
+  let generationSource = expansionInstruction ? "ai_expansion_fallback" : manualSeed ? "manual_seed_fallback" : "project_intake_fallback";
+  let usageEventId: string | null = null;
+  try {
+    const client = await prisma.client.findUnique({ where: { id: project.clientId }, select: { plan: true } });
+    const routedModel = await modelForFeature("keyword_suggestions", client?.plan, config.openaiModel);
+    const usage = await preflightUsage({
+      clientId: project.clientId,
+      userId: context.membership.userId,
+      projectId: project.id,
+      websiteId: project.websiteId,
+      featureKey: "keyword_suggestions",
+      actionKey: regenerate ? "Regenerate project keywords" : append ? "Generate more project keywords" : "Generate project keywords",
+      idempotencyKey: `keyword-generate:${project.id}:${Date.now()}`,
+      metadata: { source: "project_keyword_generation", regenerate, append },
+    });
+    usageEventId = usage.usageEventId;
+    const generated = await openaiJson(semanticKeywordPrompt({
+      project,
+      locations,
+      instruction: expansionInstruction,
+      topic: manualSeed || expansionTopic,
+      referenceGroups: append ? project.keywordGroups.filter((group) => ["approved", "suggested"].includes(group.status)) : [],
+      existingKeywords: append ? project.keywordGroups.flatMap((group) => normalizeKeywordList(group.keywords)) : [],
+    }), routedModel);
+    const semanticGroups = semanticPreviewGroups(generated.result, locations);
+    if (!semanticGroups.length) throw new Error("AI returned no valid customer-search keyword groups");
+    groups = completeSemanticKeywordGroups(semanticGroups, fallbackGroups);
+    generationSource = expansionInstruction ? "ai_intent_expansion" : manualSeed ? "ai_manual_seed" : "ai_intent_recommendation";
+    await commitUsage({ usageEventId, provider: "openai", model: generated.model, inputTokens: generated.inputTokens, outputTokens: generated.outputTokens, metadata: { source: "project_keyword_generation" } });
+    usageEventId = null;
+  } catch (error) {
+    if (usageEventId) await refundUsage({ usageEventId, reason: error instanceof Error ? error.message : "keyword generation failed" }).catch(() => undefined);
+  }
   const pageText = project.websiteStatus === "existing_website" && project.websiteId
     ? await prisma.page.findMany({ where: { crawlJob: { websiteId: project.websiteId, status: "completed" } }, orderBy: { createdAt: "desc" }, take: 100, select: { url: true, seo: { select: { title: true, metaDescription: true, h1Text: true, h2Json: true } } } })
     : [];
@@ -1628,11 +1719,11 @@ async function generateProjectKeywordGroups(project: NonNullable<Awaited<ReturnT
       const gapKeywords = pageText.length ? keywords.filter((keyword) => !content.includes(keyword.toLowerCase())) : [];
       saved.push(await tx.projectKeywordGroup.upsert({
         where: { projectId_category: { projectId: project.id, category: group.category } },
-        update: { title: group.title, explanation: group.explanation, expectedValue: group.expectedValue, goalSupport: group.goalSupport, keywords, gapKeywords, source: expansionInstruction ? "ai_expansion" : manualSeed ? "manual_seed" : "project_intake", ...(regenerate ? { status: "suggested", approvedAt: null, approvedById: null } : {}) },
-        create: { projectId: project.id, ...group, keywords, gapKeywords, source: expansionInstruction ? "ai_expansion" : manualSeed ? "manual_seed" : "project_intake" },
+        update: { title: group.title, explanation: group.explanation, expectedValue: group.expectedValue, goalSupport: group.goalSupport, keywords, gapKeywords, source: generationSource, ...(regenerate ? { status: "suggested", approvedAt: null, approvedById: null } : {}) },
+        create: { projectId: project.id, ...group, keywords, gapKeywords, source: generationSource },
       }));
     }
-    await recordWorkspaceActivity(tx, { context, action: regenerate ? "keyword.recommendations_regenerated" : append ? "keyword.more_ideas_generated" : "keyword.recommendations_generated", entityType: "project", entityId: project.id, agencyClientId: project.agencyClientId, projectId: project.id, nextJson: { groupIds: saved.map((row) => row.id), manualSeed: manualSeed ?? null, expansionInstruction: expansionInstruction ?? null, expansionTopic, append, usedExistingWebsiteContent: pageText.length > 0 } });
+    await recordWorkspaceActivity(tx, { context, action: regenerate ? "keyword.recommendations_regenerated" : append ? "keyword.more_ideas_generated" : "keyword.recommendations_generated", entityType: "project", entityId: project.id, agencyClientId: project.agencyClientId, projectId: project.id, nextJson: { groupIds: saved.map((row) => row.id), manualSeed: manualSeed ?? null, expansionInstruction: expansionInstruction ?? null, expansionTopic, append, generationSource, usedExistingWebsiteContent: pageText.length > 0 } });
     if ((regenerate || append) && hadApprovedGroups && strategyApproved) await createWorkspaceNotification(tx, { context, userId: context.workspace.ownerUserId, type: "approved_keywords_changed", title: "Approved keywords changed", body: `${project.name}'s approved keyword recommendations changed after Strategy approval. Regenerate Strategy and the Execution Plan.`, actionUrl: "/keywords", agencyClientId: project.agencyClientId, projectId: project.id });
     await syncProjectWorkflow(tx, project.id);
     return saved;
@@ -3584,26 +3675,14 @@ guidedProjectsRouter.post("/projects-v2/:projectId/keyword-groups/preview", asyn
     const routedModel = await modelForFeature("keyword_suggestions", client?.plan, config.openaiModel);
     const usage = await preflightUsage({ clientId: project.clientId, userId: req.user?.userId, projectId: project.id, websiteId: project.websiteId, featureKey: "keyword_suggestions", actionKey: "Suggest more project keywords", idempotencyKey: `keyword-preview:${project.id}:${Date.now()}`, metadata: { source: "project_keyword_preview" } });
     usageEventId = usage.usageEventId;
-    const generated = await openaiJson([
-      "Analyze the project semantically and suggest complete customer search phrases. Return JSON: {groups:[{category,title,keywords:[string]}]}.",
-      "Allowed categories: primary, buyer_intent, local, informational, supporting, questions, long_tail.",
-      "First identify the real distinct products/services from the client's natural-language intake. Correct obvious grammar and speech-to-text errors only when context makes the intended term clear.",
-      "Never treat comma fragments, cities alone, conjunctions, or words such as 'others' as keywords. Never mechanically append company, services, pricing, buy, hire, or expert to an incomplete phrase.",
-      "Local keywords must combine one real service with one selected market. Suggest only phrases relevant to this project, not another website or industry.",
-      `Project: ${project.name}`,
-      `Business: ${project.businessName ?? project.agencyClient?.name ?? "not provided"}`,
-      `Industry/niche: ${project.niche ?? "not provided"}`,
-      `Business summary: ${project.businessProfile?.businessSummary ?? "not provided"}`,
-      `Products/services from intake: ${project.businessProfile?.offerSummary ?? "not provided"}`,
-      `Audience: ${project.businessProfile?.targetAudience ?? "not provided"}`,
-      `Selected opportunity: ${project.opportunities.find((item) => ["selected", "confirmed"].includes(item.status))?.recommendedOffer ?? "not selected"}`,
-      `Target markets: ${locations.join(", ") || "not provided"}`,
-      `Primary and secondary keyword groups selected by the user: ${referenceGroups.map((group) => `${group.title}: ${normalizeKeywordList(group.keywords).filter((keyword) => validSemanticKeyword(keyword, locations)).join(" | ")}`).join(" || ") || "none selected"}`,
-      "Treat the selected keyword groups as the primary source of truth. Expand their valid service concepts and intent; use intake and offer text only to clarify meaning or identify a clearly supported missing service.",
-      `User direction: ${parsed.data.instruction}`,
-      `Topic hint: ${topic ?? "derive semantically from the project"}`,
-      `Do not repeat: ${existingKeywords.join(", ") || "none"}`,
-    ].join("\n"), routedModel);
+    const generated = await openaiJson(semanticKeywordPrompt({
+      project: previewProject,
+      locations,
+      instruction: parsed.data.instruction,
+      topic,
+      referenceGroups,
+      existingKeywords,
+    }), routedModel);
     const groups = semanticPreviewGroups(generated.result, locations).filter((group) => !parsed.data.supportingOnly || group.category !== "primary");
     await commitUsage({ usageEventId, provider: "openai", model: generated.model, inputTokens: generated.inputTokens, outputTokens: generated.outputTokens });
     res.json({ instruction: parsed.data.instruction, groups });

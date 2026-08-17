@@ -106,7 +106,13 @@ export default function AdaptiveBusinessDiscovery({ draft, isAgency, clients, on
   const [busy, setBusy] = useState<"generate" | "convert" | "save" | "" | string>("");
   const [message, setMessage] = useState("");
   const [feedbackByIdea, setFeedbackByIdea] = useState<Record<string, string>>({});
+  const [listening, setListening] = useState(false);
+  const [speechError, setSpeechError] = useState("");
   const autosaveRef = useRef<number | null>(null);
+  const recognitionRef = useRef<{ stop: () => void } | null>(null);
+  const keepListeningRef = useRef(false);
+  const voiceBaseRef = useRef("");
+  const voiceCurrentRef = useRef("");
   const copy = pathCopy[current.startPath];
   const summary = record(current.aiSummaryJson);
   const nextAction = record(current.nextBestActionJson);
@@ -132,8 +138,79 @@ export default function AdaptiveBusinessDiscovery({ draft, isAgency, clients, on
     return () => { if (autosaveRef.current) window.clearTimeout(autosaveRef.current); };
   }, [answers, converted, current.id]);
 
+  useEffect(() => () => {
+    keepListeningRef.current = false;
+    try { recognitionRef.current?.stop(); } catch { /* already stopped */ }
+  }, []);
+
+  function toggleVoice() {
+    if (listening) {
+      keepListeningRef.current = false;
+      try { recognitionRef.current?.stop(); } catch { /* already stopped */ }
+      setListening(false);
+      setSpeechError("");
+      return;
+    }
+    setSpeechError("");
+    type RecognitionEvent = { results: ArrayLike<{ 0: { transcript: string }; isFinal: boolean }> };
+    type RecognitionErrorEvent = { error?: string };
+    type Recognition = {
+      lang: string;
+      interimResults: boolean;
+      continuous: boolean;
+      start: () => void;
+      stop: () => void;
+      onresult: ((event: RecognitionEvent) => void) | null;
+      onend: (() => void) | null;
+      onerror: ((event: RecognitionErrorEvent) => void) | null;
+    };
+    const speechWindow = window as unknown as { SpeechRecognition?: new () => Recognition; webkitSpeechRecognition?: new () => Recognition };
+    const RecognitionClass = speechWindow.SpeechRecognition || speechWindow.webkitSpeechRecognition;
+    if (!RecognitionClass) {
+      setSpeechError("Voice input is not supported by this browser. You can continue by typing.");
+      return;
+    }
+    const recognition = new RecognitionClass();
+    recognition.lang = "en-CA";
+    recognition.interimResults = true;
+    recognition.continuous = true;
+    const startingText = answers.main.trim();
+    voiceBaseRef.current = startingText;
+    voiceCurrentRef.current = startingText;
+    recognition.onresult = (event) => {
+      let transcript = "";
+      for (let index = 0; index < event.results.length; index += 1) transcript += `${event.results[index][0]?.transcript || ""} `;
+      const nextText = [voiceBaseRef.current, transcript.trim()].filter(Boolean).join(" ");
+      voiceCurrentRef.current = nextText;
+      setAnswers((value) => ({ ...value, main: nextText }));
+    };
+    recognition.onend = () => {
+      if (!keepListeningRef.current) { setListening(false); return; }
+      window.setTimeout(() => {
+        if (!keepListeningRef.current) return;
+        voiceBaseRef.current = voiceCurrentRef.current.trim();
+        try { recognition.start(); } catch {
+          keepListeningRef.current = false;
+          setListening(false);
+          setSpeechError("Voice recording stopped unexpectedly. Press Record to continue.");
+        }
+      }, 150);
+    };
+    recognition.onerror = (event) => {
+      if (["not-allowed", "service-not-allowed", "audio-capture", "network"].includes(event.error || "")) {
+        keepListeningRef.current = false;
+        setListening(false);
+        setSpeechError(event.error === "not-allowed" ? "Microphone permission is required for voice recording." : "Voice recording stopped. Check the microphone or connection, then try again.");
+      }
+    };
+    recognitionRef.current = recognition;
+    keepListeningRef.current = true;
+    recognition.start();
+    setListening(true);
+  }
+
   async function generate(feedback?: string, baseIdeaId?: string) {
-    if (!canGenerate || busy) return;
+    if (!canGenerate || busy || listening) return;
     setBusy("generate"); setMessage("");
     try {
       await api.patch(`/api/discovery-drafts/${current.id}`, { answers, sourceText: answers.main });
@@ -198,7 +275,7 @@ export default function AdaptiveBusinessDiscovery({ draft, isAgency, clients, on
 
     {message && message !== "Saved automatically" && <Card className={message.includes("could not") || message.includes("failed") ? "border-amber-200 bg-amber-50 p-4 text-sm text-amber-900" : "border-emerald-200 bg-emerald-50 p-4 text-sm font-bold text-emerald-900"}>{message}</Card>}
 
-    {!current.ideas.length ? <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_340px]"><Card className="p-5 sm:p-7"><div className="space-y-5">{isAgency && <div className="rounded-xl border border-brand-100 bg-brand-50 p-4 text-sm"><b>Client:</b> {selectedClient?.name || "Selected Agency client"}<p className="mt-1 text-xs text-slate-600">Known client information remains reusable, but this Discovery Draft is not yet a client Project.</p></div>}<label className="block"><span className="mb-2 block text-sm font-black text-slate-950">{copy.mainLabel}</span><textarea rows={8} value={answers.main} onChange={(event) => setAnswers((value) => ({ ...value, main: event.target.value }))} placeholder={copy.mainPlaceholder} className="w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm leading-6 outline-none focus:border-brand-400 focus:bg-white focus:ring-4 focus:ring-brand-50" /></label>{current.startPath === "SKILLS_FIRST" && <><label className="block"><span className="mb-1 block text-sm font-bold">What do people already ask you for help with? <i className="font-normal text-slate-400">Optional</i></span><textarea rows={3} value={answers.help} onChange={(event) => setAnswers((value) => ({ ...value, help: event.target.value }))} className="w-full rounded-xl border px-3 py-2 text-sm" placeholder="Skip for now if you are not sure" /></label><label className="block"><span className="mb-1 block text-sm font-bold">What do you enjoy—or want to avoid? <i className="font-normal text-slate-400">Optional</i></span><textarea rows={3} value={answers.preferences} onChange={(event) => setAnswers((value) => ({ ...value, preferences: event.target.value }))} className="w-full rounded-xl border px-3 py-2 text-sm" /></label></>}<div className="grid gap-4 md:grid-cols-2"><label><span className="mb-1 block text-sm font-bold">Time and startup budget <i className="font-normal text-slate-400">Optional</i></span><input value={answers.constraints} onChange={(event) => setAnswers((value) => ({ ...value, constraints: event.target.value }))} className="h-11 w-full rounded-xl border px-3 text-sm" placeholder="Example: 5 hours/week, under $500" /></label><label><span className="mb-1 block text-sm font-bold">{current.startPath === "EXISTING_BUSINESS" ? "How does this business serve customers?" : "How would you prefer to serve customers?"} <i className="font-normal text-slate-400">Optional</i></span><select value={answers.delivery} onChange={(event) => setAnswers((value) => ({ ...value, delivery: event.target.value }))} className="h-11 w-full rounded-xl border bg-white px-3 text-sm"><option value="">Help me decide</option><option value="online">Online or remotely</option><option value="local">In a local area or in person</option><option value="either">Either or both</option></select><span className="mt-1 block text-[10px] leading-4 text-slate-400">This guides the business model. It does not require a location unless the direction is local.</span></label></div>{current.startPath === "EXISTING_BUSINESS" && <label className="block"><span className="mb-1 block text-sm font-bold">Website, store or profile link <i className="font-normal text-slate-400">Optional</i></span><input value={answers.websiteOrProfile} onChange={(event) => setAnswers((value) => ({ ...value, websiteOrProfile: event.target.value }))} className="h-11 w-full rounded-xl border px-3 text-sm" placeholder="https://… or Skip for now" /></label>}<div className="flex flex-wrap items-center justify-between gap-3 border-t pt-5"><p className="text-xs text-slate-500">Your input autosaves. You can leave and resume from Saved Ideas.</p><Button onClick={() => void generate()} disabled={!canGenerate || Boolean(busy)}>Generate ideas →</Button></div></div></Card><Card className="h-fit border-violet-100 bg-gradient-to-br from-violet-50 to-brand-50 p-5"><div className="text-[10px] font-black uppercase tracking-wide text-violet-700">Pre-project brief</div><h2 className="mt-2 text-lg font-black text-slate-950">Nothing becomes a Project yet</h2><div className="mt-4 space-y-3 text-xs leading-5 text-slate-600">{["Your input and AI ideas are saved in this Discovery Draft.", "You can save, reject, compare and fine-tune ideas.", "Only Use This Idea creates a Project and starts the normal workflow.", "Discovery Drafts do not count against project limits."].map((item) => <div key={item} className="flex gap-2"><span className="font-black text-emerald-600">✓</span><span>{item}</span></div>)}</div></Card></div> : <>
+    {!current.ideas.length ? <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_340px]"><Card className="p-5 sm:p-7"><div className="space-y-5">{isAgency && <div className="rounded-xl border border-brand-100 bg-brand-50 p-4 text-sm"><b>Client:</b> {selectedClient?.name || "Selected Agency client"}<p className="mt-1 text-xs text-slate-600">Known client information remains reusable, but this Discovery Draft is not yet a client Project.</p></div>}<label className="block"><span className="mb-2 block text-sm font-black text-slate-950">{copy.mainLabel}</span><div className="relative"><textarea rows={8} value={answers.main} onChange={(event) => { voiceCurrentRef.current = event.target.value; setAnswers((value) => ({ ...value, main: event.target.value })); }} placeholder={copy.mainPlaceholder} className="w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 pb-16 text-sm leading-6 outline-none focus:border-brand-400 focus:bg-white focus:ring-4 focus:ring-brand-50" /><button type="button" onClick={toggleVoice} disabled={Boolean(busy)} className={`absolute bottom-3 left-3 inline-flex items-center gap-2 rounded-xl px-3 py-2 text-xs font-black shadow-sm transition ${listening ? "animate-pulse bg-rose-600 text-white" : "border border-slate-200 bg-white text-slate-700 hover:border-brand-300 hover:text-brand-700"}`}><span>{listening ? "■" : "🎙"}</span><span>{listening ? "Stop recording" : "Record your intake"}</span></button></div><div className="mt-2 flex items-center justify-between gap-3 text-xs text-slate-500"><span>{listening ? "Recording… describe your services, target audience, and goals naturally. Stop and review the text before generating." : "Write, paste, or record your business, services offered, and target audience."}</span><span className={answers.main.trim().length >= 10 ? "font-bold text-emerald-700" : ""}>{answers.main.trim().length} characters</span></div>{speechError && <div className="mt-2 text-xs font-semibold text-amber-700">{speechError}</div>}</label>{current.startPath === "SKILLS_FIRST" && <><label className="block"><span className="mb-1 block text-sm font-bold">What do people already ask you for help with? <i className="font-normal text-slate-400">Optional</i></span><textarea rows={3} value={answers.help} onChange={(event) => setAnswers((value) => ({ ...value, help: event.target.value }))} className="w-full rounded-xl border px-3 py-2 text-sm" placeholder="Skip for now if you are not sure" /></label><label className="block"><span className="mb-1 block text-sm font-bold">What do you enjoy—or want to avoid? <i className="font-normal text-slate-400">Optional</i></span><textarea rows={3} value={answers.preferences} onChange={(event) => setAnswers((value) => ({ ...value, preferences: event.target.value }))} className="w-full rounded-xl border px-3 py-2 text-sm" /></label></>}<div className="grid gap-4 md:grid-cols-2"><label><span className="mb-1 block text-sm font-bold">Time and startup budget <i className="font-normal text-slate-400">Optional</i></span><input value={answers.constraints} onChange={(event) => setAnswers((value) => ({ ...value, constraints: event.target.value }))} className="h-11 w-full rounded-xl border px-3 text-sm" placeholder="Example: 5 hours/week, under $500" /></label><label><span className="mb-1 block text-sm font-bold">{current.startPath === "EXISTING_BUSINESS" ? "How does this business serve customers?" : "How would you prefer to serve customers?"} <i className="font-normal text-slate-400">Optional</i></span><select value={answers.delivery} onChange={(event) => setAnswers((value) => ({ ...value, delivery: event.target.value }))} className="h-11 w-full rounded-xl border bg-white px-3 text-sm"><option value="">Help me decide</option><option value="online">Online or remotely</option><option value="local">In a local area or in person</option><option value="either">Either or both</option></select><span className="mt-1 block text-[10px] leading-4 text-slate-400">This guides the business model. It does not require a location unless the direction is local.</span></label></div>{current.startPath === "EXISTING_BUSINESS" && <label className="block"><span className="mb-1 block text-sm font-bold">Website, store or profile link <i className="font-normal text-slate-400">Optional</i></span><input value={answers.websiteOrProfile} onChange={(event) => setAnswers((value) => ({ ...value, websiteOrProfile: event.target.value }))} className="h-11 w-full rounded-xl border px-3 text-sm" placeholder="https://… or Skip for now" /></label>}<div className="flex flex-wrap items-center justify-between gap-3 border-t pt-5"><p className="text-xs text-slate-500">Your input autosaves. You can leave and resume from Saved Ideas.</p><Button onClick={() => void generate()} disabled={!canGenerate || Boolean(busy) || listening}>Generate ideas →</Button></div></div></Card><Card className="h-fit border-violet-100 bg-gradient-to-br from-violet-50 to-brand-50 p-5"><div className="text-[10px] font-black uppercase tracking-wide text-violet-700">Pre-project brief</div><h2 className="mt-2 text-lg font-black text-slate-950">Nothing becomes a Project yet</h2><div className="mt-4 space-y-3 text-xs leading-5 text-slate-600">{["Your input and AI ideas are saved in this Discovery Draft.", "You can save, reject, compare and fine-tune ideas.", "Only Use This Idea creates a Project and starts the normal workflow.", "Discovery Drafts do not count against project limits."].map((item) => <div key={item} className="flex gap-2"><span className="font-black text-emerald-600">✓</span><span>{item}</span></div>)}</div></Card></div> : <>
       <Card className="overflow-hidden"><div className="bg-slate-950 px-5 py-6 text-white sm:px-7"><div className="text-[10px] font-black uppercase tracking-[0.16em] text-emerald-300">Here is what I understand · AI suggested</div><h2 className="mt-2 text-2xl font-black">{String(summary.title || current.title)}</h2><p className="mt-2 max-w-4xl text-sm leading-6 text-slate-300">{String(summary.description || current.sourceText || "Review the generated directions below.")}</p></div><div className="grid gap-3 p-5 md:grid-cols-2 lg:grid-cols-4">{[["Audience", summary.audience], ["Revenue model", summary.revenueModel], ["Delivery", summary.deliveryMode], ["Primary goal", summary.primaryGoal]].map(([label, value]) => <div key={String(label)} className="rounded-xl border bg-slate-50 p-3"><div className="text-[9px] font-black uppercase tracking-wide text-slate-400">{String(label)}</div><div className="mt-1 text-xs font-bold leading-5 text-slate-800">{String(value || "Not established yet")}</div></div>)}</div></Card>
 
       <section><div className="flex flex-wrap items-end justify-between gap-3"><div><div className="text-[10px] font-black uppercase tracking-wide text-violet-700">Opportunity cards</div><h2 className="mt-1 text-2xl font-black text-slate-950">Compare before creating a project</h2></div><button type="button" onClick={() => void generate()} disabled={Boolean(busy)} className="rounded-lg border bg-white px-4 py-2 text-xs font-black text-slate-700">Regenerate from my latest input</button></div><div className="mt-4 grid gap-4 xl:grid-cols-2">{current.ideas.map((idea, index) => <Card key={idea.id} className={`overflow-hidden ${idea.status === "REJECTED" ? "opacity-60" : ""}`}><div className="flex items-start justify-between gap-3 border-b bg-slate-50 px-5 py-4"><div className="flex gap-3"><span className="grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-slate-950 text-xs font-black text-white">{index + 1}</span><div><h3 className="font-black text-slate-950">{idea.title}</h3><p className="mt-1 text-[10px] font-bold uppercase text-violet-700">{idea.businessModel || "Business direction"} · {idea.status}</p></div></div><span className="rounded-full bg-white px-3 py-1 text-xs font-black text-slate-700 shadow-sm">{idea.confidence ?? "—"}% fit</span></div><div className="space-y-4 p-5"><p className="text-sm leading-6 text-slate-700">{idea.description}</p><div className="rounded-xl bg-emerald-50 p-4 text-xs leading-5 text-emerald-900"><b>Why it fits:</b> {idea.whyFit}</div><div className="grid gap-3 sm:grid-cols-2"><Info label="Audience" value={idea.targetAudience} /><Info label="Revenue model" value={idea.revenueModel} /><Info label="Difficulty" value={idea.difficulty} /><Info label="Time / cost" value={idea.timeCostBand} /></div><div><div className="text-[10px] font-black uppercase tracking-wide text-slate-400">First validation steps</div><ol className="mt-2 space-y-2">{strings(idea.validationSteps).map((step, stepIndex) => <li key={step} className="flex gap-2 text-xs leading-5 text-slate-600"><span className="font-black text-brand-700">{stepIndex + 1}.</span><span>{step}</span></li>)}</ol></div>{idea.majorRisk && <div className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs leading-5 text-amber-900"><b>Main risk:</b> {idea.majorRisk}</div>}<div className="rounded-xl border border-violet-100 bg-violet-50 p-3"><label className="text-[10px] font-black uppercase tracking-wide text-violet-700">Fine-tune this idea into new options</label><textarea rows={2} value={feedbackByIdea[idea.id] || ""} onChange={(event) => setFeedbackByIdea((value) => ({ ...value, [idea.id]: event.target.value }))} placeholder="Ask a question or explain what to change. Example: Make this a monthly service for Canadian agencies with a lower startup cost." className="mt-2 w-full rounded-xl border bg-white px-3 py-2 text-xs" /><button type="button" disabled={Boolean(busy) || (feedbackByIdea[idea.id] || "").trim().length < 3} onClick={() => void generate(feedbackByIdea[idea.id], idea.id)} className="mt-2 w-full rounded-lg bg-violet-700 px-3 py-2 text-xs font-black text-white disabled:bg-slate-300">Fine-tune & generate 3 refined ideas</button></div><div className="grid gap-2 sm:grid-cols-3"><button type="button" disabled={Boolean(busy) || idea.status === "SAVED"} onClick={() => void decide(idea, "SAVED")} className="rounded-lg border bg-white px-3 py-2 text-xs font-black text-slate-700 disabled:bg-emerald-50 disabled:text-emerald-700">{busy === idea.id ? "Saving…" : idea.status === "SAVED" ? "Saved ✓" : "Save idea"}</button><button type="button" disabled={Boolean(busy) || idea.status === "REJECTED"} onClick={() => void decide(idea, "REJECTED")} className="rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs font-black text-rose-700 disabled:bg-rose-100">{busy === idea.id ? "Saving…" : idea.status === "REJECTED" ? "Rejected ✓" : "Reject"}</button><button type="button" disabled={Boolean(busy) || idea.status === "REJECTED"} onClick={() => void convert(idea)} className="rounded-lg bg-emerald-600 px-3 py-2 text-xs font-black text-white disabled:bg-slate-300">{busy === "convert" ? "Creating…" : "Use This Idea"}</button></div><p className="text-[10px] leading-4 text-slate-400">Fine-tune generates three new variations from this option and your input. Save keeps the current idea. Only Use This Idea creates a Project.</p></div></Card>)}</div></section>

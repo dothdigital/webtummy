@@ -24,11 +24,14 @@ const monetizationMechanic = (value: string) => /\b(?:fee|commission|paid (?:sel
 const projectDirectionLanguage = (value: string) => {
   const normalized = clean(value).toLowerCase();
   return /\b(?:build|create|develop|launch|redesign|improve|grow)\b.*\b(?:website|web site|brand|lead[ -]generation|marketing campaign|seo campaign)\b/.test(normalized)
-    || /\b(?:business growth|local (?:lead )?growth|revenue growth|brand awareness|customer acquisition|selected direction|project goal)\b/.test(normalized);
+    || /\b(?:business growth|local (?:lead )?growth|revenue growth|brand awareness|customer acquisition|selected direction|project goal|service-specific pages?|educational explanations?|consultation requests?|structured follow-up|website pages?|content pages?|contact forms?|follow-up workflows?)\b/.test(normalized);
 };
-const splitOfferTopics = (value: string) => clean(value).split(/[,;|]/).flatMap((part) => {
-  const normalized = cleanTopic(part);
-  const compound = normalized.split(/\s+and\s+/i).map(cleanTopic).filter(Boolean);
+const canonicalServiceTopic = (value: string) => cleanTopic(value).replace(/\b(rrsp|tfsa|fhsa|rrif)s\b/gi, "$1");
+const nonOfferIntakeLabel = (value: string) => /^(?:target audience|ideal customers?|audience|location|target markets?|project name|project goal|primary goal)\s*:/i.test(value);
+const stripOfferLabel = (value: string) => value.replace(/^(?:(?:products?(?:\s+(?:and|or)\s+services?)?|services?|offerings?)\s*:|services?\s+(?:(?:you|we|the business)\s+(?:are\s+)?(?:offering|offer|provide)(?:\s+to\s+(?:your|our|the)\s+clients?)?|offered|offering)\s*:?)\s*/i, "").replace(/^(?:business|personal|individual|group benefits?)\s*:\s*/i, "");
+const splitOfferTopics = (value: string) => value.split(/[,;|\n\r]+/).filter((part) => !nonOfferIntakeLabel(part.trim())).flatMap((part) => {
+  const normalized = canonicalServiceTopic(stripOfferLabel(part));
+  const compound = normalized.split(/\s+and\s+/i).map(canonicalServiceTopic).filter(Boolean);
   return compound.length === 2 && compound.every((item) => item.split(/\s+/).length >= 2) ? compound : [normalized];
 }).filter(Boolean);
 const shortAudience = (value: string) => {
@@ -37,7 +40,7 @@ const shortAudience = (value: string) => {
   return commonAudience || first.split(/\s+/).slice(0, 6).join(" ");
 };
 const isInstruction = (value: string) => /^(find|explore|create|suggest|expand|generate)\b/i.test(value) && /\b(keywords?|topics?|ideas?)\b/i.test(value) && value.split(/\s+/).length > 6;
-const unique = (values: string[]) => [...new Map(splitKeywordEntries(values).map((value) => [value.toLowerCase(), value])).values()].filter((value) => value.length >= 3 && !isInstruction(value)).slice(0, 10);
+const unique = (values: string[], limit = 10) => [...new Map(splitKeywordEntries(values).map((value) => [value.toLowerCase(), value])).values()].filter((value) => value.length >= 3 && !isInstruction(value)).slice(0, limit);
 
 export function isCustomerSearchKeyword(value: string) {
   const normalized = cleanTopic(value);
@@ -48,7 +51,7 @@ export function isCustomerSearchKeyword(value: string) {
 
 function customerFacingTopics(project: KeywordProjectInput, extraTopic?: string | null) {
   const direction = project.opportunities?.find((item) => ["selected", "confirmed"].includes(item.status));
-  const validTopics = (source?: string | null) => unique(splitOfferTopics(clean(source)).filter((item) => !monetizationMechanic(item) && isCustomerSearchKeyword(item)));
+  const validTopics = (source?: string | null) => unique(splitOfferTopics(source ?? "").filter((item) => !monetizationMechanic(item) && isCustomerSearchKeyword(item)), 20);
   if (extraTopic) return validTopics(extraTopic);
 
   // A confirmed intake offer is authoritative. Do not blend the project goal,
@@ -106,7 +109,7 @@ export function buildKeywordGroups(project: KeywordProjectInput, extraTopic?: st
   const topic = topics[0];
   const softwareLike = /\b(?:software|platform|app|application|saas|marketplace|portal|tool)\b/i.test(topic);
   const rows: Record<string, string[]> = {
-    primary: unique([...topics, ...(softwareLike ? [`${topic} platform`] : [])]),
+    primary: unique([...topics, ...(softwareLike ? [`${topic} platform`] : [])], 20),
     buyer_intent: unique(softwareLike
       ? [`best ${topic}`, `${topic} pricing`, `${topic} demo`, `${topic} reviews`, `${topic} for ${audienceTerm}`, `compare ${topic}`]
       : topics.flatMap(buyerKeywords)).slice(0, 10),
@@ -117,8 +120,8 @@ export function buildKeywordGroups(project: KeywordProjectInput, extraTopic?: st
     long_tail: unique(topics.flatMap((item) => [`${item} for ${audienceTerm}`, locations[0] ? `best ${item} in ${locations[0]}` : "", `how to choose ${item} provider`])),
   };
   return KEYWORD_GROUP_DEFINITIONS.map(([category, title]) => ({
-    category, title, keywords: unique(rows[category]),
-    explanation: `${title} are recommended from the project's offer, audience, selected direction, and target markets.`,
+    category, title, keywords: unique(rows[category], category === "primary" ? 20 : 10),
+    explanation: `${title} are recommended from the confirmed intake products/services, audience, and target markets.`,
     expectedValue: category === "buyer_intent" ? "Prioritizes searches closest to a purchase or enquiry." : category === "local" ? "Connects the offer to the markets where customers are being targeted." : "Builds relevant search coverage around the project direction.",
     goalSupport: `Supports the primary goal: ${goal}.`,
   })).filter((group) => group.keywords.length > 0);
