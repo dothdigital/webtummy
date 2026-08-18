@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api.js";
 import type { DomainBacklinkLinks, DomainBacklinkSummary } from "../types.js";
 
@@ -156,7 +156,7 @@ function Empty({ title, detail }: { title: string; detail: string }) {
   return <div className="rounded-xl border border-dashed border-slate-300 bg-slate-50 px-6 py-10 text-center"><div className="font-black text-charcoal-900">{title}</div><div className="mx-auto mt-2 max-w-xl text-sm leading-6 text-charcoal-500">{detail}</div></div>;
 }
 
-export function AuthorityGrowthWorkspace({ projectId, backlinkSummary, backlinkLinks }: { projectId: string; backlinkSummary: DomainBacklinkSummary | null; backlinkLinks: DomainBacklinkLinks | null }) {
+export function AuthorityGrowthWorkspace({ projectId, backlinkSummary, backlinkLinks, autoStart = false }: { projectId: string; backlinkSummary: DomainBacklinkSummary | null; backlinkLinks: DomainBacklinkLinks | null; autoStart?: boolean }) {
   const [workspace, setWorkspace] = useState<AuthorityWorkspace | null>(null);
   const [tab, setTab] = useState<Tab>("overview");
   const [busy, setBusy] = useState("");
@@ -165,6 +165,7 @@ export function AuthorityGrowthWorkspace({ projectId, backlinkSummary, backlinkL
   const [outcome, setOutcome] = useState({ sourceUrl: "", targetUrl: "", mentionType: "backlink", linkAttribute: "follow", referralVisits: "0", referralLeads: "0" });
   const [contactDraft, setContactDraft] = useState({ campaignId: "", organizationName: "", contactName: "", email: "", websiteUrl: "", relationshipNote: "" });
   const [messageDraft, setMessageDraft] = useState({ messageId: "", subject: "", bodyText: "" });
+  const autoStartAttempted = useRef(false);
 
   const load = useCallback(async () => {
     setError("");
@@ -201,6 +202,12 @@ export function AuthorityGrowthWorkspace({ projectId, backlinkSummary, backlinkL
   };
 
   const discover = () => void run("discover", () => api.post(`/api/projects/${encodeURIComponent(projectId)}/authority-growth/discover`, {}), "Research completed. New opportunities are scored and ready for review.");
+  useEffect(() => {
+    if (!autoStart || autoStartAttempted.current || !workspace?.capabilities.canResearch) return;
+    autoStartAttempted.current = true;
+    setTab("opportunities");
+    discover();
+  }, [autoStart, workspace?.capabilities.canResearch]);
   const updateOpportunity = (id: string, status: "shortlisted" | "researching" | "dismissed") => void run(`opportunity:${id}`, () => api.patch(`/api/projects/${encodeURIComponent(projectId)}/authority-growth/opportunities/${encodeURIComponent(id)}`, { status }), `Opportunity moved to ${label(status).toLowerCase()}.`);
   const approveOpportunity = (id: string) => void run(`approve:${id}`, () => api.post(`/api/projects/${encodeURIComponent(projectId)}/authority-growth/opportunities/${encodeURIComponent(id)}/approve`, {}), "Opportunity approved. Its execution task and authority asset are ready; any outreach remains an unsent draft.");
   const reviewFinding = (id: string, status: "reviewed_no_action" | "monitor" | "action_required") => void run(`finding:${id}`, () => api.patch(`/api/projects/${encodeURIComponent(projectId)}/authority-growth/risk-findings/${encodeURIComponent(id)}`, { status }), "Review decision saved. No link was automatically removed or disavowed.");

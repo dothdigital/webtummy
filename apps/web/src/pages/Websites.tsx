@@ -1,6 +1,6 @@
 // Projects list. Each project is a domain/website container with crawls and keyword insights.
 import { useEffect, useState } from "react";
-import { Link, useNavigate } from "react-router-dom";
+import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { ACTIVE_CLIENT_EVENT, api, endImpersonation, getImpersonationLabel } from "../api.js";
 import type { Website, WebsiteMeasurementPlan, WebsiteTrackingSite } from "../types.js";
 import { Button, Card, Input, StatusPill } from "../components/ui.js";
@@ -61,6 +61,7 @@ function csv(value: string): string[] {
 
 export default function Websites() {
   const navigate = useNavigate();
+  const [searchParams, setSearchParams] = useSearchParams();
   const [websites, setWebsites] = useState<Website[]>([]);
   const [domain, setDomain] = useState("");
   const [projectCountry, setProjectCountry] = useState(defaultLocationParts().country);
@@ -81,6 +82,8 @@ export default function Websites() {
   const load = async () => {
     const r = await api.get<{ websites: Website[] }>("/api/websites");
     setWebsites(r.websites);
+    const requestedTrackingWebsite = r.websites.find((website) => website.id === searchParams.get("tracking"));
+    if (requestedTrackingWebsite) setTrackingWebsite(requestedTrackingWebsite);
   };
   useEffect(() => { load(); /* eslint-disable-next-line */ }, []);
 
@@ -363,7 +366,7 @@ export default function Websites() {
           </table></div>
         )}
       </Card>
-      {trackingWebsite && <TrackingSetupModal website={trackingWebsite} onClose={() => setTrackingWebsite(null)} onSaved={async (text) => { setMessage(text); await load(); }} />}
+      {trackingWebsite && <TrackingSetupModal website={trackingWebsite} onClose={() => { setTrackingWebsite(null); const next = new URLSearchParams(searchParams); next.delete("tracking"); setSearchParams(next, { replace: true }); }} onSaved={async (text) => { setMessage(text); await load(); }} />}
     </div>
   );
 }

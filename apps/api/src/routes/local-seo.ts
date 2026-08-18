@@ -85,6 +85,14 @@ const reviewSchema = z.object({
   replyStatus: z.string().max(40).default("not_replied"),
 });
 
+const rankingCompetitorImportSchema = z.object({
+  domains: z.array(z.string().trim().min(2).max(255)).min(1).max(50),
+});
+
+const rankingKeywordImportSchema = z.object({
+  runIds: z.array(z.string().trim().min(1).max(191)).min(1).max(100),
+});
+
 const gridConfigurationSchema = z.object({ keywordId: z.string(), name: z.string().trim().min(2).max(180), gridSize: z.number().int().min(3).max(21).refine((value) => value % 2 === 1, "Grid size must be an odd number."), radiusKm: z.number().positive().max(100), centerLatitude: z.number().min(-90).max(90), centerLongitude: z.number().min(-180).max(180), device: z.enum(["desktop", "mobile"]).default("mobile"), language: z.string().min(2).max(16).default("en"), engine: z.enum(["google_maps", "google_local_pack"]).default("google_maps"), resultDepth: z.number().int().min(3).max(100).default(20), schedule: z.enum(["manual", "weekly", "biweekly", "monthly"]).default("monthly"), movementThreshold: z.number().min(1).max(100).default(10) });
 const gridScanResultSchema = z.object({ points: z.array(z.object({ rowIndex: z.number().int().min(0), columnIndex: z.number().int().min(0), latitude: z.number(), longitude: z.number(), rank: z.number().int().positive().optional().nullable(), found: z.boolean(), matchedName: z.string().max(180).optional().nullable(), confidence: z.number().int().min(0).max(100).default(0), evidence: z.record(z.unknown()).default({}) })).min(1).max(441), competitors: z.array(z.object({ businessName: z.string().min(2).max(180), domain: z.string().max(255).optional().nullable(), averageRank: z.number().positive().optional().nullable(), top3Share: z.number().min(0).max(100).optional().nullable(), top10Share: z.number().min(0).max(100).optional().nullable(), evidence: z.record(z.unknown()).default({}) })).max(50).default([]), summary: z.record(z.unknown()).default({}) });
 
@@ -209,9 +217,173 @@ async function scopedBusiness(req: Request, id: string) {
       recommendations: { where: { status: "open" }, orderBy: [{ priority: "asc" }, { createdAt: "desc" }], take: 20 },
       citations: { orderBy: { source: "asc" } },
       reviews: { orderBy: { reviewDate: "desc" }, take: 20 },
-      competitors: { orderBy: [{ mapsPosition: "asc" }, { reviewCount: "desc" }], take: 20 },
+      competitors: { orderBy: [{ mapsPosition: "asc" }, { reviewCount: "desc" }], take: 500 },
     },
   });
+}
+
+type RankingCompetitorSummary = {
+  domain: string;
+  title: string | null;
+  exampleUrl: string;
+  bestRank: number;
+  appearances: number;
+  keywordCount: number;
+  keywords: string[];
+  locations: string[];
+  averageContentScore: number | null;
+  imported: boolean;
+  localCompetitorId: string | null;
+};
+
+type RankingKeywordResult = {
+  runId: string;
+  keyword: string;
+  locationName: string;
+  languageCode: string;
+  device: string;
+  organicRank: number | null;
+  rankingUrl: string | null;
+  completedAt: Date | null;
+  imported: boolean;
+  localKeywordId: string | null;
+};
+
+async function keywordRankingResultsForBusiness(business: {
+  clientId: string;
+  projectId: string | null;
+  websiteId: string | null;
+  country: string;
+  keywords: Array<{ id: string; keyword: string; city: string; country: string; device: string; language: string; active: boolean }>;
+}): Promise<RankingKeywordResult[]> {
+  const scopes = [
+    ...(business.projectId ? [{ projectId: business.projectId }] : []),
+    ...(business.websiteId ? [{ websiteId: business.websiteId }] : []),
+  ];
+  if (!scopes.length) return [];
+  const runs = await prisma.keywordResearchRun.findMany({
+    where: { clientId: business.clientId, status: "completed", OR: scopes },
+    orderBy: { createdAt: "desc" },
+    take: 500,
+    select: {
+      id: true,
+      seedKeyword: true,
+      locationName: true,
+      languageCode: true,
+      device: true,
+      targetRank: true,
+      manualRank: true,
+      rankingUrl: true,
+      manualUrl: true,
+      completedAt: true,
+    },
+  });
+  const trackedByTarget = new Map(business.keywords
+    .filter((keyword) => keyword.active)
+    .map((keyword) => [keywordKey(keyword.keyword, keyword.city, keyword.country, keyword.device, keyword.language), keyword.id] as const));
+  const seenTargets = new Set<string>();
+  return runs.flatMap((run) => {
+    const targetKey = keywordKey(run.seedKeyword, run.locationName, business.country, run.device, run.languageCode);
+    if (seenTargets.has(targetKey)) return [];
+    seenTargets.add(targetKey);
+    const localKeywordId = trackedByTarget.get(targetKey) ?? null;
+    return [{
+      runId: run.id,
+      keyword: run.seedKeyword,
+      locationName: run.locationName,
+      languageCode: run.languageCode,
+      device: run.device,
+      organicRank: run.manualRank ?? run.targetRank,
+      rankingUrl: run.manualUrl ?? run.rankingUrl,
+      completedAt: run.completedAt,
+      imported: Boolean(localKeywordId),
+      localKeywordId,
+    }];
+  });
+}
+
+async function keywordRankingCompetitorsForBusiness(business: {
+  clientId: string;
+  projectId: string | null;
+  websiteId: string | null;
+  domain: string;
+  competitors: Array<{ id: string; domain: string | null }>;
+}): Promise<RankingCompetitorSummary[]> {
+  const scopes = [
+    ...(business.projectId ? [{ projectId: business.projectId }] : []),
+    ...(business.websiteId ? [{ websiteId: business.websiteId }] : []),
+  ];
+  if (!scopes.length) return [];
+
+  const runs = await prisma.keywordResearchRun.findMany({
+    where: { clientId: business.clientId, status: "completed", OR: scopes },
+    orderBy: { createdAt: "desc" },
+    take: 250,
+    select: {
+      id: true,
+      seedKeyword: true,
+      locationName: true,
+      competitors: {
+        orderBy: { rank: "asc" },
+        take: 120,
+        select: { domain: true, title: true, url: true, rank: true, contentScore: true },
+      },
+    },
+  });
+
+  type Aggregate = Omit<RankingCompetitorSummary, "keywordCount" | "keywords" | "locations" | "averageContentScore" | "imported" | "localCompetitorId"> & {
+    keywords: Set<string>;
+    locations: Set<string>;
+    contentScores: number[];
+  };
+  const ownDomain = normalizeDomain(business.domain);
+  const aggregates = new Map<string, Aggregate>();
+  for (const run of runs) {
+    const seenInRun = new Set<string>();
+    for (const competitor of run.competitors) {
+      const domain = normalizeDomain(competitor.domain);
+      if (!domain || domain === ownDomain) continue;
+      const current = aggregates.get(domain) ?? {
+        domain,
+        title: competitor.title,
+        exampleUrl: competitor.url,
+        bestRank: competitor.rank,
+        appearances: 0,
+        keywords: new Set<string>(),
+        locations: new Set<string>(),
+        contentScores: [],
+      };
+      if (!seenInRun.has(domain)) {
+        current.appearances += 1;
+        seenInRun.add(domain);
+      }
+      current.bestRank = Math.min(current.bestRank, competitor.rank);
+      current.keywords.add(run.seedKeyword);
+      if (run.locationName) current.locations.add(run.locationName);
+      if (typeof competitor.contentScore === "number") current.contentScores.push(competitor.contentScore);
+      if (!current.title && competitor.title) current.title = competitor.title;
+      aggregates.set(domain, current);
+    }
+  }
+
+  const importedByDomain = new Map(business.competitors
+    .map((competitor) => [normalizeDomain(competitor.domain ?? ""), competitor.id] as const)
+    .filter(([domain]) => Boolean(domain)));
+  return [...aggregates.values()].map((competitor) => ({
+    domain: competitor.domain,
+    title: competitor.title,
+    exampleUrl: competitor.exampleUrl,
+    bestRank: competitor.bestRank,
+    appearances: competitor.appearances,
+    keywordCount: competitor.keywords.size,
+    keywords: [...competitor.keywords],
+    locations: [...competitor.locations],
+    averageContentScore: competitor.contentScores.length
+      ? Math.round(competitor.contentScores.reduce((total, score) => total + score, 0) / competitor.contentScores.length)
+      : null,
+    imported: importedByDomain.has(competitor.domain),
+    localCompetitorId: importedByDomain.get(competitor.domain) ?? null,
+  })).sort((left, right) => left.bestRank - right.bestRank || right.appearances - left.appearances || left.domain.localeCompare(right.domain));
 }
 
 async function getClientIdForRequest(req: Request, inputClientId?: string | null) {
@@ -227,7 +399,7 @@ localSeoRouter.get("/local/business", async (req, res) => {
     include: {
       website: { select: { id: true, domain: true } },
       scores: { orderBy: { scoreDate: "desc" }, take: 1 },
-      _count: { select: { keywords: true, recommendations: true } },
+      _count: { select: { keywords: true, competitors: true, scores: true, recommendations: true } },
     },
   });
   res.json({ businesses });
@@ -292,21 +464,23 @@ localSeoRouter.get("/local/business/:id/dashboard", async (req, res) => {
   const business = await scopedBusiness(req, req.params.id);
   if (!business) return res.status(404).json({ error: "business not found" });
   const keywordIds = business.keywords.map((keyword) => keyword.id);
-  const snapshotRows = keywordIds.length
-    ? await prisma.localRankSnapshot.findMany({
+  const [snapshotRows, rankingKeywordResults, rankingCompetitors] = await Promise.all([
+    keywordIds.length ? prisma.localRankSnapshot.findMany({
         where: { keywordId: { in: keywordIds } },
         orderBy: { scanDate: "desc" },
         take: Math.max(200, keywordIds.length * 10),
         include: { keyword: true },
-      })
-    : [];
+      }) : [],
+    keywordRankingResultsForBusiness(business),
+    keywordRankingCompetitorsForBusiness(business),
+  ]);
   const seenSnapshotKeywordIds = new Set<string>();
   const latestSnapshots = snapshotRows.filter((snapshot) => {
     if (seenSnapshotKeywordIds.has(snapshot.keywordId)) return false;
     seenSnapshotKeywordIds.add(snapshot.keywordId);
     return true;
   });
-  res.json({ business, latestSnapshots });
+  res.json({ business, latestSnapshots, rankingKeywordResults, rankingCompetitors, citationScanAvailable: Boolean(searchDataAuth()) });
 });
 
 localSeoRouter.delete("/local/business/:id/keywords", async (req, res) => {
@@ -318,6 +492,19 @@ localSeoRouter.delete("/local/business/:id/keywords", async (req, res) => {
     prisma.localKeyword.deleteMany({ where: { businessId: business.id } }),
   ]);
   res.json({ keywords: [] });
+});
+
+localSeoRouter.delete("/local/business/:id/keywords/:keywordId", async (req, res) => {
+  const business = await scopedBusiness(req, req.params.id);
+  if (!business) return res.status(404).json({ error: "business not found" });
+  const keyword = business.keywords.find((item) => item.id === req.params.keywordId);
+  if (!keyword) return res.status(404).json({ error: "tracked keyword not found" });
+  await prisma.$transaction([
+    prisma.localScore.deleteMany({ where: { keywordId: keyword.id } }),
+    prisma.localKeyword.delete({ where: { id: keyword.id } }),
+  ]);
+  await replaceRecommendations(business.id, await prisma.localScore.findMany({ where: { businessId: business.id }, orderBy: { scoreDate: "desc" } }));
+  res.json({ removed: keyword.id });
 });
 
 localSeoRouter.post("/local/business/:id/keyword-suggestions", async (req, res) => {
@@ -393,6 +580,36 @@ localSeoRouter.post("/local/business/:id/keywords", async (req, res) => {
   res.status(201).json({ added: rows.length, synchronized: input.sync, targetCount: keywords.length, keywords });
 });
 
+localSeoRouter.post("/local/business/:id/keywords/import-ranking", async (req, res) => {
+  const parsed = rankingKeywordImportSchema.safeParse(req.body ?? {});
+  if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() });
+  const business = await scopedBusiness(req, req.params.id);
+  if (!business) return res.status(404).json({ error: "business not found" });
+
+  const available = await keywordRankingResultsForBusiness(business);
+  const requestedRunIds = new Set(parsed.data.runIds);
+  const selected = available.filter((result) => requestedRunIds.has(result.runId));
+  if (!selected.length) return res.status(400).json({ error: "Select a completed result from this project's Keyword Intelligence." });
+
+  const existingByKey = new Map(business.keywords.map((keyword) => [keywordKey(keyword.keyword, keyword.city, keyword.country, keyword.device, keyword.language), keyword] as const));
+  const toCreate = selected.filter((result) => !existingByKey.has(keywordKey(result.keyword, result.locationName, business.country, result.device, result.languageCode)));
+  const toReactivate = selected.flatMap((result) => {
+    const keyword = existingByKey.get(keywordKey(result.keyword, result.locationName, business.country, result.device, result.languageCode));
+    return keyword && !keyword.active ? [keyword] : [];
+  });
+  await prisma.$transaction([
+    ...(toReactivate.length ? [prisma.localKeyword.updateMany({ where: { id: { in: toReactivate.map((keyword) => keyword.id) } }, data: { active: true } })] : []),
+    ...(toCreate.length ? [prisma.localKeyword.createMany({ data: toCreate.map((result) => ({ businessId: business.id, keyword: result.keyword, city: result.locationName, country: business.country, device: result.device, language: result.languageCode })) })] : []),
+  ]);
+  const keywords = await prisma.localKeyword.findMany({ where: { businessId: business.id, active: true }, orderBy: { createdAt: "desc" } });
+  res.status(toCreate.length || toReactivate.length ? 201 : 200).json({
+    keywords,
+    added: toCreate.length,
+    reactivated: toReactivate.length,
+    alreadyTracked: selected.length - toCreate.length - toReactivate.length,
+  });
+});
+
 localSeoRouter.get("/local/business/:id/rankings", async (req, res) => {
   const business = await scopedBusiness(req, req.params.id);
   if (!business) return res.status(404).json({ error: "business not found" });
@@ -426,6 +643,77 @@ localSeoRouter.get("/local/business/:id/competitors", async (req, res) => {
   if (!business) return res.status(404).json({ error: "business not found" });
   const competitors = await prisma.localCompetitor.findMany({ where: { businessId: business.id }, orderBy: [{ mapsPosition: "asc" }, { reviewCount: "desc" }] });
   res.json({ competitors });
+});
+
+localSeoRouter.delete("/local/business/:id/competitors/:competitorId", async (req, res) => {
+  const business = await scopedBusiness(req, req.params.id);
+  if (!business) return res.status(404).json({ error: "business not found" });
+  const competitor = business.competitors.find((item) => item.id === req.params.competitorId);
+  if (!competitor) return res.status(404).json({ error: "tracked competitor not found" });
+  await prisma.localCompetitor.delete({ where: { id: competitor.id } });
+  res.json({ removed: competitor.id });
+});
+
+localSeoRouter.post("/local/business/:id/competitors/import-ranking", async (req, res) => {
+  const parsed = rankingCompetitorImportSchema.safeParse(req.body ?? {});
+  if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() });
+  const business = await scopedBusiness(req, req.params.id);
+  if (!business) return res.status(404).json({ error: "business not found" });
+
+  const available = await keywordRankingCompetitorsForBusiness(business);
+  const requestedDomains = new Set(parsed.data.domains.map(normalizeDomain).filter(Boolean));
+  const selected = available.filter((competitor) => requestedDomains.has(competitor.domain));
+  if (!selected.length) return res.status(400).json({ error: "Select a competitor found in this project's completed Keyword Intelligence results." });
+
+  const existingDomains = new Set(business.competitors.map((competitor) => normalizeDomain(competitor.domain ?? "")).filter(Boolean));
+  const newCompetitors = selected.filter((competitor) => !existingDomains.has(competitor.domain));
+  const context = await workspaceContext(req);
+  await prisma.$transaction(async (tx) => {
+    if (newCompetitors.length) {
+      await tx.localCompetitor.createMany({
+        data: newCompetitors.map((competitor) => ({
+          businessId: business.id,
+          competitorName: (competitor.title || competitor.domain).slice(0, 180),
+          domain: competitor.domain,
+          organicPosition: competitor.bestRank,
+          evidenceJson: {
+            source: "keyword_intelligence",
+            exampleUrl: competitor.exampleUrl,
+            bestRank: competitor.bestRank,
+            appearances: competitor.appearances,
+            keywords: competitor.keywords,
+            locations: competitor.locations,
+            averageContentScore: competitor.averageContentScore,
+          } as Prisma.InputJsonValue,
+        })),
+      });
+    }
+
+    const projectScopes = [
+      ...(business.projectId ? [{ id: business.projectId }] : []),
+      ...(business.websiteId ? [{ websiteId: business.websiteId }] : []),
+    ];
+    const project = projectScopes.length ? await tx.project.findFirst({ where: { clientId: business.clientId, OR: projectScopes }, orderBy: { updatedAt: "desc" }, select: { id: true, agencyClientId: true, competitors: true } }) : null;
+    if (project) {
+      const saved = Array.isArray(project.competitors) ? project.competitors.filter((value): value is string => typeof value === "string" && Boolean(value.trim())) : [];
+      const savedDomains = new Set(saved.map(normalizeDomain).filter(Boolean));
+      const addedToProject = selected.map((competitor) => competitor.domain).filter((domain) => !savedDomains.has(domain));
+      if (addedToProject.length) await tx.project.update({ where: { id: project.id }, data: { competitors: [...saved, ...addedToProject] } });
+      if (!business.projectId) await tx.localBusinessProfile.update({ where: { id: business.id }, data: { projectId: project.id } });
+      await recordWorkspaceActivity(tx, {
+        context,
+        action: "local_competitors.imported_from_keyword_intelligence",
+        entityType: "local_business_profile",
+        entityId: business.id,
+        agencyClientId: project.agencyClientId,
+        projectId: project.id,
+        nextJson: { domains: selected.map((competitor) => competitor.domain), importedCount: newCompetitors.length },
+      });
+    }
+  });
+
+  const competitors = await prisma.localCompetitor.findMany({ where: { businessId: business.id }, orderBy: [{ organicPosition: "asc" }, { mapsPosition: "asc" }] });
+  res.status(newCompetitors.length ? 201 : 200).json({ competitors, imported: newCompetitors.length, alreadyTracked: selected.length - newCompetitors.length });
 });
 
 localSeoRouter.get("/local/business/:id/citations", async (req, res) => {
@@ -1101,10 +1389,9 @@ localSeoRouter.get("/local/business/:id/report", async (req, res) => {
 
 
 async function scanBusinessCitations(business: LocalBusinessEntity & { id: string; googleBusinessProfileUrl?: string | null; country?: string | null }) {
-  const results = [];
-  for (const source of citationScanSources) {
+  return Promise.all(citationScanSources.map(async (source) => {
     if (source.source === "Google Business Profile" && business.googleBusinessProfileUrl) {
-      results.push({
+      return {
         source: source.source,
         found: true,
         nameMatch: true,
@@ -1114,12 +1401,25 @@ async function scanBusinessCitations(business: LocalBusinessEntity & { id: strin
         status: "found",
         fixUrl: business.googleBusinessProfileUrl,
         notes: "Matched from stored Google Business Profile URL.",
-      });
-      continue;
+      };
     }
-    results.push(await scanCitationSource(business, source));
-  }
-  return results;
+    try {
+      return await scanCitationSource(business, source);
+    } catch (error) {
+      const timedOut = error instanceof Error && (error.name === "TimeoutError" || error.name === "AbortError");
+      return {
+        source: source.source,
+        found: false,
+        nameMatch: false,
+        phoneMatch: false,
+        addressMatch: false,
+        websiteMatch: false,
+        status: "not_scanned",
+        fixUrl: null,
+        notes: timedOut ? "The public listing search timed out. Retry this scan or verify the source manually." : "The public listing search was unavailable. Retry this scan or verify the source manually.",
+      };
+    }
+  }));
 }
 
 async function scanCitationSource(business: LocalBusinessEntity & { country?: string | null }, source: CitationSourceConfig) {
@@ -1131,7 +1431,7 @@ async function scanCitationSource(business: LocalBusinessEntity & { country?: st
     device: "desktop",
     os: "windows",
     depth: 20,
-  }, "/v3/serp/google/organic/live/advanced");
+  }, "/v3/serp/google/organic/live/advanced", 20_000);
 
   const items = payload ? extractItems(payload.response).map(parseOrganicItem).filter((item): item is SerpItem => Boolean(item)) : [];
   const match = items.map((item) => ({ item, evidence: citationEvidence(business, source, item) })).find((result) => result.evidence.found);
@@ -1405,7 +1705,7 @@ async function cachedSearchDataTaskGet(endpoint: string, request: Record<string,
   return status === "ok" ? { cacheId: row.id, response: payload } : null;
 }
 
-async function cachedSearchData(endpoint: string, request: Record<string, unknown>, path: string): Promise<{ cacheId: string; response: SearchDataPayload } | null> {
+async function cachedSearchData(endpoint: string, request: Record<string, unknown>, path: string, timeoutMs = 45_000): Promise<{ cacheId: string; response: SearchDataPayload } | null> {
   const auth = searchDataAuth();
   if (!auth) return null;
   const cacheKey = createHash("sha256").update(JSON.stringify({ endpoint, request })).digest("hex");
@@ -1416,6 +1716,7 @@ async function cachedSearchData(endpoint: string, request: Record<string, unknow
     method: "POST",
     headers: { authorization: `Basic ${auth}`, "content-type": "application/json", accept: "application/json" },
     body: JSON.stringify([request]),
+    signal: AbortSignal.timeout(timeoutMs),
   });
   const payload = await response.json() as SearchDataPayload;
   const hasTaskError = payload.tasks?.some((task) => typeof task.status_code === "number" && task.status_code > 40000) ?? false;

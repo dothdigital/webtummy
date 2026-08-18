@@ -493,6 +493,7 @@ export interface GrowthEvidenceSignal {
 
 export interface GrowthCandidateAction {
   id: string;
+  dedupeKey?: string | null;
   title: string;
   recommendation: string;
   reasoningSummary: string;
@@ -1638,7 +1639,7 @@ export interface LocalBusinessProfile {
   citations?: LocalCitation[];
   reviews?: LocalReview[];
   competitors?: LocalCompetitor[];
-  _count?: { keywords: number; recommendations: number };
+  _count?: { keywords: number; competitors?: number; scores?: number; recommendations: number };
 }
 
 export interface LocalKeyword {
@@ -1761,6 +1762,36 @@ export interface LocalCompetitor {
 export interface LocalSeoDashboardResponse {
   business: LocalBusinessProfile;
   latestSnapshots: LocalRankSnapshot[];
+  rankingKeywordResults: RankingKeywordResult[];
+  rankingCompetitors: RankingCompetitorResult[];
+  citationScanAvailable: boolean;
+}
+
+export interface RankingKeywordResult {
+  runId: string;
+  keyword: string;
+  locationName: string;
+  languageCode: string;
+  device: string;
+  organicRank: number | null;
+  rankingUrl: string | null;
+  completedAt: string | null;
+  imported: boolean;
+  localKeywordId: string | null;
+}
+
+export interface RankingCompetitorResult {
+  domain: string;
+  title: string | null;
+  exampleUrl: string;
+  bestRank: number;
+  appearances: number;
+  keywordCount: number;
+  keywords: string[];
+  locations: string[];
+  averageContentScore: number | null;
+  imported: boolean;
+  localCompetitorId: string | null;
 }
 
 export type GoogleBusinessCapabilityStatus = "SUPPORTED" | "UNSUPPORTED" | "UNKNOWN" | "TEMPORARILY_UNAVAILABLE" | "REAUTH_REQUIRED";

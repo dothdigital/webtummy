@@ -988,6 +988,45 @@ async function activePlanId(tx: Prisma.TransactionClient, projectId: string) {
   return (await tx.executionPlan.create({ data: { projectId, title: `${project?.name ?? "Project"} execution plan` } })).id;
 }
 
+function growthTaskWorkspace(action: { actionType: string; route: string; title: string }, projectId: string) {
+  const text = `${action.actionType} ${action.route} ${action.title}`.toLowerCase();
+  if (/lead_capture|lead_nurture|retention_referral|lead magnet|follow.?up|retention|referral|enquiry|handoff/.test(text)) return {
+    moduleName: "lead_magnets",
+    relatedUrl: `/lead-magnets?projectId=${projectId}&start=1`,
+    actionButtonLabel: "Prepare with AI Funnel Builder",
+  };
+  if (action.route === "authority" || /authority|backlink|outreach/.test(text)) return {
+    moduleName: "authority_growth",
+    relatedUrl: `/backlinks?projectId=${projectId}&start=discover`,
+    actionButtonLabel: "Prepare with AI Authority Builder",
+  };
+  if (action.route === "local_seo") return {
+    moduleName: "local_seo",
+    relatedUrl: `/local-seo?projectId=${projectId}`,
+    actionButtonLabel: "Prepare in Local SEO",
+  };
+  if (/sitemap|intent architecture|canonical owner|page map/.test(text) && action.actionType !== "search_setup") return {
+    moduleName: "seo_page_map",
+    relatedUrl: `/seo-page-map?projectId=${projectId}`,
+    actionButtonLabel: "Prepare with AI Page Map",
+  };
+  if (/analytics|measurement|tracking|evidence loop/.test(text)) return {
+    moduleName: "website_intelligence",
+    relatedUrl: `/projects/${projectId}/website/performance#search-performance`,
+    actionButtonLabel: "Open Measurement Setup",
+  };
+  if (action.route === "technical") return {
+    moduleName: "website_intelligence",
+    relatedUrl: action.actionType === "search_setup" ? `/projects/${projectId}/website/performance#search-performance` : `/gap-analysis?projectId=${projectId}`,
+    actionButtonLabel: action.actionType === "search_setup" ? "Open Search Setup" : "Prepare Technical Fix",
+  };
+  return {
+    moduleName: "content",
+    relatedUrl: `/ai-content?projectId=${projectId}`,
+    actionButtonLabel: "Prepare with AI Content",
+  };
+}
+
 async function upsertGrowthTask(tx: Prisma.TransactionClient, input: {
   project: NonNullable<Awaited<ReturnType<typeof scopedProject>>>;
   sourceType?: string;
@@ -1928,6 +1967,7 @@ growthRouter.post("/projects-v2/:projectId/growth/actions/:actionId/decision", a
     const recommendation = input.recommendation ?? action.recommendation;
     const route = input.route ?? action.route;
     if (accepted && !followupTaskId) {
+      const workspace = growthTaskWorkspace({ actionType: action.actionType, route, title }, project.id);
       const task = await upsertGrowthTask(tx, {
         project,
         sourceType: "next_best_action",
@@ -1938,11 +1978,29 @@ growthRouter.post("/projects-v2/:projectId/growth/actions/:actionId/decision", a
         priority: action.priorityScore >= 80 ? "high" : action.priorityScore >= 55 ? "medium" : "low",
         automationLevel: "prepare",
         safetyCategory: action.riskLevel === "high" ? "protected_change" : "review_required",
-        actionButtonLabel: route === "content" ? "Create Growth Asset" : "Review Growth Task",
-        relatedUrl: route === "content" ? `/ai-content?projectId=${project.id}` : `/guided-projects/${project.id}?tab=execution`,
-        manualInstructions: "Review the accepted recommendation, prepare the scoped change, obtain any required publishing approval, and record baseline and result metrics.",
+        moduleName: workspace.moduleName,
+        relatedModule: "growth_marketing",
+        actionButtonLabel: workspace.actionButtonLabel,
+        relatedUrl: workspace.relatedUrl,
+        manualInstructions: `${recommendation} Use the linked AI workspace to prepare the scoped asset or fix. Review the exact output, obtain any required publishing or external-system approval, perform the approved action, and record baseline and result metrics.`,
+        approvalSnapshotJson: {
+          nextBestActionId: action.id,
+          actionType: action.actionType,
+          route,
+          recommendation,
+          reasoningSummary: action.reasoningSummary,
+          expectedImpact: action.expectedImpact,
+          confidence: action.confidence,
+          priorityScore: action.priorityScore,
+        } as Prisma.InputJsonValue,
       });
       followupTaskId = task.id;
+      if (workspace.moduleName === "content") {
+        await tx.executionTask.update({
+          where: { id: task.id },
+          data: { relatedUrl: `/ai-content?projectId=${project.id}&taskId=${task.id}&open=1` },
+        });
+      }
     }
     const status = accepted ? "accepted"
       : input.decision === "deferred" ? "deferred"

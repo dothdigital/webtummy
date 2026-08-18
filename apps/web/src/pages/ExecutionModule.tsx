@@ -445,7 +445,7 @@ export default function ExecutionModule({ kind }: { kind: ModuleKind }) {
   const [strategyBusy, setStrategyBusy] = useState<"generate" | "analyze" | "approve" | "execution" | null>(null);
   const [strategyMessage, setStrategyMessage] = useState("");
   const [strategyJob, setStrategyJob] = useState<StrategyGenerationJob | null>(null);
-  const [leadMagnetStartRequest, setLeadMagnetStartRequest] = useState(0);
+  const [leadMagnetStartRequest, setLeadMagnetStartRequest] = useState(kind === "lead-magnets" && searchParams.get("start") === "1" ? 1 : 0);
   const [opportunityBusy, setOpportunityBusy] = useState<"generate" | string | null>(null);
   const [opportunityMessage, setOpportunityMessage] = useState("");
   const [selectedProjectId, setSelectedProjectId] = useState(searchParams.get("projectId") ?? getActiveProjectId());
@@ -1139,7 +1139,7 @@ export default function ExecutionModule({ kind }: { kind: ModuleKind }) {
         </div>
       )}
       {!loading && hasActiveProject && hasWorkspaceRecords && canRunModule && kind === "site-analysis" && latestSiteCrawl && <SiteAnalysisScreen data={scopedData} />}
-      {!loading && hasActiveProject && hasWorkspaceRecords && canRunModule && kind === "backlinks" && <BacklinkScreen data={scopedData} />}
+      {!loading && hasActiveProject && hasWorkspaceRecords && canRunModule && kind === "backlinks" && <BacklinkScreen data={scopedData} autoStart={searchParams.get("start") === "discover"} />}
       {!loading && hasActiveProject && hasWorkspaceRecords && canRunModule && kind === "ai-citations" && <CitationScreen data={scopedData} />}
       {!loading && hasActiveProject && hasWorkspaceRecords && kind === "site-architect" && <ArchitectScreen data={scopedData} />}
       {!loading && hasActiveProject && hasWorkspaceRecords && canRunModule && kind === "lead-magnets" && <LeadFunnelWorkspace projectId={activeProject.id} suggestedIdeas={leadMagnetIdeas(scopedData)} startRequestKey={leadMagnetStartRequest} />}
@@ -3902,10 +3902,10 @@ function ScanDetailDrawer({ active, report, onClose }: { active: ScanDetailKey; 
   );
 }
 
-function BacklinkScreen({ data }: { data: ModuleData }) {
+function BacklinkScreen({ data, autoStart = false }: { data: ModuleData; autoStart?: boolean }) {
   const project = data.projects[0];
   if (!project) return <EmptyModuleState title="Select a project" detail="Choose a project before opening authority research." />;
-  return <AuthorityGrowthWorkspace projectId={project.id} backlinkSummary={data.backlinkSummary} backlinkLinks={data.backlinkLinks} />;
+  return <AuthorityGrowthWorkspace projectId={project.id} backlinkSummary={data.backlinkSummary} backlinkLinks={data.backlinkLinks} autoStart={autoStart} />;
 }
 
 function CitationScreen({ data }: { data: ModuleData }) {

@@ -190,7 +190,7 @@ export default function LeadFunnelWorkspace({ projectId, suggestedIdeas, startRe
   };
   useEffect(() => {
     if (startRequestKey > 0 && data?.capabilities.canGenerate) startNewLeadMagnet();
-  }, [startRequestKey]);
+  }, [startRequestKey, data?.capabilities.canGenerate]);
   const refineLeadMagnet = () => {
     if (!funnel) return;
     setGenerationSeriesId(funnel.seriesId);

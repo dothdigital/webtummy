@@ -23,6 +23,10 @@ function scoreFactors(value: unknown) {
   return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, number> : {};
 }
 
+function stringItems(value: unknown) {
+  return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
+}
+
 function titleCase(value: string) {
   return value.replace(/_/g, " ").replace(/([A-Z])/g, " $1").replace(/\b\w/g, (char) => char.toUpperCase()).trim();
 }
@@ -49,6 +53,70 @@ function automationBadge(level: string) {
   if (level === "execute_with_approval" || level === "prepare") return "One-click approval";
   if (level === "manual_guided") return "Manual guided";
   return level === "generate" ? "Automated" : titleCase(level);
+}
+
+function growthActionWorkspace(action: GrowthCandidateAction, projectId: string) {
+  const encodedProjectId = encodeURIComponent(projectId);
+  const encodedActionId = encodeURIComponent(action.id);
+  const text = `${action.actionType} ${action.route} ${action.title}`.toLowerCase();
+  if (/lead_capture|lead_nurture|retention_referral|lead magnet|follow.?up|retention|referral|enquiry|handoff/.test(text)) {
+    return {
+      url: `/lead-magnets?projectId=${encodedProjectId}&start=1&growthActionId=${encodedActionId}`,
+      label: "Continue in AI Funnel Builder",
+      preparation: "AI researches and prepares the asset, form, delivery, CTA, and follow-up flow for review.",
+    };
+  }
+  if (action.route === "authority" || /authority|backlink|outreach/.test(text)) {
+    return {
+      url: `/backlinks?projectId=${encodedProjectId}&start=discover&growthActionId=${encodedActionId}`,
+      label: "Continue in AI Authority Builder",
+      preparation: "AI researches evidence-safe authority opportunities and prepares an asset or outreach brief for approval.",
+    };
+  }
+  if (action.route === "local_seo") {
+    return {
+      url: `/local-seo?projectId=${encodedProjectId}`,
+      label: "Continue in Local SEO",
+      preparation: "AI opens the Local SEO workspace so the profile, citation, and location work can be prepared and verified.",
+    };
+  }
+  if (/sitemap|intent architecture|canonical owner|page map/.test(text) && action.actionType !== "search_setup") {
+    return {
+      url: `/seo-page-map?projectId=${encodedProjectId}`,
+      label: "Continue in AI Page Map",
+      preparation: "AI opens the page-map workspace to prepare canonical owners, page roles, CTAs, and internal links.",
+    };
+  }
+  if (/analytics|measurement|tracking|evidence loop/.test(text)) {
+    return {
+      url: `/projects/${encodedProjectId}/website/performance#search-performance`,
+      label: "Continue in Measurement Setup",
+      preparation: "SEnuke opens the measured-performance workspace so the data source, events, and baseline can be configured and verified.",
+    };
+  }
+  if (action.route === "technical") {
+    return {
+      url: action.actionType === "search_setup"
+        ? `/projects/${encodedProjectId}/website/performance#search-performance`
+        : `/gap-analysis?projectId=${encodedProjectId}`,
+      label: action.actionType === "search_setup" ? "Open Search Setup" : "Continue in Technical Analysis",
+      preparation: action.actionType === "search_setup"
+        ? "SEnuke provides the verified sitemap and checklist; the user connects the external Search Console property and submits it."
+        : "AI opens the technical evidence and prepares the scoped fixes; live changes remain subject to review.",
+    };
+  }
+  if (action.followupTask) {
+    return {
+      url: `/ai-content?projectId=${encodedProjectId}&taskId=${encodeURIComponent(action.followupTask.id)}&open=1`,
+      label: "Continue in AI Content",
+      preparation: "AI loads the approved task brief and prepares the exact content asset for review.",
+    };
+  }
+  return {
+    url: `/ai-content?projectId=${encodedProjectId}&open=1&type=article&topic=${encodeURIComponent(action.title)}&instruction=${encodeURIComponent(action.recommendation)}`,
+    label: "Continue in AI Content",
+    preparation: "AI opens a scoped draft from this recommendation for review before anything is published.",
+  };
 }
 
 function Stat({ label, value, detail }: { label: string; value: string | number; detail?: string }) {
@@ -110,14 +178,35 @@ function ExperimentCard({ experiment, onStart, busy }: { experiment: GrowthExper
   );
 }
 
-function RecommendationCard({ action, primary, busy, onDecision }: {
+function RecommendationCard({ action, projectId, primary, busy, onDecision }: {
   action: GrowthCandidateAction;
+  projectId: string;
   primary?: boolean;
   busy: boolean;
   onDecision: (action: GrowthCandidateAction, decision: "accepted" | "edited" | "deferred" | "rejected" | "alternatives") => void;
 }) {
   const factors = scoreFactors(action.scoreJson);
-  const decided = ["accepted", "rejected", "dismissed", "deferred"].includes(action.status);
+  const workspace = growthActionWorkspace(action, projectId);
+  const taskHref = action.followupTask ? workspace.url : null;
+  const canCreateTask = !action.followupTask && action.status !== "completed";
+  const startLabel = action.status === "deferred"
+    ? "Resume This Action"
+    : ["rejected", "dismissed", "superseded"].includes(action.status)
+      ? "Reconsider This Action"
+      : action.status === "accepted"
+        ? "Create Missing Task"
+        : primary
+          ? "Accept & Create Task"
+          : "Start This Action";
+  const nextStep = action.followupTask
+    ? `${workspace.preparation} The linked task is currently ${titleCase(action.followupTask.status)}.`
+    : action.status === "deferred"
+      ? `${action.reviewAfter ? `This was deferred until ${formatDate(action.reviewAfter)}. ` : ""}Resume it now to create a trackable Execution task.`
+      : ["rejected", "dismissed", "superseded"].includes(action.status)
+        ? "This was previously passed over. Reconsider it to create a trackable Execution task from the recommendation."
+        : action.status === "completed"
+          ? "This recommendation is complete. Open its decision history for the saved outcome."
+          : "Start this recommendation to create a trackable Execution task, then use that task to complete and record the work.";
   return (
     <Card className={`p-5 ${primary ? "border-brand-300 ring-2 ring-brand-100" : ""}`}>
       <div className="flex flex-wrap items-start justify-between gap-4">
@@ -128,8 +217,12 @@ function RecommendationCard({ action, primary, busy, onDecision }: {
             <span className="rounded-full bg-slate-100 px-2.5 py-1 text-xs font-bold text-slate-600">{titleCase(action.route)}</span>
           </div>
           <h3 className="mt-3 text-lg font-bold text-charcoal-950">{action.title}</h3>
-          <p className="mt-2 text-sm leading-6 text-slate-700">{action.recommendation}</p>
-          <p className="mt-3 text-sm leading-6 text-slate-500">{action.reasoningSummary}</p>
+          <div className="mt-3 rounded-xl border border-brand-100 bg-brand-50/60 p-4">
+            <div className="text-[10px] font-bold uppercase tracking-wide text-brand-700">What to do</div>
+            <p className="mt-1 text-sm leading-6 text-slate-700">{action.recommendation}</p>
+          </div>
+          <div className="mt-3 text-[10px] font-bold uppercase tracking-wide text-slate-400">Why now</div>
+          <p className="mt-1 text-sm leading-6 text-slate-500">{action.reasoningSummary}</p>
         </div>
         <div className="min-w-24 rounded-xl bg-brand-50 p-3 text-center">
           <div className="text-xs font-bold uppercase tracking-wide text-brand-600">Priority</div>
@@ -154,15 +247,35 @@ function RecommendationCard({ action, primary, busy, onDecision }: {
           Execution task created: {action.followupTask.title} · {titleCase(action.followupTask.status)}
         </div>
       )}
-      {!decided && primary && (
-        <div className="mt-5 flex flex-wrap gap-2">
-          <Button onClick={() => onDecision(action, "accepted")} disabled={busy}>Accept & Create Task</Button>
-          <Button variant="ghost" onClick={() => onDecision(action, "edited")} disabled={busy}>Edit & Accept</Button>
-          <Button variant="ghost" onClick={() => onDecision(action, "deferred")} disabled={busy}>Defer 7 Days</Button>
-          <Button variant="ghost" onClick={() => onDecision(action, "alternatives")} disabled={busy}>Show Alternatives</Button>
-          <Button variant="ghost" onClick={() => onDecision(action, "rejected")} disabled={busy}>Reject</Button>
+      <div className="mt-5 flex flex-col gap-3 border-t border-slate-100 pt-4 sm:flex-row sm:items-center sm:justify-between">
+        <div className="max-w-2xl">
+          <div className="text-[10px] font-bold uppercase tracking-wide text-slate-400">Next step</div>
+          <p className="mt-1 text-xs leading-5 text-slate-600">{nextStep}</p>
         </div>
-      )}
+        <div className="flex shrink-0 flex-wrap gap-2">
+          {taskHref ? (
+            <Link to={taskHref} className="inline-flex items-center justify-center rounded-lg bg-brand-600 px-4 py-2 text-sm font-bold text-white hover:bg-brand-700">
+              {workspace.label} →
+            </Link>
+          ) : canCreateTask ? (
+            <>
+              <Button onClick={() => onDecision(action, "accepted")} disabled={busy}>{primary ? "Start with AI" : startLabel}</Button>
+              <Button variant="ghost" onClick={() => onDecision(action, "edited")} disabled={busy}>Edit & Start</Button>
+            </>
+          ) : (
+            <Link to={`/growth?projectId=${encodeURIComponent(projectId)}&tab=history`} className="inline-flex items-center justify-center rounded-lg border border-brand-200 bg-white px-4 py-2 text-sm font-bold text-brand-700 hover:bg-brand-50">
+              View Decision History →
+            </Link>
+          )}
+          {primary && !action.followupTask && !["accepted", "completed"].includes(action.status) && (
+            <>
+              <Button variant="ghost" onClick={() => onDecision(action, "deferred")} disabled={busy}>Defer 7 Days</Button>
+              <Button variant="ghost" onClick={() => onDecision(action, "alternatives")} disabled={busy}>Show Alternatives</Button>
+              <Button variant="ghost" onClick={() => onDecision(action, "rejected")} disabled={busy}>Reject</Button>
+            </>
+          )}
+        </div>
+      </div>
     </Card>
   );
 }
@@ -380,6 +493,11 @@ export default function GrowthEngine() {
       });
       const fresh = await api.get<GrowthOverviewResponse>(`/api/projects-v2/${projectId}/growth/overview`);
       setData(fresh);
+      const savedAction = fresh.growth.candidateActions.find((candidate) => candidate.id === action.id) ?? action;
+      if ((decision === "accepted" || decision === "edited") && savedAction.followupTask) {
+        navigate(growthActionWorkspace(savedAction, projectId).url);
+        return;
+      }
       setTab("recommendations");
       setParams({ projectId, tab: "recommendations" });
     } catch (err) {
@@ -418,17 +536,21 @@ export default function GrowthEngine() {
     }
   }
 
-  async function approveContentBatch() {
-    if (!selectedContentIds.length) return;
+  async function approveContentOpportunities(opportunityIds = selectedContentIds, openAfterCreate = false) {
+    if (!opportunityIds.length) return;
     setBusy(true);
     setError(null);
     try {
-      await api.post(`/api/projects-v2/${projectId}/growth/content-roadmap/batches/approve`, { opportunityIds: selectedContentIds });
+      await api.post(`/api/projects-v2/${projectId}/growth/content-roadmap/batches/approve`, { opportunityIds });
       const fresh = await api.get<GrowthOverviewResponse>(`/api/projects-v2/${projectId}/growth/overview`);
       setData(fresh);
       setSelectedContentIds([]);
+      if (openAfterCreate && opportunityIds.length === 1) {
+        const created = fresh.growth.contentRoadmap?.opportunities.find((item) => item.id === opportunityIds[0]);
+        if (created?.executionTaskId) navigate(`/ai-content?projectId=${encodeURIComponent(projectId)}&taskId=${encodeURIComponent(created.executionTaskId)}&open=1`);
+      }
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not approve the selected content batch");
+      setError(err instanceof Error ? err.message : "Could not create the selected content task");
     } finally {
       setBusy(false);
     }
@@ -455,9 +577,19 @@ export default function GrowthEngine() {
     contentQueue === "all" ? item.lifecycleStatus !== "superseded" : item.queue === contentQueue && item.lifecycleStatus !== "superseded",
   ).sort((left, right) => contentQueueOrder[left.queue] - contentQueueOrder[right.queue] || right.priorityScore - left.priorityScore);
   const selectableContentOpportunities = visibleContentOpportunities.filter((item) => ["proposed", "deferred"].includes(item.lifecycleStatus) && !item.executionTaskId);
+  const recommendedContentOpportunity = selectableContentOpportunities[0] ?? null;
   const findings = findingItems(data.growth.diagnosis?.findingsJson);
   const growthStrategySynced = Boolean(data.strategyContext?.strategyId && data.growth.blueprint?.approvedStrategyId === data.strategyContext.strategyId && data.growth.blueprint?.status === "active");
   const officialNextAction = data.workflowController?.nextBestAction ?? null;
+  const contentQueueHelp = contentQueue === "now"
+    ? "Now contains the content worth executing first. Create one task and open it, or select several to create a small working batch."
+    : contentQueue === "next"
+      ? "Next is the near-term queue. Move an item to Now when it becomes a priority, or create its task immediately if you are ready."
+      : contentQueue === "later"
+        ? "Later is an idea backlog, not active work. Move only a strong item forward; do not create all of these tasks at once."
+        : contentQueue === "conditional"
+          ? "Conditional items should wait until their stated evidence or dependency exists. Move one forward only when that condition is met."
+          : "All shows the complete opportunity inventory. Filter to Now when choosing the next work to execute.";
 
   return (
     <div className="space-y-5">
@@ -557,7 +689,7 @@ export default function GrowthEngine() {
           </div>
           <div className="grid gap-5 xl:grid-cols-[1fr_360px]">
           <Card className="p-5">
-            <h2 className="font-bold text-charcoal-950">Growth constraint scorecard</h2>
+            <div className="flex flex-wrap items-center justify-between gap-3"><h2 className="font-bold text-charcoal-950">Growth constraint scorecard</h2><button type="button" onClick={() => { setTab("diagnosis"); setParams({ projectId, tab: "diagnosis" }); }} className="rounded-lg border border-brand-200 px-3 py-2 text-xs font-bold text-brand-700">Fix diagnosed issues →</button></div>
             <div className="mt-5 grid gap-4 md:grid-cols-2">
               {scoreEntries.map(([key, value]) => <ScoreBar key={key} label={titleCase(key)} value={value} />)}
             </div>
@@ -569,10 +701,15 @@ export default function GrowthEngine() {
                 <div className="font-bold text-charcoal-950">Refresh evidence and recommendation</div>
                 <div className="mt-1 text-sm text-slate-500">Normalize current signals, diagnose constraints, score candidates, and select one action. No task is created yet.</div>
               </button>
-              <button type="button" onClick={() => { setTab("recommendations"); setParams({ projectId, tab: "recommendations" }); }} className="w-full rounded-lg border border-slate-200 p-3 text-left hover:bg-slate-50">
-                <div className="font-bold text-charcoal-950">{officialNextAction?.title || data.growth.selectedAction?.title || "Review the Next Best Action"}</div>
-                <div className="mt-1 text-sm text-slate-500">{officialNextAction?.reason || (data.growth.selectedAction ? "Accept, edit, defer, reject, or request alternatives." : "Run the Growth Engine to generate an explainable recommendation.")}</div>
-              </button>
+              {data.growth.selectedAction?.followupTask ? (() => { const workspace = growthActionWorkspace(data.growth.selectedAction!, projectId); return <Link to={workspace.url} className="block w-full rounded-lg border border-brand-200 bg-brand-50/40 p-3 text-left hover:bg-brand-50"><div className="font-bold text-charcoal-950">{data.growth.selectedAction!.title}</div><div className="mt-1 text-sm text-slate-500">{workspace.preparation}</div><div className="mt-3 text-xs font-bold text-brand-700">{workspace.label} →</div></Link>; })() : data.growth.selectedAction ? (
+                <button type="button" disabled={busy} onClick={() => void decideRecommendation(data.growth.selectedAction!, "accepted")} className="w-full rounded-lg border border-brand-200 bg-brand-50/40 p-3 text-left hover:bg-brand-50 disabled:opacity-50">
+                  <div className="font-bold text-charcoal-950">{data.growth.selectedAction.title}</div>
+                  <div className="mt-1 text-sm text-slate-500">{data.growth.selectedAction.recommendation}</div>
+                  <div className="mt-3 text-xs font-bold text-brand-700">Start Next Best Action with AI →</div>
+                </button>
+              ) : (
+                <button type="button" onClick={() => { setTab("recommendations"); setParams({ projectId, tab: "recommendations" }); }} className="w-full rounded-lg border border-slate-200 p-3 text-left hover:bg-slate-50"><div className="font-bold text-charcoal-950">Review the Next Best Action</div><div className="mt-1 text-sm text-slate-500">Run the Growth Engine to generate an explainable recommendation.</div></button>
+              )}
               <Link to={`/strategy?projectId=${projectId}`} className="block rounded-lg border border-slate-200 p-3 text-left hover:bg-slate-50">
                 <div className="font-bold text-charcoal-950">Review approved strategy</div>
                 <div className="mt-1 text-sm text-slate-500">The Blueprint and recommendations remain anchored to this approved direction.</div>
@@ -607,13 +744,17 @@ export default function GrowthEngine() {
                   <h3 className="font-bold text-charcoal-950">{label}</h3>
                   <p className="mt-1 text-xs leading-5 text-slate-500">{description}</p>
                   <div className="mt-4 space-y-3">
-                    {blueprintItems(value).length === 0 ? <div className="text-sm text-slate-400">No action assigned.</div> : blueprintItems(value).map((item, index) => (
-                      <div key={item.dedupeKey || `${label}-${index}`} className="rounded-lg border border-slate-200 p-3">
+                    {blueprintItems(value).length === 0 ? <div className="text-sm text-slate-400">No action assigned.</div> : blueprintItems(value).map((item, index) => {
+                      const matchingAction = data.growth.candidateActions.find((action) => action.dedupeKey === item.dedupeKey || action.title === item.title);
+                      const workspace = matchingAction ? growthActionWorkspace(matchingAction, projectId) : null;
+                      return <div key={item.dedupeKey || `${label}-${index}`} className="rounded-lg border border-slate-200 p-3">
                         <div className="font-semibold text-slate-800">{item.title || "Growth action"}</div>
                         <div className="mt-1 text-xs font-bold text-brand-600">{titleCase(item.route || "growth")} · score {item.score ?? "—"}</div>
+                        {item.rationale && <p className="mt-2 text-xs leading-5 text-slate-500">{item.rationale}</p>}
                         {item.conditions && item.conditions.length > 0 && <div className="mt-2 text-xs text-amber-700">Needs: {item.conditions.join(", ")}</div>}
-                      </div>
-                    ))}
+                        {matchingAction && <div className="mt-3 border-t border-slate-100 pt-3">{matchingAction.followupTask && workspace ? <Link to={workspace.url} className="inline-flex rounded-lg bg-brand-600 px-3 py-2 text-xs font-bold text-white">{workspace.label} →</Link> : matchingAction.status === "completed" ? <button type="button" onClick={() => { setTab("history"); setParams({ projectId, tab: "history" }); }} className="rounded-lg border border-brand-200 px-3 py-2 text-xs font-bold text-brand-700">View outcome →</button> : <button type="button" disabled={busy || Boolean(item.conditions?.length)} onClick={() => void decideRecommendation(matchingAction, "accepted")} className="rounded-lg bg-brand-600 px-3 py-2 text-xs font-bold text-white disabled:bg-slate-300">Start with AI →</button>}</div>}
+                      </div>;
+                    })}
                   </div>
                 </Card>
               ))}
@@ -689,6 +830,9 @@ export default function GrowthEngine() {
               </Card>
 
               <Card className="overflow-hidden">
+                <div className="border-b border-brand-100 bg-brand-50/60 p-4">
+                  <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between"><div><div className="text-xs font-bold uppercase tracking-wide text-brand-700">Turn the plan into work</div><h2 className="mt-1 text-lg font-bold text-charcoal-950">Choose content to create as an Execution task</h2><p className="mt-1 max-w-4xl text-sm leading-6 text-slate-600">{contentQueueHelp}</p></div>{recommendedContentOpportunity&&<button type="button" disabled={busy} onClick={() => void approveContentOpportunities([recommendedContentOpportunity.id], true)} className="shrink-0 rounded-lg bg-brand-600 px-4 py-2.5 text-sm font-bold text-white hover:bg-brand-700 disabled:bg-slate-300">Start Highest-Priority Content with AI →</button>}</div>
+                </div>
                 <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-100 p-4">
                   <div className="flex flex-wrap gap-2">
                     {([
@@ -700,8 +844,8 @@ export default function GrowthEngine() {
                     ] as const).map(([queue, label]) => <button key={queue} type="button" onClick={() => { setContentQueue(queue); setSelectedContentIds([]); }} className={`rounded-full px-3 py-2 text-xs font-bold ${contentQueue === queue ? "bg-brand-600 text-white" : "bg-slate-100 text-slate-600 hover:bg-slate-200"}`}>{label}</button>)}
                   </div>
                   <div className="flex flex-wrap items-center gap-2">
-                    <button type="button" disabled={!selectableContentOpportunities.length} onClick={() => setSelectedContentIds(selectableContentOpportunities.map((item) => item.id))} className="rounded-lg border border-slate-200 px-3 py-2 text-xs font-bold text-slate-600 disabled:text-slate-300">Select available</button>
-                    <Button onClick={() => void approveContentBatch()} disabled={busy || !selectedContentIds.length}>{busy ? "Approving batch…" : `Approve Selected Batch${selectedContentIds.length ? ` (${selectedContentIds.length})` : ""}`}</Button>
+                    <button type="button" disabled={!selectableContentOpportunities.length} onClick={() => setSelectedContentIds(selectableContentOpportunities.map((item) => item.id))} className="rounded-lg border border-slate-200 px-3 py-2 text-xs font-bold text-slate-600 disabled:text-slate-300">Select all in this view</button>
+                    <Button onClick={() => void approveContentOpportunities()} disabled={busy || !selectedContentIds.length}>{busy ? "Creating tasks…" : `Create Selected Content Tasks${selectedContentIds.length ? ` (${selectedContentIds.length})` : ""}`}</Button>
                   </div>
                 </div>
                 <div className="space-y-3 p-4">
@@ -728,7 +872,8 @@ export default function GrowthEngine() {
                         </div>
                       </div>
                       <div className="mt-4 flex flex-wrap items-center justify-end gap-2 border-t border-slate-100 pt-3">
-                        {opportunity.executionTaskId && <Link to={`/ai-content?projectId=${projectId}&taskId=${opportunity.executionTaskId}&open=1`} className="rounded-lg bg-emerald-600 px-3 py-2 text-xs font-bold text-white">Open in AI Content →</Link>}
+                        {opportunity.executionTaskId && <Link to={`/ai-content?projectId=${projectId}&taskId=${opportunity.executionTaskId}&open=1`} className="rounded-lg bg-emerald-600 px-3 py-2 text-xs font-bold text-white">Open Content Task →</Link>}
+                        {selectable && <button type="button" disabled={busy} onClick={() => void approveContentOpportunities([opportunity.id], true)} className="rounded-lg bg-brand-600 px-3 py-2 text-xs font-bold text-white hover:bg-brand-700 disabled:bg-slate-300">{busy ? "Creating task…" : "Create Task & Open →"}</button>}
                         {selectable && opportunity.queue !== "next" && <button type="button" disabled={busy} onClick={() => void updateContentOpportunity(opportunity, { queue: "next" })} className="rounded-lg border border-slate-200 px-3 py-2 text-xs font-bold text-slate-600">Move to Next</button>}
                         {selectable && opportunity.queue !== "now" && <button type="button" disabled={busy} onClick={() => void updateContentOpportunity(opportunity, { queue: "now" })} className="rounded-lg border border-brand-200 px-3 py-2 text-xs font-bold text-brand-700">Move to Now</button>}
                         {selectable && <button type="button" disabled={busy} onClick={() => void updateContentOpportunity(opportunity, { lifecycleStatus: "rejected" })} className="rounded-lg border border-rose-200 px-3 py-2 text-xs font-bold text-rose-700">Reject</button>}
@@ -751,7 +896,7 @@ export default function GrowthEngine() {
       {tab === "recommendations" && (
         <div className="space-y-4">
           {data.growth.selectedAction ? (
-            <RecommendationCard action={data.growth.selectedAction} primary busy={busy} onDecision={decideRecommendation} />
+            <RecommendationCard action={data.growth.selectedAction} projectId={projectId} primary busy={busy} onDecision={decideRecommendation} />
           ) : (
             <Card className="p-8 text-center">
               <h2 className="font-bold text-charcoal-950">No undecided Next Best Action</h2>
@@ -763,7 +908,7 @@ export default function GrowthEngine() {
             <div className="space-y-3">
               <h2 className="text-lg font-bold text-charcoal-950">Other scored candidates and prior decisions</h2>
               {data.growth.candidateActions.filter((action) => action.id !== data.growth.selectedAction?.id).map((action) => (
-                <RecommendationCard key={action.id} action={action} busy={busy} onDecision={decideRecommendation} />
+                <RecommendationCard key={action.id} action={action} projectId={projectId} busy={busy} onDecision={decideRecommendation} />
               ))}
             </div>
           )}
@@ -777,16 +922,44 @@ export default function GrowthEngine() {
             <p className="mt-3 text-sm leading-6 text-slate-600">{data.growth.diagnosis?.summary || "Run diagnosis to create a stored growth bottleneck and scorecard."}</p>
             {data.growth.diagnosis && <div className="mt-2 text-xs font-semibold text-slate-400">{data.growth.diagnosis.confidence}% confidence · {titleCase(data.growth.diagnosis.runType)} run</div>}
             {findings.length > 0 && (
-              <div className="mt-5 space-y-3">
-                {findings.map((finding, index) => (
-                  <div key={finding.key || index} className="rounded-lg border border-slate-200 p-3">
+              <div className="mt-5 space-y-4">
+                <div className="rounded-xl border border-brand-100 bg-brand-50/60 p-4">
+                  <div className="text-xs font-bold uppercase tracking-wide text-brand-700">How to resolve the diagnosis</div>
+                  <p className="mt-1 text-sm leading-6 text-slate-700">Work from the lowest score down, one action at a time. Create the matching Execution task, complete it, and record the result; the next Growth refresh will then reassess the score from current evidence.</p>
+                </div>
+                {findings.map((finding, index) => {
+                  const dimension = finding.key?.replace(/^constraint:/, "") ?? "";
+                  const matchingAction = data.growth.candidateActions.find((action) => stringItems(action.targetEntitiesJson).includes(dimension));
+                  const matchingWorkspace = matchingAction ? growthActionWorkspace(matchingAction, projectId) : null;
+                  const matchingTaskHref = matchingAction?.followupTask ? matchingWorkspace?.url ?? null : null;
+                  return (
+                  <div key={finding.key || index} className="rounded-xl border border-slate-200 p-4">
                     <div className="flex items-center justify-between gap-3">
                       <div className="font-bold text-slate-800">{finding.title}</div>
                       <span className={`rounded-full px-2 py-1 text-xs font-bold ${finding.severity === "critical" || finding.severity === "high" ? "bg-rose-50 text-rose-700" : "bg-amber-50 text-amber-700"}`}>{titleCase(finding.severity || "finding")}</span>
                     </div>
                     <p className="mt-2 text-sm text-slate-500">{finding.summary}</p>
+                    {matchingAction ? (
+                      <div className="mt-3 rounded-lg bg-slate-50 p-3">
+                        <div className="text-[10px] font-bold uppercase tracking-wide text-slate-400">Resolution</div>
+                        <div className="mt-1 text-sm font-bold text-charcoal-950">{matchingAction.title}</div>
+                        <p className="mt-1 text-xs leading-5 text-slate-600">{matchingAction.recommendation}</p>
+                        <div className="mt-3">
+                          {matchingTaskHref ? (
+                            <Link to={matchingTaskHref} className="inline-flex rounded-lg bg-brand-600 px-3 py-2 text-xs font-bold text-white hover:bg-brand-700">{matchingWorkspace?.label ?? "Continue with AI"} →</Link>
+                          ) : matchingAction.status === "completed" ? (
+                            <button type="button" onClick={() => { setTab("recommendations"); setParams({ projectId, tab: "recommendations" }); }} className="rounded-lg border border-brand-200 bg-white px-3 py-2 text-xs font-bold text-brand-700">Review Completed Action →</button>
+                          ) : (
+                            <button type="button" disabled={busy} onClick={() => void decideRecommendation(matchingAction, "accepted")} className="rounded-lg bg-brand-600 px-3 py-2 text-xs font-bold text-white hover:bg-brand-700 disabled:bg-slate-300">Fix {titleCase(dimension)} with AI →</button>
+                          )}
+                        </div>
+                      </div>
+                    ) : (
+                      <button type="button" onClick={() => { setTab("recommendations"); setParams({ projectId, tab: "recommendations" }); }} className="mt-3 rounded-lg border border-brand-200 bg-white px-3 py-2 text-xs font-bold text-brand-700">Review Growth Actions →</button>
+                    )}
                   </div>
-                ))}
+                  );
+                })}
               </div>
             )}
             <div className="mt-5 grid gap-4 md:grid-cols-2">
