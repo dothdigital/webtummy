@@ -124,12 +124,12 @@ async function materializeApprovedContentPlan(tx: Prisma.TransactionClient, cont
   if (plan.blockingConflicts.length) {
     throw Object.assign(new Error(`Resolve the blocking sitemap conflict before AI content generation: ${plan.blockingConflicts[0].explanation} Merge the weaker page, change its intent or location scope, or remove it from the approved map.`), { statusCode: 409 });
   }
-  const unverifiedLocalPage = plan.pageAssignments.find((assignment) =>
+  const unavailableLocalPage = plan.pageAssignments.find((assignment) =>
     Boolean(assignment.location)
     && ["service", "neighbourhood"].includes(assignment.clusterRole ?? "")
-    && (assignment.serviceAvailabilityVerified !== true || !assignment.localEvidenceIds?.length),
+    && assignment.serviceAvailabilityVerified === false,
   );
-  if (unverifiedLocalPage) throw Object.assign(new Error(`${unverifiedLocalPage.pageName} cannot be approved yet. Verify that the service is available in ${unverifiedLocalPage.location}, add approved local evidence, then rebuild the SEO Page Map. Otherwise merge it into the broader service or location page.`), { statusCode: 409 });
+  if (unavailableLocalPage) throw Object.assign(new Error(`${unavailableLocalPage.pageName} cannot be approved because service availability in ${unavailableLocalPage.location} is explicitly marked unavailable. Correct the location scope or remove the page from the approved map.`), { statusCode: 409 });
   type PlanAssignment = ContentPlanSnapshot["pageAssignments"][number];
   type PlanDefinition = { key: string; moduleName: string; title: string; description: string; priority: string; assignment?: PlanAssignment };
   const definitions: PlanDefinition[] = [

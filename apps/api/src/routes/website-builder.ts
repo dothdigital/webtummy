@@ -988,7 +988,7 @@ async function persistCanonicalWebsiteModel(
   return { record, model: snapshot, created: true };
 }
 
-const WEBSITE_QUALITY_VALIDATOR_VERSION = "senuke-site-quality-1.2.0";
+const WEBSITE_QUALITY_VALIDATOR_VERSION = "senuke-site-quality-1.3.0";
 
 async function validateAndPersistWebsiteModel(
   project: CanonicalWebsiteProject,

@@ -1400,7 +1400,12 @@ export function validateWebsiteModel(
     if (indexable && intentOwners.has(declaredOwner)) findings.push({ code: "duplicate_intent_owner", severity: "blocking", path: `${path}.intentOwner`, message: `${page.name} and ${intentOwners.get(declaredOwner)} declare the same indexable intent owner.` });
     else if (indexable) intentOwners.set(declaredOwner, page.name);
     if (pageIsLocal(page) && page.serviceAvailabilityVerified === false) findings.push({ code: "unverified_local_service_availability", severity: "blocking", path: `${path}.serviceAvailabilityVerified`, message: `${page.name} cannot be indexed or released until service availability for its target location is verified.` });
-    if (pageIsLocal(page) && !(page.localEvidenceIds?.length)) findings.push({ code: "missing_local_uniqueness_evidence", severity: model.status === "validated" ? "blocking" : "warning", path: `${path}.localEvidenceIds`, message: `${page.name} requires approved local evidence or should be merged into a broader service or location page.` });
+    if (pageIsLocal(page) && !(page.localEvidenceIds?.length)) findings.push({
+      code: "missing_local_uniqueness_evidence",
+      severity: "warning",
+      path: `${path}.localEvidenceIds`,
+      message: `${page.name} has no approved local evidence. Review its location mapping and add verified evidence when available; this advisory does not block approval or publishing.`,
+    });
     if (!page.sections.length) findings.push({ code: "empty_page", severity: "blocking", path: `${path}.sections`, message: `${page.name} has no registered sections.` });
     const flattenedSections = flattenWebsiteComponents(page.sections);
     const h1Candidates = flattenedSections.filter((section) => section.componentId.startsWith("hero.") && typeof section.props.headline === "string");

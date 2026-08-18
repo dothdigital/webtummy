@@ -468,6 +468,16 @@ describe("SENuke canonical Website Model", () => {
     expect(result.findings.some((finding) => finding.code === "high_duplicate_content_risk")).toBe(true);
   });
 
+  it("keeps missing local evidence advisory-only after website validation", () => {
+    const website = { ...model(), status: "validated" as const };
+    const result = validateWebsiteModel(website);
+    const localEvidenceFinding = result.findings.find((finding) => finding.code === "missing_local_uniqueness_evidence");
+
+    expect(localEvidenceFinding?.severity).toBe("warning");
+    expect(scoreSeoPage(website.pages[0], website, result).blockingFindings)
+      .not.toContainEqual(expect.objectContaining({ code: "missing_local_uniqueness_evidence" }));
+  });
+
   it("blocks an incomplete approved location authority cluster", () => {
     const hub = page({
       authority: {
