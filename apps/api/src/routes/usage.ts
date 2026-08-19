@@ -5,7 +5,6 @@ import { requireAuth, requireRole } from "../middleware.js";
 import { projectClientIdForRequest } from "../project-scope.js";
 import {
   commitUsage,
-  ensureCreditAccount,
   ensureUsageControlDefaults,
   preflightUsage,
   refundUsage,
@@ -92,9 +91,10 @@ const modelRouteSchema = z.object({
 function errorResponse(res: import("express").Response, error: unknown) {
   if (!(error instanceof Error)) return res.status(500).json({ error: "usage engine failed" });
   const status =
-    error.name === "usage_insufficient_credits" ? 402 :
+    error.name === "usage_insufficient_credits" || error.name === "usage_insufficient_capacity" ? 402 :
     error.name === "usage_limit_reached" || error.name === "usage_budget_cap_reached" || error.name === "usage_plan_blocked" ? 409 :
     error.name === "usage_feature_disabled" ? 404 :
+    error.name === "usage_role_blocked" ? 403 :
     400;
   return res.status(status).json({ error: error.message, code: error.name });
 }
@@ -108,7 +108,6 @@ usageRouter.get("/usage/me", async (req, res) => {
   const clientId = await projectClientIdForRequest(req);
   if (!clientId) return res.status(400).json({ error: "client context required" });
   await ensureUsageControlDefaults();
-  await ensureCreditAccount(clientId);
   res.json(await usageSummaryForClient(clientId));
 });
 
@@ -163,7 +162,7 @@ usageRouter.post("/usage/refund", async (req, res) => {
 usageRouter.get("/admin/usage/overview", requireRole("super_admin"), async (_req, res) => {
   await ensureUsageControlDefaults();
   const periodStart = new Date(Date.UTC(new Date().getUTCFullYear(), new Date().getUTCMonth(), 1));
-  const [eventsByFeature, providerCosts, recentAlerts, creditAccounts] = await Promise.all([
+  const [eventsByFeature, providerCosts, recentAlerts, capacityAccounts] = await Promise.all([
     prisma.usageEvent.groupBy({
       by: ["featureKey", "status"],
       where: { createdAt: { gte: periodStart } },
@@ -176,9 +175,9 @@ usageRouter.get("/admin/usage/overview", requireRole("super_admin"), async (_req
       _sum: { costUsd: true, inputTokens: true, outputTokens: true },
     }),
     prisma.usageAlert.findMany({ orderBy: { createdAt: "desc" }, take: 25 }),
-    prisma.creditAccount.findMany({ orderBy: { updatedAt: "desc" }, take: 25, include: { client: { select: { id: true, name: true, plan: true } } } }),
+    prisma.workspaceCapacityAccount.findMany({ orderBy: { updatedAt: "desc" }, take: 25, include: { workspace: { select: { id: true, name: true, workspaceType: true } } } }),
   ]);
-  res.json({ eventsByFeature, providerCosts, recentAlerts, creditAccounts });
+  res.json({ eventsByFeature, providerCosts, recentAlerts, capacityAccounts, creditAccounts: [] });
 });
 
 usageRouter.get("/admin/usage/feature-costs", requireRole("super_admin"), async (_req, res) => {
@@ -199,6 +198,9 @@ usageRouter.get("/admin/usage/feature-costs", requireRole("super_admin"), async 
 usageRouter.patch("/admin/usage/feature-costs/:featureKey", requireRole("super_admin"), async (req, res) => {
   const parsed = featureSchema.partial().safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() });
+  if (parsed.data.defaultCreditCost !== undefined || parsed.data.estimatedProviderCost !== undefined) {
+    return res.status(409).json({ error: "Workflow units and provider-cost estimates are managed in Commercial Admin." });
+  }
   const feature = await prisma.featureCostCatalog.update({
     where: { featureKey: req.params.featureKey },
     data: parsed.data,
@@ -207,24 +209,8 @@ usageRouter.patch("/admin/usage/feature-costs/:featureKey", requireRole("super_a
 });
 
 usageRouter.patch("/admin/usage/plan-limits/:planCode/:featureKey", requireRole("super_admin"), async (req, res) => {
-  const parsed = planLimitSchema.safeParse(req.body);
-  if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() });
-  await ensureUsageControlDefaults();
-  const limit = await prisma.planFeatureLimit.upsert({
-    where: { planCode_featureKey: { planCode: req.params.planCode, featureKey: req.params.featureKey } },
-    update: parsed.data,
-    create: {
-      planCode: req.params.planCode,
-      featureKey: req.params.featureKey,
-      monthlyLimit: parsed.data.monthlyLimit ?? null,
-      dailyLimit: parsed.data.dailyLimit ?? null,
-      creditCost: parsed.data.creditCost ?? null,
-      hardBlocked: parsed.data.hardBlocked ?? false,
-      overageAllowed: parsed.data.overageAllowed ?? false,
-      configJson: parsed.data.configJson ?? {},
-    },
-  });
-  res.json({ limit });
+  void req;
+  res.status(410).json({ error: "Per-plan activity limits were retired by DEV-059. All plans include all core capabilities; use workspace AI Capacity and budget caps instead." });
 });
 
 usageRouter.get("/admin/usage/budget-caps", requireRole("super_admin"), async (_req, res) => {

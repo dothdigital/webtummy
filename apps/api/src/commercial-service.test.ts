@@ -1,6 +1,6 @@
 import crypto from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { checkoutUrlForPrice, normalizeJvZooIpn, selectJvZooPriceMapping, stateFromJvZooEvent, verifyJvZooIpn, workspaceTypeForCommercialPlan } from "./commercial-service.js";
+import { checkoutUrlForPrice, normalizeJvZooIpn, selectJvZooPriceMapping, stateFromJvZooEvent, validateJvZooRenewalPayment, verifyJvZooIpn, workspaceTypeForCommercialPlan } from "./commercial-service.js";
 
 const sha1 = (value: string) => crypto.createHash("sha1").update(value, "utf8").digest("hex").slice(0, 8).toUpperCase();
 
@@ -10,7 +10,7 @@ describe("JVZoo commercial adapter", () => {
     const payload: Record<string, unknown> = {
       paykey: "PA-123",
       customer_email: "owner@example.com",
-      product_name: "SEnuke AI Business",
+      product_name: "SEnuke AI - AI Growth Operating System Business",
       transaction_type: "SALE",
       date: "2026-07-30 13:30:00",
       product_id: "98211",
@@ -98,6 +98,24 @@ describe("JVZoo commercial adapter", () => {
     expect(selectJvZooPriceMapping(candidates, { amount: "97.00", currency: "USD", occurredAt: new Date("2026-08-01T00:00:00Z") })).toMatchObject({ price: { id: "usd" }, error: null });
     expect(selectJvZooPriceMapping(candidates, { amount: "98.00", currency: "USD", occurredAt: new Date("2026-08-01T00:00:00Z") })).toEqual({ price: null, error: "amount_mismatch" });
     expect(selectJvZooPriceMapping(candidates, { amount: "97.00", currency: "EUR", occurredAt: new Date("2026-08-01T00:00:00Z") })).toEqual({ price: null, error: "currency_mismatch" });
+  });
+
+  it("requires successful rebills to match the subscription's protected amount and currency", () => {
+    const base = {
+      transactionType: "REBILL",
+      nextStatus: "active",
+      amount: "79.00",
+      currency: "USD",
+      currencyProvided: true,
+      expectedAmountCents: 7_900,
+      expectedCurrency: "USD",
+    };
+    expect(validateJvZooRenewalPayment(base)).toBeNull();
+    expect(validateJvZooRenewalPayment({ ...base, amount: "97.00" })).toBe("rebill_amount_mismatch");
+    expect(validateJvZooRenewalPayment({ ...base, currency: "CAD" })).toBe("currency_mismatch");
+    expect(validateJvZooRenewalPayment({ ...base, amount: "" })).toBe("missing_required_provider_fields");
+    expect(validateJvZooRenewalPayment({ ...base, nextStatus: "past_due", amount: "" })).toBeNull();
+    expect(validateJvZooRenewalPayment({ ...base, transactionType: "CANCEL-REBILL", amount: "" })).toBeNull();
   });
 
   it("rejects an ambiguous product mapping when the provider omits the amount", () => {

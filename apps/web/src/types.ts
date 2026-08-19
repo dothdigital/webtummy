@@ -1256,6 +1256,16 @@ export interface CommercialSummary {
     price: { id: string; amountCents: number; currency: string; priceClass: string } | null;
     policy: { code: string; version: number; graceDays: number; retentionDays: number };
   } | null;
+  providerLifecycle: {
+    status: string;
+    purchasedAt: string;
+    currentPeriodStart: string | null;
+    currentPeriodEnd: string | null;
+    cancelAtPeriodEnd: boolean;
+    cancelledAt: string | null;
+    refundedAt: string | null;
+    chargebackAt: string | null;
+  } | null;
   entitlements: {
     features: Record<string, unknown>;
     limits: Record<string, unknown>;
@@ -1271,6 +1281,13 @@ export interface CommercialSummary {
       balance: number;
       monthlyAllowance: number;
       reserved: number;
+      monthlyUsed: number;
+      totalAvailable: number;
+      usedPercent: number;
+      warningLevel: 75 | 90 | 100 | null;
+      resetAt: string;
+      included: { allowance: number; available: number; reserved: number; used: number };
+      purchased: { available: number; reserved: number; usedThisPeriod: number; nonExpiring: boolean };
       periodStart: string;
       periodEnd: string;
     } | null;

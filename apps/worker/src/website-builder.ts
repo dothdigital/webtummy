@@ -1842,7 +1842,7 @@ Page uniqueness contract: return an original SEO title, H1, first post-hero H2, 
   let previousFailure = "";
   for (let attempt = 0; attempt < 3; attempt++) {
     try {
-      const response = await fetch("https://api.openai.com/v1/chat/completions", { method: "POST", signal: AbortSignal.timeout(180_000), headers: { Authorization: `Bearer ${config.openaiApiKey}`, "Content-Type": "application/json" }, body: JSON.stringify(fitWebsiteAiChatRequest({ model: config.openaiModel, response_format: strictWebsiteJsonResponseFormat("website_page_model", basic), temperature: 0.35, max_tokens: 8000, messages: [{ role: "system", content: `You are the SEnuke AI website development worker. Follow the approved SEO content plan as the controlling specification. Return structured JSON only. Generate only component IDs, versions, variants, and fields present in the supplied SENuke Component Registry. Never generate arbitrary components, scripts, PHP, WordPress code, fake claims, metrics, testimonials, credentials, offices, addresses, service availability, response times, local statistics, business relationships, awards, guarantees, or citations. Write only for the assigned intent owner and do not target prohibited competing keywords. Write a complete useful page section by section using the supplied registered-component blueprint. Every page needs one primary keyword, one dominant intent, exactly one hero headline mapped to H1, a specific CTA, appropriate schema, internal links, and image alt text. Use FAQs and process sections only when they serve the page intent. Local content must use only supplied evidence IDs, be meaningfully specific, and must not be a city-name swap. A failed or thin response is invalid; never return placeholder copy.` }, { role: "user", content: `Return the same JSON structure as this page blueprint, but rewrite every sample content value with original page-specific copy: ${promptJson(basic, 42_000)}\nActive Component Registry: ${promptJson(activeRegistry, 24_000)}\nPage composition policy: ${promptJson(policy, 4_000)}\nBusiness: ${businessContext.businessName || "business name not approved"}\nIndustry: ${businessContext.industry}\nCore customer value: ${businessContext.coreBusinessValue}\nApproved services: ${businessContext.primaryServices.join(", ")}\nAudience: ${businessContext.audience}\nLocations: ${promptStrings(project.targetLocations, 12, 200).join(", ")}\nBrand: ${promptJson(promptBrand(brand), 4_000)}\nRelevant approved SEO evidence: ${promptJson(relevantSeoEvidence(seoPlan, page), 14_000)}\nMapped page brief: ${promptJson(mappedBrief, 24_000)}\nAssigned primary intent: ${String(mappedSeoPlan.primaryIntent || page.searchIntent)}\nIntent owner: ${String(mappedSeoPlan.intentOwner || `/${page.slug}`)}\nAllowed local evidence IDs: ${promptStrings(mappedSeoPlan.localEvidenceIds, 16, 200).join(", ") || "none"}\nRequired internal links: ${promptStrings(mappedSeoPlan.requiredInternalLinks, 20, 500).join(", ") || "approved page map only"}\nProhibited competing keywords: ${promptStrings(mappedSeoPlan.prohibitedCompetingKeywords, 20, 300).join(", ") || "none supplied"}\nReserved titles, H1s, and meta descriptions already used by other planned or crawled pages: ${promptJson(uniquenessSignals, 20_000)}\nPage: ${page.title}\nPage type: ${page.pageType}\nPrimary keyword: ${page.primaryKeyword}\nSecondary: ${promptStrings(page.secondaryKeywords, 20, 300).join(", ")}\nIntent: ${page.searchIntent}\nSlug: ${page.slug}\nInstructions: ${promptText(instructions || "Build a complete conversion-focused page.", 4_000)}\nRequirements:\n- Write useful, substantive content up to ${policy.maximumWords} words across ${policy.minimumComponentCount}–10 registered component instances. Treat ${policy.minimumWords} words as a planning target, not permission to add filler.\n- Follow this page-specific direction: ${policy.guidance}\n- Keep the selected section sequence and rewrite every field with substantive page-specific content.\n- Give service, benefit, process, and proof item descriptions useful depth when those sections are selected.\n- Include page-specific FAQs only when the blueprint contains an FAQ block.\n- Return a unique SEO title, H1, and 120–160 character meta description. None may duplicate any reserved value above. Never write “Explore ... Review capabilities, process, proof, FAQs, and next steps.”\n- Do not copy any sentence from the supplied blueprint.\n- content.components is the complete and only editable page-content model. Do not return duplicate hero, section, or CTA fields outside content.components.` }, ...(previousCandidate ? [{ role: "user", content: `Expand and correct this prior candidate rather than starting over. Preserve valid component IDs and rewrite thin props with substantive copy.\nValidation failure: ${promptText(previousFailure, 2_000)}\nPrior candidate: ${promptJson(previousCandidate, 30_000)}` }] : [])] })) });
+      const response = await fetch("https://api.openai.com/v1/chat/completions", { method: "POST", signal: AbortSignal.timeout(180_000), headers: { Authorization: `Bearer ${config.openaiApiKey}`, "Content-Type": "application/json" }, body: JSON.stringify(fitWebsiteAiChatRequest({ model: config.openaiModel, response_format: strictWebsiteJsonResponseFormat("website_page_model", basic), temperature: 0.35, max_tokens: 8000, messages: [{ role: "system", content: `You are the SEnuke AI - AI Growth Operating System website development worker. Follow the approved SEO content plan as the controlling specification. Return structured JSON only. Generate only component IDs, versions, variants, and fields present in the supplied SENuke Component Registry. Never generate arbitrary components, scripts, PHP, WordPress code, fake claims, metrics, testimonials, credentials, offices, addresses, service availability, response times, local statistics, business relationships, awards, guarantees, or citations. Write only for the assigned intent owner and do not target prohibited competing keywords. Write a complete useful page section by section using the supplied registered-component blueprint. Every page needs one primary keyword, one dominant intent, exactly one hero headline mapped to H1, a specific CTA, appropriate schema, internal links, and image alt text. Use FAQs and process sections only when they serve the page intent. Local content must use only supplied evidence IDs, be meaningfully specific, and must not be a city-name swap. A failed or thin response is invalid; never return placeholder copy.` }, { role: "user", content: `Return the same JSON structure as this page blueprint, but rewrite every sample content value with original page-specific copy: ${promptJson(basic, 42_000)}\nActive Component Registry: ${promptJson(activeRegistry, 24_000)}\nPage composition policy: ${promptJson(policy, 4_000)}\nBusiness: ${businessContext.businessName || "business name not approved"}\nIndustry: ${businessContext.industry}\nCore customer value: ${businessContext.coreBusinessValue}\nApproved services: ${businessContext.primaryServices.join(", ")}\nAudience: ${businessContext.audience}\nLocations: ${promptStrings(project.targetLocations, 12, 200).join(", ")}\nBrand: ${promptJson(promptBrand(brand), 4_000)}\nRelevant approved SEO evidence: ${promptJson(relevantSeoEvidence(seoPlan, page), 14_000)}\nMapped page brief: ${promptJson(mappedBrief, 24_000)}\nAssigned primary intent: ${String(mappedSeoPlan.primaryIntent || page.searchIntent)}\nIntent owner: ${String(mappedSeoPlan.intentOwner || `/${page.slug}`)}\nAllowed local evidence IDs: ${promptStrings(mappedSeoPlan.localEvidenceIds, 16, 200).join(", ") || "none"}\nRequired internal links: ${promptStrings(mappedSeoPlan.requiredInternalLinks, 20, 500).join(", ") || "approved page map only"}\nProhibited competing keywords: ${promptStrings(mappedSeoPlan.prohibitedCompetingKeywords, 20, 300).join(", ") || "none supplied"}\nReserved titles, H1s, and meta descriptions already used by other planned or crawled pages: ${promptJson(uniquenessSignals, 20_000)}\nPage: ${page.title}\nPage type: ${page.pageType}\nPrimary keyword: ${page.primaryKeyword}\nSecondary: ${promptStrings(page.secondaryKeywords, 20, 300).join(", ")}\nIntent: ${page.searchIntent}\nSlug: ${page.slug}\nInstructions: ${promptText(instructions || "Build a complete conversion-focused page.", 4_000)}\nRequirements:\n- Write useful, substantive content up to ${policy.maximumWords} words across ${policy.minimumComponentCount}–10 registered component instances. Treat ${policy.minimumWords} words as a planning target, not permission to add filler.\n- Follow this page-specific direction: ${policy.guidance}\n- Keep the selected section sequence and rewrite every field with substantive page-specific content.\n- Give service, benefit, process, and proof item descriptions useful depth when those sections are selected.\n- Include page-specific FAQs only when the blueprint contains an FAQ block.\n- Return a unique SEO title, H1, and 120–160 character meta description. None may duplicate any reserved value above. Never write “Explore ... Review capabilities, process, proof, FAQs, and next steps.”\n- Do not copy any sentence from the supplied blueprint.\n- content.components is the complete and only editable page-content model. Do not return duplicate hero, section, or CTA fields outside content.components.` }, ...(previousCandidate ? [{ role: "user", content: `Expand and correct this prior candidate rather than starting over. Preserve valid component IDs and rewrite thin props with substantive copy.\nValidation failure: ${promptText(previousFailure, 2_000)}\nPrior candidate: ${promptJson(previousCandidate, 30_000)}` }] : [])] })) });
       const body = record(await response.json());
       if (!response.ok) throw new Error(String(record(body.error).message || `OpenAI returned HTTP ${response.status}.`));
       const choice = record(Array.isArray(body.choices) ? body.choices[0] : null);
@@ -1993,8 +1993,8 @@ async function notifyWebsiteJob(
     await sendMail({
       to: recipient.email,
       subject: input.emailSubject || input.title,
-      text: `${greeting}\n\n${input.body}\n\n${reviewLabel}: ${reviewUrl}\n\n— SEnuke AI`,
-      html: `<div style="font-family:Arial,sans-serif;max-width:640px;margin:0 auto;color:#0f172a;line-height:1.6"><p>${escapeHtml(greeting)}</p><h1 style="font-size:24px;line-height:1.25;margin:20px 0 12px">${escapeHtml(input.title)}</h1><p>${escapeHtml(input.body)}</p><p style="margin:28px 0"><a href="${reviewUrl}" style="display:inline-block;border-radius:8px;background:#4338ca;color:#fff;padding:12px 18px;text-decoration:none;font-weight:700">${escapeHtml(reviewLabel)}</a></p><p style="font-size:12px;color:#64748b">This email was sent because you requested this website-generation work in SEnuke AI.</p></div>`,
+      text: `${greeting}\n\n${input.body}\n\n${reviewLabel}: ${reviewUrl}\n\n— SEnuke AI - AI Growth Operating System`,
+      html: `<div style="font-family:Arial,sans-serif;max-width:640px;margin:0 auto;color:#0f172a;line-height:1.6"><p>${escapeHtml(greeting)}</p><h1 style="font-size:24px;line-height:1.25;margin:20px 0 12px">${escapeHtml(input.title)}</h1><p>${escapeHtml(input.body)}</p><p style="margin:28px 0"><a href="${reviewUrl}" style="display:inline-block;border-radius:8px;background:#4338ca;color:#fff;padding:12px 18px;text-decoration:none;font-weight:700">${escapeHtml(reviewLabel)}</a></p><p style="font-size:12px;color:#64748b">This email was sent because you requested this website-generation work in SEnuke AI - AI Growth Operating System.</p></div>`,
     });
     await prisma.workspaceNotification.update({
       where: { id: notification.id },
@@ -2012,7 +2012,7 @@ async function notify(job: { workspaceId: string; requestedByUserId: string | nu
     type: status === "completed" ? "website_build_ready" : "website_build_failed",
     title: status === "completed" ? "Website ready for review" : "Website development failed",
     body,
-    emailSubject: status === "completed" ? "Your SEnuke AI website is ready to review" : "Your SEnuke AI website request needs attention",
+    emailSubject: status === "completed" ? "Your SEnuke AI - AI Growth Operating System website is ready to review" : "Your SEnuke AI - AI Growth Operating System website request needs attention",
     reviewLabel: status === "completed" ? "Review website" : "Review the issue",
   });
 }
@@ -2026,31 +2026,98 @@ async function settleWebsiteJobCapacity(jobId: string) {
   const usage = await prisma.usageEvent.findUnique({ where: { id: job.usageEventId } });
   if (!usage || usage.status !== "reserved") return;
   const result = record(job.resultJson);
+  const metadata = record(usage.metadataJson);
+  const capacityAccountId = typeof metadata.capacityAccountId === "string" ? metadata.capacityAccountId : "";
+  if (!capacityAccountId || !usage.workspaceId) throw new Error("Website usage reservation has no workspace capacity account.");
+  const completedPageCount = strings(result.completedPageIds).length;
+  const requestedPageCount = Math.max(1, Number(metadata.pageCount || 1));
+  const pricingConfig = record(metadata.pricingConfig);
+  let actualUnits = job.status === "completed" ? usage.creditsReserved : 0;
+  if (job.status === "completed" && completedPageCount > 0 && completedPageCount < requestedPageCount) {
+    const mode = String(metadata.mode || "website_generation");
+    const perPageUnits = Math.max(0, Number(pricingConfig.perPageUnits || 25));
+    if (mode === "content_generation") actualUnits = completedPageCount * perPageUnits;
+    else if (mode === "image_generation") actualUnits = completedPageCount * Math.max(0, Number(pricingConfig.perImageUnits || 25));
+    else {
+      const requestedImages = Math.max(0, Number(metadata.imageCount || 0));
+      const completedImages = Math.min(requestedImages, completedPageCount + 2);
+      actualUnits = Math.max(0, Number(pricingConfig.baseUnits || 250))
+        + completedPageCount * perPageUnits
+        + completedImages * Math.max(0, Number(pricingConfig.perImageUnits || 25));
+    }
+    actualUnits = Math.max(Number(metadata.minimumUnitCost || 0), Math.min(usage.creditsReserved, Math.floor(actualUnits)));
+  }
+  const includedCommitted = Math.min(actualUnits, usage.includedUnitsReserved);
+  const purchasedCommitted = Math.max(0, actualUnits - includedCommitted);
+  const includedRefunded = usage.includedUnitsReserved - includedCommitted;
+  const purchasedRefunded = usage.purchasedUnitsReserved - purchasedCommitted;
   await prisma.$transaction(async (tx) => {
+    const shouldRefund = job.status !== "completed";
     const committed = await tx.usageEvent.updateMany({
       where: { id: usage.id, status: "reserved" },
       data: {
-        status: "committed",
-        creditsCommitted: usage.creditsReserved,
-        committedAt: new Date(),
+        status: shouldRefund ? "refunded" : "committed",
+        creditsCommitted: shouldRefund ? 0 : actualUnits,
+        committedAt: shouldRefund ? null : new Date(),
+        refundedAt: shouldRefund ? new Date() : null,
+        error: shouldRefund ? `Website job ${job.status} at ${job.stage}.` : null,
         metadataJson: {
-          ...record(usage.metadataJson),
+          ...metadata,
           websiteBuildJobId: job.id,
           terminalStatus: job.status,
           terminalStage: job.stage,
-          completedPageCount: strings(result.completedPageIds).length,
+          completedPageCount,
+          partialSettlement: !shouldRefund && actualUnits < usage.creditsReserved,
         },
       },
     });
     if (!committed.count) return;
-    const creditAccountId = record(usage.metadataJson).creditAccountId;
-    if (typeof creditAccountId === "string" && creditAccountId && usage.creditsReserved > 0) {
-      await tx.creditAccount.updateMany({
-        where: { id: creditAccountId, clientId: usage.clientId },
-        data: { monthlyUsed: { increment: usage.creditsReserved } },
-      });
+    const account = await tx.workspaceCapacityAccount.update({
+      where: { id: capacityAccountId },
+      data: shouldRefund ? {
+        includedBalance: { increment: usage.includedUnitsReserved },
+        includedReserved: { decrement: usage.includedUnitsReserved },
+        purchasedBalance: { increment: usage.purchasedUnitsReserved },
+        purchasedReserved: { decrement: usage.purchasedUnitsReserved },
+      } : {
+        includedReserved: { decrement: usage.includedUnitsReserved },
+        includedUsed: { increment: includedCommitted },
+        includedBalance: { increment: includedRefunded },
+        purchasedReserved: { decrement: usage.purchasedUnitsReserved },
+        purchasedUsed: { increment: purchasedCommitted },
+        purchasedBalance: { increment: purchasedRefunded },
+      },
+    });
+    for (const row of [
+      usage.includedUnitsReserved > 0 ? { bucket: "included", units: usage.includedUnitsReserved, committed: includedCommitted, refunded: shouldRefund ? usage.includedUnitsReserved : includedRefunded, balanceAfter: account.includedBalance } : null,
+      usage.purchasedUnitsReserved > 0 ? { bucket: "purchased", units: usage.purchasedUnitsReserved, committed: purchasedCommitted, refunded: shouldRefund ? usage.purchasedUnitsReserved : purchasedRefunded, balanceAfter: account.purchasedBalance } : null,
+    ].filter((row): row is { bucket: string; units: number; committed: number; refunded: number; balanceAfter: number } => Boolean(row))) {
+      await tx.workspaceCapacityTransaction.create({ data: {
+        workspaceId: usage.workspaceId,
+        accountId: capacityAccountId,
+        usageEventId: usage.id,
+        bucket: row.bucket,
+        type: shouldRefund ? "refund" : "commit",
+        amount: shouldRefund ? row.units : 0,
+        balanceAfter: row.balanceAfter,
+        reason: shouldRefund ? `Website job ${job.status}` : `Committed ${row.units} units for website job`,
+        correlationId: usage.id,
+        metadataJson: { committedUnits: shouldRefund ? 0 : row.committed, refundedUnits: row.refunded, websiteBuildJobId: job.id },
+      } });
+      if (!shouldRefund && row.refunded > 0) await tx.workspaceCapacityTransaction.create({ data: {
+        workspaceId: usage.workspaceId,
+        accountId: capacityAccountId,
+        usageEventId: usage.id,
+        bucket: row.bucket,
+        type: "refund",
+        amount: row.refunded,
+        balanceAfter: row.balanceAfter,
+        reason: "Unused website-job reservation returned",
+        correlationId: usage.id,
+        metadataJson: { partialSettlement: true, websiteBuildJobId: job.id },
+      } });
     }
-    await tx.providerCostEvent.create({
+    if (!shouldRefund) await tx.providerCostEvent.create({
       data: {
         clientId: usage.clientId,
         usageEventId: usage.id,
@@ -2312,7 +2379,7 @@ async function aiVisualPlan(
         messages: [
           {
             role: "system",
-            content: "You are SEnuke AI's senior website art director. Translate verified business intelligence and the exact page content into a distinctive, page-specific image brief. Return JSON only. Never use a generic stock-photo concept when the supplied business, service, audience, location, H1, or page content supports a more specific scene. Avoid decorative clutter, repeated concepts across pages, text inside images, fake proof, logos, awards, guarantees, medical or financial promises, and unsupported claims.",
+            content: "You are SEnuke AI - AI Growth Operating System's senior website art director. Translate verified business intelligence and the exact page content into a distinctive, page-specific image brief. Return JSON only. Never use a generic stock-photo concept when the supplied business, service, audience, location, H1, or page content supports a more specific scene. Avoid decorative clutter, repeated concepts across pages, text inside images, fake proof, logos, awards, guarantees, medical or financial promises, and unsupported claims.",
           },
           {
             role: "user",
@@ -3117,7 +3184,7 @@ export async function executeWebsiteBuildJob(jobId: string) {
           ? `${generatedPages} page${generatedPages === 1 ? "" : "s"} completed · ${failedPages.length} need attention`
           : contentWorkspaceBatch ? "Website content workspace ready to review" : `${contentPhaseLabel(contentPhase)} ready to review`;
         const body = failedPages.length
-          ? `SENuke AI continued the batch and saved every successful page. Retry only: ${failedPages.slice(0, 4).map((item) => item.pageTitle).join(", ")}${failedPages.length > 4 ? ` and ${failedPages.length - 4} more` : ""}.`
+          ? `SEnuke AI - AI Growth Operating System continued the batch and saved every successful page. Retry only: ${failedPages.slice(0, 4).map((item) => item.pageTitle).join(", ")}${failedPages.length > 4 ? ` and ${failedPages.length - 4} more` : ""}.`
           : nextPhase
             ? `${pages.length} page${pages.length === 1 ? " is" : "s are"} ready. Review this stage, then choose whether to proceed to ${contentPhaseLabel(nextPhase)}.`
             : contentWorkspaceBatch
@@ -3141,7 +3208,7 @@ export async function executeWebsiteBuildJob(jobId: string) {
       if (job.requestedByUserId) await notifyWebsiteJob(job, {
         type: "website_images_ready",
         title: "Website images and placements ready",
-        body: `SENuke AI prepared visuals for ${pages.length} page${pages.length === 1 ? "" : "s"} and placed them in the editable website. Review and approve the suggested placements in Site Architect.`,
+        body: `SEnuke AI - AI Growth Operating System prepared visuals for ${pages.length} page${pages.length === 1 ? "" : "s"} and placed them in the editable website. Review and approve the suggested placements in Site Architect.`,
         emailSubject: "Your website images are ready to review",
         reviewLabel: "Review website images",
       });

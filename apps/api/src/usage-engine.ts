@@ -4,6 +4,12 @@ import { normalizePlanCode } from "./billing.js";
 import { assertWorkspaceFeature, effectiveCommercialEntitlements } from "./commercial-service.js";
 import { currentCommercialRequestContext } from "./commercial-request-context.js";
 import { aiModelTierForFeature, defaultAiModelForFeature } from "./ai-model-policy.js";
+import {
+  calculateWorkflowUnits,
+  canonicalCommercialPlanCode,
+  ensureWorkspaceCapacityAccount,
+  workspaceCapacitySummary,
+} from "./commercial-capacity.js";
 
 export const USAGE_APPROVAL_HEADER = "x-senuke-usage-token";
 const CREDIT_TRANSACTION_REASON_MAX_LENGTH = 255;
@@ -35,6 +41,7 @@ export type CommitUsageInput = {
   inputTokens?: number;
   outputTokens?: number;
   providerCostUsd?: number;
+  actualUnits?: number;
   metadata?: Record<string, unknown>;
 };
 
@@ -89,13 +96,49 @@ const featureSeeds: FeatureSeed[] = [
   { featureKey: "project_agent_chat", moduleName: "project_agent", label: "Project Agent response", description: "Generate one evidence-grounded Project Agent response.", defaultCreditCost: 2, estimatedProviderCost: 0.03, cacheTtlMinutes: 0 },
 ];
 
+const commercialWorkflowPricing: Record<string, { units: number; model?: string; minimum?: number; maximum?: number | null; config?: Record<string, unknown> }> = {
+  opportunity_refresh: { units: 150, model: "fixed", minimum: 100, maximum: 200 },
+  strategy_generate: { units: 450, model: "fixed", minimum: 250, maximum: 600 },
+  keyword_research_batch: { units: 1, model: "keyword_market", minimum: 50, maximum: null, config: { baseUnits: 50, countryCheckUnits: 5, localCheckUnits: 15 } },
+  site_crawl_small: { units: 300, model: "fixed", minimum: 150, maximum: 500 },
+  backlink_snapshot: { units: 1, model: "per_domain", minimum: 25, maximum: null, config: { perDomainUnits: 25 } },
+  ai_citation_scan: { units: 250, model: "fixed", minimum: 150, maximum: 400 },
+  site_architect_generate: { units: 150, model: "fixed", minimum: 75, maximum: 250 },
+  lead_magnet_research: { units: 75, model: "fixed", minimum: 50, maximum: 150 },
+  lead_magnet_generate: { units: 125, model: "fixed", minimum: 75, maximum: 175 },
+  ai_assisted_intake: { units: 125, model: "fixed", minimum: 75, maximum: 150 },
+  growth_diagnosis: { units: 125, model: "ai_or_zero", minimum: 0, maximum: 200, config: { deterministicUnits: 0 } },
+  growth_report: { units: 100, model: "fixed", minimum: 50, maximum: 150 },
+  social_calendar_generate: { units: 100, model: "fixed", minimum: 50, maximum: 150 },
+  agency_report_generate: { units: 100, model: "fixed", minimum: 50, maximum: 150 },
+  revenue_keyword_score: { units: 10, model: "fixed", minimum: 5, maximum: 25 },
+  improve_page_stack: { units: 40, model: "fixed", minimum: 25, maximum: 75 },
+  authority_asset_builder: { units: 100, model: "fixed", minimum: 75, maximum: 200 },
+  ai_citation_gap: { units: 250, model: "fixed", minimum: 150, maximum: 400 },
+  community_intelligence: { units: 100, model: "fixed", minimum: 75, maximum: 200 },
+  moat_tracker: { units: 25, model: "fixed", minimum: 10, maximum: 50 },
+  seo_fix_queue: { units: 40, model: "fixed", minimum: 25, maximum: 75 },
+  pre_website_launch_strategy: { units: 150, model: "fixed", minimum: 100, maximum: 250 },
+  wordpress_publish: { units: 10, model: "fixed", minimum: 5, maximum: 25 },
+  local_seo_launch_plan: { units: 150, model: "fixed", minimum: 75, maximum: 250 },
+  ai_visibility_scan: { units: 75, model: "fixed", minimum: 50, maximum: 150 },
+  safe_authority_builder: { units: 100, model: "fixed", minimum: 75, maximum: 200 },
+  white_label_report: { units: 100, model: "fixed", minimum: 50, maximum: 150 },
+  demo_proof_project: { units: 0, model: "fixed", minimum: 0, maximum: 0 },
+  ad_landing_suggestions: { units: 75, model: "fixed", minimum: 50, maximum: 125 },
+  ecommerce_export_guidance: { units: 40, model: "fixed", minimum: 25, maximum: 75 },
+  ai_content_generate: { units: 80, model: "fixed", minimum: 50, maximum: 120 },
+  website_page_generate: { units: 1, model: "website", minimum: 25, maximum: null, config: { baseUnits: 250, perPageUnits: 25, perImageUnits: 25 } },
+  website_image_generate: { units: 1, model: "per_image", minimum: 25, maximum: null, config: { perImageUnits: 25 } },
+  execution_content_generate: { units: 10, model: "fixed", minimum: 5, maximum: 40 },
+  project_agent_chat: { units: 10, model: "fixed", minimum: 5, maximum: 15 },
+};
+
 const planDefaults: Record<string, { monthlyCredits: number; limits: Record<string, number | null> }> = {
-  mini: { monthlyCredits: 100, limits: { site_crawl_small: 2, backlink_snapshot: 2, growth_report: 1 } },
-  starter: { monthlyCredits: 250, limits: { site_crawl_small: 4, backlink_snapshot: 4, growth_report: 2 } },
-  basic: { monthlyCredits: 600, limits: { site_crawl_small: 8, backlink_snapshot: 8, growth_report: 4 } },
-  growth: { monthlyCredits: 1200, limits: { site_crawl_small: 16, backlink_snapshot: 16, growth_report: 8 } },
-  pro: { monthlyCredits: 2500, limits: { site_crawl_small: 30, backlink_snapshot: 30, growth_report: 15 } },
-  internal: { monthlyCredits: 10000, limits: {} },
+  entrepreneur: { monthlyCredits: 2_000, limits: {} },
+  business: { monthlyCredits: 5_000, limits: {} },
+  agency: { monthlyCredits: 18_000, limits: {} },
+  internal: { monthlyCredits: 1_000_000, limits: {} },
 };
 
 function monthWindow(now = new Date()) {
@@ -117,39 +160,61 @@ function usageFailure(name: string, message: string, statusCode: number) {
 }
 
 function defaultPlanConfig(planCode: string | null | undefined) {
-  const code = normalizePlanCode(planCode);
-  return planDefaults[code] ?? planDefaults.mini;
+  const code = canonicalCommercialPlanCode(planCode);
+  return planDefaults[code] ?? planDefaults.entrepreneur;
 }
 
 export async function ensureUsageControlDefaults(db: Db = prisma) {
   for (const feature of featureSeeds) {
-    await db.featureCostCatalog.upsert({
-      where: { featureKey: feature.featureKey },
-      update: {},
-      create: {
+    const pricing = commercialWorkflowPricing[feature.featureKey] ?? { units: feature.defaultCreditCost, model: "fixed", minimum: feature.defaultCreditCost, maximum: feature.defaultCreditCost };
+    const existing = await db.featureCostCatalog.findUnique({ where: { featureKey: feature.featureKey } });
+    if (!existing) {
+      await db.featureCostCatalog.create({ data: {
         ...feature,
+        defaultCreditCost: pricing.units,
         unitLabel: feature.unitLabel ?? "run",
         requiresApproval: feature.requiresApproval ?? false,
         requiresIntegration: feature.requiresIntegration ?? false,
         cacheTtlMinutes: feature.cacheTtlMinutes ?? 0,
+        pricingVersion: 1,
+        pricingModel: pricing.model ?? "fixed",
+        pricingConfigJson: pricing.config ?? {},
+        minimumUnitCost: pricing.minimum ?? null,
+        maximumUnitCost: pricing.maximum ?? null,
+        configJson: { commercialPricingInitialized: 1 },
+      } });
+      continue;
+    }
+    const existingConfig = existing.configJson && typeof existing.configJson === "object" && !Array.isArray(existing.configJson)
+      ? existing.configJson as Record<string, unknown>
+      : {};
+    await db.featureCostCatalog.update({
+      where: { featureKey: feature.featureKey },
+      data: {
+        moduleName: feature.moduleName,
+        label: feature.label,
+        description: feature.description,
+        estimatedProviderCost: existingConfig.commercialPricingInitialized === 1 ? existing.estimatedProviderCost : feature.estimatedProviderCost,
+        unitLabel: feature.unitLabel ?? "run",
+        requiresApproval: feature.requiresApproval ?? false,
+        requiresIntegration: feature.requiresIntegration ?? false,
+        cacheTtlMinutes: feature.cacheTtlMinutes ?? 0,
+        ...(existingConfig.commercialPricingInitialized === 1 ? {} : {
+          defaultCreditCost: pricing.units,
+          pricingVersion: 1,
+          pricingModel: pricing.model ?? "fixed",
+          pricingConfigJson: pricing.config ?? {},
+          minimumUnitCost: pricing.minimum ?? null,
+          maximumUnitCost: pricing.maximum ?? null,
+          configJson: { ...existingConfig, commercialPricingInitialized: 1 },
+        }),
       },
     });
   }
-
-  for (const [planCode, config] of Object.entries(planDefaults)) {
-    for (const feature of featureSeeds) {
-      await db.planFeatureLimit.upsert({
-        where: { planCode_featureKey: { planCode, featureKey: feature.featureKey } },
-        update: {},
-        create: {
-          planCode,
-          featureKey: feature.featureKey,
-          monthlyLimit: config.limits[feature.featureKey] ?? null,
-          creditCost: feature.defaultCreditCost,
-        },
-      });
-    }
-  }
+  // DEV-059 gives every commercial plan the complete capability set. Retire
+  // the earlier per-plan feature/count matrix so it cannot remain a second
+  // commercial authority.
+  await db.planFeatureLimit.deleteMany({ where: { planCode: { not: "internal" } } });
 }
 
 export async function ensureCreditAccount(clientId: string, db: Db = prisma) {
@@ -191,25 +256,34 @@ export async function ensureCreditAccount(clientId: string, db: Db = prisma) {
 
 export async function usageSummaryForClient(clientId: string) {
   await ensureUsageControlDefaults();
-  const account = await ensureCreditAccount(clientId);
+  const workspace = await prisma.workspace.findUnique({ where: { legacyClientId: clientId }, select: { id: true } });
+  const capacity = workspace ? await workspaceCapacitySummary(workspace.id) : null;
+  const legacyAccount = capacity ? null : await ensureCreditAccount(clientId);
   const { periodStart } = monthWindow();
-  const [events, credits, providerCost, alerts, caps] = await Promise.all([
+  const [events, legacyCredits, capacityTransactions, providerCost, alerts, caps] = await Promise.all([
     prisma.usageEvent.groupBy({
       by: ["featureKey", "status"],
       where: { clientId, createdAt: { gte: periodStart } },
       _count: { _all: true },
       _sum: { creditsCommitted: true, providerCostUsd: true },
     }),
-    prisma.creditTransaction.findMany({ where: { clientId }, orderBy: { createdAt: "desc" }, take: 20 }),
+    capacity ? Promise.resolve([]) : prisma.creditTransaction.findMany({ where: { clientId }, orderBy: { createdAt: "desc" }, take: 20 }),
+    workspace ? prisma.workspaceCapacityTransaction.findMany({ where: { workspaceId: workspace.id }, orderBy: { createdAt: "desc" }, take: 20 }) : Promise.resolve([]),
     prisma.providerCostEvent.aggregate({ where: { clientId, createdAt: { gte: periodStart } }, _sum: { costUsd: true } }),
     prisma.usageAlert.findMany({ where: { clientId, resolvedAt: null }, orderBy: { createdAt: "desc" }, take: 10 }),
     prisma.budgetCap.findMany({ where: { clientId, isActive: true }, orderBy: { createdAt: "desc" } }),
   ]);
 
   return {
-    account,
+    account: capacity ? {
+      ...capacity.account,
+      balance: capacity.totalAvailable,
+      monthlyAllowance: capacity.included.allowance,
+      monthlyUsed: capacity.included.used,
+    } : legacyAccount,
+    capacity,
     events,
-    recentTransactions: credits,
+    recentTransactions: capacityTransactions.length ? capacityTransactions : legacyCredits,
     providerCostUsd: providerCost._sum.costUsd ?? 0,
     alerts,
     budgetCaps: caps,
@@ -265,23 +339,29 @@ export async function preflightUsage(input: UsagePreflightInput) {
   const workspace = await prisma.workspace.findUnique({ where: { legacyClientId: input.clientId }, select: { id: true } });
   if (workspace) await assertWorkspaceFeature(workspace.id, feature.moduleName);
 
-  const planCode = normalizePlanCode(client.plan);
-  const limit = await prisma.planFeatureLimit.findUnique({ where: { planCode_featureKey: { planCode, featureKey: input.featureKey } } });
-  if (limit?.hardBlocked) {
-    throw usageFailure("usage_plan_blocked", "This AI feature is not available on the workspace plan.", 409);
-  }
-
-  if (limit?.monthlyLimit != null) {
-    const used = await monthlyFeatureCount(input.clientId, input.featureKey, ["reserved", "committed"]);
-    if (used + units > limit.monthlyLimit && !limit.overageAllowed) {
-      throw usageFailure("usage_limit_reached", "This workspace has reached the monthly limit for this AI feature.", 409);
+  if (!workspace) throw usageFailure("usage_workspace_required", "This action requires a workspace before AI Capacity can be reserved.", 409);
+  if (input.userId) {
+    const membership = await prisma.workspaceMembership.findUnique({
+      where: { workspaceId_userId: { workspaceId: workspace.id, userId: input.userId } },
+      select: { status: true, roles: { select: { role: true } } },
+    });
+    const roles = membership?.roles.map((item) => item.role) ?? [];
+    if (membership?.status !== "active" || (roles.length === 1 && roles[0] === "client_viewer")) {
+      throw usageFailure("usage_role_blocked", "Client Viewers cannot initiate AI work or consume workspace AI Capacity.", 403);
     }
   }
 
-  const account = await ensureCreditAccount(input.clientId);
-  const creditCost = Math.max(0, (limit?.creditCost ?? feature.defaultCreditCost) * units);
-  if (account.balance < creditCost) {
-    throw usageFailure("usage_insufficient_credits", "This workspace does not have enough AI credits for this action. Add credits or ask an administrator to increase the monthly AI allowance.", 402);
+  const account = await ensureWorkspaceCapacityAccount(workspace.id);
+  const creditCost = calculateWorkflowUnits(input.featureKey, feature.defaultCreditCost, {
+    inputUnits: units,
+    metadata: input.metadata,
+    pricingModel: feature.pricingModel,
+    pricingConfig: feature.pricingConfigJson,
+    minimumUnitCost: feature.minimumUnitCost,
+    maximumUnitCost: feature.maximumUnitCost,
+  });
+  if (account.includedBalance + account.purchasedBalance < creditCost) {
+    throw usageFailure("usage_insufficient_capacity", "This workspace does not have enough AI Capacity for this action. Add a Capacity Pack or ask an administrator to adjust the workspace balance.", 402);
   }
   await checkBudgetCaps(input, creditCost);
 
@@ -290,17 +370,25 @@ export async function preflightUsage(input: UsagePreflightInput) {
   const actionKey = input.actionKey?.trim() || input.featureKey;
 
   const event = await prisma.$transaction(async (tx) => {
-    const debited = await tx.creditAccount.updateMany({
-      where: { id: account.id, balance: { gte: creditCost } },
-      data: { balance: { decrement: creditCost } },
-    });
-    if (!debited.count) {
-      throw usageFailure("usage_insufficient_credits", "This workspace does not have enough AI credits for this action. Add credits or ask an administrator to increase the monthly AI allowance.", 402);
+    const current = await tx.workspaceCapacityAccount.findUniqueOrThrow({ where: { id: account.id } });
+    const includedUnits = Math.min(creditCost, current.includedBalance);
+    const purchasedUnits = creditCost - includedUnits;
+    if (current.purchasedBalance < purchasedUnits) {
+      throw usageFailure("usage_insufficient_capacity", "This workspace does not have enough AI Capacity for this action. Add a Capacity Pack or ask an administrator to adjust the workspace balance.", 402);
     }
-    const updated = await tx.creditAccount.findUniqueOrThrow({ where: { id: account.id } });
+    const updated = await tx.workspaceCapacityAccount.update({
+      where: { id: account.id },
+      data: {
+        includedBalance: { decrement: includedUnits },
+        includedReserved: { increment: includedUnits },
+        purchasedBalance: { decrement: purchasedUnits },
+        purchasedReserved: { increment: purchasedUnits },
+      },
+    });
     const usageEvent = await tx.usageEvent.create({
       data: {
         clientId: input.clientId,
+        workspaceId: workspace.id,
         userId: input.userId ?? null,
         projectId: input.projectId ?? null,
         websiteId: input.websiteId ?? null,
@@ -308,25 +396,39 @@ export async function preflightUsage(input: UsagePreflightInput) {
         actionKey,
         idempotencyKey: input.idempotencyKey ?? null,
         creditsReserved: creditCost,
+        includedUnitsReserved: includedUnits,
+        purchasedUnitsReserved: purchasedUnits,
         inputUnits: units,
         approvalTokenHash: hashToken(token),
         approvalTokenExpiresAt: expiresAt,
-        metadataJson: { ...(input.metadata ?? {}), creditAccountId: account.id } as Prisma.InputJsonValue,
+        metadataJson: {
+          ...(input.metadata ?? {}),
+          capacityAccountId: account.id,
+          pricingVersion: feature.pricingVersion,
+          pricingModel: feature.pricingModel,
+          pricingConfig: feature.pricingConfigJson,
+          minimumUnitCost: feature.minimumUnitCost,
+          maximumUnitCost: feature.maximumUnitCost,
+          baseUnitCost: feature.defaultCreditCost,
+        } as Prisma.InputJsonValue,
       },
     });
-    if (creditCost > 0) {
-      await tx.creditTransaction.create({
-        data: {
-          clientId: input.clientId,
-          usageEventId: usageEvent.id,
-          type: "debit",
-          amount: -creditCost,
-          balanceAfter: updated.balance,
-          reason: actionKey,
-          metadataJson: { featureKey: input.featureKey },
-        },
-      });
-    }
+    const ledgerRows = [
+      includedUnits > 0 ? { bucket: "included", amount: -includedUnits, balanceAfter: updated.includedBalance } : null,
+      purchasedUnits > 0 ? { bucket: "purchased", amount: -purchasedUnits, balanceAfter: updated.purchasedBalance } : null,
+    ].filter((row): row is { bucket: string; amount: number; balanceAfter: number } => Boolean(row));
+    for (const row of ledgerRows) await tx.workspaceCapacityTransaction.create({ data: {
+      workspaceId: workspace.id,
+      accountId: account.id,
+      usageEventId: usageEvent.id,
+      bucket: row.bucket,
+      type: "reserve",
+      amount: row.amount,
+      balanceAfter: row.balanceAfter,
+      reason: actionKey.slice(0, 255),
+      correlationId: input.idempotencyKey ?? usageEvent.id,
+      metadataJson: { featureKey: input.featureKey, pricingVersion: feature.pricingVersion },
+    } });
     return usageEvent;
   });
 
@@ -342,7 +444,7 @@ export async function preflightUsage(input: UsagePreflightInput) {
     expiresAt,
     feature,
     creditsReserved: creditCost,
-    estimatedProviderCostUsd: roundCost(feature.estimatedProviderCost * units),
+    estimatedProviderCostUsd: roundCost(feature.estimatedProviderCost * Math.max(1, units)),
   };
 }
 
@@ -363,12 +465,19 @@ export async function commitUsage(input: CommitUsageInput) {
   }
 
   const providerCostUsd = roundCost(input.providerCostUsd ?? 0);
+  const actualUnits = input.actualUnits == null
+    ? usageEvent.creditsReserved
+    : Math.max(0, Math.min(usageEvent.creditsReserved, Math.floor(input.actualUnits)));
+  const includedCommitted = Math.min(actualUnits, usageEvent.includedUnitsReserved);
+  const purchasedCommitted = Math.max(0, actualUnits - includedCommitted);
+  const includedRefunded = usageEvent.includedUnitsReserved - includedCommitted;
+  const purchasedRefunded = usageEvent.purchasedUnitsReserved - purchasedCommitted;
   return prisma.$transaction(async (tx) => {
     const claimed = await tx.usageEvent.updateMany({
       where: { id: usageEvent.id, status: "reserved" },
       data: {
         status: "committed",
-        creditsCommitted: usageEvent.creditsReserved,
+        creditsCommitted: actualUnits,
         providerCostUsd,
         committedAt: new Date(),
         metadataJson: { ...(usageEvent.metadataJson as object), ...(input.metadata ?? {}) } as Prisma.InputJsonValue,
@@ -376,14 +485,51 @@ export async function commitUsage(input: CommitUsageInput) {
     });
     if (!claimed.count) return tx.usageEvent.findUniqueOrThrow({ where: { id: usageEvent.id } });
     const updated = await tx.usageEvent.findUniqueOrThrow({ where: { id: usageEvent.id } });
-    const creditAccountId = usageEvent.metadataJson && typeof usageEvent.metadataJson === "object" && !Array.isArray(usageEvent.metadataJson)
-      ? String((usageEvent.metadataJson as Record<string, unknown>).creditAccountId ?? "")
-      : "";
-    if (creditAccountId && usageEvent.creditsReserved > 0) {
-      await tx.creditAccount.updateMany({
-        where: { id: creditAccountId, clientId: usageEvent.clientId },
-        data: { monthlyUsed: { increment: usageEvent.creditsReserved } },
+    const metadata = usageEvent.metadataJson && typeof usageEvent.metadataJson === "object" && !Array.isArray(usageEvent.metadataJson)
+      ? usageEvent.metadataJson as Record<string, unknown>
+      : {};
+    const capacityAccountId = String(metadata.capacityAccountId ?? "");
+    if (capacityAccountId && usageEvent.workspaceId) {
+      const capacityAccount = await tx.workspaceCapacityAccount.update({
+        where: { id: capacityAccountId },
+        data: {
+          includedReserved: { decrement: usageEvent.includedUnitsReserved },
+          includedUsed: { increment: includedCommitted },
+          includedBalance: { increment: includedRefunded },
+          purchasedReserved: { decrement: usageEvent.purchasedUnitsReserved },
+          purchasedUsed: { increment: purchasedCommitted },
+          purchasedBalance: { increment: purchasedRefunded },
+        },
       });
+      for (const row of [
+        usageEvent.includedUnitsReserved > 0 ? { bucket: "included", committed: includedCommitted, refunded: includedRefunded, balanceAfter: capacityAccount.includedBalance } : null,
+        usageEvent.purchasedUnitsReserved > 0 ? { bucket: "purchased", committed: purchasedCommitted, refunded: purchasedRefunded, balanceAfter: capacityAccount.purchasedBalance } : null,
+      ].filter((row): row is { bucket: string; committed: number; refunded: number; balanceAfter: number } => Boolean(row))) {
+        await tx.workspaceCapacityTransaction.create({ data: {
+          workspaceId: usageEvent.workspaceId,
+          accountId: capacityAccountId,
+          usageEventId: usageEvent.id,
+          bucket: row.bucket,
+          type: "commit",
+          amount: 0,
+          balanceAfter: row.balanceAfter,
+          reason: creditTransactionReason(`Committed ${row.committed} units for ${usageEvent.actionKey}`),
+          correlationId: usageEvent.id,
+          metadataJson: { committedUnits: row.committed, refundedUnits: row.refunded, featureKey: usageEvent.featureKey },
+        } });
+        if (row.refunded > 0) await tx.workspaceCapacityTransaction.create({ data: {
+          workspaceId: usageEvent.workspaceId,
+          accountId: capacityAccountId,
+          usageEventId: usageEvent.id,
+          bucket: row.bucket,
+          type: "refund",
+          amount: row.refunded,
+          balanceAfter: row.balanceAfter,
+          reason: creditTransactionReason(`Unused reservation returned for ${usageEvent.actionKey}`),
+          correlationId: usageEvent.id,
+          metadataJson: { featureKey: usageEvent.featureKey, partialSettlement: true },
+        } });
+      }
     }
     if (providerCostUsd > 0 || input.inputTokens || input.outputTokens || input.provider) {
       await tx.providerCostEvent.create({
@@ -412,36 +558,41 @@ export async function refundUsage(input: { usageEventId: string; reason?: string
   if (usageEvent.creditsReserved <= 0 || usageEvent.status === "committed") {
     return prisma.usageEvent.update({ where: { id: usageEvent.id }, data: { status: "failed", error: input.reason?.trim() || "failed after commit check" } });
   }
-  const creditAccountId = usageEvent.metadataJson && typeof usageEvent.metadataJson === "object" && !Array.isArray(usageEvent.metadataJson)
-    ? String((usageEvent.metadataJson as Record<string, unknown>).creditAccountId ?? "")
-    : "";
-  const account = creditAccountId
-    ? await prisma.creditAccount.findFirst({ where: { id: creditAccountId, clientId: usageEvent.clientId } })
-    : await ensureCreditAccount(usageEvent.clientId);
-  if (!account) throw new Error("usage credit account not found");
+  const metadata = usageEvent.metadataJson && typeof usageEvent.metadataJson === "object" && !Array.isArray(usageEvent.metadataJson)
+    ? usageEvent.metadataJson as Record<string, unknown>
+    : {};
+  const capacityAccountId = String(metadata.capacityAccountId ?? "");
+  if (!capacityAccountId || !usageEvent.workspaceId) throw new Error("usage capacity account not found");
   return prisma.$transaction(async (tx) => {
     const released = await tx.usageEvent.updateMany({
       where: { id: usageEvent.id, status: "reserved" },
       data: { status: "refunded", refundedAt: new Date(), error: fullReason },
     });
     if (!released.count) return tx.usageEvent.findUniqueOrThrow({ where: { id: usageEvent.id } });
-    const updatedAccount = await tx.creditAccount.update({
-      where: { id: account.id },
-      data: { balance: { increment: usageEvent.creditsReserved } },
-    });
-    await tx.creditTransaction.create({
+    const updatedAccount = await tx.workspaceCapacityAccount.update({
+      where: { id: capacityAccountId },
       data: {
-        clientId: usageEvent.clientId,
-        usageEventId: usageEvent.id,
-        type: "refund",
-        amount: usageEvent.creditsReserved,
-        balanceAfter: updatedAccount.balance,
-        // The full diagnostic remains on UsageEvent.error (Text). The ledger's
-        // reason column is VarChar(255), so bound it without rolling back the
-        // otherwise valid credit refund transaction.
-        reason: creditTransactionReason(fullReason),
+        includedBalance: { increment: usageEvent.includedUnitsReserved },
+        includedReserved: { decrement: usageEvent.includedUnitsReserved },
+        purchasedBalance: { increment: usageEvent.purchasedUnitsReserved },
+        purchasedReserved: { decrement: usageEvent.purchasedUnitsReserved },
       },
     });
+    for (const row of [
+      usageEvent.includedUnitsReserved > 0 ? { bucket: "included", amount: usageEvent.includedUnitsReserved, balanceAfter: updatedAccount.includedBalance } : null,
+      usageEvent.purchasedUnitsReserved > 0 ? { bucket: "purchased", amount: usageEvent.purchasedUnitsReserved, balanceAfter: updatedAccount.purchasedBalance } : null,
+    ].filter((row): row is { bucket: string; amount: number; balanceAfter: number } => Boolean(row))) await tx.workspaceCapacityTransaction.create({ data: {
+      workspaceId: usageEvent.workspaceId,
+      accountId: capacityAccountId,
+      usageEventId: usageEvent.id,
+      bucket: row.bucket,
+      type: "refund",
+      amount: row.amount,
+      balanceAfter: row.balanceAfter,
+      reason: creditTransactionReason(fullReason),
+      correlationId: usageEvent.id,
+      metadataJson: { featureKey: usageEvent.featureKey },
+    } });
     return tx.usageEvent.findUniqueOrThrow({ where: { id: usageEvent.id } });
   });
 }

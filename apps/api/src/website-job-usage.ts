@@ -15,6 +15,10 @@ export async function reserveWebsiteJobUsage(jobId: string) {
   const input = objectValue(job.inputJson);
   const mode = String(input.mode || "website_generation");
   const pageCount = Math.max(1, stringList(input.pageIds).length);
+  const generateImages = input.generateImages !== false;
+  const imageCount = mode === "image_generation"
+    ? Math.max(1, Number(input.imageCount || pageCount))
+    : generateImages ? pageCount + 2 : 0;
   const featureKey = mode === "image_generation" ? "website_image_generate" : "website_page_generate";
   const actionKey = mode === "image_generation"
     ? "Generate website images"
@@ -37,7 +41,7 @@ export async function reserveWebsiteJobUsage(jobId: string) {
         actionKey,
         inputUnits: pageCount,
         idempotencyKey,
-        metadata: { websiteBuildJobId: job.id, mode, pageCount, execution: "background_job" },
+        metadata: { websiteBuildJobId: job.id, mode, pageCount, imageCount, generateImages, execution: "background_job" },
       });
 
   const linked = await prisma.$transaction(async (tx) => {

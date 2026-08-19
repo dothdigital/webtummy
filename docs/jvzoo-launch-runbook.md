@@ -18,23 +18,34 @@ Configure JVZIPN Complete Processing to send `POST` requests to:
 
 1. Back up the production database.
 2. Apply `packages/db/prisma/dev053-jvzoo-complete-processing.sql`.
-3. Run `npm run db:generate` for the release artifact.
-4. Validate that the new `ExternalSubscription` and `ExternalSubscriptionActivationToken` tables exist and that `CommercialBillingEvent` uses the provider/event-fingerprint unique index.
-5. Do not use `prisma db push --accept-data-loss` to replace the event constraint. The SQL migration safely backfills existing rows first.
+3. Apply `packages/db/prisma/dev060-jvzoo-lifecycle-readiness.sql` to add and backfill searchable product and buyer fields on existing webhook events.
+4. Run `npm run db:generate` for the release artifact.
+5. Validate that the new `ExternalSubscription` and `ExternalSubscriptionActivationToken` tables exist and that `CommercialBillingEvent` uses the provider/event-fingerprint unique index.
+6. Do not use `prisma db push --accept-data-loss` to replace the event constraint. The SQL migrations safely backfill existing rows first.
 
 The migration is additive except for replacing the old provider/event-ID unique index. Rolling application code back is safe while the new tables and columns remain in place; do not drop them during an incident.
 
 ## Product catalogue
 
-Enter every approved JVZoo product in Commercial Admin. Each active JVZoo product ID must resolve to one current SEnuke AI price and plan:
+Enter every approved JVZoo product in Commercial Admin. Each active JVZoo product ID must resolve to one current SEnuke AI - AI Growth Operating System price and plan:
 
 | SEnuke plan | Workspace type | Required offers |
 | --- | --- | --- |
-| Starter | Personal | Monthly and annual product IDs |
+| Entrepreneur | Personal | Monthly and annual product IDs |
 | Business | Business | Monthly and annual product IDs |
 | Agency | Agency | Monthly and annual product IDs |
 
-The received product ID, amount, currency, and effective date must match the saved mapping. Mismatches remain unresolved and never grant access. Reusing an active product ID for another price is rejected.
+The received product ID, amount, currency, and effective date must match the saved mapping. Successful rebills must also match the subscription's protected amount and currency. Mismatches remain unresolved and never grant access. Reusing an active product ID for another price is rejected.
+
+Current founding product IDs:
+
+| Offer | Monthly | Annual |
+| --- | --- | --- |
+| Entrepreneur | `447807` | `448957` |
+| Business | `448953` | `449155` |
+| Agency | `448955` | `449157` |
+
+Do not close founding pricing until all six standard monthly and annual products have both a unique JVZoo product ID and a checkout URL. Commercial Admin enforces this precondition. Existing founding subscriptions retain their stored price when founding pricing closes.
 
 ## Lifecycle behavior
 
@@ -67,8 +78,10 @@ Do not infer missing vendor fields from checkout-page labels or browser input.
 3. Deliver the same payload again and confirm it is treated as a duplicate.
 4. Confirm an unmapped or amount-mismatched product remains unresolved.
 5. Activate the emailed single-use link and confirm a second simultaneous activation cannot consume it.
-6. Confirm the correct Personal, Business, or Agency workspace receives the entitlement.
-7. Test rebill, cancellation through the paid-through date, refund, and chargeback.
-8. Replay a failed/unresolved event from Commercial Admin.
-9. Confirm activation recovery is rate-limited across API instances through Redis.
-10. Review the commercial audit log and ensure no signing secret, activation token, or complete raw payload is written to application logs.
+6. Confirm a new buyer receives the post-activation welcome email and can sign in with the password created during activation.
+7. Confirm the correct Personal, Business, or Agency workspace receives the entitlement.
+8. Test rebill, cancellation through the paid-through date, refund, and chargeback.
+9. Confirm the customer billing page explains cancellation, refund, chargeback, and ended-access states correctly.
+10. Replay a failed/unresolved event from Commercial Admin and inspect the protected raw/normalized payload view.
+11. Confirm activation recovery is rate-limited across API instances through Redis.
+12. Review the commercial audit log and ensure no signing secret, activation token, or complete raw payload is written to application logs.

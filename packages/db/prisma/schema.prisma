@@ -13,7 +13,7 @@ datasource db {
 // ─── Auth + tenancy (RBAC) ────────────────────────────────────────────────────
 //
 // Roles:
-//  - super_admin : SEnuke AI staff. No clientId. Creates clients + client users,
+//  - super_admin : SEnuke AI - AI Growth Operating System staff. No clientId. Creates clients + client users,
 //                  sees everything across all tenants.
 //  - client_admin: belongs to one Client. Manages that client's websites, crawls,
 //                  reports, and can invite client_users in the same client.
@@ -180,6 +180,9 @@ model Workspace {
   providerReferences      CommercialProviderReference[]
   commercialAuditEvents   CommercialAuditEvent[]
   retentionCases          CommercialRetentionCase[]
+  capacityAccounts        WorkspaceCapacityAccount[]
+  capacityTransactions    WorkspaceCapacityTransaction[]
+  capacityUsageEvents     UsageEvent[]
   externalSubscriptions   ExternalSubscription[]
   whiteLabelProfiles      WhiteLabelProfile[]
   agencyDocuments         GapReportExport[]
@@ -755,6 +758,8 @@ model CommercialBillingEvent {
   providerEventId        String                @db.VarChar(191)
   eventFingerprint       String?               @db.VarChar(64)
   providerTransactionId  String?               @db.VarChar(191)
+  providerProductRef     String?               @db.VarChar(191)
+  providerCustomerEmail  String?               @db.VarChar(320)
   providerStatus         String?               @db.VarChar(80)
   externalSubscriptionId String?
   externalSubscription   ExternalSubscription? @relation(fields: [externalSubscriptionId], references: [id], onDelete: SetNull)
@@ -771,6 +776,8 @@ model CommercialBillingEvent {
 
   @@unique([provider, eventFingerprint])
   @@index([provider, providerEventId])
+  @@index([provider, providerProductRef, createdAt])
+  @@index([provider, providerCustomerEmail, createdAt])
   @@index([externalSubscriptionId, createdAt])
   @@index([workspaceId, createdAt])
   @@index([status, createdAt])
@@ -894,6 +901,82 @@ model CommercialRetentionCase {
   @@index([retentionEndsAt])
 }
 
+// DEV-059 workspace-owned AI Capacity. The earlier Client/CreditAccount
+// records remain as read-only migration history; all new reservations use
+// these workspace-scoped balances and ledger entries.
+model WorkspaceCapacityAccount {
+  id                  String    @id @default(cuid())
+  workspaceId         String
+  workspace           Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  periodStart         DateTime
+  periodEnd           DateTime
+  includedAllowance   Int       @default(0)
+  includedBalance     Int       @default(0)
+  includedReserved    Int       @default(0)
+  includedUsed        Int       @default(0)
+  purchasedBalance    Int       @default(0)
+  purchasedReserved   Int       @default(0)
+  purchasedUsed       Int       @default(0)
+  status              String    @default("active") @db.VarChar(40)
+  pricingVersion      Int       @default(1)
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
+
+  transactions WorkspaceCapacityTransaction[]
+
+  @@unique([workspaceId, periodStart])
+  @@index([workspaceId, status])
+  @@index([periodEnd])
+}
+
+model WorkspaceCapacityTransaction {
+  id             String                    @id @default(cuid())
+  workspaceId    String
+  workspace      Workspace                 @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  accountId      String?
+  account        WorkspaceCapacityAccount? @relation(fields: [accountId], references: [id], onDelete: SetNull)
+  usageEventId   String?                   @db.VarChar(191)
+  bucket         String                    @db.VarChar(30) // included | purchased
+  type           String                    @db.VarChar(40) // grant | reserve | commit | refund | adjustment | reset | expiry
+  amount         Int
+  balanceAfter   Int
+  reason         String                    @db.VarChar(255)
+  actorId        String?
+  correlationId  String?                   @db.VarChar(191)
+  metadataJson   Json                      @default("{}")
+  createdAt      DateTime                  @default(now())
+
+  @@index([workspaceId, createdAt])
+  @@index([accountId, createdAt])
+  @@index([usageEventId])
+  @@index([type])
+}
+
+model CommercialAddonSku {
+  id                 String   @id @default(cuid())
+  code               String   @unique @db.VarChar(120)
+  kind               String   @db.VarChar(40) // capacity_pack | business_seat | agency_seat
+  name               String   @db.VarChar(160)
+  description        String   @db.Text
+  billingInterval    String   @default("one_time") @db.VarChar(20)
+  currency           String   @default("USD") @db.VarChar(3)
+  amountCents        Int
+  capacityUnits      Int      @default(0)
+  seatQuantity       Int      @default(0)
+  workspaceTypes     Json     @default("[]")
+  nonExpiring        Boolean  @default(false)
+  provider           String   @default("jvzoo") @db.VarChar(40)
+  providerProductRef String?  @db.VarChar(191)
+  checkoutUrl        String?  @db.VarChar(1000)
+  status             String   @default("active") @db.VarChar(40)
+  configJson         Json     @default("{}")
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  @@index([kind, status])
+  @@index([provider, providerProductRef, status])
+}
+
 // ─── Usage, Limits, Credits & Cost Control ──────────────────────────────────
 
 model FeatureCostCatalog {
@@ -910,6 +993,11 @@ model FeatureCostCatalog {
   cacheTtlMinutes       Int      @default(0)
   isActive              Boolean  @default(true)
   configJson            Json     @default("{}")
+  pricingVersion        Int      @default(1)
+  pricingModel          String   @default("fixed") @db.VarChar(40)
+  pricingConfigJson     Json     @default("{}")
+  minimumUnitCost       Int?
+  maximumUnitCost       Int?
   createdAt             DateTime @default(now())
   updatedAt             DateTime @updatedAt
 
@@ -986,6 +1074,8 @@ model UsageEvent {
   userId                 String?
   projectId              String?
   websiteId              String?
+  workspaceId            String?
+  capacityWorkspace      Workspace?         @relation(fields: [workspaceId], references: [id], onDelete: SetNull)
   featureKey             String             @db.VarChar(120)
   feature                FeatureCostCatalog @relation(fields: [featureKey], references: [featureKey], onDelete: Restrict)
   actionKey              String             @db.VarChar(160)
@@ -993,6 +1083,8 @@ model UsageEvent {
   status                 String             @default("reserved") @db.VarChar(40)
   creditsReserved        Int                @default(0)
   creditsCommitted       Int                @default(0)
+  includedUnitsReserved  Int                @default(0)
+  purchasedUnitsReserved Int                @default(0)
   providerCostUsd        Float              @default(0)
   inputUnits             Int                @default(1)
   approvalTokenHash      String?            @unique @db.VarChar(191)
@@ -4600,6 +4692,8 @@ model KeywordResearchRun {
   error                String?   @db.Text
   createdAt            DateTime  @default(now())
   completedAt          DateTime?
+  usageEventId         String?   @db.VarChar(191)
+  capacityCheckType    String?   @db.VarChar(20)
 
   ideas       KeywordIdea[]
   competitors KeywordSerpCompetitor[]
@@ -4609,6 +4703,7 @@ model KeywordResearchRun {
   @@index([websiteId])
   @@index([projectId])
   @@index([createdAt])
+  @@index([usageEventId])
 }
 
 model KeywordIdea {

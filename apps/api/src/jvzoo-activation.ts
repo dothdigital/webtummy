@@ -20,6 +20,10 @@ function maskedEmail(email: string) {
   return `${name.slice(0, 2)}${"*".repeat(Math.max(2, name.length - 2))}@${domain}`;
 }
 
+function escapeHtml(value: string) {
+  return value.replace(/[&<>"']/g, (character) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[character] ?? character);
+}
+
 async function usableToken(token: string) {
   const record = await prisma.externalSubscriptionActivationToken.findUnique({
     where: { tokenHash: activationHash(token) },
@@ -47,9 +51,9 @@ export async function issueJvZooActivationEmail(externalSubscriptionId: string) 
   try {
     await sendMail({
       to: external.providerCustomerEmail,
-      subject: "Activate your SEnuke AI purchase",
-      text: `Activate your ${external.planCode ?? "SEnuke AI"} purchase: ${link}. This secure link expires in 72 hours and can be used once.`,
-      html: `<p>Thank you for purchasing SEnuke AI.</p><p><a href="${link}">Activate your ${external.planCode ?? "SEnuke AI"} access</a></p><p>This secure link expires in 72 hours and can be used once.</p>`,
+      subject: "Activate your SEnuke AI - AI Growth Operating System purchase",
+      text: `Activate your ${external.planCode ?? "SEnuke AI - AI Growth Operating System"} purchase: ${link}. This secure link expires in 72 hours and can be used once.`,
+      html: `<p>Thank you for purchasing SEnuke AI - AI Growth Operating System.</p><p><a href="${link}">Activate your ${external.planCode ?? "SEnuke AI - AI Growth Operating System"} access</a></p><p>This secure link expires in 72 hours and can be used once.</p>`,
     });
     await prisma.externalSubscription.update({ where: { id: external.id }, data: { activationEmailSentAt: new Date(), activationEmailError: null } });
     return { sent: true };
@@ -95,6 +99,18 @@ export async function inspectJvZooActivation(token: string) {
   };
 }
 
+async function issueJvZooWelcomeEmail(input: { email: string; name: string; planCode: string | null }) {
+  const loginUrl = `${config.webAppUrl.replace(/\/$/, "")}/login`;
+  const safeName = escapeHtml(input.name);
+  const safePlan = escapeHtml(input.planCode ?? "SEnuke AI - AI Growth Operating System");
+  await sendMail({
+    to: input.email,
+    subject: "Welcome to SEnuke AI - AI Growth Operating System",
+    text: `Welcome ${input.name}. Your ${input.planCode ?? "SEnuke AI - AI Growth Operating System"} purchase is active and your workspace is ready. Sign in at ${loginUrl}`,
+    html: `<p>Welcome ${safeName}.</p><p>Your <strong>${safePlan}</strong> purchase is active and your workspace is ready.</p><p><a href="${loginUrl}">Sign in to SEnuke AI - AI Growth Operating System</a></p>`,
+  });
+}
+
 export async function activateJvZooPurchase(input: { token: string; name?: string; password: string }) {
   const record = await usableToken(input.token);
   if (!record) throw Object.assign(new Error("This activation link is invalid or expired."), { statusCode: 400 });
@@ -102,17 +118,17 @@ export async function activateJvZooPurchase(input: { token: string; name?: strin
   const existing = await prisma.user.findFirst({ where: { email: { equals: external.providerCustomerEmail, mode: "insensitive" } } });
   if (existing) {
     if (!existing.isActive || !(await verifyPassword(input.password, existing.passwordHash))) {
-      throw Object.assign(new Error("The password for this SEnuke AI account is incorrect."), { statusCode: 401 });
+      throw Object.assign(new Error("The password for this SEnuke AI - AI Growth Operating System account is incorrect."), { statusCode: 401 });
     }
   } else if (!input.name?.trim()) {
     throw Object.assign(new Error("Your name is required to create the account."), { statusCode: 400 });
   }
 
   const workspaceType = workspaceTypeForCommercialPlan(external.planCode);
-  const name = input.name?.trim() || existing?.name?.trim() || external.providerCustomerName?.trim() || "SEnuke AI Customer";
+  const name = input.name?.trim() || existing?.name?.trim() || external.providerCustomerName?.trim() || "SEnuke AI - AI Growth Operating System Customer";
   const passwordHash = existing ? null : await hashPassword(input.password);
   const now = new Date();
-  return prisma.$transaction(async (tx) => {
+  const result = await prisma.$transaction(async (tx) => {
     const claimed = await tx.externalSubscriptionActivationToken.updateMany({
       where: { id: record.id, usedAt: null, expiresAt: { gt: now } },
       data: { usedAt: now },
@@ -128,7 +144,7 @@ export async function activateJvZooPurchase(input: { token: string; name?: strin
     let workspaceId: string;
     if (existing) {
       const currentUser = await tx.user.findUnique({ where: { id: existing.id }, select: { id: true, isActive: true } });
-      if (!currentUser?.isActive) throw Object.assign(new Error("This SEnuke AI account is not active."), { statusCode: 409, code: "account_inactive" });
+      if (!currentUser?.isActive) throw Object.assign(new Error("This SEnuke AI - AI Growth Operating System account is not active."), { statusCode: 409, code: "account_inactive" });
       const memberships = await tx.workspaceMembership.findMany({
         where: { userId: existing.id, status: "active", workspace: { workspaceType }, roles: { some: { role: "owner" } } },
         orderBy: { createdAt: "asc" },
@@ -187,4 +203,12 @@ export async function activateJvZooPurchase(input: { token: string; name?: strin
     });
     return { activated: true, accountCreated: !existing, workspaceId };
   });
+  if (result.accountCreated) {
+    await issueJvZooWelcomeEmail({ email: external.providerCustomerEmail, name, planCode: external.planCode }).catch((error) => {
+      // Account activation must not be rolled back when an optional onboarding
+      // message fails; Operations can resend onboarding separately.
+      console.error("[jvzoo] post-activation welcome email failed", { errorType: error instanceof Error ? error.name : "unknown" });
+    });
+  }
+  return result;
 }

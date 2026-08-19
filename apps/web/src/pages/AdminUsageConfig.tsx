@@ -65,7 +65,7 @@ function asNumber(value: string, fallback = 0) {
 }
 
 export default function AdminUsageConfig() {
-  const [tab, setTab] = useState<Tab>("costs");
+  const [tab, setTab] = useState<Tab>("budgets");
   const [features, setFeatures] = useState<FeatureCost[]>([]);
   const [budgetCaps, setBudgetCaps] = useState<BudgetCap[]>([]);
   const [modelRoutes, setModelRoutes] = useState<ModelRoute[]>([]);
@@ -202,7 +202,7 @@ export default function AdminUsageConfig() {
       <div className="flex flex-col gap-3 xl:flex-row xl:items-end xl:justify-between">
         <div>
           <h1 className="text-[28px] font-bold leading-tight text-charcoal-950">Usage & Cost Controls</h1>
-          <p className="text-sm text-slate-500">Admin configuration for feature costs, plan limits, credits, budget caps, and model routing.</p>
+          <p className="text-sm text-slate-500">Operational budget caps and AI model routing. Plan capacity, workflow units, seats, and add-ons are managed in Commercial Admin.</p>
         </div>
         <Button variant="ghost" onClick={() => void load()} disabled={busy}>Refresh</Button>
       </div>
@@ -210,15 +210,15 @@ export default function AdminUsageConfig() {
       {message && <Card className="p-4 text-sm font-semibold text-slate-700">{message}</Card>}
 
       <div className="grid gap-4 md:grid-cols-4">
-        <Metric label="Tracked features" value={features.length} />
-        <Metric label="Plan-limit rows" value={features.reduce((sum, feature) => sum + feature.planLimits.length, 0)} />
+        <Metric label="Tracked workflows" value={features.length} />
+        <Metric label="Retired plan-limit rows" value={features.reduce((sum, feature) => sum + feature.planLimits.length, 0)} />
         <Metric label="Budget caps" value={budgetCaps.length} />
         <Metric label="Model routes" value={modelRoutes.length} />
       </div>
 
       <Card className="p-2">
         <div className="flex flex-wrap gap-2">
-          {(["costs", "limits", "budgets", "models"] as Tab[]).map((item) => (
+          {(["budgets", "models"] as Tab[]).map((item) => (
             <button
               key={item}
               type="button"
@@ -235,7 +235,7 @@ export default function AdminUsageConfig() {
         <Card className="overflow-hidden">
           <div className="border-b border-slate-100 p-4">
             <div className="font-bold text-charcoal-950">Feature Catalog</div>
-            <p className="mt-1 text-xs text-slate-500">Select a feature to edit cost, limits, and routing.</p>
+            <p className="mt-1 text-xs text-slate-500">Select a workflow to configure model routing. Unit prices live in Commercial Admin.</p>
           </div>
           <div className="max-h-[620px] overflow-auto">
             {features.map((feature) => (
@@ -246,7 +246,7 @@ export default function AdminUsageConfig() {
                 className={`block w-full border-b border-slate-100 p-4 text-left ${selectedFeature?.featureKey === feature.featureKey ? "bg-brand-50" : "hover:bg-slate-50"}`}
               >
                 <div className="text-sm font-bold text-charcoal-950">{feature.label}</div>
-                <div className="mt-1 text-xs text-slate-500">{titleCase(feature.moduleName)} · {feature.defaultCreditCost} credits</div>
+                <div className="mt-1 text-xs text-slate-500">{titleCase(feature.moduleName)} · {feature.defaultCreditCost} capacity units</div>
               </button>
             ))}
           </div>

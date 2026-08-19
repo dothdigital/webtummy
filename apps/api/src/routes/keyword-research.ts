@@ -19,6 +19,8 @@ import { keywordResearchQueue, queueConnection, type KeywordResearchQueueJobData
 import { centralAiJson } from "../central-ai-service.js";
 import { approvedStrategyContext } from "../strategy-ai.js";
 import { canonicalGeographicLocationLabel, isPlausibleGeographicTargetMarket } from "../project-location.js";
+import { commitUsage, preflightUsage, refundUsage } from "../usage-engine.js";
+import { calculateWorkflowUnits } from "../commercial-capacity.js";
 
 export const keywordResearchRouter = Router();
 keywordResearchRouter.use(requireAuth);
@@ -775,7 +777,13 @@ async function assertKeywordResearchQueueCapacity(scope: { clientId: string; pro
   return { projectActive, globalActive };
 }
 
-async function createOrReuseKeywordResearchRun(input: KeywordCreateInput, scope: KeywordResearchScope, location: SearchLocation, bypassRefreshLimit: boolean, enforceCapacity = true) {
+async function createOrReuseKeywordResearchRun(
+  input: KeywordCreateInput,
+  scope: KeywordResearchScope,
+  location: SearchLocation,
+  bypassRefreshLimit: boolean,
+  options: { enforceCapacity?: boolean; usageEventId?: string | null; userId?: string | null } = {},
+) {
   validateKeywordLocationPair(input, scope, location);
   const { targetDomain, targetUrl } = keywordResearchTargets(input, scope);
   const requestKey = keywordResearchRequestKey(input, scope, location, targetDomain);
@@ -793,7 +801,20 @@ async function createOrReuseKeywordResearchRun(input: KeywordCreateInput, scope:
   if (existingRun && !["failed", "cancelled", "canceled"].includes(existingRun.status)) {
     return { run: withRefreshState(existingRun, bypassRefreshLimit), reused: true, retried: false };
   }
-  if (enforceCapacity) await assertKeywordResearchQueueCapacity(scope);
+  if (options.enforceCapacity !== false) await assertKeywordResearchQueueCapacity(scope);
+
+  const capacityCheckType = location.locationType === "Country" ? "country" : "local";
+  const ownedReservation = !options.usageEventId;
+  const reservation = options.usageEventId ? { usageEventId: options.usageEventId } : await preflightUsage({
+    clientId: scope.clientId,
+    userId: options.userId,
+    projectId: scope.project?.id,
+    websiteId: scope.website?.id,
+    featureKey: "keyword_research_batch",
+    actionKey: "Run keyword-market research",
+    idempotencyKey: `keyword-research:${requestKey}:${Date.now()}`,
+    metadata: { countryChecks: capacityCheckType === "country" ? 1 : 0, localChecks: capacityCheckType === "local" ? 1 : 0 },
+  });
 
   const run = await prisma.keywordResearchRun.create({
     data: {
@@ -810,6 +831,8 @@ async function createOrReuseKeywordResearchRun(input: KeywordCreateInput, scope:
       serpDepth: input.serpDepth,
       keywordLimit: input.keywordLimit,
       status: "queued",
+      usageEventId: reservation.usageEventId,
+      capacityCheckType,
     },
   });
   try {
@@ -819,6 +842,7 @@ async function createOrReuseKeywordResearchRun(input: KeywordCreateInput, scope:
       where: { id: run.id, status: "queued" },
       data: { status: "failed", error: "Keyword research could not enter the processing queue. Retry this exact check.", completedAt: new Date() },
     });
+    if (ownedReservation) await refundUsage({ usageEventId: reservation.usageEventId, reason: "Keyword research could not enter the processing queue." }).catch(() => undefined);
     throw error;
   }
   return { run: withRefreshState(run, bypassRefreshLimit), reused: Boolean(existingRun), retried: Boolean(existingRun) };
@@ -872,7 +896,7 @@ keywordResearchRouter.post("/keyword-research", async (req, res) => {
   try {
     const scope = await keywordResearchScopeForRequest(req, input);
     const location = await resolveExactSearchLocation(input.locationName, input.seedKeyword);
-    const result = await createOrReuseKeywordResearchRun(input, scope, location, bypassRefreshLimit);
+    const result = await createOrReuseKeywordResearchRun(input, scope, location, bypassRefreshLimit, { userId: req.user?.userId });
     return res.status(result.run.status === "completed" ? 200 : 202).json(result);
   } catch (error) {
     if (error instanceof KeywordResearchHttpError) return res.status(error.status).json({ error: error.message, ...(error.details ?? {}) });
@@ -965,6 +989,12 @@ keywordResearchRouter.post("/keyword-research/batch", async (req, res) => {
     const existing = latestExistingByKey.get(requestKey);
     return !existing || ["failed", "cancelled", "canceled"].includes(existing.status);
   }).length;
+  const newChecks = checks.filter(({ input, location }) => {
+    const { targetDomain } = keywordResearchTargets(input, scope);
+    const requestKey = keywordResearchRequestKey(input, scope, location, targetDomain);
+    const existing = latestExistingByKey.get(requestKey);
+    return !existing || ["failed", "cancelled", "canceled"].includes(existing.status);
+  });
   const activeWhere = scope.project?.id ? { projectId: scope.project.id } : { clientId: scope.clientId };
   const [projectActive, globalActive] = await Promise.all([
     prisma.keywordResearchRun.count({ where: { ...activeWhere, status: { in: ["queued", "running"] } } }),
@@ -987,11 +1017,33 @@ keywordResearchRouter.post("/keyword-research/batch", async (req, res) => {
     });
   }
 
+  let batchUsageEventId: string | null = null;
+  if (newChecks.length) {
+    try {
+      const countryChecks = newChecks.filter(({ location }) => location.locationType === "Country").length;
+      const localChecks = newChecks.length - countryChecks;
+      const usage = await preflightUsage({
+        clientId: scope.clientId,
+        userId: req.user?.userId,
+        projectId: scope.project?.id,
+        websiteId: scope.website?.id,
+        featureKey: "keyword_research_batch",
+        actionKey: "Run keyword-market research batch",
+        idempotencyKey: `keyword-research-batch:${Date.now()}:${requestKeys.join(":")}`,
+        inputUnits: newChecks.length,
+        metadata: { countryChecks, localChecks },
+      });
+      batchUsageEventId = usage.usageEventId;
+    } catch (error) {
+      return res.status(Number((error as { statusCode?: number }).statusCode || 402)).json({ error: error instanceof Error ? error.message : "Could not reserve AI Capacity for keyword research." });
+    }
+  }
+
   const accepted: Array<{ run: Awaited<ReturnType<typeof createOrReuseKeywordResearchRun>>["run"]; requestedLocation: string; resolvedLocation: string; reused: boolean; retried: boolean }> = [];
   const failed: Array<{ keyword: string; location: string; reason: string }> = [];
   for (const { input, location } of checks) {
     try {
-      const result = await createOrReuseKeywordResearchRun(input, scope, location, bypassRefreshLimit, false);
+      const result = await createOrReuseKeywordResearchRun(input, scope, location, bypassRefreshLimit, { enforceCapacity: false, usageEventId: batchUsageEventId, userId: req.user?.userId });
       accepted.push({
         ...result,
         requestedLocation: input.locationName,
@@ -1004,6 +1056,15 @@ keywordResearchRouter.post("/keyword-research/batch", async (req, res) => {
         reason: error instanceof Error ? error.message : "The check could not enter the processing queue.",
       });
     }
+  }
+  if (batchUsageEventId) {
+    const meteredRunIds = accepted.filter((item) => item.run.usageEventId === batchUsageEventId).map((item) => item.run.id);
+    const countryChecks = accepted.filter((item) => item.run.usageEventId === batchUsageEventId && item.run.capacityCheckType === "country").length;
+    const localChecks = meteredRunIds.length - countryChecks;
+    const reservedEvent = await prisma.usageEvent.findUnique({ where: { id: batchUsageEventId }, select: { metadataJson: true } });
+    const reservedMetadata = reservedEvent?.metadataJson && typeof reservedEvent.metadataJson === "object" && !Array.isArray(reservedEvent.metadataJson) ? reservedEvent.metadataJson as Record<string, unknown> : {};
+    await prisma.usageEvent.update({ where: { id: batchUsageEventId }, data: { metadataJson: { ...reservedMetadata, countryChecks, localChecks, keywordResearchRunIds: meteredRunIds } } });
+    if (!meteredRunIds.length) await refundUsage({ usageEventId: batchUsageEventId, reason: "No keyword research checks entered the processing queue." });
   }
   return res.status(accepted.some((item) => item.run.status !== "completed") ? 202 : 200).json({
     accepted,
@@ -1100,12 +1161,23 @@ keywordResearchRouter.get("/keyword-research/domain-backlinks", async (req, res)
   const target = normalizeDomain(website.domain) || domainFromUrl(website.rootUrl);
   if (!target) return res.status(400).json({ error: "website domain is required" });
 
+  const refresh = parsed.data.refresh === "true";
+  const cacheOnly = parsed.data.cacheOnly === "true";
+  const cached = await fetchBacklinkSummary(target, false, true);
+  const cacheAge = cached ? Date.now() - cached.fetchedAt.getTime() : Number.POSITIVE_INFINITY;
+  if (cached && (cacheOnly || (!refresh && cacheAge < 24 * 60 * 60 * 1000) || (refresh && cacheAge < BACKLINK_REFRESH_COOLDOWN_MS))) return res.json({ summary: cached });
+  if (cacheOnly) return res.json({ summary: null });
+  let usageEventId: string | null = null;
   try {
-    const summary = await fetchBacklinkSummary(target, parsed.data.refresh === "true", parsed.data.cacheOnly === "true");
+    const usage = await preflightUsage({ clientId: website.clientId, userId: req.user?.userId, websiteId: website.id, featureKey: "backlink_snapshot", actionKey: "Refresh backlink summary", idempotencyKey: `backlink-summary:${website.id}:${Date.now()}`, metadata: { domainCount: 1 } });
+    usageEventId = usage.usageEventId;
+    const summary = await fetchBacklinkSummary(target, refresh, false);
+    await commitUsage({ usageEventId, provider: SEARCH_PROVIDER_KEY, actualUnits: summary?.cached ? 0 : undefined, metadata: { target, cacheHit: summary?.cached === true } });
     res.json({ summary });
   } catch (error) {
+    if (usageEventId) await refundUsage({ usageEventId, reason: error instanceof Error ? error.message : "Backlink summary failed" }).catch(() => undefined);
     const message = error instanceof Error ? error.message : "Backlink summary failed";
-    res.status(502).json({ error: message });
+    res.status(Number((error as { statusCode?: number }).statusCode || 502)).json({ error: message });
   }
 });
 
@@ -1124,12 +1196,23 @@ keywordResearchRouter.get("/keyword-research/domain-backlink-links", async (req,
   const target = normalizeDomain(website.domain) || domainFromUrl(website.rootUrl);
   if (!target) return res.status(400).json({ error: "website domain is required" });
 
+  const refresh = parsed.data.refresh === "true";
+  const cacheOnly = parsed.data.cacheOnly === "true";
+  const cached = await fetchBacklinkLinks(target, parsed.data.limit, false, true);
+  const cacheAge = cached ? Date.now() - cached.fetchedAt.getTime() : Number.POSITIVE_INFINITY;
+  if (cached && (cacheOnly || (!refresh && cacheAge < 24 * 60 * 60 * 1000) || (refresh && cacheAge < BACKLINK_REFRESH_COOLDOWN_MS))) return res.json({ backlinks: cached });
+  if (cacheOnly) return res.json({ backlinks: null });
+  let usageEventId: string | null = null;
   try {
-    const backlinks = await fetchBacklinkLinks(target, parsed.data.limit, parsed.data.refresh === "true", parsed.data.cacheOnly === "true");
+    const usage = await preflightUsage({ clientId: website.clientId, userId: req.user?.userId, websiteId: website.id, featureKey: "backlink_snapshot", actionKey: "Refresh backlink links", idempotencyKey: `backlink-links:${website.id}:${Date.now()}`, metadata: { domainCount: 1 } });
+    usageEventId = usage.usageEventId;
+    const backlinks = await fetchBacklinkLinks(target, parsed.data.limit, refresh, false);
+    await commitUsage({ usageEventId, provider: SEARCH_PROVIDER_KEY, actualUnits: backlinks?.cached ? 0 : undefined, metadata: { target, cacheHit: backlinks?.cached === true } });
     res.json({ backlinks });
   } catch (error) {
+    if (usageEventId) await refundUsage({ usageEventId, reason: error instanceof Error ? error.message : "Backlink links failed" }).catch(() => undefined);
     const message = error instanceof Error ? error.message : "Backlink links failed";
-    res.status(502).json({ error: message });
+    res.status(Number((error as { statusCode?: number }).statusCode || 502)).json({ error: message });
   }
 });
 
@@ -1159,6 +1242,7 @@ keywordResearchRouter.post("/keyword-research/:id/cancel", async (req, res) => {
     const state = await queueJob.getState().catch(() => "unknown");
     if (state !== "active") await queueJob.remove().catch(() => undefined);
   }
+  await settleKeywordResearchCapacity(run.usageEventId).catch(() => undefined);
   return res.json({
     run: {
       ...run,
@@ -1270,6 +1354,23 @@ keywordResearchRouter.post("/keyword-research/:id/refresh", async (req, res) => 
     if (error instanceof KeywordResearchHttpError) return res.status(error.status).json({ error: error.message, ...(error.details ?? {}) });
     throw error;
   }
+  const capacityCheckType = location.locationType === "Country" ? "country" : "local";
+  let usageEventId: string;
+  try {
+    const usage = await preflightUsage({
+      clientId: existing.clientId,
+      userId: req.user?.userId,
+      projectId: existing.projectId,
+      websiteId: existing.websiteId,
+      featureKey: "keyword_research_batch",
+      actionKey: "Refresh keyword-market research",
+      idempotencyKey: `keyword-research-refresh:${existing.id}:${Date.now()}`,
+      metadata: { countryChecks: capacityCheckType === "country" ? 1 : 0, localChecks: capacityCheckType === "local" ? 1 : 0 },
+    });
+    usageEventId = usage.usageEventId;
+  } catch (error) {
+    return res.status(Number((error as { statusCode?: number }).statusCode || 402)).json({ error: error instanceof Error ? error.message : "Could not reserve AI Capacity for this refresh." });
+  }
   const run = await prisma.keywordResearchRun.create({
     data: {
       clientId: existing.clientId,
@@ -1284,6 +1385,8 @@ keywordResearchRouter.post("/keyword-research/:id/refresh", async (req, res) => 
       serpDepth: existing.serpDepth,
       keywordLimit,
       status: "queued",
+      usageEventId,
+      capacityCheckType,
     },
   });
   const executionInput: KeywordResearchExecutionInput = {
@@ -1303,6 +1406,7 @@ keywordResearchRouter.post("/keyword-research/:id/refresh", async (req, res) => 
       where: { id: run.id, status: "queued" },
       data: { status: "failed", error: "Keyword research could not enter the processing queue. Retry this exact check.", completedAt: new Date() },
     });
+    await refundUsage({ usageEventId, reason: "Keyword research refresh could not enter the processing queue." }).catch(() => undefined);
     return res.status(503).json({ error: "Keyword research could not enter the processing queue. The previous completed result is preserved; retry this exact check." });
   }
   res.status(202).json({ run: withRefreshState(run, bypassRefreshLimit) });
@@ -1471,6 +1575,31 @@ const KEYWORD_RESEARCH_CONCURRENCY = Math.max(1, Math.min(10, config.keywordRese
 let keywordResearchWorker: Worker<KeywordResearchQueueJobData> | null = null;
 let keywordResearchWatchdog: ReturnType<typeof setInterval> | null = null;
 
+async function settleKeywordResearchCapacity(usageEventId: string | null | undefined) {
+  if (!usageEventId) return;
+  const usage = await prisma.usageEvent.findUnique({ where: { id: usageEventId } });
+  if (!usage || usage.status !== "reserved") return;
+  const runs = await prisma.keywordResearchRun.findMany({ where: { usageEventId }, select: { status: true, capacityCheckType: true } });
+  if (!runs.length || runs.some((run) => ["queued", "running"].includes(run.status))) return;
+  const completed = runs.filter((run) => run.status === "completed");
+  if (!completed.length) {
+    await refundUsage({ usageEventId, reason: "Keyword research did not complete any requested checks." });
+    return;
+  }
+  const metadata = usage.metadataJson && typeof usage.metadataJson === "object" && !Array.isArray(usage.metadataJson) ? usage.metadataJson as Record<string, unknown> : {};
+  const countryChecks = completed.filter((run) => run.capacityCheckType === "country").length;
+  const localChecks = completed.length - countryChecks;
+  const actualUnits = calculateWorkflowUnits("keyword_research_batch", Number(metadata.baseUnitCost || 1), {
+    inputUnits: completed.length,
+    metadata: { countryChecks, localChecks },
+    pricingModel: String(metadata.pricingModel || "keyword_market"),
+    pricingConfig: metadata.pricingConfig,
+    minimumUnitCost: typeof metadata.minimumUnitCost === "number" ? metadata.minimumUnitCost : null,
+    maximumUnitCost: typeof metadata.maximumUnitCost === "number" ? metadata.maximumUnitCost : null,
+  });
+  await commitUsage({ usageEventId, provider: SEARCH_PROVIDER_KEY, actualUnits, metadata: { completedChecks: completed.length, countryChecks, localChecks, partialSettlement: completed.length !== runs.length } });
+}
+
 async function enqueueKeywordResearchCompletion(runId: string, input: KeywordResearchExecutionInput): Promise<"enqueued" | "existing"> {
   const existing = await keywordResearchQueue.getJob(runId);
   if (existing) {
@@ -1491,6 +1620,8 @@ async function executeKeywordResearchWork(work: { runId: string; input: KeywordR
     const started = await prisma.keywordResearchRun.updateMany({ where: { id: work.runId, status: { in: ["queued", "running"] } }, data: { status: "running", error: null } });
     if (!started.count) return;
     await completeKeywordResearchRun(work.runId, work.input);
+    const completed = await prisma.keywordResearchRun.findUnique({ where: { id: work.runId }, select: { usageEventId: true } });
+    await settleKeywordResearchCapacity(completed?.usageEventId);
   } catch (error) {
     const message = error instanceof Error ? error.message : "Keyword research failed";
     const publicError = publicKeywordResearchError(message);
@@ -1498,6 +1629,8 @@ async function executeKeywordResearchWork(work: { runId: string; input: KeywordR
       where: { id: work.runId, status: { in: ["queued", "running"] } },
       data: { status: "failed", error: publicError.message, completedAt: new Date() },
     }).catch(() => undefined);
+    const failed = await prisma.keywordResearchRun.findUnique({ where: { id: work.runId }, select: { usageEventId: true } }).catch(() => null);
+    await settleKeywordResearchCapacity(failed?.usageEventId).catch(() => undefined);
   }
 }
 
@@ -1727,7 +1860,7 @@ function buildGrowthSummary(input: OrganicGrowthInput) {
   const blockers = input.latestCrawl?.issues?.length ?? 0;
   const nextStep = input.pageAudit
     ? opportunity.nextAction
-    : "Run page mapping so SEnuke AI can connect this keyword to the best crawled page before generating changes.";
+    : "Run page mapping so SEnuke AI - AI Growth Operating System can connect this keyword to the best crawled page before generating changes.";
   return {
     headline: opportunity.label,
     nextStep,
@@ -1784,7 +1917,7 @@ function recommendedGrowthAction(input: { rank: number | null; bestPageScore: nu
 function actionText(action: string, input: OrganicGrowthInput): string {
   const pageTitle = input.bestPage?.title || input.bestPage?.url || "the best target page";
   const competitor = input.competitors[0]?.domain;
-  if (action === "map_pages") return "Run page mapping, then let SEnuke AI choose the page to improve or confirm that a new page is needed.";
+  if (action === "map_pages") return "Run page mapping, then let SEnuke AI - AI Growth Operating System choose the page to improve or confirm that a new page is needed.";
   if (action === "fix_blockers") return `Fix the latest crawl blockers first, then improve ${pageTitle}.`;
   if (action === "create_page") return `Create a focused page for this keyword because no existing crawled page is strong enough yet.`;
   if (action === "improve_page") return `Improve ${pageTitle}${competitor ? ` against ${competitor}` : ""} with stronger title/H1, FAQ, schema, content depth, and internal links.`;

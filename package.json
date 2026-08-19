@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "SEnuke AI — SEO + AI Search website crawler & audit platform (Dot H Digital)",
+  "description": "SEnuke AI - AI Growth Operating System — SEO + AI Search website crawler & audit platform (Dot H Digital)",
   "workspaces": [
     "packages/*",
     "apps/*"
@@ -15,6 +15,7 @@
     "db:postgres-init": "npm run -w @webtummy/db postgres:init",
     "db:backfill-workspaces": "npm run -w @webtummy/db backfill-workspaces",
     "db:backfill-workflows": "npm run -w @webtummy/api backfill:workflow",
+    "db:migrate-dev059-commercial": "npm run -w @webtummy/api migrate:dev059-commercial",
     "dev:api": "npm run -w @webtummy/api dev",
     "dev:worker": "npm run -w @webtummy/worker dev",
     "test": "vitest run",

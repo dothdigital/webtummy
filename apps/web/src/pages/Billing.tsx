@@ -21,6 +21,7 @@ export default function Billing() {
   const [billing, setBilling] = useState<BillingStatus | null>(null);
   const [usage, setUsage] = useState<AiContentStatus | null>(null);
   const [invoices, setInvoices] = useState<BillingInvoice[]>([]);
+  const [addons, setAddons] = useState<Array<{ id: string; kind: string; name: string; description: string; amountCents: number; currency: string; capacityUnits: number; seatQuantity: number; billingInterval: string; providerProductRef: string | null; checkoutUrl: string | null }>>([]);
   const [loading, setLoading] = useState(true);
   const [message, setMessage] = useState<string | null>(null);
   const [portalBusy, setPortalBusy] = useState(false);
@@ -30,14 +31,16 @@ export default function Billing() {
     setLoading(true);
     setMessage(null);
     try {
-      const [billingResult, usageResult, invoiceResult] = await Promise.all([
+      const [billingResult, usageResult, invoiceResult, addonResult] = await Promise.all([
         api.get<BillingStatus>("/api/billing/status"),
         api.get<AiContentStatus>("/api/ai-content/status"),
         api.get<{ invoices: BillingInvoice[] }>("/api/billing/invoices"),
+        api.get<{ addons: typeof addons }>("/api/billing/commercial-addons"),
       ]);
       setBilling(billingResult);
       setUsage(usageResult);
       setInvoices(invoiceResult.invoices);
+      setAddons(addonResult.addons);
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "Could not load billing details");
     } finally {
@@ -85,12 +88,24 @@ export default function Billing() {
     }
   };
 
+  const buyAddon = async (addonId: string) => {
+    setPortalBusy(true); setMessage(null);
+    try {
+      const result = await api.post<{ url: string }>("/api/billing/commercial-addons/checkout", { addonId });
+      window.location.assign(result.url);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Could not open the add-on checkout.");
+      setPortalBusy(false);
+    }
+  };
+
   const articleLimit = usage?.usage.articleLimit ?? billing?.plan?.articleLimit ?? 0;
   const articlesUsed = usage?.usage.articlesUsed ?? 0;
   const articlesRemaining = Math.max(0, articleLimit - articlesUsed);
   const helperLimit = usage?.usage.helperDailyLimit ?? billing?.plan?.helperMonthlyLimit ?? 0;
   const helpersUsed = usage?.usage.helpersUsed ?? 0;
   const helpersRemaining = Math.max(0, helperLimit - helpersUsed);
+  const providerLifecycle = billing?.commercial?.providerLifecycle ?? null;
 
   return (
     <div className="space-y-6">
@@ -106,6 +121,31 @@ export default function Billing() {
       </div>
 
       {message && <Card className="border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">{message}</Card>}
+
+      {providerLifecycle?.status === "cancel_at_period_end" && (
+        <Card className="border-amber-200 bg-amber-50 p-5 text-sm text-amber-950">
+          <div className="font-bold">Your SEnuke AI subscription has been cancelled.</div>
+          <p className="mt-1">You will continue to have access until {dateLabel(providerLifecycle.currentPeriodEnd)}. You will not be billed again.</p>
+        </Card>
+      )}
+      {providerLifecycle?.status === "refunded" && (
+        <Card className="border-rose-200 bg-rose-50 p-5 text-sm text-rose-950">
+          <div className="font-bold">Your purchase has been refunded.</div>
+          <p className="mt-1">Paid SEnuke AI access has been removed. Your account and workspace data remain available in read-only mode.</p>
+        </Card>
+      )}
+      {providerLifecycle?.status === "chargeback" && (
+        <Card className="border-rose-300 bg-rose-50 p-5 text-sm text-rose-950">
+          <div className="font-bold">Paid access has been suspended.</div>
+          <p className="mt-1">JVZoo reported a payment chargeback. Your account and workspace data have not been deleted.</p>
+        </Card>
+      )}
+      {providerLifecycle?.status === "cancelled" && (
+        <Card className="border-slate-300 bg-slate-50 p-5 text-sm text-slate-800">
+          <div className="font-bold">Your paid subscription has ended.</div>
+          <p className="mt-1">Your account and workspace data remain available in read-only mode. Purchase a current plan to reactivate paid features.</p>
+        </Card>
+      )}
 
       {loading ? (
         <Card className="p-6 text-sm text-charcoal-400">Loading billing...</Card>
@@ -158,7 +198,8 @@ export default function Billing() {
             <Card className="p-5">
               <div className="text-sm font-semibold text-charcoal-800">AI Capacity in {monthLabel()}</div>
               <div className="mt-3 text-4xl font-bold text-emerald-700">{(billing.commercial?.usage.capacity?.balance ?? 0).toLocaleString()}</div>
-              <div className="mt-1 text-sm text-charcoal-500">of {(billing.commercial?.usage.capacity?.monthlyAllowance ?? 0).toLocaleString()} remaining · {billing.commercial?.usage.capacity?.reserved ?? 0} reserved</div>
+              <div className="mt-1 text-sm text-charcoal-500">{(billing.commercial?.usage.capacity?.included.available ?? 0).toLocaleString()} included · {(billing.commercial?.usage.capacity?.purchased.available ?? 0).toLocaleString()} purchased · {billing.commercial?.usage.capacity?.reserved ?? 0} reserved</div>
+              {billing.commercial?.usage.capacity?.warningLevel && <div className="mt-3 rounded-lg bg-amber-50 px-3 py-2 text-xs font-semibold text-amber-800">{billing.commercial.usage.capacity.warningLevel}% capacity threshold reached. Add a non-expiring Capacity Pack before the balance is exhausted.</div>}
             </Card>
           </div>
 
@@ -180,12 +221,25 @@ export default function Billing() {
             </div>
           </Card>
 
+          <Card className="p-5">
+            <div className="text-lg font-bold text-charcoal-900">Capacity Packs and team seats</div>
+            <p className="mt-1 text-sm text-charcoal-500">Capacity Packs do not expire. Team seats add access but do not add AI Capacity.</p>
+            <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+              {addons.map((addon) => <div key={addon.id} className="rounded-xl border border-slate-200 p-4">
+                <div className="font-bold text-charcoal-900">{addon.name}</div>
+                <div className="mt-1 text-sm text-charcoal-500">{addon.description}</div>
+                <div className="mt-4 text-xl font-bold text-brand-700">{moneyLabel(addon.amountCents, addon.currency)}{addon.billingInterval !== "one_time" ? ` / ${addon.billingInterval === "annual" ? "year" : "month"}` : ""}</div>
+                <Button className="mt-4" onClick={() => void buyAddon(addon.id)} disabled={portalBusy || !addon.providerProductRef || !addon.checkoutUrl}>{addon.providerProductRef && addon.checkoutUrl ? "Buy through JVZoo" : "Coming soon"}</Button>
+              </div>)}
+            </div>
+          </Card>
+
 
           <Card className="p-5">
             <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
               <div>
                 <div className="text-lg font-bold text-charcoal-900">Report emails</div>
-                <p className="mt-1 max-w-2xl text-sm leading-6 text-charcoal-500">Receive lightweight weekly and monthly report emails built from saved SEnuke AI data. These emails do not trigger extra external search-data requests.</p>
+                <p className="mt-1 max-w-2xl text-sm leading-6 text-charcoal-500">Receive lightweight weekly and monthly report emails built from saved SEnuke AI - AI Growth Operating System data. These emails do not trigger extra external search-data requests.</p>
                 {savingReports && <div className="mt-2 text-xs font-semibold text-brand-700">Saving preferences...</div>}
               </div>
               <div className="grid gap-3 sm:grid-cols-2 lg:min-w-[520px]">

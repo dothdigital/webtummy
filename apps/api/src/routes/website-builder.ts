@@ -103,6 +103,25 @@ export function productionWebsiteUrl(project: { name?: string | null; websiteUrl
   return null;
 }
 
+const GA4_MEASUREMENT_ID_PATTERN = /^G-[A-Z0-9]{6,20}$/;
+
+function normalizedGa4MeasurementId(value: unknown): string | null {
+  const measurementId = String(value ?? "").trim().toUpperCase();
+  return GA4_MEASUREMENT_ID_PATTERN.test(measurementId) ? measurementId : null;
+}
+
+function ga4MeasurementIdFromPlan(plan: { installationJson: unknown; dataSourcesJson: unknown } | null | undefined): string | null {
+  const installation = jsonRecord(plan?.installationJson);
+  const installationId = normalizedGa4MeasurementId(installation.ga4MeasurementId);
+  if (installationId) return installationId;
+  const sources = Array.isArray(plan?.dataSourcesJson) ? plan.dataSourcesJson.map(jsonRecord) : [];
+  return normalizedGa4MeasurementId(sources.find((source) => source.key === "ga4")?.identifier);
+}
+
+function ga4MeasurementIdFromSettings(settings: unknown): string | null {
+  return normalizedGa4MeasurementId(jsonRecord(jsonRecord(settings).analytics).ga4MeasurementId);
+}
+
 async function trackingForProject(project: { id: string; clientId: string; name?: string | null; websiteUrl?: string | null; primaryGoal?: string | null; analyticsPlatforms?: unknown; cmsPlatform?: string | null; preferredPublishingMethod?: string | null; website?: { id: string; domain: string; rootUrl: string; trackingSite?: { id: string } | null } | null }, userId?: string | null, destinationUrl?: string | null) {
   let website = project.website;
   const productionUrl = productionWebsiteUrl(project, destinationUrl);
@@ -119,7 +138,62 @@ async function trackingForProject(project: { id: string; clientId: string; name?
   const embed = trackingEmbed(captured.site.id);
   const endpointIssue = embed ? productionTrackingEndpointIssue(embed.scriptUrl, website.rootUrl) : null;
   if (endpointIssue) throw Object.assign(new Error(endpointIssue), { statusCode: 409, code: "TRACKING_PUBLIC_ENDPOINT_REQUIRED" });
-  return embed ? { ...embed, rootUrl: website.rootUrl, site: captured.site, plan: captured.plan } : undefined;
+  const latestBuild = await prisma.websiteBuild.findFirst({ where: { projectId: project.id }, orderBy: { updatedAt: "desc" }, select: { settingsJson: true } });
+  const builderGa4MeasurementId = ga4MeasurementIdFromSettings(latestBuild?.settingsJson);
+  const ga4MeasurementId = builderGa4MeasurementId ?? ga4MeasurementIdFromPlan(captured.plan);
+  const measurementPlan = builderGa4MeasurementId && builderGa4MeasurementId !== ga4MeasurementIdFromPlan(captured.plan)
+    ? await saveGa4MeasurementPlan({ plan: captured.plan, measurementId: builderGa4MeasurementId, userId: userId ?? captured.plan.createdByUserId })
+    : captured.plan;
+  return embed ? { ...embed, rootUrl: website.rootUrl, site: captured.site, plan: measurementPlan, ...(ga4MeasurementId ? { ga4MeasurementId } : {}) } : undefined;
+}
+
+async function saveGa4MeasurementPlan(input: {
+  plan: Awaited<ReturnType<typeof captureWebsiteTracking>>["plan"];
+  measurementId: string | null;
+  userId: string | null;
+}) {
+  const currentId = ga4MeasurementIdFromPlan(input.plan);
+  if (currentId === input.measurementId) return input.plan;
+  const existingSources = Array.isArray(input.plan.dataSourcesJson) ? input.plan.dataSourcesJson.map(jsonRecord) : [];
+  const existingGa4 = existingSources.find((source) => source.key === "ga4");
+  const dataSources = [
+    ...existingSources.filter((source) => source.key !== "ga4"),
+    {
+      key: "ga4",
+      status: String(existingGa4?.status || "not_connected"),
+      required: existingGa4?.required === true,
+      identifier: input.measurementId,
+    },
+  ];
+  const installation = { ...jsonRecord(input.plan.installationJson), ga4MeasurementId: input.measurementId };
+  return prisma.$transaction(async (tx) => {
+    await tx.websiteMeasurementPlan.updateMany({ where: { websiteId: input.plan.websiteId, active: true }, data: { active: false } });
+    return tx.websiteMeasurementPlan.create({
+      data: {
+        websiteId: input.plan.websiteId,
+        clientId: input.plan.clientId,
+        projectId: input.plan.projectId,
+        version: input.plan.version + 1,
+        active: true,
+        status: "ready_to_install",
+        businessGoal: input.plan.businessGoal,
+        primaryConversion: input.plan.primaryConversion,
+        primaryMeasurement: input.plan.primaryMeasurement,
+        supportingActionsJson: input.plan.supportingActionsJson as Prisma.InputJsonValue,
+        guardrailsJson: input.plan.guardrailsJson as Prisma.InputJsonValue,
+        pagesAndFormsJson: input.plan.pagesAndFormsJson as Prisma.InputJsonValue,
+        dataSourcesJson: dataSources as Prisma.InputJsonValue,
+        baselineRule: input.plan.baselineRule,
+        evaluationWindowDays: input.plan.evaluationWindowDays,
+        consentRequirementsJson: input.plan.consentRequirementsJson as Prisma.InputJsonValue,
+        installationMethod: input.plan.installationMethod,
+        installationJson: installation as Prisma.InputJsonValue,
+        trackingState: input.plan.trackingState,
+        lastVerifiedAt: input.plan.lastVerifiedAt,
+        createdByUserId: input.userId,
+      },
+    });
+  });
 }
 
 async function addDirectoryToZip(zip: JSZip, sourceDirectory: string, archiveDirectory: string) {
@@ -1329,7 +1403,7 @@ function wordPressRequestFailure(error: unknown, endpoint: string): never {
       publicMessage: true,
     });
   }
-  throw Object.assign(new Error(`SENuke AI could not reach the WordPress REST API at ${endpoint}. Confirm the exact WordPress URL and allow /wp-json/* through redirects, maintenance mode, CDN protection, and security plugins.`), {
+  throw Object.assign(new Error(`SEnuke AI - AI Growth Operating System could not reach the WordPress REST API at ${endpoint}. Confirm the exact WordPress URL and allow /wp-json/* through redirects, maintenance mode, CDN protection, and security plugins.`), {
     statusCode: 409,
     code: "wordpress_rest_unreachable",
     publicMessage: true,
@@ -1346,7 +1420,7 @@ async function wpFetch(integration: { siteUrl: string; username: string | null; 
     const response = await fetch(endpoint, { ...init, redirect: "error", signal: controller.signal, headers: { Authorization: `Basic ${Buffer.from(`${integration.username}:${decryptCredential(integration.credentialCiphertext)}`).toString("base64")}`, "Content-Type": "application/json", Accept: "application/json", ...(init.headers ?? {}) } });
     const body = await response.text();
     const data = parseWordPressJsonResponse(body, { endpoint, status: response.status, statusText: response.statusText, contentType: response.headers.get("content-type") });
-    if (response.status === 401) throw Object.assign(new Error("WordPress rejected the credentials. Use the account’s exact WordPress login username and a generated Application Password—not the normal wp-admin password. In WordPress, open Users → Profile → Application Passwords, create one for SENuke AI, and paste the generated value here."), { statusCode: 409, code: "wordpress_application_password_rejected", publicMessage: true });
+    if (response.status === 401) throw Object.assign(new Error("WordPress rejected the credentials. Use the account’s exact WordPress login username and a generated Application Password—not the normal wp-admin password. In WordPress, open Users → Profile → Application Passwords, create one for SEnuke AI - AI Growth Operating System, and paste the generated value here."), { statusCode: 409, code: "wordpress_application_password_rejected", publicMessage: true });
     if (response.status === 403) throw Object.assign(new Error(`WordPress authenticated the request but the account is not allowed to use this REST operation. Use a dedicated WordPress administrator account and confirm that security plugins allow ${endpoint}.`), { statusCode: 409, code: "wordpress_rest_permission_denied", publicMessage: true });
     if (!response.ok) throw Object.assign(new Error(`WordPress rejected the request (${response.status}): ${jsonRecord(data).message ?? response.statusText}`), { statusCode: 409 });
     return data;
@@ -2196,6 +2270,8 @@ export function builderView(project: Awaited<ReturnType<typeof scopedProject>>["
     : null;
   const livePublication = project.websitePublications.find((publication) => ["published", "completed"].includes(publication.status) && publication.publishedAt) ?? null;
   const activeMeasurementPlan = project.website?.measurementPlans[0] ?? null;
+  const savedAnalytics = jsonRecord(jsonRecord(build?.settingsJson).analytics);
+  const savedGa4MeasurementId = ga4MeasurementIdFromSettings(build?.settingsJson) ?? ga4MeasurementIdFromPlan(activeMeasurementPlan);
   const postLaunchBaseline = postLaunchBaselineStatus({ publishedAt: livePublication?.publishedAt ?? null, trackingVerifiedAt: project.website?.trackingSite?.lastVerifiedAt ?? null, evaluationWindowDays: activeMeasurementPlan?.evaluationWindowDays ?? 28 });
   const growthBlueprint = project.growthBlueprint;
   const websitePlanApproved = Boolean(seoPlanTask
@@ -2218,6 +2294,11 @@ export function builderView(project: Awaited<ReturnType<typeof scopedProject>>["
       trackingState: project.website.measurementPlans[0]?.trackingState ?? "CONNECTION_REQUIRED",
       planVersion: project.website.measurementPlans[0]?.version ?? null,
     } : null,
+    analytics: {
+      ga4MeasurementId: savedGa4MeasurementId,
+      lastPushedAt: savedAnalytics.lastPushedAt ? String(savedAnalytics.lastPushedAt) : null,
+      lastPushedSite: savedAnalytics.lastPushedSite ? String(savedAnalytics.lastPushedSite) : null,
+    },
     postLaunch: livePublication ? {
       status: "website_live",
       releaseId: livePublication.releaseId,
@@ -3790,7 +3871,7 @@ async function generatePage(page: { title: string; pageType: string; primaryKeyw
         ? `\n\nCORRECTIVE PASS REQUIRED\nThe prior response was not saved because it failed validation. Return the entire corrected page JSON, not a patch. Preserve usable copy while resolving every finding below.\nValidation findings:\n- ${repairFeedback}\nPrior response to repair: ${JSON.stringify(previousResponse)}`
         : "";
       const generated = await centralAiJson({
-        system: "You are the SEnuke AI Website Generation Service and conversion-focused website copywriter. Return safe structured JSON only. The approved Strategy, keyword ownership, audience, offer, page intent, and page-specific Execution contract are governing requirements. Generate only components and props permitted by the supplied Component Registry. Never generate content.link_section automatically; it is added only after the user selects approved internal-link targets. Do not invent testimonials, metrics, credentials, addresses, awards, guarantees, or citations. Write persuasive, specific, evidence-safe website copy that helps the intended buyer understand the offer and act. Never use a welcome message, a company-name-only hero, generic placeholder headings, arbitrary scripts, PHP, WordPress code, or a thin outline.",
+        system: "You are the SEnuke AI - AI Growth Operating System Website Generation Service and conversion-focused website copywriter. Return safe structured JSON only. The approved Strategy, keyword ownership, audience, offer, page intent, and page-specific Execution contract are governing requirements. Generate only components and props permitted by the supplied Component Registry. Never generate content.link_section automatically; it is added only after the user selects approved internal-link targets. Do not invent testimonials, metrics, credentials, addresses, awards, guarantees, or citations. Write persuasive, specific, evidence-safe website copy that helps the intended buyer understand the offer and act. Never use a welcome message, a company-name-only hero, generic placeholder headings, arbitrary scripts, PHP, WordPress code, or a thin outline.",
         prompt: compactWebsiteAiPrompt(`${basePrompt}${correctivePrompt}\nFIRST SUPPORTING SECTION: Return an original first post-hero H2 that names this page's assigned topic or intent and differs from every sibling page. Never use “A solution aligned to your goals”, “How we can help”, “What we offer”, “Overview”, or “Why choose us”. Keep the follow-up overview concise at 70–130 words in 2–3 short paragraphs before deeper sections.`, 80_000),
         temperature: 0.35,
         maxInputBytes: 80_000,
@@ -4507,7 +4588,7 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/initialize", asy
     const businessContext = interpretedBusinessContext(seoPlan, project);
     const footerBusinessName = businessContext.businessName || project.name;
     const build = await tx.websiteBuild.create({ data: { projectId: project.id, clientId: project.clientId, name: `${footerBusinessName} website`, templateKey: "local_growth", createdByUserId: context.membership.userId, brandJson: { tone: project.brandVoice || "Professional, practical, and confident", businessName: footerBusinessName, personality: ["credible", "clear", "modern"], primaryColor: "#2563eb", secondaryColor: "#0f766e", accentColor: "#f59e0b", backgroundColor: "#f8fafc", textColor: "#0f172a", headingFont: "Inter", bodyFont: "Inter", radius: "14px", logoMode: "none" }, settingsJson: { sourceTaskId: contentTask?.id ?? null, seoPlan, existingSiteImport: existingWebsite ? { mode: "crawl_and_sitemap", crawlId: latestCrawl?.id ?? null, importedPageCount: crawlAssignments.length, suggestedPageCount: Math.max(0, pages.length - crawlAssignments.length), importedAt: new Date().toISOString(), liveWebsiteRemainsUnchanged: true } : null, selectedLayout: "local_growth", analysis: { business: footerBusinessName || "Business name requires confirmation", businessSummary: businessContext.brandDescription || businessContext.coreBusinessValue || "", industry: businessContext.industry || project.niche || "Professional services", audience: businessContext.audience || "Approved project audience", offer: businessContext.coreBusinessValue || "Approved SEO page direction", services: businessContext.primaryServices, goal: project.primaryGoal || "Generate qualified leads", markets: targetLocationStrings(project.targetLocations) }, contactDetails: { businessSummary: businessContext.brandDescription || businessContext.coreBusinessValue || "", email: verifiedEmail, phone: verifiedPhone, address: verifiedAddress, copyrightText: `© ${new Date().getFullYear()} ${footerBusinessName}. All rights reserved.`, source: "verified_project_and_client_intake" }, previewMode: "responsive", defaultDeployMode: "draft" } } });
-    const approvalTask = await tx.executionTask.create({ data: { clientId: project.clientId, websiteId: project.websiteId, projectId: project.id, dedupeKey: `website-builder:${build.id}:development`, moduleName: "site_architect", sourceType: "website_builder_request", sourceId: build.id, title: existingWebsite ? `Prepare ${project.name} website improvements` : `Create ${project.name} website preview`, description: existingWebsite ? "Review the imported website pages, SEO Campaign evidence, Local SEO requirements, content updates, navigation, design, and images as one governed improvement workflow." : "Approve every page and save the final navigation. The Create Website action then runs in the background to assemble registered sections, approved content, brand styling, forms, and AI-generated images into a responsive preview.", expectedOutcome: existingWebsite ? "A complete, reviewable update package is ready without changing the live website until approval and deployment." : "A complete responsive website is ready for company review before any WordPress or Static HTML publishing.", priority: "high", automationLevel: "automatic", status: "in_progress", requiresApproval: false, manualRequired: false, safetyCategory: "safe_draft", approvalRisk: "low", actionButtonLabel: existingWebsite ? "Review Website Improvement Plan" : "Prepare Website", relatedUrl: `/site-architect?projectId=${project.id}`, manualInstructions: existingWebsite ? "Review SEO, Local SEO, imported and suggested pages, Content, Navigation, Design & Images, then run Quality Review. Foundation is inherited from the existing website and is not a required step." : "Complete Foundation, Pages, Content, and Navigation, then choose Create Website. You may continue working while SENuke AI prepares the preview.", impact: existingWebsite ? "Turns crawl, SEO, and Local SEO evidence into controlled existing-site updates without publishing externally." : "Creates a complete reviewable website draft without publishing externally." } });
+    const approvalTask = await tx.executionTask.create({ data: { clientId: project.clientId, websiteId: project.websiteId, projectId: project.id, dedupeKey: `website-builder:${build.id}:development`, moduleName: "site_architect", sourceType: "website_builder_request", sourceId: build.id, title: existingWebsite ? `Prepare ${project.name} website improvements` : `Create ${project.name} website preview`, description: existingWebsite ? "Review the imported website pages, SEO Campaign evidence, Local SEO requirements, content updates, navigation, design, and images as one governed improvement workflow." : "Approve every page and save the final navigation. The Create Website action then runs in the background to assemble registered sections, approved content, brand styling, forms, and AI-generated images into a responsive preview.", expectedOutcome: existingWebsite ? "A complete, reviewable update package is ready without changing the live website until approval and deployment." : "A complete responsive website is ready for company review before any WordPress or Static HTML publishing.", priority: "high", automationLevel: "automatic", status: "in_progress", requiresApproval: false, manualRequired: false, safetyCategory: "safe_draft", approvalRisk: "low", actionButtonLabel: existingWebsite ? "Review Website Improvement Plan" : "Prepare Website", relatedUrl: `/site-architect?projectId=${project.id}`, manualInstructions: existingWebsite ? "Review SEO, Local SEO, imported and suggested pages, Content, Navigation, Design & Images, then run Quality Review. Foundation is inherited from the existing website and is not a required step." : "Complete Foundation, Pages, Content, and Navigation, then choose Create Website. You may continue working while SEnuke AI - AI Growth Operating System prepares the preview.", impact: existingWebsite ? "Turns crawl, SEO, and Local SEO evidence into controlled existing-site updates without publishing externally." : "Creates a complete reviewable website draft without publishing externally." } });
     await tx.websiteBuild.update({ where: { id: build.id }, data: { settingsJson: { ...jsonRecord(build.settingsJson), developmentApprovalTaskId: approvalTask.id } as Prisma.InputJsonValue } });
     await tx.websiteBuildPage.createMany({ data: pages.slice(0, 500).map((item, index) => assignmentPageData(build.id, item, index)) });
     const architecture = project.siteArchitectureVersions[0];
@@ -4645,6 +4726,71 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/logo-palette", a
     accessibilityNotes.push("SEnuke deepened the primary colour so white button labels remain readable.");
   }
   res.json({ ...result, colours, accessibilityNotes: [...new Set(accessibilityNotes)] });
+});
+
+websiteBuilderRouter.patch("/projects/:projectId/website-builder/analytics", async (req, res) => {
+  const { context, project } = await scopedProject(req.params.projectId, req);
+  if (!hasWorkspacePermission(context, "execute_tasks") && !hasWorkspacePermission(context, "manage_integrations")) return res.status(403).json({ error: "Website execution or integration permission is required." });
+  const build = project.websiteBuilds[0];
+  if (!build) return res.status(404).json({ error: "Initialize the website before configuring Google Analytics." });
+  const parsed = z.object({ ga4MeasurementId: z.string().trim().max(40).nullable() }).parse(req.body ?? {});
+  const requested = String(parsed.ga4MeasurementId ?? "").trim().toUpperCase();
+  if (requested && !GA4_MEASUREMENT_ID_PATTERN.test(requested)) return res.status(400).json({ error: "Enter a valid Google Analytics 4 Measurement ID such as G-XXXXXXXXXX." });
+  const measurementId = requested || null;
+  const now = new Date().toISOString();
+  const settings = jsonRecord(build.settingsJson);
+  const analytics = jsonRecord(settings.analytics);
+  await prisma.websiteBuild.update({
+    where: { id: build.id },
+    data: { settingsJson: { ...settings, analytics: { ...analytics, ga4MeasurementId: measurementId, configuredAt: now, configuredByUserId: context.membership.userId } } as Prisma.InputJsonValue },
+  });
+
+  let measurementPlanVersion: number | null = null;
+  if (project.website) {
+    const captured = await captureWebsiteTracking(prisma, { websiteId: project.website.id, clientId: project.clientId, domain: project.website.domain, rootUrl: project.website.rootUrl, project, createdByUserId: context.membership.userId });
+    const plan = await saveGa4MeasurementPlan({ plan: captured.plan, measurementId, userId: context.membership.userId });
+    measurementPlanVersion = plan.version;
+  }
+  await recordWorkspaceActivity(prisma, {
+    context,
+    action: measurementId ? "website_builder.ga4_configured" : "website_builder.ga4_removed",
+    entityType: "website_build",
+    entityId: build.id,
+    agencyClientId: project.agencyClientId,
+    projectId: project.id,
+    nextJson: { ga4MeasurementId: measurementId, measurementPlanVersion },
+  });
+  res.json({
+    analytics: { ga4MeasurementId: measurementId, lastPushedAt: analytics.lastPushedAt ?? null, lastPushedSite: analytics.lastPushedSite ?? null },
+    measurementPlanVersion,
+    message: measurementId
+      ? `${measurementId} saved. Production static exports will include the Google tag; connected WordPress sites can receive it through the SENuke connector.`
+      : "Google Analytics remains optional and can be configured before publishing or after the website is live.",
+  });
+});
+
+websiteBuilderRouter.post("/projects/:projectId/website-builder/analytics/push", async (req, res) => {
+  const { context, project } = await scopedProject(req.params.projectId, req);
+  if (!hasWorkspacePermission(context, "publish") && !hasWorkspacePermission(context, "manage_integrations")) return res.status(403).json({ error: "Publishing or integration permission is required." });
+  const build = project.websiteBuilds[0];
+  if (!build) return res.status(404).json({ error: "Website build not found." });
+  const input = z.object({ integrationId: z.string().trim().min(1).max(191).optional() }).parse(req.body ?? {});
+  const measurementId = ga4MeasurementIdFromSettings(build.settingsJson) ?? ga4MeasurementIdFromPlan(project.website?.measurementPlans[0]);
+  if (!measurementId) return res.status(409).json({ error: "Save a GA4 Measurement ID before pushing analytics to WordPress." });
+  const integration = project.wordpressIntegrations.find((candidate) => candidate.connectionStatus === "connected" && (!input.integrationId || candidate.id === input.integrationId));
+  if (!integration) return res.status(409).json({ error: "Connect the live WordPress website before pushing Google Analytics." });
+  const capabilities = jsonRecord(await wpFetch(integration, "/wp-json/senuke/v1/capabilities"));
+  const features = jsonStrings(capabilities.features);
+  if (!features.includes("analytics") || !wordPressConnectorVersionAtLeast(String(capabilities.version || "0.0.0"), "1.6.0")) {
+    return res.status(409).json({ error: `Update the SEnuke AI - AI Growth Operating System Connector to version 1.6.0 or newer, then retry. The connected plugin is ${String(capabilities.version || "unknown")} and cannot manage site-wide analytics yet.` });
+  }
+  const result = jsonRecord(await wpFetch(integration, "/wp-json/senuke/v1/analytics", { method: "POST", body: JSON.stringify({ ga4MeasurementId: measurementId, enabled: true }) }));
+  const now = new Date().toISOString();
+  const settings = jsonRecord(build.settingsJson);
+  const analytics = jsonRecord(settings.analytics);
+  await prisma.websiteBuild.update({ where: { id: build.id }, data: { settingsJson: { ...settings, analytics: { ...analytics, ga4MeasurementId: measurementId, lastPushedAt: now, lastPushedSite: integration.siteUrl } } as Prisma.InputJsonValue } });
+  await recordWorkspaceActivity(prisma, { context, action: "website_builder.ga4_pushed_to_wordpress", entityType: "wordpress_integration", entityId: integration.id, agencyClientId: project.agencyClientId, projectId: project.id, nextJson: { ga4MeasurementId: measurementId, siteUrl: integration.siteUrl, installed: result.saved === true } });
+  res.json({ analytics: { ga4MeasurementId: measurementId, lastPushedAt: now, lastPushedSite: integration.siteUrl }, message: `${measurementId} was installed site-wide on ${integration.siteUrl}. No page republish was required.` });
 });
 
 websiteBuilderRouter.patch("/projects/:projectId/website-builder/build", async (req, res) => {
@@ -5311,7 +5457,7 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/submit-developme
         } as Prisma.InputJsonValue,
       },
     }),
-    prisma.executionTask.updateMany({ where: { projectId: project.id, sourceType: "website_builder_request", sourceId: build.id, status: { in: ["ready", "in_progress", "needs_review", "waiting_approval"] } }, data: { status: "in_progress", title: `Create ${project.name} website`, description: "SENuke AI is assembling the approved page content, navigation, brand, registered website sections, and generated images into a responsive website preview.", actionButtonLabel: "View Website Build", relatedUrl: `/site-architect?projectId=${project.id}`, requiresApproval: false, blockedReason: null } }),
+    prisma.executionTask.updateMany({ where: { projectId: project.id, sourceType: "website_builder_request", sourceId: build.id, status: { in: ["ready", "in_progress", "needs_review", "waiting_approval"] } }, data: { status: "in_progress", title: `Create ${project.name} website`, description: "SEnuke AI - AI Growth Operating System is assembling the approved page content, navigation, brand, registered website sections, and generated images into a responsive website preview.", actionButtonLabel: "View Website Build", relatedUrl: `/site-architect?projectId=${project.id}`, requiresApproval: false, blockedReason: null } }),
   ]);
   await enqueueMeteredWebsiteJob(job.id);
   await recordWorkspaceActivity(prisma, { context, action: "website_builder.website_generation_queued", entityType: "website_build_job", entityId: job.id, agencyClientId: project.agencyClientId, projectId: project.id, nextJson: { pageCount: activePages.length, deferredAuthorityPageCount: build.pages.length - activePages.length, automaticSetup: input.automaticSetup, generateImages: input.generateImages, regenerateImages: input.regenerateImages, preferredPublishingMethod: project.preferredPublishingMethod } });
@@ -5358,15 +5504,7 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/jobs/:jobId/mana
     if (!["queued", "processing"].includes(source.status)) return res.status(409).json({ error: "Only queued or running work can be cancelled." });
     await prisma.websiteBuildJob.update({ where: { id: source.id }, data: { status: "cancelled", stage: "cancelled_by_user", completedAt: new Date() } });
     if (queueJob) await queueJob.remove().catch(() => undefined);
-    if (source.status === "queued") {
-      await refundWebsiteJobUsage(source.id, "Website job cancelled before execution.").catch(() => undefined);
-    } else if (source.usageEventId) {
-      await commitUsage({
-        usageEventId: source.usageEventId,
-        provider: "openai",
-        metadata: { websiteBuildJobId: source.id, terminalStatus: "cancelled", source: "website_builder_cancel" },
-      }).catch(() => undefined);
-    }
+    await refundWebsiteJobUsage(source.id, source.status === "queued" ? "Website job cancelled before execution." : "Website job cancelled before completion.").catch(() => undefined);
     await recordWorkspaceActivity(prisma, { context, action: "website_builder.job_cancelled", entityType: "website_build_job", entityId: source.id, agencyClientId: project.agencyClientId, projectId: project.id, previousJson: { status: source.status, stage: source.stage } });
     return res.json({ job: await prisma.websiteBuildJob.findUnique({ where: { id: source.id } }) });
   }
@@ -6542,7 +6680,7 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/pages/:pageId/re
   const dedicatedFaqPage = websitePageCompositionPolicy({ pageType: page.pageType, title: page.title, searchIntent: page.searchIntent }).archetype === "faq";
   const minimumFaqs = dedicatedFaqPage ? 8 : 4;
   if (currentFaqs.length >= minimumFaqs) return res.json({ page, faqCount: currentFaqs.length, unchanged: true, message: `${page.title} already has the required FAQ coverage.` });
-  const response = await centralAiJson({ system: "You are the SENuke AI FAQ repair service. Return structured JSON only. Preserve useful existing FAQs, add distinct page-specific buyer questions, and use only approved project facts. Never invent claims, prices, coverage, offices, credentials, statistics, guarantees, reviews, or availability.", prompt: `Return {"faqs":[{"question":"...","answer":"..."}]} with ${minimumFaqs} complete FAQs.\nBusiness: ${businessIdentity(project) || "business name not approved"}\nPage: ${page.title}\nPrimary keyword: ${page.primaryKeyword}\nIntent: ${page.searchIntent}\nApproved page brief: ${JSON.stringify(jsonRecord(page.briefJson)).slice(0, 12_000)}\nExisting visible FAQs to preserve or improve: ${JSON.stringify(currentFaqs)}\nEach answer should be useful, concise, and specific to this page. Do not repeat another question with different wording.`, temperature: 0.3, maxOutputTokens: 2_500, timeoutMs: 90_000 });
+  const response = await centralAiJson({ system: "You are the SEnuke AI - AI Growth Operating System FAQ repair service. Return structured JSON only. Preserve useful existing FAQs, add distinct page-specific buyer questions, and use only approved project facts. Never invent claims, prices, coverage, offices, credentials, statistics, guarantees, reviews, or availability.", prompt: `Return {"faqs":[{"question":"...","answer":"..."}]} with ${minimumFaqs} complete FAQs.\nBusiness: ${businessIdentity(project) || "business name not approved"}\nPage: ${page.title}\nPrimary keyword: ${page.primaryKeyword}\nIntent: ${page.searchIntent}\nApproved page brief: ${JSON.stringify(jsonRecord(page.briefJson)).slice(0, 12_000)}\nExisting visible FAQs to preserve or improve: ${JSON.stringify(currentFaqs)}\nEach answer should be useful, concise, and specific to this page. Do not repeat another question with different wording.`, temperature: 0.3, maxOutputTokens: 2_500, timeoutMs: 90_000 });
   const faqSchema = z.object({ faqs: z.array(z.object({ question: z.string().trim().min(8).max(300), answer: z.string().trim().min(25).max(1500) })).min(minimumFaqs).max(dedicatedFaqPage ? 12 : 6) });
   const faqs = faqSchema.parse(response.result).faqs;
   const faqHeading = `Questions buyers ask about ${page.primaryKeyword}`.slice(0, 100);
@@ -6613,7 +6751,7 @@ Create a natural title that uniquely represents this page. Do not reuse any list
     const candidate = resultSchema.parse(response.result);
     if (!reserved.has(normalizeTitle(candidate.title))) repaired = candidate;
   }
-  if (!repaired) return res.status(502).json({ error: "SENuke AI could not create a unique SEO title. No page change was saved; retry when the AI provider is available." });
+  if (!repaired) return res.status(502).json({ error: "SEnuke AI - AI Growth Operating System could not create a unique SEO title. No page change was saved; retry when the AI provider is available." });
   const nextSeo = { ...currentSeo, metaTitle: repaired.title } as Prisma.InputJsonValue;
   const nextVersion = page.version + 1;
   const updated = await prisma.$transaction(async (tx) => {
@@ -6667,7 +6805,7 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/pages/:pageId/re
     expandedWords = generatedComponentWordCount(expandedComponents);
   }
   if (expandedWords < composition.minimumWords || expandedWords <= currentWords) {
-    return res.status(502).json({ error: "SENuke AI could not add enough useful, evidence-safe detail. No page change was saved; retry when the AI provider is available." });
+    return res.status(502).json({ error: "SEnuke AI - AI Growth Operating System could not add enough useful, evidence-safe detail. No page change was saved; retry when the AI provider is available." });
   }
   const nextContent = canonicalContentFromComponents(page.contentJson, expandedComponents) as Prisma.InputJsonValue;
   const nextVersion = page.version + 1;
@@ -7256,7 +7394,7 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/media/:mediaId/g
   const asset = await prisma.websiteBuildMediaAsset.findFirst({ where: { id: req.params.mediaId, build: { projectId: project.id } } });
   if (!asset) return res.status(404).json({ error: "Website media plan not found." });
   const input = z.object({ comment: z.string().trim().max(1000).optional().default("") }).parse(req.body ?? {});
-  const usage = await preflightUsage({ clientId: project.clientId, userId: context.membership.userId, projectId: project.id, websiteId: project.websiteId, featureKey: "website_image_generate", actionKey: "Generate website image", idempotencyKey: `website-image:${asset.id}:${Date.now()}` });
+  const usage = await preflightUsage({ clientId: project.clientId, userId: context.membership.userId, projectId: project.id, websiteId: project.websiteId, featureKey: "website_image_generate", actionKey: "Generate website image", idempotencyKey: `website-image:${asset.id}:${Date.now()}`, metadata: { imageCount: 1 } });
   try {
     const generated = await requestOpenAiWebsiteImage(`${asset.prompt}\n${input.comment}`);
     const updated = await prisma.websiteBuildMediaAsset.update({ where: { id: asset.id }, data: { ...generated, status: "review" } });
@@ -7743,7 +7881,7 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/wordpress-publis
         .slice(0, 5);
     } else if (request.actionType === "add_faq") {
       const generated = await centralAiJson({
-        system: "You are the SENuke AI FAQ editor. Return safe structured JSON only. Use approved business facts, the assigned page intent, and useful buyer questions. Never invent claims.",
+        system: "You are the SEnuke AI - AI Growth Operating System FAQ editor. Return safe structured JSON only. Use approved business facts, the assigned page intent, and useful buyer questions. Never invent claims.",
         prompt: `Return {"faqs":[{"question":"...","answer":"..."}]} with 3–5 page-specific FAQs.\nPage: ${page.title}\nPrimary keyword: ${page.primaryKeyword}\nIntent: ${page.searchIntent}\nLocation: ${request.location || "not location-specific"}\nExisting content: ${JSON.stringify(page.contentJson).slice(0, 20_000)}\nInstruction: ${request.instructions}`,
         temperature: 0.3,
         maxInputBytes: 28_000,
@@ -7775,7 +7913,7 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/wordpress-publis
       updatedPage = await savePublisherPageChange(page, context, { contentJson, seoJson, comment: `Added approved-intent FAQ coverage through WordPress publishing request ${job.id}.` });
     } else if (request.actionType === "update_metadata") {
       const generated = await centralAiJson({
-        system: "You are the SENuke AI SEO metadata editor. Return JSON only. Keep the exact page intent and do not make unsupported claims.",
+        system: "You are the SEnuke AI - AI Growth Operating System SEO metadata editor. Return JSON only. Keep the exact page intent and do not make unsupported claims.",
         prompt: `Return {"metaTitle":"...","metaDescription":"..."}.\nMeta title should normally be 45–65 characters. Meta description must be 120–160 characters.\nPage: ${page.title}\nKeyword: ${page.primaryKeyword}\nIntent: ${page.searchIntent}\nLocation: ${request.location || "none"}\nInstruction: ${request.instructions}`,
         temperature: 0.25,
         maxInputBytes: 12_000,
@@ -7791,7 +7929,7 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/wordpress-publis
     } else if (request.actionType === "update_internal_links") {
       const destinations = build.pages.filter((candidate) => candidate.id !== page!.id).map((candidate) => ({ pageId: candidate.id, title: candidate.title, url: `/${candidate.slug}`, keyword: candidate.primaryKeyword })).slice(0, 80);
       const generated = await centralAiJson({
-        system: "You are the SENuke AI internal-link editor. Return JSON only. Select only supplied destination page IDs and write natural, non-spammy anchors.",
+        system: "You are the SEnuke AI - AI Growth Operating System internal-link editor. Return JSON only. Select only supplied destination page IDs and write natural, non-spammy anchors.",
         prompt: `Return {"links":[{"targetPageId":"id","anchorText":"text","reason":"short reason"}]} with 2–5 useful contextual links.\nSource page: ${page.title}\nKeyword: ${page.primaryKeyword}\nIntent: ${page.searchIntent}\nAvailable destinations: ${JSON.stringify(destinations)}\nInstruction: ${request.instructions}`,
         temperature: 0.2,
         maxInputBytes: 28_000,
@@ -8001,10 +8139,10 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/wordpress/connec
       credentialHint: credentialHint(input.applicationPassword),
       lastConnectionCheckAt: new Date(),
       lastError: !connector
-        ? "Connected to WordPress core. Install the SENuke AI Connector for managed backups, design deployment, SEO metadata, menus, forms, and rollback."
+        ? "Connected to WordPress core. Install the SEnuke AI - AI Growth Operating System Connector for managed backups, design deployment, SEO metadata, menus, forms, and rollback."
         : completeConnector
           ? null
-          : `Update the SENuke AI Connector and use a dedicated WordPress deployment administrator. Connected version ${String(connectorCapabilities.version || "unknown")} is missing a required feature or permission for backup, design, publishing, and rollback.`,
+          : `Update the SEnuke AI - AI Growth Operating System Connector and use a dedicated WordPress deployment administrator. Connected version ${String(connectorCapabilities.version || "unknown")} is missing a required feature or permission for backup, design, publishing, and rollback.`,
       secretRef: `database:wordpress:${project.id}`,
     },
   });
@@ -8066,8 +8204,8 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/wordpress/:integ
         lastError: connectorInstalled && complete
           ? null
           : connectorInstalled
-            ? `Update the SENuke AI Connector and use a dedicated WordPress deployment administrator. Connected version ${String(connector.version || "unknown")} is missing a required feature or permission for backup, design, publishing, and rollback.`
-            : "Install the SENuke AI Connector before a managed live deployment.",
+            ? `Update the SEnuke AI - AI Growth Operating System Connector and use a dedicated WordPress deployment administrator. Connected version ${String(connector.version || "unknown")} is missing a required feature or permission for backup, design, publishing, and rollback.`
+            : "Install the SEnuke AI - AI Growth Operating System Connector before a managed live deployment.",
       },
     });
     res.json({ connected: true, user: { id: me.id, name: me.name }, connector: { installed: connectorInstalled, version: connectorVersion, features, permissions: jsonRecord(connector.permissions), complete } });
@@ -8367,13 +8505,14 @@ function measurementReadinessFor(model: WebsiteModel, tracking: Awaited<ReturnTy
   const source = (key: string) => sources.find((item) => item.key === key);
   const sourceCheck = (key: string, label: string): MeasurementReadinessCheck => {
     const row = source(key);
-    const connected = row?.status === "connected";
+    const configuredIdentifier = key === "ga4" ? normalizedGa4MeasurementId(row?.identifier ?? tracking?.ga4MeasurementId) : null;
+    const connected = row?.status === "connected" || Boolean(configuredIdentifier);
     const required = row?.required === true;
     return {
       key,
       label,
       status: connected ? "passed" : "warning",
-      detail: connected ? `${label} is connected.` : required ? `${label} is marked as required but is not connected. Launch can continue; related metrics will remain unavailable until it is connected.` : `${label} is optional and not connected; related metrics will be unavailable.`,
+      detail: configuredIdentifier ? `${configuredIdentifier} is configured for production publishing. Google reporting access can be connected separately.` : connected ? `${label} is connected.` : required ? `${label} is marked as required but is not connected. Launch can continue; related metrics will remain unavailable until it is connected.` : `${label} is optional and not connected; related metrics will be unavailable.`,
       required,
     };
   };
@@ -8406,7 +8545,7 @@ function measurementReadinessFor(model: WebsiteModel, tracking: Awaited<ReturnTy
     },
     {
       key: "senuke_tag",
-      label: "SEnuke AI tracking",
+      label: "SEnuke AI - AI Growth Operating System tracking",
       status: tracking?.siteId && installation.measurementTagEnabled !== false ? "passed" : "warning",
       detail: tracking?.siteId ? "The production publisher is configured to install the project tracking identity." : "The tracking identity is not ready. Launch can continue, but SEnuke performance reporting will remain unavailable until a production website URL is connected.",
       required: true,
@@ -8510,7 +8649,7 @@ websiteBuilderRouter.get("/projects/:projectId/website-performance", async (req,
   const problems: Array<{ type: "problem" | "opportunity" | "limitation"; title: string; detail: string }> = [];
   if (!trackingVerified) problems.push({ type: "limitation", title: "Live tracking not verified", detail: "Publish the production release and open the live website to send the first valid event." });
   if (plan?.trackingState === "TRACKING_REVIEW_REQUIRED") problems.push({ type: "problem", title: "Tracking health needs verification", detail: "No recent first-party event has been observed. Run a controlled live test before relying on new performance measurements." });
-  if (trackingVerified && !baseline.performanceClaimsAllowed) problems.push({ type: "limitation", title: "Initial baseline is still collecting", detail: `SEnuke AI has ${baseline.completeVerifiedDays} of ${baseline.evaluationWindowDays} complete verified days. It will not claim that traffic, rankings, or conversions improved during this period.` });
+  if (trackingVerified && !baseline.performanceClaimsAllowed) problems.push({ type: "limitation", title: "Initial baseline is still collecting", detail: `SEnuke AI - AI Growth Operating System has ${baseline.completeVerifiedDays} of ${baseline.evaluationWindowDays} complete verified days. It will not claim that traffic, rankings, or conversions improved during this period.` });
   if (sourceStatus("search_console") !== "connected") problems.push({ type: "limitation", title: "Search Console not connected", detail: "Search clicks, impressions and query data are unavailable until this optional source is connected." });
   if (sourceStatus("ga4") !== "connected") problems.push({ type: "limitation", title: "GA4 not connected", detail: "GA4 audience and acquisition metrics are unavailable; first-party page and conversion events continue to work." });
   if (metrics.formErrors > 0) problems.push({ type: "problem", title: "Form errors recorded", detail: `${metrics.formErrors} form error event${metrics.formErrors === 1 ? " was" : "s were"} received during this period.` });
@@ -8766,13 +8905,13 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/deploy", async (
   if (input.mode === "publish" && connectorEnabled) {
     if (!wordPressConnectorVersionAtLeast(deploymentConnectorVersion, "1.5.3")) {
       return res.status(409).json({
-        error: `Update the SENuke AI Connector before publishing live. Version ${deploymentConnectorVersion} is installed; version 1.5.3 or newer is required so an active SENuke Theme is refreshed and its header/footer cannot be overridden by stale release CSS.`,
+        error: `Update the SEnuke AI - AI Growth Operating System Connector before publishing live. Version ${deploymentConnectorVersion} is installed; version 1.5.3 or newer is required so an active SENuke Theme is refreshed and its header/footer cannot be overridden by stale release CSS.`,
       });
     }
   }
   if (input.mode === "publish" && !managedConnectorReady) {
     return res.status(409).json({
-      error: "Install or update the SENuke AI Connector before publishing live. Managed live publishing requires backup, design package, SEO/schema, menus, forms, and rollback support.",
+      error: "Install or update the SEnuke AI - AI Growth Operating System Connector before publishing live. Managed live publishing requires backup, design package, SEO/schema, menus, forms, and rollback support.",
     });
   }
   const reviewedDraftPageIds = new Map<string, string>();
@@ -9032,7 +9171,7 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/deploy", async (
         action: "design_package_skipped",
         status: "success",
         detail: input.mode === "draft" && deployDesignPackage
-          ? `WordPress drafts were created without changing the active theme. Update the SENuke AI Connector from version ${deploymentConnectorVersion} to 1.5.3 or newer, then synchronize the drafts again to apply SENuke Theme, approved header/footer navigation, favicon, and page SEO output.`
+          ? `WordPress drafts were created without changing the active theme. Update the SEnuke AI - AI Growth Operating System Connector from version ${deploymentConnectorVersion} to 1.5.3 or newer, then synchronize the drafts again to apply SENuke Theme, approved header/footer navigation, favicon, and page SEO output.`
           : deployDesignPackage
           ? "The connected WordPress site does not have the managed connector; the active theme will style the content."
           : "The project uses an existing WordPress design, so SENuke preserved the active theme and did not install the approved design package.",
@@ -9369,6 +9508,22 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/deploy", async (
     }
     const verificationPassed = verificationResults.length === pages.length
       && verificationResults.every((result) => result.status === "passed");
+    if (input.mode === "publish" && websiteTracking?.ga4MeasurementId) {
+      const liveConnectorFeatures = jsonStrings(deploymentConnectorCapabilities.features);
+      if (liveConnectorFeatures.includes("analytics") && wordPressConnectorVersionAtLeast(deploymentConnectorVersion, "1.6.0")) {
+        try {
+          await wpFetch(integration, "/wp-json/senuke/v1/analytics", { method: "POST", body: JSON.stringify({ ga4MeasurementId: websiteTracking.ga4MeasurementId, enabled: true }) });
+          const currentSettings = jsonRecord(build.settingsJson);
+          const currentAnalytics = jsonRecord(currentSettings.analytics);
+          await prisma.websiteBuild.update({ where: { id: build.id }, data: { settingsJson: { ...currentSettings, analytics: { ...currentAnalytics, ga4MeasurementId: websiteTracking.ga4MeasurementId, lastPushedAt: new Date().toISOString(), lastPushedSite: integration.siteUrl } } as Prisma.InputJsonValue } });
+          logs.push({ action: "ga4_installed", status: "success", ga4MeasurementId: websiteTracking.ga4MeasurementId, siteUrl: integration.siteUrl, at: new Date().toISOString() });
+        } catch (error) {
+          logs.push({ action: "ga4_install_failed", status: "warning", detail: error instanceof Error ? error.message : "Google Analytics could not be installed through the WordPress connector.", at: new Date().toISOString() });
+        }
+      } else {
+        logs.push({ action: "ga4_install_deferred", status: "warning", detail: `Update the SEnuke AI - AI Growth Operating System Connector to version 1.6.0 or newer to install ${websiteTracking.ga4MeasurementId} site-wide without republishing pages.`, at: new Date().toISOString() });
+      }
+    }
     if (input.mode === "publish") {
       logs.push({ action: "published", status: "success", releaseId: release.id, pageCount: pageMappings.length, at: new Date().toISOString() });
       logs.push({
@@ -9843,7 +9998,7 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/quality-export",
   for (const file of files) zip.file(file.path, file.content, { date: archiveDate, base64: file.base64 });
   zip.file("quality/validation-report.json", JSON.stringify(qualityReport, null, 2), { date: archiveDate });
   zip.file("README.txt", [
-    "SENuke AI Website Quality Review Package",
+    "SEnuke AI - AI Growth Operating System Website Quality Review Package",
     "",
     "This ZIP contains the complete current website as HTML, shared CSS, available media, sitemap.xml, robots.txt, llms.txt, and its quality report.",
     "It is a review/developer-handoff artifact and is not an Approved Release.",

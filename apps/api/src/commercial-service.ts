@@ -1,6 +1,7 @@
 import crypto from "node:crypto";
 import { prisma, type Prisma } from "@webtummy/db";
 import { config } from "./config.js";
+import { COMMERCIAL_PLAN_CAPACITY, canonicalCommercialPlanCode, ensureCommercialAddonDefaults, ensureWorkspaceCapacityAccount, workspaceCapacitySummary } from "./commercial-capacity.js";
 
 type JsonObject = Record<string, unknown>;
 type Db = typeof prisma | Prisma.TransactionClient;
@@ -8,26 +9,34 @@ type Db = typeof prisma | Prisma.TransactionClient;
 export const COMMERCIAL_PROVIDER = "jvzoo";
 export const COMMERCIAL_POLICY_CODE = "senuke-default";
 export const COMMERCIAL_REGISTRATION_POLICY_ID = "default";
+export const COMMERCIAL_PLAN_VERSION = 2;
 
 export function workspaceTypeForCommercialPlan(planCode: string | null | undefined) {
-  if (planCode === "starter") return "personal";
-  if (planCode === "business") return "business";
-  if (planCode === "agency") return "agency";
+  const raw = String(planCode || "").trim().toLowerCase();
+  if (!["mini", "starter", "personal", "entrepreneur", "basic", "standard", "growth", "business", "pro", "agency"].includes(raw)) {
+    throw Object.assign(new Error("The commercial plan does not map to a supported workspace type."), { statusCode: 409, code: "unsupported_plan_mapping" });
+  }
+  const canonical = canonicalCommercialPlanCode(planCode);
+  if (canonical === "entrepreneur") return "personal";
+  if (canonical === "business") return "business";
+  if (canonical === "agency") return "agency";
   throw Object.assign(new Error("The commercial plan does not map to a supported workspace type."), { statusCode: 409, code: "unsupported_plan_mapping" });
 }
 
 const BASELINE_PLANS = [
   {
-    code: "starter",
-    name: "Starter",
-    description: "Individuals and early-stage projects.",
+    code: "entrepreneur",
+    name: "Entrepreneur",
+    description: "A complete AI Growth Operating System for an owner managing their own businesses, projects, websites, stores, and integrations.",
     sortOrder: 20,
-    workspaceTypes: ["personal", "business"],
-    capacity: 250,
+    workspaceTypes: ["personal"],
+    capacity: COMMERCIAL_PLAN_CAPACITY.entrepreneur,
+    includedSeats: 1,
     prices: [
-      { code: "starter-founding-monthly-usd-v1", interval: "monthly", amountCents: 7_700, priceClass: "founding" },
-      { code: "starter-founding-annual-usd-v1", interval: "annual", amountCents: 77_000, priceClass: "founding" },
-      { code: "starter-standard-monthly-usd-v1", interval: "monthly", amountCents: 9_700, priceClass: "standard" },
+      { code: "entrepreneur-founding-monthly-usd-v2", interval: "monthly", amountCents: 7_700, priceClass: "founding", providerProductRef: "447807" },
+      { code: "entrepreneur-founding-annual-usd-v2", interval: "annual", amountCents: 77_000, priceClass: "founding", providerProductRef: "448957" },
+      { code: "entrepreneur-standard-monthly-usd-v2", interval: "monthly", amountCents: 9_700, priceClass: "standard", providerProductRef: null },
+      { code: "entrepreneur-standard-annual-usd-v2", interval: "annual", amountCents: 97_000, priceClass: "standard", providerProductRef: null },
     ],
   },
   {
@@ -35,12 +44,14 @@ const BASELINE_PLANS = [
     name: "Business",
     description: "Operating businesses requiring broader execution capacity.",
     sortOrder: 30,
-    workspaceTypes: ["business", "ecommerce"],
-    capacity: 600,
+    workspaceTypes: ["business"],
+    capacity: COMMERCIAL_PLAN_CAPACITY.business,
+    includedSeats: 1,
     prices: [
-      { code: "business-founding-monthly-usd-v1", interval: "monthly", amountCents: 14_700, priceClass: "founding" },
-      { code: "business-founding-annual-usd-v1", interval: "annual", amountCents: 147_000, priceClass: "founding" },
-      { code: "business-standard-monthly-usd-v1", interval: "monthly", amountCents: 19_700, priceClass: "standard" },
+      { code: "business-founding-monthly-usd-v2", interval: "monthly", amountCents: 14_700, priceClass: "founding", providerProductRef: "448953" },
+      { code: "business-founding-annual-usd-v2", interval: "annual", amountCents: 147_000, priceClass: "founding", providerProductRef: "449155" },
+      { code: "business-standard-monthly-usd-v2", interval: "monthly", amountCents: 19_700, priceClass: "standard", providerProductRef: null },
+      { code: "business-standard-annual-usd-v2", interval: "annual", amountCents: 197_000, priceClass: "standard", providerProductRef: null },
     ],
   },
   {
@@ -49,18 +60,22 @@ const BASELINE_PLANS = [
     description: "Agencies and multi-client operations.",
     sortOrder: 40,
     workspaceTypes: ["agency"],
-    capacity: 2_500,
+    capacity: COMMERCIAL_PLAN_CAPACITY.agency,
+    includedSeats: 3,
     prices: [
-      { code: "agency-founding-monthly-usd-v1", interval: "monthly", amountCents: 36_700, priceClass: "founding" },
-      { code: "agency-founding-annual-usd-v1", interval: "annual", amountCents: 367_000, priceClass: "founding" },
-      { code: "agency-standard-monthly-usd-v1", interval: "monthly", amountCents: 49_700, priceClass: "standard" },
+      { code: "agency-founding-monthly-usd-v2", interval: "monthly", amountCents: 36_700, priceClass: "founding", providerProductRef: "448955" },
+      { code: "agency-founding-annual-usd-v2", interval: "annual", amountCents: 367_000, priceClass: "founding", providerProductRef: "449157" },
+      { code: "agency-standard-monthly-usd-v2", interval: "monthly", amountCents: 49_700, priceClass: "standard", providerProductRef: null },
+      { code: "agency-standard-annual-usd-v2", interval: "annual", amountCents: 497_000, priceClass: "standard", providerProductRef: null },
     ],
   },
 ] as const;
 
 const LEGACY_PLAN_MAP: Record<string, string> = {
-  mini: "starter",
-  starter: "starter",
+  mini: "entrepreneur",
+  starter: "entrepreneur",
+  personal: "entrepreneur",
+  entrepreneur: "entrepreneur",
   basic: "business",
   standard: "business",
   growth: "business",
@@ -87,7 +102,7 @@ function dateValue(value: unknown) {
 
 function legacyCommercialCode(value: string | null | undefined) {
   const code = (value ?? "mini").trim().toLowerCase();
-  return LEGACY_PLAN_MAP[code === "standard" ? "basic" : code] ?? "starter";
+  return LEGACY_PLAN_MAP[code === "standard" ? "business" : code] ?? "entrepreneur";
 }
 
 function accessModeForStatus(status: string) {
@@ -108,6 +123,7 @@ function normalizedSubscriptionStatus(value: string | null | undefined) {
 }
 
 export async function ensureCommercialDefaults(db: Db = prisma) {
+  await ensureCommercialAddonDefaults(db);
   await db.commercialRegistrationPolicy.upsert({
     where: { id: COMMERCIAL_REGISTRATION_POLICY_ID },
     update: {},
@@ -134,38 +150,54 @@ export async function ensureCommercialDefaults(db: Db = prisma) {
   for (const planSeed of BASELINE_PLANS) {
     const billingPlan = await db.billingPlan.upsert({
       where: { code: planSeed.code },
-      update: {},
+      update: {
+        name: planSeed.name,
+        description: planSeed.description,
+        priceMonthlyCents: planSeed.prices.find((price) => price.interval === "monthly" && price.priceClass === "standard")?.amountCents ?? 0,
+        articleLimit: 0,
+        helperMonthlyLimit: planSeed.capacity,
+        features: ["Complete AI Growth Operating System", "Workspace AI Capacity", "Unlimited saved resources", "Versioned commercial entitlements"],
+        sortOrder: planSeed.sortOrder,
+        isActive: true,
+      },
       create: {
         code: planSeed.code,
         name: planSeed.name,
         description: planSeed.description,
         priceMonthlyCents: planSeed.prices.find((price) => price.interval === "monthly" && price.priceClass === "standard")?.amountCents ?? 0,
-        articleLimit: planSeed.code === "starter" ? 10 : planSeed.code === "business" ? 50 : 100,
+        articleLimit: 0,
         helperMonthlyLimit: planSeed.capacity,
-        features: ["Workspace AI Capacity", "Versioned commercial entitlements"],
+        features: ["Complete AI Growth Operating System", "Workspace AI Capacity", "Unlimited saved resources", "Versioned commercial entitlements"],
         sortOrder: planSeed.sortOrder,
       },
     });
     const planVersion = await db.commercialPlanVersion.upsert({
-      where: { billingPlanId_version: { billingPlanId: billingPlan.id, version: 1 } },
-      update: {},
+      where: { billingPlanId_version: { billingPlanId: billingPlan.id, version: COMMERCIAL_PLAN_VERSION } },
+      update: {
+        workspaceTypeEligibility: [...planSeed.workspaceTypes],
+        featureEntitlements: { "*": true, agency_clients: planSeed.code === "agency", client_viewer: planSeed.code === "agency", ecommerce: true },
+        numericLimits: { activeProjects: null, activeAgencyClients: null, includedSeats: planSeed.includedSeats, monthlyAiCapacity: planSeed.capacity, seatsAddCapacity: false },
+        status: "active",
+      },
       create: {
         billingPlanId: billingPlan.id,
-        version: 1,
-        effectiveFrom: new Date("2026-07-01T00:00:00.000Z"),
+        version: COMMERCIAL_PLAN_VERSION,
+        effectiveFrom: new Date("2026-08-19T00:00:00.000Z"),
         workspaceTypeEligibility: [...planSeed.workspaceTypes],
         featureEntitlements: {
           "*": true,
           agency_clients: planSeed.code === "agency",
           client_viewer: planSeed.code === "agency",
+          ecommerce: true,
         },
         // Active-project and active-client limits deliberately remain null until
         // the approved commercial matrix is entered by Commercial Admin.
         numericLimits: {
           activeProjects: null,
-          activeAgencyClients: planSeed.code === "agency" ? null : 0,
-          includedSeats: 1,
+          activeAgencyClients: null,
+          includedSeats: planSeed.includedSeats,
           monthlyAiCapacity: planSeed.capacity,
+          seatsAddCapacity: false,
         },
         policyVersionId: policy.id,
       },
@@ -173,6 +205,8 @@ export async function ensureCommercialDefaults(db: Db = prisma) {
     for (const priceSeed of planSeed.prices) {
       await db.commercialPrice.upsert({
         where: { code: priceSeed.code },
+        // Commercial Admin creates effective-dated revisions. Never reactivate
+        // or rewrite an existing rate while ensuring catalogue defaults.
         update: {},
         create: {
           code: priceSeed.code,
@@ -182,11 +216,43 @@ export async function ensureCommercialDefaults(db: Db = prisma) {
           amountCents: priceSeed.amountCents,
           priceClass: priceSeed.priceClass,
           provider: COMMERCIAL_PROVIDER,
-          effectiveFrom: new Date("2026-07-01T00:00:00.000Z"),
+          providerProductRef: priceSeed.providerProductRef,
+          effectiveFrom: new Date("2026-08-19T00:00:00.000Z"),
         },
       });
+      if (priceSeed.providerProductRef) {
+        const conflictingMapping = await db.commercialPrice.findFirst({
+          where: {
+            provider: COMMERCIAL_PROVIDER,
+            providerProductRef: priceSeed.providerProductRef,
+            status: "active",
+            NOT: {
+              planVersionId: planVersion.id,
+              billingInterval: priceSeed.interval,
+              priceClass: priceSeed.priceClass,
+            },
+          },
+          select: { code: true },
+        });
+        if (conflictingMapping) {
+          throw new Error(`JVZoo product ${priceSeed.providerProductRef} is already mapped to active price ${conflictingMapping.code}.`);
+        }
+        // A rate revision creates a new active row (for example $77 -> $79).
+        // Attach the launch product to that current row without rewriting the
+        // inactive historical rate retained for existing subscriptions.
+        await db.commercialPrice.updateMany({
+          where: {
+            planVersionId: planVersion.id,
+            billingInterval: priceSeed.interval,
+            priceClass: priceSeed.priceClass,
+            status: "active",
+          },
+          data: { providerProductRef: priceSeed.providerProductRef },
+        });
+      }
     }
   }
+  await db.billingPlan.updateMany({ where: { code: { in: ["mini", "starter", "basic", "growth", "pro"] } }, data: { isActive: false } });
   return policy;
 }
 
@@ -327,7 +393,7 @@ export async function effectiveCommercialEntitlements(workspaceId: string) {
   }
   const seatEntitlements = await prisma.commercialSeatEntitlement.aggregate({
     where: { workspaceId, status: "active", OR: [{ effectiveTo: null }, { effectiveTo: { gt: now } }] },
-    _sum: { quantity: true, capacityGrant: true },
+    _sum: { quantity: true },
   });
   const includedSeats = typeof limits.includedSeats === "number" ? limits.includedSeats : 0;
   const purchasedSeatQuantity = Math.max(0, (seatEntitlements._sum.quantity ?? 0) - 1);
@@ -335,7 +401,7 @@ export async function effectiveCommercialEntitlements(workspaceId: string) {
   return {
     subscription,
     features,
-    limits: { ...limits, seatCapacityContribution: seatEntitlements._sum.capacityGrant ?? 0 },
+    limits: { ...limits, seatCapacityContribution: 0, seatsAddCapacity: false },
     seatLimit,
   };
 }
@@ -343,7 +409,10 @@ export async function effectiveCommercialEntitlements(workspaceId: string) {
 export async function commercialCatalog(input: { includeInactive?: boolean; workspaceType?: string | null } = {}) {
   await ensureCommercialDefaults();
   const planVersions = await prisma.commercialPlanVersion.findMany({
-    where: input.includeInactive ? {} : { status: "active" },
+    where: {
+      billingPlan: { code: { in: ["entrepreneur", "business", "agency"] } },
+      ...(input.includeInactive ? {} : { status: "active" }),
+    },
     orderBy: [{ billingPlan: { sortOrder: "asc" } }, { version: "desc" }],
     include: {
       billingPlan: true,
@@ -399,14 +468,28 @@ export async function workspaceCommercialSummary(workspaceId: string) {
     effectiveCommercialEntitlements(workspaceId),
   ]);
   const subscription = entitlements.subscription;
-  const [activeProjects, archivedProjects, activeClients, memberships, assignedSeats, capacityAccount, recentEvents] = await Promise.all([
+  const [activeProjects, archivedProjects, activeClients, memberships, assignedSeats, capacity, recentEvents, providerLifecycle] = await Promise.all([
     workspace.legacyClientId ? prisma.project.count({ where: { clientId: workspace.legacyClientId, status: { not: "archived" } } }) : 0,
     workspace.legacyClientId ? prisma.project.count({ where: { clientId: workspace.legacyClientId, status: "archived" } }) : 0,
     prisma.agencyClient.count({ where: { workspaceId, status: "active" } }),
     prisma.workspaceMembership.count({ where: { workspaceId, status: "active" } }),
     prisma.commercialSeatAssignment.count({ where: { workspaceId, status: "active" } }),
-    workspace.legacyClientId ? prisma.creditAccount.findFirst({ where: { clientId: workspace.legacyClientId, status: "active" }, orderBy: { periodStart: "desc" } }) : null,
+    workspaceCapacitySummary(workspaceId),
     prisma.commercialBillingEvent.findMany({ where: { workspaceId }, orderBy: { createdAt: "desc" }, take: 10 }),
+    prisma.externalSubscription.findFirst({
+      where: { workspaceId, provider: COMMERCIAL_PROVIDER },
+      orderBy: { updatedAt: "desc" },
+      select: {
+        status: true,
+        purchasedAt: true,
+        currentPeriodStart: true,
+        currentPeriodEnd: true,
+        cancelAtPeriodEnd: true,
+        cancelledAt: true,
+        refundedAt: true,
+        chargebackAt: true,
+      },
+    }),
   ]);
   return {
     workspace: {
@@ -446,6 +529,7 @@ export async function workspaceCommercialSummary(workspaceId: string) {
         retentionDays: subscription.policyVersion.retentionDays,
       },
     } : null,
+    providerLifecycle,
     entitlements: {
       features: entitlements.features,
       limits: entitlements.limits,
@@ -457,13 +541,7 @@ export async function workspaceCommercialSummary(workspaceId: string) {
       activeAgencyClients: activeClients,
       activeMemberships: memberships,
       assignedSeats,
-      capacity: capacityAccount ? {
-        balance: capacityAccount.balance,
-        monthlyAllowance: capacityAccount.monthlyAllowance,
-        reserved: Math.max(0, capacityAccount.monthlyAllowance - capacityAccount.monthlyUsed - capacityAccount.balance),
-        periodStart: capacityAccount.periodStart,
-        periodEnd: capacityAccount.periodEnd,
-      } : null,
+      capacity,
     },
     recentBillingEvents: recentEvents.map((event) => ({
       id: event.id,
@@ -515,6 +593,8 @@ export async function ensureCommercialSeatAssignments(workspaceId: string) {
     where: { workspaceId, status: "active" },
     select: { id: true, roles: { select: { role: true } } },
   });
+  // Client Viewer is an external, read-only role: it consumes neither a paid
+  // team seat nor AI Capacity.
   const internalRoles = new Set(["owner", "admin", "manager", "approver", "manager_approver", "editor", "viewer"]);
   const eligibleIds = memberships
     .filter((membership) => membership.roles.some(({ role }) => internalRoles.has(role)))
@@ -684,6 +764,23 @@ function amountCents(value: string) {
   return Number.isFinite(parsed) ? Math.round(parsed * 100) : null;
 }
 
+export function validateJvZooRenewalPayment(input: {
+  transactionType: string;
+  nextStatus: string;
+  amount: string;
+  currency: string;
+  currencyProvided: boolean;
+  expectedAmountCents: number;
+  expectedCurrency: string;
+}) {
+  if (!["BILL", "REBILL"].includes(input.transactionType) || input.nextStatus !== "active") return null;
+  const reportedAmountCents = amountCents(input.amount);
+  if (reportedAmountCents === null) return "missing_required_provider_fields";
+  if (reportedAmountCents !== input.expectedAmountCents) return "rebill_amount_mismatch";
+  if (input.currencyProvided && input.currency.trim().toUpperCase() !== input.expectedCurrency.trim().toUpperCase()) return "currency_mismatch";
+  return null;
+}
+
 type JvZooPriceCandidate = {
   id: string;
   status: string;
@@ -733,6 +830,82 @@ async function mappedJvZooPrice(normalized: ReturnType<typeof normalizeJvZooIpn>
   return selectJvZooPriceMapping(candidates, normalized);
 }
 
+async function mappedJvZooAddon(normalized: ReturnType<typeof normalizeJvZooIpn>) {
+  if (!normalized.productId) return { addon: null, error: "product_not_mapped" } as const;
+  const candidates = await prisma.commercialAddonSku.findMany({
+    where: { provider: COMMERCIAL_PROVIDER, providerProductRef: normalized.productId, status: "active" },
+  });
+  if (!candidates.length) return { addon: null, error: "product_not_mapped" } as const;
+  const currencyMatches = candidates.filter((candidate) => candidate.currency.toUpperCase() === normalized.currency.toUpperCase());
+  if (!currencyMatches.length) return { addon: null, error: "currency_mismatch" } as const;
+  const cents = amountCents(normalized.amount);
+  const exact = cents == null ? currencyMatches : currencyMatches.filter((candidate) => candidate.amountCents === cents);
+  if (!exact.length) return { addon: null, error: "amount_mismatch" } as const;
+  if (exact.length > 1) return { addon: null, error: "price_mapping_ambiguous" } as const;
+  return { addon: exact[0], error: null };
+}
+
+async function processJvZooAddonEvent(
+  event: { id: string; createdAt: Date },
+  normalized: ReturnType<typeof normalizeJvZooIpn>,
+  addon: NonNullable<Awaited<ReturnType<typeof mappedJvZooAddon>>["addon"]>,
+  nextState: NonNullable<ReturnType<typeof stateFromJvZooEvent>>,
+) {
+  const eligibleWorkspaceTypes = Array.isArray(addon.workspaceTypes) ? addon.workspaceTypes.map(String) : [];
+  const workspace = await resolveJvZooWorkspace(normalized, eligibleWorkspaceTypes);
+  if (!workspace) {
+    const unresolved = await prisma.commercialBillingEvent.update({ where: { id: event.id }, data: { status: "unresolved", error: "addon_workspace_required" } });
+    return { event: unresolved, duplicate: false, workspaceId: null };
+  }
+  const correlationId = `jvzoo-addon:${normalized.providerTransactionId}:${addon.code}`;
+  await prisma.$transaction(async (tx) => {
+    if (addon.kind === "capacity_pack") {
+      const account = await ensureWorkspaceCapacityAccount(workspace.id, tx);
+      const prior = await tx.workspaceCapacityTransaction.findFirst({ where: { workspaceId: workspace.id, correlationId } });
+      if (["active", "cancel_at_period_end"].includes(nextState.status) && !prior) {
+        const updated = await tx.workspaceCapacityAccount.update({ where: { id: account.id }, data: { purchasedBalance: { increment: addon.capacityUnits } } });
+        await tx.workspaceCapacityTransaction.create({ data: {
+          workspaceId: workspace.id, accountId: account.id, bucket: "purchased", type: "purchase", amount: addon.capacityUnits,
+          balanceAfter: updated.purchasedBalance, reason: `${addon.name} purchased through JVZoo`, correlationId,
+          metadataJson: { addonSkuId: addon.id, providerTransactionId: normalized.providerTransactionId, nonExpiring: true },
+        } });
+      } else if (["cancelled", "suspended"].includes(nextState.status) && prior && prior.amount > 0) {
+        const reversalId = `${correlationId}:reversal`;
+        const reversed = await tx.workspaceCapacityTransaction.findFirst({ where: { workspaceId: workspace.id, correlationId: reversalId } });
+        if (!reversed) {
+          const removable = Math.min(account.purchasedBalance, prior.amount);
+          const updated = await tx.workspaceCapacityAccount.update({ where: { id: account.id }, data: { purchasedBalance: { decrement: removable } } });
+          await tx.workspaceCapacityTransaction.create({ data: {
+            workspaceId: workspace.id, accountId: account.id, bucket: "purchased", type: nextState.status === "suspended" ? "chargeback" : "refund",
+            amount: -removable, balanceAfter: updated.purchasedBalance, reason: `${addon.name} ${nextState.status} through JVZoo`, correlationId: reversalId,
+            metadataJson: { addonSkuId: addon.id, providerTransactionId: normalized.providerTransactionId, unrecoveredUsedUnits: prior.amount - removable },
+          } });
+        }
+      }
+    } else {
+      const providerRef = normalized.providerSubscriptionRef || correlationId;
+      const current = await tx.commercialSeatEntitlement.findFirst({ where: { workspaceId: workspace.id, providerRef } });
+      const seatData = {
+        source: addon.kind,
+        quantity: addon.seatQuantity,
+        capacityGrant: 0,
+        status: ["active", "cancel_at_period_end"].includes(nextState.status) ? "active" : "inactive",
+        effectiveTo: ["active", "cancel_at_period_end"].includes(nextState.status) ? null : (normalized.occurredAt ?? event.createdAt),
+        providerRef,
+      };
+      if (current) await tx.commercialSeatEntitlement.update({ where: { id: current.id }, data: seatData });
+      else await tx.commercialSeatEntitlement.create({ data: { workspaceId: workspace.id, ...seatData } });
+    }
+    await tx.commercialBillingEvent.update({ where: { id: event.id }, data: { workspaceId: workspace.id, status: "processed", processedAt: new Date(), error: null } });
+    await tx.commercialAuditEvent.create({ data: {
+      workspaceId: workspace.id, actorType: "provider", actorId: COMMERCIAL_PROVIDER, action: `billing.addon_${normalized.transactionType.toLowerCase() || "event"}`,
+      reasonCode: "verified_addon_event", source: "provider", correlationId: normalized.eventFingerprint,
+      afterJson: { addonCode: addon.code, kind: addon.kind, capacityUnits: addon.capacityUnits, seatQuantity: addon.seatQuantity, status: nextState.status },
+    } });
+  });
+  return { event: await prisma.commercialBillingEvent.findUniqueOrThrow({ where: { id: event.id } }), duplicate: false, workspaceId: workspace.id };
+}
+
 export async function receiveJvZooIpn(payload: JsonObject) {
   const verified = verifyJvZooIpn(payload)
     || (Boolean(config.jvzooPreviousSecretKey) && verifyJvZooIpn(payload, config.jvzooPreviousSecretKey));
@@ -748,6 +921,8 @@ export async function receiveJvZooIpn(payload: JsonObject) {
           providerEventId: normalized.providerEventId,
           eventFingerprint: normalized.eventFingerprint,
           providerTransactionId: normalized.providerTransactionId,
+          providerProductRef: normalized.productId || null,
+          providerCustomerEmail: normalized.customerEmail || null,
           providerStatus: normalized.providerStatus || null,
           eventType: normalized.transactionType || "UNKNOWN",
           verified: false,
@@ -771,6 +946,8 @@ export async function receiveJvZooIpn(payload: JsonObject) {
       verified: true,
       rawPayload: payload as Prisma.InputJsonValue,
       normalizedPayload: normalized as unknown as Prisma.InputJsonValue,
+      providerProductRef: normalized.productId || null,
+      providerCustomerEmail: normalized.customerEmail || null,
       status: "queued",
       error: null,
     },
@@ -779,6 +956,8 @@ export async function receiveJvZooIpn(payload: JsonObject) {
       providerEventId: normalized.providerEventId,
       eventFingerprint: normalized.eventFingerprint,
       providerTransactionId: normalized.providerTransactionId,
+      providerProductRef: normalized.productId || null,
+      providerCustomerEmail: normalized.customerEmail || null,
       providerStatus: normalized.providerStatus || null,
       eventType: normalized.transactionType || "UNKNOWN",
       verified: true,
@@ -958,6 +1137,8 @@ export async function processStoredJvZooEvent(eventId: string) {
     const unresolved = await prisma.commercialBillingEvent.update({ where: { id: event.id }, data: { status: "unresolved", error: "missing_required_provider_fields" } });
     return { event: unresolved, duplicate: false, workspaceId: external?.workspaceId ?? null };
   }
+  const addonMapping = await mappedJvZooAddon(normalized);
+  if (addonMapping.addon) return processJvZooAddonEvent(event, normalized, addonMapping.addon, nextState);
   if (!external && !isPurchase) {
     const unresolved = await prisma.commercialBillingEvent.update({ where: { id: event.id }, data: { status: "unresolved", error: "subscription_not_found" } });
     return { event: unresolved, duplicate: false, workspaceId: null };
@@ -986,6 +1167,22 @@ export async function processStoredJvZooEvent(eventId: string) {
   if (!price) {
     const error = mapping.error ?? "product_not_mapped";
     const unresolved = await prisma.commercialBillingEvent.update({ where: { id: event.id }, data: { status: error === "product_not_mapped" ? "unmapped_product" : "unresolved", error } });
+    return { event: unresolved, duplicate: false, workspaceId: external?.workspaceId ?? null };
+  }
+  const renewalValidationError = external ? validateJvZooRenewalPayment({
+    transactionType: normalized.transactionType,
+    nextStatus: nextState.status,
+    amount: normalized.amount,
+    currency: normalized.currency,
+    currencyProvided: normalized.currencyProvided,
+    expectedAmountCents: external.amountCents ?? price.amountCents,
+    expectedCurrency: external.currency || price.currency,
+  }) : null;
+  if (renewalValidationError) {
+    const unresolved = await prisma.commercialBillingEvent.update({
+      where: { id: event.id },
+      data: { status: "unresolved", error: renewalValidationError, externalSubscriptionId: external?.id },
+    });
     return { event: unresolved, duplicate: false, workspaceId: external?.workspaceId ?? null };
   }
   const occurredAt = normalized.occurredAt ?? event.createdAt;
