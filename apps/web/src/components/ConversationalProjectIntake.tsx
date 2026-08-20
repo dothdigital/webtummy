@@ -8,6 +8,7 @@ import { geographicTargetMarkets } from "../utils/projectLocations.js";
 
 type Message = { role: "user" | "assistant"; text: string };
 const PROJECT_CONVERSATION_LIMIT = 100;
+const BUSINESS_DISCOVERY_REQUEST_TIMEOUT_MS = 210_000;
 type FieldUpdate = { field: string; value: unknown; confidence: "high" | "medium" | "low"; reason: string };
 type ConversationResponse = { message: string; fieldUpdates: FieldUpdate[]; keywordSuggestions: { primary: string[]; secondary: string[] }; missingFields: string[]; readyForReview: boolean; sessionId: string; websiteContextLoaded?: boolean; usage: { used: number; limit: number } };
 type ProjectLaunchProposal = {
@@ -242,7 +243,7 @@ export default function ConversationalProjectIntake(props: Props) {
     setComposer(""); setMessages(nextMessages); setLoading(true); setError("");
     try {
       const analyzeWebsite = draft.websiteStatus === "existing_website" && Boolean(draft.websiteUrl) && !websiteContextLoaded;
-      const result = await api.post<ConversationResponse>("/api/ai-intake/business-discovery", { projectId: draft.savedProjectId, sessionId: draft.aiConversationSessionId || undefined, messages: nextMessages.slice(-30), totalUserTurns: usedAiRequests + 1, draft: currentDraft(), workspaceType: props.workspaceType, analyzeWebsite, websiteUrl: draft.websiteUrl, directSelection, intakeMode: "business_discovery" }, { signal: AbortSignal.timeout(55_000) });
+      const result = await api.post<ConversationResponse>("/api/ai-intake/business-discovery", { projectId: draft.savedProjectId, sessionId: draft.aiConversationSessionId || undefined, messages: nextMessages.slice(-30), totalUserTurns: usedAiRequests + 1, draft: currentDraft(), workspaceType: props.workspaceType, analyzeWebsite, websiteUrl: draft.websiteUrl, directSelection, intakeMode: "business_discovery" }, { signal: AbortSignal.timeout(BUSINESS_DISCOVERY_REQUEST_TIMEOUT_MS) });
       if (result.websiteContextLoaded || analyzeWebsite) { setWebsiteContextLoaded(true); patch({ websiteContextLoaded: true }); }
       const completed = dedupeConsecutiveMessages([...nextMessages, { role: "assistant" as const, text: result.message }]);
       setMessages(completed);
@@ -265,7 +266,7 @@ export default function ConversationalProjectIntake(props: Props) {
       const initialMessages: Message[] = [{ role: "assistant", text: opening }, { role: "user", text: draft.businessDescription.trim() }];
       setMessages(initialMessages); setStarted(true); setLoading(true);
       const analyzeWebsite = draft.websiteStatus === "existing_website" && Boolean(draft.websiteUrl);
-      const result = await api.post<ConversationResponse>("/api/ai-intake/business-discovery", { projectId, messages: initialMessages, totalUserTurns: 1, draft: currentDraft(), workspaceType: props.workspaceType, analyzeWebsite, websiteUrl: draft.websiteUrl, intakeMode: "business_discovery" }, { signal: AbortSignal.timeout(55_000) });
+      const result = await api.post<ConversationResponse>("/api/ai-intake/business-discovery", { projectId, messages: initialMessages, totalUserTurns: 1, draft: currentDraft(), workspaceType: props.workspaceType, analyzeWebsite, websiteUrl: draft.websiteUrl, intakeMode: "business_discovery" }, { signal: AbortSignal.timeout(BUSINESS_DISCOVERY_REQUEST_TIMEOUT_MS) });
       const completed = dedupeConsecutiveMessages([...initialMessages, { role: "assistant" as const, text: result.message }]);
       setMessages(completed); setServerUsageCount(result.usage.used); setKeywordSuggestions(result.keywordSuggestions); setWebsiteContextLoaded(Boolean(result.websiteContextLoaded || analyzeWebsite));
       if (result.websiteContextLoaded || analyzeWebsite) patch({ websiteContextLoaded: true });

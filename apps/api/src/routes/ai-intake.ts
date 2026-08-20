@@ -742,7 +742,7 @@ Recent conversation window: ${JSON.stringify(input.messages.slice(-30)).slice(0,
         model,
         maxInputBytes: 100_000,
         maxOutputTokens: 6_000,
-        timeoutMs: 45_000,
+        timeoutMs: 90_000,
       });
       let output = conversationOutputSchema.parse(generated.result);
       output = { ...output, fieldUpdates: output.fieldUpdates.filter((update) => update.field !== "projectName") };
@@ -751,49 +751,10 @@ Recent conversation window: ${JSON.stringify(input.messages.slice(-30)).slice(0,
       }
       let totalInputTokens = generated.inputTokens;
       let totalOutputTokens = generated.outputTokens;
-      if (businessDiscovery && requestCount === 0) {
-        const currentIndustry = String(input.draft.industryNiche ?? input.draft.serviceType ?? "").trim();
-        const proposedIndustry = output.fieldUpdates.find((update) => update.field === "industryNiche");
-        const extractedFacts = Object.fromEntries(output.fieldUpdates
-          .filter((update) => ["businessDescription", "targetAudience", "productsServices"].includes(update.field))
-          .map((update) => [update.field, update.value]));
-        const reconciliation = await centralAiJson({
-          system: "You are SEnuke AI - AI Growth Operating System's Business Brain classification validator. Classify the business described by the user, independent of inherited software, website, client, workspace, or form defaults.",
-          prompt: `Reconcile the industry/category for the first Business Discovery response.
-Return {"decision":"replace|keep|unresolved","industryNiche":"concise category","confidence":"high|medium|low","reason":"brief evidence-based reason"}.
-Rules:
-- The user's narrative and facts extracted from it are the source of truth.
-- Treat the current draft industry as an untrusted inherited default.
-- Use a concise business category a normal owner would recognize, not a list of technologies or keywords.
-- Choose replace when the narrative supports a different business from the current draft.
-- Choose unresolved only when the narrative genuinely does not identify what the business does.
-User narrative: ${JSON.stringify(input.messages.filter((message) => message.role === "user").map((message) => message.text).join("\n")).slice(0, 20_000)}
-Extracted facts: ${JSON.stringify(extractedFacts).slice(0, 10_000)}
-Current inherited industry: ${JSON.stringify(currentIndustry || null)}
-Industry proposed by the first AI response: ${JSON.stringify(proposedIndustry?.value ?? null)}`,
-          model,
-          maxInputBytes: 40_000,
-          maxOutputTokens: 1_000,
-          timeoutMs: 45_000,
-          validate: (value) => z.object({
-            decision: z.enum(["replace", "keep", "unresolved"]),
-            industryNiche: z.string().trim().min(2).max(180),
-            confidence: z.enum(["high", "medium", "low"]),
-            reason: z.string().trim().min(3).max(500),
-          }).parse(value),
-        });
-        totalInputTokens += reconciliation.inputTokens;
-        totalOutputTokens += reconciliation.outputTokens;
-        if (reconciliation.result.decision === "replace" || (!currentIndustry && reconciliation.result.decision === "keep")) {
-          output = {
-            ...output,
-            fieldUpdates: [
-              ...output.fieldUpdates.filter((update) => update.field !== "industryNiche"),
-              { field: "industryNiche", value: reconciliation.result.industryNiche, confidence: reconciliation.result.confidence, reason: reconciliation.result.reason },
-            ],
-          };
-        }
-      }
+      // The primary Business Discovery response already reconciles the
+      // narrative against inherited draft values. A second provider request
+      // here made the first turn unnecessarily slow and could cause a valid
+      // analysis to exceed the browser deadline before anything was shown.
       const allowedPrimaryGoals = new Set<string>(primaryGoalsForWorkspace(input.workspaceType || context.workspace.workspaceType));
       const allowedSecondaryGoals = new Set<string>(standardSecondaryGoals);
       const coreConversationFields = new Set(["businessName", "industryNiche", "businessDescription", "targetAudience", "productsServices", "businessLocation", "streetAddress", "targetMarkets", "primaryGoal", "secondaryGoals", "primaryKeywords", "secondaryKeywords", "competitors", "brandVoice", "preferredOutputs", "targetLaunchTimeline", "websiteUrl", "websiteStatus", "clientProjectType"]);
