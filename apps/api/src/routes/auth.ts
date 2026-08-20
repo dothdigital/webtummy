@@ -8,7 +8,7 @@ import { requireAuth } from "../middleware.js";
 import { config } from "../config.js";
 import { sendMail } from "../email.js";
 import { trialEndsFrom } from "../billing.js";
-import { hasWorkspacePermission, reconcileWorkspaceTypeFromCommercialPlan, workspaceApprovalMode, workspaceSeatUsage, type WorkspaceContext } from "../workspace-access.js";
+import { hasWorkspacePermission, preferredWorkspaceIdForUser, workspaceApprovalMode, workspaceSeatUsage, type WorkspaceContext } from "../workspace-access.js";
 import { rolesConsumeSeat } from "@webtummy/core/workspace-permissions";
 import { commercialRegistrationPolicy, reconcilePendingJvZooEventsForUser } from "../commercial-service.js";
 
@@ -29,14 +29,13 @@ function authUser(user: { id: string; email: string; name: string | null; role: 
   return { id: user.id, email: user.email, name: user.name, role: user.role, clientId: user.clientId };
 }
 
-async function workspaceSession(userId: string) {
-  const membership = await prisma.workspaceMembership.findFirst({
-    where: { userId, status: "active", workspace: { status: "active" } },
-    orderBy: { createdAt: "asc" },
+async function workspaceSession(userId: string, clientId: string | null) {
+  const workspaceId = await preferredWorkspaceIdForUser(userId, clientId);
+  const membership = workspaceId ? await prisma.workspaceMembership.findUnique({
+    where: { workspaceId_userId: { workspaceId, userId } },
     include: { workspace: { select: { id: true, name: true, workspaceType: true, ownerUserId: true, legacyClientId: true, commercialState: true, accessMode: true, settingsJson: true, securitySettingsJson: true, autoApprovalPolicyJson: true } }, roles: { select: { role: true } } },
-  });
+  }) : null;
   if (!membership) return null;
-  membership.workspace.workspaceType = await reconcileWorkspaceTypeFromCommercialPlan(membership.workspace.id, membership.workspace.workspaceType);
   if (membership.workspace.workspaceType === "personal" && membership.workspace.ownerUserId !== userId) return null;
   const [clientCount, projectCount] = await Promise.all([
     membership.workspace.workspaceType === "agency"
@@ -221,7 +220,7 @@ authRouter.post("/login", async (req, res) => {
   const token = issueLogin(user);
   res.json({
     token,
-    user: { ...authUser(user), firstLogin, workspace: await workspaceSession(user.id) },
+    user: { ...authUser(user), firstLogin, workspace: await workspaceSession(user.id, user.clientId) },
   });
 });
 
@@ -422,7 +421,7 @@ authRouter.post("/verify-email", async (req, res) => {
     console.error("Failed to reconcile a verified JVZoo purchase after email verification", error);
   }
 
-  res.json({ token: issueLogin(user), user: { ...authUser(user), workspace: await workspaceSession(user.id) } });
+  res.json({ token: issueLogin(user), user: { ...authUser(user), workspace: await workspaceSession(user.id, user.clientId) } });
 });
 
 const resendVerificationSchema = z.object({ email: z.string().email("Enter a valid email") });
@@ -500,7 +499,7 @@ authRouter.post("/reset-password", async (req, res) => {
     });
   });
 
-  res.json({ token: issueLogin(user), user: { ...authUser(user), workspace: await workspaceSession(user.id) } });
+  res.json({ token: issueLogin(user), user: { ...authUser(user), workspace: await workspaceSession(user.id, user.clientId) } });
 });
 
 authRouter.get("/me", requireAuth, async (req, res) => {
@@ -508,5 +507,5 @@ authRouter.get("/me", requireAuth, async (req, res) => {
     where: { id: req.user!.userId },
     select: { id: true, email: true, name: true, role: true, clientId: true },
   });
-  res.json({ user: user ? { ...user, workspace: await workspaceSession(user.id) } : null });
+  res.json({ user: user ? { ...user, workspace: await workspaceSession(user.id, user.clientId) } : null });
 });

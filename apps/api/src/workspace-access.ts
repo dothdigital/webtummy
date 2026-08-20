@@ -2,7 +2,7 @@ import type { Request } from "express";
 import { prisma, type Prisma } from "@webtummy/db";
 import { projectClientIdForRequest } from "./project-scope.js";
 import { defaultWorkspacePermission, rolesConsumeSeat, workspaceRoleCanEver, type ConfigurableWorkspaceRole } from "@webtummy/core/workspace-permissions";
-import { commercialSeatLimit, ensureCommercialSeatAssignments, workspaceTypeForCommercialPlan } from "./commercial-service.js";
+import { commercialSeatLimit, ensureCommercialSeatAssignments } from "./commercial-service.js";
 
 export const workspaceRoles = ["owner", "admin", "manager", "approver", "editor", "viewer", "client_viewer"] as const;
 export type WorkspaceRole = (typeof workspaceRoles)[number];
@@ -18,31 +18,51 @@ export const rolesByWorkspaceType: Record<string, readonly WorkspaceRole[]> = {
 
 const inheritedRoleOrder: readonly WorkspaceRole[] = ["owner", "admin", "manager", "approver", "editor", "viewer"];
 
-// Commercial plan is authoritative for the workspace experience. Older
-// workspaces could have been created as Agency from a role/default even though
-// their Entrepreneur entitlement is personal. Reconcile only when it is safe:
-// never collapse a workspace that has clients or multiple active members.
-export async function reconcileWorkspaceTypeFromCommercialPlan(workspaceId: string, storedType: string) {
-  const [subscription, workspace] = await Promise.all([
-    prisma.workspaceSubscription.findFirst({
-      where: { workspaceId, status: { in: ["active", "trialing", "cancel_pending", "manual_active"] } },
-      orderBy: { updatedAt: "desc" },
-      select: { planVersion: { select: { billingPlan: { select: { code: true } } } } },
-    }),
-    prisma.workspace.findUnique({ where: { id: workspaceId }, select: { legacyClient: { select: { plan: true } }, _count: { select: { agencyClients: true, memberships: { where: { status: "active" } } } } } }),
-  ]);
-  const planCode = subscription?.planVersion.billingPlan.code ?? workspace?.legacyClient?.plan;
-  let expected: string | null = null;
-  try { expected = planCode ? workspaceTypeForCommercialPlan(planCode) : null; } catch { expected = null; }
-  if (!expected || expected === storedType) return storedType;
-  const unsafeToCollapse = expected !== "agency" && ((workspace?._count.agencyClients ?? 0) > 0 || (workspace?._count.memberships ?? 0) > (expected === "personal" ? 1 : Number.MAX_SAFE_INTEGER));
-  if (unsafeToCollapse) {
-    console.warn(`[workspace] type mismatch for ${workspaceId}: stored=${storedType}, commercial=${expected}; manual migration required because shared/agency data exists`);
-    return storedType;
-  }
-  await prisma.workspace.update({ where: { id: workspaceId }, data: { workspaceType: expected } });
-  await prisma.workspaceActivity.create({ data: { workspaceId, action: "workspace.type_reconciled", entityType: "workspace", entityId: workspaceId, previousJson: { workspaceType: storedType }, nextJson: { workspaceType: expected, source: "commercial_plan" }, metadataJson: { planCode } } });
-  return expected;
+type WorkspaceChoice = {
+  id: string;
+  createdAt: Date;
+  joinedAt: Date | null;
+  workspace: { id: string; ownerUserId: string; legacyClientId: string | null; createdAt: Date };
+};
+
+/**
+ * Select the workspace that belongs to the user's current account tenant.
+ *
+ * A user can retain historical or invited memberships. Choosing the oldest
+ * membership made a newly created Personal account open an older Agency
+ * workspace. The account's legacy client link is the strongest identity signal,
+ * ownership is next, and recency is only a deterministic final fallback.
+ */
+export function selectPreferredWorkspaceId(candidates: WorkspaceChoice[], userId: string, legacyClientId: string | null) {
+  const ranked = [...candidates].sort((left, right) => {
+    const leftClientMatch = Boolean(legacyClientId && left.workspace.legacyClientId === legacyClientId);
+    const rightClientMatch = Boolean(legacyClientId && right.workspace.legacyClientId === legacyClientId);
+    if (leftClientMatch !== rightClientMatch) return leftClientMatch ? -1 : 1;
+
+    const leftOwned = left.workspace.ownerUserId === userId;
+    const rightOwned = right.workspace.ownerUserId === userId;
+    if (leftOwned !== rightOwned) return leftOwned ? -1 : 1;
+
+    const leftActivity = left.joinedAt ?? left.createdAt ?? left.workspace.createdAt;
+    const rightActivity = right.joinedAt ?? right.createdAt ?? right.workspace.createdAt;
+    const recency = rightActivity.getTime() - leftActivity.getTime();
+    if (recency !== 0) return recency;
+    return left.workspace.id.localeCompare(right.workspace.id);
+  });
+  return ranked[0]?.workspace.id ?? null;
+}
+
+export async function preferredWorkspaceIdForUser(userId: string, legacyClientId: string | null) {
+  const memberships = await prisma.workspaceMembership.findMany({
+    where: { userId, status: "active", workspace: { status: "active" } },
+    select: {
+      id: true,
+      createdAt: true,
+      joinedAt: true,
+      workspace: { select: { id: true, ownerUserId: true, legacyClientId: true, createdAt: true } },
+    },
+  });
+  return selectPreferredWorkspaceId(memberships, userId, legacyClientId);
 }
 
 export type WorkspaceContext = {
@@ -89,17 +109,20 @@ async function bootstrapWorkspace(req: Request, legacyClientId: string) {
 export async function workspaceContext(req: Request): Promise<WorkspaceContext> {
   if (!req.user) throw Object.assign(new Error("Unauthenticated."), { statusCode: 401 });
   const explicitWorkspaceId = req.header("x-senuke-ai-workspace-id")?.trim();
+  const preferredWorkspaceId = explicitWorkspaceId
+    ? null
+    : await preferredWorkspaceIdForUser(req.user.userId, req.user.clientId);
   let workspace = explicitWorkspaceId
-    ? await prisma.workspace.findFirst({ where: { id: explicitWorkspaceId, memberships: { some: { userId: req.user.userId, status: "active" } } } })
-    : await prisma.workspace.findFirst({ where: { memberships: { some: { userId: req.user.userId } } }, orderBy: { createdAt: "asc" } });
+    ? await prisma.workspace.findFirst({ where: { id: explicitWorkspaceId, status: "active", memberships: { some: { userId: req.user.userId, status: "active" } } } })
+    : preferredWorkspaceId
+      ? await prisma.workspace.findUnique({ where: { id: preferredWorkspaceId } })
+      : null;
 
   // Browsers can retain a workspace id after local data or membership changes.
   // Use the user's active workspace instead of entering legacy bootstrap.
   if (!workspace && explicitWorkspaceId) {
-    workspace = await prisma.workspace.findFirst({
-      where: { memberships: { some: { userId: req.user.userId, status: "active" } } },
-      orderBy: { createdAt: "asc" },
-    });
+    const fallbackWorkspaceId = await preferredWorkspaceIdForUser(req.user.userId, req.user.clientId);
+    workspace = fallbackWorkspaceId ? await prisma.workspace.findUnique({ where: { id: fallbackWorkspaceId } }) : null;
   }
 
   if (!workspace) {
@@ -110,8 +133,6 @@ export async function workspaceContext(req: Request): Promise<WorkspaceContext> 
     if (!legacyClientId || legacyClientId === "__no_client_scope__") throw Object.assign(new Error("Workspace context is required."), { statusCode: 400 });
     workspace = await bootstrapWorkspace(req, legacyClientId);
   }
-  const reconciledWorkspaceType = await reconcileWorkspaceTypeFromCommercialPlan(workspace.id, workspace.workspaceType);
-  if (reconciledWorkspaceType !== workspace.workspaceType) workspace = { ...workspace, workspaceType: reconciledWorkspaceType };
   const membership = await prisma.workspaceMembership.findUnique({
     where: { workspaceId_userId: { workspaceId: workspace.id, userId: req.user.userId } },
     include: { roles: { select: { role: true } } },

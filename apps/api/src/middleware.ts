@@ -3,7 +3,7 @@ import type { Request, Response, NextFunction } from "express";
 import type { Role } from "@webtummy/db";
 import { signToken, verifyToken, type JwtPayload } from "./auth.js";
 import { prisma } from "@webtummy/db";
-import { hasWorkspacePermission, workspaceContext } from "./workspace-access.js";
+import { hasWorkspacePermission, preferredWorkspaceIdForUser, workspaceContext } from "./workspace-access.js";
 import { clientViewerRouteAllowed } from "./dev002.js";
 import { assertWorkspaceFeature } from "./commercial-service.js";
 import crypto from "node:crypto";
@@ -37,11 +37,20 @@ export async function requireAuth(req: Request, res: Response, next: NextFunctio
 
   try {
     const requestedWorkspaceId = req.header("x-senuke-ai-workspace-id")?.trim();
-    const membership = await prisma.workspaceMembership.findFirst({
-      where: { userId: req.user.userId, status: "active", ...(requestedWorkspaceId ? { workspaceId: requestedWorkspaceId } : {}) },
-      orderBy: { createdAt: "asc" },
+    let workspaceId = requestedWorkspaceId || await preferredWorkspaceIdForUser(req.user.userId, req.user.clientId);
+    let membership = workspaceId ? await prisma.workspaceMembership.findFirst({
+      where: { userId: req.user.userId, status: "active", workspaceId, workspace: { status: "active" } },
       include: { roles: { select: { role: true } } },
-    });
+    }) : null;
+    // A removed/stale explicit id must use the same fallback as workspaceContext
+    // so the security pre-check and the eventual route operate on one workspace.
+    if (!membership && requestedWorkspaceId) {
+      workspaceId = await preferredWorkspaceIdForUser(req.user.userId, req.user.clientId);
+      membership = workspaceId ? await prisma.workspaceMembership.findFirst({
+        where: { userId: req.user.userId, status: "active", workspaceId, workspace: { status: "active" } },
+        include: { roles: { select: { role: true } } },
+      }) : null;
+    }
     const roles = membership?.roles.map((item) => item.role) ?? [];
     const clientViewerOnly = roles.length === 1 && roles[0] === "client_viewer";
     const clientViewerSafeRoute = clientViewerRouteAllowed(req.method, req.originalUrl);

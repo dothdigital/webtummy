@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { hasWorkspacePermission, hasWorkspaceRole, validateRolesForWorkspace, type WorkspaceContext } from "./workspace-access.js";
+import { hasWorkspacePermission, hasWorkspaceRole, selectPreferredWorkspaceId, validateRolesForWorkspace, type WorkspaceContext } from "./workspace-access.js";
 
 function context(roles: string[], workspaceType = "agency", overrides: unknown = {}, settingsJson: unknown = {}): WorkspaceContext {
   return {
@@ -129,5 +129,50 @@ describe("workspace role enforcement", () => {
     expect(hasWorkspacePermission(context(["editor"], "agency", { allow: ["publish"] }, policy), "publish")).toBe(true);
     expect(hasWorkspacePermission(context(["editor"], "agency", { deny: ["approve"] }, policy), "approve")).toBe(false);
     expect(hasWorkspacePermission(context(["admin"], "agency", {}, policy), "publish")).toBe(true);
+  });
+});
+
+describe("workspace session selection", () => {
+  const date = (value: string) => new Date(value);
+  const membership = (input: {
+    id: string;
+    workspaceId: string;
+    ownerUserId: string;
+    legacyClientId: string | null;
+    joinedAt: string;
+  }) => ({
+    id: input.id,
+    createdAt: date(input.joinedAt),
+    joinedAt: date(input.joinedAt),
+    workspace: {
+      id: input.workspaceId,
+      ownerUserId: input.ownerUserId,
+      legacyClientId: input.legacyClientId,
+      createdAt: date(input.joinedAt),
+    },
+  });
+
+  it("selects the workspace linked to the current account instead of an older Agency membership", () => {
+    const choices = [
+      membership({ id: "old", workspaceId: "agency-old", ownerUserId: "user-1", legacyClientId: "client-old", joinedAt: "2025-01-01" }),
+      membership({ id: "new", workspaceId: "personal-new", ownerUserId: "user-1", legacyClientId: "client-current", joinedAt: "2026-08-20" }),
+    ];
+    expect(selectPreferredWorkspaceId(choices, "user-1", "client-current")).toBe("personal-new");
+  });
+
+  it("prefers an owned workspace over a newer invitation when no account link exists", () => {
+    const choices = [
+      membership({ id: "owned", workspaceId: "personal-owned", ownerUserId: "user-1", legacyClientId: null, joinedAt: "2026-01-01" }),
+      membership({ id: "invite", workspaceId: "agency-invite", ownerUserId: "another-user", legacyClientId: null, joinedAt: "2026-08-20" }),
+    ];
+    expect(selectPreferredWorkspaceId(choices, "user-1", null)).toBe("personal-owned");
+  });
+
+  it("uses the most recently joined owned workspace only as the final fallback", () => {
+    const choices = [
+      membership({ id: "old", workspaceId: "owned-old", ownerUserId: "user-1", legacyClientId: null, joinedAt: "2025-01-01" }),
+      membership({ id: "new", workspaceId: "owned-new", ownerUserId: "user-1", legacyClientId: null, joinedAt: "2026-08-20" }),
+    ];
+    expect(selectPreferredWorkspaceId(choices, "user-1", null)).toBe("owned-new");
   });
 });
