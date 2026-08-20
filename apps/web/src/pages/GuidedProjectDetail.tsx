@@ -781,7 +781,7 @@ export default function GuidedProjectDetail() {
     <div className="space-y-5" onClickCapture={interceptGuidedPlanNavigation}>
       <Card className="overflow-hidden">
         <div className="border-b border-charcoal-100 bg-charcoal-50/70 px-5 py-4">
-          <div className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
+          <div className="flex flex-col gap-4">
             <div className="w-full min-w-0">
               <div className="min-w-0">
                 <h1 className="break-words text-[28px] font-bold leading-tight text-charcoal-950">{displayName}</h1>
@@ -799,8 +799,8 @@ export default function GuidedProjectDetail() {
                 <div className="min-w-0 break-words"><span className="font-semibold text-charcoal-700">Primary goal:</span> {project.primaryGoal ?? "Not set"}</div>
               </div>
             </div>
-            <div className="flex flex-col gap-3 xl:items-end">
-              <div className="flex max-w-full flex-nowrap items-center gap-2 overflow-x-auto whitespace-nowrap pb-1 xl:justify-end">
+            <div className="min-w-0">
+              <div className="flex max-w-full flex-wrap items-center gap-2">
                 <span className="shrink-0"><StatusPill status={project.currentStep} /></span>
                 <span className="shrink-0"><StatusPill status={project.status} /></span>
                 {project.projectLaunchAnalysis && ["completed", "reviewed", "applied"].includes(project.projectLaunchAnalysis.status) && <button type="button" disabled={busyAction === "project-launch-pdf"} onClick={() => void downloadProjectLaunchAnalysis()} className="inline-flex shrink-0 items-center justify-center rounded-lg border border-violet-200 bg-violet-50 px-3 py-2 text-sm font-semibold text-violet-800 hover:bg-violet-100 disabled:opacity-60">{busyAction === "project-launch-pdf" ? "Preparing PDF…" : "Download project analysis PDF"}</button>}
