@@ -3,6 +3,7 @@ import { Link } from "react-router-dom";
 import { api } from "../api.js";
 import { Button, Card, StatusPill } from "../components/ui.js";
 import type { AiContentStatus, BillingInvoice, BillingStatus } from "../types.js";
+import { workspaceExperience } from "../workspace-experience.js";
 
 function monthLabel() {
   return new Intl.DateTimeFormat(undefined, { month: "long", year: "numeric" }).format(new Date());
@@ -21,7 +22,7 @@ export default function Billing() {
   const [billing, setBilling] = useState<BillingStatus | null>(null);
   const [usage, setUsage] = useState<AiContentStatus | null>(null);
   const [invoices, setInvoices] = useState<BillingInvoice[]>([]);
-  const [addons, setAddons] = useState<Array<{ id: string; kind: string; name: string; description: string; amountCents: number; currency: string; capacityUnits: number; seatQuantity: number; billingInterval: string; providerProductRef: string | null; checkoutUrl: string | null }>>([]);
+  const [addons, setAddons] = useState<Array<{ id: string; kind: string; name: string; description: string; amountCents: number; currency: string; capacityUnits: number; seatQuantity: number; billingInterval: string; providerProductRef: string | null; checkoutUrl: string | null; purchaseEnabled: boolean; purchaseBlockedReason: string | null }>>([]);
   const [loading, setLoading] = useState(true);
   const [message, setMessage] = useState<string | null>(null);
   const [portalBusy, setPortalBusy] = useState(false);
@@ -106,13 +107,16 @@ export default function Billing() {
   const helpersUsed = usage?.usage.helpersUsed ?? 0;
   const helpersRemaining = Math.max(0, helperLimit - helpersUsed);
   const providerLifecycle = billing?.commercial?.providerLifecycle ?? null;
+  const experience = workspaceExperience(billing?.commercial?.workspace.workspaceType);
+  const capacityAddons = addons.filter((addon) => addon.kind === "capacity_pack");
+  const seatAddons = addons.filter((addon) => addon.kind !== "capacity_pack");
 
   return (
     <div className="space-y-6">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
         <div>
-          <h1 className="text-2xl font-bold text-charcoal-900">Commercial centre</h1>
-          <p className="mt-1 text-sm text-charcoal-500">Workspace subscription, entitlements, seats, project limits, AI Capacity, billing history, and lifecycle status.</p>
+          <h1 className="text-2xl font-bold text-charcoal-900">Plan &amp; AI Capacity</h1>
+          <p className="mt-1 text-sm text-charcoal-500">See the current plan, project allowance, people, AI Capacity used and remaining, billing history, and subscription status.</p>
         </div>
         <div className="flex gap-2">
           <Link to="/pricing"><Button variant="ghost">Change plan</Button></Link>
@@ -191,14 +195,15 @@ export default function Billing() {
               <div className="mt-1 text-sm text-charcoal-500">{billing.commercial?.usage.archivedProjects ?? 0} archived · limit {String(billing.commercial?.entitlements.limits.activeProjects ?? "not configured")}</div>
             </Card>
             <Card className="p-5">
-              <div className="text-sm font-semibold text-charcoal-800">Named internal seats</div>
+              <div className="text-sm font-semibold text-charcoal-800">{experience.kind === "personal" ? "Workspace user" : experience.kind === "agency" ? "Agency team seats" : "Business team seats"}</div>
               <div className="mt-3 text-4xl font-bold text-cyan-700">{billing.commercial?.usage.assignedSeats ?? 0}/{billing.commercial?.entitlements.seatLimit ?? "—"}</div>
-              <div className="mt-1 text-sm text-charcoal-500">Client Viewers do not consume an internal seat by default.</div>
+              <div className="mt-1 text-sm text-charcoal-500">{experience.kind === "personal" ? "Entrepreneur is a single-user Owner/Admin workspace and does not support team invitations." : experience.kind === "agency" ? "Named internal users consume seats; external Client Viewers do not by default." : "Named business users consume seats. Business workspaces do not include external client accounts."}</div>
             </Card>
             <Card className="p-5">
               <div className="text-sm font-semibold text-charcoal-800">AI Capacity in {monthLabel()}</div>
               <div className="mt-3 text-4xl font-bold text-emerald-700">{(billing.commercial?.usage.capacity?.balance ?? 0).toLocaleString()}</div>
-              <div className="mt-1 text-sm text-charcoal-500">{(billing.commercial?.usage.capacity?.included.available ?? 0).toLocaleString()} included · {(billing.commercial?.usage.capacity?.purchased.available ?? 0).toLocaleString()} purchased · {billing.commercial?.usage.capacity?.reserved ?? 0} reserved</div>
+              <div className="mt-1 text-sm font-semibold text-charcoal-700">remaining · {(billing.commercial?.usage.capacity?.monthlyUsed ?? 0).toLocaleString()} used this period</div>
+              <div className="mt-1 text-xs text-charcoal-500">{(billing.commercial?.usage.capacity?.included.available ?? 0).toLocaleString()} included available · {(billing.commercial?.usage.capacity?.purchased.available ?? 0).toLocaleString()} purchased available · {billing.commercial?.usage.capacity?.reserved ?? 0} reserved</div>
               {billing.commercial?.usage.capacity?.warningLevel && <div className="mt-3 rounded-lg bg-amber-50 px-3 py-2 text-xs font-semibold text-amber-800">{billing.commercial.usage.capacity.warningLevel}% capacity threshold reached. Add a non-expiring Capacity Pack before the balance is exhausted.</div>}
             </Card>
           </div>
@@ -209,7 +214,7 @@ export default function Billing() {
                 <div className="text-lg font-bold text-charcoal-900">Effective workspace entitlements</div>
                 <p className="mt-1 text-sm text-charcoal-500">Resolved from the immutable plan version, paid additions, and audited overrides.</p>
               </div>
-              <div className="text-xs font-semibold text-charcoal-500">Agency clients: {billing.commercial?.usage.activeAgencyClients ?? 0} / {String(billing.commercial?.entitlements.limits.activeAgencyClients ?? "not configured")}</div>
+              {experience.kind === "agency" && <div className="text-xs font-semibold text-charcoal-500">Agency clients: {billing.commercial?.usage.activeAgencyClients ?? 0} / {String(billing.commercial?.entitlements.limits.activeAgencyClients ?? "not configured")}</div>}
             </div>
             <div className="mt-4 grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
               {Object.entries(billing.commercial?.entitlements.features ?? {}).filter(([key]) => key !== "*").map(([key, value]) => (
@@ -222,17 +227,25 @@ export default function Billing() {
           </Card>
 
           <Card className="p-5">
-            <div className="text-lg font-bold text-charcoal-900">Capacity Packs and team seats</div>
-            <p className="mt-1 text-sm text-charcoal-500">Capacity Packs do not expire. Team seats add access but do not add AI Capacity.</p>
+            <div className="text-lg font-bold text-charcoal-900">Capacity Packs</div>
+            <p className="mt-1 text-sm text-charcoal-500">Capacity Packs do not expire and become available after the workspace’s current AI Capacity is exhausted.</p>
+            {(billing.commercial?.usage.capacity?.balance ?? 0) > 0 && <div className="mt-3 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-semibold text-amber-900">You still have {(billing.commercial?.usage.capacity?.balance ?? 0).toLocaleString()} AI Capacity units. Capacity Pack checkout will unlock automatically at 0.</div>}
             <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-3">
-              {addons.map((addon) => <div key={addon.id} className="rounded-xl border border-slate-200 p-4">
+              {capacityAddons.map((addon) => <div key={addon.id} className={`rounded-xl border p-4 ${addon.purchaseEnabled ? "border-slate-200" : "border-slate-200 bg-slate-50"}`}>
                 <div className="font-bold text-charcoal-900">{addon.name}</div>
                 <div className="mt-1 text-sm text-charcoal-500">{addon.description}</div>
                 <div className="mt-4 text-xl font-bold text-brand-700">{moneyLabel(addon.amountCents, addon.currency)}{addon.billingInterval !== "one_time" ? ` / ${addon.billingInterval === "annual" ? "year" : "month"}` : ""}</div>
-                <Button className="mt-4" onClick={() => void buyAddon(addon.id)} disabled={portalBusy || !addon.providerProductRef || !addon.checkoutUrl}>{addon.providerProductRef && addon.checkoutUrl ? "Buy through JVZoo" : "Coming soon"}</Button>
+                {addon.purchaseBlockedReason && <div className="mt-2 text-xs leading-5 text-slate-500">{addon.purchaseBlockedReason}</div>}
+                <Button className="mt-4" onClick={() => void buyAddon(addon.id)} disabled={portalBusy || !addon.purchaseEnabled || !addon.providerProductRef || !addon.checkoutUrl}>{!addon.purchaseEnabled ? "Available when capacity reaches 0" : addon.providerProductRef && addon.checkoutUrl ? "Buy through JVZoo" : "Coming soon"}</Button>
               </div>)}
             </div>
           </Card>
+
+          {seatAddons.length > 0 && <Card className="p-5">
+            <div className="text-lg font-bold text-charcoal-900">Team seats</div>
+            <p className="mt-1 text-sm text-charcoal-500">Team seats add named-user access but do not add AI Capacity. They remain independent of the workspace Capacity balance.</p>
+            <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-3">{seatAddons.map((addon) => <div key={addon.id} className="rounded-xl border border-slate-200 p-4"><div className="font-bold text-charcoal-900">{addon.name}</div><div className="mt-1 text-sm text-charcoal-500">{addon.description}</div><div className="mt-4 text-xl font-bold text-brand-700">{moneyLabel(addon.amountCents, addon.currency)}{addon.billingInterval !== "one_time" ? ` / ${addon.billingInterval === "annual" ? "year" : "month"}` : ""}</div><Button className="mt-4" onClick={() => void buyAddon(addon.id)} disabled={portalBusy || !addon.providerProductRef || !addon.checkoutUrl}>{addon.providerProductRef && addon.checkoutUrl ? "Buy through JVZoo" : "Coming soon"}</Button></div>)}</div>
+          </Card>}
 
 
           <Card className="p-5">
@@ -245,7 +258,7 @@ export default function Billing() {
               <div className="grid gap-3 sm:grid-cols-2 lg:min-w-[520px]">
                 <ReportToggle label="Report emails" description="Master switch for report notifications." checked={billing.reportEmailEnabled} onChange={(value) => updateReportEmailPreference("reportEmailEnabled", value)} />
                 <ReportToggle label="Weekly report" description="Ranking movement and priority changes." checked={billing.weeklyReportEmailEnabled} disabled={!billing.reportEmailEnabled} onChange={(value) => updateReportEmailPreference("weeklyReportEmailEnabled", value)} />
-                <ReportToggle label="Monthly report" description="Client-ready progress summary." checked={billing.monthlyReportEmailEnabled} disabled={!billing.reportEmailEnabled} onChange={(value) => updateReportEmailPreference("monthlyReportEmailEnabled", value)} />
+                <ReportToggle label="Monthly report" description={experience.kind === "agency" ? "Client-ready progress summary." : experience.kind === "business" ? "Business project progress summary." : "Your project progress summary."} checked={billing.monthlyReportEmailEnabled} disabled={!billing.reportEmailEnabled} onChange={(value) => updateReportEmailPreference("monthlyReportEmailEnabled", value)} />
                 <ReportToggle label="Ranking change alerts" description="Notify when tracked ranks move up or down." checked={billing.rankingChangeEmailEnabled} disabled={!billing.reportEmailEnabled} onChange={(value) => updateReportEmailPreference("rankingChangeEmailEnabled", value)} />
               </div>
             </div>

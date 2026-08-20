@@ -380,9 +380,8 @@ export async function weeklyRankingReportGeneration() {
       where: {
         isActive: true,
         reportEmailEnabled: true,
-        weeklyReportEmailEnabled: true,
-        rankingChangeEmailEnabled: true,
-        OR: [{ lastWeeklyReportAt: null }, { lastWeeklyReportAt: { lt: periodStart } }],
+        OR: [{ weeklyReportEmailEnabled: true }, { rankingChangeEmailEnabled: true }],
+        AND: [{ OR: [{ lastWeeklyReportAt: null }, { lastWeeklyReportAt: { lt: periodStart } }] }],
       },
       include: { websites: { select: { id: true, domain: true } } },
     });

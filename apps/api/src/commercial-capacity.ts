@@ -13,6 +13,10 @@ export const COMMERCIAL_PLAN_CAPACITY = {
 
 export type CommercialPlanCode = keyof typeof COMMERCIAL_PLAN_CAPACITY;
 
+export function capacityPackPurchaseAllowed(availableUnits: number) {
+  return Number.isFinite(availableUnits) && availableUnits <= 0;
+}
+
 export function canonicalCommercialPlanCode(value: string | null | undefined): CommercialPlanCode {
   const code = String(value || "entrepreneur").trim().toLowerCase();
   if (["mini", "starter", "personal", "entrepreneur"].includes(code)) return "entrepreneur";

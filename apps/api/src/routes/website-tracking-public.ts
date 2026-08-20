@@ -59,6 +59,12 @@ publicWebsiteTrackingRouter.post("/website-tracking/events", async (req, res) =>
   const suppliedTime = parsed.data.occurredAt ? new Date(parsed.data.occurredAt) : now;
   const occurredAt = Math.abs(now.getTime() - suppliedTime.getTime()) <= 86_400_000 ? suppliedTime : now;
   const activePlan = site.website.measurementPlans[0] ?? null;
+  const userAgent = String(req.headers["user-agent"] ?? "");
+  const suppliedMetadata = parsed.data.metadata;
+  const deviceType = typeof suppliedMetadata.deviceType === "string"
+    ? suppliedMetadata.deviceType
+    : /android|iphone|ipod|mobile|windows phone/i.test(userAgent) ? "mobile" : /ipad|tablet/i.test(userAgent) ? "tablet" : "desktop";
+  const eventMetadata = { ...suppliedMetadata, deviceType };
   const sourceRows = activePlan && Array.isArray(activePlan.dataSourcesJson) ? activePlan.dataSourcesJson : [];
   const connectedSources = sourceRows.map((value) => {
     if (!value || typeof value !== "object" || Array.isArray(value)) return value;
@@ -66,7 +72,7 @@ publicWebsiteTrackingRouter.post("/website-tracking/events", async (req, res) =>
     return sourceRow.key === "senuke_tag" ? { ...sourceRow, status: "connected", identifier: site.id } : sourceRow;
   });
   await prisma.$transaction(async (tx) => {
-    await tx.websiteTrackingEvent.create({ data: { trackingSiteId: site.id, websiteId: site.websiteId, clientId: site.clientId, projectId: activePlan?.projectId ?? null, eventName: parsed.data.eventName, path: parsed.data.path, referrer: parsed.data.referrer || null, sessionId: parsed.data.sessionId || null, metadataJson: parsed.data.metadata, occurredAt } });
+    await tx.websiteTrackingEvent.create({ data: { trackingSiteId: site.id, websiteId: site.websiteId, clientId: site.clientId, projectId: activePlan?.projectId ?? null, eventName: parsed.data.eventName, path: parsed.data.path, referrer: parsed.data.referrer || null, sessionId: parsed.data.sessionId || null, metadataJson: eventMetadata, occurredAt } });
     await tx.websiteTrackingSite.update({ where: { id: site.id }, data: { installation: "verified", lastEventAt: now, lastVerifiedAt: site.lastVerifiedAt ?? now } });
     if (activePlan) await tx.websiteMeasurementPlan.update({ where: { id: activePlan.id }, data: { dataSourcesJson: connectedSources as Prisma.InputJsonValue, trackingState: "COLLECTING_INITIAL_DATA", lastVerifiedAt: now } });
   });

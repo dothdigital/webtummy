@@ -1651,11 +1651,11 @@ function ExecutionPlanCookingOverlay() {
 
 function OpportunityMappingOverlay() {
   return (
-    <div className="fixed inset-0 z-[80] grid place-items-center bg-charcoal-950/45 p-6 backdrop-blur-sm" role="status" aria-live="polite">
-      <div className="w-full max-w-sm rounded-2xl bg-white p-7 text-center shadow-2xl">
-        <div className="mx-auto h-12 w-12 animate-spin rounded-full border-4 border-brand-100 border-t-brand-600" />
-        <h3 className="mt-5 text-lg font-bold text-charcoal-950">Mapping your opportunity…</h3>
-        <p className="mt-2 text-sm leading-6 text-charcoal-600">Saving this direction to the project and preparing it for Keyword Analysis and Strategy.</p>
+    <div className="fixed inset-0 z-[80] grid place-items-center bg-slate-950 p-6 backdrop-blur-sm" role="status" aria-live="polite">
+      <div className="w-full max-w-sm rounded-2xl border border-white/10 bg-white/[0.06] p-7 text-center text-white shadow-2xl">
+        <div className="mx-auto h-12 w-12 animate-spin rounded-full border-4 border-white/10 border-t-emerald-400" />
+        <h3 className="mt-5 text-lg font-bold text-white">Mapping your opportunity…</h3>
+        <p className="mt-2 text-sm leading-6 text-slate-300">Saving this direction to the project and preparing it for Keyword Analysis and Strategy.</p>
       </div>
     </div>
   );

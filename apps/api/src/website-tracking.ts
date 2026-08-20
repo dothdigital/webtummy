@@ -154,6 +154,30 @@ export function websiteTrackingMetrics(events: Array<{ eventName: string; sessio
   };
 }
 
+export function websiteTrackingDeviceMetrics(events: Array<{ eventName: string; sessionId: string | null; metadataJson: unknown; occurredAt: Date }>) {
+  const bucket = (event: typeof events[number]) => {
+    const metadata = event.metadataJson && typeof event.metadataJson === "object" && !Array.isArray(event.metadataJson) ? event.metadataJson as Record<string, unknown> : {};
+    const explicit = String(metadata.deviceType ?? "").toLowerCase();
+    if (["mobile", "tablet", "desktop"].includes(explicit)) return explicit as "mobile" | "tablet" | "desktop";
+    const width = Number(metadata.viewportWidth);
+    if (Number.isFinite(width) && width > 0) return width < 768 ? "mobile" : width < 1024 ? "tablet" : "desktop";
+    return "unknown" as const;
+  };
+  const metrics = (device: "mobile" | "tablet" | "desktop" | "unknown") => {
+    const scoped = events.filter((event) => bucket(event) === device);
+    const count = (name: string) => scoped.filter((event) => event.eventName === name).length;
+    return {
+      sessions: new Set(scoped.map((event) => event.sessionId).filter(Boolean)).size,
+      pageViews: count("page_view"),
+      ctaClicks: count("cta_click"),
+      formStarts: count("form_start"),
+      formSuccesses: count("form_success"),
+      formErrors: count("form_error"),
+    };
+  };
+  return { mobile: metrics("mobile"), tablet: metrics("tablet"), desktop: metrics("desktop"), unknown: metrics("unknown") };
+}
+
 export function hostMatchesWebsite(source: string | undefined, allowedHost: string) {
   if (!source) return false;
   try {

@@ -2,38 +2,51 @@ import { useEffect, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { api, completeWelcome } from "../api.js";
 import { Logo } from "../components/Logo.js";
+import { workspaceExperience } from "../workspace-experience.js";
+import { useAuth } from "../auth.js";
 
 type WorkspaceWelcome = {
   workspace: { id: string; name: string; workspaceType: string };
   summary: { clients: number };
 };
 
-function ActionIcon({ kind }: { kind: "client" | "team" | "project" }) {
+function ActionIcon({ kind }: { kind: "client" | "team" | "project" | "capacity" }) {
   if (kind === "client") return <svg viewBox="0 0 24 24" className="h-7 w-7" fill="none" stroke="currentColor" strokeWidth="1.8"><rect x="3" y="5" width="18" height="14" rx="2" /><path d="M3 10h18" /></svg>;
   if (kind === "team") return <svg viewBox="0 0 24 24" className="h-7 w-7" fill="none" stroke="currentColor" strokeWidth="1.8"><circle cx="12" cy="8" r="3.5" /><path d="M5 21v-2.5A5.5 5.5 0 0 1 10.5 13h3A5.5 5.5 0 0 1 19 18.5V21" /></svg>;
+  if (kind === "capacity") return <svg viewBox="0 0 24 24" className="h-7 w-7" fill="none" stroke="currentColor" strokeWidth="1.8"><path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6" /></svg>;
   return <svg viewBox="0 0 24 24" className="h-7 w-7" fill="none" stroke="currentColor" strokeWidth="1.8"><path d="M6 3h8l5 5v13H6z" /><path d="M14 3v6h5" /></svg>;
 }
 
 export default function Welcome() {
   const navigate = useNavigate();
+  const { user } = useAuth();
   const [data, setData] = useState<WorkspaceWelcome | null>(null);
 
   useEffect(() => {
     void api.get<WorkspaceWelcome>("/api/workspace").then(setData).catch(() => undefined);
   }, []);
 
-  const workspaceName = data?.workspace.name ?? "Your Workspace";
-  const agency = data?.workspace.workspaceType === "agency";
+  const workspaceName = data?.workspace.name ?? user?.workspace?.name ?? "Your Workspace";
+  const experience = workspaceExperience(data?.workspace.workspaceType ?? user?.workspace?.type);
+  const agency = experience.kind === "agency";
 
   function finish(destination: string) {
     completeWelcome(data?.workspace.id);
     navigate(destination, { replace: true });
   }
 
-  const actions = [
-    { title: agency ? "Add Your First Client" : "Set up your workspace", description: agency ? "Create a client record now. Choose this if you’re setting up clients before starting work." : "Add your business details and shared defaults.", label: agency ? "Add client" : "Open workspace", destination: agency ? "/workspace?tab=clients" : "/workspace", tone: "teal", icon: "client" as const },
-    { title: agency ? "Create a Client Project" : "Start a project", description: agency ? "Start working immediately. If the client doesn’t exist yet, you can create them as the first part of project setup." : "Kick off intake, keyword research, and strategy.", label: agency ? "Create client project" : "New project", destination: agency ? "/projects/new?clientSetup=1" : "/projects/new", tone: "amber", icon: "project" as const },
-    { title: "Invite Your Team", description: agency ? "Add team members now or later and assign them to clients and projects." : "Bring in teammates and assign roles like Manager or Editor.", label: "Invite team", destination: "/workspace?tab=teams", tone: "blue", icon: "team" as const },
+  const actions = experience.kind === "agency" ? [
+    { title: "Add Your First Client", description: "Create a client record now. Choose this if you’re setting up clients before starting work.", label: "Add client", destination: "/workspace?tab=clients", tone: "teal", icon: "client" as const },
+    { title: "Create a Client Project", description: "Start working immediately. If the client doesn’t exist yet, create them during project setup.", label: "Create client project", destination: "/projects/new?clientSetup=1", tone: "amber", icon: "project" as const },
+    { title: "Invite Your Team", description: "Add team members now or later and assign them to clients and projects.", label: "Invite team", destination: "/workspace?tab=teams", tone: "blue", icon: "team" as const },
+  ] : experience.kind === "business" ? [
+    { title: "Set Up Your Business", description: "Add your business details, market, goals, and shared workspace defaults.", label: "Open business workspace", destination: "/workspace", tone: "teal", icon: "client" as const },
+    { title: "Start Your First Project", description: "Begin intake, research, strategy, and the guided execution workflow.", label: "Create project", destination: "/projects/new", tone: "amber", icon: "project" as const },
+    { title: "Invite Your Team", description: "Add the colleagues who will manage, edit, review, or approve business projects.", label: "Invite team", destination: "/workspace?tab=teams", tone: "blue", icon: "team" as const },
+  ] : [
+    { title: "Set Up Your Business", description: "Add your business details, target market, goals, and working preferences.", label: "Open my workspace", destination: "/workspace", tone: "teal", icon: "client" as const },
+    { title: "Start Your First Project", description: "Begin intake, research, strategy, and the guided execution workflow.", label: "Create project", destination: "/projects/new", tone: "amber", icon: "project" as const },
+    { title: "Review Your AI Capacity", description: "See how much AI Capacity is included, used, and still available this month.", label: "View capacity", destination: "/billing", tone: "blue", icon: "capacity" as const },
   ];
 
   return (
@@ -43,8 +56,8 @@ export default function Welcome() {
       <div className="relative mx-auto flex min-h-[calc(100vh-2rem)] w-full max-w-[1600px] flex-col items-center lg:h-[calc(100vh-2rem)] lg:min-h-0">
         <div className="rounded-[22px] border border-white/[0.03] bg-[#171d25] px-5 py-3 shadow-2xl"><Logo size={28} /></div>
         <div className="mt-7 rounded-full border border-teal-400/30 bg-teal-400/10 px-5 py-2 text-xs font-bold uppercase tracking-wide text-teal-300 sm:mt-8 sm:text-sm"><span className="mr-2 inline-block h-2.5 w-2.5 rounded-full bg-teal-500/70" />Workspace ready</div>
-        <h1 className="mt-5 text-center text-4xl font-bold tracking-[-0.035em] text-slate-100 sm:text-5xl lg:text-[clamp(2.75rem,4.2vw,4rem)]">{agency ? "Welcome to Your Agency" : `Welcome to ${workspaceName}`}</h1>
-        <p className="mt-3 max-w-4xl text-center text-base leading-7 text-slate-400 sm:text-lg sm:leading-8">{agency ? "Manage multiple clients and projects from one workspace." : "Choose where you want to begin, or go directly to your dashboard."}</p>
+        <h1 className="mt-5 text-center text-4xl font-bold tracking-[-0.035em] text-slate-100 sm:text-5xl lg:text-[clamp(2.75rem,4.2vw,4rem)]">{agency ? "Welcome to Your Agency" : experience.kind === "business" ? "Welcome to Your Business Workspace" : `Welcome to ${workspaceName}`}</h1>
+        <p className="mt-3 max-w-4xl text-center text-base leading-7 text-slate-400 sm:text-lg sm:leading-8">{agency ? "Manage multiple clients and projects from one workspace." : experience.kind === "business" ? "Set up the business, invite colleagues, or start your first project." : "This is your single-user growth workspace. Set up the business, start a project, or review AI Capacity."}</p>
 
         {agency && <section className="mt-5 w-full rounded-2xl border border-teal-400/20 bg-teal-400/[0.06] px-4 py-3 sm:px-5">
           <div className="text-xs font-bold uppercase tracking-[0.14em] text-teal-300">Not sure where to start?</div>

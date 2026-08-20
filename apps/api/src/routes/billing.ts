@@ -16,7 +16,7 @@ import {
   processJvZooIpn,
   workspaceCommercialSummary,
 } from "../commercial-service.js";
-import { adjustWorkspacePurchasedCapacity } from "../commercial-capacity.js";
+import { adjustWorkspacePurchasedCapacity, capacityPackPurchaseAllowed, workspaceCapacitySummary } from "../commercial-capacity.js";
 import { ensureUsageControlDefaults } from "../usage-engine.js";
 import {
   billingBlockReason,
@@ -205,6 +205,12 @@ async function billingStatusForClient(client: Awaited<ReturnType<typeof clientFo
     ? Math.max(1, Math.round((client.trialEndsAt.getTime() - client.trialStartedAt.getTime()) / (24 * 60 * 60 * 1000)))
     : 0;
   const manualAccessDaysRemaining = client.manualAccessEndsAt ? Math.max(0, Math.ceil((client.manualAccessEndsAt.getTime() - now.getTime()) / (24 * 60 * 60 * 1000))) : 0;
+  // Super-admin manual access is an explicit override. A previously-created
+  // commercial trial/subscription row must not make the customer UI continue
+  // to advertise a trial or an upgrade after an administrator activates it.
+  const hasAdminAccessOverride = ["manual", "offline"].includes(client.subscriptionSource);
+  const status = hasAdminAccessOverride ? client.aiSubscriptionStatus : commercial?.workspace.commercialState ?? client.aiSubscriptionStatus;
+  const hasAccess = hasAdminAccessOverride ? hasBillingAccess(client) : commercial ? ["full", "grace"].includes(commercial.workspace.accessMode) : hasBillingAccess(client);
   return {
     plan: commercial?.subscription ? {
       ...(view ?? {}),
@@ -213,9 +219,11 @@ async function billingStatusForClient(client: Awaited<ReturnType<typeof clientFo
       priceMonthly: commercial.subscription.price?.amountCents ? commercial.subscription.price.amountCents / 100 : view?.priceMonthly ?? 0,
       priceMonthlyCents: commercial.subscription.price?.amountCents ?? view?.priceMonthlyCents ?? 0,
     } : view,
-    status: commercial?.workspace.commercialState ?? client.aiSubscriptionStatus,
-    hasAccess: commercial ? ["full", "grace"].includes(commercial.workspace.accessMode) : hasBillingAccess(client),
-    blockReason: commercial && !["full", "grace"].includes(commercial.workspace.accessMode)
+    status,
+    hasAccess,
+    blockReason: hasAdminAccessOverride
+      ? hasAccess ? null : billingBlockReason(client)
+      : commercial && !["full", "grace"].includes(commercial.workspace.accessMode)
       ? `Workspace access is ${commercial.workspace.accessMode.replace(/_/g, " ")}.`
       : hasBillingAccess(client) ? null : billingBlockReason(client),
     trialStartedAt: client.trialStartedAt?.toISOString() ?? null,
@@ -226,7 +234,7 @@ async function billingStatusForClient(client: Awaited<ReturnType<typeof clientFo
     manualAccessDaysRemaining,
     stripeCustomerId: client.stripeCustomerId,
     stripeSubscriptionId: client.stripeSubscriptionId,
-    billingProvider: commercial?.subscription?.provider ?? client.subscriptionSource,
+    billingProvider: hasAdminAccessOverride ? client.subscriptionSource : commercial?.subscription?.provider ?? client.subscriptionSource,
     commercial,
     subscriptionCurrentPeriodEnd: client.subscriptionCurrentPeriodEnd?.toISOString() ?? null,
     reportEmailEnabled: client.reportEmailEnabled,
@@ -280,8 +288,19 @@ billingRouter.get("/pricing/workspace", requireAuth, async (req, res) => {
 billingRouter.get("/commercial-addons", requireAuth, async (req, res) => {
   const context = await workspaceContext(req);
   await ensureCommercialDefaults();
-  const addons = await prisma.commercialAddonSku.findMany({ where: { status: "active" }, orderBy: [{ kind: "asc" }, { amountCents: "asc" }] });
-  res.json({ addons: addons.filter((addon) => !Array.isArray(addon.workspaceTypes) || addon.workspaceTypes.map(String).includes(context.workspace.workspaceType)) });
+  const [addons, capacity] = await Promise.all([
+    prisma.commercialAddonSku.findMany({ where: { status: "active" }, orderBy: [{ kind: "asc" }, { amountCents: "asc" }] }),
+    workspaceCapacitySummary(context.workspace.id),
+  ]);
+  res.json({ addons: addons
+    .filter((addon) => !Array.isArray(addon.workspaceTypes) || addon.workspaceTypes.map(String).includes(context.workspace.workspaceType))
+    .map((addon) => ({
+      ...addon,
+      purchaseEnabled: addon.kind !== "capacity_pack" || capacityPackPurchaseAllowed(capacity.balance),
+      purchaseBlockedReason: addon.kind === "capacity_pack" && !capacityPackPurchaseAllowed(capacity.balance)
+        ? `Use the remaining ${capacity.balance.toLocaleString()} AI Capacity units before buying a Capacity Pack.`
+        : null,
+    })) });
 });
 
 billingRouter.post("/commercial-addons/checkout", requireAuth, requireBillingOwner, async (req, res) => {
@@ -292,6 +311,10 @@ billingRouter.post("/commercial-addons/checkout", requireAuth, requireBillingOwn
   if (!addon) return res.status(404).json({ error: "Commercial add-on not found." });
   const eligible = !Array.isArray(addon.workspaceTypes) || addon.workspaceTypes.map(String).includes(context.workspace.workspaceType);
   if (!eligible) return res.status(409).json({ error: "This add-on is not available for the current workspace plan." });
+  if (addon.kind === "capacity_pack") {
+    const capacity = await workspaceCapacitySummary(context.workspace.id);
+    if (!capacityPackPurchaseAllowed(capacity.balance)) return res.status(409).json({ error: `Capacity Packs become available after the current AI Capacity is exhausted. ${capacity.balance.toLocaleString()} units remain.` });
+  }
   if (!addon.providerProductRef || !addon.checkoutUrl) return res.status(409).json({ error: "This add-on is not connected to a JVZoo product yet." });
   const user = await prisma.user.findUnique({ where: { id: req.user!.userId }, select: { email: true } });
   res.json({ url: checkoutUrlForPrice({ checkoutUrl: addon.checkoutUrl }, context.workspace.id, user?.email ?? null), addon });

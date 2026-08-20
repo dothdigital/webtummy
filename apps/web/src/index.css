@@ -130,3 +130,35 @@ textarea:focus-visible {
   font-size: 0.875rem;
   line-height: 1.375rem;
 }
+
+/* Long-running AI work always uses the same dark waiting surface. Several
+   older module-specific screens still carry light Tailwind utilities, so the
+   accessible status label is the stable cross-module styling hook. */
+:where(
+  [role="status"][aria-label*="Creating"],
+  [role="status"][aria-label*="Generating"],
+  [role="status"][aria-label*="Analyzing"],
+  [role="status"][aria-label*="Researching"]
+) {
+  background-color: #020617 !important;
+  background-image: none !important;
+  color: #fff;
+}
+
+:where(
+  [role="status"][aria-label*="Creating"],
+  [role="status"][aria-label*="Generating"],
+  [role="status"][aria-label*="Analyzing"],
+  [role="status"][aria-label*="Researching"]
+) :where(.text-slate-950, .text-slate-900, .text-charcoal-950, .text-charcoal-900) {
+  color: #fff !important;
+}
+
+:where(
+  [role="status"][aria-label*="Creating"],
+  [role="status"][aria-label*="Generating"],
+  [role="status"][aria-label*="Analyzing"],
+  [role="status"][aria-label*="Researching"]
+) :where(.text-slate-600, .text-slate-500, .text-charcoal-600, .text-charcoal-500) {
+  color: #cbd5e1 !important;
+}

@@ -1,7 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
   buildBlueprintPhases,
+  applyGrowthCapacityGate,
+  findingsFromScores,
   generateGrowthCandidates,
+  growthEvidenceContradictions,
   normalizeGrowthCandidateForStorage,
   scoreGrowthCandidate,
   selectNextBestAction,
@@ -50,6 +53,99 @@ describe("Growth Engine decision core", () => {
     expect(selected).not.toBeNull();
     expect(candidates.filter((candidate) => candidate.dedupeKey === selected?.dedupeKey)).toHaveLength(1);
     expect(selected?.dependencies).toEqual([]);
+  });
+
+  it("does not call a missing measurement a proven growth problem", () => {
+    const [finding] = findingsFromScores(
+      { retention: 20 },
+      { retention: "unavailable" },
+    );
+
+    expect(finding?.title).toBe("Retention measurement is not connected");
+    expect(finding?.summary).toContain("not a performance result");
+    expect(finding?.title).not.toMatch(/blocking|underperforming/i);
+    expect(finding?.evidenceState).toBe("unavailable");
+  });
+
+  it("creates a baseline task instead of prescribing optimization without outcome evidence", () => {
+    const candidates = generateGrowthCandidates({
+      ...baseContext,
+      evidenceStates: {
+        traffic: "unavailable",
+        conversion: "unavailable",
+        leadCapture: "unavailable",
+        followUp: "unavailable",
+        authority: "unavailable",
+        offer: "hypothesis",
+        retention: "unavailable",
+      },
+    });
+    const selected = selectNextBestAction(candidates);
+
+    expect(selected?.actionType).toBe("measurement_setup");
+    expect(selected?.title).toMatch(/^Connect and baseline /);
+    expect(selected?.recommendation).toContain("baseline");
+    expect(selected?.evidenceKeys).toContain("evidence-state:unavailable");
+  });
+
+  it("allows an optimization recommendation when mapped outcome evidence is observed", () => {
+    const candidates = generateGrowthCandidates({
+      ...baseContext,
+      evidenceStates: {
+        traffic: "observed",
+        conversion: "observed",
+        leadCapture: "observed",
+        followUp: "observed",
+        authority: "observed",
+        offer: "observed",
+        retention: "observed",
+      },
+    });
+
+    expect(candidates.some((candidate) => candidate.actionType === "conversion_optimization")).toBe(true);
+    expect(candidates.every((candidate) => candidate.actionType !== "measurement_setup")).toBe(true);
+  });
+
+  it("keeps an over-capacity action as a conditional alternative and selects ready work", () => {
+    const candidates = generateGrowthCandidates({
+      ...baseContext,
+      evidenceStates: Object.fromEntries(Object.keys(baseContext.scoreJson).map((key) => [key, "observed"])) as Record<string, "observed">,
+    });
+    const gated = applyGrowthCapacityGate(candidates, 60, (candidate) => candidate.actionType === "conversion_optimization" ? 80 : 40);
+    const blocked = gated.find((candidate) => candidate.actionType === "conversion_optimization");
+    const selected = selectNextBestAction(gated);
+
+    expect(blocked?.dependencies[0]).toContain("80 units required; 60 available");
+    expect(blocked?.evidenceKeys).toContain("capacity:insufficient");
+    expect(selected).not.toBeNull();
+    expect(selected?.actionType).not.toBe("conversion_optimization");
+  });
+
+  it("flags contradictory verified outcomes instead of choosing the last record", () => {
+    const conflicts = growthEvidenceContradictions(new Map([
+      ["conversion", [
+        { checkpointId: "check-1", classification: "IMPROVED", availability: "AVAILABLE" },
+        { checkpointId: "check-2", classification: "DECLINED", availability: "AVAILABLE" },
+      ]],
+      ["traffic", [{ checkpointId: "check-3", classification: "IMPROVED", availability: "AVAILABLE" }]],
+    ]));
+
+    expect(conflicts).toHaveLength(1);
+    expect(conflicts[0]?.dimension).toBe("conversion");
+    expect(conflicts[0]?.message).toContain("conflicting verified outcomes");
+  });
+
+  it("prioritizes an observed mobile form loss above additional acquisition", () => {
+    const candidates = generateGrowthCandidates({
+      ...baseContext,
+      evidenceStates: Object.fromEntries(Object.keys(baseContext.scoreJson).map((key) => [key, "observed"])) as Record<string, "observed">,
+      mobileConversionIssue: { mobileStarts: 20, mobileSuccesses: 4, mobileErrors: 7, desktopStarts: 20, desktopSuccesses: 14 },
+    });
+    const selected = selectNextBestAction(candidates);
+
+    expect(selected?.actionType).toBe("mobile_conversion_repair");
+    expect(selected?.recommendation).toContain("mobile device");
+    expect(selected?.reasoningSummary).toContain("outranks adding more traffic");
   });
 
   it("deduplicates excluded recommendations and re-sequences the blueprint", () => {

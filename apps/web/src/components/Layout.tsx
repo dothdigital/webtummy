@@ -4,10 +4,11 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 import { useAuth } from "../auth.js";
 import { ACTIVE_CLIENT_EVENT, api, endImpersonation, getImpersonationLabel } from "../api.js";
 import { Logo, LogoMark } from "./Logo.js";
-import type { BillingPlan, BillingStatus } from "../types.js";
+import type { BillingStatus } from "../types.js";
 import BackgroundJobCenter from "./BackgroundJobCenter.js";
 import ProjectScopeGate from "./ProjectScopeGate.js";
 import { ACTIVE_PROJECT_CHANGED_EVENT, getActiveProjectId, isProjectScopedPath, projectScopedPath, setActiveProjectId } from "../active-project.js";
+import { workspaceExperience } from "../workspace-experience.js";
 
 type NavIcon = "overview" | "projects" | "audits" | "keywords" | "local" | "social" | "content" | "billing" | "users" | "plans" | "notifications";
 type HelpSection = { title: string; body?: string; bullets?: string[] };
@@ -21,7 +22,7 @@ type HelpContent = {
 
 const nav = [
   { to: "/workspace", label: "My Workspace", icon: "overview", end: true },
-  { to: "/projects", label: "Projects", icon: "projects", permission: "read_internal" },
+  { to: "/projects", label: "Projects", icon: "projects" },
   { to: "/opportunities", label: "Opportunities", icon: "local", permission: "run_ai_analysis" },
   { to: "/strategy", label: "Strategy", icon: "plans", permission: "edit_strategy" },
   { to: "/keywords", label: "Keywords", icon: "keywords", permission: "run_ai_analysis" },
@@ -693,8 +694,6 @@ export default function Layout({ children }: { children: ReactNode }) {
   const [helpOpen, setHelpOpen] = useState(false);
   const [impersonation, setImpersonation] = useState<string | null>(() => getImpersonationLabel());
   const [billingStatus, setBillingStatus] = useState<BillingStatus | null>(null);
-  const [plans, setPlans] = useState<BillingPlan[]>([]);
-  const [busyPlan, setBusyPlan] = useState<string | null>(null);
   const [workspaceRoles, setWorkspaceRoles] = useState<string[]>(() => user?.workspace?.roles ?? []);
   const [workspacePermissions, setWorkspacePermissions] = useState<Record<string, boolean>>(() => user?.workspace?.capabilities.permissions ?? {});
   const [workspaceIdentity, setWorkspaceIdentity] = useState<{ name: string; workspaceType: string } | null>(() => user?.workspace ? { name: user.workspace.name, workspaceType: user.workspace.type } : null);
@@ -779,28 +778,6 @@ export default function Layout({ children }: { children: ReactNode }) {
     return () => { cancelled = true; };
   }, [user]);
 
-  useEffect(() => {
-    if (!billingStatus || billingStatus.hasAccess || user?.role === "super_admin") return;
-    if (plans.length > 0) return;
-    let cancelled = false;
-    api.get<{ plans: BillingPlan[] }>("/api/billing/pricing/workspace")
-      .then((result) => { if (!cancelled) setPlans(result.plans); })
-      .catch(() => { if (!cancelled) setPlans([]); });
-    return () => { cancelled = true; };
-  }, [billingStatus, plans.length, user?.role]);
-
-  const checkout = async (plan: BillingPlan) => {
-    setBusyPlan(plan.code);
-    try {
-      const price = plan.prices?.find((item) => item.billingInterval === "monthly" && item.priceClass === "standard" && item.status === "active")
-        ?? plan.prices?.find((item) => item.billingInterval === "monthly" && item.status === "active");
-      const result = await api.post<{ url: string }>("/api/billing/checkout-session", price ? { priceId: price.id } : { planCode: plan.code });
-      window.location.assign(result.url);
-    } catch {
-      setBusyPlan(null);
-    }
-  };
-
   const effectiveRoles = user?.workspace?.roles ?? workspaceRoles;
   const platformOnlySuperAdmin = user?.role === "super_admin" && !user.workspace;
   const primaryRole = user?.workspace?.primaryRole;
@@ -818,9 +795,8 @@ export default function Layout({ children }: { children: ReactNode }) {
   const workspaceItems = items.filter((item) => !item.superOnly);
   const platformAdminItems = items.filter((item) => item.superOnly);
   const workspaceHref = "/workspace";
-  const workspaceTypeLabel = workspaceIdentity
-    ? workspaceIdentity.workspaceType.charAt(0).toUpperCase() + workspaceIdentity.workspaceType.slice(1) + " Workspace"
-    : null;
+  const experience = workspaceExperience(workspaceIdentity?.workspaceType ?? user?.workspace?.type);
+  const workspaceTypeLabel = workspaceIdentity ? experience.workspaceLabel : null;
   const workspaceRoleLabel = effectiveRoles.some((role) => role === "owner" || role === "admin")
     ? "Owner/Admin"
     : effectiveRoles.some((role) => role === "manager" || role === "approver")
@@ -830,6 +806,19 @@ export default function Layout({ children }: { children: ReactNode }) {
         : primaryRole
           ? primaryRole.charAt(0).toUpperCase() + primaryRole.slice(1).replace("_", " ")
           : "Workspace Member";
+  const capacity = billingStatus?.commercial?.usage.capacity ?? null;
+  const canOpenBilling = user?.role === "super_admin" || primaryRole === "admin";
+  const capacityContents = capacity ? <>
+    <div className={`flex items-center gap-2 ${sidebarCollapsed ? "lg:justify-center" : ""}`}>
+      <span className="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-emerald-100 text-sm font-black text-emerald-700">AI</span>
+      <div className={`min-w-0 flex-1 ${sidebarCollapsed ? "lg:hidden" : ""}`}>
+        <div className="flex items-center justify-between gap-2 text-[10px] font-black uppercase tracking-wide text-slate-500"><span>AI Capacity</span><span>{capacity.usedPercent}% used</span></div>
+        <div className="mt-1 text-xs font-black text-slate-900">{capacity.balance.toLocaleString()} remaining</div>
+        <div className="mt-0.5 text-[10px] text-slate-500">{capacity.monthlyUsed.toLocaleString()} used this period</div>
+      </div>
+    </div>
+    <div className={`mt-2 h-1.5 overflow-hidden rounded-full bg-slate-200 ${sidebarCollapsed ? "lg:hidden" : ""}`}><div className="h-full rounded-full bg-emerald-500" style={{ width: `${Math.max(0, Math.min(100, capacity.usedPercent))}%` }} /></div>
+  </> : null;
 
   useEffect(() => {
     const clientReportPath = location.pathname.startsWith("/agency/clients/");
@@ -906,6 +895,9 @@ export default function Layout({ children }: { children: ReactNode }) {
             <div className="space-y-1">{platformAdminItems.map((n) => <NavLink key={n.to} to={n.to} end={n.end} title={sidebarCollapsed ? n.label : undefined} onMouseEnter={(event) => showSidebarTooltip(n.label, event.currentTarget)} onMouseLeave={() => setSidebarTooltip(null)} onFocus={(event) => showSidebarTooltip(n.label, event.currentTarget)} onBlur={() => setSidebarTooltip(null)} onClick={() => setOpen(false)} className={({ isActive }) => `flex items-center gap-3 rounded-lg border-l-2 px-3 py-2.5 text-sm font-semibold transition ${isActive ? "border-rose-500 bg-white text-rose-700 shadow-sm" : "border-transparent text-slate-700 hover:bg-white/70 hover:text-rose-700"}`}><NavGlyph icon={n.icon} /><span className={sidebarCollapsed ? "lg:hidden" : ""}>{n.label}</span></NavLink>)}</div>
           </div>}
         </nav>
+        {capacity && <div className="border-t border-slate-200 px-4 py-3" title={`${capacity.balance.toLocaleString()} AI Capacity remaining · ${capacity.monthlyUsed.toLocaleString()} used this period`}>
+          {canOpenBilling ? <Link to="/billing" onClick={() => setOpen(false)} className="block rounded-xl border border-emerald-200 bg-white p-2.5 shadow-sm transition hover:border-emerald-300 hover:bg-emerald-50/50">{capacityContents}</Link> : <div className="rounded-xl border border-emerald-200 bg-white p-2.5 shadow-sm">{capacityContents}</div>}
+        </div>}
         <div className="border-t border-slate-200 p-4">
           <div className={`grid grid-cols-3 gap-2 ${sidebarCollapsed ? "lg:grid-cols-1" : ""}`}>
             <button type="button" aria-label="Help" title="Help" onMouseEnter={(event) => showSidebarTooltip("Help", event.currentTarget)} onMouseLeave={() => setSidebarTooltip(null)} onFocus={(event) => showSidebarTooltip("Help", event.currentTarget)} onBlur={() => setSidebarTooltip(null)} onClick={() => setHelpOpen(true)} className="flex h-10 items-center justify-center rounded-lg border border-slate-200 bg-white text-lg font-bold text-slate-500 hover:bg-slate-50">?</button>
@@ -939,50 +931,18 @@ export default function Layout({ children }: { children: ReactNode }) {
         )}
         {billingStatus?.status === "offline" && billingStatus.hasAccess && (
           <div className="border-b border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-950 lg:px-8">
-            <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-              <span>Manual offline access is active until {billingStatus.manualAccessEndsAt ? new Date(billingStatus.manualAccessEndsAt).toLocaleDateString() : "the set expiry date"}. Upgrade before expiry to keep access.</span>
-              <Link to="/pricing" className="inline-flex rounded-lg bg-brand-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-brand-700">Upgrade</Link>
-            </div>
+            <span className="font-medium">Manual access is active until {billingStatus.manualAccessEndsAt ? new Date(billingStatus.manualAccessEndsAt).toLocaleDateString() : "the date set by your administrator"}. No billing action is required.</span>
           </div>
         )}
-        {billingStatus && !billingStatus.hasAccess && user?.role !== "super_admin" && (
-          <section className="border-b border-red-200 bg-red-50 px-4 py-5 lg:px-8">
-            <div className="space-y-5">
-              <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
-                <div>
-                  <div className="text-xs font-bold uppercase tracking-wide text-red-700">Subscription action required</div>
-                  <h2 className="mt-1 text-2xl font-bold text-charcoal-950">Reactivate a plan to restore workspace actions</h2>
-                  <p className="mt-2 max-w-3xl text-sm leading-6 text-red-900">
-                    Your workspace data remains available according to the retention policy, but new audits, reports, publishing, and AI work require active commercial access. Choose a plan below or open Billing to review the exact lifecycle status.
-                  </p>
-                </div>
-                <Link to="/billing" className="inline-flex items-center justify-center rounded-lg border border-red-200 bg-white px-4 py-2 text-sm font-bold text-red-800 hover:bg-red-100">View billing</Link>
+        {billingStatus && !billingStatus.hasAccess && user?.role !== "super_admin" && !["/pricing", "/billing"].includes(location.pathname) && (
+          <section className="border-b border-red-200 bg-red-50 px-4 py-4 lg:px-8">
+            <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+              <div>
+                <div className="text-xs font-bold uppercase tracking-wide text-red-700">Subscription action required</div>
+                <h2 className="mt-1 text-lg font-bold text-charcoal-950">Reactivate a plan to restore workspace actions</h2>
+                <p className="mt-1 max-w-3xl text-sm leading-6 text-red-900">Your workspace data is preserved, but new audits, reports, publishing, and AI work require active commercial access.</p>
               </div>
-              <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
-                {plans.length === 0 ? (
-                  <div className="rounded-lg border border-red-200 bg-white p-4 text-sm font-medium text-red-800 xl:col-span-3">Loading plans...</div>
-                ) : plans.map((plan) => (
-                  <div key={plan.code} className="flex min-h-[210px] flex-col rounded-lg border border-red-100 bg-white p-4 shadow-sm">
-                    <div className="text-lg font-bold text-charcoal-950">{plan.name}</div>
-                    <div className="mt-2 text-sm leading-5 text-charcoal-500">{plan.helperMonthlyLimit.toLocaleString()} AI Capacity per month</div>
-                    <div className="mt-4 flex items-end gap-1">
-                      <span className="text-3xl font-bold text-charcoal-950">${plan.priceMonthly}</span>
-                      <span className="pb-1 text-xs font-medium text-charcoal-500">/mo</span>
-                    </div>
-                    <div className="mt-3 flex-1 space-y-1.5 text-xs leading-5 text-charcoal-600">
-                      {plan.features.slice(0, 3).map((feature) => <div key={feature}>✓ {feature}</div>)}
-                    </div>
-                    <button
-                      type="button"
-                      onClick={() => void checkout(plan)}
-                      disabled={busyPlan === plan.code}
-                      className="mt-4 rounded-lg bg-charcoal-900 px-3 py-2 text-sm font-bold text-white hover:bg-charcoal-800 disabled:cursor-not-allowed disabled:opacity-60"
-                    >
-                      {busyPlan === plan.code ? "Opening..." : `Upgrade to ${plan.name}`}
-                    </button>
-                  </div>
-                ))}
-              </div>
+              <div className="flex flex-wrap gap-2"><Link to="/pricing" className="inline-flex items-center justify-center rounded-lg bg-red-700 px-4 py-2 text-sm font-bold text-white hover:bg-red-800">Choose a plan</Link><Link to="/billing" className="inline-flex items-center justify-center rounded-lg border border-red-200 bg-white px-4 py-2 text-sm font-bold text-red-800 hover:bg-red-100">View billing</Link></div>
             </div>
           </section>
         )}

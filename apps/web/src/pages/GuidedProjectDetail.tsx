@@ -574,6 +574,19 @@ export default function GuidedProjectDetail() {
     }
   };
 
+  const downloadOriginalAnalysis = async (draftId: string, ideaId: string) => {
+    if (busyAction === "discovery-pdf") return;
+    setBusyAction("discovery-pdf");
+    setError(null);
+    try {
+      await api.download(`/api/discovery-drafts/${draftId}/ideas/${ideaId}/download`);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "The original Business Discovery PDF could not be downloaded.");
+    } finally {
+      setBusyAction(null);
+    }
+  };
+
   const openContentPlan = async (existingTask?: GuidedExecutionTask | null) => {
     if (!project || busyAction === "seo-plan") return;
     setBusyAction("seo-plan");
@@ -632,6 +645,14 @@ export default function GuidedProjectDetail() {
   const projectUrl = project.website?.rootUrl ?? project.websiteUrl ?? project.businessName ?? "No website connected yet";
   const displayName = project.businessName ?? project.name;
   const internalProjectName = project.name !== displayName ? project.name : null;
+  const convertedDiscovery = project.discoveryDrafts?.[0] ?? null;
+  const selectedDiscoveryDirection = convertedDiscovery?.selectedDirectionJson && typeof convertedDiscovery.selectedDirectionJson === "object" && !Array.isArray(convertedDiscovery.selectedDirectionJson)
+    ? convertedDiscovery.selectedDirectionJson as { ideaId?: unknown }
+    : null;
+  const selectedDiscoveryIdeaId = typeof selectedDiscoveryDirection?.ideaId === "string" ? selectedDiscoveryDirection.ideaId : null;
+  const selectedDiscoveryIdea = convertedDiscovery?.ideas.find((idea) => idea.id === selectedDiscoveryIdeaId)
+    ?? convertedDiscovery?.ideas.find((idea) => idea.status === "SELECTED")
+    ?? null;
   const intakeCount = project.intakeAnswers?.length ?? project._count?.intakeAnswers ?? 0;
   const opportunityCount = project.opportunities?.length ?? project._count?.opportunities ?? 0;
   const strategyCount = project.strategyPlans?.length ?? project._count?.strategyPlans ?? 0;
@@ -713,30 +734,28 @@ export default function GuidedProjectDetail() {
       <Card className="overflow-hidden">
         <div className="border-b border-charcoal-100 bg-charcoal-50/70 px-5 py-4">
           <div className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
-            <div className="min-w-0">
-              <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
-                <h1 className="text-[28px] font-bold leading-tight text-charcoal-950">{displayName}</h1>
+            <div className="w-full min-w-0">
+              <div className="min-w-0">
+                <h1 className="break-words text-[28px] font-bold leading-tight text-charcoal-950">{displayName}</h1>
                 {project.website ? (
-                  <Link to={`/website-projects/${project.website.id}`} className="max-w-full break-all text-sm font-semibold text-brand-700 hover:text-brand-800 hover:underline">{project.website.rootUrl}</Link>
+                  <Link to={`/website-projects/${project.website.id}`} title={project.website.rootUrl} className="mt-1 block max-w-full break-all text-sm font-semibold text-brand-700 hover:text-brand-800 hover:underline">{project.website.rootUrl}</Link>
                 ) : (
-                  <span className="max-w-full break-all text-sm font-semibold text-brand-700">{projectUrl}</span>
+                  <span className="mt-1 block max-w-full break-all text-sm font-semibold text-brand-700">{projectUrl}</span>
                 )}
               </div>
-              <div className="mt-2 flex max-w-full flex-nowrap items-center gap-x-3 overflow-x-auto whitespace-nowrap pb-1 text-sm text-charcoal-500">
-                {internalProjectName && <span>Project: {internalProjectName}</span>}
-                <span><span className="font-semibold text-charcoal-700">Project type:</span> {projectTypeLabel(project)}</span>
-                <span aria-hidden="true" className="text-charcoal-300">•</span>
-                <span><span className="font-semibold text-charcoal-700">Location:</span> {project.businessLocation ?? "Not set"}</span>
-                <span aria-hidden="true" className="text-charcoal-300">•</span>
-                <span><span className="font-semibold text-charcoal-700">Timeline:</span> {project.targetLaunchTimeline ?? "Not set"}</span>
-                <span aria-hidden="true" className="text-charcoal-300">•</span>
-                <span><span className="font-semibold text-charcoal-700">Primary goal:</span> {project.primaryGoal ?? "Not set"}</span>
+              <div className="mt-3 grid min-w-0 gap-x-5 gap-y-1.5 text-sm text-charcoal-500 sm:grid-cols-2 xl:grid-cols-4">
+                {internalProjectName && <div className="min-w-0 break-words"><span className="font-semibold text-charcoal-700">Project:</span> {internalProjectName}</div>}
+                <div className="min-w-0 break-words"><span className="font-semibold text-charcoal-700">Project type:</span> {projectTypeLabel(project)}</div>
+                <div className="min-w-0 break-words"><span className="font-semibold text-charcoal-700">Location:</span> {project.businessLocation ?? "Not set"}</div>
+                <div className="min-w-0 break-words"><span className="font-semibold text-charcoal-700">Timeline:</span> {project.targetLaunchTimeline ?? "Not set"}</div>
+                <div className="min-w-0 break-words"><span className="font-semibold text-charcoal-700">Primary goal:</span> {project.primaryGoal ?? "Not set"}</div>
               </div>
             </div>
             <div className="flex flex-col gap-3 xl:items-end">
               <div className="flex max-w-full flex-nowrap items-center gap-2 overflow-x-auto whitespace-nowrap pb-1 xl:justify-end">
                 <span className="shrink-0"><StatusPill status={project.currentStep} /></span>
                 <span className="shrink-0"><StatusPill status={project.status} /></span>
+                {convertedDiscovery && selectedDiscoveryIdea && <button type="button" disabled={busyAction === "discovery-pdf"} onClick={() => void downloadOriginalAnalysis(convertedDiscovery.id, selectedDiscoveryIdea.id)} className="inline-flex shrink-0 items-center justify-center rounded-lg border border-violet-200 bg-violet-50 px-3 py-2 text-sm font-semibold text-violet-800 hover:bg-violet-100 disabled:opacity-60">{busyAction === "discovery-pdf" ? "Preparing PDF…" : "Download original analysis PDF"}</button>}
                 {!archived && (project.opportunities.length > 0 || project.strategyPlans.length > 0) && <Link to={`/guided-projects/${project.id}?resetAfterStrategy=1`} className="inline-flex shrink-0 items-center justify-center rounded-lg border border-rose-200 bg-white px-3 py-2 text-sm font-semibold text-rose-700 hover:bg-rose-50">Manage module data</Link>}
                 {!archived && <Link to={`/guided-projects/${project.id}/intake`} className="inline-flex shrink-0 items-center justify-center rounded-lg bg-brand-600 px-3 py-2 text-sm font-semibold text-white hover:bg-brand-700">Edit profile</Link>}
                 <Link to="/projects" className="inline-flex shrink-0 items-center justify-center rounded-lg bg-brand-600 px-3 py-2 text-sm font-semibold text-white hover:bg-brand-700">Back to projects</Link>

@@ -8,9 +8,11 @@ import { approvalRequiredForLevel, policyForModule, type AutomationLevel } from 
 import { canAccessProject, hasWorkspacePermission, recordWorkspaceActivity, workspaceContext, type WorkspaceContext } from "../workspace-access.js";
 import {
   GROWTH_ENGINE_VERSION,
+  applyGrowthCapacityGate,
   buildBlueprintPhases,
   findingsFromScores,
   generateGrowthCandidates,
+  growthEvidenceContradictions,
   normalizeGrowthCandidateForStorage,
   selectNextBestAction,
   signalFingerprint,
@@ -26,6 +28,8 @@ import {
   safeObservedImpact,
   type EvidenceAvailability,
 } from "../growth-intelligence-engine.js";
+import { websiteTrackingDeviceMetrics, websiteTrackingMetrics } from "../website-tracking.js";
+import { calculateWorkflowUnits, workspaceCapacitySummary } from "../commercial-capacity.js";
 
 export const growthRouter = Router();
 growthRouter.use(requireAuth);
@@ -54,6 +58,9 @@ async function scopedProject(req: Request, projectId: string) {
             include: { issues: { where: { status: "open" }, take: 50 } },
           },
           socialStrategies: { orderBy: { createdAt: "desc" }, take: 1, include: { posts: { take: 10 } } },
+          measurementPlans: { where: { active: true }, orderBy: { version: "desc" }, take: 1 },
+          trackingSite: true,
+          trackingEvents: { orderBy: { occurredAt: "desc" }, take: 5000 },
         },
       },
       keywordResearchRuns: { orderBy: { createdAt: "desc" }, take: 5, include: { ideas: { take: 200 } } },
@@ -65,7 +72,8 @@ async function scopedProject(req: Request, projectId: string) {
       opportunities: { orderBy: { createdAt: "desc" }, take: 5 },
       strategyPlans: { orderBy: { createdAt: "desc" }, take: 3 },
       executionTasks: { orderBy: { createdAt: "desc" }, take: 80 },
-      measurementCheckpoints: { orderBy: { updatedAt: "desc" }, take: 100 },
+      measurementCheckpoints: { orderBy: { updatedAt: "desc" }, take: 100, include: { task: { select: { id: true, title: true, moduleName: true, status: true } } } },
+      leadMagnetFunnels: { orderBy: { updatedAt: "desc" }, take: 20, include: { metrics: { orderBy: { createdAt: "desc" }, take: 10 }, espConnection: { select: { status: true, lastVerifiedAt: true, errorMessage: true } } } },
       backlinkProfileSnapshots: { orderBy: { capturedAt: "desc" }, take: 2 },
       authorityOpportunities: { where: { status: { not: "superseded" } }, orderBy: [{ priorityScore: "desc" }, { createdAt: "desc" }] },
       authorityAssets: { orderBy: { createdAt: "desc" }, take: 50 },
@@ -307,13 +315,66 @@ function scoreProject(project: NonNullable<Awaited<ReturnType<typeof scopedProje
     conversions: sum.conversions + metric.conversions,
   }), { impressions: 0, engagements: 0, clicks: 0, leads: 0, conversions: 0 });
   const socialEngagementRate = socialPerformance.impressions ? socialPerformance.engagements / socialPerformance.impressions * 100 : 0;
+  const trackingEvents = project.website?.trackingEvents ?? [];
+  const trackingMetrics = websiteTrackingMetrics(trackingEvents);
+  const deviceTrackingMetrics = websiteTrackingDeviceMetrics(trackingEvents);
+  const mobileCompletionRate = deviceTrackingMetrics.mobile.formStarts ? deviceTrackingMetrics.mobile.formSuccesses / deviceTrackingMetrics.mobile.formStarts : null;
+  const desktopCompletionRate = deviceTrackingMetrics.desktop.formStarts ? deviceTrackingMetrics.desktop.formSuccesses / deviceTrackingMetrics.desktop.formStarts : null;
+  const mobileConversionIssue = deviceTrackingMetrics.mobile.formStarts >= 10 && (
+    deviceTrackingMetrics.mobile.formErrors / deviceTrackingMetrics.mobile.formStarts >= 0.2
+    || (deviceTrackingMetrics.desktop.formStarts >= 10 && mobileCompletionRate != null && desktopCompletionRate != null && mobileCompletionRate + 0.1 < desktopCompletionRate)
+  ) ? {
+      mobileStarts: deviceTrackingMetrics.mobile.formStarts,
+      mobileSuccesses: deviceTrackingMetrics.mobile.formSuccesses,
+      mobileErrors: deviceTrackingMetrics.mobile.formErrors,
+      desktopStarts: deviceTrackingMetrics.desktop.formStarts,
+      desktopSuccesses: deviceTrackingMetrics.desktop.formSuccesses,
+    } : null;
+  const measurementPlan = project.website?.measurementPlans[0] ?? null;
+  const trackingVerified = Boolean(project.website?.trackingSite?.lastVerifiedAt && trackingEvents.length);
+  const primaryConversionEvents = measurementPlan
+    ? trackingEvents.filter((event) => event.eventName === measurementPlan.primaryConversion).length
+    : 0;
+  const funnelMetrics = project.leadMagnetFunnels.flatMap((funnel) => funnel.metrics);
+  const funnelViews = funnelMetrics.reduce((sum, metric) => sum + metric.views, 0);
+  const funnelOptIns = funnelMetrics.reduce((sum, metric) => sum + metric.optIns, 0);
+  const emailsDelivered = funnelMetrics.reduce((sum, metric) => sum + metric.emailsDelivered, 0);
+  const emailClicks = funnelMetrics.reduce((sum, metric) => sum + metric.emailClicks, 0);
+  const evaluatedDimensions = new Map<string, "observed" | "limited">();
+  const dimensionEvaluations = new Map<string, Array<{ checkpointId: string; classification: string; availability: string }>>();
+  for (const checkpoint of project.measurementCheckpoints) {
+    const metrics = jsonRecord(checkpoint.metricsJson);
+    const evaluation = jsonRecord(metrics.evaluation);
+    if (!evaluation.classification) continue;
+    const taskText = `${checkpoint.task.moduleName} ${checkpoint.task.title}`.toLowerCase();
+    const dimension = /retention|renewal|referral/.test(taskText) ? "retention"
+      : /follow.?up|nurture|email/.test(taskText) ? "followUp"
+        : /lead|form|capture/.test(taskText) ? "leadCapture"
+          : /authority|backlink|citation|mention/.test(taskText) ? "authority"
+            : /offer|position/.test(taskText) ? "offer"
+              : /conversion|cta|checkout/.test(taskText) ? "conversion"
+                : /traffic|seo|content|ranking/.test(taskText) ? "traffic"
+                  : null;
+    if (!dimension) continue;
+    const observations = dimensionEvaluations.get(dimension) ?? [];
+    observations.push({ checkpointId: checkpoint.id, classification: String(evaluation.classification), availability: String(evaluation.availability ?? "UNAVAILABLE") });
+    dimensionEvaluations.set(dimension, observations);
+  }
+  const contradictions = growthEvidenceContradictions(dimensionEvaluations);
+  for (const [dimension, observations] of dimensionEvaluations) {
+    const conflicting = contradictions.some((item) => item.dimension === dimension);
+    evaluatedDimensions.set(dimension, !conflicting && observations.every((item) => item.availability === "AVAILABLE") ? "observed" : "limited");
+  }
   const hasLeadMagnetTask = project.executionTasks.some((task) => task.moduleName.includes("lead") || task.title.toLowerCase().includes("lead magnet"));
   const strategyApproved = Boolean(project.strategyPlans.find((strategy) => strategy.status === "approved"));
 
-  const traffic = Math.min(100, 35 + keywordRuns * 16 + (latestCrawl ? 18 : 0) + Math.max(0, 20 - highIssues * 4));
-  const conversion = Math.min(100, 30 + (strategyApproved ? 18 : 0) + (hasLeadMagnetTask ? 14 : 0) + (project.businessProfile?.offerSummary ? 12 : 0));
-  const leadCapture = Math.min(100, 25 + (hasLeadMagnetTask ? 24 : 0) + (project.preferredOutputs && jsonList(project.preferredOutputs).some((item) => /lead/i.test(item)) ? 20 : 0));
-  const followUp = Math.min(100, 22 + socialPosts * 3 + Math.min(18, project.socialPerformanceMetrics.length * 3) + Math.min(12, socialPerformance.leads * 2) + (project.preferredPublishingMethod ? 10 : 0));
+  // These are evidence-readiness scores until a completed measurement checkpoint
+  // supplies mapped outcome evidence. They must never be presented as observed
+  // business performance merely because a task, strategy, or asset exists.
+  const traffic = Math.min(100, 20 + keywordRuns * 12 + (latestCrawl ? 12 : 0) + (trackingVerified ? 28 : 0) + (trackingMetrics.sessions >= 30 ? 15 : 0));
+  const conversion = Math.min(100, 15 + (measurementPlan ? 20 : 0) + (trackingVerified ? 25 : 0) + (trackingMetrics.sessions >= 30 ? 20 : 0) + (primaryConversionEvents > 0 ? 15 : 0));
+  const leadCapture = Math.min(100, 15 + (hasLeadMagnetTask ? 15 : 0) + (project.leadMagnetFunnels.length ? 20 : 0) + (funnelViews >= 30 ? 25 : 0) + (funnelOptIns > 0 ? 20 : 0));
+  const followUp = Math.min(100, 15 + (project.leadMagnetFunnels.some((funnel) => funnel.espConnection?.status === "connected") ? 25 : 0) + (emailsDelivered >= 30 ? 30 : 0) + (emailClicks > 0 ? 20 : 0));
   const latestAuthoritySnapshot = project.backlinkProfileSnapshots[0];
   const citationOutput = project.aiRuns[0]?.outputJson && typeof project.aiRuns[0].outputJson === "object" && !Array.isArray(project.aiRuns[0].outputJson)
     ? project.aiRuns[0].outputJson as Record<string, unknown>
@@ -339,11 +400,22 @@ function scoreProject(project: NonNullable<Awaited<ReturnType<typeof scopedProje
     + (citationReadiness == null ? 0 : Math.round(citationReadiness * .08))
     + Math.min(10, openTasks.filter((task) => /backlink|citation|authority/i.test(`${task.moduleName} ${task.title}`)).length * 2));
   const offer = Math.min(100, 35 + (project.businessProfile?.offerSummary ? 22 : 0) + (project.businessProfile?.targetAudience ? 14 : 0) + (project.strategyPlans[0]?.offerRecommendation ? 12 : 0));
-  const retention = Math.min(100, 25 + socialPosts * 2 + Math.min(18, socialPerformance.conversions * 3) + (socialEngagementRate >= 4 ? 10 : 0) + (project.strategyPlans[0]?.socialStrategy ? 12 : 0));
+  const retention = Math.min(100, 10 + (evaluatedDimensions.has("retention") ? 75 : 0));
   const scoreJson = { traffic, conversion, leadCapture, followUp, authority, offer, retention };
-  const bottleneckType = Object.entries(scoreJson).sort((a, b) => a[1] - b[1])[0]?.[0] ?? "conversion";
+  const evidenceStates: Record<string, "observed" | "limited" | "unavailable" | "hypothesis"> = {
+    traffic: evaluatedDimensions.get("traffic") ?? (trackingVerified ? "limited" : "unavailable"),
+    conversion: evaluatedDimensions.get("conversion") ?? (measurementPlan && trackingVerified ? "limited" : "unavailable"),
+    leadCapture: evaluatedDimensions.get("leadCapture") ?? (funnelViews > 0 ? "limited" : "unavailable"),
+    followUp: evaluatedDimensions.get("followUp") ?? (emailsDelivered > 0 ? "limited" : "unavailable"),
+    authority: evaluatedDimensions.get("authority") ?? (latestAuthoritySnapshot || project.earnedMentions.length || project.authorityPerformanceMetrics.length ? "limited" : "unavailable"),
+    offer: evaluatedDimensions.get("offer") ?? (project.businessProfile?.offerSummary ? "hypothesis" : "unavailable"),
+    retention: evaluatedDimensions.get("retention") ?? "unavailable",
+  };
+  const observedScores = Object.entries(scoreJson).filter(([dimension]) => evidenceStates[dimension] === "observed");
+  const bottleneckType = (observedScores.length ? observedScores : Object.entries(scoreJson))
+    .sort((a, b) => a[1] - b[1])[0]?.[0] ?? "conversion";
   const growthScore = Math.round(Object.values(scoreJson).reduce((sum, value) => sum + value, 0) / Object.values(scoreJson).length);
-  return { scoreJson, bottleneckType, growthScore, latestCrawl, openTasks, keywordRuns, socialPosts, socialPerformance, socialEngagementRate, hasLeadMagnetTask, strategyApproved, latestAuthoritySnapshot, approvedAuthorityOpportunities, completedAuthorityAssets, earnedReferralLeads, citationReadiness, observedCitationMentions, approvedCitationRecommendations };
+  return { scoreJson, evidenceStates, contradictions, bottleneckType, growthScore, trackingMetrics, deviceTrackingMetrics, mobileConversionIssue, trackingVerified, measurementPlan, primaryConversionEvents, funnelViews, funnelOptIns, emailsDelivered, emailClicks, latestCrawl, openTasks, keywordRuns, socialPosts, socialPerformance, socialEngagementRate, hasLeadMagnetTask, strategyApproved, latestAuthoritySnapshot, approvedAuthorityOpportunities, completedAuthorityAssets, earnedReferralLeads, citationReadiness, observedCitationMentions, approvedCitationRecommendations };
 }
 
 function buildSupportingContentRoadmap(project: NonNullable<Awaited<ReturnType<typeof scopedProject>>>) {
@@ -508,9 +580,12 @@ function buildSupportingContentRoadmap(project: NonNullable<Awaited<ReturnType<t
   };
 }
 
-function diagnosisSummary(bottleneckType: string, ctx: ReturnType<typeof projectContext>) {
+function diagnosisSummary(bottleneckType: string, ctx: ReturnType<typeof projectContext>, evidenceState: "observed" | "limited" | "unavailable" | "hypothesis", hasContradiction = false) {
   const label = bottleneckType.replace(/([A-Z])/g, " $1").toLowerCase();
-  return `${ctx.name} is currently most constrained by ${label}. Growth work should focus there before adding more disconnected tasks.`;
+  if (hasContradiction) return `${ctx.name} has conflicting ${label} outcome evidence. The engine has lowered confidence and will not declare a constraint until the source, period, segment, or metric mapping is resolved.`;
+  return evidenceState === "observed"
+    ? `${ctx.name} is currently most constrained by ${label} according to mapped outcome evidence. Growth work should focus there before adding disconnected tasks.`
+    : `${ctx.name} does not yet have sufficient verified ${label} outcome evidence. The next action is to connect and baseline this measurement, not assume the business is underperforming.`;
 }
 
 function normalizedGrowthSignals(project: NonNullable<Awaited<ReturnType<typeof scopedProject>>>, score: ReturnType<typeof scoreProject>) {
@@ -520,8 +595,13 @@ function normalizedGrowthSignals(project: NonNullable<Awaited<ReturnType<typeof 
     signalKey,
     sourceType: "project_snapshot",
     sourceId: project.id,
-    value: { score: value },
-    confidence: signalKey === "traffic" && !score.latestCrawl ? 58 : 82,
+    value: {
+      score: value,
+      scoreKind: "evidence_readiness",
+      evidenceState: score.evidenceStates[signalKey] ?? "unavailable",
+      performanceClaimAllowed: score.evidenceStates[signalKey] === "observed",
+    },
+    confidence: score.evidenceStates[signalKey] === "observed" ? 88 : 96,
     collectedAt: now,
     effectiveDate: now,
     expiresAt: new Date(now.getTime() + 30 * 86_400_000),
@@ -638,7 +718,7 @@ async function runGrowthEngine(input: {
   const score = scoreProject(project);
   const stages = funnelDefinitions(project, score);
   const signals = normalizedGrowthSignals(project, score);
-  const findings = findingsFromScores(score.scoreJson);
+  const findings = findingsFromScores(score.scoreJson, score.evidenceStates);
   const priorActions = await prisma.nextBestAction.findMany({
     where: { projectId: project.id, sourceType: "growth_engine" },
     select: {
@@ -660,7 +740,7 @@ async function runGrowthEngine(input: {
       .filter((action) => ["accepted", "rejected", "dismissed", "deferred"].includes(action.status) || Boolean(action.followupTaskId))
       .flatMap((action) => action.dedupeKey ? [action.dedupeKey] : []),
   ]);
-  const candidates = generateGrowthCandidates({
+  const generatedCandidates = generateGrowthCandidates({
     projectId: project.id,
     businessName: ctx.name,
     primaryGoal: ctx.primaryGoal,
@@ -675,7 +755,25 @@ async function runGrowthEngine(input: {
     strategyId: ctx.strategyContract?.strategyId,
     strategyVersion: ctx.strategyContract?.version,
     strategyFocusAreas: ctx.strategyContract?.focusAreas,
+    evidenceStates: score.evidenceStates,
+    mobileConversionIssue: score.mobileConversionIssue,
   }, excluded);
+  const capacity = await workspaceCapacitySummary(context.workspace.id);
+  const featureKeys = ["ai_content_generate", "safe_authority_builder"];
+  const featureCosts = await prisma.featureCostCatalog.findMany({ where: { featureKey: { in: featureKeys } } });
+  const featureCost = new Map(featureCosts.map((feature) => [feature.featureKey, feature]));
+  const unitsForCandidate = (candidate: typeof generatedCandidates[number]) => {
+    if (candidate.actionType === "measurement_setup") return 0;
+    const featureKey = candidate.route === "authority" ? "safe_authority_builder" : "ai_content_generate";
+    const feature = featureCost.get(featureKey);
+    return calculateWorkflowUnits(featureKey, feature?.defaultCreditCost ?? (featureKey === "safe_authority_builder" ? 100 : 80), {
+      pricingModel: feature?.pricingModel,
+      pricingConfig: feature?.pricingConfigJson,
+      minimumUnitCost: feature?.minimumUnitCost,
+      maximumUnitCost: feature?.maximumUnitCost,
+    });
+  };
+  const candidates = applyGrowthCapacityGate(generatedCandidates, capacity.totalAvailable, unitsForCandidate);
   const activeAccepted = priorActions.find((action) =>
     action.status === "accepted" &&
     action.followupTask &&
@@ -733,7 +831,7 @@ async function runGrowthEngine(input: {
         projectId: project.id,
         bottleneckType: score.bottleneckType,
         scoreJson: score.scoreJson,
-        summary: diagnosisSummary(score.bottleneckType, ctx),
+        summary: diagnosisSummary(score.bottleneckType, ctx, score.evidenceStates[score.bottleneckType] ?? "unavailable", score.contradictions.some((item) => item.dimension === score.bottleneckType)),
         dataSnapshot: {
           website: ctx.website,
           strategyApproved: score.strategyApproved,
@@ -741,16 +839,25 @@ async function runGrowthEngine(input: {
           socialPosts: score.socialPosts,
           openTasks: score.openTasks.length,
           latestCrawlScore: score.latestCrawl?.siteScore ?? null,
+          evidenceStates: score.evidenceStates,
+          trackingVerified: score.trackingVerified,
+          measurementPlanId: score.measurementPlan?.id ?? null,
+          trackedSessions: score.trackingMetrics.sessions,
+          primaryConversionEvents: score.primaryConversionEvents,
+          contradictions: score.contradictions,
           approvedStrategy: ctx.strategyContract,
         },
         findingsJson: findings as unknown as Prisma.InputJsonValue,
-        evidenceJson: { signalFingerprints: signals.map((signal) => signalFingerprint(project.id, signal)) },
-        confidence: diagnosisConfidence,
+        evidenceJson: { signalFingerprints: signals.map((signal) => signalFingerprint(project.id, signal)), contradictions: score.contradictions },
+        confidence: Math.max(0, diagnosisConfidence - (score.contradictions.length ? 20 : 0)),
         engineVersion: GROWTH_ENGINE_VERSION,
         runType: input.runType,
       },
     });
 
+    await tx.growthFunnelStage.deleteMany({
+      where: { projectId: project.id, stageKey: { notIn: stages.map((stage) => stage.stageKey) } },
+    });
     for (const stage of stages) {
       await tx.growthFunnelStage.upsert({
         where: { projectId_stageKey: { projectId: project.id, stageKey: stage.stageKey } },
@@ -919,19 +1026,83 @@ async function runGrowthEngine(input: {
 }
 
 function funnelDefinitions(project: NonNullable<Awaited<ReturnType<typeof scopedProject>>>, score: ReturnType<typeof scoreProject>) {
-  const ctx = projectContext(project);
-  return [
-    { stageKey: "traffic_sources", title: "Traffic sources", metric: `${score.keywordRuns} keyword runs`, health: score.scoreJson.traffic, issue: score.keywordRuns ? "Traffic inputs exist. Keep mapping demand to pages." : "Keyword and traffic source data is missing.", automation: "execute_through_integration" },
-    { stageKey: "landing_page", title: "Landing page", metric: score.latestCrawl ? `${score.latestCrawl.siteScore ?? 0}/100 site score` : "No crawl", health: score.latestCrawl?.siteScore ?? 35, issue: score.latestCrawl ? "Use crawl findings to improve clarity and page health." : "Run site analysis before conversion work.", automation: "execute_through_integration" },
-    { stageKey: "lead_capture", title: "Lead capture", metric: score.hasLeadMagnetTask ? "Lead magnet task exists" : "No lead capture asset", health: score.scoreJson.leadCapture, issue: score.hasLeadMagnetTask ? "Lead capture is planned. Review landing page and form flow." : "Create a lead magnet or capture offer.", automation: "generate" },
-    { stageKey: "follow_up", title: "Follow-up", metric: `${score.socialPosts} planned social posts`, health: score.scoreJson.followUp, issue: "Email and nurture follow-up should be reviewed before sending.", automation: "prepare" },
-    { stageKey: "conversion", title: "Conversion", metric: ctx.primaryGoal, health: score.scoreJson.conversion, issue: "CTA clarity, proof, objections, and form friction need measurable checks.", automation: "generate" },
-    { stageKey: "retention_referral", title: "Retention / referral", metric: "Manual tracking", health: score.scoreJson.retention, issue: "Add retention, referral, or review prompts after lead capture is stable.", automation: "manual_guided" },
-  ].map((stage, index) => ({
-    ...stage,
-    status: stage.health >= 75 ? "healthy" : stage.health >= 55 ? "watch" : "needs_attention",
-    sortOrder: index + 1,
-  }));
+  const tracking = score.trackingMetrics;
+  const enoughTraffic = score.trackingVerified && tracking.sessions >= 30;
+  const measurementConfigured = Boolean(score.measurementPlan && score.trackingVerified);
+  const primaryGoal = projectContext(project).primaryGoal;
+  const stages = [
+    {
+      stageKey: "awareness",
+      title: "Awareness",
+      metric: score.keywordRuns ? `${score.keywordRuns} research run${score.keywordRuns === 1 ? "" : "s"}` : "No demand source connected",
+      status: score.keywordRuns ? "limited_evidence" : "connection_required",
+      issue: score.keywordRuns
+        ? "Entry: target market demand. Exit: a qualified person discovers the business. Keyword research is available, but connect Search Console or another reach source to measure actual visibility."
+        : "Entry: target market demand. Exit: a qualified person discovers the business. Run keyword research and connect a reach source before judging awareness performance.",
+      automation: "execute_through_integration",
+    },
+    {
+      stageKey: "acquisition",
+      title: "Acquisition",
+      metric: score.trackingVerified ? `${tracking.sessions} tracked sessions` : "Website tracking not verified",
+      status: enoughTraffic ? "evidence_available" : score.trackingVerified ? "insufficient_sample" : "connection_required",
+      issue: enoughTraffic
+        ? "Entry: discovered audience. Exit: qualified website visit. Use source and landing-page results to identify the channel bringing the most qualified sessions."
+        : "Entry: discovered audience. Exit: qualified website visit. Verify website tracking and collect at least 30 sessions before comparing channels.",
+      automation: "execute_through_integration",
+    },
+    {
+      stageKey: "activation",
+      title: "Activation",
+      metric: score.trackingVerified ? `${tracking.ctaClicks} CTA clicks · ${tracking.formStarts} form starts` : "CTA and form events unavailable",
+      status: enoughTraffic ? "evidence_available" : score.trackingVerified ? "insufficient_sample" : "connection_required",
+      issue: enoughTraffic
+        ? "Entry: website visit. Exit: visitor starts the intended action. Compare CTA clicks and form starts with page views, then improve the largest measured drop-off."
+        : "Entry: website visit. Exit: visitor starts the intended action. Track CTA clicks and form starts, then collect enough sessions to establish a baseline.",
+      automation: "execute_through_integration",
+    },
+    {
+      stageKey: "conversion",
+      title: "Conversion",
+      metric: measurementConfigured ? `${score.primaryConversionEvents} ${score.measurementPlan?.primaryConversion ?? "primary conversions"}` : "Primary conversion not verified",
+      status: enoughTraffic && measurementConfigured ? "evidence_available" : measurementConfigured ? "insufficient_sample" : "connection_required",
+      issue: measurementConfigured
+        ? `Entry: activated visitor. Exit: ${primaryGoal}. Compare the verified primary conversion with the baseline; do not declare a conversion problem until the evaluation window and sample are complete.`
+        : `Entry: activated visitor. Exit: ${primaryGoal}. Confirm one primary conversion event and verify that it reaches the measurement plan.`,
+      automation: "execute_through_integration",
+    },
+    {
+      stageKey: "retention",
+      title: "Retention",
+      metric: score.evidenceStates.retention === "observed" ? "Verified checkpoint available" : "Retention outcome unavailable",
+      status: score.evidenceStates.retention === "observed" ? "evidence_available" : "connection_required",
+      issue: score.evidenceStates.retention === "observed"
+        ? "Entry: converted customer. Exit: retained or returning customer. Review the latest verified retention checkpoint before choosing an intervention."
+        : "Entry: converted customer. Exit: retained or returning customer. Connect CRM, renewal, repeat-purchase, or manual cohort data and record the first retention baseline.",
+      automation: "manual_guided",
+    },
+    {
+      stageKey: "revenue",
+      title: "Revenue",
+      metric: tracking.purchases ? `${tracking.purchases} tracked purchases` : "Revenue source unavailable or not applicable",
+      status: tracking.purchases ? "limited_evidence" : "not_configured",
+      issue: tracking.purchases
+        ? "Entry: converted customer. Exit: recorded revenue. Connect transaction values or CRM revenue so the engine can compare revenue, not only purchase counts."
+        : "Entry: converted customer. Exit: recorded revenue. If revenue applies to this business, connect ecommerce or CRM values; otherwise leave this stage not applicable.",
+      automation: "execute_through_integration",
+    },
+    {
+      stageKey: "referral",
+      title: "Referral",
+      metric: score.earnedReferralLeads ? `${score.earnedReferralLeads} recorded referral leads` : "Referral outcome unavailable",
+      status: score.earnedReferralLeads ? "limited_evidence" : "connection_required",
+      issue: score.earnedReferralLeads
+        ? "Entry: satisfied customer or earned mention. Exit: attributed referral lead. Add conversion outcomes to determine referral quality."
+        : "Entry: satisfied customer or earned mention. Exit: attributed referral lead. Add a referral source field or CRM attribution and record the first referral baseline.",
+      automation: "manual_guided",
+    },
+  ];
+  return stages.map((stage, index) => ({ ...stage, sortOrder: index + 1 }));
 }
 
 function experimentIdeas(project: NonNullable<Awaited<ReturnType<typeof scopedProject>>>, bottleneckType: string) {
@@ -1109,6 +1280,24 @@ async function loadGrowthOverview(projectId: string) {
     prisma.projectGrowthLearning.findMany({ where: { projectId }, orderBy: { createdAt: "desc" }, take: 25 }),
     prisma.aiRun.findMany({ where: { projectId, moduleName: "growth_engine" }, orderBy: { createdAt: "desc" }, take: 20 }),
   ]);
+  const selectedAction = candidateActions.find((action) => action.status === "selected")
+    ?? candidateActions.find((action) => action.status === "accepted" && action.followupTask && !terminalStatuses.has(action.followupTask.status))
+    ?? null;
+  const activeExperiment = experiments.find((experiment) => ["approved", "running", "paused"].includes(experiment.status));
+  const blockedCandidate = candidateActions.find((action) => action.status === "recommended" && Array.isArray(action.dependencyIdsJson) && action.dependencyIdsJson.length > 0);
+  const decisionState = selectedAction
+    ? { key: "ACTION_READY", title: "Next Best Action ready", message: "Review the selected action and create its trackable Execution task." }
+    : activeExperiment?.status === "running"
+      ? { key: "WAITING_FOR_OUTCOME", title: "Waiting for experiment outcome", message: `Continue collecting ${activeExperiment.metric} until the saved review date. Do not start a competing change.` }
+      : activeExperiment?.status === "approved"
+        ? { key: "APPROVED_NOT_STARTED", title: "Approved experiment ready to start", message: `Start ${activeExperiment.title} when its approved change is ready.` }
+        : activeExperiment?.status === "paused"
+          ? { key: "PAUSED", title: "Experiment paused", message: `Resume ${activeExperiment.title} when measurement can continue.` }
+          : blockedCandidate
+            ? { key: "BLOCKED_BY_DEPENDENCY", title: "Action blocked by a requirement", message: (Array.isArray(blockedCandidate.dependencyIdsJson) ? blockedCandidate.dependencyIdsJson.map(String).join(" · ") : "Resolve the required dependency, then refresh Growth.") }
+            : candidateActions.length
+              ? { key: "DECISIONS_RECORDED", title: "Current recommendations already decided", message: "Refresh the engine after new evidence or a completed outcome to select valid new work." }
+              : { key: "NO_MATERIAL_ACTION", title: "No material action identified", message: "The engine checked current saved evidence and found no eligible new work. Refresh after new evidence or a material project change." };
   return {
     diagnosis,
     funnelStages,
@@ -1120,9 +1309,8 @@ async function loadGrowthOverview(projectId: string) {
     socialDistribution,
     evidenceSignals,
     candidateActions,
-    selectedAction: candidateActions.find((action) => action.status === "selected")
-      ?? candidateActions.find((action) => action.status === "accepted" && action.followupTask && !terminalStatuses.has(action.followupTask.status))
-      ?? null,
+    selectedAction,
+    decisionState,
     learnings,
     recentRuns,
   };
@@ -1553,6 +1741,9 @@ growthRouter.post("/projects-v2/:projectId/growth/funnel-map", async (req, res) 
   const score = scoreProject(project);
   const stages = funnelDefinitions(project, score);
   await prisma.$transaction(async (tx) => {
+    await tx.growthFunnelStage.deleteMany({
+      where: { projectId: project.id, stageKey: { notIn: stages.map((stage) => stage.stageKey) } },
+    });
     for (const stage of stages) {
       await tx.growthFunnelStage.upsert({
         where: { projectId_stageKey: { projectId: project.id, stageKey: stage.stageKey } },
@@ -1637,6 +1828,59 @@ growthRouter.post("/projects-v2/:projectId/growth/experiments/generate", async (
   res.json(await loadGrowthOverview(project.id));
 });
 
+const experimentApprovalSchema = z.object({
+  baselineValue: z.number(),
+  baselineSampleSize: z.number().int().nonnegative().default(0),
+  evaluationWindowDays: z.number().int().min(1).max(180).default(14),
+  sourceStatus: z.enum(["AVAILABLE", "LIMITED", "STALE", "UNAVAILABLE", "INSUFFICIENT"]).default("AVAILABLE"),
+  baselineNote: z.string().trim().min(2).max(1000),
+});
+
+growthRouter.post("/growth/experiments/:experimentId/approve", async (req, res) => {
+  const parsed = experimentApprovalSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() });
+  const experiment = await prisma.growthExperiment.findFirst({
+    where: { id: req.params.experimentId },
+    include: { project: true },
+  });
+  if (!experiment) return res.status(404).json({ error: "experiment not found" });
+  const context = await authorizeProject(req, experiment.projectId, "approve");
+  if (!["planned", "draft"].includes(experiment.status)) return res.status(409).json({ error: "Only a planned or draft experiment can be approved." });
+  if (parsed.data.sourceStatus !== "AVAILABLE") return res.status(409).json({ error: "A verified available baseline is required before this experiment can start. Record or reconnect the source first." });
+  const updated = await prisma.$transaction(async (tx) => {
+    const row = await tx.growthExperiment.update({
+      where: { id: experiment.id },
+      data: {
+        status: "approved",
+        baselineJson: {
+          ...jsonRecord(experiment.baselineJson),
+          metric: experiment.metric,
+          value: parsed.data.baselineValue,
+          sampleSize: parsed.data.baselineSampleSize,
+          sourceStatus: parsed.data.sourceStatus,
+          note: parsed.data.baselineNote,
+          evaluationWindowDays: parsed.data.evaluationWindowDays,
+          approvedByUserId: context.membership.userId,
+          approvedAt: new Date().toISOString(),
+        } as Prisma.InputJsonValue,
+      },
+    });
+    await tx.growthExperimentAsset.updateMany({ where: { experimentId: experiment.id, approvalStatus: "needs_review" }, data: { approvalStatus: "approved" } });
+    await recordWorkspaceActivity(tx, {
+      context,
+      action: "growth_experiment.approved",
+      entityType: "growth_experiment",
+      entityId: experiment.id,
+      agencyClientId: experiment.project.agencyClientId,
+      projectId: experiment.projectId,
+      previousJson: { status: experiment.status },
+      nextJson: { status: "approved", baselineValue: parsed.data.baselineValue, baselineSampleSize: parsed.data.baselineSampleSize, evaluationWindowDays: parsed.data.evaluationWindowDays },
+    });
+    return row;
+  });
+  res.json({ experiment: updated });
+});
+
 growthRouter.post("/growth/experiments/:experimentId/start", async (req, res) => {
   const experiment = await prisma.growthExperiment.findFirst({
     where: { id: req.params.experimentId },
@@ -1646,6 +1890,10 @@ growthRouter.post("/growth/experiments/:experimentId/start", async (req, res) =>
   const context = await authorizeProject(req, experiment.projectId, "execute_tasks");
   const project = await scopedProject(req, experiment.projectId);
   if (!project) return res.status(404).json({ error: "project not found" });
+  if (!["approved", "paused"].includes(experiment.status)) return res.status(409).json({ error: "Approve the experiment and its baseline before starting it." });
+  const baseline = jsonRecord(experiment.baselineJson);
+  if (baseline.sourceStatus !== "AVAILABLE" || typeof baseline.value !== "number") return res.status(409).json({ error: "A verified available baseline is required before this experiment can start." });
+  const evaluationWindowDays = typeof baseline.evaluationWindowDays === "number" ? Math.max(1, Math.min(180, Math.round(baseline.evaluationWindowDays))) : 14;
   const updated = await prisma.$transaction(async (tx) => {
     const task = await upsertGrowthTask(tx, {
       project,
@@ -1664,7 +1912,11 @@ growthRouter.post("/growth/experiments/:experimentId/start", async (req, res) =>
     }
     const row = await tx.growthExperiment.update({
       where: { id: experiment.id },
-      data: { status: "running", startedAt: new Date() },
+      data: {
+        status: "running",
+        startedAt: experiment.startedAt ?? new Date(),
+        reviewAt: new Date(Date.now() + evaluationWindowDays * 86_400_000),
+      },
     });
     if (experiment.sourceActionId) {
       await tx.nextBestAction.updateMany({
@@ -1679,8 +1931,22 @@ growthRouter.post("/growth/experiments/:experimentId/start", async (req, res) =>
       entityId: experiment.id,
       agencyClientId: experiment.project.agencyClientId,
       projectId: experiment.projectId,
-      nextJson: { taskId: task.id, status: "running" },
+      previousJson: { status: experiment.status },
+      nextJson: { taskId: task.id, status: "running", baselineValue: baseline.value, baselineSampleSize: baseline.sampleSize ?? 0, evaluationWindowDays },
     });
+    return row;
+  });
+  res.json({ experiment: updated });
+});
+
+growthRouter.post("/growth/experiments/:experimentId/pause", async (req, res) => {
+  const experiment = await prisma.growthExperiment.findFirst({ where: { id: req.params.experimentId }, include: { project: true } });
+  if (!experiment) return res.status(404).json({ error: "experiment not found" });
+  const context = await authorizeProject(req, experiment.projectId, "execute_tasks");
+  if (experiment.status !== "running") return res.status(409).json({ error: "Only a running experiment can be paused." });
+  const updated = await prisma.$transaction(async (tx) => {
+    const row = await tx.growthExperiment.update({ where: { id: experiment.id }, data: { status: "paused" } });
+    await recordWorkspaceActivity(tx, { context, action: "growth_experiment.paused", entityType: "growth_experiment", entityId: experiment.id, agencyClientId: experiment.project.agencyClientId, projectId: experiment.projectId, previousJson: { status: "running" }, nextJson: { status: "paused" } });
     return row;
   });
   res.json({ experiment: updated });
@@ -1699,6 +1965,7 @@ const resultSchema = z.object({
   evaluationWindowComplete: z.boolean().optional(),
   limitations: z.array(z.string().trim().min(2).max(500)).max(20).optional(),
   resultStatus: z.enum(["tracking", "winner", "failed", "inconclusive", "scaled"]).optional(),
+  decision: z.enum(["adopt", "revise", "stop"]).optional(),
   notes: z.string().max(5000).optional(),
 });
 
@@ -1710,19 +1977,24 @@ growthRouter.post("/growth/experiments/:experimentId/results", async (req, res) 
     include: { project: true },
   });
   if (!experiment) return res.status(404).json({ error: "experiment not found" });
-  const context = await authorizeProject(req, experiment.projectId, "execute_tasks");
+  let context = await authorizeProject(req, experiment.projectId, "execute_tasks");
+  if (experiment.status !== "running") return res.status(409).json({ error: "Only a running experiment can record a measurement or final result." });
+  const approvedBaseline = jsonRecord(experiment.baselineJson);
+  const baselineValue = parsed.data.baselineValue ?? (typeof approvedBaseline.value === "number" ? approvedBaseline.value : undefined);
+  const baselineSampleSize = parsed.data.baselineSampleSize ?? (typeof approvedBaseline.sampleSize === "number" ? approvedBaseline.sampleSize : undefined);
+  const serverWindowComplete = Boolean(experiment.reviewAt && experiment.reviewAt.getTime() <= Date.now());
   const evaluation = evaluateMeasurement({
     metricKey: experiment.metric,
     direction: parsed.data.direction,
-    baselineValue: parsed.data.baselineValue,
+    baselineValue,
     currentValue: parsed.data.currentValue,
-    baselineSampleSize: parsed.data.baselineSampleSize,
+    baselineSampleSize,
     currentSampleSize: parsed.data.currentSampleSize,
     minimumSampleSize: parsed.data.minimumSampleSize,
     minimumMaterialChangePercent: parsed.data.minimumMaterialChangePercent,
     sourceStatus: parsed.data.sourceStatus as EvidenceAvailability | undefined,
     sourceFreshnessDays: parsed.data.sourceFreshnessDays,
-    evaluationWindowComplete: parsed.data.evaluationWindowComplete ?? parsed.data.resultStatus !== "tracking",
+    evaluationWindowComplete: serverWindowComplete && parsed.data.evaluationWindowComplete !== false,
     limitations: parsed.data.limitations,
   });
   const evaluatedStatus = evaluation.classification === "IMPROVED"
@@ -1733,30 +2005,35 @@ growthRouter.post("/growth/experiments/:experimentId/results", async (req, res) 
         ? "tracking"
         : "inconclusive";
   const terminal = evaluatedStatus !== "tracking";
+  if (terminal && !parsed.data.decision) return res.status(400).json({ error: "Choose Adopt, Revise, or Stop before completing the experiment evaluation." });
+  if (evaluatedStatus === "inconclusive" && parsed.data.decision === "adopt") return res.status(409).json({ error: "An inconclusive result cannot be adopted. Choose Revise to run a better test, or Stop." });
+  if (terminal) context = await authorizeProject(req, experiment.projectId, "approve");
   const result = await prisma.$transaction(async (tx) => {
     const row = await tx.growthExperimentResult.create({
       data: {
         experimentId: experiment.id,
-        baselineValue: parsed.data.baselineValue,
+        baselineValue,
         currentValue: parsed.data.currentValue,
         resultStatus: evaluatedStatus,
         notes: parsed.data.notes,
         learningJson: {
           contractVersion: GROWTH_INTELLIGENCE_CONTRACT_VERSION,
           metric: experiment.metric,
-          baselineValue: parsed.data.baselineValue ?? null,
+          baselineValue: baselineValue ?? null,
           currentValue: parsed.data.currentValue ?? null,
           outcome: evaluatedStatus,
           evaluation,
           observedImpact: safeObservedImpact(evaluation),
+          decision: parsed.data.decision ?? null,
         },
+        followUpAction: parsed.data.decision ?? null,
         evaluatedAt: terminal ? new Date() : null,
       },
     });
     if (terminal) {
       await tx.growthExperiment.update({
         where: { id: experiment.id },
-        data: { status: evaluatedStatus === "winner" ? "completed" : evaluatedStatus, completedAt: new Date() },
+        data: { status: parsed.data.decision === "adopt" ? "completed" : parsed.data.decision === "revise" ? "inconclusive" : "stopped", completedAt: new Date() },
       });
       const learning = await tx.projectGrowthLearning.create({
         data: {
@@ -1765,7 +2042,7 @@ growthRouter.post("/growth/experiments/:experimentId/results", async (req, res) 
           sourceId: experiment.id,
           outcome: evaluatedStatus === "winner" || evaluatedStatus === "scaled" ? "won" : evaluatedStatus === "failed" ? "lost" : "inconclusive",
           summary: parsed.data.notes || evaluation.summary,
-          learningJson: { contractVersion: GROWTH_INTELLIGENCE_CONTRACT_VERSION, metric: experiment.metric, evaluation, observedImpact: safeObservedImpact(evaluation) },
+          learningJson: { contractVersion: GROWTH_INTELLIGENCE_CONTRACT_VERSION, metric: experiment.metric, evaluation, observedImpact: safeObservedImpact(evaluation), decision: parsed.data.decision },
         },
       });
       const blueprint = await tx.growthBlueprint.findUnique({
@@ -1779,7 +2056,7 @@ growthRouter.post("/growth/experiments/:experimentId/results", async (req, res) 
           path: `/learnings/${learning.id}`,
           operation: "add",
           previousValue: null,
-          nextValue: { outcome: learning.outcome, metric: experiment.metric, evaluation, sourceExperimentId: experiment.id },
+          nextValue: { outcome: learning.outcome, metric: experiment.metric, evaluation, decision: parsed.data.decision, sourceExperimentId: experiment.id },
           reason: evaluation.summary,
           evidenceRefs: [`growth_experiment:${experiment.id}`, `growth_experiment_result:${row.id}`],
         });
@@ -1812,7 +2089,7 @@ growthRouter.post("/growth/experiments/:experimentId/results", async (req, res) 
       entityId: row.id,
       agencyClientId: experiment.project.agencyClientId,
       projectId: experiment.projectId,
-      nextJson: { resultStatus: evaluatedStatus, terminal, evaluationClassification: evaluation.classification, availability: evaluation.availability },
+      nextJson: { resultStatus: evaluatedStatus, terminal, decision: parsed.data.decision ?? null, evaluationClassification: evaluation.classification, availability: evaluation.availability },
     });
     return row;
   });
@@ -1822,7 +2099,7 @@ growthRouter.post("/growth/experiments/:experimentId/results", async (req, res) 
     sourceModule: "growth_engine",
     sourceId: experiment.id,
     idempotencyKey: `${terminal ? "experiment.completed" : "measurement.recorded"}:${experiment.id}:${result.id}`,
-    payload: { resultId: result.id, resultStatus: evaluatedStatus, metric: experiment.metric, baselineValue: parsed.data.baselineValue ?? null, currentValue: parsed.data.currentValue ?? null, evaluation },
+    payload: { resultId: result.id, resultStatus: evaluatedStatus, metric: experiment.metric, baselineValue: baselineValue ?? null, currentValue: parsed.data.currentValue ?? null, evaluation },
   });
   if (terminal) {
     const refreshedProject = await scopedProject(req, experiment.projectId);
@@ -1948,7 +2225,7 @@ const growthDecisionSchema = z.object({
 growthRouter.post("/projects-v2/:projectId/growth/actions/:actionId/decision", async (req, res) => {
   const parsed = growthDecisionSchema.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() });
-  const context = await authorizeProject(req, req.params.projectId, "execute_tasks");
+  let context = await authorizeProject(req, req.params.projectId, "execute_tasks");
   const project = await scopedProject(req, req.params.projectId);
   if (!project) return res.status(404).json({ error: "project not found" });
   const action = await prisma.nextBestAction.findFirst({
@@ -1957,6 +2234,7 @@ growthRouter.post("/projects-v2/:projectId/growth/actions/:actionId/decision", a
   if (!action) return res.status(404).json({ error: "Growth recommendation not found." });
   const input = parsed.data;
   const accepted = input.decision === "accepted" || input.decision === "edited";
+  if (accepted) context = await authorizeProject(req, req.params.projectId, "approve");
   const reviewAfter = input.decision === "deferred"
     ? new Date(Date.now() + (input.deferDays ?? 7) * 86_400_000)
     : null;
@@ -2070,11 +2348,24 @@ growthRouter.post("/projects-v2/:projectId/growth/channel-tests", async (req, re
   const readiness = growthReadiness(project);
   if (!readiness.canRun) return res.status(409).json({ error: "growth_readiness_incomplete", readiness });
   const channels = [
-    { channel: "SEO", cadence: "2 optimized pages per month", metric: "Indexed pages and ranking movement", assetsNeeded: ["Keyword map", "Page briefs"] },
-    { channel: "Social", cadence: "3 posts per week", metric: "Profile clicks and assisted leads", assetsNeeded: ["Post drafts", "Creative prompts"] },
-    { channel: "Email", cadence: "4-message follow-up", metric: "Reply or booked-call rate", assetsNeeded: ["Sequence copy", "Lead magnet"] },
+    { channel: "Organic search", cadence: "One approved intent-led page test", metric: "Qualified organic sessions and primary conversions", assetsNeeded: { assets: ["Approved keyword map", "Page brief"], role: "Capture existing search demand", readiness: project.keywordResearchRuns.length ? "ready" : "blocked", cost: "low", effort: "medium", risk: "low", evidence: project.keywordResearchRuns.length ? `${project.keywordResearchRuns.length} saved keyword research runs` : "Keyword research required" } },
+    { channel: "Email", cadence: "One permission-based follow-up sequence", metric: "Qualified replies or primary conversions", assetsNeeded: { assets: ["Consented audience", "Sequence copy", "Tracked CTA"], role: "Convert and reactivate known contacts", readiness: project.leadMagnetFunnels.some((funnel) => funnel.espConnection?.status === "connected") ? "ready" : "connection_required", cost: "low", effort: "medium", risk: "medium", evidence: project.leadMagnetFunnels.some((funnel) => funnel.espConnection?.status === "connected") ? "ESP connection available" : "ESP and consented audience required" } },
+    { channel: "Social/community", cadence: "One two-week message and distribution test", metric: "Qualified profile visits and attributed conversions", assetsNeeded: { assets: ["Approved source content", "Channel-specific posts", "Tracked link"], role: "Reach and validate messages", readiness: project.website?.socialStrategies.length ? "ready" : "partial", cost: "low", effort: "medium", risk: "low", evidence: project.socialPerformanceMetrics.length ? `${project.socialPerformanceMetrics.length} performance observations` : "No connected performance observations" } },
+    { channel: "Referral/partner", cadence: "One permission-based partner or customer referral test", metric: "Attributed qualified referral leads", assetsNeeded: { assets: ["Eligibility rule", "Request copy", "Referral source field"], role: "Generate trusted introductions", readiness: project.earnedMentions.length ? "partial" : "measurement_required", cost: "low", effort: "medium", risk: "medium", evidence: project.earnedMentions.length ? `${project.earnedMentions.length} earned mention records` : "No referral baseline" } },
+    { channel: "Paid acquisition test", cadence: "One capped-budget landing-page test", metric: "Cost per qualified conversion", assetsNeeded: { assets: ["Approved budget cap", "Audience", "Landing page", "Conversion tracking"], role: "Test scalable demand", readiness: scoreProject(project).trackingVerified ? "approval_required" : "blocked", cost: "high", effort: "medium", risk: "high", evidence: scoreProject(project).trackingVerified ? "Conversion tracking available; budget approval required" : "Verified conversion tracking and budget approval required" } },
   ];
-  await prisma.$transaction(channels.map((test) => prisma.growthChannelTest.create({ data: { projectId: project.id, durationDays: 30, status: "planned", ...test } })));
+  await prisma.$transaction(async (tx) => {
+    for (const test of channels) {
+      const existing = await tx.growthChannelTest.findFirst({
+        where: { projectId: project.id, channel: test.channel, status: { in: ["planned", "approved", "running"] } },
+      });
+      if (existing) {
+        await tx.growthChannelTest.update({ where: { id: existing.id }, data: { cadence: test.cadence, metric: test.metric, assetsNeeded: test.assetsNeeded as Prisma.InputJsonValue } });
+      } else {
+        await tx.growthChannelTest.create({ data: { projectId: project.id, durationDays: 30, status: "planned", ...test, assetsNeeded: test.assetsNeeded as Prisma.InputJsonValue } });
+      }
+    }
+  });
   res.json(await loadGrowthOverview(project.id));
 });
 

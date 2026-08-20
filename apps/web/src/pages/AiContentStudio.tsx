@@ -1006,11 +1006,11 @@ export default function AiContentStudio() {
             </div>}
 
             <form onSubmit={generate} className="relative flex min-h-0 flex-1 flex-col">
-              {generating && <div className="absolute inset-0 z-30 grid place-items-center bg-white/95 p-6 backdrop-blur-sm" role="status" aria-live="polite">
+              {generating && <div className="absolute inset-0 z-30 grid place-items-center bg-slate-950/98 p-6 text-white backdrop-blur-sm" role="status" aria-live="polite">
                 <div className="max-w-md text-center">
-                  <div className="mx-auto h-12 w-12 animate-spin rounded-full border-4 border-fuchsia-100 border-t-fuchsia-600" />
-                  <h3 className="mt-4 text-lg font-black text-slate-950">{revisionFlow ? "Revising the complete page…" : citationFlow ? "Creating the citation asset…" : "Creating the complete page…"}</h3>
-                  <p className="mt-2 text-sm leading-6 text-slate-600">{citationFlow ? "SEnuke AI - AI Growth Operating System is using the originating citation block, verified project facts, and available source evidence. Keep this window open; the reviewable result will return here automatically." : "SEnuke AI - AI Growth Operating System is writing the structured page content, SEO title, meta description, headings, FAQs, schema, CTA, and internal-link guidance. Keep this window open; the result will return here automatically."}</p>
+                  <div className="mx-auto h-12 w-12 animate-spin rounded-full border-4 border-white/10 border-t-emerald-400" />
+                  <h3 className="mt-4 text-lg font-black text-white">{revisionFlow ? "Revising the complete page…" : citationFlow ? "Creating the citation asset…" : "Creating the complete page…"}</h3>
+                  <p className="mt-2 text-sm leading-6 text-slate-300">{citationFlow ? "SEnuke AI - AI Growth Operating System is using the originating citation block, verified project facts, and available source evidence. Keep this window open; the reviewable result will return here automatically." : "SEnuke AI - AI Growth Operating System is writing the structured page content, SEO title, meta description, headings, FAQs, schema, CTA, and internal-link guidance. Keep this window open; the result will return here automatically."}</p>
                 </div>
               </div>}
               <div className="min-h-0 flex-1 overflow-y-auto p-5">

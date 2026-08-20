@@ -41,7 +41,7 @@ export type AiPlanningStep = { title: string; detail: string };
 export type AiPlanningStat = { value: ReactNode; label: string; tone?: "brand" | "violet" | "emerald" | "slate" };
 
 /** Shared explanatory screen for long-running AI research and generation. */
-export function AiPlanningScreen({ eyebrow, title, description, steps, status, stats = [], checks = [], note, ariaLabel, zIndexClass = "z-[80]", mode = "fullscreen", theme = "light", progress }: {
+export function AiPlanningScreen({ eyebrow, title, description, steps, status, stats = [], checks = [], note, ariaLabel, zIndexClass = "z-[80]", mode = "fullscreen", theme = "dark", progress }: {
   eyebrow: string;
   title: string;
   description: string;
@@ -63,7 +63,7 @@ export function AiPlanningScreen({ eyebrow, title, description, steps, status, s
     slate: "border-slate-200 text-slate-700",
   };
   const shell = mode === "fullscreen" ? `fixed inset-0 ${zIndexClass} min-h-screen backdrop-blur-sm` : "relative min-h-[34rem] w-full";
-  const dark = theme === "dark" || ariaLabel === "Analyzing logo colour palette";
+  const dark = theme === "dark";
   return <div className={`${shell} grid place-items-center overflow-y-auto p-5 sm:p-8 ${dark ? "bg-slate-950" : "bg-gradient-to-b from-white/95 via-brand-50/30 to-violet-50/40"}`} role="status" aria-live="polite" aria-label={ariaLabel}>
     <div className="my-auto w-full max-w-3xl text-center">
       <div className="relative mx-auto h-20 w-20"><div className={`absolute inset-0 rounded-full border-4 ${dark ? "border-white/10" : "border-brand-100"}`}/><div className="absolute inset-0 animate-spin rounded-full border-4 border-transparent border-r-violet-400 border-t-emerald-400"/><div className={`absolute inset-[18px] grid place-items-center rounded-full text-2xl ${dark ? "bg-white/10 text-white" : "bg-brand-50"}`}>✦</div></div>

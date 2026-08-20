@@ -15,8 +15,8 @@ function blueprintItems(value: unknown): BlueprintItem[] {
   return Array.isArray(value) ? value.filter((item): item is BlueprintItem => Boolean(item) && typeof item === "object") : [];
 }
 
-function findingItems(value: unknown): { key?: string; title?: string; summary?: string; severity?: string; confidence?: number }[] {
-  return Array.isArray(value) ? value.filter((item): item is { key?: string; title?: string; summary?: string; severity?: string; confidence?: number } => Boolean(item) && typeof item === "object") : [];
+function findingItems(value: unknown): { key?: string; title?: string; summary?: string; severity?: string; confidence?: number; evidenceState?: string }[] {
+  return Array.isArray(value) ? value.filter((item): item is { key?: string; title?: string; summary?: string; severity?: string; confidence?: number; evidenceState?: string } => Boolean(item) && typeof item === "object") : [];
 }
 
 function scoreFactors(value: unknown) {
@@ -26,6 +26,13 @@ function scoreFactors(value: unknown) {
 function stringItems(value: unknown) {
   return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
 }
+
+function recordObject(value: unknown) {
+  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
+}
+
+type ExperimentStartInput = { baselineValue: number; baselineSampleSize: number; evaluationWindowDays: number; sourceStatus: "AVAILABLE"; baselineNote: string };
+type ExperimentResultInput = { baselineValue: number; currentValue: number; currentSampleSize: number; minimumSampleSize: number; evaluationWindowComplete: boolean; sourceStatus: "AVAILABLE" | "LIMITED" | "STALE" | "UNAVAILABLE" | "INSUFFICIENT"; decision?: "adopt" | "revise" | "stop"; notes?: string };
 
 function titleCase(value: string) {
   return value.replace(/_/g, " ").replace(/([A-Z])/g, " $1").replace(/\b\w/g, (char) => char.toUpperCase()).trim();
@@ -42,9 +49,10 @@ function toneClass(value: number) {
 }
 
 function statusBadge(status: string) {
-  if (status === "healthy" || status === "completed" || status === "winner" || status === "scaled") return "bg-emerald-50 text-emerald-700";
-  if (status === "running" || status === "watch" || status === "approved") return "bg-brand-50 text-brand-700";
-  if (status === "failed" || status === "needs_attention") return "bg-rose-50 text-rose-700";
+  if (["healthy", "completed", "winner", "scaled", "evidence_available", "ready"].includes(status)) return "bg-emerald-50 text-emerald-700";
+  if (["running", "watch", "approved", "limited_evidence", "partial"].includes(status)) return "bg-brand-50 text-brand-700";
+  if (["failed", "needs_attention", "connection_required", "blocked"].includes(status)) return "bg-rose-50 text-rose-700";
+  if (["insufficient_sample", "measurement_required", "approval_required"].includes(status)) return "bg-amber-50 text-amber-700";
   return "bg-slate-100 text-slate-600";
 }
 
@@ -143,7 +151,31 @@ function ScoreBar({ label, value }: { label: string; value: number }) {
   );
 }
 
-function ExperimentCard({ experiment, onStart, busy }: { experiment: GrowthExperiment; onStart: (id: string) => void; busy: boolean }) {
+function ExperimentCard({ experiment, onApprove, onStart, onPause, onRecord, busy }: {
+  experiment: GrowthExperiment;
+  onApprove: (id: string, input: ExperimentStartInput) => void;
+  onStart: (id: string) => void;
+  onPause: (id: string) => void;
+  onRecord: (id: string, input: ExperimentResultInput) => void;
+  busy: boolean;
+}) {
+  const baseline = recordObject(experiment.baselineJson);
+  const savedBaseline = typeof baseline.value === "number" ? baseline.value : 0;
+  const savedMinimumSample = typeof baseline.sampleSize === "number" ? baseline.sampleSize : 30;
+  const [baselineValue, setBaselineValue] = useState(String(savedBaseline));
+  const [baselineSampleSize, setBaselineSampleSize] = useState(String(savedMinimumSample));
+  const [evaluationWindowDays, setEvaluationWindowDays] = useState(String(typeof baseline.evaluationWindowDays === "number" ? baseline.evaluationWindowDays : 14));
+  const [baselineNote, setBaselineNote] = useState(typeof baseline.note === "string" ? baseline.note : "Verified from the connected measurement source before launch.");
+  const [currentValue, setCurrentValue] = useState("");
+  const [currentSampleSize, setCurrentSampleSize] = useState("");
+  const [sourceStatus, setSourceStatus] = useState<ExperimentResultInput["sourceStatus"]>("AVAILABLE");
+  const [windowComplete, setWindowComplete] = useState(false);
+  const [decision, setDecision] = useState<"adopt" | "revise" | "stop">("adopt");
+  const [notes, setNotes] = useState("");
+  const canStart = Number.isFinite(Number(baselineValue)) && Number(baselineSampleSize) >= 0 && Number(evaluationWindowDays) > 0 && baselineNote.trim().length >= 2;
+  const canRecord = Number.isFinite(Number(currentValue)) && Number(currentSampleSize) >= 0;
+  const reviewReady = Boolean(experiment.reviewAt && new Date(experiment.reviewAt).getTime() <= Date.now());
+  const terminal = ["completed", "stopped", "inconclusive", "failed", "scaled"].includes(experiment.status);
   return (
     <Card className="p-4">
       <div className="flex flex-wrap items-start justify-between gap-3">
@@ -164,16 +196,43 @@ function ExperimentCard({ experiment, onStart, busy }: { experiment: GrowthExper
         <div className="rounded-lg bg-slate-50 p-3 text-sm"><span className="block text-xs font-bold text-slate-400">Success</span>{experiment.successThreshold}</div>
         <div className="rounded-lg bg-slate-50 p-3 text-sm"><span className="block text-xs font-bold text-slate-400">Automation</span>{automationBadge(experiment.automationLevel)}</div>
       </div>
+      <div className="mt-4 rounded-xl border border-slate-200 bg-slate-50 p-4">
+        <div className="text-xs font-black uppercase tracking-wide text-slate-500">Guardrails</div>
+        <div className="mt-2 flex flex-wrap gap-2">{stringItems(experiment.guardrailMetrics).map((item) => <span key={item} className="rounded-full bg-white px-3 py-1 text-xs font-semibold text-slate-600 shadow-sm">{item}</span>)}</div>
+      </div>
       <div className="mt-4 flex flex-wrap items-center justify-between gap-3">
         <div className="flex flex-wrap gap-2">
           {(Array.isArray(experiment.requiredAssets) ? experiment.requiredAssets : []).map((asset) => (
             <span key={String(asset)} className="rounded-full bg-brand-50 px-3 py-1 text-xs font-bold text-brand-700">{String(asset)}</span>
           ))}
         </div>
-        <Button onClick={() => onStart(experiment.id)} disabled={busy || experiment.status === "running" || experiment.status === "completed"}>
-          {experiment.status === "running" ? "Running" : "Start Experiment"}
-        </Button>
       </div>
+      {["planned", "draft"].includes(experiment.status) && <div className="mt-4 rounded-xl border border-brand-200 bg-brand-50/50 p-4">
+        <div className="text-xs font-black uppercase tracking-wide text-brand-700">Approve baseline and start</div>
+        <p className="mt-1 text-xs leading-5 text-slate-600">An Owner/Admin or Manager/Approver must confirm the baseline before the experiment can run.</p>
+        <div className="mt-3 grid gap-3 sm:grid-cols-3">
+          <label className="text-xs font-bold text-slate-600">Baseline value<input type="number" value={baselineValue} onChange={(event) => setBaselineValue(event.target.value)} className="mt-1 h-10 w-full rounded-lg border border-slate-200 bg-white px-3 text-sm" /></label>
+          <label className="text-xs font-bold text-slate-600">Baseline sample size<input type="number" min="0" value={baselineSampleSize} onChange={(event) => setBaselineSampleSize(event.target.value)} className="mt-1 h-10 w-full rounded-lg border border-slate-200 bg-white px-3 text-sm" /></label>
+          <label className="text-xs font-bold text-slate-600">Evaluation window (days)<input type="number" min="1" max="180" value={evaluationWindowDays} onChange={(event) => setEvaluationWindowDays(event.target.value)} className="mt-1 h-10 w-full rounded-lg border border-slate-200 bg-white px-3 text-sm" /></label>
+        </div>
+        <label className="mt-3 block text-xs font-bold text-slate-600">Baseline evidence note<textarea value={baselineNote} onChange={(event) => setBaselineNote(event.target.value)} rows={2} className="mt-1 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm" /></label>
+        <div className="mt-3 flex justify-end"><Button onClick={() => onApprove(experiment.id, { baselineValue: Number(baselineValue), baselineSampleSize: Number(baselineSampleSize), evaluationWindowDays: Number(evaluationWindowDays), sourceStatus: "AVAILABLE", baselineNote: baselineNote.trim() })} disabled={busy || !canStart}>Approve Experiment</Button></div>
+      </div>}
+      {experiment.status === "approved" && <div className="mt-4 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-emerald-200 bg-emerald-50 p-4"><div><div className="text-xs font-black uppercase tracking-wide text-emerald-700">Approved and ready</div><p className="mt-1 text-sm text-emerald-950">Baseline {savedBaseline} is saved. Start when the approved change is ready to go live.</p></div><Button onClick={() => onStart(experiment.id)} disabled={busy}>Start Experiment</Button></div>}
+      {experiment.status === "paused" && <div className="mt-4 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-amber-200 bg-amber-50 p-4"><div><div className="text-xs font-black uppercase tracking-wide text-amber-800">Experiment paused</div><p className="mt-1 text-sm text-amber-950">The approved baseline is preserved. Resume only when data collection can continue.</p></div><Button onClick={() => onStart(experiment.id)} disabled={busy}>Resume Experiment</Button></div>}
+      {experiment.status === "running" && <div className="mt-4 rounded-xl border border-emerald-200 bg-emerald-50/40 p-4">
+        <div className="flex flex-wrap items-start justify-between gap-2"><div><div className="text-xs font-black uppercase tracking-wide text-emerald-700">Record measured outcome</div><p className="mt-1 text-xs text-slate-600">Review date: {experiment.reviewAt ? formatDate(experiment.reviewAt) : "Not set"}. Missing or insufficient evidence remains inconclusive.</p></div><div className="flex items-center gap-2"><span className="rounded-full bg-white px-2.5 py-1 text-xs font-bold text-emerald-700">Baseline {savedBaseline}</span><button type="button" onClick={() => onPause(experiment.id)} disabled={busy} className="rounded-lg border border-amber-300 bg-white px-3 py-1.5 text-xs font-bold text-amber-800 disabled:opacity-50">Pause</button></div></div>
+        <div className="mt-3 grid gap-3 sm:grid-cols-3">
+          <label className="text-xs font-bold text-slate-600">Current value<input type="number" value={currentValue} onChange={(event) => setCurrentValue(event.target.value)} className="mt-1 h-10 w-full rounded-lg border border-slate-200 bg-white px-3 text-sm" /></label>
+          <label className="text-xs font-bold text-slate-600">Current sample size<input type="number" min="0" value={currentSampleSize} onChange={(event) => setCurrentSampleSize(event.target.value)} className="mt-1 h-10 w-full rounded-lg border border-slate-200 bg-white px-3 text-sm" /></label>
+          <label className="text-xs font-bold text-slate-600">Evidence status<select value={sourceStatus} onChange={(event) => setSourceStatus(event.target.value as ExperimentResultInput["sourceStatus"])} className="mt-1 h-10 w-full rounded-lg border border-slate-200 bg-white px-3 text-sm"><option value="AVAILABLE">Available</option><option value="LIMITED">Partial / limited</option><option value="STALE">Stale</option><option value="UNAVAILABLE">Connection required</option><option value="INSUFFICIENT">Insufficient sample</option></select></label>
+        </div>
+        <label className="mt-3 flex items-center gap-2 text-sm font-semibold text-slate-700"><input type="checkbox" checked={windowComplete} disabled={!reviewReady} onChange={(event) => setWindowComplete(event.target.checked)} /> {reviewReady ? "The evaluation window is complete" : "Final evaluation unlocks on the review date; measurements can still be saved now"}</label>
+        {windowComplete && <div className="mt-3"><div className="text-xs font-bold text-slate-600">Decision after evaluation</div><div className="mt-2 grid gap-2 sm:grid-cols-3">{(["adopt", "revise", "stop"] as const).map((item) => <button key={item} type="button" onClick={() => setDecision(item)} className={`rounded-lg border px-3 py-2 text-sm font-bold ${decision === item ? "border-brand-500 bg-brand-50 text-brand-800" : "border-slate-200 bg-white text-slate-600"}`}>{titleCase(item)}</button>)}</div></div>}
+        <label className="mt-3 block text-xs font-bold text-slate-600">Evidence and learning note<textarea value={notes} onChange={(event) => setNotes(event.target.value)} rows={3} placeholder="What changed, what remained uncertain, and what should happen next?" className="mt-1 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm" /></label>
+        <div className="mt-3 flex justify-end"><Button onClick={() => onRecord(experiment.id, { baselineValue: savedBaseline, currentValue: Number(currentValue), currentSampleSize: Number(currentSampleSize), minimumSampleSize: Math.max(1, savedMinimumSample || 30), evaluationWindowComplete: windowComplete, sourceStatus, ...(windowComplete ? { decision } : {}), notes: notes.trim() || undefined })} disabled={busy || !canRecord}>{windowComplete ? "Evaluate & Save Decision" : "Save Measurement"}</Button></div>
+      </div>}
+      {terminal && experiment.results?.[0] && <div className="mt-4 rounded-xl border border-slate-200 p-4"><div className="flex flex-wrap items-center justify-between gap-3"><div><div className="text-xs font-black uppercase tracking-wide text-slate-400">Latest verified result</div><div className="mt-1 font-bold text-charcoal-950">{titleCase(experiment.results[0].resultStatus)} · {experiment.results[0].followUpAction ? titleCase(experiment.results[0].followUpAction) : "Decision recorded"}</div></div><div className="text-sm font-bold text-brand-700">{experiment.results[0].baselineValue ?? "—"} → {experiment.results[0].currentValue ?? "—"}</div></div>{experiment.results[0].notes && <p className="mt-2 text-sm leading-6 text-slate-600">{experiment.results[0].notes}</p>}</div>}
     </Card>
   );
 }
@@ -188,7 +247,8 @@ function RecommendationCard({ action, projectId, primary, busy, onDecision }: {
   const factors = scoreFactors(action.scoreJson);
   const workspace = growthActionWorkspace(action, projectId);
   const taskHref = action.followupTask ? workspace.url : null;
-  const canCreateTask = !action.followupTask && action.status !== "completed";
+  const blockers = stringItems(action.dependencyIdsJson);
+  const canCreateTask = !action.followupTask && action.status !== "completed" && blockers.length === 0;
   const startLabel = action.status === "deferred"
     ? "Resume This Action"
     : ["rejected", "dismissed", "superseded"].includes(action.status)
@@ -200,7 +260,9 @@ function RecommendationCard({ action, projectId, primary, busy, onDecision }: {
           : "Start This Action";
   const nextStep = action.followupTask
     ? `${workspace.preparation} The linked task is currently ${titleCase(action.followupTask.status)}.`
-    : action.status === "deferred"
+    : blockers.length
+      ? `This action cannot start yet. Resolve the listed requirement; the engine will keep it as a ranked alternative and select ready work instead.`
+      : action.status === "deferred"
       ? `${action.reviewAfter ? `This was deferred until ${formatDate(action.reviewAfter)}. ` : ""}Resume it now to create a trackable Execution task.`
       : ["rejected", "dismissed", "superseded"].includes(action.status)
         ? "This was previously passed over. Reconsider it to create a trackable Execution task from the recommendation."
@@ -242,6 +304,12 @@ function RecommendationCard({ action, projectId, primary, busy, onDecision }: {
           ))}
         </div>
       )}
+      {blockers.length > 0 && (
+        <div className="mt-4 rounded-xl border border-amber-200 bg-amber-50 p-4">
+          <div className="text-xs font-black uppercase tracking-wide text-amber-800">Required before this can start</div>
+          <ul className="mt-2 space-y-1 text-sm text-amber-900">{blockers.map((blocker) => <li key={blocker}>• {blocker}</li>)}</ul>
+        </div>
+      )}
       {action.followupTask && (
         <div className="mt-4 rounded-lg bg-emerald-50 p-3 text-sm font-semibold text-emerald-800">
           Execution task created: {action.followupTask.title} · {titleCase(action.followupTask.status)}
@@ -262,6 +330,10 @@ function RecommendationCard({ action, projectId, primary, busy, onDecision }: {
               <Button onClick={() => onDecision(action, "accepted")} disabled={busy}>{primary ? "Start with AI" : startLabel}</Button>
               <Button variant="ghost" onClick={() => onDecision(action, "edited")} disabled={busy}>Edit & Start</Button>
             </>
+          ) : blockers.length ? (
+            <Link to="/billing" className="inline-flex items-center justify-center rounded-lg border border-amber-300 bg-white px-4 py-2 text-sm font-bold text-amber-800 hover:bg-amber-50">
+              Review AI Capacity →
+            </Link>
           ) : (
             <Link to={`/growth?projectId=${encodeURIComponent(projectId)}&tab=history`} className="inline-flex items-center justify-center rounded-lg border border-brand-200 bg-white px-4 py-2 text-sm font-bold text-brand-700 hover:bg-brand-50">
               View Decision History →
@@ -507,15 +579,46 @@ export default function GrowthEngine() {
     }
   }
 
-  async function startExperiment(id: string) {
+  async function updateExperiment(path: string, body: unknown, failure: string) {
     setBusy(true);
+    setError(null);
     try {
-      await api.post(`/api/growth/experiments/${id}/start`, {});
+      await api.post(path, body);
       const fresh = await api.get<GrowthOverviewResponse>(`/api/projects-v2/${projectId}/growth/overview`);
       setData(fresh);
-      setTab("tracker");
+      setTab("experiments");
+      setParams({ projectId, tab: "experiments" });
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not start experiment");
+      setError(err instanceof Error ? err.message : failure);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function approveExperiment(id: string, input: ExperimentStartInput) {
+    return updateExperiment(`/api/growth/experiments/${id}/approve`, input, "Could not approve experiment");
+  }
+
+  function startExperiment(id: string) {
+    return updateExperiment(`/api/growth/experiments/${id}/start`, {}, "Could not start experiment");
+  }
+
+  function pauseExperiment(id: string) {
+    return updateExperiment(`/api/growth/experiments/${id}/pause`, {}, "Could not pause experiment");
+  }
+
+  async function recordExperimentResult(id: string, input: ExperimentResultInput) {
+    setBusy(true);
+    setError(null);
+    try {
+      await api.post(`/api/growth/experiments/${id}/results`, input);
+      const fresh = await api.get<GrowthOverviewResponse>(`/api/projects-v2/${projectId}/growth/overview`);
+      setData(fresh);
+      setWorkflowRefreshKey((value) => value + 1);
+      setTab(input.evaluationWindowComplete ? "history" : "tracker");
+      setParams({ projectId, tab: input.evaluationWindowComplete ? "history" : "tracker" });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not record the experiment result");
     } finally {
       setBusy(false);
     }
@@ -648,8 +751,8 @@ export default function GrowthEngine() {
       </Card>}
 
       <div className="grid gap-4 md:grid-cols-4">
-        <Stat label="Growth score" value={data.signals.growthScore} detail="Blended score from project signals" />
-        <Stat label="Current bottleneck" value={titleCase(data.growth.diagnosis?.bottleneckType || data.signals.bottleneckType)} detail={data.growth.diagnosis ? "Latest diagnosis" : "Predicted from available data"} />
+        <Stat label="Evidence readiness" value={data.signals.growthScore} detail="Readiness to diagnose and measure—not a performance score" />
+        <Stat label="Current diagnosis" value={titleCase(data.growth.diagnosis?.bottleneckType || data.signals.bottleneckType)} detail={data.signals.evidenceStates[data.growth.diagnosis?.bottleneckType || data.signals.bottleneckType] === "observed" ? "Supported by mapped outcome evidence" : "Measurement required before declaring a constraint"} />
         <Stat label="Next Best Action" value={officialNextAction?.confidence ?? data.growth.selectedAction?.priorityScore ?? "—"} detail={officialNextAction?.title || data.growth.selectedAction?.title || "Run the engine to select one action"} />
         <Stat label="Blueprint version" value={data.growth.blueprint ? `v${data.growth.blueprint.currentVersion}` : "—"} detail={data.growth.blueprint?.nextReviewAt ? `Review ${new Date(data.growth.blueprint.nextReviewAt).toLocaleDateString()}` : "Not generated"} />
       </div>
@@ -689,7 +792,7 @@ export default function GrowthEngine() {
           </div>
           <div className="grid gap-5 xl:grid-cols-[1fr_360px]">
           <Card className="p-5">
-            <div className="flex flex-wrap items-center justify-between gap-3"><h2 className="font-bold text-charcoal-950">Growth constraint scorecard</h2><button type="button" onClick={() => { setTab("diagnosis"); setParams({ projectId, tab: "diagnosis" }); }} className="rounded-lg border border-brand-200 px-3 py-2 text-xs font-bold text-brand-700">Fix diagnosed issues →</button></div>
+            <div className="flex flex-wrap items-center justify-between gap-3"><div><h2 className="font-bold text-charcoal-950">Growth evidence-readiness scorecard</h2><p className="mt-1 text-xs text-slate-500">A low score means evidence or measurement is missing. It does not prove that business performance is poor.</p></div><button type="button" onClick={() => { setTab("diagnosis"); setParams({ projectId, tab: "diagnosis" }); }} className="rounded-lg border border-brand-200 px-3 py-2 text-xs font-bold text-brand-700">Resolve evidence gaps →</button></div>
             <div className="mt-5 grid gap-4 md:grid-cols-2">
               {scoreEntries.map(([key, value]) => <ScoreBar key={key} label={titleCase(key)} value={value} />)}
             </div>
@@ -899,9 +1002,10 @@ export default function GrowthEngine() {
             <RecommendationCard action={data.growth.selectedAction} projectId={projectId} primary busy={busy} onDecision={decideRecommendation} />
           ) : (
             <Card className="p-8 text-center">
-              <h2 className="font-bold text-charcoal-950">No undecided Next Best Action</h2>
-              <p className="mt-2 text-sm text-slate-500">Run the engine to refresh evidence and select the strongest ready recommendation.</p>
-              <Button className="mt-4" onClick={() => runAction(`/api/projects-v2/${projectId}/growth/analyze`, "recommendations")} disabled={busy}>Run Growth Engine</Button>
+              <span className={`inline-flex rounded-full px-2.5 py-1 text-xs font-bold ${statusBadge(data.growth.decisionState.key === "NO_MATERIAL_ACTION" ? "evidence_available" : data.growth.decisionState.key === "BLOCKED_BY_DEPENDENCY" ? "blocked" : "watch")}`}>{titleCase(data.growth.decisionState.key)}</span>
+              <h2 className="mt-3 font-bold text-charcoal-950">{data.growth.decisionState.title}</h2>
+              <p className="mt-2 text-sm text-slate-500">{data.growth.decisionState.message}</p>
+              <Button className="mt-4" onClick={() => runAction(`/api/projects-v2/${projectId}/growth/analyze`, "recommendations")} disabled={busy}>Refresh Evidence &amp; Actions</Button>
             </Card>
           )}
           {data.growth.candidateActions.filter((action) => action.id !== data.growth.selectedAction?.id).length > 0 && (
@@ -921,6 +1025,13 @@ export default function GrowthEngine() {
             <h2 className="font-bold text-charcoal-950">Top diagnosis</h2>
             <p className="mt-3 text-sm leading-6 text-slate-600">{data.growth.diagnosis?.summary || "Run diagnosis to create a stored growth bottleneck and scorecard."}</p>
             {data.growth.diagnosis && <div className="mt-2 text-xs font-semibold text-slate-400">{data.growth.diagnosis.confidence}% confidence · {titleCase(data.growth.diagnosis.runType)} run</div>}
+            {data.signals.contradictions.length > 0 && (
+              <div className="mt-4 rounded-xl border border-amber-300 bg-amber-50 p-4">
+                <div className="text-xs font-black uppercase tracking-wide text-amber-800">Conflicting evidence needs review</div>
+                <div className="mt-2 space-y-2">{data.signals.contradictions.map((item) => <p key={item.dimension} className="text-sm leading-6 text-amber-950"><b>{titleCase(item.dimension)}:</b> {item.message}</p>)}</div>
+                <p className="mt-2 text-xs text-amber-800">The affected result is treated as limited evidence and diagnosis confidence is reduced until the source, period, segment, or metric mapping is resolved.</p>
+              </div>
+            )}
             {findings.length > 0 && (
               <div className="mt-5 space-y-4">
                 <div className="rounded-xl border border-brand-100 bg-brand-50/60 p-4">
@@ -936,7 +1047,7 @@ export default function GrowthEngine() {
                   <div key={finding.key || index} className="rounded-xl border border-slate-200 p-4">
                     <div className="flex items-center justify-between gap-3">
                       <div className="font-bold text-slate-800">{finding.title}</div>
-                      <span className={`rounded-full px-2 py-1 text-xs font-bold ${finding.severity === "critical" || finding.severity === "high" ? "bg-rose-50 text-rose-700" : "bg-amber-50 text-amber-700"}`}>{titleCase(finding.severity || "finding")}</span>
+                      <div className="flex flex-wrap justify-end gap-2"><span className={`rounded-full px-2 py-1 text-xs font-bold ${finding.evidenceState === "observed" ? "bg-emerald-50 text-emerald-700" : "bg-violet-50 text-violet-700"}`}>{finding.evidenceState === "observed" ? "Observed" : finding.evidenceState === "hypothesis" ? "Hypothesis" : "Evidence gap"}</span><span className={`rounded-full px-2 py-1 text-xs font-bold ${finding.severity === "critical" || finding.severity === "high" ? "bg-rose-50 text-rose-700" : "bg-amber-50 text-amber-700"}`}>{titleCase(finding.severity || "finding")}</span></div>
                     </div>
                     <p className="mt-2 text-sm text-slate-500">{finding.summary}</p>
                     {matchingAction ? (
@@ -1003,8 +1114,11 @@ export default function GrowthEngine() {
       {tab === "funnel" && (
         <Card className="p-5">
           <div className="flex flex-wrap items-center justify-between gap-3">
-            <h2 className="font-bold text-charcoal-950">Funnel map</h2>
-            <Button variant="ghost" onClick={() => runAction(`/api/projects-v2/${projectId}/growth/funnel-map`, "funnel")} disabled={busy}>Map Funnel</Button>
+            <div>
+              <h2 className="font-bold text-charcoal-950">Measured customer journey</h2>
+              <p className="mt-1 text-sm text-slate-500">Each stage shows what is actually measured, what is still unknown, and the next setup action.</p>
+            </div>
+            <Button variant="ghost" onClick={() => runAction(`/api/projects-v2/${projectId}/growth/funnel-map`, "funnel")} disabled={busy}>Refresh Journey Evidence</Button>
           </div>
           <div className="mt-5 grid gap-3 md:grid-cols-3">
             {data.growth.funnelStages.map((stage) => (
@@ -1024,9 +1138,43 @@ export default function GrowthEngine() {
 
       {tab === "experiments" && (
         <div className="space-y-4">
+          <Card className="p-5">
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div>
+                <h2 className="font-bold text-charcoal-950">Compare acquisition channels</h2>
+                <p className="mt-1 text-sm text-slate-500">Compare the role, evidence, readiness, cost, effort, and risk before approving a channel test.</p>
+              </div>
+              <Button variant="ghost" onClick={() => runAction(`/api/projects-v2/${projectId}/growth/channel-tests`, "experiments")} disabled={busy}>{data.growth.channelTests.length ? "Refresh Comparison" : "Create Comparison"}</Button>
+            </div>
+            {data.growth.channelTests.length > 0 && (
+              <div className="mt-4 grid gap-3 lg:grid-cols-2">
+                {data.growth.channelTests.map((test) => {
+                  const details = recordObject(test.assetsNeeded);
+                  const assets = Array.isArray(details.assets) ? details.assets.map(String) : [];
+                  return (
+                    <div key={test.id} className="rounded-xl border border-slate-200 p-4">
+                      <div className="flex items-start justify-between gap-2">
+                        <h3 className="font-bold text-charcoal-950">{test.channel}</h3>
+                        <span className={`rounded-full px-2 py-0.5 text-xs font-bold ${statusBadge(String(details.readiness ?? test.status))}`}>{titleCase(String(details.readiness ?? test.status))}</span>
+                      </div>
+                      <p className="mt-2 text-sm text-slate-600">{String(details.role ?? test.cadence)}</p>
+                      <div className="mt-3 grid grid-cols-3 gap-2 text-xs font-semibold text-slate-600">
+                        <span>Cost: {titleCase(String(details.cost ?? "unknown"))}</span>
+                        <span>Effort: {titleCase(String(details.effort ?? "unknown"))}</span>
+                        <span>Risk: {titleCase(String(details.risk ?? "unknown"))}</span>
+                      </div>
+                      <p className="mt-3 text-xs text-slate-500">Evidence: {String(details.evidence ?? "No evidence recorded")}</p>
+                      <p className="mt-2 text-xs text-slate-500">Measure: {test.metric}</p>
+                      {assets.length > 0 && <p className="mt-2 text-xs text-slate-500">Needs: {assets.join(" · ")}</p>}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </Card>
           {data.growth.experiments.length === 0 ? (
             <Card className="overflow-hidden"><EmptyState eyebrow="Growth Experiments" title="No experiments yet" description="Generate experiments from the latest diagnosis and approved project Strategy." action={<Button onClick={() => runAction(`/api/projects-v2/${projectId}/growth/experiments/generate`, "experiments")} disabled={busy}>Generate Experiments</Button>} /></Card>
-          ) : data.growth.experiments.map((experiment) => <ExperimentCard key={experiment.id} experiment={experiment} onStart={startExperiment} busy={busy} />)}
+          ) : data.growth.experiments.map((experiment) => <ExperimentCard key={experiment.id} experiment={experiment} onApprove={approveExperiment} onStart={startExperiment} onPause={pauseExperiment} onRecord={recordExperimentResult} busy={busy} />)}
         </div>
       )}
 
@@ -1038,7 +1186,7 @@ export default function GrowthEngine() {
           </div>
           <div className="divide-y divide-slate-100">
             {data.growth.experiments.map((experiment) => (
-              <div key={experiment.id} className="grid gap-3 p-4 md:grid-cols-[1fr_140px_140px_120px] md:items-center">
+              <div key={experiment.id} className="grid gap-3 p-4 md:grid-cols-[1fr_120px_120px_120px_auto] md:items-center">
                 <div>
                   <div className="font-bold text-charcoal-950">{experiment.title}</div>
                   <div className="mt-1 text-sm text-slate-500">{experiment.metric}</div>
@@ -1046,6 +1194,7 @@ export default function GrowthEngine() {
                 <div className="text-sm font-semibold text-slate-700">ICE {experiment.iceScore}</div>
                 <div className="text-sm font-semibold text-slate-700">PIE {experiment.pieScore}</div>
                 <span className={`w-fit rounded-full px-2 py-1 text-xs font-bold ${statusBadge(experiment.status)}`}>{titleCase(experiment.status)}</span>
+                <button type="button" onClick={() => { setTab("experiments"); setParams({ projectId, tab: "experiments" }); }} className="rounded-lg border border-brand-200 bg-white px-3 py-2 text-xs font-bold text-brand-700">{experiment.status === "running" ? "Record result" : "Open"}</button>
               </div>
             ))}
           </div>

@@ -238,13 +238,13 @@ export function createProfessionalReportPdf(contentValue: unknown, brand: PdfBra
   };
 
   doc.rect(0, 0, doc.page.width, 245).fill(navy);
-  doc.fillColor(teal).font("Helvetica-Bold").fontSize(12).text(brand.minimizeSenukeBranding === false ? "SEnuke AI - AI Growth Operating System" : "CLIENT DOCUMENT", 54, 48, { characterSpacing: 1.5 });
+  doc.fillColor(teal).font("Helvetica-Bold").fontSize(12).text(brand.minimizeSenukeBranding === false ? "SEnuke AI - AI Growth Operating System" : brand.workspaceType === "agency" ? "CLIENT DOCUMENT" : "PROJECT REPORT", 54, 48, { characterSpacing: 1.5 });
   const logoMatch = brand.logoDataUrl?.match(/^data:image\/(?:png|jpeg);base64,(.+)$/i);
   if (logoMatch) { try { doc.image(Buffer.from(logoMatch[1], "base64"), 410, 35, { fit: [130, 48], align: "right", valign: "center" }); } catch { /* Invalid saved logo data is omitted without breaking the document. */ } }
   doc.fillColor(white).font("Helvetica-Bold").fontSize(28).text(reportType === "agency_proposal" ? "Agency Growth Proposal" : reportType === "seo_audit" ? "Complete SEO Findings Report" : reportType === "strategy" ? "Complete Strategy Report" : workspaceHeading(brand.workspaceType), 54, 83, { width: 480 });
   doc.fillColor("#CBD5E1").font("Helvetica").fontSize(12).text(display(content.title), 54, 127, { width: 480 });
   doc.fillColor(white).font("Helvetica-Bold").fontSize(11).text(brand.workspaceName, 54, 177);
-  if (brand.clientName) doc.fillColor("#CBD5E1").font("Helvetica").fontSize(10).text(`Prepared for ${brand.clientName}`, 54, 197);
+  if (brand.workspaceType === "agency" && brand.clientName) doc.fillColor("#CBD5E1").font("Helvetica").fontSize(10).text(`Prepared for ${brand.clientName}`, 54, 197);
   if (brand.preparedByName || brand.contactEmail || brand.contactPhone || brand.address) doc.fillColor("#CBD5E1").font("Helvetica").fontSize(9).text(`Prepared by ${[brand.preparedByName, brand.contactEmail, brand.contactPhone, brand.address].filter(Boolean).join(" - ")}`, 54, 215, { width: 480, height: 20, ellipsis: true });
   const period = record(content.reportingPeriod);
   const periodText = period.start && period.end ? `Reporting period ${new Date(String(period.start)).toLocaleDateString("en-CA")} to ${new Date(String(period.end)).toLocaleDateString("en-CA")}` : `Generated ${new Date(String(content.generatedAt || Date.now())).toLocaleDateString("en-CA", { year: "numeric", month: "long", day: "numeric" })}`;

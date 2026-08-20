@@ -102,7 +102,7 @@ async function addClientNarrative(content: Record<string, unknown>, enabled: boo
   if (!enabled || !config.openaiApiKey) return { ...content, clientNarrative: fallback, narrativeGeneration: { mode: "evidence_template", generatedAt: new Date().toISOString() } };
   try {
     const generated = await centralAiJson({
-      system: "You write concise Agency client reports from a supplied immutable evidence snapshot. Never invent metrics, causality, credentials, results, rankings, traffic, leads, revenue, or guarantees. Treat null as missing. Use cautious attribution and plain client-facing language. Never mention prompts, hidden reasoning, tokens, or internal workflow instructions.",
+      system: "You write concise workspace project reports from a supplied immutable evidence snapshot. Never invent metrics, causality, credentials, results, rankings, traffic, leads, revenue, or guarantees. Treat null as missing. Use cautious attribution and plain business language. Never mention prompts, hidden reasoning, tokens, or internal workflow instructions.",
       prompt: `Return {"executiveNarrative":"...","wins":string[],"risks":string[],"interpretation":"..."}. Explain performance, relevant completed work, business interpretation, uncertainty, and a small set of current priorities. Evidence snapshot:\n${JSON.stringify(content)}`,
       temperature: 0.2, maxInputBytes: 72_000, maxOutputTokens: 2_500, validate: (value) => aiNarrativeSchema.parse(value),
     });
@@ -138,7 +138,7 @@ export function documentQa(content: Record<string, unknown>, reportType: typeof 
     { key: "sources", status: Object.keys(sourceSnapshot).length ? "passed" : "failed", message: Object.keys(sourceSnapshot).length ? "Source identifiers and timestamps are recorded." : "The evidence snapshot is missing." },
     { key: "internal_content", status: /system prompt|chain[- ]of[- ]thought|hidden reasoning|return valid json/i.test(serialized) ? "failed" : "passed", message: "No internal prompts or hidden reasoning may appear." },
     { key: "pricing", status: reportType !== "agency_proposal" || !/\bTBD\b/i.test(serialized) ? "passed" : "failed", message: reportType === "agency_proposal" && /\bTBD\b/i.test(serialized) ? "Pricing placeholders must be replaced before approval or delivery." : "No unresolved pricing placeholders block delivery." },
-    { key: "narrative", status: reportType === "agency_proposal" || (content.clientNarrative && typeof content.clientNarrative === "object") ? "passed" : "failed", message: "A client-facing narrative is present." },
+    { key: "narrative", status: reportType === "agency_proposal" || (content.clientNarrative && typeof content.clientNarrative === "object") ? "passed" : "failed", message: "A plain-language report narrative is present." },
   ];
   return { status: checks.some((check) => check.status === "failed") ? "failed" : "passed", checkedAt: new Date().toISOString(), checks };
 }
@@ -537,7 +537,7 @@ async function agencyBranding(context: Awaited<ReturnType<typeof workspaceContex
     contactEmail: profile?.contactEmail || (typeof workspaceBrand.contactEmail === "string" ? workspaceBrand.contactEmail : null),
     colorPreference: profile?.colorPreference || (typeof workspaceBrand.primaryColor === "string" ? workspaceBrand.primaryColor : "#0F9F8F"),
     secondaryColor: profile?.secondaryColor || (typeof workspaceBrand.secondaryColor === "string" ? workspaceBrand.secondaryColor : "#0F172A"),
-    footerDisclaimer: profile?.footerDisclaimer || (typeof workspaceBrand.footerDisclaimer === "string" ? workspaceBrand.footerDisclaimer : "Confidential — prepared for the named client only."),
+    footerDisclaimer: profile?.footerDisclaimer || (typeof workspaceBrand.footerDisclaimer === "string" ? workspaceBrand.footerDisclaimer : context.workspace.workspaceType === "agency" ? "Confidential — prepared for the named client only." : "Confidential workspace project report."),
     defaultTerms: profile?.defaultTerms || (typeof workspaceBrand.defaultTerms === "string" ? workspaceBrand.defaultTerms : null),
     senderSignature: profile?.senderSignature || (typeof workspaceBrand.senderSignature === "string" ? workspaceBrand.senderSignature : null),
     minimizeSenukeBranding: profile?.minimizeSenukeBranding ?? (typeof workspaceBrand.minimizeSenukeBranding === "boolean" ? workspaceBrand.minimizeSenukeBranding : true),
@@ -631,7 +631,7 @@ projectReportsRouter.patch("/agency-proposals/:proposalId", async (req, res) => 
 
 projectReportsRouter.patch("/project-reports/:reportId/content", async (req, res) => {
   const context = await workspaceContext(req);
-  if (context.roles.has("client_viewer") || context.workspace.workspaceType !== "agency" || !hasWorkspacePermission(context, "export_reports")) return res.status(403).json({ error: "Agency report editing permission is required." });
+  if (context.roles.has("client_viewer") || !hasWorkspacePermission(context, "export_reports")) return res.status(403).json({ error: "Report editing permission is required." });
   const data = reportEditSchema.parse(req.body);
   const report = await prisma.gapReportExport.findUnique({ where: { id: req.params.reportId }, include: { project: true } });
   if (!report || report.reportType === "agency_proposal" || !await canAccessProject(context, report.projectId)) return res.status(404).json({ error: "Report not found." });
@@ -645,7 +645,8 @@ projectReportsRouter.patch("/project-reports/:reportId/content", async (req, res
   const qa = documentQa(content, report.reportType as typeof projectReportTypes[number], "draft");
   const updated = await prisma.$transaction(async (tx) => {
     await tx.agencyDocumentVersion.updateMany({ where: { documentId: report.id, version: report.currentVersion }, data: { contentJson: content as Prisma.InputJsonValue } });
-    const next = await tx.gapReportExport.update({ where: { id: report.id }, data: { contentJson: content as Prisma.InputJsonValue, agencyNotes: data.openingNote, documentStatus: "draft", approvalStatus: "needs_review", qaStatus: qa.status, qaJson: qa as Prisma.InputJsonValue, clientVisible: false } });
+    const approvalStatus = context.workspace.workspaceType === "agency" ? "needs_review" : "approved";
+    const next = await tx.gapReportExport.update({ where: { id: report.id }, data: { contentJson: content as Prisma.InputJsonValue, agencyNotes: data.openingNote, documentStatus: "draft", approvalStatus, qaStatus: qa.status, qaJson: qa as Prisma.InputJsonValue, clientVisible: false } });
     await recordWorkspaceActivity(tx, { context, action: "report.presentation_updated", entityType: "gap_report_export", entityId: report.id, agencyClientId: report.project.agencyClientId, projectId: report.projectId, previousJson: { version: report.currentVersion }, nextJson: { version: report.currentVersion, title: data.title, enabledOptionalSections: data.enabledOptionalSections } });
     return next;
   });

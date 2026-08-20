@@ -83,7 +83,7 @@ export default function Users() {
   const [planFilter, setPlanFilter] = useState("all");
   const [loading, setLoading] = useState(true);
   const [busyId, setBusyId] = useState<string | null>(null);
-  const [modal, setModal] = useState<{ type: "details" | "edit" | "password" | "subscription" | "rbac"; user: AdminUser } | null>(null);
+  const [modal, setModal] = useState<{ type: "actions" | "details" | "edit" | "password" | "subscription" | "rbac"; user: AdminUser } | null>(null);
   const [password, setPassword] = useState("");
   const [trialDays, setTrialDays] = useState("30");
   const [amount, setAmount] = useState("");
@@ -257,16 +257,14 @@ export default function Users() {
                         <td className="px-5 py-3 text-charcoal-600">{trialEndLabel(user)}</td>
                         <td className="px-5 py-3 capitalize text-charcoal-600">{sourceLabel(user)}</td>
                         <td className="px-5 py-3 text-right">
-                          <div className="flex flex-nowrap justify-end gap-2 whitespace-nowrap">
-                            <ActionIconButton icon="details" label="Details" onClick={() => setModal({ type: "details", user })} />
-                            {user.role !== "super_admin" && <ActionIconButton icon="edit" label="Manage workspace roles" onClick={() => setModal({ type: "rbac", user })} />}
-                            {user.clientId && <ActionIconButton icon="save" label="Manage subscription" onClick={() => setModal({ type: "subscription", user })} />}
-                            {user.clientId && <ActionIconButton icon="edit" label="Edit user and plan" onClick={() => setModal({ type: "edit", user })} disabled={busyId === user.id} />}
-                            {user.clientId && <ActionIconButton icon="project" label="View projects" onClick={() => { startImpersonation(user.clientId!, user.name ?? user.email); navigate("/projects"); }} />}
-                            <ActionIconButton icon={user.isActive ? "disable" : "enable"} label={user.isActive ? "Disable account" : "Enable account"} onClick={() => setActive(user, !user.isActive)} disabled={busyId === user.id} />
-                            <ActionIconButton icon="key" label="Change password" onClick={() => { setModal({ type: "password", user }); setPassword(""); }} disabled={busyId === user.id} />
-                            {!user.emailVerifiedAt && <ActionIconButton icon="verify" label="Verify email" onClick={() => verify(user)} disabled={busyId === user.id} />}
-                          </div>
+                          <button
+                            type="button"
+                            onClick={() => setModal({ type: "actions", user })}
+                            className="inline-flex items-center gap-2 whitespace-nowrap rounded-lg border border-brand-200 bg-white px-3 py-2 text-xs font-bold text-brand-700 shadow-sm transition hover:border-brand-400 hover:bg-brand-50 focus:outline-none focus:ring-2 focus:ring-brand-200"
+                            aria-label={`View all actions for ${user.name ?? user.email}`}
+                          >
+                            View actions <span aria-hidden="true">→</span>
+                          </button>
                         </td>
                       </tr>
                   );
@@ -277,7 +275,28 @@ export default function Users() {
         )}
       </Card>
       {modal && (
-        <Modal title={modal.type === "rbac" ? `Workspace Access — ${modal.user.name ?? modal.user.email}` : modal.type === "subscription" ? `Manage Subscription — ${modal.user.name ?? modal.user.email}` : modal.type === "password" ? `Change Password — ${modal.user.name ?? modal.user.email}` : modal.type === "edit" ? `Edit User — ${modal.user.name ?? modal.user.email}` : `User Details — ${modal.user.name ?? modal.user.email}`} onClose={() => setModal(null)}>
+        <Modal title={modal.type === "actions" ? `Actions — ${modal.user.name ?? modal.user.email}` : modal.type === "rbac" ? `Workspace Access — ${modal.user.name ?? modal.user.email}` : modal.type === "subscription" ? `Manage Subscription — ${modal.user.name ?? modal.user.email}` : modal.type === "password" ? `Change Password — ${modal.user.name ?? modal.user.email}` : modal.type === "edit" ? `Edit User — ${modal.user.name ?? modal.user.email}` : `User Details — ${modal.user.name ?? modal.user.email}`} onClose={() => setModal(null)}>
+          {modal.type === "actions" && (
+            <div>
+              <p className="mb-4 text-sm text-charcoal-500">Choose what you want to do with this account. Only available actions are shown.</p>
+              <div className="grid gap-3 md:grid-cols-2">
+                <ActionChoice title="View user details" description="Review account, plan, login, verification, and access dates." onClick={() => setModal({ type: "details", user: modal.user })} />
+                {modal.user.role !== "super_admin" && <ActionChoice title="Manage workspace access" description="Change workspace roles, membership status, ownership, and approval permissions." onClick={() => setModal({ type: "rbac", user: modal.user })} />}
+                {modal.user.clientId && <ActionChoice title="Manage subscription" description="Update trial or manual access and record an offline payment." onClick={() => setModal({ type: "subscription", user: modal.user })} />}
+                {modal.user.clientId && <ActionChoice title="Edit user and plan" description="Change the account plan or enable and disable the account." onClick={() => setModal({ type: "edit", user: modal.user })} disabled={busyId === modal.user.id} />}
+                {modal.user.clientId && <ActionChoice title="Open user projects" description="View the platform as this customer and open their project list." onClick={() => { startImpersonation(modal.user.clientId!, modal.user.name ?? modal.user.email); navigate("/projects"); }} />}
+                <ActionChoice title="Change password" description="Set a new login password for this user." onClick={() => { setPassword(""); setModal({ type: "password", user: modal.user }); }} disabled={busyId === modal.user.id} />
+                {!modal.user.emailVerifiedAt && <ActionChoice title="Verify email" description="Mark this email address as verified and enable the account." onClick={() => { const user = modal.user; setModal(null); void verify(user); }} disabled={busyId === modal.user.id} />}
+                <ActionChoice
+                  title={modal.user.isActive ? "Disable account" : "Enable account"}
+                  description={modal.user.isActive ? "Block this user from signing in without deleting their data." : "Restore this user’s ability to sign in."}
+                  onClick={() => { const user = modal.user; setModal(null); void setActive(user, !user.isActive); }}
+                  disabled={busyId === modal.user.id}
+                  destructive={modal.user.isActive}
+                />
+              </div>
+            </div>
+          )}
           {modal.type === "details" && (
             <div className="grid gap-4 text-sm md:grid-cols-3">
               <Detail label="User ID" value={modal.user.id} /><Detail label="Client ID" value={modal.user.clientId ?? "-"} /><Detail label="User created" value={formatDateTime(modal.user.createdAt)} />
@@ -400,6 +419,20 @@ function Modal({ title, children, onClose }: { title: string; children: ReactNod
         <div className="p-5">{children}</div>
       </div>
     </div>
+  );
+}
+
+function ActionChoice({ title, description, onClick, disabled = false, destructive = false }: { title: string; description: string; onClick: () => void; disabled?: boolean; destructive?: boolean }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={disabled}
+      className={`rounded-xl border p-4 text-left transition focus:outline-none focus:ring-2 disabled:cursor-not-allowed disabled:opacity-50 ${destructive ? "border-red-200 hover:border-red-400 hover:bg-red-50 focus:ring-red-200" : "border-slate-200 hover:border-brand-300 hover:bg-brand-50/60 focus:ring-brand-200"}`}
+    >
+      <span className={`block text-sm font-bold ${destructive ? "text-red-700" : "text-charcoal-900"}`}>{title}</span>
+      <span className="mt-1 block text-xs leading-5 text-charcoal-500">{description}</span>
+    </button>
   );
 }
 

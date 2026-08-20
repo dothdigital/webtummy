@@ -283,26 +283,22 @@ export default function GuidedProjects() {
             const nextHref = nextActionHref(project, task, workflowStep);
             const projectHref = `/guided-projects/${project.id}`;
             return <article key={project.id} className="rounded-2xl border border-violet-100 bg-white px-5 py-5 shadow-sm transition hover:border-teal-200 hover:shadow-md sm:px-6">
-              <div className="flex items-start justify-between gap-4">
-                <div className="flex min-w-0 items-center gap-4">
+              <div className="flex flex-col items-start gap-4 sm:flex-row sm:justify-between">
+                <div className="flex w-full min-w-0 items-start gap-4">
                   <div className={`flex h-14 w-14 shrink-0 items-center justify-center rounded-2xl text-lg font-bold ${avatarTones[index % avatarTones.length]}`}>{project.name.slice(0, 2).toUpperCase()}</div>
-                  <div className="min-w-0">
+                  <div className="w-full min-w-0">
                     {project.agencyClient?.name && <div className="mb-0.5 truncate text-[11px] font-black uppercase tracking-[0.12em] text-teal-700">Client · {project.agencyClient.name}</div>}
-                    <Link to={`/guided-projects/${project.id}`} className="block truncate text-lg font-bold text-slate-950 hover:text-teal-700">{project.name}</Link>
-                    <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-sm text-slate-500">
-                      {project.website?.id ? <Link to={`/website-projects/${project.website.id}`} className="font-semibold text-teal-700 hover:underline">{project.website.rootUrl ?? project.websiteUrl ?? project.website.domain}</Link> : <span>{project.websiteUrl ?? "No website connected"}</span>}
-                      <span className="hidden text-slate-300 sm:inline">•</span>
-                      <span><b className="font-semibold text-slate-700">Project type:</b> {projectTypeLabel(project)}</span>
-                      <span className="text-slate-300">•</span>
-                      <span><b className="font-semibold text-slate-700">Location:</b> {project.businessLocation ?? "Not set"}</span>
-                      <span className="text-slate-300">•</span>
-                      <span><b className="font-semibold text-slate-700">Timeline:</b> {project.targetLaunchTimeline ?? "Not set"}</span>
-                      <span className="text-slate-300">•</span>
-                      <span><b className="font-semibold text-slate-700">Primary goal:</b> {project.primaryGoal ?? "Not set"}</span>
+                    <Link to={`/guided-projects/${project.id}`} className="block break-words text-lg font-bold leading-6 text-slate-950 hover:text-teal-700">{project.name}</Link>
+                    <div className="mt-2 grid min-w-0 gap-x-5 gap-y-1.5 text-sm text-slate-500 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-5">
+                      <div className="min-w-0"><b className="font-semibold text-slate-700">Website:</b>{" "}{project.website?.id ? <Link to={`/website-projects/${project.website.id}`} title={project.website.rootUrl ?? project.websiteUrl ?? project.website.domain} className="break-all font-semibold text-teal-700 hover:underline">{project.website.rootUrl ?? project.websiteUrl ?? project.website.domain}</Link> : <span className="break-all">{project.websiteUrl ?? "No website connected"}</span>}</div>
+                      <div className="min-w-0 break-words"><b className="font-semibold text-slate-700">Project type:</b> {projectTypeLabel(project)}</div>
+                      <div className="min-w-0 break-words"><b className="font-semibold text-slate-700">Location:</b> {project.businessLocation ?? "Not set"}</div>
+                      <div className="min-w-0 break-words"><b className="font-semibold text-slate-700">Timeline:</b> {project.targetLaunchTimeline ?? "Not set"}</div>
+                      <div className="min-w-0 break-words"><b className="font-semibold text-slate-700">Primary goal:</b> {project.primaryGoal ?? "Not set"}</div>
                     </div>
                   </div>
                 </div>
-                <span className={`shrink-0 rounded-full px-4 py-1.5 text-xs font-bold ${project.status === "archived" ? "bg-slate-200 text-slate-700" : project.status === "intake_draft" ? "bg-violet-100 text-violet-800" : needsReview ? "bg-amber-100 text-amber-800" : project.status === "completed" ? "bg-emerald-100 text-emerald-800" : "bg-teal-100 text-teal-800"}`}>{project.status === "archived" ? "Archived · View only" : project.status === "intake_draft" ? "Intake draft" : needsReview ? "Needs Review" : stageLabel(project)}</span>
+                <span className={`shrink-0 self-start rounded-full px-4 py-1.5 text-xs font-bold ${project.status === "archived" ? "bg-slate-200 text-slate-700" : project.status === "intake_draft" ? "bg-violet-100 text-violet-800" : needsReview ? "bg-amber-100 text-amber-800" : project.status === "completed" ? "bg-emerald-100 text-emerald-800" : "bg-teal-100 text-teal-800"}`}>{project.status === "archived" ? "Archived · View only" : project.status === "intake_draft" ? "Intake draft" : needsReview ? "Needs Review" : stageLabel(project)}</span>
               </div>
 
 

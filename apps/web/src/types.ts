@@ -328,6 +328,14 @@ export interface GuidedProject {
   opportunities?: Opportunity[];
   keywordGroups?: ProjectKeywordGroup[];
   strategyPlans?: unknown[];
+  discoveryDrafts?: Array<{
+    id: string;
+    title: string;
+    status: string;
+    convertedAt: string | null;
+    selectedDirectionJson: unknown;
+    ideas: Array<{ id: string; title: string; status: string }>;
+  }>;
   _count?: { intakeAnswers: number; strategyPlans: number; opportunities: number };
 }
 
@@ -549,13 +557,16 @@ export interface GrowthExperiment {
   potentialScore: number;
   importanceScore: number;
   requiredAssets: unknown;
+  guardrailMetrics: unknown;
+  baselineJson: unknown;
   automationLevel: string;
   requiresApproval: boolean;
   safetyCategory: string;
+  reviewAt: string | null;
   startedAt: string | null;
   completedAt: string | null;
   assets?: { id: string; title: string; assetType: string; approvalStatus: string; contentJson: unknown }[];
-  results?: { id: string; baselineValue: number | null; currentValue: number | null; resultStatus: string; notes: string | null; recordedAt: string }[];
+  results?: { id: string; baselineValue: number | null; currentValue: number | null; resultStatus: string; notes: string | null; learningJson: unknown; followUpAction: string | null; evaluatedAt: string | null; recordedAt: string }[];
 }
 
 export interface GrowthOverviewResponse {
@@ -574,8 +585,17 @@ export interface GrowthOverviewResponse {
   } | null;
   signals: {
     scoreJson: Record<string, number>;
+    evidenceStates: Record<string, "observed" | "limited" | "unavailable" | "hypothesis">;
+    contradictions: Array<{ dimension: string; message: string; observations: Array<{ checkpointId: string; classification: string; availability: string }> }>;
+    mobileConversionIssue: { mobileStarts: number; mobileSuccesses: number; mobileErrors: number; desktopStarts: number; desktopSuccesses: number } | null;
     bottleneckType: string;
     growthScore: number;
+    trackingVerified: boolean;
+    primaryConversionEvents: number;
+    funnelViews: number;
+    funnelOptIns: number;
+    emailsDelivered: number;
+    emailClicks: number;
     keywordRuns: number;
     socialPosts: number;
     hasLeadMagnetTask: boolean;
@@ -618,6 +638,7 @@ export interface GrowthOverviewResponse {
     evidenceSignals: GrowthEvidenceSignal[];
     candidateActions: GrowthCandidateAction[];
     selectedAction: GrowthCandidateAction | null;
+    decisionState: { key: string; title: string; message: string };
     learnings: { id: string; outcome: string; summary: string; learningJson: unknown; createdAt: string }[];
     recentRuns: { id: string; status: string; promptVersion: string; inputSnapshotJson: unknown; outputJson: unknown; createdAt: string }[];
   };

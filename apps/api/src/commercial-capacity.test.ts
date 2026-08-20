@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { calculateWorkflowUnits, canonicalCommercialPlanCode, COMMERCIAL_PLAN_CAPACITY } from "./commercial-capacity.js";
+import { calculateWorkflowUnits, canonicalCommercialPlanCode, capacityPackPurchaseAllowed, COMMERCIAL_PLAN_CAPACITY } from "./commercial-capacity.js";
 
 describe("DEV-059 commercial capacity policy", () => {
   it("maps legacy plan names to the three canonical commercial plans", () => {
@@ -43,5 +43,10 @@ describe("DEV-059 commercial capacity policy", () => {
       metadata: { domainCount: 100 }, pricingModel: "per_domain", pricingConfig: { perDomainUnits: 25 }, maximumUnitCost: 500,
     })).toBe(500);
     expect(calculateWorkflowUnits("strategy_generate", 450, { metadata: { cacheHit: true }, minimumUnitCost: 250 })).toBe(0);
+  });
+
+  it("unlocks Capacity Packs only after all current capacity is exhausted", () => {
+    expect(capacityPackPurchaseAllowed(1)).toBe(false);
+    expect(capacityPackPurchaseAllowed(0)).toBe(true);
   });
 });

@@ -7,8 +7,8 @@ describe("project reporting catalog", () => {
     expect(new Set(projectReportCatalog.map((report) => report.type)).size).toBe(projectReportTypes.length);
   });
 
-  it("keeps every V1 client report Agency-scoped and client-safe", () => {
-    for (const type of clientReportTypes) expect(projectReportCatalog.find((report) => report.type === type)).toMatchObject({ agencyOnly: true, clientSafe: true });
+  it("makes standard project reports available to every plan while proposals remain Agency-only", () => {
+    for (const type of clientReportTypes) expect(projectReportCatalog.find((report) => report.type === type)).toMatchObject({ agencyOnly: false, clientSafe: true });
     expect(projectReportCatalog.find((report) => report.type === "agency_proposal")).toMatchObject({ agencyOnly: true, clientSafe: true });
   });
 

@@ -22,6 +22,7 @@ export type GrowthFinding = {
   severity: "critical" | "high" | "medium" | "low";
   confidence: number;
   evidenceKeys: string[];
+  evidenceState: "observed" | "limited" | "unavailable" | "hypothesis";
 };
 
 export type CandidateFactors = {
@@ -118,19 +119,35 @@ export function signalFingerprint(projectId: string, signal: Pick<GrowthSignalDr
   return [projectId, signal.category, signal.signalKey, signal.sourceType, signal.sourceId ?? "project"].join(":").slice(0, 191);
 }
 
-export function findingsFromScores(scoreJson: Record<string, number>): GrowthFinding[] {
+export function findingsFromScores(
+  scoreJson: Record<string, number>,
+  evidenceStates: Record<string, GrowthFinding["evidenceState"]> = {},
+): GrowthFinding[] {
   return Object.entries(scoreJson)
     .sort((a, b) => a[1] - b[1])
     .slice(0, 4)
-    .map(([key, score], index) => ({
-      key: `constraint:${key}`,
-      category: key,
-      title: `${humanize(key)} is ${score < 45 ? "blocking growth" : score < 60 ? "underperforming" : "the next improvement area"}`,
-      summary: `${humanize(key)} scored ${bounded(score)}/100 against the available project, website, strategy, and execution evidence.`,
-      severity: score < 40 ? "critical" : score < 55 ? "high" : score < 70 ? "medium" : "low",
-      confidence: bounded(86 - index * 6),
-      evidenceKeys: [`score:${key}`],
-    }));
+    .map(([key, score], index) => {
+      const evidenceState = evidenceStates[key] ?? "hypothesis";
+      const evidenceLimited = evidenceState !== "observed";
+      return {
+        key: `constraint:${key}`,
+        category: key,
+        title: evidenceState === "unavailable"
+          ? `${humanize(key)} measurement is not connected`
+          : evidenceState === "limited"
+            ? `${humanize(key)} needs more outcome evidence`
+            : evidenceState === "hypothesis"
+              ? `${humanize(key)} is an unverified hypothesis`
+              : `${humanize(key)} is ${score < 45 ? "blocking growth" : score < 60 ? "underperforming" : "the next improvement area"}`,
+        summary: evidenceLimited
+          ? `${humanize(key)} has ${bounded(score)}/100 evidence readiness. This is not a performance result; collect a baseline and current outcome before declaring a growth constraint.`
+          : `${humanize(key)} scored ${bounded(score)}/100 from mapped outcome evidence for the active evaluation period.`,
+        severity: evidenceLimited ? (evidenceState === "unavailable" ? "high" : "medium") : score < 40 ? "critical" : score < 55 ? "high" : score < 70 ? "medium" : "low",
+        confidence: bounded(evidenceLimited ? 96 - index * 3 : 86 - index * 6),
+        evidenceKeys: [`score:${key}`, `evidence-state:${evidenceState}`],
+        evidenceState,
+      } satisfies GrowthFinding;
+    });
 }
 
 type CandidateContext = {
@@ -158,6 +175,14 @@ type CandidateContext = {
     successMeasures: string[];
     dependencies: string[];
   }>;
+  evidenceStates?: Record<string, GrowthFinding["evidenceState"]>;
+  mobileConversionIssue?: {
+    mobileStarts: number;
+    mobileSuccesses: number;
+    mobileErrors: number;
+    desktopStarts: number;
+    desktopSuccesses: number;
+  } | null;
 };
 
 function strategyRoute(channels: string[]) {
@@ -267,6 +292,40 @@ export function generateGrowthCandidates(ctx: CandidateContext, excludedDedupeKe
   const candidates: GrowthCandidate[] = dimensions.flatMap(([dimension, score], index) => {
     const template = actionTemplates[dimension];
     if (!template) return [];
+    const evidenceState = ctx.evidenceStates?.[dimension] ?? "hypothesis";
+    if (evidenceState !== "observed") {
+      const dedupeKey = `growth:${ctx.projectId}:measurement_setup:${dimension}`;
+      if (excludedDedupeKeys.has(dedupeKey)) return [];
+      const factors: CandidateFactors = {
+        impact: 78,
+        confidence: 96,
+        urgency: evidenceState === "unavailable" ? 88 : 72,
+        strategicFit: ctx.hasApprovedStrategy ? 94 : 58,
+        efficiency: 86,
+        readiness: 94,
+        learningValue: 96,
+        riskPenalty: 1,
+      };
+      return [{
+        dedupeKey,
+        actionType: "measurement_setup",
+        title: `Connect and baseline ${humanize(dimension)}`,
+        recommendation: `Define the ${humanize(dimension).toLowerCase()} KPI, source, baseline period, current evaluation window, and minimum sample. Connect or record the evidence before treating this area as a growth constraint.`,
+        reasoningSummary: `${humanize(dimension)} has ${bounded(score)}/100 evidence readiness and is currently ${evidenceState}. Missing or limited evidence is not treated as zero performance.`,
+        expectedImpact: `Creates enough mapped evidence to determine whether ${humanize(dimension).toLowerCase()} actually needs intervention and to measure any approved change.`,
+        businessGoal: ctx.primaryGoal,
+        route: "technical",
+        estimatedEffort: "low",
+        approvalType: "user_approval" as const,
+        riskLevel: "low",
+        urgency: factors.urgency,
+        targetEntities: [dimension, "measurement"],
+        dependencies: [],
+        evidenceKeys: [`score:${dimension}`, `evidence-state:${evidenceState}`, "measurement:required"],
+        factors,
+        priorityScore: scoreGrowthCandidate(factors),
+      }];
+    }
     const dedupeKey = `growth:${ctx.projectId}:${template.actionType}:${dimension}`;
     if (excludedDedupeKeys.has(dedupeKey)) return [];
     const urgency = bounded(100 - score);
@@ -334,6 +393,33 @@ export function generateGrowthCandidates(ctx: CandidateContext, excludedDedupeKe
     });
   }
 
+  if (ctx.mobileConversionIssue) {
+    const issue = ctx.mobileConversionIssue;
+    const mobileRate = issue.mobileStarts ? Math.round(issue.mobileSuccesses / issue.mobileStarts * 100) : 0;
+    const desktopRate = issue.desktopStarts ? Math.round(issue.desktopSuccesses / issue.desktopStarts * 100) : 0;
+    const factors: CandidateFactors = { impact: 94, confidence: 96, urgency: 94, strategicFit: 96, efficiency: 88, readiness: 96, learningValue: 82, riskPenalty: 4 };
+    const dedupeKey = `growth:${ctx.projectId}:mobile_conversion:form-friction`;
+    if (!excludedDedupeKeys.has(dedupeKey)) candidates.push({
+      dedupeKey,
+      actionType: "mobile_conversion_repair",
+      title: "Repair the measured mobile form drop-off",
+      recommendation: `Open the primary form on a mobile device, reproduce and fix validation, field, keyboard, tap-target, and submit errors, then publish the approved repair and compare mobile form success against the saved baseline.`,
+      reasoningSummary: `${issue.mobileStarts} mobile form starts produced ${issue.mobileSuccesses} successes and ${issue.mobileErrors} errors (${mobileRate}% completion), compared with ${desktopRate}% across ${issue.desktopStarts} desktop starts. This observed conversion loss outranks adding more traffic.`,
+      expectedImpact: "Removes a measured mobile conversion loss before spending effort on additional acquisition.",
+      businessGoal: ctx.primaryGoal,
+      route: "technical",
+      estimatedEffort: "medium",
+      approvalType: "user_approval",
+      riskLevel: "medium",
+      urgency: factors.urgency,
+      targetEntities: ["conversion", "mobile", "form"],
+      dependencies: [],
+      evidenceKeys: ["website-tracking:mobile-form-start", "website-tracking:mobile-form-success", "website-tracking:mobile-form-error"],
+      factors,
+      priorityScore: scoreGrowthCandidate(factors),
+    });
+  }
+
   for (const [index, focus] of (ctx.strategyFocusAreas ?? []).slice(0, 6).entries()) {
     const normalizedKey = focus.key.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || `focus-${index + 1}`;
     const dedupeKey = boundedStorageText(`growth:${ctx.projectId}:approved-strategy:${ctx.strategyId ?? "current"}:${normalizedKey}`, 191);
@@ -376,6 +462,40 @@ export function selectNextBestAction(candidates: readonly GrowthCandidate[]) {
   return [...candidates]
     .filter((candidate) => candidate.dependencies.length === 0)
     .sort((a, b) => b.priorityScore - a.priorityScore || b.factors.confidence - a.factors.confidence)[0] ?? null;
+}
+
+/** Retain capacity-blocked alternatives for explanation, while making them
+ * ineligible for Next Best Action selection until capacity is available. */
+export function applyGrowthCapacityGate(
+  candidates: readonly GrowthCandidate[],
+  availableUnits: number,
+  requiredUnits: (candidate: GrowthCandidate) => number,
+) {
+  return candidates.map((candidate) => {
+    const units = Math.max(0, Math.floor(requiredUnits(candidate)));
+    if (units <= availableUnits) return candidate;
+    const dependency = `AI Capacity: ${units} units required; ${Math.max(0, Math.floor(availableUnits))} available`;
+    return {
+      ...candidate,
+      dependencies: [...new Set([...candidate.dependencies, dependency])],
+      evidenceKeys: [...new Set([...candidate.evidenceKeys, "capacity:insufficient"])],
+      reasoningSummary: `${candidate.reasoningSummary} This action is retained as an alternative but cannot start until the workspace has ${units} AI Capacity units.`,
+    };
+  });
+}
+
+export function growthEvidenceContradictions(
+  evaluations: ReadonlyMap<string, readonly { checkpointId: string; classification: string; availability: string }[]>,
+) {
+  return [...evaluations.entries()].flatMap(([dimension, observations]) => {
+    const directional = new Set(observations.map((item) => item.classification).filter((item) => ["IMPROVED", "DECLINED"].includes(item)));
+    if (directional.size < 2) return [];
+    return [{
+      dimension,
+      message: `${humanize(dimension)} has conflicting verified outcomes. Resolve the source, period, segment, or metric mapping before prioritizing an intervention.`,
+      observations: [...observations],
+    }];
+  });
 }
 
 export function buildBlueprintPhases(candidates: readonly GrowthCandidate[]) {
