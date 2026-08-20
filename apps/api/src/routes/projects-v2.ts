@@ -2699,6 +2699,11 @@ guidedProjectsRouter.get("/projects-v2", async (req, res) => {
       businessProfile: true,
       keywordGroups: { orderBy: { createdAt: "asc" } },
       workflowSteps: { orderBy: { sortOrder: "asc" } },
+      executionTasks: {
+        where: { status: { in: ["submitted_for_approval", "needs_review", "changes_requested", "waiting_for_approval", "pending_approval", "needs_approval"] } },
+        orderBy: { updatedAt: "desc" },
+        take: 1,
+      },
       executionPlans: {
         where: { status: "active" },
         take: 1,
@@ -3528,6 +3533,37 @@ guidedProjectsRouter.post("/projects-v2/:projectId/restore", async (req, res) =>
   const updated = await prisma.$transaction(async (tx) => {
     const next = await tx.project.update({ where: { id: project.id }, data: { status: "active", archivedAt: null, archivedById: null } });
     await recordWorkspaceActivity(tx, { context, action: "project.restored", entityType: "project", entityId: project.id, agencyClientId: project.agencyClientId, projectId: project.id, previousJson: { status: project.status }, nextJson: { status: "active" } });
+    return next;
+  });
+  res.json({ project: updated });
+});
+
+guidedProjectsRouter.post("/projects-v2/:projectId/complete", async (req, res) => {
+  await requireRequestPermission(req, "manage_projects");
+  const context = await workspaceContext(req);
+  const project = await scopedProject(req, req.params.projectId);
+  if (!project) return res.status(404).json({ error: "project not found" });
+  if (project.status === "archived") return res.status(409).json({ error: "Restore the project before marking it completed." });
+  if (project.status === "intake_draft") return res.status(409).json({ error: "Finish the project intake before marking it completed." });
+  if (project.status === "completed") return res.json({ project });
+  const updated = await prisma.$transaction(async (tx) => {
+    const next = await tx.project.update({ where: { id: project.id }, data: { status: "completed" } });
+    await recordWorkspaceActivity(tx, { context, action: "project.completed", entityType: "project", entityId: project.id, agencyClientId: project.agencyClientId, projectId: project.id, previousJson: { status: project.status }, nextJson: { status: "completed" } });
+    return next;
+  });
+  res.json({ project: updated });
+});
+
+guidedProjectsRouter.post("/projects-v2/:projectId/reopen", async (req, res) => {
+  await requireRequestPermission(req, "manage_projects");
+  const context = await workspaceContext(req);
+  const project = await scopedProject(req, req.params.projectId);
+  if (!project) return res.status(404).json({ error: "project not found" });
+  if (project.status !== "completed") return res.status(409).json({ error: "Only a completed project can be reopened." });
+  await assertWorkspaceResourceAvailable(context.workspace.id, "activeProjects", { excludeId: project.id });
+  const updated = await prisma.$transaction(async (tx) => {
+    const next = await tx.project.update({ where: { id: project.id }, data: { status: "active" } });
+    await recordWorkspaceActivity(tx, { context, action: "project.reopened", entityType: "project", entityId: project.id, agencyClientId: project.agencyClientId, projectId: project.id, previousJson: { status: project.status }, nextJson: { status: "active" } });
     return next;
   });
   res.json({ project: updated });

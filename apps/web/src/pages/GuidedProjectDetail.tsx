@@ -15,6 +15,7 @@ import ExecutionTaskBrief from "../components/ExecutionTaskBrief.js";
 import OptimizationWorkflow from "../components/OptimizationWorkflow.js";
 import { canonicalPrimaryGoal } from "@webtummy/core/project-goals";
 import { executionTaskDestination, executionTaskGuidance } from "../execution-task-guidance.js";
+import { useAuth } from "../auth.js";
 
 const EXECUTION_PHASES = ["Setup + Discovery", "Strategy", "Build + Publish", "Promote + Measure", "Execution"] as const;
 type ExecutionPhase = typeof EXECUTION_PHASES[number];
@@ -428,6 +429,7 @@ type ResetAfterStrategySummary = {
 type ResetModuleKey = "opportunities" | "execution" | "website" | "content" | "lead_magnets" | "local_seo" | "publishing";
 
 export default function GuidedProjectDetail() {
+  const { user } = useAuth();
   const { id } = useParams();
   const location = useLocation();
   const navigate = useNavigate();
@@ -438,12 +440,31 @@ export default function GuidedProjectDetail() {
   const [executionPhaseTab, setExecutionPhaseTab] = useState<ExecutionPhase | null>(null);
   const [contentPlanTask, setContentPlanTask] = useState<GuidedExecutionTask | null>(null);
   const [resetAfterStrategyOpen, setResetAfterStrategyOpen] = useState(false);
+  const canManageProjects = user?.role === "super_admin" || Boolean(user?.workspace?.capabilities.manageProjects);
 
   const load = () => {
     if (!id) return;
     api.get<{ project: GuidedProject }>(`/api/projects-v2/${id}`)
       .then((result) => setProject(result.project))
       .catch((err) => setError(err instanceof Error ? err.message : "Could not load project"));
+  };
+
+  const changeLifecycleStatus = async (action: "complete" | "reopen") => {
+    if (!project || busyAction) return;
+    const confirmed = window.confirm(action === "complete"
+      ? `Mark “${project.name}” completed? Its data and reports will remain available, and you can reopen it later.`
+      : `Reopen “${project.name}” and return it to In Progress?`);
+    if (!confirmed) return;
+    setBusyAction(`project-${action}`);
+    setError(null);
+    try {
+      const result = await api.post<{ project: GuidedProject }>(`/api/projects-v2/${project.id}/${action}`, {});
+      setProject((current) => current ? { ...current, ...result.project } : result.project);
+    } catch (nextError) {
+      setError(nextError instanceof Error ? nextError.message : `The project could not be ${action === "complete" ? "completed" : "reopened"}.`);
+    } finally {
+      setBusyAction(null);
+    }
   };
 
   useEffect(() => { load(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [id]);
@@ -786,6 +807,8 @@ export default function GuidedProjectDetail() {
                 {project.projectLaunchAnalysis?.status === "failed" && <button type="button" disabled={busyAction === "retry-project-launch-analysis"} onClick={() => void retryProjectLaunchAnalysis()} className="inline-flex shrink-0 items-center justify-center rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-sm font-semibold text-amber-900 hover:bg-amber-100 disabled:opacity-60">{busyAction === "retry-project-launch-analysis" ? "Retrying analysis…" : "Retry project analysis"}</button>}
                 {project.projectLaunchAnalysis?.status === "running" && <span className="inline-flex shrink-0 items-center rounded-lg border border-blue-200 bg-blue-50 px-3 py-2 text-sm font-semibold text-blue-800">Project analysis is running…</span>}
                 {convertedDiscovery && selectedDiscoveryIdea && <button type="button" disabled={busyAction === "discovery-pdf"} onClick={() => void downloadOriginalAnalysis(convertedDiscovery.id, selectedDiscoveryIdea.id)} className="inline-flex shrink-0 items-center justify-center rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-60">{busyAction === "discovery-pdf" ? "Preparing PDF…" : "Download original idea PDF"}</button>}
+                {canManageProjects && !archived && project.status !== "completed" && <button type="button" disabled={Boolean(busyAction)} onClick={() => void changeLifecycleStatus("complete")} className="inline-flex shrink-0 items-center justify-center rounded-lg border border-emerald-300 bg-emerald-50 px-3 py-2 text-sm font-semibold text-emerald-800 hover:bg-emerald-100 disabled:opacity-60">{busyAction === "project-complete" ? "Completing…" : "Mark project completed"}</button>}
+                {canManageProjects && project.status === "completed" && <button type="button" disabled={Boolean(busyAction)} onClick={() => void changeLifecycleStatus("reopen")} className="inline-flex shrink-0 items-center justify-center rounded-lg border border-teal-300 bg-teal-50 px-3 py-2 text-sm font-semibold text-teal-800 hover:bg-teal-100 disabled:opacity-60">{busyAction === "project-reopen" ? "Reopening…" : "Reopen project"}</button>}
                 {!archived && (project.opportunities.length > 0 || project.strategyPlans.length > 0) && <Link to={`/guided-projects/${project.id}?resetAfterStrategy=1`} className="inline-flex shrink-0 items-center justify-center rounded-lg border border-rose-200 bg-white px-3 py-2 text-sm font-semibold text-rose-700 hover:bg-rose-50">Manage module data</Link>}
                 {!archived && <Link to={`/guided-projects/${project.id}/intake`} className="inline-flex shrink-0 items-center justify-center rounded-lg bg-brand-600 px-3 py-2 text-sm font-semibold text-white hover:bg-brand-700">Edit profile</Link>}
                 <Link to="/projects" className="inline-flex shrink-0 items-center justify-center rounded-lg bg-brand-600 px-3 py-2 text-sm font-semibold text-white hover:bg-brand-700">Back to projects</Link>

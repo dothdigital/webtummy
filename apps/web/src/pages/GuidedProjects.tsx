@@ -5,10 +5,20 @@ import { Card } from "../components/ui.js";
 import { useAuth } from "../auth.js";
 import type { GuidedExecutionTask, GuidedProject } from "../types.js";
 
-type ProjectFilter = "all" | "in_progress" | "needs_review" | "completed" | "archived";
+type ProjectFilter = "all" | "draft" | "in_progress" | "needs_review" | "completed" | "archived";
+
+type ProjectDiscoveryDraft = {
+  id: string;
+  title: string;
+  status: string;
+  sourceText: string | null;
+  convertedProjectId: string | null;
+  updatedAt: string;
+  ideas: Array<{ id: string; title: string; status: string }>;
+};
 
 const completedStatuses = new Set(["completed", "skipped", "published"]);
-const reviewStatuses = new Set(["submitted_for_approval", "needs_review", "changes_requested"]);
+const reviewStatuses = new Set(["submitted_for_approval", "needs_review", "changes_requested", "waiting_for_approval", "pending_approval", "needs_approval"]);
 
 const priorityRank: Record<string, number> = { critical: 0, high: 1, medium: 2, low: 3 };
 const taskStatusRank: Record<string, number> = { changes_requested: 0, needs_review: 1, submitted_for_approval: 2, ready_to_publish: 3, ready: 4, in_progress: 5, pending: 6, blocked: 7 };
@@ -95,7 +105,15 @@ function projectProgressBreakdown(project: GuidedProject) {
 }
 
 function projectNeedsReview(project: GuidedProject) {
-  return Boolean(project.executionPlans?.[0]?.tasks?.some((task) => reviewStatuses.has(task.status)) || project.workflowSteps?.some((step) => reviewStatuses.has(step.status)));
+  return Boolean(project.executionTasks?.some((task) => reviewStatuses.has(task.status)) || project.executionPlans?.[0]?.tasks?.some((task) => reviewStatuses.has(task.status)) || project.workflowSteps?.some((step) => reviewStatuses.has(step.status)));
+}
+
+function projectState(project: GuidedProject): Exclude<ProjectFilter, "all"> {
+  if (project.status === "archived") return "archived";
+  if (project.status === "completed") return "completed";
+  if (project.status === "intake_draft") return "draft";
+  if (projectNeedsReview(project)) return "needs_review";
+  return "in_progress";
 }
 
 function workflowState(project: GuidedProject, index: number): "completed" | "skipped" | "current" | "pending" | "blocked" | "review" {
@@ -173,6 +191,7 @@ export default function GuidedProjects() {
   const canManageProjects = user?.role === "super_admin" || Boolean(user?.workspace?.capabilities.manageProjects);
   const canEditProjects = user?.role === "super_admin" || Boolean(user?.workspace?.capabilities.edit);
   const [projects, setProjects] = useState<GuidedProject[]>([]);
+  const [discoveryDrafts, setDiscoveryDrafts] = useState<ProjectDiscoveryDraft[]>([]);
   const [deleteTarget, setDeleteTarget] = useState<GuidedProject | null>(null);
   const [deleting, setDeleting] = useState(false);
   const [deleteError, setDeleteError] = useState("");
@@ -183,13 +202,15 @@ export default function GuidedProjects() {
 
   const load = async () => {
     try {
-      const [result, agencyWorkspace] = await Promise.all([
+      const [result, draftResult, agencyWorkspace] = await Promise.all([
         api.get<{ projects: GuidedProject[] }>("/api/projects-v2"),
+        api.get<{ drafts: ProjectDiscoveryDraft[] }>("/api/discovery-drafts").catch(() => ({ drafts: [] })),
         user?.workspace?.type === "agency"
           ? api.get<{ clients: { status: string }[] }>("/api/agency/workspace")
           : Promise.resolve(null),
       ]);
       setProjects(result.projects);
+      setDiscoveryDrafts(draftResult.drafts.filter((draft) => !draft.convertedProjectId));
       setAgencyHasActiveClient(agencyWorkspace ? agencyWorkspace.clients.some((client) => client.status === "active") : true);
     } catch (error) {
       // A 401 is handled globally by clearing the expired session and routing
@@ -201,20 +222,32 @@ export default function GuidedProjects() {
 
   useEffect(() => { void load().catch(() => undefined); }, [user?.workspace?.type]);
   const agencyNeedsClient = user?.workspace?.type === "agency" && !agencyHasActiveClient;
+  const personalWorkspace = ["personal", "entrepreneur", "individual"].includes(String(user?.workspace?.type || "").toLowerCase());
+
+  const projectCounts = useMemo(() => {
+    const counts: Record<ProjectFilter, number> = { all: discoveryDrafts.length, draft: discoveryDrafts.length, in_progress: 0, needs_review: 0, completed: 0, archived: 0 };
+    for (const project of projects) {
+      counts.all += 1;
+      counts[projectState(project)] += 1;
+    }
+    return counts;
+  }, [discoveryDrafts.length, projects]);
 
   const visibleProjects = useMemo(() => {
     const query = search.trim().toLowerCase();
     return projects.filter((project) => {
       const matchesSearch = !query || [project.name, project.agencyClient?.name, project.businessName, project.website?.domain, project.websiteUrl, project.projectType]
         .filter(Boolean).some((value) => String(value).toLowerCase().includes(query));
-      const matchesFilter = filter === "all"
-        || (filter === "completed" && project.status === "completed")
-        || (filter === "archived" && project.status === "archived")
-        || (filter === "needs_review" && projectNeedsReview(project))
-        || (filter === "in_progress" && !["completed", "archived"].includes(project.status) && !projectNeedsReview(project));
+      const matchesFilter = filter === "all" || projectState(project) === filter;
       return matchesSearch && matchesFilter;
     });
   }, [filter, projects, search]);
+
+  const visibleDiscoveryDrafts = useMemo(() => {
+    if (!["all", "draft"].includes(filter)) return [];
+    const query = search.trim().toLowerCase();
+    return discoveryDrafts.filter((draft) => !query || [draft.title, draft.sourceText, ...draft.ideas.map((idea) => idea.title)].filter(Boolean).some((value) => String(value).toLowerCase().includes(query)));
+  }, [discoveryDrafts, filter, search]);
 
   const deleteProject = async () => {
     if (!deleteTarget) return;
@@ -241,6 +274,31 @@ export default function GuidedProjects() {
     }
   };
 
+  const changeLifecycleStatus = async (project: GuidedProject, action: "complete" | "reopen") => {
+    const confirmed = window.confirm(action === "complete"
+      ? `Mark “${project.name}” completed? Its data and reports will remain available, and you can reopen it later.`
+      : `Reopen “${project.name}” and return it to In Progress?`);
+    if (!confirmed) return;
+    setStatusBusy(project.id);
+    try {
+      const result = await api.post<{ project: GuidedProject }>(`/api/projects-v2/${project.id}/${action}`, {});
+      setProjects((current) => current.map((item) => item.id === project.id ? { ...item, ...result.project } : item));
+    } finally {
+      setStatusBusy(null);
+    }
+  };
+
+  const downloadIdeaPdf = async (draftId: string, ideaId: string) => {
+    setStatusBusy(`pdf:${ideaId}`);
+    try {
+      await api.download(`/api/discovery-drafts/${draftId}/ideas/${ideaId}/download`);
+    } catch (error) {
+      window.alert(error instanceof Error ? error.message : "The idea PDF could not be downloaded.");
+    } finally {
+      setStatusBusy(null);
+    }
+  };
+
   return (
     <div className="-m-4 min-h-full bg-[#f7f7ff] p-4 lg:-m-8 lg:p-8">
       <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
@@ -259,23 +317,28 @@ export default function GuidedProjects() {
           <input value={search} onChange={(event) => setSearch(event.target.value)} className="h-12 w-full rounded-xl border border-violet-100 bg-white pl-12 pr-4 text-sm text-slate-800 shadow-sm outline-none placeholder:text-slate-400 focus:border-teal-300 focus:ring-4 focus:ring-teal-100/60" placeholder="Search projects..." />
         </label>
         <div className="flex gap-2 overflow-x-auto pb-1">
-          {([{ id: "all", label: "All" }, { id: "in_progress", label: "In Progress" }, { id: "needs_review", label: "Needs Review" }, { id: "completed", label: "Completed" }, { id: "archived", label: "Archived" }] as { id: ProjectFilter; label: string }[]).map((item) => <button key={item.id} type="button" onClick={() => setFilter(item.id)} className={`h-11 shrink-0 rounded-full border px-5 text-sm font-bold transition ${filter === item.id ? "border-teal-300 bg-teal-100 text-teal-800 shadow-sm" : "border-violet-100 bg-transparent text-slate-500 hover:border-violet-200 hover:bg-white"}`}>{item.label}</button>)}
+          {([{ id: "all", label: "All" }, { id: "draft", label: "Drafts" }, { id: "in_progress", label: "In Progress" }, { id: "needs_review", label: "Needs Review" }, { id: "completed", label: "Completed" }, { id: "archived", label: "Archived" }] as { id: ProjectFilter; label: string }[]).map((item) => <button key={item.id} type="button" onClick={() => setFilter(item.id)} className={`h-11 shrink-0 rounded-full border px-5 text-sm font-bold transition ${filter === item.id ? "border-teal-300 bg-teal-100 text-teal-800 shadow-sm" : "border-violet-100 bg-transparent text-slate-500 hover:border-violet-200 hover:bg-white"}`}>{item.label} ({projectCounts[item.id]})</button>)}
         </div>
       </div>
 
-      {projects.length === 0 ? (
+      {filter === "draft" && <div className="mt-4 rounded-xl border border-violet-200 bg-violet-50 px-4 py-3 text-sm leading-6 text-violet-900"><b>Drafts are saved work that is not active yet.</b> Discovery ideas appear here after you start or generate them; select <b>Use This Idea</b> when you want one to become a Project. Intake drafts become active after you finish project setup.</div>}
+      {filter === "needs_review" && <div className="mt-4 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm leading-6 text-amber-900"><b>{personalWorkspace ? "Your review is needed." : "A review is needed."}</b> {personalWorkspace ? "In an Individual workspace, you are the reviewer. Open the project and approve, request changes, or complete the waiting item." : "Open the project to approve, request changes, or complete the waiting item."}</div>}
+      {filter === "completed" && <div className="mt-4 rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm leading-6 text-emerald-900"><b>Completed projects remain available for reports and history.</b> Use Reopen if more work is needed.</div>}
+
+      {projects.length === 0 && discoveryDrafts.length === 0 ? (
         <div className="mt-7 rounded-2xl border border-dashed border-violet-200 bg-white p-10 text-center shadow-sm">
           <div className="text-lg font-bold text-slate-950">{agencyNeedsClient ? "Create a client first" : "No projects yet"}</div>
           <p className="mx-auto mt-2 max-w-lg text-sm leading-6 text-slate-500">{agencyNeedsClient ? "Agency projects must belong to an active client. Add the client before creating their first project." : "Create a project to begin intake, strategy, analysis, execution, approval, and delivery."}</p>
           {canManageProjects && <Link to={agencyNeedsClient ? "/workspace?tab=clients" : "/projects/new"} className="mt-5 inline-flex rounded-xl bg-teal-600 px-5 py-2.5 text-sm font-bold text-white hover:bg-teal-700">{agencyNeedsClient ? "Create Client" : "Create Project"}</Link>}
         </div>
-      ) : visibleProjects.length === 0 ? (
+      ) : visibleProjects.length === 0 && visibleDiscoveryDrafts.length === 0 ? (
         <div className="mt-7 rounded-2xl border border-violet-100 bg-white p-10 text-center shadow-sm"><div className="font-bold text-slate-900">No matching projects</div><p className="mt-2 text-sm text-slate-500">Try another search or status filter.</p><button type="button" onClick={() => { setSearch(""); setFilter("all"); }} className="mt-4 text-sm font-bold text-teal-700">Clear filters</button></div>
       ) : (
         <div className="mt-7 space-y-4">
+          {visibleDiscoveryDrafts.map((draft) => <article key={`discovery-${draft.id}`} className="rounded-2xl border border-violet-200 bg-white px-5 py-5 shadow-sm sm:px-6"><div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between"><div className="min-w-0"><div className="flex flex-wrap items-center gap-2"><span className="rounded-full bg-violet-100 px-3 py-1 text-[10px] font-black uppercase tracking-wide text-violet-800">Discovery draft</span><span className="text-xs font-semibold text-slate-400">{draft.ideas.length} generated idea{draft.ideas.length === 1 ? "" : "s"}</span></div><h2 className="mt-2 break-words text-lg font-bold text-slate-950">{draft.title}</h2><p className="mt-1 line-clamp-2 text-sm leading-6 text-slate-500">{draft.sourceText || "Business Discovery started. Continue the draft to add context and generate ideas."}</p><p className="mt-2 text-xs text-slate-400">Updated {relativeUpdated(draft.updatedAt)} · Does not count as an active project</p>{draft.ideas.length > 0 && <div className="mt-3"><div className="text-[10px] font-black uppercase tracking-wide text-slate-500">Download a saved idea again</div><div className="mt-2 flex flex-wrap gap-2">{draft.ideas.map((idea, ideaIndex) => <button key={idea.id} type="button" disabled={statusBusy === `pdf:${idea.id}`} title={`Download PDF: ${idea.title}`} onClick={() => void downloadIdeaPdf(draft.id, idea.id)} className="rounded-lg border border-violet-200 bg-violet-50 px-3 py-2 text-xs font-bold text-violet-800 hover:bg-violet-100 disabled:opacity-50">{statusBusy === `pdf:${idea.id}` ? "Preparing PDF…" : `Idea ${ideaIndex + 1} PDF`}</button>)}</div></div>}</div><Link to={`/projects/new?discoveryDraftId=${encodeURIComponent(draft.id)}`} className="inline-flex h-10 shrink-0 items-center justify-center rounded-lg bg-violet-700 px-4 text-sm font-bold text-white hover:bg-violet-800">{draft.ideas.length ? "Review ideas →" : "Continue discovery →"}</Link></div></article>)}
           {visibleProjects.map((project, index) => {
-            const task = nextTask(project);
-            const workflowStep = nextWorkflowStep(project);
+            const task = project.status === "completed" ? null : nextTask(project);
+            const workflowStep = project.status === "completed" ? null : nextWorkflowStep(project);
             const progress = projectProgress(project);
             const breakdown = projectProgressBreakdown(project);
             const needsReview = projectNeedsReview(project);
@@ -298,7 +361,7 @@ export default function GuidedProjects() {
                     </div>
                   </div>
                 </div>
-                <span className={`shrink-0 self-start rounded-full px-4 py-1.5 text-xs font-bold ${project.status === "archived" ? "bg-slate-200 text-slate-700" : project.status === "intake_draft" ? "bg-violet-100 text-violet-800" : needsReview ? "bg-amber-100 text-amber-800" : project.status === "completed" ? "bg-emerald-100 text-emerald-800" : "bg-teal-100 text-teal-800"}`}>{project.status === "archived" ? "Archived · View only" : project.status === "intake_draft" ? "Intake draft" : needsReview ? "Needs Review" : stageLabel(project)}</span>
+                <span className={`shrink-0 self-start rounded-full px-4 py-1.5 text-xs font-bold ${project.status === "archived" ? "bg-slate-200 text-slate-700" : project.status === "intake_draft" ? "bg-violet-100 text-violet-800" : project.status === "completed" ? "bg-emerald-100 text-emerald-800" : needsReview ? "bg-amber-100 text-amber-800" : "bg-teal-100 text-teal-800"}`}>{project.status === "archived" ? "Archived · View only" : project.status === "intake_draft" ? "Intake draft" : project.status === "completed" ? "Completed" : needsReview ? (personalWorkspace ? "Your review needed" : "Needs Review") : stageLabel(project)}</span>
               </div>
 
 
@@ -323,7 +386,7 @@ export default function GuidedProjects() {
 
               <div className="mt-5 flex flex-col gap-3 border-t border-violet-50 pt-4 md:flex-row md:items-center md:justify-between">
                 <div className="flex min-w-0 flex-col gap-2 text-sm text-slate-500 sm:flex-row sm:items-center sm:gap-7"><Link to={nextHref} className="group inline-flex min-w-0 items-center gap-2 rounded-lg border border-teal-200 bg-teal-50 px-3 py-2 text-teal-800 transition hover:border-teal-400 hover:bg-teal-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-300"><span className="shrink-0 text-[10px] font-black uppercase tracking-wide text-teal-600">Next task</span><span className="truncate font-black">{nextTitle}</span><span aria-hidden="true" className="shrink-0 font-black transition-transform group-hover:translate-x-1">→</span></Link><div className="shrink-0">Updated <span className="font-bold text-slate-800">{relativeUpdated(project.updatedAt)}</span></div></div>
-                <div className="flex shrink-0 items-center gap-4">{canEditProjects && !["archived", "intake_draft"].includes(project.status) && <Link to={`/projects/new?edit=${project.id}`} className="text-xs font-bold text-teal-700 hover:text-teal-900">Edit</Link>}{canManageProjects && project.status !== "archived" && <button disabled={statusBusy === project.id} type="button" onClick={() => void changeArchiveStatus(project, "archive")} className="text-xs font-bold text-slate-500 hover:text-amber-700 disabled:opacity-50">Archive</button>}{canManageProjects && project.status === "archived" && <><button disabled={statusBusy === project.id} type="button" onClick={() => void changeArchiveStatus(project, "restore")} className="text-xs font-bold text-teal-700 disabled:opacity-50">Restore</button><button type="button" onClick={() => setDeleteTarget(project)} className="text-xs font-bold text-rose-600 hover:text-rose-800">Permanently delete</button></>}<Link to={project.status === "intake_draft" ? `/projects/new?resumeConversation=${project.id}` : projectHref} className="text-sm font-bold text-teal-700 hover:text-teal-900">{project.status === "archived" ? "View project →" : project.status === "intake_draft" ? "Continue intake →" : "Open project →"}</Link></div>
+                <div className="flex shrink-0 items-center gap-4">{canEditProjects && !["archived", "intake_draft", "completed"].includes(project.status) && <Link to={`/projects/new?edit=${project.id}`} className="text-xs font-bold text-teal-700 hover:text-teal-900">Edit</Link>}{canManageProjects && !["archived", "intake_draft", "completed"].includes(project.status) && <button disabled={statusBusy === project.id} type="button" onClick={() => void changeLifecycleStatus(project, "complete")} className="text-xs font-bold text-emerald-700 hover:text-emerald-900 disabled:opacity-50">Mark completed</button>}{canManageProjects && project.status === "completed" && <button disabled={statusBusy === project.id} type="button" onClick={() => void changeLifecycleStatus(project, "reopen")} className="text-xs font-bold text-teal-700 hover:text-teal-900 disabled:opacity-50">Reopen</button>}{canManageProjects && project.status !== "archived" && <button disabled={statusBusy === project.id} type="button" onClick={() => void changeArchiveStatus(project, "archive")} className="text-xs font-bold text-slate-500 hover:text-amber-700 disabled:opacity-50">Archive</button>}{canManageProjects && project.status === "archived" && <><button disabled={statusBusy === project.id} type="button" onClick={() => void changeArchiveStatus(project, "restore")} className="text-xs font-bold text-teal-700 disabled:opacity-50">Restore</button><button type="button" onClick={() => setDeleteTarget(project)} className="text-xs font-bold text-rose-600 hover:text-rose-800">Permanently delete</button></>}<Link to={project.status === "intake_draft" ? `/projects/new?resumeConversation=${project.id}` : projectHref} className="text-sm font-bold text-teal-700 hover:text-teal-900">{project.status === "archived" ? "View project →" : project.status === "intake_draft" ? "Continue intake →" : "Open project →"}</Link></div>
               </div>
             </article>;
           })}
