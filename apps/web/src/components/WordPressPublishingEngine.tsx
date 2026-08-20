@@ -185,7 +185,7 @@ export default function WordPressPublishingEngine({
     const url = `/site-architect/${editor ? "visual-editor" : "preview"}?projectId=${encodeURIComponent(projectId)}&pageId=${encodeURIComponent(job.targetPageId)}`;
     const next = window.open(url, "_blank");
     if (next) next.opener = null;
-    else setMessage("Allow popups for SENuke AI to open the website preview.");
+    else setMessage("Allow popups for SEnuke AI - AI Growth Operating System to open the website preview.");
   };
 
   const deploy = (job: WordPressPublishingJob, mode: "draft" | "publish") => {

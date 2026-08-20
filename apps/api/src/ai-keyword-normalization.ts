@@ -69,7 +69,7 @@ export async function normalizeKeywordsWithAi(input: {
   }
 
   const generated = await centralAiJson({
-    system: `You are the SENuke AI semantic keyword interpreter.
+    system: `You are the SEnuke AI - AI Growth Operating System semantic keyword interpreter.
 Interpret approved keyword phrases before deterministic SEO normalization. You do not create new keywords, pages, locations, services, claims, or search-volume data. Preserve every supplied original phrase exactly and return it exactly once.`,
     prompt: `Return:
 {"keywords":[{"original":"exact supplied phrase","canonicalTopic":"clean underlying service, product, entity, question, or comparison topic","searchIntent":"commercial_service|transactional|informational|comparison|local_service|brand|navigational|support_faq","reason":"brief semantic explanation"}]}
@@ -108,7 +108,7 @@ Rules:
   ]));
   const missing = keywords.filter((keyword) => !returnedByOriginal.has(normalizeKeywordPhrase(keyword)));
   if (missing.length || returnedByOriginal.size !== keywords.length) {
-    throw Object.assign(new Error(`SEnuke AI omitted or changed ${missing.length || Math.abs(returnedByOriginal.size - keywords.length)} approved keyword phrase${missing.length === 1 ? "" : "s"}. Nothing was normalized; please retry.`), {
+    throw Object.assign(new Error(`SEnuke AI - AI Growth Operating System omitted or changed ${missing.length || Math.abs(returnedByOriginal.size - keywords.length)} approved keyword phrase${missing.length === 1 ? "" : "s"}. Nothing was normalized; please retry.`), {
       code: "ai_keyword_normalization_incomplete",
       statusCode: 502,
       publicMessage: true,

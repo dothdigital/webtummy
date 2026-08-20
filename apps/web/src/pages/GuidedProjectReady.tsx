@@ -34,7 +34,7 @@ export default function GuidedProjectReady() {
           </div>
 
           <div className="mt-8 rounded-xl border border-slate-200 text-left">
-            <div className="border-b border-slate-100 px-5 py-4 text-base font-bold text-slate-950">What SEnuke AI will do next</div>
+            <div className="border-b border-slate-100 px-5 py-4 text-base font-bold text-slate-950">What SEnuke AI - AI Growth Operating System will do next</div>
             <div className="divide-y divide-slate-100">
               {[
                 ["Analyze Your Business & Industry", "We’ll analyze your site, competitors, and market to understand your landscape.", "Starting now"],
@@ -75,7 +75,7 @@ export default function GuidedProjectReady() {
           </div>
           <div className="mt-8 rounded-xl border border-brand-100 bg-brand-50 p-5">
             <div className="text-lg font-bold text-slate-950">You’re all set. Let’s build something amazing.</div>
-            <p className="mt-2 text-sm leading-6 text-slate-600">SEnuke AI is here to help you grow smarter, faster, and with confidence.</p>
+            <p className="mt-2 text-sm leading-6 text-slate-600">SEnuke AI - AI Growth Operating System is here to help you grow smarter, faster, and with confidence.</p>
           </div>
         </Card>
       </div>

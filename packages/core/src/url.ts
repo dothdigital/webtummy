@@ -128,8 +128,82 @@ export function urlAliasKey(raw: string): string {
     const url = new URL(normalizeForDedup(raw));
     url.hostname = url.hostname.replace(/^www\./i, "").toLowerCase();
     url.pathname = url.pathname.replace(/\/index\.(?:html?|php)$/i, "/");
+    if (/^\/(?:home|homepage|default\.(?:html?|php|aspx?))\/?$/i.test(url.pathname)) url.pathname = "/";
     return `${url.hostname}${url.pathname}${url.search}`.toLowerCase();
   } catch {
     return raw.trim().toLowerCase();
   }
+}
+
+export type LogicalPageIdentityInput = {
+  id: string;
+  url: string;
+  finalUrl?: string | null;
+  canonicalUrl?: string | null;
+  contentFingerprint?: string | number | bigint | null;
+};
+
+/**
+ * Build stable logical-page keys without collapsing genuine submenu pages.
+ * Pages are grouped when they are well-known URL aliases, resolve to the same
+ * final URL, or render the same content at an equivalent root/service/location
+ * route. A shared canonical is trusted only when the rendered fingerprint also
+ * matches, because broken templates sometimes canonicalize every page to home.
+ */
+export function logicalPageIdentityKeys(pages: LogicalPageIdentityInput[]): Map<string, string> {
+  const parent = pages.map((_, index) => index);
+  const find = (index: number): number => parent[index] === index ? index : (parent[index] = find(parent[index]));
+  const unite = (left: number, right: number) => {
+    const leftRoot = find(left), rightRoot = find(right);
+    if (leftRoot !== rightRoot) parent[rightRoot] = leftRoot;
+  };
+  const joinBy = (keyFor: (page: LogicalPageIdentityInput) => string | null) => {
+    const firstByKey = new Map<string, number>();
+    pages.forEach((page, index) => {
+      const key = keyFor(page);
+      if (!key) return;
+      const first = firstByKey.get(key);
+      if (first == null) firstByKey.set(key, index);
+      else unite(first, index);
+    });
+  };
+  const fingerprint = (page: LogicalPageIdentityInput) => page.contentFingerprint == null ? "" : String(page.contentFingerprint);
+  const normalizedFinal = (page: LogicalPageIdentityInput) => {
+    if (!page.finalUrl) return null;
+    return urlAliasKey(page.finalUrl);
+  };
+  const canonicalOwner = (page: LogicalPageIdentityInput) => {
+    if (!page.canonicalUrl || !fingerprint(page) || !isSameHost(page.url, page.canonicalUrl)) return null;
+    return `${urlAliasKey(page.canonicalUrl)}|${fingerprint(page)}`;
+  };
+  const equivalentRoute = (page: LogicalPageIdentityInput) => {
+    if (!fingerprint(page)) return null;
+    try {
+      const path = new URL(normalizeForDedup(page.url)).pathname.replace(/^\/+|\/+$/g, "");
+      const segments = path.split("/").filter(Boolean).map((segment) => decodeURIComponent(segment).toLowerCase());
+      if (segments.length === 1) return `route:${segments[0]}|${fingerprint(page)}`;
+      if (segments.length === 2 && /^(?:service|services|location|locations)$/.test(segments[0])) return `route:${segments[1]}|${fingerprint(page)}`;
+    } catch {
+      return null;
+    }
+    return null;
+  };
+
+  joinBy((page) => urlAliasKey(page.url));
+  joinBy(normalizedFinal);
+  joinBy(canonicalOwner);
+  joinBy(equivalentRoute);
+
+  const members = new Map<number, number[]>();
+  pages.forEach((_, index) => {
+    const root = find(index), current = members.get(root) ?? [];
+    current.push(index);
+    members.set(root, current);
+  });
+  const result = new Map<string, string>();
+  for (const indexes of members.values()) {
+    const key = indexes.map((index) => urlAliasKey(pages[index].url)).sort((left, right) => left.length - right.length || left.localeCompare(right))[0];
+    for (const index of indexes) result.set(pages[index].id, key);
+  }
+  return result;
 }

@@ -32,7 +32,7 @@ export function nextProjectFlowStep(project: GuidedProject) {
   if (!workflowStepComplete(project, "keyword_analysis")) {
     return {
       title: "Complete Keyword Intelligence",
-      description: "SENuke AI will discover and validate primary, supporting, long-tail, question, commercial, and local search directions, then evaluate intent, demand, competition, topic clusters, entities, AI-search opportunities, and page direction. A new website does not require a crawl for this step.",
+      description: "SEnuke AI - AI Growth Operating System will discover and validate primary, supporting, long-tail, question, commercial, and local search directions, then evaluate intent, demand, competition, topic clusters, entities, AI-search opportunities, and page direction. A new website does not require a crawl for this step.",
       actionLabel: "Start Keyword Intelligence",
       to: `/keywords?projectId=${project.id}`,
       badge: "Step 3: Keyword Intelligence",
@@ -41,7 +41,7 @@ export function nextProjectFlowStep(project: GuidedProject) {
   if (siteAnalysisRequired && !workflowStepComplete(project, "site_analysis")) {
     return {
       title: "Run Site Analysis",
-      description: "Because this project has an existing website, SEnuke AI should crawl the site before strategy so the plan uses real page, SEO, internal link, speed, CTA, and indexability data.",
+      description: "Because this project has an existing website, SEnuke AI - AI Growth Operating System should crawl the site before strategy so the plan uses real page, SEO, internal link, speed, CTA, and indexability data.",
       actionLabel: "Analyze Site",
       to: `/site-analysis?projectId=${project.id}`,
       badge: "Step 4: Site Analysis",
@@ -50,7 +50,7 @@ export function nextProjectFlowStep(project: GuidedProject) {
   if (!hasStrategy) {
     return {
       title: "Generate Strategy",
-      description: "Keyword discovery and required site analysis are ready. SEnuke AI can now generate the strategy using the opportunity, keyword data, site data, business goal, and user path.",
+      description: "Keyword discovery and required site analysis are ready. SEnuke AI - AI Growth Operating System can now generate the strategy using the opportunity, keyword data, site data, business goal, and user path.",
       actionLabel: "Generate Strategy",
       to: `/strategy?projectId=${project.id}`,
       badge: "Step 5: Strategy",
@@ -84,7 +84,7 @@ export function nextProjectFlowStep(project: GuidedProject) {
   }
   return {
     title: "Create Execution Plan",
-    description: "The strategy is approved. SEnuke AI can now create the full prioritized execution plan with the right execution modules based on campaign type, readiness data, and strategy recommendations.",
+    description: "The strategy is approved. SEnuke AI - AI Growth Operating System can now create the full prioritized execution plan with the right execution modules based on campaign type, readiness data, and strategy recommendations.",
     actionLabel: "Create Execution Plan",
     to: `/strategy?projectId=${project.id}`,
     badge: "Step 6: Execution Plan",

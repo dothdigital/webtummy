@@ -152,7 +152,7 @@ export default function Overview() {
       <div className="space-y-5">
         <div>
           <h1 className="text-[28px] font-bold leading-tight text-charcoal-950">Dashboard</h1>
-          <p className="text-sm text-charcoal-500">{agencyNeedsClient ? "Create a client before starting an Agency project." : "Create a project to start the SEnuke AI workflow."}</p>
+          <p className="text-sm text-charcoal-500">{agencyNeedsClient ? "Create a client before starting an Agency project." : "Create a project to start the SEnuke AI - AI Growth Operating System workflow."}</p>
         </div>
         <Card className="border-brand-100 bg-brand-50/40 p-6">
           <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">

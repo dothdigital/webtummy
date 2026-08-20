@@ -1,6 +1,6 @@
-# SEnuke AI GUI Mockups — Phase 1 Core Screens
+# SEnuke AI - AI Growth Operating System GUI Mockups — Phase 1 Core Screens
 
-This package contains the first batch of labeled GUI mockups for the core SEnuke AI application screens. These are visual references for developers/designers and are not final coded UI assets.
+This package contains the first batch of labeled GUI mockups for the core SEnuke AI - AI Growth Operating System application screens. These are visual references for developers/designers and are not final coded UI assets.
 
 ## Included Screens
 

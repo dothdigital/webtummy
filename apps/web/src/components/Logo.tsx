@@ -22,15 +22,20 @@ export function Logo({ size = 32, light = false }: { size?: number; light?: bool
 
   return (
     <span
-      className={`inline-flex shrink-0 items-center rounded-lg px-2.5 py-1.5 ${light ? "bg-charcoal-800 shadow-sm" : "bg-charcoal-900"}`}
-      aria-label="SEnuke AI"
+      className={`inline-flex shrink-0 items-center gap-2.5 rounded-lg px-2.5 py-1.5 ${light ? "bg-charcoal-800 shadow-sm" : "bg-charcoal-900"}`}
+      aria-label="SEnuke AI - AI Growth Operating System"
     >
       <img
         src={logoSrc}
-        alt="SEnuke AI"
+        alt=""
+        aria-hidden="true"
         className="object-contain"
         style={{ width, height: size }}
       />
+      <span aria-hidden="true" className="max-w-[7.5rem] border-l border-white/15 pl-2.5 text-[9px] font-bold uppercase leading-[1.35] tracking-[0.08em] text-slate-200">
+        <span className="block">– AI Growth</span>
+        <span className="block">Operating System</span>
+      </span>
     </span>
   );
 }

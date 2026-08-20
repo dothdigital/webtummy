@@ -1,6 +1,6 @@
-# SEnuke AI — Architecture
+# SEnuke AI - AI Growth Operating System — Architecture
 
-Technical design for **SEnuke AI**, the SEO + AI Search crawler & audit platform.
+Technical design for **SEnuke AI - AI Growth Operating System**, the SEO + AI Search crawler & audit platform.
 Pairs with [`SCOPE.md`](./SCOPE.md).
 
 ---
@@ -57,7 +57,7 @@ Pairs with [`SCOPE.md`](./SCOPE.md).
 
 ## 1a. Auth & RBAC (multi-tenant)
 
-SEnuke AI is multi-tenant from day one. Three roles (see `schema.prisma` → `Role`):
+SEnuke AI - AI Growth Operating System is multi-tenant from day one. Three roles (see `schema.prisma` → `Role`):
 
 | Role | Tenant | Can do |
 |---|---|---|

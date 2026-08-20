@@ -1,8 +1,8 @@
-# SEnuke AI Project Execution Builder Workflow
+# SEnuke AI - AI Growth Operating System Project Execution Builder Workflow
 
 ## Goal
 
-This workflow explains how a user should move through SEnuke AI from project setup to execution tasks.
+This workflow explains how a user should move through SEnuke AI - AI Growth Operating System from project setup to execution tasks.
 
 The Project Execution Builder should not feel like a separate tool. It should collect work from the existing modules and turn that work into one clear project action plan.
 
@@ -352,9 +352,9 @@ Use this flow to test locally:
 The user should feel this sequence:
 
 1. I created a project.
-2. SEnuke AI checked the website.
-3. SEnuke AI found keyword, local, content, and social opportunities.
-4. SEnuke AI turned those findings into a task list.
+2. SEnuke AI - AI Growth Operating System checked the website.
+3. SEnuke AI - AI Growth Operating System found keyword, local, content, and social opportunities.
+4. SEnuke AI - AI Growth Operating System turned those findings into a task list.
 5. I know what to do first.
 6. I can open the right report or module from each task.
 7. I can track what is done and what still needs work.

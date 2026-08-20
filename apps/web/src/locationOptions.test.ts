@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { projectAnalysisLocations } from "./locationOptions";
+import { buildProjectMarketLocationNames, projectAnalysisLocations } from "./locationOptions";
 
 describe("projectAnalysisLocations", () => {
   it("keeps the browser request matrix aligned with canonical project markets", () => {
@@ -24,5 +24,19 @@ describe("projectAnalysisLocations", () => {
       markets: ["Edmonton", "Calgary"],
       locationNames: ["Edmonton, Alberta, Canada", "Calgary, Alberta, Canada"],
     });
+  });
+
+  it("keeps independently selected countries out of the business address hierarchy", () => {
+    expect(projectAnalysisLocations({
+      targetLocations: ["Canada", "United States"],
+      businessLocationJson: { city: "Mississauga", stateProvince: "Ontario", country: "Canada" },
+    })).toEqual({
+      country: "Canada",
+      region: "Ontario",
+      markets: ["Canada", "United States"],
+      locationNames: ["Canada", "United States"],
+    });
+    expect(buildProjectMarketLocationNames(["United States", "Ontario", "Toronto"], "Ontario", "Canada"))
+      .toEqual(["United States", "Ontario, Canada", "Toronto, Ontario, Canada"]);
   });
 });

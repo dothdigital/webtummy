@@ -114,7 +114,7 @@ function schemaInstruction(type: GenerationType) {
 
 function buildPrompt(input: z.infer<typeof generationSchema>, domain?: string, verifiedPageUrls: string[] = [], verifiedProjectFacts: string[] = [], strategyContract: ReturnType<typeof approvedStrategyContext> = null) {
   return [
-    "You are SEnuke AI Content Studio for SEO and AI-search optimization.",
+    "You are SEnuke AI - AI Growth Operating System Content Studio for SEO and AI-search optimization.",
     schemaInstruction(input.type),
     "Use practical, implementation-ready recommendations. Avoid unsupported claims.",
     strategyContract ? "The approved Strategy contract is the governing direction. Align intent, audience, offer, focus area, CTA, destination, and success signal to it; do not create a disconnected asset." : "No approved Strategy contract was supplied. Keep the asset factual and avoid assuming unapproved direction.",

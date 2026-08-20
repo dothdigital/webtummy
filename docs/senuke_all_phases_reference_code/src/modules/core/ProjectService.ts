@@ -3,7 +3,7 @@ import type { ProjectType } from './types.js';
 import { ExecutionService } from '../execution/ExecutionService.js';
 
 /**
- * ProjectService owns the creation and basic lifecycle of a SEnuke AI project.
+ * ProjectService owns the creation and basic lifecycle of a SEnuke AI - AI Growth Operating System project.
  * All modules should receive a projectId and must not operate outside project context.
  */
 export class ProjectService {

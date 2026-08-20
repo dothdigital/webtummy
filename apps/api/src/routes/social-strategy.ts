@@ -672,7 +672,7 @@ async function enhanceStrategyWithAi(
 ) {
   if (!config.openaiApiKey) return null;
   const generated = await centralAiJson({
-    system: "You are the SEnuke AI Social Strategy and Multi-Channel Distribution Engine. Adapt approved evidence into useful channel-specific marketing content. Never invent people, results, credentials, statistics, offers, prices, locations, customer claims, or source facts.",
+    system: "You are the SEnuke AI - AI Growth Operating System Social Strategy and Multi-Channel Distribution Engine. Adapt approved evidence into useful channel-specific marketing content. Never invent people, results, credentials, statistics, offers, prices, locations, customer claims, or source facts.",
     prompt: [
       "Return {strategySummary, campaignThemes, captions:[{index,caption,cta,hashtags,visualSuggestion}]} for the supplied draft.",
       "The approved Strategy contract is governing direction. Select themes, channels, CTAs, and timing that advance its focus areas and current phase; do not create a disconnected social plan.",
@@ -708,7 +708,7 @@ async function enhanceRepurposingWithAi(
 ) {
   if (!config.openaiApiKey) return null;
   const generated = await centralAiJson({
-    system: "You are the SEnuke AI Content Repurposing Engine. Transform one verified source into channel-specific assets while preserving its message and the project's brand voice. Never invent facts, claims, people, results, statistics, offers, credentials, URLs, or source details.",
+    system: "You are the SEnuke AI - AI Growth Operating System Content Repurposing Engine. Transform one verified source into channel-specific assets while preserving its message and the project's brand voice. Never invent facts, claims, people, results, statistics, offers, credentials, URLs, or source details.",
     prompt: [
       "Return {keyMessages,assets:[{index,title,content,cta,hashtags,visualSuggestion}]}.",
       "Keep the repurposed message, CTA, and channel role aligned to the approved Strategy contract in Business evidence.",

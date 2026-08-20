@@ -154,9 +154,9 @@ async function sendVerificationEmail(user: { id: string; email: string; name: st
   const link = `${config.webAppUrl.replace(/\/$/, "")}/verify-email?token=${encodeURIComponent(token)}`;
   await sendMail({
     to: user.email,
-    subject: "Verify your SEnuke AI account",
+    subject: "Verify your SEnuke AI - AI Growth Operating System account",
     text: `Hi ${user.name ?? "there"}, verify your account by opening this link: ${link}. This link expires in 24 hours.`,
-    html: `<p>Hi ${user.name ?? "there"},</p><p>Verify your SEnuke AI account by opening this secure link:</p><p><a href="${link}">Verify email address</a></p><p>This link expires in 24 hours.</p>`,
+    html: `<p>Hi ${user.name ?? "there"},</p><p>Verify your SEnuke AI - AI Growth Operating System account by opening this secure link:</p><p><a href="${link}">Verify email address</a></p><p>This link expires in 24 hours.</p>`,
   });
 }
 
@@ -172,18 +172,18 @@ async function sendPasswordResetEmail(user: { id: string; email: string; name: s
   const link = `${config.webAppUrl.replace(/\/$/, "")}/reset-password?token=${encodeURIComponent(token)}`;
   await sendMail({
     to: user.email,
-    subject: "Reset your SEnuke AI password",
+    subject: "Reset your SEnuke AI - AI Growth Operating System password",
     text: `Hi ${user.name ?? "there"}, reset your password by opening this link: ${link}. This link expires in 1 hour.`,
-    html: `<p>Hi ${user.name ?? "there"},</p><p>Reset your SEnuke AI password by opening this secure link:</p><p><a href="${link}">Reset password</a></p><p>This link expires in 1 hour.</p>`,
+    html: `<p>Hi ${user.name ?? "there"},</p><p>Reset your SEnuke AI - AI Growth Operating System password by opening this secure link:</p><p><a href="${link}">Reset password</a></p><p>This link expires in 1 hour.</p>`,
   });
 }
 
 async function sendSignupNotification(input: { name: string; workspaceType: string; email: string }) {
   if (!config.signupNotifyEmail) return;
 
-  const subject = "New SEnuke AI signup";
+  const subject = "New SEnuke AI - AI Growth Operating System signup";
   const text = [
-    "A new user registered for SEnuke AI.",
+    "A new user registered for SEnuke AI - AI Growth Operating System.",
     "",
     "Name: " + input.name,
     "Workspace Type: " + input.workspaceType,
@@ -194,7 +194,7 @@ async function sendSignupNotification(input: { name: string; workspaceType: stri
     to: config.signupNotifyEmail,
     subject,
     text,
-    html: "<p>A new user registered for SEnuke AI.</p><ul><li><strong>Name:</strong> " + escapeHtml(input.name) + "</li><li><strong>Workspace Type:</strong> " + escapeHtml(input.workspaceType) + "</li><li><strong>Email:</strong> " + escapeHtml(input.email) + "</li></ul>",
+    html: "<p>A new user registered for SEnuke AI - AI Growth Operating System.</p><ul><li><strong>Name:</strong> " + escapeHtml(input.name) + "</li><li><strong>Workspace Type:</strong> " + escapeHtml(input.workspaceType) + "</li><li><strong>Email:</strong> " + escapeHtml(input.email) + "</li></ul>",
   });
 }
 

@@ -172,6 +172,7 @@ model Workspace {
   agentThreads            ProjectAgentThread[]
   aiIntakeSessions        WorkspaceAiIntakeSession[]
   discoveryDrafts         DiscoveryDraft[]
+  discoveryIdeaExports    DiscoveryIdeaExport[]
   commercialSubscriptions WorkspaceSubscription[]
   entitlementOverrides    CommercialEntitlementOverride[]
   seatEntitlements        CommercialSeatEntitlement[]
@@ -278,7 +279,42 @@ model DiscoveryIdea {
   createdAt       DateTime       @default(now())
   updatedAt       DateTime       @updatedAt
 
+  exports DiscoveryIdeaExport[]
+
   @@index([discoveryDraftId, status, position])
+}
+
+// Immutable, workspace-scoped Business Discovery PDF snapshots. Re-downloading
+// a completed version serves the saved bytes and never invokes AI. A changed
+// idea creates the next version while prior exports remain auditable.
+model DiscoveryIdeaExport {
+  id                String        @id @default(cuid())
+  ideaId            String
+  idea              DiscoveryIdea @relation(fields: [ideaId], references: [id], onDelete: Cascade)
+  workspaceId       String
+  workspace         Workspace     @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  agencyClientId    String?
+  exportMode        String        @default("standard") @db.VarChar(40)
+  version           Int
+  status            String        @default("rendering") @db.VarChar(40)
+  filename          String        @db.VarChar(255)
+  sourceUpdatedAt   DateTime
+  snapshotJson      Json          @default("{}")
+  pdfBytes          Bytes?
+  byteLength        Int?
+  sha256            String?       @db.VarChar(64)
+  generatedByUserId String?       @db.VarChar(191)
+  generatedAt       DateTime?
+  lastDownloadedAt  DateTime?
+  downloadCount     Int           @default(0)
+  errorMessage      String?       @db.Text
+  createdAt         DateTime      @default(now())
+  updatedAt         DateTime      @updatedAt
+
+  @@unique([ideaId, exportMode, version])
+  @@index([workspaceId, createdAt])
+  @@index([ideaId, exportMode, sourceUpdatedAt, status])
+  @@index([agencyClientId, createdAt])
 }
 
 model WorkspaceInvitation {
@@ -1451,12 +1487,47 @@ model Project {
   websiteSftpIntegrations     WebsiteSftpIntegration[]
   measurementCheckpoints      MeasurementCheckpoint[]
   nextBestActions             NextBestAction[]
+  dev053VerificationRuns     Dev053VerificationRun[]
   originDiscoveryDraft        DiscoveryDraft? @relation("DiscoveryDraftConvertedProject")
 
   @@index([clientId, status])
   @@index([agencyClientId, status])
   @@index([websiteId])
   @@index([currentStep])
+}
+
+// Evidence-backed verification runs for the complete DEV-053 SEO, AEO and GEO
+// capability checklist. A run is immutable once completed so a workspace can
+// prove what was available, blocked, missing or not applicable at that time.
+model Dev053VerificationRun {
+  id                String   @id @default(cuid())
+  projectId         String
+  project           Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  initiatedByUserId String?  @db.VarChar(191)
+  status            String   @default("running") @db.VarChar(40)
+  summaryJson       Json     @default("{}")
+  createdAt         DateTime @default(now())
+  completedAt       DateTime?
+
+  results Dev053CapabilityResult[]
+
+  @@index([projectId, createdAt])
+  @@index([status, createdAt])
+}
+
+model Dev053CapabilityResult {
+  id                  String                @id @default(cuid())
+  runId               String
+  run                 Dev053VerificationRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+  capabilityId        String                @db.VarChar(20)
+  status              String                @db.VarChar(30)
+  message             String                @db.Text
+  workflowDestination String                @db.VarChar(1000)
+  evidenceJson        Json                  @default("{}")
+  checkedAt           DateTime              @default(now())
+
+  @@unique([runId, capabilityId])
+  @@index([capabilityId, status])
 }
 
 model LeadMagnetFunnel {

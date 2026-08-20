@@ -48,7 +48,7 @@ export function chatCompletionBody(input: { model: string; system: string; promp
 }
 
 export async function centralAiJson<T = unknown>(input: { system: string; prompt: string; model?: string; temperature?: number; maxOutputTokens?: number; maxInputBytes?: number; reasoningEffort?: CentralAiReasoningEffort; timeoutMs?: number; validate?: (value: unknown) => T }) {
-  if (!config.openaiApiKey) throw Object.assign(new Error("SEnuke AI is not configured."), { code: "ai_not_configured", statusCode: 503, publicMessage: true });
+  if (!config.openaiApiKey) throw Object.assign(new Error("SEnuke AI - AI Growth Operating System is not configured."), { code: "ai_not_configured", statusCode: 503, publicMessage: true });
   const requestContext = currentCommercialRequestContext();
   const policyDefault = defaultAiModelForFeature(requestContext?.featureKey, config.openaiContentModel);
   const model = input.model || (requestContext
@@ -76,21 +76,21 @@ export async function centralAiJson<T = unknown>(input: { system: string; prompt
     const data = await response.json().catch(() => ({})) as { error?: { message?: string }; choices?: Array<{ finish_reason?: string | null; message?: { content?: string; refusal?: string | null } }>; usage?: { prompt_tokens?: number; completion_tokens?: number }; model?: string };
     if (!response.ok) {
       if (response.status === 401 || response.status === 403) {
-        throw Object.assign(new Error("SEnuke AI could not authenticate with the configured AI provider. Ask an administrator to update OPENAI_API_KEY and restart the API."), { code: "ai_provider_auth_error", statusCode: 503, publicMessage: true });
+        throw Object.assign(new Error("SEnuke AI - AI Growth Operating System could not authenticate with the configured AI provider. Ask an administrator to update OPENAI_API_KEY and restart the API."), { code: "ai_provider_auth_error", statusCode: 503, publicMessage: true });
       }
-      throw Object.assign(new Error(data.error?.message || "SEnuke AI could not complete the request."), { code: "ai_provider_error", statusCode: 502 });
+      throw Object.assign(new Error(data.error?.message || "SEnuke AI - AI Growth Operating System could not complete the request."), { code: "ai_provider_error", statusCode: 502 });
     }
     const choice = data.choices?.[0];
     const content = choice?.message?.content?.trim();
     if (!content) {
       const reason = choice?.finish_reason || (choice?.message?.refusal ? "refusal" : "unknown");
-      throw Object.assign(new Error(`SEnuke AI returned no structured suggestions (provider finish reason: ${reason}).`), { code: "ai_output_empty", statusCode: 502, providerFinishReason: reason });
+      throw Object.assign(new Error(`SEnuke AI - AI Growth Operating System returned no structured suggestions (provider finish reason: ${reason}).`), { code: "ai_output_empty", statusCode: 502, providerFinishReason: reason });
     }
     let parsedResult: unknown;
     try {
       parsedResult = JSON.parse(content) as unknown;
     } catch {
-      throw Object.assign(new Error("SEnuke AI returned invalid structured suggestions."), { code: "ai_output_invalid", statusCode: 502 });
+      throw Object.assign(new Error("SEnuke AI - AI Growth Operating System returned invalid structured suggestions."), { code: "ai_output_invalid", statusCode: 502 });
     }
     // Validate before committing credits. A provider response that cannot be
     // used by the requested feature is a failed run, not billable output.
@@ -113,7 +113,7 @@ export async function centralAiJson<T = unknown>(input: { system: string; prompt
       await refundUsage({ usageEventId: automaticUsageEventId, reason: error instanceof Error ? error.message : "central AI execution failed" }).catch(() => undefined);
       if (requestContext) requestContext.usageEventId = null;
     }
-    if (error instanceof DOMException && error.name === "TimeoutError") throw Object.assign(new Error("SEnuke AI analysis took longer than expected. No information was applied; please retry the analysis."), { code: "ai_provider_timeout", statusCode: 504, publicMessage: true });
+    if (error instanceof DOMException && error.name === "TimeoutError") throw Object.assign(new Error("SEnuke AI - AI Growth Operating System analysis took longer than expected. No information was applied; please retry the analysis."), { code: "ai_provider_timeout", statusCode: 504, publicMessage: true });
     throw error;
   }
 }

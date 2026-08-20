@@ -1,4 +1,4 @@
-// Auth screens aligned to the SEnuke AI mockups.
+// Auth screens aligned to the SEnuke AI - AI Growth Operating System mockups.
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { useAuth } from "../auth.js";
@@ -57,7 +57,7 @@ export default function Login() {
           <div className="relative mt-10 max-w-lg lg:mt-12">
             <h1 className="text-4xl font-bold leading-tight text-slate-950 xl:text-[42px]">{mode === "signup" ? "AI-Powered SEO. Smarter. Faster. Better." : "Welcome back"}</h1>
             <p className="mt-4 max-w-md text-base leading-7 text-slate-500 xl:text-lg">
-              {mode === "signup" ? "Create your account and unlock the full power of SEnuke AI to grow your organic presence." : "Sign in to your account to continue managing your projects and AI campaigns."}
+              {mode === "signup" ? "Create your account and unlock the full power of SEnuke AI - AI Growth Operating System to grow your organic presence." : "Sign in to your account to continue managing your projects and AI campaigns."}
             </p>
 
             <div className="mt-8 space-y-5 xl:mt-10 xl:space-y-6">
@@ -341,7 +341,7 @@ function SignInForm({
   return (
     <form onSubmit={submit}>
       <div className="text-center">
-        <h2 className="text-2xl font-bold text-slate-950 xl:text-3xl">Sign in to SEnuke AI</h2>
+        <h2 className="text-2xl font-bold text-slate-950 xl:text-3xl">Sign in to SEnuke AI - AI Growth Operating System</h2>
         <p className="mt-2 text-base text-slate-500">Enter your credentials to access your account.</p>
       </div>
       <div className="mt-6 space-y-4">
@@ -479,7 +479,7 @@ function SignUpForm({
     <form onSubmit={submit}>
       <div className="text-center">
         <h2 className="text-2xl font-bold text-slate-950 xl:text-3xl">Create Your Account</h2>
-        <p className="mt-1.5 text-base text-slate-500">{jvZooPurchase ? "Claim your JVZoo purchase and create your SEnuke AI account." : "Get started in less than a minute."}</p>
+        <p className="mt-1.5 text-base text-slate-500">{jvZooPurchase ? "Claim your JVZoo purchase and create your SEnuke AI - AI Growth Operating System account." : "Get started in less than a minute."}</p>
       </div>
       {jvZooPurchase && <div className="mt-4 rounded-lg border border-brand-200 bg-brand-50 px-3 py-2.5 text-sm leading-5 text-brand-900"><strong>Already purchased through JVZoo?</strong> Use the same delivery email used at checkout. After email verification, your verified purchase will be connected automatically and you will not be charged again.</div>}
       <div className="mt-4 space-y-2.5">
@@ -526,7 +526,7 @@ function SignUpForm({
           <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-brand-50 text-sm font-bold text-brand-700">↗</div>
           <div>
             <div className="text-sm font-bold text-slate-950">{jvZooPurchase ? "Connect your existing JVZoo purchase" : trialPolicy.enabled ? `Start your ${trialPolicy.days}-day trial` : "Activate your workspace after verification"}</div>
-            <p className="text-xs leading-4 text-slate-500">{jvZooPurchase ? "Verification securely proves ownership of the delivery email before SEnuke AI unlocks the purchased plan." : trialPolicy.enabled ? "Verify your email, then create your first project with trial access." : "Verify your email, choose the plan for your workspace, and complete secure checkout through JVZoo before using projects or AI tools."}</p>
+            <p className="text-xs leading-4 text-slate-500">{jvZooPurchase ? "Verification securely proves ownership of the delivery email before SEnuke AI - AI Growth Operating System unlocks the purchased plan." : trialPolicy.enabled ? "Verify your email, then create your first project with trial access." : "Verify your email, choose the plan for your workspace, and complete secure checkout through JVZoo before using projects or AI tools."}</p>
           </div>
         </div>
       </div>

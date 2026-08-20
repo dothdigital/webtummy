@@ -8,7 +8,7 @@ const app = express();
 app.use(cors());
 app.use(express.json({ limit: '5mb' }));
 
-app.get('/health', (_req, res) => res.json({ ok: true, app: 'SEnuke AI Reference API' }));
+app.get('/health', (_req, res) => res.json({ ok: true, app: 'SEnuke AI - AI Growth Operating System Reference API' }));
 app.use('/api/projects', projectsRouter);
 app.use('/api/modules', modulesRouter);
 
@@ -19,5 +19,5 @@ app.use((err: any, _req: express.Request, res: express.Response, _next: express.
 });
 
 app.listen(env.PORT, () => {
-  console.log(`SEnuke AI reference API running on port ${env.PORT}`);
+  console.log(`SEnuke AI - AI Growth Operating System reference API running on port ${env.PORT}`);
 });

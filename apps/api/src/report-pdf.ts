@@ -238,7 +238,7 @@ export function createProfessionalReportPdf(contentValue: unknown, brand: PdfBra
   };
 
   doc.rect(0, 0, doc.page.width, 245).fill(navy);
-  doc.fillColor(teal).font("Helvetica-Bold").fontSize(12).text(brand.minimizeSenukeBranding === false ? "SENUKE AI" : "CLIENT DOCUMENT", 54, 48, { characterSpacing: 1.5 });
+  doc.fillColor(teal).font("Helvetica-Bold").fontSize(12).text(brand.minimizeSenukeBranding === false ? "SEnuke AI - AI Growth Operating System" : "CLIENT DOCUMENT", 54, 48, { characterSpacing: 1.5 });
   const logoMatch = brand.logoDataUrl?.match(/^data:image\/(?:png|jpeg);base64,(.+)$/i);
   if (logoMatch) { try { doc.image(Buffer.from(logoMatch[1], "base64"), 410, 35, { fit: [130, 48], align: "right", valign: "center" }); } catch { /* Invalid saved logo data is omitted without breaking the document. */ } }
   doc.fillColor(white).font("Helvetica-Bold").fontSize(28).text(reportType === "agency_proposal" ? "Agency Growth Proposal" : reportType === "seo_audit" ? "Complete SEO Findings Report" : reportType === "strategy" ? "Complete Strategy Report" : workspaceHeading(brand.workspaceType), 54, 83, { width: 480 });

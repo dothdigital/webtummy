@@ -217,7 +217,7 @@ function growthReadiness(project: NonNullable<Awaited<ReturnType<typeof scopedPr
     {
       key: "intake",
       title: "Project intake required",
-      description: "SEnuke AI needs the business profile, audience, offer, goal, and project context before advanced growth analysis can run.",
+      description: "SEnuke AI - AI Growth Operating System needs the business profile, audience, offer, goal, and project context before advanced growth analysis can run.",
       status: intakeComplete ? "complete" : "missing",
       required: true,
       actions: [{ label: "Complete Intake", url: `/guided-projects/${project.id}/intake` }],
@@ -225,7 +225,7 @@ function growthReadiness(project: NonNullable<Awaited<ReturnType<typeof scopedPr
     {
       key: "opportunity",
       title: "Opportunity required",
-      description: "SEnuke AI needs to know what direction this project is targeting before it can create growth recommendations.",
+      description: "SEnuke AI - AI Growth Operating System needs to know what direction this project is targeting before it can create growth recommendations.",
       status: opportunityExists ? "complete" : "missing",
       required: true,
       actions: [{ label: "Find Opportunity", url: `/opportunities?projectId=${project.id}` }],
@@ -233,7 +233,7 @@ function growthReadiness(project: NonNullable<Awaited<ReturnType<typeof scopedPr
     {
       key: "strategy",
       title: "Strategy required",
-      description: "SEnuke AI needs an approved strategy before it can diagnose growth bottlenecks or create experiments.",
+      description: "SEnuke AI - AI Growth Operating System needs an approved strategy before it can diagnose growth bottlenecks or create experiments.",
       status: strategyApproved ? "complete" : "missing",
       required: true,
       actions: [{ label: "Generate Strategy", url: `/strategy?projectId=${project.id}` }],
@@ -244,7 +244,7 @@ function growthReadiness(project: NonNullable<Awaited<ReturnType<typeof scopedPr
     items.push({
       key: "website",
       title: "No website found",
-      description: "Create or connect a website first so SEnuke AI can analyze and optimize it.",
+      description: "Create or connect a website first so SEnuke AI - AI Growth Operating System can analyze and optimize it.",
       status: "missing",
       required: true,
       actions: [
@@ -257,8 +257,8 @@ function growthReadiness(project: NonNullable<Awaited<ReturnType<typeof scopedPr
       key: "site_analysis",
       title: siteAnalysisInProgress ? "Site analysis in progress" : "Site analysis required",
       description: siteAnalysisInProgress
-        ? "SEnuke AI is currently analyzing this website. Growth recommendations will unlock automatically when the crawl finishes."
-        : "SEnuke AI needs to analyze your website before it can evaluate funnel gaps, conversion issues, SEO issues, internal links, AI citations, or page improvements.",
+        ? "SEnuke AI - AI Growth Operating System is currently analyzing this website. Growth recommendations will unlock automatically when the crawl finishes."
+        : "SEnuke AI - AI Growth Operating System needs to analyze your website before it can evaluate funnel gaps, conversion issues, SEO issues, internal links, AI citations, or page improvements.",
       status: siteAnalysisComplete ? "complete" : siteAnalysisInProgress ? "in_progress" : "missing",
       required: true,
       actions: [{ label: siteAnalysisInProgress ? "View progress" : "Analyze Site", url: `/site-analysis?projectId=${project.id}` }],
@@ -271,7 +271,7 @@ function growthReadiness(project: NonNullable<Awaited<ReturnType<typeof scopedPr
     status: missing.length === 0 ? "ready" : "blocked",
     message: missing.length === 0
       ? "Growth Engine has the required foundation data for this project."
-      : "Before SEnuke AI can run this, we need to complete these missing steps.",
+      : "Before SEnuke AI - AI Growth Operating System can run this, we need to complete these missing steps.",
     items,
     missing,
   };
@@ -504,7 +504,7 @@ function buildSupportingContentRoadmap(project: NonNullable<Awaited<ReturnType<t
       conditional: opportunities.filter((item) => item.queue === "conditional").length,
     },
     recommendedCadence: total > 24 ? "1–2 approved pieces per week; reassess every 30 days" : "1 approved piece per week; reassess every 30 days",
-    rationale: `SEnuke AI mapped ${total} distinct supporting-content opportunities from approved keywords, search demand, website pages, target markets, and business goals. Only the ${nowTarget} highest-priority items are recommended for the current phase.`,
+    rationale: `SEnuke AI - AI Growth Operating System mapped ${total} distinct supporting-content opportunities from approved keywords, search demand, website pages, target markets, and business goals. Only the ${nowTarget} highest-priority items are recommended for the current phase.`,
   };
 }
 

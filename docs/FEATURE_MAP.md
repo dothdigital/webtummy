@@ -1,4 +1,4 @@
-# Feature Map — Screaming Frog parity + SEnuke AI differentiators
+# Feature Map — Screaming Frog parity + SEnuke AI - AI Growth Operating System differentiators
 
 You asked for the full Screaming Frog (SF) feature set. This maps **every** requested
 feature to a phase, with effort (S/M/L/XL) and ROI for an agency SaaS, so we ship value

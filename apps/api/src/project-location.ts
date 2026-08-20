@@ -6,6 +6,27 @@ export type BusinessLocation = {
   postalCode?: string;
 };
 
+const countryNamesByKey = (() => {
+  const names = new Map<string, string>();
+  const displayNames = new Intl.DisplayNames(["en"], { type: "region" });
+  for (let first = 65; first <= 90; first += 1) {
+    for (let second = 65; second <= 90; second += 1) {
+      const code = String.fromCharCode(first, second);
+      const label = displayNames.of(code);
+      if (!label || label === code) continue;
+      names.set(code.toLocaleLowerCase(), label);
+      names.set(label.toLocaleLowerCase(), label);
+    }
+  }
+  names.set("usa", "United States");
+  names.set("uk", "United Kingdom");
+  return names;
+})();
+
+function countryLocationLabel(value: string) {
+  return countryNamesByKey.get(value.trim().toLocaleLowerCase()) ?? null;
+}
+
 export function cleanTargetMarkets(values: string[]) {
   const seen = new Set<string>();
   return values.map((value) => value.trim().replace(/\s+/g, " ")).filter((value) => {
@@ -47,13 +68,19 @@ export function projectAnalysisLocationLabels(
     : typeof targetLocations === "string"
       ? targetLocations.split(/[;\n]/)
       : [];
+  const explicitContextMarkets = new Set(raw
+    .filter((item) => !item.includes(","))
+    .map((item) => item.trim().toLocaleLowerCase())
+    .filter((item) => excluded.has(item)));
   const markets = cleanGeographicTargetMarkets(raw.flatMap((item) => item.split(",")))
-    .filter((market) => !excluded.has(market.toLocaleLowerCase()));
+    .filter((market) => !excluded.has(market.toLocaleLowerCase()) || explicitContextMarkets.has(market.toLocaleLowerCase()));
   if (!markets.length && businessLocationJson?.city?.trim()) markets.push(businessLocationJson.city.trim());
   return [...new Map(markets.map((market) => {
     const normalizedMarket = market.toLocaleLowerCase();
+    const matchedCountry = countryLocationLabel(market);
+    if (matchedCountry) return [matchedCountry.toLocaleLowerCase(), matchedCountry] as const;
     const parts = [market];
-    if (region && !normalizedMarket.includes(region.toLocaleLowerCase())) parts.push(region);
+    if (region && normalizedMarket !== region.toLocaleLowerCase() && !normalizedMarket.includes(region.toLocaleLowerCase())) parts.push(region);
     if (country && !normalizedMarket.includes(country.toLocaleLowerCase())) parts.push(country);
     const label = canonicalGeographicLocationLabel(parts.join(", "));
     return [label.toLocaleLowerCase(), label] as const;

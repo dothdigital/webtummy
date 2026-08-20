@@ -257,6 +257,7 @@ export default function AdaptiveBusinessDiscovery({ draft, isAgency, clients, on
     <Card className="overflow-hidden"><div className="bg-slate-950 px-5 py-6 text-white sm:px-7"><div className="text-[10px] font-black uppercase tracking-[0.16em] text-emerald-300">Here is what I understand · AI suggested</div><h2 className="mt-2 text-2xl font-black">{String(summary.title || current.title)}</h2><p className="mt-2 max-w-4xl text-sm leading-6 text-slate-300">{String(summary.description || current.sourceText || "Review the generated directions below.")}</p></div><div className="grid gap-3 p-5 md:grid-cols-2 lg:grid-cols-4">{[["Audience", summary.audience], ["Revenue model", summary.revenueModel], ["Delivery", summary.deliveryMode], ["Primary goal", summary.primaryGoal]].map(([label, value]) => <div key={String(label)} className="rounded-xl border bg-slate-50 p-3"><div className="text-[9px] font-black uppercase tracking-wide text-slate-400">{String(label)}</div><div className="mt-1 text-xs font-bold leading-5 text-slate-800">{String(value || "Not established yet")}</div></div>)}</div></Card>
     <DiscoveryIdeaTabs
       draftId={current.id}
+      isAgency={isAgency}
       ideas={current.ideas}
       busy={busy}
       feedbackByIdea={feedbackByIdea}

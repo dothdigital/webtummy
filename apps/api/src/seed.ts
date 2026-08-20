@@ -229,7 +229,7 @@ async function main() {
     data: {
       email,
       passwordHash: await hashPassword(password),
-      name: "SEnuke AI Admin",
+      name: "SEnuke AI - AI Growth Operating System Admin",
       role: "super_admin",
     },
   });

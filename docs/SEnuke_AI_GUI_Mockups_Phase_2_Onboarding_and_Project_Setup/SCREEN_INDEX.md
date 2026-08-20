@@ -1,4 +1,4 @@
-# SEnuke AI GUI Mockups — Phase 2 Onboarding and Project Setup
+# SEnuke AI - AI Growth Operating System GUI Mockups — Phase 2 Onboarding and Project Setup
 
 1. 01_Login_Screen.png
 2. 02_Signup_Create_Account_Screen.png

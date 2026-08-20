@@ -186,7 +186,7 @@ describe("Approved Release website renderer", () => {
     expect(html).toContain("<title>Super Visa Insurance Brampton | Example</title>");
     expect(html).toContain('type="application/ld+json"');
     expect(html).toContain("All rights reserved.");
-    expect(html).not.toContain("approved SENuke AI release");
+    expect(html).not.toContain("approved SEnuke AI - AI Growth Operating System release");
   });
 
   it("publishes each governed page section as a separate Gutenberg block", () => {
@@ -575,13 +575,20 @@ describe("Approved Release website renderer", () => {
     expect(files[0].content).toContain('alt="Family reviewing Super Visa insurance"');
   });
 
-  it("installs first-party tracking only in production output", () => {
-    const tracking = { siteId: "site-123456789", scriptUrl: "https://api.example.test/api/public/website-tracking/tag.js?site=site-123456789" };
+  it("installs first-party and GA4 tracking only in production output", () => {
+    const tracking = { siteId: "site-123456789", scriptUrl: "https://api.example.test/api/public/website-tracking/tag.js?site=site-123456789", ga4MeasurementId: "G-ABC1234567" };
     const production = renderWebsitePageDocument(model, model.pages[0], { environmentType: "production", tracking });
     const staging = renderWebsitePageDocument(model, model.pages[0], { environmentType: "staging", tracking });
     const wordpress = renderWebsitePageWordPressBlocks(model, model.pages[0], { tracking });
     expect(production).toContain('data-senuke-site="site-123456789"');
+    expect(production).toContain("googletagmanager.com/gtag/js?id=G-ABC1234567");
+    expect(production.match(/googletagmanager\.com\/gtag/g)).toHaveLength(1);
     expect(staging).not.toContain("website-tracking/tag.js");
+    expect(staging).not.toContain("googletagmanager.com/gtag");
     expect(wordpress).toContain('data-senuke-site="site-123456789"');
+    expect(wordpress).not.toContain("googletagmanager.com/gtag");
+
+    const invalid = renderWebsitePageDocument(model, model.pages[0], { environmentType: "production", tracking: { ...tracking, ga4MeasurementId: "not-a-measurement-id" } });
+    expect(invalid).not.toContain("googletagmanager.com/gtag");
   });
 });

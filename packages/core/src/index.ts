@@ -15,6 +15,7 @@ export * from "./approvals.js";
 export * from "./websiteModel.js";
 export * from "./websiteGeneration.js";
 export * from "./websiteRenderer.js";
+export * from "./dev053Verification.js";
 export * from "./websiteLaunchReadiness.js";
 export * from "./websiteQualityGovernance.js";
 export * from "./keywordNormalization.js";

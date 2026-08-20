@@ -43,7 +43,7 @@ export default function Legal({ kind }: { kind: LegalKind }) {
     return (
       <Shell title="Privacy Policy">
         <Section title="1. Who We Are">
-          <p>SEnuke AI is an SEO and AI-search audit platform. This Privacy Policy explains how we collect, use, disclose, and protect information when you use the SEnuke AI website, dashboard, crawler, reports, billing flows, and related services.</p>
+          <p>SEnuke AI - AI Growth Operating System is an SEO and AI-search audit platform. This Privacy Policy explains how we collect, use, disclose, and protect information when you use the SEnuke AI - AI Growth Operating System website, dashboard, crawler, reports, billing flows, and related services.</p>
           <p>Contact: support@senuke.ai.</p>
         </Section>
 
@@ -59,22 +59,22 @@ export default function Legal({ kind }: { kind: LegalKind }) {
         </Section>
 
         <Section title="4. Website Crawling and Client Data">
-          <p>When you submit a website or URL, SEnuke AI may crawl publicly accessible pages and assets to identify SEO, performance, content, schema, link, and AI-search readiness issues. You are responsible for ensuring you have the authority to crawl and analyze submitted websites.</p>
+          <p>When you submit a website or URL, SEnuke AI - AI Growth Operating System may crawl publicly accessible pages and assets to identify SEO, performance, content, schema, link, and AI-search readiness issues. You are responsible for ensuring you have the authority to crawl and analyze submitted websites.</p>
           <p>Audit results may include page titles, metadata, headings, page text excerpts, URLs, links, structured data, response data, and recommendations derived from those pages.</p>
         </Section>
 
         <Section title="5. Third-Party Services">
-          <p>We use selected service providers to operate SEnuke AI, including hosting and infrastructure providers, email delivery providers, JVZoo for checkout, recurring billing, and purchase notifications, Google reCAPTCHA v3 for abuse prevention, Google or other performance APIs where configured, keyword and SERP data providers where configured, and OpenAI for AI-assisted content or analysis features.</p>
+          <p>We use selected service providers to operate SEnuke AI - AI Growth Operating System, including hosting and infrastructure providers, email delivery providers, JVZoo for checkout, recurring billing, and purchase notifications, Google reCAPTCHA v3 for abuse prevention, Google or other performance APIs where configured, keyword and SERP data providers where configured, and OpenAI for AI-assisted content or analysis features.</p>
           <p>These providers process information according to their own terms and privacy policies. We share only the information needed for the relevant feature or operational purpose.</p>
         </Section>
 
         <Section title="6. Cookies, Local Storage, and reCAPTCHA">
-          <p>SEnuke AI uses browser storage for authentication tokens, active client context, and dashboard state. Google reCAPTCHA v3 may analyze browser and interaction signals to determine whether registration activity appears legitimate.</p>
+          <p>SEnuke AI - AI Growth Operating System uses browser storage for authentication tokens, active client context, and dashboard state. Google reCAPTCHA v3 may analyze browser and interaction signals to determine whether registration activity appears legitimate.</p>
           <p>Use of reCAPTCHA is subject to Google&apos;s Privacy Policy and Terms of Service.</p>
         </Section>
 
         <Section title="7. Billing and Invoices">
-          <p>Payments, subscriptions, purchase records, and customer purchase access are handled through JVZoo and its supported payment processors. We store provider references, subscription status, plan information, and limited transaction metadata, but we do not store full payment card numbers on SEnuke AI servers.</p>
+          <p>Payments, subscriptions, purchase records, and customer purchase access are handled through JVZoo and its supported payment processors. We store provider references, subscription status, plan information, and limited transaction metadata, but we do not store full payment card numbers on SEnuke AI - AI Growth Operating System servers.</p>
         </Section>
 
         <Section title="8. Security and Retention">
@@ -87,7 +87,7 @@ export default function Legal({ kind }: { kind: LegalKind }) {
         </Section>
 
         <Section title="10. Changes">
-          <p>We may update this Privacy Policy as SEnuke AI changes. The updated version will be posted with a new effective date. Continued use of the service after changes means you accept the updated policy.</p>
+          <p>We may update this Privacy Policy as SEnuke AI - AI Growth Operating System changes. The updated version will be posted with a new effective date. Continued use of the service after changes means you accept the updated policy.</p>
         </Section>
       </Shell>
     );
@@ -96,12 +96,12 @@ export default function Legal({ kind }: { kind: LegalKind }) {
   return (
     <Shell title="Terms and Conditions">
       <Section title="1. Agreement">
-        <p>These Terms and Conditions govern access to and use of the SEnuke AI SEO and AI-search audit platform. By creating an account, signing in, or using the service, you agree to these Terms.</p>
-        <p>If you use SEnuke AI for a company or client, you confirm that you have authority to bind that organization and to submit websites, data, and content for analysis.</p>
+        <p>These Terms and Conditions govern access to and use of the SEnuke AI - AI Growth Operating System SEO and AI-search audit platform. By creating an account, signing in, or using the service, you agree to these Terms.</p>
+        <p>If you use SEnuke AI - AI Growth Operating System for a company or client, you confirm that you have authority to bind that organization and to submit websites, data, and content for analysis.</p>
       </Section>
 
       <Section title="2. Service Overview">
-        <p>SEnuke AI helps crawl websites, identify technical and content issues, generate keyword and SEO insights, score AI-search readiness, and prepare reports. Results are informational and decision-support tools, not guarantees of search ranking, indexing, traffic, revenue, or legal compliance.</p>
+        <p>SEnuke AI - AI Growth Operating System helps crawl websites, identify technical and content issues, generate keyword and SEO insights, score AI-search readiness, and prepare reports. Results are informational and decision-support tools, not guarantees of search ranking, indexing, traffic, revenue, or legal compliance.</p>
       </Section>
 
       <Section title="3. Accounts and Access">
@@ -110,12 +110,12 @@ export default function Legal({ kind }: { kind: LegalKind }) {
       </Section>
 
       <Section title="4. Acceptable Use">
-        <p>You may only crawl, audit, or analyze websites and content that you own, manage, or are authorized to assess. You must not use SEnuke AI to attack, overload, scrape unlawfully, bypass access controls, collect sensitive personal data without authority, or violate third-party rights.</p>
+        <p>You may only crawl, audit, or analyze websites and content that you own, manage, or are authorized to assess. You must not use SEnuke AI - AI Growth Operating System to attack, overload, scrape unlawfully, bypass access controls, collect sensitive personal data without authority, or violate third-party rights.</p>
         <p>We may suspend or limit access if we believe use is abusive, unlawful, risky to infrastructure, or inconsistent with these Terms.</p>
       </Section>
 
       <Section title="5. Client Content and Reports">
-        <p>You retain ownership of websites, inputs, uploaded or entered content, and client materials you provide. You grant SEnuke AI permission to process that information to provide audits, reports, AI-assisted outputs, billing, support, security, and service improvements.</p>
+        <p>You retain ownership of websites, inputs, uploaded or entered content, and client materials you provide. You grant SEnuke AI - AI Growth Operating System permission to process that information to provide audits, reports, AI-assisted outputs, billing, support, security, and service improvements.</p>
         <p>You are responsible for reviewing generated recommendations, AI-assisted content, metadata, schema, reports, and exports before publishing or relying on them.</p>
       </Section>
 
@@ -125,27 +125,27 @@ export default function Legal({ kind }: { kind: LegalKind }) {
       </Section>
 
       <Section title="7. Plans, Billing, and Invoices">
-        <p>Paid plan access, subscription status, entitlements, and purchase history may be managed through SEnuke AI and JVZoo. Fees are billed according to the selected plan and the JVZoo checkout terms shown at purchase.</p>
+        <p>Paid plan access, subscription status, entitlements, and purchase history may be managed through SEnuke AI - AI Growth Operating System and JVZoo. Fees are billed according to the selected plan and the JVZoo checkout terms shown at purchase.</p>
         <p>Unless otherwise stated, fees are non-refundable except where required by law or expressly agreed in writing. We may change plans, quotas, or pricing with notice where required.</p>
       </Section>
 
       <Section title="8. Availability and Changes">
-        <p>We aim to keep SEnuke AI reliable, but the service may be unavailable because of maintenance, updates, incidents, third-party outages, crawler limitations, website blocking, API limits, or events outside our control.</p>
+        <p>We aim to keep SEnuke AI - AI Growth Operating System reliable, but the service may be unavailable because of maintenance, updates, incidents, third-party outages, crawler limitations, website blocking, API limits, or events outside our control.</p>
         <p>We may add, change, suspend, or discontinue features as the product evolves.</p>
       </Section>
 
       <Section title="9. Intellectual Property">
-        <p>SEnuke AI, its software, user interface, workflows, branding, and platform technology are owned by the platform operator or its licensors. These Terms do not transfer ownership of the platform to you.</p>
+        <p>SEnuke AI - AI Growth Operating System, its software, user interface, workflows, branding, and platform technology are owned by the platform operator or its licensors. These Terms do not transfer ownership of the platform to you.</p>
         <p>You may use reports and outputs generated for your authorized client work, subject to these Terms and your responsibility to review them.</p>
       </Section>
 
       <Section title="10. Disclaimers and Limitation of Liability">
-        <p>SEnuke AI is provided on an “as is” and “as available” basis. To the maximum extent permitted by law, we disclaim warranties of merchantability, fitness for a particular purpose, non-infringement, and uninterrupted or error-free operation.</p>
+        <p>SEnuke AI - AI Growth Operating System is provided on an “as is” and “as available” basis. To the maximum extent permitted by law, we disclaim warranties of merchantability, fitness for a particular purpose, non-infringement, and uninterrupted or error-free operation.</p>
         <p>To the maximum extent permitted by law, the platform operator will not be liable for indirect, incidental, special, consequential, exemplary, or punitive damages, or for lost profits, lost rankings, lost traffic, lost data, or business interruption.</p>
       </Section>
 
       <Section title="11. Termination">
-        <p>You may stop using SEnuke AI at any time. We may suspend or terminate access for non-payment, security risk, abuse, legal risk, or breach of these Terms. Some obligations, including payment, confidentiality, intellectual property, disclaimers, and limitations of liability, survive termination.</p>
+        <p>You may stop using SEnuke AI - AI Growth Operating System at any time. We may suspend or terminate access for non-payment, security risk, abuse, legal risk, or breach of these Terms. Some obligations, including payment, confidentiality, intellectual property, disclaimers, and limitations of liability, survive termination.</p>
       </Section>
 
       <Section title="12. Contact">

@@ -27,7 +27,7 @@ export type WebsiteRenderOptions = {
   assetUrls?: Record<string, string>;
   internalUrlMap?: Record<string, string>;
   formAction?: string;
-  tracking?: { siteId: string; scriptUrl: string; releaseId?: string };
+  tracking?: { siteId: string; scriptUrl: string; releaseId?: string; ga4MeasurementId?: string };
   /** Preview and staging output are never indexable. */
   environmentType?: WebsiteQualityEnvironment;
 };
@@ -39,6 +39,18 @@ const escapeHtml = (value: unknown) =>
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;")
     .replace(/'/g, "&#039;");
+
+const validGa4MeasurementId = (value: unknown) => {
+  const measurementId = String(value ?? "").trim().toUpperCase();
+  return /^G-[A-Z0-9]{6,20}$/.test(measurementId) ? measurementId : "";
+};
+
+const ga4HeadScript = (value: unknown) => {
+  const measurementId = validGa4MeasurementId(value);
+  if (!measurementId) return "";
+  const encodedId = JSON.stringify(measurementId);
+  return `<script async src="https://www.googletagmanager.com/gtag/js?id=${escapeHtml(measurementId)}"></script>\n<script>window.dataLayer=window.dataLayer||[];function gtag(){dataLayer.push(arguments);}gtag('js',new Date());gtag('config',${encodedId});</script>`;
+};
 
 const propString = (component: WebsiteComponentInstance, name: string) => {
   const value = component.props[name];
@@ -662,6 +674,7 @@ document.querySelectorAll("[data-senuke-managed-form]").forEach(function(form){
   const trackingScript = production && options.tracking
     ? `<script async src="${escapeHtml(options.tracking.scriptUrl)}" data-senuke-site="${escapeHtml(options.tracking.siteId)}"${options.tracking.releaseId ? ` data-senuke-release="${escapeHtml(options.tracking.releaseId)}"` : ""}></script>`
     : "";
+  const googleAnalyticsScript = production ? ga4HeadScript(options.tracking?.ga4MeasurementId) : "";
   return `<!doctype html>
 <html lang="en" style="${cssVariables}">
 <head>
@@ -675,6 +688,7 @@ ${faviconUrl && renderableImageUrl(faviconUrl) ? `<link rel="icon" href="${escap
 <link rel="stylesheet" href="${escapeHtml(options.stylesheetHref || "/assets/senuke.css")}">
 <script type="application/ld+json">${safeJsonLd(page.seo.schemaJsonLd)}</script>
 ${trackingScript}
+${googleAnalyticsScript}
 </head>
 <body>
 <div class="senuke-site-topbar"><div class="senuke-site-topbar-inner">${socialNavigationHtml(model, "header")}${headerContactHtml(model)}</div></div>
@@ -949,7 +963,7 @@ export function createStaticWebsiteFiles(
   }).join("");
   const llmsPages = model.pages.map((page) => `- [${page.name}](${normalizedPath(page.slug)}): ${page.seo.metaDescription}`).join("\n");
   const manifest = {
-    generator: "SENuke AI Static HTML Renderer",
+    generator: "SEnuke AI - AI Growth Operating System Static HTML Renderer",
     rendererVersion: "1.0.0",
     approvedReleaseId: options.approvedReleaseId ?? null,
     snapshotHash: options.snapshotHash ?? null,

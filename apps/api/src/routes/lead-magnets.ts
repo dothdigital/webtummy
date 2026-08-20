@@ -22,7 +22,7 @@ const connectionSchema = z.object({
   endpointUrl: z.string().url().max(512).optional(),
   accountId: z.string().trim().max(191).optional(),
   listId: z.string().trim().max(191).optional(),
-  listName: z.string().trim().min(1).max(180).default("SEnuke AI Leads"),
+  listName: z.string().trim().min(1).max(180).default("SEnuke AI - AI Growth Operating System Leads"),
   fieldMappings: z.record(z.string(), z.string().trim().max(120)).default({ email: "email", firstName: "first_name", lastName: "last_name" }),
 });
 const metricsSchema = z.object({

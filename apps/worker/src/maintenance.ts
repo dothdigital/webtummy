@@ -167,9 +167,9 @@ export async function dailyBillingAccessSync() {
           const sent = await notifyClient({
             clientId: client.id,
             fallbackEmail: client.contactEmail,
-            subject: `Your SEnuke AI trial ends in ${days} day${days === 1 ? "" : "s"}`,
-            text: `Your SEnuke AI trial ends in ${days} day${days === 1 ? "" : "s"}. Upgrade here: ${appLink("/pricing")}`,
-            html: `<p>Your SEnuke AI trial ends in <strong>${days} day${days === 1 ? "" : "s"}</strong>.</p><p><a href="${appLink("/pricing")}">Choose a plan</a> to keep access active.</p>`,
+            subject: `Your SEnuke AI - AI Growth Operating System trial ends in ${days} day${days === 1 ? "" : "s"}`,
+            text: `Your SEnuke AI - AI Growth Operating System trial ends in ${days} day${days === 1 ? "" : "s"}. Upgrade here: ${appLink("/pricing")}`,
+            html: `<p>Your SEnuke AI - AI Growth Operating System trial ends in <strong>${days} day${days === 1 ? "" : "s"}</strong>.</p><p><a href="${appLink("/pricing")}">Choose a plan</a> to keep access active.</p>`,
           });
           if (sent) {
             await prisma.client.update({ where: { id: client.id }, data: { trialEndingSoonNotifiedAt: now } });
@@ -180,9 +180,9 @@ export async function dailyBillingAccessSync() {
           const sent = await notifyClient({
             clientId: client.id,
             fallbackEmail: client.contactEmail,
-            subject: "Your SEnuke AI trial has expired",
-            text: `Your SEnuke AI trial has expired. Choose a plan to continue: ${appLink("/pricing")}`,
-            html: `<p>Your SEnuke AI trial has expired.</p><p><a href="${appLink("/pricing")}">Choose a plan</a> to continue using SEnuke AI.</p>`,
+            subject: "Your SEnuke AI - AI Growth Operating System trial has expired",
+            text: `Your SEnuke AI - AI Growth Operating System trial has expired. Choose a plan to continue: ${appLink("/pricing")}`,
+            html: `<p>Your SEnuke AI - AI Growth Operating System trial has expired.</p><p><a href="${appLink("/pricing")}">Choose a plan</a> to continue using SEnuke AI - AI Growth Operating System.</p>`,
           });
           if (sent) {
             await prisma.client.update({ where: { id: client.id }, data: { trialExpiredNotifiedAt: now } });
@@ -195,9 +195,9 @@ export async function dailyBillingAccessSync() {
         const sent = await notifyClient({
           clientId: client.id,
           fallbackEmail: client.contactEmail,
-          subject: "SEnuke AI payment was unsuccessful",
-          text: `Your SEnuke AI payment was unsuccessful. Update or choose a plan here: ${appLink("/pricing?payment=unsuccessful")}`,
-          html: `<p>Your SEnuke AI payment was unsuccessful.</p><p><a href="${appLink("/pricing?payment=unsuccessful")}">Choose a plan or retry payment</a> to restore access.</p>`,
+          subject: "SEnuke AI - AI Growth Operating System payment was unsuccessful",
+          text: `Your SEnuke AI - AI Growth Operating System payment was unsuccessful. Update or choose a plan here: ${appLink("/pricing?payment=unsuccessful")}`,
+          html: `<p>Your SEnuke AI - AI Growth Operating System payment was unsuccessful.</p><p><a href="${appLink("/pricing?payment=unsuccessful")}">Choose a plan or retry payment</a> to restore access.</p>`,
         });
         if (sent) {
           await prisma.client.update({ where: { id: client.id }, data: { paymentFailedNotifiedAt: now } });
@@ -211,9 +211,9 @@ export async function dailyBillingAccessSync() {
           const sent = await notifyClient({
             clientId: client.id,
             fallbackEmail: client.contactEmail,
-            subject: `Your SEnuke AI manual access ends in ${days} day${days === 1 ? "" : "s"}`,
-            text: `Manual/offline SEnuke AI access ends in ${days} day${days === 1 ? "" : "s"}. Upgrade here: ${appLink("/pricing")}`,
-            html: `<p>Manual/offline SEnuke AI access ends in <strong>${days} day${days === 1 ? "" : "s"}</strong>.</p><p><a href="${appLink("/pricing")}">Upgrade</a> to keep access active.</p>`,
+            subject: `Your SEnuke AI - AI Growth Operating System manual access ends in ${days} day${days === 1 ? "" : "s"}`,
+            text: `Manual/offline SEnuke AI - AI Growth Operating System access ends in ${days} day${days === 1 ? "" : "s"}. Upgrade here: ${appLink("/pricing")}`,
+            html: `<p>Manual/offline SEnuke AI - AI Growth Operating System access ends in <strong>${days} day${days === 1 ? "" : "s"}</strong>.</p><p><a href="${appLink("/pricing")}">Upgrade</a> to keep access active.</p>`,
           });
           if (sent) {
             await prisma.client.update({ where: { id: client.id }, data: { manualAccessEndingSoonNotifiedAt: now } });
@@ -224,9 +224,9 @@ export async function dailyBillingAccessSync() {
           const sent = await notifyClient({
             clientId: client.id,
             fallbackEmail: client.contactEmail,
-            subject: "Your SEnuke AI manual access has expired",
-            text: `Manual/offline SEnuke AI access has expired. Choose a plan here: ${appLink("/pricing")}`,
-            html: `<p>Manual/offline SEnuke AI access has expired.</p><p><a href="${appLink("/pricing")}">Choose a plan</a> to restore access.</p>`,
+            subject: "Your SEnuke AI - AI Growth Operating System manual access has expired",
+            text: `Manual/offline SEnuke AI - AI Growth Operating System access has expired. Choose a plan here: ${appLink("/pricing")}`,
+            html: `<p>Manual/offline SEnuke AI - AI Growth Operating System access has expired.</p><p><a href="${appLink("/pricing")}">Choose a plan</a> to restore access.</p>`,
           });
           if (sent) {
             await prisma.client.update({ where: { id: client.id }, data: { manualAccessExpiredNotifiedAt: now } });
@@ -241,9 +241,9 @@ export async function dailyBillingAccessSync() {
           const sent = await notifyClient({
             clientId: client.id,
             fallbackEmail: client.contactEmail,
-            subject: `Your SEnuke AI subscription renews in ${days} day${days === 1 ? "" : "s"}`,
-            text: `Your SEnuke AI subscription period renews in ${days} day${days === 1 ? "" : "s"}. Manage billing: ${appLink("/billing")}`,
-            html: `<p>Your SEnuke AI subscription period renews in <strong>${days} day${days === 1 ? "" : "s"}</strong>.</p><p><a href="${appLink("/billing")}">Manage billing</a>.</p>`,
+            subject: `Your SEnuke AI - AI Growth Operating System subscription renews in ${days} day${days === 1 ? "" : "s"}`,
+            text: `Your SEnuke AI - AI Growth Operating System subscription period renews in ${days} day${days === 1 ? "" : "s"}. Manage billing: ${appLink("/billing")}`,
+            html: `<p>Your SEnuke AI - AI Growth Operating System subscription period renews in <strong>${days} day${days === 1 ? "" : "s"}</strong>.</p><p><a href="${appLink("/billing")}">Manage billing</a>.</p>`,
           });
           if (sent) {
             await prisma.client.update({ where: { id: client.id }, data: { subscriptionExpiringSoonNotifiedAt: now } });
@@ -417,7 +417,7 @@ export async function weeklyRankingReportGeneration() {
       const sent = await notifyClient({
         clientId: client.id,
         fallbackEmail: client.contactEmail,
-        subject: "Your weekly SEnuke AI ranking changes",
+        subject: "Your weekly SEnuke AI - AI Growth Operating System ranking changes",
         text: [`Weekly ranking changes for ${client.name}:`, "", ...lines, "", `Open dashboard: ${appLink("/keyword-insights")}`].join("\n"),
         html: `<p>Weekly ranking changes for <strong>${client.name}</strong>:</p><ul>${topMovements.map((item) => `<li><strong>${item.change < 0 ? "Up" : "Down"} ${Math.abs(item.change)}</strong>: ${item.keyword} is now #${item.currentRank} (was #${item.previousRank})</li>`).join("")}</ul><p><a href="${appLink("/keyword-insights")}">Open keyword dashboard</a></p>`,
       });
@@ -473,9 +473,9 @@ export async function monthlyClientReportGeneration() {
       const sent = await notifyClient({
         clientId: client.id,
         fallbackEmail: client.contactEmail,
-        subject: `Your SEnuke AI monthly report is ready`,
-        text: `Your monthly report for ${latest.website.domain} is ready. Score: ${latest.siteScore ?? "not scored"}. Open SEnuke AI: ${appLink("/")}`,
-        html: `<p>Your monthly report for <strong>${latest.website.domain}</strong> is ready.</p><p>Score: <strong>${latest.siteScore ?? "not scored"}</strong></p><p><a href="${appLink("/")}">Open SEnuke AI</a></p>`,
+        subject: `Your SEnuke AI - AI Growth Operating System monthly report is ready`,
+        text: `Your monthly report for ${latest.website.domain} is ready. Score: ${latest.siteScore ?? "not scored"}. Open SEnuke AI - AI Growth Operating System: ${appLink("/")}`,
+        html: `<p>Your monthly report for <strong>${latest.website.domain}</strong> is ready.</p><p>Score: <strong>${latest.siteScore ?? "not scored"}</strong></p><p><a href="${appLink("/")}">Open SEnuke AI - AI Growth Operating System</a></p>`,
       });
       if (sent) {
         await prisma.monthlyClientReport.update({ where: { id: report.id }, data: { emailSentAt: now } });
@@ -626,7 +626,7 @@ export async function workspaceNotificationEmailDelivery(now = new Date()) {
       for (const batch of batches) {
         const lines = batch.map((item) => `${item.title}: ${item.body}`);
         try {
-          await sendMail({ to: recipient.email, subject: batch.length > 1 ? `${batch.length} SEnuke AI project updates` : batch[0].title, text: lines.join("\n\n"), html: `<p>${lines.map((line) => line.replace(/&/g, "&amp;").replace(/</g, "&lt;")).join("</p><p>")}</p><p><a href="${appLink(batch[0].actionUrl || "/")}">Open SEnuke AI</a></p>` });
+          await sendMail({ to: recipient.email, subject: batch.length > 1 ? `${batch.length} SEnuke AI - AI Growth Operating System project updates` : batch[0].title, text: lines.join("\n\n"), html: `<p>${lines.map((line) => line.replace(/&/g, "&amp;").replace(/</g, "&lt;")).join("</p><p>")}</p><p><a href="${appLink(batch[0].actionUrl || "/")}">Open SEnuke AI - AI Growth Operating System</a></p>` });
           await prisma.workspaceNotification.updateMany({ where: { id: { in: batch.map((item) => item.id) } }, data: { emailStatus: "sent" } });
           sent += batch.length;
         } catch (error) {
@@ -689,7 +689,7 @@ export async function scheduledWebsiteTrackingHealthChecks(now = new Date()) {
           await tx.nextBestAction.updateMany({ where: { projectId: project.id, engineVersion: "post-launch-growth-v1", status: "selected", actionType: { not: "tracking_verification" } }, data: { status: "superseded", decision: "tracking_health_priority", decidedAt: now, selectedAt: null } });
           const dedupeKey = `post-launch:${project.id}:verify-live-tracking`.slice(0, 191);
           const existing = await tx.nextBestAction.findFirst({ where: { projectId: project.id, dedupeKey }, orderBy: { createdAt: "asc" } });
-          const data = { sourceType: "growth_engine", sourceId: site.id, title: "Verify tracking on the live website", recommendation: "Run a controlled production page-view and primary-conversion test. Confirm that SEnuke AI receives the events, then correct the tag, allowed host, consent, or form mapping if collection has stopped.", reasoningSummary: "The daily tracking-health check did not observe a recent event. Low traffic may be the cause, so verify with a controlled test before treating this as a failure.", expectedImpact: "A verified measurement stream that can continue collecting trustworthy baseline and outcome data.", confidence: 70, estimatedEffort: "low", route: "technical", priorityScore: 99, evidenceJson: { source: "daily_tracking_health", lastEventAt: site.lastEventAt, checkedAt: now, evidenceLimitation: "No recent event does not by itself prove that tracking is broken." } as Prisma.InputJsonValue, actionType: "tracking_verification", businessGoal: (project.primaryGoal || "Reliable growth measurement").slice(0, 255), targetEntitiesJson: [site.id] as Prisma.InputJsonValue, estimatedImpactJson: { statement: "Restore or confirm reliable tracking." } as Prisma.InputJsonValue, scoreJson: { priorityScore: 99, confidence: 70 } as Prisma.InputJsonValue, dependencyIdsJson: [] as Prisma.InputJsonValue, approvalType: "user_approval", riskLevel: "medium", urgency: 99, engineVersion: "post-launch-growth-v1", selectedAt: now, status: "selected" };
+          const data = { sourceType: "growth_engine", sourceId: site.id, title: "Verify tracking on the live website", recommendation: "Run a controlled production page-view and primary-conversion test. Confirm that SEnuke AI - AI Growth Operating System receives the events, then correct the tag, allowed host, consent, or form mapping if collection has stopped.", reasoningSummary: "The daily tracking-health check did not observe a recent event. Low traffic may be the cause, so verify with a controlled test before treating this as a failure.", expectedImpact: "A verified measurement stream that can continue collecting trustworthy baseline and outcome data.", confidence: 70, estimatedEffort: "low", route: "technical", priorityScore: 99, evidenceJson: { source: "daily_tracking_health", lastEventAt: site.lastEventAt, checkedAt: now, evidenceLimitation: "No recent event does not by itself prove that tracking is broken." } as Prisma.InputJsonValue, actionType: "tracking_verification", businessGoal: (project.primaryGoal || "Reliable growth measurement").slice(0, 255), targetEntitiesJson: [site.id] as Prisma.InputJsonValue, estimatedImpactJson: { statement: "Restore or confirm reliable tracking." } as Prisma.InputJsonValue, scoreJson: { priorityScore: 99, confidence: 70 } as Prisma.InputJsonValue, dependencyIdsJson: [] as Prisma.InputJsonValue, approvalType: "user_approval", riskLevel: "medium", urgency: 99, engineVersion: "post-launch-growth-v1", selectedAt: now, status: "selected" };
           if (existing) await tx.nextBestAction.update({ where: { id: existing.id }, data });
           else await tx.nextBestAction.create({ data: { projectId: project.id, dedupeKey, ...data } });
         });

@@ -27,8 +27,11 @@ export type StrategyRecommendation = {
 };
 export type IntelligentTask = { key: string; analysisKey: string; title: string; description: string; expectedOutcome: string; priority: StrategyRecommendation["priority"]; automationLevel: string; requiresApproval: boolean; approvalRisk: string; safetyCategory: string; manualInstructions: string; dependencyKeys: string[]; destination?: string; destinationUrl?: string; sourceModule?: string };
 
-const funnelKeys = ["funnel_discover", "funnel_evaluate", "funnel_trust", "funnel_convert", "funnel_delight", "funnel_grow_refer"];
-const supported = new Set(["freshness", "internal_link_equity", "cannibalization", "serp_ai", "crawl_budget", "intent_content_mapping", ...funnelKeys]);
+// Strategy may describe the complete customer journey, but a description is
+// not an Execution task. Only recommendations backed by a concrete platform
+// workflow are admitted here. Funnel recommendations remain visible in
+// Strategy until a module materializes exact assets or records to operate on.
+const supported = new Set(["freshness", "internal_link_equity", "cannibalization", "serp_ai", "crawl_budget", "intent_content_mapping"]);
 const liveChange = new Set(["freshness", "internal_link_equity", "cannibalization", "crawl_budget"]);
 const dependencies: Record<string, string[]> = {
   cannibalization: ["intent_content_mapping"], serp_ai: ["intent_content_mapping"], internal_link_equity: ["intent_content_mapping"],
@@ -49,16 +52,55 @@ const outcomes: Record<string, string> = {
   funnel_grow_refer: "Use verified outcomes to improve retention, expansion, advocacy, referrals, and the next growth cycle.",
 };
 
+const executableSpecs: Record<string, { title: string; destination: string; destinationUrl: string; instruction: string }> = {
+  freshness: {
+    title: "Review outdated pages and create refresh drafts",
+    destination: "content",
+    destinationUrl: "/ai-content",
+    instruction: "Open Content Studio, review the pages flagged as outdated, generate a refresh draft for each selected page, then send the exact drafts for approval.",
+  },
+  internal_link_equity: {
+    title: "Fix broken, weak, and missing internal links",
+    destination: "gap_analysis",
+    destinationUrl: "/gap-analysis",
+    instruction: "Open SEO & Gap Analysis, review the source URL, target URL, and proposed anchor for each finding, then approve the exact link changes to implement.",
+  },
+  cannibalization: {
+    title: "Resolve pages competing for the same keyword",
+    destination: "gap_analysis",
+    destinationUrl: "/gap-analysis",
+    instruction: "Open SEO & Gap Analysis, choose the owner URL for each competing keyword set, then approve the proposed merge, redirect, or reposition action for the other URLs.",
+  },
+  serp_ai: {
+    title: "Prepare answer and schema updates for selected pages",
+    destination: "ai_citations",
+    destinationUrl: "/ai-citations",
+    instruction: "Open AI Citations, review the cited page and missing answer or entity signal, generate the supported update, and approve only claims backed by saved evidence.",
+  },
+  crawl_budget: {
+    title: "Fix indexability, canonical, and crawl-path issues",
+    destination: "gap_analysis",
+    destinationUrl: "/gap-analysis",
+    instruction: "Open SEO & Gap Analysis, review each affected URL and its proposed canonical, redirect, sitemap, or indexability change, then approve the exact fixes.",
+  },
+  intent_content_mapping: {
+    title: "Review the keyword-to-page map",
+    destination: "content",
+    destinationUrl: "/seo-page-map",
+    instruction: "Open the SEO Page Map, review every approved keyword cluster and owner URL, resolve duplicate owners or unmapped clusters, then approve the map.",
+  },
+};
+
 export function buildIntelligentExecutionTasks(recommendations: StrategyRecommendation[]): IntelligentTask[] {
   const applicable = recommendations.filter((item) => {
     if (item.applicable === false || item.analysisKey === "unified_strategy_plan" || item.disposition === "deferred") return false;
-    return supported.has(item.analysisKey) || item.engineVersion === "dev-047-part2-v1";
+    return supported.has(item.analysisKey);
   });
   const recommendationKeys = new Set(applicable.map((item) => item.analysisKey));
   return applicable.map((item, index) => {
+    const spec = executableSpecs[item.analysisKey];
     const slug = item.title.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 100);
-    const funnelAction = item.analysisKey.startsWith("funnel_");
-    const approval = liveChange.has(item.analysisKey) || funnelAction || Boolean(item.requiredPermissions?.some((permission) => /approval|public|protected|publish|external/i.test(permission)));
+    const approval = liveChange.has(item.analysisKey) || Boolean(item.requiredPermissions?.some((permission) => /approval|public|protected|publish|external/i.test(permission)));
     const actionSummary = item.actions?.length ? ` AI will prepare: ${item.actions.join("; ")}.` : "";
     const explicitDependencies = (item.dependencies ?? []).filter((dependency) => recommendationKeys.has(dependency));
     const dependencyContext = item.dependencies?.length ? ` Dependencies: ${item.dependencies.join("; ")}.` : "";
@@ -66,19 +108,19 @@ export function buildIntelligentExecutionTasks(recommendations: StrategyRecommen
     return {
       key: `dev015:${item.analysisKey}:${slug || index}`,
       analysisKey: item.analysisKey,
-      title: item.title,
-      description: `${item.why} Evidence: ${item.evidence.join("; ") || "Approved Strategy evidence"}.${actionSummary}`,
+      title: spec.title,
+      description: `${spec.instruction} Evidence: ${item.evidence.join("; ") || "Approved Strategy evidence"}.${actionSummary}`,
       expectedOutcome: item.successMeasure ?? item.expectedImpact ?? outcomes[item.analysisKey] ?? `Complete the ${item.analysisKey.replaceAll("_", " ")} recommendation with measurable improvement and no duplicate work.`,
       priority: item.priority,
       automationLevel: approval ? "one_click_approval" : "manual_guided",
       requiresApproval: approval,
       approvalRisk: approval ? "high" : "low",
       safetyCategory: approval ? "protected_change" : "safe",
-      manualInstructions: `${item.executionMethod ?? item.title} Review the cited evidence and AI-prepared assets, preview every affected page or customer touchpoint, and approve before implementation.${dependencyContext}${capacityContext} ${item.validationRequirement ?? "Validate the result before completion."} ${item.recommendedExperiment ? `Recommended experiment: ${item.recommendedExperiment}` : ""} ${item.whatHappensAfterApproval ?? ""} Impact ${item.impact}/100; confidence ${item.confidence}%; decision priority ${item.priorityScore ?? item.impact}/100.`,
+      manualInstructions: `${spec.instruction}${dependencyContext}${capacityContext} ${item.validationRequirement ?? "Confirm the module reports no unresolved selected findings before completion."}`,
       dependencyKeys: [...new Set([...(dependencies[item.analysisKey] ?? []), ...explicitDependencies])],
-      destination: item.destination,
-      destinationUrl: item.destinationUrl,
-      sourceModule: item.sourceModule,
+      destination: spec.destination,
+      destinationUrl: spec.destinationUrl,
+      sourceModule: spec.destination,
     };
   });
 }

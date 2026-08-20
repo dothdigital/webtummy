@@ -2,7 +2,7 @@ import { one, query } from '../../db/db.js';
 import type { ExecutionTaskInput } from '../core/types.js';
 
 /**
- * ExecutionService is the core of SEnuke AI.
+ * ExecutionService is the core of SEnuke AI - AI Growth Operating System.
  * Every module must create tasks here so recommendations become executable workflows.
  */
 export class ExecutionService {

@@ -31,7 +31,7 @@ export default function AcceptInvitation() {
     <Card className="w-full max-w-md p-7">
       <Logo />
       <h1 className="mt-6 text-2xl font-bold text-slate-950">Accept workspace invitation</h1>
-      <p className="mt-2 text-sm leading-6 text-slate-600">If this email already has a SEnuke AI account, leave the new-account fields blank. Otherwise, enter your name and create a password for your own login.</p>
+      <p className="mt-2 text-sm leading-6 text-slate-600">If this email already has a SEnuke AI - AI Growth Operating System account, leave the new-account fields blank. Otherwise, enter your name and create a password for your own login.</p>
       {user && <div className="mt-4 rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">You are currently signed in as <b>{user.email}</b>. After accepting, this session will be signed out so the invited user can sign in with their own account.</div>}
       {error && <div className="mt-4 rounded-lg border border-red-200 bg-red-50 p-3 text-sm font-semibold text-red-700">{error}</div>}
       {!token ? <div className="mt-5 text-sm text-red-700">This invitation link is missing its secure token.</div> : <form onSubmit={(event) => void accept(event)} className="mt-5 space-y-4">

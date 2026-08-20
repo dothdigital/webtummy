@@ -14,6 +14,7 @@ import {
   normalizeForDedup,
   dedupKey,
   fileUrlWithoutTrailingSlash,
+  logicalPageIdentityKeys,
   urlAliasKey,
   detectPageIssues,
   type CrawlOptions,
@@ -567,6 +568,7 @@ async function postCrawl(crawlJobId: string, opts: CrawlOptions, rootUrl: string
       placement: true,
     },
   });
+  const logicalPageKeys = await logicalPageKeysForCrawl(crawlJobId);
 
   // 1. inlink counts + internal linking score
   const inlinkCounts = new Map<string, number>();
@@ -625,14 +627,14 @@ async function postCrawl(crawlJobId: string, opts: CrawlOptions, rootUrl: string
     bodyOutgoingCounts,
     weakAnchorCounts,
     knownStatus,
-  }, rootUrl);
+  }, rootUrl, logicalPageKeys);
 
   // 3. URL-alias and duplicate detection across the crawl. Aliases such as
   // www/apex and /index.html/root are one canonicalization problem, not four
   // separate duplicate-content problems.
-  await detectUrlAliases(crawlJobId, rootUrl);
-  await detectDuplicates(crawlJobId);
-  await detectExactDuplicateContent(crawlJobId);
+  await detectUrlAliases(crawlJobId, rootUrl, logicalPageKeys);
+  await detectDuplicates(crawlJobId, logicalPageKeys);
+  await detectExactDuplicateContent(crawlJobId, logicalPageKeys);
 
   // 3a. sitemap coverage + status issues
   await auditSitemapUrls(crawlJobId, knownStatus, byNorm, opts);
@@ -654,6 +656,20 @@ async function postCrawl(crawlJobId: string, opts: CrawlOptions, rootUrl: string
     await prisma.page.update({ where: { id: p.id }, data: { score } });
   }
   return pages.length > 0 ? Math.round(scoreSum / pages.length) : 0;
+}
+
+async function logicalPageKeysForCrawl(crawlJobId: string): Promise<Map<string, string>> {
+  const pages = await prisma.page.findMany({
+    where: { crawlJobId },
+    select: { id: true, url: true, finalUrl: true, seo: { select: { canonicalUrl: true, contentSimhash: true } } },
+  });
+  return logicalPageIdentityKeys(pages.map((page) => ({
+    id: page.id,
+    url: page.url,
+    finalUrl: page.finalUrl,
+    canonicalUrl: page.seo?.canonicalUrl,
+    contentFingerprint: page.seo?.contentSimhash,
+  })));
 }
 
 async function fillKnownStatuses(targets: string[], knownStatus: Map<string, number>, opts: CrawlOptions, concurrency = 20): Promise<void> {
@@ -765,12 +781,13 @@ async function scoreInternalLinks(
     knownStatus: Map<string, number>;
   },
   rootUrl: string,
+  logicalPageKeys: Map<string, string>,
 ): Promise<void> {
   const preferredHost = hostname(rootUrl);
   const pagesByAlias = new Map<string, InternalPage[]>();
   const representativeByAlias = new Map<string, InternalPage>();
   for (const page of pages.filter((item) => item.statusCode === 200)) {
-    const key = urlAliasKey(page.url);
+    const key = logicalPageKeys.get(page.id) ?? urlAliasKey(page.url);
     const aliases = pagesByAlias.get(key) ?? [];
     aliases.push(page);
     pagesByAlias.set(key, aliases);
@@ -806,7 +823,7 @@ async function scoreInternalLinks(
       });
       continue;
     }
-    const aliasPages = pagesByAlias.get(urlAliasKey(page.url)) ?? [page];
+    const aliasPages = pagesByAlias.get(logicalPageKeys.get(page.id) ?? urlAliasKey(page.url)) ?? [page];
     const incoming = aliasPages.reduce((sum, alias) => sum + (metrics.inlinkCounts.get(alias.id) ?? 0), 0);
     const contextualIncoming = aliasPages.reduce((sum, alias) => sum + (metrics.contextualInlinkCounts.get(alias.id) ?? 0), 0);
     const outgoing = metrics.outgoingCounts.get(page.id) ?? 0;
@@ -1022,7 +1039,7 @@ async function createSiteIssue(
 }
 
 /** Find pages sharing a title / meta description / H1 and raise duplicate issues. */
-async function detectDuplicates(crawlJobId: string): Promise<void> {
+async function detectDuplicates(crawlJobId: string, logicalPageKeys: Map<string, string>): Promise<void> {
   const seos = await prisma.pageSeo.findMany({
     where: { page: { crawlJobId, statusCode: 200 } },
     select: { pageId: true, title: true, metaDescription: true, h1Text: true, page: { select: { url: true } } },
@@ -1040,7 +1057,7 @@ async function detectDuplicates(crawlJobId: string): Promise<void> {
     return [...groups.values()].flatMap((pages) => {
       const representatives = new Map<string, (typeof seos)[number]>();
       for (const page of pages) {
-        const aliasKey = urlAliasKey(page.page.url);
+        const aliasKey = logicalPageKeys.get(page.pageId) ?? urlAliasKey(page.page.url);
         if (!representatives.has(aliasKey)) representatives.set(aliasKey, page);
       }
       const distinctPages = [...representatives.values()];
@@ -1075,7 +1092,7 @@ async function detectDuplicates(crawlJobId: string): Promise<void> {
 }
 
 /** Find pages with identical visible body text hashes. */
-async function detectExactDuplicateContent(crawlJobId: string): Promise<void> {
+async function detectExactDuplicateContent(crawlJobId: string, logicalPageKeys: Map<string, string>): Promise<void> {
   const seos = await prisma.pageSeo.findMany({
     where: { page: { crawlJobId, statusCode: 200 }, contentSimhash: { not: null } },
     select: { pageId: true, contentSimhash: true, page: { select: { url: true } } },
@@ -1096,7 +1113,7 @@ async function detectExactDuplicateContent(crawlJobId: string): Promise<void> {
   for (const pages of groups.values()) {
     const representatives = new Map<string, (typeof seos)[number]>();
     for (const page of pages) {
-      const aliasKey = urlAliasKey(page.page.url);
+      const aliasKey = logicalPageKeys.get(page.pageId) ?? urlAliasKey(page.page.url);
       if (!representatives.has(aliasKey)) representatives.set(aliasKey, page);
     }
     const distinctPages = [...representatives.values()];
@@ -1119,7 +1136,7 @@ async function detectExactDuplicateContent(crawlJobId: string): Promise<void> {
 }
 
 /** Detect multiple live, non-redirecting URL aliases for one logical page. */
-async function detectUrlAliases(crawlJobId: string, rootUrl: string): Promise<void> {
+async function detectUrlAliases(crawlJobId: string, rootUrl: string, logicalPageKeys: Map<string, string>): Promise<void> {
   const pages = await prisma.page.findMany({
     where: { crawlJobId, statusCode: 200 },
     select: { id: true, url: true, depth: true, redirectChain: true },
@@ -1127,7 +1144,7 @@ async function detectUrlAliases(crawlJobId: string, rootUrl: string): Promise<vo
   const groups = new Map<string, typeof pages>();
   for (const page of pages) {
     if (Array.isArray(page.redirectChain) && page.redirectChain.length > 0) continue;
-    const key = urlAliasKey(page.url);
+    const key = logicalPageKeys.get(page.id) ?? urlAliasKey(page.url);
     const matches = groups.get(key) ?? [];
     matches.push(page);
     groups.set(key, matches);

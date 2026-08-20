@@ -116,7 +116,7 @@ export default function AutomationCenter() {
       <div className="flex flex-col gap-3 xl:flex-row xl:items-end xl:justify-between">
         <div>
           <h1 className="text-[28px] font-bold leading-tight text-charcoal-950">Automation Center</h1>
-          <p className="text-sm text-slate-500">Central policy for safe automation, approvals, integrations, and manual guidance across SEnuke AI modules.</p>
+          <p className="text-sm text-slate-500">Central policy for safe automation, approvals, integrations, and manual guidance across SEnuke AI - AI Growth Operating System modules.</p>
         </div>
         <div className="flex flex-wrap gap-2">
           <Button variant="ghost" onClick={() => setTab("coverage")}>View Automation Map</Button>

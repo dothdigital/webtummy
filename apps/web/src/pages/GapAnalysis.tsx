@@ -155,7 +155,7 @@ function evidencePage(value: string) {
 }
 
 function gapCategoryLabel(value: string) {
-  const labels: Record<string, string> = { keyword: "Keywords", keyword_mapping: "Keyword ↔ Pages", topic: "Topics", content: "Content", backlink: "Backlinks", entity: "Entities & EEAT", ai_citation: "AI Citations", technical: "Technical", local: "Local SEO", site_structure: "Site Structure", validation: "Validation" };
+  const labels: Record<string, string> = { keyword: "Keywords", keyword_mapping: "Keyword ↔ Pages", topic: "Topics", content: "Content", backlink: "Backlinks", entity: "Entities & EEAT", ai_citation: "AI Citations", technical: "Technical", local: "Local SEO", site_structure: "Site Structure", connected_coverage: "Connected Coverage", validation: "Validation" };
   return labels[value] ?? readinessLabel(value);
 }
 
@@ -264,6 +264,7 @@ function severityTone(value: string): "blue" | "green" | "orange" | "red" | "gra
 
 function recommendationDestination(category: string, projectId: string) {
   const encodedProjectId = encodeURIComponent(projectId);
+  if (category === "connected_coverage") return { label: "Open Site Analysis", route: `/site-analysis?projectId=${encodedProjectId}` };
   if (category === "keyword" || category === "keyword_mapping") return { label: "Open Keyword Research", route: `/keywords?projectId=${encodedProjectId}` };
   if (category === "topic") return { label: "Open Content", route: `/ai-content?projectId=${encodedProjectId}` };
   if (category === "backlink") return { label: "Open Backlinks & Authority", route: `/backlinks?projectId=${encodedProjectId}` };

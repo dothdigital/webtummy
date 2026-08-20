@@ -1,6 +1,6 @@
-# SEnuke AI - All Phases Reference Implementation
+# SEnuke AI - AI Growth Operating System - All Phases Reference Implementation
 
-This package is a developer handoff/reference implementation for the SEnuke AI MVP and post-MVP phases. It is intentionally modular so the team can adapt it into the existing application stack.
+This package is a developer handoff/reference implementation for the SEnuke AI - AI Growth Operating System MVP and post-MVP phases. It is intentionally modular so the team can adapt it into the existing application stack.
 
 ## What this code includes
 

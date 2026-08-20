@@ -1,4 +1,5 @@
 import { Router } from "express";
+import { createHash } from "node:crypto";
 import { Prisma, prisma } from "@webtummy/db";
 import { z } from "zod";
 import { canonicalPrimaryGoal, primaryGoalsForWorkspace } from "@webtummy/core/project-goals";
@@ -500,17 +501,91 @@ discoveryDraftsRouter.get("/discovery-drafts/:draftId", async (req, res, next) =
 discoveryDraftsRouter.get("/discovery-drafts/:draftId/ideas/:ideaId/download", async (req, res, next) => {
   try {
     const context = await workspaceContext(req);
-    assertCanEdit(context);
+    if (!hasWorkspacePermission(context, "export_reports") || context.roles.has("client_viewer")) throw Object.assign(new Error("You do not have permission to export this Discovery Draft."), { statusCode: 403 });
     const draft = await accessibleDraft(context, req.params.draftId);
     if (!draft) return res.status(404).json({ error: "Discovery Draft not found." });
     const idea = draft.ideas.find((item) => item.id === req.params.ideaId);
     if (!idea) return res.status(404).json({ error: "Discovery idea not found." });
+    const exportMode = req.query.mode === "agency" ? "agency" as const : "standard" as const;
+    if (exportMode === "agency" && context.workspace.workspaceType !== "agency") throw Object.assign(new Error("Agency branding and client-specific Discovery reports require an Agency workspace."), { statusCode: 403 });
     const clientName = draft.agencyClientId ? (await prisma.agencyClient.findUnique({ where: { id: draft.agencyClientId }, select: { name: true } }))?.name : null;
-    const pdf = await createDiscoveryIdeaPdf({ workspaceName: context.workspace.name, clientName, draftTitle: draft.title, startPath: draft.startPath, createdAt: idea.createdAt, idea });
-    await prisma.$transaction((tx) => recordWorkspaceActivity(tx, { context, action: "discovery.idea_pdf_downloaded", entityType: "discovery_idea", entityId: idea.id, agencyClientId: draft.agencyClientId, nextJson: { discoveryDraftId: draft.id, title: idea.title, format: "pdf" } }));
-    const safeName = idea.title.replace(/[^a-z0-9-_]+/gi, "-").replace(/-+/g, "-").replace(/^-|-$/g, "").toLowerCase();
+    const agencyProfile = exportMode === "agency" ? await prisma.whiteLabelProfile.findUnique({ where: { workspaceId: context.workspace.id }, select: { agencyName: true, agencyLogoDataUrl: true, contactEmail: true, websiteUrl: true } }) : null;
+    const agencyBrand = exportMode === "agency" && agencyProfile?.agencyName ? { name: agencyProfile.agencyName, logoDataUrl: agencyProfile.agencyLogoDataUrl, contactEmail: agencyProfile.contactEmail, websiteUrl: agencyProfile.websiteUrl } : null;
+    let savedExport = await prisma.discoveryIdeaExport.findFirst({
+      where: { ideaId: idea.id, workspaceId: context.workspace.id, exportMode, sourceUpdatedAt: idea.updatedAt, status: "completed", pdfBytes: { not: null } },
+      orderBy: { version: "desc" },
+    });
+    if (!savedExport) {
+      const latest = await prisma.discoveryIdeaExport.findFirst({ where: { ideaId: idea.id, workspaceId: context.workspace.id, exportMode }, orderBy: { version: "desc" } });
+      const version = latest && latest.sourceUpdatedAt.getTime() === idea.updatedAt.getTime() && latest.status === "failed" ? latest.version : (latest?.version ?? 0) + 1;
+      const date = new Date().toISOString().slice(0, 10);
+      const concept = idea.title.replace(/[^a-z0-9]+/gi, "-").replace(/-+/g, "-").replace(/^-|-$/g, "").slice(0, 90) || "Business-Idea";
+      const filename = `SEnuke-AI_Business-Discovery_${exportMode === "agency" ? "Agency_" : ""}${concept}_${date}_v${version}.pdf`;
+      const snapshot = {
+        workspaceName: context.workspace.name,
+        workspaceType: context.workspace.workspaceType,
+        exportMode,
+        clientName: exportMode === "agency" ? clientName : null,
+        agencyBrand: agencyBrand ? { name: agencyBrand.name, contactEmail: agencyBrand.contactEmail, websiteUrl: agencyBrand.websiteUrl, logoConfigured: Boolean(agencyBrand.logoDataUrl) } : null,
+        draft: { id: draft.id, title: draft.title, startPath: draft.startPath, answersJson: draft.answersJson, factsJson: draft.factsJson, updatedAt: draft.updatedAt.toISOString() },
+        idea: { ...idea, createdAt: idea.createdAt.toISOString(), updatedAt: idea.updatedAt.toISOString() },
+        evidenceScope: "Business Discovery input plus specifically cited external sources only.",
+        capacityCharged: 0,
+      };
+      const row = latest && latest.version === version
+        ? await prisma.discoveryIdeaExport.update({ where: { id: latest.id }, data: { status: "rendering", filename, snapshotJson: snapshot as Prisma.InputJsonValue, errorMessage: null } })
+        : await prisma.discoveryIdeaExport.create({ data: {
+          ideaId: idea.id,
+          workspaceId: context.workspace.id,
+          agencyClientId: draft.agencyClientId,
+          exportMode,
+          version,
+          filename,
+          sourceUpdatedAt: idea.updatedAt,
+          snapshotJson: snapshot as Prisma.InputJsonValue,
+          generatedByUserId: context.membership.userId,
+        } });
+      try {
+        const generatedAt = new Date();
+        const pdf = await createDiscoveryIdeaPdf({
+          workspaceName: context.workspace.name,
+          clientName: exportMode === "agency" ? clientName : null,
+          draftTitle: draft.title,
+          startPath: draft.startPath,
+          createdAt: idea.createdAt,
+          updatedAt: idea.updatedAt,
+          generatedAt,
+          version,
+          exportMode,
+          agencyBrand,
+          actionUrl: `${config.webAppUrl.replace(/\/$/, "")}/guided-projects/new?discoveryDraftId=${encodeURIComponent(draft.id)}`,
+          answersJson: draft.answersJson,
+          factsJson: draft.factsJson,
+          idea,
+        });
+        savedExport = await prisma.discoveryIdeaExport.update({ where: { id: row.id }, data: {
+          status: "completed",
+          pdfBytes: pdf,
+          byteLength: pdf.length,
+          sha256: createHash("sha256").update(pdf).digest("hex"),
+          generatedAt,
+          errorMessage: null,
+        } });
+      } catch (error) {
+        await prisma.discoveryIdeaExport.update({ where: { id: row.id }, data: { status: "failed", errorMessage: error instanceof Error ? error.message.slice(0, 2000) : "PDF rendering failed" } }).catch(() => undefined);
+        throw error;
+      }
+    }
+    if (!savedExport.pdfBytes) throw new Error("The saved Discovery PDF is not available.");
+    const pdf = Buffer.from(savedExport.pdfBytes);
+    await prisma.$transaction(async (tx) => {
+      await tx.discoveryIdeaExport.update({ where: { id: savedExport!.id }, data: { lastDownloadedAt: new Date(), downloadCount: { increment: 1 } } });
+      await recordWorkspaceActivity(tx, { context, action: "discovery.idea_pdf_downloaded", entityType: "discovery_idea_export", entityId: savedExport!.id, agencyClientId: draft.agencyClientId, nextJson: { discoveryDraftId: draft.id, ideaId: idea.id, title: idea.title, format: "pdf", exportMode, version: savedExport!.version, capacityCharged: 0, reusedSavedExport: savedExport!.downloadCount > 0 } });
+    });
     res.setHeader("Content-Type", "application/pdf");
-    res.setHeader("Content-Disposition", `attachment; filename="${safeName || "business-idea"}-brief.pdf"`);
+    res.setHeader("Content-Disposition", `attachment; filename="${savedExport.filename}"`);
+    res.setHeader("X-SEnuke-Export-Version", String(savedExport.version));
+    res.setHeader("X-SEnuke-AI-Capacity-Charged", "0");
     res.setHeader("Content-Length", String(pdf.length));
     return res.send(pdf);
   } catch (error) { next(error); }
@@ -677,7 +752,7 @@ ${responseContract}`;
     for (let attempt = 0; attempt < 3; attempt += 1) {
       try {
         generated = await centralAiJson<DiscoveryResearch>({
-          system: "You are SEnuke AI's adaptive Business Discovery researcher. Turn short user input into realistic, reviewable directions without inventing proof, demand, income, rankings, credentials, or guaranteed outcomes.",
+          system: "You are SEnuke AI - AI Growth Operating System's adaptive Business Discovery researcher. Turn short user input into realistic, reviewable directions without inventing proof, demand, income, rankings, credentials, or guaranteed outcomes.",
           prompt: `${basePrompt}${validationFeedback}`,
           model,
           maxOutputTokens: 16_000,
@@ -700,7 +775,7 @@ ${responseContract}`;
         if (attempt === 2) break;
       }
     }
-    if (!generated) throw Object.assign(new Error("SEnuke AI could not produce a valid Discovery Brief. Please retry."), { code: "discovery_output_invalid", statusCode: 502, publicMessage: true });
+    if (!generated) throw Object.assign(new Error("SEnuke AI - AI Growth Operating System could not produce a valid Discovery Brief. Please retry."), { code: "discovery_output_invalid", statusCode: 502, publicMessage: true });
     const result = generated.result;
     const updated = await prisma.$transaction(async (tx) => {
       await tx.discoveryIdea.deleteMany({ where: { discoveryDraftId: draft.id, status: { in: ["GENERATED", "REJECTED"] } } });
@@ -789,7 +864,7 @@ discoveryDraftsRouter.post("/discovery-drafts/:draftId/ideas/:ideaId/revise", as
     const allowedGoals = primaryGoalsForWorkspace(context.workspace.workspaceType);
     const answers = jsonRecord(draft.answersJson);
     const generated = await centralAiJson<DiscoveryResearch["opportunities"][number]>({
-      system: "You revise one SEnuke AI Business Discovery idea from direct user feedback. Preserve useful details, change only what the feedback requires, and never invent proof, credentials, demand, income, rankings, or guarantees.",
+      system: "You revise one SEnuke AI - AI Growth Operating System Business Discovery idea from direct user feedback. Preserve useful details, change only what the feedback requires, and never invent proof, credentials, demand, income, rankings, or guarantees.",
       prompt: `Revise this single idea.
 
 Current idea: ${JSON.stringify({ title: idea.title, description: idea.description, whyFit: idea.whyFit, targetAudience: idea.targetAudience, problemSolved: idea.problemSolved, revenueModel: idea.revenueModel, businessModel: idea.businessModel, evidence: idea.evidenceJson, validationSteps: idea.validationSteps, difficulty: idea.difficulty, timeCostBand: idea.timeCostBand, majorRisk: idea.majorRisk, confidence: idea.confidence, details: idea.detailsJson }).slice(0, 30_000)}

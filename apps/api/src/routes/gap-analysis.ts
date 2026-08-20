@@ -1,7 +1,7 @@
 import { Router, type Request, type Response } from "express";
 import { z } from "zod";
 import { Prisma, prisma } from "@webtummy/db";
-import { approvedKeywordEntries, missingApprovedKeywordResearch, splitKeywordEntries, urlAliasKey } from "@webtummy/core";
+import { approvedKeywordEntries, dev053Capabilities, logicalPageIdentityKeys, missingApprovedKeywordResearch, splitKeywordEntries, urlAliasKey } from "@webtummy/core";
 import { requireAuth } from "../middleware.js";
 import { projectClientIdForRequest } from "../project-scope.js";
 import { commitUsage, preflightUsage, refundUsage } from "../usage-engine.js";
@@ -476,6 +476,7 @@ function gapPriority(score: number): "critical" | "high" | "medium" | "low" {
 
 function gapTaskDestination(category: string, projectId: string) {
   const query = `projectId=${encodeURIComponent(projectId)}`;
+  if (category === "connected_coverage") return { moduleName: "site_analysis", actionButtonLabel: "Resolve Connected Gaps", relatedUrl: `/site-analysis?${query}` };
   if (category === "technical") return { moduleName: "site_analysis", actionButtonLabel: "Review Technical Findings", relatedUrl: `/site-analysis?${query}` };
   if (category === "site_structure") return { moduleName: "site_analysis", actionButtonLabel: "Review Page & Link Findings", relatedUrl: `/gap-analysis?${query}` };
   if (category === "ai_citation" || category === "entity") return { moduleName: "ai_citations", actionButtonLabel: "Review AI Citation Work", relatedUrl: `/ai-citations?${query}` };
@@ -760,9 +761,12 @@ function canonicalFindingUrl(rawUrl: string) {
 }
 
 function logicalCrawlPages<T extends {
+  id: string;
   url: string;
+  finalUrl?: string | null;
   statusCode: number | null;
   depth: number;
+  seo?: { canonicalUrl?: string | null; contentSimhash?: bigint | number | string | null } | null;
   internalLinkScore?: number | null;
   inlinkCount?: number | null;
   brokenInternalLinkCount?: number | null;
@@ -781,9 +785,16 @@ function logicalCrawlPages<T extends {
         + Math.max(0, 10 - page.depth);
     } catch { return 0; }
   };
+  const identityKeys = logicalPageIdentityKeys(pages.map((page) => ({
+    id: page.id,
+    url: page.url,
+    finalUrl: page.finalUrl,
+    canonicalUrl: page.seo?.canonicalUrl,
+    contentFingerprint: page.seo?.contentSimhash,
+  })));
   const groups = new Map<string, T[]>();
   for (const page of pages) {
-    const key = urlAliasKey(page.url);
+    const key = identityKeys.get(page.id) ?? urlAliasKey(page.url);
     const group = groups.get(key) ?? [];
     group.push(page);
     groups.set(key, group);
@@ -919,8 +930,8 @@ function canonicalAssignmentsFromTasks(tasks: Array<{ status: string; approvalSn
 async function gapEvidence(projectId: string) {
   const project = await prisma.project.findUnique({ where: { id: projectId }, include: { website: { select: { rootUrl: true } }, businessProfile: true, keywordGroups: true, strategyPlans: { orderBy: { version: "desc" }, take: 1 }, opportunities: { where: { status: { in: ["selected", "confirmed"] } }, take: 1 } } });
   if (!project) throw new Error("project not found");
-  const [crawl, competitiveRuns, citationGaps, authority, pageScores, legacyLocalProfile, canonicalLocalProfile, keywordRuns, pageMapTasks] = await Promise.all([
-    project.websiteId ? prisma.crawlJob.findFirst({ where: { websiteId: project.websiteId, status: "completed" }, orderBy: [{ completedAt: "desc" }, { createdAt: "desc" }], include: { issues: { where: { status: "open" }, take: 500, select: { category: true, issueType: true, severity: true, message: true, recommendation: true, page: { select: { url: true, statusCode: true } } } }, pages: { take: 500, select: { id: true, url: true, isOrphan: true, inlinkCount: true, brokenInternalLinkCount: true, weakAnchorCount: true, wordCount: true, statusCode: true, contentType: true, depth: true, internalLinkScore: true, seo: { select: { title: true, metaDescription: true, h1Text: true, h2Json: true } } } } } }) : null,
+  const [crawl, competitiveRuns, citationGaps, authority, pageScores, legacyLocalProfile, canonicalLocalProfile, keywordRuns, pageMapTasks, capabilityRun] = await Promise.all([
+    project.websiteId ? prisma.crawlJob.findFirst({ where: { websiteId: project.websiteId, status: "completed" }, orderBy: [{ completedAt: "desc" }, { createdAt: "desc" }], include: { issues: { where: { status: "open" }, take: 500, select: { category: true, issueType: true, severity: true, message: true, recommendation: true, page: { select: { url: true, statusCode: true } } } }, pages: { take: 500, select: { id: true, url: true, finalUrl: true, isOrphan: true, inlinkCount: true, brokenInternalLinkCount: true, weakAnchorCount: true, wordCount: true, statusCode: true, contentType: true, depth: true, internalLinkScore: true, seo: { select: { title: true, metaDescription: true, h1Text: true, h2Json: true, canonicalUrl: true, contentSimhash: true } } } } } }) : null,
     prisma.competitiveIntelligenceRun.findMany({ where: { projectId, status: "completed" }, orderBy: { createdAt: "desc" }, take: 5 }),
     prisma.aiCitationGap.findMany({ where: { projectId, status: { not: "superseded" } }, orderBy: { createdAt: "desc" }, take: 30 }),
     prisma.authorityOpportunity.findMany({ where: { projectId }, orderBy: { createdAt: "desc" }, take: 30 }),
@@ -929,11 +940,16 @@ async function gapEvidence(projectId: string) {
     findCanonicalLocalProfile(project),
     prisma.keywordResearchRun.findMany({ where: { projectId, status: "completed" }, orderBy: { createdAt: "desc" }, take: 100, include: { competitors: { take: 15 }, ideas: { take: 30 } } }),
     prisma.executionTask.findMany({ where: { projectId, OR: [{ title: { contains: "SEO Page Map", mode: "insensitive" } }, { title: { contains: "Content Plan", mode: "insensitive" } }, { title: { contains: "Website Plan", mode: "insensitive" } }, { actionButtonLabel: { contains: "SEO Page Map", mode: "insensitive" } }, { sourceType: { in: ["seo_plan", "website_launch_plan"] } }] }, orderBy: { updatedAt: "desc" }, take: 10, select: { status: true, approvalSnapshotJson: true } }),
+    prisma.dev053VerificationRun.findFirst({
+      where: { projectId, status: "completed" },
+      orderBy: [{ completedAt: "desc" }, { createdAt: "desc" }],
+      include: { results: { where: { status: { in: ["BLOCKED", "MISSING", "PARTIAL"] } }, orderBy: { capabilityId: "asc" } } },
+    }),
   ]);
   const localProfile = mergedLocalProfile(legacyLocalProfile, canonicalLocalProfile);
   const rootUrl = project.website?.rootUrl ?? project.websiteUrl ?? crawl?.pages[0]?.url ?? "";
   const logicalCrawl = crawl ? { ...crawl, pages: logicalCrawlPages(crawl.pages, rootUrl) } : null;
-  return { project, crawl: logicalCrawl, competitiveRuns, citationGaps, authority, pageScores, localProfile, keywordRuns, canonicalAssignments: canonicalAssignmentsFromTasks(pageMapTasks) };
+  return { project, crawl: logicalCrawl, competitiveRuns, citationGaps, authority, pageScores, localProfile, keywordRuns, canonicalAssignments: canonicalAssignmentsFromTasks(pageMapTasks), capabilityRun };
 }
 
 export async function recommendationFindings(projectId: string, category: string): Promise<RecommendationFinding[]> {
@@ -1042,6 +1058,14 @@ export async function recommendationFindings(projectId: string, category: string
     });
   }
   if (category === "content") {
+    const rawPageIdentityKeys = logicalPageIdentityKeys(crawl.pages.map((page) => ({
+      id: page.id,
+      url: page.url,
+      finalUrl: page.finalUrl,
+      canonicalUrl: page.seo?.canonicalUrl,
+      contentFingerprint: page.seo?.contentSimhash,
+    })));
+    const logicalKeyByObservedUrl = new Map(crawl.pages.map((page) => [urlAliasKey(page.url), rawPageIdentityKeys.get(page.id) ?? urlAliasKey(page.url)]));
     const relatedUrlsByIssue = new Map<string, string[]>();
     const registerDuplicateGroups = (
       issueType: string,
@@ -1073,6 +1097,11 @@ export async function recommendationFindings(projectId: string, category: string
 
     const grouped = new Map<string, { issues: typeof crawl.issues; urls: string[] }>();
     for (const issue of crawl.issues.filter(contentIssueMatches)) {
+      if (["duplicate_title", "duplicate_meta_description", "duplicate_h1", "exact_duplicate_content"].includes(issue.issueType)) {
+        const duplicateUrls = urlsFromFindingText(issue.message);
+        const logicalDuplicatePages = new Set(duplicateUrls.map((url) => logicalKeyByObservedUrl.get(urlAliasKey(url)) ?? urlAliasKey(url)));
+        if (duplicateUrls.length > 1 && logicalDuplicatePages.size === 1) continue;
+      }
       const affectedUrl = issue.page?.url ?? rootUrl;
       const groupKey = issue.page?.url ? canonicalFindingUrl(issue.page.url) : `site:${issue.issueType}`;
       const current = grouped.get(groupKey) ?? { issues: [], urls: [] };
@@ -1150,11 +1179,19 @@ export async function recommendationFindings(projectId: string, category: string
     return pages
       .filter((page) => page.isOrphan || page.inlinkCount === 0 || page.brokenInternalLinkCount > 0 || page.weakAnchorCount > 0)
       .map((page) => {
+        const incomingCount = page.inlinkCount ?? 0;
+        const brokenCount = page.brokenInternalLinkCount ?? 0;
+        const weakOutgoingCount = page.weakAnchorCount ?? 0;
         const evidence = [
           page.isOrphan ? "Orphan page" : "",
-          page.inlinkCount === 0 ? "No internal links point to this page" : `${page.inlinkCount} internal link${page.inlinkCount === 1 ? "" : "s"} point to this page`,
-          page.brokenInternalLinkCount ? `${page.brokenInternalLinkCount} broken internal link${page.brokenInternalLinkCount === 1 ? "" : "s"}` : "",
-          page.weakAnchorCount ? `${page.weakAnchorCount} weak anchor${page.weakAnchorCount === 1 ? "" : "s"}` : "",
+          incomingCount === 0 ? "No internal links point to this page" : `${incomingCount} internal link${incomingCount === 1 ? "" : "s"} ${incomingCount === 1 ? "points" : "point"} to this page`,
+          brokenCount ? `This page contains ${brokenCount} broken internal link${brokenCount === 1 ? "" : "s"}` : "",
+          weakOutgoingCount ? `This page contains ${weakOutgoingCount} outgoing link${weakOutgoingCount === 1 ? "" : "s"} with generic anchor text` : "",
+        ].filter(Boolean);
+        const actions = [
+          brokenCount ? `Repair the ${brokenCount} broken internal target${brokenCount === 1 ? "" : "s"} linked from this page.` : "",
+          weakOutgoingCount ? `Replace the ${weakOutgoingCount} generic outgoing anchor${weakOutgoingCount === 1 ? "" : "s"} on this page with text that names the destination topic.` : "",
+          incomingCount <= 2 ? `Add one or two relevant contextual links from related pages to this page; use this page's actual service or topic as the anchor.` : "",
         ].filter(Boolean);
         return {
           key: `page:${page.id}`,
@@ -1162,7 +1199,7 @@ export async function recommendationFindings(projectId: string, category: string
           issueType: "site_structure_internal_links",
           severity: page.isOrphan || page.brokenInternalLinkCount > 0 ? "high" as const : "medium" as const,
           evidence: evidence.join(" · "),
-          recommendedFix: "Repair broken targets, choose relevant source pages, and add descriptive contextual internal links to this page without forcing unrelated anchors.",
+          recommendedFix: actions.join(" "),
           whyItMatters: "Pages that are isolated or linked poorly are harder for visitors and crawlers to discover, and receive less internal authority.",
           expectedImpact: "Improves discovery, navigation, internal authority flow, and keyword-to-page clarity after the links are published and recrawled.",
           sourceAnalysisId: crawl.id,
@@ -1173,7 +1210,7 @@ export async function recommendationFindings(projectId: string, category: string
 }
 
 function buildGapRecommendations(evidence: Awaited<ReturnType<typeof gapEvidence>>): GapInput[] {
-  const { project, crawl, citationGaps, authority, pageScores, localProfile, keywordRuns, competitiveRuns, canonicalAssignments } = evidence;
+  const { project, crawl, citationGaps, authority, pageScores, localProfile, keywordRuns, competitiveRuns, canonicalAssignments, capabilityRun } = evidence;
   const groups = project.keywordGroups.filter((group) => group.status === "approved");
   const approvedKeywords = uniqueStrings(splitKeywordEntries(groups.flatMap((group) => jsonStringList(group.keywords))), 100);
   const savedKeywordGaps = uniqueStrings(groups.flatMap((group) => jsonStringList(group.gapKeywords)), 30);
@@ -1217,6 +1254,30 @@ function buildGapRecommendations(evidence: Awaited<ReturnType<typeof gapEvidence
     canonicalAssignments,
   ) : [];
   const result: GapInput[] = [];
+  if (capabilityRun?.results.length) {
+    const definitions = new Map(dev053Capabilities.map((item) => [item.id, item]));
+    const blocked = capabilityRun.results.filter((item) => item.status === "BLOCKED").length;
+    const missing = capabilityRun.results.filter((item) => item.status === "MISSING").length;
+    const partial = capabilityRun.results.filter((item) => item.status === "PARTIAL").length;
+    const sections = uniqueStrings(capabilityRun.results.flatMap((item) => {
+      const section = definitions.get(item.capabilityId as (typeof dev053Capabilities)[number]["id"])?.section;
+      return section ? [section] : [];
+    }), 8);
+    result.push({
+      category: "connected_coverage",
+      title: `${capabilityRun.results.length} connected SEO and growth gaps need action`,
+      explanation: `Site Analysis found ${blocked} blocked, ${missing} missing, and ${partial} partially supported capabilities across ${sections.length || 1} applicable areas. These are consolidated here so they can inform one approved workflow instead of becoming a separate checklist.`,
+      action: "Resolve the highest-impact prerequisites and evidence gaps in Site Analysis, approve this recommendation into Strategy, and complete the resulting Execution Plan task before refreshing the checks.",
+      impact: "Connects site, content, local, authority, AI-search, publishing, and measurement evidence to the approved growth workflow and verifies progress after implementation.",
+      score: blocked ? 94 : missing ? 88 : 78,
+      confidence: 95,
+      evidence: capabilityRun.results.slice(0, 8).map((item) => {
+        const definition = definitions.get(item.capabilityId as (typeof dev053Capabilities)[number]["id"]);
+        return `${definition?.title ?? "Connected capability"} — ${item.message}`;
+      }),
+      competitors: [],
+    });
+  }
   if (!groups.length || savedKeywordGaps.length) result.push({ category: "keyword", title: groups.length ? `${savedKeywordGaps.length} keyword opportunities need coverage` : "Approved keyword direction is missing", explanation: groups.length ? "Approved keyword research contains relevant phrases that are not yet fully covered by the project direction." : "Strategy cannot reliably prioritize search demand without at least one approved keyword group.", action: groups.length ? "Map the highest-intent gap keywords to existing or new pages and validate them through Keyword Research." : "Generate Keyword Intelligence recommendations and approve at least one relevant group.", impact: "Improves intent coverage and gives Strategy and Execution a defensible search-demand direction.", score: groups.length ? 84 : 94, confidence: groups.length ? 88 : 99, evidence: groups.length ? savedKeywordGaps.slice(0, 6) : ["No approved keyword groups"], competitors });
   if (keywordMappingFindings.length) result.push({
     category: "keyword_mapping",
@@ -1263,7 +1324,7 @@ gapAnalysisRouter.post(gapRoutes("/run"), (req, res) => routeAction(res, async (
   const result = await prisma.$transaction(async (tx) => {
     const run = await tx.gapAnalysisRun.create({ data: {
       projectId: evidence.project.id, clientId: evidence.project.clientId, createdByUserId: context.membership.userId, status: "completed", completedAt: new Date(),
-      evidenceJson: { approvedKeywordGroups: evidence.project.keywordGroups.filter((item) => item.status === "approved").length, competitors: jsonStringList(evidence.project.competitors).length, crawlId: evidence.crawl?.id ?? null, competitiveRuns: evidence.competitiveRuns.length, citationGaps: evidence.citationGaps.length },
+      evidenceJson: { approvedKeywordGroups: evidence.project.keywordGroups.filter((item) => item.status === "approved").length, competitors: jsonStringList(evidence.project.competitors).length, crawlId: evidence.crawl?.id ?? null, competitiveRuns: evidence.competitiveRuns.length, citationGaps: evidence.citationGaps.length, connectedCoverageRunId: evidence.capabilityRun?.id ?? null, connectedCoverageGaps: evidence.capabilityRun?.results.length ?? 0 },
       summaryJson: { total: recommendations.length, highImpact: highImpact.length, categories: recommendations.map((item) => item.category) },
     } });
     const saved = [];

@@ -1,8 +1,8 @@
-# SENuke AI — Full WordPress Site Deployment
+# SEnuke AI - AI Growth Operating System — Full WordPress Site Deployment
 
 ## Goal
 
-Deploy the exact **Approved Website Release** as a complete, independent WordPress website. WordPress is the publishing/runtime target; Puck remains the visual composition editor inside SENuke AI.
+Deploy the exact **Approved Website Release** as a complete, independent WordPress website. WordPress is the publishing/runtime target; Puck remains the visual composition editor inside SEnuke AI - AI Growth Operating System.
 
 The deployment layer must not assume a fixed list or count of pages. The SEO Plan and Website Model can produce tens, hundreds, or thousands of pages. Every active page in the Approved Release uses the same generic publishing contract.
 

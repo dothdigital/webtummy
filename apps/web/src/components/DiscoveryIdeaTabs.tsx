@@ -6,6 +6,7 @@ import type { DiscoveryIdea } from "./AdaptiveBusinessDiscovery.js";
 
 type Props = {
   draftId: string;
+  isAgency?: boolean;
   ideas: DiscoveryIdea[];
   busy: string;
   feedbackByIdea: Record<string, string>;
@@ -49,9 +50,9 @@ export default function DiscoveryIdeaTabs(props: Props) {
   const hasExpandedBrief = Object.keys(details).length > 0;
   const instruction = props.feedbackByIdea[idea.id] || "";
 
-  const download = async () => {
+  const download = async (mode: "standard" | "agency" = "standard") => {
     setDownloadingId(idea.id); setDownloadError("");
-    try { await api.download(`/api/discovery-drafts/${props.draftId}/ideas/${idea.id}/download`); }
+    try { await api.download(`/api/discovery-drafts/${props.draftId}/ideas/${idea.id}/download${mode === "agency" ? "?mode=agency" : ""}`); }
     catch (error) { setDownloadError(error instanceof Error ? error.message : "The PDF could not be downloaded."); }
     finally { setDownloadingId(""); }
   };
@@ -95,7 +96,8 @@ export default function DiscoveryIdeaTabs(props: Props) {
         <div className="rounded-2xl border border-violet-200 bg-violet-50 p-5"><div className="text-[10px] font-black uppercase tracking-wide text-violet-700">Fine-tune this idea into new options</div><p className="mt-1 text-xs leading-5 text-slate-600">Ask a question or explain what should change. SEnuke will generate three new variations anchored to this idea.</p><textarea rows={3} value={instruction} onChange={(event) => props.onFeedback(idea.id, event.target.value)} placeholder="Example: Make this a subscription for Canadian agencies, reduce the initial cost, and explain the compliance impact." className="mt-3 w-full rounded-xl border bg-white px-3 py-2 text-sm" /><button type="button" disabled={Boolean(props.busy) || instruction.trim().length < 3} onClick={() => props.onFineTune(idea, instruction)} className="mt-3 rounded-lg bg-violet-700 px-4 py-2.5 text-xs font-black text-white disabled:bg-slate-300">Fine-tune & generate 3 refined ideas</button></div>
 
         {downloadError && <div className="rounded-xl border border-rose-200 bg-rose-50 p-3 text-xs text-rose-800">{downloadError}</div>}
-        <div className="grid gap-2 border-t pt-5 sm:grid-cols-4"><button type="button" disabled={Boolean(props.busy) || idea.status === "SAVED"} onClick={() => props.onSave(idea)} className="rounded-lg border bg-white px-3 py-2.5 text-xs font-black text-slate-700 disabled:bg-emerald-50 disabled:text-emerald-700">{idea.status === "SAVED" ? "Saved ✓" : "Save idea"}</button><button type="button" disabled={Boolean(props.busy) || idea.status === "REJECTED"} onClick={() => props.onReject(idea)} className="rounded-lg border border-rose-200 bg-rose-50 px-3 py-2.5 text-xs font-black text-rose-700 disabled:opacity-50">{idea.status === "REJECTED" ? "Rejected ✓" : "Reject"}</button><button type="button" disabled={Boolean(props.busy) || Boolean(downloadingId)} onClick={() => void download()} className="rounded-lg border border-slate-300 bg-white px-3 py-2.5 text-xs font-black text-slate-800 disabled:opacity-50">{downloadingId === idea.id ? "Preparing PDF…" : "Download idea PDF"}</button><button type="button" disabled={Boolean(props.busy) || idea.status === "REJECTED"} onClick={() => props.onUse(idea)} className="rounded-lg bg-emerald-600 px-3 py-2.5 text-xs font-black text-white disabled:bg-slate-300">{props.busy === "convert" ? "Creating Project…" : "Use This Idea"}</button></div>
+        <div className={`grid gap-2 border-t pt-5 ${props.isAgency ? "sm:grid-cols-5" : "sm:grid-cols-4"}`}><button type="button" disabled={Boolean(props.busy) || idea.status === "SAVED"} onClick={() => props.onSave(idea)} className="rounded-lg border bg-white px-3 py-2.5 text-xs font-black text-slate-700 disabled:bg-emerald-50 disabled:text-emerald-700">{idea.status === "SAVED" ? "Saved ✓" : "Save idea"}</button><button type="button" disabled={Boolean(props.busy) || idea.status === "REJECTED"} onClick={() => props.onReject(idea)} className="rounded-lg border border-rose-200 bg-rose-50 px-3 py-2.5 text-xs font-black text-rose-700 disabled:opacity-50">{idea.status === "REJECTED" ? "Rejected ✓" : "Reject"}</button><button type="button" disabled={Boolean(props.busy) || Boolean(downloadingId)} onClick={() => void download("standard")} className="rounded-lg border border-slate-300 bg-white px-3 py-2.5 text-xs font-black text-slate-800 disabled:opacity-50">{downloadingId === idea.id ? "Preparing PDF…" : "Standard PDF"}</button>{props.isAgency && <button type="button" disabled={Boolean(props.busy) || Boolean(downloadingId)} onClick={() => void download("agency")} className="rounded-lg border border-violet-300 bg-violet-50 px-3 py-2.5 text-xs font-black text-violet-800 disabled:opacity-50">Agency/client PDF</button>}<button type="button" disabled={Boolean(props.busy) || idea.status === "REJECTED"} onClick={() => props.onUse(idea)} className="rounded-lg bg-emerald-600 px-3 py-2.5 text-xs font-black text-white disabled:bg-slate-300">{props.busy === "convert" ? "Creating Project…" : "Use This Idea"}</button></div>
+        <p className="text-center text-[10px] leading-4 text-slate-400">Standard SEnuke AI-branded PDF export is included in Entrepreneur, Business, and Agency. Downloading or re-rendering saved report data uses no AI Capacity.</p>
         <p className="text-center text-[10px] leading-4 text-slate-400">Saving keeps this brief in Discovery. Fine-tuning generates new options. Only Use This Idea creates a Project.</p>
       </div>
     </Card></div>

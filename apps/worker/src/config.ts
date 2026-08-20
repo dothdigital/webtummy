@@ -46,7 +46,7 @@ export const config = {
     process.env.CRAWL_USER_AGENT ?? "SEnukeAI-Crawler/0.1 (+https://senuke-ai.local/bot)",
   webAppUrl: process.env.WEB_APP_URL ?? "http://localhost:5173",
   emailProvider: (process.env.EMAIL_PROVIDER ?? "").toLowerCase(),
-  emailFrom: process.env.EMAIL_FROM ?? "SEnuke AI <no-reply@senuke.com>",
+  emailFrom: process.env.EMAIL_FROM ?? "SEnuke AI - AI Growth Operating System <no-reply@senuke.com>",
   resendApiKey: process.env.RESEND_API_KEY ?? "",
   awsRegion: process.env.SES_MAILER_AWS_REGION ?? process.env.AWS_REGION ?? process.env.AWS_DEFAULT_REGION ?? "",
   awsAccessKeyId: process.env.SES_MAILER_ACCESS_KEY ?? process.env.AWS_ACCESS_KEY_ID ?? "",

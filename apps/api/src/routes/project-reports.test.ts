@@ -66,6 +66,6 @@ describe("Client report template differentiation", () => {
     expect(contracts[1]).toContain("Keyword Visibility");
     expect(contracts[2]).toContain("Google Business Profile");
     expect(contracts[3]).toContain("Lead Quality");
-    expect(contracts[4]).toContain("What SEnuke AI Learned");
+    expect(contracts[4]).toContain("What SEnuke AI - AI Growth Operating System Learned");
   });
 });

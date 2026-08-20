@@ -1877,7 +1877,7 @@ export default function SocialStrategy() {
               <div>
                 <div className="text-xs font-bold uppercase tracking-wide text-brand-600">Time-bound campaign setup</div>
                 <h2 className="mt-1 text-lg font-semibold text-charcoal-800">Social campaigns</h2>
-                <p className="mt-1 text-sm leading-6 text-charcoal-500">Add a campaign with a start date, end date, business objective, success metric, and target. SEnuke AI builds the strategy and calendar within those boundaries.</p>
+                <p className="mt-1 text-sm leading-6 text-charcoal-500">Add a campaign with a start date, end date, business objective, success metric, and target. SEnuke AI - AI Growth Operating System builds the strategy and calendar within those boundaries.</p>
               </div>
               <Button className="shrink-0" onClick={openNewCampaign}>+ Add Campaign</Button>
             </div>

@@ -1,4 +1,4 @@
--- SEnuke AI Competitive SEO and Growth Intelligence Add-On v1.0
+-- SEnuke AI - AI Growth Operating System Competitive SEO and Growth Intelligence Add-On v1.0
 -- PostgreSQL reference schema
 
 CREATE TABLE competitive_intelligence_runs (

@@ -22,7 +22,7 @@ export function agencyProposalContent(input: AgencyProposalInput) {
   return {
     templateId,
     title: `${input.projectName} ${template.title}`,
-    executiveSummary: `This proposal outlines a focused engagement for ${input.clientName} to ${goal.toLowerCase()}${markets.length ? ` across ${markets.join(", ")}` : ""}. Recommendations and delivery priorities are based on the saved project intake and current SEnuke AI evidence.`,
+    executiveSummary: `This proposal outlines a focused engagement for ${input.clientName} to ${goal.toLowerCase()}${markets.length ? ` across ${markets.join(", ")}` : ""}. Recommendations and delivery priorities are based on the saved project intake and current SEnuke AI - AI Growth Operating System evidence.`,
     objectives: [goal],
     findings: selectedFindings,
     opportunity,

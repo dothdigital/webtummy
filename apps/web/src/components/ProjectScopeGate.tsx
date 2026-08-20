@@ -115,7 +115,7 @@ export default function ProjectScopeGate({
               </div>
               <h1 className="mt-4 text-3xl font-black tracking-tight sm:text-4xl">Choose a project to open {moduleLabel}</h1>
               <p className="mt-3 max-w-xl text-sm leading-6 text-slate-200 sm:text-base">
-                SEnuke AI keeps every recommendation, asset, approval, and result attached to the correct project. Select where you want to work before this module loads.
+                SEnuke AI - AI Growth Operating System keeps every recommendation, asset, approval, and result attached to the correct project. Select where you want to work before this module loads.
               </p>
             </div>
             <div className="relative mx-auto grid h-28 w-28 shrink-0 place-items-center rounded-[30px] border border-white/15 bg-white/10 shadow-2xl backdrop-blur md:mx-0">

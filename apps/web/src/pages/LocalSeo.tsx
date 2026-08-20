@@ -1061,7 +1061,7 @@ export default function LocalSeo() {
             <div className="mt-0.5 h-5 w-5 shrink-0 animate-spin rounded-full border-2 border-blue-200 border-t-blue-700" aria-hidden="true" />
             <div>
               <div className="text-sm font-bold text-blue-950">Data pull in progress</div>
-              <p className="mt-1 text-sm leading-6 text-blue-900">SEnuke AI is pulling Google organic, Maps, local pack, rating, review-count, and competitor signals for the saved keywords and locations. This can take up to a minute depending on the number of targets.</p>
+              <p className="mt-1 text-sm leading-6 text-blue-900">SEnuke AI - AI Growth Operating System is pulling Google organic, Maps, local pack, rating, review-count, and competitor signals for the saved keywords and locations. This can take up to a minute depending on the number of targets.</p>
               <p className="mt-1 text-xs leading-5 text-blue-800">Keep this page open. Results will refresh automatically when the audit finishes.</p>
             </div>
           </div>
@@ -1228,6 +1228,7 @@ export default function LocalSeo() {
                     {score ? <div className="pb-1 text-right text-xs font-semibold text-charcoal-500">Average across {targetCount} target{targetCount === 1 ? "" : "s"}</div> : rankingKeywordResults.length > 0 ? <div className="pb-1 text-right text-xs font-semibold text-violet-700">{rankingKeywordResults.length} analyzed keyword-market result{rankingKeywordResults.length === 1 ? "" : "s"} available</div> : null}
                   </div>
                   {score && <div className="mt-3 h-3 overflow-hidden rounded-full bg-white"><div className="h-full rounded-full bg-brand-500" style={{ width: `${Math.min(100, Math.max(0, score.totalScore))}%` }} /></div>}
+                  {business && rankingKeywordResults.length > 0 && <div className="mt-3 border-t border-charcoal-200 pt-3"><button type="button" disabled={auditing} onClick={()=>hasActiveTargets?void runAudit(true):setActiveView("rankings")} className="w-full rounded-lg bg-brand-600 px-4 py-2.5 text-sm font-bold text-white shadow-sm transition hover:bg-brand-700 disabled:cursor-wait disabled:bg-charcoal-300">{auditing?`Analyzing ${auditJob?.completedTargets??0} of ${auditJob?.totalTargets??targetCount} targets…`:hasActiveTargets?`${score?"Refresh":"Run"} audit & analyze`:`Choose targets & run audit`}</button><p className="mt-2 text-center text-[11px] leading-4 text-charcoal-500">{hasActiveTargets?`${targetCount} tracked keyword-market target${targetCount===1?"":"s"} will be checked for organic, Maps, local-pack, reviews, citations, website, and content evidence.`:`Select the relevant results first; the audit will not automatically track all ${rankingKeywordResults.length}.`}</p></div>}
                 </div>
               </div>
               {rankingKeywordResults.length > 0 && (

@@ -48,7 +48,7 @@ export default function Welcome() {
 
         {agency && <section className="mt-5 w-full rounded-2xl border border-teal-400/20 bg-teal-400/[0.06] px-4 py-3 sm:px-5">
           <div className="text-xs font-bold uppercase tracking-[0.14em] text-teal-300">Not sure where to start?</div>
-          <p className="mt-1 text-sm leading-6 text-slate-300">Choose the path that matches how you want to begin. A client is still attached to every Agency project, but SEnuke AI can collect and create that client during the project setup flow.</p>
+          <p className="mt-1 text-sm leading-6 text-slate-300">Choose the path that matches how you want to begin. A client is still attached to every Agency project, but SEnuke AI - AI Growth Operating System can collect and create that client during the project setup flow.</p>
         </section>}
 
         <div className="mt-5 grid w-full gap-4 md:grid-cols-3 lg:gap-5">
@@ -63,7 +63,7 @@ export default function Welcome() {
           })}
         </div>
 
-        {agency && <div className="mt-4 w-full rounded-xl border border-amber-300/20 bg-amber-300/[0.08] px-4 py-3 text-center text-xs leading-5 text-amber-100"><b>Tip:</b> Most agencies can simply click <b>Create a Client Project</b> to begin. If the client doesn’t already exist, SEnuke AI will create the client first and then continue with project setup.</div>}
+        {agency && <div className="mt-4 w-full rounded-xl border border-amber-300/20 bg-amber-300/[0.08] px-4 py-3 text-center text-xs leading-5 text-amber-100"><b>Tip:</b> Most agencies can simply click <b>Create a Client Project</b> to begin. If the client doesn’t already exist, SEnuke AI - AI Growth Operating System will create the client first and then continue with project setup.</div>}
 
         <button type="button" onClick={() => finish("/")} className="mt-5 inline-flex items-center rounded-[14px] bg-gradient-to-r from-teal-300 to-emerald-400 px-8 py-3 text-sm font-bold text-slate-950 shadow-xl shadow-teal-950/50 hover:from-teal-200 hover:to-emerald-300">Go to My Workspace <span className="ml-6">→</span></button>
         <div className="mb-1 mt-auto pt-4 text-xs text-slate-600 sm:text-sm">© 2026 SEnuke.com — All rights reserved.</div>

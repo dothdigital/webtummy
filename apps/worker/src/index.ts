@@ -87,7 +87,7 @@ worker.on("failed", (job, err) => {
 const maintenanceTimer = startMaintenanceScheduler();
 const websiteBuilderWorker = startWebsiteBuilderWorker();
 
-console.log(`[worker] SEnuke AI crawler up. UA="${config.userAgent}". Listening on "${CRAWL_QUEUE}".`);
+console.log(`[worker] SEnuke AI - AI Growth Operating System crawler up. UA="${config.userAgent}". Listening on "${CRAWL_QUEUE}".`);
 console.log(`[worker] Maintenance scheduler active every ${config.maintenanceIntervalMs}ms.`);
 
 const shutdown = async () => {

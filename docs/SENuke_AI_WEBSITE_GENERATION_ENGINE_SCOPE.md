@@ -1,10 +1,10 @@
-# SENuke AI Website Generation Engine
+# SEnuke AI - AI Growth Operating System Website Generation Engine
 
 ## Scope of Work and Technical Architecture
 
 **Status:** APPROVED & LOCKED architecture scope  
 **Version:** 1.0  
-**Related specifications:** DEV-030 AI Website Generation Engine; SENuke AI Core Website Builder Developer Note  
+**Related specifications:** DEV-030 AI Website Generation Engine; SEnuke AI - AI Growth Operating System Core Website Builder Developer Note  
 **Primary publishing targets:** WordPress and Static HTML  
 **Visual editor:** SENuke Visual Website Editor, powered internally by Puck
 
@@ -12,9 +12,9 @@
 
 ## 1. Purpose
 
-This document defines the scope of work for evolving the existing SENuke AI Website Builder into a governed, component-based AI Website Generation Engine.
+This document defines the scope of work for evolving the existing SEnuke AI - AI Growth Operating System Website Builder into a governed, component-based AI Website Generation Engine.
 
-SENuke AI will:
+SEnuke AI - AI Growth Operating System will:
 
 1. Collect and normalize business, audience, keyword, location, brand, and conversion requirements.
 2. Use OpenAI to propose a structured, platform-neutral Website Model.
@@ -33,7 +33,7 @@ The implementation must not become a conventional theme selector, template marke
 
 ### 2.1 Official core flow
 
-This is the official generation and publishing flow for the SENuke AI Website Builder:
+This is the official generation and publishing flow for the SEnuke AI - AI Growth Operating System Website Builder:
 
 ```text
 Component Registry
@@ -364,7 +364,7 @@ Responsibilities:
 
 ### 4.4 component-registry
 
-Controls what SENuke AI is permitted to build.
+Controls what SEnuke AI - AI Growth Operating System is permitted to build.
 
 Responsibilities:
 
@@ -851,7 +851,7 @@ Approved status language:
 | --- | --- |
 | Not started | This step has not begun. |
 | Ready | Required inputs are available; the user can begin. |
-| Working | SENuke AI is processing in the background. |
+| Working | SEnuke AI - AI Growth Operating System is processing in the background. |
 | Needs review | Results are ready for the user to inspect. |
 | Changes requested | A reviewer requested an update. |
 | Complete | The step is finished and its output is saved. |
@@ -863,7 +863,7 @@ Approved status language:
 Each step header must answer four questions without requiring technical knowledge:
 
 1. Where am I?
-2. What has SENuke AI completed?
+2. What has SEnuke AI - AI Growth Operating System completed?
 3. What must I do now?
 4. What happens after I continue?
 
@@ -956,13 +956,13 @@ Each step includes a compact guidance panel:
 Current step
 Review your website pages
 
-SENuke AI created 12 pages from your approved keywords and locations.
+SEnuke AI - AI Growth Operating System created 12 pages from your approved keywords and locations.
 
 Your action
 Confirm the page names, URLs, hierarchy, and menu placement.
 
 Next
-SENuke AI will generate the page layouts, content, SEO, and image plans.
+SEnuke AI - AI Growth Operating System will generate the page layouts, content, SEO, and image plans.
 
 [Review 12 Pages]
 ```
@@ -1766,9 +1766,9 @@ Acceptance criteria:
 
 ## 15. Final Developer Rule
 
-> The Component Registry controls what SENuke AI is allowed to generate.
+> The Component Registry controls what SEnuke AI - AI Growth Operating System is allowed to generate.
 >
-> The Website Model records what SENuke AI generated or the user edited for a specific website.
+> The Website Model records what SEnuke AI - AI Growth Operating System generated or the user edited for a specific website.
 >
 > The Approved Release records what was reviewed, validated, approved, locked, and authorized for publishing.
 

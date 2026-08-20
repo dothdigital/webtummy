@@ -54,21 +54,21 @@ export default function JvZooActivation() {
 
   return <main className="grid min-h-screen place-items-center bg-gradient-to-br from-slate-950 via-blue-950 to-slate-900 px-5 py-12">
     <section className="w-full max-w-lg rounded-3xl border border-white/10 bg-white p-7 shadow-2xl sm:p-10">
-      <div className="text-xs font-black uppercase tracking-[0.16em] text-brand-700">SEnuke AI · JVZoo</div>
+      <div className="text-xs font-black uppercase tracking-[0.16em] text-brand-700">SEnuke AI - AI Growth Operating System · JVZoo</div>
       <h1 className="mt-3 text-3xl font-black text-slate-950">Activate your purchase</h1>
       {busy && !activation ? <p className="mt-5 text-sm text-slate-600">Checking your secure purchase link…</p> : null}
       {complete ? <div className="mt-6 rounded-2xl bg-emerald-50 p-5 text-sm text-emerald-900">
         <b>Your JVZoo purchase is active.</b><p className="mt-2">You can now sign in with the email used at checkout.</p>
-        <Link className="mt-4 inline-flex rounded-xl bg-emerald-700 px-4 py-2 font-bold text-white" to="/login">Sign in to SEnuke AI</Link>
+        <Link className="mt-4 inline-flex rounded-xl bg-emerald-700 px-4 py-2 font-bold text-white" to="/login">Sign in to SEnuke AI - AI Growth Operating System</Link>
       </div> : activation ? <>
         <div className="mt-6 rounded-2xl border border-brand-100 bg-brand-50 p-4 text-sm text-slate-700">
-          <b className="capitalize text-slate-950">{activation.planCode ?? "SEnuke AI"} · {activation.billingInterval ?? "subscription"}</b>
+          <b className="capitalize text-slate-950">{activation.planCode ?? "SEnuke AI - AI Growth Operating System"} · {activation.billingInterval ?? "subscription"}</b>
           <p className="mt-1">Purchase email: {activation.email}</p>
         </div>
         <form className="mt-6 space-y-4" onSubmit={activate}>
           {!activation.accountExists && <label className="block text-sm font-bold text-slate-800">Your name<input className="mt-2 w-full rounded-xl border border-slate-300 px-4 py-3 font-normal" value={name} onChange={(event) => setName(event.target.value)} required /></label>}
           <label className="block text-sm font-bold text-slate-800">{activation.accountExists ? "Existing account password" : "Create a password"}<input type="password" minLength={8} className="mt-2 w-full rounded-xl border border-slate-300 px-4 py-3 font-normal" value={password} onChange={(event) => setPassword(event.target.value)} required /></label>
-          {activation.accountExists && <p className="text-xs leading-5 text-slate-500">This purchase matches an existing SEnuke AI account. Enter its password to attach the verified entitlement.</p>}
+          {activation.accountExists && <p className="text-xs leading-5 text-slate-500">This purchase matches an existing SEnuke AI - AI Growth Operating System account. Enter its password to attach the verified entitlement.</p>}
           <button disabled={busy} className="w-full rounded-xl bg-gradient-to-r from-cyan-500 to-blue-700 px-4 py-3 font-black text-white disabled:opacity-50">{busy ? "Activating…" : "Activate purchase"}</button>
         </form>
       </> : !token ? <form className="mt-6 space-y-4" onSubmit={requestLink}>

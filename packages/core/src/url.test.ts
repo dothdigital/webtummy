@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { fileUrlWithoutTrailingSlash, normalizeForDedup, resolveUrl, isSameHost, urlAliasKey } from "./url.js";
+import { fileUrlWithoutTrailingSlash, logicalPageIdentityKeys, normalizeForDedup, resolveUrl, isSameHost, urlAliasKey } from "./url.js";
 
 describe("normalizeForDedup", () => {
   it("lowercases scheme and host", () => {
@@ -83,12 +83,51 @@ describe("urlAliasKey", () => {
     expect(urlAliasKey("https://www.example.com")).toBe("example.com/");
     expect(urlAliasKey("https://example.com/")).toBe("example.com/");
     expect(urlAliasKey("https://www.example.com/index.html")).toBe("example.com/");
+    expect(urlAliasKey("https://example.com/home/")).toBe("example.com/");
+    expect(urlAliasKey("https://example.com/homepage")).toBe("example.com/");
   });
 
   it("does not merge a file URL with its slash-suffixed 404 variant", () => {
     expect(urlAliasKey("https://example.com/blog.html/")).not.toBe(
       urlAliasKey("https://example.com/blog.html"),
     );
+  });
+});
+
+describe("logicalPageIdentityKeys", () => {
+  it("groups equivalent root and service routes only when their rendered content matches", () => {
+    const keys = logicalPageIdentityKeys([
+      { id: "root", url: "https://example.com/life-insurance-broker/", contentFingerprint: "same-page" },
+      { id: "service", url: "https://example.com/services/life-insurance-broker/", contentFingerprint: "same-page" },
+      { id: "different", url: "https://example.com/services/critical-illness/", contentFingerprint: "other-page" },
+    ]);
+    expect(keys.get("root")).toBe(keys.get("service"));
+    expect(keys.get("root")).not.toBe(keys.get("different"));
+  });
+
+  it("does not collapse genuine submenu pages or same-slug routes with different content", () => {
+    const keys = logicalPageIdentityKeys([
+      { id: "services", url: "https://example.com/services/", contentFingerprint: "service-hub" },
+      { id: "life", url: "https://example.com/services/life-insurance/", contentFingerprint: "life-page" },
+      { id: "root-life", url: "https://example.com/life-insurance/", contentFingerprint: "different-life-page" },
+    ]);
+    expect(new Set(keys.values())).toHaveLength(3);
+  });
+
+  it("groups matching rendered pages that declare the same canonical owner", () => {
+    const keys = logicalPageIdentityKeys([
+      { id: "one", url: "https://example.com/route-a", canonicalUrl: "https://example.com/preferred", contentFingerprint: "same" },
+      { id: "two", url: "https://example.com/route-b", canonicalUrl: "https://example.com/preferred", contentFingerprint: "same" },
+    ]);
+    expect(keys.get("one")).toBe(keys.get("two"));
+  });
+
+  it("groups a redirected source with its final page", () => {
+    const keys = logicalPageIdentityKeys([
+      { id: "old", url: "https://example.com/old-page", finalUrl: "https://example.com/new-page" },
+      { id: "new", url: "https://example.com/new-page", finalUrl: "https://example.com/new-page" },
+    ]);
+    expect(keys.get("old")).toBe(keys.get("new"));
   });
 });
 

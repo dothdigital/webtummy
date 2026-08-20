@@ -1,4 +1,4 @@
--- SEnuke AI Usage, Limits, Credits, and Cost Control Engine
+-- SEnuke AI - AI Growth Operating System Usage, Limits, Credits, and Cost Control Engine
 -- PostgreSQL reference schema. Adjust types/names to match the existing codebase.
 
 CREATE TABLE plans (

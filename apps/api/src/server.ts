@@ -1,4 +1,4 @@
-// SEnuke AI API server.
+// SEnuke AI - AI Growth Operating System API server.
 import "./async-errors.js";
 import express from "express";
 import { config } from "./config.js";
@@ -39,6 +39,7 @@ import { publicWebsiteFormsRouter } from "./routes/website-public-forms.js";
 import { publicWebsiteTrackingRouter } from "./routes/website-tracking-public.js";
 import { jvZooRouter, startJvZooQueueWorker } from "./routes/jvzoo.js";
 import { discoveryDraftsRouter } from "./routes/discovery-drafts.js";
+import { dev053VerificationRouter } from "./routes/dev053-verification.js";
 import { rawBodySaver } from "./billing.js";
 import { enforceArchivedReadOnly, enforceCommercialAccess, enforceWorkspacePermissions, requireAuth } from "./middleware.js";
 import { createApiErrorCode, GENERIC_SYSTEM_ERROR, systemErrorPayload } from "./api-errors.js";
@@ -208,6 +209,7 @@ app.use("/api", googleBusinessProfileRouter);
 app.use("/api", discoveryDraftsRouter);
 app.use("/api", executionTasksRouter);
 app.use("/api", optimizationWorkflowRouter);
+app.use("/api", dev053VerificationRouter);
 
 // Centralized error handler.
 app.use((err: unknown, req: express.Request, res: express.Response, _next: express.NextFunction) => {
@@ -233,5 +235,5 @@ startContentPlanGenerationQueueWorker();
 startJvZooQueueWorker();
 
 app.listen(config.port, () => {
-  console.log(`[api] SEnuke AI API listening on http://localhost:${config.port}`);
+  console.log(`[api] SEnuke AI - AI Growth Operating System API listening on http://localhost:${config.port}`);
 });

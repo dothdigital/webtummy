@@ -350,7 +350,7 @@ agencyWorkspaceRouter.post(["/agency/invitations", "/workspace/invitations"], (r
   const link = `${config.webAppUrl.replace(/\/$/, "")}/accept-invitation?token=${encodeURIComponent(token)}`;
   await sendMail({
     to: invitation.email,
-    subject: `Join ${context.workspace.name} on SEnuke AI`,
+    subject: `Join ${context.workspace.name} on SEnuke AI - AI Growth Operating System`,
     text: `You were invited to ${context.workspace.name}. Accept the invitation: ${link}. This link expires in 7 days.`,
     html: `<p>You were invited to <strong>${context.workspace.name}</strong>.</p><p><a href="${link}">Accept workspace invitation</a></p><p>This secure link expires in 7 days.</p>`,
   });

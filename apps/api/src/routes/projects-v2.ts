@@ -308,7 +308,7 @@ const moduleTaskCreateSchema = z.object({
 
 async function openaiJson(prompt: string, model = config.openaiModel) {
   return centralAiJson({
-    system: "You are SEnuke AI. Do not invent unavailable metrics or claim live publication.",
+    system: "You are SEnuke AI - AI Growth Operating System. Do not invent unavailable metrics or claim live publication.",
     prompt,
     model,
     temperature: 0.35,
@@ -480,6 +480,8 @@ async function scopedProject(req: Request, projectId: string) {
     return { ...task, relatedUrl: `/seo-page-map?projectId=${project.id}&taskId=${task.id}` };
   };
   const withExecutionGovernance = <T extends { moduleName: string; status: string }>(task: T) => ({ ...task, executionGovernance: marketingExecutionSummary(task) });
+  const isVisibleExecutionWork = <T extends { sourceType?: string | null; title?: string | null; actionButtonLabel?: string | null; dedupeKey?: string | null }>(task: T) =>
+    task.sourceType !== "strategy_decision" || isWebsitePlanTask(task);
   const normalizedProject = {
     ...project,
     keywordGroups: project.keywordGroups.map((group) => ({
@@ -487,8 +489,8 @@ async function scopedProject(req: Request, projectId: string) {
       keywords: normalizeKeywordList(group.keywords),
       gapKeywords: normalizeKeywordList(group.gapKeywords),
     })),
-    executionTasks: project.executionTasks.map(normalizeGuidedPlanTask).map(withExecutionGovernance),
-    executionPlans: project.executionPlans.map((plan) => ({ ...plan, tasks: plan.tasks.map(normalizeGuidedPlanTask).map(withExecutionGovernance) })),
+    executionTasks: project.executionTasks.filter(isVisibleExecutionWork).map(normalizeGuidedPlanTask).map(withExecutionGovernance),
+    executionPlans: project.executionPlans.map((plan) => ({ ...plan, tasks: plan.tasks.filter(isVisibleExecutionWork).map(normalizeGuidedPlanTask).map(withExecutionGovernance) })),
   };
   if (normalizedProject.businessLocationJson) return normalizedProject;
   const clientSettings = project.agencyClient?.defaultSettings && typeof project.agencyClient.defaultSettings === "object"
@@ -520,7 +522,7 @@ async function projectSourceActivitySummaries(project: NonNullable<Awaited<Retur
     const rows = project.executionTasks.filter((task) => moduleNames.includes(task.moduleName));
     return {
       total: rows.length,
-      open: rows.filter((task) => !["completed", "skipped", "cancelled", "canceled"].includes(task.status)).length,
+      open: rows.filter((task) => !["completed", "skipped", "cancelled", "canceled", "superseded"].includes(task.status)).length,
       completed: rows.filter((task) => task.status === "completed").length,
       awaitingApproval: rows.filter((task) => ["waiting_for_approval", "pending_approval", "submitted_for_approval", "needs_approval"].includes(task.status)).length,
       blocked: rows.filter((task) => task.status === "blocked").length,
@@ -1378,6 +1380,21 @@ async function ensureNextTask(tx: Prisma.TransactionClient, input: {
 async function syncStrategyIntelligenceTasks(tx: Prisma.TransactionClient, project: NonNullable<Awaited<ReturnType<typeof scopedProject>>>, planId: string, strategy: { id: string; prioritizedRecommendations?: unknown }, context: Awaited<ReturnType<typeof workspaceContext>>) {
   const recommendations = Array.isArray(strategy.prioritizedRecommendations) ? strategy.prioritizedRecommendations as StrategyRecommendation[] : [];
   const inputs = buildIntelligentExecutionTasks(recommendations);
+  // Older versions converted every Strategy recommendation and funnel idea
+  // into a card. Retire those narrative records first. The loop below revives
+  // only recommendations that satisfy the module-backed execution contract.
+  await tx.executionTask.updateMany({
+    where: {
+      projectId: project.id,
+      executionPlanId: planId,
+      sourceType: "strategy_decision",
+      status: { notIn: ["completed", "published", "skipped", "cancelled", "canceled"] },
+    },
+    data: {
+      status: "superseded",
+      blockedReason: "This item is a Strategy recommendation, not a standalone platform operation. It remains available in Strategy and will return to Execution only when a module creates concrete work.",
+    },
+  });
   const hasWebsiteBuild = await tx.websiteBuild.count({ where: { projectId: project.id } }) > 0;
   const existingWebsiteWithoutBuild = (project.projectType === "existing_website" || project.websiteStatus === "existing_website") && !hasWebsiteBuild;
   const created = new Map<string, Awaited<ReturnType<typeof ensureNextTask>>[]>();
@@ -1386,7 +1403,7 @@ async function syncStrategyIntelligenceTasks(tx: Prisma.TransactionClient, proje
     const destinationModule = input.destination?.trim().toLowerCase().replace(/[&/\s-]+/g, "_") || input.sourceModule || "strategy_intelligence";
     const destinationLabel = destinationModule.replaceAll("_", " ").replace(/\b\w/g, (letter) => letter.toUpperCase());
     const existingSiteUpdate = destinationModule === "website" && existingWebsiteWithoutBuild;
-    let task = await ensureNextTask(tx, { clientId: project.clientId, websiteId: project.websiteId, projectId: project.id, executionPlanId: planId, key: `project:${project.id}:${input.key}`, moduleName: existingSiteUpdate ? "site_architect" : destinationModule, sourceType: "strategy_decision", sourceId: strategy.id, title: input.title, description: input.description, expectedOutcome: input.expectedOutcome, actionButtonLabel: existingSiteUpdate ? "Open Website Improvement Plan" : approvalRequired ? `Review in ${destinationLabel}` : `Open ${destinationLabel}`, relatedUrl: existingSiteUpdate ? `/site-architect?projectId=${project.id}&source=existing-site&step=structure` : input.destinationUrl ?? `/guided-projects/${project.id}?tab=execution#execution-tasks`, priority: input.priority, automationLevel: input.automationLevel, requiresApproval: approvalRequired, impact: input.expectedOutcome, manualInstructions: input.manualInstructions, approvalRisk: input.approvalRisk, safetyCategory: input.safetyCategory });
+    let task = await ensureNextTask(tx, { clientId: project.clientId, websiteId: project.websiteId, projectId: project.id, executionPlanId: planId, key: `project:${project.id}:${input.key}`, moduleName: existingSiteUpdate ? "site_architect" : destinationModule, sourceType: "strategy_execution", sourceId: strategy.id, title: input.title, description: input.description, expectedOutcome: input.expectedOutcome, actionButtonLabel: existingSiteUpdate ? "Open Website Improvement Plan" : approvalRequired ? `Review in ${destinationLabel}` : `Open ${destinationLabel}`, relatedUrl: existingSiteUpdate ? `/site-architect?projectId=${project.id}&source=existing-site&step=structure` : input.destinationUrl ?? `/guided-projects/${project.id}?tab=execution#execution-tasks`, priority: input.priority, automationLevel: input.automationLevel, requiresApproval: approvalRequired, impact: input.expectedOutcome, manualInstructions: input.manualInstructions, approvalRisk: input.approvalRisk, safetyCategory: input.safetyCategory, status: "ready", blockedReason: null });
     if (existingSiteUpdate) task = await tx.executionTask.update({ where: { id: task.id }, data: { relatedUrl: `/site-architect?projectId=${project.id}&source=existing-site&taskId=${task.id}&step=structure` } });
     if (recommendations.find((item) => item.analysisKey === input.analysisKey)?.selected) {
       await tx.nextBestAction.updateMany({ where: { projectId: project.id, sourceType: "strategy_decision_engine", sourceId: strategy.id, status: { in: ["proposed", "selected", "recommended"] } }, data: { followupTaskId: task.id } });
@@ -1773,7 +1790,7 @@ function buildLeadMagnetPrompt(input: {
     relatedIdeas: run.ideas.slice(0, 5).map((idea) => ({ keyword: idea.keyword, volume: idea.avgMonthlySearches })),
   }));
   return [
-    "Create a project-specific lead magnet package for SEnuke AI.",
+    "Create a project-specific lead magnet package for SEnuke AI - AI Growth Operating System.",
     "The output must be practical, specific to the provided business, and suitable for review before publishing or sending.",
     "Do not use generic placeholder advice. If data is missing, use the best available project context and mark assumptions clearly.",
     "Do not claim measured traffic, conversion, or customer behaviour unless it appears in the supplied evidence. Treat estimated impact as directional.",
@@ -1782,7 +1799,7 @@ function buildLeadMagnetPrompt(input: {
       ? `Generate approximately ${targetWordCount.toLocaleString("en-US")} words of substantive lead-magnet body content across the sections (within 10% of the target), excluding the title, landing-page copy, opt-in form, thank-you page, and emails. This user-selected target applies to every format and takes priority over the format's default length.`
       : "Choose the most useful body length for the selected format. If the selected format is Mini eBook (1,000–2,000 words), generate 1,000–2,000 words of substantive lead-magnet body content across the sections.",
     `The visual requirements apply to every lead-magnet format. Create exactly one imagePlan item for each enabled type: ${Object.entries(visuals).filter(([, enabled]) => enabled).map(([kind]) => kind).join(", ") || "none"}. Do not include disabled visual types.`,
-    "SEnuke AI will perform a separate live source-research step after this content plan. Do not ask the user for sources and do not invent source labels or URLs in imagePlan.",
+    "SEnuke AI - AI Growth Operating System will perform a separate live source-research step after this content plan. Do not ask the user for sources and do not invent source labels or URLs in imagePlan.",
     "Describe what each visual should communicate, the evidence question AI should research, and the most appropriate placement. Factual sources and final rendered images will be attached automatically.",
     "Return JSON with this exact top-level shape:",
     selectedIdea ? `The user selected this lead magnet concept. Preserve its core intent and improve it: ${selectedIdea}` : "Choose the strongest concept from the project evidence.",
@@ -1882,7 +1899,7 @@ function buildLeadMagnetResearchPrompt(input: {
   evidence: Record<string, unknown>;
 }) {
   return [
-    "Research the strongest lead-magnet opportunities for this specific SEnuke AI project.",
+    "Research the strongest lead-magnet opportunities for this specific SEnuke AI - AI Growth Operating System project.",
     "This is a research and recommendation step only. Do not generate the lead magnet, landing page, or email sequence yet.",
     "Base every finding on the supplied business intake, keyword evidence, target geography, website analysis, selected Opportunity, approved Strategy, and SEO plan.",
     "Present the strongest recommendation from the existing evidence first. Follow-up questions must only refine genuine uncertainties; never make the initial recommendation depend on answering them.",
@@ -2166,7 +2183,7 @@ export async function generateLeadMagnetVisuals(input: {
       sourceUrl: source.url,
       sourceNote: evidence,
       sourceType: "openai_web_search",
-      attribution: `Original visual generated by SEnuke AI with ${config.openaiImageModel}; factual evidence sourced from ${source.title}.`,
+      attribution: `Original visual generated by SEnuke AI - AI Growth Operating System with ${config.openaiImageModel}; factual evidence sourced from ${source.title}.`,
       generationProvider: "openai",
       generationModel: config.openaiImageModel,
       dataPoints: Array.isArray(item.dataPoints) ? item.dataPoints : [],

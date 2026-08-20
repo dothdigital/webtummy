@@ -149,7 +149,7 @@ function modeLabel(mode: IntakeMode) {
 function modeDetail(mode: IntakeMode) {
   if (mode === "advanced") return "Show the full intake with optional SEO, publishing, keyword, competitor, and integration context.";
   if (mode === "agency") return "Collect client and deliverable context while keeping the workflow connected to the same project engine.";
-  return "Fastest path to a first strategy. SEnuke AI can suggest uncertain fields and ask for advanced details later.";
+  return "Fastest path to a first strategy. SEnuke AI - AI Growth Operating System can suggest uncertain fields and ask for advanced details later.";
 }
 
 function normalizeList(value: string | undefined) {
@@ -446,7 +446,7 @@ function aiSuggestionOptions(question: IntakeQuestion, answers: Record<string, s
 }
 
 function stepHelper(step: string) {
-  if (step === "Project Info") return "Add the minimum profile SEnuke AI needs to understand the project.";
+  if (step === "Project Info") return "Add the minimum profile SEnuke AI - AI Growth Operating System needs to understand the project.";
   if (step === "Goals & Audience") return "Define who this is for and what outcome matters first.";
   if (step === "Content Focus") return "Optional context that improves strategy, offers, and generated copy.";
   if (step === "Integrations") return "Optional platform and access details used by connected modules.";
@@ -665,7 +665,7 @@ export default function GuidedProjectIntake() {
           },
           {
             questionKey: "not_sure_flags",
-            questionText: "Fields filled by SEnuke AI recommendation",
+            questionText: "Fields filled by SEnuke AI - AI Growth Operating System recommendation",
             answerValue: Array.from(aiRecommended),
             answerType: "multiselect",
             moduleContext: "progressive_intake",
@@ -760,13 +760,13 @@ export default function GuidedProjectIntake() {
               </div>
             </div>
             <div className="border-t border-slate-100 bg-slate-50 p-5 lg:border-l lg:border-t-0">
-              <div className="text-xs font-bold uppercase tracking-wide text-brand-600">SEnuke AI guide</div>
+              <div className="text-xs font-bold uppercase tracking-wide text-brand-600">SEnuke AI - AI Growth Operating System guide</div>
               <h3 className="mt-2 font-bold text-charcoal-950">{mode === "quick" ? "You can move fast" : "Add detail only where it helps"}</h3>
               <p className="mt-2 text-sm leading-6 text-charcoal-600">
                 {project.projectType === "new_business"
-                  ? "For a new business, start with the niche, audience, and main goal. SEnuke AI can recommend uncertain answers and ask for competitors, keywords, domains, and social channels later."
+                  ? "For a new business, start with the niche, audience, and main goal. SEnuke AI - AI Growth Operating System can recommend uncertain answers and ask for competitors, keywords, domains, and social channels later."
                   : project.projectType === "local_seo"
-                    ? "For Local SEO, start with the service area, city keywords, reviews, citations, Google Maps visibility, and local lead goals. SEnuke AI can ask for advanced local details later."
+                    ? "For Local SEO, start with the service area, city keywords, reviews, citations, Google Maps visibility, and local lead goals. SEnuke AI - AI Growth Operating System can ask for advanced local details later."
                   : "Answer the fields you know. Use AI recommendations when unsure, and mark optional items to ask later so setup does not block progress."}
               </p>
               <div className="mt-4 grid grid-cols-3 gap-2 text-center">
@@ -939,7 +939,7 @@ export default function GuidedProjectIntake() {
                 <span className="mt-2 block">
                   {suggestions.length > 0 && (
                     <span className="block rounded-lg border border-brand-100 bg-brand-50/70 p-3">
-                      <span className="flex flex-wrap items-center justify-between gap-2"><span className="text-xs font-bold uppercase tracking-wide text-brand-700">SEnuke AI suggestions</span>{question.key === "target_audience" && <button type="button" onClick={(event) => { event.preventDefault(); event.stopPropagation(); update(question.key, suggestions.map(suggestionChipValue).join(", ")); setAiRecommended((current) => new Set(current).add(question.key)); }} className="rounded-md border border-brand-200 bg-white px-2.5 py-1 text-[11px] font-bold text-brand-700 hover:bg-brand-100">Refresh using current markets</button>}</span>
+                      <span className="flex flex-wrap items-center justify-between gap-2"><span className="text-xs font-bold uppercase tracking-wide text-brand-700">SEnuke AI - AI Growth Operating System suggestions</span>{question.key === "target_audience" && <button type="button" onClick={(event) => { event.preventDefault(); event.stopPropagation(); update(question.key, suggestions.map(suggestionChipValue).join(", ")); setAiRecommended((current) => new Set(current).add(question.key)); }} className="rounded-md border border-brand-200 bg-white px-2.5 py-1 text-[11px] font-bold text-brand-700 hover:bg-brand-100">Refresh using current markets</button>}</span>
                       <span className="mt-2 flex flex-wrap gap-2">
                         {suggestions.map((suggestion) => {
                           const chipValue = suggestionChipValue(suggestion);

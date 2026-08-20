@@ -23,9 +23,19 @@ describe("DEV-015 intelligent Execution Plan", () => {
     expect(tasks.find((item) => item.analysisKey === "serp_ai")?.dependencyKeys).toContain("intent_content_mapping");
   });
 
-  it("turns queued DEV-047 decisions into destination-routed work", () => {
+  it("routes admitted work to an exact module operation", () => {
+    const tasks = buildIntelligentExecutionTasks([recommendation("intent_content_mapping"), recommendation("cannibalization")]);
+    expect(tasks.find((item) => item.analysisKey === "intent_content_mapping")).toMatchObject({ title: "Review the keyword-to-page map", destinationUrl: "/seo-page-map" });
+    expect(tasks.find((item) => item.analysisKey === "cannibalization")).toMatchObject({ title: "Resolve pages competing for the same keyword", destinationUrl: "/gap-analysis" });
+  });
+
+  it("keeps broad strategy and funnel recommendations out of Execution", () => {
     const tasks = buildIntelligentExecutionTasks([{ ...recommendation("focus_conversion"), engineVersion: "dev-047-part2-v1", disposition: "queued", destination: "content", destinationUrl: "/ai-content?projectId=project-1", successMeasure: "Qualified actions improve from baseline." }]);
-    expect(tasks).toHaveLength(1);
-    expect(tasks[0]).toMatchObject({ destination: "content", destinationUrl: "/ai-content?projectId=project-1", expectedOutcome: "Qualified actions improve from baseline." });
+    expect(tasks).toHaveLength(0);
+  });
+
+  it("keeps customer-journey narratives in Strategy until a module creates exact work", () => {
+    const tasks = buildIntelligentExecutionTasks([recommendation("funnel_convert"), recommendation("funnel_delight")]);
+    expect(tasks).toHaveLength(0);
   });
 });

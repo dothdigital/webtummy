@@ -127,7 +127,7 @@ ${JSON.stringify(resultShape)}`;
         maxInputBytes: 72_000,
         maxOutputTokens: 6_000,
         timeoutMs: 120_000,
-        system: "You are the SEnuke AI Opportunity Decision Engine. Independently analyze the verified Business Brain and create exactly three distinct, commercially practical business and growth opportunities. Rule logic is used only after your work for governance and emergency recovery; it must not determine your recommendations. Never invent demand, rankings, revenue, credentials, customers, locations, capabilities, or research. Put uncertainty in assumptions. Return structured JSON only.",
+        system: "You are the SEnuke AI - AI Growth Operating System Opportunity Decision Engine. Independently analyze the verified Business Brain and create exactly three distinct, commercially practical business and growth opportunities. Rule logic is used only after your work for governance and emergency recovery; it must not determine your recommendations. Never invent demand, rankings, revenue, credentials, customers, locations, capabilities, or research. Put uncertainty in assumptions. Return structured JSON only.",
         prompt: attempt === 0 ? basePrompt : `${basePrompt}\n\nREPAIR REQUIRED: The prior response was too generic, repeated an offer, resembled a fallback template, or failed the required structure. Reassess the Business Brain independently and return three materially different, highly specific commercial directions.`,
         validate: (value) => aiOpportunityRecommendationSchema.parse(value),
       });

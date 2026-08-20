@@ -314,7 +314,7 @@ async function interpretApprovedBusinessEvidence(input: {
   const sourceFingerprint = businessEvidenceFingerprint(evidence);
   try {
     const generated = await centralAiJson({
-      system: `You are the SENuke AI business-context interpreter. Convert approved project evidence into precise, customer-facing business context before SEO planning.
+      system: `You are the SEnuke AI - AI Growth Operating System business-context interpreter. Convert approved project evidence into precise, customer-facing business context before SEO planning.
 
 Raw intake wording is evidence, not publishable copy. Interpret the user's meaning, repair obvious speech-to-text or punctuation errors only when corroborated by other approved evidence, and organize service lists into clear service names. Never invent a business name, service, licence, credential, result, price, guarantee, or service area. The internal project name is never the business name unless it exactly matches a separately confirmed business/client name.`,
       prompt: `Return:
@@ -382,7 +382,7 @@ Rules:
     });
   } catch (error) {
     if (error && typeof error === "object" && "publicMessage" in error) throw error;
-    throw Object.assign(new Error("SEnuke AI could not interpret the approved business evidence. No raw intake wording was copied into the SEO plan. Retry after confirming the AI provider is available."), {
+    throw Object.assign(new Error("SEnuke AI - AI Growth Operating System could not interpret the approved business evidence. No raw intake wording was copied into the SEO plan. Retry after confirming the AI provider is available."), {
       statusCode: 502,
       code: "ai_business_context_invalid",
       publicMessage: true,
@@ -959,7 +959,7 @@ ${repair ? `\nREPAIR REQUIRED: Return only the ${requestedAssignments.length} mi
     let decisionIssues = new Map<string, Array<{ field: string; message: string }>>();
     for (let attempt = 0; attempt < 3; attempt += 1) {
       try {
-        const generated = await centralAiJson({ system: "You are the SENuke AI Unified Website Planning Engine. Make complete, evidence-grounded page ownership, content, conversion, and funnel decisions. Never omit a requested JSON field. Return valid structured JSON only.", prompt: promptFor(pendingAssignments, attempt > 0), temperature: 0.2, maxInputBytes: 100_000, maxOutputTokens: 16_000, timeoutMs: 120_000, validate: inspectAiUnifiedWebsitePlanResponse });
+        const generated = await centralAiJson({ system: "You are the SEnuke AI - AI Growth Operating System Unified Website Planning Engine. Make complete, evidence-grounded page ownership, content, conversion, and funnel decisions. Never omit a requested JSON field. Return valid structured JSON only.", prompt: promptFor(pendingAssignments, attempt > 0), temperature: 0.2, maxInputBytes: 100_000, maxOutputTokens: 16_000, timeoutMs: 120_000, validate: inspectAiUnifiedWebsitePlanResponse });
         const parsed = generated.result;
         const reconciledRaw = reconcileAiTargetUrlBatch(pendingAssignments, parsed.decisions);
         const validDecisions: AiWebsitePlanDecision[] = [];
@@ -1030,7 +1030,7 @@ ${repair ? `\nREPAIR REQUIRED: Return only the ${requestedAssignments.length} mi
   });
   const summary = generatedSummaries.length === 1
     ? generatedSummaries[0]
-    : `SENuke AI evaluated ${generatedDecisions.length} page decisions across ${generatedSummaries.length} evidence batches. ${generatedSummaries.join(" ")}`.slice(0, 3000);
+    : `SEnuke AI - AI Growth Operating System evaluated ${generatedDecisions.length} page decisions across ${generatedSummaries.length} evidence batches. ${generatedSummaries.join(" ")}`.slice(0, 3000);
   return contentPlanSchema.parse({ ...plan, summary, pageAssignments, pageUpdates: pageAssignments.map((assignment) => `${assignment.recommendedAction.replaceAll("_", " ")}: ${assignment.pageName} · ${assignment.targetUrl} · ${assignment.funnelStage ?? "evaluate"} stage`), keywordMapping: pageAssignments.map((assignment) => `“${assignment.canonicalKeyword}” → ${assignment.intentOwner || assignment.targetUrl}${assignment.secondaryKeywords.length ? ` · Supporting: ${assignment.secondaryKeywords.join(", ")}` : ""}`), pageMap: pageAssignments.map((assignment) => `${assignment.pageName} → ${assignment.targetUrl} · ${assignment.searchIntent} · ${assignment.recommendedAction.replaceAll("_", " ")}`), planningChecks: pageAssignments.map((assignment) => `${assignment.pageName}: ${assignment.decisionReason || assignment.gapAnalysis}`) });
 }
 
@@ -1128,7 +1128,7 @@ async function applyAiPageFaqSuggestions(plan: ContentPlan, context: {
       for (let attempt = 0; attempt < 2; attempt += 1) {
         try {
           const generated = await centralAiJson({
-        system: "You are the SENuke AI SEO content planner. Create useful, natural FAQ topic suggestions from the approved keyword-to-page map. Never invent business facts, prices, credentials, guarantees, reviews, statistics, eligibility rules, or service availability.",
+        system: "You are the SEnuke AI - AI Growth Operating System SEO content planner. Create useful, natural FAQ topic suggestions from the approved keyword-to-page map. Never invent business facts, prices, credentials, guarantees, reviews, statistics, eligibility rules, or service availability.",
         prompt: `Return {"pages":[{"targetUrl":"exact supplied target URL","seoTitle":"unique SEO title","metaDescription":"unique search description","contentOutline":["4 to 8 page sections"],"contentBrief":"complete page-specific writing direction","supportingContentIdeas":["2 to 4 useful supporting assets"],"proofRequirements":["1 to 4 evidence requirements"],"ctaSuggestion":"page-specific conversion action of 3 to 120 characters","faqTopics":["3 or 4 question topics"]}]}.
 
 Approved business evidence:
@@ -1213,7 +1213,7 @@ ${attempt ? "REPAIR REQUIRED: The previous response was incomplete or invalid. R
         try {
           const repairTargets = pendingAssignments;
           const retry = await centralAiJson({
-            system: "You are the SENuke AI SEO content planner repairing only incomplete pages from a prior structured response. Return every supplied targetUrl exactly once and every required field. Never invent business facts, claims, prices, credentials, guarantees, reviews, statistics, eligibility rules, or service availability.",
+            system: "You are the SEnuke AI - AI Growth Operating System SEO content planner repairing only incomplete pages from a prior structured response. Return every supplied targetUrl exactly once and every required field. Never invent business facts, claims, prices, credentials, guarantees, reviews, statistics, eligibility rules, or service availability.",
             prompt: `Return {"pages":[{"targetUrl":"exact supplied target URL","seoTitle":"unique SEO title","metaDescription":"unique search description","contentOutline":["3 to 8 page sections"],"contentBrief":"complete page-specific writing direction","supportingContentIdeas":["2 to 4 useful supporting assets"],"proofRequirements":["1 to 4 evidence requirements"],"ctaSuggestion":"page-specific conversion action of 3 to 120 characters","faqTopics":["3 or 4 page-specific question topics"]}]}.
 
 Business: ${context.business.businessName || "Business name not confirmed"}
@@ -1306,7 +1306,7 @@ Do not omit faqTopics, contentBrief, supportingContentIdeas, proofRequirements, 
       ? error.issues.slice(0, 3).map((issue) => `${issue.path.join(".") || "response"}: ${issue.message}`).join("; ")
       : error instanceof Error ? error.message : "Unknown AI response error";
     console.error("[content-plan] AI page suggestion validation failed:", diagnostic);
-    throw Object.assign(new Error(`SEnuke AI could not create the page content suggestions. No generic fallback was applied. ${diagnostic}`), {
+    throw Object.assign(new Error(`SEnuke AI - AI Growth Operating System could not create the page content suggestions. No generic fallback was applied. ${diagnostic}`), {
       statusCode: 502,
       code: "ai_content_plan_invalid",
       publicMessage: true,

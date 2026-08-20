@@ -43,7 +43,7 @@ export const config = {
   webAppUrl: process.env.WEB_APP_URL ?? "http://localhost:5173",
   publicApiUrl: process.env.PUBLIC_API_URL ?? `http://localhost:${apiPort}`,
   emailProvider: (process.env.EMAIL_PROVIDER ?? "").toLowerCase(),
-  emailFrom: process.env.EMAIL_FROM ?? "SEnuke AI <no-reply@senuke.com>",
+  emailFrom: process.env.EMAIL_FROM ?? "SEnuke AI - AI Growth Operating System <no-reply@senuke.com>",
   supportEmail: process.env.SUPPORT_EMAIL ?? "support@senuke.ai",
   signupNotifyEmail: process.env.SIGNUP_NOTIFY_EMAIL ?? "support@senuke.ai",
   resendApiKey: process.env.RESEND_API_KEY ?? "",

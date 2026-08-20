@@ -1,4 +1,4 @@
-# SEnuke AI Usage, Limits, Credits, and Cost Control Engine - Reference Code v1.0
+# SEnuke AI - AI Growth Operating System Usage, Limits, Credits, and Cost Control Engine - Reference Code v1.0
 
 This reference code is intentionally framework-neutral TypeScript/Node-style pseudocode. It shows the architecture expected by the development handoff:
 

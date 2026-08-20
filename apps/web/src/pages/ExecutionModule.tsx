@@ -15,6 +15,7 @@ import { keywordMarketKey, keywordMarketOptions, keywordOpportunityScore, latest
 import { getActiveProjectId, resolveActiveProjectId, setActiveProjectId } from "../active-project.js";
 import LeadFunnelWorkspace from "../components/LeadFunnelWorkspace.js";
 import SiteBuilderWorkflow from "../components/SiteBuilderWorkflow.js";
+import SiteCapabilityExtension from "../components/SiteCapabilityExtension.js";
 import type { AiContentGeneration, DomainBacklinkLinks, DomainBacklinkSummary, ExecutionTask, GuidedExecutionTask, GuidedProject, HealthReport, IssueRow, KeywordResearchRun, Opportunity, ProjectNotification, ProjectWorkflowController as ProjectWorkflowControllerState, StrategyPagePriority, Website, WorkspaceIntelligence, WorkspaceIntelligenceResponse } from "../types.js";
 import { AuthorityGrowthWorkspace } from "../components/AuthorityGrowthWorkspace.js";
 import AiCitationVisibilityWorkspace from "../components/AiCitationVisibilityWorkspace.js";
@@ -354,14 +355,14 @@ function moduleReadiness(kind: ModuleKind, data: ModuleData, project?: GuidedPro
   const intake = item(
     "intake",
     "Project intake required",
-    "SEnuke AI needs the business profile, audience, offer, goal, and project context before this module can create useful output.",
+    "SEnuke AI - AI Growth Operating System needs the business profile, audience, offer, goal, and project context before this module can create useful output.",
     intakeComplete,
     [{ label: "Complete Intake", url: `/guided-projects/${project.id}/intake` }],
   );
   const opportunity = item(
     "opportunity",
     "Opportunity required",
-    "SEnuke AI needs to know what direction this project is targeting before it can create downstream recommendations.",
+    "SEnuke AI - AI Growth Operating System needs to know what direction this project is targeting before it can create downstream recommendations.",
     opportunityExists,
     [{ label: "Find Opportunity", url: `/opportunities?projectId=${project.id}` }],
   );
@@ -375,21 +376,21 @@ function moduleReadiness(kind: ModuleKind, data: ModuleData, project?: GuidedPro
   const strategy = item(
     "strategy",
     "Strategy required",
-    "SEnuke AI needs an approved strategy before this module can generate reliable execution tasks.",
+    "SEnuke AI - AI Growth Operating System needs an approved strategy before this module can generate reliable execution tasks.",
     strategyApproved,
     [{ label: strategyExists ? "Approve Strategy" : "Generate Strategy", url: `/strategy?projectId=${project.id}` }],
   );
   const keywordAnalysis = item(
     "keyword_analysis",
     "Keyword analysis required",
-    "SEnuke AI needs target keywords, buyer intent, topical clusters, competitor gaps, difficulty, opportunity score, and revenue potential before strategy and full execution planning.",
+    "SEnuke AI - AI Growth Operating System needs target keywords, buyer intent, topical clusters, competitor gaps, difficulty, opportunity score, and revenue potential before strategy and full execution planning.",
     keywordAnalysisComplete,
     [{ label: "Run Keyword Analysis", url: `/keywords?projectId=${project.id}` }],
   );
   const websiteItem = item(
     "website",
     "No website found",
-    "Create or connect a website first so SEnuke AI can analyze and optimize it.",
+    "Create or connect a website first so SEnuke AI - AI Growth Operating System can analyze and optimize it.",
     hasWebsite,
     [
       { label: "Create Website", url: `/site-architect?projectId=${project.id}` },
@@ -400,8 +401,8 @@ function moduleReadiness(kind: ModuleKind, data: ModuleData, project?: GuidedPro
     key: "site_analysis",
     title: siteAnalysisInProgress && !siteAnalysisComplete ? "Site analysis in progress" : "Site analysis required",
     description: siteAnalysisInProgress && !siteAnalysisComplete
-      ? "SEnuke AI is currently analyzing this website. Dependent modules will unlock automatically when the crawl finishes."
-      : "SEnuke AI needs to analyze your website before it can evaluate funnel gaps, SEO issues, internal links, AI citations, backlinks, or page improvements.",
+      ? "SEnuke AI - AI Growth Operating System is currently analyzing this website. Dependent modules will unlock automatically when the crawl finishes."
+      : "SEnuke AI - AI Growth Operating System needs to analyze your website before it can evaluate funnel gaps, SEO issues, internal links, AI citations, backlinks, or page improvements.",
     status: siteAnalysisComplete ? "complete" : siteAnalysisInProgress ? "in_progress" : "missing",
     actions: [{ label: siteAnalysisInProgress && !siteAnalysisComplete ? "View progress" : "Analyze Site", url: `/site-analysis?projectId=${project.id}` }],
   };
@@ -1154,7 +1155,7 @@ function moduleHelpSections(kind: ModuleKind, projectName: string): HelpSection[
   const sharedSafety = {
     title: "Approval and safety",
     bullets: [
-      "SEnuke AI can recommend, generate, and prepare assets automatically.",
+      "SEnuke AI - AI Growth Operating System can recommend, generate, and prepare assets automatically.",
       "Anything that publishes, sends, schedules, changes a live page, or affects an external system requires user approval.",
       "If required data is missing, the module shows a readiness checklist with direct buttons instead of a dead-end error.",
     ],
@@ -1435,7 +1436,7 @@ function ModuleReadinessChecklist({ moduleTitle, items }: { moduleTitle: string;
         <div className="text-xs font-bold uppercase tracking-wide text-brand-600">Readiness Checklist</div>
         <h2 className="mt-2 text-xl font-bold text-charcoal-950">{moduleTitle} is not ready yet.</h2>
         <p className="mt-2 text-sm leading-6 text-slate-600">
-          Before SEnuke AI can run this, we need to complete these missing steps. Missing data becomes the next recommended action instead of a dead-end error.
+          Before SEnuke AI - AI Growth Operating System can run this, we need to complete these missing steps. Missing data becomes the next recommended action instead of a dead-end error.
         </p>
       </div>
       <div className="grid gap-4 p-5 lg:grid-cols-2">
@@ -1636,16 +1637,16 @@ function OpportunityScreen({
 }
 
 function OpportunityCookingOverlay() {
-  return <AiPlanningScreen theme="dark" eyebrow="Opportunity research in progress" title="Hang tight — we’re finding your strongest opportunities!" description="SEnuke AI is reviewing the business, audience, offer, goals, markets, competitors, and constraints to identify practical directions worth pursuing." steps={[{ title: "Review the business", detail: "Business Intake, audience, offer, goals, markets, assets, and operating constraints" }, { title: "Evaluate the market", detail: "Demand, competitor positioning, customer needs, differentiation, and evidence quality" }, { title: "Rank the opportunities", detail: "Business fit, expected value, confidence, effort, dependencies, and recommended next step" }]} checks={["Evidence is separated from inference", "Opportunities are scored consistently", "Nothing is selected without review"]} status="Creating scored opportunity recommendations…" note="You will review, compare, refine, and select an opportunity before it becomes part of the Strategy." ariaLabel="Creating opportunity recommendations" />;
+  return <AiPlanningScreen theme="dark" eyebrow="Opportunity research in progress" title="Hang tight — we’re finding your strongest opportunities!" description="SEnuke AI - AI Growth Operating System is reviewing the business, audience, offer, goals, markets, competitors, and constraints to identify practical directions worth pursuing." steps={[{ title: "Review the business", detail: "Business Intake, audience, offer, goals, markets, assets, and operating constraints" }, { title: "Evaluate the market", detail: "Demand, competitor positioning, customer needs, differentiation, and evidence quality" }, { title: "Rank the opportunities", detail: "Business fit, expected value, confidence, effort, dependencies, and recommended next step" }]} checks={["Evidence is separated from inference", "Opportunities are scored consistently", "Nothing is selected without review"]} status="Creating scored opportunity recommendations…" note="You will review, compare, refine, and select an opportunity before it becomes part of the Strategy." ariaLabel="Creating opportunity recommendations" />;
 }
 
 function StrategyCookingOverlay({ job }: { job: StrategyGenerationJob | null }) {
   const stage = job?.stage === "queued" ? "Waiting for an available AI worker" : job?.stage === "generating_strategy" ? "Researching and making Strategy decisions" : "Creating an evidence-backed Unified Strategy";
-  return <AiPlanningScreen theme="dark" eyebrow="Strategy planning in progress" title="Hang tight — we’re building your unified strategy!" description="SEnuke AI is connecting the selected opportunity, approved keywords, target markets, project goals, audience, offer, and available website evidence into one prioritized plan of action." steps={[{ title: "Review the intelligence", detail: "Business goals, audience, offer, opportunity, approved keywords, markets, competitors, and website evidence" }, { title: "Make strategic decisions", detail: "Positioning, page and content priorities, funnel gaps, Local SEO, authority, AI visibility, and conversion direction" }, { title: "Build the action plan", detail: "Ranked focus areas, phased actions, channel responsibilities, dependencies, KPIs, and one Next Best Action" }]} stats={job ? [{ value: `${Math.round(job.progress)}%`, label: stage, tone: "emerald" }] : []} progress={job?.progress} checks={["Runs safely in the background", "Duplicate requests reuse one job", "The completed draft loads automatically"]} status={job?.status === "queued" ? "Strategy job queued…" : "Creating an evidence-backed Unified Strategy…"} note="You can leave this page safely. The Strategy job continues in the background and the completed draft will load automatically when you return." ariaLabel="Creating project strategy" />;
+  return <AiPlanningScreen theme="dark" eyebrow="Strategy planning in progress" title="Hang tight — we’re building your unified strategy!" description="SEnuke AI - AI Growth Operating System is connecting the selected opportunity, approved keywords, target markets, project goals, audience, offer, and available website evidence into one prioritized plan of action." steps={[{ title: "Review the intelligence", detail: "Business goals, audience, offer, opportunity, approved keywords, markets, competitors, and website evidence" }, { title: "Make strategic decisions", detail: "Positioning, page and content priorities, funnel gaps, Local SEO, authority, AI visibility, and conversion direction" }, { title: "Build the action plan", detail: "Ranked focus areas, phased actions, channel responsibilities, dependencies, KPIs, and one Next Best Action" }]} stats={job ? [{ value: `${Math.round(job.progress)}%`, label: stage, tone: "emerald" }] : []} progress={job?.progress} checks={["Runs safely in the background", "Duplicate requests reuse one job", "The completed draft loads automatically"]} status={job?.status === "queued" ? "Strategy job queued…" : "Creating an evidence-backed Unified Strategy…"} note="You can leave this page safely. The Strategy job continues in the background and the completed draft will load automatically when you return." ariaLabel="Creating project strategy" />;
 }
 
 function ExecutionPlanCookingOverlay() {
-  return <AiPlanningScreen eyebrow="Execution planning in progress" title="Hang tight — we’re building your Execution Plan!" description="SEnuke AI is converting the approved Strategy into clear, ordered work for this project—not running another analysis." steps={[{ title: "Review the approved direction", detail: "Strategy version, keywords, markets, evidence, priorities, safeguards, and project readiness" }, { title: "Create executable tasks", detail: "SEO, content, website, Local SEO, authority, AI citation, publishing, and measurement work" }, { title: "Set the workflow", detail: "Priority, dependencies, AI assistance, approvals, destinations, and success measures" }]} checks={["One task for each approved outcome", "Dependencies remain in order", "Protected changes require approval"]} status="Prioritizing and organizing the next work…" note="The resulting tasks remain reviewable. AI-assisted work prepares drafts; public or protected changes wait for approval." ariaLabel="Creating execution plan" />;
+  return <AiPlanningScreen eyebrow="Execution planning in progress" title="Hang tight — we’re building your Execution Plan!" description="SEnuke AI - AI Growth Operating System is converting the approved Strategy into clear, ordered work for this project—not running another analysis." steps={[{ title: "Review the approved direction", detail: "Strategy version, keywords, markets, evidence, priorities, safeguards, and project readiness" }, { title: "Create executable tasks", detail: "SEO, content, website, Local SEO, authority, AI citation, publishing, and measurement work" }, { title: "Set the workflow", detail: "Priority, dependencies, AI assistance, approvals, destinations, and success measures" }]} checks={["One task for each approved outcome", "Dependencies remain in order", "Protected changes require approval"]} status="Prioritizing and organizing the next work…" note="The resulting tasks remain reviewable. AI-assisted work prepares drafts; public or protected changes wait for approval." ariaLabel="Creating execution plan" />;
 }
 
 function OpportunityMappingOverlay() {
@@ -1789,7 +1790,7 @@ function StrategyRevisionModal({ open, busy, project, strategy, opportunityName,
     <div className="fixed inset-0 z-[70] grid place-items-center overflow-y-auto bg-charcoal-950/55 p-4" role="dialog" aria-modal="true" aria-labelledby="strategy-revision-title">
       <button type="button" className="absolute inset-0" aria-label="Close Strategy revision" onClick={busy ? undefined : onClose} />
       <div className="relative w-full max-w-3xl overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl">
-        {busy && <div className="absolute inset-0 z-20 overflow-y-auto"><AiPlanningScreen mode="contained" eyebrow="Strategy revision in progress" title="Hang tight — we’re revising your Strategy!" description="SEnuke AI is re-aligning the Strategy with your selected priorities while preserving its relationship to the project goals, markets, keywords, opportunity, and website evidence." steps={[{ title: "Review your instruction", detail: "Selected changes, custom direction, current Strategy version, and approved project priorities" }, { title: "Reconcile the evidence", detail: "Goals, markets, keywords, opportunity, website findings, dependencies, and conflicting signals" }, { title: "Create a new version", detail: "Updated focus areas, phased actions, funnel direction, KPIs, confidence, and Next Best Action" }]} checks={["Keep the current version in history", "Preserve approved project facts", "Require approval for the revised draft"]} status="Creating a new Strategy draft…" note="The current approved version remains unchanged until you review and approve this new draft." ariaLabel="Revising project strategy" /></div>}
+        {busy && <div className="absolute inset-0 z-20 overflow-y-auto"><AiPlanningScreen mode="contained" eyebrow="Strategy revision in progress" title="Hang tight — we’re revising your Strategy!" description="SEnuke AI - AI Growth Operating System is re-aligning the Strategy with your selected priorities while preserving its relationship to the project goals, markets, keywords, opportunity, and website evidence." steps={[{ title: "Review your instruction", detail: "Selected changes, custom direction, current Strategy version, and approved project priorities" }, { title: "Reconcile the evidence", detail: "Goals, markets, keywords, opportunity, website findings, dependencies, and conflicting signals" }, { title: "Create a new version", detail: "Updated focus areas, phased actions, funnel direction, KPIs, confidence, and Next Best Action" }]} checks={["Keep the current version in history", "Preserve approved project facts", "Require approval for the revised draft"]} status="Creating a new Strategy draft…" note="The current approved version remains unchanged until you review and approve this new draft." ariaLabel="Revising project strategy" /></div>}
         <div className="flex items-start justify-between gap-4 border-b border-slate-100 px-5 py-5 sm:px-6">
           <div><div className="text-xs font-bold uppercase tracking-wide text-brand-600">Strategy Engine · Version {strategy.version ?? 1}</div><h2 id="strategy-revision-title" className="mt-1 text-xl font-bold text-charcoal-950">What should AI revise?</h2><p className="mt-2 max-w-2xl text-sm leading-6 text-charcoal-600">AI suggested these improvements from the current project intake, goals, markets, opportunity, keywords and site context. Select one or more changes.</p></div>
           <button type="button" onClick={onClose} disabled={busy} className="grid h-9 w-9 shrink-0 place-items-center rounded-lg border border-slate-200 text-lg text-charcoal-500 disabled:opacity-50" aria-label="Close">×</button>
@@ -3033,7 +3034,7 @@ function AiEvaluatedGrowthFunnel({ projectId, funnel, strategyDecision, siteHeal
             </div>
           </div>
           <div className="bg-slate-50/60 p-5 sm:p-6">
-            {selected && <><div className="flex flex-wrap items-center gap-2"><span className="rounded-full bg-brand-100 px-2.5 py-1 text-[10px] font-black uppercase tracking-wide text-brand-700">{aiEvaluated ? "AI priority detail" : "Strategy priority detail"}</span><span className="rounded-full bg-white px-2.5 py-1 text-[10px] font-bold capitalize text-charcoal-600 ring-1 ring-slate-200">{selected.step.effort} effort</span><span className="rounded-full bg-white px-2.5 py-1 text-[10px] font-bold text-charcoal-600 ring-1 ring-slate-200">{selected.step.confidence}% confidence</span></div><h3 className="mt-3 text-xl font-black text-charcoal-950">{selected.step.title}</h3><p className="mt-2 text-sm leading-6 text-charcoal-600">{selected.step.recommendedAction}</p><div className="mt-4 grid gap-3 sm:grid-cols-2"><div className="rounded-xl border border-slate-200 bg-white p-4"><div className="text-[10px] font-black uppercase tracking-wide text-charcoal-400">Why this position</div><p className="mt-2 text-xs leading-5 text-charcoal-600">{selected.step.whyNow}</p></div><div className="rounded-xl border border-slate-200 bg-white p-4"><div className="text-[10px] font-black uppercase tracking-wide text-charcoal-400">Expected impact</div><p className="mt-2 text-xs leading-5 text-charcoal-600">{selected.step.expectedImpact}</p></div></div><div className="mt-4 rounded-xl border border-slate-200 bg-white p-4"><div className="text-[10px] font-black uppercase tracking-wide text-charcoal-400">What SEnuke AI will work through</div><div className="mt-2 space-y-2">{selected.step.details.map((detail) => <div key={detail} className="flex gap-2 text-xs leading-5 text-charcoal-600"><span className="font-black text-emerald-600">✓</span><span>{detail}</span></div>)}</div></div>{selected.step.affectedPages.length > 0 && <div className="mt-4 rounded-xl border border-slate-200 bg-white p-4"><div className="text-[10px] font-black uppercase tracking-wide text-charcoal-400">Affected pages</div><div className="mt-2 max-h-36 space-y-1 overflow-y-auto">{selected.step.affectedPages.map((url) => <div key={url} className="truncate text-xs font-semibold text-brand-700" title={url}>{url}</div>)}</div></div>}<div className="mt-4 rounded-xl border border-violet-100 bg-violet-50 p-4"><div className="text-[10px] font-black uppercase tracking-wide text-violet-700">{aiEvaluated ? "Why AI is confident" : "Confidence basis"}</div><p className="mt-2 text-xs leading-5 text-violet-900">{selected.step.confidenceReason}</p><div className="mt-3 flex flex-wrap gap-2">{selected.step.sourceSignals.map((signal) => <span key={signal} className="rounded-full bg-white px-2.5 py-1 text-[10px] font-bold text-violet-700 ring-1 ring-violet-100">{signal}</span>)}</div></div><button type="button" onClick={() => onNavigate(funnelDestinationUrl(selected.step, projectId))} className="mt-4 rounded-lg border border-brand-200 bg-white px-4 py-2.5 text-xs font-bold text-brand-700 hover:bg-brand-50">Open {selected.step.title} workspace →</button></>}
+            {selected && <><div className="flex flex-wrap items-center gap-2"><span className="rounded-full bg-brand-100 px-2.5 py-1 text-[10px] font-black uppercase tracking-wide text-brand-700">{aiEvaluated ? "AI priority detail" : "Strategy priority detail"}</span><span className="rounded-full bg-white px-2.5 py-1 text-[10px] font-bold capitalize text-charcoal-600 ring-1 ring-slate-200">{selected.step.effort} effort</span><span className="rounded-full bg-white px-2.5 py-1 text-[10px] font-bold text-charcoal-600 ring-1 ring-slate-200">{selected.step.confidence}% confidence</span></div><h3 className="mt-3 text-xl font-black text-charcoal-950">{selected.step.title}</h3><p className="mt-2 text-sm leading-6 text-charcoal-600">{selected.step.recommendedAction}</p><div className="mt-4 grid gap-3 sm:grid-cols-2"><div className="rounded-xl border border-slate-200 bg-white p-4"><div className="text-[10px] font-black uppercase tracking-wide text-charcoal-400">Why this position</div><p className="mt-2 text-xs leading-5 text-charcoal-600">{selected.step.whyNow}</p></div><div className="rounded-xl border border-slate-200 bg-white p-4"><div className="text-[10px] font-black uppercase tracking-wide text-charcoal-400">Expected impact</div><p className="mt-2 text-xs leading-5 text-charcoal-600">{selected.step.expectedImpact}</p></div></div><div className="mt-4 rounded-xl border border-slate-200 bg-white p-4"><div className="text-[10px] font-black uppercase tracking-wide text-charcoal-400">What SEnuke AI - AI Growth Operating System will work through</div><div className="mt-2 space-y-2">{selected.step.details.map((detail) => <div key={detail} className="flex gap-2 text-xs leading-5 text-charcoal-600"><span className="font-black text-emerald-600">✓</span><span>{detail}</span></div>)}</div></div>{selected.step.affectedPages.length > 0 && <div className="mt-4 rounded-xl border border-slate-200 bg-white p-4"><div className="text-[10px] font-black uppercase tracking-wide text-charcoal-400">Affected pages</div><div className="mt-2 max-h-36 space-y-1 overflow-y-auto">{selected.step.affectedPages.map((url) => <div key={url} className="truncate text-xs font-semibold text-brand-700" title={url}>{url}</div>)}</div></div>}<div className="mt-4 rounded-xl border border-violet-100 bg-violet-50 p-4"><div className="text-[10px] font-black uppercase tracking-wide text-violet-700">{aiEvaluated ? "Why AI is confident" : "Confidence basis"}</div><p className="mt-2 text-xs leading-5 text-violet-900">{selected.step.confidenceReason}</p><div className="mt-3 flex flex-wrap gap-2">{selected.step.sourceSignals.map((signal) => <span key={signal} className="rounded-full bg-white px-2.5 py-1 text-[10px] font-bold text-violet-700 ring-1 ring-violet-100">{signal}</span>)}</div></div><button type="button" onClick={() => onNavigate(funnelDestinationUrl(selected.step, projectId))} className="mt-4 rounded-lg border border-brand-200 bg-white px-4 py-2.5 text-xs font-bold text-brand-700 hover:bg-brand-50">Open {selected.step.title} workspace →</button></>}
           </div>
         </div>
       </Card>
@@ -3297,7 +3298,7 @@ function KeywordScreen({ data }: { data: ModuleData }) {
     return (
       <Card className="p-6">
         <h2 className="text-xl font-bold text-charcoal-950">Preparing keyword recommendations</h2>
-        <p className="mt-2 text-sm leading-6 text-charcoal-600">SEnuke AI starts with project intake, goals, markets, competitors, and the selected opportunity. A manual seed is only needed when that information is insufficient.</p>
+        <p className="mt-2 text-sm leading-6 text-charcoal-600">SEnuke AI - AI Growth Operating System starts with project intake, goals, markets, competitors, and the selected opportunity. A manual seed is only needed when that information is insufficient.</p>
         {message && <div className="mt-4 rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">{message}</div>}
         <div className="mt-4 flex flex-col gap-2 sm:flex-row"><input value={manualSeed} onChange={(event) => setManualSeed(event.target.value)} placeholder="Fallback manual seed keyword" className="min-w-0 flex-1 rounded-lg border border-slate-200 px-3 py-2 text-sm"/><button type="button" disabled={busy !== null || manualSeed.trim().length < 2} onClick={() => void generate(false, manualSeed)} className="rounded-lg bg-brand-600 px-4 py-2 text-sm font-bold text-white disabled:bg-slate-300">{busy ? "Generating…" : "Generate from seed"}</button></div>
       </Card>
@@ -3351,6 +3352,7 @@ function KeywordScreen({ data }: { data: ModuleData }) {
     .flatMap((group) => groupKeywords(group.keywords))
     .map((keyword) => [keyword.toLocaleLowerCase(), keyword])).values()];
   const keywordAnalysisLocations = project ? projectAnalysisLocations(project).locationNames : [];
+  const keywordMarketSetupRequired = approvedKeywordDirections.length > 0 && keywordAnalysisLocations.length === 0;
   const fixedResearchKeywords = keywordResearchScopeKeywords(groups, data.keywordRuns);
   const expectedKeywordChecks = expectedApprovedKeywordResearchChecks([{ status: "approved", keywords: fixedResearchKeywords }], keywordAnalysisLocations);
   const incompleteKeywordChecks = incompleteApprovedKeywordResearchChecks(groups, data.keywordRuns, keywordAnalysisLocations);
@@ -3383,14 +3385,14 @@ function KeywordScreen({ data }: { data: ModuleData }) {
   });
   const failedKeywordLocationChecks = failedKeywordAttentionRows.length;
   const retryingFailedKeywords = failedKeywordLocationChecks > 0;
-  const totalRecommendations = groups.reduce((sum, group) => sum + groupKeywords(group.keywords).length, 0);
+  const totalApprovedKeywords = approvedKeywordDirections.length;
   const analysisWebsiteId = website?.id ?? project?.websiteId ?? project?.website?.id ?? null;
   const keywordAnalysisTo = analysisWebsiteId
     ? `/keyword-insights?project=${encodeURIComponent(analysisWebsiteId)}&projectId=${encodeURIComponent(project?.id ?? "")}${analysisGroupIds.length ? `&groupIds=${encodeURIComponent(analysisGroupIds.join(","))}` : analysisGroupId ? `&groupId=${encodeURIComponent(analysisGroupId)}` : ""}&add=1&remaining=1`
     : `/keyword-insights?projectId=${encodeURIComponent(project?.id ?? "")}${analysisGroupIds.length ? `&groupIds=${encodeURIComponent(analysisGroupIds.join(","))}` : analysisGroupId ? `&groupId=${encodeURIComponent(analysisGroupId)}` : ""}&add=1&remaining=1`;
   const keywordReportsTo = keywordAnalysisTo.replace("&add=1&remaining=1", "");
   const failedKeywordAnalysisTo = `${keywordAnalysisTo}&failed=1`;
-  const keywordReportsReady = runs.length > 0 && !keywordAnalysisProcessing && missingApprovedKeywords.length === 0 && failedKeywordLocationChecks === 0;
+  const keywordReportsReady = !keywordMarketSetupRequired && expectedKeywordChecks.length > 0 && runs.length > 0 && !keywordAnalysisProcessing && missingApprovedKeywords.length === 0 && failedKeywordLocationChecks === 0;
   const existingWebsiteFlow = isExistingWebsiteFlow(project, website);
   const preLaunchWebsiteFlow = Boolean(project && ["new_website_required", "website_planned"].includes(project.websiteStatus ?? "") && !existingWebsiteFlow);
   const siteAnalysisComplete = hasCompletedSiteAnalysis(data, project, website);
@@ -3473,19 +3475,19 @@ function KeywordScreen({ data }: { data: ModuleData }) {
           <Link to={`/site-analysis?projectId=${encodeURIComponent(project?.id ?? "")}`} className="inline-flex shrink-0 items-center justify-center rounded-lg border border-amber-300 bg-white px-4 py-2 text-xs font-bold text-amber-900 hover:bg-amber-50">View Site Analysis progress →</Link>
         </div>
       </Card>}
-      <Card className={`${keywordAnalysisProcessing ? "border-amber-300 bg-gradient-to-r from-amber-50 via-white to-brand-50" : keywordReportsReady ? "border-emerald-300 bg-gradient-to-r from-emerald-50 via-white to-brand-50" : retryingFailedKeywords ? "border-rose-200 bg-gradient-to-r from-rose-50 via-white to-amber-50" : approvedCount > 0 ? "border-brand-200 bg-gradient-to-r from-brand-50 via-white to-emerald-50" : ""} p-5`}>
+      <Card className={`${keywordAnalysisProcessing ? "border-amber-300 bg-gradient-to-r from-amber-50 via-white to-brand-50" : keywordReportsReady ? "border-emerald-300 bg-gradient-to-r from-emerald-50 via-white to-brand-50" : retryingFailedKeywords && !keywordMarketSetupRequired ? "border-rose-200 bg-gradient-to-r from-rose-50 via-white to-amber-50" : approvedCount > 0 ? "border-brand-200 bg-gradient-to-r from-brand-50 via-white to-emerald-50" : ""} p-5`}>
         <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
           <div>
             <div className={`text-xs font-bold uppercase tracking-wide ${keywordAnalysisProcessing ? "text-amber-700" : keywordReportsReady ? "text-emerald-700" : retryingFailedKeywords ? "text-rose-700" : "text-brand-600"}`}>Keyword Intelligence</div>
-            <h2 className="mt-1 text-lg font-bold text-charcoal-950">{keywordAnalysisProcessing ? "Keyword analysis is in progress" : keywordReportsReady ? "Keyword reports are ready" : retryingFailedKeywords ? `${failedKeywordLocationChecks} keyword-location check${failedKeywordLocationChecks === 1 ? " needs" : "s need"} a retry` : approvedCount > 0 ? "Approved direction ready for analysis" : "Approve and manage keyword direction"}</h2>
-            <p className="mt-1 text-sm leading-6 text-charcoal-600">{keywordAnalysisProcessing ? "SEnuke AI is collecting demand, competition, CPC, intent and SERP competitor signals. You can leave this page and return to review completed reports." : keywordReportsReady ? "Every approved Primary and Secondary keyword has been analyzed. Open the reports to review market demand, competition, CPC, intent and SERP opportunities." : retryingFailedKeywords ? `The provider could not complete ${failedKeywordLocationChecks} exact keyword-location check${failedKeywordLocationChecks === 1 ? "" : "s"}. The completed checks are preserved; retry only the failed pairs.` : approvedCount > 0 ? `${incompleteKeywordChecks.length} exact market check${incompleteKeywordChecks.length === 1 ? "" : "s"} across ${missingApprovedKeywords.length} approved keyword${missingApprovedKeywords.length === 1 ? " is" : "s are"} still waiting for analysis. Website and Strategy will use the complete approved set for page mapping.` : "Review, approve, edit, or add keywords before continuing."}</p>
-            <p className="mt-1 text-xs font-semibold text-charcoal-500">{groups.length} groups · {approvedCount} approved · {totalRecommendations} approved keywords · {completedRequiredKeywordChecks}/{expectedKeywordChecks.length} required checks complete · {retryingFailedKeywords ? `${failedKeywordLocationChecks} failed checks · ${missingApprovedKeywords.length} keywords still awaiting complete evidence` : `${incompleteKeywordChecks.length} remaining checks across ${missingApprovedKeywords.length} keywords`} · {keywordAnalysisProcessing ? `${processingRuns.length} analysis run${processingRuns.length === 1 ? "" : "s"} processing` : keywordReportsReady ? `${runs.length} completed analysis run${runs.length === 1 ? "" : "s"}` : existingWebsiteFlow ? "existing website context" : "pre-launch market research"}</p>
+            <h2 className="mt-1 text-lg font-bold text-charcoal-950">{keywordAnalysisProcessing ? "Keyword analysis is in progress" : keywordReportsReady ? "Keyword reports are ready" : keywordMarketSetupRequired ? "Choose target areas for keyword analysis" : retryingFailedKeywords ? `${failedKeywordLocationChecks} keyword-location check${failedKeywordLocationChecks === 1 ? " needs" : "s need"} a retry` : approvedCount > 0 ? "Approved direction ready for analysis" : "Approve and manage keyword direction"}</h2>
+            <p className="mt-1 text-sm leading-6 text-charcoal-600">{keywordAnalysisProcessing ? "SEnuke AI - AI Growth Operating System is collecting demand, competition, CPC, intent and SERP competitor signals. You can leave this page and return to review completed reports." : keywordReportsReady ? "Every approved Primary and Secondary keyword has been analyzed. Open the reports to review market demand, competition, CPC, intent and SERP opportunities." : keywordMarketSetupRequired ? `Select at least one exact city, region, or country for the ${totalApprovedKeywords} approved keyword${totalApprovedKeywords === 1 ? "" : "s"}. SEnuke AI will then calculate the required keyword-market checks before analysis starts.` : retryingFailedKeywords ? `The provider could not complete ${failedKeywordLocationChecks} exact keyword-location check${failedKeywordLocationChecks === 1 ? "" : "s"}. The completed checks are preserved; retry only the failed pairs.` : approvedCount > 0 ? `${incompleteKeywordChecks.length} exact market check${incompleteKeywordChecks.length === 1 ? "" : "s"} across ${missingApprovedKeywords.length} approved keyword${missingApprovedKeywords.length === 1 ? " is" : "s are"} still waiting for analysis. Website and Strategy will use the complete approved set for page mapping.` : "Review, approve, edit, or add keywords before continuing."}</p>
+            <p className="mt-1 text-xs font-semibold text-charcoal-500">{groups.length} groups · {approvedCount} approved · {totalApprovedKeywords} approved keywords · {keywordMarketSetupRequired ? "target areas not selected · required checks calculate after selection" : <>{completedRequiredKeywordChecks}/{expectedKeywordChecks.length} required checks complete · {retryingFailedKeywords ? `${failedKeywordLocationChecks} failed checks · ${missingApprovedKeywords.length} keywords still awaiting complete evidence` : `${incompleteKeywordChecks.length} remaining checks across ${missingApprovedKeywords.length} keywords`}</>} · {keywordAnalysisProcessing ? `${processingRuns.length} analysis run${processingRuns.length === 1 ? "" : "s"} processing` : keywordReportsReady ? `${runs.length} completed analysis run${runs.length === 1 ? "" : "s"}` : existingWebsiteFlow ? "existing website context" : "pre-launch market research"}</p>
           </div>
-          {keywordAnalysisProcessing ? <Link to={keywordReportsTo} className="inline-flex shrink-0 items-center justify-center gap-2 rounded-lg border border-amber-200 bg-white px-5 py-2.5 text-sm font-bold text-amber-800 shadow-sm hover:bg-amber-50"><span className="h-4 w-4 animate-spin rounded-full border-2 border-amber-200 border-t-amber-600" />View analysis status →</Link> : keywordReportsReady ? <Link to={completedKeywordNextRoute} className="inline-flex shrink-0 items-center justify-center rounded-lg bg-emerald-600 px-5 py-2.5 text-sm font-bold text-white shadow-sm hover:bg-emerald-700">{completedKeywordNextLabel} →</Link> : approvedCount > 0 ? <Link to={retryingFailedKeywords ? failedKeywordAnalysisTo : keywordAnalysisTo} className={`inline-flex shrink-0 items-center justify-center rounded-lg px-5 py-2.5 text-sm font-bold text-white shadow-sm ${retryingFailedKeywords ? "bg-rose-700 hover:bg-rose-800" : "bg-brand-600 hover:bg-brand-700"}`}>{retryingFailedKeywords ? `Review & Retry ${failedKeywordLocationChecks || missingApprovedKeywords.length} Failed Check${(failedKeywordLocationChecks || missingApprovedKeywords.length) === 1 ? "" : "s"}` : `Review & Start ${incompleteKeywordChecks.length} Remaining Check${incompleteKeywordChecks.length === 1 ? "" : "s"}`} →</Link> : null}
+          {keywordAnalysisProcessing ? <Link to={keywordReportsTo} className="inline-flex shrink-0 items-center justify-center gap-2 rounded-lg border border-amber-200 bg-white px-5 py-2.5 text-sm font-bold text-amber-800 shadow-sm hover:bg-amber-50"><span className="h-4 w-4 animate-spin rounded-full border-2 border-amber-200 border-t-amber-600" />View analysis status →</Link> : keywordReportsReady ? <Link to={completedKeywordNextRoute} className="inline-flex shrink-0 items-center justify-center rounded-lg bg-emerald-600 px-5 py-2.5 text-sm font-bold text-white shadow-sm hover:bg-emerald-700">{completedKeywordNextLabel} →</Link> : approvedCount > 0 ? <Link to={keywordMarketSetupRequired ? keywordAnalysisTo : retryingFailedKeywords ? failedKeywordAnalysisTo : keywordAnalysisTo} className={`inline-flex shrink-0 items-center justify-center rounded-lg px-5 py-2.5 text-sm font-bold text-white shadow-sm ${retryingFailedKeywords && !keywordMarketSetupRequired ? "bg-rose-700 hover:bg-rose-800" : "bg-brand-600 hover:bg-brand-700"}`}>{keywordMarketSetupRequired ? "Choose target areas" : retryingFailedKeywords ? `Review & Retry ${failedKeywordLocationChecks || missingApprovedKeywords.length} Failed Check${(failedKeywordLocationChecks || missingApprovedKeywords.length) === 1 ? "" : "s"}` : `Review & Start ${incompleteKeywordChecks.length} Remaining Check${incompleteKeywordChecks.length === 1 ? "" : "s"}`} →</Link> : null}
         </div>
         <div className="mt-4 flex items-start gap-3 rounded-xl bg-slate-950 px-4 py-3 text-white">
           <span className="mt-0.5 grid h-6 w-6 shrink-0 place-items-center rounded-full bg-brand-500 text-xs font-black" aria-hidden="true">→</span>
-          <div><div className="text-[10px] font-black uppercase tracking-[0.14em] text-brand-200">Next action</div><p className="mt-1 text-sm font-semibold leading-5 text-white">{keywordAnalysisProcessing ? "Let the current analysis finish, then review the completed keyword reports. You do not need to start another run." : keywordReportsReady ? completedKeywordNextDescription : retryingFailedKeywords ? `Review and retry the ${failedKeywordLocationChecks} failed checks. Successful results will not be rerun.` : approvedCount > 0 ? `Analyze ${incompleteKeywordChecks.length} exact market check${incompleteKeywordChecks.length === 1 ? "" : "s"} for the ${missingApprovedKeywords.length} remaining approved keyword${missingApprovedKeywords.length === 1 ? "" : "s"}.` : "Review and approve the Primary and Secondary keyword groups before analysis begins."}</p></div>
+          <div><div className="text-[10px] font-black uppercase tracking-[0.14em] text-brand-200">Next action</div><p className="mt-1 text-sm font-semibold leading-5 text-white">{keywordAnalysisProcessing ? "Let the current analysis finish, then review the completed keyword reports. You do not need to start another run." : keywordReportsReady ? completedKeywordNextDescription : keywordMarketSetupRequired ? "Choose the target areas this project should compete in. After you save them, review the calculated checks and start the analysis." : retryingFailedKeywords ? `Review and retry the ${failedKeywordLocationChecks} failed checks. Successful results will not be rerun.` : approvedCount > 0 ? `Analyze ${incompleteKeywordChecks.length} exact market check${incompleteKeywordChecks.length === 1 ? "" : "s"} for the ${missingApprovedKeywords.length} remaining approved keyword${missingApprovedKeywords.length === 1 ? "" : "s"}.` : "Review and approve the Primary and Secondary keyword groups before analysis begins."}</p></div>
         </div>
       </Card>
       {failedKeywordAttentionRows.length > 0 && !keywordAnalysisProcessing && <Card className="overflow-hidden border-rose-200">
@@ -3690,6 +3692,7 @@ function SiteAnalysisScreen({ data }: { data: ModuleData }) {
           ].map(([title, value, detail, tone]) => <div key={title} className="min-w-0 px-5 py-4"><div className="text-xs font-bold uppercase tracking-wide text-charcoal-400">{title}</div><div className={`mt-2 text-2xl font-bold leading-none ${tone}`}>{value}</div><div className="mt-2 truncate text-xs font-semibold text-charcoal-500">{detail}</div></div>)}
         </div>
         <ScanSummaryCards report={healthReport} loading={issuesLoading} onOpen={setActiveDetail} embedded />
+        {project && <SiteCapabilityExtension projectId={project.id} crawlCompletedAt={latest?.completedAt} />}
       </Card>
       <Card className={`border ${missingKeywordResearch.length ? "border-amber-200 bg-amber-50/60" : "border-emerald-200 bg-emerald-50/50"}`}>
         <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
@@ -4145,7 +4148,7 @@ function LeadMagnetScreen({ data, selectedIdea: selectedInput, instructions, onS
                   <span className="rounded-full bg-white px-2 py-1 text-xs font-bold text-brand-700">{leadMagnetScore(data, index)}</span>
                 </div>
               </button>
-            )) : <EmptyModuleState title="No ideas yet" detail="Approve strategy first. SEnuke AI will use the offer, audience, and goal to create lead magnet ideas." compact />}
+            )) : <EmptyModuleState title="No ideas yet" detail="Approve strategy first. SEnuke AI - AI Growth Operating System will use the offer, audience, and goal to create lead magnet ideas." compact />}
           {ideas.length > 3 && <button type="button" onClick={() => setShowAllIdeas((value) => !value)} className="mt-3 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm font-bold text-charcoal-700 hover:bg-slate-50">
             {showAllIdeas ? "Show fewer ideas" : `Show ${ideas.length - 3} more ideas`}
           </button>}
@@ -4177,7 +4180,7 @@ function LeadMagnetScreen({ data, selectedIdea: selectedInput, instructions, onS
               <ArchitectureDetail title="Audience Promise" value={generatedPackage?.leadMagnet.promise || leadMagnetPromise(project, approvedStrategy)} />
               <ArchitectureDetail title="Primary CTA" value={generatedPackage?.landingPage.ctaText || (project?.primaryGoal?.toLowerCase().includes("lead") ? "Get the resource, then book a consultation" : "Download the resource and continue to the next best action")} />
               <ArchitectureDetail title="Data Source" value="Approved strategy, intake profile, project goal, offer, keyword runs, and lead-magnet tasks." />
-              <ArchitectureDetail title="Safety Rule" value="SEnuke AI can generate drafts, but publishing pages or sending emails requires approval." />
+              <ArchitectureDetail title="Safety Rule" value="SEnuke AI - AI Growth Operating System can generate drafts, but publishing pages or sending emails requires approval." />
             </div>
           </Card>
 
@@ -4235,7 +4238,7 @@ function LeadMagnetScreen({ data, selectedIdea: selectedInput, instructions, onS
           <details className="group rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
             <summary className="cursor-pointer list-none font-bold text-charcoal-950">How it works <span className="float-right text-charcoal-400 group-open:rotate-180">⌄</span></summary>
             <div className="mt-4 space-y-3 text-sm leading-6 text-charcoal-600">
-              <p>1. SEnuke AI reads the approved strategy, audience, offer, and goal.</p>
+              <p>1. SEnuke AI - AI Growth Operating System reads the approved strategy, audience, offer, and goal.</p>
               <p>2. It recommends the best gated asset for the current funnel stage.</p>
               <p>3. It prepares the asset outline, landing-page copy, delivery email, thank-you copy, and follow-up flow.</p>
               <p>4. You review and approve before anything is published or sent.</p>
@@ -4342,7 +4345,7 @@ function getModuleNextStep({
       return {
         eyebrow: "Next step",
         title: "Review and approve strategy",
-        detail: "Approve the strategy before SEnuke AI creates downstream execution tasks for sitemap, content, lead magnets, SEO, domains, publishing, and social.",
+        detail: "Approve the strategy before SEnuke AI - AI Growth Operating System creates downstream execution tasks for sitemap, content, lead magnets, SEO, domains, publishing, and social.",
         actionLabel: "Review Strategy",
         actionTo: `/strategy${projectQuery}`,
         helper: "Draft strategies do not create live execution tasks until approved.",
@@ -4364,7 +4367,7 @@ function getModuleNextStep({
       return {
         eyebrow: "Next step",
         title: "Connect a website",
-        detail: "Site Analysis needs a website URL before SEnuke AI can crawl pages, issues, internal links, schema, AI readiness, and conversion opportunities.",
+        detail: "Site Analysis needs a website URL before SEnuke AI - AI Growth Operating System can crawl pages, issues, internal links, schema, AI readiness, and conversion opportunities.",
         actionLabel: "Edit Project",
         actionTo: `/guided-projects/${project.id}/intake`,
         helper: "Add the primary website URL in project intake.",
@@ -4397,7 +4400,7 @@ function getModuleNextStep({
     return {
       eyebrow: "Next step",
       title: "Add seed keywords",
-      detail: "Start with keywords the project actually wants to rank for. SEnuke AI will fetch demand, SERP competitors, visibility, and page mapping signals.",
+      detail: "Start with keywords the project actually wants to rank for. SEnuke AI - AI Growth Operating System will fetch demand, SERP competitors, visibility, and page mapping signals.",
       actionLabel: "Add Keywords",
       actionTo: website?.id ? `/keyword-insights?project=${encodeURIComponent(website.id)}&add=1` : "/keyword-insights?add=1",
       helper: website?.url ?? "Keyword runs become available after a website is connected.",
@@ -4989,7 +4992,7 @@ function OpportunityReportDrawer({ opportunity, open, onClose, projectId }: { op
             </div>
           </Card>
           <Card className="p-5">
-            <h3 className="font-bold text-charcoal-950">Why SEnuke AI Recommends This</h3>
+            <h3 className="font-bold text-charcoal-950">Why SEnuke AI - AI Growth Operating System Recommends This</h3>
             <div className="mt-4 space-y-3">
               {(reasons.length ? reasons : ["No scored rationale is available yet. Refresh opportunities after completing intake."]).map((reason, index) => (
                 <div key={`${opportunity?.id ?? "report"}-reason-${index}`} className="flex gap-2 text-sm leading-6 text-charcoal-600">

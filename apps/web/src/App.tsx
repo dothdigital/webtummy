@@ -117,14 +117,18 @@ function Shell() {
   if (platformOnlySuperAdmin && location.pathname !== "/users" && !location.pathname.startsWith("/admin")) return <Navigate to="/admin" replace />;
   if (workspaceRole === "client_viewer" && location.pathname !== "/workspace" && location.pathname !== "/reports" && !location.pathname.startsWith("/site-architect") && !/^\/projects\/[^/]+\/website\/performance$/.test(location.pathname) && location.pathname !== "/seo-page-map" && location.pathname !== "/lead-magnets" && !location.pathname.startsWith("/agency/clients/")) return <Navigate to="/workspace" replace />;
 
-  const paymentRequired = Boolean(user.workspace?.primaryOwner && user.workspace.commercialState === "payment_required");
-  if (paymentRequired && location.pathname !== "/pricing" && location.pathname !== "/billing") return <Navigate to="/pricing?payment=required" replace />;
-
   const welcomeEligible = Boolean(user.workspace && user.workspace.primaryRole === "admin" && user.workspace.onboardingRequired);
   const showWelcome = welcomeEligible && welcomePending(user.id, user.workspace?.id);
   if (showWelcome && location.pathname !== "/welcome") return <Navigate to="/welcome" replace />;
   if (!showWelcome && location.pathname === "/welcome") return <Navigate to="/" replace />;
   if (showWelcome) return <Welcome />;
+
+  // First-time owners must be able to finish Welcome before commercial
+  // routing begins. Checking payment first creates a /welcome ↔ /pricing loop:
+  // payment sends Welcome to Pricing, then pending onboarding sends Pricing
+  // straight back to Welcome, leaving the browser on a blank render.
+  const paymentRequired = Boolean(user.workspace?.primaryOwner && user.workspace.commercialState === "payment_required");
+  if (paymentRequired && location.pathname !== "/pricing" && location.pathname !== "/billing") return <Navigate to="/pricing?payment=required" replace />;
   if (location.pathname === "/site-architect/visual-editor") return <PermissionRoute permission="execute_tasks"><Suspense fallback={<div className="grid min-h-screen place-items-center bg-slate-950 text-sm font-bold text-white">Opening the SENuke Visual Editor…</div>}><WebsiteVisualEditor mode="editor" /></Suspense></PermissionRoute>;
   if (location.pathname === "/site-architect/preview") return <PermissionRoute anyOf={["run_ai_analysis", "read_internal", "read_shared_client_data"]}><Suspense fallback={<div className="grid min-h-screen place-items-center bg-slate-950 text-sm font-bold text-white">Preparing the responsive preview…</div>}><WebsiteVisualEditor mode="preview" /></Suspense></PermissionRoute>;
   if (location.pathname === "/ai-content" && new URLSearchParams(location.search).get("embedded") === "1") return <PermissionRoute anyOf={["run_ai_analysis", "publish"]}><div className="min-h-screen bg-slate-50"><AiContentStudio /></div></PermissionRoute>;

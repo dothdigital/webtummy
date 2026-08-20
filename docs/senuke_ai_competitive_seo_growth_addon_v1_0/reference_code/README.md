@@ -1,6 +1,6 @@
-# SEnuke AI Competitive SEO and Growth Intelligence Add-On v1.0
+# SEnuke AI - AI Growth Operating System Competitive SEO and Growth Intelligence Add-On v1.0
 
-This reference code package shows how to implement competitive SEO/growth intelligence as hidden services that feed the SEnuke AI Execution Engine.
+This reference code package shows how to implement competitive SEO/growth intelligence as hidden services that feed the SEnuke AI - AI Growth Operating System Execution Engine.
 
 Core ideas:
 - Do not add every capability as a separate UI module.

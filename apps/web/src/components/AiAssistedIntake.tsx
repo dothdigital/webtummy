@@ -90,7 +90,7 @@ export default function AiAssistedIntake({ contextType, websiteUrl, knownInfo, o
         : api.post<IntakeResult>("/api/ai-intake/define", { contextType, knownInfo, answers });
       receive(await Promise.race([request, pollForCompletedResult(startedAfter)]));
     } catch (cause) {
-      if (!await recoverLatest(startedAfter)) setError(cause instanceof Error ? cause.message : "SEnuke AI could not prepare suggestions. Continue manually or retry.");
+      if (!await recoverLatest(startedAfter)) setError(cause instanceof Error ? cause.message : "SEnuke AI - AI Growth Operating System could not prepare suggestions. Continue manually or retry.");
     } finally { setBusy(""); }
   };
   const decide = (field: string, action: Review["action"]) => {
@@ -130,7 +130,7 @@ export default function AiAssistedIntake({ contextType, websiteUrl, knownInfo, o
       <button type="button" className="absolute inset-0 bg-slate-950/50" onClick={() => setOpen(false)} aria-label="Close" />
       <section className="relative z-10 max-h-[92vh] w-full max-w-5xl overflow-y-auto rounded-2xl bg-white p-6 shadow-2xl">
         <header className="flex items-start justify-between gap-4">
-          <div><div className="text-xs font-bold uppercase tracking-wide text-brand-600">SEnuke AI-assisted intake</div><h2 className="mt-1 text-xl font-bold text-slate-950">{hasUrl ? "Analyze Website with AI" : "Help Me Define This with AI"}</h2><p className="mt-1 max-w-3xl text-sm leading-6 text-slate-500">{hasUrl ? "A limited public crawl will suggest reusable business information. Nothing is saved or overwritten until you review and apply it." : "Answer a few simple questions. Nothing is saved until you review and apply it."}</p></div>
+          <div><div className="text-xs font-bold uppercase tracking-wide text-brand-600">SEnuke AI - AI Growth Operating System-assisted intake</div><h2 className="mt-1 text-xl font-bold text-slate-950">{hasUrl ? "Analyze Website with AI" : "Help Me Define This with AI"}</h2><p className="mt-1 max-w-3xl text-sm leading-6 text-slate-500">{hasUrl ? "A limited public crawl will suggest reusable business information. Nothing is saved or overwritten until you review and apply it." : "Answer a few simple questions. Nothing is saved until you review and apply it."}</p></div>
           <button type="button" onClick={() => setOpen(false)} className="grid h-9 w-9 place-items-center rounded-lg border text-lg font-bold">×</button>
         </header>
         <WizardSteps current={!sessionId ? 1 : reviewPage ? 3 : 2} />
@@ -138,7 +138,7 @@ export default function AiAssistedIntake({ contextType, websiteUrl, knownInfo, o
         {!sessionId && <div className="mt-5">
           {hasUrl ? <div className="rounded-xl border border-slate-200 bg-slate-50 p-4"><div className="text-xs font-bold uppercase text-slate-400">Website to analyze</div><div className="mt-1 break-all font-bold text-slate-900">{websiteUrl}</div><p className="mt-2 text-xs leading-5 text-slate-500">Homepage plus at most 9 important same-domain pages. Robots rules, private destinations, unsafe redirects, timeouts, and size limits are enforced.</p></div> : <GuidedQuestions answers={answers} setAnswers={setAnswers} />}
           {busy === "analyze" && <ProgressPanel progress={analysisProgress} title={stage.title} detail={stage.detail} />}
-          <div className="mt-5 flex justify-end"><button type="button" disabled={Boolean(busy)} onClick={() => void start()} className="rounded-lg bg-brand-600 px-5 py-2.5 text-sm font-bold text-white disabled:bg-slate-300">{busy ? "SEnuke AI is working…" : hasUrl ? "Analyze Website" : "Generate Suggestions"}</button></div>
+          <div className="mt-5 flex justify-end"><button type="button" disabled={Boolean(busy)} onClick={() => void start()} className="rounded-lg bg-brand-600 px-5 py-2.5 text-sm font-bold text-white disabled:bg-slate-300">{busy ? "SEnuke AI - AI Growth Operating System is working…" : hasUrl ? "Analyze Website" : "Generate Suggestions"}</button></div>
         </div>}
         {sessionId && !reviewPage && <>
           <div className="sticky top-0 z-10 mt-5 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-slate-200 bg-white/95 p-3 shadow-sm backdrop-blur">

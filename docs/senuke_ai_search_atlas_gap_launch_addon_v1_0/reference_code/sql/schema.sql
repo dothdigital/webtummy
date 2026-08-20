@@ -1,4 +1,4 @@
--- SEnuke AI Search Atlas Competitive Gap Launch Add-On v1.0
+-- SEnuke AI - AI Growth Operating System Search Atlas Competitive Gap Launch Add-On v1.0
 -- PostgreSQL reference schema. Adapt naming to existing conventions.
 
 CREATE TABLE IF NOT EXISTS seo_fix_queue_items (

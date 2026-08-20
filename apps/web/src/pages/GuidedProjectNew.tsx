@@ -95,6 +95,7 @@ export default function GuidedProjectNew() {
   const [searchParams] = useSearchParams();
   const editProjectId = searchParams.get("edit");
   const resumeConversationId = searchParams.get("resumeConversation");
+  const requestedDiscoveryDraftId = searchParams.get("discoveryDraftId");
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const [activeField, setActiveField] = useState<{ label: string; detail: string } | null>(null);
@@ -256,9 +257,12 @@ export default function GuidedProjectNew() {
   useEffect(() => {
     if (!workspaceLoaded || editProjectId || creationMode !== "choose") return;
     void api.get<{ drafts: DiscoveryDraft[] }>("/api/discovery-drafts")
-      .then((result) => setDiscoveryDrafts(result.drafts))
+      .then((result) => {
+        setDiscoveryDrafts(result.drafts);
+        if (requestedDiscoveryDraftId) setActiveDiscoveryDraft(result.drafts.find((draft) => draft.id === requestedDiscoveryDraftId) ?? null);
+      })
       .catch(() => setDiscoveryDrafts([]));
-  }, [workspaceLoaded, editProjectId, creationMode]);
+  }, [workspaceLoaded, editProjectId, creationMode, requestedDiscoveryDraftId]);
 
   const startDiscovery = async (startPath: DiscoveryStartPath) => {
     if (startingDiscovery) return;
@@ -487,7 +491,7 @@ export default function GuidedProjectNew() {
       <Card className="mx-auto max-w-2xl p-8 text-center sm:p-12">
         <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-2xl bg-brand-50 text-2xl">◆</div>
         <h1 className="mt-5 text-2xl font-bold text-slate-950">First, create the client for this project</h1>
-        <p className="mx-auto mt-3 max-w-lg text-sm leading-6 text-slate-600">The client record is the first part of Agency project setup. Add the reusable business, contact, location and target-market details; SEnuke AI will then return here automatically so you can continue creating the project.</p>
+        <p className="mx-auto mt-3 max-w-lg text-sm leading-6 text-slate-600">The client record is the first part of Agency project setup. Add the reusable business, contact, location and target-market details; SEnuke AI - AI Growth Operating System will then return here automatically so you can continue creating the project.</p>
         <Link to={`/workspace?tab=clients&returnTo=${encodeURIComponent("/projects/new?clientSetup=1")}`} className="mt-6 inline-flex h-11 items-center rounded-lg bg-brand-600 px-5 text-sm font-bold text-white shadow-sm hover:bg-brand-700">Create client & continue</Link>
       </Card>
     </div>
@@ -495,7 +499,7 @@ export default function GuidedProjectNew() {
 
   if (!editProjectId && creationMode === "choose") return <div className="space-y-6">
     <div className="text-sm font-semibold text-brand-700"><Link to="/projects">‹ Projects</Link><span className="mx-2 text-slate-300">›</span>Create Project</div>
-    <section className="relative overflow-hidden rounded-[28px] bg-slate-950 px-6 py-10 text-white shadow-2xl sm:px-10 sm:py-12"><div className="absolute inset-0 bg-[radial-gradient(circle_at_15%_15%,rgba(52,211,153,.2),transparent_34%),radial-gradient(circle_at_85%_20%,rgba(139,92,246,.2),transparent_32%)]" /><div className="relative max-w-4xl"><div className="text-xs font-black uppercase tracking-[0.22em] text-emerald-300">Start a new project</div><h1 className="mt-4 text-3xl font-black leading-tight sm:text-5xl">Choose how you want to begin</h1><p className="mt-4 max-w-3xl text-sm leading-7 text-slate-300 sm:text-base">If you are new, describe the idea in your own words and let SEnuke AI turn it into a researched project direction. If you already know the details, use the structured setup.</p></div></section>
+    <section className="relative overflow-hidden rounded-[28px] bg-slate-950 px-6 py-10 text-white shadow-2xl sm:px-10 sm:py-12"><div className="absolute inset-0 bg-[radial-gradient(circle_at_15%_15%,rgba(52,211,153,.2),transparent_34%),radial-gradient(circle_at_85%_20%,rgba(139,92,246,.2),transparent_32%)]" /><div className="relative max-w-4xl"><div className="text-xs font-black uppercase tracking-[0.22em] text-emerald-300">Start a new project</div><h1 className="mt-4 text-3xl font-black leading-tight sm:text-5xl">Choose how you want to begin</h1><p className="mt-4 max-w-3xl text-sm leading-7 text-slate-300 sm:text-base">If you are new, describe the idea in your own words and let SEnuke AI - AI Growth Operating System turn it into a researched project direction. If you already know the details, use the structured setup.</p></div></section>
     {message && <Card className="border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">{message}</Card>}
     <Card className="p-5"><div className={`grid gap-4 ${isAgency ? "md:grid-cols-2" : ""}`}><label className="block"><span className="mb-1 block text-sm font-black text-slate-950">Project Name *</span><input value={form.name} onChange={(event) => patch({ name: event.target.value })} maxLength={180} className="h-11 w-full rounded-xl border bg-white px-3 text-sm" placeholder="Enter a project name" /><span className="mt-1 block text-xs text-slate-500">This name identifies the project and will not be replaced by an AI-generated goal or idea.</span></label>{isAgency && <label className="block"><span className="mb-1 block text-sm font-black text-slate-950">Client *</span><select value={form.agencyClientId} onChange={(event) => patch({ agencyClientId: event.target.value })} className="h-11 w-full rounded-xl border bg-white px-3 text-sm"><option value="">Select the client that owns this discovery</option>{agencyClients.map((client) => <option key={client.id} value={client.id}>{client.name}</option>)}</select><span className="mt-1 block text-xs text-slate-500">Known client information can be reused, but the Discovery Draft will not count as a client Project.</span></label>}</div></Card>
     <div className="grid gap-5 md:grid-cols-3">

@@ -4,7 +4,7 @@ import { api } from "../api.js";
 import type { GuidedProject, KeywordResearchRun, Website } from "../types.js";
 import { getActiveProjectId, setActiveProjectId } from "../active-project.js";
 import { ActionIconButton, ActionIconLink, Button, Card, Input } from "../components/ui.js";
-import { COUNTRY_OPTIONS, buildLocationNames, defaultLocationParts, projectAnalysisLocations } from "../locationOptions.js";
+import { COUNTRY_OPTIONS, buildLocationNames, buildProjectMarketLocationNames, defaultLocationParts, projectAnalysisLocations } from "../locationOptions.js";
 import { isBackgroundJobFinished, registerBackgroundJob } from "../background-jobs.js";
 import { keywordRunsForProjectLocations, latestSuccessfulKeywordRuns } from "../keyword-runs.js";
 import { incompleteApprovedKeywordResearchChecks, keywordResearchRequestIdentity, normalizeKeywordPhrase, selectKeywordAnalysisLocations, splitKeywordEntries } from "@webtummy/core";
@@ -136,7 +136,11 @@ function targetCitiesText(value: unknown): string {
 }
 
 function projectMarketLocationNames(markets: string[], region: string, country: string): string[] {
-  return buildLocationNames(geographicTargetMarkets(markets).join(", "), region, country);
+  return buildProjectMarketLocationNames(markets, region, country);
+}
+
+function marketKey(values: string[]) {
+  return [...new Set(values.map((value) => value.trim().toLocaleLowerCase()).filter(Boolean))].sort().join("|");
 }
 
 export default function KeywordReports() {
@@ -250,10 +254,11 @@ export default function KeywordReports() {
         const failedKeywords = new Set(failedChecks.map((run) => normalizeKeywordPhrase(run.seedKeyword)));
         const requestedKeyword = searchParams.get("keyword");
         const remainingOnly = searchParams.get("remaining") === "1";
+        const marketSetupRequired = remainingOnly && projectLocation.locationNames.length === 0;
         // Older and bookmarked workflow links may contain only remaining=1.
         // Failed checks always take priority so the user reaches a usable retry
         // queue instead of a generic keyword selection/report screen.
-        const failedOnly = searchParams.get("failed") === "1" || (remainingOnly && failedChecks.length > 0);
+        const failedOnly = !marketSetupRequired && (searchParams.get("failed") === "1" || (remainingOnly && failedChecks.length > 0));
         setRetryQueueMode(failedOnly);
         const requestedSuggestions = requestedKeyword
           ? uniqueSuggestions.filter((suggestion) => normalizeKeywordPhrase(suggestion.keyword) === normalizeKeywordPhrase(requestedKeyword))
@@ -263,13 +268,15 @@ export default function KeywordReports() {
           : requestedSuggestions;
         const preselectedKeywords = scopedSuggestions
           .map((suggestion) => suggestion.keyword)
-          .filter((keyword) => failedOnly || incompleteKeywordSet.has(normalizeKeywordPhrase(keyword)));
+          .filter((keyword) => failedOnly || marketSetupRequired || incompleteKeywordSet.has(normalizeKeywordPhrase(keyword)));
         setKeywordSuggestions(remainingOnly
           ? scopedSuggestions.filter((suggestion) => preselectedKeywords.includes(suggestion.keyword))
           : scopedSuggestions);
         setSelectedKeywordSuggestions(remainingOnly ? [] : preselectedKeywords);
         if (remainingOnly && (preselectedKeywords.length || (failedOnly && failedChecks.length))) {
-          setMessage(failedOnly
+          setMessage(marketSetupRequired
+            ? `${preselectedKeywords.length} approved keyword${preselectedKeywords.length === 1 ? " is" : "s are"} ready. Choose and save at least one target area to calculate the exact analysis checks.`
+            : failedOnly
             ? `${failedChecks.length} failed keyword-location check${failedChecks.length === 1 ? " is" : "s are"} ready to retry. Completed checks will not be rerun.`
             : `${preselectedKeywords.length} remaining approved keyword${preselectedKeywords.length === 1 ? " is" : "s are"} selected. Review the analysis settings, then continue to start the research.`);
         }
@@ -601,7 +608,6 @@ export default function KeywordReports() {
     if (!normalizedMarkets.length) throw new Error("Select at least one named project market before running analysis.");
     if (!guidedProject) return normalizedMarkets;
     const currentMarkets = projectAnalysisLocations(guidedProject).markets;
-    const marketKey = (values: string[]) => [...new Set(values.map((value) => value.trim().toLocaleLowerCase()).filter(Boolean))].sort().join("|");
     if (marketKey(currentMarkets) === marketKey(normalizedMarkets)) return normalizedMarkets;
     const result = await api.patch<{ targetMarkets: string[]; changed: boolean }>(
       `/api/projects-v2/${guidedProject.id}/target-markets`,
@@ -665,6 +671,9 @@ export default function KeywordReports() {
   const paginatedVisibleRuns = filteredVisibleRuns.slice((currentReportPage - 1) * reportPageSize, currentReportPage * reportPageSize);
   const focusedAddMode = showAddKeyword && searchParams.get("add") === "1";
   const remainingActionMode = focusedAddMode && searchParams.get("remaining") === "1";
+  const savedTargetMarkets = guidedProject ? projectAnalysisLocations(guidedProject).markets : [];
+  const targetMarketsDirty = marketKey(savedTargetMarkets) !== marketKey(geographicTargetMarkets(selectedTargetMarkets));
+  const targetMarketSelectionRequired = Boolean(guidedProject) && savedTargetMarkets.length === 0 && selectedTargetMarkets.length === 0;
   const guidedProjectId = searchParams.get("projectId");
   const backToKeywords = guidedProjectId ? `/keywords?projectId=${encodeURIComponent(guidedProjectId)}` : "/keywords";
   const locationPreview = buildLocationNames(locationCity, locationRegion, locationCountry).join(" | ");
@@ -782,7 +791,7 @@ export default function KeywordReports() {
                 <div className="mb-3 flex flex-col gap-1 sm:flex-row sm:items-end sm:justify-between">
                   <div>
                     <div className="text-sm font-bold text-charcoal-900">Start Keyword Research</div>
-                    <div className="text-xs text-charcoal-500">SEnuke AI uses the project intake to recommend starting themes. Manual seed entry is optional.</div>
+                    <div className="text-xs text-charcoal-500">SEnuke AI - AI Growth Operating System uses the project intake to recommend starting themes. Manual seed entry is optional.</div>
                   </div>
                   <div className="flex gap-2">
                     <Button type="button" variant="ghost" onClick={() => setShowManualKeywordForm(false)}>Cancel</Button>
@@ -893,7 +902,7 @@ export default function KeywordReports() {
                 {suggestingKeywords && (
                   <div className="mt-4 flex items-center gap-3 rounded-lg border border-emerald-200 bg-white px-4 py-4 text-sm text-emerald-900 shadow-sm" role="status" aria-live="polite">
                     <span className="h-5 w-5 shrink-0 animate-spin rounded-full border-2 border-emerald-200 border-t-emerald-600" aria-hidden="true" />
-                    <span>SEnuke AI is reviewing the project intake and generating recommended seed keywords...</span>
+                    <span>SEnuke AI - AI Growth Operating System is reviewing the project intake and generating recommended seed keywords...</span>
                   </div>
                 )}
                 {intakeNeedsMoreInfo && !suggestingKeywords && (
@@ -977,10 +986,10 @@ export default function KeywordReports() {
               </div>}
               {!retryMode && searchParams.get("remaining") === "1" && <div className="flex flex-col gap-3 rounded-xl border border-brand-200 bg-gradient-to-r from-brand-50 via-white to-emerald-50 p-4 sm:flex-row sm:items-center sm:justify-between">
                 <div>
-                  <div className="text-sm font-black text-charcoal-950">Remaining analysis queue ready</div>
-                  <p className="mt-1 text-xs leading-5 text-charcoal-700">{queuedCheckCount} keyword-location check{queuedCheckCount === 1 ? " is" : "s are"} ready across {queuedKeywords.length} approved keyword{queuedKeywords.length === 1 ? "" : "s"}. Review the markets below, then start the missing analysis. Completed research will not be rerun.</p>
+                  <div className="text-sm font-black text-charcoal-950">{selectedTargetMarkets.length === 0 ? "Choose target areas to calculate the analysis" : targetMarketsDirty ? "Save the selected target areas" : "Remaining analysis queue ready"}</div>
+                  <p className="mt-1 text-xs leading-5 text-charcoal-700">{selectedTargetMarkets.length === 0 ? `${queuedKeywords.length} approved keyword${queuedKeywords.length === 1 ? " is" : "s are"} preserved. Add one or more exact cities, regions, or countries below; the required check total will be calculated after you save.` : targetMarketsDirty ? `Save the selected project markets below to recalculate the exact checks for all ${queuedKeywords.length} approved keywords.` : `${queuedCheckCount} keyword-location check${queuedCheckCount === 1 ? " is" : "s are"} ready across ${queuedKeywords.length} approved keyword${queuedKeywords.length === 1 ? "" : "s"}. Review the markets below, then start the missing analysis. Completed research will not be rerun.`}</p>
                 </div>
-                <Button type="submit" disabled={creating || queuedCheckCount === 0}>{creating ? "Starting…" : `Start ${queuedCheckCount} remaining check${queuedCheckCount === 1 ? "" : "s"}`}</Button>
+                {selectedTargetMarkets.length > 0 && !targetMarketsDirty && <Button type="submit" disabled={creating || queuedCheckCount === 0}>{creating ? "Starting…" : `Start ${queuedCheckCount} remaining check${queuedCheckCount === 1 ? "" : "s"}`}</Button>}
               </div>}
               {guidedProject && <div className="rounded-xl border border-brand-200 bg-gradient-to-r from-brand-50 via-white to-emerald-50 p-4">
                 <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
@@ -988,7 +997,11 @@ export default function KeywordReports() {
                     <div className="text-sm font-bold text-charcoal-900">Analysis markets</div>
                     <p className="mt-1 max-w-2xl text-xs leading-5 text-charcoal-600">Choose the current project markets used by both this research run and the completion gate. Saving a new list removes old markets from required checks without deleting their historical reports.</p>
                   </div>
-                  <Button type="button" onClick={() => void applyTargetMarkets()} disabled={savingMarkets || !selectedTargetMarkets.length || !queuedKeywords.length}>{savingMarkets ? "Saving markets…" : "Save & Apply Project Markets"}</Button>
+                  {targetMarketSelectionRequired
+                    ? <span className="rounded-full bg-amber-100 px-3 py-1.5 text-xs font-bold text-amber-800">Target areas required</span>
+                    : targetMarketsDirty
+                    ? <Button type="button" onClick={() => void applyTargetMarkets()} disabled={savingMarkets || !selectedTargetMarkets.length}>{savingMarkets ? "Saving markets…" : remainingActionMode ? "Save markets & calculate checks" : "Save & Apply Project Markets"}</Button>
+                    : <span className="rounded-full bg-emerald-100 px-3 py-1.5 text-xs font-bold text-emerald-800">Markets saved</span>}
                 </div>
                 <div className="mt-4 flex flex-wrap gap-2">
                   {targetMarkets.map((market) => {
@@ -1027,7 +1040,7 @@ export default function KeywordReports() {
                         <span className="min-w-0">
                           <span className="block text-sm font-bold text-emerald-900">{item.keyword}</span>
                           <span className="mt-0.5 block text-xs leading-5 text-emerald-700">
-                            {item.locationNames.join(" | ")} · {item.languageCode} · {item.device} · top {item.serpDepth}
+                            {item.locationNames.length ? item.locationNames.join(" | ") : "Waiting for target area selection"} · {item.languageCode} · {item.device} · top {item.serpDepth}
                             {item.targetUrl ? ` · URL: ${item.targetUrl}` : ""}
                             {item.targetDomain ? ` · Domain: ${item.targetDomain}` : ""}
                           </span>
@@ -1066,8 +1079,8 @@ export default function KeywordReports() {
                 ) : (
                   <Button type="button" variant="ghost" onClick={() => setKeywordStep("select")}>Go back</Button>
                 )}
-                <Button type="submit" disabled={creating || (!websiteId && !guidedProject) || queuedKeywords.length === 0}>
-                  {creating ? "Running..." : queuedCheckCount ? `Start keyword analysis (${queuedCheckCount} checks)` : "Start keyword analysis"}
+                <Button type="submit" disabled={creating || (!websiteId && !guidedProject) || queuedKeywords.length === 0 || queuedCheckCount === 0 || targetMarketsDirty}>
+                  {creating ? "Running..." : selectedTargetMarkets.length === 0 ? "Choose target areas first" : targetMarketsDirty ? "Save target areas first" : queuedCheckCount ? `Start keyword analysis (${queuedCheckCount} checks)` : "Start keyword analysis"}
                 </Button>
               </div>
               </>}

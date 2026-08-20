@@ -559,7 +559,7 @@ const outputShape = {
         recommendedExperiment: "A bounded test that validates the recommended stage improvement against a recorded baseline",
         validationRequirement: "What must be checked before this stage recommendation becomes approved execution",
         whyNow: "Why improving this stage is or is not the next priority",
-        recommendedAction: "The exact improvement SEnuke AI or the user should make in this stage",
+        recommendedAction: "The exact improvement SEnuke AI - AI Growth Operating System or the user should make in this stage",
         expectedImpact: "Evidence-grounded expected direction; never invent a numeric forecast",
         confidence: 85,
         confidenceReason: "Which supplied evidence supports this confidence and what is missing",
@@ -635,7 +635,7 @@ async function generateFocusedGrowthFunnelWithAi(input: { evidence: Record<strin
   for (let attempt = 0; attempt < 2; attempt += 1) {
     try {
       return await centralAiJson({
-        system: "You are the SEnuke AI Funnel Decision Engine. Diagnose one connected, evidence-grounded customer journey and return valid JSON for the requested six-stage funnel only.",
+        system: "You are the SEnuke AI - AI Growth Operating System Funnel Decision Engine. Diagnose one connected, evidence-grounded customer journey and return valid JSON for the requested six-stage funnel only.",
         prompt: attempt ? `${prompt}\n\nThe previous funnel response failed schema validation. Repair these exact fields and return all required fields for all six stages with no unrelated Strategy sections. Validation feedback: ${repairFeedback}` : prompt,
         model: input.model,
         temperature: 0.25,
@@ -682,7 +682,7 @@ export async function generateUnifiedStrategyWithAi(input: { evidence: Record<st
   for (let attempt = 0; attempt < 2; attempt += 1) {
     try {
       generatedCore = await centralAiJson({
-        system: "You are the SEnuke AI Integrated Strategy Engine. Produce an evidence-grounded, cross-platform plan of action for review. Make clear strategic choices and preserve factual safeguards.",
+        system: "You are the SEnuke AI - AI Growth Operating System Integrated Strategy Engine. Produce an evidence-grounded, cross-platform plan of action for review. Make clear strategic choices and preserve factual safeguards.",
         prompt: attempt ? `${prompt}\n\nThe previous response failed core Strategy schema validation. Repair these exact fields, return every required Strategy field, and keep localSeo either a complete object or null. Validation feedback: ${repairFeedback}` : prompt,
         model: input.model,
         temperature: 0.3,

@@ -13,6 +13,8 @@ describe("DEV-047 Part 3 marketing execution contract", () => {
     expect(marketingModuleContract("social_strategy").defaultMode).toBe("EXPORT_HANDOFF");
     expect(marketingModuleContract("lead_magnet").expectedOutputs).toContain("opt_in_form");
     expect(marketingModuleContract("website_builder").protectedExternalAction).toBe(true);
+    expect(marketingModuleContract("measurement").label).toBe("Measurement");
+    expect(marketingModuleContract("seo").destinationPath).toBe("/gap-analysis");
   });
 
   it("requires preparation, validation, immutable approval, and dependencies before publishing", () => {
@@ -38,6 +40,13 @@ describe("DEV-047 Part 3 marketing execution contract", () => {
     const summary = marketingExecutionSummary({ moduleName: "content", status: "needs_review", approvalSnapshotJson: { marketingExecution: { workPackage: { fingerprint: "hash" }, validation: { status: "passed" }, measurementPlan: { status: "planned" } } } });
     expect(summary.canonicalState).toBe("NEEDS_REVIEW");
     expect(summary.nextAction.key).toBe("review");
+  });
+
+  it("never presents an unprepared stale task as executable work", () => {
+    const summary = marketingExecutionSummary({ moduleName: "website", status: "stale", approvalSnapshotJson: {} });
+    expect(summary.nextAction.key).toBe("refresh_plan");
+    expect(summary.nextAction.label).toBe("Refresh Execution Plan");
+    expect(summary.nextAction.reason).toContain("Replace it before doing any work");
   });
 
   it("binds only a completely unversioned plan created after the approved Strategy", () => {

@@ -60,4 +60,11 @@ describe("DEV-004 business location and target markets", () => {
       { city: "Mississauga", stateProvince: "Ontario", country: "Canada" },
     )).toEqual(["Milton, Ontario, Canada", "Oakville, Ontario, Canada"]);
   });
+
+  it("keeps country-level target markets independent from the business address", () => {
+    expect(projectAnalysisLocationLabels(
+      ["Canada", "United States"],
+      { city: "Mississauga", stateProvince: "Ontario", country: "Canada" },
+    )).toEqual(["Canada", "United States"]);
+  });
 });

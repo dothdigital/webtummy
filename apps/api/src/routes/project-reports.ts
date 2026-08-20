@@ -219,7 +219,7 @@ export function clientReportSections(reportType: typeof projectReportTypes[numbe
     { key: "goal_comparison", title: "Goal Comparison", items: reportValues(reportRecord(growth.blueprint).goals), emptyMessage: "No measurable goal baseline and comparison are recorded." },
     { key: "what_worked", title: "What Worked", items: reportValues(narrative.wins), emptyMessage: "No verified positive result was recorded." },
     { key: "what_did_not_work", title: "What Did Not Work", items: [...reportValues(narrative.risks), ...blocked], emptyMessage: "No failed or blocked result was recorded." },
-    { key: "what_senuke_ai_learned", title: "What SEnuke AI Learned", items: experiments, emptyMessage: "No completed experiment learning is available." },
+    { key: "what_senuke_ai_learned", title: "What SEnuke AI - AI Growth Operating System Learned", items: experiments, emptyMessage: "No completed experiment learning is available." },
     { key: "recommended_next_step", title: "Recommended Next Step", items: nextAction, emptyMessage: "No recommended next step is available." },
   ];
 }

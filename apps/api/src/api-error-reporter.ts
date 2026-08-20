@@ -44,11 +44,11 @@ export async function reportApiError({ errorCode, statusCode, diagnostic, reques
     `Client ID: ${user?.clientId || "Unavailable"}`,
     `User role: ${user?.role || "Unavailable"}`,
   ];
-  const text = [`SEnuke AI API error`, "", ...context, "", "Sanitized diagnostic:", detail].join("\n");
-  const html = `<h2>SEnuke AI API error</h2><table cellpadding="6" cellspacing="0" style="border-collapse:collapse">${context.map((line) => { const separator = line.indexOf(":"); return `<tr><td style="font-weight:700;border-bottom:1px solid #e2e8f0">${escapeHtml(line.slice(0, separator))}</td><td style="border-bottom:1px solid #e2e8f0">${escapeHtml(line.slice(separator + 1).trim())}</td></tr>`; }).join("")}</table><h3>Sanitized diagnostic</h3><pre style="white-space:pre-wrap;background:#0f172a;color:#e2e8f0;padding:16px;border-radius:8px">${escapeHtml(detail)}</pre><p>Request bodies, authorization headers, cookies, and credentials are not included in this email.</p>`;
+  const text = [`SEnuke AI - AI Growth Operating System API error`, "", ...context, "", "Sanitized diagnostic:", detail].join("\n");
+  const html = `<h2>SEnuke AI - AI Growth Operating System API error</h2><table cellpadding="6" cellspacing="0" style="border-collapse:collapse">${context.map((line) => { const separator = line.indexOf(":"); return `<tr><td style="font-weight:700;border-bottom:1px solid #e2e8f0">${escapeHtml(line.slice(0, separator))}</td><td style="border-bottom:1px solid #e2e8f0">${escapeHtml(line.slice(separator + 1).trim())}</td></tr>`; }).join("")}</table><h3>Sanitized diagnostic</h3><pre style="white-space:pre-wrap;background:#0f172a;color:#e2e8f0;padding:16px;border-radius:8px">${escapeHtml(detail)}</pre><p>Request bodies, authorization headers, cookies, and credentials are not included in this email.</p>`;
   await sendMail({
     to: config.supportEmail,
-    subject: `[SEnuke AI Error] ${errorCode} · ${request.method} ${request.path}`,
+    subject: `[SEnuke AI - AI Growth Operating System Error] ${errorCode} · ${request.method} ${request.path}`,
     text,
     html,
   });

@@ -52,7 +52,7 @@ const sharedHelpSections = {
   projectRequired: {
     title: "Readiness behavior",
     bullets: [
-      "If a module needs project data, SEnuke AI should show a readiness checklist instead of fake or static data.",
+      "If a module needs project data, SEnuke AI - AI Growth Operating System should show a readiness checklist instead of fake or static data.",
       "Missing prerequisites become direct next actions, such as create project, complete intake, find opportunity, generate strategy, run keyword analysis, or analyze site.",
       "Completed project signals should automatically update the dashboard, guided project, strategy, and module pages.",
     ],
@@ -60,7 +60,7 @@ const sharedHelpSections = {
   approvalSafety: {
     title: "Approval and automation safety",
     bullets: [
-      "SEnuke AI can recommend, generate, and prepare work automatically.",
+      "SEnuke AI - AI Growth Operating System can recommend, generate, and prepare work automatically.",
       "Publishing pages, sending emails, scheduling social posts, changing DNS, buying domains, or delivering client assets must require explicit approval.",
       "Blocked or risky automation should be converted into manual guided steps.",
     ],
@@ -69,7 +69,7 @@ const sharedHelpSections = {
 
 const defaultHelp: HelpContent = {
   eyebrow: "Help",
-  title: "SEnuke AI Help",
+  title: "SEnuke AI - AI Growth Operating System Help",
   intro: "This workspace is organized around projects. Create or select a project first, then move through opportunity, keyword analysis, site analysis, strategy, and execution.",
   primaryAction: { label: "Open Projects", to: "/projects" },
   sections: [
@@ -141,7 +141,7 @@ const helpByPath: Record<string, HelpContent> = {
   "/projects/new": {
     eyebrow: "Project Setup Help",
     title: "Create Project",
-    intro: "The project wizard collects enough context for SEnuke AI to recommend opportunities, keywords, strategy, site architecture, and execution tasks.",
+    intro: "The project wizard collects enough context for SEnuke AI - AI Growth Operating System to recommend opportunities, keywords, strategy, site architecture, and execution tasks.",
     sections: [
       {
         title: "Setup modes",
@@ -301,7 +301,7 @@ const helpByPath: Record<string, HelpContent> = {
       {
         title: "Safe authority rule",
         bullets: [
-          "SEnuke AI should recommend safe authority building, not spammy automated link schemes.",
+          "SEnuke AI - AI Growth Operating System should recommend safe authority building, not spammy automated link schemes.",
           "For Local SEO, authority tasks can include citations, local directories, chambers, local media, partnerships, and review signals.",
           "For SEO campaigns, authority tasks can include backlink gaps, resource pages, digital PR assets, expert content, and approved outreach drafts.",
         ],
@@ -429,7 +429,7 @@ const helpByPath: Record<string, HelpContent> = {
       {
         title: "Safety",
         bullets: [
-          "SEnuke AI can prepare drafts automatically.",
+          "SEnuke AI - AI Growth Operating System can prepare drafts automatically.",
           "Publishing live pages must require review and approval.",
           "Integration errors should create clear tasks instead of failing silently.",
         ],
@@ -524,7 +524,7 @@ const helpByPath: Record<string, HelpContent> = {
           "Users: manage users, roles, client access, and passwords.",
           "Task Management: define project and module task templates.",
           "Plan Management: control subscription plans and feature access.",
-          "Usage Controls: manage credits, cost catalog, budgets, model routing, and limits.",
+          "Usage Controls: manage operational budgets and model routing; commercial units live in Commercial Admin.",
           "Automation Center: review automation policy, approvals, and logs.",
         ],
       },
@@ -574,7 +574,7 @@ const helpByPath: Record<string, HelpContent> = {
   "/admin/usage-controls": {
     eyebrow: "Admin Help",
     title: "Usage Controls",
-    intro: "Usage Controls manages credits, feature costs, model routing, cache policy, budget caps, scan frequency, queues, alerts, and plan limits.",
+    intro: "Usage Controls manages model routing, cache policy, budget caps, scan frequency, queues, and alerts. Commercial Admin manages workspace capacity and workflow-unit pricing.",
     sections: [
       {
         title: "Admin controls",
@@ -845,7 +845,7 @@ export default function Layout({ children }: { children: ReactNode }) {
         }`}
       >
         <div className="relative px-4 pb-4 pt-5">
-          <Link to="/" className={`inline-flex max-w-full items-center ${sidebarCollapsed ? "lg:w-full lg:justify-center" : ""}`} title="SEnuke AI">
+          <Link to="/" className={`inline-flex max-w-full items-center ${sidebarCollapsed ? "lg:w-full lg:justify-center" : ""}`} title="SEnuke AI - AI Growth Operating System">
             <span className={sidebarCollapsed ? "lg:hidden" : ""}><Logo size={30} /></span>
             <span className={`hidden ${sidebarCollapsed ? "lg:inline-flex" : ""}`}><LogoMark size={30} /></span>
           </Link>
@@ -926,7 +926,7 @@ export default function Layout({ children }: { children: ReactNode }) {
         {billingStatus?.status === "trialing" && billingStatus.hasAccess && (
           <div className="border-b border-amber-300 bg-amber-300 px-4 py-3 text-sm text-amber-950 shadow-sm lg:px-8">
             <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-              <span className="font-bold">Your {billingStatus.trialDurationDays ?? ""}{billingStatus.trialDurationDays ? "-day " : ""}trial is active. {billingStatus.trialDaysRemaining} day{billingStatus.trialDaysRemaining === 1 ? "" : "s"} left. Upgrade to keep SEnuke AI active after the trial.</span>
+              <span className="font-bold">Your {billingStatus.trialDurationDays ?? ""}{billingStatus.trialDurationDays ? "-day " : ""}trial is active. {billingStatus.trialDaysRemaining} day{billingStatus.trialDaysRemaining === 1 ? "" : "s"} left. Upgrade to keep SEnuke AI - AI Growth Operating System active after the trial.</span>
               <Link to="/pricing" className="inline-flex rounded-lg bg-charcoal-900 px-4 py-2 text-sm font-bold text-white shadow-sm hover:bg-charcoal-800">Upgrade</Link>
             </div>
           </div>
@@ -1112,7 +1112,7 @@ const agentPageHelp: Record<string, { label: string; purpose: string; prompts: s
   workspace: { label: "My Workspace", purpose: "Understand workspace health, active projects, overdue work, approvals, reports, users, and the most important workspace-level action.", prompts: ["What needs attention in this workspace?", "Which project should I review next?", "Are any tasks or approvals overdue?", "Summarize recent workspace activity"] },
   clients: { label: "Clients", purpose: "Explain client setup, inherited project defaults, assignments, access boundaries, archives, reports, and the correct next client action.", prompts: ["Which client information is incomplete?", "How do projects inherit client details?", "Who can access each client?", "What happens when a client is archived?"] },
   teams: { label: "Users & Teams", purpose: "Explain roles, permissions, seats, invitations, team membership, client/project assignments, and safe user-management actions.", prompts: ["What can each role do?", "Who has access to this project?", "How do I assign clients and projects?", "What happens when a user is removed?"] },
-  billing: { label: "Billing & Plans", purpose: "Explain plan access, seats, credits, usage limits, billing status, and the effect of upgrading or changing a subscription.", prompts: ["What does my current plan include?", "How are seats counted?", "How are AI credits used?", "What changes if I upgrade?"] },
+  billing: { label: "Billing & Plans", purpose: "Explain plan access, seats, AI Capacity, billing status, and the effect of upgrading or changing a subscription.", prompts: ["What does my current plan include?", "How are seats counted?", "How is AI Capacity used?", "What changes if I upgrade?"] },
   admin: { label: "Platform Administration", purpose: "Explain platform-level workspaces, users, plans, automation, usage controls, system tasks, and restricted administrative actions.", prompts: ["What needs administrator attention?", "How are platform and workspace roles different?", "Which automation jobs need review?", "What is safe to change here?"] },
   "geo-keywords": { label: "Geo Keyword Intelligence", purpose: "Interpret keyword visibility by market, location differences, local competitors, coverage gaps, and geographic priorities.", prompts: ["Which market has the strongest opportunity?", "Why do rankings differ by location?", "Which local keywords should I prioritize?", "Where are competitors outperforming us?"] },
 };
@@ -1167,7 +1167,7 @@ function AgentChatHeader({ label, purpose }: { label: string; purpose: string })
         </div>
         <div className="min-w-0">
           <div className="flex items-center gap-2">
-            <h2 className="truncate text-sm font-black text-charcoal-950">SEnuke AI</h2>
+            <h2 className="truncate text-sm font-black text-charcoal-950">SEnuke AI - AI Growth Operating System</h2>
             <span className="rounded-full bg-emerald-100 px-2 py-0.5 text-[9px] font-black uppercase tracking-wide text-emerald-700">Online</span>
           </div>
           <p className="truncate text-xs font-semibold text-brand-700">{label}</p>
@@ -1295,10 +1295,10 @@ function ProjectAgentDrawer({ content, pathname, search, open, onClose }: { cont
     return () => window.cancelAnimationFrame(frame);
   }, [open, historyLoading, loading, messages]);
   if (!open) return null;
-  if (!projectResolved) return <FloatingChatWindow label="Loading SEnuke AI chat" onClose={onClose}><div className="grid h-full w-full place-items-center"><div className="px-6 text-center"><div className="mx-auto h-11 w-11 animate-spin rounded-full border-4 border-brand-100 border-t-brand-600" /><div className="mt-4 font-black text-charcoal-900">Opening project chat…</div><div className="mt-1 text-sm text-charcoal-500">Finding the active project for this page.</div></div></div></FloatingChatWindow>;
+  if (!projectResolved) return <FloatingChatWindow label="Loading SEnuke AI - AI Growth Operating System chat" onClose={onClose}><div className="grid h-full w-full place-items-center"><div className="px-6 text-center"><div className="mx-auto h-11 w-11 animate-spin rounded-full border-4 border-brand-100 border-t-brand-600" /><div className="mt-4 font-black text-charcoal-900">Opening project chat…</div><div className="mt-1 text-sm text-charcoal-500">Finding the active project for this page.</div></div></div></FloatingChatWindow>;
   if (!projectId && creationPage) return <ProjectCreationHelpDrawer open={open} onClose={onClose} />;
   if (!projectId) return <GlobalHelpDrawer content={content} open={open} onClose={onClose} />;
-  return <FloatingChatWindow label="SEnuke AI project agent" onClose={onClose}>
+  return <FloatingChatWindow label="SEnuke AI - AI Growth Operating System project agent" onClose={onClose}>
     <div className="flex h-full min-h-0 w-full flex-col overflow-hidden">
       <AgentChatHeader label={pageContext.label} purpose={pageContext.purpose} />
       <div ref={messageViewportRef} className="min-h-0 flex-1 overflow-y-auto overscroll-contain bg-gradient-to-b from-white to-slate-50/60 p-4">
@@ -1311,7 +1311,7 @@ function ProjectAgentDrawer({ content, pathname, search, open, onClose }: { cont
             const showModuleReadiness = message.role === "assistant" && ["opportunities", "keywords"].includes(message.page ?? "") && message.plan?.presentation?.showReadinessChecklist === true && Boolean(message.plan.readinessChecklist?.length);
             return <div key={message.id} className={`flex flex-col ${message.role === "user" ? "items-end" : "items-start"}`}>
               <div className={`max-w-[88%] whitespace-pre-line rounded-2xl px-4 py-3 text-sm leading-6 shadow-sm ${message.role === "user" ? "rounded-br-md bg-brand-600 text-white" : "rounded-bl-md border border-slate-200 bg-white text-charcoal-700"}`}>
-                {message.role === "assistant" && <div className="mb-1 text-[10px] font-black uppercase tracking-wide text-brand-700">SEnuke AI</div>}
+                {message.role === "assistant" && <div className="mb-1 text-[10px] font-black uppercase tracking-wide text-brand-700">SEnuke AI - AI Growth Operating System</div>}
                 {message.text}
               </div>
               {showModuleReadiness && message.plan ? <ModuleReadinessCard plan={message.plan} title={message.page === "keywords" ? "Keyword readiness" : "Opportunity readiness"} onNavigate={openAgentAction} /> : null}
@@ -1349,7 +1349,7 @@ function ProjectCreationHelpDrawer({ open, onClose }: { open: boolean; onClose: 
     return "Ask about a specific project-creation field, available option, required value, or how the information will be used. The field guide beside the form also updates for each setup step.";
   };
   if (!open) return null;
-  return <FloatingChatWindow label="SEnuke project setup help" onClose={onClose}><div className="flex h-full min-h-0 w-full flex-col"><AgentChatHeader label="Project setup" purpose="Ask about any field, option, validation rule, or how SEnuke will use the information." /><div className="flex-1 overflow-y-auto bg-gradient-to-b from-white to-slate-50/60 p-4">{!answer && <div className="flex min-h-full flex-col justify-center py-5 text-center"><div className="mx-auto grid h-14 w-14 place-items-center rounded-2xl bg-brand-100 text-2xl shadow-sm">✦</div><h3 className="mt-4 text-lg font-black text-charcoal-950">Let’s set up your project</h3><p className="mx-auto mt-1 max-w-sm text-sm leading-6 text-charcoal-500">Guidance follows the fields visible on this form and does not use another project’s saved data.</p><div className="mt-5 grid gap-2 text-left">{prompts.map(([prompt, response]) => <button key={prompt} type="button" onClick={() => setAnswer(response)} className="group flex items-center justify-between gap-3 rounded-xl border border-slate-200 bg-white px-3.5 py-3 text-left text-xs font-bold text-charcoal-700 shadow-sm transition hover:-translate-y-0.5 hover:border-brand-200 hover:shadow-md"><span>{prompt}</span><span className="text-brand-600">→</span></button>)}</div></div>}{answer && <div className="flex items-start gap-2.5"><div className="mt-1 grid h-8 w-8 shrink-0 place-items-center rounded-xl bg-charcoal-950 text-sm text-white">✦</div><div className="rounded-2xl rounded-bl-md border border-slate-200 bg-white px-4 py-3 text-sm leading-6 text-charcoal-700 shadow-sm"><div className="mb-1 text-[10px] font-black uppercase tracking-wide text-brand-700">SEnuke AI</div>{answer}</div></div>}</div><form className="shrink-0 border-t border-slate-100 bg-white p-3" onSubmit={(event) => { event.preventDefault(); if (!question.trim()) return; setAnswer(answerQuestion(question)); setQuestion(""); }}><div className="flex items-end gap-2 rounded-2xl border border-slate-200 bg-slate-50 p-1.5 pl-3 shadow-inner focus-within:border-brand-300 focus-within:bg-white focus-within:ring-4 focus-within:ring-brand-50"><input value={question} onChange={(event) => setQuestion(event.target.value)} placeholder="Ask about any field or option…" className="min-w-0 flex-1 bg-transparent py-2.5 text-sm outline-none" /><button type="submit" aria-label="Send message" disabled={!question.trim()} className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-gradient-to-br from-brand-500 to-brand-700 font-black text-white disabled:from-slate-300 disabled:to-slate-300">↑</button></div></form></div></FloatingChatWindow>;
+  return <FloatingChatWindow label="SEnuke project setup help" onClose={onClose}><div className="flex h-full min-h-0 w-full flex-col"><AgentChatHeader label="Project setup" purpose="Ask about any field, option, validation rule, or how SEnuke will use the information." /><div className="flex-1 overflow-y-auto bg-gradient-to-b from-white to-slate-50/60 p-4">{!answer && <div className="flex min-h-full flex-col justify-center py-5 text-center"><div className="mx-auto grid h-14 w-14 place-items-center rounded-2xl bg-brand-100 text-2xl shadow-sm">✦</div><h3 className="mt-4 text-lg font-black text-charcoal-950">Let’s set up your project</h3><p className="mx-auto mt-1 max-w-sm text-sm leading-6 text-charcoal-500">Guidance follows the fields visible on this form and does not use another project’s saved data.</p><div className="mt-5 grid gap-2 text-left">{prompts.map(([prompt, response]) => <button key={prompt} type="button" onClick={() => setAnswer(response)} className="group flex items-center justify-between gap-3 rounded-xl border border-slate-200 bg-white px-3.5 py-3 text-left text-xs font-bold text-charcoal-700 shadow-sm transition hover:-translate-y-0.5 hover:border-brand-200 hover:shadow-md"><span>{prompt}</span><span className="text-brand-600">→</span></button>)}</div></div>}{answer && <div className="flex items-start gap-2.5"><div className="mt-1 grid h-8 w-8 shrink-0 place-items-center rounded-xl bg-charcoal-950 text-sm text-white">✦</div><div className="rounded-2xl rounded-bl-md border border-slate-200 bg-white px-4 py-3 text-sm leading-6 text-charcoal-700 shadow-sm"><div className="mb-1 text-[10px] font-black uppercase tracking-wide text-brand-700">SEnuke AI - AI Growth Operating System</div>{answer}</div></div>}</div><form className="shrink-0 border-t border-slate-100 bg-white p-3" onSubmit={(event) => { event.preventDefault(); if (!question.trim()) return; setAnswer(answerQuestion(question)); setQuestion(""); }}><div className="flex items-end gap-2 rounded-2xl border border-slate-200 bg-slate-50 p-1.5 pl-3 shadow-inner focus-within:border-brand-300 focus-within:bg-white focus-within:ring-4 focus-within:ring-brand-50"><input value={question} onChange={(event) => setQuestion(event.target.value)} placeholder="Ask about any field or option…" className="min-w-0 flex-1 bg-transparent py-2.5 text-sm outline-none" /><button type="submit" aria-label="Send message" disabled={!question.trim()} className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-gradient-to-br from-brand-500 to-brand-700 font-black text-white disabled:from-slate-300 disabled:to-slate-300">↑</button></div></form></div></FloatingChatWindow>;
 }
 
 function getHelpContent(pathname: string): HelpContent {
@@ -1452,7 +1452,7 @@ function Footer() {
         <div className="flex items-center gap-2 text-sm text-charcoal-500">
           <LogoMark size={20} />
           <span>
-            <span className="font-semibold text-charcoal-700">SEnuke AI</span> — SEO &amp; AI Search Audit Platform
+            <span className="font-semibold text-charcoal-700">SEnuke AI - AI Growth Operating System</span> — SEO &amp; AI Search Audit Platform
           </span>
         </div>
         <div className="text-xs text-charcoal-400">© {year} All rights reserved.</div>

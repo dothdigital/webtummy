@@ -1,4 +1,4 @@
-# SEnuke AI Search Atlas Competitive Gap Launch Add-On Reference Code v1.0
+# SEnuke AI - AI Growth Operating System Search Atlas Competitive Gap Launch Add-On Reference Code v1.0
 
 This is illustrative TypeScript/Node/PostgreSQL reference code for the launch-gap v1 add-on. It is not production-ready without security review, integration testing, permissions hardening, and project-specific implementation.
 

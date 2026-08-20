@@ -59,13 +59,13 @@ function DetailList({ title, values, tone }: { title: string; values: string[]; 
 
 export default function ExecutionTaskBrief({ task, compact = false }: { task: GuidedExecutionTask; compact?: boolean }) {
   const brief = executionTaskBrief(task);
-  const [activeTab, setActiveTab] = useState<"overview" | "evidence" | "execution">("overview");
+  const [activeTab, setActiveTab] = useState<"overview" | "evidence" | "execution">(brief.actions.length ? "execution" : "overview");
   const structured = brief.evidence.length > 0 || brief.actions.length > 0 || brief.impact != null;
   if (!structured) return <p className={`${compact ? "text-xs leading-5" : "text-sm leading-6"} text-charcoal-600`}>{brief.summary}</p>;
   const tabs = [
-    { key: "overview" as const, label: "Overview" },
+    { key: "overview" as const, label: "Why this matters" },
     { key: "evidence" as const, label: `Evidence${brief.evidence.length ? ` · ${brief.evidence.length}` : ""}` },
-    { key: "execution" as const, label: `AI Execution${brief.actions.length ? ` · ${brief.actions.length}` : ""}` },
+    { key: "execution" as const, label: `AI will prepare${brief.actions.length ? ` · ${brief.actions.length}` : ""}` },
   ];
   return <div className="overflow-hidden rounded-xl border border-slate-200 bg-white">
     <div className="grid grid-cols-3 border-b border-slate-200 bg-slate-50/80" role="tablist" aria-label={`${task.title} details`}>

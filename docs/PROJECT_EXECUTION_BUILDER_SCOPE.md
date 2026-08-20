@@ -1,8 +1,8 @@
-# SEnuke AI Project Execution Builder Scope
+# SEnuke AI - AI Growth Operating System Project Execution Builder Scope
 
 ## Purpose
 
-The Project Execution Builder is the central workflow area of SEnuke AI. Its purpose is to turn website audits, keyword research, local SEO findings, AI content ideas, and social media plans into clear project tasks that a user can review and complete.
+The Project Execution Builder is the central workflow area of SEnuke AI - AI Growth Operating System. Its purpose is to turn website audits, keyword research, local SEO findings, AI content ideas, and social media plans into clear project tasks that a user can review and complete.
 
 The goal is simple: users should not only see recommendations. They should know what to do next, why it matters, and where to take action.
 
@@ -108,7 +108,7 @@ Each task should show how much the system can help:
 - Integration is required
 - Manual work is required
 
-This makes it clear what SEnuke AI can do automatically and what the user must still handle.
+This makes it clear what SEnuke AI - AI Growth Operating System can do automatically and what the user must still handle.
 
 ## Approval Rules
 
@@ -222,7 +222,7 @@ After completing work, the user reruns the crawl or related report. The new repo
 
 ## Task Sources in First Version
 
-The first version should create execution tasks from existing SEnuke AI modules:
+The first version should create execution tasks from existing SEnuke AI - AI Growth Operating System modules:
 
 - Website crawl issues become technical SEO and website health tasks.
 - Keyword research runs become ranking improvement and content planning tasks.
@@ -269,7 +269,7 @@ To test the first version:
 
 ## Expected MVP Result
 
-At the end of the first MVP flow, the user should not just see reports. The user should see a clear project action plan built from the reports and modules already inside SEnuke AI.
+At the end of the first MVP flow, the user should not just see reports. The user should see a clear project action plan built from the reports and modules already inside SEnuke AI - AI Growth Operating System.
 
 ## Success Criteria
 
@@ -285,7 +285,7 @@ The Project Execution Builder is successful when:
 
 ## Simple Summary
 
-The Project Execution Builder turns SEnuke AI from a reporting platform into an action platform.
+The Project Execution Builder turns SEnuke AI - AI Growth Operating System from a reporting platform into an action platform.
 
 Reports tell the user what is wrong.
 

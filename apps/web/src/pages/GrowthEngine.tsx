@@ -287,7 +287,7 @@ function ReadinessChecklist({ items }: { items: GrowthReadinessItem[] }) {
     <Card className="overflow-hidden">
       <div className="border-b border-slate-100 bg-slate-50 p-5">
         <div className="text-xs font-bold uppercase tracking-wide text-brand-600">Readiness Checklist</div>
-        <h2 className="mt-2 text-xl font-bold text-charcoal-950">Before SEnuke AI can run this, we need to complete these missing steps.</h2>
+        <h2 className="mt-2 text-xl font-bold text-charcoal-950">Before SEnuke AI - AI Growth Operating System can run this, we need to complete these missing steps.</h2>
         <p className="mt-2 text-sm leading-6 text-slate-600">
           Growth Engine depends on the project direction, approved strategy, and site analysis so it does not create false recommendations from missing data.
         </p>
@@ -676,7 +676,7 @@ export default function GrowthEngine() {
               <div>
                 <div className="text-xs font-bold uppercase tracking-[0.2em] text-emerald-300">Growth Intelligence · continuous optimization</div>
                 <h2 className="mt-2 text-xl font-bold">Measure what changed, learn from evidence, then choose one valid next action</h2>
-                <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-300">Verified execution activates measurement. SEnuke AI separates missing evidence from zero, evaluates the result without inventing causality, updates the versioned Growth Blueprint, and sends one governed Next Best Action to execution.</p>
+                <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-300">Verified execution activates measurement. SEnuke AI - AI Growth Operating System separates missing evidence from zero, evaluates the result without inventing causality, updates the versioned Growth Blueprint, and sends one governed Next Best Action to execution.</p>
               </div>
               <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
                 <div className="rounded-xl bg-white/10 p-3"><div className="text-2xl font-bold">{data.growthIntelligence.lifecycle.verifiedExposures}</div><div className="text-[11px] text-slate-300">Verified exposures</div></div>
@@ -807,7 +807,7 @@ export default function GrowthEngine() {
       {tab === "content" && (
         <div className="space-y-5">
           {!contentRoadmap ? (
-            <Card className="overflow-hidden"><EmptyState eyebrow="Growth Blueprint" title="Generate the Supporting Content Plan" description="SEnuke AI will use the approved Strategy, keyword research, website pages, target markets, and business goals to build a complete opportunity map. It will not generate the articles yet." action={<Button onClick={() => runAction(`/api/projects-v2/${projectId}/growth/content-roadmap/refresh`, "content")} disabled={busy || !canRunGrowth}>{busy ? "Researching opportunities…" : "Generate Supporting Content Plan"}</Button>} /></Card>
+            <Card className="overflow-hidden"><EmptyState eyebrow="Growth Blueprint" title="Generate the Supporting Content Plan" description="SEnuke AI - AI Growth Operating System will use the approved Strategy, keyword research, website pages, target markets, and business goals to build a complete opportunity map. It will not generate the articles yet." action={<Button onClick={() => runAction(`/api/projects-v2/${projectId}/growth/content-roadmap/refresh`, "content")} disabled={busy || !canRunGrowth}>{busy ? "Researching opportunities…" : "Generate Supporting Content Plan"}</Button>} /></Card>
           ) : (
             <>
               <Card className="overflow-hidden">

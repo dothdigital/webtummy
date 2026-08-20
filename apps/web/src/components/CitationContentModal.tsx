@@ -117,7 +117,7 @@ export default function CitationContentModal({
             <div className="text-[10px] font-black uppercase tracking-[0.13em] text-indigo-700">AI Citation content workspace</div>
             <div className="truncate text-sm font-black text-slate-950">{request.contextLabel}</div>
             <div className={`mt-0.5 text-xs font-semibold ${generationError ? "text-rose-700" : savedGenerationId ? "text-emerald-700" : generating ? "text-indigo-700" : "text-slate-500"}`}>
-              {generationError || (savedGenerationId ? "Content saved. Review the generated output below." : generating ? "SENuke AI is generating this asset. Keep this review window open." : "Your AI Citation workspace stays open behind this review window.")}
+              {generationError || (savedGenerationId ? "Content saved. Review the generated output below." : generating ? "SEnuke AI - AI Growth Operating System is generating this asset. Keep this review window open." : "Your AI Citation workspace stays open behind this review window.")}
             </div>
           </div>
           <button type="button" disabled={generating} onClick={() => closeRef.current()} className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-black text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50">{generating ? "Generating…" : "Close"}</button>

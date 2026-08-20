@@ -132,6 +132,31 @@ export function buildLocationNames(cities: string, region: string, country: stri
   return (parsed.length ? parsed : [cities.trim()].filter(Boolean)).map((city) => buildLocationName(city, region, country));
 }
 
+function countryOption(value: string) {
+  const normalized = value.trim().toLowerCase();
+  return COUNTRY_OPTIONS.find((country) => country.value.toLowerCase() === normalized || country.isoCode.toLowerCase() === normalized) ?? null;
+}
+
+/**
+ * Convert independent project markets into provider-ready locations. A target
+ * market may itself be a country or the project's region, so it must not
+ * always inherit the business address's province and country.
+ */
+export function buildProjectMarketLocationNames(markets: string[], region: string, country: string): string[] {
+  const regionKey = region.trim().toLowerCase();
+  const countryKey = country.trim().toLowerCase();
+  const labels = geographicTargetMarkets(markets).map((market) => {
+    const normalized = market.trim().toLowerCase();
+    const matchedCountry = countryOption(market);
+    if (matchedCountry) return matchedCountry.value;
+    if (normalized === regionKey) return buildLocationName(region, "", country);
+    if (market.includes(",")) return market.split(",").map((part) => part.trim()).filter(Boolean).join(", ");
+    if (normalized === countryKey) return country.trim();
+    return buildLocationName(market, region, country);
+  });
+  return [...new Map(labels.filter(Boolean).map((label) => [label.toLowerCase(), label])).values()];
+}
+
 export function projectAnalysisLocations(input: {
   targetLocations?: unknown;
   businessLocationJson?: { country?: string | null; stateProvince?: string | null; city?: string | null } | null;
@@ -149,14 +174,18 @@ export function projectAnalysisLocations(input: {
   )?.value || countryValue;
   const region = input.businessLocationJson?.stateProvince?.trim() || "";
   const excluded = new Set([country.toLowerCase(), countryValue.toLowerCase(), region.toLowerCase()].filter(Boolean));
+  const explicitContextMarkets = new Set(rawTargets
+    .filter((item) => !item.includes(","))
+    .map((item) => item.trim().toLowerCase())
+    .filter((item) => excluded.has(item)));
   const markets = [...new Map(geographicTargetMarkets(rawTargets)
     .filter((item) => {
-      if (excluded.has(item.toLowerCase())) return false;
-      return !COUNTRY_OPTIONS.some((countryOption) => countryOption.value.toLowerCase() === item.toLowerCase() || countryOption.isoCode.toLowerCase() === item.toLowerCase());
+      const normalized = item.toLowerCase();
+      return !excluded.has(normalized) || explicitContextMarkets.has(normalized);
     })
     .map((item) => [item.toLowerCase(), item])).values()];
   if (!markets.length && input.businessLocationJson?.city?.trim()) markets.push(input.businessLocationJson.city.trim());
-  return { country, region, markets, locationNames: buildLocationNames(markets.join(", "), region, country) };
+  return { country, region, markets, locationNames: buildProjectMarketLocationNames(markets, region, country) };
 }
 
 export function defaultLocationParts() {

@@ -1,4 +1,4 @@
-# SENuke AI WordPress Website Builder
+# SEnuke AI - AI Growth Operating System WordPress Website Builder
 
 The Website Builder is integrated into **Site Architect** at:
 
@@ -62,7 +62,7 @@ OPENAI_API_KEY=required-for-content-and-image-generation
 
 1. Create a staging WordPress site.
 2. In WordPress, install `wordpress-plugin/senuke-ai-connector.zip`.
-3. Activate **SENuke AI Connector**.
+3. Activate **SEnuke AI - AI Growth Operating System Connector**.
 4. Create a WordPress Application Password for a dedicated SENuke deployment user.
 5. Use a dedicated WordPress deployment administrator. Managed backup and
    rollback require `manage_options`; design and navigation require

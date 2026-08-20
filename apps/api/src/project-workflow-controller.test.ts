@@ -129,6 +129,24 @@ describe("DEV-046 project workflow controller", () => {
     expect(keywords?.reason).toContain("Retry");
   });
 
+  it("asks for target areas instead of presenting a zero-check analysis action", () => {
+    const result = resolveProjectWorkflow(snapshot({
+      targetLocationsConfirmed: false,
+      approvedKeywords: false,
+      approvedKeywordCount: 18,
+      missingKeywordResearchCount: 18,
+      missingKeywordResearchCheckCount: 0,
+      gapAnalysisComplete: false,
+      competitorAnalysisComplete: false,
+    }));
+    const keywords = result.intelligenceModules.find((item) => item.key === "keyword_intelligence");
+    expect(keywords?.status).toBe("blocked");
+    expect(keywords?.reason).toContain("Choose at least one exact city, region, or country");
+    expect(keywords?.reason).not.toContain("0 exact market checks");
+    expect(keywords?.action?.label).toBe("Choose target areas");
+    expect(result.nextBestAction.reason).not.toContain("0 exact market checks");
+  });
+
   it("requires market and content gap analysis but not crawl-only modules for a pre-website project", () => {
     const pending = resolveProjectWorkflow(snapshot({ existingWebsite: false, gapAnalysisComplete: false, siteAnalysisComplete: true, citationEvidenceComplete: true, authorityEvidenceComplete: true }));
     expect(pending.intelligenceModules.find((item) => item.key === "site_analysis")?.status).toBe("not_required");

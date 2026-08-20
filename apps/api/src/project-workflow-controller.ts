@@ -351,12 +351,15 @@ export function resolveProjectWorkflow(snapshot: WorkflowEvidenceSnapshot): Proj
   const failedKeywordResearchKeywords = snapshot.failedKeywordResearchKeywords ?? [];
   const failedKeywordResearchCheckCount = snapshot.failedKeywordResearchCheckCount ?? failedKeywordResearchKeywords.length;
   const keywordResearchActiveCheckCount = snapshot.keywordResearchActiveCheckCount ?? (snapshot.keywordResearchInProgress ? 1 : 0);
+  const keywordMarketSetupRequired = approvedKeywordCount > 0 && !snapshot.targetLocationsConfirmed;
   const keywordBlockedBy = !snapshot.discoveryComplete
     ? "Complete Business Discovery first."
     : !snapshot.selectedOpportunity
       ? "Create and select the project opportunity before Keyword Intelligence."
-      : null;
-  let keywordsStatus = moduleStatus({ required: true, complete: snapshot.approvedKeywords, inProgress: snapshot.keywordResearchInProgress, failed: snapshot.keywordResearchFailed && !snapshot.keywordResearchInProgress, blockedBy: keywordBlockedBy });
+      : keywordMarketSetupRequired
+        ? "Choose at least one exact city, region, or country before starting Keyword Intelligence analysis."
+        : null;
+  let keywordsStatus = moduleStatus({ required: true, complete: snapshot.approvedKeywords && !keywordMarketSetupRequired, inProgress: snapshot.keywordResearchInProgress, failed: snapshot.keywordResearchFailed && !snapshot.keywordResearchInProgress, blockedBy: keywordBlockedBy });
   if (keywordsStatus === "not_started" && approvedKeywordCount > missingKeywordResearchCount && missingKeywordResearchCount > 0) keywordsStatus = "needs_attention";
   const missingKeywordNames = missingKeywordResearchKeywords.length
     ? ` Affected: ${missingKeywordResearchKeywords.slice(0, 6).join(", ")}${missingKeywordResearchKeywords.length > 6 ? `, and ${missingKeywordResearchKeywords.length - 6} more` : ""}.`
@@ -371,6 +374,8 @@ export function resolveProjectWorkflow(snapshot: WorkflowEvidenceSnapshot): Proj
     : "Run Keyword Intelligence and approve the relevant groups.";
   const keywordActionLabel = keywordResearchActiveCheckCount > 0
     ? `View ${keywordResearchActiveCheckCount} Running Check${keywordResearchActiveCheckCount === 1 ? "" : "s"}`
+    : keywordMarketSetupRequired
+    ? "Choose target areas"
     : failedKeywordResearchCheckCount > 0
     ? `Review & Retry ${failedKeywordResearchCheckCount} Failed Check${failedKeywordResearchCheckCount === 1 ? "" : "s"}`
     : snapshot.approvedKeywords

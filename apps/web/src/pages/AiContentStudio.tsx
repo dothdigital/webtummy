@@ -632,7 +632,7 @@ export default function AiContentStudio() {
       return;
     }
     if ((revisionFlow || (selectedResult && linkedTask)) && !revisionInstruction) {
-      setGenerationError("Choose at least one improvement or add a short instruction so SENuke AI knows what to revise.");
+      setGenerationError("Choose at least one improvement or add a short instruction so SEnuke AI - AI Growth Operating System knows what to revise.");
       window.setTimeout(() => {
         const input = document.getElementById("content-recreation-comment");
         input?.scrollIntoView({ behavior: "smooth", block: "center" });
@@ -706,7 +706,7 @@ export default function AiContentStudio() {
         await api.post(`/api/execution-tasks/${task.id}/publish`, { target: "wordpress" });
       } else {
         const suggestedUrl = String(task.approvalSnapshotJson?.targetUrl ?? (task.approvalSnapshotJson?.publishingWorkflow as Record<string, unknown> | undefined)?.affectedUrl ?? "");
-        const liveUrl = window.prompt("Enter the exact public URL after this approved update has been deployed. SEnuke AI will verify it before marking the work published.", suggestedUrl)?.trim();
+        const liveUrl = window.prompt("Enter the exact public URL after this approved update has been deployed. SEnuke AI - AI Growth Operating System will verify it before marking the work published.", suggestedUrl)?.trim();
         if (!liveUrl) return;
         const started = await api.post<{ publishing: { attemptId: string } }>(`/api/execution-tasks/${task.id}/publish`, { target: "html", targetReference: liveUrl });
         await api.post(`/api/execution-tasks/${task.id}/publish/verify`, { attemptId: started.publishing.attemptId, status: "verified", liveUrl });
@@ -1010,7 +1010,7 @@ export default function AiContentStudio() {
                 <div className="max-w-md text-center">
                   <div className="mx-auto h-12 w-12 animate-spin rounded-full border-4 border-fuchsia-100 border-t-fuchsia-600" />
                   <h3 className="mt-4 text-lg font-black text-slate-950">{revisionFlow ? "Revising the complete page…" : citationFlow ? "Creating the citation asset…" : "Creating the complete page…"}</h3>
-                  <p className="mt-2 text-sm leading-6 text-slate-600">{citationFlow ? "SENuke AI is using the originating citation block, verified project facts, and available source evidence. Keep this window open; the reviewable result will return here automatically." : "SENuke AI is writing the structured page content, SEO title, meta description, headings, FAQs, schema, CTA, and internal-link guidance. Keep this window open; the result will return here automatically."}</p>
+                  <p className="mt-2 text-sm leading-6 text-slate-600">{citationFlow ? "SEnuke AI - AI Growth Operating System is using the originating citation block, verified project facts, and available source evidence. Keep this window open; the reviewable result will return here automatically." : "SEnuke AI - AI Growth Operating System is writing the structured page content, SEO title, meta description, headings, FAQs, schema, CTA, and internal-link guidance. Keep this window open; the result will return here automatically."}</p>
                 </div>
               </div>}
               <div className="min-h-0 flex-1 overflow-y-auto p-5">
@@ -1095,7 +1095,7 @@ export default function AiContentStudio() {
                     ) : (
                       <>
                         <div>
-                          <h2 className="text-lg font-bold text-slate-950">What should SENuke AI improve?</h2>
+                          <h2 className="text-lg font-bold text-slate-950">What should SEnuke AI - AI Growth Operating System improve?</h2>
                           <p className="mt-1 text-sm text-slate-500">Choose one or more areas. The approved keyword, URL, business facts, and SEO plan remain attached automatically.</p>
                         </div>
                         <div className="grid gap-3 sm:grid-cols-2">
@@ -1155,7 +1155,7 @@ export default function AiContentStudio() {
                     {!citationFlow && <ContentGenerationControls mode={contentMode} instruction={generationInstruction} onModeChange={setContentMode} onInstructionChange={setGenerationInstruction} compact />}
                     {generationError && <div className="rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm font-semibold text-rose-700">{generationError}</div>}
 
-                    {linkedTask && selectedResult && <label className="block rounded-xl border border-amber-200 bg-amber-50 p-4" htmlFor="content-recreation-comment"><span className="text-xs font-bold uppercase tracking-wide text-amber-700">Revision instructions required</span><span className="mt-1 block text-sm font-bold text-charcoal-900">What should SENuke AI change in the current version?</span><textarea id="content-recreation-comment" value={recreationComment} onChange={(event) => { setRecreationComment(event.target.value); if (generationError) setGenerationError(""); }} rows={4} placeholder="Example: Make the introduction more direct, add a Brampton-specific example, improve the SEO title, and reduce repetition." className="mt-3 w-full rounded-lg border border-amber-300 bg-white px-3 py-2 text-sm outline-none focus:border-amber-500 focus:ring-2 focus:ring-amber-100" /><span className="mt-1 block text-xs text-charcoal-500">The current content remains unchanged until the new version is generated and reviewed.</span></label>}
+                    {linkedTask && selectedResult && <label className="block rounded-xl border border-amber-200 bg-amber-50 p-4" htmlFor="content-recreation-comment"><span className="text-xs font-bold uppercase tracking-wide text-amber-700">Revision instructions required</span><span className="mt-1 block text-sm font-bold text-charcoal-900">What should SEnuke AI - AI Growth Operating System change in the current version?</span><textarea id="content-recreation-comment" value={recreationComment} onChange={(event) => { setRecreationComment(event.target.value); if (generationError) setGenerationError(""); }} rows={4} placeholder="Example: Make the introduction more direct, add a Brampton-specific example, improve the SEO title, and reduce repetition." className="mt-3 w-full rounded-lg border border-amber-300 bg-white px-3 py-2 text-sm outline-none focus:border-amber-500 focus:ring-2 focus:ring-amber-100" /><span className="mt-1 block text-xs text-charcoal-500">The current content remains unchanged until the new version is generated and reviewed.</span></label>}
 
                     <TabbedResultViewer
                       items={selectedResultItems.length > 0 ? selectedResultItems : selectedResult ? [selectedResult] : []}

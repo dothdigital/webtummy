@@ -1,4 +1,4 @@
--- SEnuke AI reference schema.
+-- SEnuke AI - AI Growth Operating System reference schema.
 -- This schema favors clarity over vendor-specific optimizations.
 -- Developers can convert this to Prisma, Drizzle, Laravel migrations, Django models, etc.
 
