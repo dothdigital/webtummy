@@ -1,4 +1,4 @@
-import { useEffect, useState, type SyntheticEvent } from "react";
+import { useEffect, useRef, useState, type SyntheticEvent } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { api } from "../api.js";
 import { Button, Card, Input } from "../components/ui.js";
@@ -96,6 +96,8 @@ export default function GuidedProjectNew() {
   const editProjectId = searchParams.get("edit");
   const resumeConversationId = searchParams.get("resumeConversation");
   const requestedDiscoveryDraftId = searchParams.get("discoveryDraftId");
+  const requestedStartPath = (["EXISTING_BUSINESS", "IDEA_TO_EXPLORE", "SKILLS_FIRST"] as const).find((path) => path === searchParams.get("startPath")) ?? null;
+  const autoStartedPath = useRef<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const [activeField, setActiveField] = useState<{ label: string; detail: string } | null>(null);
@@ -264,9 +266,9 @@ export default function GuidedProjectNew() {
       .catch(() => setDiscoveryDrafts([]));
   }, [workspaceLoaded, editProjectId, creationMode, requestedDiscoveryDraftId]);
 
-  const startDiscovery = async (startPath: DiscoveryStartPath) => {
+  const startDiscovery = async (startPath: DiscoveryStartPath, titleOverride?: string) => {
     if (startingDiscovery) return;
-    const projectName = form.name.trim();
+    const projectName = titleOverride?.trim() || form.name.trim();
     if (projectName.length < 2) {
       setMessage("Enter the project name before starting Business Discovery.");
       return;
@@ -279,9 +281,23 @@ export default function GuidedProjectNew() {
     try {
       const result = await api.post<{ draft: DiscoveryDraft }>("/api/discovery-drafts", { startPath, title: projectName, agencyClientId: isAgency ? form.agencyClientId : null });
       setActiveDiscoveryDraft(result.draft);
-    } catch (error) { setMessage(error instanceof Error ? error.message : "Discovery Draft could not be created."); }
+    } catch (error) {
+      if (titleOverride) autoStartedPath.current = null;
+      setMessage(error instanceof Error ? error.message : "Discovery Draft could not be created.");
+    }
     finally { setStartingDiscovery(false); }
   };
+
+  useEffect(() => {
+    if (!workspaceLoaded || editProjectId || creationMode !== "choose" || !requestedStartPath || requestedDiscoveryDraftId || isAgency || activeDiscoveryDraft || autoStartedPath.current === requestedStartPath) return;
+    autoStartedPath.current = requestedStartPath;
+    const titles: Record<DiscoveryStartPath, string> = {
+      EXISTING_BUSINESS: "Existing business discovery",
+      IDEA_TO_EXPLORE: "Business idea discovery",
+      SKILLS_FIRST: "Opportunity discovery",
+    };
+    void startDiscovery(requestedStartPath, titles[requestedStartPath]);
+  }, [workspaceLoaded, editProjectId, creationMode, requestedStartPath, requestedDiscoveryDraftId, isAgency, activeDiscoveryDraft]);
 
   const deleteDiscoveryDraft = async (draft: DiscoveryDraft) => {
     if (!window.confirm(`Delete “${draft.title}”? This removes its saved answers and ideas.`)) return;
@@ -498,7 +514,7 @@ export default function GuidedProjectNew() {
   );
 
   if (!editProjectId && creationMode === "choose") return <div className="space-y-6">
-    <div className="text-sm font-semibold text-brand-700"><Link to="/projects">‹ Projects</Link><span className="mx-2 text-slate-300">›</span>Create Project</div>
+    <div className="text-sm font-semibold text-brand-700"><Link to="/projects">‹ Projects</Link><span className="mx-2 text-slate-300">›</span>Start a Project</div>
     <section className="relative overflow-hidden rounded-[28px] bg-slate-950 px-6 py-10 text-white shadow-2xl sm:px-10 sm:py-12"><div className="absolute inset-0 bg-[radial-gradient(circle_at_15%_15%,rgba(52,211,153,.2),transparent_34%),radial-gradient(circle_at_85%_20%,rgba(139,92,246,.2),transparent_32%)]" /><div className="relative max-w-4xl"><div className="text-xs font-black uppercase tracking-[0.22em] text-emerald-300">Start a new project</div><h1 className="mt-4 text-3xl font-black leading-tight sm:text-5xl">Choose how you want to begin</h1><p className="mt-4 max-w-3xl text-sm leading-7 text-slate-300 sm:text-base">If you are new, describe the idea in your own words and let SEnuke AI - AI Growth Operating System turn it into a researched project direction. If you already know the details, use the structured setup.</p></div></section>
     {message && <Card className="border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">{message}</Card>}
     <Card className="p-5"><div className={`grid gap-4 ${isAgency ? "md:grid-cols-2" : ""}`}><label className="block"><span className="mb-1 block text-sm font-black text-slate-950">Project Name *</span><input value={form.name} onChange={(event) => patch({ name: event.target.value })} maxLength={180} className="h-11 w-full rounded-xl border bg-white px-3 text-sm" placeholder="Enter a project name" /><span className="mt-1 block text-xs text-slate-500">This name identifies the project and will not be replaced by an AI-generated goal or idea.</span></label>{isAgency && <label className="block"><span className="mb-1 block text-sm font-black text-slate-950">Client *</span><select value={form.agencyClientId} onChange={(event) => patch({ agencyClientId: event.target.value })} className="h-11 w-full rounded-xl border bg-white px-3 text-sm"><option value="">Select the client that owns this discovery</option>{agencyClients.map((client) => <option key={client.id} value={client.id}>{client.name}</option>)}</select><span className="mt-1 block text-xs text-slate-500">Known client information can be reused, but the Discovery Draft will not count as a client Project.</span></label>}</div></Card>
@@ -506,7 +522,7 @@ export default function GuidedProjectNew() {
       {[
         { key:"EXISTING_BUSINESS" as const, icon:"↗", badge:"Already operating", title:"I have an existing business", detail:"Describe the business or provide an optional website, store or profile. Receive a concise understanding and the best practical directions.", points:["Known facts are reused","Location is asked only when relevant"], tone:"border-cyan-200 bg-gradient-to-br from-cyan-50 via-white to-blue-50", iconTone:"bg-cyan-700 text-white" },
         { key:"IDEA_TO_EXPLORE" as const, icon:"⌕", badge:"Explore first", title:"I have an idea to explore", detail:"Refine an incomplete idea, audience, revenue model and first validation step before deciding whether to create a project.", points:["Autosaved Pre-Project Brief","No Project until Use This Idea"], tone:"border-violet-200 bg-gradient-to-br from-violet-50 via-white to-fuchsia-50", iconTone:"bg-violet-700 text-white" },
-        { key:"SKILLS_FIRST" as const, icon:"✦", badge:"Help me decide", title:"I do not know what to start", detail:"Start with your skills, knowledge, interests and constraints. Compare three to five realistic opportunity ideas.", points:["No business details required","Save, shortlist or reject ideas"], tone:"border-emerald-300 bg-gradient-to-br from-emerald-50 via-white to-cyan-50", iconTone:"bg-slate-950 text-white" },
+        { key:"SKILLS_FIRST" as const, icon:"✦", badge:"Help me decide", title:"Help me find an opportunity", detail:"Start with your skills, knowledge, interests and constraints. Compare three to five realistic opportunity ideas.", points:["No business details required","Save, shortlist or reject ideas"], tone:"border-emerald-300 bg-gradient-to-br from-emerald-50 via-white to-cyan-50", iconTone:"bg-slate-950 text-white" },
       ].map((option)=><button key={option.key} type="button" disabled={startingDiscovery || form.name.trim().length < 2 || (isAgency && !form.agencyClientId)} onClick={()=>void startDiscovery(option.key)} className={`group rounded-[24px] border-2 p-7 text-left shadow-sm transition hover:-translate-y-1 hover:shadow-xl disabled:cursor-not-allowed disabled:opacity-50 sm:p-8 ${option.tone}`}><div className="flex items-start justify-between gap-4"><span className={`grid h-14 w-14 place-items-center rounded-2xl text-2xl shadow-lg ${option.iconTone}`}>{option.icon}</span><span className="rounded-full bg-white/90 px-3 py-1.5 text-[10px] font-black uppercase tracking-wide text-slate-600 shadow-sm">{option.badge}</span></div><h2 className="mt-6 text-2xl font-black text-slate-950">{option.title}</h2><p className="mt-2 text-sm leading-7 text-slate-600">{option.detail}</p><div className="mt-5 space-y-2">{option.points.map((item)=><div key={item} className="flex items-start gap-3 text-xs font-bold leading-5 text-slate-700"><span className="mt-0.5 grid h-5 w-5 shrink-0 place-items-center rounded-full bg-white text-[10px] text-emerald-700">✓</span>{item}</div>)}</div><div className="mt-7 flex items-center justify-between border-t border-slate-200/80 pt-5"><span className="text-xs font-bold text-slate-500">Business Discovery</span><span className="text-sm font-black text-slate-950 transition group-hover:translate-x-1">{startingDiscovery ? "Starting…" : "Continue →"}</span></div></button>)}
     </div>
     <DiscoveryDraftList drafts={discoveryDrafts} onResume={(draft) => setActiveDiscoveryDraft(draft)} onDelete={(draft) => void deleteDiscoveryDraft(draft)} />

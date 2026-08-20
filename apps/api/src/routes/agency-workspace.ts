@@ -8,7 +8,7 @@ import { sendMail } from "../email.js";
 import { assignableWorkspaceRoles, canAccessAgencyClient, canAccessProject, createWorkspaceNotification, effectiveWorkspaceRoles, hasWorkspacePermission, isWorkspaceOwner, recordWorkspaceActivity, requireAvailableSeat, requireWorkspaceRole, validateRolesForWorkspace, workspaceApprovalMode, workspaceContext, workspaceSeatUsage } from "../workspace-access.js";
 import { locationDefaultsFromSettings, normalizeRequiredLocations } from "../dev004.js";
 import { normalizeProjectGoals } from "../dev005.js";
-import { agencyNextActions } from "../dev002.js";
+import { workspaceNextActions } from "../dev002.js";
 import { configurableWorkspaceRoles, workspaceRoleCanEver } from "@webtummy/core/workspace-permissions";
 import { decideTaskApproval, submitTaskApproval } from "../approval-workflow.js";
 import { startTaskPublishing, verifyTaskPublishing } from "../publishing-workflow.js";
@@ -138,7 +138,7 @@ agencyWorkspaceRouter.get(["/agency/workspace", "/workspace"], (req, res) => han
   const canManageUsers = hasWorkspacePermission(context, "manage_users");
   const canViewNotifications = hasWorkspacePermission(context, "view_notifications");
   const canViewActivity = hasWorkspacePermission(context, "view_activity");
-  const [clients, teams, members, invitations, notifications, activity] = await Promise.all([
+  const [clients, teams, members, invitations, notifications, activity, discoveryDrafts] = await Promise.all([
     prisma.agencyClient.findMany({
       where: { workspaceId: context.workspace.id, ...clientFilter },
       orderBy: [{ status: "asc" }, { name: "asc" }],
@@ -159,7 +159,28 @@ agencyWorkspaceRouter.get(["/agency/workspace", "/workspace"], (req, res) => han
     canManageUsers ? prisma.workspaceInvitation.findMany({ where: { workspaceId: context.workspace.id, status: "invited" }, orderBy: { createdAt: "desc" }, select: { id: true, email: true, name: true, rolesJson: true, teamIdsJson: true, agencyClientIdsJson: true, status: true, expiresAt: true, createdAt: true } }) : Promise.resolve([]),
     canViewNotifications ? prisma.workspaceNotification.findMany({ where: { workspaceId: context.workspace.id, userId: context.membership.userId, ...(clientViewer ? { type: { in: ["report_sent", "approval_requested_client", "publishing_completed", "major_milestone", "performance_change", "client_feedback_requested"] } } : {}) }, orderBy: { createdAt: "desc" }, take: 50 }) : Promise.resolve([]),
     canViewActivity ? prisma.workspaceActivity.findMany({ where: { workspaceId: context.workspace.id, ...(clientViewer ? { agencyClientId: { in: [] } } : {}) }, orderBy: { createdAt: "desc" }, take: 100, include: { actor: { select: { id: true, name: true, email: true } } } }) : Promise.resolve([]),
+    clientViewer ? Promise.resolve([]) : prisma.discoveryDraft.findMany({
+      where: {
+        workspaceId: context.workspace.id,
+        convertedProjectId: null,
+        status: { not: "ARCHIVED" },
+        ...(context.workspace.workspaceType === "agency" ? { createdByUserId: context.membership.userId } : { agencyClientId: null }),
+      },
+      orderBy: { updatedAt: "desc" },
+      take: 10,
+      select: { id: true, title: true, status: true, startPath: true, updatedAt: true },
+    }),
   ]);
+  const scopedClients = context.workspace.workspaceType === "agency" ? clients : [];
+  if (context.workspace.workspaceType !== "agency" && clients.length) {
+    await prisma.$transaction((tx) => recordWorkspaceActivity(tx, {
+      context,
+      action: "workspace.payload_scope_violation",
+      entityType: "workspace",
+      entityId: context.workspace.id,
+      metadataJson: { blockedAgencyClientCount: clients.length, workspaceType: context.workspace.workspaceType },
+    }));
+  }
   const directProjectFilter: Prisma.ProjectWhereInput = hasWorkspacePermission(context, "manage_projects") || context.workspace.workspaceType === "personal" ? {} : {
     OR: [
       { memberAssignments: { some: { membershipId: context.membership.id } } },
@@ -180,7 +201,7 @@ agencyWorkspaceRouter.get(["/agency/workspace", "/workspace"], (req, res) => han
       strategyPlans: { orderBy: { updatedAt: "desc" }, take: 1, select: { status: true } },
     },
   });
-  const visibleProjectIds = context.workspace.workspaceType === "agency" ? clients.flatMap((client) => client.projects.map((project) => project.id)) : directProjects.map((project) => project.id);
+  const visibleProjectIds = context.workspace.workspaceType === "agency" ? scopedClients.flatMap((client) => client.projects.map((project) => project.id)) : directProjects.map((project) => project.id);
   const pendingApprovalTasks = visibleProjectIds.length ? await prisma.executionTask.findMany({
     where: { projectId: { in: visibleProjectIds }, requiresApproval: true, approvedAt: null, status: "submitted_for_approval" },
     orderBy: [{ dueAt: "asc" }, { submittedAt: "asc" }],
@@ -236,15 +257,15 @@ agencyWorkspaceRouter.get(["/agency/workspace", "/workspace"], (req, res) => han
       nextTask: nextTaskByProject.get(project.id) ?? null,
     };
   };
-  const safeClients = clients.map((client) => clientViewer ? {
+  const safeClients = scopedClients.map((client) => clientViewer ? {
     id: client.id, name: client.name, status: client.status, contactName: null, contactEmail: null,
     websites: [], businessLocations: [], targetMarkets: [], competitors: [], brandingJson: {}, defaultSettings: {},
     internalNotes: null, clientVisibleNotes: null, projects: [], memberAssignments: [], teamAssignments: [],
   } : { ...client, projects: client.projects.map(projectWithProgress) });
   const projectsWithProgress = directProjects.map(projectWithProgress);
   const summary = {
-    clients: clients.filter((client) => client.status === "active").length,
-    activeProjects: (context.workspace.workspaceType === "agency" ? clients.flatMap((client) => client.projects) : directProjects).filter((project) => project.status === "active").length,
+    clients: scopedClients.filter((client) => client.status === "active").length,
+    activeProjects: (context.workspace.workspaceType === "agency" ? scopedClients.flatMap((client) => client.projects) : directProjects).filter((project) => project.status === "active").length,
     pendingApprovals, overdueTasks: actionRows.filter((task) => {
       const complete = Boolean(task.completedAt || task.skippedAt || task.publishedAt || completedStatuses.has(task.status));
       return !complete && Boolean(task.dueAt && task.dueAt < now);
@@ -271,7 +292,15 @@ agencyWorkspaceRouter.get(["/agency/workspace", "/workspace"], (req, res) => han
     pendingApprovalTasks: clientViewer ? [] : pendingApprovalTasks,
     summary,
     seats,
-    nextActions: clientViewer ? [] : agencyNextActions(summary),
+    discoveryDrafts,
+    nextActions: clientViewer ? [] : workspaceNextActions({
+      workspaceType: context.workspace.workspaceType,
+      ...summary,
+      discoveryDrafts: discoveryDrafts.length,
+      latestDiscoveryDraftId: discoveryDrafts[0]?.id ?? null,
+      intakeDrafts: projectsWithProgress.filter((project) => project.status === "intake_draft").length,
+      latestIntakeDraftId: projectsWithProgress.find((project) => project.status === "intake_draft")?.id ?? null,
+    }),
     permissions: Object.fromEntries(["manage_users", "manage_roles", "manage_clients", "create_projects", "edit_project_settings", "manage_projects", "run_ai_analysis", "edit_strategy", "execute_tasks", "assign_tasks", "approve", "publish", "view_reports", "export_reports", "view_activity", "view_notifications", "manage_integrations", "read_integrations", "manage_api_keys", "billing"].map((permission) => [permission, hasWorkspacePermission(context, permission)])),
   };
 }));

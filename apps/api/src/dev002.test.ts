@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { agencyNextActions, clientDefaults, clientViewerRouteAllowed } from "./dev002.js";
+import { agencyNextActions, clientDefaults, clientViewerRouteAllowed, workspaceNextActions } from "./dev002.js";
 
 describe("DEV-002 Agency → Clients → Projects", () => {
   it("reuses the complete client profile as project defaults", () => {
@@ -34,11 +34,28 @@ describe("DEV-002 Agency → Clients → Projects", () => {
 
   it("prioritizes creating a client before an agency project", () => {
     expect(agencyNextActions({ clients: 0, activeProjects: 0, pendingApprovals: 0, reportsReady: 0 })[0]?.key).toBe("create_client");
+    expect(workspaceNextActions({ workspaceType: "agency", clients: 0, activeProjects: 0, pendingApprovals: 0, reportsReady: 0 })[0]?.key).toBe("create_client");
   });
 
   it("surfaces approvals and intentionally sendable reports", () => {
     const keys = agencyNextActions({ clients: 2, activeProjects: 4, pendingApprovals: 3, reportsReady: 1 }).map((item) => item.key);
     expect(keys).toEqual(["review_approvals", "send_reports"]);
+  });
+
+  it("keeps Personal first use project-focused and free of Agency actions", () => {
+    expect(workspaceNextActions({ workspaceType: "personal", clients: 0, activeProjects: 0, pendingApprovals: 0, reportsReady: 0 })).toEqual([expect.objectContaining({ key: "start_first_project", title: "Start your first project", href: "/projects/new" })]);
+  });
+
+  it("continues a saved Discovery Draft before offering another first project", () => {
+    expect(workspaceNextActions({ workspaceType: "business", clients: 0, activeProjects: 0, pendingApprovals: 0, reportsReady: 0, discoveryDrafts: 1, latestDiscoveryDraftId: "draft 1" })[0]).toEqual(expect.objectContaining({ key: "continue_discovery", href: "/projects/new?discoveryDraftId=draft%201" }));
+  });
+
+  it("continues an intake draft without creating a duplicate project", () => {
+    expect(workspaceNextActions({ workspaceType: "personal", clients: 0, activeProjects: 0, pendingApprovals: 0, reportsReady: 0, intakeDrafts: 1, latestIntakeDraftId: "project 1" })[0]).toEqual(expect.objectContaining({ key: "continue_intake", href: "/projects/new?resumeConversation=project%201" }));
+  });
+
+  it("puts a required approval ahead of other Personal work", () => {
+    expect(workspaceNextActions({ workspaceType: "personal", clients: 0, activeProjects: 1, pendingApprovals: 2, reportsReady: 1 }).map((item) => item.key)).toEqual(["review_approvals", "review_reports"]);
   });
 
   it("limits Client Viewer API access to shared dashboards and explicit client decisions", () => {

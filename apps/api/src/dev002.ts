@@ -47,6 +47,52 @@ export function agencyNextActions(input: { clients: number; activeProjects: numb
   return actions.slice(0, 4);
 }
 
+export function workspaceNextActions(input: {
+  workspaceType: string;
+  clients: number;
+  activeProjects: number;
+  pendingApprovals: number;
+  reportsReady: number;
+  discoveryDrafts?: number;
+  latestDiscoveryDraftId?: string | null;
+  intakeDrafts?: number;
+  latestIntakeDraftId?: string | null;
+}) {
+  if (input.workspaceType === "agency") return agencyNextActions(input);
+  const actions: { key: string; title: string; description: string; href: string }[] = [];
+  if (input.pendingApprovals) actions.push({
+    key: "review_approvals",
+    title: `Review ${input.pendingApprovals} pending approval${input.pendingApprovals === 1 ? "" : "s"}`,
+    description: "A project decision is waiting. Review the proposed change, evidence, impact, and risk before work continues.",
+    href: "/approvals",
+  });
+  if (!input.activeProjects && input.intakeDrafts) actions.push({
+    key: "continue_intake",
+    title: "Continue project setup",
+    description: "Your saved project intake is ready. Continue from the last completed answer without creating a duplicate project.",
+    href: input.latestIntakeDraftId ? `/projects/new?resumeConversation=${encodeURIComponent(input.latestIntakeDraftId)}` : "/projects?status=draft",
+  });
+  else if (!input.activeProjects && input.discoveryDrafts) actions.push({
+    key: "continue_discovery",
+    title: "Continue discovery",
+    description: "Your saved Discovery Draft is ready. Continue it, compare the ideas, and create a project only when you confirm one.",
+    href: input.latestDiscoveryDraftId ? `/projects/new?discoveryDraftId=${encodeURIComponent(input.latestDiscoveryDraftId)}` : "/projects?status=draft",
+  });
+  else if (!input.activeProjects) actions.push({
+    key: "start_first_project",
+    title: "Start your first project",
+    description: "Choose an existing business, explore an idea, or let SEnuke AI help you find an opportunity.",
+    href: "/projects/new",
+  });
+  if (input.reportsReady) actions.push({
+    key: "review_reports",
+    title: `${input.reportsReady} report${input.reportsReady === 1 ? " is" : "s are"} ready`,
+    description: "Open the completed project report and review its verified results.",
+    href: "/reports",
+  });
+  return actions.slice(0, 4);
+}
+
 export function clientViewerRouteAllowed(method: string, originalUrl: string) {
   const path = originalUrl.split("?")[0];
   const prefix = "/api/agency/clients/";

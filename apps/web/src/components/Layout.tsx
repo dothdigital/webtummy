@@ -119,7 +119,7 @@ const helpByPath: Record<string, HelpContent> = {
     eyebrow: "Projects Help",
     title: "Projects",
     intro: "Projects are the core workspace records. Every module should use the selected project context and should not show unrelated or static data.",
-    primaryAction: { label: "New Project", to: "/projects/new" },
+    primaryAction: { label: "Start a Project", to: "/projects/new" },
     sections: [
       {
         title: "What this page does",
@@ -1412,7 +1412,7 @@ function Footer() {
         <div className="flex items-center gap-2 text-sm text-charcoal-500">
           <LogoMark size={20} />
           <span>
-            <span className="font-semibold text-charcoal-700">SEnuke AI - AI Growth Operating System</span> — SEO &amp; AI Search Audit Platform
+            <span className="font-semibold text-charcoal-700">SEnuke AI — The AI Growth Operating System</span>
           </span>
         </div>
         <div className="text-xs text-charcoal-400">© {year} All rights reserved.</div>
