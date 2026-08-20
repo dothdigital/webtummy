@@ -225,28 +225,28 @@ model WorkspaceAiIntakeSession {
 }
 
 model DiscoveryDraft {
-  id                      String    @id @default(cuid())
+  id                      String        @id @default(cuid())
   workspaceId             String
-  workspace               Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  workspace               Workspace     @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
   agencyClientId          String?
   agencyClient            AgencyClient? @relation(fields: [agencyClientId], references: [id], onDelete: Cascade)
-  createdByUserId         String    @db.VarChar(191)
-  title                   String    @db.VarChar(180)
-  startPath               String    @db.VarChar(40)
-  status                  String    @default("DRAFT") @db.VarChar(40)
-  sourceText              String?   @db.Text
-  answersJson             Json      @default("{}")
-  factsJson               Json      @default("[]")
-  questionHistoryJson     Json      @default("[]")
-  aiSummaryJson           Json      @default("{}")
-  selectedDirectionJson   Json      @default("{}")
-  nextBestActionJson      Json      @default("{}")
-  aiConversationSessionId String?   @db.VarChar(191)
-  convertedProjectId      String?   @unique
-  convertedProject        Project?  @relation("DiscoveryDraftConvertedProject", fields: [convertedProjectId], references: [id], onDelete: SetNull)
+  createdByUserId         String        @db.VarChar(191)
+  title                   String        @db.VarChar(180)
+  startPath               String        @db.VarChar(40)
+  status                  String        @default("DRAFT") @db.VarChar(40)
+  sourceText              String?       @db.Text
+  answersJson             Json          @default("{}")
+  factsJson               Json          @default("[]")
+  questionHistoryJson     Json          @default("[]")
+  aiSummaryJson           Json          @default("{}")
+  selectedDirectionJson   Json          @default("{}")
+  nextBestActionJson      Json          @default("{}")
+  aiConversationSessionId String?       @db.VarChar(191)
+  convertedProjectId      String?       @unique
+  convertedProject        Project?      @relation("DiscoveryDraftConvertedProject", fields: [convertedProjectId], references: [id], onDelete: SetNull)
   convertedAt             DateTime?
-  createdAt               DateTime  @default(now())
-  updatedAt               DateTime  @updatedAt
+  createdAt               DateTime      @default(now())
+  updatedAt               DateTime      @updatedAt
 
   ideas DiscoveryIdea[]
 
@@ -256,28 +256,28 @@ model DiscoveryDraft {
 }
 
 model DiscoveryIdea {
-  id              String         @id @default(cuid())
+  id               String         @id @default(cuid())
   discoveryDraftId String
-  discoveryDraft  DiscoveryDraft @relation(fields: [discoveryDraftId], references: [id], onDelete: Cascade)
-  position        Int            @default(0)
-  title           String         @db.VarChar(180)
-  description     String         @db.Text
-  whyFit          String         @db.Text
-  targetAudience  String?        @db.Text
-  problemSolved   String?        @db.Text
-  revenueModel    String?        @db.VarChar(180)
-  businessModel   String?        @db.VarChar(120)
-  evidenceJson    Json           @default("[]")
-  validationSteps Json           @default("[]")
-  difficulty      String?        @db.VarChar(40)
-  timeCostBand    String?        @db.VarChar(180)
-  majorRisk       String?        @db.Text
-  confidence      Int?
-  detailsJson     Json           @default("{}")
-  status          String         @default("GENERATED") @db.VarChar(40)
-  userFeedback    String?        @db.Text
-  createdAt       DateTime       @default(now())
-  updatedAt       DateTime       @updatedAt
+  discoveryDraft   DiscoveryDraft @relation(fields: [discoveryDraftId], references: [id], onDelete: Cascade)
+  position         Int            @default(0)
+  title            String         @db.VarChar(180)
+  description      String         @db.Text
+  whyFit           String         @db.Text
+  targetAudience   String?        @db.Text
+  problemSolved    String?        @db.Text
+  revenueModel     String?        @db.VarChar(180)
+  businessModel    String?        @db.VarChar(120)
+  evidenceJson     Json           @default("[]")
+  validationSteps  Json           @default("[]")
+  difficulty       String?        @db.VarChar(40)
+  timeCostBand     String?        @db.VarChar(180)
+  majorRisk        String?        @db.Text
+  confidence       Int?
+  detailsJson      Json           @default("{}")
+  status           String         @default("GENERATED") @db.VarChar(40)
+  userFeedback     String?        @db.Text
+  createdAt        DateTime       @default(now())
+  updatedAt        DateTime       @updatedAt
 
   exports DiscoveryIdeaExport[]
 
@@ -645,8 +645,8 @@ model CommercialPolicyVersion {
   status                   String    @default("active") @db.VarChar(40)
   createdAt                DateTime  @default(now())
 
-  planVersions  CommercialPlanVersion[]
-  subscriptions WorkspaceSubscription[]
+  planVersions          CommercialPlanVersion[]
+  subscriptions         WorkspaceSubscription[]
   externalSubscriptions ExternalSubscription[]
 
   @@unique([code, version])
@@ -668,8 +668,8 @@ model CommercialPlanVersion {
   status                   String                  @default("active") @db.VarChar(40)
   createdAt                DateTime                @default(now())
 
-  prices        CommercialPrice[]
-  subscriptions WorkspaceSubscription[]
+  prices                CommercialPrice[]
+  subscriptions         WorkspaceSubscription[]
   externalSubscriptions ExternalSubscription[]
 
   @@unique([billingPlanId, version])
@@ -823,35 +823,35 @@ model CommercialBillingEvent {
 // Browser-selected plan data is never authoritative; only a verified provider
 // event can create or change one of these records.
 model ExternalSubscription {
-  id                      String     @id @default(cuid())
-  provider                String     @default("jvzoo") @db.VarChar(40)
-  providerTransactionId   String     @db.VarChar(191)
-  providerSubscriptionRef String?    @db.VarChar(191)
-  providerCustomerEmail   String     @db.VarChar(320)
-  providerCustomerName    String?    @db.VarChar(180)
-  providerProductRef      String     @db.VarChar(191)
+  id                      String                   @id @default(cuid())
+  provider                String                   @default("jvzoo") @db.VarChar(40)
+  providerTransactionId   String                   @db.VarChar(191)
+  providerSubscriptionRef String?                  @db.VarChar(191)
+  providerCustomerEmail   String                   @db.VarChar(320)
+  providerCustomerName    String?                  @db.VarChar(180)
+  providerProductRef      String                   @db.VarChar(191)
   priceId                 String?
-  price                   CommercialPrice? @relation(fields: [priceId], references: [id], onDelete: Restrict)
+  price                   CommercialPrice?         @relation(fields: [priceId], references: [id], onDelete: Restrict)
   planVersionId           String?
-  planVersion             CommercialPlanVersion? @relation(fields: [planVersionId], references: [id], onDelete: Restrict)
+  planVersion             CommercialPlanVersion?   @relation(fields: [planVersionId], references: [id], onDelete: Restrict)
   policyVersionId         String?
   policyVersion           CommercialPolicyVersion? @relation(fields: [policyVersionId], references: [id], onDelete: Restrict)
-  planCode                String?    @db.VarChar(40)
-  billingInterval         String?    @db.VarChar(20)
-  currency                String     @default("USD") @db.VarChar(3)
+  planCode                String?                  @db.VarChar(40)
+  billingInterval         String?                  @db.VarChar(20)
+  currency                String                   @default("USD") @db.VarChar(3)
   amountCents             Int?
-  status                  String     @default("unclaimed") @db.VarChar(40)
-  activationStatus        String     @default("unclaimed") @db.VarChar(40)
+  status                  String                   @default("unclaimed") @db.VarChar(40)
+  activationStatus        String                   @default("unclaimed") @db.VarChar(40)
   workspaceId             String?
-  workspace               Workspace? @relation(fields: [workspaceId], references: [id], onDelete: SetNull)
+  workspace               Workspace?               @relation(fields: [workspaceId], references: [id], onDelete: SetNull)
   userId                  String?
-  user                    User?      @relation(fields: [userId], references: [id], onDelete: SetNull)
+  user                    User?                    @relation(fields: [userId], references: [id], onDelete: SetNull)
   purchasedAt             DateTime
   currentPeriodStart      DateTime?
   currentPeriodEnd        DateTime?
-  cancelAtPeriodEnd       Boolean    @default(false)
-  foundingMember          Boolean    @default(false)
-  foundingCampaignCode    String?    @db.VarChar(80)
+  cancelAtPeriodEnd       Boolean                  @default(false)
+  foundingMember          Boolean                  @default(false)
+  foundingCampaignCode    String?                  @db.VarChar(80)
   protectedPriceId        String?
   lastEventAt             DateTime?
   activatedAt             DateTime?
@@ -859,9 +859,9 @@ model ExternalSubscription {
   refundedAt              DateTime?
   chargebackAt            DateTime?
   activationEmailSentAt   DateTime?
-  activationEmailError    String?    @db.Text
-  createdAt               DateTime   @default(now())
-  updatedAt               DateTime   @updatedAt
+  activationEmailError    String?                  @db.Text
+  createdAt               DateTime                 @default(now())
+  updatedAt               DateTime                 @updatedAt
 
   activationTokens ExternalSubscriptionActivationToken[]
   billingEvents    CommercialBillingEvent[]
@@ -941,22 +941,22 @@ model CommercialRetentionCase {
 // records remain as read-only migration history; all new reservations use
 // these workspace-scoped balances and ledger entries.
 model WorkspaceCapacityAccount {
-  id                  String    @id @default(cuid())
-  workspaceId         String
-  workspace           Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  periodStart         DateTime
-  periodEnd           DateTime
-  includedAllowance   Int       @default(0)
-  includedBalance     Int       @default(0)
-  includedReserved    Int       @default(0)
-  includedUsed        Int       @default(0)
-  purchasedBalance    Int       @default(0)
-  purchasedReserved   Int       @default(0)
-  purchasedUsed       Int       @default(0)
-  status              String    @default("active") @db.VarChar(40)
-  pricingVersion      Int       @default(1)
-  createdAt           DateTime  @default(now())
-  updatedAt           DateTime  @updatedAt
+  id                String    @id @default(cuid())
+  workspaceId       String
+  workspace         Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  periodStart       DateTime
+  periodEnd         DateTime
+  includedAllowance Int       @default(0)
+  includedBalance   Int       @default(0)
+  includedReserved  Int       @default(0)
+  includedUsed      Int       @default(0)
+  purchasedBalance  Int       @default(0)
+  purchasedReserved Int       @default(0)
+  purchasedUsed     Int       @default(0)
+  status            String    @default("active") @db.VarChar(40)
+  pricingVersion    Int       @default(1)
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
 
   transactions WorkspaceCapacityTransaction[]
 
@@ -966,21 +966,21 @@ model WorkspaceCapacityAccount {
 }
 
 model WorkspaceCapacityTransaction {
-  id             String                    @id @default(cuid())
-  workspaceId    String
-  workspace      Workspace                 @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  accountId      String?
-  account        WorkspaceCapacityAccount? @relation(fields: [accountId], references: [id], onDelete: SetNull)
-  usageEventId   String?                   @db.VarChar(191)
-  bucket         String                    @db.VarChar(30) // included | purchased
-  type           String                    @db.VarChar(40) // grant | reserve | commit | refund | adjustment | reset | expiry
-  amount         Int
-  balanceAfter   Int
-  reason         String                    @db.VarChar(255)
-  actorId        String?
-  correlationId  String?                   @db.VarChar(191)
-  metadataJson   Json                      @default("{}")
-  createdAt      DateTime                  @default(now())
+  id            String                    @id @default(cuid())
+  workspaceId   String
+  workspace     Workspace                 @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  accountId     String?
+  account       WorkspaceCapacityAccount? @relation(fields: [accountId], references: [id], onDelete: SetNull)
+  usageEventId  String?                   @db.VarChar(191)
+  bucket        String                    @db.VarChar(30) // included | purchased
+  type          String                    @db.VarChar(40) // grant | reserve | commit | refund | adjustment | reset | expiry
+  amount        Int
+  balanceAfter  Int
+  reason        String                    @db.VarChar(255)
+  actorId       String?
+  correlationId String?                   @db.VarChar(191)
+  metadataJson  Json                      @default("{}")
+  createdAt     DateTime                  @default(now())
 
   @@index([workspaceId, createdAt])
   @@index([accountId, createdAt])
@@ -1487,8 +1487,11 @@ model Project {
   websiteSftpIntegrations     WebsiteSftpIntegration[]
   measurementCheckpoints      MeasurementCheckpoint[]
   nextBestActions             NextBestAction[]
-  dev053VerificationRuns     Dev053VerificationRun[]
-  originDiscoveryDraft        DiscoveryDraft? @relation("DiscoveryDraftConvertedProject")
+  growthIntelligenceCycles    GrowthIntelligenceCycle[]
+  growthIntelligenceFindings  GrowthIntelligenceFinding[]
+  growthIntelligenceDecisions GrowthIntelligenceDecision[]
+  dev053VerificationRuns      Dev053VerificationRun[]
+  originDiscoveryDraft        DiscoveryDraft?              @relation("DiscoveryDraftConvertedProject")
 
   @@index([clientId, status])
   @@index([agencyClientId, status])
@@ -1500,13 +1503,13 @@ model Project {
 // capability checklist. A run is immutable once completed so a workspace can
 // prove what was available, blocked, missing or not applicable at that time.
 model Dev053VerificationRun {
-  id                String   @id @default(cuid())
+  id                String    @id @default(cuid())
   projectId         String
-  project           Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  initiatedByUserId String?  @db.VarChar(191)
-  status            String   @default("running") @db.VarChar(40)
-  summaryJson       Json     @default("{}")
-  createdAt         DateTime @default(now())
+  project           Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  initiatedByUserId String?   @db.VarChar(191)
+  status            String    @default("running") @db.VarChar(40)
+  summaryJson       Json      @default("{}")
+  createdAt         DateTime  @default(now())
   completedAt       DateTime?
 
   results Dev053CapabilityResult[]
@@ -4137,6 +4140,145 @@ model GrowthDiagnosis {
 
   @@index([projectId, createdAt])
   @@index([bottleneckType])
+}
+
+// DEV-063 durable orchestration ledger. Collection is included monitoring work:
+// these rows never reserve customer AI Capacity. A cycle can be safely retried
+// because its idempotency key, source runs, findings and decision are unique.
+model GrowthIntelligenceCycle {
+  id                        String    @id @default(cuid())
+  projectId                 String
+  project                   Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  workspaceId               String    @db.VarChar(191)
+  agencyClientId            String?   @db.VarChar(191)
+  triggerType               String    @db.VarChar(60)
+  triggerSource             String    @db.VarChar(120)
+  idempotencyKey            String    @unique @db.VarChar(191)
+  status                    String    @default("queued") @db.VarChar(40)
+  scheduledAt               DateTime
+  startedAt                 DateTime?
+  heartbeatAt               DateTime?
+  completedAt               DateTime?
+  previousSuccessfulAt      DateTime?
+  nextScheduledAt           DateTime?
+  periodStart               DateTime?
+  periodEnd                 DateTime?
+  dataVersionFingerprint    String?   @db.VarChar(64)
+  sourceSummaryJson         Json      @default("{}")
+  snapshotJson              Json      @default("{}")
+  recordCount               Int       @default(0)
+  retryCount                Int       @default(0)
+  maxAttempts               Int       @default(5)
+  skipReason                String?   @db.Text
+  errorMessage              String?   @db.Text
+  restrictionsJson          Json      @default("[]")
+  meaningfulChangeDetected  Boolean   @default(false)
+  growthEvaluationTriggered Boolean   @default(false)
+  nextBestActionTriggered   Boolean   @default(false)
+  notificationCreated       Boolean   @default(false)
+  weeklySummaryCreated      Boolean   @default(false)
+  createdAt                 DateTime  @default(now())
+  updatedAt                 DateTime  @updatedAt
+
+  sourceRuns GrowthIntelligenceSourceRun[]
+  findings   GrowthIntelligenceFinding[]
+  decisions  GrowthIntelligenceDecision[]
+
+  @@index([status, scheduledAt])
+  @@index([projectId, createdAt])
+  @@index([workspaceId, status, scheduledAt])
+  @@index([nextScheduledAt])
+}
+
+model GrowthIntelligenceSourceRun {
+  id                        String                  @id @default(cuid())
+  cycleId                   String
+  cycle                     GrowthIntelligenceCycle @relation(fields: [cycleId], references: [id], onDelete: Cascade)
+  projectId                 String                  @db.VarChar(191)
+  sourceType                String                  @db.VarChar(80)
+  jobType                   String                  @db.VarChar(80)
+  status                    String                  @db.VarChar(40)
+  scheduledAt               DateTime
+  startedAt                 DateTime?
+  completedAt               DateTime?
+  previousSuccessfulAt      DateTime?
+  nextScheduledAt           DateTime?
+  periodStart               DateTime?
+  periodEnd                 DateTime?
+  recordCount               Int                     @default(0)
+  snapshotVersion           String?                 @db.VarChar(64)
+  snapshotJson              Json                    @default("{}")
+  countsJson                Json                    @default("{}")
+  restrictionReason         String?                 @db.Text
+  skipReason                String?                 @db.Text
+  errorMessage              String?                 @db.Text
+  retryCount                Int                     @default(0)
+  meaningfulChangeDetected  Boolean                 @default(false)
+  growthEvaluationTriggered Boolean                 @default(false)
+  nextBestActionTriggered   Boolean                 @default(false)
+  createdAt                 DateTime                @default(now())
+  updatedAt                 DateTime                @updatedAt
+
+  @@unique([cycleId, sourceType])
+  @@index([projectId, sourceType, completedAt])
+  @@index([status, nextScheduledAt])
+}
+
+model GrowthIntelligenceFinding {
+  id                      String                  @id @default(cuid())
+  cycleId                 String
+  cycle                   GrowthIntelligenceCycle @relation(fields: [cycleId], references: [id], onDelete: Cascade)
+  projectId               String
+  project                 Project                 @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  fingerprint             String                  @unique @db.VarChar(191)
+  sourceType              String                  @db.VarChar(80)
+  findingType             String                  @db.VarChar(80)
+  severity                String                  @db.VarChar(30)
+  status                  String                  @default("open") @db.VarChar(40)
+  observedEvidenceJson    Json                    @default("{}")
+  currentValueJson        Json                    @default("{}")
+  previousValueJson       Json                    @default("{}")
+  periodStart             DateTime?
+  periodEnd               DateTime?
+  absoluteChange          Float?
+  percentChange           Float?
+  detectedAt              DateTime                @default(now())
+  confidence              Int                     @default(0)
+  limitationsJson         Json                    @default("[]")
+  observedFact            String                  @db.Text
+  interpretation          String?                 @db.Text
+  importance              String?                 @db.Text
+  affectedObjective       String?                 @db.VarChar(255)
+  recommendedResponse     String?                 @db.Text
+  approvalRequired        Boolean                 @default(false)
+  approvalStatus          String                  @default("not_required") @db.VarChar(40)
+  relatedStrategyId       String?                 @db.VarChar(191)
+  relatedExecutionTaskId  String?                 @db.VarChar(191)
+  relatedNextBestActionId String?                 @db.VarChar(191)
+  createdAt               DateTime                @default(now())
+  updatedAt               DateTime                @updatedAt
+
+  @@index([projectId, status, detectedAt])
+  @@index([cycleId, severity])
+  @@index([sourceType, findingType])
+}
+
+model GrowthIntelligenceDecision {
+  id                       String                  @id @default(cuid())
+  cycleId                  String                  @unique
+  cycle                    GrowthIntelligenceCycle @relation(fields: [cycleId], references: [id], onDelete: Cascade)
+  projectId                String
+  project                  Project                 @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  outcome                  String                  @db.VarChar(30)
+  previousNextBestActionId String?                 @db.VarChar(191)
+  currentNextBestActionId  String?                 @db.VarChar(191)
+  reason                   String                  @db.Text
+  evidenceJson             Json                    @default("{}")
+  dataVersionFingerprint   String                  @db.VarChar(64)
+  createdAt                DateTime                @default(now())
+
+  @@index([projectId, createdAt])
+  @@index([outcome, createdAt])
 }
 
 model GrowthFunnelStage {

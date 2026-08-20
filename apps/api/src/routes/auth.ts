@@ -8,7 +8,7 @@ import { requireAuth } from "../middleware.js";
 import { config } from "../config.js";
 import { sendMail } from "../email.js";
 import { trialEndsFrom } from "../billing.js";
-import { hasWorkspacePermission, workspaceApprovalMode, workspaceSeatUsage, type WorkspaceContext } from "../workspace-access.js";
+import { hasWorkspacePermission, reconcileWorkspaceTypeFromCommercialPlan, workspaceApprovalMode, workspaceSeatUsage, type WorkspaceContext } from "../workspace-access.js";
 import { rolesConsumeSeat } from "@webtummy/core/workspace-permissions";
 import { commercialRegistrationPolicy, reconcilePendingJvZooEventsForUser } from "../commercial-service.js";
 
@@ -36,6 +36,7 @@ async function workspaceSession(userId: string) {
     include: { workspace: { select: { id: true, name: true, workspaceType: true, ownerUserId: true, legacyClientId: true, commercialState: true, accessMode: true, settingsJson: true, securitySettingsJson: true, autoApprovalPolicyJson: true } }, roles: { select: { role: true } } },
   });
   if (!membership) return null;
+  membership.workspace.workspaceType = await reconcileWorkspaceTypeFromCommercialPlan(membership.workspace.id, membership.workspace.workspaceType);
   if (membership.workspace.workspaceType === "personal" && membership.workspace.ownerUserId !== userId) return null;
   const [clientCount, projectCount] = await Promise.all([
     membership.workspace.workspaceType === "agency"

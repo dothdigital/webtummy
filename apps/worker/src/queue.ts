@@ -1,7 +1,7 @@
 // BullMQ queue + shared Redis connection. The API enqueues `crawl:start` jobs here;
 // this worker process consumes them.
 import { Queue } from "bullmq";
-import { config, CRAWL_QUEUE, WEBSITE_BUILDER_QUEUE } from "./config.js";
+import { config, CRAWL_QUEUE, GROWTH_INTELLIGENCE_QUEUE, WEBSITE_BUILDER_QUEUE } from "./config.js";
 
 function redisConnectionOptions() {
   const url = new URL(config.redisUrl);
@@ -24,3 +24,5 @@ export interface CrawlJobData {
 export const crawlQueue = new Queue<CrawlJobData, unknown, "crawl:start">(CRAWL_QUEUE, { connection });
 export type WebsiteBuilderJobData = { jobId: string };
 export const websiteBuilderQueue = new Queue<WebsiteBuilderJobData, unknown, "website:develop">(WEBSITE_BUILDER_QUEUE, { connection });
+export type GrowthIntelligenceJobData = { cycleId: string };
+export const growthIntelligenceQueue = new Queue<GrowthIntelligenceJobData, unknown, "growth-intelligence:evaluate">(GROWTH_INTELLIGENCE_QUEUE, { connection });

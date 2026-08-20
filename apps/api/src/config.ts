@@ -111,3 +111,4 @@ export const WEBSITE_BUILDER_QUEUE = "website-builder";
 export const STRATEGY_GENERATION_QUEUE = "strategy-generation";
 export const CONTENT_PLAN_GENERATION_QUEUE = "content-plan-generation";
 export const JVZOO_PROCESSING_QUEUE = "jvzoo-processing";
+export const GROWTH_INTELLIGENCE_QUEUE = "growth-intelligence";

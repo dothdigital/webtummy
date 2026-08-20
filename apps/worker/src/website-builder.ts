@@ -3275,13 +3275,19 @@ const WEBSITE_JOB_STALE_AFTER_MS = 3 * 60 * 60 * 1000;
 
 async function expireStaleWebsiteJobs() {
   const cutoff = new Date(Date.now() - WEBSITE_JOB_STALE_AFTER_MS);
-  const stale = await prisma.websiteBuildJob.findMany({ where: { status: { in: ["queued", "processing"] }, updatedAt: { lt: cutoff } }, select: { id: true } });
+  const stale = await prisma.websiteBuildJob.findMany({ where: { status: { in: ["queued", "processing"] }, updatedAt: { lt: cutoff } }, select: { id: true, attempts: true } });
   for (const item of stale) {
-    await prisma.websiteBuildJob.updateMany({ where: { id: item.id, status: { in: ["queued", "processing"] } }, data: { status: "cancelled", stage: "timed_out", errorMessage: "Website background work made no progress for three hours and was stopped. Resume the unfinished work.", completedAt: new Date() } });
     const queueJob = await websiteBuilderQueue.getJob(item.id);
-    if (queueJob && await queueJob.getState().catch(() => "unknown") !== "active") await queueJob.remove().catch(() => undefined);
+    if (queueJob && await queueJob.getState().catch(() => "unknown") === "active") continue;
+    if (queueJob) await queueJob.remove().catch(() => undefined);
+    if (item.attempts >= 5) {
+      await prisma.websiteBuildJob.updateMany({ where: { id: item.id, status: { in: ["queued", "processing"] } }, data: { status: "failed", stage: "recovery_exhausted", errorMessage: "Website background work was interrupted repeatedly. Saved page checkpoints were preserved for support-assisted recovery.", completedAt: new Date() } });
+      continue;
+    }
+    const recovered = await prisma.websiteBuildJob.updateMany({ where: { id: item.id, status: { in: ["queued", "processing"] } }, data: { status: "queued", stage: "queued_recovered", errorMessage: "Recovered after an interrupted worker. Continuing from saved page checkpoints.", queuedAt: new Date(), startedAt: null, completedAt: null } });
+    if (recovered.count) await websiteBuilderQueue.add("website:develop", { jobId: item.id }, { jobId: item.id, attempts: 2, backoff: { type: "exponential", delay: 10_000 }, removeOnComplete: 100, removeOnFail: 200 });
   }
-  if (stale.length) console.info(`[worker] website queue watchdog expired ${stale.length} stale job${stale.length === 1 ? "" : "s"}.`);
+  if (stale.length) console.info(`[worker] website queue watchdog recovered or finalized ${stale.length} stale job${stale.length === 1 ? "" : "s"}.`);
 }
 
 export function startWebsiteBuilderWorker() {

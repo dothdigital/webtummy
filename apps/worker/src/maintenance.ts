@@ -105,33 +105,14 @@ export async function recoverQueuedCrawlJobs() {
 
     for (const crawl of crawls) {
       const existingJob = await crawlQueue.getJob(crawl.id);
-      if (crawl.status === "queued" && crawl.createdAt < staleQueuedBefore) {
-        await prisma.crawlJob.updateMany({
-          where: { id: crawl.id, status: "queued" },
-          data: { status: "failed", completedAt: new Date(), error: "Site analysis waited longer than 60 minutes and was stopped. Run Analyze Site again." },
-        });
-        if (existingJob && await existingJob.getState().catch(() => "unknown") !== "active") await existingJob.remove().catch(() => undefined);
-        markedFailed++;
-        continue;
-      }
+      if (crawl.status === "queued" && crawl.createdAt < staleQueuedBefore && existingJob && await existingJob.getState().catch(() => "unknown") !== "active") await existingJob.remove().catch(() => undefined);
       if (existingJob) {
         const state = await existingJob.getState();
         if (trackedStates.has(state)) {
           alreadyTracked++;
           continue;
         }
-        if (crawl.status === "running" && (state === "failed" || state === "completed")) {
-          await prisma.crawlJob.updateMany({
-            where: { id: crawl.id, status: "running" },
-            data: {
-              status: "failed",
-              completedAt: new Date(),
-              error: "Crawl worker job ended in BullMQ state " + state + " before the database status was finalized. Please run Analyze Site again.",
-            },
-          });
-          markedFailed++;
-          continue;
-        }
+        if (crawl.status === "running" && (state === "failed" || state === "completed")) await prisma.crawlJob.updateMany({ where: { id: crawl.id, status: "running" }, data: { status: "queued", startedAt: null, completedAt: null, error: `Recovered after queue state ${state}.` } });
         await existingJob.remove().catch(() => undefined);
       }
 
@@ -141,7 +122,7 @@ export async function recoverQueuedCrawlJobs() {
           data: { status: "queued", startedAt: null, completedAt: null, error: null },
         });
       }
-      await crawlQueue.add("crawl:start", { crawlJobId: crawl.id }, { jobId: crawl.id });
+      await crawlQueue.add("crawl:start", { crawlJobId: crawl.id }, { jobId: crawl.id, attempts: 3, backoff: { type: "exponential", delay: 15_000 }, removeOnComplete: { age: 86_400, count: 5_000 }, removeOnFail: { age: 7 * 86_400, count: 10_000 } });
       requeued++;
     }
 
@@ -347,27 +328,30 @@ export async function monthlyUsageReset() {
 }
 
 export async function monthlyScheduledAudit() {
-  return runLogged("monthly_scheduled_audit", async () => {
+  return runLogged("weekly_scheduled_post_launch_audit", async () => {
     const now = new Date();
-    const periodStart = monthStart(now);
-    const clients = await prisma.client.findMany({
-      where: { isActive: true, OR: [{ lastMonthlyAuditAt: null }, { lastMonthlyAuditAt: { lt: periodStart } }] },
-      include: { websites: { where: { status: "active" }, include: { crawlJobs: { where: { status: { in: ["queued", "running"] } }, select: { id: true }, take: 1 } } } },
+    const periodStart = new Date(now.getTime() - 7 * DAY_MS);
+    const websites = await prisma.website.findMany({
+      where: {
+        status: "active",
+        client: { isActive: true },
+        projects: { some: { status: "active", strategyPlans: { some: { status: "approved" } } } },
+        crawlJobs: { none: { OR: [{ status: { in: ["queued", "running"] } }, { createdAt: { gte: periodStart } }] } },
+      },
+      take: 500,
+      orderBy: { createdAt: "asc" },
+      include: { client: true, projects: { where: { status: "active", strategyPlans: { some: { status: "approved" } } }, orderBy: { updatedAt: "desc" }, take: 1, select: { id: true } } },
     });
     let queued = 0;
-    for (const client of clients) {
-      if (!hasAccess(client, now)) continue;
-      const websiteLimit = Math.max(1, client.activeWebsiteLimit + client.extraWebsiteSlots);
-      const websites = client.websites.slice(0, websiteLimit);
-      for (const website of websites) {
-        if (website.crawlJobs.length > 0) continue;
-        const crawl = await prisma.crawlJob.create({ data: { websiteId: website.id, pageLimit: config.monthlyAuditPageLimit, maxDepth: config.monthlyAuditMaxDepth, options: { scheduled: true, periodStart: periodStart.toISOString() } } });
-        await crawlQueue.add("crawl:start", { crawlJobId: crawl.id }, { jobId: crawl.id });
-        queued += 1;
-      }
-      await prisma.client.update({ where: { id: client.id }, data: { lastMonthlyAuditAt: now } });
+    for (const website of websites) {
+      if (!hasAccess(website.client, now)) continue;
+      const project = website.projects[0];
+      if (!project) continue;
+      const crawl = await prisma.crawlJob.create({ data: { websiteId: website.id, pageLimit: config.monthlyAuditPageLimit, maxDepth: config.monthlyAuditMaxDepth, options: { scheduled: true, cadence: "weekly_post_launch", projectId: project.id, periodStart: periodStart.toISOString() } } });
+      await crawlQueue.add("crawl:start", { crawlJobId: crawl.id }, { jobId: crawl.id, attempts: 3, backoff: { type: "exponential", delay: 15_000 } });
+      queued += 1;
     }
-    return { periodStart: periodStart.toISOString(), clientsChecked: clients.length, queued };
+    return { periodStart: periodStart.toISOString(), websitesDue: websites.length, queued };
   });
 }
 

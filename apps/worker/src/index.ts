@@ -7,6 +7,7 @@ import { runCrawl } from "./crawl.js";
 import { recoverQueuedCrawlJobs, startMaintenanceScheduler } from "./maintenance.js";
 import type { CrawlOptions } from "@webtummy/core";
 import { startWebsiteBuilderWorker } from "./website-builder.js";
+import { recoverGrowthIntelligenceCycles, startGrowthIntelligenceScheduler, startGrowthIntelligenceWorker } from "./growth-intelligence.js";
 
 async function markCrawlFailed(crawlJobId: string, error: unknown) {
   const message = error instanceof Error ? error.message : String(error);
@@ -34,7 +35,6 @@ async function runWithTimeout(crawlJobId: string, task: Promise<void>) {
       }),
     ]);
   } catch (error) {
-    await markCrawlFailed(crawlJobId, error);
     throw error;
   } finally {
     if (timeout) clearTimeout(timeout);
@@ -42,6 +42,7 @@ async function runWithTimeout(crawlJobId: string, task: Promise<void>) {
 }
 
 await recoverQueuedCrawlJobs();
+await recoverGrowthIntelligenceCycles();
 
 const worker = new Worker<CrawlJobData>(
   CRAWL_QUEUE,
@@ -78,7 +79,11 @@ worker.on("failed", (job, err) => {
   const crawlJobId = job?.data.crawlJobId;
   console.error("[worker] crawl " + crawlJobId + " failed:", err.message);
   if (crawlJobId) {
-    markCrawlFailed(crawlJobId, err).catch((updateError) => {
+    const exhausted = (job?.attemptsMade ?? 0) >= (job?.opts.attempts ?? 3);
+    (exhausted
+      ? markCrawlFailed(crawlJobId, err)
+      : prisma.crawlJob.updateMany({ where: { id: crawlJobId, status: "running" }, data: { status: "queued", startedAt: null, completedAt: null, error: `Retrying after worker interruption: ${err.message}` } }).then(() => undefined)
+    ).catch((updateError) => {
       console.error("[worker] failed to persist crawl " + crawlJobId + " failure:", updateError);
     });
   }
@@ -86,15 +91,20 @@ worker.on("failed", (job, err) => {
 
 const maintenanceTimer = startMaintenanceScheduler();
 const websiteBuilderWorker = startWebsiteBuilderWorker();
+const growthIntelligenceWorker = startGrowthIntelligenceWorker();
+const growthIntelligenceTimer = startGrowthIntelligenceScheduler();
 
 console.log(`[worker] SEnuke AI - AI Growth Operating System crawler up. UA="${config.userAgent}". Listening on "${CRAWL_QUEUE}".`);
 console.log(`[worker] Maintenance scheduler active every ${config.maintenanceIntervalMs}ms.`);
+console.log(`[worker] Continuous Growth scheduler active every ${config.growthIntelligenceScheduleIntervalMs}ms with ${config.growthIntelligenceConcurrency} worker slots.`);
 
 const shutdown = async () => {
   console.log("[worker] shutting down…");
   clearInterval(maintenanceTimer);
+  clearInterval(growthIntelligenceTimer);
   await worker.close();
   await websiteBuilderWorker.close();
+  await growthIntelligenceWorker.close();
   await prisma.$disconnect();
   process.exit(0);
 };

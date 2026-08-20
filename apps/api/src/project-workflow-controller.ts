@@ -980,5 +980,13 @@ export async function publishProjectWorkflowEvent(input: { projectId: string; ev
     });
   }
   await prisma.projectWorkflowEvent.update({ where: { idempotencyKey: input.idempotencyKey }, data: { processedAt: new Date() } });
+  // Monitoring is deliberately best-effort at publish time: Redis downtime must
+  // never roll back the business event. The worker's recovery scheduler will
+  // enqueue the durable cycle row when the queue becomes available again.
+  if (!input.eventType.startsWith("growth_intelligence.")) {
+    import("./continuous-growth-queue.js")
+      .then(({ enqueueGrowthIntelligenceCycle }) => enqueueGrowthIntelligenceCycle({ projectId: input.projectId, triggerSource: `${input.sourceModule}:${input.eventType}`, sourceEventId: input.idempotencyKey, occurredAt: input.occurredAt }))
+      .catch((error) => console.error("[growth-intelligence] could not enqueue event cycle", error));
+  }
   return workflow;
 }

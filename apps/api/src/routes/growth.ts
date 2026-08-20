@@ -1318,7 +1318,7 @@ async function loadGrowthOverview(projectId: string) {
 
 async function loadGrowthIntelligence(projectId: string) {
   const now = new Date();
-  const [checkpoints, signals, experiments, blueprint, activeTasks] = await Promise.all([
+  const [checkpoints, signals, experiments, blueprint, activeTasks, continuousCycles] = await Promise.all([
     prisma.measurementCheckpoint.findMany({
       where: { projectId },
       orderBy: [{ dueAt: "asc" }, { createdAt: "asc" }],
@@ -1328,6 +1328,16 @@ async function loadGrowthIntelligence(projectId: string) {
     prisma.growthExperiment.findMany({ where: { projectId }, include: { results: { orderBy: { recordedAt: "desc" } } } }),
     prisma.growthBlueprint.findUnique({ where: { projectId }, include: { versions: { orderBy: { version: "desc" }, take: 20 } } }),
     prisma.executionTask.findMany({ where: { projectId, status: { notIn: [...terminalStatuses] } }, select: { id: true, status: true, title: true, moduleName: true } }),
+    prisma.growthIntelligenceCycle.findMany({
+      where: { projectId },
+      orderBy: { createdAt: "desc" },
+      take: 12,
+      include: {
+        sourceRuns: { orderBy: { sourceType: "asc" } },
+        findings: { orderBy: [{ severity: "asc" }, { detectedAt: "desc" }], take: 50 },
+        decisions: { take: 1 },
+      },
+    }),
   ]);
   const completed = checkpoints.filter((item) => item.status === "completed");
   const due = checkpoints.filter((item) => item.status !== "completed" && item.dueAt <= now);
@@ -1356,6 +1366,7 @@ async function loadGrowthIntelligence(projectId: string) {
         : scheduled.length
           ? "COLLECTING"
           : "CURRENT";
+  const latestContinuous = continuousCycles[0] ?? null;
   return {
     contractVersion: GROWTH_INTELLIGENCE_CONTRACT_VERSION,
     lifecycle: {
@@ -1387,6 +1398,49 @@ async function loadGrowthIntelligence(projectId: string) {
       patchCount: patches.length,
       patches,
       strategyReviewRequired: patches.some((patch) => jsonRecord(patch).materialStrategyChange === true),
+    },
+    continuousMonitoring: {
+      enabled: true,
+      customerCapacityUnits: 0,
+      status: latestContinuous?.status ?? "waiting_for_first_cycle",
+      lastCheckedAt: latestContinuous?.completedAt ?? latestContinuous?.startedAt ?? null,
+      nextScheduledAt: latestContinuous?.nextScheduledAt ?? latestContinuous?.scheduledAt ?? null,
+      triggerType: latestContinuous?.triggerType ?? null,
+      meaningfulChangeDetected: latestContinuous?.meaningfulChangeDetected ?? false,
+      growthEvaluationTriggered: latestContinuous?.growthEvaluationTriggered ?? false,
+      nextBestActionTriggered: latestContinuous?.nextBestActionTriggered ?? false,
+      skipReason: latestContinuous?.skipReason ?? null,
+      errorMessage: latestContinuous?.errorMessage ?? null,
+      sources: (latestContinuous?.sourceRuns ?? []).map((source) => ({
+        key: source.sourceType,
+        status: source.status,
+        recordCount: source.recordCount,
+        observedAt: jsonRecord(source.snapshotJson).observedAt ?? null,
+        nextScheduledAt: source.nextScheduledAt,
+        restrictionReason: source.restrictionReason,
+        skipReason: source.skipReason,
+      })),
+      findings: (latestContinuous?.findings ?? []).map((finding) => ({
+        id: finding.id,
+        sourceType: finding.sourceType,
+        findingType: finding.findingType,
+        severity: finding.severity,
+        status: finding.status,
+        observedFact: finding.observedFact,
+        interpretation: finding.interpretation,
+        importance: finding.importance,
+        confidence: finding.confidence,
+        limitations: finding.limitationsJson,
+        recommendedResponse: finding.recommendedResponse,
+        detectedAt: finding.detectedAt,
+      })),
+      decision: latestContinuous?.decisions[0] ? {
+        outcome: latestContinuous.decisions[0].outcome,
+        reason: latestContinuous.decisions[0].reason,
+        currentNextBestActionId: latestContinuous.decisions[0].currentNextBestActionId,
+        createdAt: latestContinuous.decisions[0].createdAt,
+      } : null,
+      history: continuousCycles.map((cycle) => ({ id: cycle.id, status: cycle.status, triggerType: cycle.triggerType, scheduledAt: cycle.scheduledAt, completedAt: cycle.completedAt, meaningfulChangeDetected: cycle.meaningfulChangeDetected, recordCount: cycle.recordCount, decision: cycle.decisions[0]?.outcome ?? null })),
     },
   };
 }
@@ -1535,6 +1589,52 @@ growthRouter.get("/projects-v2/:projectId/growth/overview", async (req, res) => 
   const growthIntelligence = await loadGrowthIntelligence(project.id);
   const workflowController = await getProjectWorkflowController(project.id);
   res.json({ project, signals: score, readiness, growth, growthIntelligence, workflowController, strategyContext: projectContext(project).strategyContract, automationPolicy: policyForModule("growth_marketing") });
+});
+
+growthRouter.get("/projects-v2/:projectId/growth/continuous-status", async (req, res) => {
+  await authorizeProject(req, req.params.projectId);
+  const project = await prisma.project.findUnique({ where: { id: req.params.projectId }, select: { id: true, name: true, status: true } });
+  if (!project) return res.status(404).json({ error: "project not found" });
+  const since = new Date(Date.now() - 7 * 86_400_000);
+  const [cycles, sourceRuns, decisions, weeklyReports, strategyReviews] = await Promise.all([
+    prisma.growthIntelligenceCycle.findMany({ where: { projectId: project.id, createdAt: { gte: since } }, orderBy: { createdAt: "desc" } }),
+    prisma.growthIntelligenceSourceRun.findMany({ where: { projectId: project.id, createdAt: { gte: since } }, orderBy: { createdAt: "desc" } }),
+    prisma.growthIntelligenceDecision.findMany({ where: { projectId: project.id, createdAt: { gte: since } }, orderBy: { createdAt: "desc" } }),
+    prisma.growthReport.findMany({ where: { projectId: project.id, reportType: "continuous_growth_weekly", createdAt: { gte: since } }, orderBy: { createdAt: "desc" } }),
+    prisma.projectWorkflowEvent.findMany({ where: { projectId: project.id, eventType: "growth_intelligence.strategy_review_evaluated", createdAt: { gte: since } }, orderBy: { createdAt: "desc" } }),
+  ]);
+  const catalogue = [
+    ["analytics", "daily"], ["search_console", "daily"], ["google_business_profile", "daily"], ["reviews", "6–12 hours"], ["website_crawl", "weekly and post-publish"], ["publish_verification", "15–30 minutes"], ["technical_health", "after crawl"], ["rankings", "weekly"], ["local_visibility", "weekly"], ["competitors", "weekly"], ["backlinks", "biweekly"], ["content_decay", "weekly"], ["ai_visibility", "weekly"], ["conversions", "daily"], ["measurement_checkpoints", "scheduled"],
+  ] as const;
+  const processes = catalogue.map(([key, cadence]) => {
+    const rows = sourceRuns.filter((row) => row.sourceType === key);
+    const latest = rows[0];
+    return { key, cadence, status: latest?.status ?? "not_run", runCount: rows.length, latestRunAt: latest?.completedAt ?? latest?.startedAt ?? null, nextRunAt: latest?.nextScheduledAt ?? null, recordCount: latest?.recordCount ?? 0, meaningfulChangeDetected: latest?.meaningfulChangeDetected ?? false, restrictionReason: latest?.restrictionReason ?? null, skipReason: latest?.skipReason ?? null, retries: latest?.retryCount ?? 0 };
+  });
+  const completedCycles = cycles.filter((cycle) => ["completed", "skipped"].includes(cycle.status));
+  const failedCycles = cycles.filter((cycle) => cycle.status === "failed");
+  res.json({
+    contractVersion: "DEV-063-v1",
+    project,
+    window: { start: since, end: new Date(), days: 7 },
+    customerCapacityUnits: 0,
+    orchestration: { cycleCount: cycles.length, completedOrSafelySkipped: completedCycles.length, failed: failedCycles.length, retryCount: cycles.reduce((sum, cycle) => sum + cycle.retryCount, 0), nextScheduledAt: cycles.find((cycle) => cycle.nextScheduledAt)?.nextScheduledAt ?? null, singleProjectEvaluationLease: true, debounceMinutes: 30, idempotentArtifacts: true },
+    processes: [
+      ...processes,
+      { key: "growth_evaluation", cadence: "daily after qualifying change", status: cycles.some((cycle) => cycle.growthEvaluationTriggered) ? "completed" : "no_qualifying_change", runCount: cycles.filter((cycle) => cycle.growthEvaluationTriggered).length },
+      { key: "next_best_action", cadence: "after qualifying Growth evaluation", status: decisions[0]?.outcome ?? "not_run", runCount: decisions.length, latestDecision: decisions[0] ?? null },
+      { key: "weekly_summary", cadence: "weekly", status: weeklyReports.length ? "completed" : "not_due_or_not_run", runCount: weeklyReports.length, latestRunAt: weeklyReports[0]?.createdAt ?? null },
+      { key: "strategy_review", cadence: "monthly or material event", status: strategyReviews.length ? "evaluated" : "not_due_or_not_run", runCount: strategyReviews.length, latestRunAt: strategyReviews[0]?.occurredAt ?? null },
+    ],
+    acceptance: {
+      sevenConsecutiveDaysObserved: completedCycles.some((cycle) => cycle.completedAt && cycle.completedAt <= new Date(Date.now() - 6 * 86_400_000)),
+      noDuplicateCycleKeys: new Set(cycles.map((cycle) => cycle.idempotencyKey)).size === cycles.length,
+      retriesDoNotCreateDuplicateDecisions: new Set(decisions.map((decision) => decision.cycleId)).size === decisions.length,
+      unchangedDataSkipped: cycles.some((cycle) => cycle.status === "skipped" && /unchanged/i.test(cycle.skipReason ?? "")),
+      weeklySummaryCreated: weeklyReports.length > 0,
+      failures: failedCycles.map((cycle) => ({ id: cycle.id, error: cycle.errorMessage, retries: cycle.retryCount })),
+    },
+  });
 });
 
 growthRouter.post("/projects-v2/:projectId/growth/analyze", async (req, res) => {

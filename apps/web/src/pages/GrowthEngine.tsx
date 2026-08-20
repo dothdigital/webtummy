@@ -790,6 +790,35 @@ export default function GrowthEngine() {
             </div>
             {data.growthIntelligence.dataQuality.limitations.length > 0 && <div className="border-t border-white/10 bg-white/5 px-5 py-3 text-xs text-amber-200">Known limitations: {data.growthIntelligence.dataQuality.limitations.join(" · ")}</div>}
           </div>
+          <Card className="overflow-hidden">
+            <div className="border-b border-slate-200 bg-slate-50 p-5">
+              <div className="flex flex-wrap items-start justify-between gap-4">
+                <div>
+                  <div className="text-xs font-black uppercase tracking-[0.14em] text-emerald-700">Automatic monitoring</div>
+                  <h2 className="mt-1 text-lg font-bold text-charcoal-950">Continuous Growth Intelligence</h2>
+                  <p className="mt-1 max-w-3xl text-sm leading-6 text-slate-600">Runs after qualifying project events and on saved source schedules. It records unavailable evidence honestly, combines event bursts, and changes Growth priority only after a meaningful comparison.</p>
+                </div>
+                <div className="flex flex-wrap gap-2 text-xs font-bold">
+                  <span className={`rounded-full px-3 py-1 ${statusBadge(data.growthIntelligence.continuousMonitoring.status)}`}>{titleCase(data.growthIntelligence.continuousMonitoring.status)}</span>
+                  <span className="rounded-full bg-emerald-100 px-3 py-1 text-emerald-800">0 AI Capacity</span>
+                </div>
+              </div>
+            </div>
+            <div className="grid gap-4 p-5 lg:grid-cols-[280px_1fr]">
+              <div className="space-y-3 text-sm">
+                <div><div className="text-[10px] font-black uppercase tracking-wide text-slate-400">Last checked</div><div className="mt-1 font-bold text-slate-800">{data.growthIntelligence.continuousMonitoring.lastCheckedAt ? new Date(data.growthIntelligence.continuousMonitoring.lastCheckedAt).toLocaleString() : "Waiting for first cycle"}</div></div>
+                <div><div className="text-[10px] font-black uppercase tracking-wide text-slate-400">Next scheduled</div><div className="mt-1 font-bold text-slate-800">{data.growthIntelligence.continuousMonitoring.nextScheduledAt ? new Date(data.growthIntelligence.continuousMonitoring.nextScheduledAt).toLocaleString() : "Activates after Strategy approval"}</div></div>
+                <div><div className="text-[10px] font-black uppercase tracking-wide text-slate-400">NBA decision</div><div className="mt-1 font-bold text-slate-800">{data.growthIntelligence.continuousMonitoring.decision?.outcome ?? "No decision yet"}</div>{data.growthIntelligence.continuousMonitoring.decision && <p className="mt-1 text-xs leading-5 text-slate-500">{data.growthIntelligence.continuousMonitoring.decision.reason}</p>}</div>
+              </div>
+              <div>
+                <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
+                  {data.growthIntelligence.continuousMonitoring.sources.map((source) => <div key={source.key} className="rounded-xl border border-slate-200 p-3"><div className="flex items-center justify-between gap-2"><span className="text-xs font-bold text-slate-800">{titleCase(source.key)}</span><span className={`rounded-full px-2 py-0.5 text-[10px] font-black ${statusBadge(source.status)}`}>{titleCase(source.status)}</span></div><div className="mt-2 text-[11px] leading-5 text-slate-500">{source.restrictionReason || source.skipReason || `${source.recordCount} evidence record${source.recordCount === 1 ? "" : "s"}`}</div></div>)}
+                  {!data.growthIntelligence.continuousMonitoring.sources.length && <div className="rounded-xl border border-dashed border-slate-300 p-4 text-sm text-slate-500 sm:col-span-2 xl:col-span-3">The scheduler will create the first source ledger after the approved Strategy gate is satisfied. No manual Analyze button is required.</div>}
+                </div>
+                {data.growthIntelligence.continuousMonitoring.findings.length > 0 && <div className="mt-4 space-y-2"><div className="text-[10px] font-black uppercase tracking-wide text-slate-400">Latest evidence findings</div>{data.growthIntelligence.continuousMonitoring.findings.slice(0, 5).map((finding) => <div key={finding.id} className="rounded-lg border border-slate-200 bg-white p-3"><div className="flex flex-wrap items-center gap-2"><span className="text-xs font-bold text-slate-900">{titleCase(finding.sourceType)}</span><span className={`rounded-full px-2 py-0.5 text-[10px] font-black ${statusBadge(finding.status)}`}>{titleCase(finding.findingType)}</span><span className="text-[10px] font-bold text-slate-400">{finding.confidence}% confidence</span></div><p className="mt-1 text-xs leading-5 text-slate-600">{finding.observedFact}</p>{finding.recommendedResponse && <p className="mt-1 text-xs font-semibold leading-5 text-brand-700">Next response: {finding.recommendedResponse}</p>}</div>)}</div>}
+              </div>
+            </div>
+          </Card>
           <div className="grid gap-5 xl:grid-cols-[1fr_360px]">
           <Card className="p-5">
             <div className="flex flex-wrap items-center justify-between gap-3"><div><h2 className="font-bold text-charcoal-950">Growth evidence-readiness scorecard</h2><p className="mt-1 text-xs text-slate-500">A low score means evidence or measurement is missing. It does not prove that business performance is poor.</p></div><button type="button" onClick={() => { setTab("diagnosis"); setParams({ projectId, tab: "diagnosis" }); }} className="rounded-lg border border-brand-200 px-3 py-2 text-xs font-bold text-brand-700">Resolve evidence gaps →</button></div>

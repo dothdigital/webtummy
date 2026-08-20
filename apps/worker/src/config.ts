@@ -59,6 +59,11 @@ export const config = {
   monthlyAuditMaxDepth: num(process.env.MONTHLY_AUDIT_MAX_DEPTH, 8),
   websiteBuilderConcurrency: Math.max(1, num(process.env.WEBSITE_BUILDER_CONCURRENCY, 2)),
   websiteBuilderJobsPerMinute: Math.max(1, num(process.env.WEBSITE_BUILDER_JOBS_PER_MINUTE, 60)),
+  growthIntelligenceConcurrency: Math.max(1, num(process.env.GROWTH_INTELLIGENCE_CONCURRENCY, 8)),
+  growthIntelligenceJobsPerMinute: Math.max(1, num(process.env.GROWTH_INTELLIGENCE_JOBS_PER_MINUTE, 120)),
+  growthIntelligenceScheduleIntervalMs: Math.max(15_000, num(process.env.GROWTH_INTELLIGENCE_SCHEDULE_INTERVAL_MS, 60_000)),
+  growthIntelligenceScheduleBatchSize: Math.max(10, num(process.env.GROWTH_INTELLIGENCE_SCHEDULE_BATCH_SIZE, 250)),
+  growthIntelligenceDebounceMs: Math.max(60_000, num(process.env.GROWTH_INTELLIGENCE_DEBOUNCE_MS, 30 * 60 * 1000)),
 };
 
 /** Crawl defaults from env; per-crawl options override these. */
@@ -78,3 +83,4 @@ export function defaultCrawlOptions(): CrawlOptions {
 
 export const CRAWL_QUEUE = "crawl";
 export const WEBSITE_BUILDER_QUEUE = "website-builder";
+export const GROWTH_INTELLIGENCE_QUEUE = "growth-intelligence";

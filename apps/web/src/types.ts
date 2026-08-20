@@ -671,6 +671,23 @@ export interface GrowthOverviewResponse {
       patches: unknown[];
       strategyReviewRequired: boolean;
     };
+    continuousMonitoring: {
+      enabled: boolean;
+      customerCapacityUnits: number;
+      status: string;
+      lastCheckedAt: string | null;
+      nextScheduledAt: string | null;
+      triggerType: string | null;
+      meaningfulChangeDetected: boolean;
+      growthEvaluationTriggered: boolean;
+      nextBestActionTriggered: boolean;
+      skipReason: string | null;
+      errorMessage: string | null;
+      sources: Array<{ key: string; status: string; recordCount: number; observedAt: string | null; nextScheduledAt: string | null; restrictionReason: string | null; skipReason: string | null }>;
+      findings: Array<{ id: string; sourceType: string; findingType: string; severity: string; status: string; observedFact: string; interpretation: string | null; importance: string | null; confidence: number; limitations: unknown; recommendedResponse: string | null; detectedAt: string }>;
+      decision: { outcome: string; reason: string; currentNextBestActionId: string | null; createdAt: string } | null;
+      history: Array<{ id: string; status: string; triggerType: string; scheduledAt: string; completedAt: string | null; meaningfulChangeDetected: boolean; recordCount: number; decision: string | null }>;
+    };
   };
   automationPolicy: AutomationPolicy;
 }
