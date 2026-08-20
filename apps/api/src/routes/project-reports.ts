@@ -161,8 +161,13 @@ export function clientReportSections(reportType: typeof projectReportTypes[numbe
   const narrative = reportRecord(content.clientNarrative); const execution = reportRecord(content.execution); const performance = reportRecord(content.performance); const seo = reportRecord(content.seo);
   const evidence = reportRecord(content.evidence); const site = reportRecord(evidence.siteAnalysis); const local = reportRecord(content.localSeo); const reputation = reportRecord(content.reputation);
   const growth = reportRecord(content.growth); const social = reportRecord(content.socialEmail); const citation = reportRecord(content.aiCitationVisibility); const monitoring = reportRecord(citation.monitoring); const publishing = reportRecord(content.contentPublishing);
-  const recommendations = reportValues(content.recommendations); const completed = reportValues(execution.completed); const published = reportValues(execution.published); const blocked = reportValues(execution.blocked); const scheduled = reportValues(execution.scheduledNext);
-  const rankingChanges = reportValues(performance.keywordRankingChanges); const nextAction = recommendations.slice(0, 1); const experiments = reportValues(growth.experiments); const funnelStages = reportValues(growth.funnelStages);
+  const storedRecommendations = reportValues(content.recommendations); const completed = reportValues(execution.completed); const published = reportValues(execution.published); const blocked = reportValues(execution.blocked); const scheduled = reportValues(execution.scheduledNext);
+  const rankingChanges = reportValues(performance.keywordRankingChanges); const experiments = reportValues(growth.experiments); const funnelStages = reportValues(growth.funnelStages);
+  const project = reportRecord(content.project); const business = reportRecord(content.businessContext); const health = reportRecord(content.health); const sourceSnapshot = reportRecord(content.sourceSnapshot);
+  const recommendations = health.workflowStep === "intake" && (!storedRecommendations.length || storedRecommendations.every((item) => /continue with the next approved execution priorities/i.test(String(item))))
+    ? ["Open Project Intake, complete any unanswered required fields, review the saved business details, and submit the intake to continue analysis."]
+    : storedRecommendations;
+  const nextAction = recommendations.slice(0, 1);
   const completedFor = (pattern: RegExp) => completed.filter((item) => pattern.test(`${reportRecord(item).module ?? ""} ${reportRecord(item).title ?? item}`));
   const commonSummary = String(narrative.executiveNarrative || "The report uses the current saved project evidence for the selected reporting period.");
   const missing = (message = unavailableText) => ({ items: [], emptyMessage: message });
@@ -211,15 +216,36 @@ export function clientReportSections(reportType: typeof projectReportTypes[numbe
     { key: "tests_and_improvements", title: "Tests and Improvements", items: experiments, emptyMessage: "No conversion experiment was recorded in this period." },
     { key: "next_conversion_action", title: "Next Conversion Action", items: nextAction, emptyMessage: "No current conversion action is available." },
   ];
+  const scopeItems = [
+    business.businessSummary ? `Business: ${String(business.businessSummary)}` : null,
+    business.targetAudience ? `Audience: ${String(business.targetAudience)}` : null,
+    business.offerSummary ? `Offer: ${String(business.offerSummary)}` : null,
+    business.businessModel ? `Business model: ${String(business.businessModel)}` : null,
+    project.businessLocation || evidence.businessLocation ? `Business location: ${String(project.businessLocation || evidence.businessLocation)}` : null,
+    reportValues(project.targetMarkets).length ? `Analysis markets: ${reportValues(project.targetMarkets).map(String).join(", ")}` : null,
+  ].filter((item): item is string => Boolean(item));
+  const setupEvidence = [
+    sourceSnapshot.businessBrain ? "The current Business Brain snapshot is saved for this report." : null,
+    Number(business.intakeAnswerCount || 0) > 0 ? `${Number(business.intakeAnswerCount)} project intake answers are recorded.` : null,
+    business.targetAudience ? `The intended audience is recorded as ${String(business.targetAudience)}.` : null,
+    business.offerSummary ? `The intended offer is recorded as ${String(business.offerSummary)}.` : null,
+  ].filter((item): item is string => Boolean(item));
+  const learnedItems = experiments.length ? experiments : [
+    business.businessSummary ? `Business summary: ${String(business.businessSummary)}` : null,
+    business.targetAudience ? `Target audience: ${String(business.targetAudience)}` : null,
+    business.offerSummary ? `Offer: ${String(business.offerSummary)}` : null,
+    ...reportValues(business.constraints).map((item) => `Constraint: ${String(item)}`),
+  ].filter((item): item is string => Boolean(item));
+  const goalItems = [project.primaryGoal ? `Primary goal: ${String(project.primaryGoal)}` : null, ...reportValues(project.secondaryGoals).map((goal) => `Secondary goal: ${String(goal)}`)].filter((item): item is string => Boolean(item));
   return [
-    { key: "objective", title: "Objective", summary: String(reportRecord(content.project).primaryGoal || "No project objective is recorded.") },
-    { key: "scope_and_dates", title: "Scope and Dates", summary: "This report covers the selected reporting period and the work recorded against this project." },
+    { key: "objective", title: "Objective", summary: String(project.primaryGoal || business.primaryGoal || "No project objective is recorded.") },
+    { key: "scope_and_dates", title: "Scope and Dates", summary: "This report uses the saved business context and the work recorded during the selected reporting period.", items: scopeItems, emptyMessage: "Complete Project Intake to add the business, audience, offer, and target-market scope." },
     { key: "work_completed", title: "Work Completed", items: completed, emptyMessage: "No completed campaign or project work was recorded." },
-    { key: "results", title: "Results", metrics: [{ label: "Completed", value: completed.length }, { label: "Published", value: published.length }, { label: "Blocked", value: blocked.length }] },
-    { key: "goal_comparison", title: "Goal Comparison", items: reportValues(reportRecord(growth.blueprint).goals), emptyMessage: "No measurable goal baseline and comparison are recorded." },
-    { key: "what_worked", title: "What Worked", items: reportValues(narrative.wins), emptyMessage: "No verified positive result was recorded." },
+    { key: "results", title: "Results", metrics: [{ label: "Current stage", value: health.workflowStep ?? "Intake" }, { label: "Completed", value: completed.length }, { label: "Published", value: published.length }, { label: "Blocked", value: blocked.length }], summary: completed.length || published.length ? undefined : "Performance results are not available yet because execution has not recorded completed or published work." },
+    { key: "goal_comparison", title: "Goal Comparison", items: reportValues(reportRecord(growth.blueprint).goals).length ? reportValues(reportRecord(growth.blueprint).goals) : goalItems, emptyMessage: "No goal is recorded. Add a measurable goal and baseline in Project Intake." },
+    { key: "what_worked", title: "What Worked", items: reportValues(narrative.wins).length ? reportValues(narrative.wins) : setupEvidence, emptyMessage: "No verified campaign result or completed setup milestone was recorded." },
     { key: "what_did_not_work", title: "What Did Not Work", items: [...reportValues(narrative.risks), ...blocked], emptyMessage: "No failed or blocked result was recorded." },
-    { key: "what_senuke_ai_learned", title: "What SEnuke AI - AI Growth Operating System Learned", items: experiments, emptyMessage: "No completed experiment learning is available." },
+    { key: "what_senuke_ai_learned", title: "What SEnuke AI - AI Growth Operating System Learned", items: learnedItems, emptyMessage: "No business discovery or completed experiment learning is available." },
     { key: "recommended_next_step", title: "Recommended Next Step", items: nextAction, emptyMessage: "No recommended next step is available." },
   ];
 }
@@ -227,7 +253,7 @@ export function clientReportSections(reportType: typeof projectReportTypes[numbe
 function withClientReportPresentation(reportType: string, value: Prisma.JsonValue) {
   if (!clientReportTypes.includes(reportType as typeof clientReportTypes[number]) || !value || typeof value !== "object" || Array.isArray(value)) return value;
   const content = value as Record<string, unknown>;
-  return Array.isArray(content.clientSections) ? value : { ...content, clientSections: clientReportSections(reportType as typeof clientReportTypes[number], content) };
+  return { ...content, clientSections: clientReportSections(reportType as typeof clientReportTypes[number], content) };
 }
 
 async function scopedProject(context: Awaited<ReturnType<typeof workspaceContext>>, projectId: string) {
@@ -269,6 +295,30 @@ async function scopedProject(context: Awaited<ReturnType<typeof workspaceContext
   return project;
 }
 
+function projectBusinessContext(project: Awaited<ReturnType<typeof scopedProject>>) {
+  const snapshot = project.businessBrainVersions[0]?.snapshotJson;
+  const root = snapshot && typeof snapshot === "object" && !Array.isArray(snapshot) ? snapshot as Record<string, unknown> : {};
+  const snapshotProject = root.project && typeof root.project === "object" && !Array.isArray(root.project) ? root.project as Record<string, unknown> : {};
+  const profile = root.businessProfile && typeof root.businessProfile === "object" && !Array.isArray(root.businessProfile) ? root.businessProfile as Record<string, unknown> : {};
+  const intakeAnswers = Array.isArray(root.intakeAnswers) ? root.intakeAnswers.filter((answer) => answer && typeof answer === "object" && !Array.isArray(answer)) : [];
+  const list = (value: unknown) => Array.isArray(value) ? value.map(String).map((item) => item.trim()).filter(Boolean) : [];
+  return {
+    businessSummary: profile.businessSummary ?? null,
+    targetAudience: profile.targetAudience ?? null,
+    offerSummary: profile.offerSummary ?? null,
+    businessModel: profile.businessModel ?? null,
+    strengths: list(profile.strengths),
+    constraints: list(profile.constraints),
+    tonePreference: profile.tonePreference ?? snapshotProject.brandVoice ?? project.brandVoice ?? null,
+    primaryGoal: snapshotProject.primaryGoal ?? project.primaryGoal,
+    secondaryGoals: list(snapshotProject.secondaryGoals ?? project.secondaryGoals),
+    targetLocations: list(snapshotProject.targetLocations ?? project.targetLocations),
+    preferredOutputs: list(snapshotProject.preferredOutputs ?? project.preferredOutputs),
+    intakeAnswerCount: intakeAnswers.length,
+    intakeAnswers: intakeAnswers.slice(0, 50),
+  };
+}
+
 function reportContent(project: Awaited<ReturnType<typeof scopedProject>>, reportType: typeof projectReportTypes[number], branding: Record<string, unknown>, options: { periodStart: Date | null; periodEnd: Date | null; templateId?: z.infer<typeof generateSchema>["templateId"]; selectedServices?: string[]; selectedFindings?: string[] }) {
   const definition = projectReportCatalog.find((item) => item.type === reportType)!;
   const inPeriod = (value: Date | null | undefined) => Boolean(value && (!options.periodStart || value >= options.periodStart) && (!options.periodEnd || value <= options.periodEnd));
@@ -289,6 +339,7 @@ function reportContent(project: Awaited<ReturnType<typeof scopedProject>>, repor
   const crawl = project.website?.crawlJobs[0];
   const selectedOpportunity = project.opportunities[0];
   const sourceSnapshot = currentSourceSnapshot(project, options.periodStart, options.periodEnd);
+  const businessContext = projectBusinessContext(project);
   const enabled = new Set(definition.sections.map(sectionKey));
   const reportSections = definition.sections.map((title, index) => ({ key: sectionKey(title), title, order: index, enabled: enabled.has(sectionKey(title)) }));
   const blueprintVersion = project.growthBlueprint?.versions[0];
@@ -344,8 +395,21 @@ function reportContent(project: Awaited<ReturnType<typeof scopedProject>>, repor
     confidence: typeof storedScoreBreakdown.confidence === "number" ? storedScoreBreakdown.confidence : selectedOpportunity?.opportunityScore ?? strategyScore,
   };
   const clientBrand = project.agencyClient?.brandingJson && typeof project.agencyClient.brandingJson === "object" && !Array.isArray(project.agencyClient.brandingJson) ? project.agencyClient.brandingJson as Record<string, unknown> : {};
+  const recommendations = project.workflowController?.strategyStale
+    ? ["Open Strategy, regenerate it from the latest Business Brain and evidence, review the new version, and approve it before continuing execution."]
+    : nextBestActions.length
+      ? nextBestActions.slice(0, 3).map((action) => action.recommendation)
+      : blocked.length
+        ? ["Open Execution, resolve the blocked item shown first, and record the result before the next milestone."]
+        : project.currentStep === "intake"
+          ? ["Open Project Intake, complete any unanswered required fields, review the saved business details, and submit the intake to continue analysis."]
+          : !strategy
+            ? ["Open Strategy, generate the first Strategy from the approved Business Brain and evidence, review it, and approve the version you want to execute."]
+            : project.executionTasks.length === 0
+              ? ["Open Execution and create the approved tasks from the current Strategy, then assign the first task and its completion check."]
+              : ["Open Execution and complete the highest-priority approved task, then record its measured result."];
   const base = {
-    title: definition.title, reportType, project: { id: project.id, name: project.name, businessName: project.businessName, website: project.website?.domain ?? project.websiteUrl, primaryGoal: project.primaryGoal, targetMarkets: project.targetLocations }, clientIdentity: { name: project.agencyClient?.name ?? project.businessName ?? project.name, logoFileId: typeof clientBrand.logoFileId === "string" ? clientBrand.logoFileId : null },
+    title: definition.title, reportType, project: { id: project.id, name: project.name, businessName: project.businessName, website: project.website?.domain ?? project.websiteUrl, primaryGoal: project.primaryGoal, secondaryGoals: project.secondaryGoals, businessLocation: project.businessLocation, targetMarkets: project.targetLocations }, businessContext, clientIdentity: { name: project.agencyClient?.name ?? project.businessName ?? project.name, logoFileId: typeof clientBrand.logoFileId === "string" ? clientBrand.logoFileId : null },
     branding,
     reportingPeriod: reportType === "agency_proposal" ? null : { start: options.periodStart?.toISOString() ?? null, end: options.periodEnd?.toISOString() ?? null },
     sourceSnapshot,
@@ -417,7 +481,7 @@ function reportContent(project: Awaited<ReturnType<typeof scopedProject>>, repor
     strategy: strategy ? { version: strategy.version, status: strategy.status, score: strategyScore, scoreBreakdown: strategyScoreBreakdown, summary: strategy.strategySummary, businessObjectives: strategy.businessObjectives, positioning: strategy.positioningStatement, audience: strategy.audienceProfile, offer: strategy.offerRecommendation, businessModel: strategy.businessModel, seo: strategy.seoStrategy, localSeo: strategy.localSeoStrategy, content: strategy.contentStrategy, competitors: strategy.competitorStrategy, competitiveInsights: strategy.competitiveInsights, authority: strategy.authorityStrategy, growthRecommendations: strategy.growthRecommendations, social: strategy.socialStrategy, publishing: strategy.publishingStrategy, kpis: strategy.kpis, revisionInstructions: strategy.revisionComment, approvedAt: strategy.approvedAt, unifiedPlan: unifiedStrategyPlan, decisionSet: strategyDecisionSet, decisions: strategy.advancedAnalysis } : null,
     evidence: { selectedOpportunity: selectedOpportunity?.name ?? null, opportunityScore: selectedOpportunity?.opportunityScore ?? null, businessLocation: project.businessLocation, targetMarkets: project.targetLocations, approvedKeywordGroups: approvedKeywordGroups.map((group) => ({ title: group.title, keywords: group.keywords })), siteAnalysis: crawl ? { score: crawl.siteScore, pagesCrawled: crawl.pagesCrawled, issuesFound: crawl._count.issues, completedAt: crawl.completedAt } : null },
     ecommerce: { productAndCollectionOptimization: project.executionTasks.filter((task) => /product|collection/i.test(`${task.moduleName} ${task.title}`)).map((task) => task.title), organicProductTraffic: null, storeSeoIssues: blocked.filter((task) => /store|product|collection|shopify/i.test(`${task.moduleName} ${task.title}`)).map((task) => task.title), productPagePerformance: null, publishedStoreChanges: published.filter((task) => /store|product|collection|shopify/i.test(`${task.moduleName} ${task.title}`)).map((task) => task.title), salesAndConversions: null, unavailableReason: unavailable },
-    sections: reportSections, openingNote: null, recommendations: project.workflowController?.strategyStale ? ["Strategy is being reassessed because newer project evidence exists. Refresh and approve Strategy before presenting priorities as current."] : nextBestActions.length ? nextBestActions.slice(0, 3).map((action) => action.recommendation) : blocked.length ? ["Resolve blocked work before the next milestone."] : ["Continue with the next approved execution priorities."],
+    sections: reportSections, openingNote: null, recommendations,
     clientSafe: "clientSafe" in definition && definition.clientSafe === true,
   };
   if (reportType !== "agency_proposal") return { ...base, clientSections: clientReportSections(reportType, base) };

@@ -103,4 +103,30 @@ describe("professional project report PDF", () => {
     expect(pageCount).toBeLessThanOrEqual(6);
     expect(pdf.length).toBeGreaterThan(9000);
   });
+
+  it("keeps an early-stage campaign report substantive without one sparse page per section", async () => {
+    const section = (key: string, title: string, items: string[] = []) => ({ key, title, items, emptyMessage: items.length ? undefined : "No measured result is available yet." });
+    const pdf = await createProfessionalReportPdf({
+      title: "Campaign or Project Report", reportType: "campaign_project", generatedAt: "2026-08-20T18:00:00.000Z",
+      project: { name: "AI Decision Support Platform for CXO Executives", website: "Not set", primaryGoal: "Generate more leads", targetMarkets: ["Canada", "United States"] },
+      reportingPeriod: { start: "2026-08-01T00:00:00.000Z", end: "2026-08-20T18:00:00.000Z" },
+      health: { workflowStep: "intake", strategyStatus: "not_started", completedTasks: 0, totalTasks: 0, blockedTasks: 0 },
+      clientSections: [
+        { key: "objective", title: "Objective", summary: "Generate more leads" },
+        section("scope_and_dates", "Scope and Dates", ["Business: Decision support software for executive teams.", "Audience: CXO executives", "Analysis markets: Canada, United States"]),
+        section("work_completed", "Work Completed"),
+        { key: "results", title: "Results", summary: "Execution has not started, so measured results are pending.", metrics: [{ label: "Current stage", value: "Intake" }, { label: "Completed", value: 0 }, { label: "Published", value: 0 }] },
+        section("goal_comparison", "Goal Comparison", ["Primary goal: Generate more leads"]),
+        section("what_worked", "What Worked", ["18 project intake answers are recorded."]),
+        section("what_did_not_work", "What Did Not Work"),
+        section("what_senuke_ai_learned", "What SEnuke AI Learned", ["Target audience: CXO executives", "Offer: Guided AI decision support"]),
+        section("recommended_next_step", "Recommended Next Step", ["Open Project Intake, complete required fields, and submit the intake."]),
+      ],
+      sourceSnapshot: { businessBrain: { version: 1, createdAt: "2026-08-20T17:00:00.000Z" }, evidence: { version: 1, completeness: 0, createdAt: "2026-08-20T17:00:00.000Z" } },
+    }, { workspaceName: "Personal Workspace", workspaceType: "personal", clientName: "AI Decision Support Platform" });
+    const pageCount = (pdf.toString("latin1").match(/\/Type\s*\/Page\b/g) ?? []).length;
+    expect(pageCount).toBeGreaterThanOrEqual(3);
+    expect(pageCount).toBeLessThanOrEqual(6);
+    expect(pdf.length).toBeGreaterThan(7000);
+  });
 });

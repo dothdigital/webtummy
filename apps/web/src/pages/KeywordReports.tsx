@@ -604,7 +604,9 @@ export default function KeywordReports() {
   };
 
   const persistAnalysisMarkets = async () => {
-    const normalizedMarkets = geographicTargetMarkets(selectedTargetMarkets);
+    const normalizedMarkets = geographicTargetMarkets(selectedTargetMarkets).map((market) =>
+      COUNTRY_OPTIONS.find((country) => country.value.toLocaleLowerCase() === market.toLocaleLowerCase() || country.isoCode.toLocaleLowerCase() === market.toLocaleLowerCase())?.value ?? market,
+    );
     if (!normalizedMarkets.length) throw new Error("Select at least one named project market before running analysis.");
     if (!guidedProject) return normalizedMarkets;
     const currentMarkets = projectAnalysisLocations(guidedProject).markets;

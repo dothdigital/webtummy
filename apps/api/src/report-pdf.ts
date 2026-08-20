@@ -7,6 +7,19 @@ const values = (value: unknown) => Array.isArray(value) ? value : [];
 const record = (value: unknown): Record<string, unknown> => value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
 const display = (value: unknown) => value == null || value === "" ? "Data pending" : typeof value === "boolean" ? (value ? "Yes" : "No") : Array.isArray(value) ? (value.length ? value.map((item) => typeof item === "object" ? JSON.stringify(item) : String(item)).join(", ") : "None") : String(value);
 const clientItem = (value: unknown) => { if (!value || typeof value !== "object") return display(value); const item = record(value); const title = display(item.title ?? item.keyword ?? item.name ?? item.recommendation ?? item.issueSummary ?? "Recorded item"); const detail = item.location ? ` · ${display(item.location)}` : item.status ? ` · ${titleCase(display(item.status))}` : ""; return `${title}${detail}`; };
+const sourceVersionLabel = (value: unknown) => {
+  const item = record(value);
+  if (!Object.keys(item).length) return "Not available for this report version";
+  const timestamp = item.completedAt ?? item.updatedAt ?? item.createdAt ?? item.capturedAt;
+  const parts = [
+    item.version != null ? `Version ${display(item.version)}` : null,
+    item.status ? titleCase(display(item.status)) : null,
+    item.score != null ? `Score ${display(item.score)}/100` : null,
+    item.pagesCrawled != null ? `${display(item.pagesCrawled)} pages analyzed` : null,
+    timestamp ? `recorded ${new Date(String(timestamp)).toLocaleString("en-CA")}` : null,
+  ].filter(Boolean);
+  return parts.length ? parts.join(" · ") : "Recorded in this report's immutable source snapshot";
+};
 
 function workspaceHeading(type: string) {
   return type === "agency" ? "Agency Performance Report" : type === "ecommerce" ? "Ecommerce Performance Report" : type === "personal" ? "Individual Project Report" : "Business Performance Report";
@@ -46,7 +59,7 @@ export function createProfessionalReportPdf(contentValue: unknown, brand: PdfBra
     doc.font("Helvetica").fontSize(10);
     const introHeight = intro ? doc.heightOfString(intro, { width: 487, lineGap: 2 }) : 0;
     const headingBlockHeight = 20 + headingHeight + (intro ? 10 + introHeight : 0) + 28;
-    const keepWithFirstBlock = forceNewPage ? 0 : 60;
+    const keepWithFirstBlock = forceNewPage ? 0 : 140;
     if (forceNewPage || doc.y + headingBlockHeight + keepWithFirstBlock > doc.page.height - 100) doc.addPage();
     const sectionTop = forceNewPage || doc.y < 70 ? 52 : doc.y + 14;
     doc.fillColor(teal).font("Helvetica-Bold").fontSize(9).text(eyebrow.toUpperCase(), 54, sectionTop, { characterSpacing: 1.2 });
@@ -578,7 +591,7 @@ export function createProfessionalReportPdf(contentValue: unknown, brand: PdfBra
     const enabledSections = new Map(reportSections.map((item) => [String(item.key), item.enabled !== false]));
     const clientSections = values(content.clientSections).map(record).filter((item) => enabledSections.get(String(item.key)) !== false);
     clientSections.forEach((clientSection, index) => {
-      pageHeading(`${String(index + 1).padStart(2, "0")} · ${display(clientSection.title)}`, display(clientSection.title), index === 0 ? `This ${titleCase(reportType)} uses only saved evidence for the selected reporting period. Missing integrations remain clearly labelled.` : undefined, index > 0);
+      pageHeading(`${String(index + 1).padStart(2, "0")} · ${display(clientSection.title)}`, display(clientSection.title), index === 0 ? `This ${titleCase(reportType)} uses only saved evidence for the selected reporting period. Missing integrations remain clearly labelled.` : undefined, index === 0);
       if (clientSection.summary) narrative("Summary", clientSection.summary, index === 0 ? "#3B82F6" : teal);
       const metrics = values(clientSection.metrics).map(record).map((metric) => ({ label: display(metric.label), value: metric.value, note: metric.note ? display(metric.note) : undefined }));
       if (metrics.length) metricCards(metrics);
@@ -588,7 +601,7 @@ export function createProfessionalReportPdf(contentValue: unknown, brand: PdfBra
     });
     const sourceSnapshot = record(content.sourceSnapshot);
     pageHeading("Sources", "Evidence and snapshot record", "Values remain tied to the identifiers and timestamps captured for this report version.", false);
-    section("Source versions", [["Business Brain", JSON.stringify(sourceSnapshot.businessBrain ?? null)], ["Evidence", JSON.stringify(sourceSnapshot.evidence ?? null)], ["Strategy", JSON.stringify(sourceSnapshot.strategy ?? null)], ["Growth Blueprint", JSON.stringify(sourceSnapshot.growthBlueprint ?? null)], ["Site Analysis", JSON.stringify(sourceSnapshot.siteAnalysis ?? null)]]);
+    section("Source versions", [["Business Brain", sourceVersionLabel(sourceSnapshot.businessBrain)], ["Evidence", sourceVersionLabel(sourceSnapshot.evidence)], ["Strategy", sourceVersionLabel(sourceSnapshot.strategy)], ["Growth Blueprint", sourceVersionLabel(sourceSnapshot.growthBlueprint)], ["Site Analysis", sourceVersionLabel(sourceSnapshot.siteAnalysis)]]);
   } else {
     const strategy = record(content.strategy); const evidence = record(content.evidence); const site = record(evidence.siteAnalysis); const clientNarrative = record(content.clientNarrative); const growth = record(content.growth); const blueprint = record(growth.blueprint);
     const rankingRows = values(performance.keywordRankingChanges).map((item) => { const row = record(item); const rank = row.rank == null ? "Not found" : `#${row.rank}`; const movement = row.change == null ? "new baseline" : Number(row.change) > 0 ? `up ${row.change}` : Number(row.change) < 0 ? `down ${Math.abs(Number(row.change))}` : "no change"; return `${display(row.keyword)} · ${display(row.location)} · ${rank} · ${movement}`; });
@@ -621,7 +634,7 @@ export function createProfessionalReportPdf(contentValue: unknown, brand: PdfBra
     if (content.openingNote || content.agencyNotes) narrative("Opening note", content.openingNote ?? content.agencyNotes, "#3B82F6");
     const sourceSnapshot = record(content.sourceSnapshot);
     pageHeading("Sources", "Evidence and snapshot record", "Important values remain tied to the evidence identifiers and timestamps captured when this document version was generated.", false);
-    section("Source versions", [["Business Brain", JSON.stringify(sourceSnapshot.businessBrain ?? null)], ["Evidence", JSON.stringify(sourceSnapshot.evidence ?? null)], ["Strategy", JSON.stringify(sourceSnapshot.strategy ?? null)], ["Growth Blueprint", JSON.stringify(sourceSnapshot.growthBlueprint ?? null)], ["Site Analysis", JSON.stringify(sourceSnapshot.siteAnalysis ?? null)]]);
+    section("Source versions", [["Business Brain", sourceVersionLabel(sourceSnapshot.businessBrain)], ["Evidence", sourceVersionLabel(sourceSnapshot.evidence)], ["Strategy", sourceVersionLabel(sourceSnapshot.strategy)], ["Growth Blueprint", sourceVersionLabel(sourceSnapshot.growthBlueprint)], ["Site Analysis", sourceVersionLabel(sourceSnapshot.siteAnalysis)]]);
   }
   if (!values(content.clientSections).length && reportType === "local_visibility") { const local = record(content.localSeo); section("Local Visibility", [["Google Business Profile", local.googleBusinessProfilePerformance], ["Local grid rankings", local.localGridRankings], ["Citation and NAP issues", local.citationsAndNapIssues], ["Recommendations", local.recommendations]]); }
   if (!values(content.clientSections).length && reportType === "leads_conversion") { section("Leads & Conversion", [["Lead data", "Not connected"], ["Forms and calls", "Not connected"], ["Lead quality", "Not connected"], ["Revenue attribution", "Not connected"], ["Explanation", "Connect a supported CRM and verified attribution source before including lead, conversion, or revenue metrics."]]); }

@@ -183,7 +183,7 @@ export function projectAnalysisLocations(input: {
       const normalized = item.toLowerCase();
       return !excluded.has(normalized) || explicitContextMarkets.has(normalized);
     })
-    .map((item) => [item.toLowerCase(), item])).values()];
+    .map((item) => [item.toLowerCase(), countryOption(item)?.value ?? item])).values()];
   if (!markets.length && input.businessLocationJson?.city?.trim()) markets.push(input.businessLocationJson.city.trim());
   return { country, region, markets, locationNames: buildProjectMarketLocationNames(markets, region, country) };
 }

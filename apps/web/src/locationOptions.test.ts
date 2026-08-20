@@ -39,4 +39,13 @@ describe("projectAnalysisLocations", () => {
     expect(buildProjectMarketLocationNames(["United States", "Ontario", "Toronto"], "Ontario", "Canada"))
       .toEqual(["United States", "Ontario, Canada", "Toronto, Ontario, Canada"]);
   });
+
+  it("displays saved country markets using their canonical names", () => {
+    expect(projectAnalysisLocations({ targetLocations: ["canada", "united states"] })).toEqual({
+      country: "Canada",
+      region: "",
+      markets: ["Canada", "United States"],
+      locationNames: ["Canada", "United States"],
+    });
+  });
 });

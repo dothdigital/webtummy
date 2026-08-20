@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { creditTransactionReason, expectedSuccessfulWorkflowCost, selectLowestSuccessfulWorkflowCostRoute } from "./usage-engine.js";
+import { creditTransactionReason, expectedSuccessfulWorkflowCost, selectLowestSuccessfulWorkflowCostRoute, usageCorrelationId, usageIdempotencyKey } from "./usage-engine.js";
 
 describe("AI Orchestrator successful-workflow cost routing", () => {
   it("includes initial, retry, validation, and correction cost", () => {
@@ -35,5 +35,21 @@ describe("usage refund ledger reasons", () => {
 
   it("uses a stable fallback when no diagnostic reason is supplied", () => {
     expect(creditTransactionReason("  ")).toBe("usage refunded");
+  });
+});
+
+describe("usage idempotency keys", () => {
+  it("keeps short keys unchanged", () => {
+    expect(usageIdempotencyKey("keyword-research:canada")).toBe("keyword-research:canada");
+  });
+
+  it("bounds large keyword-market batches without losing deterministic retry identity", () => {
+    const batchKey = `keyword-research-batch:1787241600000:${Array.from({ length: 30 }, (_, index) => `keyword-${index}:Canada:United States`).join(":")}`;
+    const normalized = usageIdempotencyKey(batchKey);
+    expect(Array.from(normalized ?? "")).toHaveLength(255);
+    expect(normalized).toBe(usageIdempotencyKey(batchKey));
+    expect(normalized).not.toBe(usageIdempotencyKey(`${batchKey}:different`));
+    expect(normalized).toMatch(/^keyword-research-batch:/);
+    expect(Array.from(usageCorrelationId(normalized) ?? "").length).toBeLessThanOrEqual(191);
   });
 });

@@ -68,4 +68,23 @@ describe("Client report template differentiation", () => {
     expect(contracts[3]).toContain("Lead Quality");
     expect(contracts[4]).toContain("What SEnuke AI - AI Growth Operating System Learned");
   });
+
+  it("turns saved intake and Business Brain evidence into a useful early-stage project report", () => {
+    const sections = clientReportSections("campaign_project", {
+      ...baseContent,
+      project: { name: "AI Decision Support Platform for CXO Executives", primaryGoal: "Generate more leads", secondaryGoals: ["Validate the offer"], businessLocation: "Toronto, Canada", targetMarkets: ["Canada", "United States"] },
+      businessContext: { businessSummary: "Decision support software for executive teams.", targetAudience: "CXO executives", offerSummary: "Guided AI decision support", businessModel: "B2B SaaS", constraints: ["The first offer still needs validation"], intakeAnswerCount: 18 },
+      health: { workflowStep: "intake", strategyStatus: "not_started" },
+      execution: { completed: [], published: [], blocked: [], scheduledNext: [] },
+      growth: { experiments: [] },
+      recommendations: ["Open Project Intake, complete any unanswered required fields, review the saved business details, and submit the intake to continue analysis."],
+    });
+    const scope = sections.find((section) => section.key === "scope_and_dates");
+    const learning = sections.find((section) => section.key === "what_senuke_ai_learned");
+    const next = sections.find((section) => section.key === "recommended_next_step");
+    expect(scope?.items).toContain("Audience: CXO executives");
+    expect(scope?.items).toContain("Analysis markets: Canada, United States");
+    expect(learning?.items).toContain("Constraint: The first offer still needs validation");
+    expect(next?.items?.[0]).toContain("Open Project Intake");
+  });
 });

@@ -13,10 +13,29 @@ import {
 
 export const USAGE_APPROVAL_HEADER = "x-senuke-usage-token";
 const CREDIT_TRANSACTION_REASON_MAX_LENGTH = 255;
+const USAGE_IDEMPOTENCY_KEY_MAX_LENGTH = 255;
+const USAGE_CORRELATION_ID_MAX_LENGTH = 191;
 
 export function creditTransactionReason(value: string | null | undefined, fallback = "usage refunded") {
   const reason = value?.trim() || fallback;
   return Array.from(reason).slice(0, CREDIT_TRANSACTION_REASON_MAX_LENGTH).join("");
+}
+
+function boundedStableKey(value: string | null | undefined, maxLength: number) {
+  const key = value?.trim();
+  if (!key) return null;
+  if (Array.from(key).length <= maxLength) return key;
+  const digest = crypto.createHash("sha256").update(key).digest("hex");
+  const readableLength = maxLength - digest.length - 1;
+  return `${Array.from(key).slice(0, readableLength).join("")}:${digest}`;
+}
+
+export function usageIdempotencyKey(value: string | null | undefined) {
+  return boundedStableKey(value, USAGE_IDEMPOTENCY_KEY_MAX_LENGTH);
+}
+
+export function usageCorrelationId(value: string | null | undefined) {
+  return boundedStableKey(value, USAGE_CORRELATION_ID_MAX_LENGTH);
 }
 
 type Db = typeof prisma | Prisma.TransactionClient;
@@ -367,7 +386,8 @@ export async function preflightUsage(input: UsagePreflightInput) {
 
   const token = crypto.randomBytes(24).toString("base64url");
   const expiresAt = new Date(Date.now() + 15 * 60 * 1000);
-  const actionKey = input.actionKey?.trim() || input.featureKey;
+  const actionKey = Array.from(input.actionKey?.trim() || input.featureKey).slice(0, 160).join("");
+  const idempotencyKey = usageIdempotencyKey(input.idempotencyKey);
 
   const event = await prisma.$transaction(async (tx) => {
     const current = await tx.workspaceCapacityAccount.findUniqueOrThrow({ where: { id: account.id } });
@@ -394,7 +414,7 @@ export async function preflightUsage(input: UsagePreflightInput) {
         websiteId: input.websiteId ?? null,
         featureKey: input.featureKey,
         actionKey,
-        idempotencyKey: input.idempotencyKey ?? null,
+        idempotencyKey,
         creditsReserved: creditCost,
         includedUnitsReserved: includedUnits,
         purchasedUnitsReserved: purchasedUnits,
@@ -426,7 +446,7 @@ export async function preflightUsage(input: UsagePreflightInput) {
       amount: row.amount,
       balanceAfter: row.balanceAfter,
       reason: actionKey.slice(0, 255),
-      correlationId: input.idempotencyKey ?? usageEvent.id,
+      correlationId: usageCorrelationId(idempotencyKey) ?? usageEvent.id,
       metadataJson: { featureKey: input.featureKey, pricingVersion: feature.pricingVersion },
     } });
     return usageEvent;
