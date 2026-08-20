@@ -3088,9 +3088,9 @@ guidedProjectsRouter.get("/projects-v2/:projectId", async (req, res) => {
   const [sourceActivitySummaries, projectLaunchAnalysis] = await Promise.all([
     projectSourceActivitySummaries(project),
     prisma.workspaceAiIntakeSession.findFirst({
-      where: { workspaceId: context.workspace.id, contextType: "project", mode: "project_launch_research", appliedProjectId: project.id, status: { in: ["completed", "reviewed", "applied"] } },
+      where: { workspaceId: context.workspace.id, contextType: "project", mode: "project_launch_research", appliedProjectId: project.id },
       orderBy: { updatedAt: "desc" },
-      select: { id: true, completedAt: true },
+      select: { id: true, status: true, errorCode: true, completedAt: true },
     }),
   ]);
   res.json({ project: { ...project, sourceActivitySummaries, projectLaunchAnalysis } });
