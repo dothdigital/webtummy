@@ -237,31 +237,69 @@ export function createProfessionalReportPdf(contentValue: unknown, brand: PdfBra
     });
   };
 
-  doc.rect(0, 0, doc.page.width, 245).fill(navy);
-  doc.fillColor(teal).font("Helvetica-Bold").fontSize(12).text(brand.minimizeSenukeBranding === false ? "SEnuke AI - AI Growth Operating System" : brand.workspaceType === "agency" ? "CLIENT DOCUMENT" : "PROJECT REPORT", 54, 48, { characterSpacing: 1.5 });
+  const coverHeading = reportType === "agency_proposal" ? "Agency Growth Proposal" : reportType === "seo_audit" ? "Complete SEO Findings Report" : reportType === "strategy" ? "Complete Strategy Report" : workspaceHeading(brand.workspaceType);
+  const documentTitle = display(content.title);
   const logoMatch = brand.logoDataUrl?.match(/^data:image\/(?:png|jpeg);base64,(.+)$/i);
+  const coverHeadingWidth = logoMatch ? 340 : 480;
+  doc.font("Helvetica-Bold").fontSize(28);
+  const coverHeadingHeight = doc.heightOfString(coverHeading, { width: coverHeadingWidth, lineGap: 2 });
+  doc.font("Helvetica").fontSize(12);
+  const documentTitleY = 83 + coverHeadingHeight + 8;
+  const documentTitleHeight = doc.heightOfString(documentTitle, { width: 480, lineGap: 2 });
+  let coverCursorY = documentTitleY + documentTitleHeight + 18;
+  const workspaceNameY = coverCursorY;
+  doc.font("Helvetica-Bold").fontSize(11);
+  coverCursorY += doc.heightOfString(brand.workspaceName, { width: 480, lineGap: 1 }) + 8;
+  const preparedForY = brand.workspaceType === "agency" && brand.clientName ? coverCursorY : null;
+  if (preparedForY != null) {
+    doc.font("Helvetica").fontSize(10);
+    coverCursorY += doc.heightOfString(`Prepared for ${brand.clientName}`, { width: 480, lineGap: 1 }) + 7;
+  }
+  const preparedByText = brand.preparedByName || brand.contactEmail || brand.contactPhone || brand.address
+    ? `Prepared by ${[brand.preparedByName, brand.contactEmail, brand.contactPhone, brand.address].filter(Boolean).join(" - ")}`
+    : "";
+  const preparedByY = preparedByText ? coverCursorY : null;
+  if (preparedByY != null) {
+    doc.font("Helvetica").fontSize(9);
+    coverCursorY += doc.heightOfString(preparedByText, { width: 480, lineGap: 1 }) + 5;
+  }
+  const coverHeight = Math.max(245, coverCursorY + 14);
+
+  doc.rect(0, 0, doc.page.width, coverHeight).fill(navy);
+  doc.fillColor(teal).font("Helvetica-Bold").fontSize(12).text(brand.minimizeSenukeBranding === false ? "SEnuke AI - AI Growth Operating System" : brand.workspaceType === "agency" ? "CLIENT DOCUMENT" : "PROJECT REPORT", 54, 48, { characterSpacing: 1.5 });
   if (logoMatch) { try { doc.image(Buffer.from(logoMatch[1], "base64"), 410, 35, { fit: [130, 48], align: "right", valign: "center" }); } catch { /* Invalid saved logo data is omitted without breaking the document. */ } }
-  doc.fillColor(white).font("Helvetica-Bold").fontSize(28).text(reportType === "agency_proposal" ? "Agency Growth Proposal" : reportType === "seo_audit" ? "Complete SEO Findings Report" : reportType === "strategy" ? "Complete Strategy Report" : workspaceHeading(brand.workspaceType), 54, 83, { width: 480 });
-  doc.fillColor("#CBD5E1").font("Helvetica").fontSize(12).text(display(content.title), 54, 127, { width: 480 });
-  doc.fillColor(white).font("Helvetica-Bold").fontSize(11).text(brand.workspaceName, 54, 177);
-  if (brand.workspaceType === "agency" && brand.clientName) doc.fillColor("#CBD5E1").font("Helvetica").fontSize(10).text(`Prepared for ${brand.clientName}`, 54, 197);
-  if (brand.preparedByName || brand.contactEmail || brand.contactPhone || brand.address) doc.fillColor("#CBD5E1").font("Helvetica").fontSize(9).text(`Prepared by ${[brand.preparedByName, brand.contactEmail, brand.contactPhone, brand.address].filter(Boolean).join(" - ")}`, 54, 215, { width: 480, height: 20, ellipsis: true });
+  doc.fillColor(white).font("Helvetica-Bold").fontSize(28).text(coverHeading, 54, 83, { width: coverHeadingWidth, lineGap: 2 });
+  doc.fillColor("#CBD5E1").font("Helvetica").fontSize(12).text(documentTitle, 54, documentTitleY, { width: 480, lineGap: 2 });
+  doc.fillColor(white).font("Helvetica-Bold").fontSize(11).text(brand.workspaceName, 54, workspaceNameY, { width: 480, lineGap: 1 });
+  if (preparedForY != null) doc.fillColor("#CBD5E1").font("Helvetica").fontSize(10).text(`Prepared for ${brand.clientName}`, 54, preparedForY, { width: 480, lineGap: 1 });
+  if (preparedByY != null) doc.fillColor("#CBD5E1").font("Helvetica").fontSize(9).text(preparedByText, 54, preparedByY, { width: 480, lineGap: 1 });
   const period = record(content.reportingPeriod);
   const periodText = period.start && period.end ? `Reporting period ${new Date(String(period.start)).toLocaleDateString("en-CA")} to ${new Date(String(period.end)).toLocaleDateString("en-CA")}` : `Generated ${new Date(String(content.generatedAt || Date.now())).toLocaleDateString("en-CA", { year: "numeric", month: "long", day: "numeric" })}`;
-  doc.fillColor(muted).font("Helvetica").fontSize(9).text(periodText, 54, 268);
-  doc.fillColor(navy).font("Helvetica-Bold").fontSize(21).text(display(project.name || project.businessName || "Project Report"), 54, 294, { width: 480 });
-  doc.fillColor(muted).font("Helvetica").fontSize(10).text([project.website, project.primaryGoal].filter(Boolean).map(String).join("  -  ") || "Project performance and delivery summary", 54, 324, { width: 480 });
-  doc.y = 365;
+  const periodY = coverHeight + 23;
+  doc.fillColor(muted).font("Helvetica").fontSize(9).text(periodText, 54, periodY, { width: 480 });
+  const projectTitle = display(project.name || project.businessName || "Project Report");
+  const projectTitleY = periodY + 26;
+  const projectTitleSize = projectTitle.length > 120 ? 17 : projectTitle.length > 80 ? 19 : 21;
+  doc.font("Helvetica-Bold").fontSize(projectTitleSize);
+  const projectTitleHeight = doc.heightOfString(projectTitle, { width: 480, lineGap: 2 });
+  doc.fillColor(navy).text(projectTitle, 54, projectTitleY, { width: 480, lineGap: 2 });
+  const projectMeta = [project.website, project.primaryGoal].filter(Boolean).map(String).join("  -  ") || "Project performance and delivery summary";
+  const projectMetaY = projectTitleY + projectTitleHeight + 7;
+  doc.font("Helvetica").fontSize(10);
+  const projectMetaHeight = doc.heightOfString(projectMeta, { width: 480, lineGap: 2 });
+  doc.fillColor(muted).text(projectMeta, 54, projectMetaY, { width: 480, lineGap: 2 });
+  const metricsY = projectMetaY + projectMetaHeight + 24;
+  doc.y = metricsY;
 
   const metrics: [string, unknown][] = [["Project stage", health.workflowStep], ["Strategy", health.strategyStatus], ["Tasks completed", health.completedTasks], ["Blocked tasks", health.blockedTasks]];
   metrics.forEach(([label, value], index) => {
-    const x = 54 + (index % 2) * 250; const y = 365 + Math.floor(index / 2) * 72;
+    const x = 54 + (index % 2) * 250; const y = metricsY + Math.floor(index / 2) * 72;
     const metricValue = display(value); const metricSize = metricValue.length <= 10 ? 18 : metricValue.length <= 20 ? 13 : 10;
     doc.roundedRect(x, y, 237, 58, 7).fill(pale);
     doc.fillColor(teal).font("Helvetica-Bold").fontSize(metricSize).text(metricValue, x + 14, y + 12, { width: 208, height: 22, ellipsis: true, lineBreak: false });
     doc.fillColor(muted).font("Helvetica").fontSize(9).text(label, x + 14, y + 38, { width: 208 });
   });
-  doc.y = 520;
+  doc.y = metricsY + 155;
 
   const performance = record(content.performance); const seo = record(content.seo);
   if (reportType === "agency_proposal") {
