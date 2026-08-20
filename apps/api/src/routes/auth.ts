@@ -8,9 +8,9 @@ import { requireAuth } from "../middleware.js";
 import { config } from "../config.js";
 import { sendMail } from "../email.js";
 import { trialEndsFrom } from "../billing.js";
-import { hasWorkspacePermission, preferredWorkspaceIdForUser, workspaceApprovalMode, workspaceSeatUsage, type WorkspaceContext } from "../workspace-access.js";
+import { hasWorkspacePermission, preferredWorkspaceIdForUser, reconcileWorkspaceTypeFromCommercialPlan, workspaceApprovalMode, workspaceSeatUsage, type WorkspaceContext } from "../workspace-access.js";
 import { rolesConsumeSeat } from "@webtummy/core/workspace-permissions";
-import { commercialRegistrationPolicy, reconcilePendingJvZooEventsForUser } from "../commercial-service.js";
+import { commercialRegistrationPolicy, reconcilePendingJvZooEventsForUser, workspaceTypeForCommercialPlan } from "../commercial-service.js";
 
 export const authRouter = Router();
 
@@ -36,6 +36,7 @@ async function workspaceSession(userId: string, clientId: string | null) {
     include: { workspace: { select: { id: true, name: true, workspaceType: true, ownerUserId: true, legacyClientId: true, commercialState: true, accessMode: true, settingsJson: true, securitySettingsJson: true, autoApprovalPolicyJson: true } }, roles: { select: { role: true } } },
   }) : null;
   if (!membership) return null;
+  membership.workspace.workspaceType = await reconcileWorkspaceTypeFromCommercialPlan(membership.workspace.id, membership.workspace.workspaceType);
   if (membership.workspace.workspaceType === "personal" && membership.workspace.ownerUserId !== userId) return null;
   const [clientCount, projectCount] = await Promise.all([
     membership.workspace.workspaceType === "agency"
@@ -228,7 +229,10 @@ authRouter.post("/login", async (req, res) => {
 // (Super-admins are created via the seed script, not here.)
 const registerSchema = z.object({
   name: z.string().min(1, "Name is required"),
-  workspaceType: z.enum(["Personal", "Business", "Agency", "Ecommerce"], { errorMap: () => ({ message: "Select workspace type" }) }),
+  // Retained as an optional compatibility field for older browser builds. The
+  // server derives the workspace from a verified purchase or the default
+  // Entrepreneur trial; an unauthenticated form cannot grant Agency access.
+  workspaceType: z.enum(["Personal", "Business", "Agency", "Ecommerce"]).optional(),
   email: z.string().email("Enter a valid email"),
   password: z
     .string()
@@ -256,15 +260,25 @@ authRouter.post("/register", async (req, res) => {
   if (existing) return res.status(409).json({ error: { email: ["Email already registered"] } });
 
   const registrationPolicy = await commercialRegistrationPolicy();
+  const verifiedPurchases = await prisma.externalSubscription.findMany({
+    where: {
+      provider: "jvzoo",
+      providerCustomerEmail: { equals: d.email, mode: "insensitive" },
+      activationStatus: "unclaimed",
+      status: { in: ["active", "cancel_at_period_end"] },
+    },
+    orderBy: { purchasedAt: "desc" },
+    take: 2,
+    select: { planCode: true },
+  });
+  const verifiedTypes = [...new Set(verifiedPurchases.map((purchase) => {
+    try { return workspaceTypeForCommercialPlan(purchase.planCode); } catch { return null; }
+  }).filter((value): value is string => Boolean(value)))];
+  const workspaceType = verifiedTypes.length === 1 ? verifiedTypes[0] : "personal";
 
   const { user } = await prisma.$transaction(async (tx) => {
     const trialStartedAt = new Date();
-    // Ecommerce is a project/business type, not an ownership workspace. Keep
-    // accepting the historical value at the API boundary so old clients do not
-    // fail, but create the canonical Business workspace for new registrations.
-    const requestedWorkspaceType = d.workspaceType.toLowerCase();
-    const workspaceType = requestedWorkspaceType === "ecommerce" ? "business" : requestedWorkspaceType;
-    const workspaceName = requestedWorkspaceType === "ecommerce" ? "Business" : d.workspaceType;
+    const workspaceName = workspaceType === "agency" ? "Agency" : workspaceType === "business" ? "Business" : "Personal";
     const compatibilityPlan = workspaceType === "agency" ? "agency" : workspaceType === "business" ? "business" : "starter";
     const commercialState = registrationPolicy.trialEnabled ? "trialing" : "payment_required";
     const client = await tx.client.create({
@@ -318,7 +332,7 @@ authRouter.post("/register", async (req, res) => {
     return res.status(502).json({ error: { email: ["Account was created, but the verification email could not be sent. Contact support to verify the account."] } });
   }
 
-  sendSignupNotification({ name: d.name, workspaceType: d.workspaceType, email: d.email }).catch((error) => {
+  sendSignupNotification({ name: d.name, workspaceType, email: d.email }).catch((error) => {
     console.error("Failed to send signup notification", error);
   });
 

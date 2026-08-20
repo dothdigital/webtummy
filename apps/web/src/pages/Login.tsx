@@ -404,25 +404,14 @@ function SignUpForm({
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [confirm, setConfirm] = useState("");
-  const [workspaceType, setWorkspaceType] = useState("");
   const [acceptedTerms, setAcceptedTerms] = useState(false);
   const [err, setErr] = useState<Record<string, string>>({});
   const [success, setSuccess] = useState("");
   const [busy, setBusy] = useState(false);
   const [captchaSiteKey, setCaptchaSiteKey] = useState("");
   const [trialPolicy, setTrialPolicy] = useState({ enabled: false, days: 14 });
-  const workspaceOptions = jvZooPlan === "agency"
-    ? ["Agency"]
-    : jvZooPlan === "business"
-      ? ["Business"]
-      : jvZooPlan === "starter"
-        ? ["Personal", "Business"]
-        : ["Personal", "Business", "Agency"];
-  const canSubmit = Boolean(name && emailOk(email) && passwordValid(password) && confirm === password && workspaceType && acceptedTerms);
-
-  useEffect(() => {
-    if (workspaceOptions.length === 1) setWorkspaceType(workspaceOptions[0]);
-  }, [jvZooPlan]);
+  const displayedPlan = jvZooPlan === "agency" ? "Agency" : jvZooPlan === "business" ? "Business" : "Entrepreneur";
+  const canSubmit = Boolean(name && emailOk(email) && passwordValid(password) && confirm === password && acceptedTerms);
 
   useEffect(() => {
     let cancelled = false;
@@ -446,14 +435,13 @@ function SignUpForm({
     if (!emailOk(email)) next.email = "Enter a valid email";
     if (!passwordValid(password)) next.password = "Complete all password requirements";
     if (confirm !== password) next.confirm = "Passwords do not match";
-    if (!workspaceType) next.workspaceType = "Select workspace type";
     if (!acceptedTerms) next.terms = "Accept the terms to continue";
     setErr(next);
     if (Object.keys(next).length) return;
     setBusy(true);
     try {
       const captchaToken = captchaSiteKey ? await executeRecaptcha(captchaSiteKey, "register") : undefined;
-      setSuccess(await onRegister({ name, workspaceType, email, password, captchaToken }));
+      setSuccess(await onRegister({ name, workspaceType: "Personal", email, password, captchaToken }));
       setPassword("");
       setConfirm("");
     } catch (e) {
@@ -495,19 +483,10 @@ function SignUpForm({
           <div><AuthInput label="Confirm Password" icon="password" type="password" value={confirm} onChange={setConfirm} autoComplete="new-password" placeholder="Confirm password" /><FieldError msg={err.confirm} /></div>
         </div>
         <PasswordChecklist password={password} confirm={confirm} />
-        <label className="block">
-          <span className="mb-1.5 block text-sm font-bold text-slate-900">Workspace Type</span>
-          <span className="relative block">
-            <span className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400"><AuthIcon name="workspace" /></span>
-            <select value={workspaceType} onChange={(event) => setWorkspaceType(event.target.value)} className="h-11 w-full appearance-none rounded-lg border border-slate-200 bg-white pl-11 pr-10 text-sm text-slate-600 outline-none transition focus:border-brand-400 focus:ring-2 focus:ring-brand-100 xl:h-12 xl:text-base">
-              <option value="">Select workspace type</option>
-              {workspaceOptions.map((option) => <option key={option} value={option}>{option}</option>)}
-            </select>
-            <span className="pointer-events-none absolute right-4 top-1/2 -translate-y-1/2 text-slate-400"><AuthIcon name="chevron" /></span>
-          </span>
-          <span className="mt-1.5 block text-xs leading-5 text-slate-500">Choose who manages the work. Ecommerce, SaaS, local, and service models are selected later as the project’s Business Type.</span>
-          <FieldError msg={err.workspaceType} />
-        </label>
+        <div className="rounded-lg border border-slate-200 bg-slate-50 px-4 py-3">
+          <div className="text-sm font-bold text-slate-900">{displayedPlan} workspace</div>
+          <p className="mt-1 text-xs leading-5 text-slate-500">{jvZooPurchase ? "Your verified JVZoo purchase determines the workspace and plan after email verification." : "New trials start on Entrepreneur for one Owner/Admin. Business and Agency workspaces are activated by their corresponding plan."}</p>
+        </div>
         <label className="flex items-start gap-2.5 text-xs leading-5 text-slate-500 xl:text-sm">
           <input type="checkbox" checked={acceptedTerms} onChange={(event) => setAcceptedTerms(event.target.checked)} className="mt-0.5 h-4 w-4 rounded border-slate-300 text-brand-600 focus:ring-brand-500" />
           <span>I agree to the <Link to="/terms" className="font-semibold text-brand-600 hover:underline">Terms of Service</Link> and <Link to="/privacy" className="font-semibold text-brand-600 hover:underline">Privacy Policy</Link>.</span>

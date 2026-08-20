@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { hasWorkspacePermission, hasWorkspaceRole, selectPreferredWorkspaceId, validateRolesForWorkspace, type WorkspaceContext } from "./workspace-access.js";
+import { hasWorkspacePermission, hasWorkspaceRole, selectPreferredWorkspaceId, validateRolesForWorkspace, workspaceTypeReconciliationBlockReason, type WorkspaceContext } from "./workspace-access.js";
 
 function context(roles: string[], workspaceType = "agency", overrides: unknown = {}, settingsJson: unknown = {}): WorkspaceContext {
   return {
@@ -174,5 +174,20 @@ describe("workspace session selection", () => {
       membership({ id: "new", workspaceId: "owned-new", ownerUserId: "user-1", legacyClientId: null, joinedAt: "2026-08-20" }),
     ];
     expect(selectPreferredWorkspaceId(choices, "user-1", null)).toBe("owned-new");
+  });
+});
+
+describe("commercial workspace type alignment", () => {
+  it("allows a one-user empty Agency shell to align to Entrepreneur", () => {
+    expect(workspaceTypeReconciliationBlockReason({ storedType: "agency", expectedType: "personal", activeMemberships: 1, agencyClients: 0 })).toBeNull();
+  });
+
+  it("protects real Agency clients and additional members during narrowing", () => {
+    expect(workspaceTypeReconciliationBlockReason({ storedType: "agency", expectedType: "personal", activeMemberships: 1, agencyClients: 1 })).toBe("agency_clients_exist");
+    expect(workspaceTypeReconciliationBlockReason({ storedType: "agency", expectedType: "personal", activeMemberships: 2, agencyClients: 0 })).toBe("multiple_active_members_exist");
+  });
+
+  it("allows expansion to Agency without deleting existing data", () => {
+    expect(workspaceTypeReconciliationBlockReason({ storedType: "personal", expectedType: "agency", activeMemberships: 1, agencyClients: 0 })).toBeNull();
   });
 });

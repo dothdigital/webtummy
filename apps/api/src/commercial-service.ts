@@ -396,8 +396,12 @@ export async function effectiveCommercialEntitlements(workspaceId: string) {
     _sum: { quantity: true },
   });
   const includedSeats = typeof limits.includedSeats === "number" ? limits.includedSeats : 0;
-  const purchasedSeatQuantity = Math.max(0, (seatEntitlements._sum.quantity ?? 0) - 1);
-  const seatLimit = includedSeats + purchasedSeatQuantity;
+  const expectedWorkspaceType = workspaceTypeForCommercialPlan(subscription.planVersion.billingPlan.code);
+  // Entrepreneur is intentionally a single-user Owner/Admin plan. Preserve
+  // historical seat entitlements in the ledger, but do not make them usable
+  // unless the workspace is on a Business or Agency plan.
+  const purchasedSeatQuantity = expectedWorkspaceType === "personal" ? 0 : Math.max(0, (seatEntitlements._sum.quantity ?? 0) - 1);
+  const seatLimit = expectedWorkspaceType === "personal" ? 1 : includedSeats + purchasedSeatQuantity;
   return {
     subscription,
     features,

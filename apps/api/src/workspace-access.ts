@@ -2,7 +2,7 @@ import type { Request } from "express";
 import { prisma, type Prisma } from "@webtummy/db";
 import { projectClientIdForRequest } from "./project-scope.js";
 import { defaultWorkspacePermission, rolesConsumeSeat, workspaceRoleCanEver, type ConfigurableWorkspaceRole } from "@webtummy/core/workspace-permissions";
-import { commercialSeatLimit, ensureCommercialSeatAssignments } from "./commercial-service.js";
+import { commercialSeatLimit, ensureCommercialSeatAssignments, workspaceTypeForCommercialPlan } from "./commercial-service.js";
 
 export const workspaceRoles = ["owner", "admin", "manager", "approver", "editor", "viewer", "client_viewer"] as const;
 export type WorkspaceRole = (typeof workspaceRoles)[number];
@@ -17,6 +17,71 @@ export const rolesByWorkspaceType: Record<string, readonly WorkspaceRole[]> = {
 };
 
 const inheritedRoleOrder: readonly WorkspaceRole[] = ["owner", "admin", "manager", "approver", "editor", "viewer"];
+
+export function workspaceTypeReconciliationBlockReason(input: { storedType: string; expectedType: string; activeMemberships: number; agencyClients: number }) {
+  if (input.storedType === input.expectedType) return null;
+  if (input.expectedType === "personal" && input.agencyClients > 0) return "agency_clients_exist";
+  if (input.expectedType === "personal" && input.activeMemberships > 1) return "multiple_active_members_exist";
+  if (input.expectedType === "business" && input.agencyClients > 0) return "agency_clients_exist";
+  return null;
+}
+
+/**
+ * Keep the operational workspace experience aligned with the authoritative
+ * commercial plan. Narrowing is automatic only when it cannot hide Agency
+ * clients or remove another active user's access. Every change is audited.
+ */
+export async function reconcileWorkspaceTypeFromCommercialPlan(workspaceId: string, storedType: string) {
+  const [subscription, workspace] = await Promise.all([
+    prisma.workspaceSubscription.findFirst({
+      where: { workspaceId, status: { not: "deleted" } },
+      orderBy: { createdAt: "desc" },
+      select: { planVersion: { select: { billingPlan: { select: { code: true } } } } },
+    }),
+    prisma.workspace.findUnique({
+      where: { id: workspaceId },
+      select: {
+        legacyClient: { select: { plan: true } },
+        _count: { select: { agencyClients: true, memberships: { where: { status: "active" } } } },
+      },
+    }),
+  ]);
+  const planCode = subscription?.planVersion.billingPlan.code ?? workspace?.legacyClient?.plan;
+  let expectedType: string | null = null;
+  try { expectedType = planCode ? workspaceTypeForCommercialPlan(planCode) : null; } catch { expectedType = null; }
+  if (!expectedType || expectedType === storedType) return storedType;
+
+  const blockReason = workspaceTypeReconciliationBlockReason({
+    storedType,
+    expectedType,
+    activeMemberships: workspace?._count.memberships ?? 0,
+    agencyClients: workspace?._count.agencyClients ?? 0,
+  });
+  if (blockReason) {
+    console.warn(`[workspace] commercial type mismatch requires admin review`, { workspaceId, storedType, expectedType, planCode, blockReason });
+    return storedType;
+  }
+
+  await prisma.$transaction(async (tx) => {
+    const changed = await tx.workspace.updateMany({
+      where: { id: workspaceId, workspaceType: storedType },
+      data: { workspaceType: expectedType! },
+    });
+    if (!changed.count) return;
+    await tx.workspaceActivity.create({
+      data: {
+        workspaceId,
+        action: "workspace.type_aligned_to_plan",
+        entityType: "workspace",
+        entityId: workspaceId,
+        previousJson: { workspaceType: storedType },
+        nextJson: { workspaceType: expectedType, planCode },
+        metadataJson: { source: "commercial_plan", automatic: true },
+      },
+    });
+  });
+  return expectedType;
+}
 
 type WorkspaceChoice = {
   id: string;
@@ -133,6 +198,8 @@ export async function workspaceContext(req: Request): Promise<WorkspaceContext> 
     if (!legacyClientId || legacyClientId === "__no_client_scope__") throw Object.assign(new Error("Workspace context is required."), { statusCode: 400 });
     workspace = await bootstrapWorkspace(req, legacyClientId);
   }
+  const reconciledWorkspaceType = await reconcileWorkspaceTypeFromCommercialPlan(workspace.id, workspace.workspaceType);
+  if (reconciledWorkspaceType !== workspace.workspaceType) workspace = { ...workspace, workspaceType: reconciledWorkspaceType };
   const membership = await prisma.workspaceMembership.findUnique({
     where: { workspaceId_userId: { workspaceId: workspace.id, userId: req.user.userId } },
     include: { roles: { select: { role: true } } },
