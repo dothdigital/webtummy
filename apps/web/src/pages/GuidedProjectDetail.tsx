@@ -587,6 +587,19 @@ export default function GuidedProjectDetail() {
     }
   };
 
+  const downloadProjectLaunchAnalysis = async () => {
+    if (!project || busyAction === "project-launch-pdf") return;
+    setBusyAction("project-launch-pdf");
+    setError(null);
+    try {
+      await api.download(`/api/ai-intake/project-launch/${project.id}/download`);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "The saved project analysis PDF could not be downloaded.");
+    } finally {
+      setBusyAction(null);
+    }
+  };
+
   const openContentPlan = async (existingTask?: GuidedExecutionTask | null) => {
     if (!project || busyAction === "seo-plan") return;
     setBusyAction("seo-plan");
@@ -755,7 +768,8 @@ export default function GuidedProjectDetail() {
               <div className="flex max-w-full flex-nowrap items-center gap-2 overflow-x-auto whitespace-nowrap pb-1 xl:justify-end">
                 <span className="shrink-0"><StatusPill status={project.currentStep} /></span>
                 <span className="shrink-0"><StatusPill status={project.status} /></span>
-                {convertedDiscovery && selectedDiscoveryIdea && <button type="button" disabled={busyAction === "discovery-pdf"} onClick={() => void downloadOriginalAnalysis(convertedDiscovery.id, selectedDiscoveryIdea.id)} className="inline-flex shrink-0 items-center justify-center rounded-lg border border-violet-200 bg-violet-50 px-3 py-2 text-sm font-semibold text-violet-800 hover:bg-violet-100 disabled:opacity-60">{busyAction === "discovery-pdf" ? "Preparing PDF…" : "Download original analysis PDF"}</button>}
+                {project.projectLaunchAnalysis && <button type="button" disabled={busyAction === "project-launch-pdf"} onClick={() => void downloadProjectLaunchAnalysis()} className="inline-flex shrink-0 items-center justify-center rounded-lg border border-violet-200 bg-violet-50 px-3 py-2 text-sm font-semibold text-violet-800 hover:bg-violet-100 disabled:opacity-60">{busyAction === "project-launch-pdf" ? "Preparing PDF…" : "Download project analysis PDF"}</button>}
+                {convertedDiscovery && selectedDiscoveryIdea && <button type="button" disabled={busyAction === "discovery-pdf"} onClick={() => void downloadOriginalAnalysis(convertedDiscovery.id, selectedDiscoveryIdea.id)} className="inline-flex shrink-0 items-center justify-center rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-60">{busyAction === "discovery-pdf" ? "Preparing PDF…" : "Download original idea PDF"}</button>}
                 {!archived && (project.opportunities.length > 0 || project.strategyPlans.length > 0) && <Link to={`/guided-projects/${project.id}?resetAfterStrategy=1`} className="inline-flex shrink-0 items-center justify-center rounded-lg border border-rose-200 bg-white px-3 py-2 text-sm font-semibold text-rose-700 hover:bg-rose-50">Manage module data</Link>}
                 {!archived && <Link to={`/guided-projects/${project.id}/intake`} className="inline-flex shrink-0 items-center justify-center rounded-lg bg-brand-600 px-3 py-2 text-sm font-semibold text-white hover:bg-brand-700">Edit profile</Link>}
                 <Link to="/projects" className="inline-flex shrink-0 items-center justify-center rounded-lg bg-brand-600 px-3 py-2 text-sm font-semibold text-white hover:bg-brand-700">Back to projects</Link>

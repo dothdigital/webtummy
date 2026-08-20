@@ -12,6 +12,7 @@ import { config } from "../config.js";
 import { canonicalPrimaryGoal, canonicalSecondaryGoal, primaryGoalsForWorkspace, standardSecondaryGoals } from "@webtummy/core/project-goals";
 import { cleanGeographicTargetMarkets, explicitlyTargetsGeographicMarket } from "../project-location.js";
 import { discoveryTargetMarkets } from "../discovery-target-markets.js";
+import { createProfessionalReportPdf } from "../report-pdf.js";
 
 export const aiIntakeRouter = Router();
 aiIntakeRouter.use(requireAuth);
@@ -1287,6 +1288,41 @@ aiIntakeRouter.get("/ai-intake/project-launch/:projectId", async (req, res, next
     const session = await prisma.workspaceAiIntakeSession.findFirst({ where: { workspaceId: context.workspace.id, contextType: "project", mode: "project_launch_research", appliedProjectId: req.params.projectId, status: { in: ["completed", "reviewed", "applied"] } }, orderBy: { updatedAt: "desc" } });
     if (!session) return res.json({ ready: false });
     return res.json({ ready: true, sessionId: session.id, status: session.status, proposal: projectLaunchProposalSchema.parse(session.suggestionsJson), model: session.model });
+  } catch (error) { next(error); }
+});
+
+aiIntakeRouter.get("/ai-intake/project-launch/:projectId/download", async (req, res, next) => {
+  try {
+    const context = await workspaceContext(req);
+    if (!hasWorkspacePermission(context, "export_reports") || context.roles.has("client_viewer")) throw Object.assign(new Error("You do not have permission to export this project analysis."), { statusCode: 403 });
+    if (!await canAccessProject(context, req.params.projectId)) return res.status(404).json({ error: "Project not found." });
+    const [project, session] = await Promise.all([
+      prisma.project.findUnique({ where: { id: req.params.projectId }, select: { id: true, name: true, businessName: true, primaryGoal: true, createdAt: true } }),
+      prisma.workspaceAiIntakeSession.findFirst({ where: { workspaceId: context.workspace.id, contextType: "project", mode: "project_launch_research", appliedProjectId: req.params.projectId, status: { in: ["completed", "reviewed", "applied"] } }, orderBy: { updatedAt: "desc" } }),
+    ]);
+    if (!project || !session) return res.status(404).json({ error: "A completed AI Project Launch analysis is not available for this project." });
+    const proposal = projectLaunchProposalSchema.parse(session.suggestionsJson);
+    const pdf = await createProfessionalReportPdf({
+      reportType: "project_launch_analysis",
+      title: `${project.businessName || project.name} — AI Project Launch Analysis`,
+      project: { name: project.name, businessName: project.businessName, primaryGoal: proposal.goals.primary, targetMarkets: proposal.geography.targetMarkets },
+      clientSections: [
+        { key: "executive", title: "Executive Summary", summary: proposal.executiveSummary, metrics: [{ label: "Confidence", value: `${proposal.confidence.overall}/100`, note: "Directional pre-launch analysis" }, { label: "Opportunities", value: proposal.opportunities.length, note: "Starting opportunities" }, { label: "Keyword directions", value: proposal.keywords.primary.length + proposal.keywords.secondary.length, note: "Validate in Keyword Intelligence" }] },
+        { key: "business", title: "Business Direction", summary: `${proposal.business.description}\nAudience: ${proposal.business.audience}\nCore offer: ${proposal.business.offer}`, items: [...proposal.business.productsServices.map((title) => ({ title })), ...proposal.business.strengths.map((title) => ({ title }))] },
+        { key: "goals", title: "Goals and Geography", summary: `Primary goal: ${proposal.goals.primary}\nBusiness location: ${proposal.geography.businessLocation || "Not confirmed"}\nTarget markets: ${proposal.geography.targetMarkets.join(", ") || "Not confirmed"}`, items: proposal.goals.secondary.map((title) => ({ title })) },
+        { key: "website", title: "Website Direction", summary: proposal.website.recommendation, items: [...proposal.website.suggestedPages.map((page) => ({ title: `${page.title} — ${page.purpose}` })), ...proposal.website.technology.why.map((title) => ({ title: `${proposal.website.technology.recommendedPlatform}: ${title}` }))] },
+        { key: "search", title: "Starting Search Direction", summary: proposal.keywords.rationale, items: [...proposal.keywords.primary.map((title) => ({ title: `Primary: ${title}` })), ...proposal.keywords.secondary.map((title) => ({ title: `Supporting: ${title}` }))] },
+        { key: "growth", title: "Ranked Opportunities", summary: "These are evidence-grounded starting recommendations, not guaranteed outcomes.", items: proposal.opportunities.map((item) => ({ title: `${item.title} — ${item.nextStep}` })) },
+        { key: "evidence", title: "Evidence and Validation Limits", summary: `Confidence cautions: ${proposal.confidence.cautions.join("; ") || "No additional cautions recorded."}`, items: [...proposal.evidence.map((item) => ({ title: `${item.label}: ${item.summary}` })), ...proposal.missingInformation.map((title) => ({ title: `Still to validate: ${title}` }))] },
+      ],
+      sourceSnapshot: { projectLaunchSessionId: session.id, generatedAt: session.completedAt?.toISOString() ?? session.updatedAt.toISOString(), projectCreatedAt: project.createdAt.toISOString() },
+    }, { workspaceName: context.workspace.name, workspaceType: context.workspace.workspaceType });
+    const safeName = (project.businessName || project.name || "project").replace(/[^a-z0-9]+/gi, "-").replace(/^-|-$/g, "").slice(0, 90) || "project";
+    res.setHeader("Content-Type", "application/pdf");
+    res.setHeader("Content-Disposition", `attachment; filename="SEnuke-AI_${safeName}_Project-Analysis.pdf"`);
+    res.setHeader("X-SEnuke-AI-Capacity-Charged", "0");
+    res.setHeader("Content-Length", String(pdf.length));
+    return res.send(pdf);
   } catch (error) { next(error); }
 });
 

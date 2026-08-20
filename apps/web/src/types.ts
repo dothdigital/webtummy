@@ -336,6 +336,7 @@ export interface GuidedProject {
     selectedDirectionJson: unknown;
     ideas: Array<{ id: string; title: string; status: string }>;
   }>;
+  projectLaunchAnalysis?: { id: string; completedAt: string | null } | null;
   _count?: { intakeAnswers: number; strategyPlans: number; opportunities: number };
 }
 

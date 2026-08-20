@@ -3085,8 +3085,15 @@ guidedProjectsRouter.get("/projects-v2/:projectId", async (req, res) => {
   await prisma.$transaction((tx) => syncProjectWorkflow(tx, accessible.id));
   const project = await scopedProject(req, accessible.id);
   if (!project) return res.status(404).json({ error: "project not found" });
-  const sourceActivitySummaries = await projectSourceActivitySummaries(project);
-  res.json({ project: { ...project, sourceActivitySummaries } });
+  const [sourceActivitySummaries, projectLaunchAnalysis] = await Promise.all([
+    projectSourceActivitySummaries(project),
+    prisma.workspaceAiIntakeSession.findFirst({
+      where: { workspaceId: context.workspace.id, contextType: "project", mode: "project_launch_research", appliedProjectId: project.id, status: { in: ["completed", "reviewed", "applied"] } },
+      orderBy: { updatedAt: "desc" },
+      select: { id: true, completedAt: true },
+    }),
+  ]);
+  res.json({ project: { ...project, sourceActivitySummaries, projectLaunchAnalysis } });
 });
 
 guidedProjectsRouter.get("/projects-v2/:projectId/workflow-controller", async (req, res) => {
