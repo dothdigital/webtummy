@@ -378,10 +378,7 @@ async function scopedProject(req: Request, projectId: string) {
       strategyPlans: { orderBy: { createdAt: "desc" }, take: 3 },
       gapAnalysisRuns: { orderBy: { createdAt: "desc" }, take: 1, select: { id: true, completedAt: true, createdAt: true } },
       aiRuns: { where: { moduleName: "ecommerce_intelligence", status: "completed" }, orderBy: { createdAt: "desc" }, take: 1, select: { id: true, outputJson: true, createdAt: true } },
-      discoveryDrafts: {
-        where: { status: "CONVERTED_TO_PROJECT" },
-        orderBy: { convertedAt: "desc" },
-        take: 1,
+      originDiscoveryDraft: {
         select: {
           id: true,
           title: true,
@@ -497,6 +494,9 @@ async function scopedProject(req: Request, projectId: string) {
     task.sourceType !== "strategy_decision" || isWebsitePlanTask(task);
   const normalizedProject = {
     ...project,
+    // Keep the existing API response shape while reading the singular Prisma
+    // relation used by DiscoveryDraft.convertedProjectId.
+    discoveryDrafts: project.originDiscoveryDraft ? [project.originDiscoveryDraft] : [],
     keywordGroups: project.keywordGroups.map((group) => ({
       ...group,
       keywords: normalizeKeywordList(group.keywords),
