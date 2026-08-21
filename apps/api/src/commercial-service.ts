@@ -264,9 +264,16 @@ export async function commercialRegistrationPolicy() {
   });
 }
 
-async function authoritativePlanVersion(workspaceId: string, db: Db = prisma) {
+export async function authoritativePlanVersion(workspaceId: string, db: Db = prisma) {
   await ensureCommercialDefaults(db);
+  // A historical Agency row can be newer than the workspace's current
+  // Entrepreneur trial or purchase. Prefer a live entitlement first; use the
+  // newest historical row only when no live/current row exists.
   const existing = await db.workspaceSubscription.findFirst({
+    where: { workspaceId, status: { in: ["active", "trialing", "cancel_at_period_end", "past_due", "payment_required", "pending", "read_only"] } },
+    orderBy: { createdAt: "desc" },
+    include: { planVersion: { include: { billingPlan: true } }, price: true, policyVersion: true },
+  }) ?? await db.workspaceSubscription.findFirst({
     where: { workspaceId, status: { not: "deleted" } },
     orderBy: { createdAt: "desc" },
     include: { planVersion: { include: { billingPlan: true } }, price: true, policyVersion: true },

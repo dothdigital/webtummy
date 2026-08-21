@@ -2,7 +2,7 @@ import type { Request } from "express";
 import { prisma, type Prisma } from "@webtummy/db";
 import { projectClientIdForRequest } from "./project-scope.js";
 import { defaultWorkspacePermission, rolesConsumeSeat, workspaceRoleCanEver, type ConfigurableWorkspaceRole } from "@webtummy/core/workspace-permissions";
-import { commercialSeatLimit, ensureCommercialSeatAssignments, workspaceTypeForCommercialPlan } from "./commercial-service.js";
+import { authoritativePlanVersion, commercialSeatLimit, ensureCommercialSeatAssignments, workspaceTypeForCommercialPlan } from "./commercial-service.js";
 
 export const workspaceRoles = ["owner", "admin", "manager", "approver", "editor", "viewer", "client_viewer"] as const;
 export type WorkspaceRole = (typeof workspaceRoles)[number];
@@ -33,11 +33,7 @@ export function workspaceTypeReconciliationBlockReason(input: { storedType: stri
  */
 export async function reconcileWorkspaceTypeFromCommercialPlan(workspaceId: string, storedType: string) {
   const [subscription, workspace] = await Promise.all([
-    prisma.workspaceSubscription.findFirst({
-      where: { workspaceId, status: { not: "deleted" } },
-      orderBy: { createdAt: "desc" },
-      select: { planVersion: { select: { billingPlan: { select: { code: true } } } } },
-    }),
+    authoritativePlanVersion(workspaceId),
     prisma.workspace.findUnique({
       where: { id: workspaceId },
       select: {

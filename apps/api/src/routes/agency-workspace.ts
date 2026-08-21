@@ -13,6 +13,7 @@ import { configurableWorkspaceRoles, workspaceRoleCanEver } from "@webtummy/core
 import { decideTaskApproval, submitTaskApproval } from "../approval-workflow.js";
 import { startTaskPublishing, verifyTaskPublishing } from "../publishing-workflow.js";
 import { assertWorkspaceResourceAvailable } from "../commercial-service.js";
+import { clientSafeReportContent } from "@webtummy/core/reporting";
 
 export const agencyWorkspaceRouter = Router();
 agencyWorkspaceRouter.use(requireAuth);
@@ -214,6 +215,14 @@ agencyWorkspaceRouter.get(["/agency/workspace", "/workspace"], (req, res) => han
     orderBy: [{ dueAt: "asc" }, { createdAt: "asc" }],
     select: { id: true, projectId: true, title: true, moduleName: true, priority: true, status: true, relatedUrl: true, completedAt: true, skippedAt: true, publishedAt: true, dueAt: true },
   }) : [];
+  const reportingPeriodStart = new Date(Date.UTC(new Date().getUTCFullYear(), new Date().getUTCMonth(), 1));
+  const [capacityByProject, providerCosts, failedJobs, integrationFailures, reportsByProject] = context.workspace.workspaceType === "agency" && visibleProjectIds.length ? await Promise.all([
+    prisma.usageEvent.groupBy({ by: ["projectId"], where: { workspaceId: context.workspace.id, projectId: { in: visibleProjectIds }, status: "committed", createdAt: { gte: reportingPeriodStart } }, _sum: { creditsCommitted: true } }),
+    prisma.providerCostEvent.findMany({ where: { createdAt: { gte: reportingPeriodStart }, usageEvent: { workspaceId: context.workspace.id, projectId: { in: visibleProjectIds } } }, select: { costUsd: true, usageEvent: { select: { projectId: true } } } }),
+    prisma.jobQueueRecord.findMany({ where: { projectId: { in: visibleProjectIds }, status: "failed", createdAt: { gte: reportingPeriodStart } }, select: { id: true, projectId: true, featureKey: true, error: true, createdAt: true } }),
+    prisma.workspaceActivity.findMany({ where: { workspaceId: context.workspace.id, projectId: { in: visibleProjectIds }, createdAt: { gte: reportingPeriodStart }, OR: [{ action: { contains: "integration" } }, { entityType: { contains: "integration" } }], action: { contains: "failed" } }, select: { id: true, projectId: true, action: true, entityType: true, createdAt: true } }),
+    prisma.gapReportExport.groupBy({ by: ["projectId"], where: { projectId: { in: visibleProjectIds }, approvalStatus: "approved", status: { in: ["complete", "completed", "ready"] } }, _count: true }),
+  ]) : [[], [], [], [], []];
   const completedStatuses = new Set(["completed", "skipped", "published"]);
   const now = new Date();
   const priorityRank: Record<string, number> = { critical: 0, urgent: 0, high: 1, medium: 2, low: 3 };
@@ -270,7 +279,29 @@ agencyWorkspaceRouter.get(["/agency/workspace", "/workspace"], (req, res) => han
       const complete = Boolean(task.completedAt || task.skippedAt || task.publishedAt || completedStatuses.has(task.status));
       return !complete && Boolean(task.dueAt && task.dueAt < now);
     }).length, reportsReady,
+    failedJobs: failedJobs.length,
+    integrationFailures: integrationFailures.length,
+    capacityUsed: capacityByProject.reduce((sum, row) => sum + (row._sum.creditsCommitted ?? 0), 0),
+    providerCostUsd: Math.round(providerCosts.reduce((sum, row) => sum + row.costUsd, 0) * 100) / 100,
   };
+  const capacityMap = new Map(capacityByProject.map((row) => [row.projectId, row._sum.creditsCommitted ?? 0]));
+  const reportsMap = new Map(reportsByProject.map((row) => [row.projectId, row._count]));
+  const costMap = new Map<string | null, number>();
+  for (const row of providerCosts) costMap.set(row.usageEvent?.projectId ?? null, (costMap.get(row.usageEvent?.projectId ?? null) ?? 0) + row.costUsd);
+  const portfolioReporting = context.workspace.workspaceType === "agency" ? scopedClients.map((client) => {
+    const projectIds = client.projects.map((project) => project.id);
+    const tasks = actionRows.filter((task) => task.projectId && projectIds.includes(task.projectId));
+    const openTasks = tasks.filter((task) => !task.completedAt && !task.skippedAt && !task.publishedAt && !completedStatuses.has(task.status));
+    const overdue = openTasks.filter((task) => task.dueAt && task.dueAt < now).length;
+    const blocked = openTasks.filter((task) => ["blocked", "failed"].includes(task.status)).length;
+    const approvals = pendingApprovalTasks.filter((task) => Boolean(task.projectId && projectIds.includes(task.projectId))).length;
+    const clientFailedJobs = failedJobs.filter((job) => job.projectId && projectIds.includes(job.projectId)).length;
+    const clientIntegrationFailures = integrationFailures.filter((item) => item.projectId && projectIds.includes(item.projectId)).length;
+    const capacityUsed = projectIds.reduce((sum, projectId) => sum + (capacityMap.get(projectId) ?? 0), 0);
+    const providerCostUsd = Math.round(projectIds.reduce((sum, projectId) => sum + (costMap.get(projectId) ?? 0), 0) * 100) / 100;
+    const riskPoints = overdue * 2 + blocked * 3 + approvals + clientFailedJobs * 3 + clientIntegrationFailures * 3;
+    return { clientId: client.id, clientName: client.name, activeProjects: client.projects.filter((project) => project.status === "active").length, openTasks: openTasks.length, overdueTasks: overdue, blockedTasks: blocked, pendingApprovals: approvals, reportsReady: client.projects.reduce((sum, project) => sum + (reportsMap.get(project.id) ?? 0), 0), failedJobs: clientFailedJobs, integrationFailures: clientIntegrationFailures, capacityUsed, providerCostUsd, health: riskPoints >= 8 ? "at_risk" : riskPoints >= 3 ? "attention" : "healthy", retentionSignal: riskPoints >= 8 ? "Review delivery blockers and contact cadence." : "No evidence-backed retention risk is currently detected." };
+  }) : [];
   const seats = canManageUsers ? await workspaceSeatUsage(context.workspace.id, context.workspace.settingsJson) : null;
   return {
     workspace: {
@@ -291,6 +322,8 @@ agencyWorkspaceRouter.get(["/agency/workspace", "/workspace"], (req, res) => han
     activity,
     pendingApprovalTasks: clientViewer ? [] : pendingApprovalTasks,
     summary,
+    portfolioReporting,
+    operationalReporting: context.workspace.workspaceType === "agency" ? { periodStart: reportingPeriodStart, failedJobs, integrationFailures, capacityByProject: capacityByProject.map((row) => ({ projectId: row.projectId, capacityUsed: row._sum.creditsCommitted ?? 0 })), providerCostsByProject: [...costMap.entries()].filter(([projectId]) => projectId).map(([projectId, costUsd]) => ({ projectId, costUsd: Math.round(costUsd * 100) / 100 })) } : null,
     seats,
     discoveryDrafts,
     nextActions: clientViewer ? [] : workspaceNextActions({
@@ -460,7 +493,12 @@ agencyWorkspaceRouter.get("/agency/clients/:clientId/dashboard", (req, res) => h
     client: clientViewer
       ? { id: client.id, name: client.name, status: client.status, contactName: null, contactEmail: null, targetMarkets: [], clientVisibleNotes: null, internalNotes: null, teamAssignments: [], memberAssignments: [] }
       : { ...client, memberAssignments },
-    projects: clientViewer ? [] : projects, tasks, reports, activity,
+    projects: clientViewer ? [] : projects,
+    tasks,
+    reports: clientViewer
+      ? reports.map((report) => ({ ...report, contentJson: clientSafeReportContent(report.contentJson) }))
+      : reports,
+    activity,
     permissions: { clientViewer, canManage: !clientViewer && (context.roles.has("owner") || context.roles.has("admin") || context.roles.has("manager")) },
   };
 }));

@@ -3,6 +3,7 @@ import { crawlQueue } from "./queue.js";
 import { config } from "./config.js";
 import { sendMail } from "./email.js";
 import { approvalEscalationStage } from "@webtummy/core/approvals";
+import { scheduledReportKey } from "@webtummy/core/reporting";
 import { lookup } from "node:dns/promises";
 import { isIP } from "node:net";
 
@@ -804,8 +805,91 @@ export async function scheduledLocalGridScans(now = new Date()) {
 }
 
 export async function scheduledProjectReportGeneration(now = new Date()) {
-  void now;
-  return { generated: 0, delivered: 0, disabled: true as const };
+  return runLogged("scheduled_project_report_generation", async () => {
+    const projects = await prisma.project.findMany({
+      where: { status: "active" },
+      include: {
+        agencyClient: { include: { workspace: true } },
+        client: { include: { workspace: true } },
+        website: { select: { domain: true, crawlJobs: { where: { status: "completed" }, orderBy: { completedAt: "desc" }, take: 2, select: { siteScore: true, pagesCrawled: true, completedAt: true, _count: { select: { issues: true } } } } } },
+        strategyPlans: { orderBy: { updatedAt: "desc" }, take: 1, select: { id: true, version: true, status: true, strategySummary: true, updatedAt: true } },
+        businessBrainVersions: { orderBy: { version: "desc" }, take: 1, select: { id: true, version: true, createdAt: true } },
+        evidenceVersions: { orderBy: { version: "desc" }, take: 1, select: { id: true, version: true, freshness: true, completeness: true, createdAt: true } },
+        growthBlueprint: { include: { versions: { orderBy: { version: "desc" }, take: 1 } } },
+        nextBestActions: { where: { status: { in: ["proposed", "recommended", "selected", "approved", "accepted", "in_progress"] } }, orderBy: [{ selectedAt: "desc" }, { priorityScore: "desc" }], take: 3 },
+        growthExperiments: { include: { results: { orderBy: { recordedAt: "desc" }, take: 1 } }, orderBy: { updatedAt: "desc" }, take: 20 },
+        executionTasks: { orderBy: { createdAt: "desc" }, select: { title: true, moduleName: true, status: true, completedAt: true, publishedAt: true, approvedAt: true, dueAt: true } },
+        keywordResearchRuns: { where: { status: "completed" }, orderBy: { createdAt: "desc" }, take: 100, select: { seedKeyword: true, locationName: true, targetRank: true, manualRank: true, createdAt: true } },
+      },
+    });
+    let generated = 0; let skipped = 0; let insufficient = 0;
+    const reportEmailPreference = new Map<string, boolean>();
+    for (const project of projects) {
+      const workspace = project.agencyClient?.workspace ?? project.client.workspace;
+      if (!workspace || workspace.status !== "active") { skipped += 1; continue; }
+      const schedules = [
+        { frequency: "weekly", reportType: "weekly_growth", periodStart: weekStart(now), sufficient: Boolean(project.businessBrainVersions[0] || project.evidenceVersions[0] || project.strategyPlans[0]) },
+        { frequency: "monthly", reportType: "monthly_growth", periodStart: monthStart(now), sufficient: Boolean(project.website?.crawlJobs[0] || project.executionTasks.length || project.keywordResearchRuns.length || project.strategyPlans[0]) },
+      ] as const;
+      for (const schedule of schedules) {
+        if (!schedule.sufficient) { insufficient += 1; continue; }
+        const scheduleKey = scheduledReportKey(project.id, schedule.frequency, schedule.periodStart);
+        if (await prisma.gapReportExport.findUnique({ where: { scheduleKey }, select: { id: true } })) { skipped += 1; continue; }
+        const completed = project.executionTasks.filter((task) => task.completedAt && task.completedAt >= schedule.periodStart && task.completedAt <= now);
+        const published = project.executionTasks.filter((task) => task.publishedAt && task.publishedAt >= schedule.periodStart && task.publishedAt <= now);
+        const blocked = project.executionTasks.filter((task) => ["blocked", "failed"].includes(task.status));
+        const pending = project.executionTasks.filter((task) => !task.completedAt && !task.publishedAt && !["cancelled", "canceled", "skipped"].includes(task.status));
+        const latestCrawl = project.website?.crawlJobs[0];
+        const priorCrawl = project.website?.crawlJobs[1];
+        const latestStrategy = project.strategyPlans[0];
+        const evidence = project.evidenceVersions[0];
+        const missingSources = [!project.website ? "website" : !latestCrawl ? "site analysis" : null, !project.keywordResearchRuns.length ? "ranking evidence" : null, !latestStrategy ? "approved strategy" : null, !project.nextBestActions.length ? "next best action" : null].filter((item): item is string => Boolean(item));
+        const sourceSnapshot = { capturedAt: now.toISOString(), reportingPeriod: { start: schedule.periodStart.toISOString(), end: now.toISOString() }, businessBrain: project.businessBrainVersions[0] ?? null, evidence: evidence ?? null, strategy: latestStrategy ?? null, growthBlueprint: project.growthBlueprint ? { id: project.growthBlueprint.id, version: project.growthBlueprint.versions[0]?.version ?? project.growthBlueprint.currentVersion, status: project.growthBlueprint.status, updatedAt: project.growthBlueprint.updatedAt } : null, nextBestAction: project.nextBestActions[0] ?? null, siteAnalysis: latestCrawl ?? null, rankingEvidenceAt: project.keywordResearchRuns[0]?.createdAt ?? null };
+        const reportType = schedule.reportType;
+        const weekly = reportType === "weekly_growth";
+        const reportTitle = weekly ? "Weekly Growth Summary" : "Monthly Growth Report";
+        const narrative = `${project.name} recorded ${completed.length} completed action${completed.length === 1 ? "" : "s"} and ${published.length} published change${published.length === 1 ? "" : "s"} during this ${schedule.frequency} period. ${missingSources.length ? `${missingSources.length} source${missingSources.length === 1 ? " is" : "s are"} unavailable and are listed as limitations.` : "All applicable saved evidence sources have a current observation."}`;
+        const baseSections = weekly ? [
+          { key: "executive_summary", title: "Executive Summary", summary: narrative },
+          { key: "verified_changes", title: "Verified Changes", metrics: [{ label: "Site health", value: latestCrawl?.siteScore ?? null }, { label: "Site health change", value: latestCrawl?.siteScore != null && priorCrawl?.siteScore != null ? latestCrawl.siteScore - priorCrawl.siteScore : null }, { label: "Ranking observations", value: project.keywordResearchRuns.length }], items: project.growthExperiments.filter((item) => item.updatedAt >= schedule.periodStart).map((item) => ({ title: item.title, status: item.status })) },
+          { key: "work_completed", title: "Work Completed", items: completed.map((item) => ({ title: item.title, module: item.moduleName })) },
+          { key: "evidence_limitations", title: "Evidence Limitations", items: missingSources },
+          { key: "next_best_action", title: "Next Best Action", items: project.nextBestActions.slice(0, 1).map((item) => item.recommendation || item.title) },
+        ] : [
+          { key: "executive_summary", title: "Executive Summary", summary: narrative },
+          { key: "work_completed", title: "Work Completed", items: completed.map((item) => ({ title: item.title, module: item.moduleName })) },
+          { key: "important_results", title: "Important Results", metrics: [{ label: "Site health", value: latestCrawl?.siteScore ?? null }, { label: "Pages analyzed", value: latestCrawl?.pagesCrawled ?? null }, { label: "Published changes", value: published.length }] },
+          { key: "seo_website_progress", title: "SEO & Website Progress", metrics: [{ label: "Ranking observations", value: project.keywordResearchRuns.length }, { label: "Site issues", value: latestCrawl?._count.issues ?? null }] },
+          { key: "local_visibility", title: "Local Visibility", items: [], emptyMessage: "No connected Local SEO evidence is available for this period." },
+          { key: "leads_conversions", title: "Leads & Conversions", items: [], emptyMessage: "No connected conversion evidence is available for this period." },
+          { key: "wins_and_problems", title: "Wins and Problems", items: [...completed.slice(0, 5).map((item) => `Completed: ${item.title}`), ...blocked.slice(0, 5).map((item) => `Blocked: ${item.title}`)] },
+          { key: "next_best_action", title: "Next Best Action", items: project.nextBestActions.slice(0, 1).map((item) => item.recommendation || item.title) },
+          { key: "next_period", title: "Next Period", items: pending.slice(0, 8).map((item) => item.title) },
+        ];
+        const branding = await prisma.whiteLabelProfile.findFirst({ where: { workspaceId: workspace.id }, orderBy: { updatedAt: "desc" } });
+        const content = { title: `${project.businessName ?? project.name} - ${reportTitle}`, reportType, generatedAt: now.toISOString(), frequency: schedule.frequency, reportingPeriod: sourceSnapshot.reportingPeriod, sourceSnapshot, branding: { agencyName: workspace.workspaceType === "agency" ? branding?.agencyName ?? workspace.name : workspace.name, agencyLogoDataUrl: workspace.workspaceType === "agency" ? branding?.agencyLogoDataUrl ?? null : null, colorPreference: branding?.colorPreference ?? "#0F9F8F", secondaryColor: branding?.secondaryColor ?? "#0F172A", footerDisclaimer: branding?.footerDisclaimer ?? "Confidential workspace project report.", minimizeSenukeBranding: workspace.workspaceType === "agency" ? branding?.minimizeSenukeBranding ?? true : false }, project: { id: project.id, name: project.name, businessName: project.businessName, website: project.website?.domain, primaryGoal: project.primaryGoal, targetMarkets: project.targetLocations }, health: { workflowStep: project.currentStep, strategyStatus: latestStrategy?.status ?? "not_started", completedTasks: completed.length, totalTasks: project.executionTasks.length, blockedTasks: blocked.length }, performance: { trackedKeywords: project.keywordResearchRuns.length, siteScore: latestCrawl?.siteScore ?? null }, evidence: { siteAnalysis: latestCrawl ? { score: latestCrawl.siteScore, pagesCrawled: latestCrawl.pagesCrawled, issuesFound: latestCrawl._count.issues, completedAt: latestCrawl.completedAt } : null }, execution: { completed: completed.map((item) => ({ title: item.title, module: item.moduleName })), published: published.map((item) => item.title), awaitingApproval: pending.filter((item) => !item.approvedAt && /approval/.test(item.status)).map((item) => item.title), blocked: blocked.map((item) => item.title), scheduledNext: pending.slice(0, 10).map((item) => ({ title: item.title })) }, strategy: latestStrategy ? { version: latestStrategy.version, status: latestStrategy.status, summary: latestStrategy.strategySummary } : null, growth: { nextBestActions: project.nextBestActions.map((item) => ({ title: item.title, recommendation: item.recommendation, expectedImpact: item.expectedImpact, status: item.status })), experiments: project.growthExperiments.map((item) => ({ title: item.title, status: item.status, metric: item.metric, result: item.results[0] ?? null })) }, recommendations: project.nextBestActions.map((item) => item.recommendation), clientNarrative: { executiveNarrative: narrative, wins: completed.slice(0, 5).map((item) => item.title), risks: blocked.slice(0, 5).map((item) => item.title), interpretation: "Review verified changes, completed work, missing sources, and the current Next Best Action together. No causal result is claimed without a valid baseline and comparison period." }, sections: baseSections.map((section, index) => ({ key: section.key, title: section.title, order: index, enabled: true })), clientSections: baseSections, dataQuality: { confidence: Math.max(20, 100 - missingSources.length * 15), missingSources, limitations: missingSources.map((source) => `${source} is disconnected or has no current saved evidence.`) }, clientSafe: true, narrativeGeneration: { mode: "passive_evidence_template", customerCapacityUnits: 0, generatedAt: now.toISOString() } };
+        const approvalStatus = workspace.workspaceType === "agency" ? "needs_review" : "approved";
+        const qa = { status: "passed", checkedAt: now.toISOString(), checks: [{ key: "identity", status: "passed", message: "Workspace and project identity are present." }, { key: "period", status: "passed", message: "The reporting period is recorded." }, { key: "sources", status: "passed", message: "Source timestamps and missing sources are recorded." }, { key: "client_safety", status: "passed", message: "The scheduled report contains no internal costs, margins, capacity balances, or team notes." }] };
+        try {
+          const report = await prisma.gapReportExport.create({ data: { workspaceId: workspace.id, agencyClientId: project.agencyClientId, projectId: project.id, clientId: project.clientId, reportType, clientName: project.agencyClient?.name ?? project.businessName ?? project.name, approvalStatus, documentStatus: workspace.workspaceType === "agency" ? "draft" : "ready", exportFormat: "pdf", status: "ready", completedAt: now, periodStart: schedule.periodStart, periodEnd: now, qaStatus: "passed", qaJson: qa, createdByUserId: workspace.ownerUserId, clientVisible: false, contentJson: content, scheduleKey, generatedBy: "scheduler", customerCapacityUnits: 0, versions: { create: { version: 1, contentJson: content, sourceEvidenceJson: sourceSnapshot, sourceTimestampsJson: sourceSnapshot, strategyVersion: latestStrategy?.version, growthBlueprintVersion: project.growthBlueprint?.versions[0]?.version ?? project.growthBlueprint?.currentVersion, nextBestActionId: project.nextBestActions[0]?.id, createdByUserId: workspace.ownerUserId, sections: { create: baseSections.map((section, index) => ({ sectionType: section.key, sortOrder: index, enabled: true, contentJson: { title: section.title } })) } } } } });
+          await prisma.workspaceActivity.create({ data: { workspaceId: workspace.id, actorUserId: workspace.ownerUserId, agencyClientId: project.agencyClientId, projectId: project.id, action: "report.scheduled_generated", entityType: "gap_report_export", entityId: report.id, nextJson: { reportType, frequency: schedule.frequency, periodStart: schedule.periodStart, periodEnd: now, customerCapacityUnits: 0, approvalStatus } } });
+          if (!reportEmailPreference.has(workspace.id)) {
+            const membership = await prisma.workspaceMembership.findUnique({ where: { workspaceId_userId: { workspaceId: workspace.id, userId: workspace.ownerUserId } }, select: { permissionOverrides: true } });
+            const overrides = membership?.permissionOverrides && typeof membership.permissionOverrides === "object" && !Array.isArray(membership.permissionOverrides) ? membership.permissionOverrides as { notificationPreferences?: unknown } : {};
+            const preferences = overrides.notificationPreferences && typeof overrides.notificationPreferences === "object" && !Array.isArray(overrides.notificationPreferences) ? overrides.notificationPreferences as { nonCriticalEmail?: unknown; reportEmails?: unknown } : {};
+            reportEmailPreference.set(workspace.id, preferences.nonCriticalEmail !== false && preferences.reportEmails !== false);
+          }
+          const emailEligible = reportEmailPreference.get(workspace.id) !== false;
+          await prisma.workspaceNotification.create({ data: { workspaceId: workspace.id, userId: workspace.ownerUserId, agencyClientId: project.agencyClientId, projectId: project.id, type: `report_ready:${scheduleKey}`, title: `${reportTitle} ready`, body: `${project.name}'s ${schedule.frequency} evidence summary is ready${workspace.workspaceType === "agency" ? " for review" : ""}. No AI Capacity was used.`, actionUrl: `/reports?projectId=${project.id}&reportId=${report.id}`, emailEligible, emailStatus: emailEligible ? "pending" : "disabled" } });
+          generated += 1;
+        } catch (error) {
+          if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002") { skipped += 1; continue; }
+          throw error;
+        }
+      }
+    }
+    return { generated, skipped, insufficient, customerCapacityUnits: 0 };
+  });
   /* Legacy scheduler retained as migration reference only. DEV-049 V1 reports are on demand.
   return runLogged("scheduled_project_report_generation", async () => {
     const workspaces = await prisma.workspace.findMany({ where: { status: "active" }, select: { id: true, legacyClientId: true, name: true, workspaceType: true, ownerUserId: true, settingsJson: true } });
@@ -868,6 +952,7 @@ export async function runMaintenanceSuite() {
     await monthlyScheduledAudit();
     await weeklyRankingReportGeneration();
     await monthlyClientReportGeneration();
+    await scheduledProjectReportGeneration();
     await taskDeadlineNotifications();
     await approvalReminderEscalations();
     await pendingContentDiscoveryChecks();

@@ -61,12 +61,12 @@ describe("Client report template differentiation", () => {
   };
 
   it("creates a different ordered section contract for every report type", () => {
-    const contracts = ["monthly_growth", "seo_website", "local_visibility", "leads_conversion", "campaign_project"].map((type) => clientReportSections(type as Parameters<typeof clientReportSections>[0], evidenceContent).map((section) => section.title));
-    expect(new Set(contracts.map((contract) => JSON.stringify(contract))).size).toBe(5);
-    expect(contracts[1]).toContain("Keyword Visibility");
-    expect(contracts[2]).toContain("Google Business Profile");
-    expect(contracts[3]).toContain("Lead Quality");
-    expect(contracts[4]).toContain("What SEnuke AI - AI Growth Operating System Learned");
+    const contracts = ["weekly_growth", "monthly_growth", "seo_website", "local_visibility", "leads_conversion", "campaign_project"].map((type) => clientReportSections(type as Parameters<typeof clientReportSections>[0], evidenceContent).map((section) => section.title));
+    expect(new Set(contracts.map((contract) => JSON.stringify(contract))).size).toBe(6);
+    expect(contracts[2]).toContain("Keyword Visibility");
+    expect(contracts[3]).toContain("Google Business Profile");
+    expect(contracts[4]).toContain("Lead Quality");
+    expect(contracts[5]).toContain("What SEnuke AI - AI Growth Operating System Learned");
   });
 
   it("turns saved intake and Business Brain evidence into a useful early-stage project report", () => {

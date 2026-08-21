@@ -4,10 +4,11 @@ import { z } from "zod";
 import { prisma } from "@webtummy/db";
 import { requireAuth, requireRole } from "../middleware.js";
 import { projectClientIdForRequest } from "../project-scope.js";
-import { hasWorkspacePermission, isWorkspaceOwner, workspaceContext } from "../workspace-access.js";
+import { hasWorkspacePermission, isWorkspaceOwner, reconcileWorkspaceTypeFromCommercialPlan, workspaceContext, workspaceTypeReconciliationBlockReason } from "../workspace-access.js";
 import { config } from "../config.js";
 import {
   checkoutUrlForPrice,
+  authoritativePlanVersion,
   commercialCatalog,
   commercialRegistrationPolicy,
   COMMERCIAL_PLAN_VERSION,
@@ -15,6 +16,7 @@ import {
   ensureCommercialDefaults,
   processJvZooIpn,
   workspaceCommercialSummary,
+  workspaceTypeForCommercialPlan,
 } from "../commercial-service.js";
 import { adjustWorkspacePurchasedCapacity, capacityPackPurchaseAllowed, workspaceCapacitySummary } from "../commercial-capacity.js";
 import { ensureUsageControlDefaults } from "../usage-engine.js";
@@ -464,6 +466,24 @@ billingRouter.get("/admin/commercial", requireAuth, requireRole("super_admin"), 
     prisma.featureCostCatalog.findMany({ orderBy: [{ moduleName: "asc" }, { label: "asc" }] }),
   ]);
   res.json({ catalog, policies, events, audits, workspaces, registrationPolicy, externalSubscriptions, addonSkus, workflowPricing });
+});
+
+billingRouter.post("/admin/commercial/workspaces/reconcile-types", requireAuth, requireRole("super_admin"), async (_req, res) => {
+  const workspaces = await prisma.workspace.findMany({
+    where: { status: "active" },
+    orderBy: { createdAt: "asc" },
+    select: { id: true, name: true, workspaceType: true, _count: { select: { agencyClients: true, memberships: { where: { status: "active" } } } } },
+  });
+  const results: Array<{ workspaceId: string; name: string; previousType: string; expectedType: string | null; resolvedType: string; status: "correct" | "changed" | "review_required"; reason: string | null }> = [];
+  for (const workspace of workspaces) {
+    const subscription = await authoritativePlanVersion(workspace.id);
+    let expectedType: string | null = null;
+    try { expectedType = subscription ? workspaceTypeForCommercialPlan(subscription.planVersion.billingPlan.code) : null; } catch { expectedType = null; }
+    const reason = expectedType ? workspaceTypeReconciliationBlockReason({ storedType: workspace.workspaceType, expectedType, activeMemberships: workspace._count.memberships, agencyClients: workspace._count.agencyClients }) : "commercial_plan_unresolved";
+    const resolvedType = expectedType && !reason ? await reconcileWorkspaceTypeFromCommercialPlan(workspace.id, workspace.workspaceType) : workspace.workspaceType;
+    results.push({ workspaceId: workspace.id, name: workspace.name, previousType: workspace.workspaceType, expectedType, resolvedType, status: resolvedType !== workspace.workspaceType ? "changed" : expectedType === workspace.workspaceType ? "correct" : "review_required", reason });
+  }
+  res.json({ checked: results.length, changed: results.filter((item) => item.status === "changed").length, reviewRequired: results.filter((item) => item.status === "review_required").length, results });
 });
 
 billingRouter.patch("/admin/commercial/addons/:addonId", requireAuth, requireRole("super_admin"), async (req, res) => {

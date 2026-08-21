@@ -45,6 +45,7 @@ import PublicLeadFunnel from "./pages/PublicLeadFunnel.js";
 import EcommerceIntelligence from "./pages/EcommerceIntelligence.js";
 import JvZooActivation from "./pages/JvZooActivation.js";
 import WebsitePerformance from "./pages/WebsitePerformance.js";
+import SharedReport from "./pages/SharedReport.js";
 
 const WebsiteVisualEditor = lazy(() => import("./pages/WebsiteVisualEditor.js"));
 
@@ -99,6 +100,7 @@ function Shell() {
       </div>
     );
   }
+  if (location.pathname.startsWith("/shared-report/")) return <SharedReport token={decodeURIComponent(location.pathname.slice("/shared-report/".length))} />;
   if (location.pathname.startsWith("/lead/")) return <PublicLeadFunnel slug={decodeURIComponent(location.pathname.slice("/lead/".length))} />;
   if (!user) {
     if (location.pathname === "/activate/jvzoo") return <JvZooActivation />;

@@ -120,6 +120,20 @@ export default function AdminCommercial() {
 
   const unresolvedEvents = useMemo(() => data?.events.filter((event) => ["unresolved", "unmapped_product", "failed", "rejected"].includes(event.status)) ?? [], [data]);
 
+  const reconcileWorkspaceTypes = async () => {
+    setBusy("reconcile-workspace-types");
+    setMessage(null);
+    try {
+      const result = await api.post<{ checked: number; changed: number; reviewRequired: number }>("/api/billing/admin/commercial/workspaces/reconcile-types", {});
+      await load();
+      setMessage(`Checked ${result.checked} active workspaces. Corrected ${result.changed}; ${result.reviewRequired} require manual review because their plan is unresolved or Agency data/team access must be protected.`);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Workspace plan types could not be reconciled.");
+    } finally {
+      setBusy(null);
+    }
+  };
+
   const savePrice = async (priceId: string) => {
     const draft = priceDrafts[priceId];
     if (!draft) return;
@@ -394,9 +408,10 @@ export default function AdminCommercial() {
       </Card>
 
       <Card className="overflow-hidden">
-        <div className="border-b border-slate-200 p-5">
-          <h2 className="text-lg font-bold text-charcoal-950">Workspace commercial state</h2>
-          <p className="text-sm text-charcoal-500">The workspace—not the user—is the licensing boundary.</p>
+        <div className="flex flex-wrap items-start justify-between gap-3 border-b border-slate-200 p-5">
+          <div><h2 className="text-lg font-bold text-charcoal-950">Workspace commercial state</h2>
+          <p className="text-sm text-charcoal-500">The workspace—not the user—is the licensing boundary. Reconciliation aligns existing workspaces to their active or trialing commercial plan without deleting project data.</p></div>
+          <Button onClick={() => void reconcileWorkspaceTypes()} disabled={busy === "reconcile-workspace-types"}>{busy === "reconcile-workspace-types" ? "Checking…" : "Repair plan workspace types"}</Button>
         </div>
         <div className="overflow-x-auto">
           <table className="min-w-full divide-y divide-slate-200 text-sm">

@@ -3804,6 +3804,13 @@ model GapReportExport {
   clientVisible   Boolean       @default(false)
   sentToClientAt  DateTime?
   sentByUserId    String?       @db.VarChar(191)
+  scheduleKey     String?       @unique @db.VarChar(191)
+  generatedBy     String        @default("user") @db.VarChar(40)
+  customerCapacityUnits Int     @default(0)
+  shareTokenHash  String?       @unique @db.VarChar(191)
+  shareExpiresAt  DateTime?
+  shareRevokedAt  DateTime?
+  shareCreatedAt  DateTime?
 
   versions     AgencyDocumentVersion[]
   acceptances  ProposalAcceptance[]
@@ -3814,6 +3821,7 @@ model GapReportExport {
   @@index([agencyClientId, createdAt])
   @@index([clientId, createdAt])
   @@index([reportType])
+  @@index([shareExpiresAt])
 }
 
 model AgencyDocumentVersion {
