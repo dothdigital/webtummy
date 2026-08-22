@@ -3,6 +3,7 @@ import { z } from "zod";
 import { prisma } from "@webtummy/db";
 import { hashPassword } from "../auth.js";
 import { normalizePlanCode } from "../billing.js";
+import { changeWorkspaceCommercialPlan } from "../commercial-service.js";
 import { requireAuth, requireRole } from "../middleware.js";
 import { rolesConsumeSeat } from "@webtummy/core/workspace-permissions";
 import { workspaceSeatUsage } from "../workspace-access.js";
@@ -214,10 +215,20 @@ usersRouter.patch("/:id/plan", async (req, res) => {
   const plan = await prisma.billingPlan.findUnique({ where: { code } });
   if (!plan) return res.status(404).json({ error: "plan not found" });
 
-  await prisma.client.update({
-    where: { id: user.clientId },
-    data: { plan: code, aiSubscriptionStatus: "active" },
-  });
+  const workspace = await prisma.workspace.findUnique({ where: { legacyClientId: user.clientId }, select: { id: true } });
+  if (!workspace) return res.status(409).json({ error: "The user's workspace has not been migrated to commercial licensing. Open Commercial Admin and repair workspace types first." });
+
+  try {
+    await changeWorkspaceCommercialPlan({
+      workspaceId: workspace.id,
+      targetPlanCode: code,
+      actorId: req.user!.userId,
+      justification: "Changed by super admin from Users account management.",
+    });
+  } catch (error) {
+    const typed = error as { statusCode?: number; code?: string; message?: string; blockers?: string[] };
+    return res.status(typed.statusCode ?? 500).json({ error: typed.message ?? "The plan could not be changed.", code: typed.code, blockers: typed.blockers ?? [] });
+  }
 
   const updated = await prisma.user.findUniqueOrThrow({
     where: { id: req.params.id },

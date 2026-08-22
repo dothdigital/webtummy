@@ -370,6 +370,64 @@ export async function authoritativePlanVersion(workspaceId: string, db: Db = pri
   return subscription;
 }
 
+export function workspacePlanChangeBlockers(input: { targetWorkspaceType: string; activeMemberships: number; activeAgencyClients: number; activeProjects: number; activeProjectLimit: number | null; targetSeatLimit?: number | null }) {
+  const blockers: string[] = [];
+  const targetSeatLimit = input.targetWorkspaceType === "personal" ? 1 : input.targetSeatLimit;
+  if (targetSeatLimit != null && input.activeMemberships > targetSeatLimit) blockers.push(`Remove or deactivate ${input.activeMemberships - targetSeatLimit} additional workspace member${input.activeMemberships - targetSeatLimit === 1 ? "" : "s"} to meet the target plan seat limit of ${targetSeatLimit}.`);
+  if (["personal", "business"].includes(input.targetWorkspaceType) && input.activeAgencyClients > 0) blockers.push(`Archive or migrate ${input.activeAgencyClients} active Agency client${input.activeAgencyClients === 1 ? "" : "s"} before leaving Agency.`);
+  if (input.activeProjectLimit != null && input.activeProjects > input.activeProjectLimit) blockers.push(`Archive ${input.activeProjects - input.activeProjectLimit} active project${input.activeProjects - input.activeProjectLimit === 1 ? "" : "s"} to meet the target plan limit of ${input.activeProjectLimit}.`);
+  return blockers;
+}
+
+export async function changeWorkspaceCommercialPlan(input: { workspaceId: string; targetPlanCode: string; actorId: string; justification: string }) {
+  const justification = input.justification.trim();
+  if (justification.length < 8) throw Object.assign(new Error("Enter an audit justification of at least 8 characters."), { statusCode: 400, code: "plan_change_justification_required" });
+  const targetPlanCode = canonicalCommercialPlanCode(input.targetPlanCode);
+  if (!(["entrepreneur", "business", "agency"] as const).includes(targetPlanCode as "entrepreneur" | "business" | "agency")) throw Object.assign(new Error("Choose Entrepreneur, Business, or Agency."), { statusCode: 400, code: "unsupported_plan_mapping" });
+  const subscription = await authoritativePlanVersion(input.workspaceId);
+  if (!subscription) throw Object.assign(new Error("This internal workspace does not use a customer commercial plan."), { statusCode: 409, code: "internal_workspace_plan_change_blocked" });
+  const mutableProviders = new Set(["trial", "manual", "manual_override", "offline", "legacy"]);
+  if (!mutableProviders.has(subscription.provider)) throw Object.assign(new Error(`${subscription.provider.toUpperCase()} controls this subscription. Use the provider checkout or verified subscription event to change its plan; Admin cannot overwrite provider billing.`), { statusCode: 409, code: "provider_managed_plan_change" });
+  const targetPlan = await prisma.commercialPlanVersion.findFirst({
+    where: { billingPlan: { code: targetPlanCode }, status: "active" },
+    orderBy: { version: "desc" },
+    include: { billingPlan: true, prices: { where: { status: "active" }, orderBy: { effectiveFrom: "desc" } } },
+  });
+  if (!targetPlan) throw Object.assign(new Error(`The active ${targetPlanCode} commercial plan is unavailable.`), { statusCode: 409, code: "target_plan_unavailable" });
+  const targetWorkspaceType = workspaceTypeForCommercialPlan(targetPlan.billingPlan.code);
+  const workspace = await prisma.workspace.findUniqueOrThrow({ where: { id: input.workspaceId }, include: { legacyClient: true } });
+  const [activeMemberships, activeAgencyClients, activeProjects, activeSeatEntitlements] = await Promise.all([
+    prisma.workspaceMembership.count({ where: { workspaceId: input.workspaceId, status: "active" } }),
+    prisma.agencyClient.count({ where: { workspaceId: input.workspaceId, status: "active" } }),
+    workspace.legacyClientId ? prisma.project.count({ where: { clientId: workspace.legacyClientId, status: { not: "archived" } } }) : 0,
+    prisma.commercialSeatEntitlement.aggregate({ where: { workspaceId: input.workspaceId, status: "active", OR: [{ effectiveTo: null }, { effectiveTo: { gt: new Date() } }] }, _sum: { quantity: true } }),
+  ]);
+  const targetLimits = objectValue(targetPlan.numericLimits);
+  const configuredProjectLimit = typeof targetLimits.activeProjects === "number" ? targetLimits.activeProjects : null;
+  const includedSeats = typeof targetLimits.includedSeats === "number" ? targetLimits.includedSeats : 1;
+  const purchasedSeats = Math.max(0, (activeSeatEntitlements._sum.quantity ?? 0) - 1);
+  const targetSeatLimit = targetWorkspaceType === "personal" ? 1 : includedSeats + purchasedSeats;
+  const blockers = workspacePlanChangeBlockers({ targetWorkspaceType, activeMemberships, activeAgencyClients, activeProjects, activeProjectLimit: configuredProjectLimit, targetSeatLimit });
+  if (blockers.length) throw Object.assign(new Error(`Plan change is blocked. ${blockers.join(" ")}`), { statusCode: 409, code: "plan_change_requirements_not_met", blockers });
+  const currentPlanCode = canonicalCommercialPlanCode(subscription.planVersion.billingPlan.code);
+  if (currentPlanCode === targetPlanCode && workspace.workspaceType === targetWorkspaceType) return { changed: false, workspaceId: workspace.id, previousPlanCode: currentPlanCode, targetPlanCode, workspaceType: targetWorkspaceType, blockers: [] };
+  const targetPrice = targetPlan.prices.find((price) => price.billingInterval === subscription.billingInterval && price.priceClass === subscription.price?.priceClass)
+    ?? targetPlan.prices.find((price) => price.billingInterval === subscription.billingInterval && price.priceClass === "standard")
+    ?? targetPlan.prices.find((price) => price.billingInterval === subscription.billingInterval)
+    ?? null;
+  const capacity = await prisma.$transaction(async (tx) => {
+    await tx.workspaceSubscription.update({ where: { id: subscription.id }, data: { planVersionId: targetPlan.id, policyVersionId: targetPlan.policyVersionId, priceId: targetPrice?.id ?? null, protectedPriceId: null, foundingMember: false, foundingCampaignCode: null, protectionStartAt: null } });
+    await tx.workspace.update({ where: { id: workspace.id }, data: { workspaceType: targetWorkspaceType } });
+    if (workspace.legacyClientId) await tx.client.update({ where: { id: workspace.legacyClientId }, data: { plan: targetPlanCode } });
+    const updatedCapacity = await ensureWorkspaceCapacityAccount(workspace.id, tx);
+    await ensureCommercialSeatAssignments(workspace.id, tx);
+    await tx.commercialAuditEvent.create({ data: { workspaceId: workspace.id, actorType: "admin", actorId: input.actorId, action: "commercial.workspace_plan_changed", reasonCode: "admin_trial_or_manual_plan_change", source: "admin", beforeJson: { planCode: currentPlanCode, planVersionId: subscription.planVersionId, workspaceType: workspace.workspaceType, monthlyAiCapacity: objectValue(subscription.planVersion.numericLimits).monthlyAiCapacity }, afterJson: { planCode: targetPlanCode, planVersionId: targetPlan.id, workspaceType: targetWorkspaceType, monthlyAiCapacity: targetLimits.monthlyAiCapacity }, metadataJson: { justification, provider: subscription.provider, purchasedCapacityPreserved: true } } });
+    await tx.workspaceActivity.create({ data: { workspaceId: workspace.id, actorUserId: input.actorId, action: "workspace.commercial_plan_changed", entityType: "workspace_subscription", entityId: subscription.id, previousJson: { planCode: currentPlanCode, workspaceType: workspace.workspaceType }, nextJson: { planCode: targetPlanCode, workspaceType: targetWorkspaceType }, metadataJson: { justification, provider: subscription.provider } } });
+    return updatedCapacity;
+  });
+  return { changed: true, workspaceId: workspace.id, previousPlanCode: currentPlanCode, targetPlanCode, workspaceType: targetWorkspaceType, blockers: [], capacity: { includedAllowance: capacity.includedAllowance, includedBalance: capacity.includedBalance, purchasedBalance: capacity.purchasedBalance } };
+}
+
 export async function effectiveCommercialEntitlements(workspaceId: string) {
   const subscription = await authoritativePlanVersion(workspaceId);
   if (!subscription) {
@@ -599,8 +657,8 @@ export async function commercialSeatLimit(workspaceId: string) {
   return (await effectiveCommercialEntitlements(workspaceId)).seatLimit;
 }
 
-export async function ensureCommercialSeatAssignments(workspaceId: string) {
-  const memberships = await prisma.workspaceMembership.findMany({
+export async function ensureCommercialSeatAssignments(workspaceId: string, db: Db = prisma) {
+  const memberships = await db.workspaceMembership.findMany({
     where: { workspaceId, status: "active" },
     select: { id: true, roles: { select: { role: true } } },
   });
@@ -611,20 +669,20 @@ export async function ensureCommercialSeatAssignments(workspaceId: string) {
     .filter((membership) => membership.roles.some(({ role }) => internalRoles.has(role)))
     .map((membership) => membership.id);
   if (eligibleIds.length) {
-    await prisma.commercialSeatAssignment.createMany({
+    await db.commercialSeatAssignment.createMany({
       data: eligibleIds.map((membershipId) => ({ workspaceId, membershipId, status: "active" })),
       skipDuplicates: true,
     });
-    await prisma.commercialSeatAssignment.updateMany({
+    await db.commercialSeatAssignment.updateMany({
       where: { workspaceId, membershipId: { in: eligibleIds }, status: { not: "active" } },
       data: { status: "active", removedAt: null, pendingRemovalAt: null },
     });
   }
-  await prisma.commercialSeatAssignment.updateMany({
+  await db.commercialSeatAssignment.updateMany({
     where: { workspaceId, status: "active", ...(eligibleIds.length ? { membershipId: { notIn: eligibleIds } } : {}) },
     data: { status: "removed", removedAt: new Date() },
   });
-  return prisma.commercialSeatAssignment.count({ where: { workspaceId, status: "active" } });
+  return db.commercialSeatAssignment.count({ where: { workspaceId, status: "active" } });
 }
 
 export function verifyJvZooIpn(payload: JsonObject, secret = config.jvzooSecretKey) {

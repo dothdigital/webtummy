@@ -94,6 +94,7 @@ export default function AdminCommercial() {
   const [addonDrafts, setAddonDrafts] = useState<Record<string, { amount: string; units: string; providerProductRef: string; checkoutUrl: string }>>({});
   const [workflowDrafts, setWorkflowDrafts] = useState<Record<string, { units: string; minimum: string; maximum: string; providerCost: string; config: string }>>({});
   const [workspaceId, setWorkspaceId] = useState("");
+  const [workspacePlanDrafts, setWorkspacePlanDrafts] = useState<Record<string, string>>({});
   const [adjustment, setAdjustment] = useState({ units: "", reasonCode: "commercial_support", justification: "" });
   const [registrationPolicy, setRegistrationPolicy] = useState({ trialEnabled: false, trialDays: 14 });
 
@@ -106,6 +107,7 @@ export default function AdminCommercial() {
       setPriceDrafts(Object.fromEntries(result.catalog.flatMap((plan) => plan.prices.map((price) => [price.id, { amount: (price.amountCents / 100).toFixed(2), providerProductRef: price.providerProductRef ?? "", checkoutUrl: price.checkoutUrl ?? "" }]))));
       setAddonDrafts(Object.fromEntries(result.addonSkus.map((addon) => [addon.id, { amount: (addon.amountCents / 100).toFixed(2), units: String(addon.capacityUnits), providerProductRef: addon.providerProductRef ?? "", checkoutUrl: addon.checkoutUrl ?? "" }])));
       setWorkflowDrafts(Object.fromEntries(result.workflowPricing.map((workflow) => [workflow.featureKey, { units: String(workflow.defaultCreditCost), minimum: workflow.minimumUnitCost == null ? "" : String(workflow.minimumUnitCost), maximum: workflow.maximumUnitCost == null ? "" : String(workflow.maximumUnitCost), providerCost: String(workflow.estimatedProviderCost), config: JSON.stringify(workflow.pricingConfigJson ?? {}, null, 2) }])));
+      setWorkspacePlanDrafts(Object.fromEntries(result.workspaces.map((workspace) => [workspace.id, workspace.commercialSubscriptions[0]?.planVersion.billingPlan.code ?? "entrepreneur"])));
       if (!workspaceId && result.workspaces[0]) setWorkspaceId(result.workspaces[0].id);
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "Could not load Commercial Admin.");
@@ -129,6 +131,33 @@ export default function AdminCommercial() {
       setMessage(`Checked ${result.checked} active workspaces. Corrected ${result.changed}; ${result.reviewRequired} require manual review because their plan is unresolved or Agency data/team access must be protected.`);
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "Workspace plan types could not be reconciled.");
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const changeWorkspacePlan = async (workspace: AdminCommercialData["workspaces"][number]) => {
+    const subscription = workspace.commercialSubscriptions[0];
+    const targetPlanCode = workspacePlanDrafts[workspace.id];
+    if (!subscription || !targetPlanCode || targetPlanCode === subscription.planVersion.billingPlan.code) return;
+    const justification = window.prompt(`Why are you changing ${workspace.name} from ${subscription.planVersion.billingPlan.name} to ${targetPlanCode}? This reason is saved in the commercial audit log.`)?.trim();
+    if (!justification) return;
+    if (justification.length < 8) {
+      setMessage("Enter an audit reason of at least 8 characters.");
+      return;
+    }
+    if (!window.confirm(`Change ${workspace.name} to ${targetPlanCode}? Included capacity, workspace capabilities, and seat limits will update immediately. Purchased Capacity Packs are preserved.`)) return;
+    const busyKey = `plan:${workspace.id}`;
+    setBusy(busyKey);
+    setMessage(null);
+    try {
+      const result = await api.post<{ changed: boolean; previousPlanCode: string; targetPlanCode: string; workspaceType: string }>(`/api/billing/admin/commercial/workspaces/${workspace.id}/plan-change`, { targetPlanCode, justification });
+      await load();
+      setMessage(result.changed
+        ? `${workspace.name} changed from ${result.previousPlanCode} to ${result.targetPlanCode}. Workspace access, included capacity, and limits are now reconciled.`
+        : `${workspace.name} is already on ${result.targetPlanCode}.`);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "The workspace plan could not be changed.");
     } finally {
       setBusy(null);
     }
@@ -410,17 +439,18 @@ export default function AdminCommercial() {
       <Card className="overflow-hidden">
         <div className="flex flex-wrap items-start justify-between gap-3 border-b border-slate-200 p-5">
           <div><h2 className="text-lg font-bold text-charcoal-950">Workspace commercial state</h2>
-          <p className="text-sm text-charcoal-500">The workspace—not the user—is the licensing boundary. Reconciliation aligns existing workspaces to their active or trialing commercial plan without deleting project data.</p></div>
+          <p className="text-sm text-charcoal-500">The workspace—not the user—is the licensing boundary. Trial, manual, offline, and legacy plans can be changed here. JVZoo subscriptions must be changed by a verified provider event.</p></div>
           <Button onClick={() => void reconcileWorkspaceTypes()} disabled={busy === "reconcile-workspace-types"}>{busy === "reconcile-workspace-types" ? "Checking…" : "Repair plan workspace types"}</Button>
         </div>
         <div className="overflow-x-auto">
           <table className="min-w-full divide-y divide-slate-200 text-sm">
-            <thead className="bg-slate-50 text-left text-xs font-bold uppercase tracking-wide text-charcoal-500"><tr><th className="px-4 py-3">Workspace</th><th className="px-4 py-3">Plan</th><th className="px-4 py-3">Provider</th><th className="px-4 py-3">Access</th><th className="px-4 py-3">Capacity</th><th className="px-4 py-3">Resources</th><th className="px-4 py-3">Period end</th></tr></thead>
+            <thead className="bg-slate-50 text-left text-xs font-bold uppercase tracking-wide text-charcoal-500"><tr><th className="px-4 py-3">Workspace</th><th className="px-4 py-3">Current plan</th><th className="px-4 py-3">Change plan</th><th className="px-4 py-3">Provider</th><th className="px-4 py-3">Access</th><th className="px-4 py-3">Capacity</th><th className="px-4 py-3">Resources</th><th className="px-4 py-3">Period end</th></tr></thead>
             <tbody className="divide-y divide-slate-100">
               {data?.workspaces.map((workspace) => {
                 const subscription = workspace.commercialSubscriptions[0];
                 const capacity = workspace.capacityAccounts[0];
-                return <tr key={workspace.id}><td className="px-4 py-3"><div className="font-bold text-charcoal-900">{workspace.name}</div><div className="text-xs capitalize text-charcoal-500">{workspace.workspaceType}</div></td><td className="px-4 py-3">{subscription ? `${subscription.planVersion.billingPlan.name} v${subscription.planVersion.version}` : "Not resolved"}</td><td className="px-4 py-3 uppercase">{subscription?.provider ?? "—"}</td><td className="px-4 py-3"><StatusPill status={workspace.accessMode} /></td><td className="px-4 py-3">{capacity ? <><b>{capacity.includedBalance + capacity.purchasedBalance}</b><div className="text-xs text-charcoal-500">{capacity.includedBalance} included · {capacity.purchasedBalance} purchased</div></> : "Pending migration"}</td><td className="px-4 py-3">{workspace._count.memberships} members · {workspace._count.agencyClients} clients</td><td className="px-4 py-3">{dateLabel(subscription?.currentPeriodEnd)}</td></tr>;
+                const adminMutable = Boolean(subscription && ["trial", "manual", "manual_override", "offline", "legacy"].includes(subscription.provider));
+                return <tr key={workspace.id}><td className="px-4 py-3"><div className="font-bold text-charcoal-900">{workspace.name}</div><div className="text-xs capitalize text-charcoal-500">{workspace.workspaceType}</div></td><td className="px-4 py-3">{subscription ? `${subscription.planVersion.billingPlan.name} v${subscription.planVersion.version}` : "Not resolved"}</td><td className="min-w-56 px-4 py-3">{adminMutable ? <div className="flex items-center gap-2"><select aria-label={`New plan for ${workspace.name}`} value={workspacePlanDrafts[workspace.id] ?? subscription?.planVersion.billingPlan.code ?? "entrepreneur"} onChange={(event) => setWorkspacePlanDrafts((current) => ({ ...current, [workspace.id]: event.target.value }))} className="rounded-lg border border-slate-300 px-2 py-2 text-sm"><option value="entrepreneur">Entrepreneur</option><option value="business">Business</option><option value="agency">Agency</option></select><Button variant="ghost" onClick={() => void changeWorkspacePlan(workspace)} disabled={busy === `plan:${workspace.id}` || workspacePlanDrafts[workspace.id] === subscription?.planVersion.billingPlan.code}>{busy === `plan:${workspace.id}` ? "Changing…" : "Apply"}</Button></div> : <div className="text-xs text-charcoal-500">{subscription ? "Provider managed" : "Resolve plan first"}</div>}</td><td className="px-4 py-3 uppercase">{subscription?.provider ?? "—"}</td><td className="px-4 py-3"><StatusPill status={workspace.accessMode} /></td><td className="px-4 py-3">{capacity ? <><b>{capacity.includedBalance + capacity.purchasedBalance}</b><div className="text-xs text-charcoal-500">{capacity.includedBalance} included · {capacity.purchasedBalance} purchased</div></> : "Pending migration"}</td><td className="px-4 py-3">{workspace._count.memberships} members · {workspace._count.agencyClients} clients</td><td className="px-4 py-3">{dateLabel(subscription?.currentPeriodEnd)}</td></tr>;
               })}
             </tbody>
           </table>

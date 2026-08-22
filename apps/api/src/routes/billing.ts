@@ -9,6 +9,7 @@ import { config } from "../config.js";
 import {
   checkoutUrlForPrice,
   authoritativePlanVersion,
+  changeWorkspaceCommercialPlan,
   commercialCatalog,
   commercialRegistrationPolicy,
   COMMERCIAL_PLAN_VERSION,
@@ -63,6 +64,7 @@ async function requireWorkspaceSettings(req: Request, res: import("express").Res
 }
 
 const planCodeSchema = z.string().trim().toLowerCase().regex(/^[a-z0-9][a-z0-9_-]{1,39}$/, "Use 2-40 lowercase letters, numbers, hyphens, or underscores");
+const adminWorkspacePlanChangeSchema = z.object({ targetPlanCode: z.enum(["entrepreneur", "business", "agency"]), justification: z.string().trim().min(8).max(1000) });
 
 const planFieldsSchema = z.object({
   name: z.string().trim().min(1).max(80),
@@ -513,6 +515,17 @@ billingRouter.post("/admin/commercial/workspaces/reconcile-types", requireAuth, 
     results.push({ workspaceId: workspace.id, name: workspace.name, previousType: workspace.workspaceType, expectedType, resolvedType, status: resolvedType !== workspace.workspaceType ? "changed" : expectedType === workspace.workspaceType ? "correct" : "review_required", reason });
   }
   res.json({ checked: results.length, changed: results.filter((item) => item.status === "changed").length, reviewRequired: results.filter((item) => item.status === "review_required").length, results });
+});
+
+billingRouter.post("/admin/commercial/workspaces/:workspaceId/plan-change", requireAuth, requireRole("super_admin"), async (req, res) => {
+  const parsed = adminWorkspacePlanChangeSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() });
+  try {
+    res.json(await changeWorkspaceCommercialPlan({ workspaceId: req.params.workspaceId, targetPlanCode: parsed.data.targetPlanCode, justification: parsed.data.justification, actorId: req.user!.userId }));
+  } catch (error) {
+    const typed = error as { statusCode?: number; code?: string; message?: string; blockers?: string[] };
+    res.status(typed.statusCode ?? 500).json({ error: typed.message ?? "The plan could not be changed.", code: typed.code, blockers: typed.blockers ?? [] });
+  }
 });
 
 billingRouter.patch("/admin/commercial/addons/:addonId", requireAuth, requireRole("super_admin"), async (req, res) => {

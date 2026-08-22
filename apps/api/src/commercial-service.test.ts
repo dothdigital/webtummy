@@ -1,6 +1,6 @@
 import crypto from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { checkoutUrlForPrice, normalizeJvZooIpn, selectJvZooPriceMapping, stateFromJvZooEvent, validateJvZooRenewalPayment, verifyJvZooIpn, workspaceTypeForCommercialPlan } from "./commercial-service.js";
+import { checkoutUrlForPrice, normalizeJvZooIpn, selectJvZooPriceMapping, stateFromJvZooEvent, validateJvZooRenewalPayment, verifyJvZooIpn, workspacePlanChangeBlockers, workspaceTypeForCommercialPlan } from "./commercial-service.js";
 
 const sha1 = (value: string) => crypto.createHash("sha1").update(value, "utf8").digest("hex").slice(0, 8).toUpperCase();
 
@@ -132,6 +132,18 @@ describe("JVZoo commercial adapter", () => {
     expect(workspaceTypeForCommercialPlan("business")).toBe("business");
     expect(workspaceTypeForCommercialPlan("agency")).toBe("agency");
     expect(() => workspaceTypeForCommercialPlan("unknown")).toThrow(/does not map/i);
+  });
+
+  it("blocks a downgrade until resources outside the target plan are resolved", () => {
+    expect(workspacePlanChangeBlockers({ targetWorkspaceType: "personal", activeMemberships: 3, activeAgencyClients: 2, activeProjects: 6, activeProjectLimit: 4, targetSeatLimit: 1 })).toEqual([
+      "Remove or deactivate 2 additional workspace members to meet the target plan seat limit of 1.",
+      "Archive or migrate 2 active Agency clients before leaving Agency.",
+      "Archive 2 active projects to meet the target plan limit of 4.",
+    ]);
+    expect(workspacePlanChangeBlockers({ targetWorkspaceType: "agency", activeMemberships: 3, activeAgencyClients: 2, activeProjects: 6, activeProjectLimit: null, targetSeatLimit: 3 })).toEqual([]);
+    expect(workspacePlanChangeBlockers({ targetWorkspaceType: "business", activeMemberships: 3, activeAgencyClients: 0, activeProjects: 2, activeProjectLimit: 10, targetSeatLimit: 2 })).toEqual([
+      "Remove or deactivate 1 additional workspace member to meet the target plan seat limit of 2.",
+    ]);
   });
 
   it("builds the configured JVZoo checkout URL without exposing raw identifiers", () => {
