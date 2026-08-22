@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { permissionForWorkspaceRequest } from "./middleware.js";
+import { permissionForWorkspaceRequest, refreshedAuthenticatedScope } from "./middleware.js";
 
 describe("workspace activity permission mapping", () => {
   it.each([
@@ -22,5 +22,21 @@ describe("workspace activity permission mapping", () => {
     ["DELETE", "/projects-v2/project-1", "manage_projects"],
   ])("maps %s %s to %s", (method, path, permission) => {
     expect(permissionForWorkspaceRequest(method, path)).toBe(permission);
+  });
+});
+
+describe("authenticated account scope refresh", () => {
+  it("replaces a stale Agency client from the token with the current Personal account client", () => {
+    expect(refreshedAuthenticatedScope(
+      { userId: "user-1", role: "client_admin", clientId: "old-agency-client" },
+      { role: "client_admin", clientId: "current-personal-client" },
+    )).toEqual({ userId: "user-1", role: "client_admin", clientId: "current-personal-client" });
+  });
+
+  it("preserves a database null instead of reviving the token tenant", () => {
+    expect(refreshedAuthenticatedScope(
+      { userId: "user-1", role: "client_admin", clientId: "old-agency-client" },
+      { role: "client_admin", clientId: null },
+    ).clientId).toBeNull();
   });
 });

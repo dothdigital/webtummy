@@ -18,6 +18,10 @@ declare global {
   }
 }
 
+export function refreshedAuthenticatedScope(token: JwtPayload, currentUser: { role: Role; clientId: string | null }) {
+  return { ...token, role: currentUser.role, clientId: currentUser.clientId } satisfies JwtPayload;
+}
+
 /** Require a valid JWT. Attaches req.user. */
 export async function requireAuth(req: Request, res: Response, next: NextFunction) {
   const header = req.headers.authorization;
@@ -30,12 +34,21 @@ export async function requireAuth(req: Request, res: Response, next: NextFunctio
     return res.status(401).json({ error: "invalid or expired token" });
   }
 
-  // Return a renewed token on authenticated activity. The browser accepts this
-  // only when recent user interaction exists, so background polling does not
-  // keep an abandoned session alive indefinitely.
-  res.setHeader("X-SEnuke-Session-Token", signToken({ userId: req.user.userId, role: req.user.role, clientId: req.user.clientId }));
-
   try {
+    // The token proves identity, but mutable account scope must come from the
+    // database. This repairs existing sessions immediately when an account is
+    // moved from a stale Agency tenant back to its Personal/Entrepreneur
+    // client, and makes every downstream legacy and workspace route use the
+    // same current scope.
+    const currentUser = await prisma.user.findUnique({ where: { id: req.user.userId }, select: { role: true, clientId: true, isActive: true } });
+    if (!currentUser?.isActive) return res.status(401).json({ error: "inactive account" });
+    req.user = refreshedAuthenticatedScope(req.user, currentUser);
+
+    // Return a renewed token on authenticated activity. The browser accepts
+    // this only after recent interaction, and it now carries the corrected
+    // current account scope instead of perpetuating the stale tenant.
+    res.setHeader("X-SEnuke-Session-Token", signToken({ userId: req.user.userId, role: req.user.role, clientId: req.user.clientId }));
+
     const requestedWorkspaceId = req.header("x-senuke-ai-workspace-id")?.trim();
     let workspaceId = requestedWorkspaceId || await preferredWorkspaceIdForUser(req.user.userId, req.user.clientId);
     let membership = workspaceId ? await prisma.workspaceMembership.findFirst({

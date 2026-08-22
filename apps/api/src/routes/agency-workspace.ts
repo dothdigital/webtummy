@@ -140,7 +140,7 @@ agencyWorkspaceRouter.get(["/agency/workspace", "/workspace"], (req, res) => han
   const canViewNotifications = hasWorkspacePermission(context, "view_notifications");
   const canViewActivity = hasWorkspacePermission(context, "view_activity");
   const [clients, teams, members, invitations, notifications, activity, discoveryDrafts] = await Promise.all([
-    prisma.agencyClient.findMany({
+    context.workspace.workspaceType === "agency" ? prisma.agencyClient.findMany({
       where: { workspaceId: context.workspace.id, ...clientFilter },
       orderBy: [{ status: "asc" }, { name: "asc" }],
       include: {
@@ -154,7 +154,7 @@ agencyWorkspaceRouter.get(["/agency/workspace", "/workspace"], (req, res) => han
         memberAssignments: { include: { membership: { include: { user: { select: { id: true, name: true, email: true } }, roles: true } } } },
         teamAssignments: { include: { team: true } },
       },
-    }),
+    }) : Promise.resolve([]),
     canManageUsers ? prisma.workspaceTeam.findMany({ where: { workspaceId: context.workspace.id }, orderBy: { name: "asc" }, include: { members: { include: { membership: { include: { user: { select: { id: true, name: true, email: true } }, roles: true } } } }, _count: { select: { clientAssignments: true, projectAssignments: true } } } }) : Promise.resolve([]),
     canManageUsers ? prisma.workspaceMembership.findMany({ where: { workspaceId: context.workspace.id }, orderBy: { createdAt: "asc" }, include: { user: { select: { id: true, name: true, email: true, isActive: true } }, roles: true, teamMemberships: { include: { team: true } } } }) : Promise.resolve([]),
     canManageUsers ? prisma.workspaceInvitation.findMany({ where: { workspaceId: context.workspace.id, status: "invited" }, orderBy: { createdAt: "desc" }, select: { id: true, email: true, name: true, rolesJson: true, teamIdsJson: true, agencyClientIdsJson: true, status: true, expiresAt: true, createdAt: true } }) : Promise.resolve([]),

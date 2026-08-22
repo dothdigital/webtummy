@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { hasWorkspacePermission, hasWorkspaceRole, selectPreferredWorkspaceId, validateRolesForWorkspace, workspaceTypeReconciliationBlockReason, type WorkspaceContext } from "./workspace-access.js";
+import { currentAccountClientId, hasWorkspacePermission, hasWorkspaceRole, mistakenAgencyShellCanBeFlattened, selectPreferredWorkspaceId, validateRolesForWorkspace, workspaceTypeReconciliationBlockReason, type WorkspaceContext } from "./workspace-access.js";
 
 function context(roles: string[], workspaceType = "agency", overrides: unknown = {}, settingsJson: unknown = {}): WorkspaceContext {
   return {
@@ -189,5 +189,33 @@ describe("commercial workspace type alignment", () => {
 
   it("allows expansion to Agency without deleting existing data", () => {
     expect(workspaceTypeReconciliationBlockReason({ storedType: "personal", expectedType: "agency", activeMemberships: 1, agencyClients: 0 })).toBeNull();
+  });
+});
+
+describe("current account identity", () => {
+  it("uses the database account link instead of a stale token tenant", () => {
+    expect(currentAccountClientId({ clientId: "personal-client" }, "agency-client-from-old-token")).toBe("personal-client");
+  });
+
+  it("treats a cleared database account link as authoritative", () => {
+    expect(currentAccountClientId({ clientId: null }, "agency-client-from-old-token")).toBeNull();
+  });
+
+  it("uses the token only when the database user no longer exists", () => {
+    expect(currentAccountClientId(null, "token-client")).toBe("token-client");
+  });
+});
+
+describe("mistaken Agency shell repair eligibility", () => {
+  it("allows a single-user Personal plan that has never held Agency entitlement", () => {
+    expect(mistakenAgencyShellCanBeFlattened({ storedType: "agency", expectedType: "personal", activeMemberships: 1, historicalPlanCodes: ["starter", "entrepreneur"] })).toBe(true);
+  });
+
+  it("protects a genuine former Agency workspace", () => {
+    expect(mistakenAgencyShellCanBeFlattened({ storedType: "agency", expectedType: "personal", activeMemberships: 1, historicalPlanCodes: ["agency", "entrepreneur"] })).toBe(false);
+  });
+
+  it("protects additional active members", () => {
+    expect(mistakenAgencyShellCanBeFlattened({ storedType: "agency", expectedType: "personal", activeMemberships: 2, historicalPlanCodes: ["entrepreneur"] })).toBe(false);
   });
 });

@@ -4,7 +4,7 @@ import { z } from "zod";
 import { prisma } from "@webtummy/db";
 import { requireAuth, requireRole } from "../middleware.js";
 import { projectClientIdForRequest } from "../project-scope.js";
-import { hasWorkspacePermission, isWorkspaceOwner, reconcileWorkspaceTypeFromCommercialPlan, workspaceContext, workspaceTypeReconciliationBlockReason } from "../workspace-access.js";
+import { hasWorkspacePermission, isWorkspaceOwner, mistakenAgencyShellCanBeFlattened, reconcileWorkspaceTypeFromCommercialPlan, workspaceContext, workspaceTypeReconciliationBlockReason } from "../workspace-access.js";
 import { config } from "../config.js";
 import {
   checkoutUrlForPrice,
@@ -468,19 +468,48 @@ billingRouter.get("/admin/commercial", requireAuth, requireRole("super_admin"), 
   res.json({ catalog, policies, events, audits, workspaces, registrationPolicy, externalSubscriptions, addonSkus, workflowPricing });
 });
 
-billingRouter.post("/admin/commercial/workspaces/reconcile-types", requireAuth, requireRole("super_admin"), async (_req, res) => {
+billingRouter.post("/admin/commercial/workspaces/reconcile-types", requireAuth, requireRole("super_admin"), async (req, res) => {
   const workspaces = await prisma.workspace.findMany({
     where: { status: "active" },
     orderBy: { createdAt: "asc" },
-    select: { id: true, name: true, workspaceType: true, _count: { select: { agencyClients: true, memberships: { where: { status: "active" } } } } },
+    select: {
+      id: true, name: true, workspaceType: true,
+      legacyClient: { select: { plan: true } },
+      commercialSubscriptions: { where: { status: { not: "deleted" } }, select: { planVersion: { select: { billingPlan: { select: { code: true } } } } } },
+      _count: { select: { agencyClients: true, memberships: { where: { status: "active" } } } },
+    },
   });
   const results: Array<{ workspaceId: string; name: string; previousType: string; expectedType: string | null; resolvedType: string; status: "correct" | "changed" | "review_required"; reason: string | null }> = [];
   for (const workspace of workspaces) {
     const subscription = await authoritativePlanVersion(workspace.id);
     let expectedType: string | null = null;
     try { expectedType = subscription ? workspaceTypeForCommercialPlan(subscription.planVersion.billingPlan.code) : null; } catch { expectedType = null; }
-    const reason = expectedType ? workspaceTypeReconciliationBlockReason({ storedType: workspace.workspaceType, expectedType, activeMemberships: workspace._count.memberships, agencyClients: workspace._count.agencyClients }) : "commercial_plan_unresolved";
-    const resolvedType = expectedType && !reason ? await reconcileWorkspaceTypeFromCommercialPlan(workspace.id, workspace.workspaceType) : workspace.workspaceType;
+    let reason = expectedType ? workspaceTypeReconciliationBlockReason({ storedType: workspace.workspaceType, expectedType, activeMemberships: workspace._count.memberships, agencyClients: workspace._count.agencyClients }) : "commercial_plan_unresolved";
+    let resolvedType = workspace.workspaceType;
+    const historicalPlanCodes = [...workspace.commercialSubscriptions.map((item) => item.planVersion.billingPlan.code), workspace.legacyClient?.plan].filter((item): item is string => Boolean(item));
+    const flattenMistakenShell = reason === "agency_clients_exist" && mistakenAgencyShellCanBeFlattened({ storedType: workspace.workspaceType, expectedType, activeMemberships: workspace._count.memberships, historicalPlanCodes });
+    if (flattenMistakenShell) {
+      const repair = await prisma.$transaction(async (tx) => {
+        const clients = await tx.agencyClient.findMany({ where: { workspaceId: workspace.id }, select: { id: true, name: true, projects: { select: { id: true, businessName: true } } } });
+        const clientIds = clients.map((client) => client.id);
+        const projects = clients.flatMap((client) => client.projects.map((project) => ({ ...project, restoredBusinessName: project.businessName || client.name })));
+        for (const project of projects) await tx.project.update({ where: { id: project.id }, data: { agencyClientId: null, businessName: project.restoredBusinessName } });
+        if (clientIds.length) {
+          await tx.discoveryDraft.updateMany({ where: { workspaceId: workspace.id, agencyClientId: { in: clientIds } }, data: { agencyClientId: null } });
+          await tx.discoveryIdeaExport.updateMany({ where: { workspaceId: workspace.id, agencyClientId: { in: clientIds } }, data: { agencyClientId: null } });
+          await tx.gapReportExport.updateMany({ where: { workspaceId: workspace.id, agencyClientId: { in: clientIds } }, data: { agencyClientId: null } });
+          await tx.workspaceNotification.updateMany({ where: { workspaceId: workspace.id, agencyClientId: { in: clientIds } }, data: { agencyClientId: null } });
+          await tx.workspaceAiIntakeSession.updateMany({ where: { workspaceId: workspace.id, appliedAgencyClientId: { in: clientIds } }, data: { appliedAgencyClientId: null } });
+          await tx.growthIntelligenceCycle.updateMany({ where: { workspaceId: workspace.id, agencyClientId: { in: clientIds } }, data: { agencyClientId: null } });
+          await tx.agencyClient.updateMany({ where: { id: { in: clientIds } }, data: { status: "archived", archivedAt: new Date(), archivedById: req.user!.userId } });
+        }
+        await tx.workspace.update({ where: { id: workspace.id }, data: { workspaceType: "personal" } });
+        await tx.workspaceActivity.create({ data: { workspaceId: workspace.id, actorUserId: req.user!.userId, action: "workspace.mistaken_agency_shell_repaired", entityType: "workspace", entityId: workspace.id, previousJson: { workspaceType: workspace.workspaceType, agencyClients: clientIds }, nextJson: { workspaceType: "personal", projectsDetached: projects.length, clientShellsArchived: clientIds.length }, metadataJson: { source: "admin_commercial_reconciliation", historicalPlanCodes, destructive: false } } });
+        return { projects: projects.length, clients: clientIds.length };
+      });
+      resolvedType = "personal";
+      reason = `mistaken_agency_shell_repaired:${repair.projects}_projects:${repair.clients}_client_shells`;
+    } else if (expectedType && !reason) resolvedType = await reconcileWorkspaceTypeFromCommercialPlan(workspace.id, workspace.workspaceType);
     results.push({ workspaceId: workspace.id, name: workspace.name, previousType: workspace.workspaceType, expectedType, resolvedType, status: resolvedType !== workspace.workspaceType ? "changed" : expectedType === workspace.workspaceType ? "correct" : "review_required", reason });
   }
   res.json({ checked: results.length, changed: results.filter((item) => item.status === "changed").length, reviewRequired: results.filter((item) => item.status === "review_required").length, results });

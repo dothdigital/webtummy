@@ -26,6 +26,13 @@ export function workspaceTypeReconciliationBlockReason(input: { storedType: stri
   return null;
 }
 
+export function mistakenAgencyShellCanBeFlattened(input: { storedType: string; expectedType: string | null; activeMemberships: number; historicalPlanCodes: string[] }) {
+  if (input.storedType !== "agency" || input.expectedType !== "personal" || input.activeMemberships !== 1) return false;
+  return !input.historicalPlanCodes.some((planCode) => {
+    try { return workspaceTypeForCommercialPlan(planCode) === "agency"; } catch { return false; }
+  });
+}
+
 /**
  * Keep the operational workspace experience aligned with the authoritative
  * commercial plan. Narrowing is automatic only when it cannot hide Agency
@@ -113,6 +120,13 @@ export function selectPreferredWorkspaceId(candidates: WorkspaceChoice[], userId
   return ranked[0]?.workspace.id ?? null;
 }
 
+export function currentAccountClientId(databaseUser: { clientId: string | null } | null, tokenClientId: string | null) {
+  // A database null is authoritative too: falling back with `??` would revive
+  // a stale Agency tenant embedded in an older token after the account link
+  // was deliberately cleared or replaced.
+  return databaseUser ? databaseUser.clientId : tokenClientId;
+}
+
 export async function preferredWorkspaceIdForUser(userId: string, legacyClientId: string | null) {
   const memberships = await prisma.workspaceMembership.findMany({
     where: { userId, status: "active", workspace: { status: "active" } },
@@ -169,10 +183,16 @@ async function bootstrapWorkspace(req: Request, legacyClientId: string) {
 
 export async function workspaceContext(req: Request): Promise<WorkspaceContext> {
   if (!req.user) throw Object.assign(new Error("Unauthenticated."), { statusCode: 401 });
+  // JWTs can outlive an account/workspace correction. Never use the clientId
+  // embedded in an older token to choose the operational workspace: doing so
+  // made /auth/me return Personal while /workspace subsequently selected an
+  // historical Agency membership and overwrote the sidebar identity.
+  const currentUser = await prisma.user.findUnique({ where: { id: req.user.userId }, select: { clientId: true } });
+  const currentClientId = currentAccountClientId(currentUser, req.user.clientId);
   const explicitWorkspaceId = req.header("x-senuke-ai-workspace-id")?.trim();
   const preferredWorkspaceId = explicitWorkspaceId
     ? null
-    : await preferredWorkspaceIdForUser(req.user.userId, req.user.clientId);
+    : await preferredWorkspaceIdForUser(req.user.userId, currentClientId);
   let workspace = explicitWorkspaceId
     ? await prisma.workspace.findFirst({ where: { id: explicitWorkspaceId, status: "active", memberships: { some: { userId: req.user.userId, status: "active" } } } })
     : preferredWorkspaceId
@@ -182,7 +202,7 @@ export async function workspaceContext(req: Request): Promise<WorkspaceContext> 
   // Browsers can retain a workspace id after local data or membership changes.
   // Use the user's active workspace instead of entering legacy bootstrap.
   if (!workspace && explicitWorkspaceId) {
-    const fallbackWorkspaceId = await preferredWorkspaceIdForUser(req.user.userId, req.user.clientId);
+    const fallbackWorkspaceId = await preferredWorkspaceIdForUser(req.user.userId, currentClientId);
     workspace = fallbackWorkspaceId ? await prisma.workspace.findUnique({ where: { id: fallbackWorkspaceId } }) : null;
   }
 
@@ -190,7 +210,7 @@ export async function workspaceContext(req: Request): Promise<WorkspaceContext> 
     if (req.user.role === "super_admin") {
       throw Object.assign(new Error("Create or join a workspace before using workspace projects."), { statusCode: 409 });
     }
-    const legacyClientId = await projectClientIdForRequest(req);
+    const legacyClientId = currentClientId ?? await projectClientIdForRequest(req);
     if (!legacyClientId || legacyClientId === "__no_client_scope__") throw Object.assign(new Error("Workspace context is required."), { statusCode: 400 });
     workspace = await bootstrapWorkspace(req, legacyClientId);
   }
