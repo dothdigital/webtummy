@@ -5,6 +5,7 @@ import {
   renderWebsitePageDocument,
   renderWebsitePageWordPressBlocks,
   websiteLayoutCssVariables,
+  websitePagePublicationPath,
 } from "./websiteRenderer.js";
 import {
   SENUKE_COMPONENT_REGISTRY_V1,
@@ -395,6 +396,65 @@ describe("Approved Release website renderer", () => {
     expect(renderWebsiteComponentHtml(contactForm, { formShortcode: "[contact-form-7 id=\"12\"]" })).toContain("[contact-form-7");
   });
 
+  it("preserves a lead-magnet form endpoint instead of replacing it with the website contact form", () => {
+    const leadForm: WebsiteComponentInstance = {
+      instanceId: "lead-form-1",
+      componentId: "conversion.contact_form",
+      componentVersion: "1.0.0",
+      variant: "split",
+      props: {
+        heading: "Get the checklist",
+        introduction: "Enter your email to receive the approved resource.",
+        formId: "lead-magnet-checklist",
+        submissionUrl: "https://app.example.com/api/public/lead-magnets/checklist/subscribe",
+        fields: [
+          { label: "Email", name: "email", inputType: "email", required: true },
+          { label: "I agree to receive the resource.", name: "consent", inputType: "checkbox", required: true },
+        ],
+        submitLabel: "Send my checklist",
+        successMessage: "Check your inbox for the resource.",
+      },
+    };
+    const componentHtml = renderWebsiteComponentHtml(leadForm, { formAction: "https://app.example.com/contact", formShortcode: "[contact-form-7 id=\"12\"]" });
+    expect(componentHtml).toContain('id="lead-magnet-checklist"');
+    expect(componentHtml).toContain('action="https://app.example.com/api/public/lead-magnets/checklist/subscribe"');
+    expect(componentHtml).not.toContain("[contact-form-7");
+    const landingPage = { ...model.pages[0], pageId: "lead-page", pageType: "landing", sections: [hero, leadForm] };
+    const documentHtml = renderWebsitePageDocument({ ...model, pages: [landingPage] }, landingPage);
+    expect(documentHtml).toContain('document.querySelectorAll("[data-senuke-managed-form]")');
+    expect(documentHtml).toContain('field.type==="checkbox"?field.checked');
+  });
+
+  it("renders a validated provider form in a sandbox for static HTML and WordPress", () => {
+    const providerForm: WebsiteComponentInstance = {
+      instanceId: "provider-form-1",
+      componentId: "conversion.contact_form",
+      componentVersion: "1.0.0",
+      variant: "split",
+      props: {
+        heading: "Register for the guide",
+        introduction: "Use the provider form to register.",
+        formId: "provider-guide-form",
+        providerEmbedHtml: '<script src="https://forms.example.com/embed.js"></script><form action="https://forms.example.com/subscribe"></form>',
+        fields: [{ label: "Email", name: "email", inputType: "email", required: true }],
+        submitLabel: "Register",
+        successMessage: "Thank you.",
+      },
+    };
+    const html = renderWebsiteComponentHtml(providerForm, { formShortcode: "[contact-form-7 id=\"12\"]" });
+    expect(html).toContain('sandbox="allow-forms allow-scripts allow-popups"');
+    expect(html).toContain("forms.example.com");
+    expect(html).not.toContain("[contact-form-7");
+    expect(html).not.toContain("data-senuke-managed-form");
+
+    const landingPage = { ...model.pages[0], pageId: "provider-page", pageType: "landing", sections: [hero, providerForm] };
+    const providerModel = { ...model, pages: [landingPage] };
+    const wordpress = renderWebsitePageWordPressBlocks(providerModel, landingPage, { formShortcode: "[contact-form-7 id=\"12\"]" });
+    expect(wordpress).toContain("<!-- wp:html -->");
+    expect(wordpress).toContain("senuke-provider-form-embed");
+    expect(wordpress).not.toContain("[contact-form-7");
+  });
+
   it("adds a managed fallback form to a contact page even when no form component was registered", () => {
     const contactPage = {
       ...model.pages[0],
@@ -487,6 +547,50 @@ describe("Approved Release website renderer", () => {
     expect(css).toContain("@media(max-width:860px)");
     expect(css).toContain(".senuke-mobile-menu{display:block");
     expect(css).toContain(".senuke-header-navigation{display:none");
+  });
+
+  it("publishes Blog Articles beneath the Blog Section and builds an automatic archive and feed", () => {
+    const blogSection = {
+      ...model.pages[0],
+      pageId: "blog-page",
+      name: "Blog",
+      slug: "/blog/",
+      pageType: "blog_section",
+      seo: { ...model.pages[0].seo, title: "Blog", metaDescription: "Read the latest practical guidance.", canonicalUrl: "/blog/" },
+    };
+    const article = {
+      ...model.pages[0],
+      pageId: "article-page",
+      parentPageId: "blog-page",
+      name: "How to compare coverage",
+      slug: "/how-to-compare-coverage/",
+      pageType: "blog_article",
+      seo: { ...model.pages[0].seo, title: "How to compare coverage", metaDescription: "A practical guide to comparing the available coverage.", canonicalUrl: "/how-to-compare-coverage/", primaryKeyword: "compare coverage" },
+    };
+    const blogModel: WebsiteModel = {
+      ...model,
+      identity: { businessName: "Example Financial" },
+      pages: [blogSection, article],
+      navigation: [{ pageId: "blog-page", label: "Blog" }],
+    };
+    expect(websitePagePublicationPath(blogModel, article)).toBe("/blog/how-to-compare-coverage/");
+    const files = createStaticWebsiteFiles(blogModel, { environmentType: "production", baseUrl: "https://example.com" });
+    const paths = files.map((file) => file.path);
+    expect(paths).toEqual(expect.arrayContaining([
+      "blog/index.html",
+      "blog/how-to-compare-coverage/index.html",
+      "rss.xml",
+    ]));
+    expect(paths).not.toContain("how-to-compare-coverage/index.html");
+    const archive = files.find((file) => file.path === "blog/index.html")?.content || "";
+    expect(archive).toContain("senuke-blog-grid");
+    expect(archive).toContain("How to compare coverage");
+    expect(archive).toContain('href="../blog/how-to-compare-coverage/index.html"');
+    const articleHtml = files.find((file) => file.path === "blog/how-to-compare-coverage/index.html")?.content || "";
+    expect(articleHtml).toContain('<link rel="canonical" href="https://example.com/blog/how-to-compare-coverage/">');
+    expect(articleHtml).toContain('type="application/rss+xml"');
+    expect(files.find((file) => file.path === "sitemap.xml")?.content).toContain("https://example.com/blog/how-to-compare-coverage/");
+    expect(files.find((file) => file.path === "rss.xml")?.content).toContain("<title>How to compare coverage</title>");
   });
 
   it("publishes the required root Home page as index.html", () => {

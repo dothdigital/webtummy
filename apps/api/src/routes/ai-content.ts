@@ -5,10 +5,9 @@ import { z } from "zod";
 import { Prisma, prisma } from "@webtummy/db";
 import { requireAuth } from "../middleware.js";
 import { projectClientIdForRequest } from "../project-scope.js";
-import { config } from "../config.js";
 import { billingPlanForClient, hasBillingAccess, normalizePlanCode, planView, requireBillingAccess } from "../billing.js";
 import { approvedStrategyContext } from "../strategy-ai.js";
-import { chatCompletionBody } from "../central-ai-service.js";
+import { centralAiJson } from "../central-ai-service.js";
 
 export const aiContentRouter = Router();
 aiContentRouter.use(requireAuth);
@@ -158,40 +157,19 @@ function exportHtmlValue(value: unknown): string {
 }
 
 async function openaiJson(prompt: string, maxOutputTokens = 4_000) {
-  if (!config.openaiApiKey) throw new Error("openai_not_configured");
-  const response = await fetch("https://api.openai.com/v1/chat/completions", {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${config.openaiApiKey}`,
-      "Content-Type": "application/json",
+  return centralAiJson({
+    system: "Create a complete, reviewable content asset. Return valid JSON only.",
+    prompt,
+    temperature: 0.4,
+    maxInputBytes: 72_000,
+    maxOutputTokens,
+    validate: (value) => {
+      if (!value || typeof value !== "object" || Array.isArray(value)) {
+        throw Object.assign(new Error("The AI response did not contain a usable content asset."), { code: "ai_output_invalid", statusCode: 502 });
+      }
+      return value as Record<string, unknown>;
     },
-    body: JSON.stringify(chatCompletionBody({
-      model: config.openaiContentModel,
-      temperature: 0.4,
-      system: "You return valid JSON only. No markdown fences.",
-      prompt,
-      maxInputBytes: 72_000,
-      maxOutputTokens,
-    })),
   });
-  const data = await response.json().catch(() => ({})) as any;
-  if (!response.ok) {
-    throw new Error(typeof data?.error?.message === "string" ? data.error.message : "OpenAI request failed");
-  }
-  const content = data?.choices?.[0]?.message?.content;
-  if (typeof content !== "string") throw new Error("OpenAI returned no content");
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(content);
-  } catch {
-    parsed = { raw: content };
-  }
-  return {
-    result: parsed,
-    model: data?.model ?? config.openaiContentModel,
-    inputTokens: Number(data?.usage?.prompt_tokens ?? 0),
-    outputTokens: Number(data?.usage?.completion_tokens ?? 0),
-  };
 }
 
 aiContentRouter.get("/ai-content/plans", async (_req, res) => {
@@ -512,7 +490,10 @@ aiContentRouter.post("/ai-content/generate", async (req, res) => {
   } catch (error) {
     if (error instanceof Error && error.name === "quota_reached") return res.status(402).json({ error: error.message });
     if (error instanceof Error && error.name === "billing_required") return res.status(402).json({ error: error.message, billingRequired: true });
-    if (error instanceof Error && error.message === "openai_not_configured") return res.status(503).json({ error: "OpenAI is not configured" });
-    res.status(500).json({ error: error instanceof Error ? error.message : "AI generation failed" });
+    const statusCode = typeof error === "object" && error !== null && "statusCode" in error && typeof error.statusCode === "number" ? error.statusCode : 500;
+    const reason = error instanceof Error ? error.message : "AI generation failed";
+    res.status(statusCode).json({
+      error: `Content generation did not complete. Your inputs and every existing content version were preserved. The failed AI provider attempt did not consume committed AI Capacity. ${reason} Review the saved context and retry this same request.`,
+    });
   }
 });

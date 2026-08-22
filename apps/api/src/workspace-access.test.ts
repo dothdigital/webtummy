@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { currentAccountClientId, hasWorkspacePermission, hasWorkspaceRole, mistakenAgencyShellCanBeFlattened, selectPreferredWorkspaceId, validateRolesForWorkspace, workspaceTypeReconciliationBlockReason, type WorkspaceContext } from "./workspace-access.js";
+import { canAccessAgencyClient, currentAccountClientId, hasWorkspacePermission, hasWorkspaceRole, mistakenAgencyShellCanBeFlattened, selectPreferredWorkspaceId, validateRolesForWorkspace, workspaceTypeReconciliationBlockReason, type WorkspaceContext } from "./workspace-access.js";
 
 function context(roles: string[], workspaceType = "agency", overrides: unknown = {}, settingsJson: unknown = {}): WorkspaceContext {
   return {
@@ -60,6 +60,15 @@ describe("workspace role enforcement", () => {
   it("allows Client Viewer only in Agency workspaces", () => {
     expect(() => validateRolesForWorkspace(context(["admin"], "business"), ["client_viewer"])).toThrow(/Business workspaces/);
     expect(() => validateRolesForWorkspace(context(["admin"], "agency"), ["client_viewer"])).not.toThrow();
+  });
+
+  it("keeps Agency client permissions and records out of Business workspaces", async () => {
+    const businessOwner = context(["owner", "admin"], "business");
+    const businessManager = context(["manager"], "business");
+    expect(hasWorkspacePermission(businessOwner, "manage_clients")).toBe(false);
+    expect(hasWorkspacePermission(businessManager, "manage_clients")).toBe(false);
+    expect(await canAccessAgencyClient(businessOwner, "historical-client-shell")).toBe(false);
+    expect(hasWorkspacePermission(context(["manager"], "agency"), "manage_clients")).toBe(true);
   });
 
   it("limits Personal workspace roles", () => {

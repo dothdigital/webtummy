@@ -93,6 +93,10 @@ export function workspaceNextActions(input: {
   return actions.slice(0, 4);
 }
 
+export function requireAgencyWorkspaceType(workspaceType: string) {
+  if (workspaceType !== "agency") throw Object.assign(new Error("Agency client operations are available only in Agency workspaces."), { statusCode: 400 });
+}
+
 export function clientViewerRouteAllowed(method: string, originalUrl: string) {
   const path = originalUrl.split("?")[0];
   const prefix = "/api/agency/clients/";

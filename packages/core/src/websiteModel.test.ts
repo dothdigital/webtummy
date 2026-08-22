@@ -278,6 +278,8 @@ describe("SENuke canonical Website Model", () => {
     const service = websitePageCompositionPolicy({ pageType: "service", title: "Life Insurance", searchIntent: "commercial" });
     const contact = websitePageCompositionPolicy({ pageType: "conversion", title: "Contact Us", searchIntent: "navigational" });
     const faq = websitePageCompositionPolicy({ pageType: "supporting", title: "Frequently Asked Questions", searchIntent: "informational" });
+    const blogSection = websitePageCompositionPolicy({ pageType: "blog_section", title: "Blog", searchIntent: "informational" });
+    const blogArticle = websitePageCompositionPolicy({ pageType: "blog_article", title: "How to Compare Coverage", searchIntent: "informational" });
     const legal = websitePageCompositionPolicy({ pageType: "legal", title: "Privacy Policy", searchIntent: "navigational" });
     expect(home.requiredComponentIds).not.toContain("content.process");
     expect(service.recommendedComponentIds).toContain("content.process");
@@ -286,6 +288,9 @@ describe("SENuke canonical Website Model", () => {
     expect(faq.archetype).toBe("faq");
     expect(faq.requiredComponentIds).toContain("content.faq");
     expect(faq.guidance).toContain("8–12");
+    expect(blogSection.archetype).toBe("supporting");
+    expect(blogArticle.archetype).toBe("supporting");
+    expect(blogArticle.requiredComponentIds).toContain("content.rich_text");
     expect(legal.requiredComponentIds).toEqual(["hero.local_service", "content.rich_text", "content.faq"]);
   });
 
@@ -395,6 +400,12 @@ describe("SENuke canonical Website Model", () => {
     const findings = validateComponentInstance(section);
     expect(findings.map((finding) => finding.code)).toContain("unknown_component_prop");
     expect(findings.map((finding) => finding.code)).toContain("unsafe_component_url");
+  });
+
+  it("accepts safe same-page CTA anchors used by landing-page forms", () => {
+    const section = page().sections[0];
+    section.props.primaryCtaUrl = "#lead-magnet-registration";
+    expect(validateComponentInstance(section).map((finding) => finding.code)).not.toContain("unsafe_component_url");
   });
 
   it("repairs generated size limits without allowing unsupported props", () => {

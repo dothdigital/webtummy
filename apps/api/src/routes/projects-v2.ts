@@ -213,6 +213,7 @@ const leadMagnetGenerateSchema = z.object({
   recommendation: leadRecommendationSchema,
   targetWordCount: z.number().int().min(250).max(10_000).optional().nullable(),
   funnelSetup: z.object({
+    contentMode: z.enum(["sales_pitch", "full_content"]).default("sales_pitch"),
     leadMagnetTitle: z.string().trim().min(3).max(255).optional().nullable(),
     landingHeadline: z.string().trim().min(3).max(240).optional().nullable(),
     landingDescription: z.string().trim().min(3).max(600).optional().nullable(),
@@ -1820,6 +1821,9 @@ function buildLeadMagnetPrompt(input: {
     `Required research run completed before generation: ${JSON.stringify(research)}`,
     instructions ? `User requirements and constraints (follow unless unsafe or contradicted by project facts): ${instructions}` : "No additional user requirements were supplied.",
     funnelSetup ? `User-approved funnel content setup. Use these exact values wherever supplied and create any omitted values with AI: ${JSON.stringify(funnelSetup)}` : "No funnel content values were supplied; generate all funnel copy with AI.",
+    funnelSetup?.contentMode === "full_content"
+      ? "Landing-page mode is full promotional content: write the landing copy so the complete approved asset can appear publicly on the page with registration or enquiry forms before and after the content."
+      : "Landing-page mode is sales pitch and registration: write a persuasive preview of the value without revealing the complete gated asset.",
     "The title, promise, format, outline, CTA, and follow-up must align with the selected concept, target audience, offer, primary goal, market, and available keyword intent.",
     "Keep the opt-in form minimal. formFields may contain only First name, Last name, and Email; Email is always required.",
     JSON.stringify({
@@ -5202,6 +5206,7 @@ guidedProjectsRouter.post("/projects-v2/:projectId/lead-magnet/generate", async 
     const leadMagnet = packageObject(generatedPackage.leadMagnet);
     const landingPage = {
       ...packageObject(generatedPackage.landingPage),
+      contentMode: parsed.data.funnelSetup?.contentMode ?? "sales_pitch",
       ...(parsed.data.funnelSetup?.landingHeadline ? { headline: parsed.data.funnelSetup.landingHeadline } : {}),
       ...(parsed.data.funnelSetup?.landingDescription ? { subheadline: parsed.data.funnelSetup.landingDescription } : {}),
       ...(parsed.data.funnelSetup?.ctaText ? { ctaText: parsed.data.funnelSetup.ctaText } : {}),

@@ -260,6 +260,7 @@ export function hasWorkspaceRole(context: WorkspaceContext, required: WorkspaceR
 }
 
 export function hasWorkspacePermission(context: WorkspaceContext, permission: string) {
+  if (context.workspace.workspaceType !== "agency" && ["manage_clients", "manage_assigned_clients", "read_shared_client_data"].includes(permission)) return false;
   if (context.roles.has("owner") || context.roles.has("admin")) return true;
   const policyRoles = [...context.roles].map((role) => role === "approver" || role === "manager_approver" ? "manager" : role) as ConfigurableWorkspaceRole[];
   if (context.roles.has("client_viewer")) return policyRoles.length === 1 && workspaceRoleCanEver("client_viewer", permission) && permissionDecision(context, permission, ["client_viewer"]);
@@ -375,6 +376,7 @@ export function isWorkspaceOwner(context: WorkspaceContext) {
 }
 
 export async function canAccessAgencyClient(context: WorkspaceContext, agencyClientId: string) {
+  if (context.workspace.workspaceType !== "agency") return false;
   if (context.roles.has("owner") || context.roles.has("admin")) return true;
   const assigned = await prisma.agencyClient.findFirst({
     where: {

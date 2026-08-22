@@ -9,6 +9,27 @@ const HOUR = 60 * 60 * 1000;
 const DAY = 24 * HOUR;
 const ENGINE_VERSION = "continuous-growth-v1";
 
+function isPrismaWriteConflict(error: unknown) {
+  return Boolean(error && typeof error === "object" && "code" in error && error.code === "P2034");
+}
+
+async function withWriteConflictRetry<T>(action: () => Promise<T>, attempts = 5): Promise<T> {
+  let lastError: unknown;
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    try {
+      return await action();
+    } catch (error) {
+      lastError = error;
+      if (!isPrismaWriteConflict(error) || attempt === attempts) throw error;
+      // Serializable claims can overlap when several scheduler slots wake at
+      // once. Short jittered backoff preserves one owner without failing the
+      // durable BullMQ job for a normal database contention event.
+      await new Promise((resolve) => setTimeout(resolve, 75 * attempt + Math.floor(Math.random() * 75)));
+    }
+  }
+  throw lastError;
+}
+
 type SourceDefinition = { key: string; cadenceMs: number; minimumSample: number; thresholdAbsolute: number; thresholdPercent: number };
 type SourceSnapshot = {
   status: "available" | "limited" | "unavailable";
@@ -236,12 +257,12 @@ export async function processGrowthIntelligenceCycle(cycleId: string, job?: Job<
   if (!cycle) throw new Error(`growth intelligence cycle ${cycleId} not found`);
   if (["completed", "skipped"].includes(cycle.status)) return;
 
-  const claimed = await prisma.$transaction(async (tx) => {
+  const claimed = await withWriteConflictRetry(() => prisma.$transaction(async (tx) => {
     const otherRunning = await tx.growthIntelligenceCycle.findFirst({ where: { projectId: cycle.projectId, id: { not: cycleId }, status: "running" }, select: { id: true } });
     if (otherRunning) return false;
     const result = await tx.growthIntelligenceCycle.updateMany({ where: { id: cycleId, status: { in: ["queued", "retrying"] } }, data: { status: "running", startedAt: cycle.startedAt ?? now, heartbeatAt: now, retryCount: Math.max(cycle.retryCount, Math.max(0, (job?.attemptsMade ?? 0))) } });
     return result.count === 1;
-  }, { isolationLevel: "Serializable" });
+  }, { isolationLevel: "Serializable" }));
   if (!claimed) {
     const current = await prisma.growthIntelligenceCycle.findUnique({ where: { id: cycleId }, select: { status: true } });
     if (current?.status === "running") return;

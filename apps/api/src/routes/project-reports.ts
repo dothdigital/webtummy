@@ -103,7 +103,7 @@ function fallbackNarrative(content: Record<string, unknown>) {
   const execution = content.execution && typeof content.execution === "object" && !Array.isArray(content.execution) ? content.execution as Record<string, unknown> : {};
   const completed = Array.isArray(execution.completed) ? execution.completed.length : 0;
   const blocked = Array.isArray(execution.blocked) ? execution.blocked.length : Number(health.blockedTasks ?? 0);
-  return `${String(project.name || "This project")} recorded ${completed} completed action${completed === 1 ? "" : "s"} during the selected reporting period. ${blocked ? `${blocked} blocked item${blocked === 1 ? " requires" : "s require"} attention before the next milestone.` : "No blocked work is currently recorded for this report."} The next priorities below are taken from the current saved project evidence and should be reviewed by the agency before delivery.`;
+  return `${String(project.name || "This project")} recorded ${completed} completed action${completed === 1 ? "" : "s"} during the selected reporting period. ${blocked ? `${blocked} blocked item${blocked === 1 ? " requires" : "s require"} attention before the next milestone.` : "No blocked work is currently recorded for this report."} The next priorities below are taken from the current saved project evidence and should be reviewed before taking action or sharing this report.`;
 }
 
 const aiNarrativeSchema = z.object({ executiveNarrative: z.string().trim().min(40).max(10000), wins: z.array(z.string().trim().min(1).max(500)).max(8), risks: z.array(z.string().trim().min(1).max(500)).max(8), interpretation: z.string().trim().min(20).max(5000) });
@@ -161,6 +161,10 @@ export function reportCanBeArchived(report: { clientVisible: boolean; sentToClie
 
 export function reportVersionPeriod(reportType: typeof projectReportTypes[number], periodStart: Date | null, periodEnd: Date | null) {
   return reportType === "agency_proposal" ? { periodStart: null, periodEnd: null } : { periodStart, periodEnd };
+}
+
+export function reportDeliveryModeForWorkspace(workspaceType: string) {
+  return workspaceType === "agency" ? "saved_workflow" : "download_only";
 }
 
 type ClientReportSection = { key: string; title: string; summary?: string; metrics?: Array<{ label: string; value: unknown; note?: string }>; items?: unknown[]; emptyMessage?: string };
@@ -733,6 +737,39 @@ projectReportsRouter.post("/project-reports/generate", async (req, res) => {
   const narratedContent = data.reportType === "agency_proposal" ? await addProposalNarrative(generatedContent as Record<string, unknown>, data.useAiNarrative) : await addClientNarrative(generatedContent as Record<string, unknown>, data.useAiNarrative);
   const content = data.reportType === "agency_proposal" ? narratedContent : { ...narratedContent, clientSections: clientReportSections(data.reportType, narratedContent) };
   const qa = documentQa(content as Record<string, unknown>, data.reportType);
+  if (reportDeliveryModeForWorkspace(context.workspace.workspaceType) === "download_only") {
+    const contentRecord = content as Record<string, unknown>;
+    const contentBranding = contentRecord.branding && typeof contentRecord.branding === "object" && !Array.isArray(contentRecord.branding) ? contentRecord.branding as Record<string, unknown> : branding;
+    const pdf = await createProfessionalReportPdf(content as Prisma.JsonValue, {
+      workspaceName: String(contentBranding.agencyName || context.workspace.name),
+      workspaceType: context.workspace.workspaceType,
+      clientName: project.businessName ?? project.name,
+      logoDataUrl: typeof contentBranding.agencyLogoDataUrl === "string" ? contentBranding.agencyLogoDataUrl : null,
+      preparedByName: typeof contentBranding.preparedByName === "string" ? contentBranding.preparedByName : null,
+      contactEmail: typeof contentBranding.contactEmail === "string" ? contentBranding.contactEmail : null,
+      contactPhone: typeof contentBranding.contactPhone === "string" ? contentBranding.contactPhone : null,
+      websiteUrl: typeof contentBranding.websiteUrl === "string" ? contentBranding.websiteUrl : null,
+      address: typeof contentBranding.address === "string" ? contentBranding.address : null,
+      primaryColor: typeof contentBranding.colorPreference === "string" ? contentBranding.colorPreference : null,
+      secondaryColor: typeof contentBranding.secondaryColor === "string" ? contentBranding.secondaryColor : null,
+      footerDisclaimer: typeof contentBranding.footerDisclaimer === "string" ? contentBranding.footerDisclaimer : null,
+      senderSignature: typeof contentBranding.senderSignature === "string" ? contentBranding.senderSignature : null,
+      minimizeSenukeBranding: contentBranding.minimizeSenukeBranding !== false,
+    });
+    await recordWorkspaceActivity(prisma, { context, action: "report.pdf_generated", entityType: "project", entityId: project.id, projectId: project.id, nextJson: { reportType: data.reportType, periodStart: period.periodStart, periodEnd: period.periodEnd, qaStatus: qa.status, saved: false } });
+    const generation = reportRecord(contentRecord.narrativeGeneration);
+    if (usage) {
+      if (generation.mode === "ai") await commitUsage({ usageEventId: usage.usageEventId, provider: "openai", model: String(generation.model || "") || null, inputTokens: Number(generation.inputTokens || 0), outputTokens: Number(generation.outputTokens || 0), metadata: { projectId: project.id, reportType: data.reportType, deliveryMode: "download_only" } });
+      else await refundUsage({ usageEventId: usage.usageEventId, reason: "AI narrative was unavailable; deterministic report generated without charge." });
+      usageSettled = true;
+    }
+    const safeName = `${project.name}-${data.reportType}`.replace(/[^a-z0-9-_]+/gi, "-").replace(/-+/g, "-").replace(/^-|-$/g, "").toLowerCase();
+    res.setHeader("Content-Type", "application/pdf");
+    res.setHeader("Content-Disposition", `attachment; filename="${safeName || "project-report"}.pdf"`);
+    res.setHeader("Content-Length", String(pdf.length));
+    res.setHeader("X-Report-Delivery-Mode", "download-only");
+    return res.send(pdf);
+  }
   const contentSections = (content as Record<string, unknown>).sections;
   const sections = Array.isArray(contentSections) ? contentSections as Array<{ key: string; title: string; order: number; enabled: boolean }> : [];
   const sourceSnapshot = (content as { sourceSnapshot?: Prisma.InputJsonValue }).sourceSnapshot ?? {};

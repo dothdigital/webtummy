@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { SENUKE_COMPONENT_REGISTRY_V1 } from "@webtummy/core/website-model";
-import { canonicalComponents, combinedPageSchema, compactWebsiteBuilderMediaAsset, compactWebsiteBuilderOverviewPage, effectiveExistingPageRequirements, generatedPageSchema, hasReleaseScopedDraftUrl, importedWebsiteRouteAssignment, isWebsiteQaRequestTarget, logoPaletteAiPrompt, logoPalettePromptBrand, pageIsImportedExistingWebsite, parseWordPressJsonResponse, productionWebsiteUrl, publishingAssetMatchesWebsitePage, replaceWebsitePublicStatements, shouldDeployWordPressDesignPackage, websitePublicationPageMappings, websiteReleaseComparisonModel, websiteReleaseDeploymentScope, websiteSettingsWithVerifiedLocalEvidence, wordPressConnectorVersionAtLeast, wordpressConnectorSafeCss, wordpressMenuDestination, wordpressPageWritePayload, wordpressProductionCanonicalUrl, wordpressRemotePageIds } from "./website-builder.js";
+import { canonicalComponents, combinedPageSchema, compactWebsiteBuilderMediaAsset, compactWebsiteBuilderOverviewPage, effectiveExistingPageRequirements, generatedPageSchema, hasConfirmedWebsiteBuildContract, hasReleaseScopedDraftUrl, importedWebsiteRouteAssignment, isWebsiteQaRequestTarget, logoPaletteAiPrompt, logoPalettePromptBrand, measurementReadinessFor, pageIsImportedExistingWebsite, parseWordPressJsonResponse, productionWebsiteUrl, publishingAssetMatchesWebsitePage, replaceWebsitePublicStatements, shouldDeployWordPressDesignPackage, websitePublicationPageMappings, websiteReleaseComparisonModel, websiteReleaseDeploymentScope, websiteSettingsWithVerifiedLocalEvidence, wordPressConnectorVersionAtLeast, wordpressConnectorSafeCss, wordpressMenuDestination, wordpressPageWritePayload, wordpressPostTypeForPage, wordpressProductionCanonicalUrl, wordpressPublicationOrder, wordpressReadingSettingsFor, wordpressRemotePageIds } from "./website-builder.js";
 
 const project = {
   businessName: "Example Financial",
@@ -13,6 +13,50 @@ const project = {
     country: "Canada",
   },
 };
+
+describe("confirmed website build contract", () => {
+  it("lets an approved existing page map finish after upstream evidence changes", () => {
+    expect(hasConfirmedWebsiteBuildContract({
+      sitemapApprovedAt: new Date("2026-08-22T14:16:25.104Z"),
+      sourceTaskId: "approved-website-plan-1",
+      activePageCount: 15,
+    })).toBe(true);
+  });
+
+  it("does not bypass the approved-plan gate for an unconfirmed or empty build", () => {
+    expect(hasConfirmedWebsiteBuildContract({ sitemapApprovedAt: null, sourceTaskId: "approved-website-plan-1", activePageCount: 15 })).toBe(false);
+    expect(hasConfirmedWebsiteBuildContract({ sitemapApprovedAt: new Date(), sourceTaskId: "", activePageCount: 15 })).toBe(false);
+    expect(hasConfirmedWebsiteBuildContract({ sitemapApprovedAt: new Date(), sourceTaskId: "approved-website-plan-1", activePageCount: 0 })).toBe(false);
+  });
+});
+
+describe("launch measurement readiness", () => {
+  it("reports a private development tracking endpoint as advisory", () => {
+    const readiness = measurementReadinessFor({
+      pages: [],
+      forms: [],
+    } as never, {
+      siteId: "tracking-site-1",
+      endpointIssue: "The tracking script URL must use a public HTTPS endpoint.",
+      site: { lastVerifiedAt: null },
+      plan: {
+        businessGoal: "lead_generation",
+        primaryConversion: "form_success",
+        primaryMeasurement: "form_submissions",
+        installationJson: { measurementTagEnabled: true },
+        dataSourcesJson: [],
+        pagesAndFormsJson: [],
+        consentRequirementsJson: [],
+        version: 1,
+      },
+    } as never);
+
+    expect(readiness.blockingCount).toBe(0);
+    expect(readiness.status).toBe("ready_with_limitations");
+    expect(readiness.checks.find((check) => check.key === "senuke_tag")).toMatchObject({ status: "warning" });
+    expect(readiness.limitations.join(" ")).toContain("public HTTPS tracking endpoint");
+  });
+});
 
 describe("ongoing WordPress publishing schema", () => {
   const releaseModel = (overrides: Record<string, unknown> = {}) => ({
@@ -312,6 +356,26 @@ describe("ongoing WordPress publishing schema", () => {
     expect(payload).not.toHaveProperty("content");
     expect(payload).not.toHaveProperty("title");
     expect(payload).not.toHaveProperty("excerpt");
+  });
+
+  it("publishes Site Architect blog articles as WordPress posts and assigns the Blog archive", () => {
+    expect(wordpressPostTypeForPage({ pageType: "blog_article" })).toBe("post");
+    expect(wordpressPostTypeForPage({ pageType: "landing" })).toBe("page");
+    expect(wordpressPostTypeForPage({ pageType: "service" })).toBe("page");
+    const ordered = wordpressPublicationOrder([
+      { pageId: "article", parentPageId: "blog" },
+      { pageId: "home", parentPageId: null },
+      { pageId: "blog", parentPageId: null },
+    ]);
+    expect(ordered.map((page) => page.pageId)).toEqual(["home", "blog", "article"]);
+    expect(wordpressReadingSettingsFor({ homePageId: 101, blogPageId: 202 })).toEqual({
+      show_on_front: "page",
+      page_on_front: 101,
+      page_for_posts: 202,
+    });
+    expect(wordpressReadingSettingsFor({ homePageId: 101, blogPageId: 202, incrementalDeployment: true })).toEqual({
+      page_for_posts: 202,
+    });
   });
 
   it("synchronizes verified local evidence into the matching Website Plan page", () => {

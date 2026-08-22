@@ -24,13 +24,25 @@ export function trialEndsFrom(start = new Date(), trialDays = TRIAL_DAYS) {
   return new Date(start.getTime() + Math.max(1, Math.floor(trialDays)) * 24 * 60 * 60 * 1000);
 }
 
+export function shouldSeedDefaultBillingPlans(input: { billingPlanCount: number; userCount: number; clientCount: number }) {
+  return input.billingPlanCount === 0 && input.userCount === 0 && input.clientCount === 0;
+}
+
 export async function ensureDefaultBillingPlans() {
-  for (const plan of DEFAULT_BILLING_PLANS) {
-    const existing = await prisma.billingPlan.findUnique({ where: { code: plan.code } });
-    if (!existing) {
-      await prisma.billingPlan.create({ data: { ...plan, features: PLAN_FEATURES } });
-    }
-  }
+  // Defaults are a first-install bootstrap, not a reconciliation policy.
+  // Once the database has accounts or plan records, an absent plan is an
+  // intentional admin decision and must not be recreated on refresh/restart.
+  const [billingPlanCount, userCount, clientCount] = await Promise.all([
+    prisma.billingPlan.count(),
+    prisma.user.count(),
+    prisma.client.count(),
+  ]);
+  if (!shouldSeedDefaultBillingPlans({ billingPlanCount, userCount, clientCount })) return { seeded: false };
+  await prisma.billingPlan.createMany({
+    data: DEFAULT_BILLING_PLANS.map((plan) => ({ ...plan, features: [...PLAN_FEATURES] })),
+    skipDuplicates: true,
+  });
+  return { seeded: true };
 }
 
 export function normalizePlanCode(planCode: string | null | undefined) {
@@ -70,7 +82,6 @@ export function planView(plan: {
 }
 
 export async function billingPlanForClient(planCode: string | null | undefined) {
-  await ensureDefaultBillingPlans();
   return prisma.billingPlan.findUnique({ where: { code: normalizePlanCode(planCode) } });
 }
 

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { customerPlanLabel, personalStartingPaths, projectAllowanceLabel, workspaceDashboardVisibility } from "./workspace-dashboard.js";
+import { businessFirstUseSupportingText, customerPlanLabel, personalStartingPaths, projectAllowanceLabel, workspaceDashboardVisibility, workspaceDisplayName, workspaceProjectActivityCopy, workspaceProjectAssignmentLabel, workspaceStartingPathEmphasized } from "./workspace-dashboard.js";
 
 describe("DEV-056 workspace dashboard rules", () => {
   it("exposes the three approved Personal starting paths", () => {
@@ -22,9 +22,29 @@ describe("DEV-056 workspace dashboard rules", () => {
   });
 
   it("keeps clients and agency reports out of Personal and Business", () => {
-    expect(workspaceDashboardVisibility("personal")).toMatchObject({ clients: false, agencyReports: false, teamMembers: false });
-    expect(workspaceDashboardVisibility("business")).toMatchObject({ clients: false, agencyReports: false, teamMembers: true });
-    expect(workspaceDashboardVisibility("agency")).toMatchObject({ clients: true, agencyReports: true, teamMembers: true });
+    expect(workspaceDashboardVisibility("personal")).toMatchObject({ clients: false, clientAssignments: false, agencyReports: false, teamMembers: false });
+    expect(workspaceDashboardVisibility("business")).toMatchObject({ clients: false, clientAssignments: false, agencyReports: false, teamMembers: true });
+    expect(workspaceDashboardVisibility("agency")).toMatchObject({ clients: true, clientAssignments: true, agencyReports: true, teamMembers: true });
+  });
+
+  it("uses Business-only first-use emphasis and copy", () => {
+    expect(workspaceStartingPathEmphasized("business", "EXISTING_BUSINESS")).toBe(true);
+    expect(workspaceStartingPathEmphasized("business", "IDEA_TO_EXPLORE")).toBe(false);
+    expect(workspaceStartingPathEmphasized("personal", "EXISTING_BUSINESS")).toBe(false);
+    expect(businessFirstUseSupportingText).toContain("right growth path for your business");
+  });
+
+  it("uses workspace-correct names, project copy, and assignment labels", () => {
+    expect(workspaceDisplayName("Business", "business")).toBe("My Business");
+    expect(workspaceDisplayName("Acme", "business")).toBe("Acme");
+    expect(workspaceDisplayName("Personal", "personal")).toBe("My Workspace");
+    expect(workspaceProjectActivityCopy("business")).toEqual({
+      title: "Business project activity",
+      detail: "Live totals from your projects' Execution Plans. Select a project to review its status and continue the next action.",
+    });
+    expect(workspaceProjectActivityCopy("agency").title).toBe("Client and project actions");
+    expect(workspaceProjectAssignmentLabel("business", "Growth Plan", "Client shell")).toBe("Growth Plan");
+    expect(workspaceProjectAssignmentLabel("agency", "Growth Plan", "Acme")).toBe("Acme · Growth Plan");
   });
 
   it("prevents viewer-only dashboards from starting or executing work", () => {

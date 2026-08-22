@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useMemo, useState } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { api } from "../api.js";
 import type { AiContentGeneration, AiContentStatus, AiGenerationType, GuidedExecutionTask, GuidedProject, Website } from "../types.js";
@@ -428,6 +428,10 @@ export default function AiContentStudio() {
   const [recreationComment, setRecreationComment] = useState("");
   const [revisionFocus, setRevisionFocus] = useState<string[]>([]);
   const [revisionCompleted, setRevisionCompleted] = useState(false);
+  const generationLockRef = useRef(false);
+  const selectedProjectId = searchParams.get("projectId") || linkedTask?.projectId || getActiveProjectId() || "";
+  const selectedProject = useMemo(() => projects.find((project) => project.id === selectedProjectId), [projects, selectedProjectId]);
+  const selectedWebsite = useMemo(() => websites.find((website) => website.id === (selectedProject?.websiteId || websiteId)), [selectedProject?.websiteId, websiteId, websites]);
   const [contentMode, setContentMode] = useState<ContentGenerationMode>("seo");
   const [generationInstruction, setGenerationInstruction] = useState("");
   const [generationError, setGenerationError] = useState("");
@@ -623,6 +627,7 @@ export default function AiContentStudio() {
 
   const generate = async (event: React.FormEvent) => {
     event.preventDefault();
+    if (generationLockRef.current) return;
     if (citationReviewOnly) return;
     if (!canReview) return;
     if (quotaBlocked) {
@@ -640,6 +645,7 @@ export default function AiContentStudio() {
       }, 0);
       return;
     }
+    generationLockRef.current = true;
     setGenerating(true);
     setGenerationError("");
     if (embeddedDialog && window.parent !== window) {
@@ -695,6 +701,7 @@ export default function AiContentStudio() {
       }
     } finally {
       setGenerating(false);
+      generationLockRef.current = false;
     }
   };
 
@@ -998,6 +1005,10 @@ export default function AiContentStudio() {
                 </div>
                 {!(embeddedDialog && citationFlow) && <button type="button" disabled={generating} onClick={closeWizard} className="rounded-lg border border-charcoal-200 bg-white px-3 py-1.5 text-sm font-medium text-charcoal-600 hover:bg-charcoal-50 disabled:opacity-50">Close</button>}
               </div>
+              <div className="mt-3 grid gap-px overflow-hidden rounded-lg border border-slate-200 bg-slate-200 sm:grid-cols-3">
+                {[['Project', selectedProject?.name || 'No project selected'], ['Business', selectedProject?.businessName || selectedProject?.agencyClient?.name || 'Not provided'], ['Website', selectedWebsite?.domain || selectedProject?.websiteUrl || 'Not connected']].map(([contextLabel, value]) => <div key={contextLabel} className="min-w-0 bg-white px-3 py-2"><div className="text-[9px] font-bold uppercase tracking-wide text-slate-400">{contextLabel}</div><div className="mt-0.5 truncate text-xs font-semibold text-slate-800" title={value}>{value}</div></div>)}
+              </div>
+              {(linkedTask || searchParams.get("source")) && <div className="mt-2 text-xs font-semibold text-cyan-800">Source: {linkedTask ? `Execution task · ${contentTaskTitle(linkedTask)}` : searchParams.get("source")?.replaceAll("-", " ")}</div>}
               {!revisionFlow && !citationFlow && <div className="mt-4 grid gap-3 sm:grid-cols-3">
                 <WizardStep number={1} title="Choose type" active={wizardStep === 1} complete={wizardStep > 1} />
                 <WizardStep number={2} title="Add context" active={wizardStep === 2} complete={wizardStep > 2} />
@@ -1046,11 +1057,12 @@ export default function AiContentStudio() {
                     <div className="grid gap-4 lg:grid-cols-2">
                       <label className="block lg:col-span-2">
                         <span className="mb-1 block text-sm font-medium text-slate-600">Project</span>
-                        <select value={websiteId} onChange={(e) => { const nextWebsiteId = e.target.value; setWebsiteId(nextWebsiteId); const mapped = projects.find((project) => project.websiteId === nextWebsiteId); if (mapped) { setActiveProjectId(mapped.id); setSearchParams({ projectId: mapped.id }); } }} className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-100">
+                        <select value={selectedProjectId} onChange={(event) => { const nextProjectId = event.target.value; const mapped = projects.find((project) => project.id === nextProjectId); setWebsiteId(mapped?.websiteId || ""); if (nextProjectId) setActiveProjectId(nextProjectId); const nextParams = new URLSearchParams(searchParams); if (nextProjectId) nextParams.set("projectId", nextProjectId); else nextParams.delete("projectId"); setSearchParams(nextParams); }} className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-100">
                           <option value="">No project context</option>
-                          {websites.map((website) => <option key={website.id} value={website.id}>{website.domain}</option>)}
+                          {projects.map((project) => <option key={project.id} value={project.id}>{project.name}{project.businessName && project.businessName !== project.name ? ` · ${project.businessName}` : ""}</option>)}
                         </select>
                       </label>
+                      {selectedProject && <div className="lg:col-span-2 rounded-xl border border-cyan-200 bg-cyan-50 px-4 py-3 text-xs leading-5 text-cyan-950"><b>Generation context:</b> {selectedProject.businessName || selectedProject.name} · {selectedProject.businessLocation || selectedProject.targetLocation || "market not recorded"} · {selectedWebsite?.domain || selectedProject.websiteUrl || "website not connected"}. Generated content will be saved to this project for review; it will not publish automatically.</div>}
                       <div className="lg:col-span-2"><Input label="Topic" value={topic} onChange={setTopic} placeholder="CRM automation for service businesses" /></div>
                       <Input label="Target keyword" value={targetKeyword} onChange={setTargetKeyword} placeholder="crm automation" />
                       <Input label="Target URL" value={targetUrl} onChange={(value) => { setTargetUrl(value); setTargetUrlSuggested(false); }} placeholder="https://example.com/service-page" />

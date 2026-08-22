@@ -8,7 +8,7 @@ import { sendMail } from "../email.js";
 import { assignableWorkspaceRoles, canAccessAgencyClient, canAccessProject, createWorkspaceNotification, effectiveWorkspaceRoles, hasWorkspacePermission, isWorkspaceOwner, recordWorkspaceActivity, requireAvailableSeat, requireWorkspaceRole, validateRolesForWorkspace, workspaceApprovalMode, workspaceContext, workspaceSeatUsage } from "../workspace-access.js";
 import { locationDefaultsFromSettings, normalizeRequiredLocations } from "../dev004.js";
 import { normalizeProjectGoals } from "../dev005.js";
-import { workspaceNextActions } from "../dev002.js";
+import { requireAgencyWorkspaceType, workspaceNextActions } from "../dev002.js";
 import { configurableWorkspaceRoles, workspaceRoleCanEver } from "@webtummy/core/workspace-permissions";
 import { decideTaskApproval, submitTaskApproval } from "../approval-workflow.js";
 import { startTaskPublishing, verifyTaskPublishing } from "../publishing-workflow.js";
@@ -200,6 +200,8 @@ agencyWorkspaceRouter.get(["/agency/workspace", "/workspace"], (req, res) => han
       _count: { select: { executionTasks: true, gapReportExports: true } },
       workflowSteps: { orderBy: { sortOrder: "asc" }, select: { stepKey: true, title: true, status: true, actionLabel: true, actionUrl: true, sortOrder: true } },
       strategyPlans: { orderBy: { updatedAt: "desc" }, take: 1, select: { status: true } },
+      memberAssignments: { select: { membershipId: true } },
+      teamAssignments: { select: { teamId: true } },
     },
   });
   const visibleProjectIds = context.workspace.workspaceType === "agency" ? scopedClients.flatMap((client) => client.projects.map((project) => project.id)) : directProjects.map((project) => project.id);
@@ -383,6 +385,7 @@ agencyWorkspaceRouter.post(["/agency/invitations", "/workspace/invitations"], (r
   if (context.workspace.workspaceType === "personal") throw Object.assign(new Error("Personal is a single-user Owner/Admin workspace and does not support invitations."), { statusCode: 409 });
   requirePermission(context, "manage_users");
   const data = invitationSchema.parse(req.body);
+  if (context.workspace.workspaceType !== "agency" && data.agencyClientIds.length) throw Object.assign(new Error("Business invitations cannot include Agency client assignments."), { statusCode: 400 });
   if (!hasWorkspacePermission(context, "manage_roles") && data.roles.some((role) => role === "admin" || role === "manager")) {
     throw Object.assign(new Error("Only Owner/Admin can invite administrators or managers."), { statusCode: 403 });
   }
@@ -433,6 +436,7 @@ agencyWorkspaceRouter.post(["/agency/invitations/:invitationId/revoke", "/worksp
 
 agencyWorkspaceRouter.put("/agency/clients/:clientId/assignments", (req, res) => handle(res, async () => {
   const context = await workspaceContext(req);
+  requireAgencyWorkspaceType(context.workspace.workspaceType);
   requirePermission(context, "manage_clients");
   const data = clientAssignmentsSchema.parse(req.body);
   const client = await prisma.agencyClient.findFirst({ where: { id: req.params.clientId, workspaceId: context.workspace.id } });
@@ -456,6 +460,7 @@ agencyWorkspaceRouter.put("/agency/clients/:clientId/assignments", (req, res) =>
 
 agencyWorkspaceRouter.get("/agency/clients/:clientId/dashboard", (req, res) => handle(res, async () => {
   const context = await workspaceContext(req);
+  requireAgencyWorkspaceType(context.workspace.workspaceType);
   if (!await canAccessAgencyClient(context, req.params.clientId)) throw Object.assign(new Error("Client not found."), { statusCode: 404 });
   const clientViewer = context.roles.size === 1 && context.roles.has("client_viewer");
   const client = await prisma.agencyClient.findFirst({
@@ -505,6 +510,7 @@ agencyWorkspaceRouter.get("/agency/clients/:clientId/dashboard", (req, res) => h
 
 agencyWorkspaceRouter.get("/agency/projects/:projectId/dashboard", (req, res) => handle(res, async () => {
   const context = await workspaceContext(req);
+  requireAgencyWorkspaceType(context.workspace.workspaceType);
   if (context.roles.has("client_viewer")) throw Object.assign(new Error("Project operations are internal workspace resources."), { statusCode: 403 });
   const project = await prisma.project.findFirst({
     where: { id: req.params.projectId, agencyClient: { workspaceId: context.workspace.id } },
@@ -549,6 +555,7 @@ agencyWorkspaceRouter.get("/agency/projects/:projectId/dashboard", (req, res) =>
 
 agencyWorkspaceRouter.put("/agency/projects/:projectId/assignments", (req, res) => handle(res, async () => {
   const context = await workspaceContext(req);
+  requireAgencyWorkspaceType(context.workspace.workspaceType);
   requirePermission(context, "manage_projects");
   const data = clientAssignmentsSchema.parse(req.body);
   const project = await prisma.project.findFirst({ where: { id: req.params.projectId, agencyClient: { workspaceId: context.workspace.id } } });
@@ -572,6 +579,7 @@ agencyWorkspaceRouter.put("/agency/projects/:projectId/assignments", (req, res) 
 
 agencyWorkspaceRouter.post("/agency/reports/:reportId/send-to-client", (req, res) => handle(res, async () => {
   const context = await workspaceContext(req);
+  requireAgencyWorkspaceType(context.workspace.workspaceType);
   if (context.roles.has("client_viewer")) throw Object.assign(new Error("Client Viewers cannot send agency documents."), { statusCode: 403 });
   requirePermission(context, "export_reports");
   const report = await prisma.gapReportExport.findFirst({
@@ -604,7 +612,7 @@ agencyWorkspaceRouter.post("/agency/reports/:reportId/send-to-client", (req, res
 agencyWorkspaceRouter.post("/agency/clients", (req, res) => handle(res, async () => {
   const context = await workspaceContext(req);
   requirePermission(context, "manage_clients");
-  if (context.workspace.workspaceType !== "agency") throw Object.assign(new Error("Client management is available only in Agency workspaces."), { statusCode: 400 });
+  requireAgencyWorkspaceType(context.workspace.workspaceType);
   await assertWorkspaceResourceAvailable(context.workspace.id, "activeAgencyClients");
   const parsed = createClientSchema.parse(req.body);
   const normalizedLocations = normalizeRequiredLocations(parsed.businessLocations, parsed.targetMarkets);
@@ -640,6 +648,7 @@ agencyWorkspaceRouter.post("/agency/clients", (req, res) => handle(res, async ()
 
 agencyWorkspaceRouter.patch("/agency/clients/:clientId", (req, res) => handle(res, async () => {
   const context = await workspaceContext(req);
+  requireAgencyWorkspaceType(context.workspace.workspaceType);
   requirePermission(context, "manage_clients");
   if (!await canAccessAgencyClient(context, req.params.clientId)) throw Object.assign(new Error("Client not found."), { statusCode: 404 });
   const parsed = updateClientSchema.parse(req.body);
@@ -679,6 +688,7 @@ agencyWorkspaceRouter.patch("/agency/clients/:clientId", (req, res) => handle(re
 for (const action of ["archive", "restore"] as const) {
   agencyWorkspaceRouter.post(`/agency/clients/:clientId/${action}`, (req, res) => handle(res, async () => {
     const context = await workspaceContext(req);
+    requireAgencyWorkspaceType(context.workspace.workspaceType);
     requirePermission(context, "manage_clients");
     const client = await prisma.agencyClient.findFirst({ where: { id: req.params.clientId, workspaceId: context.workspace.id } });
     if (!client) throw Object.assign(new Error("Client not found."), { statusCode: 404 });
@@ -695,6 +705,7 @@ for (const action of ["archive", "restore"] as const) {
 
 agencyWorkspaceRouter.delete("/agency/clients/:clientId", (req, res) => handle(res, async () => {
   const context = await workspaceContext(req);
+  requireAgencyWorkspaceType(context.workspace.workspaceType);
   requireWorkspaceRole(context, "owner", "admin");
   const body = deleteClientSchema.parse(req.body);
   const client = await prisma.agencyClient.findFirst({ where: { id: req.params.clientId, workspaceId: context.workspace.id } });
@@ -814,15 +825,19 @@ agencyWorkspaceRouter.patch(["/agency/members/:membershipId/access", "/workspace
   const context = await workspaceContext(req);
   requireWorkspaceRole(context, "owner", "admin");
   const data = memberAccessSchema.parse(req.body);
+  if (context.workspace.workspaceType !== "agency" && data.agencyClientIds.length) throw Object.assign(new Error("Business members cannot receive Agency client assignments."), { statusCode: 400 });
   validateRolesForWorkspace(context, data.roles);
   const target = await prisma.workspaceMembership.findFirst({ where: { id: req.params.membershipId, workspaceId: context.workspace.id }, include: { roles: true } });
   if (!target) throw Object.assign(new Error("Member not found."), { statusCode: 404 });
   await requireAvailableSeat(context, data.roles, { currentMembershipId: target.id });
   if (target.userId === context.workspace.ownerUserId && !data.roles.includes("admin")) throw Object.assign(new Error("The Primary Owner cannot lose Owner/Admin authority."), { statusCode: 409 });
+  const projectScope: Prisma.ProjectWhereInput = context.workspace.workspaceType === "agency"
+    ? { agencyClient: { workspaceId: context.workspace.id } }
+    : { clientId: context.workspace.legacyClientId ?? "__no_client_scope__", agencyClientId: null };
   const [teams, clients, projects] = await Promise.all([
     prisma.workspaceTeam.findMany({ where: { id: { in: data.teamIds }, workspaceId: context.workspace.id, isActive: true }, select: { id: true } }),
-    prisma.agencyClient.findMany({ where: { id: { in: data.agencyClientIds }, workspaceId: context.workspace.id, status: { not: "deleted" } }, select: { id: true } }),
-    prisma.project.findMany({ where: { id: { in: data.projectIds }, agencyClient: { workspaceId: context.workspace.id }, status: { not: "deleted" } }, select: { id: true } }),
+    context.workspace.workspaceType === "agency" ? prisma.agencyClient.findMany({ where: { id: { in: data.agencyClientIds }, workspaceId: context.workspace.id, status: { not: "deleted" } }, select: { id: true } }) : Promise.resolve([]),
+    prisma.project.findMany({ where: { id: { in: data.projectIds }, ...projectScope, status: { not: "deleted" } }, select: { id: true } }),
   ]);
   if (teams.length !== new Set(data.teamIds).size || clients.length !== new Set(data.agencyClientIds).size || projects.length !== new Set(data.projectIds).size) throw Object.assign(new Error("Every assignment must belong to this workspace."), { statusCode: 400 });
   const storedRoles = target.userId === context.workspace.ownerUserId ? ["owner", ...data.roles] : data.roles;
@@ -883,6 +898,7 @@ agencyWorkspaceRouter.get(["/agency/notifications/summary", "/workspace/notifica
 
 async function scopedAgencyTask(req: Parameters<typeof workspaceContext>[0], taskId: string) {
   const context = await workspaceContext(req);
+  requireAgencyWorkspaceType(context.workspace.workspaceType);
   const task = await prisma.executionTask.findFirst({
     where: { id: taskId, project: { agencyClient: { workspaceId: context.workspace.id } } },
     include: {

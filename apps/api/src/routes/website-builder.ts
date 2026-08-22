@@ -25,6 +25,7 @@ import {
 import {
   createStaticWebsiteFiles,
   curatedWebsiteFooterMenus,
+  isWebsiteBlogSectionPage,
   renderWebsitePageWordPressBlocks,
   websiteLayoutCssVariables,
 } from "@webtummy/core/website-renderer";
@@ -122,7 +123,12 @@ function ga4MeasurementIdFromSettings(settings: unknown): string | null {
   return normalizedGa4MeasurementId(jsonRecord(jsonRecord(settings).analytics).ga4MeasurementId);
 }
 
-async function trackingForProject(project: { id: string; clientId: string; name?: string | null; websiteUrl?: string | null; primaryGoal?: string | null; analyticsPlatforms?: unknown; cmsPlatform?: string | null; preferredPublishingMethod?: string | null; website?: { id: string; domain: string; rootUrl: string; trackingSite?: { id: string } | null } | null }, userId?: string | null, destinationUrl?: string | null) {
+async function trackingForProject(
+  project: { id: string; clientId: string; name?: string | null; websiteUrl?: string | null; primaryGoal?: string | null; analyticsPlatforms?: unknown; cmsPlatform?: string | null; preferredPublishingMethod?: string | null; website?: { id: string; domain: string; rootUrl: string; trackingSite?: { id: string } | null } | null },
+  userId?: string | null,
+  destinationUrl?: string | null,
+  options: { allowUnpublishableEndpoint?: boolean } = {},
+) {
   let website = project.website;
   const productionUrl = productionWebsiteUrl(project, destinationUrl);
   if (!website && productionUrl) {
@@ -137,14 +143,14 @@ async function trackingForProject(project: { id: string; clientId: string; name?
   const captured = await captureWebsiteTracking(prisma, { websiteId: website.id, clientId: project.clientId, domain: website.domain, rootUrl: website.rootUrl, project, createdByUserId: userId });
   const embed = trackingEmbed(captured.site.id);
   const endpointIssue = embed ? productionTrackingEndpointIssue(embed.scriptUrl, website.rootUrl) : null;
-  if (endpointIssue) throw Object.assign(new Error(endpointIssue), { statusCode: 409, code: "TRACKING_PUBLIC_ENDPOINT_REQUIRED" });
+  if (endpointIssue && !options.allowUnpublishableEndpoint) throw Object.assign(new Error(endpointIssue), { statusCode: 409, code: "TRACKING_PUBLIC_ENDPOINT_REQUIRED" });
   const latestBuild = await prisma.websiteBuild.findFirst({ where: { projectId: project.id }, orderBy: { updatedAt: "desc" }, select: { settingsJson: true } });
   const builderGa4MeasurementId = ga4MeasurementIdFromSettings(latestBuild?.settingsJson);
   const ga4MeasurementId = builderGa4MeasurementId ?? ga4MeasurementIdFromPlan(captured.plan);
   const measurementPlan = builderGa4MeasurementId && builderGa4MeasurementId !== ga4MeasurementIdFromPlan(captured.plan)
     ? await saveGa4MeasurementPlan({ plan: captured.plan, measurementId: builderGa4MeasurementId, userId: userId ?? captured.plan.createdByUserId })
     : captured.plan;
-  return embed ? { ...embed, rootUrl: website.rootUrl, site: captured.site, plan: measurementPlan, ...(ga4MeasurementId ? { ga4MeasurementId } : {}) } : undefined;
+  return embed ? { ...embed, rootUrl: website.rootUrl, site: captured.site, plan: measurementPlan, endpointIssue, ...(ga4MeasurementId ? { ga4MeasurementId } : {}) } : undefined;
 }
 
 async function saveGa4MeasurementPlan(input: {
@@ -308,7 +314,7 @@ type WebsiteChangeHandoff = {
   pageTitle?: string | null;
   changedByUserId?: string | null;
 };
-function websiteChangedSettings(settingsValue: unknown, change: WebsiteChangeHandoff) {
+export function websiteChangedSettings(settingsValue: unknown, change: WebsiteChangeHandoff) {
   const settings = jsonRecord(settingsValue);
   const previous = jsonRecord(settings.pendingWebsiteChange);
   const previousChanges = Array.isArray(previous.changes)
@@ -2806,6 +2812,18 @@ function approvedSeoPlan(project: Awaited<ReturnType<typeof scopedProject>>["pro
   };
 }
 
+export function hasConfirmedWebsiteBuildContract(input: {
+  sitemapApprovedAt: unknown;
+  sourceTaskId: unknown;
+  activePageCount: number;
+}) {
+  return Boolean(
+    input.sitemapApprovedAt
+    && String(input.sourceTaskId || "").trim()
+    && input.activePageCount > 0,
+  );
+}
+
 async function currentApprovedWebsitePlan(project: Awaited<ReturnType<typeof scopedProject>>["project"]) {
   const approvedPlan = approvedSeoPlan(project);
   const preLaunchWebsite = isPreLaunchWebsiteCampaign(project);
@@ -3248,7 +3266,7 @@ const normalizedPageReference = (value: unknown) =>
  * References may be architecture page keys, slugs, titles, or build page IDs;
  * only resolved WebsiteBuildPage IDs are stored.
  */
-async function syncBuildPageRelationships(
+export async function syncBuildPageRelationships(
   tx: Prisma.TransactionClient,
   buildId: string,
   options: {
@@ -4128,7 +4146,8 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/sync-publishing-
   if (!build) return res.status(404).json({ error: "Website build not found." });
   const websitePlanReadiness = await currentApprovedWebsitePlan(project);
   if (!websitePlanReadiness.approvedPlan) return res.status(409).json({ error: websitePlanReadiness.error });
-  if (["queued", "processing"].includes(build.status)) return res.status(409).json({ error: "Wait for the active website job to finish before synchronizing new page content." });
+  const activeWebsiteJob = build.jobs.find((job) => ["queued", "processing"].includes(job.status));
+  if (activeWebsiteJob) return res.status(409).json({ error: `Website generation is ${activeWebsiteJob.status} (${activeWebsiteJob.progress}%). New Publishing content will synchronize automatically after it finishes.`, code: "website_job_active", retryable: true, activeJob: { id: activeWebsiteJob.id, status: activeWebsiteJob.status, stage: activeWebsiteJob.stage, progress: activeWebsiteJob.progress } });
   const assets = await publishingContentFor(project);
   const force = req.body?.force === true;
   const previousSync = jsonRecord(jsonRecord(build.settingsJson).publishingContentSync);
@@ -5273,15 +5292,31 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/submit-developme
   }
   const build = project.websiteBuilds[0];
   if (!build) return res.status(404).json({ error: "Website build not found." });
+  const existingActive = build.jobs.find((job) => ["queued", "processing"].includes(job.status) && String(jsonRecord(job.inputJson).mode) === "website_generation");
+  if (existingActive) return res.status(202).json({ job: existingActive, reused: true });
+  const settings = jsonRecord(build.settingsJson);
+  const attachedSeoPlan = jsonRecord(settings.seoPlan);
+  const attachedPlanSourceTaskId = String(attachedSeoPlan.sourceTaskId || "");
+  const hasConfirmedBuildContract = hasConfirmedWebsiteBuildContract({
+    sitemapApprovedAt: build.sitemapApprovedAt,
+    sourceTaskId: attachedPlanSourceTaskId,
+    activePageCount: build.pages.filter(pageIsActive).length,
+  });
   const websitePlanReadiness = await currentApprovedWebsitePlan(project);
-  if (!websitePlanReadiness.approvedPlan) return res.status(409).json({ error: websitePlanReadiness.error });
+  // Once a page map has been explicitly confirmed, website assembly must be
+  // able to finish from that locked contract even when Strategy or other
+  // upstream evidence changes later. A newly approved Website Plan is still
+  // protected by the source-task comparison below and requires the user to
+  // reload and reconfirm the structure before it can replace this contract.
+  const approvedPlanRecord = websitePlanReadiness.approvedPlan
+    ?? (hasConfirmedBuildContract ? approvedSeoPlan(project) : null);
+  if (!approvedPlanRecord) return res.status(409).json({ error: websitePlanReadiness.error });
   const input = z.object({
     comment: z.string().trim().max(3000).optional().default(""),
     generateImages: z.boolean().optional().default(true),
     regenerateImages: z.boolean().optional().default(false),
     automaticSetup: z.boolean().optional().default(false),
   }).parse(req.body ?? {});
-  const settings = jsonRecord(build.settingsJson);
   const authorityStageDeferred = jsonRecord(settings.deferredAuthorityStage).status === "deferred";
   const newlyRecognizedDeferredPages = authorityStageDeferred
     ? build.pages.filter((page) => pageIsActive(page) && pageIsLocalAuthority(page))
@@ -5300,8 +5335,6 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/submit-developme
   const activePages = build.pages.filter(pageIsActive);
   if (!activePages.length) return res.status(409).json({ error: "The approved SEO plan does not contain any active website pages." });
   if (!input.automaticSetup && !build.sitemapApprovedAt) return res.status(409).json({ error: "Approve the page structure before creating the website." });
-  const attachedSeoPlan = jsonRecord(jsonRecord(build.settingsJson).seoPlan);
-  const approvedPlanRecord = websitePlanReadiness.approvedPlan;
   const approvedAssignments = approvedPlanRecord && Array.isArray(approvedPlanRecord.plan.pageAssignments)
     ? withRequiredHome(project, approvedPlanRecord.plan.pageAssignments.map(jsonRecord))
     : [];
@@ -5372,8 +5405,6 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/submit-developme
   if (!input.automaticSetup && incompletePages.length) return res.status(409).json({ error: `Create content for all ${activePages.length} active pages before creating the website. Deferred Local Authority pages can be added later.` });
   const unapprovedPages = activePages.filter((page) => !["approved", "deployed", "published"].includes(page.status));
   if (!input.automaticSetup && unapprovedPages.length) return res.status(409).json({ error: `Approve the remaining ${unapprovedPages.length} page${unapprovedPages.length === 1 ? "" : "s"} before creating the website.` });
-  const active = build.jobs.find((job) => ["queued", "processing"].includes(job.status) && String(jsonRecord(job.inputJson).mode) === "website_generation");
-  if (active) return res.status(202).json({ job: active, reused: true });
   const siteFiles = input.automaticSetup ? await siteFilesFor(project) : null;
   const preparedAt = new Date();
   const preparedSettings = {
@@ -8482,8 +8513,32 @@ function requireLaunchReadiness(
   return readiness;
 }
 
-function wordpressPostTypeForPage(page: { pageType: string }) {
-  return /^(post|article|news)$/i.test(page.pageType.trim()) ? "post" : "page";
+export function wordpressPostTypeForPage(page: { pageType: string }) {
+  return /^(?:blog[_-]?article|blog[_-]?post|post|article|news)$/i.test(page.pageType.trim()) ? "post" : "page";
+}
+
+export function wordpressPublicationOrder<T extends { pageId: string; parentPageId?: string | null }>(pages: T[]) {
+  const indexed = pages.map((page, index) => ({ page, index }));
+  const byId = new Map(pages.map((page) => [page.pageId, page]));
+  const depth = (page: T, visited = new Set<string>()): number => {
+    if (!page.parentPageId || visited.has(page.pageId)) return 0;
+    const parent = byId.get(page.parentPageId);
+    return parent ? 1 + depth(parent, new Set(visited).add(page.pageId)) : 0;
+  };
+  return indexed
+    .sort((left, right) => depth(left.page) - depth(right.page) || left.index - right.index)
+    .map(({ page }) => page);
+}
+
+export function wordpressReadingSettingsFor(input: {
+  homePageId?: number | null;
+  blogPageId?: number | null;
+  incrementalDeployment?: boolean;
+}) {
+  return {
+    ...(!input.incrementalDeployment && input.homePageId ? { show_on_front: "page", page_on_front: input.homePageId } : {}),
+    ...(input.blogPageId ? { page_for_posts: input.blogPageId } : {}),
+  };
 }
 
 function wordpressRestCollection(postType: string) {
@@ -8498,7 +8553,7 @@ type MeasurementReadinessCheck = {
   required: boolean;
 };
 
-function measurementReadinessFor(model: WebsiteModel, tracking: Awaited<ReturnType<typeof trackingForProject>>) {
+export function measurementReadinessFor(model: WebsiteModel, tracking: Awaited<ReturnType<typeof trackingForProject>>) {
   const plan = tracking?.plan;
   const site = tracking?.site;
   const sources = Array.isArray(plan?.dataSourcesJson) ? plan.dataSourcesJson.map(jsonRecord) : [];
@@ -8546,8 +8601,12 @@ function measurementReadinessFor(model: WebsiteModel, tracking: Awaited<ReturnTy
     {
       key: "senuke_tag",
       label: "SEnuke AI - AI Growth Operating System tracking",
-      status: tracking?.siteId && installation.measurementTagEnabled !== false ? "passed" : "warning",
-      detail: tracking?.siteId ? "The production publisher is configured to install the project tracking identity." : "The tracking identity is not ready. Launch can continue, but SEnuke performance reporting will remain unavailable until a production website URL is connected.",
+      status: tracking?.siteId && !tracking.endpointIssue && installation.measurementTagEnabled !== false ? "passed" : "warning",
+      detail: tracking?.endpointIssue
+        ? `${tracking.endpointIssue} Launch Readiness can continue, but publishing requires a public HTTPS tracking endpoint.`
+        : tracking?.siteId
+          ? "The production publisher is configured to install the project tracking identity."
+          : "The tracking identity is not ready. Launch can continue, but SEnuke performance reporting will remain unavailable until a production website URL is connected.",
       required: true,
     },
     sourceCheck("ga4", "Google Analytics 4"),
@@ -8759,7 +8818,7 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/launch-readiness
       ? `https://${rawWebsiteUrl.replace(/^https?:\/\//i, "")}`
       : undefined;
   const connectedWordPressUrl = project.wordpressIntegrations.find((integration) => integration.connectionStatus === "connected")?.siteUrl;
-  const websiteTracking = await trackingForProject(project, context.membership.userId, connectedWordPressUrl);
+  const websiteTracking = await trackingForProject(project, context.membership.userId, connectedWordPressUrl, { allowUnpublishableEndpoint: true });
   const measurementReadiness = measurementReadinessFor(model, websiteTracking);
   const redirectCount = Array.isArray(jsonRecord(build.settingsJson).redirects)
     ? (jsonRecord(build.settingsJson).redirects as unknown[]).length
@@ -8870,9 +8929,10 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/deploy", async (
   const automaticPageIds = automaticScope.mode === "incremental" ? automaticScope.pageIds : [];
   const requestedPageIds = new Set(input.pageIds ?? (input.scope === "auto" ? automaticPageIds : []));
   const incrementalDeployment = Boolean(input.pageIds?.length) || (input.scope === "auto" && automaticScope.mode === "incremental");
-  const pages = requestedPageIds.size
+  const selectedPages = requestedPageIds.size
     ? releaseModel.pages.filter((page) => requestedPageIds.has(page.pageId))
     : releaseModel.pages;
+  const pages = wordpressPublicationOrder(selectedPages);
   if (!pages.length) return res.status(409).json({ error: automaticScope.mode === "incremental" ? "This Approved Release has no changed pages or images to publish." : "The Approved Release has no pages to publish." });
   if (requestedPageIds.size && pages.length !== requestedPageIds.size) {
     return res.status(409).json({ error: "One or more requested pages are not part of this Approved Release." });
@@ -8998,6 +9058,8 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/deploy", async (
   const logs: Array<Record<string, unknown>> = [];
   const snapshots: Array<Record<string, unknown>> = [];
   let wordpressHomePageId: number | null = null;
+  let wordpressBlogPageId: number | null = null;
+  const wordpressBlogSection = releaseModel.pages.find(isWebsiteBlogSectionPage);
   // Remote IDs are release-specific. Reusing the build's last remote ID here
   // could attach a new draft to a live parent (or a live page to a draft
   // parent), so this deployment builds its own mapping in page order.
@@ -9014,6 +9076,7 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/deploy", async (
     for (const [mappedPageId, remotePostId] of wordpressRemotePageIds(latestLivePublication?.remoteMappingsJson) ?? []) {
       wordpressPageIds.set(mappedPageId, Number(remotePostId));
     }
+    if (wordpressBlogSection) wordpressBlogPageId = wordpressPageIds.get(wordpressBlogSection.pageId) ?? null;
   }
   const wordpressPageUrls = new Map<string, string>();
   const wordpressAssetUrls: Record<string, string> = {};
@@ -9311,6 +9374,7 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/deploy", async (
       if (result.id) wordpressPageIds.set(page.pageId, Number(result.id));
       if (result.link) wordpressPageUrls.set(page.pageId, String(result.link));
       if (isHomePage && result.id) wordpressHomePageId = Number(result.id);
+      if (isWebsiteBlogSectionPage(page) && result.id) wordpressBlogPageId = Number(result.id);
       if (connectorEnabled && result.id) {
         const canonicalUrl = input.mode === "publish"
           ? wordpressProductionCanonicalUrl(integration.siteUrl, result.link, isHomePage)
@@ -9336,12 +9400,18 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/deploy", async (
         : "Internal links were included in page content. Install the connector to manage metadata, canonical URLs, and JSON-LD independently of the active theme.",
       at: new Date().toISOString(),
     });
-    if (!incrementalDeployment && wordpressHomePageId && input.mode === "publish") {
+    if (input.mode === "publish" && ((!incrementalDeployment && wordpressHomePageId) || wordpressBlogPageId)) {
       try {
-        await wpFetch(integration, "/wp-json/wp/v2/settings", { method: "POST", body: JSON.stringify({ show_on_front: "page", page_on_front: wordpressHomePageId }) });
-        logs.push({ action: "homepage_assigned", status: "success", remotePostId: wordpressHomePageId, at: new Date().toISOString() });
+        const readingSettings = wordpressReadingSettingsFor({
+          homePageId: wordpressHomePageId,
+          blogPageId: wordpressBlogPageId,
+          incrementalDeployment,
+        });
+        await wpFetch(integration, "/wp-json/wp/v2/settings", { method: "POST", body: JSON.stringify(readingSettings) });
+        if (!incrementalDeployment && wordpressHomePageId) logs.push({ action: "homepage_assigned", status: "success", remotePostId: wordpressHomePageId, at: new Date().toISOString() });
+        if (wordpressBlogPageId) logs.push({ action: "blog_archive_assigned", status: "success", remotePostId: wordpressBlogPageId, at: new Date().toISOString() });
       } catch (error) {
-        logs.push({ action: "homepage_assignment", status: "skipped", detail: "The Home page was published, but this WordPress user cannot change Reading Settings automatically.", error: error instanceof Error ? error.message : "WordPress settings endpoint unavailable", at: new Date().toISOString() });
+        logs.push({ action: "reading_settings_assignment", status: "skipped", detail: "The Home or Blog page was published, but this WordPress user cannot change Reading Settings automatically.", error: error instanceof Error ? error.message : "WordPress settings endpoint unavailable", at: new Date().toISOString() });
       }
     }
     const menu = releaseModel.navigation.map((item) => {

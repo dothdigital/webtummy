@@ -442,6 +442,7 @@ function answerText(answers: Record<string, unknown>, key: string) {
 async function accessibleDraft(context: WorkspaceContext, id: string) {
   const draft = await prisma.discoveryDraft.findFirst({ where: { id, workspaceId: context.workspace.id }, include: { ideas: { orderBy: [{ position: "asc" }, { createdAt: "asc" }] } } });
   if (!draft) return null;
+  if (context.workspace.workspaceType !== "agency" && draft.agencyClientId) return null;
   if (draft.agencyClientId && !await canAccessAgencyClient(context, draft.agencyClientId)) return null;
   return draft;
 }
@@ -456,7 +457,7 @@ discoveryDraftsRouter.get("/discovery-drafts", async (req, res, next) => {
     const context = await workspaceContext(req);
     if (context.roles.has("client_viewer")) return res.json({ drafts: [] });
     const candidates = await prisma.discoveryDraft.findMany({
-      where: { workspaceId: context.workspace.id, status: { not: "ARCHIVED" } },
+      where: { workspaceId: context.workspace.id, status: { not: "ARCHIVED" }, ...(context.workspace.workspaceType === "agency" ? {} : { agencyClientId: null }) },
       include: { ideas: { orderBy: [{ position: "asc" }, { createdAt: "asc" }] } },
       orderBy: { updatedAt: "desc" },
       take: 50,
@@ -473,6 +474,7 @@ discoveryDraftsRouter.post("/discovery-drafts", async (req, res, next) => {
     const context = await workspaceContext(req);
     assertCanEdit(context);
     if (context.workspace.workspaceType === "agency" && !input.agencyClientId) return res.status(400).json({ error: "Select the client before starting Agency discovery." });
+    if (context.workspace.workspaceType !== "agency" && input.agencyClientId) return res.status(400).json({ error: "Business discovery cannot use an Agency client." });
     if (input.agencyClientId && (!await canAccessAgencyClient(context, input.agencyClientId) || !await prisma.agencyClient.findFirst({ where: { id: input.agencyClientId, workspaceId: context.workspace.id, status: "active" } }))) return res.status(404).json({ error: "Agency client not found." });
     const draft = await prisma.$transaction(async (tx) => {
       const row = await tx.discoveryDraft.create({ data: {

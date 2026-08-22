@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { clientReportSections, documentQa, reportCanBeArchived, reportVersionPeriod } from "./project-reports.js";
+import { clientReportSections, documentQa, reportCanBeArchived, reportDeliveryModeForWorkspace, reportVersionPeriod } from "./project-reports.js";
 
 const baseContent = {
   project: { id: "project-1", name: "Acme Growth" },
@@ -47,6 +47,14 @@ describe("Report version identity", () => {
 
   it("does not assign a reporting period to proposals", () => {
     expect(reportVersionPeriod("agency_proposal", new Date(), new Date())).toEqual({ periodStart: null, periodEnd: null });
+  });
+});
+
+describe("Report delivery by workspace", () => {
+  it("keeps Agency documents and makes Personal and Business reports download-only", () => {
+    expect(reportDeliveryModeForWorkspace("personal")).toBe("download_only");
+    expect(reportDeliveryModeForWorkspace("business")).toBe("download_only");
+    expect(reportDeliveryModeForWorkspace("agency")).toBe("saved_workflow");
   });
 });
 

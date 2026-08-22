@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { agencyNextActions, clientDefaults, clientViewerRouteAllowed, workspaceNextActions } from "./dev002.js";
+import { agencyNextActions, clientDefaults, clientViewerRouteAllowed, requireAgencyWorkspaceType, workspaceNextActions } from "./dev002.js";
 
 describe("DEV-002 Agency → Clients → Projects", () => {
   it("reuses the complete client profile as project defaults", () => {
@@ -44,6 +44,12 @@ describe("DEV-002 Agency → Clients → Projects", () => {
 
   it("keeps Personal first use project-focused and free of Agency actions", () => {
     expect(workspaceNextActions({ workspaceType: "personal", clients: 0, activeProjects: 0, pendingApprovals: 0, reportsReady: 0 })).toEqual([expect.objectContaining({ key: "start_first_project", title: "Start your first project", href: "/projects/new" })]);
+  });
+
+  it("blocks Agency client operations outside an Agency workspace", () => {
+    expect(() => requireAgencyWorkspaceType("business")).toThrow("only in Agency workspaces");
+    expect(() => requireAgencyWorkspaceType("personal")).toThrow("only in Agency workspaces");
+    expect(() => requireAgencyWorkspaceType("agency")).not.toThrow();
   });
 
   it("continues a saved Discovery Draft before offering another first project", () => {

@@ -3276,18 +3276,27 @@ const WEBSITE_JOB_STALE_AFTER_MS = 3 * 60 * 60 * 1000;
 async function expireStaleWebsiteJobs() {
   const cutoff = new Date(Date.now() - WEBSITE_JOB_STALE_AFTER_MS);
   const stale = await prisma.websiteBuildJob.findMany({ where: { status: { in: ["queued", "processing"] }, updatedAt: { lt: cutoff } }, select: { id: true, attempts: true } });
+  let recoveredOrFinalized = 0;
   for (const item of stale) {
     const queueJob = await websiteBuilderQueue.getJob(item.id);
     if (queueJob && await queueJob.getState().catch(() => "unknown") === "active") continue;
-    if (queueJob) await queueJob.remove().catch(() => undefined);
     if (item.attempts >= 5) {
-      await prisma.websiteBuildJob.updateMany({ where: { id: item.id, status: { in: ["queued", "processing"] } }, data: { status: "failed", stage: "recovery_exhausted", errorMessage: "Website background work was interrupted repeatedly. Saved page checkpoints were preserved for support-assisted recovery.", completedAt: new Date() } });
+      const finalized = await prisma.websiteBuildJob.updateMany({ where: { id: item.id, status: { in: ["queued", "processing"] }, updatedAt: { lt: cutoff } }, data: { status: "failed", stage: "recovery_exhausted", errorMessage: "Website background work was interrupted repeatedly. Saved page checkpoints were preserved for support-assisted recovery.", completedAt: new Date() } });
+      if (finalized.count) {
+        if (queueJob) await queueJob.remove().catch(() => undefined);
+        recoveredOrFinalized += 1;
+      }
       continue;
     }
-    const recovered = await prisma.websiteBuildJob.updateMany({ where: { id: item.id, status: { in: ["queued", "processing"] } }, data: { status: "queued", stage: "queued_recovered", errorMessage: "Recovered after an interrupted worker. Continuing from saved page checkpoints.", queuedAt: new Date(), startedAt: null, completedAt: null } });
-    if (recovered.count) await websiteBuilderQueue.add("website:develop", { jobId: item.id }, { jobId: item.id, attempts: 2, backoff: { type: "exponential", delay: 10_000 }, removeOnComplete: 100, removeOnFail: 200 });
+    // Claim the stale database row before touching BullMQ. A second worker or
+    // watchdog tick cannot remove/requeue the same job after this update.
+    const recovered = await prisma.websiteBuildJob.updateMany({ where: { id: item.id, status: { in: ["queued", "processing"] }, updatedAt: { lt: cutoff } }, data: { status: "queued", stage: "queued_recovered", errorMessage: "Recovered after an interrupted worker. Continuing from saved page checkpoints.", queuedAt: new Date(), startedAt: null, completedAt: null } });
+    if (!recovered.count) continue;
+    if (queueJob) await queueJob.remove().catch(() => undefined);
+    await websiteBuilderQueue.add("website:develop", { jobId: item.id }, { jobId: item.id, attempts: 2, backoff: { type: "exponential", delay: 10_000 }, removeOnComplete: 100, removeOnFail: 200 });
+    recoveredOrFinalized += 1;
   }
-  if (stale.length) console.info(`[worker] website queue watchdog recovered or finalized ${stale.length} stale job${stale.length === 1 ? "" : "s"}.`);
+  if (recoveredOrFinalized) console.info(`[worker] website queue watchdog recovered or finalized ${recoveredOrFinalized} stale job${recoveredOrFinalized === 1 ? "" : "s"}.`);
 }
 
 export function startWebsiteBuilderWorker() {

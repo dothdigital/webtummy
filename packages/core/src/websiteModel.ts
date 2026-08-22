@@ -386,6 +386,7 @@ export type SeoQualityResult = {
 
 export type WebsitePageArchetype =
   | "home"
+  | "landing"
   | "service"
   | "local_service"
   | "supporting"
@@ -427,8 +428,10 @@ export function websitePageCompositionPolicy(page: {
   const home = pageType === "home" || title === "home" || title === "homepage";
   const caseStudy = /case.?study|portfolio|success.?stor/.test(`${pageType} ${title}`);
   const about = /about|team|company|our story/.test(`${pageType} ${title}`);
+  const landing = ["landing", "landing_page", "lead_capture_landing"].includes(pageType)
+    || /\b(?:lead magnet|download|free guide|free checklist) landing\b/.test(title);
   const local = pageType === "location" || pageType === "local_service" || intent.includes("local");
-  const supporting = ["supporting", "blog", "article", "resource"].includes(pageType) || intent.includes("informational");
+  const supporting = ["supporting", "blog", "blog_section", "blog_article", "article", "resource"].includes(pageType) || intent.includes("informational");
   const base = ["hero.local_service", "content.rich_text", "content.faq"] as const;
 
   if (utility) return {
@@ -466,6 +469,15 @@ export function websitePageCompositionPolicy(page: {
     minimumWords: 650,
     maximumWords: WEBSITE_PAGE_MAXIMUM_WORDS,
     guidance: "Create a distinctive overview of the business, core offers, differentiation, proof, audience pathways, and primary conversion action.",
+  };
+  if (landing) return {
+    archetype: "landing",
+    requiredComponentIds: ["hero.local_service", "content.rich_text", "service.benefits", "conversion.contact_form", "conversion.cta"],
+    recommendedComponentIds: ["trust.proof", "content.faq"],
+    minimumComponentCount: 5,
+    minimumWords: 250,
+    maximumWords: WEBSITE_PAGE_MAXIMUM_WORDS,
+    guidance: "Build one focused lead-capture journey around the approved offer. Keep the promise, benefits, proof, form, consent, delivery expectation, and next step aligned with the linked lead magnet. Do not add competing calls to action.",
   };
   if (caseStudy) return {
     archetype: "case_study",
@@ -730,6 +742,8 @@ export const SENUKE_COMPONENT_REGISTRY_V1: ComponentRegistry = {
         introduction: { type: "string", required: true, maxLength: 280 },
         ...headingStyleFields,
         formId: { type: "string", required: true, maxLength: 80 },
+        submissionUrl: { type: "url", maxLength: 1000 },
+        providerEmbedHtml: { type: "rich_text", maxLength: 40000 },
         fields: { type: "object_list", required: true, maxItems: 10 },
         submitLabel: { type: "string", required: true, maxLength: 40 },
         successMessage: { type: "string", required: true, maxLength: 240 },
@@ -753,7 +767,11 @@ export const SENUKE_COMPONENT_REGISTRY_V1: ComponentRegistry = {
 };
 
 const urlIsSafe = (value: string) =>
-  value.startsWith("/") || /^https:\/\/[a-z0-9.-]+(?:\/|$)/i.test(value) || /^mailto:[^@\s]+@[^@\s]+$/i.test(value) || /^tel:\+?[0-9 ()-]+$/i.test(value);
+  /^#[a-z][a-z0-9_:.-]*$/i.test(value)
+  || value.startsWith("/")
+  || /^https:\/\/[a-z0-9.-]+(?:\/|$)/i.test(value)
+  || /^mailto:[^@\s]+@[^@\s]+$/i.test(value)
+  || /^tel:\+?[0-9 ()-]+$/i.test(value);
 
 const fieldMatches = (value: JsonValue, field: ComponentFieldDefinition) => {
   if (field.type === "boolean") return typeof value === "boolean";
@@ -995,7 +1013,7 @@ export function validateComponentInstance(
         code: "unsafe_component_url",
         severity: "blocking",
         path: `${path}.props.${name}`,
-        message: `${name} must be a safe internal, HTTPS, mailto, or telephone URL.`,
+        message: `${name} must be a safe same-page anchor, internal, HTTPS, mailto, or telephone URL.`,
       });
     }
   }

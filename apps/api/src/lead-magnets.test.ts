@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { emailSequenceHtml, emailSequenceText, leadCaptureWidgetHtml, leadFunnelOptimizationRecommendations, leadOpportunityRecommendations, renderLeadMagnetPdf, validateLeadFunnelForPublish } from "./routes/lead-magnets.js";
+import { emailSequenceHtml, emailSequenceText, leadCaptureWidgetHtml, leadFunnelOptimizationRecommendations, leadMagnetLandingPageHtml, leadMagnetWebsitePageDraft, leadOpportunityRecommendations, renderLeadMagnetPdf, validateLeadFunnelForPublish, validateProviderEmbedCode } from "./routes/lead-magnets.js";
+import { websitePageHasCompleteContent } from "@webtummy/core/website-generation";
 import { leadMagnetBodyWordCount, leadMagnetRecommendationIsFresh, openAiWebCitations } from "./routes/projects-v2.js";
 
 const completeFunnel = {
@@ -63,6 +64,27 @@ describe("DEV-011C lead funnel optimization", () => {
     expect(result.valid).toBe(true);
     expect(result.errors).toEqual([]);
     expect(Object.values(result.checks).every(Boolean)).toBe(true);
+  });
+
+  it("accepts a validated provider form embed without requiring an API integration", () => {
+    const providerEmbed = '<form action="https://forms.example.com/subscribe" method="post"><input type="email" name="email"><button>Join</button></form>';
+    expect(validateProviderEmbedCode(providerEmbed)).toBe(providerEmbed);
+    const result = validateLeadFunnelForPublish(completeFunnel, {
+      status: "connected",
+      lastVerifiedAt: new Date(),
+      listId: "provider-form",
+      endpointUrl: null,
+      provider: "provider_embed",
+      credentialCiphertext: "encrypted-provider-form",
+      fieldMappingsJson: { mode: "sandboxed_provider_form" },
+    });
+    expect(result.valid).toBe(true);
+  });
+
+  it("rejects incomplete, insecure, and nested provider embeds", () => {
+    expect(() => validateProviderEmbedCode("<form><input name=\"email\"></form>")).toThrow("complete HTTPS");
+    expect(() => validateProviderEmbedCode('<script src="http://forms.example.com/embed.js"></script>')).toThrow("complete HTTPS");
+    expect(() => validateProviderEmbedCode('<iframe src="https://forms.example.com" srcdoc="<script></script>"></iframe>')).toThrow("Nested srcdoc");
   });
 
   it("blocks incomplete assets, forms, metadata, links, and stale ESP verification", () => {
@@ -211,5 +233,151 @@ describe("DEV-011C lead funnel optimization", () => {
     expect(html).toContain("Email sequence");
     expect(widget).toContain("data-senuke-lead-widget");
     expect(widget).toContain("/local-seo-checklist/subscribe");
+  });
+
+  it("exports a complete responsive landing page with an active delivery form", () => {
+    const html = leadMagnetLandingPageHtml({ ...completeFunnel, publicSlug: "local-seo-checklist" });
+    expect(html).toContain("<!doctype html>");
+    expect(html).toContain("Fix local visibility gaps");
+    expect(html).toContain("/local-seo-checklist/subscribe");
+    expect(html).toContain("data-download");
+    expect(html).not.toContain("disabled>Send my checklist");
+  });
+
+  it("carries a provider form into the widget, landing HTML, and Site Architect handoff", () => {
+    const providerEmbedCode = '<script src="https://forms.example.com/embed.js"></script><form action="https://forms.example.com/subscribe"></form>';
+    const widget = leadCaptureWidgetHtml({ ...completeFunnel, publicSlug: "local-seo-checklist", providerEmbedCode });
+    const landing = leadMagnetLandingPageHtml({ ...completeFunnel, publicSlug: "local-seo-checklist", providerEmbedCode });
+    expect(widget).toContain('sandbox="allow-forms allow-scripts allow-popups"');
+    expect(widget).toContain("forms.example.com");
+    expect(widget).not.toContain("/local-seo-checklist/subscribe");
+    expect(landing).toContain("senuke-provider-form-embed");
+    expect(landing).not.toContain('id="registration-form"');
+
+    const draft = leadMagnetWebsitePageDraft({
+      ...completeFunnel,
+      id: "funnel-provider",
+      seriesId: "series-provider",
+      version: 1,
+      audience: "Local business owners",
+      publicUrl: "https://app.example.com/lead/local-seo-checklist",
+    }, {
+      title: "Local SEO Checklist",
+      slug: "local-seo-checklist",
+      primaryKeyword: "local SEO checklist",
+      targetCta: "Send my checklist",
+      includeInNavigation: false,
+    }, { providerEmbedHtml: providerEmbedCode });
+    const components = draft.contentJson.components as Array<{ componentId: string; props: Record<string, unknown> }>;
+    const formComponent = components.find((component) => component.componentId === "conversion.contact_form");
+    expect(formComponent?.props.providerEmbedHtml).toBe(providerEmbedCode);
+    expect(formComponent?.props.submissionUrl).toBeUndefined();
+    expect(draft.briefJson.leadMagnet).toMatchObject({ status: "connected_draft", captureReady: true });
+  });
+
+  it("creates an approved website draft before registration is connected and marks the remaining setup", () => {
+    const draft = leadMagnetWebsitePageDraft({
+      ...completeFunnel,
+      id: "funnel-approved",
+      seriesId: "series-approved",
+      version: 3,
+      audience: "Local business owners",
+      publicUrl: null,
+    }, {
+      title: "Local SEO Checklist",
+      slug: "local-seo-checklist",
+      primaryKeyword: "local SEO checklist",
+      targetCta: "Send my checklist",
+      includeInNavigation: false,
+    }, {});
+
+    expect(draft.briefJson.leadMagnet).toMatchObject({
+      funnelId: "funnel-approved",
+      version: 3,
+      status: "form_setup_required",
+      captureReady: false,
+    });
+    expect(draft.briefJson.conversionPlan).toContain("setup is still required");
+    const components = draft.contentJson.components as Array<{ componentId: string; props: Record<string, unknown> }>;
+    const form = components.find((component) => component.componentId === "conversion.contact_form");
+    expect(form?.props.providerEmbedHtml).toBeUndefined();
+    expect(form?.props.submissionUrl).toBeUndefined();
+  });
+
+  it("supports both gated sales-pitch and full promotional landing pages", () => {
+    const landingWithFaqs = {
+      ...completeFunnel.landingPageJson,
+      faqs: [{ question: "Who is this for?", answer: "Local business owners preparing to improve visibility." }],
+    };
+    const pitch = leadMagnetLandingPageHtml({ ...completeFunnel, landingPageJson: { ...landingWithFaqs, contentMode: "sales_pitch" }, publicSlug: "local-seo-checklist" });
+    expect(pitch).toContain("Inside the resource");
+    expect(pitch).toContain("Frequently asked questions");
+    expect(pitch).not.toContain("Review every saved business detail before editing listings.");
+
+    const full = leadMagnetLandingPageHtml({ ...completeFunnel, landingPageJson: { ...landingWithFaqs, contentMode: "full_content" }, publicSlug: "local-seo-checklist" });
+    expect(full).toContain("Complete content");
+    expect(full).toContain("Review every saved business detail before editing listings.");
+    expect(full).toContain("Confirm the business name.");
+    expect(full).toContain('id="registration-form"');
+  });
+
+  it("maps an approved lead funnel into editable Site Architect components", () => {
+    const draft = leadMagnetWebsitePageDraft({
+      ...completeFunnel,
+      id: "funnel-1",
+      seriesId: "series-1",
+      version: 2,
+      audience: "Local business owners",
+      publicUrl: "https://app.example.com/lead/local-seo-checklist",
+    }, {
+      title: "Local SEO Checklist",
+      slug: "local-seo-checklist",
+      primaryKeyword: "local SEO checklist",
+      targetCta: "Send my checklist",
+      includeInNavigation: false,
+    }, {
+      submissionUrl: "https://api.example.com/api/public/lead-magnets/local-seo-checklist/subscribe",
+      imageAssetId: "image-1",
+    });
+    const components = draft.contentJson.components as Array<{ componentId: string; props: Record<string, unknown> }>;
+    expect(components.map((component) => component.componentId)).toEqual(expect.arrayContaining(["hero.local_service", "service.benefits", "conversion.contact_form", "conversion.cta"]));
+    expect(components.find((component) => component.componentId === "conversion.contact_form")?.props.submissionUrl).toContain("/subscribe");
+    expect(draft.briefJson.leadMagnet).toMatchObject({ funnelId: "funnel-1", seriesId: "series-1", version: 2 });
+    expect(draft.seoJson.canonicalUrl).toBe("/local-seo-checklist");
+    expect(websitePageHasCompleteContent({
+      content: draft.contentJson,
+      status: "review",
+      pageType: "landing",
+      title: "Local SEO Checklist",
+      searchIntent: "transactional",
+    })).toBe(true);
+  });
+
+  it("preserves full promotional content and FAQs in the Site Architect handoff", () => {
+    const draft = leadMagnetWebsitePageDraft({
+      ...completeFunnel,
+      id: "funnel-full",
+      seriesId: "series-full",
+      version: 1,
+      audience: "Local business owners",
+      publicUrl: "https://app.example.com/lead/local-seo-checklist",
+      landingPageJson: {
+        ...completeFunnel.landingPageJson,
+        contentMode: "full_content",
+        faqs: [{ question: "Who is this for?", answer: "Local business owners." }],
+      },
+    }, {
+      title: "Local SEO Promotional Page",
+      slug: "local-seo-offer",
+      primaryKeyword: "local SEO offer",
+      targetCta: "Register interest",
+      includeInNavigation: false,
+    }, {
+      submissionUrl: "https://api.example.com/api/public/lead-magnets/local-seo-checklist/subscribe",
+    });
+    const components = draft.contentJson.components as Array<{ componentId: string; props: Record<string, unknown> }>;
+    expect(components.find((component) => component.componentId === "content.rich_text")?.props.body).toContain("Review every saved business detail");
+    expect(components.find((component) => component.componentId === "content.faq")?.props.items).toEqual([{ question: "Who is this for?", answer: "Local business owners." }]);
+    expect(draft.briefJson.leadMagnet).toMatchObject({ contentMode: "full_content" });
   });
 });

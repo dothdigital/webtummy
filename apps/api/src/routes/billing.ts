@@ -26,7 +26,6 @@ import {
   billingPlanForClient,
   createCheckoutSession,
   createPortalSession,
-  ensureDefaultBillingPlans,
   hasBillingAccess,
   listCustomerInvoices,
   normalizePlanCode,
@@ -820,7 +819,6 @@ billingRouter.post("/webhooks/jvzoo", async (req, res) => {
 });
 
 billingRouter.get("/plans", requireAuth, requireRole("super_admin"), async (_req, res) => {
-  await ensureDefaultBillingPlans();
   const plans = await prisma.billingPlan.findMany({ orderBy: [{ sortOrder: "asc" }, { priceMonthlyCents: "asc" }] });
   res.json({ plans: await plansWithMemberCounts(plans) });
 });

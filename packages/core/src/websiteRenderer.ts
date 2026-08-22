@@ -118,6 +118,32 @@ const normalizedPath = (slug: string) => {
   return path ? `/${path}/` : "/";
 };
 
+export const isWebsiteBlogSectionPage = (page: Pick<WebsitePageModel, "pageType" | "name" | "slug">) =>
+  page.pageType.trim().toLowerCase() === "blog_section"
+  || (page.pageType.trim().toLowerCase() === "blog" && /^(?:blog|insights|resources)$/i.test(page.name.trim()))
+  || normalizedPath(page.slug) === "/blog/";
+
+export const isWebsiteBlogArticlePage = (page: Pick<WebsitePageModel, "pageType">) =>
+  /^(?:blog[_-]?article|blog[_-]?post|post|article|news)$/i.test(page.pageType.trim());
+
+/**
+ * Keep article slugs simple in Site Architect while publishing them beneath
+ * the approved Blog Section in static output.
+ */
+export function websitePagePublicationPath(model: Pick<WebsiteModel, "pages">, page: WebsitePageModel) {
+  const originalPath = normalizedPath(page.slug);
+  if (!isWebsiteBlogArticlePage(page)) return originalPath;
+  const parent = page.parentPageId
+    ? model.pages.find((candidate) => candidate.pageId === page.parentPageId && isWebsiteBlogSectionPage(candidate))
+    : undefined;
+  const blogSection = parent || model.pages.find(isWebsiteBlogSectionPage);
+  if (!blogSection) return originalPath;
+  const blogPath = normalizedPath(blogSection.slug);
+  if (originalPath.startsWith(blogPath) && originalPath !== blogPath) return originalPath;
+  const articleSlug = originalPath.replace(/^\/|\/$/g, "").split("/").filter(Boolean).at(-1) || page.pageId;
+  return normalizedPath(`${blogPath}${articleSlug}`);
+}
+
 const resolvedComponentUrl = (value: string, options: WebsiteRenderOptions) => {
   const path = /^(?:https?:\/\/|mailto:|tel:|#)/i.test(value) ? "" : normalizedPath(value);
   return path && options.internalUrlMap?.[path] ? options.internalUrlMap[path] : value;
@@ -137,7 +163,7 @@ const activeInternalLinks = (page: WebsitePageModel) =>
 const internalLinkHref = (model: WebsiteModel, targetPageId: string, options: WebsiteRenderOptions) => {
   const target = pageById(model, targetPageId);
   if (!target) return "";
-  const path = normalizedPath(target.slug);
+  const path = websitePagePublicationPath(model, target);
   return options.internalUrlMap?.[path] || path;
 };
 
@@ -265,7 +291,14 @@ export function renderWebsiteComponentHtml(
       return `<section class="senuke-component senuke-cta ${alignmentClass}"><h2>${heading}</h2><p>${escapeHtml(propString(component, "body"))}</p><a class="senuke-button" href="${escapeHtml(resolvedComponentUrl(propString(component, "buttonUrl"), options))}">${escapeHtml(propString(component, "buttonLabel"))}</a></section>`;
     case "conversion.contact_form":
       {
-        if (options.formShortcode) {
+        const submissionUrl = propString(component, "submissionUrl");
+        const providerEmbedHtml = propString(component, "providerEmbedHtml");
+        const formId = propString(component, "formId");
+        const sectionId = formId.replace(/[^a-z0-9_-]+/gi, "-").replace(/^-|-$/g, "");
+        if (providerEmbedHtml) {
+          return `<section${sectionId ? ` id="${escapeHtml(sectionId)}"` : ""} class="senuke-component senuke-contact-form senuke-provider-contact-form ${alignmentClass}"><div><h2>${heading}</h2><p>${escapeHtml(propString(component, "introduction"))}</p></div><iframe class="senuke-provider-form-embed" title="${escapeHtml(`${propString(component, "heading") || "Registration"} form`)}" sandbox="allow-forms allow-scripts allow-popups" referrerpolicy="no-referrer" loading="lazy" srcdoc="${escapeHtml(providerEmbedHtml)}"></iframe></section>`;
+        }
+        if (options.formShortcode && !submissionUrl) {
           return `<section class="senuke-component senuke-contact-form senuke-contact-form-shortcode ${alignmentClass}"><div><h2>${heading}</h2><p>${escapeHtml(propString(component, "introduction"))}</p></div><div>${options.formShortcode}</div></section>`;
         }
         const fields = propObjects(component, "fields");
@@ -283,7 +316,9 @@ export function renderWebsiteComponentHtml(
           const inputType = ["email", "tel", "text"].includes(type) ? type : /email/i.test(name) ? "email" : /phone|tel/i.test(name) ? "tel" : "text";
           return `<label>${escapeHtml(label)}<input type="${inputType}" name="${escapeHtml(name)}"${required ? " required" : ""}></label>`;
         }).join("");
-        return `<section class="senuke-component senuke-contact-form ${alignmentClass}"><div><h2>${heading}</h2><p>${escapeHtml(propString(component, "introduction"))}</p></div><form ${managedFormAttributes(options, propString(component, "formId"))}>${formHoneypot()}${controls}<button class="senuke-button" type="submit">${escapeHtml(propString(component, "submitLabel"))}</button><p class="senuke-form-status" role="status" aria-live="polite" hidden>${escapeHtml(propString(component, "successMessage"))}</p></form></section>`;
+        const formAction = submissionUrl || options.formAction || "";
+        const formOptions = formAction ? { ...options, formAction } : options;
+        return `<section${sectionId ? ` id="${escapeHtml(sectionId)}"` : ""} class="senuke-component senuke-contact-form ${alignmentClass}"><div><h2>${heading}</h2><p>${escapeHtml(propString(component, "introduction"))}</p></div><form ${managedFormAttributes(formOptions, formId)}>${formHoneypot()}${controls}<button class="senuke-button" type="submit">${escapeHtml(propString(component, "submitLabel"))}</button><p class="senuke-form-status" role="status" aria-live="polite" hidden>${escapeHtml(propString(component, "successMessage"))}</p></form></section>`;
       }
     case "global.footer":
       return `<footer class="senuke-component senuke-footer"><strong>${escapeHtml(propString(component, "businessName"))}</strong>${propString(component, "summary") ? `<p>${escapeHtml(propString(component, "summary"))}</p>` : ""}</footer>`;
@@ -298,9 +333,13 @@ export function renderWebsitePageBodyHtml(
   options: WebsiteRenderOptions = {},
 ) {
   const contactPage = model.pages.find((candidate) => candidate.pageType === "contact" || candidate.pageType === "conversion" || /\b(contact|get in touch|request a quote)\b/i.test(candidate.name));
-  const contactPath = contactPage ? normalizedPath(contactPage.slug) : "";
+  const contactPath = contactPage ? websitePagePublicationPath(model, contactPage) : "";
   const internalUrlMap = {
-    ...Object.fromEntries(model.pages.map((candidate) => [normalizedPath(candidate.slug), normalizedPath(candidate.slug)])),
+    ...Object.fromEntries(model.pages.flatMap((candidate) => {
+      const originalPath = normalizedPath(candidate.slug);
+      const publicationPath = websitePagePublicationPath(model, candidate);
+      return [[originalPath, publicationPath], [publicationPath, publicationPath]];
+    })),
     ...(contactPage ? { "/contact/": options.internalUrlMap?.[contactPath] || contactPath } : {}),
     ...options.internalUrlMap,
   };
@@ -343,8 +382,32 @@ export function renderWebsitePageBodyHtml(
         return `<label>${escapeHtml(field)}<input type="${type}" name="${escapeHtml(name)}"${required ? " required" : ""}></label>`;
       }).join("")}<button class="senuke-button" type="submit">Send enquiry</button><p class="senuke-form-status" role="status" aria-live="polite" hidden></p></form></section>`
     : "";
-  return `${breadcrumbHtml(model, page, componentOptions)}${sections}${relatedLinks}${conversionLinks}${formHtml}`;
+  const blogIndexHtml = isWebsiteBlogSectionPage(page)
+    ? renderWebsiteBlogIndexHtml(model, page, componentOptions)
+    : "";
+  return `${breadcrumbHtml(model, page, componentOptions)}${sections}${blogIndexHtml}${relatedLinks}${conversionLinks}${formHtml}`;
 }
+
+const renderWebsiteBlogIndexHtml = (
+  model: WebsiteModel,
+  blogSection: WebsitePageModel,
+  options: WebsiteRenderOptions,
+) => {
+  const sections = model.pages.filter(isWebsiteBlogSectionPage);
+  const articles = model.pages.filter((candidate) => isWebsiteBlogArticlePage(candidate)
+    && (candidate.parentPageId === blogSection.pageId || (!candidate.parentPageId && sections.length === 1)));
+  if (!articles.length) {
+    return `<section class="senuke-blog-index"><div class="senuke-blog-index-heading"><p class="senuke-eyebrow">Latest articles</p><h2>New articles are being prepared</h2><p>Published articles will appear here automatically.</p></div></section>`;
+  }
+  return `<section class="senuke-blog-index"><div class="senuke-blog-index-heading"><p class="senuke-eyebrow">Latest articles</p><h2>Explore the latest insights</h2><p>Practical guidance from ${escapeHtml(model.identity?.businessName || "our team")}.</p></div><div class="senuke-blog-grid">${articles.map((article) => {
+    const publicationPath = websitePagePublicationPath(model, article);
+    const href = options.internalUrlMap?.[publicationPath] || publicationPath;
+    const heroAssetId = String(article.sections.find((section) => section.componentId === "hero.local_service")?.props.imageAssetId || "");
+    const asset = model.mediaAssets.find((candidate) => candidate.assetId === heroAssetId);
+    const imageUrl = options.assetUrls?.[heroAssetId] || asset?.sourceUrl || "";
+    return `<article class="senuke-blog-card">${imageUrl && renderableImageUrl(imageUrl) ? `<a class="senuke-blog-card-image" href="${escapeHtml(href)}"><img src="${escapeHtml(imageUrl)}" alt="${escapeHtml(asset?.altText || article.name)}"></a>` : ""}<div><p class="senuke-blog-topic">${escapeHtml(article.seo.primaryKeyword || "Article")}</p><h3><a href="${escapeHtml(href)}">${escapeHtml(article.name)}</a></h3><p>${escapeHtml(article.seo.metaDescription)}</p><a class="senuke-blog-read-more" href="${escapeHtml(href)}">Read article <span aria-hidden="true">→</span></a></div></article>`;
+  }).join("")}</div></section>`;
+};
 
 /**
  * Preserve the governed SENuke page design while exposing each top-level page
@@ -362,9 +425,17 @@ export function renderWebsitePageWordPressBlocks(
   const heroIndex = page.sections.findIndex((component) => component.componentId === "hero.local_service");
   const secondFoldIndex = page.sections.findIndex((component, index) => index > heroIndex && Boolean(propString(component, "heading")));
   const blockPayloads = page.sections.map((component, index) => {
-    const blockMarkup = serializeWordPressComponentBlock(component, options, index === secondFoldIndex);
     let rendered = renderWebsiteComponentHtml(component, options);
     if (index === secondFoldIndex) rendered = rendered.replace('class="senuke-component ', 'class="senuke-component senuke-second-fold ');
+    // Lead-magnet forms have their own verified SEnuke submission endpoint.
+    // Keep their managed form markup in WordPress instead of replacing it with
+    // the website-wide contact-form shortcode, which would send the registrant
+    // to the wrong destination and skip lead-magnet delivery.
+    const hasDedicatedSubmission = component.componentId === "conversion.contact_form"
+      && Boolean(propString(component, "submissionUrl") || propString(component, "providerEmbedHtml"));
+    const blockMarkup = hasDedicatedSubmission
+      ? rendered
+      : serializeWordPressComponentBlock(component, options, index === secondFoldIndex);
     const placeholder = `<senuke-gutenberg-block data-index="${index}"></senuke-gutenberg-block>`;
     body = body.replace(rendered, placeholder);
     return blockMarkup;
@@ -464,7 +535,7 @@ function enrichWordPressComponent(component: WebsiteComponentInstance, options: 
     const sourceUrl = options.assetUrls?.[backgroundImageAssetId] || asset?.sourceUrl || "";
     if (sourceUrl) props.backgroundImageUrl = sourceUrl;
   }
-  if (component.componentId === "conversion.contact_form" && options.formShortcode) props.formShortcode = options.formShortcode;
+  if (component.componentId === "conversion.contact_form" && options.formShortcode && typeof props.submissionUrl !== "string") props.formShortcode = options.formShortcode;
   return { ...component, props };
 }
 
@@ -481,7 +552,7 @@ const navigationHtml = (model: WebsiteModel, options: WebsiteRenderOptions = {})
     if (!page && !item.custom) return "";
     const nextVisited = new Set(visited).add(item.pageId);
     const children = navigation.filter((candidate) => candidate.parentPageId === item.pageId);
-    const path = page ? normalizedPath(page.slug) : item.url || "";
+    const path = page ? websitePagePublicationPath(model, page) : item.url || "";
     const destination = page
       ? options.internalUrlMap?.[path] || path
       : resolvedComponentUrl(path, options);
@@ -498,7 +569,7 @@ const utilityNavigationHtml = (model: WebsiteModel, options: WebsiteRenderOption
   if (!items.length) return "";
   return `<nav class="senuke-utility-nav" aria-label="Utility navigation"><ul>${items.map((item) => {
     const page = pageById(model, item.pageId);
-    const path = page ? normalizedPath(page.slug) : item.url || "";
+    const path = page ? websitePagePublicationPath(model, page) : item.url || "";
     const href = page ? options.internalUrlMap?.[path] || path : resolvedComponentUrl(path, options);
     return href ? `<li><a href="${escapeHtml(href)}">${escapeHtml(item.label)}</a></li>` : "";
   }).join("")}</ul></nav>`;
@@ -559,7 +630,7 @@ const footerNavigationHtml = (model: WebsiteModel, options: WebsiteRenderOptions
   if (!groups.length) return "";
   return `<nav class="senuke-footer-navigation" aria-label="Footer navigation">${groups.map((group) => `<section><h2>${escapeHtml(group.label)}</h2><ul>${group.items.map((item) => {
     const page = pageById(model, item.pageId);
-    const path = page ? normalizedPath(page.slug) : item.url || "";
+    const path = page ? websitePagePublicationPath(model, page) : item.url || "";
     const href = page ? options.internalUrlMap?.[path] || path : resolvedComponentUrl(path, options);
     return href ? `<li><a href="${escapeHtml(href)}">${escapeHtml(item.label)}</a></li>` : "";
   }).join("")}</ul></section>`).join("")}</nav>`;
@@ -570,7 +641,7 @@ const footerLegalNavigationHtml = (model: WebsiteModel, options: WebsiteRenderOp
   const links = [`<a href="${escapeHtml(options.internalUrlMap?.["/sitemap.xml"] || "/sitemap.xml")}">Sitemap</a>`];
   for (const item of items) {
     const page = pageById(model, item.pageId);
-    const path = page ? normalizedPath(page.slug) : item.url || "";
+    const path = page ? websitePagePublicationPath(model, page) : item.url || "";
     const href = page ? options.internalUrlMap?.[path] || path : resolvedComponentUrl(path, options);
     if (href) links.push(`<a href="${escapeHtml(href)}">${escapeHtml(item.label)}</a>`);
   }
@@ -618,11 +689,13 @@ export function renderWebsitePageDocument(
   const environmentType = options.environmentType ?? "preview";
   const production = environmentType === "production";
   const colors = model.designSystem.colors;
-  const canonical = production && /^https:\/\//i.test(page.seo.canonicalUrl)
+  const publicationPath = websitePagePublicationPath(model, page);
+  const structuredPublicationPath = publicationPath !== normalizedPath(page.slug);
+  const canonical = production && /^https:\/\//i.test(page.seo.canonicalUrl) && !structuredPublicationPath
     ? page.seo.canonicalUrl
     : production && options.baseUrl
-      ? `${options.baseUrl.replace(/\/+$/, "")}${normalizedPath(page.seo.canonicalUrl || page.slug)}`
-      : normalizedPath(page.seo.canonicalUrl || page.slug);
+      ? `${options.baseUrl.replace(/\/+$/, "")}${structuredPublicationPath ? publicationPath : normalizedPath(page.seo.canonicalUrl || page.slug)}`
+      : structuredPublicationPath ? publicationPath : normalizedPath(page.seo.canonicalUrl || page.slug);
   const robots = production ? (page.seo.robots || "index, follow") : "noindex, nofollow";
   const cssVariables = `--senuke-primary:${escapeHtml(colors.primary)};--senuke-secondary:${escapeHtml(colors.secondary)};--senuke-accent:${escapeHtml(colors.accent)};--senuke-background:${escapeHtml(colors.background)};--senuke-surface:${escapeHtml(colors.surface)};--senuke-text:${escapeHtml(colors.text)};--senuke-muted:${escapeHtml(colors.mutedText)};--senuke-heading:${escapeHtml(model.designSystem.typography.headingFont)};--senuke-body:${escapeHtml(model.designSystem.typography.bodyFont)};${websiteLayoutCssVariables(model.designSystem.layoutMode)}`;
   const logoAssetId = model.identity?.logoAssetId || "";
@@ -643,7 +716,9 @@ export function renderWebsitePageDocument(
   const businessSummary = model.identity?.businessSummary?.trim() || "";
   const copyrightText = model.identity?.copyrightText || `© ${new Date().getFullYear()} ${brandName}. All rights reserved.`;
   const homeHref = options.internalUrlMap?.["/"] || "/";
-  const formDeliveryScript = options.formAction
+  const hasComponentFormAction = model.pages.some((page) => flattenWebsiteComponents(page.sections).some((section) =>
+    section.componentId === "conversion.contact_form" && typeof section.props.submissionUrl === "string" && section.props.submissionUrl.length > 0));
+  const formDeliveryScript = options.formAction || hasComponentFormAction
     ? `<script>
 document.querySelectorAll("[data-senuke-managed-form]").forEach(function(form){
   form.addEventListener("submit",async function(event){
@@ -654,7 +729,10 @@ document.querySelectorAll("[data-senuke-managed-form]").forEach(function(form){
     if(status){status.hidden=false;status.classList.remove("senuke-form-error");status.textContent="Sending…";}
     try{
       var payload={};
-      new FormData(form).forEach(function(value,key){payload[key]=String(value);});
+      new FormData(form).forEach(function(value,key){
+        var field=form.elements.namedItem(key);
+        payload[key]=field&&field.type==="checkbox"?field.checked:String(value);
+      });
       var response=await fetch(form.action,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)});
       var result=await response.json().catch(function(){return {};});
       if(!response.ok)throw new Error(result.error||"We could not send your enquiry. Please try again.");
@@ -675,6 +753,8 @@ document.querySelectorAll("[data-senuke-managed-form]").forEach(function(form){
     ? `<script async src="${escapeHtml(options.tracking.scriptUrl)}" data-senuke-site="${escapeHtml(options.tracking.siteId)}"${options.tracking.releaseId ? ` data-senuke-release="${escapeHtml(options.tracking.releaseId)}"` : ""}></script>`
     : "";
   const googleAnalyticsScript = production ? ga4HeadScript(options.tracking?.ga4MeasurementId) : "";
+  const hasBlogFeed = model.pages.some(isWebsiteBlogSectionPage) && model.pages.some(isWebsiteBlogArticlePage);
+  const rssHref = options.internalUrlMap?.["/rss.xml"] || "/rss.xml";
   return `<!doctype html>
 <html lang="en" style="${cssVariables}">
 <head>
@@ -685,6 +765,7 @@ document.querySelectorAll("[data-senuke-managed-form]").forEach(function(form){
 <meta name="robots" content="${escapeHtml(robots)}">
 <link rel="canonical" href="${escapeHtml(canonical)}">
 ${faviconUrl && renderableImageUrl(faviconUrl) ? `<link rel="icon" href="${escapeHtml(faviconUrl)}">` : ""}
+${hasBlogFeed ? `<link rel="alternate" type="application/rss+xml" title="${escapeHtml(brandName)} articles" href="${escapeHtml(rssHref)}">` : ""}
 <link rel="stylesheet" href="${escapeHtml(options.stylesheetHref || "/assets/senuke.css")}">
 <script type="application/ld+json">${safeJsonLd(page.seo.schemaJsonLd)}</script>
 ${trackingScript}
@@ -792,6 +873,7 @@ h1{max-width:18ch;font-size:clamp(2.2rem,6vw,4.8rem)}
 .senuke-proof,.senuke-cta{border-radius:1.25rem}
 .senuke-cta{background:var(--senuke-secondary);color:#fff;padding-inline:clamp(1.5rem,5vw,4rem)}
 .senuke-contact-form{display:grid;grid-template-columns:minmax(0,.8fr) minmax(300px,1.2fr);gap:clamp(2rem,6vw,5rem);align-items:start}
+.senuke-provider-form-embed{display:block;width:100%;min-height:640px;border:0;border-radius:1.25rem;background:var(--senuke-surface);box-shadow:0 20px 60px rgba(15,23,42,.1)}
 .senuke-contact-form form{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:1rem;padding:clamp(1.25rem,4vw,2.25rem);border-radius:1.25rem;background:var(--senuke-surface);box-shadow:0 20px 60px rgba(15,23,42,.1)}
 .senuke-contact-form label{display:grid;gap:.45rem;font-weight:750}
 .senuke-contact-form input,.senuke-contact-form textarea{width:100%;border:1px solid color-mix(in srgb,var(--senuke-muted) 30%,transparent);border-radius:.75rem;background:var(--senuke-background);padding:.8rem;font:inherit}
@@ -908,6 +990,7 @@ body{background:linear-gradient(180deg,var(--senuke-background),var(--senuke-sur
 .senuke-proof{padding-inline:clamp(1.5rem,5vw,4rem);background:linear-gradient(135deg,color-mix(in srgb,var(--senuke-accent) 13%,white),var(--senuke-surface))}
 .senuke-cta{position:relative;overflow:hidden;margin-block:3rem 5rem;background:linear-gradient(135deg,var(--senuke-secondary),color-mix(in srgb,var(--senuke-secondary) 76%,var(--senuke-primary)));box-shadow:0 28px 80px color-mix(in srgb,var(--senuke-secondary) 35%,transparent)}
 .senuke-faq{width:min(920px,calc(100% - 2rem))}.senuke-faq details{box-shadow:0 10px 30px rgba(15,23,42,.05)}
+.senuke-blog-index{width:min(var(--senuke-layout-max,1120px),calc(100% - var(--senuke-layout-inset,2rem)));margin:clamp(2.5rem,6vw,5rem) auto}.senuke-blog-index-heading{max-width:720px;margin-bottom:1.75rem}.senuke-blog-index-heading h2{margin:.25rem 0 .7rem;font-size:clamp(2rem,4vw,3rem)}.senuke-blog-index-heading>p:last-child{color:var(--senuke-muted)}.senuke-eyebrow,.senuke-blog-topic{margin:0;color:var(--senuke-primary);font-size:.75rem;font-weight:900;letter-spacing:.12em;text-transform:uppercase}.senuke-blog-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,280px),1fr));gap:1.25rem}.senuke-blog-card{overflow:hidden;border:1px solid color-mix(in srgb,var(--senuke-muted) 18%,transparent);border-radius:1.15rem;background:var(--senuke-surface);box-shadow:0 16px 45px rgba(15,23,42,.07)}.senuke-blog-card>div{padding:1.35rem}.senuke-blog-card h3{margin:.35rem 0 .65rem;font-size:1.35rem}.senuke-blog-card h3 a{color:inherit;text-decoration:none}.senuke-blog-card p{color:var(--senuke-muted)}.senuke-blog-card-image{display:block;aspect-ratio:16/9;overflow:hidden}.senuke-blog-card-image img{width:100%;height:100%;object-fit:cover}.senuke-blog-read-more{display:inline-flex;gap:.35rem;color:var(--senuke-primary);font-weight:850;text-decoration:none}
 @media(max-width:860px){.senuke-rich-text{padding-block:2.75rem}.senuke-site-header{position:sticky!important}.senuke-hero{padding-block:4rem}}
 `;
 
@@ -930,16 +1013,20 @@ export function createStaticWebsiteFiles(
     }
   }
   const pageFiles = model.pages.map((page) => {
-    const path = normalizedPath(page.slug);
+    const path = websitePagePublicationPath(model, page);
     const directoryDepth = path === "/" ? 0 : path.replace(/^\/|\/$/g, "").split("/").filter(Boolean).length;
     const relativeRoot = directoryDepth ? "../".repeat(directoryDepth) : "";
-    const internalUrlMap = Object.fromEntries(model.pages.map((targetPage) => {
-      const targetPath = normalizedPath(targetPage.slug);
+    const internalUrlMap = Object.fromEntries(model.pages.flatMap((targetPage) => {
+      const originalPath = normalizedPath(targetPage.slug);
+      const targetPath = websitePagePublicationPath(model, targetPage);
       const targetFile = targetPath === "/"
         ? "index.html"
         : `${targetPath.replace(/^\/|\/$/g, "")}/index.html`;
-      return [targetPath, `${relativeRoot}${targetFile}`];
+      const relativeTarget = `${relativeRoot}${targetFile}`;
+      return [[originalPath, relativeTarget], [targetPath, relativeTarget]];
     }));
+    internalUrlMap["/sitemap.xml"] = `${relativeRoot}sitemap.xml`;
+    internalUrlMap["/rss.xml"] = `${relativeRoot}rss.xml`;
     const pageAssetUrls = Object.fromEntries(Object.entries(assetUrls).map(([assetId, url]) => [
       assetId,
       url.startsWith("/") ? `${relativeRoot}${url.slice(1)}` : url,
@@ -957,11 +1044,22 @@ export function createStaticWebsiteFiles(
     };
   });
   const sitemapUrls = model.pages.map((page) => {
-    const path = normalizedPath(page.slug);
+    const path = websitePagePublicationPath(model, page);
     const location = options.baseUrl ? `${options.baseUrl.replace(/\/+$/, "")}${path}` : path;
     return `<url><loc>${escapeHtml(location)}</loc></url>`;
   }).join("");
-  const llmsPages = model.pages.map((page) => `- [${page.name}](${normalizedPath(page.slug)}): ${page.seo.metaDescription}`).join("\n");
+  const llmsPages = model.pages.map((page) => `- [${page.name}](${websitePagePublicationPath(model, page)}): ${page.seo.metaDescription}`).join("\n");
+  const blogSection = model.pages.find(isWebsiteBlogSectionPage);
+  const blogArticles = model.pages.filter(isWebsiteBlogArticlePage);
+  const rssFile: WebsiteRenderFile[] = blogSection && blogArticles.length ? [{
+    path: "rss.xml",
+    mimeType: "application/rss+xml",
+    content: `<?xml version="1.0" encoding="UTF-8"?><rss version="2.0"><channel><title>${escapeHtml(`${model.identity?.businessName || "Website"} articles`)}</title><link>${escapeHtml(options.baseUrl ? `${options.baseUrl.replace(/\/+$/, "")}${websitePagePublicationPath(model, blogSection)}` : websitePagePublicationPath(model, blogSection))}</link><description>${escapeHtml(blogSection.seo.metaDescription)}</description>${blogArticles.map((article) => {
+      const path = websitePagePublicationPath(model, article);
+      const link = options.baseUrl ? `${options.baseUrl.replace(/\/+$/, "")}${path}` : path;
+      return `<item><title>${escapeHtml(article.name)}</title><link>${escapeHtml(link)}</link><guid>${escapeHtml(link)}</guid><description>${escapeHtml(article.seo.metaDescription)}</description></item>`;
+    }).join("")}</channel></rss>`,
+  }] : [];
   const manifest = {
     generator: "SEnuke AI - AI Growth Operating System Static HTML Renderer",
     rendererVersion: "1.0.0",
@@ -973,7 +1071,7 @@ export function createStaticWebsiteFiles(
     environment: options.environmentType ?? "preview",
     canonicalBaseUrl: options.environmentType === "production" ? options.baseUrl ?? null : null,
     pageCount: model.pages.length,
-    pages: model.pages.map((page) => ({ pageId: page.pageId, name: page.name, path: normalizedPath(page.slug) })),
+    pages: model.pages.map((page) => ({ pageId: page.pageId, name: page.name, path: websitePagePublicationPath(model, page), pageType: page.pageType, parentPageId: page.parentPageId ?? null })),
   };
   return [
     ...pageFiles,
@@ -984,6 +1082,7 @@ export function createStaticWebsiteFiles(
       ? `User-agent: *\nAllow: /\nSitemap: ${options.baseUrl ? `${options.baseUrl.replace(/\/+$/, "")}/sitemap.xml` : "/sitemap.xml"}\n`
       : "User-agent: *\nDisallow: /\n", mimeType: "text/plain" },
     { path: "llms.txt", content: `# Website pages\n\n${llmsPages}\n`, mimeType: "text/plain" },
+    ...rssFile,
     { path: "senuke-release.json", content: JSON.stringify(manifest, null, 2), mimeType: "application/json" },
   ];
 }

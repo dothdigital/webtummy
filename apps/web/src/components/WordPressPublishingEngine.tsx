@@ -112,12 +112,16 @@ export default function WordPressPublishingEngine({
   pages,
   integration,
   onChanged,
+  startRequestKey = 0,
+  initialTargetType = "blog_post",
 }: {
   projectId: string;
   jobs: WordPressPublishingJob[];
   pages: PublisherPage[];
   integration: Integration | null;
   onChanged: () => Promise<unknown>;
+  startRequestKey?: number;
+  initialTargetType?: PublisherForm["targetType"];
 }) {
   const [open, setOpen] = useState(false);
   const [form, setForm] = useState<PublisherForm>(blankForm);
@@ -128,6 +132,12 @@ export default function WordPressPublishingEngine({
   const sortedJobs = useMemo(() => [...jobs].sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime()), [jobs]);
   const createMode = form.actionType === "create_content";
   const imageAction = form.actionType === "add_image";
+  useEffect(() => {
+    if (startRequestKey <= 0) return;
+    setForm({ ...blankForm(), targetType: initialTargetType });
+    setMessage("");
+    setOpen(true);
+  }, [startRequestKey, initialTargetType]);
   useEffect(() => {
     if (!jobs.some(job => ["generating", "generating_image"].includes(job.status))) return;
     const timer = window.setInterval(() => void onChanged(), 4000);
