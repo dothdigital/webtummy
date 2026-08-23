@@ -695,4 +695,20 @@ describe("Approved Release website renderer", () => {
     const invalid = renderWebsitePageDocument(model, model.pages[0], { environmentType: "production", tracking: { ...tracking, ga4MeasurementId: "not-a-measurement-id" } });
     expect(invalid).not.toContain("googletagmanager.com/gtag");
   });
+
+  it("publishes approved technical files while keeping staging robots protected", () => {
+    const siteFiles = {
+      sitemap: '<?xml version="1.0"?><urlset><url><loc>https://example.com/approved</loc></url></urlset>',
+      robots: "User-agent: *\nAllow: /\nSitemap: https://example.com/sitemap.xml\n",
+      llms: "# Approved AI-readable website guide\n\n- [Approved page](https://example.com/approved)",
+    };
+    const production = createStaticWebsiteFiles(model, { environmentType: "production", siteFiles });
+    expect(production.find((file) => file.path === "sitemap.xml")?.content).toBe(siteFiles.sitemap);
+    expect(production.find((file) => file.path === "robots.txt")?.content).toBe(siteFiles.robots.trim());
+    expect(production.find((file) => file.path === "llms.txt")?.content).toBe(siteFiles.llms);
+
+    const staging = createStaticWebsiteFiles(model, { environmentType: "staging", siteFiles });
+    expect(staging.find((file) => file.path === "robots.txt")?.content).toBe("User-agent: *\nDisallow: /\n");
+    expect(staging.find((file) => file.path === "sitemap.xml")?.content).toBe(siteFiles.sitemap);
+  });
 });

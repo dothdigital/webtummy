@@ -1,4 +1,4 @@
-import { Worker } from "bullmq";
+import { UnrecoverableError, Worker } from "bullmq";
 import { Prisma, prisma } from "@webtummy/db";
 import {
   SENUKE_COMPONENT_REGISTRY_V1,
@@ -2803,7 +2803,7 @@ export async function executeWebsiteBuildJob(jobId: string) {
       }
       await prisma.websiteBuildJob.update({ where: { id: job.id }, data: { stage: (mode === "image_generation" ? `planning_visual:${page.slug || "home"}` : automaticSetup && pageNeedsGeneration ? `writing_page:${page.slug || "home"}` : websiteGeneration ? `assembling_page:${page.slug || "home"}` : `generating_content:${page.slug || "home"}`).slice(0, 80), progress: baseProgress } });
       if (websiteGeneration && !automaticSetup && (pageNeedsGeneration || pageNeedsManualApproval)) {
-        throw new Error(`${page.title} must contain approved content before the website can be assembled.`);
+        throw new UnrecoverableError(`${page.title} needs review before website assembly. Open Site Architect → Content, approve this page, then start website creation again. The saved page and completed work were preserved.`);
       }
       const generated: { brief: unknown; content: unknown; seo: unknown } = mode === "image_generation" || (websiteGeneration && !pageNeedsGeneration)
         ? { brief: page.briefJson, content: page.contentJson, seo: page.seoJson }

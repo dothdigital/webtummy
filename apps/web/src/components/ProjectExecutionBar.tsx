@@ -44,7 +44,7 @@ function automationLabel(value: string) {
   return "Manual Task";
 }
 
-function projectScopedHref(value: string | null | undefined, projectId: string) {
+function projectScopedHref(value: string | null | undefined, projectId: string, taskId?: string) {
   if (!value) return null;
   if (/^(https?:)?\/\//i.test(value) || value.startsWith("mailto:") || value.startsWith("tel:")) return value;
   const [pathAndQuery, hash = ""] = value.split("#", 2);
@@ -57,6 +57,10 @@ function projectScopedHref(value: string | null | undefined, projectId: string) 
   const query = new URLSearchParams(rawQuery);
   query.delete("project");
   query.set("projectId", projectId);
+  if (taskId) {
+    query.set("taskId", taskId);
+    query.set("open", "1");
+  }
   return `${rawPath}?${query.toString()}${hash ? `#${hash}` : ""}`;
 }
 
@@ -154,7 +158,12 @@ export default function ProjectExecutionBar({ project, tasks: suppliedTasks, not
       expectedOutcome: "A reviewed page map with one owner per intent, build-ready SEO briefs, and a clear handoff to AI content creation.",
       actionButtonLabel: contentPlanActionLabel(storedTask),
       relatedUrl: projectScopedHref(storedTask.relatedUrl, project.id),
-    } : { ...storedTask, relatedUrl: projectScopedHref(storedTask.relatedUrl, project.id) };
+    } : {
+      ...storedTask,
+      relatedUrl: ["content", "ai_content"].includes(storedTask.moduleName)
+        ? projectScopedHref(storedTask.relatedUrl?.startsWith("/ai-content") ? storedTask.relatedUrl : "/ai-content", project.id, storedTask.id)
+        : projectScopedHref(storedTask.relatedUrl, project.id),
+    };
     const key = taskDisplayKey(task);
     const existing = map.get(key);
     map.set(key, existing ? preferredTask(existing, task) : task);

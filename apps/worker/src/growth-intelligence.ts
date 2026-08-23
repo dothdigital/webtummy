@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { Worker, type Job } from "bullmq";
-import { prisma, type Prisma } from "@webtummy/db";
+import { Prisma, prisma } from "@webtummy/db";
 import { config, GROWTH_INTELLIGENCE_QUEUE } from "./config.js";
 import { connection, growthIntelligenceQueue, type GrowthIntelligenceJobData } from "./queue.js";
 import { classifyContinuousMetric } from "./growth-intelligence-policy.js";
@@ -85,6 +85,48 @@ function sourceDue(definition: SourceDefinition, latest: { completedAt: Date | n
   return now.getTime() - latest.completedAt.getTime() >= definition.cadenceMs;
 }
 
+type GrowthBacklinkSnapshot = {
+  id: string;
+  provider: string;
+  referringDomains: number | null;
+  newBacklinks: number | null;
+  lostBacklinks: number | null;
+  limitationsJson: Prisma.JsonValue;
+  comparisonStartAt: Date | null;
+  comparisonEndAt: Date | null;
+  capturedAt: Date;
+  backlinkCount: bigint | number;
+};
+
+async function recentOwnedBacklinkSnapshots(projectId: string) {
+  // Read this nullable provider evidence directly. Earlier generated Prisma
+  // clients treated the count columns as required and could throw P2032 when
+  // a legitimate unavailable snapshot stored NULL. The SQL result preserves
+  // NULL as unavailable evidence while a fresh client is rolled out.
+  const rows = await prisma.$queryRaw<GrowthBacklinkSnapshot[]>(Prisma.sql`
+    SELECT
+      snapshot."id",
+      snapshot."provider",
+      snapshot."referringDomains",
+      snapshot."newBacklinks",
+      snapshot."lostBacklinks",
+      snapshot."limitationsJson",
+      snapshot."comparisonStartAt",
+      snapshot."comparisonEndAt",
+      snapshot."capturedAt",
+      (SELECT COUNT(*) FROM "ProjectBacklink" backlink WHERE backlink."snapshotId" = snapshot."id") AS "backlinkCount"
+    FROM "BacklinkProfileSnapshot" snapshot
+    WHERE snapshot."projectId" = ${projectId}
+      AND snapshot."profileType" = 'owned'
+    ORDER BY snapshot."capturedAt" DESC
+    LIMIT 2
+  `);
+  return rows.map((row) => ({
+    ...row,
+    _count: { backlinks: Number(row.backlinkCount || 0) },
+  }));
+}
+
 async function collectSnapshots(projectId: string, now: Date): Promise<{ project: Awaited<ReturnType<typeof loadProject>>; snapshots: Record<string, SourceSnapshot> }> {
   const currentPeriodStart = new Date(now.getTime() - DAY);
   const previousPeriodStart = new Date(now.getTime() - 2 * DAY);
@@ -104,7 +146,7 @@ async function collectSnapshots(projectId: string, now: Date): Promise<{ project
     prisma.crawlJob.findMany({ where: { websiteId, status: "completed" }, orderBy: { completedAt: "desc" }, take: 2, include: { _count: { select: { pages: true, issues: true } } } }),
     prisma.contentDiscoveryCheck.findMany({ where: { projectId }, orderBy: { updatedAt: "desc" }, take: 500 }),
     prisma.websitePublication.findMany({ where: { projectId }, orderBy: { createdAt: "desc" }, take: 100 }),
-    prisma.backlinkProfileSnapshot.findMany({ where: { projectId, profileType: "owned" }, orderBy: { capturedAt: "desc" }, take: 2, include: { _count: { select: { backlinks: true } } } }),
+    recentOwnedBacklinkSnapshots(projectId),
     prisma.aiVisibilitySnapshot.count({ where: { projectId, mentionDetected: true, createdAt: { gte: new Date(now.getTime() - 7 * DAY), lt: now } } }),
     prisma.aiVisibilitySnapshot.count({ where: { projectId, mentionDetected: true, createdAt: { gte: new Date(now.getTime() - 14 * DAY), lt: new Date(now.getTime() - 7 * DAY) } } }),
     prisma.aiVisibilitySnapshot.findFirst({ where: { projectId }, orderBy: { createdAt: "desc" }, select: { createdAt: true } }),

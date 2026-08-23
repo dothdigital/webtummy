@@ -2502,6 +2502,15 @@ function siteFileOverviewFor(project: Awaited<ReturnType<typeof scopedProject>>[
   return { sitemap: summary("sitemap"), llms: summary("llms"), robots: summary("robots") };
 }
 
+function approvedWebsiteSiteFileOverrides(build: { settingsJson: Prisma.JsonValue }) {
+  const siteFiles = jsonRecord(jsonRecord(build.settingsJson).siteFiles);
+  if (!siteFiles.approvedAt) return undefined;
+  const sitemap = String(jsonRecord(siteFiles.sitemap).content || "").trim();
+  const robots = String(jsonRecord(siteFiles.robots).content || "").trim();
+  const llms = String(jsonRecord(siteFiles.llms).content || "").trim();
+  return { ...(sitemap ? { sitemap } : {}), ...(robots ? { robots } : {}), ...(llms ? { llms } : {}) };
+}
+
 function builderOverviewView(project: Awaited<ReturnType<typeof scopedProject>>["project"]) {
   const view = builderView(project);
   if (!view.build) return view;
@@ -4201,6 +4210,194 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/sync-publishing-
   });
   const refreshed = await scopedProject(project.id, req);
   res.json({ ...builderView(refreshed.project), publishingContent: await publishingContentFor(refreshed.project, { includeResultJson: false }), siteFiles: await siteFilesFor(refreshed.project), imported, created });
+});
+
+const aiContentWebsiteHandoffSchema = z.object({
+  generationId: z.string().trim().min(1).max(191),
+  pageId: z.string().trim().max(191).optional().nullable(),
+  pageType: z.enum(["blog_article", "supporting", "service", "pillar", "location", "about", "case-study", "contact", "landing"]).default("blog_article"),
+  title: z.string().trim().min(2).max(255).optional(),
+  slug: z.string().trim().max(255).optional(),
+  targetCta: z.string().trim().max(255).optional(),
+  includeInNavigation: z.boolean().default(false),
+});
+
+const firstGeneratedString = (value: unknown) => Array.isArray(value)
+  ? value.find((item): item is string => typeof item === "string" && Boolean(item.trim()))?.trim() ?? ""
+  : typeof value === "string" ? value.trim() : "";
+
+function generatedDomainSchemaParts(value: unknown) {
+  const root = jsonRecord(value);
+  const graph = Array.isArray(root["@graph"]) ? root["@graph"].map(jsonRecord) : [root];
+  const hasType = (entry: Record<string, unknown>, expected: string) => {
+    const types = Array.isArray(entry["@type"]) ? entry["@type"] : [entry["@type"]];
+    return types.some((type) => String(type || "").toLocaleLowerCase() === expected.toLocaleLowerCase());
+  };
+  return {
+    organization: graph.find((entry) => ["Organization", "LocalBusiness", "ProfessionalService"].some((type) => hasType(entry, type))) ?? null,
+    website: graph.find((entry) => hasType(entry, "WebSite")) ?? null,
+  };
+}
+
+websiteBuilderRouter.post("/projects/:projectId/website-builder/ai-content-handoff", async (req, res) => {
+  const { context, project } = await scopedProject(req.params.projectId, req);
+  if (!hasWorkspacePermission(context, "execute_tasks")) return res.status(403).json({ error: "Task execution permission is required." });
+  const input = aiContentWebsiteHandoffSchema.parse(req.body ?? {});
+  const build = project.websiteBuilds[0];
+  if (!build) return res.status(409).json({ error: "Start the website in Site Architect before sending this content to the website." });
+  const activeJob = build.jobs.find((job) => ["queued", "processing"].includes(job.status));
+  if (activeJob) return res.status(409).json({ error: `Website generation is ${activeJob.status} (${activeJob.progress}%). This content is saved and can be sent to Site Architect when the job finishes.`, code: "website_job_active", retryable: true });
+  const generation = await prisma.aiContentGeneration.findFirst({ where: { id: input.generationId, clientId: project.clientId, projectId: project.id, status: "completed" } });
+  if (!generation) return res.status(404).json({ error: "The generated content asset was not found in this project." });
+  const result = jsonRecord(generation.resultJson);
+  const pageScopedTypes = new Set(["article", "h1", "title", "meta_description", "faq", "page_schema", "page_llms_txt"]);
+  const siteScopedTypes = new Set(["domain_schema", "domain_llms_txt", "robots_txt", "sitemap", "ai_search"]);
+  if (!pageScopedTypes.has(generation.type) && !siteScopedTypes.has(generation.type)) return res.status(409).json({ error: "This saved asset does not have a supported Website Development destination." });
+
+  if (siteScopedTypes.has(generation.type)) {
+    const settings = jsonRecord(build.settingsJson);
+    const siteFiles = jsonRecord(settings.siteFiles);
+    const trustAssets = jsonRecord(settings.trustAssets);
+    const schemas = jsonRecord(trustAssets.schemas);
+    const handoffs = jsonRecord(settings.aiContentHandoffs);
+    let nextSiteFiles = siteFiles;
+    let nextTrustAssets = trustAssets;
+    let section: WebsiteChangeSection = "optimization";
+    let destinationLabel = "Website Optimization";
+    if (generation.type === "domain_llms_txt") {
+      const content = firstGeneratedString(result.llmsTxt);
+      if (!content) return res.status(409).json({ error: "The generated llms.txt asset is empty. Create a new version before sending it to the website." });
+      nextSiteFiles = { ...siteFiles, llms: { status: "ready", source: "AI Content Studio", content, generationId: generation.id }, syncedAt: new Date().toISOString(), approvedAt: null, approvedByUserId: null };
+      section = "structure"; destinationLabel = "llms.txt";
+    } else if (generation.type === "robots_txt") {
+      const content = firstGeneratedString(result.robotsTxt);
+      if (!content) return res.status(409).json({ error: "The generated robots.txt asset is empty. Create a new version before sending it to the website." });
+      nextSiteFiles = { ...siteFiles, robots: { status: "ready", source: "AI Content Studio", content, generationId: generation.id }, syncedAt: new Date().toISOString(), approvedAt: null, approvedByUserId: null };
+      section = "structure"; destinationLabel = "robots.txt";
+    } else if (generation.type === "sitemap") {
+      const content = firstGeneratedString(result.sitemapXml);
+      if (!content) return res.status(409).json({ error: "The generated sitemap asset is empty. Create a new version before sending it to the website." });
+      nextSiteFiles = { ...siteFiles, sitemap: { status: "ready", source: "AI Content Studio", content, itemCount: Number(result.urlCount || 0), generationId: generation.id }, syncedAt: new Date().toISOString(), approvedAt: null, approvedByUserId: null };
+      section = "structure"; destinationLabel = "sitemap.xml";
+    } else if (generation.type === "domain_schema") {
+      const parts = generatedDomainSchemaParts(result.schemaJsonLd);
+      if (!parts.organization && !parts.website) return res.status(409).json({ error: "The generated domain schema does not contain an Organization, LocalBusiness, ProfessionalService, or WebSite object." });
+      nextTrustAssets = { ...trustAssets, schemas: { ...schemas, ...(parts.organization ? { organization: parts.organization } : {}), ...(parts.website ? { website: parts.website } : {}) }, syncedAt: new Date().toISOString(), source: "AI Content Studio" };
+      destinationLabel = "shared website schema";
+    } else {
+      nextTrustAssets = { ...trustAssets, aiSearchRecommendations: { generationId: generation.id, result: generation.resultJson, synchronizedAt: new Date().toISOString() } };
+      destinationLabel = "Website Optimization recommendations";
+    }
+    const nextSettings = {
+      ...settings,
+      siteFiles: nextSiteFiles,
+      trustAssets: nextTrustAssets,
+      aiContentHandoffs: { ...handoffs, [generation.id]: { generationId: generation.id, type: generation.type, destination: destinationLabel, synchronizedAt: new Date().toISOString() } },
+    };
+    const updated = await prisma.websiteBuild.update({ where: { id: build.id }, data: { sitemapApprovedAt: section === "structure" ? null : build.sitemapApprovedAt, settingsJson: websiteChangedSettings(nextSettings, { category: "ai_content_asset", summary: `${generation.topic} was sent from AI Content Studio to ${destinationLabel}.`, section, changedByUserId: context.membership.userId }) as Prisma.InputJsonValue } });
+    await recordWorkspaceActivity(prisma, { context, action: "website_builder.ai_content_synchronized", entityType: "website_build", entityId: build.id, agencyClientId: project.agencyClientId, projectId: project.id, nextJson: { generationId: generation.id, type: generation.type, destination: destinationLabel } });
+    return res.json({ build: updated, destination: "site", nextStep: section, message: `${destinationLabel} is now a reviewable Website Development change. It will not affect the live website until Quality, Approval, and Publish are completed.`, siteArchitectUrl: `/site-architect?projectId=${encodeURIComponent(project.id)}&step=${section}` });
+  }
+
+  const requestedPage = input.pageId ? build.pages.find((page) => page.id === input.pageId) : null;
+  const matchingPage = requestedPage;
+  if (input.pageId && !requestedPage) return res.status(404).json({ error: "The selected Website Development page was not found." });
+
+  if (generation.type === "article") {
+    let page = matchingPage;
+    let created = false;
+    let blogSectionCreated = false;
+    if (!page) {
+      const proposedTitle = input.title || firstGeneratedString(result.title) || generation.topic;
+      const proposedSlug = pagePathSlug(input.slug || generation.targetUrl, firstGeneratedString(result.slug) || proposedTitle);
+      const slugOwner = build.pages.find((candidate) => candidate.slug === proposedSlug);
+      if (slugOwner) return res.status(409).json({ error: `/${proposedSlug} already belongs to ${slugOwner.title}. Select that page as the destination or choose a different target URL.` });
+      else {
+        let parentPageId: string | null = null;
+        if (input.pageType === "blog_article") {
+          let blogSection = build.pages.find((candidate) => candidate.status !== "deferred" && (candidate.pageType === "blog_section" || candidate.slug.replace(/^\/+|\/+$/g, "") === "blog"));
+          if (!blogSection) {
+            blogSection = await prisma.websiteBuildPage.create({ data: { buildId: build.id, title: "Blog", slug: "blog", pageType: "blog_section", primaryKeyword: `${businessIdentity(project) || project.name} articles`, secondaryKeywords: [], searchIntent: "informational", targetUrl: "/blog", targetCta: "Explore articles", sortOrder: build.pages.length, status: "planned", briefJson: { createdForAiContentArticle: generation.id } } });
+            blogSectionCreated = true;
+          }
+          parentPageId = blogSection.id;
+        }
+        const searchIntent = ["landing", "contact"].includes(input.pageType) ? "transactional"
+          : input.pageType === "location" ? "local"
+            : ["service", "pillar", "case-study"].includes(input.pageType) ? "commercial"
+              : input.pageType === "about" ? "navigational" : "informational";
+        page = await prisma.websiteBuildPage.create({ data: { buildId: build.id, title: proposedTitle, slug: proposedSlug, pageType: input.pageType, primaryKeyword: generation.targetKeyword || generation.topic, secondaryKeywords: [], searchIntent, targetUrl: `/${proposedSlug}`, targetCta: input.targetCta || (["landing", "contact"].includes(input.pageType) ? "Get started" : "Contact us"), parentPageId, sortOrder: build.pages.length + (blogSectionCreated ? 1 : 0), status: "planned", briefJson: { aiContentSource: { generationId: generation.id, type: generation.type } } } });
+        created = true;
+      }
+    }
+    const generated = importedArticle(result, page, businessIdentity(project) || "the business");
+    const saved = await saveGeneratedPage(page, generated, context, build.templateKey, `Created from AI Content Studio generation ${generation.id}.`);
+    await prisma.$transaction(async (tx) => {
+      await syncBuildPageRelationships(tx, build.id);
+      const currentBuild = await tx.websiteBuild.findUniqueOrThrow({ where: { id: build.id }, select: { settingsJson: true } });
+      const settings = jsonRecord(currentBuild.settingsJson);
+      const menu = Array.isArray(settings.menu) ? settings.menu.map(jsonRecord).filter((item) => String(item.pageId || "") !== saved.id) : [];
+      const nextMenu = created
+        ? input.includeInNavigation ? [...menu, { pageId: saved.id, label: saved.title, slug: saved.slug, parentPageId: null, custom: false }] : menu
+        : settings.menu;
+      await tx.websiteBuild.update({ where: { id: build.id }, data: { sitemapApprovedAt: null, settingsJson: websiteChangedSettings({ ...settings, menu: nextMenu, siteFiles: null, aiContentHandoffs: { ...jsonRecord(settings.aiContentHandoffs), [generation.id]: { generationId: generation.id, type: generation.type, pageId: saved.id, pageVersion: saved.version, synchronizedAt: new Date().toISOString() } } }, { category: created ? "page_added" : "page_content", summary: `${saved.title} was ${created ? "created" : "updated"} from AI Content Studio.`, section: created ? "structure" : "content", pageId: saved.id, pageTitle: saved.title, changedByUserId: context.membership.userId }) as Prisma.InputJsonValue } });
+    });
+    await recordWorkspaceActivity(prisma, { context, action: created ? "website_builder.ai_content_page_created" : "website_builder.ai_content_page_updated", entityType: "website_build_page", entityId: saved.id, agencyClientId: project.agencyClientId, projectId: project.id, nextJson: { generationId: generation.id, pageId: saved.id, pageVersion: saved.version, pageType: saved.pageType } });
+    return res.status(created ? 201 : 200).json({ page: saved, created, destination: "page", nextStep: created ? "structure" : "content", message: `${saved.title} is now an editable Website Development draft${saved.pageType === "blog_article" ? " under the Blog Section" : ""}.${blogSectionCreated ? " The Blog Section was added to Page Structure as part of this handoff." : ""} It will not affect the live website until Quality, Approval, and Publish are completed.`, siteArchitectUrl: `/site-architect?projectId=${encodeURIComponent(project.id)}&pageId=${encodeURIComponent(saved.id)}&step=${created ? "structure" : "content"}&manage=1&source=ai-content&handoff=complete` });
+  }
+
+  if (!matchingPage) return res.status(409).json({ error: "Choose the Website Development page this page-specific asset should update." });
+  if (!pageHasCompleteContent(matchingPage)) return res.status(409).json({ error: `Create ${matchingPage.title} page content before applying a page-specific helper asset.` });
+  let content = canonicalContentFromComponents(matchingPage.contentJson, canonicalComponents(matchingPage.contentJson));
+  const seo = jsonRecord(matchingPage.seoJson);
+  const brief = jsonRecord(matchingPage.briefJson);
+  if (generation.type === "h1") {
+    const value = firstGeneratedString(result.h1Options);
+    if (!value) return res.status(409).json({ error: "No usable H1 was generated." });
+    content = updateCanonicalComponent(content as Prisma.JsonValue, "hero.local_service", (props) => ({ ...props, headline: value }));
+  } else if (generation.type === "title") {
+    const value = firstGeneratedString(result.titles);
+    if (!value) return res.status(409).json({ error: "No usable SEO title was generated." });
+    seo.metaTitle = value;
+  } else if (generation.type === "meta_description") {
+    const value = firstGeneratedString(result.descriptions);
+    if (!value) return res.status(409).json({ error: "No usable meta description was generated." });
+    seo.metaDescription = value;
+  } else if (generation.type === "page_schema") {
+    if (!Object.keys(jsonRecord(result.schemaJsonLd)).length) return res.status(409).json({ error: "No usable page schema was generated." });
+    seo.schemaJsonLd = result.schemaJsonLd;
+  } else if (generation.type === "page_llms_txt") {
+    const value = firstGeneratedString(result.markdown) || firstGeneratedString(result.llmsSection);
+    if (!value) return res.status(409).json({ error: "No usable page llms.txt section was generated." });
+    brief.aiContentAssets = { ...jsonRecord(brief.aiContentAssets), pageLlms: { generationId: generation.id, content: value, synchronizedAt: new Date().toISOString() } };
+  } else if (generation.type === "faq") {
+    const faqs = Array.isArray(result.faqs) ? result.faqs.map(jsonRecord).map((faq) => ({ question: String(faq.question || "").trim(), answer: String(faq.answer || "").trim() })).filter((faq) => faq.question && faq.answer) : [];
+    if (!faqs.length) return res.status(409).json({ error: "No usable FAQs were generated." });
+    const components = canonicalComponents(content);
+    const faqIndex = components.findIndex((component) => component.componentId === "content.faq");
+    const faqComponent: WebsiteComponentInstance = faqIndex >= 0
+      ? { ...components[faqIndex], props: { ...components[faqIndex].props, items: faqs } }
+      : { instanceId: `${slugify(matchingPage.title)}-faq-${matchingPage.version + 1}`, componentId: "content.faq", componentVersion: "1.0.0", variant: "accordion", props: { heading: `Questions buyers ask about ${matchingPage.primaryKeyword}`.slice(0, 100), items: faqs } };
+    if (faqIndex >= 0) components.splice(faqIndex, 1, faqComponent); else components.push(faqComponent);
+    content = canonicalContentFromComponents(content as Prisma.JsonValue, components);
+    seo.faqs = faqs;
+    seo.schemaJsonLd = combinedPageSchema(matchingPage, project, faqs, seo.schemaJsonLd);
+  }
+  const nextVersion = matchingPage.version + 1;
+  const contentJson = content as Prisma.InputJsonValue;
+  const seoJson = seo as Prisma.InputJsonValue;
+  const briefJson = brief as Prisma.InputJsonValue;
+  const saved = await prisma.$transaction(async (tx) => {
+    await tx.websiteBuildPageVersion.upsert({ where: { pageId_version: { pageId: matchingPage.id, version: nextVersion } }, update: { briefJson, contentJson, seoJson, layoutJson: matchingPage.layoutJson, comment: `Applied ${generation.type.replaceAll("_", " ")} from AI Content Studio generation ${generation.id}.`, createdById: context.membership.userId }, create: { pageId: matchingPage.id, version: nextVersion, briefJson, contentJson, seoJson, layoutJson: matchingPage.layoutJson, comment: `Applied ${generation.type.replaceAll("_", " ")} from AI Content Studio generation ${generation.id}.`, createdById: context.membership.userId } });
+    const page = await tx.websiteBuildPage.update({ where: { id: matchingPage.id }, data: { briefJson, contentJson, seoJson, version: nextVersion, status: "review", approvedAt: null } });
+    const latestBuild = await tx.websiteBuild.findUniqueOrThrow({ where: { id: build.id }, select: { settingsJson: true } });
+    const settings = jsonRecord(latestBuild.settingsJson);
+    await tx.websiteBuild.update({ where: { id: build.id }, data: { settingsJson: websiteChangedSettings({ ...settings, aiContentHandoffs: { ...jsonRecord(settings.aiContentHandoffs), [generation.id]: { generationId: generation.id, type: generation.type, pageId: page.id, pageVersion: page.version, synchronizedAt: new Date().toISOString() } } }, { category: "page_content", summary: `${page.title} received a ${generation.type.replaceAll("_", " ")} update from AI Content Studio.`, section: generation.type === "h1" || generation.type === "faq" ? "content" : "optimization", pageId: page.id, pageTitle: page.title, changedByUserId: context.membership.userId }) as Prisma.InputJsonValue } });
+    return page;
+  });
+  await recordWorkspaceActivity(prisma, { context, action: "website_builder.ai_content_page_updated", entityType: "website_build_page", entityId: saved.id, agencyClientId: project.agencyClientId, projectId: project.id, nextJson: { generationId: generation.id, type: generation.type, pageId: saved.id, pageVersion: saved.version } });
+  const nextStep = generation.type === "h1" || generation.type === "faq" ? "content" : "optimization";
+  res.json({ page: saved, created: false, destination: "page", nextStep, message: `${saved.title} now contains this AI Content Studio update as a reviewable page version. It will not affect the live website until Quality, Approval, and Publish are completed.`, siteArchitectUrl: `/site-architect?projectId=${encodeURIComponent(project.id)}&pageId=${encodeURIComponent(saved.id)}&step=${nextStep}&manage=1&source=ai-content&handoff=complete` });
 });
 
 websiteBuilderRouter.post("/projects/:projectId/website-builder/sync-site-files", async (req, res) => {
@@ -9198,6 +9395,7 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/deploy", async (
         snapshotHash: release.snapshotHash,
         baseUrl: integration.siteUrl,
         environmentType: input.mode === "publish" ? "production" : "staging",
+        siteFiles: approvedWebsiteSiteFileOverrides(build),
         ...(websiteTracking ? { tracking: { ...websiteTracking, releaseId: release.id } } : {}),
       });
       const approvedCss = renderedFiles.find((file) => file.path === "assets/senuke.css")?.content || "";
@@ -9782,6 +9980,7 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/static-export", 
     formAction: staticWebsiteFormAction(release),
     ...(baseUrl ? { baseUrl } : {}),
     environmentType: "production",
+    siteFiles: approvedWebsiteSiteFileOverrides(build),
     ...(websiteTracking ? { tracking: { ...websiteTracking, releaseId: release.id } } : {}),
   });
   const zip = new JSZip();
@@ -9880,6 +10079,7 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/static-deploy", 
     formAction: staticWebsiteFormAction(release),
     ...(baseUrl ? { baseUrl } : {}),
     environmentType: "production",
+    siteFiles: approvedWebsiteSiteFileOverrides(build),
     ...(websiteTracking ? { tracking: { ...websiteTracking, releaseId: release.id } } : {}),
   });
   const automaticScope = await releaseDeploymentScopeFor(project.id, release, "static_html");
@@ -10042,6 +10242,7 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/quality-export",
     snapshotHash: canonical.record.snapshotHash,
     ...(baseUrl ? { baseUrl } : {}),
     environmentType: "preview",
+    siteFiles: approvedWebsiteSiteFileOverrides(build),
   });
   const qualityReport = {
     artifactType: "website_quality_review",

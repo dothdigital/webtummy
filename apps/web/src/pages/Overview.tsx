@@ -789,6 +789,9 @@ function actionGroupForTask(task: GuidedExecutionTask, project: GuidedProject | 
   }
 
   const moduleRoute = routeForModule(task.moduleName, websiteId);
+  const contentRoute = ["content", "ai_content"].includes(task.moduleName)
+    ? contentExecutionTaskRoute(task, projectId || task.projectId || "")
+    : null;
   return {
     key: `${task.moduleName}:${normalizedActionTitle(task.title)}`,
     priority: priorityLabel(task.priority),
@@ -797,7 +800,7 @@ function actionGroupForTask(task: GuidedExecutionTask, project: GuidedProject | 
       detail: task.description || task.moduleName.replace(/_/g, " "),
       priority: priorityLabel(task.priority),
       tone: toneForModule(task.moduleName),
-      to: task.relatedUrl || moduleRoute,
+      to: contentRoute || task.relatedUrl || moduleRoute,
     },
   };
 }
@@ -812,6 +815,14 @@ function routeForModule(moduleName: string, websiteId?: string) {
   if (value.includes("strategy")) return "/strategy";
   if (value.includes("site") || value.includes("crawl") || value.includes("sitemap")) return websiteId ? `/website-projects/${websiteId}` : "/site-analysis";
   return "/opportunities";
+}
+
+function contentExecutionTaskRoute(task: GuidedExecutionTask, projectId: string) {
+  const query = new URLSearchParams(task.relatedUrl?.startsWith("/ai-content?") ? task.relatedUrl.split("?", 2)[1] : "");
+  query.set("projectId", projectId);
+  query.set("taskId", task.id);
+  query.set("open", "1");
+  return `/ai-content?${query.toString()}`;
 }
 
 function normalizedActionTitle(title: string) {
@@ -843,7 +854,9 @@ function dashboardQueue(tasks: GuidedExecutionTask[], fallbackProject: string, w
     task: normalizedActionTitle(task.title),
     project: fallbackProject,
     status: statusLabel(task.status),
-    to: task.relatedUrl || routeForModule(task.moduleName, websiteId),
+    to: ["content", "ai_content"].includes(task.moduleName)
+      ? contentExecutionTaskRoute(task, task.projectId || "")
+      : task.relatedUrl || routeForModule(task.moduleName, websiteId),
   }));
 }
 

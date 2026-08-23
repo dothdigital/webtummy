@@ -1,7 +1,7 @@
 import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { api } from "../api.js";
-import type { AiContentGeneration, AiContentStatus, AiGenerationType, GuidedExecutionTask, GuidedProject, Website } from "../types.js";
+import type { AiContentGeneration, AiGenerationType, GuidedExecutionTask, GuidedProject, Website } from "../types.js";
 import { Button, Card, Input } from "../components/ui.js";
 import { getActiveProjectId, resolveActiveProjectId, setActiveProjectId } from "../active-project.js";
 import ContentGenerationControls from "../components/ContentGenerationControls.js";
@@ -28,6 +28,67 @@ function prettyType(type: string) {
   return GENERATION_TYPES.find((item) => item.value === type)?.label ?? type;
 }
 
+function valueRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
+}
+
+function leadMagnetPublishingTask(task: GuidedExecutionTask) {
+  return /lead[\s_-]?magnet/i.test(`${task.moduleName} ${task.sourceType} ${task.title}`);
+}
+
+function savedPublicationUrl(task: GuidedExecutionTask, projects: GuidedProject[]) {
+  const snapshot = valueRecord(task.approvalSnapshotJson);
+  const publishing = valueRecord(snapshot.publishing);
+  const workflow = valueRecord(snapshot.publishingWorkflow);
+  const generated = valueRecord(snapshot.generatedContent);
+  const marketing = valueRecord(snapshot.marketingExecution);
+  const publication = valueRecord(marketing.publication);
+  const project = projects.find((candidate) => candidate.id === task.projectId);
+  const candidates = [
+    publishing.liveUrl,
+    publication.liveUrl,
+    generated.targetUrl,
+    snapshot.targetUrl,
+    snapshot.pageUrl,
+    workflow.affectedUrl,
+    workflow.targetUrl,
+    /^https?:\/\//i.test(task.relatedUrl || "") ? task.relatedUrl : null,
+    project?.website?.rootUrl,
+    project?.websiteUrl,
+  ];
+  for (const candidate of candidates) {
+    const raw = typeof candidate === "string" ? candidate.trim() : "";
+    if (!raw) continue;
+    try {
+      const url = new URL(/^https?:\/\//i.test(raw) ? raw : `https://${raw}`);
+      if (/^https?:$/.test(url.protocol) && !["localhost", "localhost.localdomain"].includes(url.hostname.toLowerCase())) return url.toString();
+    } catch { /* Try the next saved project URL. */ }
+  }
+  return "";
+}
+
+function publicationActionLabel(task: GuidedExecutionTask, busy: boolean) {
+  if (busy) return leadMagnetPublishingTask(task) ? "Opening…" : "Verifying website…";
+  if (leadMagnetPublishingTask(task)) return "Open Lead Magnet Publishing";
+  if (task.sourceType === "wordpress_publish_job") return "Publish through WordPress";
+  return publishingSourceLabel(task) === "Website" ? "Verify & open live website" : "Verify & open live page";
+}
+
+function generationTypeForTask(task: GuidedExecutionTask): AiGenerationType {
+  const value = `${task.title} ${task.description} ${task.actionButtonLabel ?? ""} ${task.manualInstructions ?? ""}`;
+  if (/robots\.txt/i.test(value)) return "robots_txt";
+  if (/sitemap(?:\.xml)?/i.test(value)) return "sitemap";
+  if (/domain.+llms\.txt|complete.+llms\.txt/i.test(value)) return "domain_llms_txt";
+  if (/page.+llms\.txt|llms\.txt.+page/i.test(value)) return "page_llms_txt";
+  if (/domain.+schema|organization.+schema|website.+schema/i.test(value)) return "domain_schema";
+  if (/page.+schema|json-ld|structured data/i.test(value)) return "page_schema";
+  if (/meta description/i.test(value)) return "meta_description";
+  if (/\bh1\b/i.test(value)) return "h1";
+  if (/seo title|title tag/i.test(value)) return "title";
+  if (/\bfaq(?:s)?\b|frequently asked/i.test(value)) return "faq";
+  return "article";
+}
+
 function formatDate(value: string) {
   return new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }).format(new Date(value));
 }
@@ -40,6 +101,22 @@ function suggestedTargetUrl(rootUrl: string | null | undefined, keyword: string)
   if (!rootUrl || !keyword) return "";
   const slug = keyword.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
   return slug ? `${rootUrl.replace(/\/$/, "")}/${slug}` : "";
+}
+
+function contentPageSlug(value: string) {
+  return value.toLowerCase().trim().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 180);
+}
+
+function savedUserInstructions(generation: AiContentGeneration | null | undefined) {
+  const prompt = generation?.prompt ?? "";
+  const marker = "Before returning the JSON, check the completed asset against every instruction in this block.\n";
+  const markerIndex = prompt.lastIndexOf(marker);
+  if (markerIndex < 0) return "";
+  return prompt
+    .slice(markerIndex + marker.length)
+    .split("\n\nINSTRUCTION COMPLIANCE REWRITE REQUIRED", 1)[0]
+    .trim()
+    .slice(0, 5_000);
 }
 
 function contentTaskTitle(task: GuidedExecutionTask) {
@@ -69,6 +146,32 @@ type GenerationGroup = {
   tokens: number;
   createdAt: string;
 };
+
+type WebsiteBuilderPageOption = {
+  id: string;
+  title: string;
+  slug: string;
+  targetUrl: string | null;
+  pageType: string;
+  status: string;
+};
+
+type WebsiteBuilderOverview = {
+  build: null | {
+    id: string;
+    pages: WebsiteBuilderPageOption[];
+  };
+};
+
+type WebsiteHandoffResult = {
+  message: string;
+  siteArchitectUrl: string;
+  nextStep: string;
+  destination: "page" | "site";
+  page?: WebsiteBuilderPageOption;
+};
+
+type WebsiteDraftPageType = "blog_article" | "supporting" | "service" | "pillar" | "location" | "about" | "case-study" | "contact" | "landing";
 
 function FriendlyValue({ value }: { value: unknown }) {
   if (Array.isArray(value)) {
@@ -400,19 +503,21 @@ export default function AiContentStudio() {
   const { chooseApprovalRoute, approvalRouteDialog } = useApprovalRouting();
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
-  const [status, setStatus] = useState<AiContentStatus | null>(null);
   const [history, setHistory] = useState<AiContentGeneration[]>([]);
   const [websites, setWebsites] = useState<Website[]>([]);
   const [projects, setProjects] = useState<GuidedProject[]>([]);
   const [websiteId, setWebsiteId] = useState("");
   const [type, setType] = useState<AiGenerationType>("article");
+  const [fullPageKind, setFullPageKind] = useState<"article" | "website_page">("article");
   const [topic, setTopic] = useState("");
   const [targetKeyword, setTargetKeyword] = useState("");
   const [targetUrl, setTargetUrl] = useState("");
   const [targetUrlSuggested, setTargetUrlSuggested] = useState(false);
+  const [targetCta, setTargetCta] = useState("Contact us");
   const [languageCode, setLanguageCode] = useState("en");
   const [tone, setTone] = useState("professional");
   const [notes, setNotes] = useState("");
+  const [userInstructions, setUserInstructions] = useState("");
   const [loading, setLoading] = useState(true);
   const [generating, setGenerating] = useState(false);
   const [selectedResult, setSelectedResult] = useState<AiContentGeneration | null>(null);
@@ -435,6 +540,13 @@ export default function AiContentStudio() {
   const [contentMode, setContentMode] = useState<ContentGenerationMode>("seo");
   const [generationInstruction, setGenerationInstruction] = useState("");
   const [generationError, setGenerationError] = useState("");
+  const [websiteBuilder, setWebsiteBuilder] = useState<WebsiteBuilderOverview["build"]>(null);
+  const [websiteHandoffPageId, setWebsiteHandoffPageId] = useState("");
+  const [websiteHandoffPageType, setWebsiteHandoffPageType] = useState<WebsiteDraftPageType>("blog_article");
+  const [websiteHandoffNavigation, setWebsiteHandoffNavigation] = useState(false);
+  const [websiteHandoffBusy, setWebsiteHandoffBusy] = useState(false);
+  const [websiteHandoffError, setWebsiteHandoffError] = useState("");
+  const [websiteHandoffResult, setWebsiteHandoffResult] = useState<WebsiteHandoffResult | null>(null);
   const embeddedDialog = searchParams.get("embedded") === "1" && searchParams.get("dialog") === "1";
   const revisionFlow = searchParams.get("action") === "revise";
   const citationFlow = searchParams.get("source") === "ai_citation";
@@ -469,13 +581,11 @@ export default function AiContentStudio() {
     if (embeddedDialog && window.parent !== window) window.parent.postMessage({ type: "senuke:close-content-asset-modal" }, window.location.origin);
   };
 
-  const selectedType = useMemo(() => GENERATION_TYPES.find((item) => item.value === type)!, [type]);
-  const articlePercent = status ? Math.min(100, Math.round((status.usage.articlesUsed / Math.max(1, status.usage.articleLimit)) * 100)) : 0;
-  const helperPercent = status ? Math.min(100, Math.round((status.usage.helpersUsed / Math.max(1, status.usage.helperDailyLimit)) * 100)) : 0;
-  const articlesRemaining = status ? Math.max(0, status.usage.articleLimit - status.usage.articlesUsed) : 0;
-  const helpersRemaining = status ? Math.max(0, status.usage.helperDailyLimit - status.usage.helpersUsed) : 0;
-  const quotaBlocked = Boolean(status && (type === "article" ? articlesRemaining <= 0 : helpersRemaining <= 0));
-  const currentMonthLabel = new Intl.DateTimeFormat(undefined, { month: "long", year: "numeric" }).format(new Date());
+  const selectedType = useMemo(() => GENERATION_TYPES.find((item) => item.value === type) ?? {
+    value: type,
+    label: prettyType(type),
+    detail: "Review the saved content asset and its attached project context.",
+  }, [type]);
   const historyGroups = useMemo<GenerationGroup[]>(() => {
     const grouped = new Map<string, GenerationGroup>();
     for (const item of history) {
@@ -519,15 +629,13 @@ export default function AiContentStudio() {
     try {
       const requestedProjectId = searchParams.get("projectId");
       const requestedGenerationId = searchParams.get("generationId");
-      const [statusResult, historyResult, websiteResult, projectResult, projectDetailResult, generationDetailResult] = await Promise.all([
-        api.get<AiContentStatus>("/api/ai-content/status"),
+      const [historyResult, websiteResult, projectResult, projectDetailResult, generationDetailResult] = await Promise.all([
         api.get<{ generations: AiContentGeneration[] }>("/api/ai-content/history"),
         api.get<{ websites: Website[] }>("/api/websites"),
         api.get<{ projects: GuidedProject[] }>("/api/projects-v2"),
         requestedProjectId ? api.get<{ project: GuidedProject }>(`/api/projects-v2/${encodeURIComponent(requestedProjectId)}`) : Promise.resolve(null),
         requestedGenerationId ? api.get<{ generation: AiContentGeneration }>(`/api/ai-content/${encodeURIComponent(requestedGenerationId)}`) : Promise.resolve(null),
       ]);
-      setStatus(statusResult);
       setHistory(historyResult.generations);
       setWebsites(websiteResult.websites);
       setProjects(projectResult.projects);
@@ -537,7 +645,7 @@ export default function AiContentStudio() {
         ...(activeProject?.executionTasks ?? []),
         ...(activeProject?.executionPlans?.flatMap((plan) => plan.tasks ?? []) ?? []),
       ].map((task) => [task.id, task])).values());
-      setProjectContentTasks(activeProjectTasks.filter((task) => isPublishingWorkflowCandidate(task) || (task.moduleName === "content" && ["content_plan_action", "growth_content_opportunity"].includes(task.sourceType))));
+      setProjectContentTasks(activeProjectTasks.filter((task) => task.moduleName !== "publishing" && !leadMagnetPublishingTask(task) && (isPublishingWorkflowCandidate(task) || (task.moduleName === "content" && ["content_plan_action", "growth_content_opportunity"].includes(task.sourceType)))));
       const requestedTaskId = searchParams.get("taskId");
       const requestedMode = searchParams.get("contentMode");
       const requestedInstruction = searchParams.get("instruction");
@@ -570,15 +678,20 @@ export default function AiContentStudio() {
           setTopic(requestedGeneration.topic);
           setTargetKeyword(requestedGeneration.targetKeyword ?? "");
           setTargetUrl(requestedGeneration.targetUrl ?? "");
+          setUserInstructions(savedUserInstructions(requestedGeneration));
         }
       }
-      if (requestedTask?.moduleName === "content") {
+      if (requestedTask && ["content", "ai_content"].includes(requestedTask.moduleName)) {
         const keyword = requestedTask.title.match(/[“\"]([^”\"]+)[”\"]/)?.[1] ?? "";
         const snapshot = requestedTask.approvalSnapshotJson && typeof requestedTask.approvalSnapshotJson === "object" ? requestedTask.approvalSnapshotJson : {};
         const plannedTargetUrl = [snapshot.targetUrl, snapshot.pageUrl, snapshot.url, requestedTask.sourceId].find((value) => typeof value === "string" && /^https?:\/\//i.test(value)) as string | undefined;
         const inferredTargetUrl = plannedTargetUrl ?? suggestedTargetUrl(activeProject?.website?.rootUrl ?? activeProject?.websiteUrl, keyword);
         setLinkedTask(requestedTask);
-        setType("article");
+        const generatedContent = snapshot.generatedContent && typeof snapshot.generatedContent === "object" ? snapshot.generatedContent as Record<string, unknown> : {};
+        const savedGenerationId = String(generatedContent.generationId ?? requestedTask.relatedAssetId ?? (requestedTask.moduleName === "ai_content" ? requestedTask.sourceId : "") ?? "");
+        const savedGeneration = historyResult.generations.find((generation) => generation.id === savedGenerationId);
+        const requestedGenerationType = requestedType && GENERATION_TYPES.some((item) => item.value === requestedType) ? requestedType as AiGenerationType : null;
+        setType(savedGeneration?.type ?? requestedGenerationType ?? generationTypeForTask(requestedTask));
         setTopic(contentTaskTitle(requestedTask).replace(/^create\s+/i, ""));
         setTargetKeyword(keyword);
         setTargetUrl(inferredTargetUrl);
@@ -589,12 +702,14 @@ export default function AiContentStudio() {
           setSelectedResultItems([]);
           setSelectedResultTabId(null);
         } else {
-          const generatedContent = snapshot.generatedContent && typeof snapshot.generatedContent === "object" ? snapshot.generatedContent as Record<string, unknown> : {};
-          const savedGeneration = historyResult.generations.find((generation) => generation.id === generatedContent.generationId);
           if (savedGeneration) {
             setSelectedResult(savedGeneration);
             setSelectedResultItems([savedGeneration]);
             setSelectedResultTabId(savedGeneration.id);
+            setTopic(savedGeneration.topic);
+            setTargetKeyword(savedGeneration.targetKeyword ?? keyword);
+            setTargetUrl(savedGeneration.targetUrl ?? inferredTargetUrl);
+            setUserInstructions(savedUserInstructions(savedGeneration));
           }
         }
       }
@@ -620,6 +735,37 @@ export default function AiContentStudio() {
   }, []);
 
   useEffect(() => {
+    let active = true;
+    setWebsiteBuilder(null);
+    setWebsiteHandoffError("");
+    setWebsiteHandoffResult(null);
+    if (!selectedProjectId) return () => { active = false; };
+    void api.get<WebsiteBuilderOverview>(`/api/projects/${encodeURIComponent(selectedProjectId)}/website-builder`)
+      .then((result) => { if (active) setWebsiteBuilder(result.build); })
+      .catch(() => { if (active) setWebsiteBuilder(null); });
+    return () => { active = false; };
+  }, [selectedProjectId]);
+
+  useEffect(() => {
+    setWebsiteHandoffError("");
+    setWebsiteHandoffResult(null);
+    if (!selectedResult || !websiteBuilder) return;
+    const normalize = (value: string | null | undefined) => {
+      const raw = String(value || "").trim();
+      if (!raw) return "";
+      try { return new URL(raw, "https://senuke.local").pathname.replace(/\/+$/, "").toLowerCase() || "/"; }
+      catch { return raw.replace(/^https?:\/\/[^/]+/i, "").replace(/\/+$/, "").toLowerCase() || "/"; }
+    };
+    const target = normalize(selectedResult.targetUrl);
+    const match = target ? websiteBuilder.pages.find((page) => normalize(page.targetUrl || `/${page.slug}`) === target) : null;
+    setWebsiteHandoffPageId(selectedResult.type === "article" && fullPageKind === "article" ? "" : match?.id ?? "");
+    setWebsiteHandoffPageType((current) => selectedResult.type === "article"
+      ? fullPageKind === "article" ? "blog_article" : current === "blog_article" ? "supporting" : current
+      : "supporting");
+    setWebsiteHandoffNavigation(false);
+  }, [selectedResult?.id, websiteBuilder?.id, fullPageKind]);
+
+  useEffect(() => {
     if (embeddedDialog && wizardOpen && window.parent !== window) {
       window.parent.postMessage({ type: "senuke:content-asset-ready" }, window.location.origin);
     }
@@ -630,12 +776,6 @@ export default function AiContentStudio() {
     if (generationLockRef.current) return;
     if (citationReviewOnly) return;
     if (!canReview) return;
-    if (quotaBlocked) {
-      setGenerationError(type === "article"
-        ? "The monthly full-content allowance has been used. Increase the workspace content allowance or wait for the next billing period before generating another full page."
-        : "The daily AI helper allowance has been used. Try again after the daily allowance resets.");
-      return;
-    }
     if ((revisionFlow || (selectedResult && linkedTask)) && !revisionInstruction) {
       setGenerationError("Choose at least one improvement or add a short instruction so SEnuke AI - AI Growth Operating System knows what to revise.");
       window.setTimeout(() => {
@@ -665,7 +805,10 @@ export default function AiContentStudio() {
         targetUrl: targetUrl || null,
         languageCode,
         tone,
+        userInstructions: userInstructions.trim() || null,
         notes: boundedGenerationNotes(
+          type === "article" ? `Website destination: ${fullPageKind === "article" ? "Blog Article beneath the Blog Section" : `${websiteHandoffPageType.replaceAll("-", " ")} page in Page Structure`}` : "",
+          type === "article" && targetCta.trim() ? `Primary website CTA: ${targetCta.trim()}` : "",
           revisionInstruction && (revisionFlow || (selectedResult && linkedTask)) ? `Re-creation change request: ${revisionInstruction}` : "",
           citationFlow
             ? [
@@ -705,18 +848,51 @@ export default function AiContentStudio() {
     }
   };
 
+  const sendToWebsite = async () => {
+    if (!selectedResult || !selectedProjectId) return;
+    const isBlogArticle = selectedResult.type === "article" && fullPageKind === "article";
+    setWebsiteHandoffBusy(true);
+    setWebsiteHandoffError("");
+    setWebsiteHandoffResult(null);
+    try {
+      const result = await api.post<WebsiteHandoffResult>(`/api/projects/${encodeURIComponent(selectedProjectId)}/website-builder/ai-content-handoff`, {
+        generationId: selectedResult.id,
+        pageId: isBlogArticle ? null : websiteHandoffPageId || null,
+        pageType: isBlogArticle ? "blog_article" : websiteHandoffPageType,
+        title: selectedResult.type === "article" ? topic.trim() || undefined : undefined,
+        slug: selectedResult.type === "article" ? targetUrl.trim() || undefined : undefined,
+        targetCta: selectedResult.type === "article" ? targetCta.trim() || undefined : undefined,
+        includeInNavigation: isBlogArticle ? false : websiteHandoffNavigation,
+      });
+      setWebsiteHandoffResult(result);
+      const refreshed = await api.get<WebsiteBuilderOverview>(`/api/projects/${encodeURIComponent(selectedProjectId)}/website-builder`);
+      setWebsiteBuilder(refreshed.build);
+      if (result.page?.id) setWebsiteHandoffPageId(result.page.id);
+    } catch (error) {
+      setWebsiteHandoffError(error instanceof Error ? error.message : "The content could not be sent to Website Development.");
+    } finally {
+      setWebsiteHandoffBusy(false);
+    }
+  };
+
   const publishTask = async (task: GuidedExecutionTask) => {
     setPublishingTaskId(task.id);
     setPublishingError(null);
     try {
+      if (leadMagnetPublishingTask(task)) {
+        navigate(`/lead-magnets?projectId=${encodeURIComponent(task.projectId || selectedProjectId)}`);
+        return;
+      }
       if (task.sourceType === "wordpress_publish_job") {
         await api.post(`/api/execution-tasks/${task.id}/publish`, { target: "wordpress" });
       } else {
-        const suggestedUrl = String(task.approvalSnapshotJson?.targetUrl ?? (task.approvalSnapshotJson?.publishingWorkflow as Record<string, unknown> | undefined)?.affectedUrl ?? "");
-        const liveUrl = window.prompt("Enter the exact public URL after this approved update has been deployed. SEnuke AI - AI Growth Operating System will verify it before marking the work published.", suggestedUrl)?.trim();
-        if (!liveUrl) return;
+        const liveUrl = savedPublicationUrl(task, projects);
+        if (!liveUrl) throw new Error("No public website URL is saved for this project. Add the production website URL in Project Details or complete Website Publishing, then verify again.");
+        const opened = window.open(liveUrl, "_blank");
+        if (opened) opened.opener = null;
         const started = await api.post<{ publishing: { attemptId: string } }>(`/api/execution-tasks/${task.id}/publish`, { target: "html", targetReference: liveUrl });
         await api.post(`/api/execution-tasks/${task.id}/publish/verify`, { attemptId: started.publishing.attemptId, status: "verified", liveUrl });
+        if (!opened) window.location.assign(liveUrl);
       }
       await load();
     } catch (error) {
@@ -767,14 +943,33 @@ export default function AiContentStudio() {
     window.setTimeout(() => URL.revokeObjectURL(href), 1000);
   };
 
-  const taskReviewUrl = (task: GuidedExecutionTask) => task.moduleName === "content"
-    ? `/ai-content?projectId=${encodeURIComponent(searchParams.get("projectId") || task.projectId || "")}&taskId=${encodeURIComponent(task.id)}&open=1`
-    : task.relatedUrl || `/guided-projects/${encodeURIComponent(task.projectId || "")}?tab=execution&actionTask=${encodeURIComponent(task.id)}#execution-tasks`;
+  const taskReviewUrl = (task: GuidedExecutionTask) => {
+    const projectId = searchParams.get("projectId") || task.projectId || "";
+    const relatedUrl = task.relatedUrl?.trim() ?? "";
+    const opensAiContent = task.moduleName === "content" || /^\/?ai-content(?:[/?#]|$)/i.test(relatedUrl) || /\/ai-content(?:[/?#]|$)/i.test(relatedUrl);
+    if (opensAiContent) {
+      const reviewUrl = new URL(relatedUrl || "/ai-content", window.location.origin);
+      if (projectId) reviewUrl.searchParams.set("projectId", projectId);
+      if (task.moduleName === "content") {
+        reviewUrl.searchParams.set("taskId", task.id);
+        reviewUrl.searchParams.set("open", "1");
+      }
+      return `${reviewUrl.pathname}${reviewUrl.search}${reviewUrl.hash}`;
+    }
+    return relatedUrl || `/guided-projects/${encodeURIComponent(projectId)}?tab=execution&actionTask=${encodeURIComponent(task.id)}#execution-tasks`;
+  };
 
   const approvedPendingTasks = projectContentTasks.filter((task) => ["approved", "ready_to_publish"].includes(task.status));
   const publishingInProgressTasks = projectContentTasks.filter((task) => task.status === "publishing");
   const contentReadyTasks = projectContentTasks.filter((task) => task.status === "ready");
   const contentApprovalTasks = projectContentTasks.filter((task) => ["needs_review", "submitted_for_approval", "changes_requested"].includes(task.status));
+  const pageWebsiteAssetTypes = new Set<AiGenerationType>(["article", "h1", "title", "meta_description", "faq", "page_schema", "page_llms_txt"]);
+  const siteWebsiteAssetTypes = new Set<AiGenerationType>(["domain_schema", "domain_llms_txt", "robots_txt", "sitemap", "ai_search"]);
+  const selectedAssetCanHandoff = Boolean(selectedResult && (pageWebsiteAssetTypes.has(selectedResult.type) || siteWebsiteAssetTypes.has(selectedResult.type)));
+  const selectedAssetNeedsPage = Boolean(selectedResult && pageWebsiteAssetTypes.has(selectedResult.type));
+  const selectedAssetCanCreatePage = selectedResult?.type === "article";
+  const selectedIsBlogArticle = selectedResult?.type === "article" && fullPageKind === "article";
+  const selectedWebsitePage = websiteBuilder?.pages.find((page) => page.id === websiteHandoffPageId) ?? null;
 
   return (
     <div className={embeddedDialog ? "h-screen overflow-hidden bg-white [&>:not([role=dialog])]:hidden" : "space-y-6"}>
@@ -785,114 +980,30 @@ export default function AiContentStudio() {
             <div className="text-xs font-semibold uppercase tracking-wide text-fuchsia-700">AI Content Studio</div>
             <h1 className="mt-1 text-3xl font-bold tracking-tight text-charcoal-900">Articles, SEO helpers, schema, llms.txt, and AI-search</h1>
             <p className="mt-2 max-w-3xl text-sm leading-6 text-charcoal-600">
-              Generate project-aware content assets using your plan quota. Articles count against the monthly article limit; helper tools are fair-use limited.
+              Generate and review project-aware content assets. AI Capacity is governed consistently at workspace level when generation begins.
             </p>
           </div>
           <div className="flex flex-col gap-3 sm:flex-row sm:items-end">
-            {status && (
-              <div className="rounded-xl border border-white/70 bg-white/80 px-4 py-3 shadow-sm">
-                <div className="text-xs font-semibold uppercase tracking-wide text-charcoal-400">Current plan</div>
-                <div className="mt-1 text-2xl font-bold text-fuchsia-700">{status.plan.name}</div>
-                <div className="text-xs text-charcoal-500">${status.plan.priceMonthly}/month · {status.plan.subscriptionStatus}</div>
-              </div>
-            )}
             <Button onClick={() => { setWizardStep(1); setWizardOpen(true); }} className="shadow-sm">Create content asset</Button>
           </div>
         </div>
       </div>
 
-      {status && (
-        <div className="space-y-3">
-          <div className="flex flex-col gap-1 sm:flex-row sm:items-end sm:justify-between">
-            <div>
-              <div className="text-sm font-semibold text-charcoal-800">Monthly usage</div>
-              <div className="text-xs text-charcoal-400">Current cycle: {currentMonthLabel}</div>
-            </div>
-            <div className="text-xs text-charcoal-500">Remaining counts update after each generation.</div>
-          </div>
-          <div className="grid gap-4 lg:grid-cols-4">
-            <Card className="border-fuchsia-100 bg-fuchsia-50/50 p-5">
-              <div className="text-xs font-semibold uppercase tracking-wide text-charcoal-500">Articles this month</div>
-              <div className="mt-2 flex items-end justify-between gap-3">
-                <div className="text-3xl font-bold text-fuchsia-700">{status.usage.articlesUsed}/{status.usage.articleLimit}</div>
-                <div className="text-right">
-                  <div className="text-lg font-bold text-charcoal-900">{articlesRemaining}</div>
-                  <div className="text-xs text-charcoal-500">remaining</div>
-                </div>
-              </div>
-              <div className="mt-3 h-2 rounded-full bg-white">
-                <div className="h-2 rounded-full bg-fuchsia-500" style={{ width: `${articlePercent}%` }} />
-              </div>
-            </Card>
-            <Card className="border-cyan-100 bg-cyan-50/50 p-5">
-              <div className="text-xs font-semibold uppercase tracking-wide text-charcoal-500">Helper generations this month</div>
-              <div className="mt-2 flex items-end justify-between gap-3">
-                <div className="text-3xl font-bold text-cyan-700">{status.usage.helpersUsed}/{status.usage.helperDailyLimit}</div>
-                <div className="text-right">
-                  <div className="text-lg font-bold text-charcoal-900">{helpersRemaining}</div>
-                  <div className="text-xs text-charcoal-500">remaining</div>
-                </div>
-              </div>
-              <div className="mt-3 h-2 rounded-full bg-white">
-                <div className="h-2 rounded-full bg-cyan-500" style={{ width: `${helperPercent}%` }} />
-              </div>
-            </Card>
-            <Card className="border-emerald-100 bg-emerald-50/50 p-5">
-              <div className="text-xs font-semibold uppercase tracking-wide text-charcoal-500">Tokens this month</div>
-              <div className="mt-2 text-3xl font-bold text-emerald-700">{status.usage.tokens.toLocaleString()}</div>
-              <div className="mt-1 text-xs text-charcoal-500">Tracked for cost control</div>
-            </Card>
-            <Card className="border-amber-100 bg-amber-50/50 p-5">
-              <div className="text-xs font-semibold uppercase tracking-wide text-charcoal-500">Available tools</div>
-              <div className="mt-2 text-3xl font-bold text-amber-700">{GENERATION_TYPES.length}</div>
-              <div className="mt-1 text-xs text-charcoal-500">Article, title, meta, FAQ, schema, llms.txt, AI-search</div>
-            </Card>
-          </div>
-        </div>
-      )}
-
-      <Card className="overflow-hidden">
-        <div className="flex flex-col gap-3 border-b border-charcoal-100 bg-charcoal-50 px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
-          <div>
-            <div className="font-semibold text-charcoal-800">Content workflow</div>
-            <div className="mt-0.5 text-xs text-charcoal-400">Create new AI assets through a focused 3-step popup.</div>
-          </div>
-          <Button onClick={() => { setWizardStep(1); setWizardOpen(true); }}>Open 3-step wizard</Button>
-        </div>
-        <div className="grid gap-4 p-5 lg:grid-cols-3">
-          <div className="rounded-xl border border-fuchsia-100 bg-fuchsia-50/70 p-4">
-            <div className="text-sm font-semibold text-fuchsia-900">Step 1</div>
-            <div className="mt-1 text-lg font-bold text-charcoal-900">Choose asset type</div>
-            <p className="mt-1 text-sm text-charcoal-600">Pick article, titles, descriptions, FAQ, schema, llms.txt, or AI-search suggestions.</p>
-          </div>
-          <div className="rounded-xl border border-cyan-100 bg-cyan-50/70 p-4">
-            <div className="text-sm font-semibold text-cyan-900">Step 2</div>
-            <div className="mt-1 text-lg font-bold text-charcoal-900">Add project context</div>
-            <p className="mt-1 text-sm text-charcoal-600">Select a project and provide topic, keyword, URL, language, tone, and notes.</p>
-          </div>
-          <div className="rounded-xl border border-emerald-100 bg-emerald-50/70 p-4">
-            <div className="text-sm font-semibold text-emerald-900">Step 3</div>
-            <div className="mt-1 text-lg font-bold text-charcoal-900">Generate and review</div>
-            <p className="mt-1 text-sm text-charcoal-600">Confirm the request, generate the result, then review it inside the wizard.</p>
-          </div>
-        </div>
-      </Card>
-
       <Card className="overflow-hidden" id="publishing">
         <div className="flex flex-col gap-3 border-b border-emerald-200 bg-emerald-50 px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
-          <div><div className="text-xs font-bold uppercase tracking-wide text-emerald-700">Shared Publishing workspace</div><div className="mt-1 text-lg font-bold text-charcoal-900">Manage every approved asset and website update</div><p className="mt-1 text-sm text-charcoal-600">SEO, Local SEO, AI Citation, Growth, lead-magnet, social, content, and website work follows one review, approval, delivery, verification, and measurement workflow here.</p></div>
+          <div><div className="text-xs font-bold uppercase tracking-wide text-emerald-700">Content publishing</div><div className="mt-1 text-lg font-bold text-charcoal-900">Review and publish website content</div><p className="mt-1 text-sm text-charcoal-600">Prepare content here, approve the exact version, then send it to Site Architect for website publishing. Lead magnets remain in the Lead Magnets workspace.</p></div>
           <div className="flex gap-2"><span className="rounded-full bg-white px-3 py-1 text-xs font-bold text-emerald-700 shadow-sm">{approvedPendingTasks.length} pending</span>{publishingInProgressTasks.length > 0 && <span className="rounded-full bg-amber-100 px-3 py-1 text-xs font-bold text-amber-800">{publishingInProgressTasks.length} publishing</span>}</div>
         </div>
         <div className="space-y-3 p-5">
           {publishingError && <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm font-semibold text-red-700">{publishingError}</div>}
           {approvedPendingTasks.map((task) => <div key={task.id} className="flex flex-col gap-3 rounded-xl border border-emerald-200 bg-white p-4 sm:flex-row sm:items-center sm:justify-between">
-            <div className="min-w-0"><div className="flex flex-wrap items-center gap-2"><div className="font-bold text-charcoal-900">{task.title}</div><span className="rounded-full bg-white px-2 py-0.5 text-[10px] font-black uppercase text-emerald-700 ring-1 ring-emerald-200">{publishingSourceLabel(task)}</span><span className="rounded-full bg-emerald-100 px-2 py-0.5 text-xs font-bold text-emerald-800">{task.status.replaceAll("_", " ")}</span></div><p className="mt-1 line-clamp-2 text-sm text-charcoal-500">{task.description}</p><div className="mt-2 text-xs font-semibold text-charcoal-500">Asset reference: {String((task.approvalSnapshotJson?.generatedContent as Record<string, unknown> | undefined)?.generationId ?? task.relatedAssetId ?? task.sourceId ?? "Attached update")}</div></div>
-            <div className="flex shrink-0 flex-wrap gap-2"><button type="button" onClick={() => downloadTaskHandoff(task)} className="rounded-lg border border-emerald-300 bg-white px-4 py-2.5 text-sm font-bold text-emerald-700 hover:bg-emerald-50">Download handoff</button>{task.moduleName === "content" && <a href={`/ai-content?projectId=${encodeURIComponent(searchParams.get("projectId") || task.projectId || "")}&taskId=${encodeURIComponent(task.id)}&open=1`} className="rounded-lg border border-emerald-300 bg-white px-4 py-2.5 text-center text-sm font-bold text-emerald-700 hover:bg-emerald-50">Review / re-create</a>}<button type="button" disabled={publishingTaskId === task.id} onClick={() => void publishTask(task)} className="rounded-lg bg-emerald-600 px-4 py-2.5 text-sm font-bold text-white hover:bg-emerald-700 disabled:bg-slate-300">{publishingTaskId === task.id ? "Verifying…" : task.sourceType === "wordpress_publish_job" ? "Publish through WordPress" : "Verify live publication"}</button></div>
+            <div className="min-w-0"><div className="flex flex-wrap items-center gap-2"><div className="font-bold text-charcoal-900">{task.title}</div><span className="rounded-full bg-white px-2 py-0.5 text-[10px] font-black uppercase text-emerald-700 ring-1 ring-emerald-200">{publishingSourceLabel(task)}</span><span className="rounded-full bg-emerald-100 px-2 py-0.5 text-xs font-bold text-emerald-800">Ready to publish</span></div><p className="mt-1 line-clamp-2 text-sm text-charcoal-500">{task.description}</p></div>
+            <div className="flex shrink-0 flex-wrap gap-2"><button type="button" onClick={() => downloadTaskHandoff(task)} className="rounded-lg border border-emerald-300 bg-white px-4 py-2.5 text-sm font-bold text-emerald-700 hover:bg-emerald-50">Download copy</button>{task.moduleName === "content" && <a href={`/ai-content?projectId=${encodeURIComponent(searchParams.get("projectId") || task.projectId || "")}&taskId=${encodeURIComponent(task.id)}&open=1`} className="rounded-lg border border-emerald-300 bg-white px-4 py-2.5 text-center text-sm font-bold text-emerald-700 hover:bg-emerald-50">Review content</a>}<button type="button" disabled={publishingTaskId === task.id} onClick={() => void publishTask(task)} className="rounded-lg bg-emerald-600 px-4 py-2.5 text-sm font-bold text-white hover:bg-emerald-700 disabled:bg-slate-300">{publicationActionLabel(task, publishingTaskId === task.id)}</button></div>
           </div>)}
           {publishingInProgressTasks.map((task) => <div key={task.id} className="flex items-center justify-between gap-3 rounded-xl border border-amber-200 bg-amber-50 p-4"><div><div className="font-bold text-charcoal-900">{task.title}</div><p className="mt-1 text-sm text-charcoal-500">The publishing request has started and is awaiting verification.</p></div><span className="shrink-0 rounded-full bg-amber-100 px-3 py-1 text-xs font-bold text-amber-800">Publishing</span></div>)}
           {approvedPendingTasks.length === 0 && publishingInProgressTasks.length === 0 && <div className="rounded-xl border border-dashed border-emerald-200 bg-emerald-50/40 px-5 py-8 text-center"><div className="font-bold text-charcoal-800">No approved work is waiting to publish</div><p className="mt-1 text-sm text-charcoal-500">Assets and updates prepared by platform modules will appear here as they move through review and approval.</p></div>}
-          {(contentReadyTasks.length > 0 || contentApprovalTasks.length > 0) && <div className="mt-5 border-t border-charcoal-100 pt-5"><div className="mb-3"><div className="text-xs font-bold uppercase tracking-wide text-charcoal-500">Earlier workflow stages</div><p className="mt-1 text-sm text-charcoal-500">Complete these actions to move content into the approved pending list above.</p></div><div className="space-y-2">
-            {contentReadyTasks.map((task) => { const canGenerate = task.moduleName === "content"; return <div key={task.id} className="flex flex-col gap-3 rounded-xl border border-brand-100 bg-brand-50/40 p-4 sm:flex-row sm:items-center sm:justify-between"><div><div className="flex flex-wrap items-center gap-2"><div className="font-bold text-charcoal-900">{task.title}</div><span className="rounded-full bg-white px-2 py-0.5 text-[10px] font-black uppercase text-brand-700">{publishingSourceLabel(task)}</span></div><p className="mt-1 text-sm text-charcoal-500">{canGenerate ? "The source module prepared this request. Create and review the exact asset before approval." : "The source module prepared an implementation update. Review or download the handoff before approval and delivery."}</p></div><div className="flex shrink-0 flex-wrap gap-2"><button type="button" onClick={() => downloadTaskHandoff(task)} className="rounded-lg border border-brand-200 bg-white px-4 py-2 text-sm font-bold text-brand-700">Download handoff</button>{canGenerate ? <a href={`/ai-content?projectId=${encodeURIComponent(searchParams.get("projectId") || task.projectId || "")}&taskId=${encodeURIComponent(task.id)}&open=1`} className="rounded-lg bg-brand-600 px-4 py-2 text-center text-sm font-bold text-white hover:bg-brand-700">Create &amp; review →</a> : <a href={task.relatedUrl || `/guided-projects/${encodeURIComponent(task.projectId || "")}?tab=execution`} className="rounded-lg bg-brand-600 px-4 py-2 text-center text-sm font-bold text-white hover:bg-brand-700">Review update →</a>}</div></div>; })}
+          {(contentReadyTasks.length > 0 || contentApprovalTasks.length > 0) && <div className="mt-5 border-t border-charcoal-100 pt-5"><div className="mb-3"><div className="text-xs font-bold uppercase tracking-wide text-charcoal-500">Needs action</div><p className="mt-1 text-sm text-charcoal-500">Complete the next step shown on each content item.</p></div><div className="space-y-2">
+            {contentReadyTasks.map((task) => { const canGenerate = task.moduleName === "content"; return <div key={task.id} className="flex flex-col gap-3 rounded-xl border border-brand-100 bg-brand-50/40 p-4 sm:flex-row sm:items-center sm:justify-between"><div><div className="flex flex-wrap items-center gap-2"><div className="font-bold text-charcoal-900">{task.title}</div><span className="rounded-full bg-white px-2 py-0.5 text-[10px] font-black uppercase text-brand-700">{publishingSourceLabel(task)}</span></div><p className="mt-1 text-sm text-charcoal-500">{canGenerate ? "Create the requested content, review it, and send the approved version to the website." : "Review the prepared website update before it moves to approval and publishing."}</p></div><div className="flex shrink-0 flex-wrap gap-2"><a href={taskReviewUrl(task)} className="rounded-lg bg-brand-600 px-4 py-2 text-center text-sm font-bold text-white hover:bg-brand-700">{canGenerate ? "Create content →" : "Review update →"}</a></div></div>; })}
             {contentApprovalTasks.map((task) => <div key={task.id} className="flex flex-col gap-3 rounded-xl border border-amber-200 bg-amber-50/50 p-4 sm:flex-row sm:items-center sm:justify-between"><div><div className="flex flex-wrap items-center gap-2"><div className="font-bold text-charcoal-900">{task.title}</div><span className="rounded-full bg-white px-2 py-0.5 text-[10px] font-black uppercase text-amber-700">{publishingSourceLabel(task)}</span><span className="rounded-full bg-white px-2 py-0.5 text-xs font-bold text-amber-700">{task.status.replaceAll("_", " ")}</span></div><p className="mt-1 text-sm text-charcoal-500">{task.status === "needs_review" ? "The exact source asset or update is ready for factual, quality, destination, and implementation review before company approval." : task.status === "changes_requested" ? "The company approver requested changes. Open the source asset, address the feedback, and resubmit the saved version." : "Source review is complete. The exact saved asset is waiting for an authorized company approver."}</p></div><div className="flex shrink-0 flex-wrap gap-2"><button type="button" onClick={() => downloadTaskHandoff(task)} className="rounded-lg border border-amber-300 bg-white px-4 py-2 text-sm font-bold text-amber-700">Download handoff</button>{task.status === "needs_review" && <><a href={taskReviewUrl(task)} className="rounded-lg border border-amber-300 bg-white px-4 py-2 text-center text-sm font-bold text-amber-700">Review exact asset</a><button type="button" disabled={publishingTaskId === task.id} onClick={() => void submitForApproval(task)} className="rounded-lg bg-amber-600 px-4 py-2 text-sm font-bold text-white hover:bg-amber-700 disabled:bg-slate-300">{publishingTaskId === task.id ? "Submitting…" : "Review complete · Send for approval"}</button></>}{task.status === "submitted_for_approval" && <a href={`/approvals?projectId=${encodeURIComponent(searchParams.get("projectId") || task.projectId || "")}`} className="rounded-lg bg-amber-600 px-4 py-2 text-center text-sm font-bold text-white hover:bg-amber-700">Open Company Approval →</a>}{task.status === "changes_requested" && <a href={taskReviewUrl(task)} className="rounded-lg bg-brand-600 px-4 py-2 text-center text-sm font-bold text-white hover:bg-brand-700">Review requested changes →</a>}</div></div>)}
           </div></div>}
         </div>
@@ -949,7 +1060,7 @@ export default function AiContentStudio() {
                       <td className="px-5 py-3 text-right">
                         <div className="flex justify-end gap-2">
                           <Button variant="ghost" onClick={() => setExpandedHistoryGroup(open ? null : group.key)}>{open ? "Hide" : "Details"}</Button>
-                          <Button variant="ghost" onClick={() => { setSelectedResult(firstItem); setSelectedResultItems(group.items); setSelectedResultTabId(firstItem.id); setType(firstItem.type); setTopic(firstItem.topic); setTargetKeyword(firstItem.targetKeyword ?? ""); setTargetUrl(firstItem.targetUrl ?? ""); setWizardStep(3); setWizardOpen(true); }}>View</Button>
+                          <Button variant="ghost" onClick={() => { setSelectedResult(firstItem); setSelectedResultItems(group.items); setSelectedResultTabId(firstItem.id); setType(firstItem.type); setTopic(firstItem.topic); setTargetKeyword(firstItem.targetKeyword ?? ""); setTargetUrl(firstItem.targetUrl ?? ""); setUserInstructions(savedUserInstructions(firstItem)); setWizardStep(3); setWizardOpen(true); }}>View</Button>
                         </div>
                       </td>
                     </tr>
@@ -974,7 +1085,7 @@ export default function AiContentStudio() {
                                     <td className="max-w-[360px] truncate px-4 py-2 text-charcoal-600">{item.topic}</td>
                                     <td className="px-4 py-2 text-charcoal-500">{item.inputTokens + item.outputTokens}</td>
                                     <td className="px-4 py-2 text-charcoal-500">{formatDate(item.createdAt)}</td>
-                                    <td className="px-4 py-2 text-right"><Button variant="ghost" onClick={() => { setSelectedResult(item); setSelectedResultItems(group.items); setSelectedResultTabId(item.id); setType(item.type); setTopic(item.topic); setTargetKeyword(item.targetKeyword ?? ""); setTargetUrl(item.targetUrl ?? ""); setWizardStep(3); setWizardOpen(true); }}>View</Button></td>
+                                    <td className="px-4 py-2 text-right"><Button variant="ghost" onClick={() => { setSelectedResult(item); setSelectedResultItems(group.items); setSelectedResultTabId(item.id); setType(item.type); setTopic(item.topic); setTargetKeyword(item.targetKeyword ?? ""); setTargetUrl(item.targetUrl ?? ""); setUserInstructions(savedUserInstructions(item)); setWizardStep(3); setWizardOpen(true); }}>View</Button></td>
                                   </tr>
                                 ))}
                               </tbody>
@@ -1017,7 +1128,7 @@ export default function AiContentStudio() {
             </div>}
 
             <form onSubmit={generate} className="relative flex min-h-0 flex-1 flex-col">
-              {generating && <div className="absolute inset-0 z-30 grid place-items-center bg-slate-950/98 p-6 text-white backdrop-blur-sm" role="status" aria-live="polite">
+              {generating && <div className="absolute inset-0 z-30 grid place-items-center bg-slate-950 p-6 text-white" role="status" aria-live="polite">
                 <div className="max-w-md text-center">
                   <div className="mx-auto h-12 w-12 animate-spin rounded-full border-4 border-white/10 border-t-emerald-400" />
                   <h3 className="mt-4 text-lg font-black text-white">{revisionFlow ? "Revising the complete page…" : citationFlow ? "Creating the citation asset…" : "Creating the complete page…"}</h3>
@@ -1033,7 +1144,23 @@ export default function AiContentStudio() {
                     </div>
                     {linkedTask && <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-4"><div className="text-xs font-bold uppercase tracking-wide text-emerald-700">AI recommendation</div><div className="mt-1 font-bold text-charcoal-900">Create a full supporting article</div><p className="mt-1 text-sm leading-6 text-charcoal-600">The execution brief calls for supporting topical coverage, services, proof, and internal linking, so Article is selected. You can choose a different asset below.</p></div>}
                     <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
-                      {GENERATION_TYPES.map((item) => (
+                      <button
+                        type="button"
+                        onClick={() => { setType("article"); setFullPageKind("article"); setWebsiteHandoffPageType("blog_article"); }}
+                        className={`rounded-xl border p-4 text-left transition ${type === "article" && fullPageKind === "article" ? "border-fuchsia-300 bg-fuchsia-50 shadow-sm" : "border-charcoal-100 bg-white hover:border-fuchsia-200 hover:bg-fuchsia-50/40"}`}
+                      >
+                        <div className="font-semibold text-charcoal-900">Article</div>
+                        <div className="mt-2 text-sm leading-5 text-charcoal-500">Create a complete blog article and attach it beneath the website Blog Section.</div>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => { setType("article"); setFullPageKind("website_page"); setWebsiteHandoffPageType((current) => current === "blog_article" ? "supporting" : current); }}
+                        className={`rounded-xl border p-4 text-left transition ${type === "article" && fullPageKind === "website_page" ? "border-fuchsia-300 bg-fuchsia-50 shadow-sm" : "border-charcoal-100 bg-white hover:border-fuchsia-200 hover:bg-fuchsia-50/40"}`}
+                      >
+                        <div className="font-semibold text-charcoal-900">Create new website page</div>
+                        <div className="mt-2 text-sm leading-5 text-charcoal-500">Create a service, supporting, location, about, case-study, contact, pillar, or landing page.</div>
+                      </button>
+                      {GENERATION_TYPES.filter((item) => item.value !== "article").map((item) => (
                         <button
                           key={item.value}
                           type="button"
@@ -1063,14 +1190,38 @@ export default function AiContentStudio() {
                         </select>
                       </label>
                       {selectedProject && <div className="lg:col-span-2 rounded-xl border border-cyan-200 bg-cyan-50 px-4 py-3 text-xs leading-5 text-cyan-950"><b>Generation context:</b> {selectedProject.businessName || selectedProject.name} · {selectedProject.businessLocation || selectedProject.targetLocation || "market not recorded"} · {selectedWebsite?.domain || selectedProject.websiteUrl || "website not connected"}. Generated content will be saved to this project for review; it will not publish automatically.</div>}
-                      <div className="lg:col-span-2"><Input label="Topic" value={topic} onChange={setTopic} placeholder="CRM automation for service businesses" /></div>
-                      <Input label="Target keyword" value={targetKeyword} onChange={setTargetKeyword} placeholder="crm automation" />
-                      <Input label="Target URL" value={targetUrl} onChange={(value) => { setTargetUrl(value); setTargetUrlSuggested(false); }} placeholder="https://example.com/service-page" />
+                      {type === "article" ? <>
+                        <div className="lg:col-span-2 rounded-xl border border-violet-200 bg-violet-50/70 p-4 text-xs leading-5 text-violet-900"><span className="font-black uppercase tracking-wide text-violet-700">{fullPageKind === "article" ? "Blog Article" : "Website Page"}</span><p className="mt-1">{fullPageKind === "article" ? "The completed article will be attached beneath the website Blog Section and its generated content will already be present in Site Architect." : "The completed page will be added to Page Structure with its generated content already present in Site Architect."}</p></div>
+                        <div><Input label={fullPageKind === "article" ? "Article title" : "Page name"} value={topic} onChange={(value) => { setTopic(value); if (!targetUrl.trim() || targetUrlSuggested) { setTargetUrl(contentPageSlug(value)); setTargetUrlSuggested(true); } }} placeholder={fullPageKind === "article" ? "How to choose the right option" : "Business Insurance Services"} /></div>
+                        <div>
+                          <Input label="URL slug" value={targetUrl} onChange={(value) => { setTargetUrl(contentPageSlug(value.replace(/^https?:\/\/[^/]+\/?/i, ""))); setTargetUrlSuggested(false); }} placeholder={fullPageKind === "article" ? "how-to-choose-the-right-option" : "business-insurance-services"} />
+                          <p className="mt-1 text-xs text-slate-500">The selected project supplies the domain; enter only the page path.</p>
+                        </div>
+                        {fullPageKind === "website_page" && <label className="block">
+                          <span className="mb-1 block text-sm font-medium text-slate-600">Page type</span>
+                          <select value={websiteHandoffPageType === "blog_article" ? "supporting" : websiteHandoffPageType} onChange={(event) => setWebsiteHandoffPageType(event.target.value as WebsiteDraftPageType)} className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-100">
+                            {["service", "pillar", "supporting", "location", "about", "case-study", "contact", "landing"].map((value) => <option key={value} value={value}>{value.replaceAll("-", " ")}</option>)}
+                          </select>
+                        </label>}
+                        <Input label={fullPageKind === "article" ? "Primary article keyword or topic" : "Primary keyword"} value={targetKeyword} onChange={setTargetKeyword} placeholder={fullPageKind === "article" ? "Primary question or search topic" : "Primary keyword or topic"} />
+                        <div className={fullPageKind === "article" ? "lg:col-span-2" : ""}><Input label="Primary CTA" value={targetCta} onChange={setTargetCta} placeholder="Book a consultation" /></div>
+                      </> : <>
+                        <div className="lg:col-span-2"><Input label="Topic" value={topic} onChange={setTopic} placeholder="CRM automation for service businesses" /></div>
+                        <Input label="Target keyword" value={targetKeyword} onChange={setTargetKeyword} placeholder="crm automation" />
+                        {pageWebsiteAssetTypes.has(type) && websiteBuilder?.pages.length ? <label className="block">
+                        <span className="mb-1 block text-sm font-medium text-slate-600">Target website page</span>
+                        <select value={targetUrl} onChange={(event) => { setTargetUrl(event.target.value); setTargetUrlSuggested(false); }} className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-100">
+                          <option value="">Choose a managed website page</option>
+                          {websiteBuilder.pages.filter((page) => page.status !== "deferred").map((page) => <option key={page.id} value={page.targetUrl || `/${page.slug}`}>{page.title} · /{page.slug}</option>)}
+                        </select>
+                        </label> : pageWebsiteAssetTypes.has(type) ? <Input label="Target page path" value={targetUrl} onChange={(value) => { setTargetUrl(value); setTargetUrlSuggested(false); }} placeholder="/service-page" /> : <div className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs leading-5 text-slate-600"><span className="font-bold text-slate-800">Website scope:</span> This asset applies to the selected project website, so no target URL is required.</div>}
+                      </>}
                       <Input label="Language" value={languageCode} onChange={setLanguageCode} placeholder="en" />
                       <Input label="Tone" value={tone} onChange={setTone} placeholder="professional" />
                       <label className="block lg:col-span-2">
-                        <span className="mb-1 block text-sm font-medium text-slate-600">Extra notes</span>
-                        <textarea value={notes} onChange={(e) => setNotes(e.target.value)} rows={5} className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-100" placeholder="Audience, offer, location, services, internal notes..." />
+                        <span className="mb-1 block text-sm font-medium text-slate-600">Required instructions</span>
+                        <textarea value={userInstructions} onChange={(e) => setUserInstructions(e.target.value)} rows={5} maxLength={5_000} className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-100" placeholder="Example: Include three comparison points, address first-time buyers, avoid technical language, and end with a consultation CTA." />
+                        <span className="mt-1 block text-xs text-slate-500">SEnuke must follow these instructions unless they conflict with verified project facts, approved strategy, or safety requirements.</span>
                       </label>
                     </div>
                   </div>
@@ -1147,25 +1298,22 @@ export default function AiContentStudio() {
                     {citationFlow ? <CitationAssetBrief assetType={selectedType.label} topic={topic || "AI citation asset"} instruction={generationInstruction} reviewing={Boolean(selectedResult)} /> : <div className="rounded-xl border border-charcoal-100 bg-charcoal-50 px-4 py-3">
                       <div className="mb-2 flex items-center justify-between gap-3">
                         <div className="text-sm font-bold text-charcoal-900">Review and generate</div>
-                        <div className="text-xs text-charcoal-500">
-                          {status ? (type === "article"
-                            ? `${status.usage.articlesUsed}/${status.usage.articleLimit} used · ${articlesRemaining} remaining`
-                            : `${status.usage.helpersUsed}/${status.usage.helperDailyLimit} used · ${helpersRemaining} remaining`) : "Loading quota..."}
-                        </div>
                       </div>
                       <div className="grid gap-2 text-xs text-charcoal-600 lg:grid-cols-[0.8fr_1.4fr_1fr_0.8fr]">
-                        <div className="truncate"><span className="font-semibold text-charcoal-800">Asset:</span> {linkedTask ? "Planned content asset" : selectedType.label}</div>
+                        <div className="truncate"><span className="font-semibold text-charcoal-800">Asset:</span> {linkedTask ? "Planned content asset" : type === "article" && fullPageKind === "website_page" ? "New website page" : selectedType.label}</div>
                         <div className="truncate"><span className="font-semibold text-charcoal-800">Topic:</span> {topic || "Missing topic"}</div>
                         <div className="truncate"><span className="font-semibold text-charcoal-800">Project:</span> {projects.find((project) => project.id === (searchParams.get("projectId") || getActiveProjectId()))?.name ?? websites.find((website) => website.id === websiteId)?.domain ?? "No project context"}</div>
                         <div className="truncate"><span className="font-semibold text-charcoal-800">Tone:</span> {languageCode || "en"} · {tone || "professional"}</div>
                       </div>
-                      <div className="mt-1 truncate text-xs text-charcoal-500">Keyword: {targetKeyword || "Not provided"} · Target page: {targetUrl || "Not provided"}{targetUrlSuggested ? " (suggested)" : ""}</div>
+                      <div className="mt-1 truncate text-xs text-charcoal-500">Keyword: {targetKeyword || "Not provided"} · {type === "article" ? `${fullPageKind === "article" ? "Article" : "Page"} slug: ${targetUrl || "Created automatically"}` : pageWebsiteAssetTypes.has(type) ? `Target page: ${targetUrl || "Not selected"}` : "Website: selected project"}{targetUrlSuggested ? " (suggested)" : ""}</div>
+                      {userInstructions.trim() && <div className="mt-2 rounded-lg border border-violet-200 bg-violet-50 px-3 py-2 text-xs leading-5 text-violet-900"><span className="font-black">Required instructions:</span> {userInstructions.trim()}</div>}
                     </div>}
 
                     {linkedTask && <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-4"><div className="text-xs font-bold uppercase tracking-wide text-emerald-700">Approved plan context</div><div className="mt-1 font-bold text-charcoal-900">{contentTaskTitle(linkedTask)}</div><p className="mt-2 text-sm leading-6 text-charcoal-600">{linkedTask.description}</p>{linkedTask.manualInstructions && <p className="mt-2 whitespace-pre-line text-sm leading-6 text-charcoal-600"><span className="font-bold">Instructions:</span> {` ${scopedTaskInstructions(linkedTask)}`}</p>}{linkedTask.expectedOutcome && <p className="mt-2 text-sm leading-6 text-charcoal-600"><span className="font-bold">Expected outcome:</span> {linkedTask.expectedOutcome}</p>}<p className="mt-3 text-xs font-semibold text-emerald-800">This plan remains attached to the asset. {selectedResult ? "Review the generated result below or re-create it from the same plan." : "Click Generate to create this planned asset."}</p></div>}
 
                     {!citationFlow && <ContentGenerationControls mode={contentMode} instruction={generationInstruction} onModeChange={setContentMode} onInstructionChange={setGenerationInstruction} compact />}
                     {generationError && <div className="rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm font-semibold text-rose-700">{generationError}</div>}
+                    {generationError && selectedResult && <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm leading-6 text-amber-900"><span className="font-black">Previous saved version shown below.</span> The latest generation was rejected and did not replace this content.</div>}
 
                     {linkedTask && selectedResult && <label className="block rounded-xl border border-amber-200 bg-amber-50 p-4" htmlFor="content-recreation-comment"><span className="text-xs font-bold uppercase tracking-wide text-amber-700">Revision instructions required</span><span className="mt-1 block text-sm font-bold text-charcoal-900">What should SEnuke AI - AI Growth Operating System change in the current version?</span><textarea id="content-recreation-comment" value={recreationComment} onChange={(event) => { setRecreationComment(event.target.value); if (generationError) setGenerationError(""); }} rows={4} placeholder="Example: Make the introduction more direct, add a Brampton-specific example, improve the SEO title, and reduce repetition." className="mt-3 w-full rounded-lg border border-amber-300 bg-white px-3 py-2 text-sm outline-none focus:border-amber-500 focus:ring-2 focus:ring-amber-100" /><span className="mt-1 block text-xs text-charcoal-500">The current content remains unchanged until the new version is generated and reviewed.</span></label>}
 
@@ -1174,6 +1322,62 @@ export default function AiContentStudio() {
                       activeId={selectedResultTabId}
                       onActiveChange={setSelectedResultTabId}
                     />
+                    {!citationFlow && !revisionFlow && selectedResult && selectedAssetCanHandoff && selectedProjectId && (
+                      <div className="overflow-hidden rounded-xl border border-cyan-200 bg-cyan-50/50">
+                        <div className="border-b border-cyan-200 bg-white/80 px-4 py-3">
+                          <div className="text-xs font-black uppercase tracking-wide text-cyan-700">AI Content → Website Development</div>
+                          <div className="mt-1 font-bold text-slate-950">Use this reviewed asset on the project website</div>
+                          <p className="mt-1 text-sm leading-6 text-slate-600">This creates an editable Site Architect change. It does not alter WordPress or the live HTML website until Website Quality, Approval, and Publish are completed.</p>
+                        </div>
+                        <div className="space-y-4 p-4">
+                          {!websiteBuilder ? (
+                            <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+                              Start this project website in Site Architect before sending content to it. <a href={`/site-architect?projectId=${encodeURIComponent(selectedProjectId)}`} className="font-black underline">Open Site Architect →</a>
+                            </div>
+                          ) : (
+                            <>
+                              {selectedIsBlogArticle ? (
+                                <div className="rounded-xl border border-violet-200 bg-violet-50 p-4 text-violet-950">
+                                  <div className="text-xs font-black uppercase tracking-wide text-violet-700">Destination</div>
+                                  <div className="mt-1 font-black">Blog → New article</div>
+                                  <p className="mt-1 text-sm leading-6">The article will be added beneath the website Blog Section. If the Blog Section is missing, Site Architect will create it automatically. Blog articles are not added to the primary menu.</p>
+                                  <ol className="mt-3 grid gap-2 text-xs font-semibold sm:grid-cols-3">
+                                    <li className="rounded-lg bg-white px-3 py-2">1. Add the editable article</li>
+                                    <li className="rounded-lg bg-white px-3 py-2">2. Review it in Site Architect</li>
+                                    <li className="rounded-lg bg-white px-3 py-2">3. Approve and publish</li>
+                                  </ol>
+                                </div>
+                              ) : selectedAssetNeedsPage && (
+                                <label className="block text-xs font-black text-slate-700">
+                                  Website destination
+                                  <select value={websiteHandoffPageId} onChange={(event) => { setWebsiteHandoffPageId(event.target.value); setWebsiteHandoffError(""); setWebsiteHandoffResult(null); }} className="mt-1.5 w-full rounded-lg border border-slate-300 bg-white px-3 py-2.5 text-sm font-semibold text-slate-800">
+                                    {selectedAssetCanCreatePage && <option value="">Create a new website page</option>}
+                                    {!selectedAssetCanCreatePage && <option value="">Choose the page to update</option>}
+                                    {websiteBuilder.pages.filter((page) => page.status !== "deferred").map((page) => <option key={page.id} value={page.id}>{page.title} · /{page.slug || ""}</option>)}
+                                  </select>
+                                </label>
+                              )}
+                              {selectedAssetCanCreatePage && !selectedIsBlogArticle && !websiteHandoffPageId && (
+                                <div className="grid gap-3 sm:grid-cols-2">
+                                  <label className="block text-xs font-black text-slate-700">New page type<select value={websiteHandoffPageType} onChange={(event) => setWebsiteHandoffPageType(event.target.value as WebsiteDraftPageType)} className="mt-1.5 w-full rounded-lg border border-slate-300 bg-white px-3 py-2.5 text-sm font-semibold text-slate-800"><option value="supporting">Supporting content page</option><option value="service">Service page</option><option value="pillar">Pillar page</option><option value="location">Location page</option><option value="about">About page</option><option value="case-study">Case study</option><option value="contact">Contact page</option><option value="landing">Landing page</option></select></label>
+                                  <label className="flex items-start gap-3 rounded-lg border border-slate-200 bg-white p-3 text-xs font-semibold leading-5 text-slate-700"><input type="checkbox" checked={websiteHandoffNavigation} onChange={(event) => setWebsiteHandoffNavigation(event.target.checked)} className="mt-1" /><span>Add to primary navigation. Leave this off for blog articles, campaign pages, and pages reached through contextual links.</span></label>
+                                </div>
+                              )}
+                              {siteWebsiteAssetTypes.has(selectedResult.type) && <div className="rounded-lg border border-indigo-200 bg-indigo-50 px-4 py-3 text-sm text-indigo-900">Destination: Website {selectedResult.type === "ai_search" || selectedResult.type === "domain_schema" ? "Optimization" : "Structure & technical files"}. Site Architect will require review and approval before publishing.</div>}
+                              {websiteHandoffError && <div className="rounded-lg border border-rose-200 bg-rose-50 px-4 py-3 text-sm font-semibold text-rose-700">{websiteHandoffError}</div>}
+                              {websiteHandoffResult ? (
+                                <div className="flex flex-col gap-3 rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3 sm:flex-row sm:items-center sm:justify-between"><p className="text-sm font-semibold leading-6 text-emerald-900">{websiteHandoffResult.message}</p><a href={websiteHandoffResult.siteArchitectUrl} className="shrink-0 rounded-lg bg-emerald-700 px-4 py-2.5 text-center text-sm font-black text-white">Review in Site Architect →</a></div>
+                              ) : (
+                                <div className="flex flex-wrap items-center justify-between gap-3">
+                                  <p className="text-xs font-semibold text-slate-500">{selectedIsBlogArticle ? "Nothing is published yet. You will review the complete article before approving the website update." : selectedWebsitePage ? `A new review version will be created for ${selectedWebsitePage.title}.` : selectedAssetCanCreatePage ? "A new managed page will be created with the generated body, metadata, FAQs, and schema." : selectedAssetNeedsPage ? "Choose the exact managed page before continuing." : "The technical asset will be attached to the website-wide review."}</p>
+                                  <button type="button" disabled={websiteHandoffBusy || (selectedAssetNeedsPage && !selectedAssetCanCreatePage && !websiteHandoffPageId)} onClick={() => void sendToWebsite()} className="rounded-lg bg-cyan-700 px-5 py-2.5 text-sm font-black text-white disabled:cursor-not-allowed disabled:bg-slate-300">{websiteHandoffBusy ? "Sending to Site Architect…" : selectedWebsitePage ? `Update ${selectedWebsitePage.title}` : selectedAssetCanCreatePage ? fullPageKind === "article" ? "Add Article to Blog" : "Add Page to Website" : "Send to Site Architect"}</button>
+                                </div>
+                              )}
+                            </>
+                          )}
+                        </div>
+                      </div>
+                    )}
                     {citationFlow && selectedResult && <CitationValidationPanel generation={selectedResult} onReturn={() => returnToCitation(selectedResult)} />}
                     {linkedTask && selectedResult && <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-4"><div className="font-bold text-emerald-900">Content created and returned to the project</div><p className="mt-1 text-sm text-emerald-800">This asset is attached to the execution task and has moved to {linkedTask.requiresApproval ? "content review and approval" : "ready to publish"}.</p><a href={`/guided-projects/${encodeURIComponent(linkedTask.projectId || searchParams.get("projectId") || "")}?tab=execution#execution-tasks`} className="mt-3 inline-flex rounded-lg bg-emerald-600 px-4 py-2 text-sm font-bold text-white hover:bg-emerald-700">Continue to publishing →</a></div>}
                   </div>
@@ -1181,16 +1385,16 @@ export default function AiContentStudio() {
               </div>
 
               <div className="flex flex-col-reverse gap-3 border-t border-charcoal-100 bg-white px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
-                <div className="min-w-0 flex-1">{generationError ? <div className="rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs font-bold leading-5 text-rose-700">{generationError}</div> : quotaBlocked && !citationReviewOnly ? <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-bold leading-5 text-amber-800">{type === "article" ? "Monthly full-content allowance reached." : "Daily AI helper allowance reached."}</div> : revisionFlow ? <div className="text-xs font-semibold text-slate-500">{revisionCompleted ? "Review the revised version, then close this window to return to Site Architect." : "Your current content is preserved until the revised version is generated."}</div> : citationFlow ? <div className="text-xs font-semibold text-indigo-700">{selectedResult ? "Review the exact saved asset and its citation validation status." : "The originating citation block controls this asset request."}</div> : linkedTask ? selectedResult && !revisionInstruction ? <button type="button" onClick={() => { const input = document.getElementById("content-recreation-comment"); input?.scrollIntoView({ behavior: "smooth", block: "center" }); (input as HTMLTextAreaElement | null)?.focus(); }} className="text-left text-xs font-bold text-amber-700 hover:text-amber-900">Add revision instructions before re-creating ↑</button> : <div className="text-xs font-semibold text-emerald-700">Content type and brief supplied by the approved plan.</div> : <Button type="button" variant="ghost" disabled={wizardStep === 1 || generating} onClick={() => setWizardStep((step) => Math.max(1, step - 1))}>Back</Button>}</div>
+                <div className="min-w-0 flex-1">{generationError ? <div className="rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs font-bold leading-5 text-rose-700">{generationError}</div> : revisionFlow ? <div className="text-xs font-semibold text-slate-500">{revisionCompleted ? "Review the revised version, then close this window to return to Site Architect." : "Your current content is preserved until the revised version is generated."}</div> : citationFlow ? <div className="text-xs font-semibold text-indigo-700">{selectedResult ? "Review the exact saved asset and its citation validation status." : "The originating citation block controls this asset request."}</div> : linkedTask ? selectedResult && !revisionInstruction ? <button type="button" onClick={() => { const input = document.getElementById("content-recreation-comment"); input?.scrollIntoView({ behavior: "smooth", block: "center" }); (input as HTMLTextAreaElement | null)?.focus(); }} className="text-left text-xs font-bold text-amber-700 hover:text-amber-900">Add revision instructions before re-creating ↑</button> : <div className="text-xs font-semibold text-emerald-700">Content type and brief supplied by the approved plan.</div> : <Button type="button" variant="ghost" disabled={wizardStep === 1 || generating} onClick={() => setWizardStep((step) => Math.max(1, step - 1))}>Back</Button>}</div>
                 <div className="flex gap-3 sm:justify-end">
                   {citationReviewOnly ? null : revisionFlow ? revisionCompleted ? (
                     <Button type="button" onClick={closeWizard}>Done</Button>
                   ) : (
-                    <Button type="submit" disabled={generating || !canReview || quotaBlocked}>{generating ? "Generating revised content…" : quotaBlocked ? "Allowance reached" : "Generate Revised Content"}</Button>
+                    <Button type="submit" disabled={generating || !canReview}>{generating ? "Generating revised content…" : "Generate Revised Content"}</Button>
                   ) : wizardStep < 3 ? (
                     <Button type="button" onClick={() => setWizardStep((step) => Math.min(3, step + 1))} disabled={wizardStep === 2 && !canReview}>Next</Button>
                   ) : (
-                    <Button type="submit" disabled={generating || !canReview || quotaBlocked}>{generating ? "Generating..." : quotaBlocked ? "Allowance reached" : selectedResult && linkedTask ? "Re-create content" : "Generate"}</Button>
+                    <Button type="submit" disabled={generating || !canReview}>{generating ? "Generating..." : selectedResult && linkedTask ? "Re-create content" : "Generate"}</Button>
                   )}
                 </div>
               </div>

@@ -40,11 +40,17 @@ function nextActionHref(project: GuidedProject, task: GuidedExecutionTask | null
   if (!task) return workflowStep ? milestoneHref(project, workflowStep.actionUrl, workflowStep.stepKey) : `/guided-projects/${project.id}`;
   if (["submitted_for_approval", "waiting_for_approval", "pending_approval", "needs_approval"].includes(task.status)) return `/approvals?projectId=${encodeURIComponent(project.id)}&taskId=${encodeURIComponent(task.id)}`;
   if (task.moduleName === "opportunity") return `/opportunities?projectId=${encodeURIComponent(project.id)}`;
+  if (["content", "ai_content"].includes(task.moduleName)) {
+    const query = new URLSearchParams(task.relatedUrl?.startsWith("/ai-content?") ? task.relatedUrl.split("?", 2)[1] : "");
+    query.set("projectId", project.id);
+    query.set("taskId", task.id);
+    query.set("open", "1");
+    return `/ai-content?${query.toString()}`;
+  }
   if (task.relatedUrl) {
     if (task.relatedUrl.startsWith(`/guided-projects/${project.id}`) || /[?&]projectId=/.test(task.relatedUrl)) return task.relatedUrl;
     return `${task.relatedUrl}${task.relatedUrl.includes("?") ? "&" : "?"}projectId=${encodeURIComponent(project.id)}`;
   }
-  if (task.moduleName === "content") return task.status === "ready" ? `/ai-content?projectId=${encodeURIComponent(project.id)}&taskId=${encodeURIComponent(task.id)}&open=1` : `/ai-content?projectId=${encodeURIComponent(project.id)}#publishing`;
   const routes: Record<string, string> = {
     opportunity: "/opportunities",
     keyword_research: "/keywords",

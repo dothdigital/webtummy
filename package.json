@@ -9,6 +9,7 @@
     "apps/*"
   ],
   "scripts": {
+    "postinstall": "npm run db:generate",
     "db:generate": "npm run -w @webtummy/db generate",
     "db:migrate": "npm run -w @webtummy/db migrate",
     "db:push": "npm run -w @webtummy/db push",

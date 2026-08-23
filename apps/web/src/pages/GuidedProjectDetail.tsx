@@ -82,7 +82,12 @@ function taskPriorityTone(task: GuidedExecutionTask) {
 function taskActionUrl(task: GuidedExecutionTask, projectId: string) {
   if (["waiting_for_approval", "pending_approval", "submitted_for_approval", "needs_approval"].includes(task.status)) return `/approvals?projectId=${encodeURIComponent(projectId)}`;
   if (isContentPlanTask(task)) return `/guided-projects/${encodeURIComponent(projectId)}?tab=execution&actionTask=${encodeURIComponent(task.id)}#execution-tasks`;
-  if (task.moduleName === "content" && task.status === "ready") return `/ai-content?projectId=${encodeURIComponent(projectId)}&taskId=${encodeURIComponent(task.id)}&open=1`;
+  // AI Content Studio is the single preparation and review path for every
+  // executable content task. Lead magnets remain in their dedicated funnel
+  // module because they also own forms, consent, delivery, and email flow.
+  if (["content", "ai_content"].includes(task.moduleName)) return task.relatedUrl?.startsWith("/ai-content")
+    ? projectScopedTaskUrl(task.relatedUrl, projectId, task.id)
+    : `/ai-content?projectId=${encodeURIComponent(projectId)}&taskId=${encodeURIComponent(task.id)}&open=1`;
   const genericExecutionUrl = task.relatedUrl && /^\/guided-projects(?:\/[^/?#]+)?(?:\?[^#]*)?(?:#execution-tasks)?$/i.test(task.relatedUrl)
     && /(?:\?|&)tab=execution(?:&|#|$)/i.test(task.relatedUrl);
   if (task.relatedUrl && !genericExecutionUrl) return projectScopedTaskUrl(task.relatedUrl, projectId, task.id);

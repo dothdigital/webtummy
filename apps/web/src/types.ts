@@ -1394,6 +1394,7 @@ export interface AiContentGeneration {
   targetUrl: string | null;
   languageCode: string;
   tone: string | null;
+  prompt?: string;
   resultJson: unknown;
   model: string | null;
   inputTokens: number;

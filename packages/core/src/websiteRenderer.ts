@@ -28,6 +28,8 @@ export type WebsiteRenderOptions = {
   internalUrlMap?: Record<string, string>;
   formAction?: string;
   tracking?: { siteId: string; scriptUrl: string; releaseId?: string; ga4MeasurementId?: string };
+  /** Approved Website Development technical files. Draft files must never be passed here. */
+  siteFiles?: { sitemap?: string; robots?: string; llms?: string };
   /** Preview and staging output are never indexable. */
   environmentType?: WebsiteQualityEnvironment;
 };
@@ -1049,6 +1051,9 @@ export function createStaticWebsiteFiles(
     return `<url><loc>${escapeHtml(location)}</loc></url>`;
   }).join("");
   const llmsPages = model.pages.map((page) => `- [${page.name}](${websitePagePublicationPath(model, page)}): ${page.seo.metaDescription}`).join("\n");
+  const approvedSitemap = String(options.siteFiles?.sitemap || "").trim();
+  const approvedRobots = String(options.siteFiles?.robots || "").trim();
+  const approvedLlms = String(options.siteFiles?.llms || "").trim();
   const blogSection = model.pages.find(isWebsiteBlogSectionPage);
   const blogArticles = model.pages.filter(isWebsiteBlogArticlePage);
   const rssFile: WebsiteRenderFile[] = blogSection && blogArticles.length ? [{
@@ -1077,11 +1082,11 @@ export function createStaticWebsiteFiles(
     ...pageFiles,
     ...mediaFiles,
     { path: "assets/senuke.css", content: `${SENUKE_STATIC_CSS}\n${SENUKE_PROFESSIONAL_CSS}`, mimeType: "text/css" },
-    { path: "sitemap.xml", content: `<?xml version="1.0" encoding="UTF-8"?><urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">${sitemapUrls}</urlset>`, mimeType: "application/xml" },
+    { path: "sitemap.xml", content: approvedSitemap || `<?xml version="1.0" encoding="UTF-8"?><urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">${sitemapUrls}</urlset>`, mimeType: "application/xml" },
     { path: "robots.txt", content: options.environmentType === "production"
-      ? `User-agent: *\nAllow: /\nSitemap: ${options.baseUrl ? `${options.baseUrl.replace(/\/+$/, "")}/sitemap.xml` : "/sitemap.xml"}\n`
+      ? approvedRobots || `User-agent: *\nAllow: /\nSitemap: ${options.baseUrl ? `${options.baseUrl.replace(/\/+$/, "")}/sitemap.xml` : "/sitemap.xml"}\n`
       : "User-agent: *\nDisallow: /\n", mimeType: "text/plain" },
-    { path: "llms.txt", content: `# Website pages\n\n${llmsPages}\n`, mimeType: "text/plain" },
+    { path: "llms.txt", content: approvedLlms || `# Website pages\n\n${llmsPages}\n`, mimeType: "text/plain" },
     ...rssFile,
     { path: "senuke-release.json", content: JSON.stringify(manifest, null, 2), mimeType: "application/json" },
   ];

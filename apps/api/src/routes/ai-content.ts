@@ -9,6 +9,8 @@ import { billingPlanForClient, hasBillingAccess, normalizePlanCode, planView, re
 import { approvedStrategyContext } from "../strategy-ai.js";
 import { centralAiJson } from "../central-ai-service.js";
 import { storeGeneratedAsset } from "../generated-assets.js";
+import { commitUsage, preflightUsage, refundUsage } from "../usage-engine.js";
+import { missingRequiredInstructionTerms, requiredInstructionTerms } from "../content-instruction-compliance.js";
 
 export const aiContentRouter = Router();
 aiContentRouter.use(requireAuth);
@@ -29,6 +31,7 @@ const generationSchema = z.object({
   targetUrl: z.string().max(512).optional().nullable(),
   languageCode: z.string().min(2).max(16).default("en"),
   tone: z.string().max(80).optional().nullable(),
+  userInstructions: z.string().max(5_000).optional().nullable(),
   // A planned website page includes its approved brief, FAQ/proof requirements,
   // internal-link direction, and reviewer instruction. Keep this bounded for a
   // single asset, but do not reject legitimate approved plans at the old 3k
@@ -43,10 +46,6 @@ const generationSchema = z.object({
 function currentMonthStart() {
   const now = new Date();
   return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
-}
-
-function usageType(type: GenerationType): "article" | "helper" {
-  return type === "article" ? "article" : "helper";
 }
 
 async function getClientForRequest(req: Request) {
@@ -73,31 +72,9 @@ async function usageFor(clientId: string, periodStart = currentMonthStart()) {
   };
 }
 
-async function assertQuota(clientId: string, articleLimit: number, type: GenerationType) {
-  const usage = await usageFor(clientId);
-  if (type === "article") {
-    const used = usage.article?.count ?? 0;
-    if (used >= articleLimit) {
-      const err = new Error("article quota reached");
-      err.name = "quota_reached";
-      throw err;
-    }
-  }
-}
-
-async function incrementUsage(clientId: string, type: GenerationType, tokens: number) {
-  const periodStart = currentMonthStart();
-  const kind = usageType(type);
-  await prisma.aiUsageCounter.upsert({
-    where: { clientId_periodStart_type: { clientId, periodStart, type: kind } },
-    create: { clientId, periodStart, type: kind, count: 1, tokens },
-    update: { count: { increment: 1 }, tokens: { increment: tokens } },
-  });
-}
-
 function schemaInstruction(type: GenerationType) {
   if (type === "article") {
-    return "Return JSON with keys: title, slug, metaTitle, metaDescription, outline, articleHtml, faqs, schemaJsonLd, aiSearchNotes. Create a complete 900–1,600 word page, not a summary or outline. The title/H1 must lead with the target topic, buyer value, or decision and must never be Welcome to [company] or a company-name-only heading. articleHtml must contain useful, specific H2/H3 sections using h2/h3/p/ul/li only; organize them around buyer questions, benefits, options, objections, process, proof, and the next step. Do not use generic headings such as Our Services, What We Offer, Overview, Why Choose Us, How the Process Works, or Frequently Asked Questions. Use target and supporting topics naturally without keyword stuffing. The meta description must be a unique 120–160 character search snippet explaining this page's specific value and next step. Cover the approved buyer problem, service or topic details, decision factors, process, proof only where supported, FAQs, internal-link opportunities, and conversion action. Avoid generic filler and never use the template “Explore ... Review capabilities, process, proof, FAQs, and next steps.”";
+    return "Return JSON with keys: title, slug, metaTitle, metaDescription, outline, articleHtml, faqs, schemaJsonLd, aiSearchNotes. Create a complete 900–1,600 word page, not a summary or outline. The title/H1 must lead with the target topic, buyer value, or decision and must never be Welcome to [company] or a company-name-only heading. When the user names a product, service, audience, or geography, make it central to the title or opening, relevant headings, body, CTA, and FAQs instead of mentioning it once. Preserve the proper name supplied by the user. Do not invent an umbrella product, conflate adjacent products, or broaden the article away from the requested subject. articleHtml must contain useful, specific H2/H3 sections using h2/h3/p/ul/li only; organize them around buyer questions, benefits, options, objections, process, verified proof, and the next step. Do not use generic headings such as Our Services, What We Offer, Overview, Why Choose Us, How the Process Works, or Frequently Asked Questions. Use target and supporting topics naturally without keyword stuffing. The meta description must be a unique 120–160 character search snippet explaining this page's specific value and next step. Cover the approved buyer problem, service or topic details, decision factors, process, proof only where supported, FAQs, internal-link opportunities, and conversion action. Never claim testimonials, satisfied clients, case studies, credentials, coverage details, or success stories unless supplied as verified evidence. Avoid generic filler and never use the template “Explore ... Review capabilities, process, proof, FAQs, and next steps.”";
   }
   if (type === "h1") return "Return JSON with key h1Options: an array of 8 concise, conversion-oriented H1 options aligned to the target keyword, audience, offer, page intent, and local context where relevant. Lead with the service, product, category, customer outcome, or decision value. Never return Welcome, Welcome to [company], Home, the company name alone, generic partner language, keyword stuffing, or unsupported best/leading/#1/guarantee claims.";
   if (type === "title") return "Return JSON with key titles: an array of 10 SEO title options under 60 characters where possible.";
@@ -128,7 +105,8 @@ function buildPrompt(input: z.infer<typeof generationSchema>, domain?: string, v
     verifiedPageUrls.length ? `Verified crawled website URLs (use only these URLs for sitemap entries and internal references):\n${verifiedPageUrls.join("\n")}` : "",
     verifiedProjectFacts.length ? `Verified project facts (use these values exactly; omit any public fact not listed here):\n${verifiedProjectFacts.map((fact) => `- ${fact}`).join("\n")}` : "",
     strategyContract ? `Approved Strategy contract:\n${JSON.stringify(strategyContract).slice(0, 30_000)}` : "",
-    input.notes ? `Extra notes: ${input.notes}` : "",
+    input.notes ? `Approved workflow and implementation context:\n${input.notes}` : "",
+    input.userInstructions ? `MANDATORY USER INSTRUCTIONS\nFollow every applicable instruction below in the generated asset. These instructions are requirements, not optional background. If an instruction conflicts with verified facts, the approved Strategy, legal/safety requirements, or the required output schema, follow the governing evidence or rule and do not invent information. Before returning the JSON, check the completed asset against every instruction in this block.\n${input.userInstructions}` : "",
   ].filter(Boolean).join("\n");
 }
 
@@ -358,6 +336,7 @@ aiContentRouter.post("/ai-content/generate", async (req, res) => {
     });
   }
   const input = parsed.data;
+  let usageEventId: string | null = null;
 
   try {
     const client = await getClientForRequest(req);
@@ -410,10 +389,8 @@ aiContentRouter.post("/ai-content/generate", async (req, res) => {
         return res.status(404).json({ error: "The originating AI Citation block was not found. Refresh Citation Research and try again." });
       }
     }
-    const plan = await billingPlanForClient(client.plan);
-    await assertQuota(client.id, plan?.articleLimit ?? 5, input.type);
     const linkedTask = input.executionTaskId
-      ? await prisma.executionTask.findFirst({ where: { id: input.executionTaskId, clientId: client.id, moduleName: "content" } })
+      ? await prisma.executionTask.findFirst({ where: { id: input.executionTaskId, clientId: client.id, moduleName: { in: ["content", "ai_content"] } } })
       : null;
     if (input.executionTaskId && !linkedTask) return res.status(404).json({ error: "The linked content task was not found." });
     if (linkedTask?.sourceType === "content_plan_action") {
@@ -453,10 +430,46 @@ aiContentRouter.post("/ai-content/generate", async (req, res) => {
     if (input.type === "sitemap" && !verifiedPageUrls.length) {
       return res.status(409).json({ error: "A sitemap cannot be generated safely without verified website URLs. Run Site Analysis first, then return to this citation signal." });
     }
+    const usage = await preflightUsage({
+      clientId: client.id,
+      userId: req.user?.userId,
+      projectId: input.projectId ?? linkedTask?.projectId ?? null,
+      websiteId: website?.id ?? input.websiteId ?? null,
+      featureKey: "ai_content_generate",
+      actionKey: input.type === "article" ? "Generate AI content article" : `Generate ${input.type.replaceAll("_", " ")}`,
+      metadata: { contentType: input.type, sourceContext: input.sourceContext ?? "ai_content_studio" },
+    });
+    usageEventId = usage.usageEventId;
     const prompt = buildPrompt(input, website?.domain, verifiedPageUrls, input.sourceContext === "ai_citation" ? verifiedProjectFacts : [], strategyContract);
-    const generated = await openaiJson(prompt, ["article", "domain_llms_txt", "sitemap"].includes(input.type) ? 8_000 : 4_000);
-    const tokens = generated.inputTokens + generated.outputTokens;
-
+    const maxOutputTokens = ["article", "domain_llms_txt", "sitemap"].includes(input.type) ? 8_000 : 4_000;
+    let generated = await openaiJson(prompt, maxOutputTokens);
+    let savedPrompt = prompt;
+    let totalInputTokens = generated.inputTokens;
+    let totalOutputTokens = generated.outputTokens;
+    let missingInstructionTerms = missingRequiredInstructionTerms(input.userInstructions, generated.result, input.type);
+    const requiredTerms = requiredInstructionTerms(input.userInstructions);
+    for (let correctionAttempt = 1; missingInstructionTerms.length && correctionAttempt <= 2; correctionAttempt += 1) {
+      const correctionPrompt = [
+        prompt,
+        `INSTRUCTION COMPLIANCE REWRITE REQUIRED · ATTEMPT ${correctionAttempt}`,
+        `The previous draft omitted these mandatory concepts from the user's Required instructions: ${missingInstructionTerms.join(", ")}.`,
+        `Every required concept: ${requiredTerms.join(", ")}.`,
+        input.type === "article"
+          ? "Rewrite the complete article JSON. The visible article title, introduction, headings, paragraphs, CTA, or FAQs must naturally and substantively address every mandatory concept. Merely placing a word in metadata, schema, notes, or an unrelated sentence does not comply. Keep the requested subject and geography central to the article."
+          : "Rewrite the complete asset JSON. Its visible user-facing content must naturally and substantively address every mandatory concept. Merely placing a word in metadata, schema, or notes does not comply.",
+        "Preserve verified facts, do not invent business claims, and return the complete replacement JSON using the original schema.",
+        `Draft to replace:\n${JSON.stringify(generated.result).slice(0, 40_000)}`,
+      ].join("\n\n");
+      const corrected = await openaiJson(correctionPrompt, maxOutputTokens);
+      totalInputTokens += corrected.inputTokens;
+      totalOutputTokens += corrected.outputTokens;
+      generated = corrected;
+      savedPrompt = correctionPrompt;
+      missingInstructionTerms = missingRequiredInstructionTerms(input.userInstructions, generated.result, input.type);
+    }
+    if (missingInstructionTerms.length) {
+      throw Object.assign(new Error(`AI could not produce a compliant replacement after two focused corrections. The draft still omitted required instructions (${missingInstructionTerms.join(", ")}). No incomplete content was saved; retry this same request and the existing version will remain unchanged.`), { code: "instruction_compliance_failed", statusCode: 422 });
+    }
     const record = await prisma.aiContentGeneration.create({
       data: {
         clientId: client.id,
@@ -472,11 +485,11 @@ aiContentRouter.post("/ai-content/generate", async (req, res) => {
         targetUrl: input.targetUrl ?? null,
         languageCode: input.languageCode,
         tone: input.tone ?? null,
-        prompt,
+        prompt: savedPrompt,
         resultJson: generated.result as object,
         model: generated.model,
-        inputTokens: generated.inputTokens,
-        outputTokens: generated.outputTokens,
+        inputTokens: totalInputTokens,
+        outputTokens: totalOutputTokens,
       },
     });
     if (linkedTask) {
@@ -507,13 +520,18 @@ aiContentRouter.post("/ai-content/generate", async (req, res) => {
         });
       }
     }
-    await incrementUsage(client.id, input.type, tokens);
+    await commitUsage({ usageEventId, provider: "openai", model: generated.model, inputTokens: totalInputTokens, outputTokens: totalOutputTokens, metadata: { generationId: record.id, contentType: input.type } });
+    usageEventId = null;
     res.status(201).json({ generation: record });
   } catch (error) {
-    if (error instanceof Error && error.name === "quota_reached") return res.status(402).json({ error: error.message });
+    if (usageEventId) await refundUsage({ usageEventId, reason: error instanceof Error ? error.message : "AI content generation failed" }).catch(() => undefined);
     if (error instanceof Error && error.name === "billing_required") return res.status(402).json({ error: error.message, billingRequired: true });
     const statusCode = typeof error === "object" && error !== null && "statusCode" in error && typeof error.statusCode === "number" ? error.statusCode : 500;
     const reason = error instanceof Error ? error.message : "AI generation failed";
+    const errorCode = typeof error === "object" && error !== null && "code" in error ? String(error.code) : "";
+    if (errorCode === "instruction_compliance_failed") {
+      return res.status(statusCode).json({ error: `The new draft was rejected because it did not follow all Required instructions. No incomplete content was saved, the previous version remains unchanged, and committed AI Capacity was refunded. ${reason}` });
+    }
     res.status(statusCode).json({
       error: `Content generation did not complete. Your inputs and every existing content version were preserved. The failed AI provider attempt did not consume committed AI Capacity. ${reason} Review the saved context and retry this same request.`,
     });

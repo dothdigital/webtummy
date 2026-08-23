@@ -65,6 +65,10 @@ export function apiErrorMessage(data: unknown, fallback: string, res?: Response)
   const envelope = data && typeof data === "object" && !Array.isArray(data) ? data as ApiErrorEnvelope : {};
   if (res?.status === 502) {
     const errorCode = typeof envelope.errorCode === "string" ? envelope.errorCode : res.headers.get("X-SEnuke-Error-Code");
+    const publicMessage = firstErrorText(envelope.message) ?? firstErrorText(envelope.error);
+    if (publicMessage && !/^we could not complete this request\b/i.test(publicMessage)) {
+      return [publicMessage, errorCode ? `Error code: ${errorCode}` : null].filter(Boolean).join("\n");
+    }
     return [
       "The service is temporarily unavailable while the server recovers (502 Bad Gateway). Your action may still have completed. Wait a moment, refresh, and check its status before retrying.",
       errorCode ? `Error code: ${errorCode}` : null,
