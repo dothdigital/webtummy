@@ -152,6 +152,7 @@ function capacityFeatureForRequest(path: string) {
   if (/gap-analysis/.test(normalized)) return "seo_fix_queue";
   if (/local-seo|\/local\//.test(normalized)) return "local_seo_launch_plan";
   if (/ai-citation/.test(normalized)) return "ai_citation_scan";
+  if (/authority.*outreach.*(?:revise|regenerate)/.test(normalized)) return "execution_content_generate";
   if (/authority|backlink/.test(normalized)) return "backlink_snapshot";
   if (/social/.test(normalized)) return "social_calendar_generate";
   if (/growth.*report/.test(normalized)) return "growth_report";

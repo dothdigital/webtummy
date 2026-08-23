@@ -64,7 +64,7 @@ export default function Login() {
               {mode === "signup" ? (
                 <>
                   <AuthBenefit tone="blue" icon="▥" title="AI-Driven Insights">Leverage AI to discover high-impact opportunities and content gaps.</AuthBenefit>
-                  <AuthBenefit tone="green" icon="⌁" title="Automate & Scale">Build backlinks, optimize content, and automate SEO workflows.</AuthBenefit>
+                  <AuthBenefit tone="green" icon="⌁" title="Guide & Scale">Find safe authority opportunities, optimize content, and govern SEO workflows with approvals.</AuthBenefit>
                   <AuthBenefit tone="violet" icon="◈" title="Track What Matters">Monitor rankings, traffic, and conversions in one powerful dashboard.</AuthBenefit>
                   <AuthBenefit tone="orange" icon="♙" title="Built for Teams">Collaborate with your team and manage projects across workspaces.</AuthBenefit>
                 </>

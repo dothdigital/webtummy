@@ -13,6 +13,7 @@ import { canonicalPrimaryGoal, canonicalSecondaryGoal, primaryGoalsForWorkspace,
 import { cleanGeographicTargetMarkets, explicitlyTargetsGeographicMarket } from "../project-location.js";
 import { discoveryTargetMarkets } from "../discovery-target-markets.js";
 import { createProfessionalReportPdf } from "../report-pdf.js";
+import { storeGeneratedAsset } from "../generated-assets.js";
 
 export const aiIntakeRouter = Router();
 aiIntakeRouter.use(requireAuth);
@@ -1318,6 +1319,19 @@ aiIntakeRouter.get("/ai-intake/project-launch/:projectId/download", async (req, 
       sourceSnapshot: { projectLaunchSessionId: session.id, generatedAt: session.completedAt?.toISOString() ?? session.updatedAt.toISOString(), projectCreatedAt: project.createdAt.toISOString() },
     }, { workspaceName: context.workspace.name, workspaceType: context.workspace.workspaceType });
     const safeName = (project.businessName || project.name || "project").replace(/[^a-z0-9]+/gi, "-").replace(/^-|-$/g, "").slice(0, 90) || "project";
+    await storeGeneratedAsset({
+      workspaceId: context.workspace.id,
+      projectId: project.id,
+      assetType: "pdfs",
+      mimeType: "application/pdf",
+      filename: `SEnuke-AI_${safeName}_Project-Analysis.pdf`,
+      body: pdf,
+      source: "system_generated",
+      sourceEntityType: "workspace_ai_intake_session",
+      sourceEntityId: session.id,
+      dedupeKey: `project-launch-analysis:${session.id}`,
+      createdByUserId: context.membership.userId,
+    });
     res.setHeader("Content-Type", "application/pdf");
     res.setHeader("Content-Disposition", `attachment; filename="SEnuke-AI_${safeName}_Project-Analysis.pdf"`);
     res.setHeader("X-SEnuke-AI-Capacity-Charged", "0");

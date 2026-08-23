@@ -617,7 +617,14 @@ export function createProfessionalReportPdf(contentValue: unknown, brand: PdfBra
     pageHeading("02 · Search Performance", "SEO, rankings and authority", "Keyword and crawl metrics are shown only when saved evidence exists. Traffic and backlink sections remain clearly marked until their relevant integrations are connected.");
     metricCards([{ label: "Approved groups", value: seo.approvedKeywordGroups, note: "Keyword direction" }, { label: "Approved keywords", value: seo.approvedKeywords, note: "Selected themes" }, { label: "Indexed/crawled pages", value: performance.indexedPages ?? "Pending", note: "Latest Site Analysis" }]);
     bullets("Keyword ranking movement", rankingRows);
-    section("Connected performance data", [["Organic traffic", performance.organicTraffic ?? "Not connected"], ["Search impressions", performance.searchImpressions ?? "Not connected"], ["Search clicks", performance.searchClicks ?? "Not connected"], ["Backlink progress", performance.backlinkProgress ?? "Not connected"], ["SERP competitors observed", performance.serpCompetitors ?? "Pending"]]);
+    const backlinkProgress = record(performance.backlinkProgress);
+    const backlinkSummary = backlinkProgress.capturedAt
+      ? `${display(backlinkProgress.referringDomains ?? "Unavailable")} referring domains · ${display(backlinkProgress.totalBacklinks ?? "Unavailable")} backlinks · ${display(backlinkProgress.newBacklinks ?? "Unavailable")} new · ${display(backlinkProgress.lostBacklinks ?? "Unavailable")} lost · ${display(backlinkProgress.provider ?? "Provider unavailable")} · collected ${display(backlinkProgress.capturedAt)}`
+      : "Not connected";
+    section("Connected performance data", [["Organic traffic", performance.organicTraffic ?? "Not connected"], ["Search impressions", performance.searchImpressions ?? "Not connected"], ["Search clicks", performance.searchClicks ?? "Not connected"], ["Backlink progress", backlinkSummary], ["SERP competitors observed", performance.serpCompetitors ?? "Pending"]]);
+    if (backlinkProgress.capturedAt) {
+      narrative("Backlink evidence limits", `${display(backlinkProgress.authorityMetricNote)} Comparison: ${display(backlinkProgress.comparisonStartAt ?? "First baseline")} to ${display(backlinkProgress.comparisonEndAt ?? backlinkProgress.capturedAt)}. ${backlinkProgress.reportingPeriodCompatible === false ? "This comparison does not overlap the selected reporting period and is shown only as the latest available evidence. " : ""}${values(backlinkProgress.limitations).map(display).join(" ")} ${display(backlinkProgress.attributionNote)}`, "#F59E0B");
+    }
 
     pageHeading("03 · Delivery & Next Actions", "Work completed and what happens next", "Delivery status is taken from the Execution Plan, including approval and publishing outcomes. Internal notes, costs, credits, and administrative warnings are not included.");
     columnList("Completed work", execution.completed);

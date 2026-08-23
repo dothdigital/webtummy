@@ -20,7 +20,7 @@ export function latestSuccessfulKeywordRuns<T extends SuccessfulKeywordRun>(runs
   const latest = new Map<string, T>();
   for (const run of runs) {
     if (run.status !== "completed" || usesCountryFallback(run)) continue;
-    // DataForSEO-normalized and legacy locations may represent the same market
+    // Provider-normalized and legacy locations may represent the same market
     // as "Toronto, ON, Canada" and "Toronto,Ontario,Canada". The first segment
     // is the selected project market, so use it as the stable display identity.
     const market = run.locationName.split(",")[0]?.replace(/\s+/g, " ").trim().toLowerCase() ?? "";

@@ -40,6 +40,7 @@ import { publicWebsiteTrackingRouter } from "./routes/website-tracking-public.js
 import { jvZooRouter, startJvZooQueueWorker } from "./routes/jvzoo.js";
 import { discoveryDraftsRouter } from "./routes/discovery-drafts.js";
 import { dev053VerificationRouter } from "./routes/dev053-verification.js";
+import { publicGeneratedAssetsRouter } from "./routes/generated-assets.js";
 import { rawBodySaver } from "./billing.js";
 import { enforceArchivedReadOnly, enforceCommercialAccess, enforceWorkspacePermissions, requireAuth } from "./middleware.js";
 import { createApiErrorCode, GENERIC_SYSTEM_ERROR, systemErrorPayload } from "./api-errors.js";
@@ -88,8 +89,9 @@ app.use((req, res, next) => {
   const isPublicWebsiteForm = req.path.startsWith("/api/public/website-forms/");
   const isPublicLeadMagnet = req.path.startsWith("/api/public/lead-magnets/");
   const isPublicWebsiteTracking = req.path.startsWith("/api/public/website-tracking/");
+  const isPublicGeneratedAsset = req.path.startsWith("/api/public/generated-assets/");
   const isGoogleBusinessProfileCallback = req.path === "/api/integrations/google-business-profile/callback" || req.path === "/api/integrations/google-business-profile/callback/";
-  if (isPublicWebsiteForm || isPublicLeadMagnet || isPublicWebsiteTracking) {
+  if (isPublicWebsiteForm || isPublicLeadMagnet || isPublicWebsiteTracking || isPublicGeneratedAsset) {
     res.setHeader("Access-Control-Allow-Origin", isPublicWebsiteTracking && origin ? origin : "*");
     if (isPublicWebsiteTracking && origin) res.setHeader("Vary", "Origin");
     res.setHeader("Access-Control-Allow-Headers", "Content-Type");
@@ -176,6 +178,7 @@ app.use("/api/public", publicLeadMagnetsRouter);
 app.use("/api/public", publicWebsiteFormsRouter);
 app.use("/api/public", publicWebsiteTrackingRouter);
 app.use("/api/public", publicProjectReportsRouter);
+app.use("/api/public", publicGeneratedAssetsRouter);
 app.use("/api/integrations/google-business-profile/callback", googleBusinessProfileCallbackRouter);
 app.use("/api", requireAuth, enforceCommercialAccess, enforceArchivedReadOnly, enforceWorkspacePermissions);
 app.use("/api/clients", clientsRouter);

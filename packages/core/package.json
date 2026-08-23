@@ -16,9 +16,13 @@
     "./website-launch-readiness": "./src/websiteLaunchReadiness.ts",
     "./website-quality-governance": "./src/websiteQualityGovernance.ts",
     "./publishing": "./src/publishing.ts",
-    "./agency-documents": "./src/agency-documents.ts"
+    "./agency-documents": "./src/agency-documents.ts",
+    "./backlink-provider": "./src/backlinkProvider.ts",
+    "./object-storage": "./src/objectStorage.ts"
   },
   "dependencies": {
+    "@aws-sdk/client-s3": "^3.1116.0",
+    "@aws-sdk/s3-request-presigner": "^3.1116.0",
     "cheerio": "^1.0.0"
   }
 }

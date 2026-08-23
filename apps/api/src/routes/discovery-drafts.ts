@@ -12,6 +12,7 @@ import { canAccessAgencyClient, hasWorkspacePermission, recordWorkspaceActivity,
 import { createDiscoveryIdeaPdf } from "../discovery-idea-pdf.js";
 import { normalizeComplianceAdvisories } from "../compliance-advisories.js";
 import { discoveryTargetMarkets } from "../discovery-target-markets.js";
+import { readGeneratedAsset, storeGeneratedAsset } from "../generated-assets.js";
 
 export const discoveryDraftsRouter = Router();
 
@@ -514,7 +515,7 @@ discoveryDraftsRouter.get("/discovery-drafts/:draftId/ideas/:ideaId/download", a
     const agencyProfile = exportMode === "agency" ? await prisma.whiteLabelProfile.findUnique({ where: { workspaceId: context.workspace.id }, select: { agencyName: true, agencyLogoDataUrl: true, contactEmail: true, websiteUrl: true } }) : null;
     const agencyBrand = exportMode === "agency" && agencyProfile?.agencyName ? { name: agencyProfile.agencyName, logoDataUrl: agencyProfile.agencyLogoDataUrl, contactEmail: agencyProfile.contactEmail, websiteUrl: agencyProfile.websiteUrl } : null;
     let savedExport = await prisma.discoveryIdeaExport.findFirst({
-      where: { ideaId: idea.id, workspaceId: context.workspace.id, exportMode, sourceUpdatedAt: idea.updatedAt, status: "completed", pdfBytes: { not: null } },
+      where: { ideaId: idea.id, workspaceId: context.workspace.id, exportMode, sourceUpdatedAt: idea.updatedAt, status: "completed", OR: [{ pdfBytes: { not: null } }, { storageAssetId: { not: null } }] },
       orderBy: { version: "desc" },
     });
     if (!savedExport) {
@@ -565,9 +566,22 @@ discoveryDraftsRouter.get("/discovery-drafts/:draftId/ideas/:ideaId/download", a
           factsJson: draft.factsJson,
           idea,
         });
+        const storedAsset = await storeGeneratedAsset({
+          workspaceId: context.workspace.id,
+          assetType: "pdfs",
+          mimeType: "application/pdf",
+          filename,
+          body: pdf,
+          source: "system_generated",
+          sourceEntityType: "discovery_idea_export",
+          sourceEntityId: row.id,
+          dedupeKey: `discovery-idea-pdf:${row.id}:v${version}`,
+          createdByUserId: context.membership.userId,
+        });
         savedExport = await prisma.discoveryIdeaExport.update({ where: { id: row.id }, data: {
           status: "completed",
-          pdfBytes: pdf,
+          pdfBytes: storedAsset ? null : new Uint8Array(pdf),
+          storageAssetId: storedAsset?.id ?? null,
           byteLength: pdf.length,
           sha256: createHash("sha256").update(pdf).digest("hex"),
           generatedAt,
@@ -578,8 +592,9 @@ discoveryDraftsRouter.get("/discovery-drafts/:draftId/ideas/:ideaId/download", a
         throw error;
       }
     }
-    if (!savedExport.pdfBytes) throw new Error("The saved Discovery PDF is not available.");
-    const pdf = Buffer.from(savedExport.pdfBytes);
+    const storedPdf = savedExport.storageAssetId ? await readGeneratedAsset(savedExport.storageAssetId) : null;
+    if (!savedExport.pdfBytes && !storedPdf) throw new Error("The saved Discovery PDF is not available.");
+    const pdf = storedPdf?.body ?? Buffer.from(savedExport.pdfBytes!);
     await prisma.$transaction(async (tx) => {
       await tx.discoveryIdeaExport.update({ where: { id: savedExport!.id }, data: { lastDownloadedAt: new Date(), downloadCount: { increment: 1 } } });
       await recordWorkspaceActivity(tx, { context, action: "discovery.idea_pdf_downloaded", entityType: "discovery_idea_export", entityId: savedExport!.id, agencyClientId: draft.agencyClientId, nextJson: { discoveryDraftId: draft.id, ideaId: idea.id, title: idea.title, format: "pdf", exportMode, version: savedExport!.version, capacityCharged: 0, reusedSavedExport: savedExport!.downloadCount > 0 } });

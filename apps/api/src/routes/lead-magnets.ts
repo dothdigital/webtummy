@@ -8,6 +8,7 @@ import PDFDocument from "pdfkit";
 import { z } from "zod";
 import { config } from "../config.js";
 import { sendMail } from "../email.js";
+import { readGeneratedAsset, storeGeneratedAsset } from "../generated-assets.js";
 import { requireAuth } from "../middleware.js";
 import { canAccessProject, createWorkspaceNotification, hasWorkspacePermission, recordWorkspaceActivity, workspaceContext } from "../workspace-access.js";
 import { syncBuildPageRelationships, websiteChangedSettings } from "./website-builder.js";
@@ -167,7 +168,8 @@ export function validateLeadFunnelForPublish(funnel: PublishValidationFunnel, co
   if (jsonList(asset.sections).map(jsonObject).some((section) => !nonEmpty(section.summary) || !jsonList(section.paragraphs).length || !jsonList(section.bullets).length || !nonEmpty(section.actionStep))) errors.push("Every lead magnet section requires substantive copy, practical bullets, and an action step.");
   if (!nonEmpty(businessAnalysis.business) || !nonEmpty(businessAnalysis.audience) || !nonEmpty(businessAnalysis.offer) || !nonEmpty(businessAnalysis.goal)) errors.push("Business, audience, offer, and goal analysis is incomplete.");
   if (!nonEmpty(branding.businessName) || !nonEmpty(branding.brandVoice)) errors.push("Brand identity and voice snapshot is incomplete.");
-  if (!nonEmpty(asset.coverImage) || !/^data:image\/svg\+xml;base64,/i.test(String(asset.coverImage)) || (imagePlan.length > 0 && !generatedImages.some((item) => /^data:image\/(svg\+xml|png|jpeg|webp);base64,/i.test(String(item.dataUrl ?? ""))))) errors.push("Branded cover image or supporting generated visuals are missing.");
+  const validGeneratedVisual = (value: unknown) => typeof value === "string" && (/^data:image\/(svg\+xml|png|jpeg|webp);base64,/i.test(value) || validPublicLink(value));
+  if (!validGeneratedVisual(asset.coverImage) || (imagePlan.length > 0 && !generatedImages.some((item) => validGeneratedVisual(item.dataUrl)))) errors.push("Branded cover image or supporting generated visuals are missing.");
   if (generatedImages.some((item) => !nonEmpty(item.sourceLabel))) errors.push("Every generated visual requires a visible source label.");
   const unsourcedFactualVisuals = generatedImages.filter((item) => {
     const sourceLabel = String(item.sourceLabel ?? "").trim();
@@ -257,7 +259,7 @@ function assetHtml(funnel: { title: string; magnetType: string; assetJson: unkno
   const body = sections.length
     ? sections.map((section, index) => {
       const image = generatedImages[index];
-      const dataUrl = typeof image?.dataUrl === "string" && /^data:image\/(svg\+xml|png|jpeg|webp);base64,/i.test(image.dataUrl) ? image.dataUrl : "";
+      const dataUrl = typeof image?.dataUrl === "string" && (/^data:image\/(svg\+xml|png|jpeg|webp);base64,/i.test(image.dataUrl) || validPublicLink(image.dataUrl)) ? image.dataUrl : "";
       return `<section><h2>${escapeHtml(section.title)}</h2>${dataUrl ? `<figure><img class="visual" src="${escapeHtml(dataUrl)}" alt="${escapeHtml(image.altText || `Supporting visual ${index + 1}`)}">${visualSource(image)}</figure>` : ""}${nonEmpty(section.summary) ? `<p class="summary">${escapeHtml(section.summary)}</p>` : ""}${jsonList(section.paragraphs).map((item) => `<p>${escapeHtml(item)}</p>`).join("")}<ul>${jsonList(section.bullets).map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul>${nonEmpty(section.actionStep) ? `<div class="action"><b>Action step:</b> ${escapeHtml(section.actionStep)}</div>` : ""}</section>`;
     }).join("")
     : `<ul>${outline.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul>`;
@@ -319,7 +321,7 @@ export function leadMagnetLandingPageHtml(funnel: {
   const seo = jsonObject(funnel.seoMetadataJson);
   const generatedImages = jsonList(asset.generatedImages).map(jsonObject);
   const coverImage = [landing.coverImage, asset.coverImage, generatedImages[0]?.dataUrl]
-    .find((value) => typeof value === "string" && /^(?:data:image\/(?:svg\+xml|png|jpeg|webp);base64,|https:\/\/)/i.test(value)) as string | undefined;
+    .find((value) => typeof value === "string" && (/^data:image\/(?:svg\+xml|png|jpeg|webp);base64,/i.test(value) || validPublicLink(value))) as string | undefined;
   const fields = jsonList(form.fields).map(jsonObject).filter((field) => ["email", "first_name", "last_name"].includes(String(field.name ?? "")));
   const endpoint = funnel.publicSlug ? `${config.publicApiUrl.replace(/\/$/, "")}/api/public/lead-magnets/${encodeURIComponent(funnel.publicSlug)}/subscribe` : "";
   const title = String(seo.title || landing.headline || funnel.title);
@@ -330,7 +332,7 @@ export function leadMagnetLandingPageHtml(funnel: {
   const faqs = jsonList(landing.faqs).map(jsonObject).filter((faq) => nonEmpty(faq.question) && nonEmpty(faq.answer));
   const landingContent = assetSections.length ? `<section class="landing-content"><div class="section-heading"><div class="type">${contentMode === "full_content" ? "Complete content" : "Inside the resource"}</div><h2>${contentMode === "full_content" ? escapeHtml(asset.title || funnel.title) : "What you’ll learn"}</h2><p>${contentMode === "full_content" ? escapeHtml(asset.promise || landing.subheadline) : "A practical preview of the topics covered after registration."}</p></div><div class="content-sections">${assetSections.map((section, index) => {
     const image = generatedImages[index];
-    const imageUrl = typeof image?.dataUrl === "string" && /^data:image\/(svg\+xml|png|jpeg|webp);base64,/i.test(image.dataUrl) ? image.dataUrl : "";
+    const imageUrl = typeof image?.dataUrl === "string" && (/^data:image\/(svg\+xml|png|jpeg|webp);base64,/i.test(image.dataUrl) || validPublicLink(image.dataUrl)) ? image.dataUrl : "";
     return `<article class="content-section">${contentMode === "full_content" && imageUrl ? `<img src="${escapeHtml(imageUrl)}" alt="${escapeHtml(image.altText || section.title || `Supporting visual ${index + 1}`)}">` : ""}<h3>${escapeHtml(section.title || `Section ${index + 1}`)}</h3>${nonEmpty(section.summary) ? `<p class="summary">${escapeHtml(section.summary)}</p>` : ""}${contentMode === "full_content" ? `${jsonList(section.paragraphs).map((paragraph) => `<p>${escapeHtml(paragraph)}</p>`).join("")}${jsonList(section.bullets).length ? `<ul>${jsonList(section.bullets).map((bullet) => `<li>${escapeHtml(bullet)}</li>`).join("")}</ul>` : ""}${nonEmpty(section.actionStep) ? `<div class="action"><b>Action step:</b> ${escapeHtml(section.actionStep)}</div>` : ""}` : ""}</article>`;
   }).join("")}</div></section>` : "";
   const faqHtml = faqs.length ? `<section class="faq"><div class="section-heading"><div class="type">Questions</div><h2>Frequently asked questions</h2></div>${faqs.map((faq) => `<details><summary>${escapeHtml(faq.question)}</summary><p>${escapeHtml(faq.answer)}</p></details>`).join("")}</section>` : "";
@@ -445,10 +447,22 @@ export function leadMagnetWebsitePageDraft(
   };
 }
 
-export function renderLeadMagnetPdf(funnel: { title: string; magnetType: string; assetJson: unknown }) {
+async function leadMagnetPdfImage(value: unknown) {
+  if (typeof value !== "string") return null;
+  const inline = value.match(/^data:image\/(png|jpeg);base64,(.+)$/i);
+  if (inline) return Buffer.from(inline[2], "base64");
+  const stored = value.match(/\/api\/public\/generated-assets\/([^/?]+)\/content(?:\?|$)/i);
+  if (!stored) return null;
+  const result = await readGeneratedAsset(decodeURIComponent(stored[1])).catch(() => null);
+  return result && /image\/(png|jpeg)/i.test(result.asset.mimeType) ? result.body : null;
+}
+
+export async function renderLeadMagnetPdf(funnel: { title: string; magnetType: string; assetJson: unknown }) {
   const asset = jsonObject(funnel.assetJson);
   const branding = jsonObject(asset.branding);
   const title = String(asset.title || funnel.title);
+  const generatedImages = jsonList(asset.generatedImages).map(jsonObject);
+  const pdfImages = await Promise.all(generatedImages.map((image) => leadMagnetPdfImage(image.dataUrl)));
   return new Promise<Buffer>((resolve, reject) => {
     const doc = new PDFDocument({ size: "A4", margins: { top: 58, bottom: 58, left: 58, right: 58 }, info: { Title: title, Subject: funnel.magnetType } });
     const chunks: Buffer[] = [];
@@ -478,7 +492,6 @@ export function renderLeadMagnetPdf(funnel: { title: string; magnetType: string;
       doc.moveDown(1.2).fillColor("#334155").font("Helvetica").fontSize(11);
       for (const bullet of jsonList(asset.outline)) doc.text(`•  ${String(bullet)}`, { indent: 8, lineGap: 4 });
     }
-    const generatedImages = jsonList(asset.generatedImages).map(jsonObject);
     if (generatedImages.length) {
       doc.addPage();
       doc.fillColor("#172033").font("Helvetica-Bold").fontSize(20).text("Visuals and sources");
@@ -492,11 +505,10 @@ export function renderLeadMagnetPdf(funnel: { title: string; magnetType: string;
         doc.roundedRect(left, top, width, 265, 10).fillAndStroke("#f8fafc", "#dbe4ef");
         doc.fillColor(secondary).font("Helvetica-Bold").fontSize(8).text(role.toUpperCase(), left + 16, top + 13, { characterSpacing: 1 });
         doc.fillColor("#172033").font("Helvetica-Bold").fontSize(11).text(String(image.altText ?? `Supporting visual ${index + 1}`), left + 16, top + 29, { width: width - 32, height: 28 });
-        const dataUrl = typeof image.dataUrl === "string" ? image.dataUrl : "";
-        const rasterMatch = dataUrl.match(/^data:image\/(png|jpeg);base64,(.+)$/i);
-        if (rasterMatch) {
+        const imageBody = pdfImages[index];
+        if (imageBody) {
           try {
-            doc.image(Buffer.from(rasterMatch[2], "base64"), left + 16, top + 60, { fit: [width - 32, 155], align: "center", valign: "center" });
+            doc.image(imageBody, left + 16, top + 60, { fit: [width - 32, 155], align: "center", valign: "center" });
           } catch {
             doc.roundedRect(left + 16, top + 67, width - 32, 135, 8).fillOpacity(.12).fill(primary).fillOpacity(1);
           }
@@ -785,6 +797,19 @@ leadMagnetsRouter.get("/projects/:projectId/lead-magnets/:funnelId/export/:kind"
   let extension: string;
   if (kind === "pdf") {
     body = await renderLeadMagnetPdf(funnel);
+    await storeGeneratedAsset({
+      workspaceId: context.workspace.id,
+      projectId: project.id,
+      assetType: "pdfs",
+      mimeType: "application/pdf",
+      filename: `${baseName}-lead-magnet-v${funnel.version}.pdf`,
+      body,
+      source: "system_generated",
+      sourceEntityType: "lead_magnet_funnel",
+      sourceEntityId: funnel.id,
+      dedupeKey: `lead-magnet-pdf:${funnel.id}:v${funnel.version}`,
+      createdByUserId: context.membership.userId,
+    });
     contentType = "application/pdf";
     extension = "pdf";
   } else if (kind === "email-text") {
@@ -1082,12 +1107,24 @@ publicLeadMagnetsRouter.post("/lead-magnets/:slug/subscribe", async (req, res, n
 
 publicLeadMagnetsRouter.get("/lead-magnets/:slug/download", async (req, res, next) => { try {
   if (!publicAllowed(req)) return res.status(429).json({ error: "Too many requests." });
-  const funnel = await prisma.leadMagnetFunnel.findFirst({ where: { publicSlug: req.params.slug, status: "published" } });
+  const funnel = await prisma.leadMagnetFunnel.findFirst({ where: { publicSlug: req.params.slug, status: "published" }, include: { project: { select: { client: { select: { workspace: { select: { id: true } } } } } } } });
   if (!funnel) return res.status(404).json({ error: "Lead funnel not found." });
   if (!verifyTrackingToken(req.query.token, funnel.id, "download")) return res.status(403).json({ error: "This resource link is invalid or has expired." });
   await prisma.leadMagnetMetricSnapshot.create({ data: { funnelId: funnel.id, source: "asset_download", downloads: 1 } });
   const pdf = pdfMagnetTypes.has(funnel.magnetType);
   const body = pdf ? await renderLeadMagnetPdf(funnel) : assetHtml(funnel);
+  if (pdf && Buffer.isBuffer(body) && funnel.project.client.workspace) await storeGeneratedAsset({
+    workspaceId: funnel.project.client.workspace.id,
+    projectId: funnel.projectId,
+    assetType: "pdfs",
+    mimeType: "application/pdf",
+    filename: `${slug(funnel.title) || "lead-magnet"}-v${funnel.version}.pdf`,
+    body,
+    source: "system_generated",
+    sourceEntityType: "lead_magnet_funnel",
+    sourceEntityId: funnel.id,
+    dedupeKey: `lead-magnet-pdf:${funnel.id}:v${funnel.version}`,
+  });
   res.set({
     "Content-Type": pdf ? "application/pdf" : "text/html; charset=utf-8",
     "Content-Disposition": `attachment; filename="${slug(funnel.title) || "lead-magnet"}.${pdf ? "pdf" : "html"}"`,

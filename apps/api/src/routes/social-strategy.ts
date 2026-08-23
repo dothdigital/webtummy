@@ -8,6 +8,7 @@ import { projectClientIdForRequest } from "../project-scope.js";
 import { socialPlatforms, socialProviderCapabilities } from "../social-provider-registry.js";
 import { canAccessProject, hasWorkspacePermission, recordWorkspaceActivity, workspaceContext } from "../workspace-access.js";
 import { approvedStrategyContext } from "../strategy-ai.js";
+import { storeGeneratedImage } from "../generated-assets.js";
 
 export const socialStrategyRouter = Router();
 socialStrategyRouter.use(requireAuth);
@@ -1295,12 +1296,25 @@ socialStrategyRouter.post("/social-strategy/posts/:postId/request-changes", asyn
   });
   if (!post?.strategy.projectId || !post.strategy.project || !await canAccessProject(context, post.strategy.projectId)) return res.status(404).json({ error: "Campaign post not found." });
   const contentRevision = parsed.data.changeContent ? await reviseSocialPostContent(post, parsed.data.instruction) : null;
-  const imageUrl = parsed.data.changeImage ? await reviseSocialPostImage({
+  const revisedImage = parsed.data.changeImage ? await reviseSocialPostImage({
     topic: contentRevision?.topic || post.topic,
     platform: post.platform,
     imageSuggestion: contentRevision?.imageSuggestion || post.imageSuggestion,
     strategy: post.strategy,
-  }, parsed.data.instruction) : post.imageUrl;
+  }, parsed.data.instruction) : null;
+  const imageAltText = `${post.strategy.project.businessName || post.strategy.project.name}: ${contentRevision?.topic || post.topic}`.slice(0, 500);
+  const imageUrl = revisedImage ? await storeGeneratedImage({
+    workspaceId: context.workspace.id,
+    projectId: post.strategy.projectId,
+    filename: `social-post-${post.id}.png`,
+    dataUrl: revisedImage,
+    source: "openai_generated",
+    altText: imageAltText,
+    sourceEntityType: "social_calendar_post",
+    sourceEntityId: post.id,
+    dedupeKey: `social-post-image:${post.id}`,
+    createdByUserId: context.membership.userId,
+  }) : post.imageUrl;
   const updated = await prisma.$transaction(async (tx) => {
     const row = await tx.socialCalendarPost.update({
       where: { id: post.id },
@@ -1312,7 +1326,7 @@ socialStrategyRouter.post("/social-strategy/posts/:postId/request-changes", asyn
           hashtagsJson: contentRevision.hashtags,
           imageSuggestion: contentRevision.imageSuggestion,
         } : {}),
-        ...(parsed.data.changeImage ? { imageUrl, imageStatus: "regenerated", imageAltText: `${post.strategy.project!.businessName || post.strategy.project!.name}: ${contentRevision?.topic || post.topic}`.slice(0, 500) } : {}),
+        ...(parsed.data.changeImage ? { imageUrl, imageStatus: "regenerated", imageAltText } : {}),
         status: "planned",
       },
     });

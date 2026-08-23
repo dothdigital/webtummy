@@ -301,7 +301,7 @@ export function buildCampaignExecutionTasks(project: CampaignProjectContext): Ca
     ...(shouldCreateAuthority ? [{
       key: isLocalSeo ? "local-authority-building" : "authority-building",
       moduleName: "backlinks",
-      title: isLocalSeo ? "Build local authority" : "Build backlinks and authority",
+      title: isLocalSeo ? "Build local authority" : "Earn relevant backlinks and authority",
       description: isLocalSeo
         ? "Find safe local directories, citations, chambers, local media, partnerships, and service-area authority opportunities."
         : "Find safe backlink gaps, resource opportunities, authority assets, expert content, and outreach tasks for priority pages.",

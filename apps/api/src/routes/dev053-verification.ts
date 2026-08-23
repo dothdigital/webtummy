@@ -66,7 +66,7 @@ export async function collectSignals(project: Awaited<ReturnType<typeof scopedPr
     prisma.aiVisibilityQuery.count({ where: { projectId } }),
     prisma.aiVisibilitySnapshot.count({ where: { projectId } }),
     prisma.sourceMention.count({ where: { projectId } }),
-    prisma.backlinkProfileSnapshot.count({ where: { projectId } }),
+    prisma.backlinkProfileSnapshot.count({ where: { projectId, profileType: "owned" } }),
     prisma.authorityOpportunity.count({ where: { projectId } }),
     prisma.ecommerceExportGuide.count({ where: { projectId } }),
     prisma.growthBlueprint.count({ where: { projectId } }),

@@ -347,6 +347,7 @@ async function checkBudgetCaps(input: UsagePreflightInput, creditCost: number) {
 export async function preflightUsage(input: UsagePreflightInput) {
   await ensureUsageControlDefaults();
   const units = Math.max(1, Math.floor(input.inputUnits ?? 1));
+  let idempotencyKey = usageIdempotencyKey(input.idempotencyKey);
   const client = await prisma.client.findUnique({ where: { id: input.clientId }, select: { id: true, plan: true, aiSubscriptionStatus: true } });
   if (!client) throw new Error("client not found");
 
@@ -370,6 +371,20 @@ export async function preflightUsage(input: UsagePreflightInput) {
     }
   }
 
+  if (idempotencyKey) {
+    const existing = await prisma.usageEvent.findUnique({ where: { clientId_idempotencyKey: { clientId: input.clientId, idempotencyKey } }, include: { feature: true } });
+    if (existing && ["reserved", "committed"].includes(existing.status)) return {
+      usageEventId: existing.id,
+      approvalToken: "",
+      expiresAt: existing.approvalTokenExpiresAt ?? new Date(),
+      feature: existing.feature,
+      creditsReserved: existing.creditsReserved,
+      estimatedProviderCostUsd: roundCost(existing.feature.estimatedProviderCost * Math.max(1, units)),
+      duplicate: true,
+    };
+    if (existing) idempotencyKey = usageIdempotencyKey(`${idempotencyKey}:retry:${Date.now()}`);
+  }
+
   const account = await ensureWorkspaceCapacityAccount(workspace.id);
   const creditCost = calculateWorkflowUnits(input.featureKey, feature.defaultCreditCost, {
     inputUnits: units,
@@ -387,7 +402,6 @@ export async function preflightUsage(input: UsagePreflightInput) {
   const token = crypto.randomBytes(24).toString("base64url");
   const expiresAt = new Date(Date.now() + 15 * 60 * 1000);
   const actionKey = Array.from(input.actionKey?.trim() || input.featureKey).slice(0, 160).join("");
-  const idempotencyKey = usageIdempotencyKey(input.idempotencyKey);
 
   const event = await prisma.$transaction(async (tx) => {
     const current = await tx.workspaceCapacityAccount.findUniqueOrThrow({ where: { id: account.id } });
@@ -450,6 +464,12 @@ export async function preflightUsage(input: UsagePreflightInput) {
       metadataJson: { featureKey: input.featureKey, pricingVersion: feature.pricingVersion },
     } });
     return usageEvent;
+  }).catch(async (error) => {
+    if ((error as { code?: string })?.code === "P2002" && idempotencyKey) {
+      const existing = await prisma.usageEvent.findUnique({ where: { clientId_idempotencyKey: { clientId: input.clientId, idempotencyKey } } });
+      if (existing) return existing;
+    }
+    throw error;
   });
 
   const requestContext = currentCommercialRequestContext();
@@ -475,7 +495,10 @@ export async function commitUsage(input: CommitUsageInput) {
       ? await prisma.usageEvent.findUnique({ where: { approvalTokenHash: hashToken(input.approvalToken) } })
       : null;
   if (!usageEvent) throw new Error("usage event not found");
-  if (usageEvent.status === "committed") return usageEvent;
+  if (usageEvent.status === "committed") {
+    await recordProviderCostForUsage(usageEvent, input);
+    return prisma.usageEvent.findUniqueOrThrow({ where: { id: usageEvent.id } });
+  }
   if (usageEvent.status !== "reserved") throw new Error(`usage event cannot be committed from ${usageEvent.status}`);
   if (usageEvent.approvalTokenExpiresAt && usageEvent.approvalTokenExpiresAt < new Date()) {
     await refundUsage({ usageEventId: usageEvent.id, reason: "approval token expired" });
@@ -484,7 +507,6 @@ export async function commitUsage(input: CommitUsageInput) {
     throw error;
   }
 
-  const providerCostUsd = roundCost(input.providerCostUsd ?? 0);
   const actualUnits = input.actualUnits == null
     ? usageEvent.creditsReserved
     : Math.max(0, Math.min(usageEvent.creditsReserved, Math.floor(input.actualUnits)));
@@ -492,13 +514,13 @@ export async function commitUsage(input: CommitUsageInput) {
   const purchasedCommitted = Math.max(0, actualUnits - includedCommitted);
   const includedRefunded = usageEvent.includedUnitsReserved - includedCommitted;
   const purchasedRefunded = usageEvent.purchasedUnitsReserved - purchasedCommitted;
-  return prisma.$transaction(async (tx) => {
+  const settled = await prisma.$transaction(async (tx) => {
     const claimed = await tx.usageEvent.updateMany({
       where: { id: usageEvent.id, status: "reserved" },
       data: {
         status: "committed",
         creditsCommitted: actualUnits,
-        providerCostUsd,
+        providerCostUsd: 0,
         committedAt: new Date(),
         metadataJson: { ...(usageEvent.metadataJson as object), ...(input.metadata ?? {}) } as Prisma.InputJsonValue,
       },
@@ -551,23 +573,39 @@ export async function commitUsage(input: CommitUsageInput) {
         } });
       }
     }
-    if (providerCostUsd > 0 || input.inputTokens || input.outputTokens || input.provider) {
-      await tx.providerCostEvent.create({
-        data: {
-          clientId: usageEvent.clientId,
-          usageEventId: usageEvent.id,
-          featureKey: usageEvent.featureKey,
-          provider: input.provider ?? "unknown",
-          model: input.model ?? null,
-          inputTokens: input.inputTokens ?? 0,
-          outputTokens: input.outputTokens ?? 0,
-          costUsd: providerCostUsd,
-          metadataJson: (input.metadata ?? {}) as Prisma.InputJsonValue,
-        },
-      });
-    }
     return updated;
   });
+  await recordProviderCostForUsage(settled, input);
+  return prisma.usageEvent.findUniqueOrThrow({ where: { id: settled.id } });
+}
+
+async function recordProviderCostForUsage(usageEvent: Awaited<ReturnType<typeof prisma.usageEvent.findUniqueOrThrow>>, input: CommitUsageInput) {
+  const providerCostUsd = roundCost(input.providerCostUsd ?? 0);
+  if (!(providerCostUsd > 0 || input.inputTokens || input.outputTokens || input.provider)) return;
+  const requestKey = typeof input.metadata?.providerRequestKey === "string" ? input.metadata.providerRequestKey : "primary";
+  const idempotencyKey = `usage-provider:${usageEvent.id}:${crypto.createHash("sha256").update(requestKey).digest("hex").slice(0, 24)}`;
+  try {
+    await prisma.$transaction(async (tx) => {
+      await tx.providerCostEvent.create({ data: {
+        clientId: usageEvent.clientId,
+        usageEventId: usageEvent.id,
+        featureKey: usageEvent.featureKey,
+        provider: input.provider ?? "unknown",
+        workspaceId: usageEvent.workspaceId,
+        projectId: usageEvent.projectId,
+        websiteId: usageEvent.websiteId,
+        idempotencyKey,
+        model: input.model ?? null,
+        inputTokens: input.inputTokens ?? 0,
+        outputTokens: input.outputTokens ?? 0,
+        costUsd: providerCostUsd,
+        metadataJson: (input.metadata ?? {}) as Prisma.InputJsonValue,
+      } });
+      if (providerCostUsd > 0) await tx.usageEvent.update({ where: { id: usageEvent.id }, data: { providerCostUsd: { increment: providerCostUsd } } });
+    });
+  } catch (error) {
+    if ((error as { code?: string })?.code !== "P2002") throw error;
+  }
 }
 
 export async function refundUsage(input: { usageEventId: string; reason?: string }) {

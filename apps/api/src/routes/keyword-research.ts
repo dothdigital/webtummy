@@ -169,6 +169,7 @@ type BacklinkSummary = {
   source: "search_data";
   fetchedAt: Date;
   cached: boolean;
+  providerCostUsd: number;
 };
 
 type BacklinkLink = {
@@ -190,6 +191,7 @@ type BacklinkLinksResult = {
   source: "search_data";
   fetchedAt: Date;
   cached: boolean;
+  providerCostUsd: number;
 };
 
 type OrganicGrowthTask = {
@@ -1169,10 +1171,11 @@ keywordResearchRouter.get("/keyword-research/domain-backlinks", async (req, res)
   if (cacheOnly) return res.json({ summary: null });
   let usageEventId: string | null = null;
   try {
-    const usage = await preflightUsage({ clientId: website.clientId, userId: req.user?.userId, websiteId: website.id, featureKey: "backlink_snapshot", actionKey: "Refresh backlink summary", idempotencyKey: `backlink-summary:${website.id}:${Date.now()}`, metadata: { domainCount: 1 } });
+    const refreshBucket = Math.floor(Date.now() / BACKLINK_REFRESH_COOLDOWN_MS);
+    const usage = await preflightUsage({ clientId: website.clientId, userId: req.user?.userId, websiteId: website.id, featureKey: "backlink_snapshot", actionKey: "Refresh backlink summary", idempotencyKey: `backlink-summary:${website.id}:${refreshBucket}`, metadata: { domainCount: 1 } });
     usageEventId = usage.usageEventId;
     const summary = await fetchBacklinkSummary(target, refresh, false);
-    await commitUsage({ usageEventId, provider: SEARCH_PROVIDER_KEY, actualUnits: summary?.cached ? 0 : undefined, metadata: { target, cacheHit: summary?.cached === true } });
+    await commitUsage({ usageEventId, provider: SEARCH_PROVIDER_KEY, providerCostUsd: summary?.providerCostUsd ?? 0, actualUnits: summary?.cached ? 0 : undefined, metadata: { target, cacheHit: summary?.cached === true, providerRequestKey: `backlink-summary:${target}:${refreshBucket}` } });
     res.json({ summary });
   } catch (error) {
     if (usageEventId) await refundUsage({ usageEventId, reason: error instanceof Error ? error.message : "Backlink summary failed" }).catch(() => undefined);
@@ -1204,10 +1207,11 @@ keywordResearchRouter.get("/keyword-research/domain-backlink-links", async (req,
   if (cacheOnly) return res.json({ backlinks: null });
   let usageEventId: string | null = null;
   try {
-    const usage = await preflightUsage({ clientId: website.clientId, userId: req.user?.userId, websiteId: website.id, featureKey: "backlink_snapshot", actionKey: "Refresh backlink links", idempotencyKey: `backlink-links:${website.id}:${Date.now()}`, metadata: { domainCount: 1 } });
+    const refreshBucket = Math.floor(Date.now() / BACKLINK_REFRESH_COOLDOWN_MS);
+    const usage = await preflightUsage({ clientId: website.clientId, userId: req.user?.userId, websiteId: website.id, featureKey: "backlink_snapshot", actionKey: "Refresh backlink profile", idempotencyKey: `backlink-summary:${website.id}:${refreshBucket}`, metadata: { domainCount: 1 } });
     usageEventId = usage.usageEventId;
     const backlinks = await fetchBacklinkLinks(target, parsed.data.limit, refresh, false);
-    await commitUsage({ usageEventId, provider: SEARCH_PROVIDER_KEY, actualUnits: backlinks?.cached ? 0 : undefined, metadata: { target, cacheHit: backlinks?.cached === true } });
+    await commitUsage({ usageEventId, provider: SEARCH_PROVIDER_KEY, providerCostUsd: backlinks?.providerCostUsd ?? 0, metadata: { target, cacheHit: backlinks?.cached === true, includedWithSummaryRefresh: true, providerRequestKey: `backlink-links:${target}:${refreshBucket}` } });
     res.json({ backlinks });
   } catch (error) {
     if (usageEventId) await refundUsage({ usageEventId, reason: error instanceof Error ? error.message : "Backlink links failed" }).catch(() => undefined);
@@ -2124,6 +2128,7 @@ function parseBacklinkLinks(target: string, payload: unknown): Omit<BacklinkLink
     target,
     links: items.map((item) => parseBacklinkLink(item as Record<string, unknown>)).filter((item) => item.sourceUrl || item.targetUrl),
     source: "search_data",
+    providerCostUsd: ((payload as SearchDataPayload)?.tasks ?? []).reduce((sum, task) => sum + (typeof (task as { cost?: unknown }).cost === "number" ? Number((task as { cost: number }).cost) : 0), 0),
   };
 }
 
@@ -2168,6 +2173,7 @@ function parseBacklinkSummary(target: string, payload: unknown): Omit<BacklinkSu
     firstSeen: stringOrNull(item?.first_seen),
     lastSeen: stringOrNull(item?.last_seen),
     source: "search_data",
+    providerCostUsd: ((payload as SearchDataPayload)?.tasks ?? []).reduce((sum, task) => sum + (typeof (task as { cost?: unknown }).cost === "number" ? Number((task as { cost: number }).cost) : 0), 0),
   };
 }
 
@@ -2214,21 +2220,83 @@ async function searchProviderLocations(countryIsoCode?: string | null): Promise<
 async function searchDataRequest(path: string, body: unknown): Promise<SearchDataPayload> {
   const cacheKey = createHash("sha256").update(JSON.stringify({ path, body })).digest("hex");
   const now = new Date();
-  const cached = await prisma.externalApiCache.findUnique({ where: { cacheKey } });
+  let cached = await prisma.externalApiCache.findUnique({ where: { cacheKey } });
   if (cached && cached.expiresAt > now && cached.status === "ok") return cached.responseJson as unknown as SearchDataPayload;
-
   const activeRequest = inFlightSearchDataRequests.get(cacheKey);
   if (activeRequest) return activeRequest;
+  if (cached && cached.expiresAt > now && cached.status === "pending") {
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      const completed = await prisma.externalApiCache.findUnique({ where: { cacheKey } });
+      if (completed?.status === "ok" && completed.expiresAt > new Date()) return completed.responseJson as unknown as SearchDataPayload;
+      if (completed?.status === "error") throw new Error(String((completed.responseJson as Record<string, unknown>)?.error ?? "Backlink provider request failed."));
+    }
+    throw Object.assign(new Error("This provider request is already running. Retry after the current collection finishes."), { statusCode: 409 });
+  }
 
-  const request = requestSearchDataProvider(path, body).then(async (payload) => {
-    const expiresAt = new Date(Date.now() + KEYWORD_REFRESH_COOLDOWN_MS);
-    await prisma.externalApiCache.upsert({
-      where: { cacheKey },
-      create: { provider: "search_data", endpoint: path.slice(0, 180), cacheKey, requestJson: body as Prisma.InputJsonValue, responseJson: payload as unknown as Prisma.InputJsonValue, status: "ok", expiresAt },
-      update: { requestJson: body as Prisma.InputJsonValue, responseJson: payload as unknown as Prisma.InputJsonValue, status: "ok", fetchedAt: new Date(), expiresAt },
+  // ExternalApiCache is also a cross-process request lease. The API, worker,
+  // and any horizontally scaled API instances must not independently buy the
+  // same provider result when their in-memory maps cannot see one another.
+  const leaseExpiresAt = new Date(Date.now() + Math.max(5 * 60_000, KEYWORD_RESEARCH_PROVIDER_TIMEOUT_MS * 3 + 15_000));
+  let ownsLease = false;
+  if (!cached) {
+    try {
+      await prisma.externalApiCache.create({
+        data: {
+          provider: "search_data",
+          endpoint: path.slice(0, 180),
+          cacheKey,
+          requestJson: body as Prisma.InputJsonValue,
+          responseJson: {},
+          status: "pending",
+          expiresAt: leaseExpiresAt,
+        },
+      });
+      ownsLease = true;
+    } catch (error) {
+      if (!(error instanceof Prisma.PrismaClientKnownRequestError) || error.code !== "P2002") throw error;
+      cached = await prisma.externalApiCache.findUnique({ where: { cacheKey } });
+    }
+  } else {
+    const claimed = await prisma.externalApiCache.updateMany({
+      where: { id: cached.id, fetchedAt: cached.fetchedAt, OR: [{ expiresAt: { lte: now } }, { status: { not: "pending" } }] },
+      data: { endpoint: path.slice(0, 180), requestJson: body as Prisma.InputJsonValue, responseJson: {}, status: "pending", fetchedAt: now, expiresAt: leaseExpiresAt },
     });
-    return payload;
-  }).finally(() => inFlightSearchDataRequests.delete(cacheKey));
+    ownsLease = claimed.count === 1;
+  }
+
+  if (!ownsLease) {
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      const completed = await prisma.externalApiCache.findUnique({ where: { cacheKey } });
+      if (completed?.status === "ok" && completed.expiresAt > new Date()) return completed.responseJson as unknown as SearchDataPayload;
+      if (completed?.status === "error") throw new Error(String((completed.responseJson as Record<string, unknown>)?.error ?? "Search data provider request failed."));
+    }
+    throw Object.assign(new Error("This provider request is already running. Retry after the current collection finishes."), { statusCode: 409 });
+  }
+
+  const request = requestSearchDataProvider(path, body)
+    .then(async (payload) => {
+      const expiresAt = new Date(Date.now() + KEYWORD_REFRESH_COOLDOWN_MS);
+      await prisma.externalApiCache.update({
+        where: { cacheKey },
+        data: { requestJson: body as Prisma.InputJsonValue, responseJson: payload as unknown as Prisma.InputJsonValue, status: "ok", fetchedAt: new Date(), expiresAt },
+      });
+      return payload;
+    })
+    .catch(async (error) => {
+      await prisma.externalApiCache.update({
+        where: { cacheKey },
+        data: {
+          responseJson: { error: error instanceof Error ? error.message : "Search data provider request failed." },
+          status: "error",
+          fetchedAt: new Date(),
+          expiresAt: new Date(Date.now() + 60_000),
+        },
+      }).catch(() => undefined);
+      throw error;
+    })
+    .finally(() => inFlightSearchDataRequests.delete(cacheKey));
   inFlightSearchDataRequests.set(cacheKey, request);
   return request;
 }

@@ -4,10 +4,12 @@ import { prisma, type Prisma } from "@webtummy/db";
 import { config, GROWTH_INTELLIGENCE_QUEUE } from "./config.js";
 import { connection, growthIntelligenceQueue, type GrowthIntelligenceJobData } from "./queue.js";
 import { classifyContinuousMetric } from "./growth-intelligence-policy.js";
+import { AUTHORITY_CADENCE_MS, collectScheduledBacklinkEvidence } from "./backlink-monitoring.js";
 
 const HOUR = 60 * 60 * 1000;
 const DAY = 24 * HOUR;
 const ENGINE_VERSION = "continuous-growth-v1";
+const configuredAuthorityChangeThreshold = Number(process.env.AUTHORITY_BACKLINK_MEANINGFUL_CHANGE ?? 3);
 
 function isPrismaWriteConflict(error: unknown) {
   return Boolean(error && typeof error === "object" && "code" in error && error.code === "P2034");
@@ -53,7 +55,7 @@ const SOURCES: SourceDefinition[] = [
   { key: "rankings", cadenceMs: 7 * DAY, minimumSample: 1, thresholdAbsolute: 3, thresholdPercent: 10 },
   { key: "local_visibility", cadenceMs: 7 * DAY, minimumSample: 1, thresholdAbsolute: 3, thresholdPercent: 10 },
   { key: "competitors", cadenceMs: 7 * DAY, minimumSample: 1, thresholdAbsolute: 1, thresholdPercent: 10 },
-  { key: "backlinks", cadenceMs: 14 * DAY, minimumSample: 1, thresholdAbsolute: 3, thresholdPercent: 10 },
+  { key: "backlinks", cadenceMs: AUTHORITY_CADENCE_MS, minimumSample: 1, thresholdAbsolute: Math.max(1, Math.min(100, Number.isFinite(configuredAuthorityChangeThreshold) ? configuredAuthorityChangeThreshold : 3)), thresholdPercent: 10 },
   { key: "content_decay", cadenceMs: 7 * DAY, minimumSample: 1, thresholdAbsolute: 1, thresholdPercent: 10 },
   { key: "ai_visibility", cadenceMs: 7 * DAY, minimumSample: 1, thresholdAbsolute: 1, thresholdPercent: 10 },
   { key: "conversions", cadenceMs: DAY, minimumSample: 5, thresholdAbsolute: 2, thresholdPercent: 20 },
@@ -76,8 +78,9 @@ function escapeHtml(value: string) {
   return value.replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[char] ?? char));
 }
 
-function sourceDue(definition: SourceDefinition, latest: { completedAt: Date | null } | undefined, cycleTrigger: string, now: Date) {
+function sourceDue(definition: SourceDefinition, latest: { completedAt: Date | null; status?: string } | undefined, cycleTrigger: string, now: Date) {
   if (cycleTrigger === "event" && ["publish_verification", "website_crawl", "technical_health", "measurement_checkpoints", "conversions"].includes(definition.key)) return true;
+  if (definition.key === "backlinks" && latest?.status === "limited") return true;
   if (!latest?.completedAt) return true;
   return now.getTime() - latest.completedAt.getTime() >= definition.cadenceMs;
 }
@@ -87,6 +90,8 @@ async function collectSnapshots(projectId: string, now: Date): Promise<{ project
   const previousPeriodStart = new Date(now.getTime() - 2 * DAY);
   const project = await loadProject(projectId);
   if (!project) return { project: null, snapshots: {} };
+
+  const backlinkCollection = await collectScheduledBacklinkEvidence(projectId, now);
 
   const websiteId = project.websiteId ?? "__none__";
   const localBusinessIds = project.localBusinessProfiles.map((item) => item.id);
@@ -99,7 +104,7 @@ async function collectSnapshots(projectId: string, now: Date): Promise<{ project
     prisma.crawlJob.findMany({ where: { websiteId, status: "completed" }, orderBy: { completedAt: "desc" }, take: 2, include: { _count: { select: { pages: true, issues: true } } } }),
     prisma.contentDiscoveryCheck.findMany({ where: { projectId }, orderBy: { updatedAt: "desc" }, take: 500 }),
     prisma.websitePublication.findMany({ where: { projectId }, orderBy: { createdAt: "desc" }, take: 100 }),
-    prisma.backlinkProfileSnapshot.findMany({ where: { projectId }, orderBy: { capturedAt: "desc" }, take: 2 }),
+    prisma.backlinkProfileSnapshot.findMany({ where: { projectId, profileType: "owned" }, orderBy: { capturedAt: "desc" }, take: 2, include: { _count: { select: { backlinks: true } } } }),
     prisma.aiVisibilitySnapshot.count({ where: { projectId, mentionDetected: true, createdAt: { gte: new Date(now.getTime() - 7 * DAY), lt: now } } }),
     prisma.aiVisibilitySnapshot.count({ where: { projectId, mentionDetected: true, createdAt: { gte: new Date(now.getTime() - 14 * DAY), lt: new Date(now.getTime() - 7 * DAY) } } }),
     prisma.aiVisibilitySnapshot.findFirst({ where: { projectId }, orderBy: { createdAt: "desc" }, select: { createdAt: true } }),
@@ -164,9 +169,27 @@ async function collectSnapshots(projectId: string, now: Date): Promise<{ project
     competitors: keywordRuns.some((run) => run.competitorCount > 0)
       ? { status: "available", observedAt: keywordRuns[0]?.completedAt?.toISOString() ?? null, recordCount: keywordRuns.reduce((sum, run) => sum + run.competitorCount, 0), primaryMetric: keywordRuns.reduce((sum, run) => sum + run.competitorCount, 0), metricLabel: "competitor observations", sampleSize: keywordRuns.length, details: { markets: new Set(keywordRuns.map((run) => run.locationName)).size } }
       : { status: "unavailable", observedAt: null, recordCount: 0, primaryMetric: null, metricLabel: "competitor observations", sampleSize: 0, details: {}, limitation: "No ranking competitor observations are saved." },
-    backlinks: latestBacklink
-      ? { status: "available", observedAt: latestBacklink.capturedAt.toISOString(), recordCount: latestBacklink.referringDomains, primaryMetric: latestBacklink.referringDomains, metricLabel: "referring domains", sampleSize: latestBacklink.referringDomains, details: { referringDomains: latestBacklink.referringDomains, previousReferringDomains: priorBacklink?.referringDomains ?? null, newBacklinks: latestBacklink.newBacklinks, lostBacklinks: latestBacklink.lostBacklinks } }
-      : { status: "unavailable", observedAt: null, recordCount: 0, primaryMetric: null, metricLabel: "referring domains", sampleSize: 0, details: {}, limitation: "No backlink profile snapshot is available." },
+    backlinks: latestBacklink && latestBacklink.referringDomains != null
+      ? {
+          status: backlinkCollection.status === "failed" ? "limited" : "available",
+          observedAt: latestBacklink.capturedAt.toISOString(),
+          recordCount: latestBacklink._count.backlinks,
+          primaryMetric: latestBacklink.referringDomains,
+          metricLabel: "referring domains",
+          sampleSize: 1,
+          details: {
+            provider: latestBacklink.provider,
+            referringDomains: latestBacklink.referringDomains,
+            previousReferringDomains: priorBacklink?.referringDomains ?? null,
+            newBacklinks: latestBacklink.newBacklinks,
+            lostBacklinks: latestBacklink.lostBacklinks,
+            comparisonStartAt: latestBacklink.comparisonStartAt?.toISOString() ?? null,
+            comparisonEndAt: latestBacklink.comparisonEndAt?.toISOString() ?? latestBacklink.capturedAt.toISOString(),
+            limitations: latestBacklink.limitationsJson,
+          },
+          ...(backlinkCollection.limitation ? { limitation: backlinkCollection.limitation } : {}),
+        }
+      : { status: "unavailable", observedAt: backlinkCollection.collectedAt?.toISOString() ?? null, recordCount: 0, primaryMetric: null, metricLabel: "referring domains", sampleSize: 0, details: { provider: backlinkCollection.provider }, limitation: backlinkCollection.limitation ?? "No verified backlink profile snapshot is available." },
     content_decay: { status: "limited", observedAt: latestCrawl?.completedAt?.toISOString() ?? null, recordCount: 0, primaryMetric: null, metricLabel: "decaying pages", sampleSize: 0, details: { crawlAvailable: Boolean(latestCrawl), analyticsAvailable: trackingAvailable }, limitation: "Content decay needs comparable page-level traffic and ranking snapshots; current evidence is insufficient." },
     ai_visibility: aiCurrent || aiPrevious
       ? { status: aiCurrent >= 1 ? "available" : "limited", observedAt: aiLatest?.createdAt.toISOString() ?? null, recordCount: aiCurrent, primaryMetric: aiCurrent, metricLabel: "AI answer mentions in 7 days", sampleSize: aiCurrent + aiPrevious, details: { currentMentions: aiCurrent, previousMentions: aiPrevious } }
@@ -195,6 +218,34 @@ async function loadProject(projectId: string) {
 
 function buildFinding(input: { projectId: string; cycleId: string; source: SourceDefinition; current: SourceSnapshot; previous?: SourceSnapshot; periodStart?: Date | null; periodEnd?: Date | null }) {
   const { source, current, previous } = input;
+  if (source.key === "backlinks" && previous) {
+    const gained = typeof current.details.newBacklinks === "number" ? current.details.newBacklinks : 0;
+    const lost = typeof current.details.lostBacklinks === "number" ? current.details.lostBacklinks : 0;
+    if (gained >= source.thresholdAbsolute || lost >= source.thresholdAbsolute) {
+      const decline = lost > gained;
+      return {
+        fingerprint: `${input.cycleId}:backlinks:gained-lost`,
+        sourceType: source.key,
+        findingType: decline ? "meaningful_links_lost" : "meaningful_links_gained",
+        severity: decline ? "high" : "medium",
+        status: "open",
+        observedEvidenceJson: asJson(current.details),
+        currentValueJson: asJson({ gained, lost, referringDomains: current.primaryMetric }),
+        previousValueJson: asJson({ referringDomains: previous.primaryMetric }),
+        periodStart: input.periodStart ?? null,
+        periodEnd: input.periodEnd ?? null,
+        absoluteChange: gained - lost,
+        percentChange: null,
+        confidence: current.status === "available" ? 90 : 65,
+        limitationsJson: asJson(current.limitation ? [current.limitation] : []),
+        observedFact: `${gained} sampled backlink${gained === 1 ? " was" : "s were"} gained and ${lost} ${lost === 1 ? "was" : "were"} lost in the latest provider comparison.`,
+        interpretation: decline ? "The verified sampled profile lost more links than it gained; no ranking causation has been assumed." : "The verified sampled profile gained at least as many links as it lost; no ranking causation has been assumed.",
+        importance: "Material link changes can alter authority evidence, referral reach and approved opportunity priorities.",
+        affectedObjective: null,
+        recommendedResponse: decline ? "Review the lost source and target evidence, then approve a recovery or replacement task only when the source remains relevant." : "Verify relevance and referral quality, then retain or update the current authority priority.",
+      };
+    }
+  }
   const worseningWhenHigher = ["technical_health", "publish_verification", "measurement_checkpoints", "rankings", "local_visibility"].includes(source.key);
   const metricDecision = classifyContinuousMetric({
     current: { status: current.status, value: current.primaryMetric, sampleSize: current.sampleSize },
@@ -268,15 +319,17 @@ export async function processGrowthIntelligenceCycle(cycleId: string, job?: Job<
     if (current?.status === "running") return;
     throw new Error(`Project ${cycle.projectId} already has an active Growth Intelligence evaluation; this cycle will retry.`);
   }
-  const { project, snapshots } = await collectSnapshots(cycle.projectId, now);
-  if (!project || project.status !== "active") {
+  const eligibleProject = await loadProject(cycle.projectId);
+  if (!eligibleProject || eligibleProject.status !== "active") {
     await prisma.growthIntelligenceCycle.update({ where: { id: cycleId }, data: { status: "skipped", completedAt: now, skipReason: "Project is no longer active.", nextScheduledAt: null } });
     return;
   }
-  if (!project.strategyPlans.length) {
+  if (!eligibleProject.strategyPlans.length) {
     await prisma.growthIntelligenceCycle.update({ where: { id: cycleId }, data: { status: "skipped", completedAt: now, skipReason: "An approved Strategy is required before continuous reprioritization begins.", nextScheduledAt: new Date(now.getTime() + 12 * HOUR) } });
     return;
   }
+  const { project, snapshots } = await collectSnapshots(cycle.projectId, now);
+  if (!project) throw new Error(`Project ${cycle.projectId} became unavailable during monitoring collection.`);
 
   const previousRuns = await prisma.growthIntelligenceSourceRun.findMany({ where: { projectId: cycle.projectId, cycleId: { not: cycle.id }, status: { in: ["completed", "baseline", "limited"] } }, orderBy: { completedAt: "desc" }, take: 250 });
   const previousBySource = new Map<string, (typeof previousRuns)[number]>();
@@ -319,10 +372,25 @@ export async function processGrowthIntelligenceCycle(cycleId: string, job?: Job<
       if (finding) findingRows.push(finding);
     }
   }
+  const hasAuthorityFinding = findingRows.some((finding) => finding.sourceType === "backlinks");
+  const [authorityTask, authorityAction] = hasAuthorityFinding ? await Promise.all([
+    prisma.executionTask.findFirst({ where: { projectId: cycle.projectId, moduleName: "backlinks" }, orderBy: { updatedAt: "desc" }, select: { id: true } }),
+    prisma.nextBestAction.findFirst({ where: { projectId: cycle.projectId, OR: [{ route: "authority" }, { sourceType: "authority_opportunity" }] }, orderBy: { updatedAt: "desc" }, select: { id: true } }),
+  ]) : [null, null];
   const savedFindings = findingRows.length ? await prisma.$transaction(findingRows.map((finding) => prisma.growthIntelligenceFinding.upsert({
-    where: { fingerprint: finding.fingerprint }, update: {}, create: { cycleId, projectId: cycle.projectId, ...finding, affectedObjective: project.primaryGoal, approvalRequired: false, approvalStatus: "not_required", relatedStrategyId: project.strategyPlans[0].id },
+    where: { fingerprint: finding.fingerprint }, update: {}, create: {
+      cycleId,
+      projectId: cycle.projectId,
+      ...finding,
+      affectedObjective: project.primaryGoal,
+      approvalRequired: false,
+      approvalStatus: "not_required",
+      relatedStrategyId: project.strategyPlans[0].id,
+      relatedExecutionTaskId: finding.sourceType === "backlinks" ? authorityTask?.id ?? null : null,
+      relatedNextBestActionId: finding.sourceType === "backlinks" ? authorityAction?.id ?? null : null,
+    },
   }))) : [];
-  const materialFindings = savedFindings.filter((finding) => ["material_decline", "material_improvement"].includes(finding.findingType));
+  const materialFindings = savedFindings.filter((finding) => ["material_decline", "material_improvement", "meaningful_links_gained", "meaningful_links_lost"].includes(finding.findingType));
   const meaningful = materialFindings.length > 0;
   let blueprintVersion: number | null = null;
   if (meaningful) {

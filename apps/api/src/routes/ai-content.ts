@@ -8,6 +8,7 @@ import { projectClientIdForRequest } from "../project-scope.js";
 import { billingPlanForClient, hasBillingAccess, normalizePlanCode, planView, requireBillingAccess } from "../billing.js";
 import { approvedStrategyContext } from "../strategy-ai.js";
 import { centralAiJson } from "../central-ai-service.js";
+import { storeGeneratedAsset } from "../generated-assets.js";
 
 export const aiContentRouter = Router();
 aiContentRouter.use(requireAuth);
@@ -310,14 +311,35 @@ aiContentRouter.get("/ai-content/:generationId/export", async (req, res) => {
       res.setHeader("Content-Disposition", `attachment; filename="${safeName}.${extension}"`);
       return res.send(documentHtml);
     }
+    const plainText = sectionHtml.replace(/<h2[^>]*>/gi, "\n\n").replace(/<\/h2>/gi, "\n").replace(/<\/(p|h1|h3|li|div|dd|dt)>/gi, "\n").replace(/<li[^>]*>/gi, "• ").replace(/<dt[^>]*>/gi, "\n").replace(/<[^>]+>/g, " ").replace(/&nbsp;/g, " ").replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, "\"").replace(/\n{3,}/g, "\n\n").trim();
+    const pdf = await new Promise<Buffer>((resolve, reject) => {
+      const doc = new PDFDocument({ size: "A4", margins: { top: 54, bottom: 54, left: 54, right: 54 }, info: { Title: title } });
+      const chunks: Buffer[] = [];
+      doc.on("data", (chunk) => chunks.push(Buffer.from(chunk)));
+      doc.on("end", () => resolve(Buffer.concat(chunks)));
+      doc.on("error", reject);
+      doc.fontSize(20).fillColor("#172033").text(title).moveDown();
+      doc.fontSize(11).fillColor("#334155").text(plainText, { lineGap: 3 });
+      doc.end();
+    });
+    const workspace = await prisma.workspace.findUnique({ where: { legacyClientId: client.id }, select: { id: true } });
+    if (workspace) await storeGeneratedAsset({
+      workspaceId: workspace.id,
+      projectId: generation.projectId,
+      assetType: "pdfs",
+      mimeType: "application/pdf",
+      filename: `${safeName}.pdf`,
+      body: pdf,
+      source: "system_generated",
+      sourceEntityType: "ai_content_generation",
+      sourceEntityId: generation.id,
+      dedupeKey: `ai-content-pdf:${generation.id}`,
+      createdByUserId: req.user?.userId ?? null,
+    });
     res.setHeader("Content-Type", "application/pdf");
     res.setHeader("Content-Disposition", `attachment; filename="${safeName}.pdf"`);
-    const doc = new PDFDocument({ size: "A4", margins: { top: 54, bottom: 54, left: 54, right: 54 }, info: { Title: title } });
-    doc.pipe(res);
-    doc.fontSize(20).fillColor("#172033").text(title).moveDown();
-    const plainText = sectionHtml.replace(/<h2[^>]*>/gi, "\n\n").replace(/<\/h2>/gi, "\n").replace(/<\/(p|h1|h3|li|div|dd|dt)>/gi, "\n").replace(/<li[^>]*>/gi, "• ").replace(/<dt[^>]*>/gi, "\n").replace(/<[^>]+>/g, " ").replace(/&nbsp;/g, " ").replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, "\"").replace(/\n{3,}/g, "\n\n").trim();
-    doc.fontSize(11).fillColor("#334155").text(plainText, { lineGap: 3 });
-    doc.end();
+    res.setHeader("Content-Length", String(pdf.length));
+    res.send(pdf);
   } catch (error) {
     if (!res.headersSent) res.status(400).json({ error: error instanceof Error ? error.message : "Could not export content." });
   }

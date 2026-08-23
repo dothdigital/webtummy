@@ -74,7 +74,7 @@ async function scopedProject(req: Request, projectId: string) {
       executionTasks: { orderBy: { createdAt: "desc" }, take: 80 },
       measurementCheckpoints: { orderBy: { updatedAt: "desc" }, take: 100, include: { task: { select: { id: true, title: true, moduleName: true, status: true } } } },
       leadMagnetFunnels: { orderBy: { updatedAt: "desc" }, take: 20, include: { metrics: { orderBy: { createdAt: "desc" }, take: 10 }, espConnection: { select: { status: true, lastVerifiedAt: true, errorMessage: true } } } },
-      backlinkProfileSnapshots: { orderBy: { capturedAt: "desc" }, take: 2 },
+      backlinkProfileSnapshots: { where: { profileType: "owned" }, orderBy: { capturedAt: "desc" }, take: 2 },
       authorityOpportunities: { where: { status: { not: "superseded" } }, orderBy: [{ priorityScore: "desc" }, { createdAt: "desc" }] },
       authorityAssets: { orderBy: { createdAt: "desc" }, take: 50 },
       earnedMentions: { orderBy: [{ earnedAt: "desc" }, { createdAt: "desc" }] },

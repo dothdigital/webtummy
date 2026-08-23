@@ -1,7 +1,9 @@
 import { Router, type NextFunction, type Request, type Response } from "express";
+import { createHash } from "node:crypto";
 import { Prisma, prisma } from "@webtummy/db";
 import { z } from "zod";
 import { backlinkRiskFinding, buildAuthorityOpportunityDrafts } from "../authority-growth-engine.js";
+import { centralAiJson } from "../central-ai-service.js";
 import { canAccessProject, hasWorkspacePermission, recordWorkspaceActivity, workspaceContext } from "../workspace-access.js";
 
 export const authorityGrowthRouter = Router();
@@ -55,6 +57,16 @@ const outreachContactSchema = z.object({
 });
 
 const outreachMessageUpdateSchema = z.object({
+  subject: z.string().trim().min(2).max(255),
+  bodyText: z.string().trim().min(20).max(20_000),
+});
+
+const outreachVersionSchema = z.object({ version: z.coerce.number().int().min(1) });
+const outreachAiRevisionSchema = z.object({
+  mode: z.enum(["revise", "regenerate"]),
+  instruction: z.string().trim().max(1000).optional(),
+});
+const outreachAiResultSchema = z.object({
   subject: z.string().trim().min(2).max(255),
   bodyText: z.string().trim().min(20).max(20_000),
 });
@@ -128,9 +140,9 @@ async function activeExecutionPlan(tx: Prisma.TransactionClient, projectId: stri
 authorityGrowthRouter.get("/projects/:projectId/authority-growth", async (req, res) => {
   const { context, project } = await authorityProject(req, req.params.projectId);
   const clientViewer = context.roles.size === 1 && context.roles.has("client_viewer");
-  const [snapshots, backlinks, riskFindings, opportunities, assets, campaigns, earnedMentions, performance] = await Promise.all([
-    prisma.backlinkProfileSnapshot.findMany({ where: { projectId: project.id }, orderBy: { capturedAt: "desc" }, take: 12 }),
-    prisma.projectBacklink.findMany({ where: { projectId: project.id }, orderBy: { createdAt: "desc" }, take: 100 }),
+  const [snapshots, backlinks, riskFindings, opportunities, assets, campaigns, earnedMentions, performance, preparationFeature, monitoringRun] = await Promise.all([
+    prisma.backlinkProfileSnapshot.findMany({ where: { projectId: project.id, profileType: "owned" }, orderBy: { capturedAt: "desc" }, take: 12 }),
+    prisma.projectBacklink.findMany({ where: { projectId: project.id, snapshot: { profileType: "owned" } }, orderBy: { createdAt: "desc" }, take: 100 }),
     prisma.authorityRiskFinding.findMany({ where: { projectId: project.id, ...(clientViewer ? { status: { not: "needs_review" } } : {}) }, orderBy: [{ status: "asc" }, { severity: "asc" }, { createdAt: "desc" }], take: 100 }),
     prisma.authorityOpportunity.findMany({
       where: { projectId: project.id, status: clientViewer ? "approved" : { not: "superseded" } },
@@ -138,9 +150,11 @@ authorityGrowthRouter.get("/projects/:projectId/authority-growth", async (req, r
       take: 100,
     }),
     prisma.authorityAsset.findMany({ where: { projectId: project.id }, orderBy: [{ priorityScore: "desc" }, { createdAt: "desc" }], take: 100 }),
-    clientViewer ? Promise.resolve([]) : prisma.outreachCampaign.findMany({ where: { projectId: project.id }, include: { contact: true, messages: { orderBy: { sequenceOrder: "asc" } }, opportunity: { select: { title: true } } }, orderBy: { createdAt: "desc" }, take: 50 }),
+    clientViewer ? Promise.resolve([]) : prisma.outreachCampaign.findMany({ where: { projectId: project.id }, include: { contact: true, messages: { orderBy: { sequenceOrder: "asc" }, include: { versions: { orderBy: { version: "desc" }, take: 20 } } }, opportunity: { select: { title: true } } }, orderBy: { createdAt: "desc" }, take: 50 }),
     prisma.earnedMention.findMany({ where: { projectId: project.id }, orderBy: [{ earnedAt: "desc" }, { createdAt: "desc" }], take: 100 }),
     prisma.authorityPerformanceMetric.findMany({ where: { projectId: project.id }, orderBy: { periodEnd: "desc" }, take: 100 }),
+    prisma.featureCostCatalog.findUnique({ where: { featureKey: "execution_content_generate" }, select: { featureKey: true, label: true, defaultCreditCost: true, requiresApproval: true } }),
+    prisma.growthIntelligenceSourceRun.findFirst({ where: { projectId: project.id, sourceType: "backlinks" }, orderBy: { createdAt: "desc" }, select: { status: true, completedAt: true, nextScheduledAt: true, restrictionReason: true, errorMessage: true, snapshotJson: true } }),
   ]);
   res.json({
     project: { id: project.id, name: project.businessName ?? project.name, website: project.website?.rootUrl ?? project.websiteUrl },
@@ -149,15 +163,18 @@ authorityGrowthRouter.get("/projects/:projectId/authority-growth", async (req, r
       canApprove: hasWorkspacePermission(context, "approve"),
       canExecute: hasWorkspacePermission(context, "execute_tasks"),
       readOnly: clientViewer || !hasWorkspacePermission(context, "run_ai_analysis"),
+      hasApprovedStrategy: project.strategyPlans.length > 0,
     },
     snapshots,
-    backlinks,
+    backlinks: snapshots[0] ? backlinks.filter((item) => item.snapshotId === snapshots[0].id) : [],
     riskFindings,
     opportunities,
     assets,
     campaigns,
     earnedMentions,
     performance,
+    preparationEstimate: preparationFeature ? { featureKey: preparationFeature.featureKey, label: preparationFeature.label, capacityUnits: preparationFeature.defaultCreditCost, requiresApproval: preparationFeature.requiresApproval } : null,
+    monitoringState: monitoringRun,
   });
 });
 
@@ -165,25 +182,33 @@ authorityGrowthRouter.post("/projects/:projectId/authority-growth/snapshots", as
   const { context, project } = await authorityProject(req, req.params.projectId, "run_ai_analysis");
   const input = snapshotSchema.parse(req.body);
   const capturedAt = safeDate(input.summary.fetchedAt) ?? new Date();
+  const collectionKey = `authority:manual:${project.id}:${createHash("sha256").update(`${input.summary.source}:${input.summary.target}:${capturedAt.toISOString()}`).digest("hex").slice(0, 32)}`;
   const existing = await prisma.backlinkProfileSnapshot.findFirst({
-    where: { projectId: project.id, provider: input.summary.source, target: input.summary.target, capturedAt },
+    where: { collectionKey },
   });
   if (existing) return res.json({ snapshot: existing, backlinkCount: 0, findingCount: 0, duplicate: true });
   const result = await prisma.$transaction(async (tx) => {
+    const previous = await tx.backlinkProfileSnapshot.findFirst({ where: { projectId: project.id, profileType: "owned" }, orderBy: { capturedAt: "desc" } });
     const snapshot = await tx.backlinkProfileSnapshot.create({
       data: {
         projectId: project.id,
         provider: input.summary.source,
         target: input.summary.target,
-        totalBacklinks: input.summary.backlinks ?? 0,
-        referringDomains: input.summary.referringDomains ?? 0,
-        newBacklinks: input.summary.backlinksNew ?? 0,
-        lostBacklinks: input.summary.backlinksLost ?? 0,
-        dofollowBacklinks: input.summary.dofollow ?? 0,
-        nofollowBacklinks: input.summary.nofollow ?? 0,
-        brokenBacklinks: input.summary.brokenBacklinks ?? 0,
+        profileType: "owned",
+        collectionKey,
+        dataStatus: input.summary.backlinks == null && input.summary.referringDomains == null ? "limited" : "available",
+        totalBacklinks: input.summary.backlinks,
+        referringDomains: input.summary.referringDomains,
+        newBacklinks: input.summary.backlinksNew,
+        lostBacklinks: input.summary.backlinksLost,
+        dofollowBacklinks: input.summary.dofollow,
+        nofollowBacklinks: input.summary.nofollow,
+        brokenBacklinks: input.summary.brokenBacklinks,
         providerRiskSignal: input.summary.spamScore,
         rawSummaryJson: input.summary as Prisma.InputJsonValue,
+        limitationsJson: ["Link details are limited to the provider sample saved with this snapshot.", "Provider authority and risk scores are third-party proxies, not Google ranking factors."],
+        comparisonStartAt: previous?.capturedAt ?? null,
+        comparisonEndAt: capturedAt,
         capturedAt,
       },
     });
@@ -273,7 +298,7 @@ authorityGrowthRouter.post("/projects/:projectId/authority-growth/discover", asy
     approvedKeywords: keywords.length ? keywords : strategy?.seoStrategy ? [strategy.seoStrategy.slice(0, 180)] : [],
   });
   const result = await prisma.$transaction(async (tx) => {
-    await tx.authorityOpportunity.updateMany({ where: { projectId: project.id, status: { in: ["discovered", "shortlisted", "researching"] } }, data: { status: "superseded" } });
+    await tx.authorityOpportunity.updateMany({ where: { projectId: project.id, sourceType: { not: "verified_provider_gap" }, status: { in: ["discovered", "shortlisted", "researching"] } }, data: { status: "superseded" } });
     const opportunities = [];
     for (const draft of drafts) {
       opportunities.push(await tx.authorityOpportunity.create({
@@ -369,6 +394,7 @@ authorityGrowthRouter.post("/projects/:projectId/authority-growth/opportunities/
   const { context, project } = await authorityProject(req, req.params.projectId, "approve");
   const opportunity = await prisma.authorityOpportunity.findFirst({ where: { id: req.params.opportunityId, projectId: project.id } });
   if (!opportunity) fail("Authority opportunity not found.", 404);
+  if (!project.strategyPlans[0]) fail("Approve the current Strategy before creating authority execution work.", 409);
   if (opportunity.riskLabel === "avoid") fail("This opportunity cannot be approved because it conflicts with the authority safety policy.", 409);
   const result = await prisma.$transaction(async (tx) => {
     const plan = await activeExecutionPlan(tx, project.id);
@@ -380,6 +406,8 @@ authorityGrowthRouter.post("/projects/:projectId/authority-growth/opportunities/
         expectedOutcome: "Earn a relevant authority signal and measure resulting referral visibility and leads.",
         priority: opportunity.priorityScore >= 75 ? "high" : opportunity.priorityScore >= 50 ? "medium" : "low",
         status: "ready",
+        relatedModule: "strategy",
+        approvalSnapshotJson: { strategyId: project.strategyPlans[0]?.id ?? null, strategyVersion: project.strategyPlans[0]?.version ?? null, authorityOpportunityId: opportunity.id, evidence: opportunity.evidenceJson },
       },
       create: {
         clientId: project.clientId,
@@ -399,6 +427,8 @@ authorityGrowthRouter.post("/projects/:projectId/authority-growth/opportunities/
         status: "ready",
         requiresApproval: false,
         manualRequired: true,
+        relatedModule: "strategy",
+        approvalSnapshotJson: { strategyId: project.strategyPlans[0]?.id ?? null, strategyVersion: project.strategyPlans[0]?.version ?? null, authorityOpportunityId: opportunity.id, evidence: opportunity.evidenceJson },
         safetyCategory: opportunity.riskLabel,
         actionButtonLabel: opportunity.outreachRequired ? "Review Outreach Draft" : "Open Authority Task",
         relatedUrl: `/backlinks?projectId=${project.id}`,
@@ -422,7 +452,7 @@ authorityGrowthRouter.post("/projects/:projectId/authority-growth/opportunities/
           requirements: ["Use verifiable sources", "Do not invent statistics, credentials or relationships", "Include a clear audience benefit", "Record source URLs and publication dates"],
         },
         status: "planned",
-        approvalStatus: "approved",
+        approvalStatus: "draft",
         riskScore: opportunity.riskScore,
         priorityScore: opportunity.priorityScore,
         executionTaskId: task.id,
@@ -447,6 +477,13 @@ authorityGrowthRouter.post("/projects/:projectId/authority-growth/opportunities/
               subject: `Resource idea for your audience: ${opportunity.title ?? project.name}`.slice(0, 255),
               bodyText: `Hello,\n\nI’m reaching out on behalf of ${project.businessName ?? project.name}. We prepared a resource for ${project.businessProfile?.targetAudience ?? "people interested in this topic"}: ${opportunity.title ?? "a practical authority resource"}.\n\nWhy it may be useful to your audience:\n${opportunity.valueExchange ?? "It provides practical, source-backed information without requiring a promotional placement."}\n\nIf it fits your editorial standards, would you be open to reviewing it? No automated placement or reciprocal link is expected.\n\nThank you.`,
               personalizationJson: { required: ["recipient name", "publication or organization", "specific relevant page", "why this audience benefits"], autoSend: false },
+              versions: { create: {
+                version: 1,
+                subject: `Resource idea for your audience: ${opportunity.title ?? project.name}`.slice(0, 255),
+                bodyText: `Hello,\n\nI’m reaching out on behalf of ${project.businessName ?? project.name}. We prepared a resource for ${project.businessProfile?.targetAudience ?? "people interested in this topic"}: ${opportunity.title ?? "a practical authority resource"}.\n\nWhy it may be useful to your audience:\n${opportunity.valueExchange ?? "It provides practical, source-backed information without requiring a promotional placement."}\n\nIf it fits your editorial standards, would you be open to reviewing it? No automated placement or reciprocal link is expected.\n\nThank you.`,
+                changeType: "initial_draft",
+                createdByUserId: context.membership.userId,
+              } },
             },
           },
         },
@@ -480,7 +517,7 @@ authorityGrowthRouter.post("/projects/:projectId/authority-growth/outreach/messa
   const message = await prisma.outreachMessage.findFirst({ where: { id: req.params.messageId, projectId: project.id }, include: { campaign: true } });
   if (!message) fail("Outreach message not found.", 404);
   const updated = await prisma.$transaction(async (tx) => {
-    const next = await tx.outreachMessage.update({ where: { id: message.id }, data: { approvalStatus: "approved", status: "approved_not_sent", approvedByUserId: context.membership.userId, approvedAt: new Date() } });
+    const next = await tx.outreachMessage.update({ where: { id: message.id }, data: { approvalStatus: "approved", status: "approved_not_sent", approvedVersion: message.currentVersion, approvedByUserId: context.membership.userId, approvedAt: new Date() } });
     await tx.outreachCampaign.update({ where: { id: message.campaignId }, data: { approvalStatus: "approved", status: "approved_not_sent", approvedByUserId: context.membership.userId, approvedAt: new Date(), sendingLimit: 0 } });
     await recordWorkspaceActivity(tx, { context, action: "authority.outreach_draft_approved", entityType: "outreach_message", entityId: message.id, agencyClientId: project.agencyClientId, projectId: project.id, previousJson: { approvalStatus: message.approvalStatus }, nextJson: { approvalStatus: "approved", status: "approved_not_sent", autoSend: false } });
     return next;
@@ -494,12 +531,106 @@ authorityGrowthRouter.patch("/projects/:projectId/authority-growth/outreach/mess
   const message = await prisma.outreachMessage.findFirst({ where: { id: req.params.messageId, projectId: project.id } });
   if (!message) fail("Outreach message not found.", 404);
   const updated = await prisma.$transaction(async (tx) => {
-    const next = await tx.outreachMessage.update({ where: { id: message.id }, data: { subject: input.subject, bodyText: input.bodyText, status: "draft", approvalStatus: "draft", approvedAt: null, approvedByUserId: null } });
+    const version = message.currentVersion + 1;
+    await tx.outreachMessageVersion.create({ data: { messageId: message.id, version, subject: input.subject, bodyText: input.bodyText, changeType: "manual_edit", createdByUserId: context.membership.userId } });
+    const next = await tx.outreachMessage.update({ where: { id: message.id }, data: { subject: input.subject, bodyText: input.bodyText, currentVersion: version, approvedVersion: null, status: "draft", approvalStatus: "draft", approvedAt: null, approvedByUserId: null } });
     await tx.outreachCampaign.update({ where: { id: message.campaignId }, data: { status: "draft", approvalStatus: "draft", approvedAt: null, approvedByUserId: null, sendingLimit: 0 } });
     await recordWorkspaceActivity(tx, { context, action: "authority.outreach_draft_edited", entityType: "outreach_message", entityId: message.id, agencyClientId: project.agencyClientId, projectId: project.id, previousJson: { subject: message.subject, approvalStatus: message.approvalStatus }, nextJson: { subject: input.subject, approvalStatus: "draft", autoSend: false } });
     return next;
   });
   res.json({ message: updated });
+});
+
+authorityGrowthRouter.post("/projects/:projectId/authority-growth/outreach/messages/:messageId/revise", async (req, res) => {
+  const { context, project } = await authorityProject(req, req.params.projectId, "run_ai_analysis");
+  const input = outreachAiRevisionSchema.parse(req.body ?? {});
+  const message = await prisma.outreachMessage.findFirst({
+    where: { id: req.params.messageId, projectId: project.id },
+    include: { campaign: { include: { opportunity: true, contact: true } } },
+  });
+  if (!message) fail("Outreach message not found.", 404);
+  if (message.campaign.contact?.optOut) fail("This contact has opted out. Reopen the contact preference before preparing another draft.", 409);
+
+  const generated = await centralAiJson({
+    system: "Prepare one ethical, manually reviewed authority-outreach email. Never send it. Never invent a relationship, publication fit, credential, result, statistic, link placement, recipient detail, or completed asset. Use only supplied facts; omit anything unavailable. Do not offer payment, reciprocal links, bulk placement, or guaranteed coverage. Return valid JSON with subject and bodyText only.",
+    prompt: JSON.stringify({
+      task: input.mode === "regenerate" ? "Create a materially different outreach draft." : "Improve the current draft while preserving its factual meaning.",
+      userInstruction: input.instruction || null,
+      business: {
+        name: project.businessName ?? project.name,
+        website: project.website?.rootUrl ?? project.websiteUrl ?? null,
+        audience: project.businessProfile?.targetAudience ?? null,
+      },
+      opportunity: message.campaign.opportunity ? {
+        title: message.campaign.opportunity.title,
+        description: message.campaign.opportunity.description,
+        valueExchange: message.campaign.opportunity.valueExchange,
+        evidence: message.campaign.opportunity.evidenceJson,
+      } : null,
+      recipient: message.campaign.contact ? {
+        organizationName: message.campaign.contact.organizationName,
+        contactName: message.campaign.contact.contactName,
+        websiteUrl: message.campaign.contact.websiteUrl,
+        relationshipNote: message.campaign.contact.relationshipNote,
+      } : null,
+      currentDraft: { subject: message.subject, bodyText: message.bodyText },
+      requiredOutput: { subject: "string", bodyText: "plain-text email" },
+    }),
+    temperature: input.mode === "regenerate" ? 0.5 : 0.25,
+    maxInputBytes: 48_000,
+    maxOutputTokens: 1_500,
+    validate: (value) => outreachAiResultSchema.parse(value),
+  });
+
+  const updated = await prisma.$transaction(async (tx) => {
+    const version = message.currentVersion + 1;
+    await tx.outreachMessageVersion.create({
+      data: {
+        messageId: message.id,
+        version,
+        subject: generated.result.subject,
+        bodyText: generated.result.bodyText,
+        changeType: input.mode === "regenerate" ? "ai_regenerate" : "ai_revise",
+        createdByUserId: context.membership.userId,
+        metadataJson: { model: generated.model, instruction: input.instruction ?? null },
+      },
+    });
+    const next = await tx.outreachMessage.update({
+      where: { id: message.id },
+      data: { subject: generated.result.subject, bodyText: generated.result.bodyText, currentVersion: version, approvedVersion: null, status: "draft", approvalStatus: "draft", approvedAt: null, approvedByUserId: null },
+    });
+    await tx.outreachCampaign.update({ where: { id: message.campaignId }, data: { status: "draft", approvalStatus: "draft", approvedAt: null, approvedByUserId: null, sendingLimit: 0 } });
+    await recordWorkspaceActivity(tx, {
+      context,
+      action: input.mode === "regenerate" ? "authority.outreach_draft_ai_regenerated" : "authority.outreach_draft_ai_revised",
+      entityType: "outreach_message",
+      entityId: message.id,
+      agencyClientId: project.agencyClientId,
+      projectId: project.id,
+      previousJson: { version: message.currentVersion, approvalStatus: message.approvalStatus },
+      nextJson: { version, approvalStatus: "draft", autoSend: false, model: generated.model },
+    });
+    return next;
+  });
+  res.json({ message: updated, usage: { inputTokens: generated.inputTokens, outputTokens: generated.outputTokens }, sendingEnabled: false });
+});
+
+authorityGrowthRouter.post("/projects/:projectId/authority-growth/outreach/messages/:messageId/versions/:version/restore", async (req, res) => {
+  const { context, project } = await authorityProject(req, req.params.projectId, "run_ai_analysis");
+  const { version } = outreachVersionSchema.parse({ version: req.params.version });
+  const message = await prisma.outreachMessage.findFirst({ where: { id: req.params.messageId, projectId: project.id } });
+  if (!message) fail("Outreach message not found.", 404);
+  const historical = await prisma.outreachMessageVersion.findUnique({ where: { messageId_version: { messageId: message.id, version } } });
+  if (!historical) fail("Outreach draft version not found.", 404);
+  const updated = await prisma.$transaction(async (tx) => {
+    const nextVersion = message.currentVersion + 1;
+    await tx.outreachMessageVersion.create({ data: { messageId: message.id, version: nextVersion, subject: historical.subject, bodyText: historical.bodyText, changeType: `restored_from_v${version}`, createdByUserId: context.membership.userId } });
+    const next = await tx.outreachMessage.update({ where: { id: message.id }, data: { subject: historical.subject, bodyText: historical.bodyText, currentVersion: nextVersion, approvedVersion: null, status: "draft", approvalStatus: "draft", approvedAt: null, approvedByUserId: null } });
+    await tx.outreachCampaign.update({ where: { id: message.campaignId }, data: { status: "draft", approvalStatus: "draft", approvedAt: null, approvedByUserId: null, sendingLimit: 0 } });
+    await recordWorkspaceActivity(tx, { context, action: "authority.outreach_version_restored", entityType: "outreach_message", entityId: message.id, agencyClientId: project.agencyClientId, projectId: project.id, previousJson: { version: message.currentVersion }, nextJson: { version: nextVersion, restoredFromVersion: version, autoSend: false } });
+    return next;
+  });
+  res.json({ message: updated, restoredFromVersion: version });
 });
 
 authorityGrowthRouter.post("/projects/:projectId/authority-growth/outreach/campaigns/:campaignId/contact", async (req, res) => {
@@ -565,7 +696,7 @@ authorityGrowthRouter.patch("/projects/:projectId/authority-growth/outreach/cont
 authorityGrowthRouter.post("/projects/:projectId/authority-growth/earned-mentions", async (req, res) => {
   const { context, project } = await authorityProject(req, req.params.projectId, "execute_tasks");
   const input = earnedMentionSchema.parse(req.body);
-  if (input.opportunityId && !await prisma.authorityOpportunity.findFirst({ where: { id: input.opportunityId, projectId: project.id }, select: { id: true } })) fail("Authority opportunity not found.", 404);
+  if (input.opportunityId && !await prisma.authorityOpportunity.findFirst({ where: { id: input.opportunityId, projectId: project.id, status: "approved" }, select: { id: true } })) fail("Approved authority opportunity not found.", 404);
   const result = await prisma.$transaction(async (tx) => {
     const mention = await tx.earnedMention.create({
       data: {
@@ -576,6 +707,8 @@ authorityGrowthRouter.post("/projects/:projectId/authority-growth/earned-mention
         targetUrl: input.targetUrl,
         mentionType: input.mentionType,
         linkAttribute: input.linkAttribute,
+        status: input.mentionType === "backlink" ? "pending_verification" : "recorded",
+        verificationStatus: input.mentionType === "backlink" ? "pending_provider_verification" : "manual_evidence_only",
         referralVisits: input.referralVisits,
         referralLeads: input.referralLeads,
         earnedAt: input.earnedAt ? new Date(input.earnedAt) : new Date(),
@@ -597,11 +730,11 @@ authorityGrowthRouter.post("/projects/:projectId/authority-growth/earned-mention
         projectId: project.id,
         fingerprint: `authority-earned:${mention.id}`,
         category: "authority",
-        signalKey: "earned_mention",
+        signalKey: "reported_earned_mention",
         sourceType: "earned_mention",
         sourceId: mention.id,
         valueJson: { mentionType: mention.mentionType, sourceDomain: mention.sourceDomain, referralVisits: mention.referralVisits, referralLeads: mention.referralLeads },
-        confidence: 90,
+        confidence: input.mentionType === "backlink" ? 45 : 60,
         collectedAt: new Date(),
         effectiveDate: period,
         expiresAt: new Date(period.getTime() + 180 * 86_400_000),

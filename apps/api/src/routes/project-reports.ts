@@ -11,6 +11,7 @@ import { centralAiJson } from "../central-ai-service.js";
 import { config } from "../config.js";
 import { commitUsage, preflightUsage, refundUsage } from "../usage-engine.js";
 import crypto from "node:crypto";
+import { storeGeneratedAsset } from "../generated-assets.js";
 
 export const projectReportsRouter = Router();
 export const publicProjectReportsRouter = Router();
@@ -298,7 +299,7 @@ async function scopedProject(context: Awaited<ReturnType<typeof workspaceContext
       growthExperiments: { include: { results: { orderBy: { recordedAt: "desc" }, take: 2 } }, orderBy: { updatedAt: "desc" }, take: 30 },
       growthFunnelStages: { orderBy: { sortOrder: "asc" } },
       socialPerformanceMetrics: { orderBy: { recordedAt: "desc" }, take: 200 },
-      backlinkProfileSnapshots: { orderBy: { capturedAt: "desc" }, take: 2 },
+      backlinkProfileSnapshots: { where: { profileType: "owned" }, orderBy: { capturedAt: "desc" }, take: 2 },
       authorityOpportunities: { where: { status: { not: "superseded" } }, orderBy: [{ priorityScore: "desc" }, { createdAt: "desc" }] },
       authorityAssets: { orderBy: { createdAt: "desc" } },
       earnedMentions: { orderBy: [{ earnedAt: "desc" }, { createdAt: "desc" }] },
@@ -382,13 +383,26 @@ function reportContent(project: Awaited<ReturnType<typeof scopedProject>>, repor
   const previousBacklinkSnapshot = project.backlinkProfileSnapshots[1];
   const earnedReferralVisits = project.earnedMentions.reduce((sum, mention) => sum + mention.referralVisits, 0);
   const earnedReferralLeads = project.earnedMentions.reduce((sum, mention) => sum + mention.referralLeads, 0);
+  const backlinkEvidenceStart = latestBacklinkSnapshot?.comparisonStartAt ?? latestBacklinkSnapshot?.capturedAt ?? null;
+  const backlinkEvidenceEnd = latestBacklinkSnapshot?.comparisonEndAt ?? latestBacklinkSnapshot?.capturedAt ?? null;
+  const backlinkPeriodCompatible = !options.periodStart || !options.periodEnd || !backlinkEvidenceStart || !backlinkEvidenceEnd
+    ? null
+    : backlinkEvidenceEnd >= options.periodStart && backlinkEvidenceStart <= options.periodEnd;
   const backlinkProgress = latestBacklinkSnapshot ? {
+    status: latestBacklinkSnapshot.dataStatus,
+    provider: latestBacklinkSnapshot.provider,
     capturedAt: latestBacklinkSnapshot.capturedAt,
+    comparisonStartAt: latestBacklinkSnapshot.comparisonStartAt,
+    comparisonEndAt: latestBacklinkSnapshot.comparisonEndAt,
+    reportingPeriodCompatible: backlinkPeriodCompatible,
     totalBacklinks: latestBacklinkSnapshot.totalBacklinks,
     referringDomains: latestBacklinkSnapshot.referringDomains,
-    referringDomainChange: previousBacklinkSnapshot ? latestBacklinkSnapshot.referringDomains - previousBacklinkSnapshot.referringDomains : null,
+    referringDomainChange: previousBacklinkSnapshot?.referringDomains != null && latestBacklinkSnapshot.referringDomains != null ? latestBacklinkSnapshot.referringDomains - previousBacklinkSnapshot.referringDomains : null,
     newBacklinks: latestBacklinkSnapshot.newBacklinks,
     lostBacklinks: latestBacklinkSnapshot.lostBacklinks,
+    limitations: latestBacklinkSnapshot.limitationsJson,
+    authorityMetricNote: "Provider authority and risk scores are third-party proxy metrics, not Google ranking factors.",
+    attributionNote: "Observed backlink, ranking, traffic, lead and revenue changes are reported as separate evidence. This report does not claim that one link caused another metric to change.",
     earnedMentions: project.earnedMentions.length,
     referralVisits: earnedReferralVisits,
     referralLeads: earnedReferralLeads,
@@ -451,7 +465,7 @@ function reportContent(project: Awaited<ReturnType<typeof scopedProject>>, repor
         planned: project.authorityAssets.filter((item) => item.status === "planned").length,
         completed: project.authorityAssets.filter((item) => item.status === "completed").length,
       },
-      earnedMentions: project.earnedMentions.map((mention) => ({ sourceDomain: mention.sourceDomain, mentionType: mention.mentionType, linkAttribute: mention.linkAttribute, referralVisits: mention.referralVisits, referralLeads: mention.referralLeads, earnedAt: mention.earnedAt })),
+      earnedMentions: project.earnedMentions.map((mention) => ({ sourceDomain: mention.sourceDomain, mentionType: mention.mentionType, linkAttribute: mention.linkAttribute, status: mention.status, verificationStatus: mention.verificationStatus, verifiedAt: mention.verifiedAt, referralVisits: mention.referralVisits, referralLeads: mention.referralLeads, earnedAt: mention.earnedAt })),
     },
     aiCitationVisibility: {
       assessmentStatus: citationScores ? "assessed" : "not_assessed",
@@ -678,9 +692,11 @@ projectReportsRouter.get("/business-reports/download", async (req, res) => {
   const summary = await businessReportingSummary(context);
   const content = { title: `${summary.workspace.name} - Business Performance Summary`, reportType: "business_consolidated", generatedAt: summary.generatedAt, reportingPeriod: summary.reportingPeriod, sourceSnapshot: { capturedAt: summary.generatedAt, projects: summary.projects.map((project) => ({ id: project.id, updatedAt: project.updatedAt, siteEvidenceAt: project.siteEvidenceAt, strategyVersion: project.strategyVersion })) }, branding: { agencyName: summary.workspace.name, minimizeSenukeBranding: false }, project: { name: summary.workspace.name, primaryGoal: "Consolidated business growth performance", targetMarkets: [] }, health: { workflowStep: "business_workspace", strategyStatus: "multiple_projects", completedTasks: summary.summary.completedTasks, totalTasks: summary.projects.reduce((sum, project) => sum + project.totalTasks, 0), blockedTasks: summary.summary.blockedTasks }, clientNarrative: { executiveNarrative: `${summary.workspace.name} has ${summary.summary.activeProjects} active project${summary.summary.activeProjects === 1 ? "" : "s"}, ${summary.summary.completedTasks} completed actions, ${summary.summary.blockedTasks} blocked actions, and ${summary.summary.overdueTasks} overdue actions across the selected 30-day workspace period.`, wins: [], risks: summary.projects.filter((project) => project.blockedTasks || project.overdueTasks).map((project) => `${project.name}: ${project.blockedTasks} blocked and ${project.overdueTasks} overdue.`), interpretation: "Use this workspace view to compare project health and assign accountable next work. Missing project evidence remains explicitly identified." }, clientSections: [{ key: "workspace_summary", title: "Workspace Summary", metrics: [{ label: "Active projects", value: summary.summary.activeProjects }, { label: "Average site score", value: summary.summary.averageSiteScore }, { label: "Completed actions", value: summary.summary.completedTasks }, { label: "Blocked actions", value: summary.summary.blockedTasks }, { label: "Overdue actions", value: summary.summary.overdueTasks }, { label: "Saved reports", value: summary.summary.reports }] }, { key: "project_performance", title: "Project Performance", items: summary.projects.map((project) => ({ title: project.name, status: `${project.status} · site ${project.siteScore ?? "pending"} · ${project.completedTasks}/${project.totalTasks} actions complete · ${project.overdueTasks} overdue` })) }, { key: "missing_evidence", title: "Missing Evidence", items: summary.dataQuality.missingSiteAnalysis, emptyMessage: "Every active project has a completed Site Analysis snapshot." }], dataQuality: summary.dataQuality, clientSafe: true };
   const pdf = await createProfessionalReportPdf(content, { workspaceName: summary.workspace.name, workspaceType: "business", clientName: summary.workspace.name });
+  const businessFilename = `${summary.workspace.name.replace(/[^a-z0-9]+/gi, "-").toLowerCase()}-business-summary.pdf`;
+  await storeGeneratedAsset({ workspaceId: context.workspace.id, assetType: "pdfs", mimeType: "application/pdf", filename: businessFilename, body: pdf, source: "system_generated", sourceEntityType: "workspace", sourceEntityId: context.workspace.id, dedupeKey: `business-summary:${context.workspace.id}:${summary.reportingPeriod.start}:${summary.reportingPeriod.end}`, createdByUserId: context.membership.userId });
   await recordWorkspaceActivity(prisma, { context, action: "business_report.exported", entityType: "workspace", entityId: context.workspace.id, nextJson: { reportingPeriod: summary.reportingPeriod, projects: summary.projects.length, format: "pdf" } });
   res.setHeader("Content-Type", "application/pdf");
-  res.setHeader("Content-Disposition", `attachment; filename="${summary.workspace.name.replace(/[^a-z0-9]+/gi, "-").toLowerCase()}-business-summary.pdf"`);
+  res.setHeader("Content-Disposition", `attachment; filename="${businessFilename}"`);
   res.send(pdf);
 });
 
@@ -764,6 +780,7 @@ projectReportsRouter.post("/project-reports/generate", async (req, res) => {
       usageSettled = true;
     }
     const safeName = `${project.name}-${data.reportType}`.replace(/[^a-z0-9-_]+/gi, "-").replace(/-+/g, "-").replace(/^-|-$/g, "").toLowerCase();
+    await storeGeneratedAsset({ workspaceId: context.workspace.id, projectId: project.id, assetType: "pdfs", mimeType: "application/pdf", filename: `${safeName || "project-report"}.pdf`, body: pdf, source: "system_generated", sourceEntityType: "project", sourceEntityId: project.id, dedupeKey: `download-only-report:${project.id}:${data.reportType}:${period.periodStart?.toISOString() ?? "none"}:${period.periodEnd?.toISOString() ?? "none"}`, createdByUserId: context.membership.userId });
     res.setHeader("Content-Type", "application/pdf");
     res.setHeader("Content-Disposition", `attachment; filename="${safeName || "project-report"}.pdf"`);
     res.setHeader("Content-Length", String(pdf.length));
@@ -996,6 +1013,7 @@ publicProjectReportsRouter.get("/reports/:token/download", async (req, res) => {
   const pdf = await createProfessionalReportPdf(content, { workspaceName: String(branding.agencyName || shared.report.workspace?.name || "Workspace"), workspaceType: shared.report.workspace?.workspaceType || "personal", clientName: shared.report.clientName, logoDataUrl: typeof branding.agencyLogoDataUrl === "string" ? branding.agencyLogoDataUrl : null, preparedByName: typeof branding.preparedByName === "string" ? branding.preparedByName : null, contactEmail: typeof branding.contactEmail === "string" ? branding.contactEmail : null, contactPhone: typeof branding.contactPhone === "string" ? branding.contactPhone : null, websiteUrl: typeof branding.websiteUrl === "string" ? branding.websiteUrl : null, address: typeof branding.address === "string" ? branding.address : null, primaryColor: typeof branding.colorPreference === "string" ? branding.colorPreference : null, secondaryColor: typeof branding.secondaryColor === "string" ? branding.secondaryColor : null, footerDisclaimer: typeof branding.footerDisclaimer === "string" ? branding.footerDisclaimer : null, senderSignature: typeof branding.senderSignature === "string" ? branding.senderSignature : null, minimizeSenukeBranding: branding.minimizeSenukeBranding !== false });
   await prisma.documentExportEvent.create({ data: { documentId: shared.report.id, versionId: shared.version.id, format: "shared_pdf", exportedByUserId: null } });
   const safeName = `${shared.report.project.name}-${shared.report.reportType}`.replace(/[^a-z0-9-_]+/gi, "-").replace(/-+/g, "-").replace(/^-|-$/g, "").toLowerCase();
+  await storeGeneratedAsset({ workspaceId: shared.report.workspaceId, projectId: shared.report.projectId, assetType: "pdfs", mimeType: "application/pdf", filename: `${safeName || "project-report"}-v${shared.version.version}.pdf`, body: pdf, source: "system_generated", sourceEntityType: "gap_report_export", sourceEntityId: shared.report.id, dedupeKey: `shared-report:${shared.report.id}:v${shared.version.version}` });
   res.setHeader("Cache-Control", "private, no-store");
   res.setHeader("Content-Type", "application/pdf");
   res.setHeader("Content-Disposition", `attachment; filename="${safeName || "project-report"}-v${shared.version.version}.pdf"`);
@@ -1050,6 +1068,7 @@ projectReportsRouter.get("/project-reports/:reportId/download", async (req, res)
     await recordWorkspaceActivity(tx, { context, action: report.reportType === "agency_proposal" ? "proposal.exported" : "report.exported", entityType: "gap_report_export", entityId: report.id, agencyClientId: report.agencyClientId, projectId: report.projectId, nextJson: { format: "pdf", version: selectedVersion.version } });
   });
   const safeName = `${report.project.name}-${report.reportType}`.replace(/[^a-z0-9-_]+/gi, "-").replace(/-+/g, "-").replace(/^-|-$/g, "").toLowerCase();
+  await storeGeneratedAsset({ workspaceId: context.workspace.id, projectId: report.projectId, assetType: "pdfs", mimeType: "application/pdf", filename: `${safeName || "project-report"}-v${selectedVersion.version}.pdf`, body: pdf, source: "system_generated", sourceEntityType: "gap_report_export", sourceEntityId: report.id, dedupeKey: `project-report:${report.id}:v${selectedVersion.version}:${requestedView}`, createdByUserId: context.membership.userId });
   res.setHeader("Content-Type", "application/pdf");
   res.setHeader("Content-Disposition", `attachment; filename="${safeName || "project-report"}-v${selectedVersion.version}.pdf"`);
   res.setHeader("Content-Length", String(pdf.length));

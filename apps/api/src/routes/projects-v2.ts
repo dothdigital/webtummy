@@ -34,6 +34,7 @@ import { createApiErrorCode } from "../api-errors.js";
 import { queueApiErrorReport } from "../api-error-reporter.js";
 import { captureWebsiteTracking } from "../website-tracking.js";
 import { discoveryTargetMarkets, latestExplicitConversationTargetMarkets, sameGeographicTargetMarkets } from "../discovery-target-markets.js";
+import { storeGeneratedImage } from "../generated-assets.js";
 
 export const guidedProjectsRouter = Router();
 guidedProjectsRouter.use(requireAuth);
@@ -5239,8 +5240,8 @@ guidedProjectsRouter.post("/projects-v2/:projectId/lead-magnet/generate", async 
         sourceQuery: String(planned.sourceQuery ?? planned.sourceNote ?? `What credible evidence best supports this ${role} for ${title}?`),
       };
     });
-    const coverImage = leadMagnetCoverImage({ title, businessName: String(generatedBrand.businessName ?? project.businessName ?? project.name), branding: generatedBrand, imagePlan });
-    const generatedImages = await generateLeadMagnetVisuals({
+    const generatedCoverImage = leadMagnetCoverImage({ title, businessName: String(generatedBrand.businessName ?? project.businessName ?? project.name), branding: generatedBrand, imagePlan });
+    const rawGeneratedImages = await generateLeadMagnetVisuals({
       branding: generatedBrand,
       imagePlan,
       researchContext: {
@@ -5251,6 +5252,11 @@ guidedProjectsRouter.post("/projects-v2/:projectId/lead-magnet/generate", async 
         keywords: keywordContext,
       },
     });
+    const coverImage = await storeGeneratedImage({ workspaceId: context.workspace.id, projectId: project.id, dataUrl: generatedCoverImage, filename: "lead-magnet-cover.svg", source: "ai_lead_magnet", visibility: "private", altText: `${title} cover`, sourceEntityType: "lead_magnet_research", sourceEntityId: researchRun.id, dedupeKey: `lead-magnet:${project.id}:${researchRun.id}:cover`, createdByUserId: context.membership.userId });
+    const generatedImages = await Promise.all(rawGeneratedImages.map(async (image, index) => ({
+      ...image,
+      dataUrl: await storeGeneratedImage({ workspaceId: context.workspace.id, projectId: project.id, dataUrl: image.dataUrl, filename: `lead-magnet-${image.role || index + 1}.png`, source: "openai_generated", visibility: "private", altText: image.altText, sourceEntityType: "lead_magnet_research", sourceEntityId: researchRun.id, dedupeKey: `lead-magnet:${project.id}:${researchRun.id}:${image.role || index}`, createdByUserId: context.membership.userId, metadata: { generationModel: image.generationModel, evidenceSource: image.sourceUrl } }),
+    })));
     const generatedWordCount = leadMagnetBodyWordCount(leadMagnet);
     const generationResult = await prisma.$transaction(async (tx) => {
       const planId = await activePlanId(tx, project.id);

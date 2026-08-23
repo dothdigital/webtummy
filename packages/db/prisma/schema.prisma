@@ -187,6 +187,7 @@ model Workspace {
   externalSubscriptions   ExternalSubscription[]
   whiteLabelProfiles      WhiteLabelProfile[]
   agencyDocuments         GapReportExport[]
+  generatedAssets         GeneratedAsset[]
 
   @@index([ownerUserId])
   @@index([status])
@@ -301,6 +302,8 @@ model DiscoveryIdeaExport {
   sourceUpdatedAt   DateTime
   snapshotJson      Json          @default("{}")
   pdfBytes          Bytes?
+  storageAssetId    String?
+  storageAsset      GeneratedAsset? @relation(fields: [storageAssetId], references: [id], onDelete: SetNull)
   byteLength        Int?
   sha256            String?       @db.VarChar(64)
   generatedByUserId String?       @db.VarChar(191)
@@ -315,6 +318,45 @@ model DiscoveryIdeaExport {
   @@index([workspaceId, createdAt])
   @@index([ideaId, exportMode, sourceUpdatedAt, status])
   @@index([agencyClientId, createdAt])
+  @@index([storageAssetId])
+}
+
+// Durable metadata for AI/system generated binary objects. The object bytes
+// live in private S3; application and worker disks are temporary only.
+model GeneratedAsset {
+  id                String    @id
+  workspaceId       String
+  workspace         Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  projectId         String?
+  project           Project?  @relation(fields: [projectId], references: [id], onDelete: SetNull)
+  bucket            String    @db.VarChar(255)
+  objectKey         String    @db.VarChar(1024)
+  versionId         String?   @db.VarChar(255)
+  etag              String?   @db.VarChar(255)
+  assetType         String    @db.VarChar(80)
+  mimeType          String    @db.VarChar(160)
+  sizeBytes         Int
+  checksumSha256    String    @db.VarChar(64)
+  visibility        String    @default("private") @db.VarChar(40)
+  source            String    @db.VarChar(80)
+  originalFilename  String?   @db.VarChar(255)
+  altText           String?   @db.VarChar(500)
+  sourceEntityType  String?   @db.VarChar(80)
+  sourceEntityId    String?   @db.VarChar(191)
+  dedupeKey         String?   @unique @db.VarChar(191)
+  status            String    @default("available") @db.VarChar(40)
+  metadataJson      Json      @default("{}")
+  createdByUserId   String?   @db.VarChar(191)
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  discoveryIdeaExports DiscoveryIdeaExport[]
+
+  @@unique([bucket, objectKey])
+  @@index([workspaceId, createdAt])
+  @@index([projectId, assetType, createdAt])
+  @@index([sourceEntityType, sourceEntityId])
+  @@index([checksumSha256])
 }
 
 model WorkspaceInvitation {
@@ -1152,6 +1194,10 @@ model ProviderCostEvent {
   featureKey   String             @db.VarChar(120)
   feature      FeatureCostCatalog @relation(fields: [featureKey], references: [featureKey], onDelete: Restrict)
   provider     String             @db.VarChar(80)
+  workspaceId  String?            @db.VarChar(191)
+  projectId    String?            @db.VarChar(191)
+  websiteId    String?            @db.VarChar(191)
+  idempotencyKey String?          @unique @db.VarChar(191)
   model        String?            @db.VarChar(120)
   inputTokens  Int                @default(0)
   outputTokens Int                @default(0)
@@ -1163,6 +1209,8 @@ model ProviderCostEvent {
   @@index([usageEventId])
   @@index([featureKey])
   @@index([provider])
+  @@index([workspaceId, createdAt])
+  @@index([projectId, createdAt])
 }
 
 model CacheRecord {
@@ -1484,6 +1532,7 @@ model Project {
   websiteApprovedReleases     WebsiteApprovedRelease[]
   websitePublications         WebsitePublication[]
   websiteDeployments          WebsiteDeployment[]
+  generatedAssets             GeneratedAsset[]
   websiteSftpIntegrations     WebsiteSftpIntegration[]
   measurementCheckpoints      MeasurementCheckpoint[]
   nextBestActions             NextBestAction[]
@@ -3548,6 +3597,7 @@ model AuthorityOpportunity {
   outreachRequired        Boolean            @default(false)
   outreachDraftAiOutputId String?            @db.VarChar(191)
   executionTaskId         String?            @db.VarChar(191)
+  dedupeKey               String?            @unique @db.VarChar(191)
   approvedByUserId        String?            @db.VarChar(191)
   approvedAt              DateTime?
   dismissedAt             DateTime?
@@ -3569,20 +3619,28 @@ model BacklinkProfileSnapshot {
   project            Project                @relation(fields: [projectId], references: [id], onDelete: Cascade)
   provider           String                 @default("searchdata") @db.VarChar(80)
   target             String                 @db.VarChar(512)
-  totalBacklinks     Int                    @default(0)
-  referringDomains   Int                    @default(0)
-  newBacklinks       Int                    @default(0)
-  lostBacklinks      Int                    @default(0)
-  dofollowBacklinks  Int                    @default(0)
-  nofollowBacklinks  Int                    @default(0)
-  brokenBacklinks    Int                    @default(0)
+  profileType        String                 @default("owned") @db.VarChar(40)
+  competitorDomain   String?                @db.VarChar(255)
+  collectionKey      String?                @unique @db.VarChar(191)
+  dataStatus         String                 @default("available") @db.VarChar(40)
+  totalBacklinks     Int?
+  referringDomains   Int?
+  newBacklinks       Int?
+  lostBacklinks      Int?
+  dofollowBacklinks  Int?
+  nofollowBacklinks  Int?
+  brokenBacklinks    Int?
   providerRiskSignal Int?
   rawSummaryJson     Json                   @default("{}")
+  limitationsJson    Json                   @default("[]")
+  comparisonStartAt  DateTime?
+  comparisonEndAt    DateTime?
   capturedAt         DateTime               @default(now())
   backlinks          ProjectBacklink[]
   riskFindings       AuthorityRiskFinding[]
 
-  @@index([projectId, capturedAt])
+  @@index([projectId, profileType, capturedAt])
+  @@index([projectId, competitorDomain, capturedAt])
 }
 
 model ProjectBacklink {
@@ -3692,14 +3750,33 @@ model OutreachMessage {
   personalizationJson Json             @default("{}")
   status              String           @default("draft") @db.VarChar(40)
   approvalStatus      String           @default("draft") @db.VarChar(40)
+  currentVersion      Int              @default(1)
+  approvedVersion     Int?
   approvedByUserId    String?          @db.VarChar(191)
   approvedAt          DateTime?
   sentAt              DateTime?
   createdAt           DateTime         @default(now())
   updatedAt           DateTime         @updatedAt
+  versions            OutreachMessageVersion[]
 
   @@unique([campaignId, sequenceOrder])
   @@index([projectId, status])
+}
+
+model OutreachMessageVersion {
+  id              String          @id @default(cuid())
+  messageId       String
+  message         OutreachMessage @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  version         Int
+  subject         String          @db.VarChar(255)
+  bodyText        String          @db.Text
+  changeType      String          @default("manual_edit") @db.VarChar(40)
+  metadataJson    Json            @default("{}")
+  createdByUserId String?         @db.VarChar(191)
+  createdAt       DateTime        @default(now())
+
+  @@unique([messageId, version])
+  @@index([messageId, createdAt])
 }
 
 model EarnedMention {
@@ -3714,6 +3791,8 @@ model EarnedMention {
   mentionType    String                @default("backlink") @db.VarChar(60)
   linkAttribute  String?               @db.VarChar(40)
   status         String                @default("earned") @db.VarChar(40)
+  verificationStatus String            @default("pending_provider_verification") @db.VarChar(60)
+  verifiedAt     DateTime?
   referralVisits Int                   @default(0)
   referralLeads  Int                   @default(0)
   evidenceJson   Json                  @default("{}")
