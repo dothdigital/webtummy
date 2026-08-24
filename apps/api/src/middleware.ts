@@ -1,7 +1,7 @@
 // Auth + RBAC + tenant-isolation middleware. See docs/ARCHITECTURE.md §1a.
 import type { Request, Response, NextFunction } from "express";
 import type { Role } from "@webtummy/db";
-import { signToken, verifyToken, type JwtPayload } from "./auth.js";
+import { sessionCookie, sessionTokenFromCookie, signToken, verifyToken, type JwtPayload } from "./auth.js";
 import { prisma } from "@webtummy/db";
 import { hasWorkspacePermission, preferredWorkspaceIdForUser, workspaceContext } from "./workspace-access.js";
 import { clientViewerRouteAllowed } from "./dev002.js";
@@ -18,18 +18,20 @@ declare global {
   }
 }
 
-export function refreshedAuthenticatedScope(token: JwtPayload, currentUser: { role: Role; clientId: string | null }) {
-  return { ...token, role: currentUser.role, clientId: currentUser.clientId } satisfies JwtPayload;
+export function refreshedAuthenticatedScope(token: JwtPayload, currentUser: { role: Role; clientId: string | null; sessionVersion?: number }) {
+  const sessionVersion = currentUser.sessionVersion ?? token.sessionVersion;
+  return { ...token, role: currentUser.role, clientId: currentUser.clientId, ...(sessionVersion === undefined ? {} : { sessionVersion }) } satisfies JwtPayload;
 }
 
 /** Require a valid JWT. Attaches req.user. */
 export async function requireAuth(req: Request, res: Response, next: NextFunction) {
   const header = req.headers.authorization;
-  if (!header?.startsWith("Bearer ")) {
-    return res.status(401).json({ error: "missing bearer token" });
-  }
+  const bearerToken = header?.startsWith("Bearer ") ? header.slice(7) : null;
+  const cookieToken = sessionTokenFromCookie(req.headers.cookie);
+  const presentedToken = bearerToken ?? cookieToken;
+  if (!presentedToken) return res.status(401).json({ error: "missing session token" });
   try {
-    req.user = verifyToken(header.slice(7));
+    req.user = verifyToken(presentedToken);
   } catch {
     return res.status(401).json({ error: "invalid or expired token" });
   }
@@ -40,14 +42,17 @@ export async function requireAuth(req: Request, res: Response, next: NextFunctio
     // moved from a stale Agency tenant back to its Personal/Entrepreneur
     // client, and makes every downstream legacy and workspace route use the
     // same current scope.
-    const currentUser = await prisma.user.findUnique({ where: { id: req.user.userId }, select: { role: true, clientId: true, isActive: true } });
+    const currentUser = await prisma.user.findUnique({ where: { id: req.user.userId }, select: { role: true, clientId: true, isActive: true, sessionVersion: true } });
     if (!currentUser?.isActive) return res.status(401).json({ error: "inactive account" });
+    if ((req.user.sessionVersion ?? 0) !== currentUser.sessionVersion) return res.status(401).json({ error: "session revoked" });
     req.user = refreshedAuthenticatedScope(req.user, currentUser);
 
     // Return a renewed token on authenticated activity. The browser accepts
     // this only after recent interaction, and it now carries the corrected
     // current account scope instead of perpetuating the stale tenant.
-    res.setHeader("X-SEnuke-Session-Token", signToken({ userId: req.user.userId, role: req.user.role, clientId: req.user.clientId }));
+    const renewedToken = signToken({ userId: req.user.userId, role: req.user.role, clientId: req.user.clientId, sessionVersion: currentUser.sessionVersion });
+    res.append("Set-Cookie", sessionCookie(renewedToken));
+    if (bearerToken) res.setHeader("X-SEnuke-Session-Token", renewedToken);
 
     const requestedWorkspaceId = req.header("x-senuke-ai-workspace-id")?.trim();
     let workspaceId = requestedWorkspaceId || await preferredWorkspaceIdForUser(req.user.userId, req.user.clientId);

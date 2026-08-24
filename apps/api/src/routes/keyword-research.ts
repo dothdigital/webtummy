@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { Router } from "express";
+import { safePublicFetch } from "@webtummy/core/safe-public-fetch";
 import type { Request } from "express";
 import { Worker } from "bullmq";
 import { z } from "zod";
@@ -3015,13 +3016,13 @@ async function fetchCompetitorProfile(url: string, target: ParsedCompetitor | nu
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 15000);
   try {
-    const response = await fetch(url, {
+    const response = await safePublicFetch(url, {
       headers: {
         "user-agent": "Mozilla/5.0 (compatible; SEnukeAIBot/0.1; +https://senuke-ai.local)",
         accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
       },
       signal: controller.signal,
-    });
+    }, { sameHostname: true });
     const contentType = response.headers.get("content-type") || "";
     if (!contentType.includes("text/html")) return emptyProfile(response.status, target);
     const html = await response.text();

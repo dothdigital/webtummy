@@ -13,8 +13,8 @@ export const COMMERCIAL_PLAN_CAPACITY = {
 
 export type CommercialPlanCode = keyof typeof COMMERCIAL_PLAN_CAPACITY;
 
-export function capacityPackPurchaseAllowed(availableUnits: number) {
-  return Number.isFinite(availableUnits) && availableUnits <= 0;
+export function capacityPackPurchaseAllowed(availableUnits: number, warningLevel?: number | null) {
+  return Number.isFinite(availableUnits) && (availableUnits <= 0 || warningLevel != null);
 }
 
 export function canonicalCommercialPlanCode(value: string | null | undefined): CommercialPlanCode {

@@ -3,6 +3,7 @@ import { useSearchParams } from "react-router-dom";
 import { api } from "../api.js";
 import { Button, Card } from "../components/ui.js";
 import type { BillingPlan } from "../types.js";
+import { sanitizeHtml } from "../sanitize-html.js";
 
 export default function Pricing() {
   const [searchParams] = useSearchParams();
@@ -72,7 +73,7 @@ export default function Pricing() {
                 <div className="text-xl font-bold text-charcoal-900">{plan.name}</div>
                 <div
                   className="mt-2 min-h-[44px] text-sm leading-5 text-charcoal-500 [&_ol]:ml-4 [&_ol]:list-decimal [&_ul]:ml-4 [&_ul]:list-disc"
-                  dangerouslySetInnerHTML={{ __html: plan.description }}
+                  dangerouslySetInnerHTML={{ __html: sanitizeHtml(plan.description, "basic") }}
                 />
                 <div className="mt-5 flex items-end gap-1">
                   <span className="text-4xl font-bold text-charcoal-900">${((price?.amountCents ?? 0) / 100).toLocaleString()}</span>

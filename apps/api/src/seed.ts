@@ -1,11 +1,12 @@
-// Seed the first super_admin. Run once: npm run -w @webtummy/api seed
-// Override via env: SEED_ADMIN_EMAIL / SEED_ADMIN_PASSWORD.
+// Seed the first super_admin only when both credentials are explicitly set.
+// The command also maintains non-account seed data, so deployments may run it
+// safely without creating a default administrator.
 import { prisma } from "@webtummy/db";
 import { hashPassword } from "./auth.js";
 import { ensureDefaultBillingPlans } from "./billing.js";
 
-const email = process.env.SEED_ADMIN_EMAIL ?? "admin@webtummy.com";
-const password = process.env.SEED_ADMIN_PASSWORD ?? "ChangeMe!2026";
+const email = process.env.SEED_ADMIN_EMAIL?.trim().toLowerCase() ?? "";
+const password = process.env.SEED_ADMIN_PASSWORD?.trim() ?? "";
 
 const standardModuleTasks = [
   {
@@ -219,8 +220,23 @@ async function ensureModuleTaskSeedData() {
 
 async function main() {
   await ensureDefaultBillingPlans();
+  if (!email && !password) {
+    console.log("SEED_ADMIN_EMAIL and SEED_ADMIN_PASSWORD are not set; skipping bootstrap super-admin creation.");
+    await ensureModuleTaskSeedData();
+    return;
+  }
+  if (!email || !password) {
+    throw new Error("Set both SEED_ADMIN_EMAIL and SEED_ADMIN_PASSWORD, or leave both unset to skip bootstrap super-admin creation.");
+  }
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+    throw new Error("SEED_ADMIN_EMAIL must be a valid email address.");
+  }
+  if (password.length < 16) {
+    throw new Error("SEED_ADMIN_PASSWORD must contain at least 16 characters.");
+  }
   const existing = await prisma.user.findUnique({ where: { email } });
   if (existing) {
+    if (existing.role !== "super_admin") throw new Error(`SEED_ADMIN_EMAIL ${email} already belongs to a non-admin account.`);
     console.log(`super_admin ${email} already exists.`);
     await ensureModuleTaskSeedData();
     return;
@@ -234,7 +250,6 @@ async function main() {
     },
   });
   console.log(`Created super_admin: ${user.email}`);
-  console.log(`Password: ${password}  (change it after first login)`);
   await ensureModuleTaskSeedData();
 }
 

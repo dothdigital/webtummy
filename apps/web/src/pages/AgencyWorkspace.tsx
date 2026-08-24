@@ -70,9 +70,9 @@ function Badge({ children, tone = "slate" }: { children: React.ReactNode; tone?:
   return <span className={`inline-flex rounded-full px-2.5 py-1 text-xs font-bold ${styles[tone]}`}>{children}</span>;
 }
 
-function AttentionQueue({ actions }: { actions: WorkspaceData["nextActions"] }) {
+function AttentionQueue({ actions, entrepreneur = false }: { actions: WorkspaceData["nextActions"]; entrepreneur?: boolean }) {
   if (!actions.length) return null;
-  return <Card className="p-5 lg:p-6"><div className="flex items-start justify-between gap-3"><div><div className="text-xs font-bold uppercase tracking-wide text-brand-700">Next Best Action</div><h2 className="mt-1 text-lg font-bold text-slate-950">What to do next</h2></div><Badge tone="amber">{actions.length} item{actions.length === 1 ? "" : "s"}</Badge></div><div className="mt-5 space-y-3">{actions.map((item) => <Link key={item.key} to={item.href} className="group flex min-h-16 items-center justify-between gap-4 rounded-xl border border-slate-200 p-4 hover:border-brand-300 hover:bg-brand-50/30 focus:outline-none focus:ring-4 focus:ring-brand-100"><div><b className="text-slate-900">{item.title}</b><span className="mt-1 block text-sm leading-5 text-slate-600">{item.description}</span></div><span className="shrink-0 font-bold text-brand-700">Open →</span></Link>)}</div></Card>;
+  return <Card className="p-5 lg:p-6"><div className="flex items-start justify-between gap-3"><div><div className="text-xs font-bold uppercase tracking-wide text-brand-700">Next Best Action</div><h2 className="mt-1 text-lg font-bold text-slate-950">{entrepreneur ? "What this workspace should do next" : "What to do next"}</h2></div><Badge tone="amber">{actions.length} item{actions.length === 1 ? "" : "s"}</Badge></div><div className="mt-5 space-y-3">{actions.map((item) => <Link key={item.key} to={item.href} className="group flex min-h-16 items-center justify-between gap-4 rounded-xl border border-slate-200 p-4 hover:border-brand-300 hover:bg-brand-50/30 focus:outline-none focus:ring-4 focus:ring-brand-100"><div><b className="text-slate-900">{item.title}</b><span className="mt-1 block text-sm leading-5 text-slate-600">{item.description}</span></div><span className="shrink-0 font-bold text-brand-700">Open →</span></Link>)}</div></Card>;
 }
 
 const WORKSPACE_PAGE_SIZE = 10;
@@ -315,6 +315,7 @@ export default function AgencyWorkspace() {
         <div className="min-w-0">
           {isAgency && <div className="flex flex-wrap items-center gap-2 text-xs font-bold text-slate-400"><Link to="/" className="hover:text-brand-700">My Workspace</Link><span>/</span><span className="text-brand-700">Agency Portfolio</span></div>}
           <div className={`${isAgency ? "mt-3" : ""} flex flex-wrap items-center gap-3`}><h1 className="text-3xl font-bold tracking-tight text-slate-950">{workspaceName}</h1><Badge tone="blue">{customerPlanLabel(data.workspace.workspaceType)}</Badge></div>
+          {isPersonal && <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-600">See the current priority, project progress, approvals and verified results across your Entrepreneur Workspace.</p>}
           {!portfolioProjects.length && <p className="mt-2 text-sm font-semibold text-slate-500">{projectAllowanceLabel(0, null)}</p>}
         </div>
         <div className="flex shrink-0 flex-nowrap gap-2 overflow-x-auto pb-1">{isAgency && !data.clients.some((client) => client.status === "active") ? canManageClients && <button type="button" onClick={() => { openTab("clients"); setShowClientForm(true); }} className="inline-flex h-11 shrink-0 items-center rounded-lg bg-brand-600 px-4 text-sm font-bold text-white shadow-sm hover:bg-brand-700">Create Client</button> : <>{canManageClients && isAgency && <button onClick={() => { openTab("clients"); setShowClientForm(true); }} className="h-11 shrink-0 rounded-lg border border-slate-200 bg-white px-4 text-sm font-bold text-slate-700 hover:bg-slate-50">New Client</button>}{canCreateProjects && <Link to="/projects/new" className="inline-flex h-11 shrink-0 items-center rounded-lg bg-brand-600 px-4 text-sm font-bold text-white shadow-sm hover:bg-brand-700">Start a Project</Link>}</>}</div>
@@ -338,7 +339,7 @@ export default function AgencyWorkspace() {
     <div className="flex gap-2 overflow-x-auto rounded-xl border bg-white p-2">{tabs.map((item) => <button key={item.id} onClick={() => openTab(item.id)} className={`shrink-0 rounded-lg px-4 py-2 text-sm font-bold ${tab === item.id ? "bg-slate-950 text-white" : "text-slate-600 hover:bg-slate-50"}`}>{item.label}{item.count !== undefined && <span className="ml-2 opacity-70">{item.count}</span>}</button>)}</div>
 
     {tab === "dashboard" && <>
-      {!isBusiness && <AttentionQueue actions={dashboardActions} />}
+      {!isBusiness && <AttentionQueue actions={dashboardActions} entrepreneur={isPersonal} />}
       {!portfolioProjects.length && !isAgency && <Card className="overflow-hidden border-brand-100 p-0">
         <div className="bg-gradient-to-br from-brand-50 via-white to-emerald-50 px-5 py-6 sm:px-7 sm:py-8">
           <div className="text-xs font-black uppercase tracking-[0.16em] text-brand-700">Guided first step</div>

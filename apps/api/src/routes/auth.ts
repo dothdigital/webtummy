@@ -3,8 +3,9 @@ import { createHash, randomBytes } from "node:crypto";
 import { Router } from "express";
 import { z } from "zod";
 import { Prisma, prisma } from "@webtummy/db";
-import { verifyPassword, signToken, hashPassword } from "../auth.js";
+import { clearSessionCookie, hashPassword, sessionCookie, signToken, verifyPassword } from "../auth.js";
 import { requireAuth } from "../middleware.js";
+import { authRateLimit } from "../auth-rate-limit.js";
 import { config } from "../config.js";
 import { sendMail } from "../email.js";
 import { trialEndsFrom } from "../billing.js";
@@ -13,6 +14,11 @@ import { rolesConsumeSeat } from "@webtummy/core/workspace-permissions";
 import { commercialRegistrationPolicy, reconcilePendingJvZooEventsForUser, workspaceTypeForCommercialPlan } from "../commercial-service.js";
 
 export const authRouter = Router();
+
+// Public self-registration is intentionally retained for a possible future
+// launch mode, but disabled while all customer accounts originate from a
+// verified JVZoo purchase or the protected Admin Users workflow.
+const PUBLIC_SELF_REGISTRATION_ENABLED = false;
 
 const VERIFY_TOKEN_TTL_MS = 24 * 60 * 60 * 1000;
 const RESET_TOKEN_TTL_MS = 60 * 60 * 1000;
@@ -89,8 +95,8 @@ async function workspaceSession(userId: string, clientId: string | null) {
   };
 }
 
-function issueLogin(user: { id: string; role: "super_admin" | "client_admin" | "client_user"; clientId: string | null }) {
-  return signToken({ userId: user.id, role: user.role, clientId: user.clientId });
+function issueLogin(user: { id: string; role: "super_admin" | "client_admin" | "client_user"; clientId: string | null; sessionVersion?: number }) {
+  return signToken({ userId: user.id, role: user.role, clientId: user.clientId, sessionVersion: user.sessionVersion ?? 0 });
 }
 
 function escapeHtml(value: string) {
@@ -161,7 +167,7 @@ async function sendVerificationEmail(user: { id: string; email: string; name: st
   });
 }
 
-async function sendPasswordResetEmail(user: { id: string; email: string; name: string | null }) {
+export async function sendPasswordResetEmail(user: { id: string; email: string; name: string | null }, purpose: "reset" | "setup" = "reset") {
   const token = randomToken();
   await prisma.passwordResetToken.create({
     data: {
@@ -173,9 +179,13 @@ async function sendPasswordResetEmail(user: { id: string; email: string; name: s
   const link = `${config.webAppUrl.replace(/\/$/, "")}/reset-password?token=${encodeURIComponent(token)}`;
   await sendMail({
     to: user.email,
-    subject: "Reset your SEnuke AI - AI Growth Operating System password",
-    text: `Hi ${user.name ?? "there"}, reset your password by opening this link: ${link}. This link expires in 1 hour.`,
-    html: `<p>Hi ${user.name ?? "there"},</p><p>Reset your SEnuke AI - AI Growth Operating System password by opening this secure link:</p><p><a href="${link}">Reset password</a></p><p>This link expires in 1 hour.</p>`,
+    subject: purpose === "setup" ? "Set up your SEnuke AI - AI Growth Operating System account" : "Reset your SEnuke AI - AI Growth Operating System password",
+    text: purpose === "setup"
+      ? `Hi ${user.name ?? "there"}, an administrator created your SEnuke AI - AI Growth Operating System account. Set your password by opening this link: ${link}. This link expires in 1 hour.`
+      : `Hi ${user.name ?? "there"}, reset your password by opening this link: ${link}. This link expires in 1 hour.`,
+    html: purpose === "setup"
+      ? `<p>Hi ${user.name ?? "there"},</p><p>An administrator created your SEnuke AI - AI Growth Operating System account.</p><p><a href="${link}">Set password and sign in</a></p><p>This secure link expires in 1 hour.</p>`
+      : `<p>Hi ${user.name ?? "there"},</p><p>Reset your SEnuke AI - AI Growth Operating System password by opening this secure link:</p><p><a href="${link}">Reset password</a></p><p>This link expires in 1 hour.</p>`,
   });
 }
 
@@ -204,7 +214,7 @@ const loginSchema = z.object({
   password: z.string().min(1),
 });
 
-authRouter.post("/login", async (req, res) => {
+authRouter.post("/login", authRateLimit({ scope: "login", limit: 10, windowSeconds: 15 * 60, identityFields: ["email"] }), async (req, res) => {
   const parsed = loginSchema.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() });
 
@@ -219,6 +229,7 @@ authRouter.post("/login", async (req, res) => {
   const firstLogin = !user.lastLoginAt;
   await prisma.user.update({ where: { id: user.id }, data: { lastLoginAt: new Date() } });
   const token = issueLogin(user);
+  res.append("Set-Cookie", sessionCookie(token));
   res.json({
     token,
     user: { ...authUser(user), firstLogin, workspace: await workspaceSession(user.id, user.clientId) },
@@ -243,7 +254,13 @@ const registerSchema = z.object({
   captchaToken: z.string().optional(),
 });
 
-authRouter.post("/register", async (req, res) => {
+authRouter.post("/register", authRateLimit({ scope: "register", limit: 5, windowSeconds: 60 * 60, identityFields: ["email"] }), async (req, res) => {
+  if (!PUBLIC_SELF_REGISTRATION_ENABLED) {
+    return res.status(403).json({
+      error: "Public account creation is disabled. Complete checkout through JVZoo and use the secure activation email, or contact support.",
+      code: "public_registration_disabled",
+    });
+  }
   const parsed = registerSchema.safeParse(req.body);
   if (!parsed.success) {
     return res.status(400).json({ error: parsed.error.flatten().fieldErrors });
@@ -348,7 +365,7 @@ const acceptWorkspaceInvitationSchema = z.object({
   password: z.string().min(8).max(128).optional(),
 });
 
-authRouter.post("/workspace-invitations/accept", async (req, res) => {
+authRouter.post("/workspace-invitations/accept", authRateLimit({ scope: "invitation", limit: 20, windowSeconds: 15 * 60, identityFields: ["token", "email"] }), async (req, res) => {
   const parsed = acceptWorkspaceInvitationSchema.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() });
   const hash = tokenHash(parsed.data.token);
@@ -402,7 +419,7 @@ authRouter.post("/workspace-invitations/accept", async (req, res) => {
 });
 
 const verifyEmailSchema = z.object({ token: z.string().min(32) });
-authRouter.post("/verify-email", async (req, res) => {
+authRouter.post("/verify-email", authRateLimit({ scope: "verify-email", limit: 20, windowSeconds: 15 * 60, identityFields: ["token"] }), async (req, res) => {
   const parsed = verifyEmailSchema.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ error: "invalid token" });
 
@@ -435,11 +452,13 @@ authRouter.post("/verify-email", async (req, res) => {
     console.error("Failed to reconcile a verified JVZoo purchase after email verification", error);
   }
 
-  res.json({ token: issueLogin(user), user: { ...authUser(user), workspace: await workspaceSession(user.id, user.clientId) } });
+  const token = issueLogin(user);
+  res.append("Set-Cookie", sessionCookie(token));
+  res.json({ token, user: { ...authUser(user), workspace: await workspaceSession(user.id, user.clientId) } });
 });
 
 const resendVerificationSchema = z.object({ email: z.string().email("Enter a valid email") });
-authRouter.post("/resend-verification", async (req, res) => {
+authRouter.post("/resend-verification", authRateLimit({ scope: "resend-verification", limit: 5, windowSeconds: 60 * 60, identityFields: ["email"] }), async (req, res) => {
   const parsed = resendVerificationSchema.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten().fieldErrors });
 
@@ -457,7 +476,7 @@ authRouter.post("/resend-verification", async (req, res) => {
 
 // Always returns a generic message to prevent email enumeration.
 const forgotSchema = z.object({ email: z.string().email("Enter a valid email") });
-authRouter.post("/forgot-password", async (req, res) => {
+authRouter.post("/forgot-password", authRateLimit({ scope: "forgot-password", limit: 5, windowSeconds: 60 * 60, identityFields: ["email"] }), async (req, res) => {
   const parsed = forgotSchema.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten().fieldErrors });
   const user = await prisma.user.findUnique({ where: { email: parsed.data.email } });
@@ -483,7 +502,7 @@ const resetPasswordSchema = z.object({
     .regex(/[0-9]/, "Include a number")
     .regex(/[^A-Za-z0-9]/, "Include a special character"),
 });
-authRouter.post("/reset-password", async (req, res) => {
+authRouter.post("/reset-password", authRateLimit({ scope: "reset-password", limit: 20, windowSeconds: 15 * 60, identityFields: ["token"] }), async (req, res) => {
   const parsed = resetPasswordSchema.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten().fieldErrors });
 
@@ -507,13 +526,21 @@ authRouter.post("/reset-password", async (req, res) => {
       where: { id: record.userId },
       data: {
         passwordHash,
+        sessionVersion: { increment: 1 },
         emailVerifiedAt: record.user.emailVerifiedAt ?? now,
         lastLoginAt: now,
       },
     });
   });
 
-  res.json({ token: issueLogin(user), user: { ...authUser(user), workspace: await workspaceSession(user.id, user.clientId) } });
+  const token = issueLogin(user);
+  res.append("Set-Cookie", sessionCookie(token));
+  res.json({ token, user: { ...authUser(user), workspace: await workspaceSession(user.id, user.clientId) } });
+});
+
+authRouter.post("/logout", (_req, res) => {
+  res.append("Set-Cookie", clearSessionCookie());
+  res.status(204).end();
 });
 
 authRouter.get("/me", requireAuth, async (req, res) => {

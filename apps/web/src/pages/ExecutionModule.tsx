@@ -208,13 +208,13 @@ const moduleCopy: Record<ModuleKind, { title: string; subtitle: string; primary:
   opportunities: {
     title: "Opportunity Finder",
     subtitle: "Discover and evaluate high-value opportunities for this project.",
-    primary: "Refresh Opportunities",
+    primary: "Reassess opportunities",
     secondary: "How it works",
   },
   strategy: {
     title: "AI Strategy Engine",
     subtitle: "Turn opportunity insights into a structured execution strategy.",
-    primary: "Refresh Strategy",
+    primary: "Create new Strategy version",
     secondary: "How it works",
   },
   keywords: {
@@ -243,13 +243,13 @@ const moduleCopy: Record<ModuleKind, { title: string; subtitle: string; primary:
   },
   "site-architect": {
     title: "AI Site Architect",
-    subtitle: "Generate intelligent site structure and pages that rank and convert.",
+    subtitle: "Create an approved website structure and page plan designed for usability, search visibility and conversion goals.",
     primary: "Generate Pages",
     secondary: "How it works",
   },
   "lead-magnets": {
     title: "Lead Magnet Builder",
-    subtitle: "Create high-converting lead capture assets that grow your audience and fuel your funnel.",
+    subtitle: "Prepare a Strategy-approved lead capture asset, delivery path and follow-up workflow for review.",
     primary: "Create Lead Magnet",
     secondary: "How it works",
   },
@@ -382,20 +382,23 @@ function moduleReadiness(kind: ModuleKind, data: ModuleData, project?: GuidedPro
   );
   const keywordAnalysis = item(
     "keyword_analysis",
-    "Keyword analysis required",
+    keywordAnalysisComplete ? "Keyword analysis complete" : "Keyword analysis required",
     "SEnuke AI - AI Growth Operating System needs target keywords, buyer intent, topical clusters, competitor gaps, difficulty, opportunity score, and revenue potential before strategy and full execution planning.",
     keywordAnalysisComplete,
     [{ label: "Run Keyword Analysis", url: `/keywords?projectId=${project.id}` }],
   );
+  const websitePlanTask = project.executionTasks?.find((task) => task.sourceType === "website_plan" || task.moduleName === "site_architect" || /website plan|page map/i.test(task.title ?? ""));
+  const websitePlanApproved = Boolean(websitePlanTask?.approvedAt || ["approved", "ready_to_publish", "completed"].includes(websitePlanTask?.status ?? ""));
+  const existingWebsitePath = project.projectType === "existing_website" || project.websiteStatus === "existing_website";
+  const websiteRecoveryActions = websitePlanApproved
+    ? [{ label: existingWebsitePath ? "Add Website URL" : "Create Website", url: existingWebsitePath ? `/guided-projects/${project.id}/intake` : `/site-architect?projectId=${project.id}` }]
+    : [{ label: "Review Website Plan", url: `/seo-page-map?projectId=${project.id}${websitePlanTask?.id ? `&taskId=${websitePlanTask.id}` : ""}` }];
   const websiteItem = item(
     "website",
-    "No website found",
-    "Create or connect a website first so SEnuke AI - AI Growth Operating System can analyze and optimize it.",
+    "Site Analysis needs a website",
+    websitePlanApproved ? "Create or connect the website approved in the Website Plan before Site Analysis begins." : "Review and approve the governed Website Plan before creating or connecting its website.",
     hasWebsite,
-    [
-      { label: "Create Website", url: `/site-architect?projectId=${project.id}` },
-      { label: "Add Website URL", url: `/guided-projects/${project.id}/intake` },
-    ],
+    websiteRecoveryActions,
   );
   const siteAnalysis: ReadinessItem = {
     key: "site_analysis",
@@ -449,6 +452,7 @@ export default function ExecutionModule({ kind }: { kind: ModuleKind }) {
   const [leadMagnetStartRequest, setLeadMagnetStartRequest] = useState(kind === "lead-magnets" && searchParams.get("start") === "1" ? 1 : 0);
   const [opportunityBusy, setOpportunityBusy] = useState<"generate" | string | null>(null);
   const [opportunityMessage, setOpportunityMessage] = useState("");
+  const [opportunityCapacityEstimate, setOpportunityCapacityEstimate] = useState<number | null>(null);
   const [selectedProjectId, setSelectedProjectId] = useState(searchParams.get("projectId") ?? getActiveProjectId());
   const keywordJobFingerprint = useRef("");
   const strategyRequestKey = useRef("");
@@ -514,6 +518,13 @@ export default function ExecutionModule({ kind }: { kind: ModuleKind }) {
     const timer = window.setInterval(() => setNowMs(Date.now()), 60 * 1000);
     return () => window.clearInterval(timer);
   }, []);
+
+  useEffect(() => {
+    if (kind !== "opportunities") return;
+    void api.get<{ features: Array<{ featureKey: string; defaultCreditCost: number }> }>("/api/usage/feature-costs")
+      .then((result) => setOpportunityCapacityEstimate(result.features.find((feature) => feature.featureKey === "opportunity_refresh")?.defaultCreditCost ?? null))
+      .catch(() => setOpportunityCapacityEstimate(null));
+  }, [kind]);
 
   useEffect(() => {
     let refreshTimer: number | null = null;
@@ -847,15 +858,19 @@ export default function ExecutionModule({ kind }: { kind: ModuleKind }) {
   const generateOpportunities = async () => {
     if (!activeProject || opportunityBusy) return;
     const creatingFirstOpportunity = !hasOpportunities;
+    const estimateText = opportunityCapacityEstimate == null ? "the configured AI Capacity estimate" : `${opportunityCapacityEstimate.toLocaleString()} AI Capacity units`;
+    if (!window.confirm(`${creatingFirstOpportunity ? "Create" : "Reassess"} opportunity recommendations?\n\nSEnuke AI will use the current Business Brain and project evidence. Estimated use: ${estimateText}. If no eligible evidence changed, the saved assessment is reused without another charge.`)) return;
     setOpportunityBusy("generate");
     setOpportunityMessage("");
     try {
       const [result] = await Promise.all([
-        api.post<{ project: GuidedProject; generationMode: "ai" | "rule_fallback"; analysisSummary?: string }>(`/api/projects-v2/${activeProject.id}/opportunities/generate`, {}),
+        api.post<{ project: GuidedProject; generationMode: "ai" | "rule_fallback"; analysisSummary?: string; cached?: boolean }>(`/api/projects-v2/${activeProject.id}/opportunities/generate`, {}),
         new Promise<void>((resolve) => window.setTimeout(resolve, 2500)),
       ]);
       updateActiveProject(result.project);
-      setOpportunityMessage(result.generationMode === "rule_fallback"
+      setOpportunityMessage(result.cached
+        ? (result.analysisSummary || "No eligible evidence changed. The existing assessment was reused without another AI Capacity charge.")
+        : result.generationMode === "rule_fallback"
         ? "The AI provider was unavailable, so a clearly recorded rules-based fallback was created. Refresh when AI is available for a full recommendation."
         : creatingFirstOpportunity
           ? "AI analyzed the Business Brain and created three ranked opportunities. Review the reasoning and select the best direction."
@@ -991,7 +1006,7 @@ export default function ExecutionModule({ kind }: { kind: ModuleKind }) {
     : kind === "opportunities" && opportunityBusy === "generate"
       ? hasOpportunities ? "Refreshing..." : "Creating..."
     : kind === "opportunities"
-      ? hasOpportunities ? "Refresh Opportunities" : "Create Opportunity"
+      ? hasOpportunities ? "Reassess opportunities" : "Create Opportunity"
     : copy.primary;
   const moduleNextStep = activeProject ? getModuleNextStep({
     kind,
@@ -1017,7 +1032,7 @@ export default function ExecutionModule({ kind }: { kind: ModuleKind }) {
       return;
     }
     if (kind === "strategy") {
-      setStrategyMessage("Regenerating strategy from the latest project data...");
+      setStrategyMessage("Creating a new Strategy version from the latest project data...");
       void runStrategyAction("generate");
       return;
     }
@@ -1037,7 +1052,7 @@ export default function ExecutionModule({ kind }: { kind: ModuleKind }) {
   const headerActions: ProjectHeaderAction[] = [];
   if (kind === "keywords" && scopedKeywordRuns.length > 0) headerActions.push({ key: "manage-keywords", label: "Manage keyword groups", variant: "secondary", onClick: () => { const next = new URLSearchParams(searchParams); next.set("manageKeywords", "1"); setSearchParams(next, { replace: true }); } });
   if (kind === "ai-citations") headerActions.push({ key: "evidence-workspace", label: "Evidence-led workspace", variant: "status" });
-  else if (kind !== "site-architect" && kind !== "keywords" && !(kind === "site-analysis" && !latestSiteCrawl)) headerActions.push({ key: "primary", label: primaryLabel, disabled: primaryDisabled, onClick: runHeaderPrimaryAction });
+  else if (kind !== "site-architect" && kind !== "keywords" && kind !== "lead-magnets" && !(kind === "site-analysis" && !latestSiteCrawl)) headerActions.push({ key: "primary", label: primaryLabel, disabled: primaryDisabled, onClick: runHeaderPrimaryAction });
 
   return (
     <div className={kind === "keywords"
@@ -1057,10 +1072,10 @@ export default function ExecutionModule({ kind }: { kind: ModuleKind }) {
           <div>
             <div className="text-xs font-black uppercase tracking-wide text-amber-700">Previously completed · refresh required</div>
             <div className="mt-1 text-base font-bold text-slate-950">Strategy v{activeProject.strategyPlans[0].version ?? 1} was completed, but newer evidence is now available</div>
-            <p className="mt-1 leading-6 text-amber-900">The existing version remains in history. {workflowController.intelligenceReady ? "Regenerate Strategy to create a new reviewable version from the latest evidence." : "Complete the evidence refresh shown above first; then regenerate Strategy as a new version."}</p>
+            <p className="mt-1 leading-6 text-amber-900">The existing version remains in history. {workflowController.intelligenceReady ? "Create a new Strategy version from the latest evidence for review." : "Complete the evidence refresh shown above first; then create a new Strategy version."}</p>
           </div>
           {workflowController.intelligenceReady ? (
-            <button type="button" onClick={() => { setStrategyMessage("Regenerating strategy from the latest project data..."); void runStrategyAction("generate"); }} disabled={Boolean(strategyBusy)} className="shrink-0 rounded-lg bg-brand-600 px-4 py-2.5 text-sm font-black text-white hover:bg-brand-700 disabled:bg-slate-300">{strategyBusy === "generate" ? "Regenerating…" : "Regenerate Strategy · New Version"}</button>
+            <button type="button" onClick={() => { setStrategyMessage("Creating a new Strategy version from the latest project data..."); void runStrategyAction("generate"); }} disabled={Boolean(strategyBusy)} className="shrink-0 rounded-lg bg-brand-600 px-4 py-2.5 text-sm font-black text-white hover:bg-brand-700 disabled:bg-slate-300">{strategyBusy === "generate" ? "Creating version…" : "Create new Strategy version"}</button>
           ) : (
             <Link to={workflowController.nextBestAction.action.url} className="shrink-0 rounded-lg bg-brand-600 px-4 py-2.5 text-center text-sm font-black text-white hover:bg-brand-700">{workflowController.nextBestAction.action.label}</Link>
           )}
@@ -1098,7 +1113,7 @@ export default function ExecutionModule({ kind }: { kind: ModuleKind }) {
         <ModuleNextStepCallout
           step={moduleNextStep}
           onAction={moduleNextStep.action === "generate-strategy"
-            ? () => { setStrategyMessage("Regenerating strategy from the latest project data..."); void runStrategyAction("generate"); }
+            ? () => { setStrategyMessage("Creating a new Strategy version from the latest project data..."); void runStrategyAction("generate"); }
             : moduleNextStep.action === "analyze-site"
               ? () => { void analyzeSite(); }
               : undefined}
@@ -1118,7 +1133,7 @@ export default function ExecutionModule({ kind }: { kind: ModuleKind }) {
       {!loading && !workspaceLoadError && !hasActiveProject && data.projects.length > 0 && searchParams.get("projectId") && <Card className="border-amber-200 bg-amber-50 p-5"><h2 className="font-bold text-amber-900">Project unavailable</h2><p className="mt-2 text-sm text-amber-800">This project was not found or is not assigned to your workspace account.</p><Link to="/projects" className="mt-4 inline-flex rounded-lg border border-amber-200 bg-white px-4 py-2 text-sm font-bold text-amber-900">Back to projects</Link></Card>}
       {!loading && hasActiveProject && !hasWorkspaceRecords && <EmptyModuleState title="No data available" detail="Project data will appear here after intake, crawls, tasks, or generation runs exist." />}
       {!loading && hasActiveProject && hasWorkspaceRecords && !canRunModule && kind !== "site-architect" && <ModuleReadinessChecklist moduleTitle={copy.title} items={readiness.items} />}
-      {!loading && hasActiveProject && hasWorkspaceRecords && canRunModule && kind === "opportunities" && <OpportunityScreen data={scopedData} selectingId={opportunityBusy} onGenerate={generateOpportunities} onSelect={selectOpportunity} onClearSelection={clearOpportunitySelection} onDeleteData={deleteOpportunityData} onRefine={refineOpportunities} onSkip={skipOpportunityFinder} />}
+      {!loading && hasActiveProject && hasWorkspaceRecords && canRunModule && kind === "opportunities" && <OpportunityScreen data={scopedData} selectingId={opportunityBusy} capacityEstimate={opportunityCapacityEstimate} onGenerate={generateOpportunities} onSelect={selectOpportunity} onClearSelection={clearOpportunitySelection} onDeleteData={deleteOpportunityData} onRefine={refineOpportunities} onSkip={skipOpportunityFinder} />}
       {!loading && hasActiveProject && hasWorkspaceRecords && canRunModule && kind === "strategy" && <StrategyScreen data={scopedData} busy={strategyBusy} onAction={runStrategyAction} />}
       {!loading && hasActiveProject && hasWorkspaceRecords && canRunModule && kind === "keywords" && <KeywordScreen data={scopedData} />}
       {!loading && hasActiveProject && hasWorkspaceRecords && canRunModule && kind === "site-analysis" && !latestSiteCrawl && !activeSiteCrawl && !siteAnalysisBusy && (
@@ -1180,7 +1195,7 @@ function moduleHelpSections(kind: ModuleKind, projectName: string): HelpSection[
         bullets: [
           "Complete intake first so the project has enough business context.",
           "Use Create Opportunity when no recommendations exist yet.",
-          "Use Refresh Opportunities only after recommendations already exist and the project profile or analysis data has changed.",
+          "Use Reassess opportunities only after recommendations already exist and the project profile or analysis data has changed.",
           "Review the score, fit rationale, execution preview, and insights panel.",
           "Select one opportunity to make it the strategy context.",
         ],
@@ -1483,6 +1498,7 @@ function ModuleReadinessChecklist({ moduleTitle, items }: { moduleTitle: string;
 function OpportunityScreen({
   data,
   selectingId,
+  capacityEstimate,
   onGenerate,
   onSelect,
   onClearSelection,
@@ -1492,6 +1508,7 @@ function OpportunityScreen({
 }: {
   data: ModuleData;
   selectingId: string | null;
+  capacityEstimate: number | null;
   onGenerate: () => Promise<void>;
   onSelect: (opportunityId: string) => Promise<boolean>;
   onClearSelection: () => Promise<void>;
@@ -1561,7 +1578,7 @@ function OpportunityScreen({
           <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
             <div>
               <h2 className="text-lg font-bold text-charcoal-950">Recommended Opportunities</h2>
-              <p className="text-sm text-charcoal-500">Select one opportunity to become the context for strategy and execution.</p>
+              <p className="text-sm text-charcoal-500">Select one opportunity to become the context for Strategy and execution. Reassessment uses {capacityEstimate == null ? "the configured AI Capacity estimate" : `${capacityEstimate.toLocaleString()} AI Capacity units`} only when eligible evidence changed.</p>
             </div>
             <div className="flex flex-wrap gap-2">
               <button
@@ -1569,7 +1586,9 @@ function OpportunityScreen({
                 onClick={() => {
                   setCompareOpen(true);
                 }}
-                className="rounded-lg border border-slate-200 bg-white px-4 py-2 text-sm font-bold text-charcoal-800 hover:bg-slate-50"
+                disabled={opportunityCount < 2}
+                title={opportunityCount < 2 ? "At least two valid opportunities are required for comparison." : undefined}
+                className="rounded-lg border border-slate-200 bg-white px-4 py-2 text-sm font-bold text-charcoal-800 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
               >
                 Compare
               </button>
@@ -1582,8 +1601,8 @@ function OpportunityScreen({
               >
                 Full Report
               </button>
-              <button type="button" onClick={() => setRefineOpen(true)} disabled={selectingId === "refine"} className="rounded-lg border border-brand-200 bg-white px-4 py-2 text-sm font-bold text-brand-700 hover:bg-brand-50 disabled:opacity-50">{selectingId === "refine" ? "Refining…" : "Ask AI to Refine"}</button>
-              <button type="button" onClick={() => void onSkip()} disabled={selectingId === "skip"} className="rounded-lg border border-slate-200 bg-white px-4 py-2 text-sm font-bold text-charcoal-700 hover:bg-slate-50 disabled:opacity-50">Confirm Existing Direction / Skip</button>
+              <button type="button" onClick={() => setRefineOpen(true)} disabled={selectingId === "refine"} className="rounded-lg border border-brand-200 bg-white px-4 py-2 text-sm font-bold text-brand-700 hover:bg-brand-50 disabled:opacity-50">{selectingId === "refine" ? "Refining…" : "Refine recommendation"}</button>
+              <button type="button" onClick={() => void onSkip()} disabled={selectingId === "skip"} className="rounded-lg border border-slate-200 bg-white px-4 py-2 text-sm font-bold text-charcoal-700 hover:bg-slate-50 disabled:opacity-50">Keep current direction</button>
               <button type="button" onClick={() => void onDeleteData()} disabled={Boolean(selectingId)} className="rounded-lg border border-rose-200 bg-white px-4 py-2 text-sm font-bold text-rose-700 hover:bg-rose-50 disabled:opacity-50">{selectingId === "delete" ? "Deleting…" : "Delete Opportunity Data"}</button>
             </div>
           </div>
@@ -2008,7 +2027,7 @@ function StrategyScreen({ data, busy, onAction }: { data: ModuleData; busy: "gen
           <StrategyTabs activeTab={activeTab} onChange={setActiveTab} />
 
           <Card className="px-4 py-3">
-            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between"><div><div className="text-xs font-bold uppercase tracking-wide text-charcoal-400">Strategy versions</div><div className="mt-1 text-sm font-semibold text-charcoal-700">Version {latestStrategy.version ?? strategyVersions.length} · {label(latestStrategy.status ?? "draft")} {latestStrategy.createdAt ? `· ${formatDateTime(latestStrategy.createdAt)}` : ""}</div></div><div className="flex flex-wrap items-center gap-2">{activeTab !== "overview" && <button type="button" onClick={() => setRegenerateConfirmOpen(true)} disabled={Boolean(busy)} className="rounded-lg border border-violet-200 bg-violet-50 px-3 py-2 text-xs font-bold text-violet-700 hover:bg-violet-100 disabled:opacity-50">{busy === "generate" ? "Regenerating…" : "Regenerate Strategy"}</button>}<button type="button" onClick={() => void generateStrategyReport()} disabled={reportBusy} className="rounded-lg bg-brand-600 px-3 py-2 text-xs font-bold text-white shadow-sm disabled:bg-slate-300">{reportBusy ? "Generating PDF…" : "Generate Strategy Report ↓"}</button>{strategyVersions.map((version, index) => <button type="button" key={version?.id ?? index} onClick={() => setCompareVersionId(index === 0 || compareVersionId === version?.id ? null : version?.id ?? null)} className={`rounded-full border px-3 py-1 text-xs font-bold ${index === 0 ? "border-brand-300 bg-brand-50 text-brand-700" : compareVersionId === version?.id ? "border-violet-300 bg-violet-50 text-violet-700" : "border-slate-200 bg-white text-charcoal-500"}`}>v{version?.version ?? strategyVersions.length - index} · {index === 0 ? label(version?.status ?? "draft") : compareVersionId === version?.id ? "Comparing" : "Compare"}</button>)}</div></div>
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between"><div><div className="text-xs font-bold uppercase tracking-wide text-charcoal-400">Strategy versions</div><div className="mt-1 text-sm font-semibold text-charcoal-700">{latestStrategy.status === "approved" ? "Current approved Strategy" : "Current Strategy draft"}, version {latestStrategy.version ?? strategyVersions.length} {latestStrategy.createdAt ? `· ${formatDateTime(latestStrategy.createdAt)}` : ""}</div></div><div className="flex flex-wrap items-center gap-2">{activeTab !== "overview" && <button type="button" onClick={() => setRegenerateConfirmOpen(true)} disabled={Boolean(busy)} className="rounded-lg border border-violet-200 bg-violet-50 px-3 py-2 text-xs font-bold text-violet-700 hover:bg-violet-100 disabled:opacity-50">{busy === "generate" ? "Creating version…" : "Create new Strategy version"}</button>}<button type="button" onClick={() => void generateStrategyReport()} disabled={reportBusy} className="rounded-lg bg-brand-600 px-3 py-2 text-xs font-bold text-white shadow-sm disabled:bg-slate-300">{reportBusy ? "Generating PDF…" : "Generate Strategy Report ↓"}</button>{strategyVersions.map((version, index) => <button type="button" key={version?.id ?? index} onClick={() => setCompareVersionId(index === 0 || compareVersionId === version?.id ? null : version?.id ?? null)} className={`rounded-full border px-3 py-1 text-xs font-bold ${index === 0 ? "border-brand-300 bg-brand-50 text-brand-700" : compareVersionId === version?.id ? "border-violet-300 bg-violet-50 text-violet-700" : "border-slate-200 bg-white text-charcoal-500"}`}>v{version?.version ?? strategyVersions.length - index} · {index === 0 ? label(version?.status ?? "draft") : compareVersionId === version?.id ? "Comparing" : "Compare"}</button>)}</div></div>
             {compareVersionId && (() => {
               const compared = strategyVersions.find((version) => version?.id === compareVersionId);
               if (!compared) return null;
@@ -2213,7 +2232,7 @@ function StrategyScreen({ data, busy, onAction }: { data: ModuleData; busy: "gen
                   <div className="text-xs font-bold uppercase tracking-[0.18em] text-violet-200">AI Funnel Evaluator</div>
                   <h2 className="mt-2 text-2xl font-bold">Evaluate the complete funnel with the latest project evidence</h2>
                   <p className="mt-2 max-w-3xl text-sm leading-6 text-violet-100">This Strategy version predates the AI-guided funnel contract. Create a revised Strategy so AI can select one Next Best Action, explain why, rank the remaining journey, and connect every step to Execution.</p>
-                  <button type="button" onClick={() => void runInlineAction("generate", { revisionComment: "Evaluate the complete growth funnel with AI using all current project evidence. Select one Next Best Action and rank the remaining execution journey by evidence, dependency, expected impact, confidence, and effort." })} disabled={Boolean(busy)} className="mt-5 rounded-xl bg-white px-5 py-3 text-sm font-bold text-violet-950 shadow-lg disabled:opacity-60">{busy === "generate" ? "AI is evaluating the funnel…" : "Regenerate Strategy"}</button>
+                  <button type="button" onClick={() => void runInlineAction("generate", { revisionComment: "Evaluate the complete growth funnel with AI using all current project evidence. Select one Next Best Action and rank the remaining execution journey by evidence, dependency, expected impact, confidence, and effort." })} disabled={Boolean(busy)} className="mt-5 rounded-xl bg-white px-5 py-3 text-sm font-bold text-violet-950 shadow-lg disabled:opacity-60">{busy === "generate" ? "AI is evaluating the funnel…" : "Create new Strategy version"}</button>
                 </div>
               </Card>
             )
@@ -2311,10 +2330,10 @@ function UnifiedStrategyOverview({ plan, decisionSet, strategy, score, scoreRows
   onRegenerate: () => void;
   onExecution: () => void;
 }) {
-  const reviewActions = <div className="flex flex-wrap gap-3">{!approved && <button type="button" onClick={onApprove} disabled={Boolean(busy)} className="rounded-xl bg-brand-600 px-5 py-3 text-sm font-black text-white shadow-md shadow-brand-200 transition hover:bg-brand-700 disabled:bg-slate-300 disabled:shadow-none">{busy === "approve" ? "Approving…" : "Approve Strategy"}</button>}<button type="button" onClick={onRegenerate} disabled={Boolean(busy)} className="rounded-xl border-2 border-brand-200 bg-white px-5 py-3 text-sm font-black text-brand-700 shadow-sm transition hover:border-brand-300 hover:bg-brand-50 disabled:text-slate-400">{plan ? "Regenerate Strategy" : "Generate Unified AI Strategy"}</button></div>;
+  const reviewActions = <div className="flex flex-wrap gap-3">{!approved && <button type="button" onClick={onApprove} disabled={Boolean(busy)} className="rounded-xl bg-brand-600 px-5 py-3 text-sm font-black text-white shadow-md shadow-brand-200 transition hover:bg-brand-700 disabled:bg-slate-300 disabled:shadow-none">{busy === "approve" ? "Approving…" : "Approve Strategy"}</button>}<button type="button" onClick={onRegenerate} disabled={Boolean(busy)} className="rounded-xl border-2 border-brand-200 bg-white px-5 py-3 text-sm font-black text-brand-700 shadow-sm transition hover:border-brand-300 hover:bg-brand-50 disabled:text-slate-400">{plan ? "Create new Strategy version" : "Generate Unified AI Strategy"}</button></div>;
   const executionAction = approved && <button type="button" onClick={onExecution} disabled={Boolean(busy)} className="rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-2.5 text-sm font-bold text-emerald-700 disabled:text-slate-400">{busy === "execution" ? "Synchronizing…" : "Sync Execution Plan"}</button>;
   const actions = <div className="flex flex-wrap items-center gap-2">{reviewActions}{executionAction}</div>;
-  if (!plan) return <Card className="overflow-hidden"><div className="border-b border-amber-200 bg-amber-50 px-5 py-4"><div className="text-xs font-black uppercase tracking-wide text-amber-700">Legacy Strategy v{strategy.version ?? 1}</div><h2 className="mt-1 text-xl font-black text-charcoal-950">This version is a project summary, not the unified plan of action</h2><p className="mt-2 text-sm leading-6 text-amber-900">Regenerate it with the Integrated Strategy Engine to create ranked focus areas, a phased action plan, audience journeys, channel responsibilities, dependencies, and shared direction for Website Development, SEO, Lead Magnets, AI Citations, Growth, Social, and Publishing.</p></div><div className="grid gap-4 p-5 lg:grid-cols-3"><StrategySnapshot label="Current summary" value={strategy.strategySummary || "Not available"} /><StrategySnapshot label="Positioning" value={strategy.positioningStatement || "Not available"} /><StrategySnapshot label="Audience and offer" value={`${strategy.audienceProfile || "Audience not available"}\n${strategy.offerRecommendation || "Offer not available"}`} /></div><div className="flex flex-col gap-3 border-t border-slate-100 bg-slate-50 px-5 py-4 sm:flex-row sm:items-center sm:justify-between"><p className="text-sm text-charcoal-600">The old version remains in history after regeneration.</p>{actions}</div></Card>;
+  if (!plan) return <Card className="overflow-hidden"><div className="border-b border-amber-200 bg-amber-50 px-5 py-4"><div className="text-xs font-black uppercase tracking-wide text-amber-700">Legacy Strategy v{strategy.version ?? 1}</div><h2 className="mt-1 text-xl font-black text-charcoal-950">This version is a project summary, not the unified plan of action</h2><p className="mt-2 text-sm leading-6 text-amber-900">Create a new version with the Integrated Strategy Engine to add ranked focus areas, a phased action plan, audience journeys, channel responsibilities, dependencies, and shared direction for Website Development, SEO, Lead Magnets, AI Citations, Growth, Social, and Publishing.</p></div><div className="grid gap-4 p-5 lg:grid-cols-3"><StrategySnapshot label="Current summary" value={strategy.strategySummary || "Not available"} /><StrategySnapshot label="Positioning" value={strategy.positioningStatement || "Not available"} /><StrategySnapshot label="Audience and offer" value={`${strategy.audienceProfile || "Audience not available"}\n${strategy.offerRecommendation || "Offer not available"}`} /></div><div className="flex flex-col gap-3 border-t border-slate-100 bg-slate-50 px-5 py-4 sm:flex-row sm:items-center sm:justify-between"><p className="text-sm text-charcoal-600">The current version remains in history after the new draft is created.</p>{actions}</div></Card>;
 
   return <div className="space-y-5">
     <Card className="overflow-hidden"><div className="border-b border-slate-100 bg-gradient-to-br from-brand-50 via-white to-emerald-50 px-5 py-5 sm:px-6"><div className="flex flex-col gap-5 lg:flex-row lg:items-start lg:justify-between"><div className="min-w-0"><div className="flex flex-wrap items-center gap-2"><span className="rounded-full bg-brand-600 px-3 py-1 text-[11px] font-black uppercase tracking-wide text-white">Unified Strategy & Decision Engine</span><span className={`rounded-full px-3 py-1 text-[11px] font-black uppercase ${approved ? "bg-emerald-100 text-emerald-700" : "bg-amber-100 text-amber-700"}`}>{approved ? "Approved" : "Draft"}</span>{decisionSet && <span className="rounded-full border border-violet-200 bg-violet-50 px-3 py-1 text-[11px] font-black text-violet-700">Brain v{decisionSet.businessBrainVersion} · Evidence v{decisionSet.evidenceVersion}</span>}</div><h2 className="mt-3 text-2xl font-black tracking-tight text-charcoal-950">One plan of action for the complete platform</h2><div className="mt-4">{reviewActions}</div><p className="mt-4 max-w-3xl text-sm font-medium leading-6 text-charcoal-600">{plan.executiveSummary}</p></div><div className="w-full shrink-0 rounded-2xl border border-white bg-white/90 px-5 py-4 shadow-sm lg:w-[420px]"><div className="flex items-end justify-between gap-4"><div><div className="text-4xl font-black leading-none text-charcoal-950">{score}</div><div className="mt-1 text-[11px] font-black uppercase tracking-wide text-charcoal-400">Strategy readiness</div></div></div><div className="mt-4 grid grid-cols-2 gap-2">{scoreRows.slice(0, 4).map((row) => <div key={row.key} className="rounded-xl border border-slate-100 bg-slate-50 px-3 py-2.5"><div className="text-xl font-black leading-none text-charcoal-950">{row.value}</div><div className="mt-1 text-[11px] font-black leading-4 text-charcoal-600">{row.label}</div></div>)}</div></div></div><StrategyExecutiveBrief summary={plan.executiveSummary} objectives={plan.objectives} summaryShown />{executionAction && <div className="mt-5">{executionAction}</div>}</div>{notice && <div className={`mx-5 my-4 rounded-lg border px-4 py-3 text-sm font-semibold sm:mx-6 ${notice.tone === "success" ? "border-emerald-200 bg-emerald-50 text-emerald-800" : notice.tone === "error" ? "border-red-200 bg-red-50 text-red-800" : "border-brand-200 bg-brand-50 text-brand-800"}`}>{notice.message}</div>}</Card>
@@ -2395,7 +2414,7 @@ function StrategyDarkDetail({ label: detailLabel, value }: { label: string; valu
 }
 
 function StrategyRegenerateConfirmModal({ currentVersion, busy, onClose, onNeedAiHelp, onConfirm }: { currentVersion: number; busy: boolean; onClose: () => void; onNeedAiHelp: () => void; onConfirm: () => void }) {
-  return <div className="fixed inset-0 z-[80] grid place-items-center bg-charcoal-950/55 p-4 backdrop-blur-sm" role="dialog" aria-modal="true" aria-labelledby="regenerate-strategy-title"><button type="button" className="absolute inset-0" aria-label="Cancel Strategy regeneration" onClick={busy ? undefined : onClose}/><div className="relative w-full max-w-lg overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl"><div className="border-b border-slate-100 bg-gradient-to-r from-brand-50 via-white to-violet-50 px-6 py-5"><div className="grid h-11 w-11 place-items-center rounded-xl bg-brand-100 text-xl text-brand-700">✦</div><div className="mt-4 text-xs font-black uppercase tracking-[0.14em] text-brand-700">Create Strategy v{currentVersion + 1}</div><h2 id="regenerate-strategy-title" className="mt-1 text-xl font-black text-charcoal-950">Would you like help from AI before regenerating?</h2><p className="mt-2 text-sm leading-6 text-charcoal-600">Choose guided revision if you want to tell AI what should change, or regenerate directly from the latest approved project evidence.</p></div><div className="space-y-3 px-6 py-5"><button type="button" onClick={onNeedAiHelp} disabled={busy} className="flex w-full items-start gap-3 rounded-xl border border-brand-300 bg-brand-50 p-4 text-left transition hover:border-brand-500 hover:bg-brand-100 disabled:opacity-50"><span className="grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-brand-600 text-lg text-white">✦</span><span><span className="block text-sm font-bold text-charcoal-950">Yes, help me revise with AI</span><span className="mt-1 block text-xs leading-5 text-charcoal-600">Choose suggested improvements and add your own instructions before creating the new draft.</span></span></button><button type="button" onClick={onConfirm} disabled={busy} className="flex w-full items-start gap-3 rounded-xl border border-slate-200 bg-white p-4 text-left transition hover:border-emerald-300 hover:bg-emerald-50 disabled:opacity-50"><span className="grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-emerald-100 text-lg font-bold text-emerald-700">↻</span><span><span className="block text-sm font-bold text-charcoal-950">No, regenerate from latest evidence</span><span className="mt-1 block text-xs leading-5 text-charcoal-600">Use the latest approved opportunity, keywords, Site Analysis, markets, and project profile without extra instructions.</span></span></button><div className="rounded-xl border border-emerald-200 bg-emerald-50 p-4"><div className="text-sm font-bold text-emerald-900">Your current version remains safe</div><p className="mt-1 text-xs leading-5 text-emerald-800">Strategy v{currentVersion} stays in version history. The new version is created as a draft and must be approved before changing the active Execution Plan.</p></div></div><div className="flex justify-end border-t border-slate-100 bg-slate-50 px-6 py-4"><button type="button" onClick={onClose} disabled={busy} className="rounded-lg border border-slate-200 bg-white px-4 py-2.5 text-sm font-bold text-charcoal-700 disabled:opacity-50">Cancel</button></div></div></div>;
+  return <div className="fixed inset-0 z-[80] grid place-items-center bg-charcoal-950/55 p-4 backdrop-blur-sm" role="dialog" aria-modal="true" aria-labelledby="regenerate-strategy-title"><button type="button" className="absolute inset-0" aria-label="Cancel new Strategy version" onClick={busy ? undefined : onClose}/><div className="relative w-full max-w-lg overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl"><div className="border-b border-slate-100 bg-gradient-to-r from-brand-50 via-white to-violet-50 px-6 py-5"><div className="grid h-11 w-11 place-items-center rounded-xl bg-brand-100 text-xl text-brand-700">✦</div><div className="mt-4 text-xs font-black uppercase tracking-[0.14em] text-brand-700">Create Strategy v{currentVersion + 1}</div><h2 id="regenerate-strategy-title" className="mt-1 text-xl font-black text-charcoal-950">How should the new Strategy draft be created?</h2><p className="mt-2 text-sm leading-6 text-charcoal-600">Choose guided revision to specify changes, or create the draft directly from the latest approved project evidence.</p></div><div className="space-y-3 px-6 py-5"><button type="button" onClick={onNeedAiHelp} disabled={busy} className="flex w-full items-start gap-3 rounded-xl border border-brand-300 bg-brand-50 p-4 text-left transition hover:border-brand-500 hover:bg-brand-100 disabled:opacity-50"><span className="grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-brand-600 text-lg text-white">✦</span><span><span className="block text-sm font-bold text-charcoal-950">Guide the new version</span><span className="mt-1 block text-xs leading-5 text-charcoal-600">Choose suggested improvements and add your own instructions before creating the new draft.</span></span></button><button type="button" onClick={onConfirm} disabled={busy} className="flex w-full items-start gap-3 rounded-xl border border-slate-200 bg-white p-4 text-left transition hover:border-emerald-300 hover:bg-emerald-50 disabled:opacity-50"><span className="grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-emerald-100 text-lg font-bold text-emerald-700">↻</span><span><span className="block text-sm font-bold text-charcoal-950">Use latest approved evidence</span><span className="mt-1 block text-xs leading-5 text-charcoal-600">Use the latest approved opportunity, keywords, Site Analysis, markets, and project profile without extra instructions.</span></span></button><div className="rounded-xl border border-emerald-200 bg-emerald-50 p-4"><div className="text-sm font-bold text-emerald-900">Your current version remains safe</div><p className="mt-1 text-xs leading-5 text-emerald-800">Strategy v{currentVersion} stays in version history. The new version is created as a draft and must be approved before changing the active Execution Plan.</p></div></div><div className="flex justify-end border-t border-slate-100 bg-slate-50 px-6 py-4"><button type="button" onClick={onClose} disabled={busy} className="rounded-lg border border-slate-200 bg-white px-4 py-2.5 text-sm font-bold text-charcoal-700 disabled:opacity-50">Cancel</button></div></div></div>;
 }
 
 function StrategyApprovalCompleteModal({ projectId, strategyVersion, onReview }: { projectId: string; strategyVersion: number; onReview: () => void }) {
@@ -2499,7 +2518,7 @@ function StrategyIntelligencePanel({ analyses, applicable, score, strategyApprov
   }));
   return <Card className="overflow-hidden">
     <div className="border-b border-slate-200 bg-gradient-to-r from-slate-50 via-white to-violet-50/40 px-5 py-6 sm:px-6">
-      <div className="flex flex-col gap-5 sm:flex-row sm:items-center sm:justify-between"><div className="max-w-3xl"><div className="text-xs font-black uppercase tracking-[0.14em] text-violet-700">{isAiFunnel ? "Advanced Analysis · Unified Decision Intelligence" : "Advanced Analysis · Strategy Intelligence"}</div><h2 className="mt-2 text-2xl font-black tracking-tight text-charcoal-950">{isAiFunnel ? "Why each opportunity matters and what AI will improve" : "What the evidence says—and what the project should do next"}</h2><p className="mt-2 text-sm leading-6 text-charcoal-600">{isAiFunnel ? "This is the same saved decision set used by the Strategy overview, customer funnel, downloadable report, Next Best Action, and Execution Plan. Each recommendation keeps its evidence, expected impact, calculated confidence, destination, experiment, approval rule, and success measure." : "This analysis combines approved keywords, canonical page findings, Site Analysis, business intake, markets and competitors. Measured evidence is kept separate from AI planning inferences, so every recommendation shows what is known, what requires validation and where the work continues. Regenerate Strategy to refresh this evidence and create a new reviewable Strategy version."}</p></div><div className="shrink-0 text-center"><div className="relative grid h-24 w-24 place-items-center rounded-full" style={{ background: `conic-gradient(#10b981 ${Math.min(100, Math.max(0, score)) * 3.6}deg, #e2e8f0 0deg)` }}><div className="grid h-[76px] w-[76px] place-items-center rounded-full bg-white shadow-sm"><div><div className="text-xl font-black leading-none text-charcoal-950">{score}</div><div className="mt-1 text-[9px] font-bold uppercase text-charcoal-400">of 100</div></div></div></div><div className="mt-2 text-[10px] font-black uppercase tracking-wide text-emerald-700">Strategy score</div></div></div>
+      <div className="flex flex-col gap-5 sm:flex-row sm:items-center sm:justify-between"><div className="max-w-3xl"><div className="text-xs font-black uppercase tracking-[0.14em] text-violet-700">{isAiFunnel ? "Advanced Analysis · Unified Decision Intelligence" : "Advanced Analysis · Strategy Intelligence"}</div><h2 className="mt-2 text-2xl font-black tracking-tight text-charcoal-950">{isAiFunnel ? "Why each opportunity matters and what AI will improve" : "What the evidence says—and what the project should do next"}</h2><p className="mt-2 text-sm leading-6 text-charcoal-600">{isAiFunnel ? "This is the same saved decision set used by the Strategy overview, customer funnel, downloadable report, Next Best Action, and Execution Plan. Each recommendation keeps its evidence, expected impact, calculated confidence, destination, experiment, approval rule, and success measure." : "This analysis combines approved keywords, canonical page findings, Site Analysis, business intake, markets and competitors. Measured evidence is kept separate from AI planning inferences, so every recommendation shows what is known, what requires validation and where the work continues. Create a new Strategy version to refresh this evidence while preserving the current approved version."}</p></div><div className="shrink-0 text-center"><div className="relative grid h-24 w-24 place-items-center rounded-full" style={{ background: `conic-gradient(#10b981 ${Math.min(100, Math.max(0, score)) * 3.6}deg, #e2e8f0 0deg)` }}><div className="grid h-[76px] w-[76px] place-items-center rounded-full bg-white shadow-sm"><div><div className="text-xl font-black leading-none text-charcoal-950">{score}</div><div className="mt-1 text-[9px] font-bold uppercase text-charcoal-400">of 100</div></div></div></div><div className="mt-2 text-[10px] font-black uppercase tracking-wide text-emerald-700">Strategy score</div></div></div>
       {hasAnalysis && <div className="mt-6 grid grid-cols-2 gap-2 sm:grid-cols-4"><AnalysisSummaryMetric value={applicable.length} label="actionable priorities" /><AnalysisSummaryMetric value={highPriorities} label="high priority" /><AnalysisSummaryMetric value={`${averageImpact}/100`} label="average impact" /><AnalysisSummaryMetric value={`${averageConfidence}%`} label="evidence confidence" /></div>}
       {isAiFunnel && funnel && <div className="mt-5 grid grid-cols-2 gap-2 sm:grid-cols-3 xl:grid-cols-6">{funnel.steps.map((step, index) => { const meta = customerFunnelMeta(step, index); const priority = step.key === funnel.nextBestActionKey; return <div key={step.key} className={`rounded-xl border px-3 py-3 ${priority ? "border-amber-300 bg-amber-50 ring-2 ring-amber-100" : "border-slate-200 bg-white"}`}><div className="text-[9px] font-black uppercase tracking-[0.12em] text-charcoal-400">Stage {index + 1}</div><div className="mt-1 text-sm font-black text-charcoal-950">{meta.label}</div><div className={`mt-2 text-[9px] font-black uppercase ${priority ? "text-amber-700" : "text-emerald-700"}`}>{priority ? "Biggest opportunity" : `${step.confidence}% confidence`}</div></div>; })}</div>}
       {hasAnalysis && applicable.length > 0 && <div className="mt-5 grid gap-3 md:grid-cols-3">{phases.map(({ phase, items }, phaseIndex) => <div key={phase} className="rounded-xl border border-slate-200 bg-white px-4 py-3 shadow-sm"><div className="flex items-center justify-between"><span className="text-[10px] font-black uppercase tracking-[0.14em] text-violet-700">{phaseIndex + 1} · {phase}</span><span className="rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-bold text-charcoal-500">{items.length}</span></div><div className="mt-2 text-sm font-bold text-charcoal-900">{items[0]?.title ?? "No priority assigned"}</div>{items.length > 1 && <div className="mt-1 text-xs text-charcoal-500">+ {items.length - 1} more prioritized actions</div>}</div>)}</div>}
@@ -2511,7 +2530,7 @@ function StrategyIntelligencePanel({ analyses, applicable, score, strategyApprov
       <div className="border-t border-emerald-200 bg-emerald-50 px-5 py-4 text-sm leading-6 text-emerald-900 sm:px-6"><b>How this creates value:</b> approving the Strategy converts applicable recommendations into traceable execution tasks. Every task keeps its evidence and priority context, so the team knows why it exists and what outcome it supports.</div>
     </>}
     {hasAnalysis && applicable.length === 0 && <div className="p-6"><div className="rounded-xl border border-emerald-200 bg-emerald-50 p-5 text-sm leading-6 text-emerald-800"><b>No additional optimization priorities were detected.</b><span className="mt-1 block">The current project evidence was reviewed successfully. Refresh the analysis after keywords, crawl findings, competitors, goals or target markets change.</span></div></div>}
-    {!hasAnalysis && <div className="p-6"><div className="rounded-xl border border-violet-200 bg-violet-50 p-5"><h3 className="font-bold text-charcoal-950">Create the evidence-backed action plan</h3><p className="mt-2 text-sm leading-6 text-charcoal-600">Use Regenerate Strategy above. It reviews the latest keywords, site findings, competitors, markets and project goals, then saves the result as a new Strategy draft for review and approval.</p></div></div>}
+    {!hasAnalysis && <div className="p-6"><div className="rounded-xl border border-violet-200 bg-violet-50 p-5"><h3 className="font-bold text-charcoal-950">Create the evidence-backed action plan</h3><p className="mt-2 text-sm leading-6 text-charcoal-600">Use Create new Strategy version above. It reviews the latest keywords, site findings, competitors, markets and project goals, then saves a new draft for review and approval.</p></div></div>}
   </Card>;
 }
 
@@ -2940,7 +2959,7 @@ function AiEvaluatedGrowthFunnel({ projectId, funnel, strategyDecision, siteHeal
             </div>
             <div className="mt-5 flex flex-wrap gap-3">
               <button type="button" onClick={startPrimary} disabled={Boolean(busy)} className="rounded-xl bg-emerald-400 px-6 py-3 text-sm font-black text-slate-950 shadow-lg shadow-emerald-950/30 transition hover:bg-emerald-300 disabled:opacity-60">{busy ? "Working…" : primaryButton} <span aria-hidden="true">→</span></button>
-              {!aiEvaluated && <button type="button" onClick={onReevaluate} disabled={Boolean(busy)} className="rounded-xl border border-white/20 bg-white/10 px-6 py-3 text-sm font-black text-white transition hover:bg-white/15 disabled:opacity-60">{busy === "generate" ? "AI is evaluating…" : "Regenerate Strategy"}</button>}
+              {!aiEvaluated && <button type="button" onClick={onReevaluate} disabled={Boolean(busy)} className="rounded-xl border border-white/20 bg-white/10 px-6 py-3 text-sm font-black text-white transition hover:bg-white/15 disabled:opacity-60">{busy === "generate" ? "AI is evaluating…" : "Create new Strategy version"}</button>}
             </div>
           </div>
           <div className="rounded-2xl border border-white/10 bg-white/[0.06] p-4 backdrop-blur">
@@ -2956,7 +2975,7 @@ function AiEvaluatedGrowthFunnel({ projectId, funnel, strategyDecision, siteHeal
         </div>
       </Card>
 
-      {!aiEvaluated && <Card className="border-amber-200 bg-amber-50 p-4"><div className="text-sm font-bold text-amber-950">Full AI funnel evaluation is recommended</div><p className="mt-1 text-xs leading-5 text-amber-800">This funnel was reconstructed from an older AI Strategy response. Use <strong>Regenerate Strategy</strong> above to evaluate all current evidence and save a fully ranked AI funnel with a new Strategy version.</p></Card>}
+      {!aiEvaluated && <Card className="border-amber-200 bg-amber-50 p-4"><div className="text-sm font-bold text-amber-950">Full AI funnel evaluation is recommended</div><p className="mt-1 text-xs leading-5 text-amber-800">This funnel was reconstructed from an older AI Strategy response. Use <strong>Create new Strategy version</strong> above to evaluate current evidence and save a fully ranked AI funnel without replacing the approved version.</p></Card>}
 
       <Card className="overflow-hidden">
         <div className="border-b border-slate-100 px-5 py-4 sm:px-6">
@@ -3400,15 +3419,15 @@ function KeywordScreen({ data }: { data: ModuleData }) {
     ? siteAnalysisComplete
       ? `/gap-analysis?projectId=${encodeURIComponent(project?.id ?? "")}`
       : `/site-analysis?projectId=${encodeURIComponent(project?.id ?? "")}`
-    : `/gap-analysis?projectId=${encodeURIComponent(project?.id ?? "")}`;
+    : `/site-architect?projectId=${encodeURIComponent(project?.id ?? "")}&step=foundation`;
   const completedKeywordNextLabel = existingWebsiteFlow
     ? siteAnalysisComplete ? "Continue to SEO & Gap Analysis" : "Continue to Site Analysis"
-    : preLaunchWebsiteFlow ? "Continue to Market & Content Intelligence" : "Continue to Market & Content Gap Analysis";
+    : "Review Website Plan";
   const completedKeywordNextDescription = existingWebsiteFlow
     ? siteAnalysisComplete
       ? "Site Analysis is already complete. Continue to SEO & Gap Analysis to map every approved keyword to the most relevant existing page."
       : "Continue to Site Analysis so every approved keyword can be compared with the live website and mapped to the right page."
-    : preLaunchWebsiteFlow ? "Keyword Intelligence is complete. Continue to Market & Content Intelligence so AI can evaluate competitors, demand, customer questions, local opportunities, and the content needed before Website Strategy and Unified Strategy." : "The opportunity is already selected and Keyword Intelligence is complete. Continue to Market & Content Gap Analysis so AI can compare demand, competitors, target markets, authority, entities, and planned content before Strategy.";
+    : "Keyword analysis is complete. Review how every approved Primary and Secondary keyword is assigned to the governed Website Plan before approving the next Strategy version.";
   const audience = project?.businessProfile?.targetAudience || "the project audience";
   const offer = project?.businessProfile?.offerSummary || project?.niche || project?.businessName || project?.name || "the project offer";
   const markets = projectGeographies;
@@ -4918,6 +4937,7 @@ function opportunityInsightScoreRows(opportunity: Opportunity | undefined) {
 function OpportunityInsights({ project, niche, opportunity, opportunityCount, taskCount, onReport }: { project: GuidedProject; niche: string; opportunity: Opportunity | undefined; opportunityCount: number; taskCount: number; onReport: () => void }) {
   const score = safeScore(opportunity?.opportunityScore, 72);
   const scoreRows = opportunityInsightScoreRows(opportunity);
+  const scoreEvidenceComplete = Boolean(opportunity && [opportunity.opportunityScore, opportunity.seoScore, opportunity.monetizationScore, opportunity.competitionScore, opportunity.executionScore, opportunity.userFitScore].every((value) => typeof value === "number" && Number.isFinite(value)));
   const details = [
     { label: "Type", value: projectTypeLabel(project) },
     { label: "Niche", value: niche },
@@ -4934,11 +4954,11 @@ function OpportunityInsights({ project, niche, opportunity, opportunityCount, ta
       </div>
       <div className="grid gap-5 p-5 xl:grid-cols-[minmax(0,1.5fr)_220px_minmax(0,1fr)]">
         <div className="grid gap-x-5 gap-y-3 sm:grid-cols-2">
-          {scoreRows.map((row) => <OpportunityScoreBar key={row.label} label={row.label} value={row.value} tone={row.tone} />)}
-          <div className="rounded-lg bg-slate-50 px-3 py-2 text-xs leading-5 text-charcoal-600 sm:col-span-2">Complexity is inverted from speed to launch. Lower complexity means easier to execute.</div>
+          {scoreEvidenceComplete ? scoreRows.map((row) => <OpportunityScoreBar key={row.label} label={row.label} value={row.value} tone={row.tone} />) : <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-4 text-sm leading-6 text-amber-900 sm:col-span-2"><b>Insufficient evidence for scored factors.</b><br />Reassess opportunities from the current Business Brain before relying on a numeric score.</div>}
+          {scoreEvidenceComplete && <div className="rounded-lg bg-slate-50 px-3 py-2 text-xs leading-5 text-charcoal-600 sm:col-span-2">Complexity is inverted from speed to launch. Lower complexity means easier to execute.</div>}
         </div>
         <div className="grid grid-cols-3 gap-2 xl:grid-cols-1">
-          <div className="grid place-items-center rounded-xl bg-gradient-to-br from-brand-500 to-brand-700 p-3 text-center text-white shadow-sm"><div className="text-3xl font-black">{score}</div><div className="text-[11px] font-bold uppercase tracking-wide text-brand-50">Overall Score</div></div>
+          <div className="grid place-items-center rounded-xl bg-gradient-to-br from-brand-500 to-brand-700 p-3 text-center text-white shadow-sm"><div className={scoreEvidenceComplete ? "text-3xl font-black" : "text-sm font-black"}>{scoreEvidenceComplete ? score : "Not scored"}</div><div className="text-[11px] font-bold uppercase tracking-wide text-brand-50">Overall Score</div></div>
           <div className="grid place-items-center rounded-xl border border-slate-200 bg-white p-3 text-center"><div className="text-2xl font-black text-charcoal-950">{opportunityCount}</div><div className="text-[11px] font-bold uppercase text-charcoal-400">Generated options</div></div>
           <div className="grid place-items-center rounded-xl border border-slate-200 bg-white p-3 text-center"><div className="text-2xl font-black text-charcoal-950">{taskCount}</div><div className="text-[11px] font-bold uppercase text-charcoal-400">Related tasks</div></div>
         </div>

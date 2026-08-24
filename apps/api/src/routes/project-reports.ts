@@ -165,7 +165,8 @@ export function reportVersionPeriod(reportType: typeof projectReportTypes[number
 }
 
 export function reportDeliveryModeForWorkspace(workspaceType: string) {
-  return workspaceType === "agency" ? "saved_workflow" : "download_only";
+  void workspaceType;
+  return "saved_workflow";
 }
 
 type ClientReportSection = { key: string; title: string; summary?: string; metrics?: Array<{ label: string; value: unknown; note?: string }>; items?: unknown[]; emptyMessage?: string };

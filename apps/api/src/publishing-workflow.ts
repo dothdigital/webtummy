@@ -1,8 +1,7 @@
 import { randomUUID } from "node:crypto";
-import { lookup } from "node:dns/promises";
-import { isIP } from "node:net";
 import { Prisma, prisma } from "@webtummy/db";
 import { publishingState, publishingValidationErrors, type PublishingTarget, type PublishingVerification } from "@webtummy/core/publishing";
+import { safePublicFetch } from "@webtummy/core/safe-public-fetch";
 import { canAccessProject, createWorkspaceNotification, hasWorkspacePermission, recordWorkspaceActivity, workspaceContext } from "./workspace-access.js";
 import { attachPublicationOutcome, prepareMarketingExecution, publishingExecutionPreflight } from "./marketing-execution-engine.js";
 import { publishProjectWorkflowEvent } from "./project-workflow-controller.js";
@@ -22,21 +21,9 @@ function jsonRecord(value: unknown): JsonRecord {
   return value && typeof value === "object" && !Array.isArray(value) ? value as JsonRecord : {};
 }
 
-function privateAddress(address: string) {
-  if (address === "::1" || address === "::" || /^f[cd]/i.test(address) || /^fe[89ab]/i.test(address)) return true;
-  if (!isIP(address)) return true;
-  if (address.includes(":")) return false;
-  const [a, b] = address.split(".").map(Number);
-  return a === 10 || a === 127 || a === 0 || (a === 169 && b === 254) || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168) || (a === 100 && b >= 64 && b <= 127);
-}
-
 async function verifyPublicHtmlUrl(expected: string, actual?: string | null) {
   if (!actual || actual !== expected) throw Object.assign(new Error("The verified HTML URL must match the deployment target."), { statusCode: 409 });
-  const url = new URL(actual);
-  if (!/^https?:$/.test(url.protocol) || ["localhost", "localhost.localdomain"].includes(url.hostname.toLowerCase())) throw Object.assign(new Error("The deployment URL is not publicly verifiable."), { statusCode: 409 });
-  const addresses = await lookup(url.hostname, { all: true });
-  if (!addresses.length || addresses.some((entry) => privateAddress(entry.address))) throw Object.assign(new Error("The deployment URL resolves to a private or unsafe address."), { statusCode: 409 });
-  const response = await fetch(url, { method: "HEAD", redirect: "error", signal: AbortSignal.timeout(10_000) });
+  const response = await safePublicFetch(actual, { method: "HEAD", signal: AbortSignal.timeout(10_000) }, { sameHostname: true });
   if (!response.ok) throw Object.assign(new Error(`The deployment URL could not be verified (${response.status}).`), { statusCode: 409 });
 }
 

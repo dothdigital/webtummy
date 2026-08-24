@@ -90,8 +90,8 @@ export default function SeoGrowthHub() {
         <div className="pointer-events-none absolute -bottom-28 left-1/3 h-64 w-64 rounded-full bg-violet-500/20 blur-3xl" />
         <div className="relative max-w-3xl">
           <div className="text-xs font-black uppercase tracking-[0.18em] text-cyan-200">SEO &amp; Growth</div>
-          <h1 className="mt-3 text-3xl font-black tracking-tight sm:text-4xl">One starting point for search and authority growth</h1>
-          <p className="mt-3 text-sm leading-6 text-slate-200 sm:text-base">Choose the specialist workspace you need. Every module uses the same project evidence, approved strategy, keywords, website analysis, and execution records.</p>
+          <h1 className="mt-3 text-3xl font-black tracking-tight sm:text-4xl">Search, visibility and authority working from one Strategy</h1>
+          <p className="mt-3 text-sm leading-6 text-slate-200 sm:text-base">Review the project’s search, local visibility, authority and AI-citation evidence, then continue the highest valid action without creating a second growth plan.</p>
           {project && <div className="mt-5 inline-flex rounded-full border border-white/20 bg-white/10 px-4 py-2 text-sm font-bold text-white">{project.businessName || project.name}</div>}
         </div>
       </header>
@@ -102,7 +102,7 @@ export default function SeoGrowthHub() {
             <div className="flex items-start gap-4">
               <div className={`grid h-12 w-12 shrink-0 place-items-center rounded-xl bg-gradient-to-br ${item.tone} text-xl font-black text-white shadow-sm`}>{item.icon}</div>
               <div className="min-w-0 flex-1">
-                <div className="text-[10px] font-black uppercase tracking-[0.16em] text-slate-400">Workspace {item.number}</div>
+                <div className="text-[10px] font-black uppercase tracking-[0.16em] text-slate-400">Growth area {item.number}</div>
                 <h2 className="mt-1 text-xl font-black text-slate-950">{item.title}</h2>
                 <p className="mt-1 text-sm font-semibold leading-6 text-slate-700">{item.description}</p>
                 <p className="mt-2 text-xs leading-5 text-slate-500">{item.detail}</p>

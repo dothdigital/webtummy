@@ -45,8 +45,9 @@ describe("DEV-059 commercial capacity policy", () => {
     expect(calculateWorkflowUnits("strategy_generate", 450, { metadata: { cacheHit: true }, minimumUnitCost: 250 })).toBe(0);
   });
 
-  it("unlocks Capacity Packs only after all current capacity is exhausted", () => {
+  it("unlocks Capacity Packs at the warning threshold so work is not interrupted", () => {
     expect(capacityPackPurchaseAllowed(1)).toBe(false);
+    expect(capacityPackPurchaseAllowed(265, 20)).toBe(true);
     expect(capacityPackPurchaseAllowed(0)).toBe(true);
   });
 });

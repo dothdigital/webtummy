@@ -34,7 +34,7 @@ function approvalView(task: Awaited<ReturnType<typeof accessibleTask>>, level: A
   const snapshot = task.approvalSnapshotJson && typeof task.approvalSnapshotJson === "object" ? task.approvalSnapshotJson as Record<string, unknown> : {};
   const affectedCount = typeof snapshot.affectedCount === "number" ? snapshot.affectedCount : null;
   const classification = classifyApproval({ ...task, affectedCount });
-  return { ...task, approvalType: classification.type, effectiveRisk: classification.risk, highRisk: classification.highRisk, confirmationOnly: task.status === "awaiting_confirmation" || snapshot.confirmationOnly === true, approvalStage: snapshot.stage ?? "team_approval", automationLevel: level, policyRequiresApproval: approvalRequired(level, { ...task, affectedCount }), expectedBenefit: task.impact || snapshot.expectedBenefit || null, aiReason: task.description, affectedCount, beforeVersion: snapshot.before ?? null, proposedVersion: snapshot.after ?? snapshot.proposed ?? null };
+  return { ...task, approvalType: classification.type, effectiveRisk: classification.risk, highRisk: classification.highRisk, confirmationOnly: task.status === "awaiting_confirmation" || snapshot.confirmationOnly === true, approvalStage: snapshot.stage ?? "team_approval", automationLevel: level, policyRequiresApproval: approvalRequired(level, { ...task, affectedCount }), expectedBenefit: task.impact || snapshot.expectedBenefit || null, aiReason: task.description, affectedCount, beforeVersion: snapshot.before ?? null, proposedVersion: snapshot.after ?? snapshot.proposed ?? null, approvalContext: { destination: task.relatedUrl ?? snapshot.destination ?? null, confidence: snapshot.confidence ?? null, dependencies: snapshot.dependencies ?? null, capacity: snapshot.capacity ?? snapshot.capacityUnits ?? null, version: snapshot.version ?? snapshot.assetVersion ?? null, permission: snapshot.permission ?? (task.requiresApproval ? "Approval permission required" : "Project edit permission required") } };
 }
 
 approvalsRouter.get("/approvals", async (req, res) => {
@@ -46,6 +46,21 @@ approvalsRouter.get("/approvals", async (req, res) => {
   const tasks = [];
   for (const task of candidates) if (task.projectId && await canAccessProject(context, task.projectId)) tasks.push(approvalView(task as Awaited<ReturnType<typeof accessibleTask>>, projectPolicy(context.workspace.settingsJson, task.projectId)));
   res.json({ tasks, automationLevels });
+});
+
+approvalsRouter.get("/approvals/history", async (req, res) => {
+  const context = await workspaceContext(req);
+  if (!hasWorkspacePermission(context, "approve")) return res.status(403).json({ error: "Approval permission is required." });
+  const projectId = typeof req.query.projectId === "string" ? req.query.projectId : null;
+  const candidates = await prisma.executionTaskApproval.findMany({
+    where: { task: { projectId: projectId ?? { not: null } } },
+    orderBy: { createdAt: "desc" },
+    take: 200,
+    include: { task: { select: { id: true, projectId: true, title: true, relatedUrl: true, status: true, project: { select: { name: true, agencyClient: { select: { name: true } } } } } } },
+  });
+  const history = [];
+  for (const item of candidates) if (item.task.projectId && await canAccessProject(context, item.task.projectId)) history.push(item);
+  res.json({ history });
 });
 
 approvalsRouter.get("/projects-v2/:projectId/approval-policy", async (req, res) => {

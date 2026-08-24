@@ -1,6 +1,6 @@
 // Crawl detail: live status (polls while running), score gauge, summary stats,
 // pages table, and issues table with severity badges.
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { api } from "../api.js";
 import type {
@@ -1907,7 +1907,9 @@ export default function CrawlDetail() {
   const [taskModuleFilter, setTaskModuleFilter] = useState("all");
   const [taskPage, setTaskPage] = useState(1);
   const [taskActionMessage, setTaskActionMessage] = useState("");
+  const [taskActionError, setTaskActionError] = useState(false);
   const [syncingTasks, setSyncingTasks] = useState(false);
+  const taskSyncPromiseRef = useRef<Promise<ExecutionTask[]> | null>(null);
   const [healthReport, setHealthReport] = useState<HealthReport | null>(null);
   const [comparison, setComparison] = useState<CrawlComparison | null>(null);
   const [loadingComparison, setLoadingComparison] = useState(false);
@@ -1980,20 +1982,33 @@ export default function CrawlDetail() {
     }
   };
 
-  const syncExecutionTasks = async (websiteId?: string | null) => {
-    if (!id || !websiteId) return [] as ExecutionTask[];
+  const syncExecutionTasks = (websiteId?: string | null, announce = false) => {
+    if (!id || !websiteId) return Promise.resolve([] as ExecutionTask[]);
+    if (taskSyncPromiseRef.current) return taskSyncPromiseRef.current;
     setSyncingTasks(true);
-    try {
-      const result = await api.post<{ tasks: ExecutionTask[] }>(`/api/websites/${websiteId}/execution-tasks/sync`, {});
-      setExecutionTasks(result.tasks);
-      return result.tasks;
-    } finally {
-      setSyncingTasks(false);
-    }
+    const request = api.post<{ tasks: ExecutionTask[] }>(`/api/websites/${websiteId}/execution-tasks/sync`, {})
+      .then((result) => {
+        setExecutionTasks(result.tasks);
+        setTaskActionError(false);
+        if (announce) setTaskActionMessage(`${result.tasks.length} project task${result.tasks.length === 1 ? " was" : "s were"} synchronized.`);
+        return result.tasks;
+      })
+      .catch((error) => {
+        setTaskActionError(true);
+        setTaskActionMessage(`The crawl report is available, but project tasks could not be synchronized automatically. ${error instanceof Error ? error.message : "Use Sync tasks to try again."}`);
+        return [] as ExecutionTask[];
+      })
+      .finally(() => {
+        setSyncingTasks(false);
+        taskSyncPromiseRef.current = null;
+      });
+    taskSyncPromiseRef.current = request;
+    return request;
   };
 
   const updateTaskStatus = async (taskId: string, nextStatus: "completed" | "skipped" | "approved" | "ready") => {
     setTaskActionMessage("");
+    setTaskActionError(false);
     try {
       const endpoint = nextStatus === "completed" ? "complete" : nextStatus === "skipped" ? "skip" : null;
       const result = endpoint
@@ -2002,6 +2017,7 @@ export default function CrawlDetail() {
       setExecutionTasks((tasks) => tasks.map((task) => task.id === result.task.id ? result.task : task));
       setTaskActionMessage(nextStatus === "completed" ? "Task marked completed. View it anytime using the Completed filter." : `Task marked ${taskLabel(nextStatus)}.`);
     } catch (error) {
+      setTaskActionError(true);
       setTaskActionMessage(error instanceof Error ? error.message : "Task status could not be updated.");
     }
   };
@@ -2011,29 +2027,34 @@ export default function CrawlDetail() {
     if (!id) return;
     let timer: ReturnType<typeof setTimeout>;
     const tick = async () => {
-      const s = await api.get<CrawlStatus>(`/api/crawls/${id}/status`);
-      setStatus(s);
-      if (s.status === "queued" || s.status === "running") {
-        timer = setTimeout(tick, 1500);
-      } else {
-        // load results once finished
-        setSummary(await api.get(`/api/crawls/${id}/summary`));
-        const pageResult = await api.get<{ total: number; pages: PageRow[] }>(`/api/crawls/${id}/pages?take=150`);
-        setPageTotal(pageResult.total);
-        setPages(pageResult.pages);
-        setIssues((await api.get<{ issues: IssueRow[] }>(`/api/crawls/${id}/issues`)).issues);
-        setBrokenLinks((await api.get<{ links: BrokenLinkRow[] }>(`/api/crawls/${id}/broken-links`)).links);
-        setHealthReport(await api.get<HealthReport>(`/api/crawls/${id}/health-report`));
-        const syncedTasks = await syncExecutionTasks(s.website?.id);
-        const sourceIssueId = searchParams.get("sourceIssueId");
-        if (searchParams.get("section") === "execution" || sourceIssueId) setSection("execution");
-        if (sourceIssueId) {
-          const matchingTask = syncedTasks.find((task) => task.dedupeKey === `crawl:${sourceIssueId}`);
-          if (matchingTask) setOpenTaskId(matchingTask.id);
+      try {
+        const s = await api.get<CrawlStatus>(`/api/crawls/${id}/status`);
+        setStatus(s);
+        if (s.status === "queued" || s.status === "running") {
+          timer = setTimeout(tick, 1500);
+        } else {
+          // load results once finished
+          setSummary(await api.get(`/api/crawls/${id}/summary`));
+          const pageResult = await api.get<{ total: number; pages: PageRow[] }>(`/api/crawls/${id}/pages?take=150`);
+          setPageTotal(pageResult.total);
+          setPages(pageResult.pages);
+          setIssues((await api.get<{ issues: IssueRow[] }>(`/api/crawls/${id}/issues`)).issues);
+          setBrokenLinks((await api.get<{ links: BrokenLinkRow[] }>(`/api/crawls/${id}/broken-links`)).links);
+          setHealthReport(await api.get<HealthReport>(`/api/crawls/${id}/health-report`));
+          const syncedTasks = await syncExecutionTasks(s.website?.id);
+          const sourceIssueId = searchParams.get("sourceIssueId");
+          if (searchParams.get("section") === "execution" || sourceIssueId) setSection("execution");
+          if (sourceIssueId) {
+            const matchingTask = syncedTasks.find((task) => task.dedupeKey === `crawl:${sourceIssueId}`);
+            if (matchingTask) setOpenTaskId(matchingTask.id);
+          }
         }
+      } catch (error) {
+        setTaskActionError(true);
+        setTaskActionMessage(`The crawl report could not finish loading. ${error instanceof Error ? error.message : "Refresh this page to try again."}`);
       }
     };
-    tick();
+    void tick();
     return () => clearTimeout(timer);
   }, [id]);
 
@@ -2194,7 +2215,7 @@ export default function CrawlDetail() {
                 </div>
                 <div className="flex shrink-0 flex-nowrap items-center gap-2">
                   {status.website?.id && (
-                    <Button disabled={syncingTasks} onClick={() => void syncExecutionTasks(status.website?.id)}>
+                    <Button disabled={syncingTasks} onClick={() => void syncExecutionTasks(status.website?.id, true)}>
                       {syncingTasks ? "Syncing..." : "Sync tasks"}
                     </Button>
                   )}
@@ -2203,7 +2224,7 @@ export default function CrawlDetail() {
                   </Button>
                 </div>
               </div>
-              {taskActionMessage && <div className="border-b border-emerald-100 bg-emerald-50 px-5 py-2.5 text-sm font-semibold text-emerald-800">{taskActionMessage}</div>}
+              {taskActionMessage && <div className={`border-b px-5 py-2.5 text-sm font-semibold ${taskActionError ? "border-amber-200 bg-amber-50 text-amber-900" : "border-emerald-100 bg-emerald-50 text-emerald-800"}`}>{taskActionMessage}</div>}
               <div className="flex flex-wrap gap-2 border-b border-charcoal-100 px-5 py-3">
                 {taskFilters.map((item) => (
                   <button

@@ -3,6 +3,7 @@ import { Router } from "express";
 import { z } from "zod";
 import { prisma } from "@webtummy/db";
 import { urlAliasKey } from "@webtummy/core";
+import { safePublicFetch } from "@webtummy/core/safe-public-fetch";
 import { requireAuth } from "../middleware.js";
 import { projectClientIdForRequest } from "../project-scope.js";
 import { config } from "../config.js";
@@ -830,9 +831,8 @@ async function liveCheckStatus(url: string): Promise<number> {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 15000);
   try {
-    const res = await fetch(url, {
+    const res = await safePublicFetch(url, {
       method: "GET",
-      redirect: "follow",
       signal: controller.signal,
       headers: {
         "user-agent": "Mozilla/5.0 (compatible; SEnukeAIBot/0.1; +https://senuke-ai.local)",

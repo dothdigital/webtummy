@@ -1562,6 +1562,26 @@ async function generateOpportunityRecommendations(project: NonNullable<Awaited<R
   const ctx = projectContext(project);
   const run = opportunityRunMode(project);
   const ruleGuardrails = applyOpportunityRefinement(buildOpportunityOptions(project, ctx), refinement);
+  const inputSnapshot = { projectId: project.id, inputs: opportunityInputSummary(project), context: ctx, mode: run.mode, refinement: refinement ?? null, ruleGuardrails };
+  const inputHash = createHash("sha256").update(JSON.stringify(inputSnapshot)).digest("hex");
+  const usage = await preflightUsage({
+    clientId: project.clientId,
+    userId: context.membership.userId,
+    projectId: project.id,
+    websiteId: project.websiteId,
+    featureKey: "opportunity_refresh",
+    actionKey: refinement ? "Refine opportunity recommendations" : "Reassess opportunities",
+    idempotencyKey: `opportunity:${project.id}:${inputHash}`,
+    metadata: { inputHash, mode: run.mode, refinement: Boolean(refinement) },
+  });
+  if (usage.duplicate) return {
+    opportunities: project.opportunities,
+    generationMode: "ai" as const,
+    model: null,
+    analysisSummary: "No eligible project evidence changed. The existing opportunity assessment was reused without another AI Capacity charge.",
+    fallbackReason: null,
+    cached: true,
+  };
   const client = await prisma.client.findUnique({ where: { id: project.clientId }, select: { plan: true } });
   const routedModel = await modelForFeature("opportunity_refresh", client?.plan, config.openaiModel);
   let options: AiOpportunityRecommendation[];
@@ -1595,7 +1615,8 @@ async function generateOpportunityRecommendations(project: NonNullable<Awaited<R
   // should not remove their ability to compare alternatives. Always persist
   // the three ranked options and mark the strongest one for confirmation.
   const recommendations = rankedOpportunityRecommendations(options.slice().sort((left, right) => right.opportunityScore - left.opportunityScore));
-  return prisma.$transaction(async (tx) => {
+  try {
+    const saved = await prisma.$transaction(async (tx) => {
     // Saved ideas are user-owned decisions and must survive regeneration/refinement.
     await tx.opportunity.deleteMany({ where: { projectId: project.id, status: { in: ["suggested", "confirmation_required"] } } });
     const rows = await Promise.all(recommendations.map((option, index) => tx.opportunity.create({ data: {
@@ -1613,7 +1634,7 @@ async function generateOpportunityRecommendations(project: NonNullable<Awaited<R
     } })));
     await tx.aiRun.create({ data: {
       projectId: project.id, clientId: project.clientId, moduleName: "opportunity", promptVersion: refinement ? "ai-opportunity-refine-v4" : "ai-opportunity-decision-v4",
-      inputSnapshotJson: { projectId: project.id, inputs: opportunityInputSummary(project), context: ctx, mode: run.mode, refinement: refinement ?? null, ruleGuardrails },
+      inputSnapshotJson: { ...inputSnapshot, inputHash },
       outputJson: { generationMode, model: generatedModel, analysisSummary, fallbackReason, recommendations: recommendations.map((item, index) => ({ ...item, id: rows[index]?.id, status: rows[index]?.status })) },
       outputText: generationMode === "ai" ? (refinement ? `AI refined opportunity recommendations using: ${refinement}` : `AI generated ${rows.length} ${run.mode} opportunity recommendation(s) from the Business Brain.`) : `Rules fallback generated ${rows.length} opportunity recommendation(s): ${fallbackReason}`,
       status: generationMode === "ai" ? "completed" : "completed_with_fallback",
@@ -1625,8 +1646,15 @@ async function generateOpportunityRecommendations(project: NonNullable<Awaited<R
       nextJson: { mode: run.mode, generationMode, model: generatedModel, recommendationIds: rows.map((row) => row.id), input: opportunityInputSummary(project), refinement: refinement ?? null, fallbackReason },
     });
     await syncProjectWorkflow(tx, project.id);
-    return { opportunities: rows, generationMode, model: generatedModel, analysisSummary, fallbackReason };
-  });
+      return { opportunities: rows, generationMode, model: generatedModel, analysisSummary, fallbackReason, cached: false };
+    });
+    if (generationMode === "ai") await commitUsage({ usageEventId: usage.usageEventId, provider: "openai", model: generatedModel, inputTokens: tokenUsage.inputTokens, outputTokens: tokenUsage.outputTokens, metadata: { inputHash, recommendationCount: saved.opportunities.length } }).catch((usageError) => console.error("[api] Opportunity analysis was saved but AI Capacity finalization needs attention:", usageError));
+    else await refundUsage({ usageEventId: usage.usageEventId, reason: "The AI provider did not complete opportunity analysis; a rules-based fallback was saved." }).catch((usageError) => console.error("[api] Opportunity fallback was saved but the AI Capacity refund needs attention:", usageError));
+    return saved;
+  } catch (error) {
+    await refundUsage({ usageEventId: usage.usageEventId, reason: error instanceof Error ? error.message : "Opportunity analysis failed before it was saved." }).catch(() => undefined);
+    throw error;
+  }
 }
 
 function keywordTopicFromInstruction(instruction?: string | null) {
@@ -1774,7 +1802,7 @@ async function generateProjectKeywordGroups(project: NonNullable<Awaited<ReturnT
       }));
     }
     await recordWorkspaceActivity(tx, { context, action: regenerate ? "keyword.recommendations_regenerated" : append ? "keyword.more_ideas_generated" : "keyword.recommendations_generated", entityType: "project", entityId: project.id, agencyClientId: project.agencyClientId, projectId: project.id, nextJson: { groupIds: saved.map((row) => row.id), manualSeed: manualSeed ?? null, expansionInstruction: expansionInstruction ?? null, expansionTopic, append, generationSource, usedExistingWebsiteContent: pageText.length > 0 } });
-    if ((regenerate || append) && hadApprovedGroups && strategyApproved) await createWorkspaceNotification(tx, { context, userId: context.workspace.ownerUserId, type: "approved_keywords_changed", title: "Approved keywords changed", body: `${project.name}'s approved keyword recommendations changed after Strategy approval. Regenerate Strategy and the Execution Plan.`, actionUrl: "/keywords", agencyClientId: project.agencyClientId, projectId: project.id });
+    if ((regenerate || append) && hadApprovedGroups && strategyApproved) await createWorkspaceNotification(tx, { context, userId: context.workspace.ownerUserId, type: "approved_keywords_changed", title: "Approved keywords changed", body: `${project.name}'s approved keyword recommendations changed after Strategy approval. Create a new Strategy version and reconcile the Execution Plan.`, actionUrl: "/keywords", agencyClientId: project.agencyClientId, projectId: project.id });
     await syncProjectWorkflow(tx, project.id);
     return saved;
   });
@@ -3551,9 +3579,13 @@ guidedProjectsRouter.post("/projects-v2/:projectId/complete", async (req, res) =
   if (project.status === "archived") return res.status(409).json({ error: "Restore the project before marking it completed." });
   if (project.status === "intake_draft") return res.status(409).json({ error: "Finish the project intake before marking it completed." });
   if (project.status === "completed") return res.json({ project });
+  const completionEvidence = typeof req.body?.completionEvidence === "string" ? req.body.completionEvidence.trim() : "";
+  if (completionEvidence.length < 10 || completionEvidence.length > 2_000) return res.status(400).json({ error: "Add a short verified outcome or completion reason (10–2,000 characters) before marking this project complete." });
+  const unresolvedProtectedWork = await prisma.executionTask.count({ where: { projectId: project.id, status: { in: ["awaiting_confirmation", "submitted_for_approval", "approved", "ready_to_publish", "publishing", "verification_required"] } } });
+  if (unresolvedProtectedWork > 0) return res.status(409).json({ error: `${unresolvedProtectedWork} protected approval, publishing, or verification item${unresolvedProtectedWork === 1 ? " is" : "s are"} still open. Resolve or explicitly skip that work before completing the project.` });
   const updated = await prisma.$transaction(async (tx) => {
     const next = await tx.project.update({ where: { id: project.id }, data: { status: "completed" } });
-    await recordWorkspaceActivity(tx, { context, action: "project.completed", entityType: "project", entityId: project.id, agencyClientId: project.agencyClientId, projectId: project.id, previousJson: { status: project.status }, nextJson: { status: "completed" } });
+    await recordWorkspaceActivity(tx, { context, action: "project.completed", entityType: "project", entityId: project.id, agencyClientId: project.agencyClientId, projectId: project.id, previousJson: { status: project.status }, nextJson: { status: "completed", completionEvidence } });
     return next;
   });
   res.json({ project: updated });
@@ -3639,12 +3671,14 @@ guidedProjectsRouter.post("/projects-v2/:projectId/intake", async (req, res) => 
   });
 
   let updated = await scopedProject(req, project.id);
+  let opportunityGenerationDeferred: string | null = null;
   if (updated?.businessProfile && !updated.opportunities.length) {
-    await generateOpportunityRecommendations(updated, context);
+    try { await generateOpportunityRecommendations(updated, context); }
+    catch (error) { opportunityGenerationDeferred = error instanceof Error ? error.message : "Opportunity recommendations can be created from Opportunity Finder."; }
     updated = await scopedProject(req, project.id);
   }
   const workflow = await publishProjectWorkflowEvent({ projectId: project.id, eventType: "business_brain.updated", sourceModule: "project_intake", sourceId: project.id, idempotencyKey: `intake.saved:${project.id}:${Date.now()}`, payload: { answerCount: parsed.data.answers.length } });
-  res.json({ project: updated, opportunityMode: updated ? opportunityRunMode(updated).mode : null, workflow });
+  res.json({ project: updated, opportunityMode: updated ? opportunityRunMode(updated).mode : null, workflow, opportunityGenerationDeferred });
 });
 
 guidedProjectsRouter.post("/projects-v2/:projectId/opportunities/generate", async (req, res) => {
@@ -3879,7 +3913,7 @@ guidedProjectsRouter.patch("/projects-v2/:projectId/keyword-groups/:groupId", as
   await prisma.$transaction(async (tx) => {
     await tx.projectKeywordGroup.update({ where: { id: group.id }, data: { keywords: after } });
     await recordWorkspaceActivity(tx, { context, action: removed.length ? "keyword.keywords_deleted_or_edited" : "keyword.keywords_added_or_edited", entityType: "project_keyword_group", entityId: group.id, agencyClientId: project.agencyClientId, projectId: project.id, previousJson: { keywords: before }, nextJson: { keywords: after, added, removed, reason: parsed.data.reason ?? null } });
-    if (group.status === "approved" && strategyApproved && (added.length || removed.length)) await createWorkspaceNotification(tx, { context, userId: context.workspace.ownerUserId, type: "approved_keywords_changed", title: "Approved keywords changed", body: `${project.name}'s approved ${group.title} were edited after Strategy approval. Regenerate Strategy and the Execution Plan.`, actionUrl: "/keywords", agencyClientId: project.agencyClientId, projectId: project.id });
+    if (group.status === "approved" && strategyApproved && (added.length || removed.length)) await createWorkspaceNotification(tx, { context, userId: context.workspace.ownerUserId, type: "approved_keywords_changed", title: "Approved keywords changed", body: `${project.name}'s approved ${group.title} were edited after Strategy approval. Create a new Strategy version and reconcile the Execution Plan.`, actionUrl: "/keywords", agencyClientId: project.agencyClientId, projectId: project.id });
   });
   res.json({ project: await scopedProject(req, project.id) });
 });
@@ -3909,7 +3943,7 @@ guidedProjectsRouter.post("/projects-v2/:projectId/keyword-groups/manual", async
   await prisma.$transaction(async (tx) => {
     await tx.projectKeywordGroup.update({ where: { id: existing.id }, data: { keywords, source: "manual" } });
     await recordWorkspaceActivity(tx, { context, action: "keyword.manual_keywords_added", entityType: "project_keyword_group", entityId: existing.id, agencyClientId: project.agencyClientId, projectId: project.id, previousJson: { keywords: originalBefore }, nextJson: { keywords, added: parsed.data.keywords, cleanedLegacyFragments: originalBefore.filter((keyword) => !before.includes(keyword)) } });
-    if (existing.status === "approved" && project.strategyPlans.some((strategy) => strategy.status === "approved")) await createWorkspaceNotification(tx, { context, userId: context.workspace.ownerUserId, type: "approved_keywords_changed", title: "Approved keywords changed", body: `${project.name}'s approved keywords received manual additions after Strategy approval. Regenerate Strategy and the Execution Plan.`, actionUrl: "/keywords", agencyClientId: project.agencyClientId, projectId: project.id });
+    if (existing.status === "approved" && project.strategyPlans.some((strategy) => strategy.status === "approved")) await createWorkspaceNotification(tx, { context, userId: context.workspace.ownerUserId, type: "approved_keywords_changed", title: "Approved keywords changed", body: `${project.name}'s approved keywords received manual additions after Strategy approval. Create a new Strategy version and reconcile the Execution Plan.`, actionUrl: "/keywords", agencyClientId: project.agencyClientId, projectId: project.id });
   });
   res.json({ project: await scopedProject(req, project.id) });
 });
@@ -4534,7 +4568,7 @@ guidedProjectsRouter.post("/projects-v2/:projectId/strategy/analyze", async (req
   if (!project) return res.status(404).json({ error: "project not found" });
   const strategy = project.strategyPlans[0];
   if (!strategy) return res.status(409).json({ error: "Generate a Strategy before running optimization analysis." });
-  if (strategy.status === "approved") return res.status(409).json({ error: "The approved Strategy is version-locked. Regenerate Strategy to incorporate new evidence or recalculate decisions.", code: "STRATEGY_VERSION_LOCKED" });
+  if (strategy.status === "approved") return res.status(409).json({ error: "The approved Strategy is version-locked. Create a new Strategy version to incorporate new evidence or recalculate decisions.", code: "STRATEGY_VERSION_LOCKED" });
   const unifiedPlan = extractUnifiedStrategyPlan(strategy.prioritizedRecommendations);
   if (!unifiedPlan) return res.status(409).json({ error: "Regenerate this legacy Strategy with the Unified Strategy & Decision Engine.", code: "STRATEGY_REGENERATION_REQUIRED" });
   const workflowGate = await getProjectWorkflowController(project.id);
@@ -4564,9 +4598,9 @@ guidedProjectsRouter.post("/projects-v2/:projectId/strategy/approve", async (req
 
   const latestStrategy = project.strategyPlans[0];
   if (!latestStrategy) return res.status(409).json({ error: "generate strategy before approving" });
-  if (latestStrategy.status === "stale") return res.status(409).json({ error: "This Strategy is stale because upstream project evidence changed. Regenerate Strategy before approval.", code: "WORKFLOW_STRATEGY_STALE" });
+  if (latestStrategy.status === "stale") return res.status(409).json({ error: "This Strategy is stale because upstream project evidence changed. Create a new Strategy version before approval.", code: "WORKFLOW_STRATEGY_STALE" });
   const workflowGate = await getProjectWorkflowController(project.id);
-  if (!workflowGate?.intelligenceReady || workflowGate.strategyStale) return res.status(409).json({ error: workflowGate?.strategyStale ? "Newer intelligence exists. Regenerate Strategy before approval." : "Complete the required project intelligence before approving Strategy.", code: workflowGate?.strategyStale ? "WORKFLOW_STRATEGY_STALE" : "WORKFLOW_INTELLIGENCE_INCOMPLETE", workflow: workflowGate });
+  if (!workflowGate?.intelligenceReady || workflowGate.strategyStale) return res.status(409).json({ error: workflowGate?.strategyStale ? "Newer intelligence exists. Create a new Strategy version before approval." : "Complete the required project intelligence before approving Strategy.", code: workflowGate?.strategyStale ? "WORKFLOW_STRATEGY_STALE" : "WORKFLOW_INTELLIGENCE_INCOMPLETE", workflow: workflowGate });
   const latestGapAnalysis = requiresSiteAnalysisBeforeStrategy(project)
     ? await prisma.gapAnalysisRun.findFirst({ where: { projectId: project.id, status: "completed" }, orderBy: [{ completedAt: "desc" }, { createdAt: "desc" }], select: { completedAt: true, createdAt: true } })
     : null;

@@ -1,4 +1,5 @@
-// Thin API client. Real login (token in localStorage). The backend enforces JWT + RBAC.
+// Thin API client. Browser authentication uses an HttpOnly session cookie. A
+// legacy local token is accepted once so existing sessions migrate cleanly.
 let token: string | null = localStorage.getItem("wt_token");
 let activeClientId: string | null = localStorage.getItem("wt_active_client_id");
 let currentRole: AppUser["role"] | null = localStorage.getItem("wt_role") as AppUser["role"] | null;
@@ -26,8 +27,8 @@ window.addEventListener("visibilitychange", () => { if (document.visibilityState
 function captureRenewedSession(res: Response) {
   const renewed = res.headers.get("X-SEnuke-Session-Token");
   if (!renewed || Date.now() - lastUserActivityAt > ACTIVE_RENEWAL_WINDOW_MS) return;
-  token = renewed;
-  localStorage.setItem("wt_token", renewed);
+  token = null;
+  localStorage.removeItem("wt_token");
 }
 
 async function readJson(res: Response) {
@@ -174,6 +175,7 @@ function clearRememberedUser() {
 export async function login(email: string, password: string): Promise<AppUser> {
   const res = await fetch("/api/auth/login", {
     method: "POST",
+    credentials: "same-origin",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ email, password }),
   });
@@ -183,8 +185,8 @@ export async function login(email: string, password: string): Promise<AppUser> {
     throw new Error(data.error === "email_not_verified" ? "email_not_verified" : "Invalid email or password");
   }
   const data = await res.json();
-  token = data.token;
-  localStorage.setItem("wt_token", token!);
+  token = null;
+  localStorage.removeItem("wt_token");
   markUserActivity();
   const authenticatedUser = data.user as AppUser;
   if (authenticatedUser.role === "super_admin") endImpersonation();
@@ -224,13 +226,14 @@ export async function register(input: {
 export async function verifyEmail(verificationToken: string): Promise<AppUser> {
   const res = await fetch("/api/auth/verify-email", {
     method: "POST",
+    credentials: "same-origin",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ token: verificationToken }),
   });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(res.status >= 500 ? apiErrorMessage(data, "Email verification is temporarily unavailable. Please try again.", res) : data.error ?? "Verification link is invalid or expired");
-  token = data.token;
-  localStorage.setItem("wt_token", token!);
+  token = null;
+  localStorage.removeItem("wt_token");
   rememberUser(data.user as AppUser);
   return data.user as AppUser;
 }
@@ -260,6 +263,7 @@ export async function forgotPassword(email: string): Promise<string> {
 export async function resetPassword(resetToken: string, password: string): Promise<AppUser> {
   const res = await fetch("/api/auth/reset-password", {
     method: "POST",
+    credentials: "same-origin",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ token: resetToken, password }),
   });
@@ -269,12 +273,13 @@ export async function resetPassword(resetToken: string, password: string): Promi
     const first = typeof fe === "string" ? fe : (Object.values(fe).flat()[0] as string | undefined);
     throw new Error(res.status >= 500 ? apiErrorMessage(data, "Password reset is temporarily unavailable. Please try again.", res) : first ?? "Could not reset password");
   }
-  token = data.token;
-  localStorage.setItem("wt_token", token!);
+  token = null;
+  localStorage.removeItem("wt_token");
   return data.user as AppUser;
 }
 
 export function logout() {
+  void fetch("/api/auth/logout", { method: "POST", credentials: "same-origin" }).catch(() => undefined);
   token = null;
   activeClientId = null;
   localStorage.removeItem("wt_token");
@@ -286,15 +291,12 @@ export function logout() {
 }
 
 function expireSession() {
-  if (token || localStorage.getItem("wt_token")) {
-    logout();
-    notifySessionExpired();
-  }
+  logout();
+  notifySessionExpired();
 }
 
 export async function fetchMe(): Promise<AppUser | null> {
-  if (!token) return null;
-  const res = await fetch("/api/auth/me", { headers: authHeaders() });
+  const res = await fetch("/api/auth/me", { headers: authHeaders(), credentials: "same-origin" });
   captureRenewedSession(res);
   if (!res.ok) {
     if (res.status === 401) {
@@ -319,6 +321,7 @@ function authHeaders(): Record<string, string> {
 async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   const res = await fetch(path, {
     ...init,
+    credentials: "same-origin",
     headers: { "Content-Type": "application/json", ...authHeaders(), ...(init.headers ?? {}) },
   });
   captureRenewedSession(res);
@@ -333,6 +336,7 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
 async function download(path: string, init: RequestInit = {}) {
   const res = await fetch(path, {
     ...init,
+    credentials: "same-origin",
     headers: {
       ...authHeaders(),
       ...(init.body ? { "Content-Type": "application/json" } : {}),

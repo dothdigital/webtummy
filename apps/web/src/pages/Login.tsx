@@ -8,6 +8,10 @@ import { Logo } from "../components/Logo.js";
 
 type Mode = "signin" | "signup" | "forgot" | "verify" | "reset";
 
+// Keep the existing self-registration screen available in source, but do not
+// expose it while account provisioning is controlled by JVZoo and Admin.
+const PUBLIC_SELF_REGISTRATION_ENABLED = false;
+
 const emailOk = (e: string) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e);
 const passwordRules = (password: string) => ({
   minLength: password.length >= 8,
@@ -37,7 +41,7 @@ export default function Login() {
     } else if (url.pathname === "/reset-password" && token) {
       setRouteToken(token);
       setMode("reset");
-    } else if (fromJvZoo) {
+    } else if (fromJvZoo && PUBLIC_SELF_REGISTRATION_ENABLED) {
       setMode("signup");
     }
   }, []);
@@ -93,13 +97,13 @@ export default function Login() {
               <AuthCard>
                 <ForgotForm onBack={() => setMode("signin")} />
               </AuthCard>
-            ) : mode === "signup" ? (
+            ) : mode === "signup" && PUBLIC_SELF_REGISTRATION_ENABLED ? (
               <AuthCard>
                 <SignUpForm onRegister={register} onSignIn={() => setMode("signin")} jvZooPurchase={jvZooPurchase} jvZooPlan={jvZooPlan} />
               </AuthCard>
             ) : (
               <AuthCard>
-                <SignInForm onLogin={login} onForgot={() => setMode("forgot")} onSignup={() => setMode("signup")} />
+                <SignInForm onLogin={login} onForgot={() => setMode("forgot")} onSignup={() => setMode("signup")} allowSignup={PUBLIC_SELF_REGISTRATION_ENABLED} />
               </AuthCard>
             )}
 
@@ -289,10 +293,12 @@ function SignInForm({
   onLogin,
   onForgot,
   onSignup,
+  allowSignup,
 }: {
   onLogin: (e: string, p: string) => Promise<void>;
   onForgot: () => void;
   onSignup: () => void;
+  allowSignup: boolean;
 }) {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -377,14 +383,12 @@ function SignInForm({
       <Button type="submit" disabled={busy} className="mt-5 h-11 w-full text-base xl:h-12">
         {busy ? "Signing in…" : "Sign In"}
       </Button>
-      <div className="my-5 flex items-center gap-5 text-sm text-slate-400">
-        <div className="h-px flex-1 bg-slate-200" />
-        <span className="font-semibold">or</span>
-        <div className="h-px flex-1 bg-slate-200" />
-      </div>
-      <div className="text-center text-sm text-slate-500">
-        Don’t have an account? <button type="button" onClick={onSignup} className="font-semibold text-brand-600 hover:underline">Create an account</button>
-      </div>
+      {allowSignup ? <>
+        <div className="my-5 flex items-center gap-5 text-sm text-slate-400"><div className="h-px flex-1 bg-slate-200" /><span className="font-semibold">or</span><div className="h-px flex-1 bg-slate-200" /></div>
+        <div className="text-center text-sm text-slate-500">Don’t have an account? <button type="button" onClick={onSignup} className="font-semibold text-brand-600 hover:underline">Create an account</button></div>
+      </> : <div className="mt-5 rounded-lg border border-brand-100 bg-brand-50 p-3 text-center text-sm leading-6 text-brand-900">
+        New customer accounts are created after verified JVZoo checkout. Use the secure activation email sent to your purchase email address.
+      </div>}
     </form>
   );
 }

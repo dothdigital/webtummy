@@ -1,12 +1,15 @@
+import { randomBytes } from "node:crypto";
 import { Router } from "express";
 import { z } from "zod";
 import { prisma } from "@webtummy/db";
 import { hashPassword } from "../auth.js";
-import { normalizePlanCode } from "../billing.js";
-import { changeWorkspaceCommercialPlan } from "../commercial-service.js";
+import { normalizePlanCode, trialEndsFrom } from "../billing.js";
+import { changeWorkspaceCommercialPlan, ensureCommercialDefaults, workspaceTypeForCommercialPlan } from "../commercial-service.js";
+import { ensureWorkspaceCapacityAccount } from "../commercial-capacity.js";
 import { requireAuth, requireRole } from "../middleware.js";
 import { rolesConsumeSeat } from "@webtummy/core/workspace-permissions";
 import { workspaceSeatUsage } from "../workspace-access.js";
+import { sendPasswordResetEmail } from "./auth.js";
 
 export const usersRouter = Router();
 usersRouter.use(requireAuth, requireRole("super_admin"));
@@ -38,6 +41,13 @@ const primaryOwnerSchema = z.object({ membershipId: z.string().min(1) });
 const approvalPolicySchema = z.object({ allowManagerSelfApproval: z.boolean() });
 const planSchema = z.object({ plan: z.string().min(1).max(40) });
 const passwordSchema = z.object({ password: z.string().min(8).max(128) });
+const createAccountSchema = z.object({
+  name: z.string().trim().min(1).max(180),
+  email: z.string().trim().email().transform((value) => value.toLowerCase()),
+  workspaceName: z.string().trim().min(1).max(180),
+  plan: z.enum(["entrepreneur", "business", "agency"]),
+  trialDays: z.number().int().min(0).max(365).default(30),
+});
 const billingAccessSchema = z.discriminatedUnion("action", [
   z.object({ action: z.literal("extend_trial"), days: z.number().int().min(1).max(365) }),
   z.object({ action: z.literal("offline_until"), expiresAt: z.string().datetime(), autoRenew: z.boolean().optional() }),
@@ -98,6 +108,109 @@ usersRouter.get("/", async (_req, res) => {
     },
   });
   res.json({ users: users.map((user) => ({ ...publicUser(user), memberships: user.workspaceMemberships })) });
+});
+
+usersRouter.post("/", async (req, res) => {
+  const parsed = createAccountSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() });
+  const data = parsed.data;
+  const existing = await prisma.user.findFirst({ where: { email: { equals: data.email, mode: "insensitive" } }, select: { id: true } });
+  if (existing) return res.status(409).json({ error: "An account already exists for this email address." });
+
+  await ensureCommercialDefaults();
+  const workspaceType = workspaceTypeForCommercialPlan(data.plan);
+  const planVersion = await prisma.commercialPlanVersion.findFirst({
+    where: { billingPlan: { code: data.plan }, status: "active" },
+    orderBy: { version: "desc" },
+    include: { billingPlan: true },
+  });
+  if (!planVersion) return res.status(409).json({ error: `The active ${data.plan} plan is unavailable.` });
+  const price = await prisma.commercialPrice.findFirst({
+    where: { planVersionId: planVersion.id, billingInterval: "monthly", priceClass: "standard", status: "active" },
+    orderBy: { effectiveFrom: "desc" },
+  });
+  const now = new Date();
+  const trialEndsAt = data.trialDays > 0 ? trialEndsFrom(now, data.trialDays) : null;
+  const commercialState = trialEndsAt ? "trialing" : "payment_required";
+  const accessMode = trialEndsAt ? "full" : "read_only";
+  const temporaryPasswordHash = await hashPassword(randomBytes(48).toString("base64url"));
+
+  const result = await prisma.$transaction(async (tx) => {
+    const client = await tx.client.create({
+      data: {
+        name: data.workspaceName,
+        contactEmail: data.email,
+        plan: data.plan,
+        aiSubscriptionStatus: commercialState,
+        subscriptionSource: "manual",
+        trialStartedAt: trialEndsAt ? now : null,
+        trialEndsAt,
+      },
+    });
+    const user = await tx.user.create({
+      data: {
+        email: data.email,
+        passwordHash: temporaryPasswordHash,
+        name: data.name,
+        role: "client_admin",
+        clientId: client.id,
+        emailVerifiedAt: null,
+      },
+    });
+    const workspace = await tx.workspace.create({
+      data: {
+        legacyClientId: client.id,
+        name: data.workspaceName,
+        workspaceType,
+        ownerUserId: user.id,
+        commercialState,
+        accessMode,
+      },
+    });
+    const membership = await tx.workspaceMembership.create({
+      data: { workspaceId: workspace.id, userId: user.id, status: "active", joinedAt: now },
+    });
+    const roles = workspaceType === "personal" ? ["owner"] : ["owner", "admin"];
+    await tx.workspaceMemberRole.createMany({ data: roles.map((role) => ({ membershipId: membership.id, role, grantedById: req.user!.userId })) });
+    const subscription = await tx.workspaceSubscription.create({
+      data: {
+        workspaceId: workspace.id,
+        planVersionId: planVersion.id,
+        priceId: price?.id ?? null,
+        policyVersionId: planVersion.policyVersionId,
+        provider: "manual",
+        status: commercialState,
+        billingInterval: "monthly",
+        currentPeriodStart: now,
+        currentPeriodEnd: trialEndsAt,
+      },
+    });
+    await tx.commercialSeatEntitlement.create({ data: { workspaceId: workspace.id, source: "included_owner", quantity: 1, capacityGrant: 0 } });
+    await ensureWorkspaceCapacityAccount(workspace.id, tx);
+    await tx.workspaceActivity.create({
+      data: { workspaceId: workspace.id, actorUserId: req.user!.userId, action: "workspace.account_created_by_admin", entityType: "user", entityId: user.id, nextJson: { plan: data.plan, workspaceType, trialDays: data.trialDays } },
+    });
+    await tx.commercialAuditEvent.create({
+      data: { workspaceId: workspace.id, actorType: "admin", actorId: req.user!.userId, action: "commercial.admin_account_created", reasonCode: "admin_account_creation", source: "admin", afterJson: { userId: user.id, subscriptionId: subscription.id, planCode: data.plan, workspaceType, commercialState, trialEndsAt } },
+    });
+    return { user, workspace, client };
+  });
+
+  let setupEmailSent = true;
+  try {
+    await sendPasswordResetEmail(result.user, "setup");
+  } catch (error) {
+    setupEmailSent = false;
+    console.error("Admin-created account setup email failed", { userId: result.user.id, errorType: error instanceof Error ? error.name : "unknown" });
+  }
+
+  res.status(201).json({
+    account: { userId: result.user.id, workspaceId: result.workspace.id, clientId: result.client.id, email: result.user.email },
+    setupEmailSent,
+    message: setupEmailSent
+      ? "Account created. A secure set-password email was sent to the user."
+      : "Account created, but the set-password email could not be sent. Use Change Password and Verify Email from this user's actions.",
+  });
 });
 
 usersRouter.patch("/memberships/:membershipId/role", async (req, res) => {
@@ -243,7 +356,7 @@ usersRouter.patch("/:id/password", async (req, res) => {
 
   const user = await prisma.user.update({
     where: { id: req.params.id },
-    data: { passwordHash: await hashPassword(parsed.data.password) },
+    data: { passwordHash: await hashPassword(parsed.data.password), sessionVersion: { increment: 1 } },
     include: { client: { select: clientUserSelect } },
   });
   res.json({ user: publicUser(user) });

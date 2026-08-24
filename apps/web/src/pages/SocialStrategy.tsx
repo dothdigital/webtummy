@@ -1674,9 +1674,9 @@ export default function SocialStrategy() {
             </div>
             {websites.length === 0 ? (
               <div className="rounded-lg border border-dashed border-brand-200 bg-brand-50 p-6 text-center">
-                <div className="font-bold text-charcoal-900">No projects yet</div>
-                <p className="mx-auto mt-2 max-w-2xl text-sm leading-6 text-charcoal-600">Create a website project first, then return here to build the social strategy.</p>
-                <Link to="/projects" className="mt-4 inline-flex items-center justify-center rounded-lg bg-brand-600 px-4 py-2 text-sm font-bold text-white hover:bg-brand-700">Create new project</Link>
+                <div className="font-bold text-charcoal-900">No eligible website is connected</div>
+                <p className="mx-auto mt-2 max-w-2xl text-sm leading-6 text-charcoal-600">{projects.length ? "Choose an existing project and add or create its website before setting up social profiles and distribution." : "Create a project and add its website before preparing a Social plan."}</p>
+                <Link to="/projects" className="mt-4 inline-flex items-center justify-center rounded-lg bg-brand-600 px-4 py-2 text-sm font-bold text-white hover:bg-brand-700">Choose a project</Link>
               </div>
             ) : (
               <div className="grid gap-3 lg:grid-cols-2">

@@ -4,6 +4,7 @@ import { isIP } from "node:net";
 import { Router, type Request } from "express";
 import { Prisma, prisma } from "@webtummy/db";
 import { SENUKE_COMPONENT_REGISTRY_V1 } from "@webtummy/core/website-model";
+import { safePublicFetch } from "@webtummy/core/safe-public-fetch";
 import PDFDocument from "pdfkit";
 import { z } from "zod";
 import { config } from "../config.js";
@@ -687,7 +688,7 @@ function privateAddress(address: string) {
   const [a, b] = address.split(".").map(Number); return a === 10 || a === 127 || a === 0 || (a === 169 && b === 254) || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168) || (a === 100 && b >= 64 && b <= 127);
 }
 async function safePublicUrl(raw: string) { const url = new URL(raw); if (url.protocol !== "https:") throw new Error("The webhook must use HTTPS."); const addresses = await lookup(url.hostname, { all: true }); if (!addresses.length || addresses.some((entry) => privateAddress(entry.address))) throw new Error("The webhook resolves to a private or unsafe address."); return url; }
-async function providerFetch(url: string, init: RequestInit) { const response = await fetch(url, { ...init, signal: AbortSignal.timeout(12_000) }); const text = await response.text(); const body = text ? (() => { try { return JSON.parse(text); } catch { return { message: text.slice(0, 500) }; } })() : {}; if (!response.ok) throw new Error(`${response.status}: ${String(body?.detail ?? body?.message ?? body?.title ?? "Provider rejected the request")}`); return body; }
+async function providerFetch(url: string, init: RequestInit) { const response = await safePublicFetch(url, { ...init, signal: AbortSignal.timeout(12_000) }); const text = await response.text(); const body = text ? (() => { try { return JSON.parse(text); } catch { return { message: text.slice(0, 500) }; } })() : {}; if (!response.ok) throw new Error(`${response.status}: ${String(body?.detail ?? body?.message ?? body?.title ?? "Provider rejected the request")}`); return body; }
 
 async function verifyConnection(input: z.infer<typeof connectionSchema>, project: { name: string; businessName: string | null; businessLocationJson: Prisma.JsonValue | null }, ownerEmail: string) {
   const token = input.token ?? "";

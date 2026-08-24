@@ -116,7 +116,7 @@ export default function Billing() {
       <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
         <div>
           <h1 className="text-2xl font-bold text-charcoal-900">Plan &amp; AI Capacity</h1>
-          <p className="mt-1 text-sm text-charcoal-500">See the current plan, project allowance, people, AI Capacity used and remaining, billing history, and subscription status.</p>
+          <p className="mt-1 text-sm text-charcoal-500">Review your plan, AI Capacity, add-ons, billing history and subscription status.</p>
         </div>
         <div className="flex gap-2">
           <Link to="/pricing"><Button variant="ghost">Change plan</Button></Link>
@@ -167,7 +167,7 @@ export default function Billing() {
             <Card className="p-5">
               <div className="text-xs font-semibold uppercase tracking-wide text-charcoal-400">Current plan</div>
               <div className="mt-2 text-3xl font-bold text-charcoal-900">{billing.commercial?.subscription?.plan.name ?? billing.plan?.name ?? "Not assigned"}</div>
-              <div className="mt-1 text-sm text-charcoal-500">Version {billing.commercial?.subscription?.plan.version ?? "—"} · {billing.commercial?.subscription?.billingInterval ?? "—"}</div>
+              <div className="mt-1 text-sm capitalize text-charcoal-500">{billing.commercial?.subscription?.billingInterval ? `${billing.commercial.subscription.billingInterval} billing` : "Billing schedule unavailable"}</div>
               <div className="mt-4"><StatusPill status={billing.status} /></div>
             </Card>
             <Card className="p-5">
@@ -177,9 +177,9 @@ export default function Billing() {
               <div className="mt-4 text-xs text-charcoal-500">Grace: {billing.commercial?.subscription?.policy.graceDays ?? "—"} days</div>
             </Card>
             <Card className="p-5">
-              <div className="text-xs font-semibold uppercase tracking-wide text-charcoal-400">Current paid period</div>
-              <div className="mt-2 text-lg font-bold text-charcoal-900">{dateLabel(billing.commercial?.subscription?.currentPeriodEnd ?? billing.subscriptionCurrentPeriodEnd)}</div>
-              <div className="mt-1 text-sm text-charcoal-500">{billing.commercial?.subscription?.cancelAtPeriodEnd ? "Cancels at period end" : "Recurring through JVZoo"}</div>
+              <div className="text-xs font-semibold uppercase tracking-wide text-charcoal-400">Current access period</div>
+              <div className="mt-2 text-lg font-bold text-charcoal-900">{dateLabel(billing.commercial?.subscription?.currentPeriodEnd ?? billing.subscriptionCurrentPeriodEnd ?? billing.trialEndsAt ?? billing.manualAccessEndsAt)}</div>
+              <div className="mt-1 text-sm text-charcoal-500">{billing.commercial?.subscription?.cancelAtPeriodEnd ? "Cancels at period end" : billing.status === "trialing" ? "Trial access end date" : billing.commercial?.subscription ? "Recurring through JVZoo" : "Verified access end date"}</div>
             </Card>
             <Card className="p-5">
               <div className="text-xs font-semibold uppercase tracking-wide text-charcoal-400">Price protection</div>
@@ -192,7 +192,7 @@ export default function Billing() {
             <Card className="p-5">
               <div className="text-sm font-semibold text-charcoal-800">Active projects</div>
               <div className="mt-3 text-4xl font-bold text-brand-700">{billing.commercial?.usage.activeProjects ?? 0}</div>
-              <div className="mt-1 text-sm text-charcoal-500">{billing.commercial?.usage.archivedProjects ?? 0} archived · limit {String(billing.commercial?.entitlements.limits.activeProjects ?? "not configured")}</div>
+              <div className="mt-1 text-sm text-charcoal-500">{billing.commercial?.usage.archivedProjects ?? 0} archived · {billing.commercial?.entitlements.limits.activeProjects == null ? "Unlimited active projects" : `${billing.commercial.entitlements.limits.activeProjects} active-project allowance`}</div>
             </Card>
             <Card className="p-5">
               <div className="text-sm font-semibold text-charcoal-800">{experience.kind === "personal" ? "Workspace user" : experience.kind === "agency" ? "Agency team seats" : "Business team seats"}</div>
@@ -203,7 +203,7 @@ export default function Billing() {
               <div className="text-sm font-semibold text-charcoal-800">AI Capacity in {monthLabel()}</div>
               <div className="mt-3 text-4xl font-bold text-emerald-700">{(billing.commercial?.usage.capacity?.balance ?? 0).toLocaleString()}</div>
               <div className="mt-1 text-sm font-semibold text-charcoal-700">remaining · {(billing.commercial?.usage.capacity?.monthlyUsed ?? 0).toLocaleString()} used this period</div>
-              <div className="mt-1 text-xs text-charcoal-500">{(billing.commercial?.usage.capacity?.included.available ?? 0).toLocaleString()} included available · {(billing.commercial?.usage.capacity?.purchased.available ?? 0).toLocaleString()} purchased available · {billing.commercial?.usage.capacity?.reserved ?? 0} reserved</div>
+              <div className="mt-1 text-xs text-charcoal-500">{(billing.commercial?.usage.capacity?.included.available ?? 0).toLocaleString()} included available · {(billing.commercial?.usage.capacity?.purchased.available ?? 0).toLocaleString()} purchased available · {billing.commercial?.usage.capacity?.reserved ?? 0} reserved{billing.commercial?.usage.capacity?.resetAt ? ` · Included Capacity resets ${dateLabel(billing.commercial.usage.capacity.resetAt)}` : ""}</div>
               {billing.commercial?.usage.capacity?.warningLevel && <div className="mt-3 rounded-lg bg-amber-50 px-3 py-2 text-xs font-semibold text-amber-800">{billing.commercial.usage.capacity.warningLevel}% capacity threshold reached. Add a non-expiring Capacity Pack before the balance is exhausted.</div>}
             </Card>
           </div>
@@ -211,10 +211,10 @@ export default function Billing() {
           <Card className="p-5">
             <div className="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
               <div>
-                <div className="text-lg font-bold text-charcoal-900">Effective workspace entitlements</div>
-                <p className="mt-1 text-sm text-charcoal-500">Resolved from the immutable plan version, paid additions, and audited overrides.</p>
+                <div className="text-lg font-bold text-charcoal-900">Included with your plan</div>
+                <p className="mt-1 text-sm text-charcoal-500">Your current verified features and allowances.</p>
               </div>
-              {experience.kind === "agency" && <div className="text-xs font-semibold text-charcoal-500">Agency clients: {billing.commercial?.usage.activeAgencyClients ?? 0} / {String(billing.commercial?.entitlements.limits.activeAgencyClients ?? "not configured")}</div>}
+              {experience.kind === "agency" && <div className="text-xs font-semibold text-charcoal-500">Agency clients: {billing.commercial?.usage.activeAgencyClients ?? 0} / {billing.commercial?.entitlements.limits.activeAgencyClients == null ? "Unlimited" : billing.commercial.entitlements.limits.activeAgencyClients}</div>}
             </div>
             <div className="mt-4 grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
               {Object.entries(billing.commercial?.entitlements.features ?? {}).filter(([key]) => key !== "*").map(([key, value]) => (
@@ -228,15 +228,14 @@ export default function Billing() {
 
           <Card className="p-5">
             <div className="text-lg font-bold text-charcoal-900">Capacity Packs</div>
-            <p className="mt-1 text-sm text-charcoal-500">Capacity Packs do not expire and become available after the workspace’s current AI Capacity is exhausted.</p>
-            {(billing.commercial?.usage.capacity?.balance ?? 0) > 0 && <div className="mt-3 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-semibold text-amber-900">You still have {(billing.commercial?.usage.capacity?.balance ?? 0).toLocaleString()} AI Capacity units. Capacity Pack checkout will unlock automatically at 0.</div>}
+            <p className="mt-1 text-sm text-charcoal-500">Capacity Packs do not expire. Checkout becomes available at the low-capacity warning threshold so you can avoid interruption.</p>
             <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-3">
               {capacityAddons.map((addon) => <div key={addon.id} className={`rounded-xl border p-4 ${addon.purchaseEnabled ? "border-slate-200" : "border-slate-200 bg-slate-50"}`}>
                 <div className="font-bold text-charcoal-900">{addon.name}</div>
                 <div className="mt-1 text-sm text-charcoal-500">{addon.description}</div>
                 <div className="mt-4 text-xl font-bold text-brand-700">{moneyLabel(addon.amountCents, addon.currency)}{addon.billingInterval !== "one_time" ? ` / ${addon.billingInterval === "annual" ? "year" : "month"}` : ""}</div>
                 {addon.purchaseBlockedReason && <div className="mt-2 text-xs leading-5 text-slate-500">{addon.purchaseBlockedReason}</div>}
-                <Button className="mt-4" onClick={() => void buyAddon(addon.id)} disabled={portalBusy || !addon.purchaseEnabled || !addon.providerProductRef || !addon.checkoutUrl}>{!addon.purchaseEnabled ? "Available when capacity reaches 0" : addon.providerProductRef && addon.checkoutUrl ? "Buy through JVZoo" : "Coming soon"}</Button>
+                <Button className="mt-4" onClick={() => void buyAddon(addon.id)} disabled={portalBusy || !addon.purchaseEnabled || !addon.providerProductRef || !addon.checkoutUrl}>{!addon.purchaseEnabled ? "Available at low-capacity warning" : addon.providerProductRef && addon.checkoutUrl ? "Buy through JVZoo" : "Coming soon"}</Button>
               </div>)}
             </div>
           </Card>
@@ -248,7 +247,7 @@ export default function Billing() {
           </Card>}
 
 
-          <Card className="p-5">
+          {false && <Card className="p-5">
             <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
               <div>
                 <div className="text-lg font-bold text-charcoal-900">Report emails</div>
@@ -262,7 +261,7 @@ export default function Billing() {
                 <ReportToggle label="Ranking change alerts" description="Notify when tracked ranks move up or down." checked={billing.rankingChangeEmailEnabled} disabled={!billing.reportEmailEnabled} onChange={(value) => updateReportEmailPreference("rankingChangeEmailEnabled", value)} />
               </div>
             </div>
-          </Card>
+          </Card>}
 
           <Card className="overflow-hidden">
             <div className="flex flex-col gap-2 border-b border-slate-200 p-5 sm:flex-row sm:items-center sm:justify-between">

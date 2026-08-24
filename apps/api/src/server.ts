@@ -47,6 +47,19 @@ import { createApiErrorCode, GENERIC_SYSTEM_ERROR, systemErrorPayload } from "./
 import { queueApiErrorReport } from "./api-error-reporter.js";
 
 const app = express();
+app.disable("x-powered-by");
+if (config.trustProxy !== false) app.set("trust proxy", config.trustProxy);
+
+app.use((_req, res, next) => {
+  res.setHeader("X-Content-Type-Options", "nosniff");
+  res.setHeader("X-Frame-Options", "DENY");
+  res.setHeader("Referrer-Policy", "strict-origin-when-cross-origin");
+  res.setHeader("Permissions-Policy", "camera=(), microphone=(), geolocation=(), payment=(), usb=()");
+  res.setHeader("Cross-Origin-Opener-Policy", "same-origin");
+  res.setHeader("Content-Security-Policy", "default-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'");
+  if (config.environment === "production") res.setHeader("Strict-Transport-Security", "max-age=31536000; includeSubDomains");
+  next();
+});
 
 // One platform-wide boundary for unexpected API failures. Individual routes can
 // keep returning useful validation and permission errors; every 5xx response is

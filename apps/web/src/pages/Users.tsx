@@ -94,9 +94,17 @@ export default function Users() {
   const [autoRenew, setAutoRenew] = useState(false);
   const [offlineExpiry, setOfflineExpiry] = useState(() => dateInputValue(new Date(Date.now() + 30 * 24 * 60 * 60 * 1000)));
   const [message, setMessage] = useState<string | null>(null);
+  const [createAccountOpen, setCreateAccountOpen] = useState(false);
+  const [createAccountBusy, setCreateAccountBusy] = useState(false);
+  const [createName, setCreateName] = useState("");
+  const [createEmail, setCreateEmail] = useState("");
+  const [createWorkspaceName, setCreateWorkspaceName] = useState("");
+  const [createPlan, setCreatePlan] = useState("entrepreneur");
+  const [createTrialDays, setCreateTrialDays] = useState("30");
 
   const planByCode = useMemo(() => new Map(plans.map((plan) => [plan.code, plan])), [plans]);
   const filteredUsers = useMemo(() => users.filter((user) => planFilter === "all" || user.client?.plan === planFilter), [planFilter, users]);
+  const accountPlans = useMemo(() => plans.filter((plan) => ["entrepreneur", "business", "agency"].includes(plan.code)), [plans]);
 
   const load = async () => {
     setLoading(true);
@@ -175,6 +183,33 @@ export default function Users() {
     finally { setBusyId(null); }
   };
 
+  const createAccount = async (event: FormEvent) => {
+    event.preventDefault();
+    setCreateAccountBusy(true);
+    setMessage(null);
+    try {
+      const result = await api.post<{ message: string; setupEmailSent: boolean }>("/api/users", {
+        name: createName,
+        email: createEmail,
+        workspaceName: createWorkspaceName,
+        plan: createPlan,
+        trialDays: Number(createTrialDays),
+      });
+      setMessage(result.message);
+      setCreateAccountOpen(false);
+      setCreateName("");
+      setCreateEmail("");
+      setCreateWorkspaceName("");
+      setCreatePlan("entrepreneur");
+      setCreateTrialDays("30");
+      await load();
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : String(error));
+    } finally {
+      setCreateAccountBusy(false);
+    }
+  };
+
   const changePassword = async (event: FormEvent, user: AdminUser) => {
     event.preventDefault();
     await patchUser(user, `/api/users/${user.id}/password`, { password }, `Password changed for ${user.email}.`);
@@ -218,13 +253,16 @@ export default function Users() {
       <Card className="overflow-hidden">
         <div className="flex flex-col gap-3 border-b border-charcoal-100 px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
           <div className="font-semibold text-charcoal-700">Users ({filteredUsers.length}{planFilter === "all" ? "" : ` of ${users.length}`})</div>
-          <label className="flex items-center gap-2 text-sm text-charcoal-600">
-            <span className="font-medium">Filter plan</span>
-            <select value={planFilter} onChange={(event) => setPlanFilter(event.target.value)} className="min-w-44 rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-100">
-              <option value="all">All plans</option>
-              {plans.map((plan) => <option key={plan.code} value={plan.code}>{plan.name}</option>)}
-            </select>
-          </label>
+          <div className="flex flex-wrap items-center gap-3">
+            <button type="button" onClick={() => setCreateAccountOpen(true)} className="rounded-lg bg-brand-600 px-4 py-2 text-sm font-bold text-white shadow-sm hover:bg-brand-700">+ Create account</button>
+            <label className="flex items-center gap-2 text-sm text-charcoal-600">
+              <span className="font-medium">Filter plan</span>
+              <select value={planFilter} onChange={(event) => setPlanFilter(event.target.value)} className="min-w-44 rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-100">
+                <option value="all">All plans</option>
+                {plans.map((plan) => <option key={plan.code} value={plan.code}>{plan.name}</option>)}
+              </select>
+            </label>
+          </div>
         </div>
         {loading ? <div className="p-6 text-sm text-charcoal-400">Loading users...</div> : filteredUsers.length === 0 ? <div className="p-6 text-sm text-charcoal-400">No users found.</div> : (
           <div className="overflow-x-auto">
@@ -360,6 +398,21 @@ export default function Users() {
           )}
         </Modal>
       )}
+      {createAccountOpen && <Modal title="Create customer account" onClose={() => !createAccountBusy && setCreateAccountOpen(false)}>
+        <form onSubmit={(event) => void createAccount(event)} className="space-y-5">
+          <div className="rounded-xl border border-brand-100 bg-brand-50 p-4 text-sm leading-6 text-brand-950">
+            This protected Admin action creates the user, workspace, owner membership, commercial plan entitlement, and AI Capacity account. The user receives a secure link to set their password. Public registration remains disabled.
+          </div>
+          <div className="grid gap-4 md:grid-cols-2">
+            <Input label="Full name" value={createName} onChange={setCreateName} placeholder="Account owner name" />
+            <Input label="Email address" type="email" value={createEmail} onChange={setCreateEmail} placeholder="owner@example.com" />
+            <Input label="Workspace name" value={createWorkspaceName} onChange={setCreateWorkspaceName} placeholder="Business or workspace name" />
+            <label className="block"><span className="mb-1 block text-sm font-medium text-slate-600">Plan</span><select value={createPlan} onChange={(event) => setCreatePlan(event.target.value)} className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-100">{accountPlans.map((plan) => <option key={plan.code} value={plan.code}>{plan.name}</option>)}</select></label>
+            <label className="block"><span className="mb-1 block text-sm font-medium text-slate-600">Trial access days</span><input type="number" min="0" max="365" value={createTrialDays} onChange={(event) => setCreateTrialDays(event.target.value)} className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-100" /><span className="mt-1 block text-xs text-slate-500">Use 0 to create the account in payment-required, read-only state.</span></label>
+          </div>
+          <div className="flex justify-end gap-2"><Button type="button" variant="ghost" onClick={() => setCreateAccountOpen(false)} disabled={createAccountBusy}>Cancel</Button><Button type="submit" disabled={createAccountBusy || !createName.trim() || !createEmail.trim() || !createWorkspaceName.trim() || !createPlan || !createTrialDays}>{createAccountBusy ? "Creating…" : "Create account & send setup email"}</Button></div>
+        </form>
+      </Modal>}
     </div>
   );
 }

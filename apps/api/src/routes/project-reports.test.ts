@@ -51,9 +51,9 @@ describe("Report version identity", () => {
 });
 
 describe("Report delivery by workspace", () => {
-  it("keeps Agency documents and makes Personal and Business reports download-only", () => {
-    expect(reportDeliveryModeForWorkspace("personal")).toBe("download_only");
-    expect(reportDeliveryModeForWorkspace("business")).toBe("download_only");
+  it("keeps durable report history for every workspace plan", () => {
+    expect(reportDeliveryModeForWorkspace("personal")).toBe("saved_workflow");
+    expect(reportDeliveryModeForWorkspace("business")).toBe("saved_workflow");
     expect(reportDeliveryModeForWorkspace("agency")).toBe("saved_workflow");
   });
 });

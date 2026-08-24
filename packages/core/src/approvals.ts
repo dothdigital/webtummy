@@ -34,9 +34,9 @@ export function approvalRequired(level: AutomationLevel, candidate: ApprovalCand
 }
 
 export function automationLevelDescription(level: AutomationLevel) {
-  if (level === "manual") return "Every action requiring approval pauses for review.";
-  if (level === "assisted") return "Low-risk drafts may continue automatically; higher-risk actions pause.";
-  return "Most actions continue automatically, but publishing, integrations, strategy and high-risk changes still pause.";
+  if (level === "manual") return "SEnuke AI identifies and recommends work, but waits for you before progressing to the next approval-controlled stage.";
+  if (level === "assisted") return "SEnuke AI may continue routine analysis and low-risk draft preparation automatically. Strategy approval, publishing and protected external actions still wait for you.";
+  return "SEnuke AI may progress eligible internal analysis, drafting and preparation until the work is ready for approval. It cannot publish or make protected external changes without your permission.";
 }
 
 export type ApprovalDecision = "approved" | "rejected" | "changes_requested";

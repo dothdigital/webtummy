@@ -94,6 +94,9 @@ export default function GuidedProjectNew() {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const editProjectId = searchParams.get("edit");
+  const requestedEditorStep = searchParams.get("step");
+  const requestedReturnTo = searchParams.get("returnTo");
+  const editReturnTo = requestedReturnTo?.startsWith("/") && !requestedReturnTo.startsWith("//") ? requestedReturnTo : null;
   const resumeConversationId = searchParams.get("resumeConversation");
   const requestedDiscoveryDraftId = searchParams.get("discoveryDraftId");
   const requestedStartPath = (["EXISTING_BUSINESS", "IDEA_TO_EXPLORE", "SKILLS_FIRST"] as const).find((path) => path === searchParams.get("startPath")) ?? null;
@@ -101,7 +104,7 @@ export default function GuidedProjectNew() {
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const [activeField, setActiveField] = useState<{ label: string; detail: string } | null>(null);
-  const [step, setStep] = useState(0);
+  const [step, setStep] = useState(requestedEditorStep === "business-type" ? 1 : 0);
   const requestedCreationMode = searchParams.get("mode");
   const [creationMode, setCreationMode] = useState<"choose" | "ai" | "classic">(resumeConversationId || requestedCreationMode === "ai" ? "ai" : editProjectId || requestedCreationMode === "classic" ? "classic" : "choose");
   const [workspaceType, setWorkspaceType] = useState("");
@@ -421,7 +424,7 @@ export default function GuidedProjectNew() {
       const result = existingProjectId
         ? await api.patch<{ project: GuidedProject }>(`/api/projects-v2/${existingProjectId}/settings`, payload)
         : await api.post<{ project: GuidedProject }>("/api/projects-v2", payload);
-      navigate(form.savedProjectId ? "/projects" : editProjectId ? `/guided-projects/${result.project.id}` : `/guided-projects/${result.project.id}/intake`);
+      navigate(form.savedProjectId ? "/projects" : editProjectId ? editReturnTo || `/guided-projects/${result.project.id}` : `/guided-projects/${result.project.id}/intake`);
     } catch (error) {
       setMessage(error instanceof Error ? error.message : editProjectId ? "Could not save project" : "Could not create project");
     } finally {
@@ -662,7 +665,7 @@ export default function GuidedProjectNew() {
 
           <div className="flex items-center justify-between gap-3">
             <Link to="/projects" className="inline-flex min-w-32 items-center justify-center rounded-lg border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50">Cancel</Link>
-            <div className="flex gap-3">{step > 0 && <button type="button" onClick={() => setStep((current) => current - 1)} className="inline-flex min-w-28 items-center justify-center rounded-lg border border-slate-200 bg-white px-4 py-2 text-sm font-bold text-slate-700 hover:bg-slate-50">← Back</button>}{step < setupSteps.length - 1 ? <Button type="button" disabled={!canContinue} onClick={() => setStep((current) => current + 1)} className="min-w-36">Continue →</Button> : <Button type="submit" disabled={busy || !canSubmit} className="min-w-44">{busy ? (editProjectId ? "Saving..." : "Creating...") : (editProjectId ? "Save Changes" : "Create Project →")}</Button>}</div>
+            <div className="flex gap-3">{step > 0 && <button type="button" onClick={() => setStep((current) => current - 1)} className="inline-flex min-w-28 items-center justify-center rounded-lg border border-slate-200 bg-white px-4 py-2 text-sm font-bold text-slate-700 hover:bg-slate-50">← Back</button>}{editProjectId && requestedEditorStep === "business-type" && step === 1 ? <Button type="submit" disabled={busy || !canSubmit} className="min-w-44">{busy ? "Saving..." : "Save Business Type"}</Button> : step < setupSteps.length - 1 ? <Button type="button" disabled={!canContinue} onClick={() => setStep((current) => current + 1)} className="min-w-36">Continue →</Button> : <Button type="submit" disabled={busy || !canSubmit} className="min-w-44">{busy ? (editProjectId ? "Saving..." : "Creating...") : (editProjectId ? "Save Changes" : "Create Project →")}</Button>}</div>
           </div>
         </div>
 

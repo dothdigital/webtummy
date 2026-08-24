@@ -6,6 +6,7 @@ import { approvalEscalationStage } from "@webtummy/core/approvals";
 import { scheduledReportKey } from "@webtummy/core/reporting";
 import { lookup } from "node:dns/promises";
 import { isIP } from "node:net";
+import { safePublicFetch } from "@webtummy/core/safe-public-fetch";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const PAYMENT_BLOCKED = new Set(["past_due", "incomplete", "incomplete_expired", "unpaid", "canceled"]);
@@ -756,7 +757,7 @@ export async function pendingContentDiscoveryChecks(now = new Date()) {
       let data: { status: string; httpStatus?: number; canonicalUrl?: string; canonicalMatches?: boolean; indexable?: boolean; robotsAllowed?: boolean; sitemapPresent?: boolean; analyticsDetected?: boolean; evidenceJson: Prisma.InputJsonValue; errorMessage?: string; checkedAt: Date; firstDiscoveredAt?: Date };
       try {
         const url = await safeDiscoveryUrl(check.liveUrl);
-        const response = await fetch(url, { redirect: "follow", signal: AbortSignal.timeout(15_000), headers: { "User-Agent": "SEnukeAI-DiscoveryCheck/1.0" } });
+        const response = await safePublicFetch(url, { signal: AbortSignal.timeout(15_000), headers: { "User-Agent": "SEnukeAI-DiscoveryCheck/1.0" } });
         const html = (await response.text()).slice(0, 2_000_000);
         const canonicalRaw = html.match(/<link[^>]+rel=["'][^"']*canonical[^"']*["'][^>]+href=["']([^"']+)/i)?.[1] ?? html.match(/<link[^>]+href=["']([^"']+)["'][^>]+rel=["'][^"']*canonical/i)?.[1];
         const canonicalUrl = canonicalRaw ? new URL(canonicalRaw, url).toString() : response.url;
@@ -764,7 +765,7 @@ export async function pendingContentDiscoveryChecks(now = new Date()) {
         const robotsMeta = html.match(/<meta[^>]+name=["']robots["'][^>]+content=["']([^"']+)/i)?.[1]?.toLowerCase() ?? "";
         const indexable = response.ok && !robotsMeta.includes("noindex") && response.headers.get("x-robots-tag")?.toLowerCase().includes("noindex") !== true;
         const sitemapUrl = new URL("/sitemap.xml", url.origin);
-        const sitemapResponse = await fetch(sitemapUrl, { signal: AbortSignal.timeout(10_000), headers: { "User-Agent": "SEnukeAI-DiscoveryCheck/1.0" } });
+        const sitemapResponse = await safePublicFetch(sitemapUrl, { signal: AbortSignal.timeout(10_000), headers: { "User-Agent": "SEnukeAI-DiscoveryCheck/1.0" } });
         const sitemapText = sitemapResponse.ok ? (await sitemapResponse.text()).slice(0, 5_000_000) : "";
         const canonicalMatches = normalized(canonicalUrl) === normalized(check.liveUrl) || normalized(canonicalUrl) === normalized(response.url);
         const sitemapPresent = sitemapResponse.ok && [check.liveUrl, response.url, canonicalUrl].some((candidate) => sitemapText.includes(candidate.replace(/&/g, "&amp;")) || sitemapText.includes(candidate));

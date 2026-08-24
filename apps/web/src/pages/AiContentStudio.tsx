@@ -1,6 +1,7 @@
 import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { api } from "../api.js";
+import { sanitizeHtml } from "../sanitize-html.js";
 import type { AiContentGeneration, AiGenerationType, GuidedExecutionTask, GuidedProject, Website } from "../types.js";
 import { Button, Card, Input } from "../components/ui.js";
 import { getActiveProjectId, resolveActiveProjectId, setActiveProjectId } from "../active-project.js";
@@ -219,7 +220,7 @@ function ResultViewer({ value }: { value: unknown }) {
         {articleHtml && (
           <div className="rounded-lg border border-charcoal-100 bg-white p-4">
             <div className="mb-2 text-sm font-semibold text-charcoal-800">Content preview</div>
-            <div className="prose prose-sm max-w-none text-charcoal-700" dangerouslySetInnerHTML={{ __html: articleHtml }} />
+            <div className="prose prose-sm max-w-none text-charcoal-700" dangerouslySetInnerHTML={{ __html: sanitizeHtml(articleHtml) }} />
           </div>
         )}
         {hasCodeOutput && (
@@ -715,7 +716,7 @@ export default function AiContentStudio() {
       }
       if (requestedTopic) setTopic(requestedTopic);
       if (requestedTargetUrl) setTargetUrl(requestedTargetUrl);
-      if (searchParams.get("open") === "1") {
+      if (searchParams.get("open") === "1" && (requestedTask || citationFlow || requestedGenerationId)) {
         setWizardStep(requestedTask || citationFlow ? 3 : requestedTopic ? 2 : 1);
         setWizardOpen(true);
       }
@@ -970,6 +971,7 @@ export default function AiContentStudio() {
   const selectedAssetCanCreatePage = selectedResult?.type === "article";
   const selectedIsBlogArticle = selectedResult?.type === "article" && fullPageKind === "article";
   const selectedWebsitePage = websiteBuilder?.pages.find((page) => page.id === websiteHandoffPageId) ?? null;
+  const governedContentRequest = Boolean(linkedTask || citationFlow || revisionFlow || searchParams.get("generationId"));
 
   return (
     <div className={embeddedDialog ? "h-screen overflow-hidden bg-white [&>:not([role=dialog])]:hidden" : "space-y-6"}>
@@ -977,21 +979,21 @@ export default function AiContentStudio() {
       <div className="overflow-hidden rounded-2xl border border-fuchsia-100 bg-[linear-gradient(135deg,#fdf2f8_0%,#ecfeff_52%,#f0fdf4_100%)] p-6 shadow-sm">
         <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
           <div>
-            <div className="text-xs font-semibold uppercase tracking-wide text-fuchsia-700">AI Content Studio</div>
-            <h1 className="mt-1 text-3xl font-bold tracking-tight text-charcoal-900">Articles, SEO helpers, schema, llms.txt, and AI-search</h1>
+            <div className="text-xs font-semibold uppercase tracking-wide text-fuchsia-700">Governed delivery</div>
+            <h1 className="mt-1 text-3xl font-bold tracking-tight text-charcoal-900">Publishing and Delivery</h1>
             <p className="mt-2 max-w-3xl text-sm leading-6 text-charcoal-600">
-              Generate and review project-aware content assets. AI Capacity is governed consistently at workspace level when generation begins.
+              Review, approve, publish or hand off Strategy-approved assets and website changes.
             </p>
           </div>
           <div className="flex flex-col gap-3 sm:flex-row sm:items-end">
-            <Button onClick={() => { setWizardStep(1); setWizardOpen(true); }} className="shadow-sm">Create content asset</Button>
+            {governedContentRequest && <span className="rounded-full border border-fuchsia-200 bg-white px-3 py-2 text-xs font-bold text-fuchsia-700">Opened from approved project work</span>}
           </div>
         </div>
       </div>
 
       <Card className="overflow-hidden" id="publishing">
         <div className="flex flex-col gap-3 border-b border-emerald-200 bg-emerald-50 px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
-          <div><div className="text-xs font-bold uppercase tracking-wide text-emerald-700">Content publishing</div><div className="mt-1 text-lg font-bold text-charcoal-900">Review and publish website content</div><p className="mt-1 text-sm text-charcoal-600">Prepare content here, approve the exact version, then send it to Site Architect for website publishing. Lead magnets remain in the Lead Magnets workspace.</p></div>
+          <div><div className="text-xs font-bold uppercase tracking-wide text-emerald-700">Publishing queue</div><div className="mt-1 text-lg font-bold text-charcoal-900">Approved work ready for delivery</div><p className="mt-1 text-sm text-charcoal-600">Only outputs prepared through approved Strategy, Execution Plan, Growth Intelligence, Site Analysis, Opportunity, or Next Best Action work appear here.</p></div>
           <div className="flex gap-2"><span className="rounded-full bg-white px-3 py-1 text-xs font-bold text-emerald-700 shadow-sm">{approvedPendingTasks.length} pending</span>{publishingInProgressTasks.length > 0 && <span className="rounded-full bg-amber-100 px-3 py-1 text-xs font-bold text-amber-800">{publishingInProgressTasks.length} publishing</span>}</div>
         </div>
         <div className="space-y-3 p-5">
@@ -1001,7 +1003,7 @@ export default function AiContentStudio() {
             <div className="flex shrink-0 flex-wrap gap-2"><button type="button" onClick={() => downloadTaskHandoff(task)} className="rounded-lg border border-emerald-300 bg-white px-4 py-2.5 text-sm font-bold text-emerald-700 hover:bg-emerald-50">Download copy</button>{task.moduleName === "content" && <a href={`/ai-content?projectId=${encodeURIComponent(searchParams.get("projectId") || task.projectId || "")}&taskId=${encodeURIComponent(task.id)}&open=1`} className="rounded-lg border border-emerald-300 bg-white px-4 py-2.5 text-center text-sm font-bold text-emerald-700 hover:bg-emerald-50">Review content</a>}<button type="button" disabled={publishingTaskId === task.id} onClick={() => void publishTask(task)} className="rounded-lg bg-emerald-600 px-4 py-2.5 text-sm font-bold text-white hover:bg-emerald-700 disabled:bg-slate-300">{publicationActionLabel(task, publishingTaskId === task.id)}</button></div>
           </div>)}
           {publishingInProgressTasks.map((task) => <div key={task.id} className="flex items-center justify-between gap-3 rounded-xl border border-amber-200 bg-amber-50 p-4"><div><div className="font-bold text-charcoal-900">{task.title}</div><p className="mt-1 text-sm text-charcoal-500">The publishing request has started and is awaiting verification.</p></div><span className="shrink-0 rounded-full bg-amber-100 px-3 py-1 text-xs font-bold text-amber-800">Publishing</span></div>)}
-          {approvedPendingTasks.length === 0 && publishingInProgressTasks.length === 0 && <div className="rounded-xl border border-dashed border-emerald-200 bg-emerald-50/40 px-5 py-8 text-center"><div className="font-bold text-charcoal-800">No approved work is waiting to publish</div><p className="mt-1 text-sm text-charcoal-500">Assets and updates prepared by platform modules will appear here as they move through review and approval.</p></div>}
+          {approvedPendingTasks.length === 0 && publishingInProgressTasks.length === 0 && <div className="rounded-xl border border-dashed border-emerald-200 bg-emerald-50/40 px-5 py-8 text-center"><div className="font-bold text-charcoal-800">Nothing is ready for publishing.</div><p className="mt-1 text-sm text-charcoal-500">Strategy-approved work will appear here when it reaches review or delivery.</p><Link to={selectedProjectId ? `/guided-projects/${encodeURIComponent(selectedProjectId)}?tab=execution` : "/projects"} className="mt-4 inline-flex rounded-lg bg-brand-600 px-4 py-2 text-sm font-bold text-white">Open Execution Plan →</Link></div>}
           {(contentReadyTasks.length > 0 || contentApprovalTasks.length > 0) && <div className="mt-5 border-t border-charcoal-100 pt-5"><div className="mb-3"><div className="text-xs font-bold uppercase tracking-wide text-charcoal-500">Needs action</div><p className="mt-1 text-sm text-charcoal-500">Complete the next step shown on each content item.</p></div><div className="space-y-2">
             {contentReadyTasks.map((task) => { const canGenerate = task.moduleName === "content"; return <div key={task.id} className="flex flex-col gap-3 rounded-xl border border-brand-100 bg-brand-50/40 p-4 sm:flex-row sm:items-center sm:justify-between"><div><div className="flex flex-wrap items-center gap-2"><div className="font-bold text-charcoal-900">{task.title}</div><span className="rounded-full bg-white px-2 py-0.5 text-[10px] font-black uppercase text-brand-700">{publishingSourceLabel(task)}</span></div><p className="mt-1 text-sm text-charcoal-500">{canGenerate ? "Create the requested content, review it, and send the approved version to the website." : "Review the prepared website update before it moves to approval and publishing."}</p></div><div className="flex shrink-0 flex-wrap gap-2"><a href={taskReviewUrl(task)} className="rounded-lg bg-brand-600 px-4 py-2 text-center text-sm font-bold text-white hover:bg-brand-700">{canGenerate ? "Create content →" : "Review update →"}</a></div></div>; })}
             {contentApprovalTasks.map((task) => <div key={task.id} className="flex flex-col gap-3 rounded-xl border border-amber-200 bg-amber-50/50 p-4 sm:flex-row sm:items-center sm:justify-between"><div><div className="flex flex-wrap items-center gap-2"><div className="font-bold text-charcoal-900">{task.title}</div><span className="rounded-full bg-white px-2 py-0.5 text-[10px] font-black uppercase text-amber-700">{publishingSourceLabel(task)}</span><span className="rounded-full bg-white px-2 py-0.5 text-xs font-bold text-amber-700">{task.status.replaceAll("_", " ")}</span></div><p className="mt-1 text-sm text-charcoal-500">{task.status === "needs_review" ? "The exact source asset or update is ready for factual, quality, destination, and implementation review before company approval." : task.status === "changes_requested" ? "The company approver requested changes. Open the source asset, address the feedback, and resubmit the saved version." : "Source review is complete. The exact saved asset is waiting for an authorized company approver."}</p></div><div className="flex shrink-0 flex-wrap gap-2"><button type="button" onClick={() => downloadTaskHandoff(task)} className="rounded-lg border border-amber-300 bg-white px-4 py-2 text-sm font-bold text-amber-700">Download handoff</button>{task.status === "needs_review" && <><a href={taskReviewUrl(task)} className="rounded-lg border border-amber-300 bg-white px-4 py-2 text-center text-sm font-bold text-amber-700">Review exact asset</a><button type="button" disabled={publishingTaskId === task.id} onClick={() => void submitForApproval(task)} className="rounded-lg bg-amber-600 px-4 py-2 text-sm font-bold text-white hover:bg-amber-700 disabled:bg-slate-300">{publishingTaskId === task.id ? "Submitting…" : "Review complete · Send for approval"}</button></>}{task.status === "submitted_for_approval" && <a href={`/approvals?projectId=${encodeURIComponent(searchParams.get("projectId") || task.projectId || "")}`} className="rounded-lg bg-amber-600 px-4 py-2 text-center text-sm font-bold text-white hover:bg-amber-700">Open Company Approval →</a>}{task.status === "changes_requested" && <a href={taskReviewUrl(task)} className="rounded-lg bg-brand-600 px-4 py-2 text-center text-sm font-bold text-white hover:bg-brand-700">Review requested changes →</a>}</div></div>)}
@@ -1009,11 +1011,11 @@ export default function AiContentStudio() {
         </div>
       </Card>
 
-      <Card className="overflow-hidden">
+      {governedContentRequest && <Card className="overflow-hidden">
         <div className="flex items-center justify-between gap-4 border-b border-charcoal-100 px-5 py-4">
           <div>
             <div className="font-semibold text-charcoal-800">Recent generations</div>
-            <div className="mt-0.5 text-xs text-charcoal-400">Latest AI outputs for this account.</div>
+            <div className="mt-0.5 text-xs text-charcoal-400">Saved output versions for this governed project request.</div>
           </div>
           <Button variant="ghost" onClick={load}>Refresh</Button>
         </div>
@@ -1097,21 +1099,21 @@ export default function AiContentStudio() {
                   </Fragment>
                 );
               })}
-              {historyGroups.length === 0 && <tr><td colSpan={7} className="px-5 py-6 text-center text-charcoal-400">No AI generations yet.</td></tr>}
+              {historyGroups.length === 0 && <tr><td colSpan={7} className="px-5 py-6 text-center text-charcoal-400">No saved output version exists for this governed request yet.</td></tr>}
             </tbody>
           </table>
         </div>
-      </Card>
+      </Card>}
 
-      {wizardOpen && (
+      {wizardOpen && governedContentRequest && (
         <div className={embeddedDialog ? "absolute inset-0 z-50 bg-white" : "fixed inset-0 z-50"} role="dialog" aria-modal="true" aria-label="Create AI content asset">
           {!embeddedDialog && <div className="absolute inset-0 bg-charcoal-900/55" onClick={closeWizard} />}
           <div className={embeddedDialog ? "absolute inset-0 flex flex-col overflow-hidden bg-white" : "absolute inset-x-3 top-4 mx-auto flex max-h-[calc(100vh-2rem)] max-w-5xl flex-col overflow-hidden rounded-2xl bg-white shadow-2xl sm:top-8 sm:max-h-[calc(100vh-4rem)]"}>
             {!(embeddedDialog && citationFlow) && <div className="border-b border-charcoal-100 bg-[linear-gradient(135deg,#fdf2f8_0%,#ecfeff_100%)] px-5 py-4">
               <div className="flex items-start justify-between gap-4">
                 <div>
-                  <div className="text-xs font-semibold uppercase tracking-wide text-fuchsia-700">{revisionFlow ? "AI content revision" : citationFlow ? "AI Citation asset" : "3-step wizard"}</div>
-                  <div className="mt-1 text-xl font-bold text-charcoal-900">{revisionFlow ? `Revise ${topic || "page content"}` : citationFlow ? (citationReviewOnly ? "Review generated citation content" : "Create citation content") : "Create content asset"}</div>
+                  <div className="text-xs font-semibold uppercase tracking-wide text-fuchsia-700">{revisionFlow ? "AI content revision" : citationFlow ? "AI Citation asset" : "Approved content preparation"}</div>
+                  <div className="mt-1 text-xl font-bold text-charcoal-900">{revisionFlow ? `Revise ${topic || "page content"}` : citationFlow ? (citationReviewOnly ? "Review generated citation content" : "Create citation content") : "Prepare approved website content"}</div>
                   {linkedTask && <div className="mt-1 text-xs font-semibold text-emerald-700">Linked to project task: {contentTaskTitle(linkedTask)}</div>}
                 </div>
                 {!(embeddedDialog && citationFlow) && <button type="button" disabled={generating} onClick={closeWizard} className="rounded-lg border border-charcoal-200 bg-white px-3 py-1.5 text-sm font-medium text-charcoal-600 hover:bg-charcoal-50 disabled:opacity-50">Close</button>}

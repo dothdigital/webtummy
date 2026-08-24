@@ -1,5 +1,6 @@
 import { UnrecoverableError, Worker } from "bullmq";
 import { Prisma, prisma } from "@webtummy/db";
+import { safePublicFetch } from "@webtummy/core/safe-public-fetch";
 import {
   SENUKE_COMPONENT_REGISTRY_V1,
   normalizeGeneratedComponentInstance,
@@ -474,8 +475,7 @@ async function enrichExistingWebsitePageEvidence<T extends { briefJson: Prisma.J
   let visibleTextExcerpt = "";
   if (/^https?:\/\//i.test(sourceUrl)) {
     try {
-      const response = await fetch(sourceUrl, {
-        redirect: "follow",
+      const response = await safePublicFetch(sourceUrl, {
         signal: AbortSignal.timeout(15_000),
         headers: { "User-Agent": "SEnuke-AI-Website-Migration/1.0" },
       });

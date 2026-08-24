@@ -40,6 +40,7 @@ model User {
   isActive                Boolean                  @default(true)
   emailVerifiedAt         DateTime?
   lastLoginAt             DateTime?
+  sessionVersion          Int                      @default(0)
   createdAt               DateTime                 @default(now())
   emailVerificationTokens EmailVerificationToken[]
   passwordResetTokens     PasswordResetToken[]

@@ -2281,7 +2281,7 @@ async function upsertTask(tx: Prisma.TransactionClient, input: TaskInput) {
   return "updated";
 }
 
-async function withTransactionRetry<T>(action: () => Promise<T>, attempts = 3): Promise<T> {
+async function withTransactionRetry<T>(action: () => Promise<T>, attempts = 5): Promise<T> {
   let lastError: unknown;
   for (let attempt = 1; attempt <= attempts; attempt += 1) {
     try {
@@ -2291,7 +2291,7 @@ async function withTransactionRetry<T>(action: () => Promise<T>, attempts = 3): 
       if (!(error instanceof Prisma.PrismaClientKnownRequestError) || error.code !== "P2034" || attempt === attempts) {
         throw error;
       }
-      await new Promise((resolve) => setTimeout(resolve, 100 * attempt));
+      await new Promise((resolve) => setTimeout(resolve, 100 * attempt + Math.floor(Math.random() * 100)));
     }
   }
   throw lastError;
@@ -2459,7 +2459,7 @@ async function buildTasksForWebsite(website: { id: string; clientId: string; dom
       actionButtonLabel: "Open AI Content",
       relatedUrl: "/ai-content",
       relatedAssetId: generation.id,
-      manualInstructions: "Open AI Content Studio, review the saved output, edit if needed, then apply it manually to the website or content plan.",
+      manualInstructions: "Open the approved content workflow, review the saved output, edit if needed, then apply it manually to the website or content plan.",
       impact: "Moves generated content from draft output into reviewed project execution.",
     });
   }

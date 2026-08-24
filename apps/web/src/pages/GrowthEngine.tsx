@@ -121,9 +121,9 @@ function growthActionWorkspace(action: GrowthCandidateAction, projectId: string)
     };
   }
   return {
-    url: `/ai-content?projectId=${encodedProjectId}&open=1&type=article&topic=${encodeURIComponent(action.title)}&instruction=${encodeURIComponent(action.recommendation)}`,
-    label: "Continue in AI Content",
-    preparation: "AI opens a scoped draft from this recommendation for review before anything is published.",
+    url: `/guided-projects/${encodedProjectId}?tab=execution&actionTask=${encodedActionId}#execution-tasks`,
+    label: "Create the governed Execution task",
+    preparation: "Review and approve this recommendation in the Execution Plan. Content preparation becomes available only after an exact task and version are created.",
   };
 }
 
@@ -464,7 +464,7 @@ function IntelligenceReadiness({ controller }: { controller: NonNullable<GrowthO
       {!incomplete.length && controller.strategyStale && (
         <div className="p-5">
           <Link to={`/strategy?projectId=${controller.projectId}`} className="inline-flex items-center justify-center rounded-lg bg-brand-600 px-3 py-2 text-sm font-bold text-white hover:bg-brand-700">
-            Regenerate Strategy · Create New Version
+            Create new Strategy version
           </Link>
         </div>
       )}

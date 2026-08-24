@@ -37,7 +37,11 @@ npm install
 cp .env.example .env          # adjust DATABASE_URL / JWT_SECRET if needed
 npm run db:generate           # generate Prisma client
 npm run db:push               # create tables in MySQL
-npm run -w @webtummy/api seed # create first super_admin (admin@webtummy.com / ChangeMe!2026)
+# Optional: set both values to create the first super_admin. With neither set,
+# the seed maintains system data without creating an administrator.
+export SEED_ADMIN_EMAIL="your-admin@example.com"
+export SEED_ADMIN_PASSWORD="use-a-unique-password-of-at-least-16-characters"
+npm run -w @webtummy/api seed
 ```
 
 ## Run (two terminals)
@@ -51,7 +55,7 @@ npm run dev:worker  # consumes crawl jobs
 # login
 TOKEN=$(curl -s -X POST localhost:4000/api/auth/login \
   -H 'Content-Type: application/json' \
-  -d '{"email":"admin@webtummy.com","password":"ChangeMe!2026"}' | jq -r .token)
+  -d '{"email":"YOUR_ADMIN_EMAIL","password":"YOUR_ADMIN_PASSWORD"}' | jq -r .token)
 
 # create client (+ first client_admin)
 curl -s -X POST localhost:4000/api/clients -H "Authorization: Bearer $TOKEN" \

@@ -271,6 +271,7 @@ export default function GuidedProjects() {
   };
 
   const changeArchiveStatus = async (project: GuidedProject, action: "archive" | "restore") => {
+    if (action === "archive" && !window.confirm(`Archive “${project.name}”?\n\nThe project will leave active views, but its reports, Strategy versions, evidence, generated assets, execution history, and audit records will be retained. You can restore it later.`)) return;
     setStatusBusy(project.id);
     try {
       const result = await api.post<{ project: GuidedProject }>(`/api/projects-v2/${project.id}/${action}`, {});
@@ -281,13 +282,20 @@ export default function GuidedProjects() {
   };
 
   const changeLifecycleStatus = async (project: GuidedProject, action: "complete" | "reopen") => {
+    let completionEvidence = "";
+    if (action === "complete") {
+      const answer = window.prompt(`Mark “${project.name}” complete with evidence\n\nRecord the verified outcome, completion evidence, or reason for the manual override. Open approvals and publishing work should be resolved first.`, "");
+      if (answer === null) return;
+      completionEvidence = answer.trim();
+      if (completionEvidence.length < 10) { window.alert("Add at least 10 characters describing the verified outcome or completion evidence."); return; }
+    }
     const confirmed = window.confirm(action === "complete"
-      ? `Mark “${project.name}” completed? Its data and reports will remain available, and you can reopen it later.`
+      ? `Confirm project completion for “${project.name}”? The evidence will be retained in the workspace audit history, and the project can be reopened later.`
       : `Reopen “${project.name}” and return it to In Progress?`);
     if (!confirmed) return;
     setStatusBusy(project.id);
     try {
-      const result = await api.post<{ project: GuidedProject }>(`/api/projects-v2/${project.id}/${action}`, {});
+      const result = await api.post<{ project: GuidedProject }>(`/api/projects-v2/${project.id}/${action}`, action === "complete" ? { completionEvidence } : {});
       setProjects((current) => current.map((item) => item.id === project.id ? { ...item, ...result.project } : item));
     } finally {
       setStatusBusy(null);
@@ -310,7 +318,7 @@ export default function GuidedProjects() {
       <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
         <div>
           <h1 className="text-3xl font-bold tracking-tight text-slate-950">Projects</h1>
-          <p className="mt-1 text-base text-slate-500">Every guided project and its current AI growth stage.</p>
+          <p className="mt-1 text-base text-slate-500">See every project, its current stage, Next Best Action, review state and verified completion history.</p>
         </div>
         {canManageProjects && <Link to={agencyNeedsClient ? "/workspace?tab=clients" : "/projects/new"} className="inline-flex h-11 shrink-0 items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-teal-400 to-teal-600 px-5 text-sm font-bold text-white shadow-lg shadow-teal-200/70 hover:from-teal-500 hover:to-teal-700">
           <span className="text-xl leading-none">+</span> {agencyNeedsClient ? "New Client" : "New Project"}
@@ -328,7 +336,7 @@ export default function GuidedProjects() {
       </div>
 
       {filter === "draft" && <div className="mt-4 rounded-xl border border-violet-200 bg-violet-50 px-4 py-3 text-sm leading-6 text-violet-900"><b>Drafts are saved work that is not active yet.</b> Discovery ideas appear here after you start or generate them; select <b>Use This Idea</b> when you want one to become a Project. Intake drafts become active after you finish project setup.</div>}
-      {filter === "needs_review" && <div className="mt-4 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm leading-6 text-amber-900"><b>{personalWorkspace ? "Your review is needed." : "A review is needed."}</b> {personalWorkspace ? "In an Individual workspace, you are the reviewer. Open the project and approve, request changes, or complete the waiting item." : "Open the project to approve, request changes, or complete the waiting item."}</div>}
+      {filter === "needs_review" && <div className="mt-4 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm leading-6 text-amber-900"><b>{personalWorkspace ? "Your review is needed." : "A review is needed."}</b> {personalWorkspace ? "In an Entrepreneur Workspace, you are the reviewer. Open the project and approve, request changes, or complete the waiting item." : "Open the project to approve, request changes, or complete the waiting item."}</div>}
       {filter === "completed" && <div className="mt-4 rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm leading-6 text-emerald-900"><b>Completed projects remain available for reports and history.</b> Use Reopen if more work is needed.</div>}
 
       {projects.length === 0 && discoveryDrafts.length === 0 ? (
@@ -392,7 +400,7 @@ export default function GuidedProjects() {
 
               <div className="mt-5 flex flex-col gap-3 border-t border-violet-50 pt-4 md:flex-row md:items-center md:justify-between">
                 <div className="flex min-w-0 flex-col gap-2 text-sm text-slate-500 sm:flex-row sm:items-center sm:gap-7"><Link to={nextHref} className="group inline-flex min-w-0 items-center gap-2 rounded-lg border border-teal-200 bg-teal-50 px-3 py-2 text-teal-800 transition hover:border-teal-400 hover:bg-teal-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-300"><span className="shrink-0 text-[10px] font-black uppercase tracking-wide text-teal-600">Next task</span><span className="truncate font-black">{nextTitle}</span><span aria-hidden="true" className="shrink-0 font-black transition-transform group-hover:translate-x-1">→</span></Link><div className="shrink-0">Updated <span className="font-bold text-slate-800">{relativeUpdated(project.updatedAt)}</span></div></div>
-                <div className="flex shrink-0 items-center gap-4">{canEditProjects && !["archived", "intake_draft", "completed"].includes(project.status) && <Link to={`/projects/new?edit=${project.id}`} className="text-xs font-bold text-teal-700 hover:text-teal-900">Edit</Link>}{canManageProjects && !["archived", "intake_draft", "completed"].includes(project.status) && <button disabled={statusBusy === project.id} type="button" onClick={() => void changeLifecycleStatus(project, "complete")} className="text-xs font-bold text-emerald-700 hover:text-emerald-900 disabled:opacity-50">Mark completed</button>}{canManageProjects && project.status === "completed" && <button disabled={statusBusy === project.id} type="button" onClick={() => void changeLifecycleStatus(project, "reopen")} className="text-xs font-bold text-teal-700 hover:text-teal-900 disabled:opacity-50">Reopen</button>}{canManageProjects && project.status !== "archived" && <button disabled={statusBusy === project.id} type="button" onClick={() => void changeArchiveStatus(project, "archive")} className="text-xs font-bold text-slate-500 hover:text-amber-700 disabled:opacity-50">Archive</button>}{canManageProjects && project.status === "archived" && <><button disabled={statusBusy === project.id} type="button" onClick={() => void changeArchiveStatus(project, "restore")} className="text-xs font-bold text-teal-700 disabled:opacity-50">Restore</button><button type="button" onClick={() => setDeleteTarget(project)} className="text-xs font-bold text-rose-600 hover:text-rose-800">Permanently delete</button></>}<Link to={project.status === "intake_draft" ? `/projects/new?resumeConversation=${project.id}` : projectHref} className="text-sm font-bold text-teal-700 hover:text-teal-900">{project.status === "archived" ? "View project →" : project.status === "intake_draft" ? "Continue intake →" : "Open project →"}</Link></div>
+                <div className="flex shrink-0 items-center gap-4">{canEditProjects && !["archived", "intake_draft", "completed"].includes(project.status) && <Link to={`/projects/new?edit=${project.id}`} className="text-xs font-bold text-teal-700 hover:text-teal-900">Edit</Link>}{canManageProjects && !["archived", "intake_draft", "completed"].includes(project.status) && <button disabled={statusBusy === project.id} type="button" onClick={() => void changeLifecycleStatus(project, "complete")} className="text-xs font-bold text-emerald-700 hover:text-emerald-900 disabled:opacity-50">Mark complete with evidence</button>}{canManageProjects && project.status === "completed" && <button disabled={statusBusy === project.id} type="button" onClick={() => void changeLifecycleStatus(project, "reopen")} className="text-xs font-bold text-teal-700 hover:text-teal-900 disabled:opacity-50">Reopen</button>}{canManageProjects && project.status !== "archived" && <button disabled={statusBusy === project.id} type="button" onClick={() => void changeArchiveStatus(project, "archive")} className="text-xs font-bold text-slate-500 hover:text-amber-700 disabled:opacity-50">Archive</button>}{canManageProjects && project.status === "archived" && <><button disabled={statusBusy === project.id} type="button" onClick={() => void changeArchiveStatus(project, "restore")} className="text-xs font-bold text-teal-700 disabled:opacity-50">Restore</button><button type="button" onClick={() => setDeleteTarget(project)} className="text-xs font-bold text-rose-600 hover:text-rose-800">Permanently delete</button></>}<Link to={project.status === "intake_draft" ? `/projects/new?resumeConversation=${project.id}` : projectHref} className="text-sm font-bold text-teal-700 hover:text-teal-900">{project.status === "archived" ? "View project →" : project.status === "intake_draft" ? "Continue intake →" : "Open project →"}</Link></div>
               </div>
             </article>;
           })}

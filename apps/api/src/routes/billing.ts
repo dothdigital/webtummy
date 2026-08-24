@@ -1,6 +1,7 @@
 import { Router } from "express";
 import type { Request } from "express";
 import { z } from "zod";
+import sanitizeHtml from "sanitize-html";
 import { prisma } from "@webtummy/db";
 import { requireAuth, requireRole } from "../middleware.js";
 import { projectClientIdForRequest } from "../project-scope.js";
@@ -140,18 +141,12 @@ const registrationPolicySchema = z.object({
   trialDays: z.number().int().min(1).max(90),
 });
 
-const allowedDescriptionTags = new Set(["p", "br", "strong", "b", "em", "i", "u", "ul", "ol", "li"]);
-
 function sanitizePlanDescription(value: string) {
-  return value
-    .replace(/<script[\s\S]*?<\/script>/gi, "")
-    .replace(/<style[\s\S]*?<\/style>/gi, "")
-    .replace(/<\/?([a-z][a-z0-9]*)\b[^>]*>/gi, (tag, rawName) => {
-      const name = String(rawName).toLowerCase();
-      if (!allowedDescriptionTags.has(name)) return "";
-      const closing = tag.startsWith("</") ? "/" : "";
-      return name === "br" ? "<br>" : `<${closing}${name}>`;
-    });
+  return sanitizeHtml(value, {
+    allowedTags: ["p", "br", "strong", "b", "em", "i", "u", "ul", "ol", "li"],
+    allowedAttributes: {},
+    disallowedTagsMode: "discard",
+  });
 }
 
 async function plansWithMemberCounts(plans: Awaited<ReturnType<typeof prisma.billingPlan.findMany>>) {
@@ -299,9 +294,9 @@ billingRouter.get("/commercial-addons", requireAuth, async (req, res) => {
     .filter((addon) => !Array.isArray(addon.workspaceTypes) || addon.workspaceTypes.map(String).includes(context.workspace.workspaceType))
     .map((addon) => ({
       ...addon,
-      purchaseEnabled: addon.kind !== "capacity_pack" || capacityPackPurchaseAllowed(capacity.balance),
-      purchaseBlockedReason: addon.kind === "capacity_pack" && !capacityPackPurchaseAllowed(capacity.balance)
-        ? `Use the remaining ${capacity.balance.toLocaleString()} AI Capacity units before buying a Capacity Pack.`
+      purchaseEnabled: addon.kind !== "capacity_pack" || capacityPackPurchaseAllowed(capacity.balance, capacity.warningLevel),
+      purchaseBlockedReason: addon.kind === "capacity_pack" && !capacityPackPurchaseAllowed(capacity.balance, capacity.warningLevel)
+        ? `Capacity Pack checkout becomes available when this workspace reaches its low-capacity warning threshold.`
         : null,
     })) });
 });
@@ -316,7 +311,7 @@ billingRouter.post("/commercial-addons/checkout", requireAuth, requireBillingOwn
   if (!eligible) return res.status(409).json({ error: "This add-on is not available for the current workspace plan." });
   if (addon.kind === "capacity_pack") {
     const capacity = await workspaceCapacitySummary(context.workspace.id);
-    if (!capacityPackPurchaseAllowed(capacity.balance)) return res.status(409).json({ error: `Capacity Packs become available after the current AI Capacity is exhausted. ${capacity.balance.toLocaleString()} units remain.` });
+    if (!capacityPackPurchaseAllowed(capacity.balance, capacity.warningLevel)) return res.status(409).json({ error: `Capacity Pack checkout becomes available at the low-capacity warning threshold. ${capacity.balance.toLocaleString()} units remain.` });
   }
   if (!addon.providerProductRef || !addon.checkoutUrl) return res.status(409).json({ error: "This add-on is not connected to a JVZoo product yet." });
   const user = await prisma.user.findUnique({ where: { id: req.user!.userId }, select: { email: true } });

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { conversationOutputSchema } from "./ai-intake.js";
+import { aiIntakeOutputSchema, aiIntakeSuggestionFields, conversationOutputSchema } from "./ai-intake.js";
 
 function validOutput() {
   return {
@@ -32,5 +32,37 @@ describe("AI intake output limits", () => {
     const candidate = validOutput();
     candidate.questionOptions[6] = "";
     expect(() => conversationOutputSchema.parse(candidate)).toThrow();
+  });
+
+  it("trims excess client-analysis follow-up questions instead of rejecting valid suggestions", () => {
+    const suggestions = Object.fromEntries(aiIntakeSuggestionFields.map((field) => [field, {
+      value: null,
+      confidence: "unresolved",
+      reason: "The available evidence does not confirm this field.",
+      evidence: [],
+      inferred: false,
+    }]));
+    const parsed = aiIntakeOutputSchema.parse({
+      suggestions,
+      additionalQuestions: Array.from({ length: 8 }, (_, index) => `Follow-up question ${index + 1}?`),
+    });
+    expect(parsed.additionalQuestions).toEqual([
+      "Follow-up question 1?",
+      "Follow-up question 2?",
+      "Follow-up question 3?",
+      "Follow-up question 4?",
+      "Follow-up question 5?",
+    ]);
+  });
+
+  it("still rejects malformed client-analysis questions inside the accepted limit", () => {
+    const suggestions = Object.fromEntries(aiIntakeSuggestionFields.map((field) => [field, {
+      value: null,
+      confidence: "unresolved",
+      reason: "The available evidence does not confirm this field.",
+      evidence: [],
+      inferred: false,
+    }]));
+    expect(() => aiIntakeOutputSchema.parse({ suggestions, additionalQuestions: ["Valid question?", ""] })).toThrow();
   });
 });

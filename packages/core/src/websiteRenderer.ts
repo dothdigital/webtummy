@@ -241,7 +241,7 @@ export function renderWebsiteComponentHtml(
         const assetId = propString(component, "backgroundImageAssetId");
         const asset = options.mediaAssets?.find((candidate) => candidate.assetId === assetId);
         const imageUrl = options.assetUrls?.[assetId] || asset?.sourceUrl || "";
-        const image = assetId && renderableImageUrl(imageUrl) ? `<img class="senuke-layout-background-image" src="${escapeHtml(imageUrl)}" alt="" aria-hidden="true">` : "";
+        const image = assetId && renderableImageUrl(imageUrl) ? `<img class="senuke-layout-background-image" src="${escapeHtml(imageUrl)}" alt="" aria-hidden="true" loading="lazy" decoding="async">` : "";
         const rawOverlay = component.props.backgroundOverlay;
         const overlay = typeof rawOverlay === "number" ? Math.max(0, Math.min(90, rawOverlay)) : 40;
         const overlayHtml = image && overlay ? `<span class="senuke-layout-background-overlay" style="opacity:${overlay / 100}"></span>` : "";
@@ -257,7 +257,7 @@ export function renderWebsiteComponentHtml(
         const asset = options.mediaAssets?.find((candidate) => candidate.assetId === assetId);
         const imageUrl = options.assetUrls?.[assetId] || asset?.sourceUrl || "";
         const image = assetId && renderableImageUrl(imageUrl)
-          ? `<img class="senuke-hero-image" src="${escapeHtml(imageUrl)}" alt="${escapeHtml(asset?.altText || propString(component, "headline"))}">`
+          ? `<img class="senuke-hero-image" src="${escapeHtml(imageUrl)}" alt="${escapeHtml(asset?.altText || propString(component, "headline"))}" width="1200" height="800" loading="eager" fetchpriority="high" decoding="async">`
           : "";
         return `<section class="senuke-component senuke-hero senuke-${escapeHtml(component.variant)} ${alignmentClass}"><div>${propString(component, "eyebrow") ? `<p class="senuke-eyebrow">${escapeHtml(propString(component, "eyebrow"))}</p>` : ""}<h1>${escapeHtml(propString(component, "headline"))}</h1><p class="senuke-lead">${escapeHtml(propString(component, "summary"))}</p><a class="senuke-button" href="${escapeHtml(resolvedComponentUrl(propString(component, "primaryCtaUrl"), options))}">${escapeHtml(propString(component, "primaryCtaLabel"))}</a></div>${image}</section>`;
       }
@@ -275,7 +275,7 @@ export function renderWebsiteComponentHtml(
         const asset = options.mediaAssets?.find((candidate) => candidate.assetId === assetId);
         const imageUrl = options.assetUrls?.[assetId] || asset?.sourceUrl || "";
         const image = assetId && renderableImageUrl(imageUrl)
-          ? `<img src="${escapeHtml(imageUrl)}" alt="${escapeHtml(propString(component, "altText") || asset?.altText || "")}">`
+          ? `<img src="${escapeHtml(imageUrl)}" alt="${escapeHtml(propString(component, "altText") || asset?.altText || "")}" loading="lazy" decoding="async">`
           : "";
         return `<figure class="senuke-component senuke-media senuke-media-${escapeHtml(component.variant)}">${image}${propString(component, "caption") ? `<figcaption>${escapeHtml(propString(component, "caption"))}</figcaption>` : ""}</figure>`;
       }
@@ -407,7 +407,7 @@ const renderWebsiteBlogIndexHtml = (
     const heroAssetId = String(article.sections.find((section) => section.componentId === "hero.local_service")?.props.imageAssetId || "");
     const asset = model.mediaAssets.find((candidate) => candidate.assetId === heroAssetId);
     const imageUrl = options.assetUrls?.[heroAssetId] || asset?.sourceUrl || "";
-    return `<article class="senuke-blog-card">${imageUrl && renderableImageUrl(imageUrl) ? `<a class="senuke-blog-card-image" href="${escapeHtml(href)}"><img src="${escapeHtml(imageUrl)}" alt="${escapeHtml(asset?.altText || article.name)}"></a>` : ""}<div><p class="senuke-blog-topic">${escapeHtml(article.seo.primaryKeyword || "Article")}</p><h3><a href="${escapeHtml(href)}">${escapeHtml(article.name)}</a></h3><p>${escapeHtml(article.seo.metaDescription)}</p><a class="senuke-blog-read-more" href="${escapeHtml(href)}">Read article <span aria-hidden="true">→</span></a></div></article>`;
+    return `<article class="senuke-blog-card">${imageUrl && renderableImageUrl(imageUrl) ? `<a class="senuke-blog-card-image" href="${escapeHtml(href)}"><img src="${escapeHtml(imageUrl)}" alt="${escapeHtml(asset?.altText || article.name)}" width="640" height="360" loading="lazy" decoding="async"></a>` : ""}<div><p class="senuke-blog-topic">${escapeHtml(article.seo.primaryKeyword || "Article")}</p><h3><a href="${escapeHtml(href)}">${escapeHtml(article.name)}</a></h3><p>${escapeHtml(article.seo.metaDescription)}</p><a class="senuke-blog-read-more" href="${escapeHtml(href)}">Read article <span aria-hidden="true">→</span></a></div></article>`;
   }).join("")}</div></section>`;
 };
 
@@ -706,6 +706,9 @@ export function renderWebsitePageDocument(
   const faviconAssetId = model.identity?.faviconAssetId || "";
   const faviconAsset = model.mediaAssets.find((asset) => asset.assetId === faviconAssetId);
   const faviconUrl = options.assetUrls?.[faviconAssetId] || faviconAsset?.sourceUrl || "";
+  const heroImageAssetId = String(page.sections.find((section) => section.componentId === "hero.local_service")?.props.imageAssetId || "");
+  const heroImageAsset = model.mediaAssets.find((asset) => asset.assetId === heroImageAssetId);
+  const heroImageUrl = options.assetUrls?.[heroImageAssetId] || heroImageAsset?.sourceUrl || "";
   const brandName = model.identity?.businessName || model.pages[0]?.name || "Website";
   const brandMarkup = logoUrl && renderableImageUrl(logoUrl)
     ? `<img class="senuke-brand-logo" src="${escapeHtml(logoUrl)}" alt="${escapeHtml(logoAsset?.altText || `${brandName} logo`)}">`
@@ -768,6 +771,7 @@ document.querySelectorAll("[data-senuke-managed-form]").forEach(function(form){
 <link rel="canonical" href="${escapeHtml(canonical)}">
 ${faviconUrl && renderableImageUrl(faviconUrl) ? `<link rel="icon" href="${escapeHtml(faviconUrl)}">` : ""}
 ${hasBlogFeed ? `<link rel="alternate" type="application/rss+xml" title="${escapeHtml(brandName)} articles" href="${escapeHtml(rssHref)}">` : ""}
+${heroImageUrl && !heroImageUrl.startsWith("data:") && renderableImageUrl(heroImageUrl) ? `<link rel="preload" as="image" href="${escapeHtml(heroImageUrl)}" fetchpriority="high">` : ""}
 <link rel="stylesheet" href="${escapeHtml(options.stylesheetHref || "/assets/senuke.css")}">
 <script type="application/ld+json">${safeJsonLd(page.seo.schemaJsonLd)}</script>
 ${trackingScript}

@@ -33,10 +33,13 @@ loadEnv();
 const apiPort = process.env.API_PORT ? parseInt(process.env.API_PORT, 10) : 4000;
 
 export const config = {
+  environment: process.env.APP_ENV ?? process.env.NODE_ENV ?? "development",
   port: apiPort,
   redisUrl: process.env.REDIS_URL ?? "redis://localhost:6379",
   jwtSecret: process.env.JWT_SECRET ?? "dev-only-change-me",
   appEncryptionKey: process.env.APP_ENCRYPTION_KEY ?? process.env.JWT_SECRET ?? "dev-only-change-me",
+  bcryptCost: Math.min(14, Math.max(10, Number(process.env.BCRYPT_COST) || 12)),
+  trustProxy: process.env.TRUST_PROXY === "true" ? 1 : process.env.TRUST_PROXY ? Number(process.env.TRUST_PROXY) || false : process.env.NODE_ENV === "production" ? 1 : false,
   // Sliding idle window. Authenticated activity renews the access token; a
   // client that stops using the application naturally expires after this TTL.
   jwtExpiresIn: process.env.JWT_IDLE_TIMEOUT ?? "8h",
@@ -102,6 +105,18 @@ export const config = {
     ? parseInt(process.env.KEYWORD_RESEARCH_PROVIDER_TIMEOUT_MS, 10)
     : 120_000,
 };
+
+function assertSecureProductionConfiguration() {
+  if (config.environment !== "production") return;
+  const placeholder = /dev-only|change-me|replace-me|example|placeholder/i;
+  const problems: string[] = [];
+  if (config.jwtSecret.length < 32 || placeholder.test(config.jwtSecret)) problems.push("JWT_SECRET must be a non-placeholder secret of at least 32 characters");
+  if (config.appEncryptionKey.length < 32 || placeholder.test(config.appEncryptionKey)) problems.push("APP_ENCRYPTION_KEY must be a non-placeholder secret of at least 32 characters");
+  if (config.jwtSecret === config.appEncryptionKey) problems.push("JWT_SECRET and APP_ENCRYPTION_KEY must be different values");
+  if (problems.length) throw new Error(`Unsafe production security configuration: ${problems.join("; ")}.`);
+}
+
+assertSecureProductionConfiguration();
 
 export const CRAWL_QUEUE = "crawl";
 export const KEYWORD_RESEARCH_QUEUE = "keyword-research";

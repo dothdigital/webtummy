@@ -6,6 +6,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Router, type Response } from "express";
 import { Prisma, prisma } from "@webtummy/db";
+import { safePublicFetch } from "@webtummy/core/safe-public-fetch";
 import {
   SENUKE_COMPONENT_REGISTRY_V1,
   applyWebsiteGovernance,
@@ -82,6 +83,7 @@ import { commitUsage, preflightUsage, refundUsage } from "../usage-engine.js";
 import { refundWebsiteJobUsage, reserveWebsiteJobUsage } from "../website-job-usage.js";
 import { isPreLaunchWebsiteCampaign } from "../campaign-intelligence.js";
 import { captureWebsiteTracking, productionTrackingEndpointIssue, trackingEmbed, websiteTrackingMetrics } from "../website-tracking.js";
+import { optimizeEmbeddedWebsiteMedia, optimizeWebsiteImage, websiteAssetRole } from "../website-media-optimization.js";
 
 export const websiteBuilderRouter = Router();
 const WEBSITE_SEO_PLAN_NORMALIZATION_VERSION = "keyword-owner-v2";
@@ -1330,7 +1332,9 @@ export function wordpressConnectorSafeCss(css: string) {
 // Bump whenever WordPress synchronization behavior changes so an already
 // successful draft is not returned before the connector can refresh its theme
 // files and managed navigation.
-const WORDPRESS_RENDERER_VERSION = "senuke-wordpress-2.14.0";
+const WORDPRESS_RENDERER_VERSION = "senuke-wordpress-2.15.0";
+const STATIC_HTML_RENDERER_VERSION = "senuke-static-html-1.1.0";
+const STATIC_SFTP_RENDERER_VERSION = "senuke-static-sftp-1.1.0";
 
 export function shouldDeployWordPressDesignPackage(input: {
   mode: "draft" | "pending" | "publish";
@@ -2591,8 +2595,8 @@ async function siteFilesFor(project: Awaited<ReturnType<typeof scopedProject>>["
   const savedLlmsReady = Boolean(savedLlmsContent && storedLlms.status === "ready");
   const savedRobotsReady = Boolean(savedRobotsContent && storedRobots.status === "ready");
   return {
-    sitemap: { status: urls.length || savedSitemapReady ? "ready" : "waiting", source: activePages.length ? "Site Architect active page map" : savedSitemapReady ? "Shared Website Development asset" : sitemapGeneration ? "AI Content Studio" : crawl?.sitemaps.length ? "Website crawl" : "Site Architect page map", content: String(activePages.length ? fallbackSitemap : savedSitemapReady ? savedSitemapContent : sitemapResult.sitemapXml || savedSitemapContent || fallbackSitemap), itemCount: urls.length || Number(storedSitemap.itemCount || 0) || crawl?.sitemaps.reduce((sum, item) => sum + item.urlCount, 0) || 0 },
-    llms: { status: savedLlmsReady || llmsGeneration || crawledLlms?.content || fallbackLlms ? "ready" : "waiting", source: activePages.length ? "Site Architect active page map" : savedLlmsReady ? "Shared Website Development asset" : llmsGeneration ? "AI Content Studio" : crawledLlms?.content ? "Website crawl" : "Site Architect page map", content: String(activePages.length ? fallbackLlms : savedLlmsReady ? savedLlmsContent : llmsResult.llmsTxt || crawledLlms?.content || savedLlmsContent || fallbackLlms) },
+    sitemap: { status: urls.length || savedSitemapReady ? "ready" : "waiting", source: activePages.length ? "Site Architect active page map" : savedSitemapReady ? "Shared Website Development asset" : sitemapGeneration ? "Approved content workflow" : crawl?.sitemaps.length ? "Website crawl" : "Site Architect page map", content: String(activePages.length ? fallbackSitemap : savedSitemapReady ? savedSitemapContent : sitemapResult.sitemapXml || savedSitemapContent || fallbackSitemap), itemCount: urls.length || Number(storedSitemap.itemCount || 0) || crawl?.sitemaps.reduce((sum, item) => sum + item.urlCount, 0) || 0 },
+    llms: { status: savedLlmsReady || llmsGeneration || crawledLlms?.content || fallbackLlms ? "ready" : "waiting", source: activePages.length ? "Site Architect active page map" : savedLlmsReady ? "Shared Website Development asset" : llmsGeneration ? "Approved content workflow" : crawledLlms?.content ? "Website crawl" : "Site Architect page map", content: String(activePages.length ? fallbackLlms : savedLlmsReady ? savedLlmsContent : llmsResult.llmsTxt || crawledLlms?.content || savedLlmsContent || fallbackLlms) },
     robots: { status: savedRobotsReady || crawledRobots?.content || urls.length ? "ready" : "waiting", source: savedRobotsReady ? "Shared Website Development asset" : crawledRobots?.content ? "Website crawl" : "Site Architect", content: savedRobotsReady ? savedRobotsContent : crawledRobots?.content || savedRobotsContent || `User-agent: *\nAllow: /\n\nSitemap: ${sitemapUrl}` },
   };
 }
@@ -4267,22 +4271,22 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/ai-content-hando
     if (generation.type === "domain_llms_txt") {
       const content = firstGeneratedString(result.llmsTxt);
       if (!content) return res.status(409).json({ error: "The generated llms.txt asset is empty. Create a new version before sending it to the website." });
-      nextSiteFiles = { ...siteFiles, llms: { status: "ready", source: "AI Content Studio", content, generationId: generation.id }, syncedAt: new Date().toISOString(), approvedAt: null, approvedByUserId: null };
+      nextSiteFiles = { ...siteFiles, llms: { status: "ready", source: "Approved content workflow", content, generationId: generation.id }, syncedAt: new Date().toISOString(), approvedAt: null, approvedByUserId: null };
       section = "structure"; destinationLabel = "llms.txt";
     } else if (generation.type === "robots_txt") {
       const content = firstGeneratedString(result.robotsTxt);
       if (!content) return res.status(409).json({ error: "The generated robots.txt asset is empty. Create a new version before sending it to the website." });
-      nextSiteFiles = { ...siteFiles, robots: { status: "ready", source: "AI Content Studio", content, generationId: generation.id }, syncedAt: new Date().toISOString(), approvedAt: null, approvedByUserId: null };
+      nextSiteFiles = { ...siteFiles, robots: { status: "ready", source: "Approved content workflow", content, generationId: generation.id }, syncedAt: new Date().toISOString(), approvedAt: null, approvedByUserId: null };
       section = "structure"; destinationLabel = "robots.txt";
     } else if (generation.type === "sitemap") {
       const content = firstGeneratedString(result.sitemapXml);
       if (!content) return res.status(409).json({ error: "The generated sitemap asset is empty. Create a new version before sending it to the website." });
-      nextSiteFiles = { ...siteFiles, sitemap: { status: "ready", source: "AI Content Studio", content, itemCount: Number(result.urlCount || 0), generationId: generation.id }, syncedAt: new Date().toISOString(), approvedAt: null, approvedByUserId: null };
+      nextSiteFiles = { ...siteFiles, sitemap: { status: "ready", source: "Approved content workflow", content, itemCount: Number(result.urlCount || 0), generationId: generation.id }, syncedAt: new Date().toISOString(), approvedAt: null, approvedByUserId: null };
       section = "structure"; destinationLabel = "sitemap.xml";
     } else if (generation.type === "domain_schema") {
       const parts = generatedDomainSchemaParts(result.schemaJsonLd);
       if (!parts.organization && !parts.website) return res.status(409).json({ error: "The generated domain schema does not contain an Organization, LocalBusiness, ProfessionalService, or WebSite object." });
-      nextTrustAssets = { ...trustAssets, schemas: { ...schemas, ...(parts.organization ? { organization: parts.organization } : {}), ...(parts.website ? { website: parts.website } : {}) }, syncedAt: new Date().toISOString(), source: "AI Content Studio" };
+      nextTrustAssets = { ...trustAssets, schemas: { ...schemas, ...(parts.organization ? { organization: parts.organization } : {}), ...(parts.website ? { website: parts.website } : {}) }, syncedAt: new Date().toISOString(), source: "Approved content workflow" };
       destinationLabel = "shared website schema";
     } else {
       nextTrustAssets = { ...trustAssets, aiSearchRecommendations: { generationId: generation.id, result: generation.resultJson, synchronizedAt: new Date().toISOString() } };
@@ -4294,7 +4298,7 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/ai-content-hando
       trustAssets: nextTrustAssets,
       aiContentHandoffs: { ...handoffs, [generation.id]: { generationId: generation.id, type: generation.type, destination: destinationLabel, synchronizedAt: new Date().toISOString() } },
     };
-    const updated = await prisma.websiteBuild.update({ where: { id: build.id }, data: { sitemapApprovedAt: section === "structure" ? null : build.sitemapApprovedAt, settingsJson: websiteChangedSettings(nextSettings, { category: "ai_content_asset", summary: `${generation.topic} was sent from AI Content Studio to ${destinationLabel}.`, section, changedByUserId: context.membership.userId }) as Prisma.InputJsonValue } });
+    const updated = await prisma.websiteBuild.update({ where: { id: build.id }, data: { sitemapApprovedAt: section === "structure" ? null : build.sitemapApprovedAt, settingsJson: websiteChangedSettings(nextSettings, { category: "ai_content_asset", summary: `${generation.topic} was sent from the approved content workflow to ${destinationLabel}.`, section, changedByUserId: context.membership.userId }) as Prisma.InputJsonValue } });
     await recordWorkspaceActivity(prisma, { context, action: "website_builder.ai_content_synchronized", entityType: "website_build", entityId: build.id, agencyClientId: project.agencyClientId, projectId: project.id, nextJson: { generationId: generation.id, type: generation.type, destination: destinationLabel } });
     return res.json({ build: updated, destination: "site", nextStep: section, message: `${destinationLabel} is now a reviewable Website Development change. It will not affect the live website until Quality, Approval, and Publish are completed.`, siteArchitectUrl: `/site-architect?projectId=${encodeURIComponent(project.id)}&step=${section}` });
   }
@@ -4331,7 +4335,7 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/ai-content-hando
       }
     }
     const generated = importedArticle(result, page, businessIdentity(project) || "the business");
-    const saved = await saveGeneratedPage(page, generated, context, build.templateKey, `Created from AI Content Studio generation ${generation.id}.`);
+    const saved = await saveGeneratedPage(page, generated, context, build.templateKey, `Created from approved content generation ${generation.id}.`);
     await prisma.$transaction(async (tx) => {
       await syncBuildPageRelationships(tx, build.id);
       const currentBuild = await tx.websiteBuild.findUniqueOrThrow({ where: { id: build.id }, select: { settingsJson: true } });
@@ -4340,7 +4344,7 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/ai-content-hando
       const nextMenu = created
         ? input.includeInNavigation ? [...menu, { pageId: saved.id, label: saved.title, slug: saved.slug, parentPageId: null, custom: false }] : menu
         : settings.menu;
-      await tx.websiteBuild.update({ where: { id: build.id }, data: { sitemapApprovedAt: null, settingsJson: websiteChangedSettings({ ...settings, menu: nextMenu, siteFiles: null, aiContentHandoffs: { ...jsonRecord(settings.aiContentHandoffs), [generation.id]: { generationId: generation.id, type: generation.type, pageId: saved.id, pageVersion: saved.version, synchronizedAt: new Date().toISOString() } } }, { category: created ? "page_added" : "page_content", summary: `${saved.title} was ${created ? "created" : "updated"} from AI Content Studio.`, section: created ? "structure" : "content", pageId: saved.id, pageTitle: saved.title, changedByUserId: context.membership.userId }) as Prisma.InputJsonValue } });
+      await tx.websiteBuild.update({ where: { id: build.id }, data: { sitemapApprovedAt: null, settingsJson: websiteChangedSettings({ ...settings, menu: nextMenu, siteFiles: null, aiContentHandoffs: { ...jsonRecord(settings.aiContentHandoffs), [generation.id]: { generationId: generation.id, type: generation.type, pageId: saved.id, pageVersion: saved.version, synchronizedAt: new Date().toISOString() } } }, { category: created ? "page_added" : "page_content", summary: `${saved.title} was ${created ? "created" : "updated"} from the approved content workflow.`, section: created ? "structure" : "content", pageId: saved.id, pageTitle: saved.title, changedByUserId: context.membership.userId }) as Prisma.InputJsonValue } });
     });
     await recordWorkspaceActivity(prisma, { context, action: created ? "website_builder.ai_content_page_created" : "website_builder.ai_content_page_updated", entityType: "website_build_page", entityId: saved.id, agencyClientId: project.agencyClientId, projectId: project.id, nextJson: { generationId: generation.id, pageId: saved.id, pageVersion: saved.version, pageType: saved.pageType } });
     return res.status(created ? 201 : 200).json({ page: saved, created, destination: "page", nextStep: created ? "structure" : "content", message: `${saved.title} is now an editable Website Development draft${saved.pageType === "blog_article" ? " under the Blog Section" : ""}.${blogSectionCreated ? " The Blog Section was added to Page Structure as part of this handoff." : ""} It will not affect the live website until Quality, Approval, and Publish are completed.`, siteArchitectUrl: `/site-architect?projectId=${encodeURIComponent(project.id)}&pageId=${encodeURIComponent(saved.id)}&step=${created ? "structure" : "content"}&manage=1&source=ai-content&handoff=complete` });
@@ -4388,16 +4392,16 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/ai-content-hando
   const seoJson = seo as Prisma.InputJsonValue;
   const briefJson = brief as Prisma.InputJsonValue;
   const saved = await prisma.$transaction(async (tx) => {
-    await tx.websiteBuildPageVersion.upsert({ where: { pageId_version: { pageId: matchingPage.id, version: nextVersion } }, update: { briefJson, contentJson, seoJson, layoutJson: matchingPage.layoutJson, comment: `Applied ${generation.type.replaceAll("_", " ")} from AI Content Studio generation ${generation.id}.`, createdById: context.membership.userId }, create: { pageId: matchingPage.id, version: nextVersion, briefJson, contentJson, seoJson, layoutJson: matchingPage.layoutJson, comment: `Applied ${generation.type.replaceAll("_", " ")} from AI Content Studio generation ${generation.id}.`, createdById: context.membership.userId } });
+    await tx.websiteBuildPageVersion.upsert({ where: { pageId_version: { pageId: matchingPage.id, version: nextVersion } }, update: { briefJson, contentJson, seoJson, layoutJson: matchingPage.layoutJson, comment: `Applied ${generation.type.replaceAll("_", " ")} from approved content generation ${generation.id}.`, createdById: context.membership.userId }, create: { pageId: matchingPage.id, version: nextVersion, briefJson, contentJson, seoJson, layoutJson: matchingPage.layoutJson, comment: `Applied ${generation.type.replaceAll("_", " ")} from approved content generation ${generation.id}.`, createdById: context.membership.userId } });
     const page = await tx.websiteBuildPage.update({ where: { id: matchingPage.id }, data: { briefJson, contentJson, seoJson, version: nextVersion, status: "review", approvedAt: null } });
     const latestBuild = await tx.websiteBuild.findUniqueOrThrow({ where: { id: build.id }, select: { settingsJson: true } });
     const settings = jsonRecord(latestBuild.settingsJson);
-    await tx.websiteBuild.update({ where: { id: build.id }, data: { settingsJson: websiteChangedSettings({ ...settings, aiContentHandoffs: { ...jsonRecord(settings.aiContentHandoffs), [generation.id]: { generationId: generation.id, type: generation.type, pageId: page.id, pageVersion: page.version, synchronizedAt: new Date().toISOString() } } }, { category: "page_content", summary: `${page.title} received a ${generation.type.replaceAll("_", " ")} update from AI Content Studio.`, section: generation.type === "h1" || generation.type === "faq" ? "content" : "optimization", pageId: page.id, pageTitle: page.title, changedByUserId: context.membership.userId }) as Prisma.InputJsonValue } });
+    await tx.websiteBuild.update({ where: { id: build.id }, data: { settingsJson: websiteChangedSettings({ ...settings, aiContentHandoffs: { ...jsonRecord(settings.aiContentHandoffs), [generation.id]: { generationId: generation.id, type: generation.type, pageId: page.id, pageVersion: page.version, synchronizedAt: new Date().toISOString() } } }, { category: "page_content", summary: `${page.title} received a ${generation.type.replaceAll("_", " ")} update from the approved content workflow.`, section: generation.type === "h1" || generation.type === "faq" ? "content" : "optimization", pageId: page.id, pageTitle: page.title, changedByUserId: context.membership.userId }) as Prisma.InputJsonValue } });
     return page;
   });
   await recordWorkspaceActivity(prisma, { context, action: "website_builder.ai_content_page_updated", entityType: "website_build_page", entityId: saved.id, agencyClientId: project.agencyClientId, projectId: project.id, nextJson: { generationId: generation.id, type: generation.type, pageId: saved.id, pageVersion: saved.version } });
   const nextStep = generation.type === "h1" || generation.type === "faq" ? "content" : "optimization";
-  res.json({ page: saved, created: false, destination: "page", nextStep, message: `${saved.title} now contains this AI Content Studio update as a reviewable page version. It will not affect the live website until Quality, Approval, and Publish are completed.`, siteArchitectUrl: `/site-architect?projectId=${encodeURIComponent(project.id)}&pageId=${encodeURIComponent(saved.id)}&step=${nextStep}&manage=1&source=ai-content&handoff=complete` });
+  res.json({ page: saved, created: false, destination: "page", nextStep, message: `${saved.title} now contains this approved content update as a reviewable page version. It will not affect the live website until Quality, Approval, and Publish are completed.`, siteArchitectUrl: `/site-architect?projectId=${encodeURIComponent(project.id)}&pageId=${encodeURIComponent(saved.id)}&step=${nextStep}&manage=1&source=ai-content&handoff=complete` });
 });
 
 websiteBuilderRouter.post("/projects/:projectId/website-builder/sync-site-files", async (req, res) => {
@@ -9160,9 +9164,9 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/deploy", async (
     : {};
   const deploymentConnectorVersion = String(deploymentConnectorCapabilities.version || "0.0.0");
   if (input.mode === "publish" && connectorEnabled) {
-    if (!wordPressConnectorVersionAtLeast(deploymentConnectorVersion, "1.5.3")) {
+    if (!wordPressConnectorVersionAtLeast(deploymentConnectorVersion, "1.6.1")) {
       return res.status(409).json({
-        error: `Update the SEnuke AI - AI Growth Operating System Connector before publishing live. Version ${deploymentConnectorVersion} is installed; version 1.5.3 or newer is required so an active SENuke Theme is refreshed and its header/footer cannot be overridden by stale release CSS.`,
+        error: `Update the SEnuke AI - AI Growth Operating System Connector before publishing live. Version ${deploymentConnectorVersion} is installed; version 1.6.1 or newer is required so generated media is delivered with the approved LCP priority, dimensions, and deferred below-the-fold loading.`,
       });
     }
   }
@@ -9279,6 +9283,8 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/deploy", async (
   const wordpressAssetUrls: Record<string, string> = {};
   const wordpressMediaIds = new Map<string, number>();
   try {
+    const optimizedMedia = await optimizeEmbeddedWebsiteMedia(resolveWebsiteModelMediaSources(releaseModel, build));
+    const publishableReleaseModel = optimizedMedia.model;
     logs.push({
       action: "approved_release_locked",
       status: "success",
@@ -9288,6 +9294,15 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/deploy", async (
       deploymentScope: incrementalDeployment ? "changed_pages_and_images" : "complete_site",
       changedPageIds: pages.map((page) => page.pageId),
       changedAssetIds: automaticScope.changedAssetIds,
+      at: new Date().toISOString(),
+    });
+    logs.push({
+      action: "website_media_optimized",
+      status: "success",
+      optimizedCount: optimizedMedia.optimizedCount,
+      originalBytes: optimizedMedia.originalBytes,
+      publishedBytes: optimizedMedia.publishedBytes,
+      savedBytes: Math.max(0, optimizedMedia.originalBytes - optimizedMedia.publishedBytes),
       at: new Date().toISOString(),
     });
     await wpFetch(integration, "/wp-json/wp/v2/users/me?context=edit");
@@ -9390,7 +9405,7 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/deploy", async (
       connectorVersion: deploymentConnectorVersion,
     });
     if (deployDesignPackageNow) {
-      const renderedFiles = createStaticWebsiteFiles(resolveWebsiteModelMediaSources(releaseModel, build), {
+      const renderedFiles = createStaticWebsiteFiles(publishableReleaseModel, {
         approvedReleaseId: release.id,
         snapshotHash: release.snapshotHash,
         baseUrl: integration.siteUrl,
@@ -9463,19 +9478,21 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/deploy", async (
     }
     const editableMedia = new Map(build.pages.flatMap((page) => page.mediaAssets.map((asset) => [asset.id, asset] as const)));
     const selectedPagesJson = JSON.stringify(pages);
-    const requiredAssetIds = new Set(releaseModel.mediaAssets
+    const requiredAssetIds = new Set(publishableReleaseModel.mediaAssets
       .filter((asset) => !incrementalDeployment || selectedPagesJson.includes(asset.assetId))
       .map((asset) => asset.assetId));
     const changedAssetIds = new Set(automaticScope.changedAssetIds);
-    for (const approvedAsset of releaseModel.mediaAssets.filter((asset) => asset.status === "approved" && asset.sourceUrl && requiredAssetIds.has(asset.assetId))) {
+    for (const approvedAsset of publishableReleaseModel.mediaAssets.filter((asset) => asset.status === "approved" && asset.sourceUrl && requiredAssetIds.has(asset.assetId))) {
       const editableAsset = editableMedia.get(approvedAsset.assetId);
+      const approvedReleaseAsset = releaseModel.mediaAssets.find((asset) => asset.assetId === approvedAsset.assetId);
       const sourceUrl = approvedAsset.sourceUrl?.startsWith("asset://") ? editableAsset?.sourceUrl : approvedAsset.sourceUrl;
       if (!sourceUrl) continue;
       if (
         editableAsset?.remoteMediaId
         && editableAsset.remoteUrl
+        && /\.webp(?:$|\?)/i.test(editableAsset.remoteUrl)
         && (!changedAssetIds.has(approvedAsset.assetId) || reviewedDraftMediaAssetIds.has(approvedAsset.assetId))
-        && (approvedAsset.sourceUrl?.startsWith("asset://") || editableAsset.sourceUrl === approvedAsset.sourceUrl)
+        && (approvedReleaseAsset?.sourceUrl?.startsWith("asset://") || editableAsset.sourceUrl === approvedReleaseAsset?.sourceUrl)
       ) {
         wordpressMediaIds.set(approvedAsset.assetId, Number(editableAsset.remoteMediaId));
         wordpressAssetUrls[approvedAsset.assetId] = editableAsset.remoteUrl;
@@ -9483,13 +9500,15 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/deploy", async (
       }
       const encoded = sourceUrl.match(/^data:(image\/(?:png|jpeg|webp|gif));base64,([a-z0-9+/=\s]+)$/i);
       if (encoded) {
-        const extension = encoded[1].toLowerCase() === "image/jpeg" ? "jpg" : encoded[1].split("/")[1];
-        const fileName = editableAsset?.fileName || `${slugify(approvedAsset.assetId)}.${extension}`;
+        const sourceBytes = Buffer.from(encoded[2].replace(/\s+/g, ""), "base64");
+        const optimized = await optimizeWebsiteImage(sourceBytes, encoded[1], websiteAssetRole(publishableReleaseModel, approvedAsset.assetId));
+        const baseFileName = (editableAsset?.fileName || slugify(approvedAsset.assetId)).replace(/\.[a-z0-9]+$/i, "");
+        const fileName = `${baseFileName}.${optimized.extension}`;
         const media = await wpUploadMedia(
           integration,
           fileName,
-          encoded[1],
-          Buffer.from(encoded[2].replace(/\s+/g, ""), "base64"),
+          optimized.mimeType,
+          optimized.bytes,
           approvedAsset.altText || "Website image",
         );
         if (media.id) {
@@ -9503,7 +9522,7 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/deploy", async (
               data: { remoteMediaId: String(mediaId), remoteUrl, status: "approved" },
             });
           }
-          logs.push({ action: "media_uploaded", status: "success", assetId: approvedAsset.assetId, remoteMediaId: mediaId, url: remoteUrl, at: new Date().toISOString() });
+          logs.push({ action: "media_uploaded", status: "success", assetId: approvedAsset.assetId, remoteMediaId: mediaId, url: remoteUrl, originalBytes: optimized.originalBytes, publishedBytes: optimized.bytes.length, optimized: optimized.optimized, width: optimized.width, height: optimized.height, at: new Date().toISOString() });
         }
       } else if (/^https:\/\//i.test(sourceUrl)) {
         wordpressAssetUrls[approvedAsset.assetId] = sourceUrl;
@@ -9690,7 +9709,7 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/deploy", async (
       if (input.mode === "publish" && mapping.remoteUrl) {
         try {
           const url = await safeSiteUrl(mapping.remoteUrl);
-          const response = await fetch(url, { signal: AbortSignal.timeout(20_000), redirect: "follow" });
+          const response = await safePublicFetch(url, { signal: AbortSignal.timeout(20_000) });
           const html = await response.text();
           const finalUrl = response.url || url;
           const canonicalMatch = html.match(/<link[^>]+rel=["'][^"']*canonical[^"']*["'][^>]+href=["']([^"']+)["']|<link[^>]+href=["']([^"']+)["'][^>]+rel=["'][^"']*canonical[^"']*["']/i);
@@ -9713,7 +9732,7 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/deploy", async (
           const sampledResponses = await Promise.all(sampledTargets.map(async (target) => {
             try {
               const targetUrl = await safeSiteUrl(target);
-              const targetResponse = await fetch(targetUrl, { signal: AbortSignal.timeout(8_000), redirect: "follow" });
+              const targetResponse = await safePublicFetch(targetUrl, { signal: AbortSignal.timeout(8_000) });
               return { target, passed: targetResponse.ok, status: targetResponse.status };
             } catch { return { target, passed: false, status: 0 }; }
           }));
@@ -9974,7 +9993,8 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/static-export", 
     : rawWebsiteUrl
       ? `https://${rawWebsiteUrl.replace(/^https?:\/\//i, "")}`
       : "";
-  const files = createStaticWebsiteFiles(resolveWebsiteModelMediaSources(releaseModel, build), {
+  const optimizedMedia = await optimizeEmbeddedWebsiteMedia(resolveWebsiteModelMediaSources(releaseModel, build));
+  const files = createStaticWebsiteFiles(optimizedMedia.model, {
     approvedReleaseId: release.id,
     snapshotHash: release.snapshotHash,
     formAction: staticWebsiteFormAction(release),
@@ -9995,9 +10015,9 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/static-export", 
         where: { id: prior.id },
         data: {
           status: "completed",
-          rendererVersion: "senuke-static-html-1.0.0",
+          rendererVersion: STATIC_HTML_RENDERER_VERSION,
           remoteMappingsJson: { files: files.map((file) => ({ path: file.path, mimeType: file.mimeType })) } as Prisma.InputJsonValue,
-          deploymentLogsJson: [{ action: "static_export_created", approvedReleaseId: release.id, fileCount: files.length, archiveBytes: archive.length }] as Prisma.InputJsonValue,
+          deploymentLogsJson: [{ action: "static_export_created", approvedReleaseId: release.id, fileCount: files.length, archiveBytes: archive.length, optimizedImageCount: optimizedMedia.optimizedCount, originalImageBytes: optimizedMedia.originalBytes, publishedImageBytes: optimizedMedia.publishedBytes }] as Prisma.InputJsonValue,
           verificationJson: { archiveSha256: archiveHash, snapshotHash: release.snapshotHash, modelVersion: releaseModel.version } as Prisma.InputJsonValue,
           requestedById: context.membership.userId,
           startedAt: new Date(),
@@ -10013,11 +10033,11 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/static-export", 
           target: "static_html",
           mode: "download",
           status: "completed",
-          rendererVersion: "senuke-static-html-1.0.0",
+          rendererVersion: STATIC_HTML_RENDERER_VERSION,
           destinationId: "browser_download",
           idempotencyKey,
           remoteMappingsJson: { files: files.map((file) => ({ path: file.path, mimeType: file.mimeType })) } as Prisma.InputJsonValue,
-          deploymentLogsJson: [{ action: "static_export_created", approvedReleaseId: release.id, fileCount: files.length, archiveBytes: archive.length }] as Prisma.InputJsonValue,
+          deploymentLogsJson: [{ action: "static_export_created", approvedReleaseId: release.id, fileCount: files.length, archiveBytes: archive.length, optimizedImageCount: optimizedMedia.optimizedCount, originalImageBytes: optimizedMedia.originalBytes, publishedImageBytes: optimizedMedia.publishedBytes }] as Prisma.InputJsonValue,
           verificationJson: { archiveSha256: archiveHash, snapshotHash: release.snapshotHash, modelVersion: releaseModel.version } as Prisma.InputJsonValue,
           requestedById: context.membership.userId,
           queuedAt: new Date(),
@@ -10073,7 +10093,8 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/static-deploy", 
     : rawWebsiteUrl
       ? `https://${rawWebsiteUrl.replace(/^https?:\/\//i, "")}`
       : "";
-  const files = createStaticWebsiteFiles(resolveWebsiteModelMediaSources(releaseModel, build), {
+  const optimizedMedia = await optimizeEmbeddedWebsiteMedia(resolveWebsiteModelMediaSources(releaseModel, build));
+  const files = createStaticWebsiteFiles(optimizedMedia.model, {
     approvedReleaseId: release.id,
     snapshotHash: release.snapshotHash,
     formAction: staticWebsiteFormAction(release),
@@ -10083,6 +10104,12 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/static-deploy", 
     ...(websiteTracking ? { tracking: { ...websiteTracking, releaseId: release.id } } : {}),
   });
   const automaticScope = await releaseDeploymentScopeFor(project.id, release, "static_html");
+  const latestStaticPublication = await prisma.websitePublication.findFirst({
+    where: { projectId: project.id, target: "static_html", mode: "sftp", status: "completed" },
+    orderBy: { completedAt: "desc" },
+  });
+  const rendererUpgrade = Boolean(latestStaticPublication && latestStaticPublication.rendererVersion !== STATIC_SFTP_RENDERER_VERSION);
+  const incrementalDeployment = input.scope === "auto" && automaticScope.mode === "incremental" && !rendererUpgrade;
   const fileHash = (file: typeof files[number]) => createHash("sha256")
     .update(Buffer.from(file.content, file.base64 ? "base64" : "utf8"))
     .digest("hex");
@@ -10093,16 +10120,16 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/static-deploy", 
     return [path === "/" ? "index.html" : `${path.replace(/^\/|\/$/g, "")}/index.html`];
   }));
   const changedMediaPrefixes = automaticScope.changedAssetIds.map((assetId) => `assets/media/${assetId.replace(/[^a-z0-9_-]+/gi, "-")}.`);
-  const deployFiles = input.scope === "auto" && automaticScope.mode === "incremental"
+  const deployFiles = incrementalDeployment
     ? files.filter((file) => changedPagePaths.has(file.path) || changedMediaPrefixes.some((prefix) => file.path.startsWith(prefix)) || file.path === "senuke-release.json")
     : files;
   if (!deployFiles.length) return res.status(409).json({ error: "No changed website files were found for this Approved Release." });
-  const rendererVersion = "senuke-static-sftp-1.0.0";
+  const rendererVersion = STATIC_SFTP_RENDERER_VERSION;
   const destinationSignature = createHash("sha256")
     .update(`${transfer.host}:${transfer.port}:${transfer.rootPath}`)
     .digest("hex")
     .slice(0, 16);
-  const deploymentScope = input.scope === "auto" && automaticScope.mode === "incremental" ? "changed-files" : "complete-site";
+  const deploymentScope = incrementalDeployment ? "changed-files" : "complete-site";
   const idempotencyKey = `release:${release.id}:static_html:sftp:${transfer.id}:${destinationSignature}:${rendererVersion}:${deploymentScope}`;
   const prior = await prisma.websitePublication.findUnique({ where: { idempotencyKey } });
   if (prior?.status === "completed") {
@@ -10175,6 +10202,10 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/static-deploy", 
           totalReleaseFileCount: files.length,
           fileCount: result.fileCount,
           uploadedBytes: result.uploadedBytes,
+          optimizedImageCount: optimizedMedia.optimizedCount,
+          originalImageBytes: optimizedMedia.originalBytes,
+          publishedImageBytes: optimizedMedia.publishedBytes,
+          rendererUpgrade,
           backupPath: result.backupPath,
           at: completedAt.toISOString(),
         }] as Prisma.InputJsonValue,
@@ -10238,7 +10269,8 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/quality-export",
     : rawWebsiteUrl
       ? `https://${rawWebsiteUrl.replace(/^https?:\/\//i, "")}`
       : "";
-  const files = createStaticWebsiteFiles(resolveWebsiteModelMediaSources(canonical.model, build), {
+  const optimizedMedia = await optimizeEmbeddedWebsiteMedia(resolveWebsiteModelMediaSources(canonical.model, build));
+  const files = createStaticWebsiteFiles(optimizedMedia.model, {
     snapshotHash: canonical.record.snapshotHash,
     ...(baseUrl ? { baseUrl } : {}),
     environmentType: "preview",
@@ -10262,6 +10294,11 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/quality-export",
       validatorVersion: validation.validatorVersion,
       findings: validation.findingsJson,
       pageScores: validation.pageScoresJson,
+    },
+    mediaOptimization: {
+      optimizedImageCount: optimizedMedia.optimizedCount,
+      originalImageBytes: optimizedMedia.originalBytes,
+      publishedImageBytes: optimizedMedia.publishedBytes,
     },
   };
   const zip = new JSZip();
@@ -10327,7 +10364,7 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/deployments/:dep
     const checks: Array<{ key: string; passed: boolean; detail: string }> = [];
     try {
       const url = await safeSiteUrl(page.remoteUrl);
-      const response = await fetch(url, { signal: AbortSignal.timeout(20_000), redirect: "follow" });
+      const response = await safePublicFetch(url, { signal: AbortSignal.timeout(20_000) });
       const html = await response.text();
       const headerRobots = response.headers.get("x-robots-tag") || "";
       const finalUrl = response.url || url;
@@ -10349,7 +10386,7 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/deployments/:dep
       const sampledResponses = await Promise.all(sampledTargets.map(async (target) => {
         try {
           const targetUrl = await safeSiteUrl(target);
-          const targetResponse = await fetch(targetUrl, { signal: AbortSignal.timeout(8_000), redirect: "follow" });
+          const targetResponse = await safePublicFetch(targetUrl, { signal: AbortSignal.timeout(8_000) });
           return { target, passed: targetResponse.ok, status: targetResponse.status };
         } catch { return { target, passed: false, status: 0 }; }
       }));

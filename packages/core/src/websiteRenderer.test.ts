@@ -317,6 +317,8 @@ describe("Approved Release website renderer", () => {
     expect(html).toContain('class="senuke-hero-image"');
     expect(html).toContain('src="https://wordpress.example/wp-content/uploads/home-hero.png"');
     expect(html).toContain('alt="Team helping a customer"');
+    expect(html).toContain('width="1200" height="800"');
+    expect(html).toContain('loading="eager" fetchpriority="high" decoding="async"');
   });
 
   it("renders verified contact details and custom copyright in the global footer", () => {
@@ -677,6 +679,7 @@ describe("Approved Release website renderer", () => {
     expect(files.find((file) => file.path === "assets/media/hero-media-1.png")?.base64).toBe(true);
     expect(files[0].content).toContain('src="../assets/media/hero-media-1.png"');
     expect(files[0].content).toContain('alt="Family reviewing Super Visa insurance"');
+    expect(files[0].content).toContain('<link rel="preload" as="image" href="../assets/media/hero-media-1.png" fetchpriority="high">');
   });
 
   it("installs first-party and GA4 tracking only in production output", () => {

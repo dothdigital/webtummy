@@ -78,7 +78,10 @@ async function scopedProject(req: Request, projectId: string) {
   });
   if (!project || (context.workspace.workspaceType !== "personal" && !(await canAccessProject(context, project.id)))) throw Object.assign(new Error("Project not found."), { statusCode: 404 });
   const intake = Object.fromEntries(project.intakeAnswers.map((answer) => [answer.questionKey, answer.answerValue]));
-  const ecommerceContext = context.workspace.workspaceType === "ecommerce" || project.projectType === "ecommerce" || /shopify|woocommerce|ecommerce|online store/i.test([project.cmsPlatform, project.niche, intake.store_type, intake.product_category].filter(Boolean).join(" "));
+  // Ecommerce is a project capability, not a workspace type. Require the
+  // explicit project Business Type so a legacy workspace value, CMS name, or
+  // incidental intake wording cannot activate store intelligence by mistake.
+  const ecommerceContext = project.projectType === "ecommerce";
   return { context, project, ecommerceContext, intake };
 }
 
