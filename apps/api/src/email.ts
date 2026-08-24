@@ -1,4 +1,5 @@
 import { createHmac, createHash } from "node:crypto";
+import { defaultProvider } from "@aws-sdk/credential-provider-node";
 import { config } from "./config.js";
 
 interface MailInput {
@@ -8,6 +9,8 @@ interface MailInput {
   text: string;
   replyTo?: string;
 }
+
+const resolveAwsCredentials = defaultProvider();
 
 function hash(value: string) {
   return createHash("sha256").update(value, "utf8").digest("hex");
@@ -27,9 +30,20 @@ function amzDates(now = new Date()) {
 }
 
 async function sendWithSes(input: MailInput) {
-  if (!config.awsRegion || !config.awsAccessKeyId || !config.awsSecretAccessKey) {
-    throw new Error("SES email provider is configured but AWS_REGION, AWS_ACCESS_KEY_ID, or AWS_SECRET_ACCESS_KEY is missing");
+  if (!config.awsRegion) {
+    throw new Error("SES email provider is configured but AWS_REGION is missing");
   }
+
+  const credentials = config.awsAccessKeyId && config.awsSecretAccessKey
+    ? {
+        accessKeyId: config.awsAccessKeyId,
+        secretAccessKey: config.awsSecretAccessKey,
+        sessionToken: config.awsSessionToken || undefined,
+      }
+    : await resolveAwsCredentials().catch((error: unknown) => {
+        const detail = error instanceof Error ? error.message : "unknown credential-provider error";
+        throw new Error(`SES email provider could not resolve AWS credentials: ${detail}`);
+      });
 
   const host = `email.${config.awsRegion}.amazonaws.com`;
   const endpoint = `https://${host}/v2/email/outbound-emails`;
@@ -58,14 +72,14 @@ async function sendWithSes(input: MailInput) {
     "x-amz-content-sha256": payloadHash,
     "x-amz-date": amzDate,
   };
-  if (config.awsSessionToken) headers["x-amz-security-token"] = config.awsSessionToken;
+  if (credentials.sessionToken) headers["x-amz-security-token"] = credentials.sessionToken;
 
   const signedHeaderNames = Object.keys(headers).sort();
   const canonicalHeaders = signedHeaderNames.map((name) => `${name}:${headers[name].trim()}\n`).join("");
   const signedHeaders = signedHeaderNames.join(";");
   const canonicalRequest = ["POST", "/v2/email/outbound-emails", "", canonicalHeaders, signedHeaders, payloadHash].join("\n");
   const stringToSign = ["AWS4-HMAC-SHA256", amzDate, credentialScope, hash(canonicalRequest)].join("\n");
-  const dateKey = hmac(`AWS4${config.awsSecretAccessKey}`, dateStamp);
+  const dateKey = hmac(`AWS4${credentials.secretAccessKey}`, dateStamp);
   const regionKey = hmac(dateKey, config.awsRegion);
   const serviceKey = hmac(regionKey, service);
   const signingKey = hmac(serviceKey, "aws4_request");
@@ -75,7 +89,7 @@ async function sendWithSes(input: MailInput) {
     method: "POST",
     headers: {
       ...headers,
-      Authorization: `AWS4-HMAC-SHA256 Credential=${config.awsAccessKeyId}/${credentialScope}, SignedHeaders=${signedHeaders}, Signature=${signature}`,
+      Authorization: `AWS4-HMAC-SHA256 Credential=${credentials.accessKeyId}/${credentialScope}, SignedHeaders=${signedHeaders}, Signature=${signature}`,
     },
     body,
   });

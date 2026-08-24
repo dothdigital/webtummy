@@ -345,6 +345,8 @@ async function checkBudgetCaps(input: UsagePreflightInput, creditCost: number) {
 }
 
 export async function preflightUsage(input: UsagePreflightInput) {
+  const requestContext = currentCommercialRequestContext();
+  if (requestContext?.clientId) input = { ...input, clientId: requestContext.clientId };
   await ensureUsageControlDefaults();
   const units = Math.max(1, Math.floor(input.inputUnits ?? 1));
   let idempotencyKey = usageIdempotencyKey(input.idempotencyKey);
@@ -472,7 +474,6 @@ export async function preflightUsage(input: UsagePreflightInput) {
     throw error;
   });
 
-  const requestContext = currentCommercialRequestContext();
   if (requestContext && requestContext.clientId === input.clientId) {
     requestContext.usageEventId = event.id;
     requestContext.manualUsageReservation = true;

@@ -188,7 +188,7 @@ export function missingApprovedKeywordResearch(
   runs: KeywordResearchEvidenceInput[],
   locations: string[] = [],
 ): string[] {
-  const requiredKeywords = keywordResearchScopeKeywords(groups, runs);
+  const requiredKeywords = approvedKeywordEntries(groups);
   const requiredGroups: KeywordGroupEvidenceInput[] = [{ status: "approved", keywords: requiredKeywords }];
   if (locations.length) {
     const latest = latestKeywordResearchChecks(runs);
@@ -257,7 +257,7 @@ export function incompleteApprovedKeywordResearchChecks(
   locations: string[],
 ): KeywordResearchCheck[] {
   const latest = latestKeywordResearchChecks(runs);
-  const requiredGroups: KeywordGroupEvidenceInput[] = [{ status: "approved", keywords: keywordResearchScopeKeywords(groups, runs) }];
+  const requiredGroups: KeywordGroupEvidenceInput[] = [{ status: "approved", keywords: approvedKeywordEntries(groups) }];
   return expectedApprovedKeywordResearchChecks(requiredGroups, locations)
     .filter((check) => latest.get(check.identity)?.status?.toLowerCase() !== "completed");
 }

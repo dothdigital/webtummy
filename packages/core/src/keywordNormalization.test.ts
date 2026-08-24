@@ -58,12 +58,12 @@ describe("shared keyword normalization", () => {
     expect(missingApprovedKeywordResearch(groups, runs)).toEqual([]);
   });
 
-  it("keeps a submitted batch denominator fixed when other approved suggestions were not submitted", () => {
+  it("keeps every approved keyword in the required analysis denominator", () => {
     const groups = [{ status: "approved", keywords: ["life insurance", "family financial planning"] }];
     const runs = [{ status: "completed", seedKeyword: "life insurance", locationName: "Edmonton, Alberta, Canada", languageCode: "en", device: "desktop" }];
     expect(keywordResearchScopeKeywords(groups, runs)).toEqual(["life insurance"]);
-    expect(incompleteApprovedKeywordResearchChecks(groups, runs, ["Edmonton, Alberta, Canada"])).toEqual([]);
-    expect(missingApprovedKeywordResearch(groups, runs, ["Edmonton, Alberta, Canada"])).toEqual([]);
+    expect(incompleteApprovedKeywordResearchChecks(groups, runs, ["Edmonton, Alberta, Canada"]).map((check) => check.keyword)).toEqual(["family financial planning"]);
+    expect(missingApprovedKeywordResearch(groups, runs, ["Edmonton, Alberta, Canada"])).toEqual(["family financial planning"]);
   });
 
   it("requires the complete selected keyword-location matrix", () => {

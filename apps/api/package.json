@@ -12,6 +12,7 @@
   },
   "dependencies": {
     "@ai-sdk/openai": "^4.0.15",
+    "@aws-sdk/credential-provider-node": "^3.972.81",
     "@mastra/core": "^1.51.0",
     "@webtummy/core": "*",
     "@webtummy/db": "*",

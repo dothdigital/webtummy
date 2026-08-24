@@ -11,6 +11,7 @@ function redisConnectionOptions() {
     username: url.username ? decodeURIComponent(url.username) : undefined,
     password: url.password ? decodeURIComponent(url.password) : undefined,
     db: url.pathname && url.pathname !== "/" ? Number(url.pathname.slice(1)) || 0 : 0,
+    tls: url.protocol === "rediss:" ? {} : undefined,
     maxRetriesPerRequest: null,
   };
 }
