@@ -394,10 +394,13 @@ export async function canAccessAgencyClient(context: WorkspaceContext, agencyCli
 }
 
 export async function canAccessProject(context: WorkspaceContext, projectId: string) {
-  if (context.roles.has("owner") || context.roles.has("admin")) return true;
-  if (!context.workspace.legacyClientId) return false;
-  if (context.workspace.workspaceType === "personal") {
-    return Boolean(await prisma.project.findFirst({ where: { id: projectId, clientId: context.workspace.legacyClientId }, select: { id: true } }));
+  const workspaceScope: Prisma.ProjectWhereInput[] = [
+    ...(context.workspace.legacyClientId ? [{ clientId: context.workspace.legacyClientId }] : []),
+    ...(context.workspace.workspaceType === "agency" ? [{ agencyClient: { workspaceId: context.workspace.id } }] : []),
+  ];
+  if (!workspaceScope.length) return false;
+  if (context.roles.has("owner") || context.roles.has("admin") || context.workspace.workspaceType === "personal") {
+    return Boolean(await prisma.project.findFirst({ where: { id: projectId, OR: workspaceScope }, select: { id: true } }));
   }
   const assignments: Prisma.ProjectWhereInput[] = [
     { memberAssignments: { some: { membershipId: context.membership.id } } },
@@ -414,7 +417,7 @@ export async function canAccessProject(context: WorkspaceContext, projectId: str
     { agencyClient: { workspaceId: context.workspace.id, teamAssignments: { some: { team: { members: { some: { membershipId: context.membership.id } } } } } } },
   );
   const project = await prisma.project.findFirst({
-    where: { id: projectId, clientId: context.workspace.legacyClientId, OR: assignments },
+    where: { id: projectId, AND: [{ OR: workspaceScope }, { OR: assignments }] },
     select: { id: true },
   });
   return Boolean(project);

@@ -27,7 +27,7 @@ async function scopedProject(req: Request, projectId: string) {
   const context = await workspaceContext(req);
   if (!await canAccessProject(context, projectId)) fail("Project not found.", 404);
   const project = await prisma.project.findFirst({
-    where: { id: projectId, ...(context.workspace.legacyClientId ? { clientId: context.workspace.legacyClientId } : {}) },
+    where: { id: projectId },
     include: { businessProfile: true },
   });
   if (!project) fail("Project not found.", 404);
