@@ -13,6 +13,7 @@ import { createDiscoveryIdeaPdf } from "../discovery-idea-pdf.js";
 import { normalizeComplianceAdvisories } from "../compliance-advisories.js";
 import { discoveryTargetMarkets } from "../discovery-target-markets.js";
 import { readGeneratedAsset, storeGeneratedAsset } from "../generated-assets.js";
+import { normalizeDiscoveryWebsiteUrl } from "../discovery-website.js";
 
 export const discoveryDraftsRouter = Router();
 
@@ -949,7 +950,9 @@ discoveryDraftsRouter.post("/discovery-drafts/:draftId/convert", async (req, res
     const modelText = String(idea.businessModel ?? summary.businessModel ?? "").toLocaleLowerCase();
     const deliveryMode = String(summary.deliveryMode ?? "unclear");
     const websiteUrlCandidate = answerText(answers, "websiteOrProfile");
-    const websiteUrl = /^https?:\/\//i.test(websiteUrlCandidate) ? websiteUrlCandidate : null;
+    const normalizedWebsite = normalizeDiscoveryWebsiteUrl(websiteUrlCandidate);
+    if (websiteUrlCandidate && !normalizedWebsite) return res.status(400).json({ error: "Enter a valid website, store, or profile link, such as example.com or https://example.com." });
+    const websiteUrl = normalizedWebsite?.rootUrl ?? null;
     const projectType = /ecommerce|store|marketplace/.test(modelText) ? "ecommerce" : deliveryMode === "local" || /local service/.test(modelText) ? "local_seo" : websiteUrl ? "existing_website" : "new_business";
     const websiteStatus = websiteUrl ? "existing_website" : answerText(answers, "websiteNeeded") === "no" ? "no_website_required" : "website_planned";
     const allowedGoals = primaryGoalsForWorkspace(context.workspace.workspaceType);
@@ -966,9 +969,12 @@ discoveryDraftsRouter.post("/discovery-drafts/:draftId/convert", async (req, res
     const offerSummary = productsServices.join(", ");
     const targetMarkets = discoveryTargetMarkets({ understanding: summary, facts: draft.factsJson, answers, sourceText: draft.sourceText });
     const project = await prisma.$transaction(async (tx) => {
+      let website = normalizedWebsite ? await tx.website.findFirst({ where: { clientId, domain: normalizedWebsite.domain } }) : null;
+      if (!website && normalizedWebsite) website = await tx.website.create({ data: { clientId, domain: normalizedWebsite.domain, rootUrl: normalizedWebsite.rootUrl, status: "active", targetCities: targetMarkets } });
       const row = await tx.project.create({ data: {
         clientId,
         agencyClientId: draft.agencyClientId,
+        websiteId: website?.id ?? null,
         name: draft.title,
         projectType,
         websiteStatus,
