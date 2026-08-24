@@ -26,7 +26,6 @@ function NoWebsiteKeywordReport({ run, projectId, backUrl, refreshing, onRefresh
   const averageCpc = pricedIdeas.length ? pricedIdeas.reduce((sum, idea) => sum + (idea.cpc ?? 0), 0) / pricedIdeas.length : null;
   const averageCompetition = ideas.filter((idea) => idea.competitionIndex != null);
   const competitionIndex = averageCompetition.length ? Math.round(averageCompetition.reduce((sum, idea) => sum + (idea.competitionIndex ?? 0), 0) / averageCompetition.length) : null;
-  const siteArchitectUrl = `/site-architect?projectId=${encodeURIComponent(projectId)}`;
   const strategyUrl = `/strategy?projectId=${encodeURIComponent(projectId)}`;
 
   return <div className="space-y-6">
@@ -44,7 +43,7 @@ function NoWebsiteKeywordReport({ run, projectId, backUrl, refreshing, onRefresh
 
     <Card className="overflow-hidden border-brand-100">
       <div className="grid gap-5 bg-gradient-to-r from-brand-50 via-white to-cyan-50 p-6 lg:grid-cols-[minmax(0,1fr)_360px] lg:items-center">
-        <div><div className="text-xs font-bold uppercase tracking-wide text-brand-700">What this analysis can answer</div><h2 className="mt-2 text-xl font-bold text-charcoal-900">Is this keyword market worth building into the new website?</h2><p className="mt-2 text-sm leading-6 text-charcoal-600">Use demand, commercial value, competition and the pages already winning in Google to approve the keyword direction. Website-specific measurement begins after the site is built and the domain is connected.</p></div>
+        <div><div className="text-xs font-bold uppercase tracking-wide text-brand-700">What this analysis can answer</div><h2 className="mt-2 text-xl font-bold text-charcoal-900">Is this keyword market worth prioritizing?</h2><p className="mt-2 text-sm leading-6 text-charcoal-600">Use demand, commercial value, competition and the pages already winning in Google to approve the keyword direction. Approved keyword evidence moves into Strategy first; the Website Execution Plan is created only after Strategy review and approval.</p></div>
         <div className="rounded-xl border border-white bg-white/90 p-4 shadow-sm"><div className="text-sm font-bold text-charcoal-900">Website-specific analysis is deferred</div><div className="mt-2 text-xs leading-5 text-charcoal-500">After publishing: connect domain → crawl website → map live URLs → start ranking and visibility tracking.</div></div>
       </div>
     </Card>
@@ -63,13 +62,13 @@ function NoWebsiteKeywordReport({ run, projectId, backUrl, refreshing, onRefresh
       </div>
     </div>
 
-    <Card className="overflow-hidden"><div className="border-b border-charcoal-100 px-5 py-4"><div className="text-xs font-bold uppercase tracking-wide text-brand-700">Next plan of action</div><h2 className="mt-1 text-xl font-bold text-charcoal-900">Turn research into the new website specification</h2></div><div className="grid gap-px bg-charcoal-100 md:grid-cols-5">{[
+    <Card className="overflow-hidden"><div className="border-b border-charcoal-100 px-5 py-4"><div className="text-xs font-bold uppercase tracking-wide text-brand-700">Governed project workflow</div><h2 className="mt-1 text-xl font-bold text-charcoal-900">Move approved keyword evidence into Strategy</h2></div><div className="grid gap-px bg-charcoal-100 md:grid-cols-5">{[
       ["1", "Approve keyword direction", "Keep relevant terms and combine overlapping intent."],
-      ["2", "Create page map", "Assign each intent cluster to one planned page."],
-      ["3", "Approve SEO strategy", "Confirm priorities, local markets and publishing order."],
-      ["4", "Build and publish", "Generate structure, content, schema, images and conversion paths."],
-      ["5", "Connect and measure", "Crawl the live domain and begin ranking monitoring."],
-    ].map(([step, title, detail]) => <div key={step} className="bg-white p-5"><div className="flex h-7 w-7 items-center justify-center rounded-full bg-brand-600 text-xs font-bold text-white">{step}</div><div className="mt-3 font-bold text-charcoal-900">{title}</div><p className="mt-1 text-xs leading-5 text-charcoal-500">{detail}</p></div>)}</div><div className="flex flex-wrap gap-3 border-t border-charcoal-100 bg-charcoal-50 px-5 py-4"><Link to={backUrl} className="rounded-lg bg-brand-600 px-4 py-2.5 text-sm font-bold text-white hover:bg-brand-700">Review keyword direction</Link><Link to={strategyUrl} className="rounded-lg border border-slate-200 bg-white px-4 py-2.5 text-sm font-bold text-charcoal-700 hover:border-brand-200">Review strategy</Link><Link to={siteArchitectUrl} className="rounded-lg border border-slate-200 bg-white px-4 py-2.5 text-sm font-bold text-charcoal-700 hover:border-brand-200">Open Site Architect</Link></div></Card>
+      ["2", "Generate execution strategy", "Use the approved opportunity, market and keyword evidence."],
+      ["3", "Review and approve Strategy", "Confirm priorities, markets, channels and execution direction."],
+      ["4", "Generate Website Execution Plan", "Create architecture, page ownership, content and publishing tasks from the approved Strategy."],
+      ["5", "Build, publish and measure", "Complete the governed website workflow, then crawl and track the live result."],
+    ].map(([step, title, detail]) => <div key={step} className="bg-white p-5"><div className="flex h-7 w-7 items-center justify-center rounded-full bg-brand-600 text-xs font-bold text-white">{step}</div><div className="mt-3 font-bold text-charcoal-900">{title}</div><p className="mt-1 text-xs leading-5 text-charcoal-500">{detail}</p></div>)}</div><div className="flex flex-wrap gap-3 border-t border-charcoal-100 bg-charcoal-50 px-5 py-4"><Link to={backUrl} className="rounded-lg bg-brand-600 px-4 py-2.5 text-sm font-bold text-white hover:bg-brand-700">Review keyword direction</Link><Link to={strategyUrl} className="rounded-lg border border-slate-200 bg-white px-4 py-2.5 text-sm font-bold text-charcoal-700 hover:border-brand-200">Continue to Strategy</Link></div></Card>
   </div>;
 }
 

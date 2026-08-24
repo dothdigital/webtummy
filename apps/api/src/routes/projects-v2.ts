@@ -35,6 +35,7 @@ import { queueApiErrorReport } from "../api-error-reporter.js";
 import { captureWebsiteTracking } from "../website-tracking.js";
 import { discoveryTargetMarkets, latestExplicitConversationTargetMarkets, sameGeographicTargetMarkets } from "../discovery-target-markets.js";
 import { storeGeneratedImage } from "../generated-assets.js";
+import { projectReadinessComplete } from "../project-readiness.js";
 
 export const guidedProjectsRouter = Router();
 guidedProjectsRouter.use(requireAuth);
@@ -1119,7 +1120,21 @@ async function syncProjectWorkflow(tx: Prisma.TransactionClient, projectId: stri
   const strategyGenerated = Boolean(latestStrategy);
   const strategyApproved = latestStrategy?.status === "approved" || project.currentStep === "execution";
   const hasWebsite = Boolean(project.websiteId || project.websiteUrl || project.website?.rootUrl);
-  const readinessComplete = intakeComplete && Boolean(project.name && project.projectType && project.primaryGoal && project.businessLocation && Array.isArray(project.targetLocations) && project.targetLocations.length && (project.websiteStatus !== "existing_website" || hasWebsite));
+  const storedBusinessLocation = project.businessLocationJson && typeof project.businessLocationJson === "object" && !Array.isArray(project.businessLocationJson)
+    ? project.businessLocationJson as Partial<BusinessLocation>
+    : null;
+  const hasBusinessLocation = Boolean(project.businessLocation || locationIsComplete(storedBusinessLocation));
+  const requiredReadinessDetailsComplete = Boolean(project.name && project.projectType && project.primaryGoal && hasBusinessLocation && Array.isArray(project.targetLocations) && project.targetLocations.length && (project.websiteStatus !== "existing_website" || hasWebsite));
+  const downstreamReadinessEvidenceComplete = Boolean(
+    selectedOpportunity
+    || project.keywordResearchRuns.some((run) => run.status === "completed")
+    || strategyGenerated,
+  );
+  const readinessComplete = projectReadinessComplete({
+    intakeComplete,
+    requiredDetailsComplete: requiredReadinessDetailsComplete,
+    downstreamEvidenceComplete: downstreamReadinessEvidenceComplete,
+  });
   const websiteLaunched = Boolean(
     project.websiteBuilds[0]?.deployments.some((deployment) => ["completed", "success", "success_with_warnings"].includes(deployment.status) && deployment.mode !== "draft")
     || project.websitePublications.some((publication) => publication.status === "published" || (publication.status === "completed" && ["publish", "sftp", "live"].includes(publication.mode))),
@@ -1148,7 +1163,7 @@ async function syncProjectWorkflow(tx: Prisma.TransactionClient, projectId: stri
       ? { status: "completed", actionUrl: `/guided-projects/${project.id}/intake`, sourceType: "project_intake", completionReason: "Project intake answers and business profile exist.", completedAt: new Date() }
       : { status: "ready", actionUrl: `/guided-projects/${project.id}/intake`, readyReason: "The project needs intake answers before strategy and module work can start." },
     readiness: readinessComplete
-      ? { status: "completed", actionUrl: `/guided-projects/${project.id}`, sourceType: "project", sourceId: project.id, completionReason: "All required project details and intake are complete.", completedAt: new Date() }
+      ? { status: "completed", actionUrl: `/guided-projects/${project.id}`, sourceType: "project", sourceId: project.id, completionReason: requiredReadinessDetailsComplete ? "All required project details and intake are complete." : "Completed downstream project evidence confirms that readiness was passed.", completedAt: new Date() }
       : intakeComplete
         ? { status: "ready", actionUrl: `/guided-projects/${project.id}`, readyReason: "Review missing required project details." }
         : { status: "pending", actionUrl: `/guided-projects/${project.id}/intake`, readyReason: "Waiting for intake completion." },
