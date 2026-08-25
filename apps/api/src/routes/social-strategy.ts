@@ -313,9 +313,12 @@ async function reviseSocialPostContent(post: {
 
 async function reviseSocialPostImage(post: {
   topic: string;
+  caption: string;
+  targetKeyword: string | null;
+  targetUrl: string | null;
   platform: string;
   imageSuggestion: string | null;
-  strategy: { campaignName: string | null; imageDirection: string | null; project: { businessName: string | null; name: string } | null };
+  strategy: { campaignName: string | null; imageDirection: string | null; audience: string | null; intelligenceSnapshotJson: Prisma.JsonValue; project: { businessName: string | null; name: string } | null };
 }, instruction: string) {
   const businessName = post.strategy.project?.businessName || post.strategy.project?.name || "Business";
   if (!config.openaiApiKey) throw Object.assign(new Error("Configure OpenAI image generation before creating a new campaign image."), { statusCode: 409 });
@@ -332,7 +335,9 @@ async function reviseSocialPostImage(post: {
       prompt: [
         `Create an original, polished social media campaign image for ${businessName}.`,
         `Platform: ${post.platform}. Campaign: ${post.strategy.campaignName || "social campaign"}.`,
-        `Post topic: ${post.topic}. Current visual direction: ${post.imageSuggestion || "Professional branded campaign visual"}.`,
+        `Post topic: ${post.topic}. Target keyword: ${post.targetKeyword || "not assigned"}. Destination: ${post.targetUrl || "no destination"}.`,
+        `Audience: ${post.strategy.audience || "the verified project audience"}. Verified project and geography context: ${JSON.stringify(post.strategy.intelligenceSnapshotJson).slice(0, 10_000)}.`,
+        `Final post caption: ${post.caption.slice(0, 4_000)}. Current visual direction: ${post.imageSuggestion || "Professional branded campaign visual"}.`,
         `Campaign-wide image direction: ${post.strategy.imageDirection || "Polished, specific, brand-appropriate editorial imagery with a clear focal point and natural depth."}.`,
         `Requested change: ${instruction}.`,
         "Do not add logos, watermarks, URLs, fake testimonials, unsupported statistics, or dense text. Make the composition adaptable to a social feed crop.",
@@ -593,16 +598,24 @@ function plannedPostCount(frequency: string | null | undefined) {
 
 function buildCalendar(input: GenerateInput, snapshot: ReturnType<typeof intelligenceSnapshot>, platforms: string[], sources: ContentSource[], pillars: ReturnType<typeof buildPillars>) {
   const selectedPlatforms = platforms.length ? platforms : ["linkedin", "instagram", "facebook"];
-  const fallbackSources: ContentSource[] = snapshot.keywords.slice(0, 8).map((keyword, index) => ({
-    id: `keyword:${index}`,
+  const campaignKeywords = input.targetKeywords.length ? input.targetKeywords : snapshot.keywords.slice(0, 8);
+  const keywordSources: ContentSource[] = campaignKeywords.map((keyword, index) => {
+    const terms = keyword.toLowerCase().split(/\s+/).filter((term) => term.length > 2);
+    const matchedSource = sources.find((source) => {
+      const text = `${source.title} ${source.summary} ${source.keyword || ""}`.toLowerCase();
+      return terms.length > 0 && terms.some((term) => text.includes(term));
+    });
+    return {
+    id: `campaign-keyword:${index}`,
     type: "keyword_research",
     title: keyword,
-    url: input.targetUrls[index % Math.max(1, input.targetUrls.length)] || null,
-    summary: `Answer the practical buyer question behind ${keyword} and connect it to the most relevant verified offer.`,
+    url: input.targetUrls[index % Math.max(1, input.targetUrls.length)] || matchedSource?.url || null,
+    summary: matchedSource?.summary || `Explain the practical buyer need behind ${keyword} for ${snapshot.audience}, using only the verified offer and business context: ${snapshot.offer || snapshot.businessSummary}.`,
     keyword,
-    status: "research",
-  }));
-  const availableSources = sources.length ? sources : fallbackSources.length ? fallbackSources : [{
+    status: matchedSource?.status || "campaign_selected",
+  };
+  });
+  const availableSources = keywordSources.length ? keywordSources : sources.length ? sources : [{
     id: "project:intake",
     type: "project_intake",
     title: snapshot.offer || snapshot.businessName,
@@ -641,9 +654,9 @@ function buildCalendar(input: GenerateInput, snapshot: ReturnType<typeof intelli
       cta,
       hashtags: tags,
       imageSuggestion: `${input.imageDirection ? `${input.imageDirection} ` : ""}Create a ${platform.replaceAll("_", " ")} visual illustrating ${source.title}. Use a clear focal subject, intentional composition, natural depth, and source-aligned details; avoid generic stock-photo staging, dense text, unsupported claims, logos, and watermarks.`.trim(),
-      imageUrl: generatedSocialVisual(platform, topic, snapshot.businessName),
+      imageUrl: null,
       imageAltText,
-      imageStatus: "design_preview",
+      imageStatus: "planned",
       targetKeyword: keyword,
       targetUrl,
       sourceType: source.type,
@@ -681,7 +694,11 @@ async function enhanceStrategyWithAi(
       `Business evidence: ${JSON.stringify(snapshot).slice(0, 20_000)}`,
       `Time-bound campaign: ${JSON.stringify(campaign)}`,
       `Platform plan: ${JSON.stringify(platformPlans.filter((plan) => plan.recommended)).slice(0, 12_000)}`,
-      `Draft posts: ${JSON.stringify(posts.map((post, index) => ({ index, platform: post.platform, topic: post.topic, caption: post.caption, cta: post.cta, targetUrl: post.targetUrl, sourceType: post.sourceType }))).slice(0, 50_000)}`,
+      `Draft posts: ${JSON.stringify(posts.map((post, index) => ({ index, platform: post.platform, funnelStage: post.funnelStage, topic: post.topic, targetKeyword: post.targetKeyword, caption: post.caption, cta: post.cta, targetUrl: post.targetUrl, sourceType: post.sourceType, visualDirection: post.imageSuggestion }))).slice(0, 50_000)}`,
+      "Write final, publishable social posts—not plans, briefs, headings, or strategy commentary. Each caption must specifically address its target keyword, the verified audience need, inferred search/buyer intent, funnel stage, destination, and only verified target-market geography.",
+      "Use geography and recognizable local surroundings only when supported by Business evidence. Never invent landmarks, offices, service areas, local claims, or community involvement. Informational posts must teach something concrete; consideration posts must help compare or evaluate; trust posts must use verified process or proof; conversion posts may use a clear sales pitch tied to the verified offer and destination.",
+      "Use the keyword naturally and semantically rather than repeating it. Make Facebook conversational and useful; make Instagram concise, visual, and save/share oriented. Avoid generic motivational copy, empty claims, and interchangeable captions.",
+      "Each visual must depict the concrete subject, audience situation, geography when relevant, and message of that exact caption. It must not be reusable generic business imagery and must not contradict the post.",
     ].join("\n"),
     temperature: 0.35,
     maxInputBytes: 100_000,
@@ -936,8 +953,8 @@ socialStrategyRouter.post("/social-strategy/generate", async (req, res) => {
     audience,
     tone,
     postingFrequency: input.postingFrequency || "3 posts per week",
-    targetKeywords: uniqueStrings([...input.targetKeywords, ...snapshot.keywords]).slice(0, 30),
-    targetUrls: uniqueStrings([...input.targetUrls, ...intelligence.sources.map((source) => source.url || "")]).slice(0, 30),
+    targetKeywords: uniqueStrings(input.targetKeywords.length ? input.targetKeywords : snapshot.keywords).slice(0, 30),
+    targetUrls: uniqueStrings(input.targetUrls.length ? input.targetUrls : intelligence.sources.map((source) => source.url || "")).slice(0, 30),
   };
   const campaignStartAt = input.campaignStartAt ? new Date(`${input.campaignStartAt}T00:00:00.000Z`) : new Date();
   const campaignEndAt = input.campaignEndAt ? new Date(`${input.campaignEndAt}T23:59:59.999Z`) : new Date(campaignStartAt.getTime() + 29 * 86_400_000);

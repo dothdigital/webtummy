@@ -779,6 +779,7 @@ export default function SocialStrategy() {
   const [pageError, setPageError] = useState("");
   const [saving, setSaving] = useState(false);
   const [generating, setGenerating] = useState(false);
+  const [generationStage, setGenerationStage] = useState("");
   const [repurposing, setRepurposing] = useState(false);
   const [selectedSourceId, setSelectedSourceId] = useState("");
   const [customSource, setCustomSource] = useState({ type: "founder_journal", title: "", url: "", content: "" });
@@ -1447,6 +1448,7 @@ export default function SocialStrategy() {
       return;
     }
     setGenerating(true);
+    setGenerationStage("Creating grounded campaign content from Project Intelligence…");
     setPageError("");
     try {
       const result = await api.post<SocialStrategyResponse & { strategy: SocialStrategyType }>("/api/social-strategy/generate", {
@@ -1473,10 +1475,25 @@ export default function SocialStrategy() {
       setEditingCampaignId(null);
       setSelectedCampaignId(result.strategy.id);
       setStep("strategy");
+      const posts = result.strategy.posts ?? [];
+      let completedImages = 0;
+      for (const post of posts) {
+        setGenerationStage(`Generating actual campaign image ${completedImages + 1} of ${posts.length}: ${post.topic}`);
+        await api.post<{ post: SocialCalendarPost }>(`/api/social-strategy/posts/${post.id}/request-changes`, {
+          instruction: `Create the final campaign image for this exact post. Ground it in the target keyword, audience, caption, destination, and campaign visual direction. Do not create a generic business image.`,
+          changeContent: false,
+          changeImage: true,
+        });
+        completedImages += 1;
+      }
+      await loadStrategy(websiteId, selectedProject?.id ?? null);
+      setWorkflowMessage(`Campaign content and ${completedImages} actual AI image${completedImages === 1 ? "" : "s"} are ready for review and approval.`);
+      if (typeof Notification !== "undefined" && Notification.permission === "granted") new Notification("Social campaign ready", { body: `${result.strategy.campaignName || "Your campaign"} content and images are ready to review.` });
     } catch (err) {
       setPageError(String(err).replace(/^Error:\s*/, ""));
     } finally {
       setGenerating(false);
+      setGenerationStage("");
     }
   };
 
@@ -1574,6 +1591,7 @@ export default function SocialStrategy() {
 
   return (
     <div className="flex flex-col gap-6">
+      {generating && <div className="sticky top-3 z-40 order-0 rounded-xl border border-violet-300 bg-violet-950 px-5 py-4 text-white shadow-xl" role="status"><div className="flex items-start gap-3"><span className="mt-1 h-3 w-3 shrink-0 animate-pulse rounded-full bg-violet-300"/><div><div className="font-bold">AI campaign generation is running in the background</div><div className="mt-1 text-sm text-violet-100">{generationStage || "Preparing the campaign…"}</div><div className="mt-1 text-xs font-semibold text-violet-300">You can continue working elsewhere. SEnuke AI will notify you when the content and actual images are ready.</div></div></div></div>}
       <div className="order-1 flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
         <div>
           <div className="text-xs font-semibold uppercase tracking-wide text-brand-600">Brand Visibility</div>
