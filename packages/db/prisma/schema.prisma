@@ -5163,6 +5163,14 @@ model SocialStrategy {
   goalTarget                  Float?
   goal                        String    @db.VarChar(160)
   audience                    String?   @db.Text
+  businessNameBrief           String?   @db.VarChar(180)
+  websiteDomainBrief          String?   @db.VarChar(512)
+  industryBrief               String?   @db.VarChar(255)
+  targetLocationsJson         Json      @default("[]")
+  productServiceFocus         String?   @db.Text
+  campaignCta                 String?   @db.VarChar(500)
+  offerPromotion              String?   @db.Text
+  internalTagsJson            Json      @default("[]")
   platforms                   Json      @default("[]")
   targetKeywordsJson          Json      @default("[]")
   targetUrlsJson              Json      @default("[]")
@@ -5217,6 +5225,8 @@ model SocialCalendarPost {
   strategyId        String
   strategy          SocialStrategy @relation(fields: [strategyId], references: [id], onDelete: Cascade)
   platform          String         @db.VarChar(40)
+  postType          String         @default("educational") @db.VarChar(80)
+  targetLocation    String?        @db.VarChar(255)
   publishDate       DateTime
   topic             String         @db.VarChar(255)
   caption           String         @db.Text
@@ -5233,7 +5243,7 @@ model SocialCalendarPost {
   sourceType        String?        @db.VarChar(80)
   sourceId          String?        @db.VarChar(191)
   funnelStage       String         @default("awareness") @db.VarChar(60)
-  status            String         @default("planned") @db.VarChar(40)
+  status            String         @default("needs_review") @db.VarChar(40)
   createdAt         DateTime       @default(now())
   updatedAt         DateTime       @updatedAt
 

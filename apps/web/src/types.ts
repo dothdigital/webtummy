@@ -1472,6 +1472,8 @@ export interface SocialCalendarPost {
   id: string;
   strategyId: string;
   platform: string;
+  postType: string;
+  targetLocation: string | null;
   publishDate: string;
   topic: string;
   caption: string;
@@ -1506,6 +1508,14 @@ export interface SocialStrategy {
   goalTarget: number | null;
   goal: string;
   audience: string | null;
+  businessNameBrief: string | null;
+  websiteDomainBrief: string | null;
+  industryBrief: string | null;
+  targetLocationsJson: string[];
+  productServiceFocus: string | null;
+  campaignCta: string | null;
+  offerPromotion: string | null;
+  internalTagsJson: string[];
   platforms: string[];
   targetKeywordsJson: string[];
   targetUrlsJson: string[];

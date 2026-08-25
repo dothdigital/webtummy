@@ -74,6 +74,13 @@ const generateSchema = z.object({
   goalTarget: z.number().nonnegative().optional().nullable(),
   goal: z.string().max(160).optional().nullable(),
   audience: z.string().max(4000).optional().nullable(),
+  businessName: z.string().max(180).optional().nullable(),
+  websiteDomain: z.string().max(512).optional().nullable(),
+  industry: z.string().max(255).optional().nullable(),
+  targetLocations: z.array(z.string().max(255)).max(50).default([]),
+  productServiceFocus: z.string().max(4000).optional().nullable(),
+  campaignCta: z.string().max(500).optional().nullable(),
+  offerPromotion: z.string().max(4000).optional().nullable(),
   platforms: z.array(z.string().max(40)).default([]),
   postingFrequency: z.string().max(120).optional().nullable(),
   tone: z.string().max(80).optional().nullable(),
@@ -94,6 +101,13 @@ const campaignSetupSchema = z.object({
   goalTarget: z.number().nonnegative().optional().nullable(),
   goal: z.string().trim().min(3).max(160),
   audience: z.string().max(4000).optional().nullable(),
+  businessName: z.string().max(180).optional().nullable(),
+  websiteDomain: z.string().max(512).optional().nullable(),
+  industry: z.string().max(255).optional().nullable(),
+  targetLocations: z.array(z.string().max(255)).max(50).default([]),
+  productServiceFocus: z.string().max(4000).optional().nullable(),
+  campaignCta: z.string().max(500).optional().nullable(),
+  offerPromotion: z.string().max(4000).optional().nullable(),
   platforms: z.array(z.string().max(40)).min(1),
   postingFrequency: z.string().max(120),
   tone: z.string().max(80).optional().nullable(),
@@ -154,7 +168,7 @@ const socialPostUpdateSchema = z.object({
   imageUrl: z.string().max(8_000_000).refine((value) => /^https?:\/\//i.test(value) || /^data:image\/(svg\+xml|png|jpeg|webp);base64,/i.test(value), "Use a public HTTPS image URL or generated image.").optional().nullable(),
   imageAltText: z.string().trim().max(500).optional().nullable(),
   externalPostId: z.string().trim().max(191).optional().nullable(),
-  status: z.enum(["planned", "approved", "scheduled", "published", "changes_requested"]).optional(),
+  status: z.enum(["draft", "content_generated", "needs_review", "approved", "scheduled", "published", "failed", "rejected", "regenerate_requested", "changes_requested"]).optional(),
 });
 
 const publishingProfileSchema = z.object({
@@ -194,6 +208,8 @@ type PlatformPlan = {
 
 type PlannedPost = {
   platform: string;
+  postType: string;
+  targetLocation: string | null;
   publishDate: Date;
   topic: string;
   caption: string;
@@ -201,7 +217,7 @@ type PlannedPost = {
   cta: string;
   hashtags: string[];
   imageSuggestion: string;
-  imageUrl: string;
+  imageUrl: string | null;
   imageAltText: string;
   imageStatus: string;
   targetKeyword: string | null;
@@ -328,7 +344,7 @@ async function reviseSocialPostImage(post: {
     headers: { Authorization: `Bearer ${config.openaiApiKey}`, "Content-Type": "application/json" },
     body: JSON.stringify({
       model: config.openaiImageModel,
-      size: "1536x1024",
+      size: post.platform === "instagram" ? "1024x1024" : "1536x1024",
       quality: "medium",
       output_format: "png",
       n: 1,
@@ -537,6 +553,7 @@ function recommendPlatforms(snapshot: ReturnType<typeof intelligenceSnapshot>, s
     { platform: "instagram", score: visual ? 94 : 70, reason: visual ? "The offer benefits from visual proof, short demonstrations, and branded education." : "Useful for visual education, team trust, and short-form proof.", frequency: "3 posts per week", bestTimes: ["Monday 12:00 PM", "Wednesday 12:00 PM", "Friday 11:00 AM"], primaryFormats: ["carousel", "reel", "story"] },
     { platform: "google_business", score: local ? 96 : 45, reason: local ? "Directly supports local discovery, offers, updates, and service visibility." : "Use only when the business has a verified local profile and local intent.", frequency: "1 post per week", bestTimes: ["Wednesday 10:00 AM"], primaryFormats: ["update", "offer", "event"] },
     { platform: "x", score: /news|technology|software|finance|media/.test(context) ? 82 : 50, reason: "Best for timely insights, commentary, threads, and conversation-led distribution.", frequency: "4 posts per week", bestTimes: ["Monday 9:00 AM", "Wednesday 1:00 PM", "Friday 9:00 AM"], primaryFormats: ["short insight", "thread", "commentary"] },
+    { platform: "reddit", score: /community|technical|software|finance|health|hobby|education|local/.test(context) ? 76 : 52, reason: "Useful for community-first education, transparent expertise, and genuine participation without promotional spam.", frequency: "2 posts per week", bestTimes: ["Tuesday 10:00 AM", "Thursday 1:00 PM"], primaryFormats: ["educational discussion", "question", "community resource"] },
     { platform: "threads", score: /creator|consumer|community|lifestyle/.test(context) ? 76 : 46, reason: "Useful for conversational brand voice, community questions, and short insights.", frequency: "3 posts per week", bestTimes: ["Tuesday 12:00 PM", "Thursday 12:00 PM"], primaryFormats: ["conversation", "tip", "question"] },
     { platform: "youtube", score: /how|education|demo|software|training|complex/.test(context) ? 78 : 55, reason: "Supports durable demonstrations, buyer education, and searchable video authority.", frequency: "2 videos per month", bestTimes: ["Thursday 3:00 PM"], primaryFormats: ["explainer", "demo", "short"] },
     { platform: "tiktok", score: visual ? 72 : 42, reason: "Use when fast visual demonstrations or audience education fit the brand.", frequency: "3 videos per week", bestTimes: ["Tuesday 6:00 PM", "Thursday 6:00 PM"], primaryFormats: ["short demo", "myth", "quick tip"] },
@@ -567,13 +584,17 @@ function buildRecommendations(input: GenerateInput, profiles: SocialProfileInput
 
 function buildPillars(goal: string, domain: string, competitorThemes: string[], sources: ContentSource[]) {
   const base = [
-    { title: "Buyer Education", description: `Answer real buyer questions tied to ${domain}'s services and approved search demand.`, formatsJson: ["carousel", "short video", "how-to post"] },
-    { title: "Proof and Trust", description: "Repurpose verified outcomes, examples, reviews, process evidence, and expertise without inventing claims.", formatsJson: ["case study", "testimonial", "process post"] },
-    { title: "Offers and Conversion", description: `Connect ${goal.toLowerCase()} to a clear next step, relevant page, lead magnet, or campaign.`, formatsJson: ["offer post", "FAQ", "objection response"] },
-    { title: "Brand and Community", description: "Show the people, perspective, values, local relevance, and useful updates behind the business.", formatsJson: ["founder note", "community post", "news update"] },
+    { title: "Educational / How-to", description: `Teach the audience how to understand or solve a real problem connected to ${domain}'s verified expertise.`, formatsJson: ["how-to", "tips", "carousel"] },
+    { title: "Informational / Awareness", description: "Explain a relevant service, process, change, concept, or decision using verified project information.", formatsJson: ["explainer", "update", "guide"] },
+    { title: "FAQ / Objection Handling", description: "Answer real buyer questions and objections clearly without unsupported promises.", formatsJson: ["FAQ", "myth versus fact", "objection response"] },
+    { title: "Local Market / Location-Based", description: "Connect the topic to an approved target location and genuine local buyer context without inventing local facts.", formatsJson: ["local insight", "location guide", "community education"] },
+    { title: "Trust / Proof / Authority", description: "Use only verified process, expertise, evidence, or approved proof; never invent testimonials, awards, or outcomes.", formatsJson: ["process", "verified proof", "case insight"] },
+    { title: "Sales / Offer / Lead Generation", description: `Present the verified offer and a clear next step supporting ${goal.toLowerCase()} without pressure or misleading claims.`, formatsJson: ["offer", "service focus", "conversion post"] },
+    { title: "Engagement / Poll / Checklist", description: "Invite useful participation with a checklist, poll, question, or practical self-assessment.", formatsJson: ["checklist", "poll", "question"] },
+    { title: "Seasonal / Event-Based", description: "Use only genuinely relevant, date-appropriate seasons or events without inventing deadlines or promotions.", formatsJson: ["seasonal guide", "event reminder", "timely checklist"] },
+    { title: "Comparison / Decision Support", description: "Help buyers compare legitimate options and decision criteria without disparaging competitors or inventing differences.", formatsJson: ["comparison", "decision guide", "checklist"] },
+    { title: "Behind-the-Scenes / Brand", description: "Show a verified process, team practice, product update, or company perspective without fabricating people or activity.", formatsJson: ["process story", "team update", "build note"] },
   ];
-  if (sources.length) base.push({ title: "Content Repurposing", description: `Turn ${sources.length} existing project assets into channel-specific posts while preserving the original message.`, formatsJson: ["key-message post", "thread", "newsletter excerpt"] });
-  if (competitorThemes.length) base.push({ title: "Competitor Content Gaps", description: `Create more useful coverage around: ${competitorThemes.slice(0, 5).join(", ")}.`, formatsJson: ["comparison", "myth", "expert response"] });
   return base;
 }
 
@@ -585,6 +606,7 @@ function platformCaption(platform: string, source: ContentSource, businessName: 
   if (platform === "instagram") return `${source.title}\n\n${message}\n\nSave this for your next review, then ${cta.toLowerCase()}.`;
   if (platform === "google_business") return `${businessName} update: ${source.title}. ${message} ${cta}`;
   if (platform === "facebook") return `${source.title}\n\n${message}\n\n${cta}`;
+  if (platform === "reddit") return `${source.title}\n\n${message}\n\nWhat has your experience been with this? Add context first and only share a resource if the community rules allow it.`;
   return `${source.title}\n\n${message}\n\n${cta} (${tone} tone)`;
 }
 
@@ -593,7 +615,55 @@ function plannedPostCount(frequency: string | null | undefined) {
   const match = value.match(/\d+/);
   const amount = match ? Number(match[0]) : 3;
   const monthly = value.includes("month") ? amount : amount * 4;
-  return Math.max(1, Math.min(28, monthly));
+  return Math.max(1, Math.min(120, monthly));
+}
+
+const CORE_CONTENT_WEIGHTS = [
+  { type: "Educational / How-to", weight: 0.2 },
+  { type: "Informational / Awareness", weight: 0.2 },
+  { type: "FAQ / Objection Handling", weight: 0.2 },
+  { type: "Local Market / Location-Based", weight: 0.1 },
+  { type: "Trust / Proof / Authority", weight: 0.1 },
+  { type: "Sales / Offer / Lead Generation", weight: 0.1 },
+  { type: "Engagement / Poll / Checklist", weight: 0.1 },
+] as const;
+
+const PRESET_CONTENT_MIXES: Record<number, string[]> = {
+  4: ["Educational / How-to", "Informational / Awareness", "FAQ / Objection Handling", "Sales / Offer / Lead Generation"],
+  6: ["Educational / How-to", "Informational / Awareness", "FAQ / Objection Handling", "Local Market / Location-Based", "Trust / Proof / Authority", "Sales / Offer / Lead Generation"],
+  8: ["Educational / How-to", "Educational / How-to", "Informational / Awareness", "FAQ / Objection Handling", "Local Market / Location-Based", "Trust / Proof / Authority", "Sales / Offer / Lead Generation", "Engagement / Poll / Checklist"],
+  10: ["Educational / How-to", "Educational / How-to", "Informational / Awareness", "Informational / Awareness", "FAQ / Objection Handling", "FAQ / Objection Handling", "Local Market / Location-Based", "Trust / Proof / Authority", "Sales / Offer / Lead Generation", "Engagement / Poll / Checklist"],
+  12: ["Educational / How-to", "Educational / How-to", "Informational / Awareness", "Informational / Awareness", "FAQ / Objection Handling", "FAQ / Objection Handling", "Local Market / Location-Based", "Local Market / Location-Based", "Trust / Proof / Authority", "Sales / Offer / Lead Generation", "Engagement / Poll / Checklist", "Comparison / Decision Support"],
+  16: ["Educational / How-to", "Educational / How-to", "Educational / How-to", "Informational / Awareness", "Informational / Awareness", "Informational / Awareness", "FAQ / Objection Handling", "FAQ / Objection Handling", "FAQ / Objection Handling", "Local Market / Location-Based", "Local Market / Location-Based", "Trust / Proof / Authority", "Trust / Proof / Authority", "Sales / Offer / Lead Generation", "Engagement / Poll / Checklist", "Seasonal / Event-Based"],
+};
+
+function balancedContentMix(count: number) {
+  const preset = PRESET_CONTENT_MIXES[count];
+  if (preset) return preset;
+  const allocations = CORE_CONTENT_WEIGHTS.map((category) => {
+    const exact = count * category.weight;
+    return { ...category, count: Math.floor(exact), remainder: exact - Math.floor(exact) };
+  });
+  let remaining = count - allocations.reduce((sum, item) => sum + item.count, 0);
+  for (const item of [...allocations].sort((a, b) => b.remainder - a.remainder || b.weight - a.weight)) {
+    if (remaining <= 0) break;
+    item.count += 1;
+    remaining -= 1;
+  }
+  if (count >= 4 && !allocations.find((item) => item.type === "Sales / Offer / Lead Generation")?.count) {
+    const donor = [...allocations].sort((a, b) => b.count - a.count)[0];
+    if (donor?.count) {
+      donor.count -= 1;
+      allocations.find((item) => item.type === "Sales / Offer / Lead Generation")!.count += 1;
+    }
+  }
+  const mix: string[] = [];
+  const pending = allocations.map((item) => ({ ...item }));
+  while (mix.length < count) for (const item of pending) if (item.count > 0) {
+    mix.push(item.type);
+    item.count -= 1;
+  }
+  return mix;
 }
 
 function buildCalendar(input: GenerateInput, snapshot: ReturnType<typeof intelligenceSnapshot>, platforms: string[], sources: ContentSource[], pillars: ReturnType<typeof buildPillars>) {
@@ -610,7 +680,7 @@ function buildCalendar(input: GenerateInput, snapshot: ReturnType<typeof intelli
     type: "keyword_research",
     title: keyword,
     url: input.targetUrls[index % Math.max(1, input.targetUrls.length)] || matchedSource?.url || null,
-    summary: matchedSource?.summary || `Explain the practical buyer need behind ${keyword} for ${snapshot.audience}, using only the verified offer and business context: ${snapshot.offer || snapshot.businessSummary}.`,
+    summary: matchedSource?.summary || `Explain the practical buyer need behind ${keyword} for ${input.audience || snapshot.audience}, using only the verified offer and business context: ${input.productServiceFocus || input.offerPromotion || snapshot.offer || snapshot.businessSummary}.`,
     keyword,
     status: matchedSource?.status || "campaign_selected",
   };
@@ -630,38 +700,46 @@ function buildCalendar(input: GenerateInput, snapshot: ReturnType<typeof intelli
   const end = input.campaignEndAt ? new Date(`${input.campaignEndAt}T23:59:59.999Z`) : new Date(start.getTime() + 29 * 86_400_000);
   const durationDays = Math.max(1, Math.ceil((end.getTime() - start.getTime()) / 86_400_000));
   const baseCount = plannedPostCount(input.postingFrequency);
-  const count = Math.max(4, Math.min(60, Math.round(baseCount * durationDays / 30)));
+  const count = Math.max(1, Math.min(120, Math.round(baseCount * durationDays / 30)));
+  const contentMix = balancedContentMix(count);
+  const campaignLocations = input.targetLocations.length ? input.targetLocations : snapshot.targetMarkets;
+  const businessName = input.businessName || snapshot.businessName;
+  const audience = input.audience || snapshot.audience;
   const campaignTimezone = validTimeZone(input.campaignTimezone) || "UTC";
   return Array.from({ length: count }, (_, index): PlannedPost => {
     const source = availableSources[index % availableSources.length];
     const platform = selectedPlatforms[index % selectedPlatforms.length];
-    const pillar = pillars[index % pillars.length];
+    const postType = contentMix[index % contentMix.length];
+    const pillar = pillars.find((item) => item.title === postType) ?? pillars[index % pillars.length];
+    const targetLocation = postType === "Local Market / Location-Based" && campaignLocations.length ? campaignLocations[index % campaignLocations.length] : null;
     const publishDay = new Date(start);
     publishDay.setUTCDate(start.getUTCDate() + Math.floor(index * durationDays / count));
     const publishDate = scheduledDateInTimeZone(publishDay, platformPublishingHour(platform), (index % 3) * 10, campaignTimezone);
     const targetUrl = source.url || input.targetUrls[index % Math.max(1, input.targetUrls.length)] || null;
-    const cta = targetUrl ? "Read the complete resource" : "Contact us for the next step";
+    const cta = platform === "reddit" ? "Invite a useful community discussion without a promotional CTA" : input.campaignCta || (targetUrl ? "Read the complete resource" : "Contact us for the next step");
     const keyword = source.keyword || input.targetKeywords[index % Math.max(1, input.targetKeywords.length)] || null;
-    const tags = uniqueStrings([slugTag(snapshot.businessName), keyword ? slugTag(keyword) : "", slugTag(pillar.title)]).filter(Boolean).slice(0, platform === "instagram" ? 8 : 4);
+    const tags = platform === "reddit" ? [] : uniqueStrings([slugTag(businessName), keyword ? slugTag(keyword) : "", targetLocation ? slugTag(targetLocation) : "", slugTag(pillar.title)]).filter(Boolean).slice(0, platform === "instagram" ? 8 : 4);
     const topic = `${pillar.title}: ${source.title}`.slice(0, 255);
-    const imageAltText = `${snapshot.businessName}: ${topic}`.slice(0, 500);
+    const imageAltText = `${businessName}: ${topic}${targetLocation ? ` in ${targetLocation}` : ""}`.slice(0, 500);
     return {
       platform,
+      postType,
+      targetLocation,
       publishDate,
       topic,
-      caption: platformCaption(platform, source, snapshot.businessName, snapshot.audience, input.tone || snapshot.brandVoice, cta),
+      caption: platformCaption(platform, source, businessName, audience, input.tone || snapshot.brandVoice, cta),
       creativeDirection: `Create a ${pillar.formatsJson[0] || "branded post"} using one key message from “${source.title}”. Keep facts and claims aligned with the source. ${input.imageDirection ? `Campaign visual direction: ${input.imageDirection}` : ""}`.trim(),
       cta,
       hashtags: tags,
-      imageSuggestion: `${input.imageDirection ? `${input.imageDirection} ` : ""}Create a ${platform.replaceAll("_", " ")} visual illustrating ${source.title}. Use a clear focal subject, intentional composition, natural depth, and source-aligned details; avoid generic stock-photo staging, dense text, unsupported claims, logos, and watermarks.`.trim(),
+      imageSuggestion: `${input.imageDirection ? `${input.imageDirection} ` : ""}Create a ${platform.replaceAll("_", " ")} visual for a ${postType} post illustrating ${source.title}${targetLocation ? ` with authentic, evidence-supported relevance to ${targetLocation}` : ""}. Show a clear focal subject for ${audience}, intentional composition, natural depth, and source-aligned details; avoid generic stock-photo staging, dense text, unsupported claims, logos, and watermarks.`.trim(),
       imageUrl: null,
       imageAltText,
-      imageStatus: "planned",
+      imageStatus: "image_prompt_generated",
       targetKeyword: keyword,
       targetUrl,
       sourceType: source.type,
       sourceId: source.id,
-      funnelStage: index % 4 === 0 ? "awareness" : index % 4 === 1 ? "consideration" : index % 4 === 2 ? "trust" : "conversion",
+      funnelStage: postType === "Sales / Offer / Lead Generation" ? "conversion" : postType === "Trust / Proof / Authority" ? "trust" : postType === "FAQ / Objection Handling" || postType === "Comparison / Decision Support" ? "consideration" : "awareness",
     };
   });
 }
@@ -675,14 +753,14 @@ const aiStrategySchema = z.object({
     cta: z.string().max(255),
     hashtags: z.array(z.string().max(80)).max(12),
     visualSuggestion: z.string().max(2000),
-  })).max(60),
+  })).max(120),
 });
 
 async function enhanceStrategyWithAi(
   snapshot: ReturnType<typeof intelligenceSnapshot>,
   posts: PlannedPost[],
   platformPlans: PlatformPlan[],
-  campaign: { name: string; startAt: string; endAt: string; timezone: string; objective: string; metric: string | null; target: number | null; imageDirection: string | null },
+  campaign: { name: string; businessName: string; websiteDomain: string; industry: string | null; targetLocations: string[]; productServiceFocus: string | null; audience: string; cta: string | null; offerPromotion: string | null; startAt: string; endAt: string; timezone: string; objective: string; metric: string | null; target: number | null; imageDirection: string | null },
 ) {
   if (!config.openaiApiKey) return null;
   const generated = await centralAiJson({
@@ -694,10 +772,13 @@ async function enhanceStrategyWithAi(
       `Business evidence: ${JSON.stringify(snapshot).slice(0, 20_000)}`,
       `Time-bound campaign: ${JSON.stringify(campaign)}`,
       `Platform plan: ${JSON.stringify(platformPlans.filter((plan) => plan.recommended)).slice(0, 12_000)}`,
-      `Draft posts: ${JSON.stringify(posts.map((post, index) => ({ index, platform: post.platform, funnelStage: post.funnelStage, topic: post.topic, targetKeyword: post.targetKeyword, caption: post.caption, cta: post.cta, targetUrl: post.targetUrl, sourceType: post.sourceType, visualDirection: post.imageSuggestion }))).slice(0, 50_000)}`,
+      `Draft posts: ${JSON.stringify(posts.map((post, index) => ({ index, postType: post.postType, platform: post.platform, funnelStage: post.funnelStage, targetLocation: post.targetLocation, topic: post.topic, targetKeyword: post.targetKeyword, caption: post.caption, cta: post.cta, targetUrl: post.targetUrl, sourceType: post.sourceType, visualDirection: post.imageSuggestion }))).slice(0, 50_000)}`,
+      `Preserve this frequency-adjusted post-type allocation exactly: ${JSON.stringify(posts.reduce<Record<string, number>>((mix, post) => ({ ...mix, [post.postType]: (mix[post.postType] || 0) + 1 }), {}))}. Do not change a supplied postType.`,
       "Write final, publishable social posts—not plans, briefs, headings, or strategy commentary. Each caption must specifically address its target keyword, the verified audience need, inferred search/buyer intent, funnel stage, destination, and only verified target-market geography.",
       "Use geography and recognizable local surroundings only when supported by Business evidence. Never invent landmarks, offices, service areas, local claims, or community involvement. Informational posts must teach something concrete; consideration posts must help compare or evaluate; trust posts must use verified process or proof; conversion posts may use a clear sales pitch tied to the verified offer and destination.",
       "Use the keyword naturally and semantically rather than repeating it. Make Facebook conversational and useful; make Instagram concise, visual, and save/share oriented. Avoid generic motivational copy, empty claims, and interchangeable captions.",
+      "Platform contracts: Facebook = friendly, clear, slightly longer, useful for local education and lead generation. Instagram = shorter and visual-first with a strong opening hook and relevant hashtags. LinkedIn = professional, informative, and framed around business value, expertise, or trust. X = short, direct, concise, and within a single-post length for now. Reddit = educational and community-first, transparent, non-promotional, no hard-sell CTA, no hashtag stuffing, and explicitly defer to the target subreddit's rules.",
+      "Never reuse the same caption across platforms. Posts derived from the same topic must have meaningfully different hooks, structure, length, framing, CTA treatment, and hashtags appropriate to their platform contract.",
       "Each visual must depict the concrete subject, audience situation, geography when relevant, and message of that exact caption. It must not be reusable generic business imagery and must not contradict the post.",
     ].join("\n"),
     temperature: 0.35,
@@ -899,6 +980,13 @@ socialStrategyRouter.post("/social-strategy/campaigns", async (req, res) => {
     goalTarget: input.goalTarget ?? null,
     goal: input.goal,
     audience: input.audience || null,
+    businessNameBrief: input.businessName || intelligence.project.businessName || intelligence.project.name,
+    websiteDomainBrief: input.websiteDomain || website.rootUrl,
+    industryBrief: input.industry || intelligence.project.niche || null,
+    targetLocationsJson: uniqueStrings(input.targetLocations.length ? input.targetLocations : jsonList(intelligence.project.targetLocations)),
+    productServiceFocus: input.productServiceFocus || intelligence.project.businessProfile?.offerSummary || null,
+    campaignCta: input.campaignCta || null,
+    offerPromotion: input.offerPromotion || null,
     platforms: uniqueStrings(input.platforms.map(normalizePlatform)),
     targetKeywordsJson: uniqueStrings(input.targetKeywords),
     targetUrlsJson: uniqueStrings(input.targetUrls),
@@ -978,6 +1066,14 @@ socialStrategyRouter.post("/social-strategy/generate", async (req, res) => {
   try {
     const ai = await enhanceStrategyWithAi(snapshot, posts, platformPlans, {
       name: campaignName,
+      businessName: input.businessName || snapshot.businessName,
+      websiteDomain: input.websiteDomain || website.rootUrl,
+      industry: input.industry || project.niche || null,
+      targetLocations: input.targetLocations.length ? input.targetLocations : snapshot.targetMarkets,
+      productServiceFocus: input.productServiceFocus || snapshot.offer || null,
+      audience,
+      cta: input.campaignCta || null,
+      offerPromotion: input.offerPromotion || null,
       startAt: campaignStartAt.toISOString(),
       endAt: campaignEndAt.toISOString(),
       timezone: campaignTimezone,
@@ -1022,6 +1118,14 @@ socialStrategyRouter.post("/social-strategy/generate", async (req, res) => {
         goalTarget: input.goalTarget ?? null,
         goal,
         audience: audience || null,
+        businessNameBrief: input.businessName || snapshot.businessName,
+        websiteDomainBrief: input.websiteDomain || website.rootUrl,
+        industryBrief: input.industry || project.niche || null,
+        targetLocationsJson: uniqueStrings(input.targetLocations.length ? input.targetLocations : snapshot.targetMarkets),
+        productServiceFocus: input.productServiceFocus || snapshot.offer || null,
+        campaignCta: input.campaignCta || null,
+        offerPromotion: input.offerPromotion || null,
+        internalTagsJson: uniqueStrings([...campaignThemes, ...enrichedInput.targetKeywords]).slice(0, 20),
         platforms: activePlatforms,
         targetKeywordsJson: enrichedInput.targetKeywords,
         targetUrlsJson: enrichedInput.targetUrls,
@@ -1047,6 +1151,8 @@ socialStrategyRouter.post("/social-strategy/generate", async (req, res) => {
         pillars: { create: pillars },
         posts: { create: posts.map((post) => ({
           platform: post.platform,
+          postType: post.postType,
+          targetLocation: post.targetLocation,
           publishDate: post.publishDate,
           topic: post.topic,
           caption: post.caption,
@@ -1062,6 +1168,7 @@ socialStrategyRouter.post("/social-strategy/generate", async (req, res) => {
           sourceType: post.sourceType,
           sourceId: post.sourceId,
           funnelStage: post.funnelStage,
+          status: "needs_review",
         })) },
       },
       include: { posts: true },
@@ -1277,14 +1384,20 @@ socialStrategyRouter.patch("/social-strategy/posts/:postId", async (req, res) =>
       data: {
         ...parsed.data,
         ...(parsed.data.publishDate !== undefined ? { publishDate: new Date(parsed.data.publishDate) } : {}),
-        ...(parsed.data.imageUrl !== undefined ? { imageStatus: parsed.data.imageUrl ? "updated" : "planned" } : {}),
-        ...(contentChanged && parsed.data.status === undefined ? { status: "planned" } : {}),
+        ...(parsed.data.imageUrl !== undefined ? { imageStatus: parsed.data.imageUrl ? "image_generated" : "image_prompt_generated" } : {}),
+        ...(contentChanged && parsed.data.status === undefined ? { status: "needs_review" } : {}),
       },
     });
     if (contentChanged) {
       await tx.executionTask.updateMany({
         where: { projectId: post.strategy.projectId!, sourceType: "social_calendar_post", sourceId: post.id },
         data: { status: "needs_review", approvedAt: null, approverMembershipId: null, blockedReason: "Content or image changed and requires approval again." },
+      });
+    }
+    if (parsed.data.status === "rejected") {
+      await tx.executionTask.updateMany({
+        where: { projectId: post.strategy.projectId!, sourceType: "social_calendar_post", sourceId: post.id },
+        data: { status: "rejected", approvedAt: null, approverMembershipId: null, blockedReason: "The social post was rejected during review and remains stored for audit." },
       });
     }
     await recordWorkspaceActivity(tx, {
@@ -1315,6 +1428,9 @@ socialStrategyRouter.post("/social-strategy/posts/:postId/request-changes", asyn
   const contentRevision = parsed.data.changeContent ? await reviseSocialPostContent(post, parsed.data.instruction) : null;
   const revisedImage = parsed.data.changeImage ? await reviseSocialPostImage({
     topic: contentRevision?.topic || post.topic,
+    caption: contentRevision?.caption || post.caption,
+    targetKeyword: post.targetKeyword,
+    targetUrl: post.targetUrl,
     platform: post.platform,
     imageSuggestion: contentRevision?.imageSuggestion || post.imageSuggestion,
     strategy: post.strategy,
@@ -1343,8 +1459,8 @@ socialStrategyRouter.post("/social-strategy/posts/:postId/request-changes", asyn
           hashtagsJson: contentRevision.hashtags,
           imageSuggestion: contentRevision.imageSuggestion,
         } : {}),
-        ...(parsed.data.changeImage ? { imageUrl, imageStatus: "regenerated", imageAltText } : {}),
-        status: "planned",
+        ...(parsed.data.changeImage ? { imageUrl, imageStatus: post.imageUrl ? "regenerated" : "image_generated", imageAltText } : {}),
+        status: "needs_review",
       },
     });
     await tx.executionTask.updateMany({

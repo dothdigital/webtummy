@@ -13,11 +13,12 @@ const PLATFORM_LABELS: Record<string, string> = {
   tiktok: "TikTok",
   x: "X / Twitter",
   pinterest: "Pinterest",
+  reddit: "Reddit",
   google_business: "Google Business",
 };
 
 const DEFAULT_PLATFORMS = ["instagram", "facebook", "linkedin", "youtube", "google_business"];
-const CAMPAIGN_PLATFORMS = ["facebook", "instagram"];
+const CAMPAIGN_PLATFORMS = ["facebook", "instagram", "linkedin", "x", "reddit"];
 const PROFILE_FREQUENCY_OPTIONS = [
   "Not currently posting",
   "Less than once a month",
@@ -38,15 +39,13 @@ const CAMPAIGN_GOAL_OPTIONS = [
   { value: "conversions", label: "Conversions" },
 ] as const;
 const CAMPAIGN_CADENCE_OPTIONS = [
-  "7 posts per week (daily)",
-  "5 posts per week",
-  "4 posts per week",
-  "3 posts per week",
-  "2 posts per week",
-  "1 post per week",
-  "3 posts per month",
-  "2 posts per month",
-  "1 post per month",
+  "4 posts per month",
+  "6 posts per month",
+  "8 posts per month",
+  "10 posts per month",
+  "12 posts per month",
+  "16 posts per month",
+  "Custom monthly count",
 ];
 const IMAGE_DIRECTION_PRESETS = [
   {
@@ -767,7 +766,15 @@ export default function SocialStrategy() {
   const [goalMetric, setGoalMetric] = useState("leads");
   const [goalTarget, setGoalTarget] = useState("");
   const [audience, setAudience] = useState("");
-  const [postingFrequency, setPostingFrequency] = useState("3 posts per week");
+  const [campaignBusinessName, setCampaignBusinessName] = useState("");
+  const [campaignWebsiteDomain, setCampaignWebsiteDomain] = useState("");
+  const [campaignIndustry, setCampaignIndustry] = useState("");
+  const [campaignLocations, setCampaignLocations] = useState("");
+  const [productServiceFocus, setProductServiceFocus] = useState("");
+  const [campaignCta, setCampaignCta] = useState("");
+  const [offerPromotion, setOfferPromotion] = useState("");
+  const [postingFrequency, setPostingFrequency] = useState("10 posts per month");
+  const [customMonthlyPostCount, setCustomMonthlyPostCount] = useState("10");
   const [tone, setTone] = useState("professional");
   const [imageDirection, setImageDirection] = useState(IMAGE_DIRECTION_PRESETS[0].value);
   const [targetKeywords, setTargetKeywords] = useState("");
@@ -804,6 +811,9 @@ export default function SocialStrategy() {
   const selectedWebsite = websites.find((website) => website.id === websiteId) ?? websites[0] ?? null;
   const selectedProject = projects.find((project) => project.websiteId === websiteId) ?? null;
   const selectedCampaignKeywords = targetKeywords.split(",").map((value) => value.trim()).filter(Boolean);
+  const effectivePostingFrequency = postingFrequency === "Custom monthly count"
+    ? `${Math.max(1, Math.min(120, Number(customMonthlyPostCount) || 10))} posts per month`
+    : postingFrequency;
   const toggleCampaignKeyword = (keyword: string) => {
     setTargetKeywords((current) => {
       const values = current.split(",").map((value) => value.trim()).filter(Boolean);
@@ -964,6 +974,21 @@ export default function SocialStrategy() {
       const result = await api.post<{ post: SocialCalendarPost }>(`/api/social-strategy/posts/${post.id}/approve`, {});
       replaceCalendarPost(result.post);
       setWorkflowMessage("Post approved. It is ready to schedule through the saved posting profile.");
+    } catch (err) {
+      setPageError(String(err).replace(/^Error:\s*/, ""));
+    } finally {
+      setPostingActionBusy("");
+    }
+  };
+
+  const rejectCalendarPost = async (post: SocialCalendarPost) => {
+    setPostingActionBusy(`reject:${post.id}`);
+    setPageError("");
+    try {
+      const result = await api.patch<{ post: SocialCalendarPost }>(`/api/social-strategy/posts/${post.id}`, { status: "rejected" });
+      replaceCalendarPost(result.post);
+      setViewingPost(result.post);
+      setWorkflowMessage("Post rejected and retained in campaign history. Edit or regenerate it to return it to review.");
     } catch (err) {
       setPageError(String(err).replace(/^Error:\s*/, ""));
     } finally {
@@ -1332,9 +1357,17 @@ export default function SocialStrategy() {
     setGoalMetric("leads");
     setGoalTarget("");
     setAudience(intelligence?.audience || intelligence?.targetMarkets.join(", ") || "");
+    setCampaignBusinessName(intelligence?.businessName || selectedProject?.businessName || selectedProject?.name || "");
+    setCampaignWebsiteDomain(selectedProject?.websiteUrl || selectedWebsite?.rootUrl || "");
+    setCampaignIndustry(selectedProject?.niche || "");
+    setCampaignLocations(intelligence?.targetMarkets.join(", ") || "");
+    setProductServiceFocus(intelligence?.offer || "");
+    setCampaignCta("");
+    setOfferPromotion("");
     setTone("professional");
     setImageDirection(IMAGE_DIRECTION_PRESETS[0].value);
-    setPostingFrequency("3 posts per week");
+    setPostingFrequency("10 posts per month");
+    setCustomMonthlyPostCount("10");
     setTargetKeywords("");
     setTargetUrls(selectedProject?.websiteUrl || selectedProject?.website?.rootUrl || selectedWebsite?.rootUrl || "");
     setSelectedPlatforms(CAMPAIGN_PLATFORMS);
@@ -1354,9 +1387,23 @@ export default function SocialStrategy() {
     setGoalMetric(strategy.goalMetric ?? "leads");
     setGoalTarget(strategy.goalTarget?.toString() ?? "");
     setAudience(strategy.audience ?? "");
+    setCampaignBusinessName(strategy.businessNameBrief ?? intelligence?.businessName ?? "");
+    setCampaignWebsiteDomain(strategy.websiteDomainBrief ?? selectedProject?.websiteUrl ?? selectedWebsite?.rootUrl ?? "");
+    setCampaignIndustry(strategy.industryBrief ?? selectedProject?.niche ?? "");
+    setCampaignLocations(strategy.targetLocationsJson.join(", "));
+    setProductServiceFocus(strategy.productServiceFocus ?? intelligence?.offer ?? "");
+    setCampaignCta(strategy.campaignCta ?? "");
+    setOfferPromotion(strategy.offerPromotion ?? "");
     setTone(strategy.tone ?? "professional");
     setImageDirection(strategy.imageDirection ?? IMAGE_DIRECTION_PRESETS[0].value);
-    setPostingFrequency(strategy.postingFrequency ?? "3 posts per week");
+    const savedFrequency = strategy.postingFrequency ?? "10 posts per month";
+    if (CAMPAIGN_CADENCE_OPTIONS.includes(savedFrequency) && savedFrequency !== "Custom monthly count") {
+      setPostingFrequency(savedFrequency);
+    } else {
+      const savedAmount = Number(savedFrequency.match(/\d+/)?.[0] ?? 10);
+      setPostingFrequency("Custom monthly count");
+      setCustomMonthlyPostCount(String(savedFrequency.toLowerCase().includes("week") ? savedAmount * 4 : savedAmount));
+    }
     setTargetKeywords(strategy.targetKeywordsJson.join(", "));
     setTargetUrls(strategy.targetUrlsJson.join(", "));
     setSelectedPlatforms(strategy.platforms.filter((platform) => CAMPAIGN_PLATFORMS.includes(platform)).length
@@ -1387,6 +1434,10 @@ export default function SocialStrategy() {
       setPageError("Choose at least one focus platform for this campaign.");
       return;
     }
+    if (postingFrequency === "Custom monthly count" && (!Number.isInteger(Number(customMonthlyPostCount)) || Number(customMonthlyPostCount) < 1 || Number(customMonthlyPostCount) > 120)) {
+      setPageError("Enter a custom monthly post count between 1 and 120.");
+      return;
+    }
     if (!selectedProject?.id) {
       setPageError("Select a guided project before saving the campaign.");
       return;
@@ -1406,8 +1457,15 @@ export default function SocialStrategy() {
         goalMetric,
         goalTarget: goalTarget.trim() ? Number(goalTarget) : null,
         audience: audience || null,
+        businessName: campaignBusinessName || null,
+        websiteDomain: campaignWebsiteDomain || null,
+        industry: campaignIndustry || null,
+        targetLocations: campaignLocations.split(",").map((item) => item.trim()).filter(Boolean),
+        productServiceFocus: productServiceFocus || null,
+        campaignCta: campaignCta || null,
+        offerPromotion: offerPromotion || null,
         platforms: selectedPlatforms.filter((platform) => CAMPAIGN_PLATFORMS.includes(platform)),
-        postingFrequency,
+        postingFrequency: effectivePostingFrequency,
         tone: tone || null,
         imageDirection: imageDirection || null,
         targetKeywords: targetKeywords.split(",").map((item) => item.trim()).filter(Boolean),
@@ -1463,8 +1521,15 @@ export default function SocialStrategy() {
         goalMetric: savedCampaign?.goalMetric ?? goalMetric,
         goalTarget: savedCampaign ? savedCampaign.goalTarget : goalTarget.trim() ? Number(goalTarget) : null,
         audience: savedCampaign?.audience ?? (audience || null),
+        businessName: (savedCampaign?.businessNameBrief ?? campaignBusinessName) || null,
+        websiteDomain: (savedCampaign?.websiteDomainBrief ?? campaignWebsiteDomain) || null,
+        industry: (savedCampaign?.industryBrief ?? campaignIndustry) || null,
+        targetLocations: savedCampaign?.targetLocationsJson ?? campaignLocations.split(",").map((item) => item.trim()).filter(Boolean),
+        productServiceFocus: (savedCampaign?.productServiceFocus ?? productServiceFocus) || null,
+        campaignCta: (savedCampaign?.campaignCta ?? campaignCta) || null,
+        offerPromotion: (savedCampaign?.offerPromotion ?? offerPromotion) || null,
         platforms: (savedCampaign?.platforms ?? selectedPlatforms).filter((platform) => CAMPAIGN_PLATFORMS.includes(platform)),
-        postingFrequency: savedCampaign?.postingFrequency ?? (postingFrequency || null),
+        postingFrequency: savedCampaign?.postingFrequency ?? effectivePostingFrequency,
         tone: savedCampaign?.tone ?? (tone || null),
         imageDirection: savedCampaign?.imageDirection ?? (imageDirection || null),
         targetKeywords: savedCampaign?.targetKeywordsJson ?? targetKeywords.split(",").map((item) => item.trim()).filter(Boolean),
@@ -1953,7 +2018,7 @@ export default function SocialStrategy() {
 
             {competitorEditorOpen && (
               <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/50 p-4" role="dialog" aria-modal="true" aria-label={editingCompetitorIndex === null ? "Add competitor" : "Edit competitor"}>
-                <div className="max-h-[90vh] w-full max-w-3xl overflow-y-auto rounded-2xl bg-white shadow-2xl">
+                <div className="max-h-[92vh] w-full max-w-6xl overflow-y-auto rounded-2xl bg-white shadow-2xl">
                   <div className="flex items-start justify-between gap-3 border-b border-slate-200 px-5 py-4">
                     <div><div className="text-xs font-bold uppercase tracking-wide text-brand-600">{editingCompetitorIndex === null ? "New competitor" : "Update competitor"}</div><h3 className="mt-1 text-xl font-bold text-charcoal-900">{editingCompetitorIndex === null ? "Add Competitor" : `Edit ${competitorDraft.competitorName}`}</h3></div>
                     <button type="button" onClick={() => setCompetitorEditorOpen(false)} className="rounded-lg px-3 py-2 text-xl text-slate-400 hover:bg-slate-100 hover:text-slate-700" aria-label="Close">×</button>
@@ -2121,17 +2186,20 @@ export default function SocialStrategy() {
                     {campaignSetupStep === 1 && <>
                     <div>
                       <div className="text-sm font-bold text-charcoal-900">Choose platforms</div>
-                      <p className="mt-1 text-xs leading-5 text-slate-500">Select where this campaign will publish. Facebook and Instagram are currently available.</p>
-                      <div className="mt-3 grid gap-3 sm:grid-cols-2">
+                      <p className="mt-1 text-xs leading-5 text-slate-500">Generate distinct content for every selected platform. Facebook and Instagram support connected scheduling; LinkedIn, X, and Reddit use approval-controlled handoff until their connectors are enabled.</p>
+                      <div className="mt-3 grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
                         {CAMPAIGN_PLATFORMS.map((platform) => {
                           const active = selectedPlatforms.includes(platform);
-                          return <button key={platform} type="button" onClick={() => setSelectedPlatforms((items) => active ? items.filter((item) => item !== platform) : [...items, platform])} className={`flex items-center justify-between rounded-xl border p-4 text-left transition ${active ? "border-brand-300 bg-brand-50 text-brand-800 ring-2 ring-brand-100" : "border-slate-200 bg-white text-slate-600 hover:border-brand-200"}`}><span><span className="block font-bold">{platformLabel(platform)}</span><span className="mt-1 block text-xs font-normal">Create, review, schedule, and publish campaign posts.</span></span><span className={`flex h-6 w-6 items-center justify-center rounded-full text-xs ${active ? "bg-brand-600 text-white" : "bg-slate-100 text-slate-400"}`}>{active ? "✓" : "+"}</span></button>;
+                          return <button key={platform} type="button" onClick={() => setSelectedPlatforms((items) => active ? items.filter((item) => item !== platform) : [...items, platform])} className={`flex items-center justify-between rounded-xl border p-3 text-left transition ${active ? "border-brand-300 bg-brand-50 text-brand-800 ring-2 ring-brand-100" : "border-slate-200 bg-white text-slate-600 hover:border-brand-200"}`}><span><span className="block font-bold">{platformLabel(platform)}</span><span className="mt-1 block text-[10px] font-normal">{platform === "facebook" || platform === "instagram" ? "Connected scheduling" : "Approval + handoff"}</span></span><span className={`flex h-6 w-6 items-center justify-center rounded-full text-xs ${active ? "bg-brand-600 text-white" : "bg-slate-100 text-slate-400"}`}>{active ? "✓" : "+"}</span></button>;
                         })}
                       </div>
                     </div>
                     <p className="rounded-lg border border-violet-200 bg-violet-50 px-3 py-2 text-xs leading-5 text-violet-800">Set the outcome, dates, and measurement target for this campaign.</p>
                     <div className="grid gap-4 md:grid-cols-2">
                       <div className="md:col-span-2"><Input label="Campaign name" value={campaignName} onChange={setCampaignName} placeholder="Fall lead generation campaign" /></div>
+                      <Input label="Business name" value={campaignBusinessName} onChange={setCampaignBusinessName} placeholder="Business name" />
+                      <Input label="Website / domain" value={campaignWebsiteDomain} onChange={setCampaignWebsiteDomain} placeholder="https://example.com" />
+                      <div className="md:col-span-2"><Input label="Industry" value={campaignIndustry} onChange={setCampaignIndustry} placeholder="Physiotherapy, SaaS, professional services" /></div>
                       <label className="block"><span className="mb-1 block text-sm font-medium text-slate-600">Start date</span><input type="date" value={campaignStartAt} onChange={(event) => setCampaignStartAt(event.target.value)} className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-100" /></label>
                       <label className="block"><span className="mb-1 block text-sm font-medium text-slate-600">End date</span><input type="date" min={campaignStartAt} value={campaignEndAt} onChange={(event) => setCampaignEndAt(event.target.value)} className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-100" /></label>
                       <div className="md:col-span-2"><Input label="Publishing timezone" value={campaignTimezone} onChange={setCampaignTimezone} placeholder="America/Toronto" /></div>
@@ -2151,14 +2219,18 @@ export default function SocialStrategy() {
                           <span className="mt-1 block text-right text-xs text-slate-400">{audience.length}/4000</span>
                           <span className="mt-1 block text-xs text-slate-500">Loaded from Project Intelligence. Refine only what is specific to this campaign.</span>
                         </label>
+                        <div className="md:col-span-2"><Input label="Product / service focus" value={productServiceFocus} onChange={setProductServiceFocus} placeholder="The specific service, product, or solution this campaign should promote" /></div>
+                        <div className="md:col-span-2"><Input label="Target locations" value={campaignLocations} onChange={setCampaignLocations} placeholder="Toronto, Mississauga, Ontario" /></div>
                         <Input label="Tone" value={tone} onChange={setTone} placeholder="Professional, friendly, educational" />
                         <label className="block">
-                          <span className="mb-1 block text-sm font-medium text-slate-600">Planned campaign cadence</span>
+                          <span className="mb-1 block text-sm font-medium text-slate-600">Monthly post count</span>
                           <select value={postingFrequency} onChange={(event) => setPostingFrequency(event.target.value)} className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-100">
                             {CAMPAIGN_CADENCE_OPTIONS.map((option) => <option key={option} value={option}>{option}</option>)}
                           </select>
                         </label>
-                        <div className="rounded-lg border border-sky-200 bg-sky-50 p-3 text-xs leading-5 text-sky-800"><b>Project target markets</b><br />{intelligence?.targetMarkets.length ? intelligence.targetMarkets.join(" · ") : "No target markets have been saved yet."}</div>
+                        {postingFrequency === "Custom monthly count" && <Input label="Custom posts per month" type="number" value={customMonthlyPostCount} onChange={setCustomMonthlyPostCount} placeholder="Between 1 and 120" />}
+                        <Input label="Campaign CTA" value={campaignCta} onChange={setCampaignCta} placeholder="Book an assessment, Learn more, Request a quote" />
+                        <div className="md:col-span-2"><Input label="Offer / promotion" value={offerPromotion} onChange={setOfferPromotion} placeholder="Optional verified offer, promotion, or campaign incentive" /></div>
                         <div className="md:col-span-2"><Input label="Target URLs" value={targetUrls} onChange={setTargetUrls} placeholder="https://example.com/service" /></div>
                         </>}
                         {campaignSetupStep === 3 && <>
@@ -2403,7 +2475,8 @@ export default function SocialStrategy() {
             </div>
             <div className="flex flex-col-reverse gap-2 border-t border-slate-200 px-5 py-4 sm:flex-row sm:justify-end">
               <Button variant="ghost" onClick={() => { openPostEditor(viewingPost); setViewingPost(null); }}>Edit post</Button>
-              {!["approved", "scheduled", "published"].includes(viewingPost.status) && <Button variant="ghost" onClick={() => void approveCalendarPost(viewingPost)} disabled={postingActionBusy === `approve:${viewingPost.id}`}>{postingActionBusy === `approve:${viewingPost.id}` ? "Approving…" : "Approve post"}</Button>}
+              {!["approved", "scheduled", "published", "rejected"].includes(viewingPost.status) && <Button variant="danger" onClick={() => void rejectCalendarPost(viewingPost)} disabled={postingActionBusy === `reject:${viewingPost.id}`}>{postingActionBusy === `reject:${viewingPost.id}` ? "Rejecting…" : "Reject post"}</Button>}
+              {!["approved", "scheduled", "published", "rejected"].includes(viewingPost.status) && <Button variant="ghost" onClick={() => void approveCalendarPost(viewingPost)} disabled={postingActionBusy === `approve:${viewingPost.id}`}>{postingActionBusy === `approve:${viewingPost.id}` ? "Approving…" : "Approve post"}</Button>}
               {viewingPost.status === "approved" && <Button onClick={() => void scheduleCalendarPost(viewingPost)} disabled={postingActionBusy === `schedule:${viewingPost.id}`}>{postingActionBusy === `schedule:${viewingPost.id}` ? "Scheduling…" : "Schedule approved post"}</Button>}
               {viewingPost.status === "scheduled" && <Button disabled>Scheduled</Button>}
               <Button onClick={() => setViewingPost(null)}>Close</Button>
