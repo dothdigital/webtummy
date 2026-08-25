@@ -818,6 +818,7 @@ export default function SocialStrategy() {
     ?? strategies.find((strategy) => strategy.status !== "draft" && strategy.status !== "superseded")
     ?? null;
   const selectedStrategy = strategies.find((strategy) => strategy.id === selectedCampaignId) ?? activeStrategy;
+  const pendingImageCount = selectedStrategy?.posts.filter((post) => ["queued", "generating"].includes(post.imageStatus)).length ?? 0;
   const selectedWebsite = websites.find((website) => website.id === websiteId) ?? websites[0] ?? null;
   const selectedProject = projects.find((project) => project.websiteId === websiteId) ?? null;
   const selectedCampaignKeywords = targetKeywords.split(",").map((value) => value.trim()).filter(Boolean);
@@ -1189,6 +1190,16 @@ export default function SocialStrategy() {
     const result = await api.get<SocialStrategyResponse>(`/api/social-strategy?websiteId=${encodeURIComponent(id)}${projectId ? `&projectId=${encodeURIComponent(projectId)}` : ""}`);
     applySocialResponse(result);
   };
+
+  useEffect(() => {
+    if (!websiteId || !pendingImageCount) return;
+    const timer = window.setInterval(() => {
+      void loadStrategy(websiteId, selectedProject?.id ?? null).catch(() => undefined);
+    }, 5_000);
+    return () => window.clearInterval(timer);
+    // The pending count deliberately stops polling when the durable worker finishes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [websiteId, selectedProject?.id, pendingImageCount]);
 
   const loadProviderAccounts = async () => {
     try {
@@ -1698,7 +1709,7 @@ export default function SocialStrategy() {
 
   return (
     <div className="flex flex-col gap-6">
-      {generating && <div className="sticky top-3 z-40 order-0 rounded-xl border border-violet-300 bg-violet-950 px-5 py-4 text-white shadow-xl" role="status"><div className="flex items-start gap-3"><span className="mt-1 h-3 w-3 shrink-0 animate-pulse rounded-full bg-violet-300"/><div><div className="font-bold">AI campaign generation is running in the background</div><div className="mt-1 text-sm text-violet-100">{generationStage || "Preparing the campaign…"}</div><div className="mt-1 text-xs font-semibold text-violet-300">You can continue working elsewhere. SEnuke AI will notify you when the content and actual images are ready.</div></div></div></div>}
+      {(generating || pendingImageCount > 0) && <div className="sticky top-3 z-40 order-0 rounded-xl border border-violet-300 bg-violet-950 px-5 py-4 text-white shadow-xl" role="status"><div className="flex items-start gap-3"><span className="mt-1 h-3 w-3 shrink-0 animate-pulse rounded-full bg-violet-300"/><div><div className="font-bold">{generating ? "AI campaign content is being created" : "AI campaign images are being created by the background worker"}</div><div className="mt-1 text-sm text-violet-100">{generating ? generationStage || "Preparing the campaign…" : `${pendingImageCount} image${pendingImageCount === 1 ? " is" : "s are"} still processing. Previews refresh automatically every 5 seconds.`}</div><div className="mt-1 text-xs font-semibold text-violet-300">You can safely leave this page. The worker continues, stores finished images in S3, and sends an email when the campaign image batch is ready.</div></div></div></div>}
       <div className="order-1 flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
         <div>
           <div className="text-xs font-semibold uppercase tracking-wide text-brand-600">Brand Visibility</div>
@@ -1805,9 +1816,9 @@ export default function SocialStrategy() {
           <Card className="p-5">
             <div className="flex flex-wrap items-start justify-between gap-3">
               <div>
-                <div className="text-xs font-bold uppercase tracking-wide text-brand-600">Campaign · Content repurposing</div>
-                <h2 className="mt-1 text-xl font-bold text-charcoal-900">Repurpose content for {selectedStrategy.campaignName || "this campaign"}</h2>
-                <p className="mt-1 text-sm leading-6 text-charcoal-500">Repurposing belongs to this campaign. The source list includes only approved or published project assets, and generated assets remain attached to this campaign’s strategy.</p>
+                <div className="text-xs font-bold uppercase tracking-wide text-brand-600">Optional campaign tool · Content repurposing</div>
+                <h2 className="mt-1 text-xl font-bold text-charcoal-900">Turn one approved source into more channel assets</h2>
+                <p className="mt-1 text-sm leading-6 text-charcoal-500">This is separate from your monthly campaign calendar. Choose an approved website page, post, or report and AI will adapt it into formats such as a Facebook post, newsletter, video script, or lead-magnet idea. Nothing is published automatically; generated assets stay attached to {selectedStrategy.campaignName || "this campaign"} for review.</p>
               </div>
               <div className="flex flex-wrap items-center gap-2">
                 <span className="rounded-full bg-brand-50 px-3 py-1 text-xs font-bold text-brand-700">{contentSources.length} available sources</span>

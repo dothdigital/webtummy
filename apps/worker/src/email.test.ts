@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { configuredMailProvider } from "./email.js";
+import { actionEmail, configuredMailProvider } from "./email.js";
 
 describe("configuredMailProvider", () => {
   it("uses SES with an AWS region and instance-role credentials", () => {
@@ -28,4 +28,11 @@ describe("configuredMailProvider", () => {
       awsAccessKeyId: "",
     })).toBe("development");
   });
+});
+
+it("builds an action email with a CTA and branded signature", () => {
+  const email = actionEmail({ title: "Work is ready", message: "Review the generated content.", ctaLabel: "Review now", ctaUrl: "https://app.senuke.com/review" });
+  expect(email.text).toContain("Review now: https://app.senuke.com/review");
+  expect(email.text).toContain("The SEnuke AI Team");
+  expect(email.html).toContain(">Review now</a>");
 });

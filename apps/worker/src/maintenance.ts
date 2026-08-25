@@ -1,7 +1,7 @@
 import { Prisma, prisma, type Client } from "@webtummy/db";
 import { crawlQueue } from "./queue.js";
 import { config } from "./config.js";
-import { sendMail } from "./email.js";
+import { actionEmail, sendMail } from "./email.js";
 import { approvalEscalationStage } from "@webtummy/core/approvals";
 import { scheduledReportKey } from "@webtummy/core/reporting";
 import { lookup } from "node:dns/promises";
@@ -611,8 +611,17 @@ export async function workspaceNotificationEmailDelivery(now = new Date()) {
       deferred += routine.length - readyRoutine.length;
       for (const batch of batches) {
         const lines = batch.map((item) => `${item.title}: ${item.body}`);
+        const content = actionEmail({
+          title: batch.length > 1 ? `${batch.length} project updates are ready` : batch[0].title,
+          message: lines.join("\n\n"),
+          ctaLabel: batch.length > 1 ? "Review updates" : "Review now",
+          ctaUrl: appLink(batch[0].actionUrl || "/"),
+          reason: batch.length > 1
+            ? "You are receiving this summary based on your workspace notification frequency."
+            : "You are receiving this message because this workspace update is ready for your attention.",
+        });
         try {
-          await sendMail({ to: recipient.email, subject: batch.length > 1 ? `${batch.length} SEnuke AI - AI Growth Operating System project updates` : batch[0].title, text: lines.join("\n\n"), html: `<p>${lines.map((line) => line.replace(/&/g, "&amp;").replace(/</g, "&lt;")).join("</p><p>")}</p><p><a href="${appLink(batch[0].actionUrl || "/")}">Open SEnuke AI - AI Growth Operating System</a></p>` });
+          await sendMail({ to: recipient.email, subject: batch.length > 1 ? `${batch.length} SEnuke AI project updates are ready` : batch[0].title, ...content });
           await prisma.workspaceNotification.updateMany({ where: { id: { in: batch.map((item) => item.id) } }, data: { emailStatus: "sent" } });
           sent += batch.length;
         } catch (error) {

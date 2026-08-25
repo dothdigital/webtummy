@@ -9,6 +9,26 @@ export interface MailInput {
   text: string;
 }
 
+function escapeHtml(value: string) {
+  return value.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;").replaceAll("'", "&#039;");
+}
+
+export function actionEmail(input: {
+  greeting?: string;
+  title: string;
+  message: string;
+  ctaLabel: string;
+  ctaUrl: string;
+  reason?: string;
+}) {
+  const greeting = input.greeting?.trim() || "Hello,";
+  const signature = "The SEnuke AI Team";
+  return {
+    text: `${greeting}\n\n${input.title}\n\n${input.message}\n\n${input.ctaLabel}: ${input.ctaUrl}\n\nThank you,\n${signature}${input.reason ? `\n\n${input.reason}` : ""}`,
+    html: `<div style="font-family:Arial,sans-serif;max-width:640px;margin:0 auto;color:#0f172a;line-height:1.6"><p>${escapeHtml(greeting)}</p><h1 style="font-size:24px;line-height:1.25;margin:20px 0 12px">${escapeHtml(input.title)}</h1><p>${escapeHtml(input.message)}</p><p style="margin:28px 0"><a href="${escapeHtml(input.ctaUrl)}" style="display:inline-block;border-radius:8px;background:#4338ca;color:#fff;padding:12px 18px;text-decoration:none;font-weight:700">${escapeHtml(input.ctaLabel)}</a></p><p>Thank you,<br><strong>${signature}</strong></p>${input.reason ? `<p style="font-size:12px;color:#64748b;border-top:1px solid #e2e8f0;padding-top:16px">${escapeHtml(input.reason)}</p>` : ""}</div>`,
+  };
+}
+
 export function configuredMailProvider(input: {
   emailProvider: string;
   resendApiKey: string;

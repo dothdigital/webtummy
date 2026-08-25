@@ -4,6 +4,64 @@ import { prisma } from "@webtummy/db";
 import { putGeneratedObject } from "@webtummy/core/object-storage";
 import { config, SOCIAL_IMAGE_QUEUE } from "./config.js";
 import { connection, type SocialImageJobData } from "./queue.js";
+import { actionEmail, sendMail } from "./email.js";
+
+async function notifyCampaignImagesReady(input: SocialImageJobData) {
+  const post = await prisma.socialCalendarPost.findUnique({
+    where: { id: input.postId },
+    include: { strategy: { include: { project: true, posts: { select: { imageStatus: true, imageUrl: true } } } } },
+  });
+  const strategy = post?.strategy;
+  if (!strategy?.projectId || !strategy.project) return;
+  if (strategy.posts.some((item) => ["queued", "generating"].includes(item.imageStatus))) return;
+  const readyCount = strategy.posts.filter((item) => Boolean(item.imageUrl)).length;
+  if (!readyCount) return;
+  const actionUrl = `/social-strategy?projectId=${encodeURIComponent(strategy.projectId)}`;
+  const type = `social_images_ready:${strategy.id}`;
+  const existing = await prisma.workspaceNotification.findFirst({ where: { workspaceId: input.workspaceId, userId: input.createdByUserId, type }, select: { id: true } });
+  if (existing) return;
+  const membership = await prisma.workspaceMembership.findUnique({
+    where: { workspaceId_userId: { workspaceId: input.workspaceId, userId: input.createdByUserId } },
+    select: { status: true, permissionOverrides: true, user: { select: { email: true, name: true } } },
+  });
+  if (!membership || membership.status !== "active") return;
+  const overrides = membership.permissionOverrides && typeof membership.permissionOverrides === "object" && !Array.isArray(membership.permissionOverrides)
+    ? membership.permissionOverrides as { notificationPreferences?: unknown }
+    : {};
+  const preferences = overrides.notificationPreferences && typeof overrides.notificationPreferences === "object" && !Array.isArray(overrides.notificationPreferences)
+    ? overrides.notificationPreferences as { nonCriticalEmail?: unknown; emailFrequency?: unknown }
+    : {};
+  const emailEligible = preferences.nonCriticalEmail !== false;
+  const notification = await prisma.workspaceNotification.create({ data: {
+    workspaceId: input.workspaceId,
+    userId: input.createdByUserId,
+    agencyClientId: strategy.project.agencyClientId,
+    projectId: strategy.projectId,
+    type,
+    title: "Social campaign images are ready",
+    body: `${strategy.campaignName || strategy.project.name}: ${readyCount} image${readyCount === 1 ? " is" : "s are"} ready for review. Approve the content and visuals before scheduling.`,
+    actionUrl,
+    emailEligible,
+    emailStatus: emailEligible ? "pending" : "disabled",
+  } });
+  if (emailEligible && preferences.emailFrequency === "immediate") {
+    const reviewUrl = `${config.webAppUrl.replace(/\/$/, "")}${actionUrl}`;
+    const content = actionEmail({
+      greeting: membership.user.name?.trim() ? `Hi ${membership.user.name.trim()},` : "Hello,",
+      title: "Your social campaign images are ready",
+      message: `${strategy.campaignName || strategy.project.name}: ${readyCount} image${readyCount === 1 ? " is" : "s are"} ready. Review the captions, CTAs, hashtags, and visuals before scheduling.`,
+      ctaLabel: "Review social campaign",
+      ctaUrl: reviewUrl,
+      reason: "You are receiving this email because you requested AI image generation and selected immediate workspace notifications.",
+    });
+    try {
+      await sendMail({ to: membership.user.email, subject: "Your SEnuke AI social campaign images are ready", ...content });
+      await prisma.workspaceNotification.update({ where: { id: notification.id }, data: { emailStatus: "sent" } });
+    } catch (error) {
+      console.error(`[worker] immediate social campaign email failed for ${notification.id}:`, error);
+    }
+  }
+}
 
 function deliveryUrl(assetId: string) {
   const token = createHmac("sha256", config.appEncryptionKey).update(`generated-asset:${assetId}`).digest("hex");
@@ -55,7 +113,10 @@ async function generateSocialImage(postId: string, workspaceId: string, createdB
 
 export function startSocialImageWorker() {
   const worker = new Worker<SocialImageJobData>(SOCIAL_IMAGE_QUEUE, async (job) => generateSocialImage(job.data.postId, job.data.workspaceId, job.data.createdByUserId), { connection, concurrency: 2 });
-  worker.on("completed", (job) => console.log(`[worker] generated social image for ${job.data.postId}`));
+  worker.on("completed", (job) => {
+    console.log(`[worker] generated social image for ${job.data.postId}`);
+    void notifyCampaignImagesReady(job.data).catch((error) => console.error(`[worker] social campaign notification failed for ${job.data.postId}:`, error));
+  });
   worker.on("failed", (job, error) => {
     console.error(`[worker] social image ${job?.data.postId || "unknown"} failed:`, error.message);
     if (job && job.attemptsMade >= (job.opts.attempts ?? 3)) prisma.socialCalendarPost.updateMany({ where: { id: job.data.postId, imageUrl: null }, data: { imageStatus: "failed" } }).catch(() => undefined);
