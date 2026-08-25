@@ -19,6 +19,7 @@ const PLATFORM_LABELS: Record<string, string> = {
 
 const DEFAULT_PLATFORMS = ["instagram", "facebook", "linkedin", "youtube", "google_business"];
 const CAMPAIGN_PLATFORMS = ["facebook", "instagram", "linkedin", "x", "reddit"];
+const ENABLED_CAMPAIGN_PLATFORMS = ["facebook", "instagram"];
 const PROFILE_FREQUENCY_OPTIONS = [
   "Not currently posting",
   "Less than once a month",
@@ -788,7 +789,7 @@ export default function SocialStrategy() {
   const [imageDirection, setImageDirection] = useState(IMAGE_DIRECTION_PRESETS[0].value);
   const [targetKeywords, setTargetKeywords] = useState("");
   const [targetUrls, setTargetUrls] = useState("");
-  const [selectedPlatforms, setSelectedPlatforms] = useState<string[]>(CAMPAIGN_PLATFORMS);
+  const [selectedPlatforms, setSelectedPlatforms] = useState<string[]>(ENABLED_CAMPAIGN_PLATFORMS);
   const [mode, setMode] = useState<"posting" | "strategy" | "performance">("strategy");
   const [step, setStep] = useState<WizardStep>("strategy");
   const [loading, setLoading] = useState(true);
@@ -845,7 +846,7 @@ export default function SocialStrategy() {
     setIntelligence(result.intelligence ?? null);
     setSelectedSourceId((current) => current === "__custom__" || result.contentSources?.some((source) => source.id === current) ? current : result.contentSources?.[0]?.id || "__custom__");
     setPlatformOptions(result.platformOptions.length ? result.platformOptions : DEFAULT_PLATFORMS);
-    if (!selectedPlatforms.length) setSelectedPlatforms(CAMPAIGN_PLATFORMS);
+    if (!selectedPlatforms.length) setSelectedPlatforms(ENABLED_CAMPAIGN_PLATFORMS);
   };
 
   const replaceCalendarPost = (updated: SocialCalendarPost) => {
@@ -1433,7 +1434,7 @@ export default function SocialStrategy() {
     setCustomMonthlyPostCount("10");
     setTargetKeywords("");
     setTargetUrls(selectedProject?.websiteUrl || selectedProject?.website?.rootUrl || selectedWebsite?.rootUrl || "");
-    setSelectedPlatforms(CAMPAIGN_PLATFORMS);
+    setSelectedPlatforms(ENABLED_CAMPAIGN_PLATFORMS);
     setCampaignConfigured(false);
     setCampaignEditorOpen(true);
   };
@@ -1469,9 +1470,9 @@ export default function SocialStrategy() {
     }
     setTargetKeywords(strategy.targetKeywordsJson.join(", "));
     setTargetUrls(strategy.targetUrlsJson.join(", "));
-    setSelectedPlatforms(strategy.platforms.filter((platform) => CAMPAIGN_PLATFORMS.includes(platform)).length
-      ? strategy.platforms.filter((platform) => CAMPAIGN_PLATFORMS.includes(platform))
-      : CAMPAIGN_PLATFORMS);
+    setSelectedPlatforms(strategy.platforms.filter((platform) => ENABLED_CAMPAIGN_PLATFORMS.includes(platform)).length
+      ? strategy.platforms.filter((platform) => ENABLED_CAMPAIGN_PLATFORMS.includes(platform))
+      : ENABLED_CAMPAIGN_PLATFORMS);
     setCampaignConfigured(true);
     setCampaignEditorOpen(true);
   };
@@ -1527,7 +1528,7 @@ export default function SocialStrategy() {
         productServiceFocus: productServiceFocus || null,
         campaignCta: campaignCta || null,
         offerPromotion: offerPromotion || null,
-        platforms: selectedPlatforms.filter((platform) => CAMPAIGN_PLATFORMS.includes(platform)),
+        platforms: selectedPlatforms.filter((platform) => ENABLED_CAMPAIGN_PLATFORMS.includes(platform)),
         postingFrequency: effectivePostingFrequency,
         tone: tone || null,
         imageDirection: imageDirection || null,
@@ -1591,7 +1592,7 @@ export default function SocialStrategy() {
         productServiceFocus: (savedCampaign?.productServiceFocus ?? productServiceFocus) || null,
         campaignCta: (savedCampaign?.campaignCta ?? campaignCta) || null,
         offerPromotion: (savedCampaign?.offerPromotion ?? offerPromotion) || null,
-        platforms: (savedCampaign?.platforms ?? selectedPlatforms).filter((platform) => CAMPAIGN_PLATFORMS.includes(platform)),
+        platforms: (savedCampaign?.platforms ?? selectedPlatforms).filter((platform) => ENABLED_CAMPAIGN_PLATFORMS.includes(platform)),
         postingFrequency: savedCampaign?.postingFrequency ?? effectivePostingFrequency,
         tone: savedCampaign?.tone ?? (tone || null),
         imageDirection: savedCampaign?.imageDirection ?? (imageDirection || null),
@@ -2250,11 +2251,12 @@ export default function SocialStrategy() {
                     {campaignSetupStep === 1 && <>
                     <div>
                       <div className="text-sm font-bold text-charcoal-900">Choose platforms</div>
-                      <p className="mt-1 text-xs leading-5 text-slate-500">Generate distinct content for every selected platform. Facebook and Instagram support connected scheduling; LinkedIn, X, and Reddit use approval-controlled handoff until their connectors are enabled.</p>
+                      <p className="mt-1 text-xs leading-5 text-slate-500">Facebook and Instagram are available for campaign generation and connected scheduling. Additional platform connectors are coming soon.</p>
                       <div className="mt-3 grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
                         {CAMPAIGN_PLATFORMS.map((platform) => {
                           const active = selectedPlatforms.includes(platform);
-                          return <button key={platform} type="button" onClick={() => setSelectedPlatforms((items) => active ? items.filter((item) => item !== platform) : [...items, platform])} className={`flex items-center justify-between rounded-xl border p-3 text-left transition ${active ? "border-brand-300 bg-brand-50 text-brand-800 ring-2 ring-brand-100" : "border-slate-200 bg-white text-slate-600 hover:border-brand-200"}`}><span><span className="block font-bold">{platformLabel(platform)}</span><span className="mt-1 block text-[10px] font-normal">{platform === "facebook" || platform === "instagram" ? "Connected scheduling" : "Approval + handoff"}</span></span><span className={`flex h-6 w-6 items-center justify-center rounded-full text-xs ${active ? "bg-brand-600 text-white" : "bg-slate-100 text-slate-400"}`}>{active ? "✓" : "+"}</span></button>;
+                          const enabled = ENABLED_CAMPAIGN_PLATFORMS.includes(platform);
+                          return <button key={platform} type="button" disabled={!enabled} onClick={() => enabled && setSelectedPlatforms((items) => active ? items.filter((item) => item !== platform) : [...items, platform])} className={`flex items-center justify-between rounded-xl border p-3 text-left transition ${!enabled ? "cursor-not-allowed border-slate-200 bg-slate-100 text-slate-400 opacity-70" : active ? "border-brand-300 bg-brand-50 text-brand-800 ring-2 ring-brand-100" : "border-slate-200 bg-white text-slate-600 hover:border-brand-200"}`}><span><span className="block font-bold">{platformLabel(platform)}</span><span className="mt-1 block text-[10px] font-normal">{enabled ? "Connected scheduling" : "Coming soon"}</span></span><span className={`flex h-6 w-6 items-center justify-center rounded-full text-xs ${active ? "bg-brand-600 text-white" : "bg-slate-200 text-slate-400"}`}>{active ? "✓" : enabled ? "+" : "—"}</span></button>;
                         })}
                       </div>
                     </div>
