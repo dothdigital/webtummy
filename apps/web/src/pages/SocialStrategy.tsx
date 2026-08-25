@@ -1120,6 +1120,22 @@ export default function SocialStrategy() {
     }
   };
 
+  const disconnectSocialAccount = async (account: SocialConnectAccount) => {
+    if (!window.confirm(`Disconnect ${account.account_name} from ${platformLabel(account.platform)}? Existing scheduled posts may need to be reviewed or cancelled separately.`)) return;
+    setProviderActionBusy(true);
+    setPageError("");
+    try {
+      await api.delete(`/api/social-connect/accounts/${encodeURIComponent(account.id)}`);
+      setProviderAccounts((items) => items.filter((item) => item.id !== account.id));
+      setPostingProfileAccountIds((items) => items.filter((id) => id !== account.id));
+      setWorkflowMessage(`${account.account_name} was disconnected from ${platformLabel(account.platform)}.`);
+    } catch (err) {
+      setPageError(String(err).replace(/^Error:\s*/, ""));
+    } finally {
+      setProviderActionBusy(false);
+    }
+  };
+
   const connectSocialProvider = async (provider: "facebook" | "instagram") => {
     setProviderActionBusy(true);
     setPageError("");
@@ -1625,6 +1641,20 @@ export default function SocialStrategy() {
                   );})}
                 </div>
               </div>
+              {providerAccounts.some((account) => account.status === "connected") && (
+                <div className="mt-4 border-t border-slate-100 pt-4">
+                  <div className="mb-2 text-xs font-bold uppercase tracking-wide text-slate-500">Connected Meta accounts</div>
+                  <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-3">
+                    {providerAccounts.filter((account) => account.status === "connected").map((account) => (
+                      <div key={account.id} className="flex items-center gap-3 rounded-lg border border-slate-200 bg-white px-3 py-2">
+                        <SocialPlatformLogo platform={account.platform} />
+                        <span className="min-w-0 flex-1"><b className="block truncate text-xs text-charcoal-900">{account.account_name}</b><span className="text-[10px] text-slate-500">{platformLabel(account.platform)}</span></span>
+                        <button type="button" onClick={() => void disconnectSocialAccount(account)} disabled={providerActionBusy} className="shrink-0 rounded-md border border-red-200 px-2 py-1 text-[10px] font-bold text-red-700 hover:bg-red-50 disabled:opacity-50">Disconnect</button>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
             </Card>
             <SocialPublisher websiteId={websiteId} strategy={selectedStrategy ?? activeStrategy} onPostUpdated={replaceCalendarPost} />
           </div>
@@ -2258,11 +2288,14 @@ export default function SocialStrategy() {
                     {providerAccounts.filter((account) => account.status === "connected").map((account) => {
                       const selected = postingProfileAccountIds.includes(account.id);
                       return (
-                        <label key={account.id} className={`flex cursor-pointer items-center gap-3 rounded-lg border px-3 py-3 ${selected ? "border-brand-300 bg-brand-50" : "border-slate-200 bg-white"}`}>
+                        <div key={account.id} className={`flex items-center gap-3 rounded-lg border px-3 py-3 ${selected ? "border-brand-300 bg-brand-50" : "border-slate-200 bg-white"}`}>
+                          <label className="flex min-w-0 flex-1 cursor-pointer items-center gap-3">
                           <input type="checkbox" checked={selected} onChange={() => setPostingProfileAccountIds((items) => selected ? items.filter((id) => id !== account.id) : [...items, account.id])} />
                           <SocialPlatformLogo platform={account.platform} />
                           <span className="min-w-0"><b className="block truncate text-sm text-charcoal-900">{account.account_name}</b><span className="text-xs text-slate-500">{platformLabel(account.platform)}</span></span>
-                        </label>
+                          </label>
+                          <button type="button" onClick={() => void disconnectSocialAccount(account)} disabled={providerActionBusy} className="shrink-0 rounded-md border border-red-200 bg-white px-2.5 py-1.5 text-xs font-bold text-red-700 hover:bg-red-50 disabled:opacity-50">Disconnect</button>
+                        </div>
                       );
                     })}
                   </div>

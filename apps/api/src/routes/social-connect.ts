@@ -132,6 +132,13 @@ export function accountsForExternalUser(value: unknown, userId: string) {
   return [...unique.values()];
 }
 
+function rawAccountsForExternalUser(value: unknown, userId: string) {
+  const payload = value && typeof value === "object" ? value as Record<string, unknown> : {};
+  return (Array.isArray(payload.accounts) ? payload.accounts : []).filter((item): item is SocialConnectAccountRecord => Boolean(
+    item && typeof item === "object" && (item as SocialConnectAccountRecord).external_user_id === userId,
+  ));
+}
+
 async function ownedSocialAccounts(req: Request) {
   const data = await socialRequest("/api/social/accounts");
   return accountsForExternalUser(data, externalUserId(req));
@@ -190,6 +197,23 @@ socialConnectRouter.post("/social-connect/accounts/connect/instagram", async (re
 socialConnectRouter.get("/social-connect/accounts", async (req, res) => {
   try {
     res.json({ accounts: await ownedSocialAccounts(req) });
+  } catch (error) {
+    res.status(502).json({ error: String(error).replace(/^Error:\s*/, "") });
+  }
+});
+
+socialConnectRouter.delete("/social-connect/accounts/:accountId", async (req, res) => {
+  try {
+    const data = await socialRequest("/api/social/accounts");
+    const owned = rawAccountsForExternalUser(data, externalUserId(req));
+    const selected = owned.find((account) => account.id === req.params.accountId);
+    if (!selected) return res.status(404).json({ error: "Connected social account not found." });
+    const duplicates = owned.filter((account) => account.platform === selected.platform && account.account_id === selected.account_id);
+    for (const account of duplicates) {
+      if (typeof account.id !== "string") continue;
+      await socialRequest(`/api/social/accounts/${encodeURIComponent(account.id)}`, { method: "DELETE" });
+    }
+    res.json({ disconnected: true, accountId: req.params.accountId, disconnectedConnections: duplicates.length });
   } catch (error) {
     res.status(502).json({ error: String(error).replace(/^Error:\s*/, "") });
   }
