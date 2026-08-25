@@ -1,7 +1,7 @@
 import { Prisma, prisma, type Client } from "@webtummy/db";
 import { crawlQueue } from "./queue.js";
 import { config } from "./config.js";
-import { actionEmail, sendMail } from "./email.js";
+import { actionEmail, notificationPresentation, sendMail } from "./email.js";
 import { approvalEscalationStage } from "@webtummy/core/approvals";
 import { scheduledReportKey } from "@webtummy/core/reporting";
 import { lookup } from "node:dns/promises";
@@ -524,11 +524,23 @@ export async function taskDeadlineNotifications() {
           },
         });
         if (emailEnabled) {
+          const actionUrl = appLink(`/guided-projects/${task.projectId}#execution-tasks`);
+          const content = actionEmail({
+            greeting: recipient.name?.trim() ? `Hi ${recipient.name.trim()},` : "Hello,",
+            title: `${task.title}: ${isOverdue ? "deadline overdue" : "due soon"}`,
+            message: `${body} Please complete it, update the status, or add notes if the deadline needs attention.`,
+            ctaLabel: isOverdue ? "Update task" : "Open task",
+            ctaUrl: actionUrl,
+            previewText: isOverdue ? `This task was due ${task.dueAt.toLocaleDateString()}.` : `This task is due ${task.dueAt.toLocaleString()}.`,
+            completedAt: now,
+            preferencesUrl: appLink("/reports"),
+            supportEmail: config.supportEmail,
+            reason: "You are receiving this email because you are assigned to or manage this task.",
+          });
           try {
             await sendMail({
               to: recipient.email, subject: `${title}: ${task.title}`,
-              text: `${body} Open the project: ${appLink(`/guided-projects/${task.projectId}#execution-tasks`)}`,
-              html: `<p>${body}</p><p><a href="${appLink(`/guided-projects/${task.projectId}#execution-tasks`)}">Open project task</a></p>`,
+              ...content,
             });
             await prisma.workspaceNotification.update({ where: { id: notification.id }, data: { emailStatus: "sent" } });
             emails += 1;
@@ -615,15 +627,22 @@ export async function workspaceNotificationEmailDelivery(now = new Date()) {
       if (readyRoutine.length) batches.push(readyRoutine);
       deferred += routine.length - readyRoutine.length;
       for (const batch of batches) {
-        const lines = batch.map((item) => `${item.title}: ${item.body}\nCompleted: ${item.createdAt.toISOString().replace("T", " ").replace(".000Z", " UTC")}`);
+        const lines = batch.map((item) => `${item.title}: ${item.body}${batch.length > 1 ? `\nCompleted at: ${item.createdAt.toISOString().replace("T", " ").replace(/\.\d{3}Z$/, " UTC")}` : ""}`);
+        const presentation = batch.length > 1
+          ? { ctaLabel: "Open SEnuke AI dashboard", previewText: "Review completed work and updates that need your attention." }
+          : notificationPresentation(batch[0].type);
         const content = actionEmail({
           title: batch.length > 1 ? `${batch.length} project updates are ready` : batch[0].title,
           message: lines.join("\n\n"),
-          ctaLabel: batch.length > 1 ? "Review updates" : "Review now",
-          ctaUrl: appLink(batch[0].actionUrl || "/"),
+          ctaLabel: presentation.ctaLabel,
+          ctaUrl: appLink(batch.length > 1 ? "/" : batch[0].actionUrl || "/"),
+          previewText: presentation.previewText,
+          completedAt: batch.length === 1 ? batch[0].createdAt : now,
+          preferencesUrl: appLink("/reports"),
+          supportEmail: config.supportEmail,
           reason: batch.length > 1
             ? "You are receiving this summary based on your workspace notification frequency."
-            : "You are receiving this message because this workspace update is ready for your attention.",
+            : "You are receiving this email because this update is related to your SEnuke AI workspace, project, approval, report or account.",
         });
         const claimed = await prisma.workspaceNotification.updateMany({
           where: { id: { in: batch.map((item) => item.id) }, emailStatus: { in: ["pending", "failed"] } },

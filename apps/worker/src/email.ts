@@ -13,6 +13,34 @@ function escapeHtml(value: string) {
   return value.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;").replaceAll("'", "&#039;");
 }
 
+function htmlParagraphs(value: string) {
+  return value.split(/\n{2,}/).map((paragraph) => `<p>${escapeHtml(paragraph).replaceAll("\n", "<br>")}</p>`).join("");
+}
+
+export function notificationPresentation(type: string) {
+  const normalized = type.toLowerCase();
+  if (/publishing_failed|integration.*(failed|disconnected)|esp_connection_failed/.test(normalized)) return { ctaLabel: "Fix issue", previewText: "Review the issue and take the required corrective action in SEnuke AI." };
+  if (/strategy/.test(normalized)) return { ctaLabel: "Review strategy", previewText: "Review the strategy direction and approve it before execution begins." };
+  if (/approval_escalated/.test(normalized)) return { ctaLabel: "Open approval", previewText: "This approval has passed its escalation threshold and needs a decision." };
+  if (/approval|changes_requested/.test(normalized)) return { ctaLabel: "Review approval", previewText: "Review the work, approve it, reject it, or request changes." };
+  if (/deadline|task_assignment|team_assignment|work_reassigned/.test(normalized)) return { ctaLabel: "View task", previewText: "Review the task details, due date and expected next action." };
+  if (/site_architecture/.test(normalized)) return { ctaLabel: "Review architecture", previewText: "Review the recommended pages and internal links before content generation." };
+  if (/website_(build|content|images)/.test(normalized)) return { ctaLabel: "Review website", previewText: "Review the generated website work before approving publication." };
+  if (/social/.test(normalized)) return { ctaLabel: "Review campaign assets", previewText: "Review the content, CTAs, hashtags and visuals before scheduling." };
+  if (/lead_magnet|funnel/.test(normalized)) return { ctaLabel: "Review lead magnet", previewText: "Review the funnel content, form flow, delivery settings and CTA." };
+  if (/report_sent/.test(normalized)) return { ctaLabel: "View report", previewText: "A new report is ready to view." };
+  if (/report/.test(normalized)) return { ctaLabel: "View report", previewText: "Your report is ready to review, download or share." };
+  if (/growth-weekly/.test(normalized)) return { ctaLabel: "View summary", previewText: "Automatic monitoring completed and the weekly summary is ready." };
+  if (/growth|next_best_action/.test(normalized)) return { ctaLabel: "Review evidence", previewText: "Review the saved evidence and recommended next action." };
+  if (/local_grid/.test(normalized)) return { ctaLabel: "View local grid", previewText: "Review the measured local visibility movement." };
+  if (/local_seo|local_growth/.test(normalized)) return { ctaLabel: "Review Local SEO", previewText: "Review the saved Local SEO evidence and recommended actions." };
+  if (/discovery_issue/.test(normalized)) return { ctaLabel: "Fix discovery issue", previewText: "A published item failed an availability or search-discovery check." };
+  if (/measurement/.test(normalized)) return { ctaLabel: "Review measurement", previewText: "A measurement checkpoint is ready for review." };
+  if (/billing|payment|subscription|trial|read_only|deletion/.test(normalized)) return { ctaLabel: "View billing", previewText: "Review this billing or workspace-access update." };
+  if (/membership|role_changed|ownership|workspace|client_created/.test(normalized)) return { ctaLabel: "View workspace", previewText: "Your workspace access or account details were updated." };
+  return { ctaLabel: "Open SEnuke AI", previewText: "Review this workspace update and its recommended next action." };
+}
+
 export function actionEmail(input: {
   greeting?: string;
   title: string;
@@ -20,12 +48,21 @@ export function actionEmail(input: {
   ctaLabel: string;
   ctaUrl: string;
   reason?: string;
+  previewText?: string;
+  completedAt?: Date | string;
+  preferencesUrl?: string;
+  supportEmail?: string;
+  transactional?: boolean;
 }) {
   const greeting = input.greeting?.trim() || "Hello,";
   const signature = "The SEnuke AI Team";
+  const completedAt = input.completedAt ? new Date(input.completedAt).toISOString().replace("T", " ").replace(/\.\d{3}Z$/, " UTC") : "";
+  const details = completedAt ? `Completed at: ${completedAt}` : "";
+  const footer = [input.reason, !input.transactional && input.preferencesUrl ? `Manage notification preferences: ${input.preferencesUrl}` : "", input.supportEmail ? `Support: ${input.supportEmail}` : ""].filter(Boolean).join("\n");
+  const preheader = input.previewText ? `<div style="display:none;max-height:0;overflow:hidden;opacity:0;color:transparent">${escapeHtml(input.previewText)}</div>` : "";
   return {
-    text: `${greeting}\n\n${input.title}\n\n${input.message}\n\n${input.ctaLabel}: ${input.ctaUrl}\n\nThank you,\n${signature}${input.reason ? `\n\n${input.reason}` : ""}`,
-    html: `<div style="font-family:Arial,sans-serif;max-width:640px;margin:0 auto;color:#0f172a;line-height:1.6"><p>${escapeHtml(greeting)}</p><h1 style="font-size:24px;line-height:1.25;margin:20px 0 12px">${escapeHtml(input.title)}</h1><p>${escapeHtml(input.message)}</p><p style="margin:28px 0"><a href="${escapeHtml(input.ctaUrl)}" style="display:inline-block;border-radius:8px;background:#4338ca;color:#fff;padding:12px 18px;text-decoration:none;font-weight:700">${escapeHtml(input.ctaLabel)}</a></p><p>Thank you,<br><strong>${signature}</strong></p>${input.reason ? `<p style="font-size:12px;color:#64748b;border-top:1px solid #e2e8f0;padding-top:16px">${escapeHtml(input.reason)}</p>` : ""}</div>`,
+    text: `${greeting}\n\n${input.title}\n\n${input.message}${details ? `\n\n${details}` : ""}\n\n${input.ctaLabel}: ${input.ctaUrl}\n\nThank you,\n${signature}${footer ? `\n\n${footer}` : ""}`,
+    html: `${preheader}<div style="font-family:Arial,sans-serif;max-width:640px;margin:0 auto;color:#0f172a;line-height:1.6"><p>${escapeHtml(greeting)}</p><h1 style="font-size:24px;line-height:1.25;margin:20px 0 12px">${escapeHtml(input.title)}</h1>${htmlParagraphs(input.message)}${details ? `<p style="border-radius:8px;background:#f8fafc;padding:10px 12px;font-size:13px;color:#475569"><strong>${escapeHtml(details)}</strong></p>` : ""}<p style="margin:28px 0"><a href="${escapeHtml(input.ctaUrl)}" style="display:inline-block;border-radius:8px;background:#4338ca;color:#fff;padding:12px 18px;text-decoration:none;font-weight:700">${escapeHtml(input.ctaLabel)}</a></p><p>Thank you,<br><strong>${signature}</strong></p>${footer ? `<p style="font-size:12px;color:#64748b;border-top:1px solid #e2e8f0;padding-top:16px">${escapeHtml(footer).replaceAll("\n", "<br>")}</p>` : ""}</div>`,
   };
 }
 

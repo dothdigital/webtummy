@@ -32,7 +32,7 @@ import {
   type WebsiteQueueState,
 } from "@webtummy/core/website-generation";
 import { config, WEBSITE_BUILDER_QUEUE } from "./config.js";
-import { sendMail } from "./email.js";
+import { actionEmail, sendMail } from "./email.js";
 import { connection, websiteBuilderQueue, type WebsiteBuilderJobData } from "./queue.js";
 
 const record = (value: unknown): Record<string, unknown> => value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
@@ -2004,12 +2004,23 @@ async function notifyWebsiteJob(
   const reviewUrl = websiteReviewUrl(job.projectId);
   const reviewLabel = input.reviewLabel || "Review in Site Architect";
   const greeting = recipient.name?.trim() ? `Hi ${recipient.name.trim()},` : "Hello,";
+  const content = actionEmail({
+    greeting,
+    title: input.title,
+    message: input.body,
+    ctaLabel: reviewLabel,
+    ctaUrl: reviewUrl,
+    previewText: input.type.includes("failed") ? "The website generation request could not be completed after retries." : "Your AI-generated website work is ready to review in SEnuke AI.",
+    completedAt: new Date(),
+    preferencesUrl: `${config.webAppUrl.replace(/\/$/, "")}/reports`,
+    supportEmail: config.supportEmail,
+    reason: "You are receiving this email because you requested this website-generation work in SEnuke AI.",
+  });
   try {
     await sendMail({
       to: recipient.email,
       subject: input.emailSubject || input.title,
-      text: `${greeting}\n\n${input.body}\n\n${reviewLabel}: ${reviewUrl}\n\n— SEnuke AI - AI Growth Operating System`,
-      html: `<div style="font-family:Arial,sans-serif;max-width:640px;margin:0 auto;color:#0f172a;line-height:1.6"><p>${escapeHtml(greeting)}</p><h1 style="font-size:24px;line-height:1.25;margin:20px 0 12px">${escapeHtml(input.title)}</h1><p>${escapeHtml(input.body)}</p><p style="margin:28px 0"><a href="${reviewUrl}" style="display:inline-block;border-radius:8px;background:#4338ca;color:#fff;padding:12px 18px;text-decoration:none;font-weight:700">${escapeHtml(reviewLabel)}</a></p><p style="font-size:12px;color:#64748b">This email was sent because you requested this website-generation work in SEnuke AI - AI Growth Operating System.</p></div>`,
+      ...content,
     });
     await prisma.workspaceNotification.update({
       where: { id: notification.id },

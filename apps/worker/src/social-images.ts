@@ -52,6 +52,10 @@ async function notifyCampaignImagesReady(input: SocialImageJobData) {
       message: `${strategy.campaignName || strategy.project.name}: ${readyCount} image${readyCount === 1 ? " is" : "s are"} ready. Review the captions, CTAs, hashtags, and visuals before scheduling.`,
       ctaLabel: "Review social campaign",
       ctaUrl: reviewUrl,
+      previewText: "Review captions, CTAs, hashtags and visuals before scheduling.",
+      completedAt: new Date(),
+      preferencesUrl: `${config.webAppUrl.replace(/\/$/, "")}/reports`,
+      supportEmail: config.supportEmail,
       reason: "You are receiving this email because you requested AI image generation and selected immediate workspace notifications.",
     });
     try {

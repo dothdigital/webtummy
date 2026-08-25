@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { actionEmail, configuredMailProvider } from "./email.js";
+import { actionEmail, configuredMailProvider, notificationPresentation } from "./email.js";
 
 describe("configuredMailProvider", () => {
   it("uses SES with an AWS region and instance-role credentials", () => {
@@ -31,8 +31,20 @@ describe("configuredMailProvider", () => {
 });
 
 it("builds an action email with a CTA and branded signature", () => {
-  const email = actionEmail({ title: "Work is ready", message: "Review the generated content.", ctaLabel: "Review now", ctaUrl: "https://app.senuke.com/review" });
+  const email = actionEmail({ title: "Work is ready", message: "Review the generated content.", ctaLabel: "Review now", ctaUrl: "https://app.senuke.com/review", previewText: "Review your completed work.", completedAt: "2026-08-25T16:30:00.000Z", preferencesUrl: "https://app.senuke.com/reports", supportEmail: "support@senuke.com" });
   expect(email.text).toContain("Review now: https://app.senuke.com/review");
   expect(email.text).toContain("The SEnuke AI Team");
+  expect(email.text).toContain("Completed at: 2026-08-25 16:30:00 UTC");
+  expect(email.text).toContain("Manage notification preferences: https://app.senuke.com/reports");
+  expect(email.html).toContain("Review your completed work.");
   expect(email.html).toContain(">Review now</a>");
+});
+
+it("selects a useful primary CTA for each notification family", () => {
+  expect(notificationPresentation("strategy_approval_requested").ctaLabel).toBe("Review strategy");
+  expect(notificationPresentation("site_architecture_ready").ctaLabel).toBe("Review architecture");
+  expect(notificationPresentation("social_images_ready:campaign").ctaLabel).toBe("Review campaign assets");
+  expect(notificationPresentation("growth-weekly:cycle").ctaLabel).toBe("View summary");
+  expect(notificationPresentation("content_discovery_issue").ctaLabel).toBe("Fix discovery issue");
+  expect(notificationPresentation("report_ready").ctaLabel).toBe("View report");
 });
