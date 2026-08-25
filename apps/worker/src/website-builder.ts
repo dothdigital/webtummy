@@ -1,6 +1,8 @@
 import { UnrecoverableError, Worker } from "bullmq";
+import { createHmac } from "node:crypto";
 import { Prisma, prisma } from "@webtummy/db";
 import { safePublicFetch } from "@webtummy/core/safe-public-fetch";
+import { deleteGeneratedObject, putGeneratedObject } from "@webtummy/core/object-storage";
 import {
   SENUKE_COMPONENT_REGISTRY_V1,
   normalizeGeneratedComponentInstance,
@@ -36,6 +38,30 @@ import { actionEmail, sendMail } from "./email.js";
 import { connection, websiteBuilderQueue, type WebsiteBuilderJobData } from "./queue.js";
 
 const record = (value: unknown): Record<string, unknown> => value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
+const websiteMediaDeliveryUrl = (assetId: string) => {
+  const token = createHmac("sha256", config.appEncryptionKey).update(`generated-asset:${assetId}`).digest("hex");
+  return `${config.publicApiUrl.replace(/\/$/, "")}/api/public/generated-assets/${encodeURIComponent(assetId)}/content?token=${token}`;
+};
+async function storeWorkerWebsiteImage(input: { workspaceId: string; projectId: string; mediaAssetId: string; dataUrl: string; filename: string; altText?: string | null }) {
+  const match = input.dataUrl.match(/^data:(image\/(?:png|jpeg|webp));base64,([a-z0-9+/=_-]+)$/i);
+  if (!match) throw new Error("Worker website image is not a supported base64 PNG, JPEG, or WebP image.");
+  const mimeType = match[1].toLowerCase();
+  const body = Buffer.from(match[2].replace(/-/g, "+").replace(/_/g, "/"), "base64");
+  const valid = mimeType === "image/png"
+    ? body.length >= 8 && body.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))
+    : mimeType === "image/jpeg"
+      ? body.length >= 4 && body[0] === 0xff && body[1] === 0xd8 && body[body.length - 2] === 0xff && body[body.length - 1] === 0xd9
+      : body.length >= 12 && body.toString("ascii", 0, 4) === "RIFF" && body.toString("ascii", 8, 12) === "WEBP";
+  if (!valid) throw new Error(`Worker website image bytes do not match the declared ${mimeType} type.`);
+  const uploaded = await putGeneratedObject({ workspaceId: input.workspaceId, projectId: input.projectId, assetType: "website-images", filename: input.filename, contentType: mimeType, body, source: "openai_generated", metadata: { websiteMediaAssetId: input.mediaAssetId } });
+  try {
+    await prisma.generatedAsset.create({ data: { id: uploaded.assetId, workspaceId: input.workspaceId, projectId: input.projectId, bucket: uploaded.bucket, objectKey: uploaded.objectKey, versionId: uploaded.versionId, etag: uploaded.etag, assetType: "website-images", mimeType, sizeBytes: uploaded.sizeBytes, checksumSha256: uploaded.checksumSha256, visibility: "private", source: "openai_generated", originalFilename: input.filename, altText: input.altText ?? null, sourceEntityType: "website_build_media_asset", sourceEntityId: input.mediaAssetId, dedupeKey: `website-media:${input.mediaAssetId}:${uploaded.checksumSha256.slice(0, 16)}`, metadataJson: { websiteMediaAssetId: input.mediaAssetId } } });
+  } catch (error) {
+    await deleteGeneratedObject({ bucket: uploaded.bucket, objectKey: uploaded.objectKey }).catch(() => undefined);
+    throw error;
+  }
+  return { sourceUrl: websiteMediaDeliveryUrl(uploaded.assetId), storageKey: `generated-asset:${uploaded.assetId}`, mimeType };
+}
 const strings = (value: unknown) => Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
 const targetedUpdateFields = ["seo_title", "meta_description", "h1", "h2_heading", "page_section", "faq", "internal_link", "canonical_url", "schema", "other"] as const;
 const aiText = (value: unknown, maximum = 15_000) => {
@@ -3007,6 +3033,9 @@ export async function executeWebsiteBuildJob(jobId: string) {
           throw new Error(`${page.title} still has missing content after full-page generation: ${remainingMissingContent.join(", ")}. Nothing incomplete was saved.`);
         }
       }
+      const savedHeroAsset = page.mediaAssets.find((asset) => asset.id === `${page.id}-hero`);
+      const storedVisual = visualSource?.startsWith("data:") ? await storeWorkerWebsiteImage({ workspaceId: job.workspaceId, projectId: job.projectId, mediaAssetId: `${page.id}-hero`, dataUrl: visualSource, filename: `${page.slug || "home"}-${visualPlan?.placement || "hero"}.png`, altText: visualPlan?.altText || page.title }) : { sourceUrl: visualSource, storageKey: savedHeroAsset?.storageKey ?? null, mimeType: savedHeroAsset?.mimeType ?? (visualSource ? "image/png" : null) };
+      const storedAdditionalVisuals = await Promise.all(additionalVisuals.map(async (visual) => { const savedAsset = page.mediaAssets.find((asset) => asset.id === visual.id); return { ...visual, stored: visual.sourceUrl.startsWith("data:") ? await storeWorkerWebsiteImage({ workspaceId: job.workspaceId, projectId: job.projectId, mediaAssetId: visual.id, dataUrl: visual.sourceUrl, filename: `${page.slug || "home"}-${visual.key}.png`, altText: visual.plan.altText }) : { sourceUrl: visual.sourceUrl, storageKey: savedAsset?.storageKey ?? null, mimeType: savedAsset?.mimeType ?? "image/png" } }; }));
       await prisma.$transaction(async (tx) => {
         await tx.websiteBuildPageVersion.upsert({ where: { pageId_version: { pageId: page.id, version: nextVersion } }, update: { briefJson, contentJson, seoJson, source: "worker", comment: instructions || null, createdById: job.requestedByUserId }, create: { pageId: page.id, version: nextVersion, briefJson, contentJson, seoJson, layoutJson: { template: build.templateKey }, source: "worker", comment: instructions || null, createdById: job.requestedByUserId } });
         const pageWasApproved = ["approved", "deployed", "published"].includes(page.status);
@@ -3051,8 +3080,9 @@ export async function executeWebsiteBuildJob(jobId: string) {
               role: visualPlan.placement,
               prompt: visualPlan.prompt || visualPlan.rationale,
               altText: visualPlan.altText || page.title,
-              sourceUrl: visualSource,
-              mimeType: visualSource ? "image/png" : null,
+              sourceUrl: storedVisual.sourceUrl,
+              storageKey: storedVisual.storageKey,
+              mimeType: storedVisual.mimeType,
               width: visualSource ? 1536 : null,
               height: visualSource ? 1024 : null,
               status: websiteGeneration || visualPlan.placement === "none" ? "approved" : "review",
@@ -3065,8 +3095,9 @@ export async function executeWebsiteBuildJob(jobId: string) {
               role: visualPlan.placement,
               prompt: visualPlan.prompt || visualPlan.rationale,
               altText: visualPlan.altText || page.title,
-              sourceUrl: visualSource,
-              mimeType: visualSource ? "image/png" : null,
+              sourceUrl: storedVisual.sourceUrl,
+              storageKey: storedVisual.storageKey,
+              mimeType: storedVisual.mimeType,
               width: visualSource ? 1536 : null,
               height: visualSource ? 1024 : null,
               status: websiteGeneration || visualPlan.placement === "none" ? "approved" : "review",
@@ -3074,15 +3105,16 @@ export async function executeWebsiteBuildJob(jobId: string) {
               fileName: `${page.slug || "home"}-${visualPlan.placement}.png`,
             },
           });
-          for (const visual of additionalVisuals) {
+          for (const visual of storedAdditionalVisuals) {
             await tx.websiteBuildMediaAsset.upsert({
               where: { id: visual.id },
               update: {
                 role: visual.plan.placement,
                 prompt: visual.plan.prompt,
                 altText: visual.plan.altText,
-                sourceUrl: visual.sourceUrl,
-                mimeType: "image/png",
+                sourceUrl: visual.stored.sourceUrl,
+                storageKey: visual.stored.storageKey,
+                mimeType: visual.stored.mimeType,
                 width: 1536,
                 height: 1024,
                 status: websiteGeneration ? "approved" : "review",
@@ -3095,8 +3127,9 @@ export async function executeWebsiteBuildJob(jobId: string) {
                 role: visual.plan.placement,
                 prompt: visual.plan.prompt,
                 altText: visual.plan.altText,
-                sourceUrl: visual.sourceUrl,
-                mimeType: "image/png",
+                sourceUrl: visual.stored.sourceUrl,
+                storageKey: visual.stored.storageKey,
+                mimeType: visual.stored.mimeType,
                 width: 1536,
                 height: 1024,
                 status: websiteGeneration ? "approved" : "review",

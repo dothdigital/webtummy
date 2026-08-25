@@ -108,7 +108,7 @@ app.use((req, res, next) => {
     res.setHeader("Access-Control-Allow-Origin", isPublicWebsiteTracking && origin ? origin : "*");
     if (isPublicWebsiteTracking && origin) res.setHeader("Vary", "Origin");
     res.setHeader("Access-Control-Allow-Headers", "Content-Type");
-    res.setHeader("Access-Control-Allow-Methods", isPublicLeadMagnet || isPublicWebsiteTracking ? "GET,POST,OPTIONS" : "POST,OPTIONS");
+    res.setHeader("Access-Control-Allow-Methods", isPublicLeadMagnet || isPublicWebsiteTracking ? "GET,POST,OPTIONS" : isPublicGeneratedAsset ? "GET,HEAD,OPTIONS" : "POST,OPTIONS");
     if (req.method === "OPTIONS") return res.sendStatus(204);
     return next();
   }
@@ -137,6 +137,10 @@ app.use(
   express.json({ limit: "64kb", verify: rawBodySaver }),
   express.urlencoded({ extended: false, limit: "32kb" }),
 );
+// Website image uploads are data URLs capped at 6 MB by the route schema. Give
+// only that endpoint enough JSON headroom; all other API requests keep the
+// smaller platform-wide limit below.
+app.use(/^\/api\/projects\/[^/]+\/website-builder\/media\/[^/]+\/upload\/?$/, express.json({ limit: "7mb", verify: rawBodySaver }));
 app.use(express.json({ limit: "1mb", verify: rawBodySaver }));
 app.use(express.urlencoded({ extended: false, limit: "32kb" }));
 

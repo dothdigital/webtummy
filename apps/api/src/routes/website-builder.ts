@@ -84,6 +84,7 @@ import { refundWebsiteJobUsage, reserveWebsiteJobUsage } from "../website-job-us
 import { isPreLaunchWebsiteCampaign } from "../campaign-intelligence.js";
 import { captureWebsiteTracking, productionTrackingEndpointIssue, trackingEmbed, websiteTrackingMetrics } from "../website-tracking.js";
 import { optimizeEmbeddedWebsiteMedia, optimizeWebsiteImage, websiteAssetRole } from "../website-media-optimization.js";
+import { decodeImageDataUrl, storeGeneratedAsset } from "../generated-assets.js";
 
 export const websiteBuilderRouter = Router();
 const WEBSITE_SEO_PLAN_NORMALIZATION_VERSION = "keyword-owner-v2";
@@ -7700,6 +7701,26 @@ async function requestOpenAiWebsiteImage(prompt: string) {
   };
 }
 
+async function persistWebsiteMediaImage(input: { workspaceId: string; projectId: string; assetId: string; dataUrl: string; filename: string; altText?: string | null; source: string }) {
+  const decoded = decodeImageDataUrl(input.dataUrl);
+  const stored = await storeGeneratedAsset({
+    workspaceId: input.workspaceId,
+    projectId: input.projectId,
+    assetType: "website-images",
+    mimeType: decoded.mimeType,
+    filename: input.filename,
+    body: decoded.body,
+    source: input.source,
+    altText: input.altText,
+    sourceEntityType: "website_build_media_asset",
+    sourceEntityId: input.assetId,
+    dedupeKey: `website-media:${input.assetId}`,
+    metadata: { websiteMediaAssetId: input.assetId },
+  });
+  if (!stored) throw new Error("Website image storage is unavailable. S3 must be configured before image data can be saved.");
+  return { sourceUrl: stored.deliveryUrl, storageKey: `generated-asset:${stored.id}`, mimeType: decoded.mimeType };
+}
+
 websiteBuilderRouter.post("/projects/:projectId/website-builder/media/:mediaId/generate", async (req, res) => {
   const { context, project } = await scopedProject(req.params.projectId, req);
   if (!hasWorkspacePermission(context, "run_ai_analysis")) return res.status(403).json({ error: "AI generation permission is required." });
@@ -7709,7 +7730,8 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/media/:mediaId/g
   const usage = await preflightUsage({ clientId: project.clientId, userId: context.membership.userId, projectId: project.id, websiteId: project.websiteId, featureKey: "website_image_generate", actionKey: "Generate website image", idempotencyKey: `website-image:${asset.id}:${Date.now()}`, metadata: { imageCount: 1 } });
   try {
     const generated = await requestOpenAiWebsiteImage(`${asset.prompt}\n${input.comment}`);
-    const updated = await prisma.websiteBuildMediaAsset.update({ where: { id: asset.id }, data: { ...generated, status: "review" } });
+    const stored = generated.sourceUrl.startsWith("data:") ? await persistWebsiteMediaImage({ workspaceId: context.workspace.id, projectId: project.id, assetId: asset.id, dataUrl: generated.sourceUrl, filename: asset.fileName || `${asset.id}.png`, altText: asset.altText, source: "openai_generated" }) : { sourceUrl: generated.sourceUrl, storageKey: asset.storageKey, mimeType: generated.mimeType };
+    const updated = await prisma.websiteBuildMediaAsset.update({ where: { id: asset.id }, data: { ...generated, ...stored, status: "review" } });
     await commitUsage({ usageEventId: usage.usageEventId, provider: "openai", model: config.openaiImageModel, metadata: { assetId: asset.id, workspaceId: context.workspace.id } });
     res.json({ asset: updated });
   } catch (error) {
@@ -7725,7 +7747,9 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/media/:mediaId/u
   if (!asset) return res.status(404).json({ error: "Website media plan not found." });
   const input = z.object({ dataUrl: z.string().max(6_000_000).refine((value) => /^data:image\/(png|jpeg|webp);base64,/i.test(value), "Upload a PNG, JPEG, or WebP image."), fileName: z.string().trim().min(1).max(255), altText: z.string().trim().min(3).max(500) }).parse(req.body);
   const mimeType = input.dataUrl.slice(5, input.dataUrl.indexOf(";"));
-  const updated = await prisma.websiteBuildMediaAsset.update({ where: { id: asset.id }, data: { sourceUrl: input.dataUrl, fileName: input.fileName.replace(/[^a-z0-9._-]/gi, "-"), altText: input.altText, mimeType, status: "review", approvedAt: null } });
+  const fileName = input.fileName.replace(/[^a-z0-9._-]/gi, "-");
+  const stored = await persistWebsiteMediaImage({ workspaceId: context.workspace.id, projectId: project.id, assetId: asset.id, dataUrl: input.dataUrl, filename: fileName, altText: input.altText, source: "user_uploaded" });
+  const updated = await prisma.websiteBuildMediaAsset.update({ where: { id: asset.id }, data: { ...stored, fileName, altText: input.altText, mimeType, status: "review", approvedAt: null } });
   res.json({ asset: updated });
 });
 
@@ -8286,10 +8310,11 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/wordpress-publis
         : `${page.id}-publisher-${job.id}`;
       const prompt = `${request.instructions}\nCreate a professional, original ${request.imagePlacement} website image for “${page.title}”. Visual subject must match ${page.primaryKeyword}${request.location ? ` in ${request.location}` : ""}. No text, logos, fake people endorsements, certificates, awards, charts, or unsupported claims.`;
       const image = await requestOpenAiWebsiteImage(prompt);
+      const storedImage = image.sourceUrl.startsWith("data:") ? await persistWebsiteMediaImage({ workspaceId: context.workspace.id, projectId: project.id, assetId, dataUrl: image.sourceUrl, filename: `${page.slug}-${request.imagePlacement}.png`, altText: `${page.primaryKeyword}${request.location ? ` in ${request.location}` : ""}`, source: "openai_generated" }) : { sourceUrl: image.sourceUrl, storageKey: null, mimeType: image.mimeType };
       generatedAsset = await prisma.websiteBuildMediaAsset.upsert({
         where: { id: assetId },
-        update: { ...image, prompt, altText: `${page.primaryKeyword}${request.location ? ` in ${request.location}` : ""}`, role: request.imagePlacement, status: "review", approvedAt: null },
-        create: { id: assetId, buildId: build.id, pageId: page.id, ...image, prompt, altText: `${page.primaryKeyword}${request.location ? ` in ${request.location}` : ""}`, role: request.imagePlacement, fileName: `${page.slug}-${request.imagePlacement}.png`, status: "review" },
+        update: { ...image, ...storedImage, prompt, altText: `${page.primaryKeyword}${request.location ? ` in ${request.location}` : ""}`, role: request.imagePlacement, status: "review", approvedAt: null },
+        create: { id: assetId, buildId: build.id, pageId: page.id, ...image, ...storedImage, prompt, altText: `${page.primaryKeyword}${request.location ? ` in ${request.location}` : ""}`, role: request.imagePlacement, fileName: `${page.slug}-${request.imagePlacement}.png`, status: "review" },
       });
       const currentContent = jsonRecord(updatedPage.contentJson);
       const components = (Array.isArray(currentContent.components) ? currentContent.components : []).map((item) => jsonRecord(item)) as unknown as WebsiteComponentInstance[];

@@ -103,7 +103,17 @@ export async function storeGeneratedAsset(input: GeneratedAssetInput) {
 export function decodeImageDataUrl(value: string) {
   const match = value.match(/^data:(image\/(?:png|jpeg|webp|svg\+xml));base64,([a-z0-9+/=_-]+)$/i);
   if (!match) throw new Error("Generated image is not a supported base64 PNG, JPEG, WebP, or SVG.");
-  return { mimeType: match[1].toLowerCase(), body: Buffer.from(match[2].replace(/-/g, "+").replace(/_/g, "/"), "base64") };
+  const mimeType = match[1].toLowerCase();
+  const body = Buffer.from(match[2].replace(/-/g, "+").replace(/_/g, "/"), "base64");
+  const valid = mimeType === "image/png"
+    ? body.length >= 8 && body.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))
+    : mimeType === "image/jpeg"
+      ? body.length >= 4 && body[0] === 0xff && body[1] === 0xd8 && body[body.length - 2] === 0xff && body[body.length - 1] === 0xd9
+      : mimeType === "image/webp"
+        ? body.length >= 12 && body.toString("ascii", 0, 4) === "RIFF" && body.toString("ascii", 8, 12) === "WEBP"
+        : body.length > 0;
+  if (!valid) throw new Error(`Image bytes do not match the declared ${mimeType} type.`);
+  return { mimeType, body };
 }
 
 export async function storeGeneratedImage(input: Omit<GeneratedAssetInput, "body" | "mimeType" | "assetType"> & { dataUrl: string }) {
