@@ -1335,7 +1335,7 @@ export default function SocialStrategy() {
     setImageDirection(IMAGE_DIRECTION_PRESETS[0].value);
     setPostingFrequency("3 posts per week");
     setTargetKeywords("");
-    setTargetUrls("");
+    setTargetUrls(selectedProject?.websiteUrl || selectedProject?.website?.rootUrl || selectedWebsite?.rootUrl || "");
     setSelectedPlatforms(CAMPAIGN_PLATFORMS);
     setCampaignConfigured(false);
     setCampaignEditorOpen(true);
