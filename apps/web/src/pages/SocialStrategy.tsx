@@ -756,6 +756,7 @@ export default function SocialStrategy() {
   const [repurposingChannels, setRepurposingChannels] = useState<string[]>(Object.keys(REPURPOSING_LABELS));
   const [intelligence, setIntelligence] = useState<SocialStrategyResponse["intelligence"]>(null);
   const [campaignEditorOpen, setCampaignEditorOpen] = useState(false);
+  const [campaignSetupStep, setCampaignSetupStep] = useState<1 | 2 | 3>(1);
   const [campaignConfigured, setCampaignConfigured] = useState(false);
   const [editingCampaignId, setEditingCampaignId] = useState<string | null>(null);
   const [campaignName, setCampaignName] = useState("");
@@ -801,6 +802,13 @@ export default function SocialStrategy() {
   const selectedStrategy = strategies.find((strategy) => strategy.id === selectedCampaignId) ?? activeStrategy;
   const selectedWebsite = websites.find((website) => website.id === websiteId) ?? websites[0] ?? null;
   const selectedProject = projects.find((project) => project.websiteId === websiteId) ?? null;
+  const selectedCampaignKeywords = targetKeywords.split(",").map((value) => value.trim()).filter(Boolean);
+  const toggleCampaignKeyword = (keyword: string) => {
+    setTargetKeywords((current) => {
+      const values = current.split(",").map((value) => value.trim()).filter(Boolean);
+      return (values.includes(keyword) ? values.filter((value) => value !== keyword) : [...values, keyword]).join(", ");
+    });
+  };
 
   const applySocialResponse = (result: SocialStrategyResponse) => {
     setProfiles(result.profiles);
@@ -1313,6 +1321,7 @@ export default function SocialStrategy() {
   };
 
   const openNewCampaign = () => {
+    setCampaignSetupStep(1);
     setEditingCampaignId(null);
     setCampaignName("");
     setCampaignStartAt(campaignDate(1));
@@ -1321,7 +1330,7 @@ export default function SocialStrategy() {
     setGoal("Grow search-connected brand visibility and qualified leads");
     setGoalMetric("leads");
     setGoalTarget("");
-    setAudience("");
+    setAudience(intelligence?.audience || intelligence?.targetMarkets.join(", ") || "");
     setTone("professional");
     setImageDirection(IMAGE_DIRECTION_PRESETS[0].value);
     setPostingFrequency("3 posts per week");
@@ -1333,6 +1342,7 @@ export default function SocialStrategy() {
   };
 
   const openExistingCampaign = (strategy: SocialStrategyType) => {
+    setCampaignSetupStep(1);
     setSelectedCampaignId(strategy.id);
     setEditingCampaignId(strategy.id);
     setCampaignName(strategy.campaignName ?? "");
@@ -1842,7 +1852,7 @@ export default function SocialStrategy() {
 
             {profileEditorOpen && (
               <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/50 p-4" role="dialog" aria-modal="true" aria-label={editingProfileIndex === null ? "Add profile" : "Edit profile"}>
-                <div className="max-h-[90vh] w-full max-w-3xl overflow-y-auto rounded-2xl bg-white shadow-2xl">
+                <div className="max-h-[92vh] w-full max-w-5xl overflow-y-auto rounded-2xl bg-white shadow-2xl">
                   <div className="flex items-start justify-between gap-3 border-b border-slate-200 px-5 py-4">
                     <div><div className="text-xs font-bold uppercase tracking-wide text-brand-600">{editingProfileIndex === null ? "New profile" : "Update profile"}</div><h3 className="mt-1 text-xl font-bold text-charcoal-900">{editingProfileIndex === null ? "Add Profile" : `Edit ${platformLabel(profileDraft.platform)} Profile`}</h3></div>
                     <button type="button" onClick={() => setProfileEditorOpen(false)} className="rounded-lg px-3 py-2 text-xl text-slate-400 hover:bg-slate-100 hover:text-slate-700" aria-label="Close">×</button>
@@ -2080,9 +2090,28 @@ export default function SocialStrategy() {
                     <div><div className="text-xs font-bold uppercase tracking-wide text-brand-600">{campaignConfigured ? "Update campaign" : "New campaign"}</div><h3 className="mt-1 text-xl font-bold text-charcoal-900">{campaignConfigured ? "Edit Campaign Setup" : "Add Campaign"}</h3></div>
                     <button type="button" onClick={() => setCampaignEditorOpen(false)} className="rounded-lg px-3 py-2 text-xl text-slate-400 hover:bg-slate-100 hover:text-slate-700" aria-label="Close">×</button>
                   </div>
+                  <div className="grid grid-cols-3 border-b border-slate-200 bg-slate-50 px-5 py-3">
+                    {(["Platforms & details", "Audience & content", "Images & keywords"] as const).map((label, index) => {
+                      const number = (index + 1) as 1 | 2 | 3;
+                      const active = campaignSetupStep === number;
+                      const complete = campaignSetupStep > number;
+                      return <div key={label} className={`flex items-center gap-2 text-xs font-bold sm:text-sm ${active ? "text-brand-700" : complete ? "text-emerald-700" : "text-slate-400"}`}><span className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-full ${active ? "bg-brand-600 text-white" : complete ? "bg-emerald-100 text-emerald-700" : "bg-slate-200 text-slate-500"}`}>{complete ? "✓" : number}</span><span className="hidden sm:inline">{label}</span></div>;
+                    })}
+                  </div>
                   <div className="space-y-5 p-5">
                     {pageError && <div className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">{pageError}</div>}
-                    <p className="rounded-lg border border-violet-200 bg-violet-50 px-3 py-2 text-xs leading-5 text-violet-800">Example: Generate 50 qualified leads between August 1 and September 30.</p>
+                    {campaignSetupStep === 1 && <>
+                    <div>
+                      <div className="text-sm font-bold text-charcoal-900">Choose platforms</div>
+                      <p className="mt-1 text-xs leading-5 text-slate-500">Select where this campaign will publish. Facebook and Instagram are currently available.</p>
+                      <div className="mt-3 grid gap-3 sm:grid-cols-2">
+                        {CAMPAIGN_PLATFORMS.map((platform) => {
+                          const active = selectedPlatforms.includes(platform);
+                          return <button key={platform} type="button" onClick={() => setSelectedPlatforms((items) => active ? items.filter((item) => item !== platform) : [...items, platform])} className={`flex items-center justify-between rounded-xl border p-4 text-left transition ${active ? "border-brand-300 bg-brand-50 text-brand-800 ring-2 ring-brand-100" : "border-slate-200 bg-white text-slate-600 hover:border-brand-200"}`}><span><span className="block font-bold">{platformLabel(platform)}</span><span className="mt-1 block text-xs font-normal">Create, review, schedule, and publish campaign posts.</span></span><span className={`flex h-6 w-6 items-center justify-center rounded-full text-xs ${active ? "bg-brand-600 text-white" : "bg-slate-100 text-slate-400"}`}>{active ? "✓" : "+"}</span></button>;
+                        })}
+                      </div>
+                    </div>
+                    <p className="rounded-lg border border-violet-200 bg-violet-50 px-3 py-2 text-xs leading-5 text-violet-800">Set the outcome, dates, and measurement target for this campaign.</p>
                     <div className="grid gap-4 md:grid-cols-2">
                       <div className="md:col-span-2"><Input label="Campaign name" value={campaignName} onChange={setCampaignName} placeholder="Fall lead generation campaign" /></div>
                       <label className="block"><span className="mb-1 block text-sm font-medium text-slate-600">Start date</span><input type="date" value={campaignStartAt} onChange={(event) => setCampaignStartAt(event.target.value)} className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-100" /></label>
@@ -2092,10 +2121,12 @@ export default function SocialStrategy() {
                       <label className="block"><span className="mb-1 block text-sm font-medium text-slate-600">Success metric</span><select value={goalMetric} onChange={(event) => setGoalMetric(event.target.value)} className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-100">{CAMPAIGN_GOAL_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select></label>
                       <label className="block"><span className="mb-1 block text-sm font-medium text-slate-600">Target value</span><input type="number" min="0" step={goalMetric === "engagement_rate" ? "0.1" : "1"} value={goalTarget} onChange={(event) => setGoalTarget(event.target.value)} placeholder={goalMetric === "engagement_rate" ? "5" : "50"} className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-100" /></label>
                     </div>
-                    <div className="border-t border-slate-200 pt-5">
-                      <h4 className="font-bold text-charcoal-900">Campaign direction</h4>
-                      <p className="mt-1 text-xs leading-5 text-slate-500">These optional fields refine this campaign only. Saved project intelligence remains the default source.</p>
+                    </>}
+                    {(campaignSetupStep === 2 || campaignSetupStep === 3) && <div>
+                      <h4 className="font-bold text-charcoal-900">{campaignSetupStep === 2 ? "Audience & content direction" : "Images & targeted keywords"}</h4>
+                      <p className="mt-1 text-xs leading-5 text-slate-500">{campaignSetupStep === 2 ? "The audience is loaded from Project Intelligence. Refine it only to align this specific campaign." : "Select approved keywords from Project Intelligence and define the visual direction."}</p>
                       <div className="mt-4 grid gap-4 md:grid-cols-2">
+                        {campaignSetupStep === 2 && <>
                         <Input label="Audience" value={audience} onChange={setAudience} placeholder="Homeowners, SaaS buyers, local businesses" />
                         <Input label="Tone" value={tone} onChange={setTone} placeholder="Professional, friendly, educational" />
                         <label className="block">
@@ -2104,8 +2135,14 @@ export default function SocialStrategy() {
                             {CAMPAIGN_CADENCE_OPTIONS.map((option) => <option key={option} value={option}>{option}</option>)}
                           </select>
                         </label>
-                        <Input label="Target keywords" value={targetKeywords} onChange={setTargetKeywords} placeholder="website design, local SEO" />
+                        <div className="rounded-lg border border-sky-200 bg-sky-50 p-3 text-xs leading-5 text-sky-800"><b>Project target markets</b><br />{intelligence?.targetMarkets.length ? intelligence.targetMarkets.join(" · ") : "No target markets have been saved yet."}</div>
                         <div className="md:col-span-2"><Input label="Target URLs" value={targetUrls} onChange={setTargetUrls} placeholder="https://example.com/service" /></div>
+                        </>}
+                        {campaignSetupStep === 3 && <>
+                        <div className="md:col-span-2">
+                          <div className="flex items-center justify-between gap-3"><div><div className="text-sm font-bold text-charcoal-900">Targeted keywords</div><p className="mt-1 text-xs text-slate-500">Choose one or more keywords from the approved Project Intelligence list.</p></div><span className="rounded-full bg-brand-50 px-3 py-1 text-xs font-bold text-brand-700">{selectedCampaignKeywords.length} selected</span></div>
+                          {intelligence?.keywords.length ? <div className="mt-3 flex max-h-44 flex-wrap gap-2 overflow-y-auto rounded-xl border border-slate-200 bg-slate-50 p-3">{intelligence.keywords.map((keyword) => { const active = selectedCampaignKeywords.includes(keyword); return <button key={keyword} type="button" onClick={() => toggleCampaignKeyword(keyword)} className={`rounded-full border px-3 py-1.5 text-xs font-semibold transition ${active ? "border-brand-300 bg-brand-100 text-brand-800" : "border-slate-200 bg-white text-slate-600 hover:border-brand-200"}`}>{active ? "✓ " : "+ "}{keyword}</button>; })}</div> : <div className="mt-3 rounded-lg border border-amber-200 bg-amber-50 p-3 text-xs text-amber-800">No keywords are available in Project Intelligence yet.</div>}
+                        </div>
                         <div className="md:col-span-2">
                           <div className="flex flex-wrap items-start justify-between gap-2">
                             <div>
@@ -2123,9 +2160,11 @@ export default function SocialStrategy() {
                           </div>
                           <textarea value={imageDirection} onChange={(event) => setImageDirection(event.target.value.slice(0, 4000))} rows={6} placeholder="Example: Photorealistic editorial scenes featuring Canadian small-business owners in authentic workplaces, warm window light, subtle navy and teal accents, clear focal subject, natural depth. Avoid posed handshakes, text overlays, logos, and watermarks." className="mt-3 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm leading-6 outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-100" />
                         </div>
+                        </>}
                       </div>
                     </div>
-                    <div className="border-t border-slate-200 pt-5">
+                    }
+                    <div className="hidden">
                       <div className="text-sm font-bold text-charcoal-900">Focus platforms</div>
                       <p className="mt-1 text-xs leading-5 text-slate-500">Choose the channels this campaign should prioritize.</p>
                       <div className="mt-3 flex flex-wrap gap-2">
@@ -2142,7 +2181,8 @@ export default function SocialStrategy() {
                   </div>
                   <div className="flex flex-col-reverse gap-2 border-t border-slate-200 px-5 py-4 sm:flex-row sm:justify-end">
                     <Button variant="ghost" onClick={() => setCampaignEditorOpen(false)}>Cancel</Button>
-                    <Button onClick={() => void saveCampaignSetup()} disabled={saving}>{saving ? "Saving…" : campaignConfigured ? "Save Campaign Setup" : "Add Campaign"}</Button>
+                    {campaignSetupStep > 1 && <Button variant="ghost" onClick={() => setCampaignSetupStep((campaignSetupStep - 1) as 1 | 2)}>Back</Button>}
+                    {campaignSetupStep < 3 ? <Button onClick={() => setCampaignSetupStep((campaignSetupStep + 1) as 2 | 3)}>Next</Button> : <Button onClick={() => void saveCampaignSetup()} disabled={saving}>{saving ? "Saving…" : campaignConfigured ? "Save Campaign Setup" : "Add Campaign"}</Button>}
                   </div>
                 </div>
               </div>
