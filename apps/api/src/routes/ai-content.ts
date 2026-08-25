@@ -15,7 +15,34 @@ import { missingRequiredInstructionTerms, requiredInstructionTerms } from "../co
 export const aiContentRouter = Router();
 aiContentRouter.use(requireAuth);
 
-type GenerationType = "article" | "h1" | "title" | "meta_description" | "faq" | "page_schema" | "domain_schema" | "page_llms_txt" | "domain_llms_txt" | "robots_txt" | "sitemap" | "ai_search";
+type GenerationType = "article" | "h1" | "title" | "metadata" | "on_page_seo" | "page_updates" | "meta_description" | "faq" | "page_schema" | "domain_schema" | "page_llms_txt" | "domain_llms_txt" | "robots_txt" | "sitemap" | "ai_search";
+
+type PageUpdateField = "h1" | "title" | "meta_description" | "faq" | "schema" | "internal_links";
+
+function approvedPageUpdateFields(value: string): PageUpdateField[] {
+  const checks: Array<[PageUpdateField, RegExp]> = [
+    ["h1", /\bh1\b/i],
+    ["title", /seo title|title tag|\btitle\b(?=\s*[—:-])/i],
+    ["meta_description", /meta description/i],
+    ["faq", /\bfaq(?:s)?\b|frequently asked/i],
+    ["schema", /page.+schema|json-ld|structured data/i],
+    ["internal_links", /internal links?/i],
+  ];
+  return checks.filter(([, pattern]) => pattern.test(value)).map(([field]) => field);
+}
+
+function missingPageUpdateFields(result: Record<string, unknown>, required: PageUpdateField[]) {
+  const nonEmptyArray = (key: string) => Array.isArray(result[key]) && (result[key] as unknown[]).length > 0;
+  const present: Record<PageUpdateField, boolean> = {
+    h1: nonEmptyArray("h1Options"),
+    title: nonEmptyArray("titles"),
+    meta_description: nonEmptyArray("descriptions"),
+    faq: nonEmptyArray("faqs"),
+    schema: Boolean(result.schemaJsonLd && typeof result.schemaJsonLd === "object"),
+    internal_links: nonEmptyArray("internalLinks"),
+  };
+  return required.filter((field) => !present[field]);
+}
 
 
 const generationSchema = z.object({
@@ -25,7 +52,7 @@ const generationSchema = z.object({
   sourceContext: z.enum(["ai_citation"]).optional().nullable(),
   sourceType: z.enum(["trust_signal", "finding", "opportunity", "recommendation"]).optional().nullable(),
   sourceRecordId: z.string().max(191).optional().nullable(),
-  type: z.enum(["article", "h1", "title", "meta_description", "faq", "page_schema", "domain_schema", "page_llms_txt", "domain_llms_txt", "robots_txt", "sitemap", "ai_search"]),
+  type: z.enum(["article", "h1", "title", "metadata", "on_page_seo", "page_updates", "meta_description", "faq", "page_schema", "domain_schema", "page_llms_txt", "domain_llms_txt", "robots_txt", "sitemap", "ai_search"]),
   topic: z.string().min(2).max(500),
   targetKeyword: z.string().max(255).optional().nullable(),
   targetUrl: z.string().max(512).optional().nullable(),
@@ -72,12 +99,15 @@ async function usageFor(clientId: string, periodStart = currentMonthStart()) {
   };
 }
 
-function schemaInstruction(type: GenerationType) {
+function schemaInstruction(type: GenerationType, pageUpdateFields: PageUpdateField[] = []) {
   if (type === "article") {
     return "Return JSON with keys: title, slug, metaTitle, metaDescription, outline, articleHtml, faqs, schemaJsonLd, aiSearchNotes. Create a complete 900–1,600 word page, not a summary or outline. The title/H1 must lead with the target topic, buyer value, or decision and must never be Welcome to [company] or a company-name-only heading. When the user names a product, service, audience, or geography, make it central to the title or opening, relevant headings, body, CTA, and FAQs instead of mentioning it once. Preserve the proper name supplied by the user. Do not invent an umbrella product, conflate adjacent products, or broaden the article away from the requested subject. articleHtml must contain useful, specific H2/H3 sections using h2/h3/p/ul/li only; organize them around buyer questions, benefits, options, objections, process, verified proof, and the next step. Do not use generic headings such as Our Services, What We Offer, Overview, Why Choose Us, How the Process Works, or Frequently Asked Questions. Use target and supporting topics naturally without keyword stuffing. The meta description must be a unique 120–160 character search snippet explaining this page's specific value and next step. Cover the approved buyer problem, service or topic details, decision factors, process, proof only where supported, FAQs, internal-link opportunities, and conversion action. Never claim testimonials, satisfied clients, case studies, credentials, coverage details, or success stories unless supplied as verified evidence. Avoid generic filler and never use the template “Explore ... Review capabilities, process, proof, FAQs, and next steps.”";
   }
+  if (type === "page_updates") return "Return JSON containing requestedFields and every output required by this approved task. Required fields: " + pageUpdateFields.join(", ") + ". Use h1Options for H1, titles for SEO titles, descriptions for meta descriptions, faqs for FAQ objects with question and answer, schemaJsonLd for page schema, and internalLinks for objects with anchorText, targetUrl, and rationale. Include only applicable output keys, but every field listed as required must contain a non-empty usable value. Titles must follow stated length limits; descriptions must follow stated length limits; never invent facts or URLs.";
   if (type === "h1") return "Return JSON with key h1Options: an array of 8 concise, conversion-oriented H1 options aligned to the target keyword, audience, offer, page intent, and local context where relevant. Lead with the service, product, category, customer outcome, or decision value. Never return Welcome, Welcome to [company], Home, the company name alone, generic partner language, keyword stuffing, or unsupported best/leading/#1/guarantee claims.";
   if (type === "title") return "Return JSON with key titles: an array of 10 SEO title options under 60 characters where possible.";
+  if (type === "on_page_seo") return "Return JSON with keys h1Options, titles, and descriptions. h1Options must be an array of 8 descriptive H1 options, with one clear primary H1 intended for the page. titles must be an array of 10 unique SEO title options, each 15–60 characters. descriptions must be an array of 10 unique matching meta descriptions, each under 160 characters and ideally 120–159 characters. Align all three fields to the exact page intent and pair title and description entries by array position. Return all three non-empty arrays.";
+  if (type === "metadata") return "Return JSON with keys titles and descriptions. titles must be an array of 10 SEO title options, each under 60 characters. descriptions must be an array of 10 matching meta descriptions, each under 160 characters and ideally 120–159 characters. Pair entries by array position so each title and description expresses the same page intent. Return both non-empty arrays.";
   if (type === "meta_description") return "Return JSON with key descriptions: an array of 10 meta descriptions between 120 and 160 characters where possible.";
   if (type === "faq") return "Return JSON with key faqs: an array of 6 objects with question and answer fields.";
   if (type === "page_schema") return "Return JSON with key schemaJsonLd containing valid page-level JSON-LD for this target URL/topic. Prefer WebPage, Article, FAQPage, BreadcrumbList, Service, Product, or LocalBusiness as appropriate. Do not wrap it in script tags.";
@@ -89,10 +119,10 @@ function schemaInstruction(type: GenerationType) {
   return "Return JSON with keys aiSearchRecommendations, entityCoverage, llmsTxtSuggestions, contentGaps, schemaSuggestions. Each key should be an array of concise recommendations.";
 }
 
-function buildPrompt(input: z.infer<typeof generationSchema>, domain?: string, verifiedPageUrls: string[] = [], verifiedProjectFacts: string[] = [], strategyContract: ReturnType<typeof approvedStrategyContext> = null) {
+function buildPrompt(input: z.infer<typeof generationSchema>, domain?: string, verifiedPageUrls: string[] = [], verifiedProjectFacts: string[] = [], strategyContract: ReturnType<typeof approvedStrategyContext> = null, pageUpdateFields: PageUpdateField[] = []) {
   return [
     "You are SEnuke AI - AI Growth Operating System Content Studio for SEO and AI-search optimization.",
-    schemaInstruction(input.type),
+    schemaInstruction(input.type, pageUpdateFields),
     "Use practical, implementation-ready recommendations. Avoid unsupported claims.",
     strategyContract ? "The approved Strategy contract is the governing direction. Align intent, audience, offer, focus area, CTA, destination, and success signal to it; do not create a disconnected asset." : "No approved Strategy contract was supplied. Keep the asset factual and avoid assuming unapproved direction.",
     `Content type: ${input.type}`,
@@ -393,6 +423,12 @@ aiContentRouter.post("/ai-content/generate", async (req, res) => {
       ? await prisma.executionTask.findFirst({ where: { id: input.executionTaskId, clientId: client.id, moduleName: { in: ["content", "ai_content"] } } })
       : null;
     if (input.executionTaskId && !linkedTask) return res.status(404).json({ error: "The linked content task was not found." });
+    const approvedTaskText = linkedTask ? [linkedTask.title, linkedTask.description, linkedTask.manualInstructions, linkedTask.expectedOutcome].filter(Boolean).join("\n") : "";
+    const pageUpdateFields = approvedPageUpdateFields(approvedTaskText);
+    if (linkedTask && pageUpdateFields.length > 1) {
+      input.type = "page_updates";
+      input.notes = [input.notes, "SERVER-VERIFIED APPROVED DELIVERABLES: " + pageUpdateFields.join(", ") + ". Generate every listed deliverable; none may be omitted."].filter(Boolean).join("\n\n");
+    }
     if (linkedTask?.sourceType === "content_plan_action") {
       const taskSnapshot = linkedTask.approvalSnapshotJson && typeof linkedTask.approvalSnapshotJson === "object" && !Array.isArray(linkedTask.approvalSnapshotJson) ? linkedTask.approvalSnapshotJson as Record<string, unknown> : {};
       const planning = taskSnapshot.contentPlanning && typeof taskSnapshot.contentPlanning === "object" && !Array.isArray(taskSnapshot.contentPlanning) ? taskSnapshot.contentPlanning as Record<string, unknown> : {};
@@ -440,12 +476,25 @@ aiContentRouter.post("/ai-content/generate", async (req, res) => {
       metadata: { contentType: input.type, sourceContext: input.sourceContext ?? "ai_content_studio" },
     });
     usageEventId = usage.usageEventId;
-    const prompt = buildPrompt(input, website?.domain, verifiedPageUrls, input.sourceContext === "ai_citation" ? verifiedProjectFacts : [], strategyContract);
+    const prompt = buildPrompt(input, website?.domain, verifiedPageUrls, input.sourceContext === "ai_citation" ? verifiedProjectFacts : [], strategyContract, pageUpdateFields);
     const maxOutputTokens = ["article", "domain_llms_txt", "sitemap"].includes(input.type) ? 8_000 : 4_000;
     let generated = await openaiJson(prompt, maxOutputTokens);
     let savedPrompt = prompt;
     let totalInputTokens = generated.inputTokens;
     let totalOutputTokens = generated.outputTokens;
+    if (input.type === "page_updates") {
+      const missingOutputs = missingPageUpdateFields(generated.result, pageUpdateFields);
+      if (missingOutputs.length) {
+        const correctionPrompt = [prompt, "INCOMPLETE APPROVED PAGE UPDATE. Missing outputs: " + missingOutputs.join(", ") + ". Return the complete replacement JSON with every server-verified approved deliverable."].join("\n\n");
+        const corrected = await openaiJson(correctionPrompt, maxOutputTokens);
+        totalInputTokens += corrected.inputTokens;
+        totalOutputTokens += corrected.outputTokens;
+        generated = corrected;
+        savedPrompt = correctionPrompt;
+        const stillMissing = missingPageUpdateFields(generated.result, pageUpdateFields);
+        if (stillMissing.length) throw Object.assign(new Error("AI omitted approved deliverables: " + stillMissing.join(", ") + ". No incomplete content was saved."), { code: "instruction_compliance_failed", statusCode: 422 });
+      }
+    }
     let missingInstructionTerms = missingRequiredInstructionTerms(input.userInstructions, generated.result, input.type);
     const requiredTerms = requiredInstructionTerms(input.userInstructions);
     for (let correctionAttempt = 1; missingInstructionTerms.length && correctionAttempt <= 2; correctionAttempt += 1) {

@@ -1,5 +1,5 @@
 import { Fragment, useEffect, useMemo, useRef, useState } from "react";
-import { useNavigate, useSearchParams } from "react-router-dom";
+import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { api } from "../api.js";
 import { sanitizeHtml } from "../sanitize-html.js";
 import type { AiContentGeneration, AiGenerationType, GuidedExecutionTask, GuidedProject, Website } from "../types.js";
@@ -14,6 +14,9 @@ const GENERATION_TYPES: { value: AiGenerationType; label: string; detail: string
   { value: "article", label: "Article", detail: "Full article with SEO fields, FAQ, schema, and AI-search notes." },
   { value: "h1", label: "H1 options", detail: "Generate focused H1 options for a specific page." },
   { value: "title", label: "SEO titles", detail: "Generate multiple title options." },
+  { value: "metadata", label: "SEO title & meta", detail: "Generate matching SEO title and meta-description options." },
+  { value: "on_page_seo", label: "H1, title & meta", detail: "Generate a matching H1, SEO title, and meta description." },
+  { value: "page_updates", label: "Approved page updates", detail: "Generate every page update required by the approved instructions." },
   { value: "meta_description", label: "Meta descriptions", detail: "Generate search-result descriptions." },
   { value: "faq", label: "FAQ section", detail: "Generate question and answer pairs." },
   { value: "page_schema", label: "Page schema", detail: "Generate JSON-LD for a specific page URL." },
@@ -82,10 +85,17 @@ function generationTypeForTask(task: GuidedExecutionTask): AiGenerationType {
   if (/domain.+llms\.txt|complete.+llms\.txt/i.test(value)) return "domain_llms_txt";
   if (/page.+llms\.txt|llms\.txt.+page/i.test(value)) return "page_llms_txt";
   if (/domain.+schema|organization.+schema|website.+schema/i.test(value)) return "domain_schema";
-  if (/page.+schema|json-ld|structured data/i.test(value)) return "page_schema";
-  if (/meta description/i.test(value)) return "meta_description";
-  if (/\bh1\b/i.test(value)) return "h1";
-  if (/seo title|title tag/i.test(value)) return "title";
+  if (/page.+schema|json-ld|structured data/i.test(value) && !/\bh1\b|seo title|title tag|meta description|\bfaq(?:s)?\b|frequently asked|internal links?/i.test(value)) return "page_schema";
+  const requestedPageFields = [/\bh1\b/i, /seo title|title tag|\btitle\b(?=\s*[—:-])/i, /meta description/i, /\bfaq(?:s)?\b|frequently asked/i, /page.+schema|json-ld|structured data/i, /internal links?/i].filter((pattern) => pattern.test(value)).length;
+  if (requestedPageFields > 1) return "page_updates";
+  const needsMetaDescription = /meta description/i.test(value);
+  const needsSeoTitle = /seo title|title tag|\btitle\b(?=\s*[—:-])/i.test(value);
+  const needsH1 = /\bh1\b/i.test(value);
+  if (needsH1 && needsMetaDescription && needsSeoTitle) return "on_page_seo";
+  if (needsMetaDescription && needsSeoTitle) return "metadata";
+  if (needsMetaDescription) return "meta_description";
+  if (needsH1) return "h1";
+  if (needsSeoTitle) return "title";
   if (/\bfaq(?:s)?\b|frequently asked/i.test(value)) return "faq";
   return "article";
 }
@@ -526,6 +536,7 @@ export default function AiContentStudio() {
   const [selectedResultTabId, setSelectedResultTabId] = useState<string | null>(null);
   const [wizardOpen, setWizardOpen] = useState(false);
   const [wizardStep, setWizardStep] = useState(1);
+  const [workspaceTab, setWorkspaceTab] = useState<"action" | "publishing" | "history">("action");
   const [expandedHistoryGroup, setExpandedHistoryGroup] = useState<string | null>(null);
   const [linkedTask, setLinkedTask] = useState<GuidedExecutionTask | null>(null);
   const [projectContentTasks, setProjectContentTasks] = useState<GuidedExecutionTask[]>([]);
@@ -580,6 +591,22 @@ export default function AiContentStudio() {
     if (generating) return;
     setWizardOpen(false);
     if (embeddedDialog && window.parent !== window) window.parent.postMessage({ type: "senuke:close-content-asset-modal" }, window.location.origin);
+  };
+  const openNewContent = () => {
+    setLinkedTask(null);
+    setSelectedResult(null);
+    setSelectedResultItems([]);
+    setSelectedResultTabId(null);
+    setType("article");
+    setTopic("");
+    setTargetKeyword("");
+    setTargetUrl("");
+    setNotes("");
+    setUserInstructions("");
+    setGenerationInstruction("");
+    setGenerationError("");
+    setWizardStep(1);
+    setWizardOpen(true);
   };
 
   const selectedType = useMemo(() => GENERATION_TYPES.find((item) => item.value === type) ?? {
@@ -692,7 +719,10 @@ export default function AiContentStudio() {
         const savedGenerationId = String(generatedContent.generationId ?? requestedTask.relatedAssetId ?? (requestedTask.moduleName === "ai_content" ? requestedTask.sourceId : "") ?? "");
         const savedGeneration = historyResult.generations.find((generation) => generation.id === savedGenerationId);
         const requestedGenerationType = requestedType && GENERATION_TYPES.some((item) => item.value === requestedType) ? requestedType as AiGenerationType : null;
-        setType(savedGeneration?.type ?? requestedGenerationType ?? generationTypeForTask(requestedTask));
+        const plannedGenerationType = generationTypeForTask(requestedTask);
+        const savedTypeIsSubset = plannedGenerationType === "page_updates" && ["h1", "title", "metadata", "on_page_seo", "meta_description", "faq", "page_schema"].includes(savedGeneration?.type ?? "");
+        const restoredGenerationType = savedTypeIsSubset || (savedGeneration?.type === "meta_description" && plannedGenerationType === "metadata") ? plannedGenerationType : savedGeneration?.type;
+        setType(requestedGenerationType ?? restoredGenerationType ?? plannedGenerationType);
         setTopic(contentTaskTitle(requestedTask).replace(/^create\s+/i, ""));
         setTargetKeyword(keyword);
         setTargetUrl(inferredTargetUrl);
@@ -964,7 +994,7 @@ export default function AiContentStudio() {
   const publishingInProgressTasks = projectContentTasks.filter((task) => task.status === "publishing");
   const contentReadyTasks = projectContentTasks.filter((task) => task.status === "ready");
   const contentApprovalTasks = projectContentTasks.filter((task) => ["needs_review", "submitted_for_approval", "changes_requested"].includes(task.status));
-  const pageWebsiteAssetTypes = new Set<AiGenerationType>(["article", "h1", "title", "meta_description", "faq", "page_schema", "page_llms_txt"]);
+  const pageWebsiteAssetTypes = new Set<AiGenerationType>(["article", "h1", "title", "metadata", "on_page_seo", "page_updates", "meta_description", "faq", "page_schema", "page_llms_txt"]);
   const siteWebsiteAssetTypes = new Set<AiGenerationType>(["domain_schema", "domain_llms_txt", "robots_txt", "sitemap", "ai_search"]);
   const selectedAssetCanHandoff = Boolean(selectedResult && (pageWebsiteAssetTypes.has(selectedResult.type) || siteWebsiteAssetTypes.has(selectedResult.type)));
   const selectedAssetNeedsPage = Boolean(selectedResult && pageWebsiteAssetTypes.has(selectedResult.type));
@@ -985,33 +1015,42 @@ export default function AiContentStudio() {
               Review, approve, publish or hand off Strategy-approved assets and website changes.
             </p>
           </div>
-          <div className="flex flex-col gap-3 sm:flex-row sm:items-end">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
             {governedContentRequest && <span className="rounded-full border border-fuchsia-200 bg-white px-3 py-2 text-xs font-bold text-fuchsia-700">Opened from approved project work</span>}
+            <button type="button" onClick={openNewContent} className="rounded-xl bg-fuchsia-700 px-5 py-3 text-sm font-black text-white shadow-lg shadow-fuchsia-200 hover:bg-fuchsia-800">+ Create new content</button>
           </div>
         </div>
       </div>
 
-      <Card className="overflow-hidden" id="publishing">
-        <div className="flex flex-col gap-3 border-b border-emerald-200 bg-emerald-50 px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
-          <div><div className="text-xs font-bold uppercase tracking-wide text-emerald-700">Publishing queue</div><div className="mt-1 text-lg font-bold text-charcoal-900">Approved work ready for delivery</div><p className="mt-1 text-sm text-charcoal-600">Only outputs prepared through approved Strategy, Execution Plan, Growth Intelligence, Site Analysis, Opportunity, or Next Best Action work appear here.</p></div>
-          <div className="flex gap-2"><span className="rounded-full bg-white px-3 py-1 text-xs font-bold text-emerald-700 shadow-sm">{approvedPendingTasks.length} pending</span>{publishingInProgressTasks.length > 0 && <span className="rounded-full bg-amber-100 px-3 py-1 text-xs font-bold text-amber-800">{publishingInProgressTasks.length} publishing</span>}</div>
+      <div className="rounded-2xl border border-slate-200 bg-white p-2 shadow-sm">
+        <div className="grid grid-cols-3 gap-1">
+          {([["action", "Needs action", contentReadyTasks.length + contentApprovalTasks.length], ["publishing", "Ready to publish", approvedPendingTasks.length + publishingInProgressTasks.length], ["history", "Recent generations", historyGroups.length]] as const).map(([tab, label, count]) => <button key={tab} type="button" onClick={() => setWorkspaceTab(tab)} className={workspaceTab === tab ? "rounded-xl bg-fuchsia-700 px-3 py-3 text-sm font-black text-white shadow-sm" : "rounded-xl px-3 py-3 text-sm font-black text-slate-600 hover:bg-slate-50 hover:text-slate-950"}>{label}<span className={workspaceTab === tab ? "ml-2 rounded-full bg-white/20 px-2 py-0.5 text-xs text-white" : "ml-2 rounded-full bg-slate-100 px-2 py-0.5 text-xs text-slate-600"}>{count}</span></button>)}
+        </div>
+      </div>
+
+      <Card className={workspaceTab === "history" ? "hidden" : "overflow-hidden"} id="publishing">
+        <div className={workspaceTab === "publishing" ? "flex flex-col gap-3 border-b border-emerald-200 bg-emerald-50 px-5 py-4 sm:flex-row sm:items-center sm:justify-between" : "flex flex-col gap-3 border-b border-brand-200 bg-brand-50 px-5 py-4 sm:flex-row sm:items-center sm:justify-between"}>
+          <div><div className={workspaceTab === "publishing" ? "text-xs font-bold uppercase tracking-wide text-emerald-700" : "text-xs font-bold uppercase tracking-wide text-brand-700"}>{workspaceTab === "publishing" ? "Publishing queue" : "Approved task queue"}</div><div className="mt-1 text-lg font-bold text-charcoal-900">{workspaceTab === "publishing" ? "Approved work ready for delivery" : "Content requiring the next action"}</div><p className="mt-1 text-sm text-charcoal-600">{workspaceTab === "publishing" ? "Review final outputs, download a handoff, or verify the live page." : "Open an approved task to create, review, revise, or submit its exact content."}</p></div>
+          <div className="flex gap-2"><span className="rounded-full bg-white px-3 py-1 text-xs font-bold text-slate-700 shadow-sm">{workspaceTab === "publishing" ? approvedPendingTasks.length + publishingInProgressTasks.length : contentReadyTasks.length + contentApprovalTasks.length} items</span></div>
         </div>
         <div className="space-y-3 p-5">
           {publishingError && <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm font-semibold text-red-700">{publishingError}</div>}
+          {workspaceTab === "publishing" && <>
           {approvedPendingTasks.map((task) => <div key={task.id} className="flex flex-col gap-3 rounded-xl border border-emerald-200 bg-white p-4 sm:flex-row sm:items-center sm:justify-between">
             <div className="min-w-0"><div className="flex flex-wrap items-center gap-2"><div className="font-bold text-charcoal-900">{task.title}</div><span className="rounded-full bg-white px-2 py-0.5 text-[10px] font-black uppercase text-emerald-700 ring-1 ring-emerald-200">{publishingSourceLabel(task)}</span><span className="rounded-full bg-emerald-100 px-2 py-0.5 text-xs font-bold text-emerald-800">Ready to publish</span></div><p className="mt-1 line-clamp-2 text-sm text-charcoal-500">{task.description}</p></div>
             <div className="flex shrink-0 flex-wrap gap-2"><button type="button" onClick={() => downloadTaskHandoff(task)} className="rounded-lg border border-emerald-300 bg-white px-4 py-2.5 text-sm font-bold text-emerald-700 hover:bg-emerald-50">Download copy</button>{task.moduleName === "content" && <a href={`/ai-content?projectId=${encodeURIComponent(searchParams.get("projectId") || task.projectId || "")}&taskId=${encodeURIComponent(task.id)}&open=1`} className="rounded-lg border border-emerald-300 bg-white px-4 py-2.5 text-center text-sm font-bold text-emerald-700 hover:bg-emerald-50">Review content</a>}<button type="button" disabled={publishingTaskId === task.id} onClick={() => void publishTask(task)} className="rounded-lg bg-emerald-600 px-4 py-2.5 text-sm font-bold text-white hover:bg-emerald-700 disabled:bg-slate-300">{publicationActionLabel(task, publishingTaskId === task.id)}</button></div>
           </div>)}
           {publishingInProgressTasks.map((task) => <div key={task.id} className="flex items-center justify-between gap-3 rounded-xl border border-amber-200 bg-amber-50 p-4"><div><div className="font-bold text-charcoal-900">{task.title}</div><p className="mt-1 text-sm text-charcoal-500">The publishing request has started and is awaiting verification.</p></div><span className="shrink-0 rounded-full bg-amber-100 px-3 py-1 text-xs font-bold text-amber-800">Publishing</span></div>)}
           {approvedPendingTasks.length === 0 && publishingInProgressTasks.length === 0 && <div className="rounded-xl border border-dashed border-emerald-200 bg-emerald-50/40 px-5 py-8 text-center"><div className="font-bold text-charcoal-800">Nothing is ready for publishing.</div><p className="mt-1 text-sm text-charcoal-500">Strategy-approved work will appear here when it reaches review or delivery.</p><Link to={selectedProjectId ? `/guided-projects/${encodeURIComponent(selectedProjectId)}?tab=execution` : "/projects"} className="mt-4 inline-flex rounded-lg bg-brand-600 px-4 py-2 text-sm font-bold text-white">Open Execution Plan →</Link></div>}
-          {(contentReadyTasks.length > 0 || contentApprovalTasks.length > 0) && <div className="mt-5 border-t border-charcoal-100 pt-5"><div className="mb-3"><div className="text-xs font-bold uppercase tracking-wide text-charcoal-500">Needs action</div><p className="mt-1 text-sm text-charcoal-500">Complete the next step shown on each content item.</p></div><div className="space-y-2">
+          </>}
+          {workspaceTab === "action" && (contentReadyTasks.length > 0 || contentApprovalTasks.length > 0) && <div className="mt-5 border-t border-charcoal-100 pt-5"><div className="mb-3"><div className="text-xs font-bold uppercase tracking-wide text-charcoal-500">Needs action</div><p className="mt-1 text-sm text-charcoal-500">Complete the next step shown on each content item.</p></div><div className="space-y-2">
             {contentReadyTasks.map((task) => { const canGenerate = task.moduleName === "content"; return <div key={task.id} className="flex flex-col gap-3 rounded-xl border border-brand-100 bg-brand-50/40 p-4 sm:flex-row sm:items-center sm:justify-between"><div><div className="flex flex-wrap items-center gap-2"><div className="font-bold text-charcoal-900">{task.title}</div><span className="rounded-full bg-white px-2 py-0.5 text-[10px] font-black uppercase text-brand-700">{publishingSourceLabel(task)}</span></div><p className="mt-1 text-sm text-charcoal-500">{canGenerate ? "Create the requested content, review it, and send the approved version to the website." : "Review the prepared website update before it moves to approval and publishing."}</p></div><div className="flex shrink-0 flex-wrap gap-2"><a href={taskReviewUrl(task)} className="rounded-lg bg-brand-600 px-4 py-2 text-center text-sm font-bold text-white hover:bg-brand-700">{canGenerate ? "Create content →" : "Review update →"}</a></div></div>; })}
             {contentApprovalTasks.map((task) => <div key={task.id} className="flex flex-col gap-3 rounded-xl border border-amber-200 bg-amber-50/50 p-4 sm:flex-row sm:items-center sm:justify-between"><div><div className="flex flex-wrap items-center gap-2"><div className="font-bold text-charcoal-900">{task.title}</div><span className="rounded-full bg-white px-2 py-0.5 text-[10px] font-black uppercase text-amber-700">{publishingSourceLabel(task)}</span><span className="rounded-full bg-white px-2 py-0.5 text-xs font-bold text-amber-700">{task.status.replaceAll("_", " ")}</span></div><p className="mt-1 text-sm text-charcoal-500">{task.status === "needs_review" ? "The exact source asset or update is ready for factual, quality, destination, and implementation review before company approval." : task.status === "changes_requested" ? "The company approver requested changes. Open the source asset, address the feedback, and resubmit the saved version." : "Source review is complete. The exact saved asset is waiting for an authorized company approver."}</p></div><div className="flex shrink-0 flex-wrap gap-2"><button type="button" onClick={() => downloadTaskHandoff(task)} className="rounded-lg border border-amber-300 bg-white px-4 py-2 text-sm font-bold text-amber-700">Download handoff</button>{task.status === "needs_review" && <><a href={taskReviewUrl(task)} className="rounded-lg border border-amber-300 bg-white px-4 py-2 text-center text-sm font-bold text-amber-700">Review exact asset</a><button type="button" disabled={publishingTaskId === task.id} onClick={() => void submitForApproval(task)} className="rounded-lg bg-amber-600 px-4 py-2 text-sm font-bold text-white hover:bg-amber-700 disabled:bg-slate-300">{publishingTaskId === task.id ? "Submitting…" : "Review complete · Send for approval"}</button></>}{task.status === "submitted_for_approval" && <a href={`/approvals?projectId=${encodeURIComponent(searchParams.get("projectId") || task.projectId || "")}`} className="rounded-lg bg-amber-600 px-4 py-2 text-center text-sm font-bold text-white hover:bg-amber-700">Open Company Approval →</a>}{task.status === "changes_requested" && <a href={taskReviewUrl(task)} className="rounded-lg bg-brand-600 px-4 py-2 text-center text-sm font-bold text-white hover:bg-brand-700">Review requested changes →</a>}</div></div>)}
           </div></div>}
         </div>
       </Card>
 
-      {governedContentRequest && <Card className="overflow-hidden">
+      {workspaceTab === "history" && <Card className="overflow-hidden">
         <div className="flex items-center justify-between gap-4 border-b border-charcoal-100 px-5 py-4">
           <div>
             <div className="font-semibold text-charcoal-800">Recent generations</div>
@@ -1105,7 +1144,7 @@ export default function AiContentStudio() {
         </div>
       </Card>}
 
-      {wizardOpen && governedContentRequest && (
+      {wizardOpen && (
         <div className={embeddedDialog ? "absolute inset-0 z-50 bg-white" : "fixed inset-0 z-50"} role="dialog" aria-modal="true" aria-label="Create AI content asset">
           {!embeddedDialog && <div className="absolute inset-0 bg-charcoal-900/55" onClick={closeWizard} />}
           <div className={embeddedDialog ? "absolute inset-0 flex flex-col overflow-hidden bg-white" : "absolute inset-x-3 top-4 mx-auto flex max-h-[calc(100vh-2rem)] max-w-5xl flex-col overflow-hidden rounded-2xl bg-white shadow-2xl sm:top-8 sm:max-h-[calc(100vh-4rem)]"}>

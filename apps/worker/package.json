@@ -8,6 +8,7 @@
     "start": "tsx src/index.ts"
   },
   "dependencies": {
+    "@aws-sdk/credential-provider-node": "^3.972.81",
     "@webtummy/core": "*",
     "@webtummy/db": "*",
     "bullmq": "^5.34.0",

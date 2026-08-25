@@ -1,4 +1,5 @@
 import { createHmac, createHash } from "node:crypto";
+import { defaultProvider } from "@aws-sdk/credential-provider-node";
 import { config } from "./config.js";
 
 export interface MailInput {
@@ -6,6 +7,24 @@ export interface MailInput {
   subject: string;
   html: string;
   text: string;
+}
+
+export function configuredMailProvider(input: {
+  emailProvider: string;
+  resendApiKey: string;
+  awsRegion: string;
+  awsAccessKeyId: string;
+}) {
+  if (input.emailProvider === "ses") return "ses" as const;
+  if (input.emailProvider === "resend") return "resend" as const;
+  if (input.emailProvider) return "development" as const;
+  // EC2/ECS workers normally receive short-lived credentials from the AWS
+  // default credential chain, so an access-key environment variable is not a
+  // reliable signal that SES is configured. A region is sufficient here;
+  // sendWithSes resolves and validates the credentials before sending.
+  if (input.awsRegion) return "ses" as const;
+  if (input.resendApiKey) return "resend" as const;
+  return "development" as const;
 }
 
 function hash(value: string) {
@@ -20,15 +39,18 @@ function hmacHex(key: Buffer | string, value: string) {
   return createHmac("sha256", key).update(value, "utf8").digest("hex");
 }
 
+const resolveAwsCredentials = defaultProvider();
+
 function amzDates(now = new Date()) {
   const iso = now.toISOString().replace(/[:-]|\.\d{3}/g, "");
   return { amzDate: iso, dateStamp: iso.slice(0, 8) };
 }
 
 async function sendWithSes(input: MailInput) {
-  if (!config.awsRegion || !config.awsAccessKeyId || !config.awsSecretAccessKey) {
-    throw new Error("SES email provider is configured but AWS_REGION, AWS_ACCESS_KEY_ID, or AWS_SECRET_ACCESS_KEY is missing");
-  }
+  if (!config.awsRegion) throw new Error("SES email provider is configured but AWS_REGION is missing");
+  const credentials = config.awsAccessKeyId && config.awsSecretAccessKey
+    ? { accessKeyId: config.awsAccessKeyId, secretAccessKey: config.awsSecretAccessKey, sessionToken: config.awsSessionToken || undefined }
+    : await resolveAwsCredentials();
 
   const host = `email.${config.awsRegion}.amazonaws.com`;
   const endpoint = `https://${host}/v2/email/outbound-emails`;
@@ -56,14 +78,14 @@ async function sendWithSes(input: MailInput) {
     "x-amz-content-sha256": payloadHash,
     "x-amz-date": amzDate,
   };
-  if (config.awsSessionToken) headers["x-amz-security-token"] = config.awsSessionToken;
+  if (credentials.sessionToken) headers["x-amz-security-token"] = credentials.sessionToken;
 
   const signedHeaderNames = Object.keys(headers).sort();
   const canonicalHeaders = signedHeaderNames.map((name) => `${name}:${headers[name].trim()}\n`).join("");
   const signedHeaders = signedHeaderNames.join(";");
   const canonicalRequest = ["POST", "/v2/email/outbound-emails", "", canonicalHeaders, signedHeaders, payloadHash].join("\n");
   const stringToSign = ["AWS4-HMAC-SHA256", amzDate, credentialScope, hash(canonicalRequest)].join("\n");
-  const dateKey = hmac(`AWS4${config.awsSecretAccessKey}`, dateStamp);
+  const dateKey = hmac(`AWS4${credentials.secretAccessKey}`, dateStamp);
   const regionKey = hmac(dateKey, config.awsRegion);
   const serviceKey = hmac(regionKey, service);
   const signingKey = hmac(serviceKey, "aws4_request");
@@ -73,7 +95,7 @@ async function sendWithSes(input: MailInput) {
     method: "POST",
     headers: {
       ...headers,
-      Authorization: `AWS4-HMAC-SHA256 Credential=${config.awsAccessKeyId}/${credentialScope}, SignedHeaders=${signedHeaders}, Signature=${signature}`,
+      Authorization: `AWS4-HMAC-SHA256 Credential=${credentials.accessKeyId}/${credentialScope}, SignedHeaders=${signedHeaders}, Signature=${signature}`,
     },
     body,
   });
@@ -91,8 +113,9 @@ async function sendWithResend(input: MailInput) {
 }
 
 export async function sendMail(input: MailInput) {
-  if (config.emailProvider === "ses" || (!config.emailProvider && config.awsAccessKeyId)) return sendWithSes(input);
-  if (config.emailProvider === "resend" || config.resendApiKey) return sendWithResend(input);
+  const provider = configuredMailProvider(config);
+  if (provider === "ses") return sendWithSes(input);
+  if (provider === "resend") return sendWithResend(input);
   console.info(`[mail:dev] To: ${input.to}`);
   console.info(`[mail:dev] Subject: ${input.subject}`);
   console.info(`[mail:dev] ${input.text}`);

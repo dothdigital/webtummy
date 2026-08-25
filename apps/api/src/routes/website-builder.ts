@@ -2172,8 +2172,8 @@ export function builderView(project: Awaited<ReturnType<typeof scopedProject>>["
   // A crawl is source evidence in redesign mode; it is not the content
   // delivery mode. Every approved page must receive a complete editable body.
   const fullPageContentMode = buildUsesCompletePageGeneration(buildWithQuality);
-  const existingContentPages = fullPageContentMode ? [] : contentPages.filter(pageIsImportedExistingWebsite);
-  const newContentPages = fullPageContentMode ? contentPages : contentPages.filter((page) => !pageIsImportedExistingWebsite(page));
+  const existingContentPages = fullPageContentMode ? [] : contentPages.filter((page) => pageIsImportedExistingWebsite(page) && pageHasCompleteContent(page));
+  const newContentPages = fullPageContentMode ? contentPages : contentPages.filter((page) => !pageIsImportedExistingWebsite(page) || !pageHasCompleteContent(page));
   const requirementsForViewPage = (page: typeof existingContentPages[number]) => targetedUpdateRequirements(page);
   const existingUpdatesRequired = existingContentPages.filter((page) => requirementsForViewPage(page).length > 0 && !targetedUpdateDraftReady(page));
   const existingUpdatesReadyForReview = existingContentPages.filter((page) => {
@@ -2547,24 +2547,23 @@ function builderOverviewView(project: Awaited<ReturnType<typeof scopedProject>>[
 }
 
 async function publishingContentFor(project: Awaited<ReturnType<typeof scopedProject>>["project"], options: { includeResultJson?: boolean } = {}) {
-  const tasks = project.executionTasks.filter((task) => task.moduleName === "content" && task.sourceType === "content_plan_action");
-  const rows = tasks.map((task) => {
+  const rows = project.executionTasks.filter((task) => task.moduleName === "content" && publishingTaskCanSync(task.status)).map((task) => {
     const snapshot = jsonRecord(task.approvalSnapshotJson);
     const generated = jsonRecord(snapshot.generatedContent);
     const planning = jsonRecord(snapshot.contentPlanning);
     const generationId = String(generated.generationId ?? task.relatedAssetId ?? "");
-    return { task, planning, generationId };
-  });
+    return { task, snapshot, planning, generated, generationId };
+  }).filter((row) => row.generationId);
   const generationIds = rows.map((row) => row.generationId).filter(Boolean);
   const generations = generationIds.length
     ? options.includeResultJson === false
-      ? await prisma.aiContentGeneration.findMany({ where: { clientId: project.clientId, id: { in: generationIds } }, orderBy: { createdAt: "desc" }, select: { id: true, topic: true, targetKeyword: true, targetUrl: true, createdAt: true } })
+      ? await prisma.aiContentGeneration.findMany({ where: { clientId: project.clientId, id: { in: generationIds } }, orderBy: { createdAt: "desc" }, select: { id: true, type: true, topic: true, targetKeyword: true, targetUrl: true, createdAt: true } })
       : await prisma.aiContentGeneration.findMany({ where: { clientId: project.clientId, id: { in: generationIds } }, orderBy: { createdAt: "desc" } })
     : [];
   const byId = new Map(generations.map((generation) => [generation.id, generation]));
-  return rows.map(({ task, planning, generationId }) => {
+  return rows.map(({ task, snapshot, planning, generated, generationId }) => {
     const generation = byId.get(generationId);
-    return { taskId: task.id, taskTitle: task.title, taskStatus: task.status, generationId: generation?.id ?? null, topic: generation?.topic ?? task.title, keyword: String(planning.keyword ?? generation?.targetKeyword ?? ""), targetUrl: String(planning.targetUrl ?? generation?.targetUrl ?? ""), resultJson: options.includeResultJson === false ? generation ? { available: true } : null : generation && "resultJson" in generation ? generation.resultJson : null, createdAt: generation?.createdAt ?? task.createdAt };
+    return { taskId: task.id, taskTitle: task.title, taskStatus: task.status, generationId: generation?.id ?? null, generationType: generation?.type ?? String(generated.type ?? ""), topic: generation?.topic ?? task.title, keyword: String(planning.keyword ?? generation?.targetKeyword ?? ""), targetUrl: String(planning.targetUrl ?? snapshot.targetUrl ?? generation?.targetUrl ?? ""), resultJson: options.includeResultJson === false ? generation ? { available: true } : null : generation && "resultJson" in generation ? generation.resultJson : null, createdAt: generation?.createdAt ?? task.createdAt };
   });
 }
 
@@ -2890,6 +2889,14 @@ export function normalizedPageTarget(value: unknown) {
   } catch {
     return raw.replace(/^https?:\/\/[^/]+/i, "").replace(/\/+$/, "").toLocaleLowerCase() || "/";
   }
+}
+
+export function publishingTaskCanSync(status: string) {
+  return ["approved", "ready_to_publish", "publishing", "published", "completed"].includes(status);
+}
+
+export function publishingAssetSyncScope(generationType: string): "full_page" | "field_only" {
+  return generationType === "article" ? "full_page" : "field_only";
 }
 
 export function publishingAssetMatchesWebsitePage(
@@ -3893,7 +3900,7 @@ async function generatePage(page: { title: string; pageType: string; primaryKeyw
     const rewriteContract = options.forceRewrite
       ? `\nMANDATORY SAVED-PAGE REVISION:\n- This is a revision of an existing saved page, not first-time generation.\n- Current saved content: ${JSON.stringify({ content: page.contentJson, seo: page.seoJson ?? {} })}\n- Requested revision scope: ${options.revisionScope?.join(" | ") || comment || "General evidence-preserving improvement"}.\n- Return a genuinely changed review version. Do not return the current copy unchanged or make only cosmetic punctuation changes.\n- Preserve approved facts, URL, keyword ownership, intent, safeguards, and useful evidence; rewrite the visible sections needed to satisfy the requested scope.\n- If complete-page recreation was requested, substantially rewrite every visible section while preserving verified facts.\n- The API compares the new registered content with the saved version and rejects an unchanged or trivially changed result.`
       : "";
-    const basePrompt = `Generate one complete website page as structured JSON with keys brief, content, seo matching this registered page blueprint. Rewrite every sample content value with original page-specific content: ${JSON.stringify(fallback)}${rewriteContract}\nActive Component Registry: ${JSON.stringify(SENUKE_COMPONENT_REGISTRY_V1)}\nPage composition policy: ${JSON.stringify(composition)}\nShared approved Strategy contract: ${JSON.stringify(sharedWebsiteStrategy(project))}\nPage-specific Gap Analysis and Execution contract: ${JSON.stringify(executionContract)}\nBusiness: ${businessContext.businessName ?? "business name not approved"}\nIndustry: ${businessContext.industry}\nCore customer value: ${businessContext.coreBusinessValue}\nApproved services: ${businessContext.primaryServices.join(", ")}\nAudience: ${businessContext.audience}\nLocations: ${targetLocationStrings(project.targetLocations).join(", ")}\nTone: ${project.brandVoice ?? "professional"}\nPage: ${page.title}\nPage type: ${page.pageType}\nPrimary keyword: ${page.primaryKeyword}\nSecondary keywords: ${jsonStrings(page.secondaryKeywords).join(", ")}\nIntent: ${page.searchIntent}\nSlug: ${page.slug}\nCTA: ${page.targetCta ?? "Request a consultation"}\nReviewer instruction: ${comment || "none"}\nReserved titles, H1s, and meta descriptions already used by other planned or crawled pages: ${JSON.stringify(reservedSignals)}\nRequirements:\n- Resolve the cited gapAnalysis plus every approved item in gapRequirements. Follow each recommendedFix and preserve its evidence link in the saved page contract.\n- Follow recommendedAction, contentBrief, strategyRole, funnelStage, contentOutline, proofRequirements, and CTA direction in the page-specific contract.\n- Include every requiredInternalLink naturally and do not optimize this page for prohibitedCompetingKeywords.\n- Use evidenceSources only as planning evidence; never convert an unverified item into a public claim.\n- Write useful content up to ${composition.maximumWords} visible words across all selected registered components. The ${composition.minimumWords}-word figure is a planning target, not permission to add filler. Never exceed ${composition.maximumWords} words.\n- Follow this page-specific direction: ${composition.guidance}\n- Include every required component ID exactly once: ${composition.requiredComponentIds.join(", ") || "none"}.\n- Return at least ${composition.minimumComponentCount} registered components.\n- Preserve the selected component sequence. Every page must contain one visible FAQ section with at least four complete, page-specific questions and answers; a dedicated FAQ page requires at least eight.\n- Give every selected service, benefit, process, and proof item a useful explanation.\n- HERO H1: lead with the approved service, product, category, or customer outcome. Naturally include the primary keyword/topic and the approved location only when this is a local page. Make the value clear to a buyer and support the intended CTA. Never write “Welcome”, “Welcome to [company]”, the company name by itself, “Home”, “Your trusted partner”, or an unsupported “best”, “leading”, “#1”, guarantee, ranking, or superlative claim.\n- HERO SUMMARY: identify the intended customer, problem or decision, concrete offer, useful differentiator supported by approved facts, and next step. Do not merely describe the company.\n- H2/H3: make every heading page-specific and useful for a buyer. Organize the page around benefits, options, objections, cost or eligibility factors, process, proof, FAQs, and conversion decisions. Use the primary or secondary topics naturally where relevant, but do not repeat the exact keyword in every heading or keyword-stuff. Never use generic headings such as “Our Services”, “What We Offer”, “How We Can Help”, “Overview”, “Why Choose Us”, “How the Process Works”, or “Frequently Asked Questions”.\n- Produce an original SEO title, H1, and 120–160 character meta description. None may duplicate a reserved value from another page.\n- Never use the template “Explore ... Review capabilities, process, proof, FAQs, and next steps.”\n- Do not copy sentences from the blueprint. content.components is the complete and only editable page-content model.\n- Do not return duplicate hero, section, or CTA fields outside content.components.${localDraftGuardrail}`;
+    const basePrompt = `Generate one complete website page as structured JSON with keys brief, content, seo matching this registered page blueprint. Rewrite every sample content value with original page-specific content: ${JSON.stringify(fallback)}${rewriteContract}\nActive Component Registry: ${JSON.stringify(SENUKE_COMPONENT_REGISTRY_V1)}\nPage composition policy: ${JSON.stringify(composition)}\nShared approved Strategy contract: ${JSON.stringify(sharedWebsiteStrategy(project))}\nPage-specific Gap Analysis and Execution contract: ${JSON.stringify(executionContract)}\nBusiness: ${businessContext.businessName ?? "business name not approved"}\nIndustry: ${businessContext.industry}\nCore customer value: ${businessContext.coreBusinessValue}\nApproved services: ${businessContext.primaryServices.join(", ")}\nAudience: ${businessContext.audience}\nLocations: ${targetLocationStrings(project.targetLocations).join(", ")}\nTone: ${project.brandVoice ?? "professional"}\nPage: ${page.title}\nPage type: ${page.pageType}\nPrimary keyword: ${page.primaryKeyword}\nSecondary keywords: ${jsonStrings(page.secondaryKeywords).join(", ")}\nIntent: ${page.searchIntent}\nSlug: ${page.slug}\nCTA: ${page.targetCta ?? "Request a consultation"}\nReviewer instruction: ${comment || "none"}\nReserved titles, H1s, and meta descriptions already used by other planned or crawled pages: ${JSON.stringify(reservedSignals)}\nRequirements:\n- Resolve the cited gapAnalysis plus every approved item in gapRequirements. Follow each recommendedFix and preserve its evidence link in the saved page contract.\n- Follow recommendedAction, contentBrief, strategyRole, funnelStage, contentOutline, proofRequirements, and CTA direction in the page-specific contract.\n- Include every requiredInternalLink naturally and do not optimize this page for prohibitedCompetingKeywords.\n- Use evidenceSources only as planning evidence; never convert an unverified item into a public claim.\n- Write useful content up to ${composition.maximumWords} visible words across all selected registered components. The ${composition.minimumWords}-word figure is a planning target, not permission to add filler. Never exceed ${composition.maximumWords} words.\n- Follow this page-specific direction: ${composition.guidance}\n- Include every required component ID exactly once: ${composition.requiredComponentIds.join(", ") || "none"}.\n- Return at least ${composition.minimumComponentCount} registered components.\n- Preserve the selected component sequence. Every eligible page must contain one visible FAQ section with 4–6 complete, page-specific questions and answers; a dedicated FAQ page requires 8–12. Use every relevant approved faqTopics item from the SEO Plan, Growth Plan, Gap requirements, or page brief first. When no approved FAQ topics exist, derive useful buyer questions from the approved page intent and verified evidence only. Never invent prices, guarantees, credentials, insurance coverage, medical outcomes, service availability, policies, or other unsupported facts. Keep each page FAQ set distinct, and synchronize the exact visible questions and answers with FAQPage schema.\n- Give every selected service, benefit, process, and proof item a useful explanation.\n- HERO H1: lead with the approved service, product, category, or customer outcome. Naturally include the primary keyword/topic and the approved location only when this is a local page. Make the value clear to a buyer and support the intended CTA. Never write “Welcome”, “Welcome to [company]”, the company name by itself, “Home”, “Your trusted partner”, or an unsupported “best”, “leading”, “#1”, guarantee, ranking, or superlative claim.\n- HERO SUMMARY: identify the intended customer, problem or decision, concrete offer, useful differentiator supported by approved facts, and next step. Do not merely describe the company.\n- H2/H3: make every heading page-specific and useful for a buyer. Organize the page around benefits, options, objections, cost or eligibility factors, process, proof, FAQs, and conversion decisions. Use the primary or secondary topics naturally where relevant, but do not repeat the exact keyword in every heading or keyword-stuff. Never use generic headings such as “Our Services”, “What We Offer”, “How We Can Help”, “Overview”, “Why Choose Us”, “How the Process Works”, or “Frequently Asked Questions”.\n- Produce an original SEO title, H1, and 120–160 character meta description. None may duplicate a reserved value from another page.\n- Never use the template “Explore ... Review capabilities, process, proof, FAQs, and next steps.”\n- Do not copy sentences from the blueprint. content.components is the complete and only editable page-content model.\n- Do not return duplicate hero, section, or CTA fields outside content.components.${localDraftGuardrail}`;
     let repairFeedback = "";
     let previousResponse: Record<string, unknown> | null = null;
 
@@ -4051,6 +4058,7 @@ async function markWebsiteContentExecutionNeedsReview(tx: Prisma.TransactionClie
       blockedReason: null,
     },
   });
+  await tx.seoFixQueueItem.updateMany({ where: { executionTaskId: { in: executionTaskIds } }, data: { approvalStatus: "content_ready_for_review" } });
 }
 
 async function saveGeneratedPage(page: { id: string; buildId: string; slug: string; title?: string; version: number; contentJson: Prisma.JsonValue; briefJson: Prisma.JsonValue }, generated: z.infer<typeof generatedPageSchema>, context: Awaited<ReturnType<typeof workspaceContext>>, templateKey: string, comment = "") {
@@ -4173,6 +4181,7 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/sync-publishing-
   };
   for (const asset of assets) {
     if (matchingPage(asset)) continue;
+    if (publishingAssetSyncScope(asset.generationType) !== "full_page") continue;
     const keyword = asset.keyword.trim() || asset.topic;
     const target = normalizedPageTarget(asset.targetUrl);
     const slug = pagePathSlug(target, keyword);
@@ -4186,9 +4195,43 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/sync-publishing-
     const keyword = asset.keyword.trim();
     const page = matchingPage(asset);
     if (!page || pageIsDeferred(page)) continue;
-    const generated = importedArticle(jsonRecord(asset.resultJson), page, businessIdentity(project) || "the business");
-    await saveGeneratedPage(page, generated, context, build.templateKey, `Imported from approved Publishing content task ${asset.taskId}.`);
-    imported += 1;
+    const result = jsonRecord(asset.resultJson);
+    if (publishingAssetSyncScope(asset.generationType) === "full_page") {
+      const generated = importedArticle(result, page, businessIdentity(project) || "the business");
+      await saveGeneratedPage(page, generated, context, build.templateKey, "Imported from approved Publishing content task " + asset.taskId + ".");
+      imported += 1;
+    } else {
+      const currentPage = await prisma.websiteBuildPage.findUnique({ where: { id: page.id } });
+      if (!currentPage || !pageHasCompleteContent(currentPage)) continue;
+      let content = canonicalContentFromComponents(currentPage.contentJson, canonicalComponents(currentPage.contentJson));
+      const seo = jsonRecord(currentPage.seoJson);
+      const brief = jsonRecord(currentPage.briefJson);
+      const h1 = firstGeneratedString(result.h1Options);
+      const title = firstGeneratedString(result.titles) || firstGeneratedString(result.seo_titles) || firstGeneratedString(result.metaTitle);
+      const description = firstGeneratedString(result.descriptions) || firstGeneratedString(result.meta_descriptions) || firstGeneratedString(result.metaDescription);
+      if (h1) content = updateCanonicalComponent(content as Prisma.JsonValue, "hero.local_service", (props) => ({ ...props, headline: h1 }));
+      if (title) seo.metaTitle = title;
+      if (description) seo.metaDescription = description;
+      if (result.schemaJsonLd && typeof result.schemaJsonLd === "object") seo.schemaJsonLd = result.schemaJsonLd;
+      const faqs = Array.isArray(result.faqs) ? result.faqs.map(jsonRecord).map((faq) => ({ question: String(faq.question || "").trim(), answer: String(faq.answer || "").trim() })).filter((faq) => faq.question && faq.answer) : [];
+      if (faqs.length) {
+        const components = canonicalComponents(content);
+        const faqIndex = components.findIndex((component) => component.componentId === "content.faq");
+        const faqComponent: WebsiteComponentInstance = faqIndex >= 0 ? { ...components[faqIndex], props: { ...components[faqIndex].props, items: faqs } } : { instanceId: slugify(currentPage.title) + "-faq-" + (currentPage.version + 1), componentId: "content.faq", componentVersion: "1.0.0", variant: "accordion", props: { heading: ("Questions buyers ask about " + currentPage.primaryKeyword).slice(0, 100), items: faqs } };
+        if (faqIndex >= 0) components.splice(faqIndex, 1, faqComponent); else components.push(faqComponent);
+        content = canonicalContentFromComponents(content as Prisma.JsonValue, components);
+        seo.faqs = faqs;
+        seo.schemaJsonLd = combinedPageSchema(currentPage, project, faqs, seo.schemaJsonLd);
+      }
+      if (Array.isArray(result.internalLinks) && result.internalLinks.length) brief.aiContentAssets = { ...jsonRecord(brief.aiContentAssets), internalLinks: { generationId: asset.generationId, items: result.internalLinks, synchronizedAt: new Date().toISOString() } };
+      if (!h1 && !title && !description && !faqs.length && !result.schemaJsonLd && !Array.isArray(result.internalLinks)) continue;
+      const nextVersion = currentPage.version + 1;
+      await prisma.$transaction(async (tx) => {
+        await tx.websiteBuildPageVersion.upsert({ where: { pageId_version: { pageId: currentPage.id, version: nextVersion } }, update: { briefJson: brief as Prisma.InputJsonValue, contentJson: content as Prisma.InputJsonValue, seoJson: seo as Prisma.InputJsonValue, layoutJson: currentPage.layoutJson, comment: "Applied field-only Publishing content task " + asset.taskId + ".", createdById: context.membership.userId }, create: { pageId: currentPage.id, version: nextVersion, briefJson: brief as Prisma.InputJsonValue, contentJson: content as Prisma.InputJsonValue, seoJson: seo as Prisma.InputJsonValue, layoutJson: currentPage.layoutJson, comment: "Applied field-only Publishing content task " + asset.taskId + ".", createdById: context.membership.userId } });
+        await tx.websiteBuildPage.update({ where: { id: currentPage.id }, data: { briefJson: brief as Prisma.InputJsonValue, contentJson: content as Prisma.InputJsonValue, seoJson: seo as Prisma.InputJsonValue, version: nextVersion, status: "review", approvedAt: null } });
+      });
+      imported += 1;
+    }
     if (asset.generationId && !importedGenerationIds.includes(asset.generationId)) importedGenerationIds.push(asset.generationId);
   }
   const latestBuildSettings = await prisma.websiteBuild.findUnique({ where: { id: build.id }, select: { settingsJson: true } });
@@ -4254,7 +4297,7 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/ai-content-hando
   const generation = await prisma.aiContentGeneration.findFirst({ where: { id: input.generationId, clientId: project.clientId, projectId: project.id, status: "completed" } });
   if (!generation) return res.status(404).json({ error: "The generated content asset was not found in this project." });
   const result = jsonRecord(generation.resultJson);
-  const pageScopedTypes = new Set(["article", "h1", "title", "meta_description", "faq", "page_schema", "page_llms_txt"]);
+  const pageScopedTypes = new Set(["article", "h1", "title", "metadata", "on_page_seo", "page_updates", "meta_description", "faq", "page_schema", "page_llms_txt"]);
   const siteScopedTypes = new Set(["domain_schema", "domain_llms_txt", "robots_txt", "sitemap", "ai_search"]);
   if (!pageScopedTypes.has(generation.type) && !siteScopedTypes.has(generation.type)) return res.status(409).json({ error: "This saved asset does not have a supported Website Development destination." });
 
@@ -4360,11 +4403,47 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/ai-content-hando
     if (!value) return res.status(409).json({ error: "No usable H1 was generated." });
     content = updateCanonicalComponent(content as Prisma.JsonValue, "hero.local_service", (props) => ({ ...props, headline: value }));
   } else if (generation.type === "title") {
-    const value = firstGeneratedString(result.titles);
+    const value = firstGeneratedString(result.titles) || firstGeneratedString(result.seo_titles);
     if (!value) return res.status(409).json({ error: "No usable SEO title was generated." });
     seo.metaTitle = value;
+  } else if (generation.type === "page_updates") {
+    const h1 = firstGeneratedString(result.h1Options);
+    const title = firstGeneratedString(result.titles) || firstGeneratedString(result.seo_titles);
+    const description = firstGeneratedString(result.descriptions) || firstGeneratedString(result.meta_descriptions);
+    if (h1) content = updateCanonicalComponent(content as Prisma.JsonValue, "hero.local_service", (props) => ({ ...props, headline: h1 }));
+    if (title) seo.metaTitle = title;
+    if (description) seo.metaDescription = description;
+    if (result.schemaJsonLd && typeof result.schemaJsonLd === "object") seo.schemaJsonLd = result.schemaJsonLd;
+    const faqs = Array.isArray(result.faqs) ? result.faqs.map(jsonRecord).map((faq) => ({ question: String(faq.question || "").trim(), answer: String(faq.answer || "").trim() })).filter((faq) => faq.question && faq.answer) : [];
+    if (faqs.length) {
+      const components = canonicalComponents(content);
+      const faqIndex = components.findIndex((component) => component.componentId === "content.faq");
+      const faqComponent: WebsiteComponentInstance = faqIndex >= 0
+        ? { ...components[faqIndex], props: { ...components[faqIndex].props, items: faqs } }
+        : { instanceId: slugify(matchingPage.title) + "-faq-" + (matchingPage.version + 1), componentId: "content.faq", componentVersion: "1.0.0", variant: "accordion", props: { heading: ("Questions buyers ask about " + matchingPage.primaryKeyword).slice(0, 100), items: faqs } };
+      if (faqIndex >= 0) components.splice(faqIndex, 1, faqComponent); else components.push(faqComponent);
+      content = canonicalContentFromComponents(content as Prisma.JsonValue, components);
+      seo.faqs = faqs;
+      seo.schemaJsonLd = combinedPageSchema(matchingPage, project, faqs, seo.schemaJsonLd);
+    }
+    if (Array.isArray(result.internalLinks) && result.internalLinks.length) brief.aiContentAssets = { ...jsonRecord(brief.aiContentAssets), internalLinks: { generationId: generation.id, items: result.internalLinks, synchronizedAt: new Date().toISOString() } };
+    if (!h1 && !title && !description && !faqs.length && !result.schemaJsonLd && !Array.isArray(result.internalLinks)) return res.status(409).json({ error: "No usable approved page updates were generated." });
+  } else if (generation.type === "on_page_seo") {
+    const h1 = firstGeneratedString(result.h1Options);
+    const title = firstGeneratedString(result.titles) || firstGeneratedString(result.seo_titles);
+    const description = firstGeneratedString(result.descriptions) || firstGeneratedString(result.meta_descriptions);
+    if (!h1 || !title || !description) return res.status(409).json({ error: "A usable H1, SEO title, and meta description are all required." });
+    content = updateCanonicalComponent(content as Prisma.JsonValue, "hero.local_service", (props) => ({ ...props, headline: h1 }));
+    seo.metaTitle = title;
+    seo.metaDescription = description;
+  } else if (generation.type === "metadata") {
+    const title = firstGeneratedString(result.titles) || firstGeneratedString(result.seo_titles);
+    const description = firstGeneratedString(result.descriptions) || firstGeneratedString(result.meta_descriptions);
+    if (!title || !description) return res.status(409).json({ error: "A usable SEO title and meta description are both required." });
+    seo.metaTitle = title;
+    seo.metaDescription = description;
   } else if (generation.type === "meta_description") {
-    const value = firstGeneratedString(result.descriptions);
+    const value = firstGeneratedString(result.descriptions) || firstGeneratedString(result.meta_descriptions);
     if (!value) return res.status(409).json({ error: "No usable meta description was generated." });
     seo.metaDescription = value;
   } else if (generation.type === "page_schema") {
@@ -7337,7 +7416,7 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/prepare-all-cont
     : [];
   const targetedRequirementsByPage: Record<string, Array<Record<string, unknown>>> = {};
   const importedPages = fullPageContentMode ? [] : build.pages.filter((page) => {
-    if (!pageIsActive(page) || !pageIsImportedExistingWebsite(page) || targetedUpdateDraftReady(page)) return false;
+    if (!pageIsActive(page) || !pageIsImportedExistingWebsite(page) || !pageHasCompleteContent(page) || targetedUpdateDraftReady(page)) return false;
     const requirements = effectiveExistingPageRequirements(page, websitePlanAssignments);
     if (!requirements.length) return false;
     targetedRequirementsByPage[page.id] = requirements;
@@ -7345,7 +7424,7 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/prepare-all-cont
   });
   const missingContentRequirementsByPage: Record<string, string[]> = {};
   const newPages = build.pages.filter((page) => {
-    if (!pageIsActive(page) || (!fullPageContentMode && pageIsImportedExistingWebsite(page))) return false;
+    if (!pageIsActive(page) || (!fullPageContentMode && pageIsImportedExistingWebsite(page) && pageHasCompleteContent(page))) return false;
     const missingKinds = pageMissingContentKinds(page);
     if (isEarlierPlaceholderPage(page.seoJson) && !missingKinds.includes("page_content")) missingKinds.push("page_content");
     if (!missingKinds.length) return false;
@@ -7592,6 +7671,7 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/approve-all-page
     }
     if (executionTaskIds.length) {
       await tx.executionTask.updateMany({ where: { id: { in: executionTaskIds } }, data: { status: "completed", approvedAt, completedAt: approvedAt, approvalDecision: "approved", actionButtonLabel: "View Approved Website Content", blockedReason: null } });
+      await tx.seoFixQueueItem.updateMany({ where: { executionTaskId: { in: executionTaskIds } }, data: { approvalStatus: "completed" } });
     }
     return { count: activePages.length };
   });
@@ -7859,6 +7939,7 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/pages/:pageId/ap
     await tx.websiteBuildPageVersion.updateMany({ where: { pageId: page.id, version: page.version }, data: { seoJson: synchronizedSeoJson } });
     if (executionTaskIds.length) {
       await tx.executionTask.updateMany({ where: { id: { in: executionTaskIds } }, data: { status: "completed", approvedAt, completedAt: approvedAt, approvalDecision: "approved", approvalNotes: qualityException ? input.exceptionReason : null, actionButtonLabel: "View Approved Website Content", blockedReason: null } });
+      await tx.seoFixQueueItem.updateMany({ where: { executionTaskId: { in: executionTaskIds } }, data: { approvalStatus: "completed" } });
     }
     return row;
   });

@@ -589,7 +589,8 @@ export async function approvalReminderEscalations(now = new Date()) {
 export async function workspaceNotificationEmailDelivery(now = new Date()) {
   return runLogged("workspace_notification_email_delivery", async () => {
     const notifications = await prisma.workspaceNotification.findMany({
-      where: { emailEligible: true, emailStatus: "pending" }, orderBy: { createdAt: "asc" }, take: 500,
+      // Retry newly queued and previously failed messages after transient provider or network failures.
+      where: { emailEligible: true, emailStatus: { in: ["pending", "failed"] } }, orderBy: { createdAt: "asc" }, take: 500,
       include: { user: { select: { email: true, workspaceMemberships: { where: { status: "active" }, select: { workspaceId: true, permissionOverrides: true } } } } },
     });
     const groups = new Map<string, typeof notifications>();

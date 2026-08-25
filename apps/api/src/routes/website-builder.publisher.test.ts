@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { SENUKE_COMPONENT_REGISTRY_V1 } from "@webtummy/core/website-model";
-import { canonicalComponents, combinedPageSchema, compactWebsiteBuilderMediaAsset, compactWebsiteBuilderOverviewPage, effectiveExistingPageRequirements, generatedPageSchema, hasConfirmedWebsiteBuildContract, hasReleaseScopedDraftUrl, importedWebsiteRouteAssignment, isWebsiteQaRequestTarget, logoPaletteAiPrompt, logoPalettePromptBrand, measurementReadinessFor, pageIsImportedExistingWebsite, parseWordPressJsonResponse, productionWebsiteUrl, publishingAssetMatchesWebsitePage, replaceWebsitePublicStatements, shouldDeployWordPressDesignPackage, websitePublicationPageMappings, websiteReleaseComparisonModel, websiteReleaseDeploymentScope, websiteSettingsWithVerifiedLocalEvidence, wordPressConnectorVersionAtLeast, wordpressConnectorSafeCss, wordpressMenuDestination, wordpressPageWritePayload, wordpressPostTypeForPage, wordpressProductionCanonicalUrl, wordpressPublicationOrder, wordpressReadingSettingsFor, wordpressRemotePageIds } from "./website-builder.js";
+import { canonicalComponents, combinedPageSchema, compactWebsiteBuilderMediaAsset, compactWebsiteBuilderOverviewPage, effectiveExistingPageRequirements, generatedPageSchema, hasConfirmedWebsiteBuildContract, hasReleaseScopedDraftUrl, importedWebsiteRouteAssignment, isWebsiteQaRequestTarget, logoPaletteAiPrompt, logoPalettePromptBrand, measurementReadinessFor, pageIsImportedExistingWebsite, parseWordPressJsonResponse, productionWebsiteUrl, publishingAssetMatchesWebsitePage, publishingAssetSyncScope, publishingTaskCanSync, replaceWebsitePublicStatements, shouldDeployWordPressDesignPackage, websitePublicationPageMappings, websiteReleaseComparisonModel, websiteReleaseDeploymentScope, websiteSettingsWithVerifiedLocalEvidence, wordPressConnectorVersionAtLeast, wordpressConnectorSafeCss, wordpressMenuDestination, wordpressPageWritePayload, wordpressPostTypeForPage, wordpressProductionCanonicalUrl, wordpressPublicationOrder, wordpressReadingSettingsFor, wordpressRemotePageIds } from "./website-builder.js";
 
 const project = {
   businessName: "Example Financial",
@@ -13,6 +13,20 @@ const project = {
     country: "Canada",
   },
 };
+
+describe("Publishing content synchronization scope", () => {
+  it("loads linked assets only after they reach a publishable state", () => {
+    for (const status of ["approved", "ready_to_publish", "publishing", "published", "completed"]) expect(publishingTaskCanSync(status)).toBe(true);
+    for (const status of ["ready", "in_progress", "needs_review", "submitted_for_approval", "changes_requested"]) expect(publishingTaskCanSync(status)).toBe(false);
+  });
+
+  it("allows only complete article assets to create or replace full pages", () => {
+    expect(publishingAssetSyncScope("article")).toBe("full_page");
+    for (const type of ["h1", "title", "meta_description", "metadata", "on_page_seo", "page_updates", "faq", "page_schema"]) {
+      expect(publishingAssetSyncScope(type)).toBe("field_only");
+    }
+  });
+});
 
 describe("confirmed website build contract", () => {
   it("lets an approved existing page map finish after upstream evidence changes", () => {
