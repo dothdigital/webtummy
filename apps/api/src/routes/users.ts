@@ -303,6 +303,18 @@ usersRouter.patch("/:id/verify-email", async (req, res) => {
   res.json({ user: publicUser(user) });
 });
 
+usersRouter.post("/:id/resend-setup-email", async (req, res) => {
+  const user = await prisma.user.findUnique({
+    where: { id: req.params.id },
+    select: { id: true, email: true, name: true, isActive: true },
+  });
+  if (!user) return res.status(404).json({ error: "user not found" });
+  if (!user.isActive) return res.status(409).json({ error: "Enable this account before sending a setup email." });
+
+  await sendPasswordResetEmail(user, "setup");
+  res.json({ message: `A new secure setup link was sent to ${user.email}.` });
+});
+
 
 usersRouter.patch("/:id/active", async (req, res) => {
   const parsed = activeSchema.safeParse(req.body);

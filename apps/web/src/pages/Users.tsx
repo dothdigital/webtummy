@@ -151,6 +151,19 @@ export default function Users() {
   };
 
   const verify = (user: AdminUser) => patchUser(user, `/api/users/${user.id}/verify-email`, {}, `${user.email} is now verified.`);
+  const resendSetupEmail = async (user: AdminUser) => {
+    setBusyId(user.id);
+    setMessage(null);
+    try {
+      const result = await api.post<{ message: string }>(`/api/users/${user.id}/resend-setup-email`, {});
+      setMessage(result.message);
+      setModal(null);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : String(error));
+    } finally {
+      setBusyId(null);
+    }
+  };
   const setActive = (user: AdminUser, isActive: boolean) => patchUser(user, `/api/users/${user.id}/active`, { isActive }, `${user.email} ${isActive ? "enabled" : "disabled"}.`);
   const changePlan = (user: AdminUser, plan: string) => patchUser(user, `/api/users/${user.id}/plan`, { plan }, `${user.client?.name ?? user.email} moved to ${planByCode.get(plan)?.name ?? plan}.`);
   const updateBillingAccess = (user: AdminUser, body: unknown, success: string) => patchUser(user, `/api/users/${user.id}/billing-access`, body, success);
@@ -324,6 +337,7 @@ export default function Users() {
                 {modal.user.clientId && <ActionChoice title="Edit user and plan" description="Change the account plan or enable and disable the account." onClick={() => setModal({ type: "edit", user: modal.user })} disabled={busyId === modal.user.id} />}
                 {modal.user.clientId && <ActionChoice title="Open user projects" description="View the platform as this customer and open their project list." onClick={() => { startImpersonation(modal.user.clientId!, modal.user.name ?? modal.user.email); navigate("/projects"); }} />}
                 <ActionChoice title="Change password" description="Set a new login password for this user." onClick={() => { setPassword(""); setModal({ type: "password", user: modal.user }); }} disabled={busyId === modal.user.id} />
+                {modal.user.role !== "super_admin" && <ActionChoice title="Resend setup email" description="Send a fresh secure password-setting link to this user. The link expires in one hour." onClick={() => void resendSetupEmail(modal.user)} disabled={busyId === modal.user.id || !modal.user.isActive} />}
                 {!modal.user.emailVerifiedAt && <ActionChoice title="Verify email" description="Mark this email address as verified and enable the account." onClick={() => { const user = modal.user; setModal(null); void verify(user); }} disabled={busyId === modal.user.id} />}
                 <ActionChoice
                   title={modal.user.isActive ? "Disable account" : "Enable account"}
