@@ -5162,7 +5162,7 @@ model SocialStrategy {
   goalMetric                  String?   @db.VarChar(80)
   goalTarget                  Float?
   goal                        String    @db.VarChar(160)
-  audience                    String?   @db.VarChar(255)
+  audience                    String?   @db.Text
   platforms                   Json      @default("[]")
   targetKeywordsJson          Json      @default("[]")
   targetUrlsJson              Json      @default("[]")

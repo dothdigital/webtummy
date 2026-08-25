@@ -2129,7 +2129,8 @@ export default function SocialStrategy() {
                         {campaignSetupStep === 2 && <>
                         <label className="block md:col-span-2">
                           <span className="mb-1 block text-sm font-medium text-slate-600">Audience</span>
-                          <textarea value={audience} onChange={(event) => setAudience(event.target.value)} rows={5} placeholder="Describe the priority audience, their needs, buying context, and the target markets this campaign should align with." className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm leading-6 outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-100" />
+                          <textarea value={audience} onChange={(event) => setAudience(event.target.value)} maxLength={4000} rows={5} placeholder="Describe the priority audience, their needs, buying context, and the target markets this campaign should align with." className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm leading-6 outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-100" />
+                          <span className="mt-1 block text-right text-xs text-slate-400">{audience.length}/4000</span>
                           <span className="mt-1 block text-xs text-slate-500">Loaded from Project Intelligence. Refine only what is specific to this campaign.</span>
                         </label>
                         <Input label="Tone" value={tone} onChange={setTone} placeholder="Professional, friendly, educational" />
