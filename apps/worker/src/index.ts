@@ -4,7 +4,7 @@ import { prisma } from "@webtummy/db";
 import { config, CRAWL_QUEUE, defaultCrawlOptions } from "./config.js";
 import { connection, type CrawlJobData } from "./queue.js";
 import { runCrawl } from "./crawl.js";
-import { recoverQueuedCrawlJobs, startMaintenanceScheduler } from "./maintenance.js";
+import { recoverQueuedCrawlJobs, startMaintenanceScheduler, startNotificationEmailScheduler } from "./maintenance.js";
 import type { CrawlOptions } from "@webtummy/core";
 import { startWebsiteBuilderWorker } from "./website-builder.js";
 import { recoverGrowthIntelligenceCycles, startGrowthIntelligenceScheduler, startGrowthIntelligenceWorker } from "./growth-intelligence.js";
@@ -91,6 +91,7 @@ worker.on("failed", (job, err) => {
 });
 
 const maintenanceTimer = startMaintenanceScheduler();
+const notificationEmailTimer = startNotificationEmailScheduler();
 const websiteBuilderWorker = startWebsiteBuilderWorker();
 const growthIntelligenceWorker = startGrowthIntelligenceWorker();
 const socialImageWorker = startSocialImageWorker();
@@ -103,6 +104,7 @@ console.log(`[worker] Continuous Growth scheduler active every ${config.growthIn
 const shutdown = async () => {
   console.log("[worker] shutting down…");
   clearInterval(maintenanceTimer);
+  clearInterval(notificationEmailTimer);
   clearInterval(growthIntelligenceTimer);
   await worker.close();
   await websiteBuilderWorker.close();

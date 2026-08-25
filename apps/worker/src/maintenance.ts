@@ -586,8 +586,13 @@ export async function approvalReminderEscalations(now = new Date()) {
   });
 }
 
+let notificationEmailDeliveryRunning = false;
+
 export async function workspaceNotificationEmailDelivery(now = new Date()) {
-  return runLogged("workspace_notification_email_delivery", async () => {
+  if (notificationEmailDeliveryRunning) return { checked: 0, sent: 0, deferred: 0, failed: 0, alreadyRunning: true };
+  notificationEmailDeliveryRunning = true;
+  try {
+    return await runLogged("workspace_notification_email_delivery", async () => {
     const notifications = await prisma.workspaceNotification.findMany({
       // Retry newly queued and previously failed messages after transient provider or network failures.
       where: { emailEligible: true, emailStatus: { in: ["pending", "failed"] } }, orderBy: { createdAt: "asc" }, take: 500,
@@ -601,7 +606,7 @@ export async function workspaceNotificationEmailDelivery(now = new Date()) {
       const membership = recipient.workspaceMemberships.find((item) => item.workspaceId === items[0].workspaceId);
       const overrides = membership?.permissionOverrides && typeof membership.permissionOverrides === "object" && !Array.isArray(membership.permissionOverrides) ? membership.permissionOverrides as { notificationPreferences?: unknown } : {};
       const preferences = overrides.notificationPreferences && typeof overrides.notificationPreferences === "object" && !Array.isArray(overrides.notificationPreferences) ? overrides.notificationPreferences as { emailFrequency?: unknown } : {};
-      const frequency = ["immediate", "daily", "weekly", "monthly"].includes(String(preferences.emailFrequency)) ? String(preferences.emailFrequency) : "daily";
+      const frequency = ["immediate", "daily", "weekly", "monthly"].includes(String(preferences.emailFrequency)) ? String(preferences.emailFrequency) : "immediate";
       const critical = items.filter((item) => /security|integration.*(failed|disconnected)|publishing_failed|critical/.test(item.type));
       const routine = items.filter((item) => !critical.includes(item));
       const batches: (typeof notifications)[] = critical.map((item) => [item]);
@@ -610,7 +615,7 @@ export async function workspaceNotificationEmailDelivery(now = new Date()) {
       if (readyRoutine.length) batches.push(readyRoutine);
       deferred += routine.length - readyRoutine.length;
       for (const batch of batches) {
-        const lines = batch.map((item) => `${item.title}: ${item.body}`);
+        const lines = batch.map((item) => `${item.title}: ${item.body}\nCompleted: ${item.createdAt.toISOString().replace("T", " ").replace(".000Z", " UTC")}`);
         const content = actionEmail({
           title: batch.length > 1 ? `${batch.length} project updates are ready` : batch[0].title,
           message: lines.join("\n\n"),
@@ -620,6 +625,11 @@ export async function workspaceNotificationEmailDelivery(now = new Date()) {
             ? "You are receiving this summary based on your workspace notification frequency."
             : "You are receiving this message because this workspace update is ready for your attention.",
         });
+        const claimed = await prisma.workspaceNotification.updateMany({
+          where: { id: { in: batch.map((item) => item.id) }, emailStatus: { in: ["pending", "failed"] } },
+          data: { emailStatus: "sending" },
+        });
+        if (claimed.count !== batch.length) continue;
         try {
           await sendMail({ to: recipient.email, subject: batch.length > 1 ? `${batch.length} SEnuke AI project updates are ready` : batch[0].title, ...content });
           await prisma.workspaceNotification.updateMany({ where: { id: { in: batch.map((item) => item.id) } }, data: { emailStatus: "sent" } });
@@ -631,8 +641,17 @@ export async function workspaceNotificationEmailDelivery(now = new Date()) {
         }
       }
     }
-    return { checked: notifications.length, sent, deferred, failed };
-  });
+      return { checked: notifications.length, sent, deferred, failed };
+    });
+  } finally {
+    notificationEmailDeliveryRunning = false;
+  }
+}
+
+export function startNotificationEmailScheduler() {
+  const run = () => workspaceNotificationEmailDelivery().catch((error) => console.error("[maintenance] notification email delivery failed", error));
+  setTimeout(run, 5_000);
+  return setInterval(run, 60_000);
 }
 
 export async function measurementCheckpointNotifications(now = new Date()) {

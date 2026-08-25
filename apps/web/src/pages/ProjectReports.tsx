@@ -41,7 +41,7 @@ export default function ProjectReports() {
   const [periodEnd, setPeriodEnd] = useState(today);
   const [selectedServices, setSelectedServices] = useState<string[]>([]);
   const [selectedFindings, setSelectedFindings] = useState<string[]>([]);
-  const [notificationPreferences, setNotificationPreferences] = useState<NotificationPreferences>({ nonCriticalEmail: true, emailFrequency: "daily", reportEmails: true, inAppNotifications: true });
+  const [notificationPreferences, setNotificationPreferences] = useState<NotificationPreferences>({ nonCriticalEmail: true, emailFrequency: "immediate", reportEmails: true, inAppNotifications: true });
   const [busy, setBusy] = useState("");
   const [linkCopyingId, setLinkCopyingId] = useState<string | null>(null);
   const [linkCopiedId, setLinkCopiedId] = useState<string | null>(null);

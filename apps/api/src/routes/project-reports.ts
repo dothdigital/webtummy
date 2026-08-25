@@ -1079,7 +1079,7 @@ projectReportsRouter.get("/project-reports/:reportId/download", async (req, res)
 projectReportsRouter.get("/notification-preferences", async (req, res) => {
   const context = await workspaceContext(req);
   const overrides = context.membership.permissionOverrides && typeof context.membership.permissionOverrides === "object" ? context.membership.permissionOverrides as { notificationPreferences?: unknown } : {};
-  res.json({ preferences: overrides.notificationPreferences ?? { nonCriticalEmail: true, emailFrequency: "daily", reportEmails: true, inAppNotifications: true }, criticalNotificationsRequired: true });
+  res.json({ preferences: overrides.notificationPreferences ?? { nonCriticalEmail: true, emailFrequency: "immediate", reportEmails: true, inAppNotifications: true }, criticalNotificationsRequired: true });
 });
 
 projectReportsRouter.patch("/notification-preferences", async (req, res) => {
