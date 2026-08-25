@@ -102,6 +102,28 @@ function externalUserId(req: Request) {
   return req.user?.userId ?? "unknown_user";
 }
 
+type SocialConnectAccountRecord = {
+  id?: unknown;
+  account_id?: unknown;
+  platform?: unknown;
+  status?: unknown;
+  external_user_id?: unknown;
+  [key: string]: unknown;
+};
+
+export function accountsForExternalUser(value: unknown, userId: string) {
+  const payload = value && typeof value === "object" ? value as Record<string, unknown> : {};
+  const accounts = Array.isArray(payload.accounts) ? payload.accounts : [];
+  return accounts.filter((item): item is SocialConnectAccountRecord => Boolean(
+    item && typeof item === "object" && (item as SocialConnectAccountRecord).external_user_id === userId,
+  ));
+}
+
+async function ownedSocialAccounts(req: Request) {
+  const data = await socialRequest("/api/social/accounts");
+  return accountsForExternalUser(data, externalUserId(req));
+}
+
 function socialDeliveryState(value: unknown): "verified" | "pending" | "failed" {
   const statuses: string[] = [];
   const visit = (item: unknown, depth = 0) => {
@@ -152,9 +174,9 @@ async function connectProvider(req: Request, res: ExpressResponse, provider: "fa
 socialConnectRouter.post("/social-connect/accounts/connect/facebook", async (req, res) => connectProvider(req, res, "facebook"));
 socialConnectRouter.post("/social-connect/accounts/connect/instagram", async (req, res) => connectProvider(req, res, "instagram"));
 
-socialConnectRouter.get("/social-connect/accounts", async (_req, res) => {
+socialConnectRouter.get("/social-connect/accounts", async (req, res) => {
   try {
-    res.json(await socialRequest("/api/social/accounts"));
+    res.json({ accounts: await ownedSocialAccounts(req) });
   } catch (error) {
     res.status(502).json({ error: String(error).replace(/^Error:\s*/, "") });
   }
@@ -166,6 +188,13 @@ socialConnectRouter.post("/social-connect/posts", async (req, res) => {
   if (parsed.data.scheduledAt) return res.status(409).json({ error: "Create the draft first, then schedule it through an approved Execution Plan task." });
   const idempotencyKey = req.header("idempotency-key") ?? req.header("Idempotency-Key") ?? undefined;
   try {
+    const ownedAccounts = await ownedSocialAccounts(req);
+    const invalidAccount = parsed.data.platforms.find((requested) => !ownedAccounts.some((account) => (
+      account.id === requested.accountId
+      && account.platform === requested.platform
+      && account.status === "connected"
+    )));
+    if (invalidAccount) return res.status(403).json({ error: `The selected ${invalidAccount.platform} account is not connected to this user.` });
     const data = await socialRequest("/api/social/posts", {
       method: "POST",
       headers: idempotencyKey ? { "Idempotency-Key": idempotencyKey } : undefined,

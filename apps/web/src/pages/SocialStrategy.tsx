@@ -799,6 +799,7 @@ export default function SocialStrategy() {
   const [changeContent, setChangeContent] = useState(true);
   const [changeImage, setChangeImage] = useState(false);
   const [postSaving, setPostSaving] = useState(false);
+  const [campaignBatchAction, setCampaignBatchAction] = useState<"images" | "approve" | "schedule" | "">("");
 
   const activeStrategy = strategies.find((strategy) => strategy.status === "active")
     ?? strategies.find((strategy) => strategy.status !== "draft" && strategy.status !== "superseded")
@@ -970,14 +971,14 @@ export default function SocialStrategy() {
 
   const scheduleCalendarPost = async (post: SocialCalendarPost) => {
     const strategy = strategies.find((item) => item.id === post.strategyId);
-    if (!strategy) return;
+    if (!strategy) return false;
     if (post.status !== "approved") {
       setPageError("Approve this post before scheduling it.");
-      return;
+      return false;
     }
     if (new Date(post.publishDate).getTime() <= Date.now()) {
       setPageError("Choose a future publishing time before scheduling this post.");
-      return;
+      return false;
     }
     const profile = campaignPublishingProfile(strategy);
     const accounts = providerAccounts.filter((account) => account.status === "connected" && profile.accountIds.includes(account.id) && account.platform === post.platform);
@@ -985,11 +986,11 @@ export default function SocialStrategy() {
       setPageError(post.platform === "facebook" || post.platform === "instagram"
         ? `Save a connected ${platformLabel(post.platform)} account in this campaign’s posting profile first.`
         : `${platformLabel(post.platform)} currently uses manual handoff. Automatic scheduling is available for connected Facebook and Instagram accounts.`);
-      return;
+      return false;
     }
     if (post.platform === "instagram" && !/^https:\/\//i.test(post.imageUrl || "")) {
       setPageError("Instagram requires a public HTTPS image URL. Add a hosted approved image before scheduling.");
-      return;
+      return false;
     }
     setPostingActionBusy(`schedule:${post.id}`);
     setPageError("");
@@ -1024,11 +1025,85 @@ export default function SocialStrategy() {
       });
       replaceCalendarPost(saved.post);
       setWorkflowMessage(`Post scheduled for ${formatPublishDate(saved.post.publishDate, profile.timezone)}.`);
+      return true;
     } catch (err) {
       setPageError(String(err).replace(/^Error:\s*/, ""));
+      return false;
     } finally {
       setPostingActionBusy("");
     }
+  };
+
+  const generateMissingCampaignImages = async () => {
+    if (!selectedStrategy) return;
+    const missing = selectedStrategy.posts.filter((post) => !post.imageUrl);
+    if (!missing.length) {
+      setWorkflowMessage("Every campaign post already has an image ready for review.");
+      return;
+    }
+    setCampaignBatchAction("images");
+    setPageError("");
+    let completed = 0;
+    try {
+      for (const post of missing) {
+        setWorkflowMessage(`Generating campaign image ${completed + 1} of ${missing.length}: ${post.topic}`);
+        const instruction = selectedStrategy.imageDirection
+          ? `Generate a new image that follows this campaign direction: ${selectedStrategy.imageDirection}`
+          : "Generate a distinctive, polished, brand-appropriate editorial image with a specific focal subject, natural depth, and no generic stock-photo staging.";
+        const result = await api.post<{ post: SocialCalendarPost }>(`/api/social-strategy/posts/${post.id}/request-changes`, {
+          instruction,
+          changeContent: false,
+          changeImage: true,
+        });
+        replaceCalendarPost(result.post);
+        completed += 1;
+      }
+      setWorkflowMessage(`${completed} campaign image${completed === 1 ? " is" : "s are"} ready. Open each preview before approval.`);
+    } catch (err) {
+      setPageError(`${completed} of ${missing.length} images completed. ${String(err).replace(/^Error:\s*/, "")}`);
+    } finally {
+      setCampaignBatchAction("");
+    }
+  };
+
+  const approveReadyCampaignPosts = async () => {
+    if (!selectedStrategy) return;
+    const ready = selectedStrategy.posts.filter((post) => !["approved", "scheduled", "published"].includes(post.status) && Boolean(post.imageUrl));
+    if (!ready.length) {
+      setWorkflowMessage("There are no image-ready campaign posts awaiting approval.");
+      return;
+    }
+    setCampaignBatchAction("approve");
+    setPageError("");
+    let completed = 0;
+    try {
+      for (const post of ready) {
+        const result = await api.post<{ post: SocialCalendarPost }>(`/api/social-strategy/posts/${post.id}/approve`, {});
+        replaceCalendarPost(result.post);
+        completed += 1;
+      }
+      setWorkflowMessage(`${completed} campaign post${completed === 1 ? " was" : "s were"} approved and are ready to schedule.`);
+    } catch (err) {
+      setPageError(`${completed} of ${ready.length} posts approved. ${String(err).replace(/^Error:\s*/, "")}`);
+    } finally {
+      setCampaignBatchAction("");
+    }
+  };
+
+  const scheduleApprovedCampaignPosts = async () => {
+    if (!selectedStrategy) return;
+    const approved = selectedStrategy.posts.filter((post) => post.status === "approved");
+    if (!approved.length) {
+      setWorkflowMessage("There are no approved campaign posts waiting to be scheduled.");
+      return;
+    }
+    setCampaignBatchAction("schedule");
+    setPageError("");
+    let completed = 0;
+    for (const post of approved) if (await scheduleCalendarPost(post)) completed += 1;
+    setCampaignBatchAction("");
+    if (completed === approved.length) setWorkflowMessage(`${completed} approved campaign post${completed === 1 ? " was" : "s were"} submitted to the Social Connect publishing worker.`);
+    else setPageError(`${completed} of ${approved.length} approved posts were scheduled. Review the error and the remaining account, date, or image requirements.`);
   };
 
   const loadStrategy = async (id: string, projectId?: string | null) => {
@@ -2127,6 +2202,9 @@ export default function SocialStrategy() {
                   </>
                 );
               })()}
+              <Button variant="ghost" onClick={() => void generateMissingCampaignImages()} disabled={Boolean(campaignBatchAction)}>{campaignBatchAction === "images" ? "Generating images…" : "Generate missing images"}</Button>
+              <Button variant="ghost" onClick={() => void approveReadyCampaignPosts()} disabled={Boolean(campaignBatchAction)}>{campaignBatchAction === "approve" ? "Approving…" : "Approve image-ready posts"}</Button>
+              <Button onClick={() => void scheduleApprovedCampaignPosts()} disabled={Boolean(campaignBatchAction)}>{campaignBatchAction === "schedule" ? "Scheduling…" : "Schedule approved posts"}</Button>
             </div>
           </div>
           <div className="border-b border-sky-100 bg-sky-50 px-4 py-2 text-[11px] leading-5 text-sky-900">
