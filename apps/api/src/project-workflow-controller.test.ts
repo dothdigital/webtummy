@@ -253,6 +253,10 @@ describe("DEV-046 project workflow controller", () => {
     expect(result.nextBestAction.action.label).toBe("Regenerate Strategy");
     expect(result.nextBestAction.explainability).toContain("preserves the previous version");
     expect(result.stages.find((item) => item.key === "unified_strategy")?.reason).toContain("completed previously");
+    expect(result.strategyCreatedAt).toBe(strategyAt.toISOString());
+    expect(result.latestEvidenceAt).toBe(evidenceAt.toISOString());
+    expect(result.changedEvidence.length).toBeGreaterThan(0);
+    expect(result.changedEvidence.every((item) => new Date(item.evidenceAt) > strategyAt)).toBe(true);
   });
 
   it("allows an authorized waiver to satisfy one evidence cycle", () => {

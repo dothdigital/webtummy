@@ -127,6 +127,10 @@ export type ProjectWorkflowControllerView = {
   executionPlanVersion: string | null;
   executionPlanStrategyVersion: number | null;
   growthBlueprintVersion: number;
+  strategyCreatedAt: string | null;
+  strategyApprovedAt: string | null;
+  latestEvidenceAt: string | null;
+  changedEvidence: Array<{ key: string; label: string; evidenceAt: string; reason: string }>;
   confidence: {
     overall: number;
     completeness: number;
@@ -573,7 +577,12 @@ export function resolveProjectWorkflow(snapshot: WorkflowEvidenceSnapshot): Proj
 
   const stageWeights: Record<string, number> = { create_project: 4, workspace_context: 3, project_situation: 3, business_discovery: 10, intelligence_collection: 25, unified_strategy: 10, strategy_approval: 8, execution_plan: 8, ai_execution: 10, publish_implement: 7, measurement: 5, growth_blueprint: 4, next_best_action: 3 };
   const overallProgressPercent = Math.round(stages.reduce((sum, stage) => sum + (["complete", "approved"].includes(stage.status) ? stageWeights[stage.key] ?? 0 : stage.status === "in_progress" ? (stageWeights[stage.key] ?? 0) * 0.5 : 0), 0));
-  return { version: WORKFLOW_CONTROLLER_VERSION, projectId: snapshot.projectId, state, stateLabel: stateLabels[state], readinessPercent, overallProgressPercent, intelligenceReady, strategyStale, executionPlanStale, businessBrainVersion: 0, evidenceVersion: 0, strategyVersion: snapshot.latestStrategyVersion, executionPlanVersion: snapshot.executionPlanVersion, executionPlanStrategyVersion: snapshot.executionPlanStrategyVersion, growthBlueprintVersion: snapshot.growthBlueprintVersion, confidence, blockers, nextBestAction, stages, intelligenceModules: intelligence, updatedAt: new Date().toISOString() };
+  const strategyCreatedAt = snapshot.latestStrategy?.createdAt ?? null;
+  const changedEvidence = strategyCreatedAt ? intelligence
+    .filter((item) => item.evidenceAt && new Date(item.evidenceAt).getTime() > strategyCreatedAt.getTime())
+    .map((item) => ({ key: item.key, label: item.label, evidenceAt: new Date(item.evidenceAt!).toISOString(), reason: item.reason })) : [];
+  if (strategyStale && snapshot.latestEvidenceAt && !changedEvidence.length) changedEvidence.push({ key: "business_profile", label: "Business Profile or project direction", evidenceAt: snapshot.latestEvidenceAt.toISOString(), reason: "Verified project information was updated after this Strategy version was created." });
+  return { version: WORKFLOW_CONTROLLER_VERSION, projectId: snapshot.projectId, state, stateLabel: stateLabels[state], readinessPercent, overallProgressPercent, intelligenceReady, strategyStale, executionPlanStale, businessBrainVersion: 0, evidenceVersion: 0, strategyVersion: snapshot.latestStrategyVersion, executionPlanVersion: snapshot.executionPlanVersion, executionPlanStrategyVersion: snapshot.executionPlanStrategyVersion, growthBlueprintVersion: snapshot.growthBlueprintVersion, strategyCreatedAt: strategyCreatedAt?.toISOString() ?? null, strategyApprovedAt: snapshot.latestStrategy?.approvedAt?.toISOString() ?? null, latestEvidenceAt: snapshot.latestEvidenceAt?.toISOString() ?? null, changedEvidence, confidence, blockers, nextBestAction, stages, intelligenceModules: intelligence, updatedAt: new Date().toISOString() };
 }
 
 export async function getProjectWorkflowController(projectId: string): Promise<ProjectWorkflowControllerView | null> {

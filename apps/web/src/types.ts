@@ -179,6 +179,10 @@ export interface ProjectWorkflowController {
   strategyVersion: number;
   executionPlanVersion: string | null;
   growthBlueprintVersion: number;
+  strategyCreatedAt: string | null;
+  strategyApprovedAt: string | null;
+  latestEvidenceAt: string | null;
+  changedEvidence: Array<{ key: string; label: string; evidenceAt: string; reason: string }>;
   confidence: {
     overall: number;
     completeness: number;

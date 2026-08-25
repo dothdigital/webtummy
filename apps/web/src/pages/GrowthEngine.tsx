@@ -462,10 +462,29 @@ function IntelligenceReadiness({ controller }: { controller: NonNullable<GrowthO
         </div>
       )}
       {!incomplete.length && controller.strategyStale && (
-        <div className="p-5">
-          <Link to={`/strategy?projectId=${controller.projectId}`} className="inline-flex items-center justify-center rounded-lg bg-brand-600 px-3 py-2 text-sm font-bold text-white hover:bg-brand-700">
-            Create new Strategy version
-          </Link>
+        <div className="space-y-5 p-5">
+          <div className="grid gap-4 lg:grid-cols-2">
+            <div className="rounded-xl border border-slate-200 bg-white p-4">
+              <div className="flex items-center justify-between gap-3"><div className="text-xs font-black uppercase tracking-wide text-slate-500">Existing approved plan</div><span className="rounded-full bg-slate-100 px-2.5 py-1 text-xs font-bold text-slate-700">Strategy v{controller.strategyVersion || 1}</span></div>
+              <h3 className="mt-3 font-bold text-slate-950">Continue with the existing Strategy</h3>
+              <p className="mt-2 text-sm leading-6 text-slate-600">Keep reviewing and executing the approved version already in history. It was created {controller.strategyCreatedAt ? formatDate(controller.strategyCreatedAt) : "before the latest evidence"} and does not include the changes shown here.</p>
+              <div className="mt-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs leading-5 text-amber-900"><b>Limitation:</b> new Growth recommendations remain paused until a current Strategy version is generated and approved.</div>
+            </div>
+            <div className="rounded-xl border border-brand-200 bg-brand-50/40 p-4">
+              <div className="flex items-center justify-between gap-3"><div className="text-xs font-black uppercase tracking-wide text-brand-700">Current evidence</div><span className="rounded-full bg-white px-2.5 py-1 text-xs font-bold text-brand-700">Recommended</span></div>
+              <h3 className="mt-3 font-bold text-slate-950">Create a new Strategy version</h3>
+              <p className="mt-2 text-sm leading-6 text-slate-600">Use evidence recorded through {controller.latestEvidenceAt ? formatDate(controller.latestEvidenceAt) : "the latest project update"}. Strategy v{controller.strategyVersion || 1} stays available in version history for comparison and audit.</p>
+              <div className="mt-3 text-xs font-bold text-brand-800">After generation: review the comparison, approve the exact new version, then refresh Growth.</div>
+            </div>
+          </div>
+          <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
+            <div className="text-xs font-black uppercase tracking-wide text-slate-500">What changed after Strategy v{controller.strategyVersion || 1}</div>
+            <div className="mt-3 grid gap-2 sm:grid-cols-2">{controller.changedEvidence.length ? controller.changedEvidence.map((item) => <div key={`${item.key}-${item.evidenceAt}`} className="rounded-lg border bg-white p-3"><div className="flex items-start justify-between gap-3"><b className="text-sm text-slate-900">{item.label}</b><span className="shrink-0 text-[10px] font-bold text-slate-500">{formatDate(item.evidenceAt)}</span></div><p className="mt-1 text-xs leading-5 text-slate-600">{item.reason}</p></div>) : <p className="text-sm text-slate-600">Project evidence was updated after this Strategy was created. Open Strategy to review the saved version before deciding.</p>}</div>
+          </div>
+          <div className="flex flex-wrap gap-3">
+            <Link to={`/strategy?projectId=${controller.projectId}&view=existing`} className="inline-flex items-center justify-center rounded-lg border border-slate-300 bg-white px-4 py-2.5 text-sm font-bold text-slate-800 hover:bg-slate-50">Continue with existing Strategy</Link>
+            <Link to={`/strategy?projectId=${controller.projectId}&action=regenerate`} className="inline-flex items-center justify-center rounded-lg bg-brand-600 px-4 py-2.5 text-sm font-bold text-white hover:bg-brand-700">Create new Strategy version</Link>
+          </div>
         </div>
       )}
     </Card>
