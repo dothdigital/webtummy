@@ -257,6 +257,7 @@ describe("DEV-046 project workflow controller", () => {
     expect(result.latestEvidenceAt).toBe(evidenceAt.toISOString());
     expect(result.changedEvidence.length).toBeGreaterThan(0);
     expect(result.changedEvidence.every((item) => new Date(item.evidenceAt) > strategyAt)).toBe(true);
+    expect(result.changedEvidence.find((item) => item.key === "authority_analysis")?.action?.url).toContain("projectId=project-1");
   });
 
   it("allows an authorized waiver to satisfy one evidence cycle", () => {

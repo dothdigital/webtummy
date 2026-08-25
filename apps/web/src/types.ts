@@ -182,7 +182,7 @@ export interface ProjectWorkflowController {
   strategyCreatedAt: string | null;
   strategyApprovedAt: string | null;
   latestEvidenceAt: string | null;
-  changedEvidence: Array<{ key: string; label: string; evidenceAt: string; reason: string }>;
+  changedEvidence: Array<{ key: string; label: string; evidenceAt: string; reason: string; action: WorkflowControllerAction | null }>;
   confidence: {
     overall: number;
     completeness: number;

@@ -130,7 +130,7 @@ export type ProjectWorkflowControllerView = {
   strategyCreatedAt: string | null;
   strategyApprovedAt: string | null;
   latestEvidenceAt: string | null;
-  changedEvidence: Array<{ key: string; label: string; evidenceAt: string; reason: string }>;
+  changedEvidence: Array<{ key: string; label: string; evidenceAt: string; reason: string; action: WorkflowAction | null }>;
   confidence: {
     overall: number;
     completeness: number;
@@ -580,8 +580,8 @@ export function resolveProjectWorkflow(snapshot: WorkflowEvidenceSnapshot): Proj
   const strategyCreatedAt = snapshot.latestStrategy?.createdAt ?? null;
   const changedEvidence = strategyCreatedAt ? intelligence
     .filter((item) => item.evidenceAt && new Date(item.evidenceAt).getTime() > strategyCreatedAt.getTime())
-    .map((item) => ({ key: item.key, label: item.label, evidenceAt: new Date(item.evidenceAt!).toISOString(), reason: item.reason })) : [];
-  if (strategyStale && snapshot.latestEvidenceAt && !changedEvidence.length) changedEvidence.push({ key: "business_profile", label: "Business Profile or project direction", evidenceAt: snapshot.latestEvidenceAt.toISOString(), reason: "Verified project information was updated after this Strategy version was created." });
+    .map((item) => ({ key: item.key, label: item.label, evidenceAt: new Date(item.evidenceAt!).toISOString(), reason: item.reason, action: item.action })) : [];
+  if (strategyStale && snapshot.latestEvidenceAt && !changedEvidence.length) changedEvidence.push({ key: "business_profile", label: "Business Profile or project direction", evidenceAt: snapshot.latestEvidenceAt.toISOString(), reason: "Verified project information was updated after this Strategy version was created.", action: action("Review Business Profile", `/guided-projects/${snapshot.projectId}/intake`, "review") });
   return { version: WORKFLOW_CONTROLLER_VERSION, projectId: snapshot.projectId, state, stateLabel: stateLabels[state], readinessPercent, overallProgressPercent, intelligenceReady, strategyStale, executionPlanStale, businessBrainVersion: 0, evidenceVersion: 0, strategyVersion: snapshot.latestStrategyVersion, executionPlanVersion: snapshot.executionPlanVersion, executionPlanStrategyVersion: snapshot.executionPlanStrategyVersion, growthBlueprintVersion: snapshot.growthBlueprintVersion, strategyCreatedAt: strategyCreatedAt?.toISOString() ?? null, strategyApprovedAt: snapshot.latestStrategy?.approvedAt?.toISOString() ?? null, latestEvidenceAt: snapshot.latestEvidenceAt?.toISOString() ?? null, changedEvidence, confidence, blockers, nextBestAction, stages, intelligenceModules: intelligence, updatedAt: new Date().toISOString() };
 }
 
