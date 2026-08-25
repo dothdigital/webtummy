@@ -1134,24 +1134,12 @@ export default function SocialStrategy() {
     }
     setCampaignBatchAction("images");
     setPageError("");
-    let completed = 0;
     try {
-      for (const post of missing) {
-        setWorkflowMessage(`Generating campaign image ${completed + 1} of ${missing.length}: ${post.topic}`);
-        const instruction = selectedStrategy.imageDirection
-          ? `Generate a new image that follows this campaign direction: ${selectedStrategy.imageDirection}`
-          : "Generate a distinctive, polished, brand-appropriate editorial image with a specific focal subject, natural depth, and no generic stock-photo staging.";
-        const result = await api.post<{ post: SocialCalendarPost }>(`/api/social-strategy/posts/${post.id}/request-changes`, {
-          instruction,
-          changeContent: false,
-          changeImage: true,
-        });
-        replaceCalendarPost(result.post);
-        completed += 1;
-      }
-      setWorkflowMessage(`${completed} campaign image${completed === 1 ? " is" : "s are"} ready. Open each preview before approval.`);
+      const result = await api.post<{ queued: number }>(`/api/social-strategy/${selectedStrategy.id}/generate-images`, {});
+      await loadStrategy(websiteId, selectedProject?.id ?? null);
+      setWorkflowMessage(`${result.queued} missing campaign image${result.queued === 1 ? " was" : "s were"} queued. The background worker will continue if you leave this page; refresh to see new previews.`);
     } catch (err) {
-      setPageError(`${completed} of ${missing.length} images completed. ${String(err).replace(/^Error:\s*/, "")}`);
+      setPageError(String(err).replace(/^Error:\s*/, ""));
     } finally {
       setCampaignBatchAction("");
     }
@@ -1604,19 +1592,9 @@ export default function SocialStrategy() {
       setEditingCampaignId(null);
       setSelectedCampaignId(result.strategy.id);
       setStep("strategy");
-      const posts = result.strategy.posts ?? [];
-      let completedImages = 0;
-      for (const post of posts) {
-        setGenerationStage(`Generating actual campaign image ${completedImages + 1} of ${posts.length}: ${post.topic}`);
-        await api.post<{ post: SocialCalendarPost }>(`/api/social-strategy/posts/${post.id}/request-changes`, {
-          instruction: `Create the final campaign image for this exact post. Ground it in the target keyword, audience, caption, destination, and campaign visual direction. Do not create a generic business image.`,
-          changeContent: false,
-          changeImage: true,
-        });
-        completedImages += 1;
-      }
+      const queued = await api.post<{ queued: number }>(`/api/social-strategy/${result.strategy.id}/generate-images`, {});
       await loadStrategy(websiteId, selectedProject?.id ?? null);
-      setWorkflowMessage(`Campaign content and ${completedImages} actual AI image${completedImages === 1 ? "" : "s"} are ready for review and approval.`);
+      setWorkflowMessage(`Campaign content is ready and ${queued.queued} image${queued.queued === 1 ? " is" : "s are"} queued on the background worker. You can leave this page and return to review the previews.`);
       if (typeof Notification !== "undefined" && Notification.permission === "granted") new Notification("Social campaign ready", { body: `${result.strategy.campaignName || "Your campaign"} content and images are ready to review.` });
     } catch (err) {
       setPageError(String(err).replace(/^Error:\s*/, ""));

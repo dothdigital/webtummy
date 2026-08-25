@@ -9,6 +9,7 @@ import { socialPlatforms, socialProviderCapabilities } from "../social-provider-
 import { canAccessProject, hasWorkspacePermission, recordWorkspaceActivity, workspaceContext } from "../workspace-access.js";
 import { approvedStrategyContext } from "../strategy-ai.js";
 import { storeGeneratedImage } from "../generated-assets.js";
+import { socialImageQueue } from "../queue.js";
 
 export const socialStrategyRouter = Router();
 socialStrategyRouter.use(requireAuth);
@@ -1566,6 +1567,19 @@ socialStrategyRouter.post("/social-strategy/posts/:postId/request-changes", asyn
     return row;
   });
   res.json({ post: updated });
+});
+
+socialStrategyRouter.post("/social-strategy/:strategyId/generate-images", async (req, res) => {
+  const context = await workspaceContext(req);
+  if (!hasWorkspacePermission(context, "run_ai_analysis")) return res.status(403).json({ error: "AI generation permission is required." });
+  const strategy = await prisma.socialStrategy.findUnique({ where: { id: req.params.strategyId }, include: { project: true, posts: { orderBy: { publishDate: "asc" } } } });
+  if (!strategy?.projectId || !strategy.project || !await canAccessProject(context, strategy.projectId)) return res.status(404).json({ error: "Campaign not found." });
+  const posts = strategy.posts.filter((post) => !post.imageUrl && !["scheduled", "published"].includes(post.status) && !["queued", "generating"].includes(post.imageStatus));
+  for (const post of posts) {
+    await prisma.socialCalendarPost.update({ where: { id: post.id }, data: { imageStatus: "queued" } });
+    await socialImageQueue.add("social-image:generate", { postId: post.id, workspaceId: context.workspace.id, createdByUserId: context.membership.userId });
+  }
+  res.status(202).json({ queued: posts.length, strategyId: strategy.id });
 });
 
 socialStrategyRouter.post("/social-strategy/posts/:postId/approve", async (req, res) => {

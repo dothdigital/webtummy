@@ -41,6 +41,8 @@ export const config = {
   // Backward-compatible alias used by existing background content jobs.
   openaiModel: process.env.OPENAI_CONTENT_MODEL ?? process.env.OPENAI_MODEL ?? "gpt-4o-mini",
   openaiImageModel: process.env.OPENAI_IMAGE_MODEL ?? "gpt-image-2",
+  appEncryptionKey: process.env.APP_ENCRYPTION_KEY ?? process.env.JWT_SECRET ?? "dev-only-change-me",
+  publicApiUrl: process.env.PUBLIC_API_URL ?? process.env.WEB_APP_URL ?? "http://localhost:4000",
   websiteImageQuality: process.env.WEBSITE_IMAGE_QUALITY === "medium" ? "medium" as const : "high" as const,
   userAgent:
     process.env.CRAWL_USER_AGENT ?? "SEnukeAI-Crawler/0.1 (+https://senuke-ai.local/bot)",
@@ -85,3 +87,4 @@ export function defaultCrawlOptions(): CrawlOptions {
 export const CRAWL_QUEUE = "crawl";
 export const WEBSITE_BUILDER_QUEUE = "website-builder";
 export const GROWTH_INTELLIGENCE_QUEUE = "growth-intelligence";
+export const SOCIAL_IMAGE_QUEUE = "social-images";
