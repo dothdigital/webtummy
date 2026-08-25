@@ -1852,7 +1852,7 @@ export default function SocialStrategy() {
 
             {profileEditorOpen && (
               <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/50 p-4" role="dialog" aria-modal="true" aria-label={editingProfileIndex === null ? "Add profile" : "Edit profile"}>
-                <div className="max-h-[92vh] w-full max-w-5xl overflow-y-auto rounded-2xl bg-white shadow-2xl">
+                <div className="max-h-[92vh] w-full max-w-6xl overflow-y-auto rounded-2xl bg-white shadow-2xl">
                   <div className="flex items-start justify-between gap-3 border-b border-slate-200 px-5 py-4">
                     <div><div className="text-xs font-bold uppercase tracking-wide text-brand-600">{editingProfileIndex === null ? "New profile" : "Update profile"}</div><h3 className="mt-1 text-xl font-bold text-charcoal-900">{editingProfileIndex === null ? "Add Profile" : `Edit ${platformLabel(profileDraft.platform)} Profile`}</h3></div>
                     <button type="button" onClick={() => setProfileEditorOpen(false)} className="rounded-lg px-3 py-2 text-xl text-slate-400 hover:bg-slate-100 hover:text-slate-700" aria-label="Close">×</button>
@@ -2127,7 +2127,11 @@ export default function SocialStrategy() {
                       <p className="mt-1 text-xs leading-5 text-slate-500">{campaignSetupStep === 2 ? "The audience is loaded from Project Intelligence. Refine it only to align this specific campaign." : "Select approved keywords from Project Intelligence and define the visual direction."}</p>
                       <div className="mt-4 grid gap-4 md:grid-cols-2">
                         {campaignSetupStep === 2 && <>
-                        <Input label="Audience" value={audience} onChange={setAudience} placeholder="Homeowners, SaaS buyers, local businesses" />
+                        <label className="block md:col-span-2">
+                          <span className="mb-1 block text-sm font-medium text-slate-600">Audience</span>
+                          <textarea value={audience} onChange={(event) => setAudience(event.target.value)} rows={5} placeholder="Describe the priority audience, their needs, buying context, and the target markets this campaign should align with." className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm leading-6 outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-100" />
+                          <span className="mt-1 block text-xs text-slate-500">Loaded from Project Intelligence. Refine only what is specific to this campaign.</span>
+                        </label>
                         <Input label="Tone" value={tone} onChange={setTone} placeholder="Professional, friendly, educational" />
                         <label className="block">
                           <span className="mb-1 block text-sm font-medium text-slate-600">Planned campaign cadence</span>
