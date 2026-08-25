@@ -1612,7 +1612,7 @@ export default function SocialStrategy() {
               </div>
               <div className="-mx-1 mt-4 overflow-x-auto px-1 pb-2">
                 <div className="flex min-w-max gap-1.5">
-                  {providers.filter((provider) => provider.platform !== "threads").map((provider) => {
+                  {providers.map((provider) => {
                     const connected = providerAccounts.some((account) => account.platform === provider.platform && account.status === "connected");
                     const connectable = provider.platform === "facebook" || provider.platform === "instagram";
                     return (
@@ -1629,7 +1629,7 @@ export default function SocialStrategy() {
                         ) : connectable ? (
                           <button type="button" onClick={() => void connectSocialProvider(provider.platform as "facebook" | "instagram")} disabled={providerActionBusy} className="rounded bg-brand-600 px-2 py-0.5 text-[10px] font-bold text-white hover:bg-brand-700 disabled:opacity-60">Connect</button>
                         ) : (
-                          <span className="flex items-center gap-1 text-[10px] font-semibold text-slate-500"><span className="h-1.5 w-1.5 rounded-full bg-slate-300" />Manual</span>
+                          <span className="flex items-center gap-1 text-[10px] font-bold text-slate-500"><span className="h-1.5 w-1.5 rounded-full bg-slate-300" />Coming soon</span>
                         )}
                       </div>
                     </div>
@@ -1650,6 +1650,9 @@ export default function SocialStrategy() {
                   </div>
                 </div>
               )}
+              <div className="mt-4 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs leading-5 text-slate-600">
+                <b>Coming soon:</b> LinkedIn, YouTube, TikTok, X, Threads, Pinterest, and Google Business publishing tools are visible for planning but cannot yet be connected or scheduled. Facebook and Instagram are currently available.
+              </div>
             </Card>
             <SocialPublisher websiteId={websiteId} strategy={selectedStrategy ?? activeStrategy} onPostUpdated={replaceCalendarPost} />
           </div>
