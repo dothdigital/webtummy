@@ -79,7 +79,7 @@ function AttentionQueue({ actions, entrepreneur = false }: { actions: WorkspaceD
 }
 
 const setupStateLabel: Record<GuidedSetupStep["state"], string> = { not_started: "Not started", in_progress: "In progress", complete: "Complete", blocked: "Blocked", deferred: "Deferred", not_applicable: "Not applicable" };
-function GuidedSetup({ steps }: { steps: GuidedSetupStep[] }) {
+export function GuidedSetup({ steps, preview = false }: { steps: GuidedSetupStep[]; preview?: boolean }) {
   const complete = steps.filter((step) => step.state === "complete" || step.state === "deferred" || step.state === "not_applicable").length;
   const ready = complete === steps.length;
   const next = steps.find((step) => !["complete", "deferred", "not_applicable"].includes(step.state)) ?? steps[steps.length - 1];
@@ -88,14 +88,15 @@ function GuidedSetup({ steps }: { steps: GuidedSetupStep[] }) {
     <div className="bg-gradient-to-br from-brand-50 via-white to-violet-50 p-5 sm:p-7">
       <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
         <div className="max-w-3xl"><div className="text-xs font-black uppercase tracking-[0.16em] text-brand-700">{ready ? "Your workspace is ready." : "Guided setup"}</div><h2 className="mt-2 text-2xl font-black text-slate-950">{ready ? "Open your Next Best Action" : "Let’s understand your business and determine what should happen next."}</h2><p className="mt-2 text-sm leading-6 text-slate-600">Complete the guided setup once. SEnuke AI will use your verified business information and available evidence to build a customized Strategy and recommend the first Next Best Action.</p></div>
-        <Link to={next.href} className="inline-flex min-h-11 shrink-0 items-center justify-center rounded-xl bg-brand-700 px-5 py-3 text-sm font-black text-white shadow-sm hover:bg-brand-800 focus:outline-none focus:ring-4 focus:ring-brand-200">{ready ? "Open your Next Best Action" : "Continue setup"} →</Link>
+        {preview ? <span className="inline-flex min-h-11 shrink-0 items-center justify-center rounded-xl bg-brand-700 px-5 py-3 text-sm font-black text-white shadow-sm">Continue setup →</span> : <Link to={next.href} className="inline-flex min-h-11 shrink-0 items-center justify-center rounded-xl bg-brand-700 px-5 py-3 text-sm font-black text-white shadow-sm hover:bg-brand-800 focus:outline-none focus:ring-4 focus:ring-brand-200">{ready ? "Open your Next Best Action" : "Continue setup"} →</Link>}
       </div>
       <div className="mt-6"><div className="flex items-center justify-between text-xs font-bold text-slate-600"><span>Setup progress</span><span>{complete} of {steps.length} complete</span></div><div className="mt-2 h-2 overflow-hidden rounded-full bg-white"><div className="h-full rounded-full bg-brand-600" style={{ width: `${percent}%` }} /></div></div>
     </div>
     <ol className="divide-y divide-slate-100">{steps.map((step, index) => {
       const current = step.key === next.key && !ready;
       const tone = step.state === "complete" ? "text-emerald-700 bg-emerald-50" : step.state === "blocked" ? "text-red-700 bg-red-50" : current ? "text-brand-700 bg-brand-50" : "text-slate-600 bg-slate-50";
-      return <li key={step.key}><Link to={step.href} className="flex items-start gap-4 px-5 py-4 hover:bg-slate-50 focus:outline-none focus:ring-4 focus:ring-inset focus:ring-brand-100 sm:px-7"><span className={`grid h-8 w-8 shrink-0 place-items-center rounded-full text-xs font-black ${tone}`}>{step.state === "complete" ? "✓" : index + 1}</span><span className="min-w-0 flex-1"><span className="flex flex-wrap items-center gap-2"><b className="text-sm text-slate-950">{step.title}</b><span className={`rounded-full px-2 py-0.5 text-[10px] font-black uppercase ${tone}`}>{setupStateLabel[step.state]}</span></span><span className="mt-1 block text-xs leading-5 text-slate-600">{step.detail}</span></span><span className="mt-1 shrink-0 text-sm font-black text-brand-700">Open →</span></Link></li>;
+      const content = <><span className={`grid h-8 w-8 shrink-0 place-items-center rounded-full text-xs font-black ${tone}`}>{step.state === "complete" ? "✓" : index + 1}</span><span className="min-w-0 flex-1"><span className="flex flex-wrap items-center gap-2"><b className="text-sm text-slate-950">{step.title}</b><span className={`rounded-full px-2 py-0.5 text-[10px] font-black uppercase ${tone}`}>{setupStateLabel[step.state]}</span></span><span className="mt-1 block text-xs leading-5 text-slate-600">{step.detail}</span></span><span className="mt-1 shrink-0 text-sm font-black text-brand-700">{preview ? "Preview" : "Open →"}</span></>;
+      return <li key={step.key}>{preview ? <div className="flex items-start gap-4 px-5 py-4 sm:px-7">{content}</div> : <Link to={step.href} className="flex items-start gap-4 px-5 py-4 hover:bg-slate-50 focus:outline-none focus:ring-4 focus:ring-inset focus:ring-brand-100 sm:px-7">{content}</Link>}</li>;
     })}</ol>
     <div className="border-t bg-slate-50 px-5 py-3 text-xs leading-5 text-slate-600 sm:px-7"><b>AI Capacity:</b> Before chargeable work begins, SEnuke AI will show the estimated AI Capacity requirement. <b>Approvals:</b> Publishing and protected external changes always require the appropriate permission and approval.</div>
   </Card>;

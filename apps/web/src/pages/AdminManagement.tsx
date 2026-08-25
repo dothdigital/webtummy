@@ -1,5 +1,8 @@
+import { useState } from "react";
 import { Link } from "react-router-dom";
 import { Card } from "../components/ui.js";
+import { GuidedSetup } from "./AgencyWorkspace.js";
+import type { GuidedSetupStep } from "../workspace-dashboard.js";
 
 const adminLinks = [
   {
@@ -50,12 +53,23 @@ const adminLinks = [
 ];
 
 export default function AdminManagement() {
+  const [showOnboardingPreview, setShowOnboardingPreview] = useState(false);
+  const previewSteps: GuidedSetupStep[] = [
+    { key: "project", title: "Create your first project", detail: "Create or select the business project that setup should use.", state: "complete", href: "/admin" },
+    { key: "profile", title: "Complete your Business Profile", detail: "Confirm the business identity, offer, audience, goals and target markets.", state: "in_progress", href: "/admin" },
+    { key: "evidence", title: "Connect relevant accounts", detail: "Review website, analytics, search, local and publishing evidence. Optional connections may be deferred.", state: "not_started", href: "/admin" },
+    { key: "governance", title: "Understand AI Capacity and approvals", detail: "Review the estimate before chargeable work and how protected actions pause for approval.", state: "not_started", href: "/admin" },
+    { key: "strategy", title: "Review your Strategy", detail: "Review and approve the evidence-backed Strategy version that controls execution.", state: "not_started", href: "/admin" },
+    { key: "nba", title: "Complete your first Next Best Action", detail: "Open the one validated priority, understand why it comes first, then continue with its required approval.", state: "not_started", href: "/admin" },
+  ];
   return (
     <div className="space-y-5">
-      <div>
-        <h1 className="text-[28px] font-bold leading-tight text-charcoal-950">Admin Management</h1>
-        <p className="text-sm text-charcoal-500">Super-admin controls for users, workflow tasks, plans, and billing.</p>
+      <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+        <div><h1 className="text-[28px] font-bold leading-tight text-charcoal-950">Admin Management</h1><p className="text-sm text-charcoal-500">Super-admin controls for users, workflow tasks, plans, and billing.</p></div>
+        <button type="button" onClick={() => setShowOnboardingPreview((current) => !current)} className="inline-flex min-h-11 items-center justify-center rounded-xl bg-brand-700 px-5 py-3 text-sm font-bold text-white hover:bg-brand-800 focus:outline-none focus:ring-4 focus:ring-brand-200">{showOnboardingPreview ? "Close onboarding preview" : "Preview guided onboarding"}</button>
       </div>
+
+      {showOnboardingPreview && <section className="space-y-3"><div className="rounded-lg border border-blue-200 bg-blue-50 px-4 py-3 text-sm text-blue-800"><b>Admin preview only.</b> This sample does not change customer setup, create records, run AI, or consume AI Capacity.</div><GuidedSetup steps={previewSteps} preview /></section>}
 
       <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
         {adminLinks.map((item) => (
