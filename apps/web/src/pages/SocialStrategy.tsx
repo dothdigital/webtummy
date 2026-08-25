@@ -149,6 +149,15 @@ function campaignProgress(strategy: SocialStrategyType) {
   return { created: strategy.posts.length, posted, scheduled, upcoming };
 }
 
+function campaignCanBeDeleted(strategy: SocialStrategyType) {
+  const futureCampaign = Boolean(strategy.campaignStartAt && new Date(strategy.campaignStartAt).getTime() > Date.now());
+  return futureCampaign && !strategy.posts.some((post) => ["scheduled", "published"].includes(post.status));
+}
+
+function postCanBeDeleted(post: SocialCalendarPost) {
+  return new Date(post.publishDate).getTime() > Date.now() && !["scheduled", "published"].includes(post.status);
+}
+
 function platformLabel(platform: string): string {
   return PLATFORM_LABELS[platform] ?? platform.replace(/_/g, " ");
 }
@@ -964,6 +973,60 @@ export default function SocialStrategy() {
       setPageError(String(err).replace(/^Error:\s*/, ""));
     } finally {
       setPostSaving(false);
+    }
+  };
+
+  const removeCalendarPostImage = async (post: SocialCalendarPost) => {
+    setPostSaving(true);
+    setPageError("");
+    try {
+      const result = await api.delete<{ post: SocialCalendarPost }>(`/api/social-strategy/posts/${post.id}/image`);
+      replaceCalendarPost(result.post);
+      setWorkflowMessage("Image removed from the post. The prior media record remains in audit history; generate a new image when ready.");
+    } catch (err) {
+      setPageError(String(err).replace(/^Error:\s*/, ""));
+    } finally {
+      setPostSaving(false);
+    }
+  };
+
+  const deleteCalendarPost = async (post: SocialCalendarPost) => {
+    if (!postCanBeDeleted(post)) {
+      setPageError("Only future posts that have not been scheduled or published can be deleted.");
+      return;
+    }
+    if (!window.confirm(`Delete the upcoming ${platformLabel(post.platform)} post “${post.topic}”? This cannot be undone.`)) return;
+    setPostSaving(true);
+    setPageError("");
+    try {
+      await api.delete<{ deletedPostId: string }>(`/api/social-strategy/posts/${post.id}`);
+      setStrategies((items) => items.map((strategy) => ({ ...strategy, posts: strategy.posts.filter((item) => item.id !== post.id) })));
+      setViewingPost(null);
+      setWorkflowMessage("Upcoming post deleted.");
+    } catch (err) {
+      setPageError(String(err).replace(/^Error:\s*/, ""));
+    } finally {
+      setPostSaving(false);
+    }
+  };
+
+  const deleteCampaign = async (strategy: SocialStrategyType) => {
+    if (!campaignCanBeDeleted(strategy)) {
+      setPageError("A campaign can only be deleted before its start date and before anything is scheduled or published.");
+      return;
+    }
+    if (!window.confirm(`Delete “${strategy.campaignName || "Social campaign"}”? Its unscheduled posts will be removed. This cannot be undone.`)) return;
+    setSaving(true);
+    setPageError("");
+    try {
+      const result = await api.delete<SocialStrategyResponse & { deletedCampaignId: string }>(`/api/social-strategy/campaigns/${strategy.id}`);
+      applySocialResponse(result);
+      setViewingPost(null);
+      setWorkflowMessage("Campaign deleted.");
+    } catch (err) {
+      setPageError(String(err).replace(/^Error:\s*/, ""));
+    } finally {
+      setSaving(false);
     }
   };
 
@@ -2124,6 +2187,7 @@ export default function SocialStrategy() {
                           </div>
                           <div className="flex shrink-0 flex-wrap gap-2">
                             <Button variant="ghost" onClick={() => openExistingCampaign(strategy)}>{strategy.status === "draft" ? "Edit setup" : "Edit campaign"}</Button>
+                            {campaignCanBeDeleted(strategy) && <Button variant="danger" onClick={() => void deleteCampaign(strategy)} disabled={saving}>Delete campaign</Button>}
                             {strategy.status === "draft" ? (
                               <Button onClick={() => void generateStrategy(strategy)} disabled={generating}>{generating ? "Generating…" : "Generate strategy with AI"}</Button>
                             ) : (
@@ -2455,7 +2519,10 @@ export default function SocialStrategy() {
                 </div>
                 <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
                   <span className="font-semibold text-slate-500">Image status: {viewingPost.imageStatus}</span>
-                  <Button variant="ghost" onClick={() => void generateCalendarPostImage(viewingPost)} disabled={postSaving}>{postSaving ? "Generating image…" : "Generate AI image"}</Button>
+                  <div className="flex flex-wrap gap-2">
+                    {viewingPost.imageUrl && postCanBeDeleted(viewingPost) && <Button variant="danger" onClick={() => void removeCalendarPostImage(viewingPost)} disabled={postSaving}>Delete image</Button>}
+                    {postCanBeDeleted(viewingPost) && <Button variant="ghost" onClick={() => void generateCalendarPostImage(viewingPost)} disabled={postSaving}>{postSaving ? "Working…" : viewingPost.imageUrl ? "Recreate AI image" : "Generate AI image"}</Button>}
+                  </div>
                 </div>
                 {viewingPost.imageSuggestion && <div className="rounded-lg border border-violet-100 bg-violet-50 p-3 text-xs leading-5 text-violet-900"><b>Image brief</b><p className="mt-1">{viewingPost.imageSuggestion}</p></div>}
               </div>
@@ -2475,6 +2542,7 @@ export default function SocialStrategy() {
             </div>
             <div className="flex flex-col-reverse gap-2 border-t border-slate-200 px-5 py-4 sm:flex-row sm:justify-end">
               <Button variant="ghost" onClick={() => { openPostEditor(viewingPost); setViewingPost(null); }}>Edit post</Button>
+              {postCanBeDeleted(viewingPost) && <Button variant="danger" onClick={() => void deleteCalendarPost(viewingPost)} disabled={postSaving}>Delete upcoming post</Button>}
               {!["approved", "scheduled", "published", "rejected"].includes(viewingPost.status) && <Button variant="danger" onClick={() => void rejectCalendarPost(viewingPost)} disabled={postingActionBusy === `reject:${viewingPost.id}`}>{postingActionBusy === `reject:${viewingPost.id}` ? "Rejecting…" : "Reject post"}</Button>}
               {!["approved", "scheduled", "published", "rejected"].includes(viewingPost.status) && <Button variant="ghost" onClick={() => void approveCalendarPost(viewingPost)} disabled={postingActionBusy === `approve:${viewingPost.id}`}>{postingActionBusy === `approve:${viewingPost.id}` ? "Approving…" : "Approve post"}</Button>}
               {viewingPost.status === "approved" && <Button onClick={() => void scheduleCalendarPost(viewingPost)} disabled={postingActionBusy === `schedule:${viewingPost.id}`}>{postingActionBusy === `schedule:${viewingPost.id}` ? "Scheduling…" : "Schedule approved post"}</Button>}

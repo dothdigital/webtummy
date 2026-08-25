@@ -1013,6 +1013,39 @@ socialStrategyRouter.post("/social-strategy/campaigns", async (req, res) => {
   res.status(existingDraft ? 200 : 201).json({ campaign, ...(await socialResponse(req, website.id, intelligence.project.id)) });
 });
 
+socialStrategyRouter.delete("/social-strategy/campaigns/:strategyId", async (req, res) => {
+  const context = await workspaceContext(req);
+  if (!hasWorkspacePermission(context, "execute_tasks")) return res.status(403).json({ error: "Campaign editing permission is required." });
+  const strategy = await prisma.socialStrategy.findUnique({
+    where: { id: req.params.strategyId },
+    include: { project: true, posts: { select: { id: true, status: true } } },
+  });
+  if (!strategy?.projectId || !strategy.project || !await canAccessProject(context, strategy.projectId)) return res.status(404).json({ error: "Campaign not found." });
+  const hasStartedPublishing = strategy.posts.some((post) => ["scheduled", "published"].includes(post.status));
+  const futureCampaign = Boolean(strategy.campaignStartAt && strategy.campaignStartAt.getTime() > Date.now());
+  if (!futureCampaign || hasStartedPublishing) {
+    return res.status(409).json({ error: "A campaign can only be deleted before its start date and before anything is scheduled or published." });
+  }
+  const postIds = strategy.posts.map((post) => post.id);
+  await prisma.$transaction(async (tx) => {
+    if (postIds.length) {
+      await tx.executionTask.deleteMany({ where: { projectId: strategy.projectId!, sourceType: "social_calendar_post", sourceId: { in: postIds } } });
+      await tx.socialRepurposedAsset.updateMany({ where: { socialCalendarPostId: { in: postIds } }, data: { socialCalendarPostId: null } });
+    }
+    await recordWorkspaceActivity(tx, {
+      context,
+      action: "social_campaign.deleted",
+      entityType: "social_strategy",
+      entityId: strategy.id,
+      agencyClientId: strategy.project!.agencyClientId,
+      projectId: strategy.projectId,
+      previousJson: { campaignName: strategy.campaignName, status: strategy.status, campaignStartAt: strategy.campaignStartAt, postCount: strategy.posts.length },
+    });
+    await tx.socialStrategy.delete({ where: { id: strategy.id } });
+  });
+  res.json({ deletedCampaignId: strategy.id, ...(await socialResponse(req, strategy.websiteId, strategy.projectId)) });
+});
+
 socialStrategyRouter.post("/social-strategy/generate", async (req, res) => {
   const parsed = generateSchema.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() });
@@ -1413,6 +1446,60 @@ socialStrategyRouter.patch("/social-strategy/posts/:postId", async (req, res) =>
     return row;
   });
   res.json({ post: updated });
+});
+
+socialStrategyRouter.delete("/social-strategy/posts/:postId/image", async (req, res) => {
+  const context = await workspaceContext(req);
+  if (!hasWorkspacePermission(context, "execute_tasks")) return res.status(403).json({ error: "Content editing permission is required." });
+  const post = await prisma.socialCalendarPost.findUnique({ where: { id: req.params.postId }, include: { strategy: { include: { project: true } } } });
+  if (!post?.strategy.projectId || !post.strategy.project || !await canAccessProject(context, post.strategy.projectId)) return res.status(404).json({ error: "Campaign post not found." });
+  if (post.publishDate.getTime() <= Date.now() || ["scheduled", "published"].includes(post.status)) {
+    return res.status(409).json({ error: "Images can only be removed from future posts that have not been scheduled or published." });
+  }
+  const updated = await prisma.$transaction(async (tx) => {
+    const row = await tx.socialCalendarPost.update({ where: { id: post.id }, data: { imageUrl: null, imageStatus: "image_prompt_generated", status: "needs_review" } });
+    await tx.executionTask.updateMany({
+      where: { projectId: post.strategy.projectId!, sourceType: "social_calendar_post", sourceId: post.id },
+      data: { status: "needs_review", approvedAt: null, approverMembershipId: null, blockedReason: "The post image was removed and requires a replacement and review." },
+    });
+    await recordWorkspaceActivity(tx, {
+      context,
+      action: "social_post.image_removed",
+      entityType: "social_calendar_post",
+      entityId: post.id,
+      agencyClientId: post.strategy.project!.agencyClientId,
+      projectId: post.strategy.projectId,
+      previousJson: { imageUrl: post.imageUrl, imageStatus: post.imageStatus, postStatus: post.status },
+      nextJson: { imageUrl: null, imageStatus: row.imageStatus, postStatus: row.status },
+    });
+    return row;
+  });
+  res.json({ post: updated });
+});
+
+socialStrategyRouter.delete("/social-strategy/posts/:postId", async (req, res) => {
+  const context = await workspaceContext(req);
+  if (!hasWorkspacePermission(context, "execute_tasks")) return res.status(403).json({ error: "Content editing permission is required." });
+  const post = await prisma.socialCalendarPost.findUnique({ where: { id: req.params.postId }, include: { strategy: { include: { project: true } } } });
+  if (!post?.strategy.projectId || !post.strategy.project || !await canAccessProject(context, post.strategy.projectId)) return res.status(404).json({ error: "Campaign post not found." });
+  if (post.publishDate.getTime() <= Date.now() || ["scheduled", "published"].includes(post.status)) {
+    return res.status(409).json({ error: "Only future posts that have not been scheduled or published can be deleted." });
+  }
+  await prisma.$transaction(async (tx) => {
+    await tx.executionTask.deleteMany({ where: { projectId: post.strategy.projectId!, sourceType: "social_calendar_post", sourceId: post.id } });
+    await tx.socialRepurposedAsset.updateMany({ where: { socialCalendarPostId: post.id }, data: { socialCalendarPostId: null } });
+    await recordWorkspaceActivity(tx, {
+      context,
+      action: "social_post.deleted",
+      entityType: "social_calendar_post",
+      entityId: post.id,
+      agencyClientId: post.strategy.project!.agencyClientId,
+      projectId: post.strategy.projectId,
+      previousJson: { topic: post.topic, platform: post.platform, publishDate: post.publishDate, status: post.status, imageUrl: post.imageUrl },
+    });
+    await tx.socialCalendarPost.delete({ where: { id: post.id } });
+  });
+  res.json({ deletedPostId: post.id });
 });
 
 socialStrategyRouter.post("/social-strategy/posts/:postId/request-changes", async (req, res) => {
