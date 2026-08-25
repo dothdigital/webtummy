@@ -17,6 +17,7 @@ const PLATFORM_LABELS: Record<string, string> = {
 };
 
 const DEFAULT_PLATFORMS = ["instagram", "facebook", "linkedin", "youtube", "google_business"];
+const CAMPAIGN_PLATFORMS = ["facebook", "instagram"];
 const PROFILE_FREQUENCY_OPTIONS = [
   "Not currently posting",
   "Less than once a month",
@@ -78,14 +79,7 @@ const REPURPOSING_LABELS: Record<string, string> = {
   lead_magnet: "Lead magnet recommendation",
 };
 const EMPTY_PERFORMANCE: SocialPerformanceSummary = { impressions: 0, reach: 0, engagements: 0, clicks: 0, leads: 0, conversions: 0, observations: 0, engagementRate: 0, clickThroughRate: 0, conversionRate: 0 };
-const WIZARD_STEPS = [
-  { id: "project", title: "Project", description: "Choose the website this strategy belongs to." },
-  { id: "profiles", title: "Profiles", description: "Add your official social channels." },
-  { id: "competitors", title: "Competitors", description: "Capture examples to compare against." },
-  { id: "strategy", title: "Campaign Planning & Strategy", description: "Plan, generate, review, and manage every campaign." },
-] as const;
-
-type WizardStep = typeof WIZARD_STEPS[number]["id"];
+type WizardStep = "project" | "profiles" | "competitors" | "strategy";
 
 function emptyProfile(platform = "instagram"): SocialProfile {
   return {
@@ -777,9 +771,9 @@ export default function SocialStrategy() {
   const [imageDirection, setImageDirection] = useState(IMAGE_DIRECTION_PRESETS[0].value);
   const [targetKeywords, setTargetKeywords] = useState("");
   const [targetUrls, setTargetUrls] = useState("");
-  const [selectedPlatforms, setSelectedPlatforms] = useState<string[]>(DEFAULT_PLATFORMS.slice(0, 3));
+  const [selectedPlatforms, setSelectedPlatforms] = useState<string[]>(CAMPAIGN_PLATFORMS);
   const [mode, setMode] = useState<"posting" | "strategy" | "performance">("strategy");
-  const [step, setStep] = useState<WizardStep>("project");
+  const [step, setStep] = useState<WizardStep>("strategy");
   const [loading, setLoading] = useState(true);
   const [pageError, setPageError] = useState("");
   const [saving, setSaving] = useState(false);
@@ -806,7 +800,6 @@ export default function SocialStrategy() {
     ?? null;
   const selectedStrategy = strategies.find((strategy) => strategy.id === selectedCampaignId) ?? activeStrategy;
   const selectedWebsite = websites.find((website) => website.id === websiteId) ?? websites[0] ?? null;
-  const activeStepIndex = WIZARD_STEPS.findIndex((item) => item.id === step);
   const selectedProject = projects.find((project) => project.websiteId === websiteId) ?? null;
 
   const applySocialResponse = (result: SocialStrategyResponse) => {
@@ -824,7 +817,7 @@ export default function SocialStrategy() {
     setIntelligence(result.intelligence ?? null);
     setSelectedSourceId((current) => current === "__custom__" || result.contentSources?.some((source) => source.id === current) ? current : result.contentSources?.[0]?.id || "__custom__");
     setPlatformOptions(result.platformOptions.length ? result.platformOptions : DEFAULT_PLATFORMS);
-    if (!selectedPlatforms.length && result.platformOptions.length) setSelectedPlatforms(result.platformOptions.slice(0, 3));
+    if (!selectedPlatforms.length) setSelectedPlatforms(CAMPAIGN_PLATFORMS);
   };
 
   const replaceCalendarPost = (updated: SocialCalendarPost) => {
@@ -1164,7 +1157,7 @@ export default function SocialStrategy() {
       if (selected) {
         setWebsiteId(selected.id);
         await loadStrategy(selected.id, activeGuided?.id ?? projectResult.projects.find((project) => project.websiteId === selected.id)?.id);
-        if (requestedProject && selected.id === requestedProject) setStep("profiles");
+        if (requestedProject && selected.id === requestedProject) setStep("strategy");
       }
     } catch (err) {
       setPageError(String(err).replace(/^Error:\s*/, ""));
@@ -1334,7 +1327,7 @@ export default function SocialStrategy() {
     setPostingFrequency("3 posts per week");
     setTargetKeywords("");
     setTargetUrls("");
-    setSelectedPlatforms(DEFAULT_PLATFORMS.slice(0, 3));
+    setSelectedPlatforms(CAMPAIGN_PLATFORMS);
     setCampaignConfigured(false);
     setCampaignEditorOpen(true);
   };
@@ -1355,7 +1348,9 @@ export default function SocialStrategy() {
     setPostingFrequency(strategy.postingFrequency ?? "3 posts per week");
     setTargetKeywords(strategy.targetKeywordsJson.join(", "));
     setTargetUrls(strategy.targetUrlsJson.join(", "));
-    setSelectedPlatforms(strategy.platforms);
+    setSelectedPlatforms(strategy.platforms.filter((platform) => CAMPAIGN_PLATFORMS.includes(platform)).length
+      ? strategy.platforms.filter((platform) => CAMPAIGN_PLATFORMS.includes(platform))
+      : CAMPAIGN_PLATFORMS);
     setCampaignConfigured(true);
     setCampaignEditorOpen(true);
   };
@@ -1400,7 +1395,7 @@ export default function SocialStrategy() {
         goalMetric,
         goalTarget: goalTarget.trim() ? Number(goalTarget) : null,
         audience: audience || null,
-        platforms: selectedPlatforms,
+        platforms: selectedPlatforms.filter((platform) => CAMPAIGN_PLATFORMS.includes(platform)),
         postingFrequency,
         tone: tone || null,
         imageDirection: imageDirection || null,
@@ -1456,7 +1451,7 @@ export default function SocialStrategy() {
         goalMetric: savedCampaign?.goalMetric ?? goalMetric,
         goalTarget: savedCampaign ? savedCampaign.goalTarget : goalTarget.trim() ? Number(goalTarget) : null,
         audience: savedCampaign?.audience ?? (audience || null),
-        platforms: savedCampaign?.platforms ?? selectedPlatforms,
+        platforms: (savedCampaign?.platforms ?? selectedPlatforms).filter((platform) => CAMPAIGN_PLATFORMS.includes(platform)),
         postingFrequency: savedCampaign?.postingFrequency ?? (postingFrequency || null),
         tone: savedCampaign?.tone ?? (tone || null),
         imageDirection: savedCampaign?.imageDirection ?? (imageDirection || null),
@@ -1755,20 +1750,10 @@ export default function SocialStrategy() {
       {mode === "strategy" && (
         <div className="order-4 space-y-6">
       <Card className="overflow-hidden">
-        <div className="grid gap-0 border-b border-charcoal-100 bg-charcoal-50 md:grid-cols-4">
-          {WIZARD_STEPS.map((item, index) => {
-            const active = item.id === step;
-            const done = index < activeStepIndex;
-            return (
-              <button key={item.id} type="button" onClick={() => setStep(item.id)} className={`border-b border-r border-charcoal-100 px-4 py-3 text-left transition md:border-b-0 ${active ? "bg-white" : "hover:bg-white/70"}`}>
-                <div className="flex items-center gap-2">
-                  <span className={`flex h-7 w-7 items-center justify-center rounded-full text-xs font-bold ${active ? "bg-brand-600 text-white" : done ? "bg-green-100 text-green-700" : "bg-white text-charcoal-500"}`}>{done ? "OK" : index + 1}</span>
-                  <span className="font-semibold text-charcoal-800">{item.title}</span>
-                </div>
-                <p className="mt-1 text-xs leading-5 text-charcoal-400">{item.description}</p>
-              </button>
-            );
-          })}
+        <div className="border-b border-charcoal-100 bg-charcoal-50 px-5 py-4">
+          <div className="text-xs font-bold uppercase tracking-wide text-brand-600">Facebook & Instagram</div>
+          <div className="mt-1 text-lg font-bold text-charcoal-900">Campaign Planning & Strategy</div>
+          <p className="mt-1 text-sm text-charcoal-500">Choose the channels, campaign dates, topics, keywords, and frequency. Generate content and images, review previews, approve, and schedule.</p>
         </div>
 
         {step === "project" && (
@@ -1981,10 +1966,10 @@ export default function SocialStrategy() {
             <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
               <div>
                 <div className="text-xs font-bold uppercase tracking-wide text-brand-600">Time-bound campaign setup</div>
-                <h2 className="mt-1 text-lg font-semibold text-charcoal-800">Social campaigns</h2>
-                <p className="mt-1 text-sm leading-6 text-charcoal-500">Add a campaign with a start date, end date, business objective, success metric, and target. SEnuke AI - AI Growth Operating System builds the strategy and calendar within those boundaries.</p>
+                <h2 className="mt-1 text-lg font-semibold text-charcoal-800">Campaign Planning & Strategy</h2>
+                <p className="mt-1 text-sm leading-6 text-charcoal-500">Create a Facebook and Instagram campaign from your dates, topics, keywords, and frequency. AI prepares the posts and images for preview, approval, and scheduling.</p>
               </div>
-              <Button className="shrink-0" onClick={openNewCampaign}>+ Add Campaign</Button>
+              <Button className="shrink-0" onClick={openNewCampaign}>Create campaign strategy</Button>
             </div>
             {intelligence && <div className="mb-5 rounded-xl border border-brand-200 bg-brand-50 p-4"><div className="flex flex-wrap items-center justify-between gap-2"><div className="font-bold text-brand-900">Project intelligence loaded</div><span className="rounded-full bg-white px-2.5 py-1 text-xs font-bold text-brand-700">{intelligence.sourceCount} reusable content sources</span></div><div className="mt-3 grid gap-3 text-xs sm:grid-cols-2 lg:grid-cols-4"><div><b className="block text-brand-800">Business</b><span className="text-brand-700">{intelligence.businessName}</span></div><div><b className="block text-brand-800">Audience</b><span className="text-brand-700">{intelligence.audience || "Review needed"}</span></div><div><b className="block text-brand-800">Markets</b><span className="text-brand-700">{intelligence.targetMarkets.join(", ") || "Not location-dependent"}</span></div><div><b className="block text-brand-800">Evidence</b><span className="text-brand-700">{intelligence.keywords.length} keywords · {intelligence.sourceTypes.length} source types</span></div></div></div>}
             <div className="mt-6 overflow-hidden rounded-xl border border-slate-200">
@@ -1993,13 +1978,13 @@ export default function SocialStrategy() {
                   <div className="font-bold text-charcoal-900">Campaigns</div>
                   <div className="text-xs text-slate-500">{strategies.length} saved campaign{strategies.length === 1 ? "" : "s"} for this project</div>
                 </div>
-                {(campaignConfigured || strategies.length > 0) && <Button variant="ghost" onClick={openNewCampaign}>+ Add Campaign</Button>}
+                {(campaignConfigured || strategies.length > 0) && <Button variant="ghost" onClick={openNewCampaign}>Create campaign strategy</Button>}
               </div>
               {!campaignConfigured && strategies.length === 0 && (
                 <div className="p-8 text-center">
                   <div className="text-lg font-bold text-charcoal-900">No campaigns created</div>
                   <p className="mx-auto mt-2 max-w-xl text-sm leading-6 text-charcoal-500">Create a time-bound campaign before generating its AI strategy and publishing calendar.</p>
-                  <Button className="mt-4" onClick={openNewCampaign}>+ Add Campaign</Button>
+                  <Button className="mt-4" onClick={openNewCampaign}>Create campaign strategy</Button>
                 </div>
               )}
               {campaignConfigured && (
@@ -2141,7 +2126,7 @@ export default function SocialStrategy() {
                       <div className="text-sm font-bold text-charcoal-900">Focus platforms</div>
                       <p className="mt-1 text-xs leading-5 text-slate-500">Choose the channels this campaign should prioritize.</p>
                       <div className="mt-3 flex flex-wrap gap-2">
-                        {platformOptions.map((platform) => {
+                        {CAMPAIGN_PLATFORMS.map((platform) => {
                           const active = selectedPlatforms.includes(platform);
                           return (
                             <button key={platform} type="button" onClick={() => setSelectedPlatforms((items) => active ? items.filter((item) => item !== platform) : [...items, platform])} className={`rounded-lg border px-3 py-2 text-sm font-medium ${active ? "border-brand-300 bg-brand-50 text-brand-700" : "border-charcoal-200 bg-white text-charcoal-500"}`}>
@@ -2159,7 +2144,6 @@ export default function SocialStrategy() {
                 </div>
               </div>
             )}
-            <StepFooter back={() => setStep("competitors")} />
           </div>
         )}
 
