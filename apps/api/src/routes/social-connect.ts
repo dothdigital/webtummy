@@ -108,15 +108,28 @@ type SocialConnectAccountRecord = {
   platform?: unknown;
   status?: unknown;
   external_user_id?: unknown;
+  updated_at?: unknown;
   [key: string]: unknown;
 };
 
 export function accountsForExternalUser(value: unknown, userId: string) {
   const payload = value && typeof value === "object" ? value as Record<string, unknown> : {};
   const accounts = Array.isArray(payload.accounts) ? payload.accounts : [];
-  return accounts.filter((item): item is SocialConnectAccountRecord => Boolean(
+  const owned = accounts.filter((item): item is SocialConnectAccountRecord => Boolean(
     item && typeof item === "object" && (item as SocialConnectAccountRecord).external_user_id === userId,
   ));
+  const unique = new Map<string, SocialConnectAccountRecord>();
+  for (const account of owned) {
+    const key = `${String(account.platform || "")}:${String(account.account_id || account.id || "")}`;
+    const current = unique.get(key);
+    const accountTime = typeof account.updated_at === "string" ? Date.parse(account.updated_at) || 0 : 0;
+    const currentTime = typeof current?.updated_at === "string" ? Date.parse(current.updated_at) || 0 : 0;
+    const preferAccount = !current
+      || (current.status !== "connected" && account.status === "connected")
+      || (current.status === account.status && accountTime >= currentTime);
+    if (preferAccount) unique.set(key, account);
+  }
+  return [...unique.values()];
 }
 
 async function ownedSocialAccounts(req: Request) {
