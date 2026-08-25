@@ -9,7 +9,7 @@ import { primaryGoalsForWorkspace } from "@webtummy/core/project-goals";
 import { configurableWorkspaceRoles, defaultWorkspacePermission, workspacePermissionCatalog, workspaceRoleCanEver, type ConfigurableWorkspaceRole } from "@webtummy/core/workspace-permissions";
 import AiAssistedIntake from "../components/AiAssistedIntake.js";
 import { geographicTargetMarkets } from "../utils/projectLocations.js";
-import { businessFirstUseSupportingText, customerPlanLabel, personalStartingPaths, projectAllowanceLabel, workspaceDisplayName, workspaceProjectActivityCopy, workspaceProjectAssignmentLabel, workspaceStartingPathEmphasized } from "../workspace-dashboard.js";
+import { businessFirstUseSupportingText, customerPlanLabel, guidedSetupSteps, personalStartingPaths, projectAllowanceLabel, workspaceDisplayName, workspaceProjectActivityCopy, workspaceProjectAssignmentLabel, workspaceStartingPathEmphasized, type GuidedSetupStep } from "../workspace-dashboard.js";
 
 type Role = "owner" | "admin" | "manager" | "approver" | "editor" | "viewer" | "client_viewer";
 type Member = { id: string; status: string; user: { id: string; name: string | null; email: string; isActive: boolean }; roles: { role: string }[]; teamMemberships: { team: { id: string; name: string } }[] };
@@ -20,6 +20,8 @@ type Project = {
   _count: { executionTasks: number; gapReportExports: number };
   actionProgress: { total: number; completed: number; remaining: number; overdue: number };
   workflowProgress: { total: number; completed: number; nextStep: { stepKey: string; title: string; status: string; actionLabel: string | null; actionUrl: string | null; sortOrder: number } | null };
+  workflowSteps: { stepKey: string; status: string; actionUrl: string | null }[];
+  onboardingReadiness: { intelligenceReady: boolean; blockersJson: unknown; moduleStatusJson: unknown; nextBestActionJson: unknown } | null;
   strategyStatus: string;
   nextTask: { id: string; title: string; moduleName: string; priority: string; status: string; dueAt: string | null; href: string } | null;
 };
@@ -43,6 +45,7 @@ type WorkspaceData = {
   portfolioReporting: { clientId: string; clientName: string; activeProjects: number; openTasks: number; overdueTasks: number; blockedTasks: number; pendingApprovals: number; reportsReady: number; failedJobs: number; integrationFailures: number; capacityUsed: number; providerCostUsd: number; health: "healthy" | "attention" | "at_risk"; retentionSignal: string }[];
   seats: { used: number; reserved: number; total: number; limit: number | null; available: number | null; clientViewers: number } | null;
   nextActions: { key: string; title: string; description: string; href: string }[];
+  approvalMode: string;
   discoveryDrafts: { id: string; title: string; status: string; startPath: string; updatedAt: string }[];
   permissions: Record<string, boolean>;
 };
@@ -73,6 +76,29 @@ function Badge({ children, tone = "slate" }: { children: React.ReactNode; tone?:
 function AttentionQueue({ actions, entrepreneur = false }: { actions: WorkspaceData["nextActions"]; entrepreneur?: boolean }) {
   if (!actions.length) return null;
   return <Card className="p-5 lg:p-6"><div className="flex items-start justify-between gap-3"><div><div className="text-xs font-bold uppercase tracking-wide text-brand-700">Next Best Action</div><h2 className="mt-1 text-lg font-bold text-slate-950">{entrepreneur ? "What this workspace should do next" : "What to do next"}</h2></div><Badge tone="amber">{actions.length} item{actions.length === 1 ? "" : "s"}</Badge></div><div className="mt-5 space-y-3">{actions.map((item) => <Link key={item.key} to={item.href} className="group flex min-h-16 items-center justify-between gap-4 rounded-xl border border-slate-200 p-4 hover:border-brand-300 hover:bg-brand-50/30 focus:outline-none focus:ring-4 focus:ring-brand-100"><div><b className="text-slate-900">{item.title}</b><span className="mt-1 block text-sm leading-5 text-slate-600">{item.description}</span></div><span className="shrink-0 font-bold text-brand-700">Open →</span></Link>)}</div></Card>;
+}
+
+const setupStateLabel: Record<GuidedSetupStep["state"], string> = { not_started: "Not started", in_progress: "In progress", complete: "Complete", blocked: "Blocked", deferred: "Deferred", not_applicable: "Not applicable" };
+function GuidedSetup({ steps }: { steps: GuidedSetupStep[] }) {
+  const complete = steps.filter((step) => step.state === "complete" || step.state === "deferred" || step.state === "not_applicable").length;
+  const ready = complete === steps.length;
+  const next = steps.find((step) => !["complete", "deferred", "not_applicable"].includes(step.state)) ?? steps[steps.length - 1];
+  const percent = Math.round((complete / steps.length) * 100);
+  return <Card className="overflow-hidden border-brand-200 p-0">
+    <div className="bg-gradient-to-br from-brand-50 via-white to-violet-50 p-5 sm:p-7">
+      <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+        <div className="max-w-3xl"><div className="text-xs font-black uppercase tracking-[0.16em] text-brand-700">{ready ? "Your workspace is ready." : "Guided setup"}</div><h2 className="mt-2 text-2xl font-black text-slate-950">{ready ? "Open your Next Best Action" : "Let’s understand your business and determine what should happen next."}</h2><p className="mt-2 text-sm leading-6 text-slate-600">Complete the guided setup once. SEnuke AI will use your verified business information and available evidence to build a customized Strategy and recommend the first Next Best Action.</p></div>
+        <Link to={next.href} className="inline-flex min-h-11 shrink-0 items-center justify-center rounded-xl bg-brand-700 px-5 py-3 text-sm font-black text-white shadow-sm hover:bg-brand-800 focus:outline-none focus:ring-4 focus:ring-brand-200">{ready ? "Open your Next Best Action" : "Continue setup"} →</Link>
+      </div>
+      <div className="mt-6"><div className="flex items-center justify-between text-xs font-bold text-slate-600"><span>Setup progress</span><span>{complete} of {steps.length} complete</span></div><div className="mt-2 h-2 overflow-hidden rounded-full bg-white"><div className="h-full rounded-full bg-brand-600" style={{ width: `${percent}%` }} /></div></div>
+    </div>
+    <ol className="divide-y divide-slate-100">{steps.map((step, index) => {
+      const current = step.key === next.key && !ready;
+      const tone = step.state === "complete" ? "text-emerald-700 bg-emerald-50" : step.state === "blocked" ? "text-red-700 bg-red-50" : current ? "text-brand-700 bg-brand-50" : "text-slate-600 bg-slate-50";
+      return <li key={step.key}><Link to={step.href} className="flex items-start gap-4 px-5 py-4 hover:bg-slate-50 focus:outline-none focus:ring-4 focus:ring-inset focus:ring-brand-100 sm:px-7"><span className={`grid h-8 w-8 shrink-0 place-items-center rounded-full text-xs font-black ${tone}`}>{step.state === "complete" ? "✓" : index + 1}</span><span className="min-w-0 flex-1"><span className="flex flex-wrap items-center gap-2"><b className="text-sm text-slate-950">{step.title}</b><span className={`rounded-full px-2 py-0.5 text-[10px] font-black uppercase ${tone}`}>{setupStateLabel[step.state]}</span></span><span className="mt-1 block text-xs leading-5 text-slate-600">{step.detail}</span></span><span className="mt-1 shrink-0 text-sm font-black text-brand-700">Open →</span></Link></li>;
+    })}</ol>
+    <div className="border-t bg-slate-50 px-5 py-3 text-xs leading-5 text-slate-600 sm:px-7"><b>AI Capacity:</b> Before chargeable work begins, SEnuke AI will show the estimated AI Capacity requirement. <b>Approvals:</b> Publishing and protected external changes always require the appropriate permission and approval.</div>
+  </Card>;
 }
 
 const WORKSPACE_PAGE_SIZE = 10;
@@ -171,6 +197,7 @@ export default function AgencyWorkspace() {
   const projectActivityCopy = workspaceProjectActivityCopy(data?.workspace.workspaceType ?? "personal");
   const projectActionsId = isAgency ? "client-project-actions" : "project-actions";
   const firstProject = portfolioProjects[0];
+  const setupSteps = guidedSetupSteps({ workspaceType: data?.workspace.workspaceType ?? "personal", activeClientCount: data?.clients.filter((client) => client.status === "active").length ?? 0, project: firstProject ?? null, approvalMode: data?.approvalMode });
   const projectNextAction = firstProject?.nextTask
     ? [{ key: `project-task-${firstProject.nextTask.id}`, title: firstProject.nextTask.title, description: `Continue ${firstProject.name}. This is the highest-priority open Execution Plan task.`, href: firstProject.nextTask.href }]
     : firstProject?.workflowProgress.nextStep
@@ -339,6 +366,7 @@ export default function AgencyWorkspace() {
     <div className="flex gap-2 overflow-x-auto rounded-xl border bg-white p-2">{tabs.map((item) => <button key={item.id} onClick={() => openTab(item.id)} className={`shrink-0 rounded-lg px-4 py-2 text-sm font-bold ${tab === item.id ? "bg-slate-950 text-white" : "text-slate-600 hover:bg-slate-50"}`}>{item.label}{item.count !== undefined && <span className="ml-2 opacity-70">{item.count}</span>}</button>)}</div>
 
     {tab === "dashboard" && <>
+      <GuidedSetup steps={setupSteps} />
       {!isBusiness && <AttentionQueue actions={dashboardActions} entrepreneur={isPersonal} />}
       {!portfolioProjects.length && !isAgency && <Card className="overflow-hidden border-brand-100 p-0">
         <div className="bg-gradient-to-br from-brand-50 via-white to-emerald-50 px-5 py-6 sm:px-7 sm:py-8">

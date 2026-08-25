@@ -147,6 +147,7 @@ agencyWorkspaceRouter.get(["/agency/workspace", "/workspace"], (req, res) => han
         projects: { orderBy: { createdAt: "desc" }, include: {
           _count: { select: { executionTasks: true, gapReportExports: true } },
           workflowSteps: { orderBy: { sortOrder: "asc" }, select: { stepKey: true, title: true, status: true, actionLabel: true, actionUrl: true, sortOrder: true } },
+          workflowController: { select: { state: true, readinessPercent: true, intelligenceReady: true, blockersJson: true, moduleStatusJson: true, nextBestActionJson: true } },
           strategyPlans: { orderBy: { updatedAt: "desc" }, take: 1, select: { status: true } },
           memberAssignments: { select: { membershipId: true } },
           teamAssignments: { select: { teamId: true } },
@@ -199,6 +200,7 @@ agencyWorkspaceRouter.get(["/agency/workspace", "/workspace"], (req, res) => han
     include: {
       _count: { select: { executionTasks: true, gapReportExports: true } },
       workflowSteps: { orderBy: { sortOrder: "asc" }, select: { stepKey: true, title: true, status: true, actionLabel: true, actionUrl: true, sortOrder: true } },
+      workflowController: { select: { state: true, readinessPercent: true, intelligenceReady: true, blockersJson: true, moduleStatusJson: true, nextBestActionJson: true } },
       strategyPlans: { orderBy: { updatedAt: "desc" }, take: 1, select: { status: true } },
       memberAssignments: { select: { membershipId: true } },
       teamAssignments: { select: { teamId: true } },
@@ -256,14 +258,17 @@ agencyWorkspaceRouter.get(["/agency/workspace", "/workspace"], (req, res) => han
     id: string;
     workflowSteps: { stepKey: string; title: string; status: string; actionLabel: string | null; actionUrl: string | null; sortOrder: number }[];
     strategyPlans: { status: string }[];
+    workflowController: { state: string; readinessPercent: number; intelligenceReady: boolean; blockersJson: Prisma.JsonValue; moduleStatusJson: Prisma.JsonValue; nextBestActionJson: Prisma.JsonValue } | null;
   }>(project: T) => {
-    const { workflowSteps, strategyPlans, ...record } = project;
+    const { workflowSteps, strategyPlans, workflowController, ...record } = project;
     const completedSteps = workflowSteps.filter((step) => ["completed", "skipped"].includes(step.status)).length;
     const nextStep = workflowSteps.find((step) => !["completed", "skipped"].includes(step.status)) ?? null;
     return {
       ...record,
       actionProgress: progressByProject.get(project.id) ?? { total: 0, completed: 0, remaining: 0, overdue: 0 },
       workflowProgress: { total: workflowSteps.length, completed: completedSteps, nextStep },
+      workflowSteps,
+      onboardingReadiness: workflowController,
       strategyStatus: strategyPlans[0]?.status ?? "not_started",
       nextTask: nextTaskByProject.get(project.id) ?? null,
     };
@@ -327,6 +332,7 @@ agencyWorkspaceRouter.get(["/agency/workspace", "/workspace"], (req, res) => han
     portfolioReporting,
     operationalReporting: context.workspace.workspaceType === "agency" ? { periodStart: reportingPeriodStart, failedJobs, integrationFailures, capacityByProject: capacityByProject.map((row) => ({ projectId: row.projectId, capacityUsed: row._sum.creditsCommitted ?? 0 })), providerCostsByProject: [...costMap.entries()].filter(([projectId]) => projectId).map(([projectId, costUsd]) => ({ projectId, costUsd: Math.round(costUsd * 100) / 100 })) } : null,
     seats,
+    approvalMode: await workspaceApprovalMode(context),
     discoveryDrafts,
     nextActions: clientViewer ? [] : workspaceNextActions({
       workspaceType: context.workspace.workspaceType,

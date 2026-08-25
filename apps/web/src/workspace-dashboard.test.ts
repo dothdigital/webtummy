@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { businessFirstUseSupportingText, customerPlanLabel, personalStartingPaths, projectAllowanceLabel, workspaceDashboardVisibility, workspaceDisplayName, workspaceProjectActivityCopy, workspaceProjectAssignmentLabel, workspaceStartingPathEmphasized } from "./workspace-dashboard.js";
+import { businessFirstUseSupportingText, customerPlanLabel, guidedSetupSteps, personalStartingPaths, projectAllowanceLabel, workspaceDashboardVisibility, workspaceDisplayName, workspaceProjectActivityCopy, workspaceProjectAssignmentLabel, workspaceStartingPathEmphasized } from "./workspace-dashboard.js";
 
 describe("DEV-056 workspace dashboard rules", () => {
   it("exposes the three approved Personal starting paths", () => {
@@ -49,5 +49,16 @@ describe("DEV-056 workspace dashboard rules", () => {
 
   it("prevents viewer-only dashboards from starting or executing work", () => {
     expect(workspaceDashboardVisibility("agency", true)).toMatchObject({ startProject: false, projectActivity: false, clients: false });
+  });
+
+  it("derives DEV-073 setup from saved project state and resumes the first incomplete step", () => {
+    const steps = guidedSetupSteps({ workspaceType: "business", activeClientCount: 0, approvalMode: "manual", project: { id: "p1", status: "active", strategyStatus: "draft", workflowSteps: [{ stepKey: "intake", status: "completed", actionUrl: null }], onboardingReadiness: { intelligenceReady: true, blockersJson: [], moduleStatusJson: [], nextBestActionJson: {} } } });
+    expect(steps.map((step) => step.state)).toEqual(["complete", "complete", "complete", "complete", "in_progress", "not_started"]);
+    expect(steps.find((step) => step.key === "strategy")?.href).toBe("/strategy?projectId=p1");
+  });
+
+  it("blocks an Agency project until a client exists", () => {
+    const steps = guidedSetupSteps({ workspaceType: "agency", activeClientCount: 0, project: null });
+    expect(steps[0]).toMatchObject({ state: "blocked", href: "/workspace?tab=clients" });
   });
 });
