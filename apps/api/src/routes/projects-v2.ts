@@ -4389,10 +4389,10 @@ async function executeStrategyGenerationJob(jobId: string) {
     return;
   }
 
-  // BullMQ can redeliver a stalled job, and multiple API instances can recover
-  // the same database record concurrently. Only one worker may transition the
-  // durable job from queued to running and call the AI provider.
-  const claimed = await prisma.aiRun.updateMany({ where: { id: jobId, status: "queued" }, data: { status: "running", outputJson: { stage: "generating_strategy", progress: 35, startedAt: new Date().toISOString() }, errorMessage: null } });
+  // BullMQ serializes execution by job ID. A worker restart can leave the
+  // durable row at `running`; when BullMQ redelivers that stalled job, reclaim
+  // it here instead of acknowledging the queue item without doing the work.
+  const claimed = await prisma.aiRun.updateMany({ where: { id: jobId, status: { in: ["queued", "running"] } }, data: { status: "running", outputJson: { stage: "generating_strategy", progress: 35, startedAt: new Date().toISOString(), recovered: job.status === "running" }, errorMessage: null } });
   if (!claimed.count) return;
   const request = strategyWorkerRequest(input, jobId);
   let responseStatus = 200;
