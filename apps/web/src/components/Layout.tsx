@@ -945,7 +945,7 @@ export default function Layout({ children }: { children: ReactNode }) {
             </div>
           </section>
         )}
-        <main className="min-w-0 flex-1 overflow-x-hidden px-4 pb-4 pt-16 lg:p-8" style={{ background: "linear-gradient(135deg, #181d21 0%, #0f172a 52%, #104d65 100%)" }}>
+        <main className="min-w-0 flex-1 overflow-x-hidden px-4 pb-4 pt-16 lg:p-8">
           <ProjectScopeGate
             required={isProjectScopedPath(location.pathname)}
             projectId={new URLSearchParams(location.search).get("projectId") || activeProjectId}

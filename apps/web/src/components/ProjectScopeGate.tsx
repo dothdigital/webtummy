@@ -104,7 +104,7 @@ export default function ProjectScopeGate({
   return (
     <section className="mx-auto max-w-6xl">
       <div className="overflow-hidden rounded-[28px] border border-slate-200 bg-white shadow-[0_24px_70px_rgba(15,23,42,0.08)]">
-        <div className="relative overflow-hidden bg-gradient-to-br from-charcoal-950 via-slate-900 to-brand-900 px-6 py-9 text-white sm:px-10 sm:py-11">
+        <div className="relative overflow-hidden bg-charcoal-900 px-6 py-9 text-white sm:px-10 sm:py-11">
           <div className="pointer-events-none absolute -right-20 -top-28 h-72 w-72 rounded-full bg-emerald-400/20 blur-3xl" />
           <div className="pointer-events-none absolute -bottom-28 left-1/3 h-64 w-64 rounded-full bg-brand-400/20 blur-3xl" />
           <div className="relative flex flex-col gap-6 md:flex-row md:items-center md:justify-between">
