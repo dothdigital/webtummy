@@ -4305,7 +4305,7 @@ function EmptyModuleState({
   actionDisabled?: boolean;
 }) {
   return (
-    <Card className={`border-dashed border-slate-200 bg-white ${compact ? "p-4" : "p-6"}`}>
+    <Card className={`border-dashed border-slate-300 bg-white shadow-sm ${compact ? "p-4" : "p-6"}`}>
       <h2 className="text-base font-bold text-charcoal-950">{title}</h2>
       <p className="mt-2 text-sm leading-6 text-charcoal-500">{detail}</p>
       {!compact && actionLabel && onAction ? <button type="button" onClick={onAction} disabled={actionDisabled} className="mt-4 inline-flex rounded-lg bg-brand-600 px-4 py-2 text-sm font-bold text-white hover:bg-brand-700 disabled:cursor-not-allowed disabled:bg-slate-300">{actionLabel}</button> : null}
