@@ -17,6 +17,7 @@ import type {
   PageSpeedStrategyResult,
 } from "../types.js";
 import { ActionIconAnchor, ActionIconButton, Card, StatusPill, Badge, Button } from "../components/ui.js";
+import WebsitePlanSuggestionAction from "../components/WebsitePlanSuggestionAction.js";
 
 function SeverityChip({
   label, sev, count, active, onClick,
@@ -159,6 +160,7 @@ function organizationNotes(details: OrganizationDetails) {
 }
 
 function ReadinessGenerateModal({
+  projectId,
   activeKey,
   organizationDetails,
   setOrganizationDetails,
@@ -172,6 +174,7 @@ function ReadinessGenerateModal({
   onCopy,
   onClose,
 }: {
+  projectId: string;
   activeKey: ReadinessGenerateKey | null;
   organizationDetails: OrganizationDetails;
   setOrganizationDetails: (details: OrganizationDetails) => void;
@@ -259,7 +262,7 @@ function ReadinessGenerateModal({
         </div>
         <div className="flex flex-col-reverse gap-3 border-t border-charcoal-100 bg-white px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
           <div className="text-xs text-charcoal-500">Future access: AI Content → Recent generations → search by this project/topic.</div>
-          <Button type="button" onClick={onGenerate} disabled={generating || !canGenerate}>{generating ? "Generating..." : generated ? "Generate again" : "Generate content"}</Button>
+          {projectId ? <WebsitePlanSuggestionAction projectId={projectId} suggestion={{ sourceModule: "site_analysis", sourceType: "readiness_requirement", sourceId: activeKey, title: config.label, targetUrl: null, evidence: `Site Analysis found the ${config.label} readiness item is missing.`, recommendedAction: `Add ${config.label} to Website Plan review before preparation or implementation.`, expectedImpact: "Improves technical, schema, or answer-readiness coverage after approval and implementation." }} /> : <span className="text-xs font-semibold text-amber-700">Open this crawl from its project to add the requirement to Website Plan.</span>}
         </div>
       </div>
     </div>
@@ -1430,7 +1433,7 @@ function HealthDetailDrawer({
   );
 }
 
-function HealthReportView({ report, crawl, pages }: { report: HealthReport | null; crawl: CrawlStatus | null; pages: PageRow[] }) {
+function HealthReportView({ report, crawl, pages, projectId }: { report: HealthReport | null; crawl: CrawlStatus | null; pages: PageRow[]; projectId: string }) {
   const [activeDetail, setActiveDetail] = useState<HealthDetailKey | null>(null);
   const [activeGenerateKey, setActiveGenerateKey] = useState<ReadinessGenerateKey | null>(null);
   const [generating, setGenerating] = useState<ReadinessGenerateKey | null>(null);
@@ -1568,6 +1571,7 @@ function HealthReportView({ report, crawl, pages }: { report: HealthReport | nul
       </div>
 
       <ReadinessGenerateModal
+        projectId={projectId}
         activeKey={activeGenerateKey}
         organizationDetails={organizationDetails}
         setOrganizationDetails={setOrganizationDetails}
@@ -1895,6 +1899,7 @@ export default function CrawlDetail() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
+  const projectId = searchParams.get("projectId") ?? "";
   const requestedReturnTo = searchParams.get("returnTo");
   const returnTo = requestedReturnTo?.startsWith("/") && !requestedReturnTo.startsWith("//") ? requestedReturnTo : "/site-analysis";
   const [status, setStatus] = useState<CrawlStatus | null>(null);
@@ -2204,7 +2209,7 @@ export default function CrawlDetail() {
               </div>
             </Card>
 
-            {section === "health" && <HealthReportView report={healthReport} crawl={status} pages={pages} />}
+            {section === "health" && <HealthReportView report={healthReport} crawl={status} pages={pages} projectId={projectId} />}
 
             {section === "execution" && <Card className="overflow-hidden">
               <div className="flex flex-col gap-3 border-b border-charcoal-100 bg-white px-5 py-4 md:flex-row md:items-center md:justify-between">

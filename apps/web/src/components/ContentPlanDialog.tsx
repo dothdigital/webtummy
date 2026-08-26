@@ -1697,7 +1697,7 @@ export default function ContentPlanDialog({ task, onClose, onSaved, autoPrepare 
           <div className="truncate text-[10px] font-semibold text-brand-700">{assignment.targetUrl}</div>
         </div>
         <span className={`hidden rounded-full px-2 py-1 text-[9px] font-bold sm:inline ${assignment.source === "existing_crawl" ? "bg-emerald-100 text-emerald-700" : "bg-amber-100 text-amber-700"}`}>{sourceLabel}</span>
-        <span className="hidden rounded-full bg-slate-100 px-2 py-1 text-[9px] font-bold text-slate-600 lg:inline">{pageType}</span>
+        <span className={`hidden rounded-full px-2 py-1 text-[9px] font-bold lg:inline ${assignment.source === "existing_crawl" ? "bg-emerald-100 text-emerald-800" : "bg-violet-100 text-violet-800"}`}>{pageType}</span>
         {assignment.location && <span className="hidden rounded-full bg-slate-100 px-2 py-1 text-[9px] font-bold text-slate-600 lg:inline">{assignment.location} · {assignment.clusterRole?.replaceAll("_", " ")}</span>}
         {assignment.candidateScore != null && <span className={`hidden rounded-full px-2 py-1 text-[9px] font-black lg:inline ${assignment.candidateScore >= 70 ? "bg-emerald-50 text-emerald-700" : "bg-amber-50 text-amber-700"}`}>{assignment.candidateScore}/100</span>}
         <span className="hidden rounded-full bg-slate-100 px-2 py-1 text-[9px] font-bold text-slate-600 xl:inline">{assignment.searchIntent} · {assignment.recommendedAction.replaceAll("_", " ")}</span>
@@ -1707,7 +1707,7 @@ export default function ContentPlanDialog({ task, onClose, onSaved, autoPrepare 
       <div className="border-t border-slate-100 bg-slate-50/50 p-3">
         <div className="mb-2 flex flex-wrap gap-1.5 sm:hidden">
           <span className={`rounded-full px-2 py-1 text-[9px] font-bold ${assignment.source === "existing_crawl" ? "bg-emerald-100 text-emerald-700" : "bg-amber-100 text-amber-700"}`}>{sourceLabel}</span>
-          <span className="rounded-full bg-slate-100 px-2 py-1 text-[9px] font-bold text-slate-600">{pageType}</span>
+          <span className={`rounded-full px-2 py-1 text-[9px] font-bold ${assignment.source === "existing_crawl" ? "bg-emerald-100 text-emerald-800" : "bg-violet-100 text-violet-800"}`}>{pageType}</span>
           {assignment.location && <span className="rounded-full bg-slate-100 px-2 py-1 text-[9px] font-bold text-slate-600">{assignment.location} · {assignment.clusterRole?.replaceAll("_", " ")}</span>}
           <span className="rounded-full bg-slate-100 px-2 py-1 text-[9px] font-bold text-slate-600">{assignment.searchIntent} · {assignment.recommendedAction.replaceAll("_", " ")}</span>
         </div>

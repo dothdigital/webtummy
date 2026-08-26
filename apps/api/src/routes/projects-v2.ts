@@ -471,7 +471,7 @@ async function scopedProject(req: Request, projectId: string) {
         : seoPageMapUrl,
       ...(!seoPageMapApproved ? { blockedReason: "Approve the SEO Page Map & Content Plan before Website Development prepares this existing-site update." } : {}),
     };
-    const isSeoGapAggregate = task.moduleName === "gap_analysis"
+    const isSeoGapAggregate = (task.moduleName === "gap_analysis" && task.sourceType === "project")
       || (task.moduleName === "site_analysis" && /(?:fix (?:local )?site|review site issues|optimize existing site)/i.test(`${task.title} ${task.actionButtonLabel ?? ""}`));
     if (!isSeoPlanTask && !isSeoGapAggregate) return task;
     if (!seoEvidenceCurrent && !["completed", "skipped", "cancelled", "canceled"].includes(task.status ?? "")) return {
@@ -3391,7 +3391,7 @@ guidedProjectsRouter.post("/projects-v2/:projectId/reset-after-strategy", async 
   const project = await scopedProject(req, req.params.projectId);
   if (!project) return res.status(404).json({ error: "project not found" });
   if (project.status === "archived") return res.status(409).json({ error: "Restore the project before restarting its workflow." });
-  const approvedStrategy = project.strategyPlans.find((strategy) => strategy.status === "approved");
+  const approvedStrategy = project.strategyPlans.find((strategy) => strategy.status === "approved" || Boolean(strategy.approvedAt));
 
   const requestedModules = new Set(parsed.data.modules ?? ["execution", "website", "content", "lead_magnets", "local_seo", "publishing"]);
   // An Opportunity is an input to every Strategy decision. Removing it while
@@ -4613,9 +4613,8 @@ guidedProjectsRouter.post("/projects-v2/:projectId/strategy/approve", async (req
 
   const latestStrategy = project.strategyPlans[0];
   if (!latestStrategy) return res.status(409).json({ error: "generate strategy before approving" });
-  if (latestStrategy.status === "stale") return res.status(409).json({ error: "This Strategy is stale because upstream project evidence changed. Create a new Strategy version before approval.", code: "WORKFLOW_STRATEGY_STALE" });
   const workflowGate = await getProjectWorkflowController(project.id);
-  if (!workflowGate?.intelligenceReady || workflowGate.strategyStale) return res.status(409).json({ error: workflowGate?.strategyStale ? "Newer intelligence exists. Create a new Strategy version before approval." : "Complete the required project intelligence before approving Strategy.", code: workflowGate?.strategyStale ? "WORKFLOW_STRATEGY_STALE" : "WORKFLOW_INTELLIGENCE_INCOMPLETE", workflow: workflowGate });
+  if (!workflowGate?.intelligenceReady) return res.status(409).json({ error: "Complete the required project intelligence before approving Strategy.", code: "WORKFLOW_INTELLIGENCE_INCOMPLETE", workflow: workflowGate });
   const latestGapAnalysis = requiresSiteAnalysisBeforeStrategy(project)
     ? await prisma.gapAnalysisRun.findFirst({ where: { projectId: project.id, status: "completed" }, orderBy: [{ completedAt: "desc" }, { createdAt: "desc" }], select: { completedAt: true, createdAt: true } })
     : null;
@@ -4712,12 +4711,13 @@ guidedProjectsRouter.post("/projects-v2/:projectId/execution-plan/create", async
   const approvedStrategy = project.strategyPlans.find((strategy) => strategy.status === "approved");
   if (!approvedStrategy) return res.status(409).json({ error: "approve strategy before creating execution plan" });
   const workflowGate = await getProjectWorkflowController(project.id);
-  if (!workflowGate?.intelligenceReady || workflowGate.strategyStale) return res.status(409).json({ error: workflowGate?.strategyStale ? "The approved Strategy is stale. Regenerate and approve Strategy before creating the Execution Plan." : "Complete required intelligence before creating the Execution Plan.", code: workflowGate?.strategyStale ? "WORKFLOW_STRATEGY_STALE" : "WORKFLOW_INTELLIGENCE_INCOMPLETE", workflow: workflowGate });
+  if (!workflowGate?.intelligenceReady) return res.status(409).json({ error: "Complete required intelligence before creating the Execution Plan.", code: "WORKFLOW_INTELLIGENCE_INCOMPLETE", workflow: workflowGate });
   if (requiresSiteAnalysisBeforeStrategy(project)) {
     const latestGapAnalysis = await prisma.gapAnalysisRun.findFirst({ where: { projectId: project.id, status: "completed" }, orderBy: [{ completedAt: "desc" }, { createdAt: "desc" }], select: { completedAt: true, createdAt: true } });
     if (!latestGapAnalysis) return res.status(409).json({ error: "Run SEO and Gap Analysis before creating the Execution Plan. Then update and approve Strategy from that evidence." });
     const gapAnalysisAt = latestGapAnalysis.completedAt ?? latestGapAnalysis.createdAt;
-    if (gapAnalysisAt.getTime() > approvedStrategy.createdAt.getTime()) return res.status(409).json({ error: "The latest SEO and Gap Analysis is newer than the approved Strategy. Update and approve Strategy before creating the Execution Plan." });
+    // Later SEO evidence is retained as a freshness advisory. The explicitly
+    // approved Strategy remains usable until the customer opts to replace it.
   }
 
   const websiteId = project.websiteId ?? project.website?.id ?? null;

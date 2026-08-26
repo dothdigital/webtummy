@@ -818,6 +818,10 @@ function routeForModule(moduleName: string, websiteId?: string) {
 }
 
 function contentExecutionTaskRoute(task: GuidedExecutionTask, projectId: string) {
+  // Website Development is the canonical editor for content already mapped to
+  // a build page. Preserve that deep link instead of forcing every content task
+  // back through AI Content and creating a second asset for the same URL.
+  if (task.relatedUrl && !task.relatedUrl.startsWith("/ai-content")) return task.relatedUrl;
   const query = new URLSearchParams(task.relatedUrl?.startsWith("/ai-content?") ? task.relatedUrl.split("?", 2)[1] : "");
   query.set("projectId", projectId);
   query.set("taskId", task.id);

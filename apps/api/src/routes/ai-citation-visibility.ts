@@ -97,7 +97,7 @@ async function scopedCitationProject(req: Request, projectId: string, permission
   if (!await canAccessProject(context, projectId)) fail("Project not found.", 404);
   if (permission && !hasWorkspacePermission(context, permission)) fail(`${permission === "approve" ? "Approval" : permission === "execute_tasks" ? "Task execution" : "AI analysis"} permission is required.`, 403);
   const project = await prisma.project.findFirst({
-    where: { id: projectId, ...(context.workspace.legacyClientId ? { clientId: context.workspace.legacyClientId } : {}) },
+    where: { id: projectId },
     include: {
       client: { select: { name: true, contactEmail: true } },
       agencyClient: { select: { id: true, name: true, contactName: true, contactEmail: true, contactPhone: true, businessLocations: true } },

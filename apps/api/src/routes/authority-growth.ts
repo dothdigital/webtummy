@@ -100,7 +100,7 @@ async function authorityProject(req: Request, projectId: string, permission?: st
   if (!await canAccessProject(context, projectId)) fail("Project not found.", 404);
   if (permission && !hasWorkspacePermission(context, permission)) fail(`${permission === "approve" ? "Approval" : "AI analysis"} permission is required.`, 403);
   const project = await prisma.project.findFirst({
-    where: { id: projectId, ...(context.workspace.legacyClientId ? { clientId: context.workspace.legacyClientId } : {}) },
+    where: { id: projectId },
     include: {
       agencyClient: { select: { id: true } },
       businessProfile: true,

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { resolveProjectApplicability, resolveProjectWorkflow, type WorkflowEvidenceSnapshot } from "./project-workflow-controller.js";
+import { resolveProjectApplicability, resolveProjectWorkflow, STRATEGY_EVIDENCE_SETTLING_WINDOW_MS, type WorkflowEvidenceSnapshot } from "./project-workflow-controller.js";
 
 function snapshot(overrides: Partial<WorkflowEvidenceSnapshot> = {}): WorkflowEvidenceSnapshot {
   const now = new Date("2026-08-01T12:00:00.000Z");
@@ -243,21 +243,46 @@ describe("DEV-046 project workflow controller", () => {
     expect(result.nextBestAction.action.url).toContain("/site-analysis?");
   });
 
-  it("invalidates Strategy when newer evidence arrives", () => {
+  it("keeps an approved Strategy usable when newer evidence arrives", () => {
     const strategyAt = new Date("2026-07-20T12:00:00.000Z");
     const evidenceAt = new Date("2026-08-01T12:00:00.000Z");
     const result = resolveProjectWorkflow(snapshot({ latestStrategy: { id: "strategy-1", status: "approved", createdAt: strategyAt, approvedAt: strategyAt }, latestStrategyVersion: 6, latestEvidenceAt: evidenceAt }));
     expect(result.strategyStale).toBe(true);
-    expect(result.state).toBe("strategy_ready");
-    expect(result.nextBestAction.title).toContain("was completed");
-    expect(result.nextBestAction.action.label).toBe("Regenerate Strategy");
-    expect(result.nextBestAction.explainability).toContain("preserves the previous version");
-    expect(result.stages.find((item) => item.key === "unified_strategy")?.reason).toContain("completed previously");
+    expect(result.state).toBe("strategy_approved");
+    expect(result.nextBestAction.title).toBe("Create the Execution Plan");
+    expect(result.nextBestAction.action.label).toBe("Create Execution Plan");
+    expect(result.blockers.some((item) => item.key === "strategy_stale")).toBe(false);
+    expect(result.stages.find((item) => item.key === "unified_strategy")?.reason).toContain("remains usable");
     expect(result.strategyCreatedAt).toBe(strategyAt.toISOString());
     expect(result.latestEvidenceAt).toBe(evidenceAt.toISOString());
     expect(result.changedEvidence.length).toBeGreaterThan(0);
     expect(result.changedEvidence.every((item) => new Date(item.evidenceAt) > strategyAt)).toBe(true);
     expect(result.changedEvidence.find((item) => item.key === "authority_analysis")?.action?.url).toContain("projectId=project-1");
+  });
+
+  it("does not invalidate a fresh Strategy while its evidence cycle is settling", () => {
+    const strategyAt = new Date("2026-08-25T19:29:32.624Z");
+    const evidenceAt = new Date(strategyAt.getTime() + 28_000);
+    const result = resolveProjectWorkflow(snapshot({
+      latestStrategy: { id: "strategy-3", status: "draft", createdAt: strategyAt, approvedAt: null },
+      latestStrategyVersion: 3,
+      latestEvidenceAt: evidenceAt,
+      authorityEvidenceAt: evidenceAt,
+    }));
+    expect(result.strategyStale).toBe(false);
+    expect(result.stages.find((item) => item.key === "strategy_approval")?.status).toBe("ready");
+  });
+
+  it("invalidates Strategy after the evidence settling window", () => {
+    const strategyAt = new Date("2026-08-25T19:29:32.624Z");
+    const evidenceAt = new Date(strategyAt.getTime() + STRATEGY_EVIDENCE_SETTLING_WINDOW_MS + 1);
+    const result = resolveProjectWorkflow(snapshot({
+      latestStrategy: { id: "strategy-3", status: "draft", createdAt: strategyAt, approvedAt: null },
+      latestStrategyVersion: 3,
+      latestEvidenceAt: evidenceAt,
+      authorityEvidenceAt: evidenceAt,
+    }));
+    expect(result.strategyStale).toBe(true);
   });
 
   it("allows an authorized waiver to satisfy one evidence cycle", () => {

@@ -4,6 +4,7 @@ import { api } from "../api.js";
 import { getActiveProjectId, resolveActiveProjectId, setActiveProjectId } from "../active-project.js";
 import ProjectModuleHeader from "../components/ProjectModuleHeader.js";
 import ProjectWorkflowController from "../components/ProjectWorkflowController.js";
+import WebsitePlanSuggestionAction from "../components/WebsitePlanSuggestionAction.js";
 import { Button, Card, EmptyState } from "../components/ui.js";
 import type { GrowthCandidateAction, GrowthContentOpportunity, GrowthExperiment, GrowthOverviewResponse, GrowthReadinessItem, GuidedProject } from "../types.js";
 
@@ -501,6 +502,8 @@ export default function GrowthEngine() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [contentQueue, setContentQueue] = useState<"now" | "next" | "later" | "conditional" | "all">("now");
+  const [contentWindow, setContentWindow] = useState<30 | 60 | 90 | 120 | 150 | 180 | "all">(30);
+  const [contentPlanStartDate, setContentPlanStartDate] = useState("");
   const [selectedContentIds, setSelectedContentIds] = useState<string[]>([]);
   const [workflowRefreshKey, setWorkflowRefreshKey] = useState(0);
   const projectId = resolveActiveProjectId(projects, params.get("projectId"), getActiveProjectId());
@@ -529,17 +532,18 @@ export default function GrowthEngine() {
 
   useEffect(() => {
     setSelectedContentIds([]);
-    setContentQueue("now");
+    setContentQueue("all");
+    setContentWindow(30);
   }, [projectId]);
 
   const scoreEntries = useMemo(() => Object.entries(data?.signals.scoreJson ?? {}), [data]);
 
-  async function runAction(path: string, nextTab?: Tab) {
+  async function runAction(path: string, nextTab?: Tab, body: Record<string, unknown> = {}) {
     if (!projectId) return;
     setBusy(true);
     setError(null);
     try {
-      await api.post(path, {});
+      await api.post(path, body);
       const fresh = await api.get<GrowthOverviewResponse>(`/api/projects-v2/${projectId}/growth/overview`);
       setData(fresh);
       setWorkflowRefreshKey((value) => value + 1);
@@ -690,14 +694,24 @@ export default function GrowthEngine() {
   }
   if (!data) return <Card className="p-4 text-sm text-red-700">{error || "Growth data unavailable"}</Card>;
   const foundationReady = data.readiness.canRun;
-  const workflowReady = Boolean(data.workflowController?.intelligenceReady && !data.workflowController.strategyStale);
+  const workflowReady = Boolean(data.workflowController?.intelligenceReady && data.workflowController.strategyApprovedAt);
   const canRunGrowth = foundationReady && workflowReady;
   const blueprintVersion = data.growth.blueprint?.versions[0] ?? null;
   const contentRoadmap = data.growth.contentRoadmap;
   const contentQueueOrder = { now: 0, next: 1, later: 2, conditional: 3 };
+  const plannedDay = (item: GrowthContentOpportunity) => {
+    const exactMatch = item.plannedPhase.match(/^day_(\d+)$/);
+    if (exactMatch) return Number(exactMatch[1]);
+    const legacyMatch = item.plannedPhase.match(/days_\d+_(\d+)/);
+    return legacyMatch ? Number(legacyMatch[1]) : null;
+  };
+  const scheduleWindow = (item: GrowthContentOpportunity) => {
+    const day = plannedDay(item) ?? 180;
+    return Math.min(180, Math.max(30, Math.ceil(day / 30) * 30));
+  };
   const visibleContentOpportunities = (contentRoadmap?.opportunities ?? []).filter((item) =>
-    contentQueue === "all" ? item.lifecycleStatus !== "superseded" : item.queue === contentQueue && item.lifecycleStatus !== "superseded",
-  ).sort((left, right) => contentQueueOrder[left.queue] - contentQueueOrder[right.queue] || right.priorityScore - left.priorityScore);
+    item.lifecycleStatus !== "superseded" && (contentQueue === "all" || item.queue === contentQueue) && (contentWindow === "all" || scheduleWindow(item) === contentWindow),
+  ).sort((left, right) => (plannedDay(left) ?? 999) - (plannedDay(right) ?? 999) || contentQueueOrder[left.queue] - contentQueueOrder[right.queue] || right.priorityScore - left.priorityScore);
   const selectableContentOpportunities = visibleContentOpportunities.filter((item) => ["proposed", "deferred"].includes(item.lifecycleStatus) && !item.executionTaskId);
   const recommendedContentOpportunity = selectableContentOpportunities[0] ?? null;
   const findings = findingItems(data.growth.diagnosis?.findingsJson);
@@ -969,7 +983,10 @@ export default function GrowthEngine() {
                     <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-600">{contentRoadmap.recommendationRationale}</p>
                     <div className="mt-3 text-xs font-semibold text-slate-500">Cadence: {contentRoadmap.recommendedCadence}{contentRoadmap.nextReviewAt ? ` · Reassess ${new Date(contentRoadmap.nextReviewAt).toLocaleDateString()}` : ""}</div>
                   </div>
-                  <Button variant="ghost" onClick={() => runAction(`/api/projects-v2/${projectId}/growth/content-roadmap/refresh`, "content")} disabled={busy}>{busy ? "Refreshing research…" : "Refresh Research"}</Button>
+                  <div className="flex flex-wrap items-end gap-2">
+                    <label className="text-xs font-bold text-slate-600"><span className="mb-1 block">Plan start date (optional)</span><input type="date" value={contentPlanStartDate} onChange={(event) => setContentPlanStartDate(event.target.value)} className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-charcoal-950" /></label>
+                    <Button variant="ghost" onClick={() => { if (window.confirm("Recreate the 180-day plan? Approved, scheduled, and published work will keep its current status and dates.")) void runAction(`/api/projects-v2/${projectId}/growth/content-roadmap/refresh`, "content", contentPlanStartDate ? { startDate: contentPlanStartDate } : {}); }} disabled={busy}>{busy ? "Recreating plan…" : "Recreate Content Plan"}</Button>
+                  </div>
                 </div>
                 <div className="grid gap-3 p-5 sm:grid-cols-2 xl:grid-cols-5">
                   <Stat label="Total opportunity" value={contentRoadmap.opportunityCount} />
@@ -981,8 +998,23 @@ export default function GrowthEngine() {
               </Card>
 
               <Card className="overflow-hidden">
+                <div className="border-b border-cyan-100 bg-cyan-50/60 p-4">
+                  <div className="text-xs font-bold uppercase tracking-wide text-cyan-700">180-day publishing plan</div>
+                  <h2 className="mt-1 text-lg font-bold text-charcoal-950">Choose a delivery window</h2>
+                  <p className="mt-1 text-sm text-slate-600">Without a start date, the plan stays relative as Day 1–180. Set a start date and recreate it to trigger calendar dates and Website Plan deadlines.</p>
+                </div>
+                <div className="grid gap-2 p-4 sm:grid-cols-3 xl:grid-cols-7">
+                  {([30, 60, 90, 120, 150, 180] as const).map((days) => {
+                    const count = contentRoadmap.opportunities.filter((item) => item.lifecycleStatus !== "superseded" && scheduleWindow(item) === days).length;
+                    return <button key={days} type="button" onClick={() => { setContentWindow(days); setSelectedContentIds([]); }} className={`rounded-xl border p-3 text-left ${contentWindow === days ? "border-cyan-500 bg-cyan-50 ring-1 ring-cyan-200" : "border-slate-200 bg-white hover:border-cyan-300"}`}><span className="block text-sm font-bold text-charcoal-950">Days {days - 29}–{days}</span><span className="mt-1 block text-xs text-slate-500">{count} planned {count === 1 ? "article" : "articles"}</span></button>;
+                  })}
+                  <button type="button" onClick={() => { setContentWindow("all"); setSelectedContentIds([]); }} className={`rounded-xl border p-3 text-left ${contentWindow === "all" ? "border-cyan-500 bg-cyan-50 ring-1 ring-cyan-200" : "border-slate-200 bg-white hover:border-cyan-300"}`}><span className="block text-sm font-bold text-charcoal-950">Full plan</span><span className="mt-1 block text-xs text-slate-500">{contentRoadmap.opportunityCount} opportunities</span></button>
+                </div>
+              </Card>
+
+              <Card className="overflow-hidden">
                 <div className="border-b border-brand-100 bg-brand-50/60 p-4">
-                  <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between"><div><div className="text-xs font-bold uppercase tracking-wide text-brand-700">Turn the plan into work</div><h2 className="mt-1 text-lg font-bold text-charcoal-950">Choose content to create as an Execution task</h2><p className="mt-1 max-w-4xl text-sm leading-6 text-slate-600">{contentQueueHelp}</p></div>{recommendedContentOpportunity&&<button type="button" disabled={busy} onClick={() => void approveContentOpportunities([recommendedContentOpportunity.id], true)} className="shrink-0 rounded-lg bg-brand-600 px-4 py-2.5 text-sm font-bold text-white hover:bg-brand-700 disabled:bg-slate-300">Start Highest-Priority Content with AI →</button>}</div>
+                  <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between"><div><div className="text-xs font-bold uppercase tracking-wide text-brand-700">Turn the plan into governed website work</div><h2 className="mt-1 text-lg font-bold text-charcoal-950">Add content opportunities to Website Plan</h2><p className="mt-1 max-w-4xl text-sm leading-6 text-slate-600">Supporting-content suggestions become their own proposed pages and retain the supplied target page as their cluster parent. Content work begins only after Website Plan approval.</p></div>{recommendedContentOpportunity&&<WebsitePlanSuggestionAction projectId={projectId} suggestion={{ sourceModule: "growth", sourceType: "content_opportunity", sourceId: recommendedContentOpportunity.id, title: recommendedContentOpportunity.title, pageMode: "create_supporting", targetUrl: null, parentTargetUrl: recommendedContentOpportunity.internalLinkTargetUrl || recommendedContentOpportunity.targetUrl, evidence: recommendedContentOpportunity.recommendationReason, recommendedAction: recommendedContentOpportunity.businessPurpose, expectedImpact: `Priority ${recommendedContentOpportunity.priorityScore}/100 growth content opportunity.` }} className="shrink-0 rounded-lg bg-brand-600 px-4 py-2.5 text-sm font-bold text-white disabled:opacity-50" />}</div>
                 </div>
                 <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-100 p-4">
                   <div className="flex flex-wrap gap-2">
@@ -996,7 +1028,7 @@ export default function GrowthEngine() {
                   </div>
                   <div className="flex flex-wrap items-center gap-2">
                     <button type="button" disabled={!selectableContentOpportunities.length} onClick={() => setSelectedContentIds(selectableContentOpportunities.map((item) => item.id))} className="rounded-lg border border-slate-200 px-3 py-2 text-xs font-bold text-slate-600 disabled:text-slate-300">Select all in this view</button>
-                    <Button onClick={() => void approveContentOpportunities()} disabled={busy || !selectedContentIds.length}>{busy ? "Creating tasks…" : `Create Selected Content Tasks${selectedContentIds.length ? ` (${selectedContentIds.length})` : ""}`}</Button>
+                    <span className="text-xs font-semibold text-slate-500">Add each selected opportunity to its matched Website Plan page below.</span>
                   </div>
                 </div>
                 <div className="space-y-3 p-4">
@@ -1010,21 +1042,22 @@ export default function GrowthEngine() {
                           <div className="flex flex-wrap items-center gap-2">
                             <span className={`rounded-full px-2.5 py-1 text-[10px] font-bold uppercase ${opportunity.queue === "now" ? "bg-emerald-100 text-emerald-700" : opportunity.queue === "next" ? "bg-cyan-100 text-cyan-700" : opportunity.queue === "conditional" ? "bg-amber-100 text-amber-700" : "bg-slate-100 text-slate-600"}`}>{opportunity.queue}</span>
                             <span className={`rounded-full px-2.5 py-1 text-[10px] font-bold ${statusBadge(opportunity.lifecycleStatus)}`}>{titleCase(opportunity.lifecycleStatus)}</span>
-                            <span className="rounded-full bg-violet-50 px-2.5 py-1 text-[10px] font-bold text-violet-700">{titleCase(opportunity.plannedPhase)}</span>
+                            <span className="rounded-full bg-violet-50 px-2.5 py-1 text-[10px] font-bold text-violet-700">Day {plannedDay(opportunity) ?? "TBD"}</span>
                           </div>
                           <h3 className="mt-2 text-base font-bold text-charcoal-950">{opportunity.title}</h3>
                           <div className="mt-1 text-xs font-semibold text-brand-700">{opportunity.primaryKeyword} · {titleCase(opportunity.searchIntent)} · {opportunity.clusterName}</div>
                           <p className="mt-3 text-sm leading-6 text-slate-600">{opportunity.recommendationReason}</p>
-                          <div className="mt-3 grid gap-3 text-xs md:grid-cols-3">
+                          <div className="mt-3 grid gap-3 text-xs md:grid-cols-4">
                             <div className="rounded-lg bg-slate-50 p-3"><span className="block font-bold uppercase text-slate-400">Business purpose</span><span className="mt-1 block leading-5 text-slate-700">{opportunity.businessPurpose}</span></div>
                             <div className="rounded-lg bg-slate-50 p-3"><span className="block font-bold uppercase text-slate-400">Target page</span><span className="mt-1 block break-all leading-5 text-slate-700">{opportunity.internalLinkTargetUrl || opportunity.targetUrl || "Assign during content review"}</span></div>
                             <div className="rounded-lg bg-slate-50 p-3"><span className="block font-bold uppercase text-slate-400">Priority</span><span className="mt-1 block text-lg font-bold text-brand-700">{opportunity.priorityScore}/100</span><span className="text-slate-500">{opportunity.confidence}% confidence</span></div>
+                            <div className="rounded-lg bg-cyan-50 p-3"><span className="block font-bold uppercase text-cyan-700">Action trigger</span><span className="mt-1 block font-bold text-charcoal-950">{opportunity.plannedPublishAt ? `Post ${formatDate(opportunity.plannedPublishAt)}` : `Publish on Day ${plannedDay(opportunity) ?? "TBD"}`}</span><span className="mt-1 block leading-5 text-slate-600">{opportunity.plannedPublishAt ? `Add to Website Plan by ${formatDate(new Date(new Date(opportunity.plannedPublishAt).getTime() - 14 * 86_400_000).toISOString())}` : `Add to Website Plan 14 days before Day ${plannedDay(opportunity) ?? "TBD"}`}</span></div>
                           </div>
                         </div>
                       </div>
                       <div className="mt-4 flex flex-wrap items-center justify-end gap-2 border-t border-slate-100 pt-3">
                         {opportunity.executionTaskId && <Link to={`/ai-content?projectId=${projectId}&taskId=${opportunity.executionTaskId}&open=1`} className="rounded-lg bg-emerald-600 px-3 py-2 text-xs font-bold text-white">Open Content Task →</Link>}
-                        {selectable && <button type="button" disabled={busy} onClick={() => void approveContentOpportunities([opportunity.id], true)} className="rounded-lg bg-brand-600 px-3 py-2 text-xs font-bold text-white hover:bg-brand-700 disabled:bg-slate-300">{busy ? "Creating task…" : "Create Task & Open →"}</button>}
+                        {selectable && <WebsitePlanSuggestionAction projectId={projectId} suggestion={{ sourceModule: "growth", sourceType: "content_opportunity", sourceId: opportunity.id, title: opportunity.title, pageMode: "create_supporting", targetUrl: null, parentTargetUrl: opportunity.internalLinkTargetUrl || opportunity.targetUrl, evidence: opportunity.recommendationReason, recommendedAction: opportunity.businessPurpose, expectedImpact: `Priority ${opportunity.priorityScore}/100 · ${opportunity.confidence}% confidence.` }} />}
                         {selectable && opportunity.queue !== "next" && <button type="button" disabled={busy} onClick={() => void updateContentOpportunity(opportunity, { queue: "next" })} className="rounded-lg border border-slate-200 px-3 py-2 text-xs font-bold text-slate-600">Move to Next</button>}
                         {selectable && opportunity.queue !== "now" && <button type="button" disabled={busy} onClick={() => void updateContentOpportunity(opportunity, { queue: "now" })} className="rounded-lg border border-brand-200 px-3 py-2 text-xs font-bold text-brand-700">Move to Now</button>}
                         {selectable && <button type="button" disabled={busy} onClick={() => void updateContentOpportunity(opportunity, { lifecycleStatus: "rejected" })} className="rounded-lg border border-rose-200 px-3 py-2 text-xs font-bold text-rose-700">Reject</button>}

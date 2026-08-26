@@ -439,6 +439,12 @@ const interpretedBusinessContext = (seoPlan: unknown, project: { name?: string |
   };
 };
 
+function legitimateServiceSafetyContext(input: { title: string; primaryKeyword: string }, businessContext: ReturnType<typeof interpretedBusinessContext>) {
+  const subject = [input.title, input.primaryKeyword, businessContext.industry, ...businessContext.primaryServices].join(" ").toLowerCase();
+  if (!/\b(massage therapy|massage therapist|registered massage|rmt)\b/.test(subject)) return "";
+  return "Legitimate healthcare-service context: this page concerns professional therapeutic massage delivered as a health, rehabilitation, or wellness service. Interpret massage terminology only in that clinical/professional sense. Keep all copy non-sexual, evidence-bound, and appropriate for patients evaluating care. Do not introduce sensual, erotic, adult, or suggestive language.";
+}
+
 type WebsiteGenerationBusinessProfile = {
   businessSummary: string | null;
   targetAudience: string | null;
@@ -1633,6 +1639,7 @@ async function aiPageBySectionGroups(
   const composition = await planPageComposition(page, project, brand, seoPlan, basic, checkpoint);
   const components = composition.components;
   const businessContext = interpretedBusinessContext(seoPlan, project);
+  const serviceSafetyContext = legitimateServiceSafetyContext(page, businessContext);
   const mappedBrief = {
     ...pageBriefEvidence(page.briefJson),
     verifiedProjectIntakeEvidence: pageIntakeEvidence(page, project),
@@ -1660,7 +1667,7 @@ Slug: /${page.slug}
 CTA: ${page.targetCta || "Request a consultation"}
 User instructions: ${promptText(instructions || "Create clear, complete content that helps the visitor make an informed decision.", 4_000)}`;
   const governedContext = `${commonContext}
-SEO and navigation governance:
+${serviceSafetyContext ? `${serviceSafetyContext}\n` : ""}SEO and navigation governance:
 - Build every section from the approved intake facts, the assigned keyword owner, and this page's archetype and dominant intent. The niche alone is never a content brief.
 - Use exactly the approved primary keyword and dominant intent shown above.
 - Treat Mapped page brief.internalLinkPlan as immutable: use only those approved destinations, anchors, placements, and intents; never guess a URL.
@@ -1829,6 +1836,8 @@ async function aiPage(page: { id: string; title: string; pageType: string; prima
 Visible page word budget: ${policy.minimumWords}–${policy.maximumWords} words across all website sections combined, including hero, service descriptions, proof, FAQs, forms, and CTA copy. Do not exceed ${policy.maximumWords} words. Metadata and schema are outside this visible-content budget.
 Page uniqueness contract: return an original SEO title, H1, first post-hero H2, and meta description that do not match values reserved by another page. The first H2 must name this page's assigned topic or intent. Never use “A solution aligned to your goals”, “How we can help”, “What we offer”, “Overview”, or “Why choose us”. Keep its follow-up overview concise at 70–130 words before deeper sections. Reserved page identity values: ${promptJson(uniquenessSignals, 20_000)}`.trim();
   const businessContext = interpretedBusinessContext(seoPlan, project);
+  const serviceSafetyContext = legitimateServiceSafetyContext(page, businessContext);
+  if (serviceSafetyContext) instructions = `${serviceSafetyContext}\n${instructions}`;
   if (!businessContext.coreBusinessValue || !businessContext.primaryServices.length || !businessContext.audience) {
     throw new Error("The approved SEO plan is missing its AI-interpreted business foundation. Reload and approve the SEO Content Plan before generating website content.");
   }

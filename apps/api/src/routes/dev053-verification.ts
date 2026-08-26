@@ -167,10 +167,10 @@ export async function collectSignals(project: Awaited<ReturnType<typeof scopedPr
         : { status: "MISSING", message: "Configure measurement, capture a baseline, and schedule post-work checkpoints.", evidence: { measurementPlans: 0, trackingEvents: 0, checkpoints: 0 } },
     aeo: citationFindings > 0 && aiQueries > 0
       ? { status: aiSnapshots > 0 ? "COMPLETE" : "PARTIAL", message: aiSnapshots > 0 ? "Answer opportunities and observed answer visibility are recorded." : "Answer readiness exists; record an observed answer result to measure visibility.", evidence: { readinessFindings: citationFindings, queries: aiQueries, observations: aiSnapshots } }
-      : { status: "MISSING", message: "Run Answer Engine analysis and save question-led queries.", evidence: { readinessFindings: citationFindings, queries: aiQueries } },
+      : { status: "MISSING", message: "Run Citation Research, review Answer opportunities, and save question-led monitoring prompts.", evidence: { readinessFindings: citationFindings, queries: aiQueries } },
     geo: entities > 0 && claims > 0 && citationFindings > 0
       ? { status: aiSnapshots > 0 ? "COMPLETE" : "PARTIAL", message: aiSnapshots > 0 ? "GEO readiness and observed generative-engine evidence are separated and available." : "GEO readiness exists; add permitted engine observations for measured visibility.", evidence: { entities, claims, readinessFindings: citationFindings, observations: aiSnapshots, sourceMentions } }
-      : { status: "MISSING", message: "Run Generative Engine analysis to validate entities, claims, sources and citation readiness.", evidence: { entities, claims, readinessFindings: citationFindings } },
+      : { status: "MISSING", message: "Run Citation Research to validate entities, claims, sources and generative citation readiness.", evidence: { entities, claims, readinessFindings: citationFindings } },
   };
 
   return { signals, flags: { isEcommerce, hasWebsite, isLocal, hasSearchConsole, hasGa4, searchProviderConfigured: provider, pagespeedConfigured: Boolean(process.env.PAGESPEED_API_KEY), gbpConfigured: Boolean(process.env.GOOGLE_BUSINESS_PROFILE_CLIENT_ID && process.env.GOOGLE_BUSINESS_PROFILE_CLIENT_SECRET), gbpConnected: localProfile?.googleBusinessConnection?.status === "connected", gbpActions: localProfile?._count.googleBusinessActions ?? 0, localScores: localProfile?._count.scores ?? 0, observations: aiSnapshots, sourceMentions, nextBestActionCount, measurementCheckpointCount: measurementCheckpoints.length, completedMeasurementCheckpoints: completedMeasurementCheckpoints.length, contentDecaySignals: contentDecaySignals.length, refreshTasks: refreshTasks.length, published: publishCount + verifiedPublicationCount } };
@@ -179,6 +179,14 @@ export async function collectSignals(project: Awaited<ReturnType<typeof scopedPr
 export function capabilityResult(capability: (typeof dev053Capabilities)[number], collected: Awaited<ReturnType<typeof collectSignals>>) {
   let result = collected.signals[capability.signal] ?? { status: "MISSING" as const, message: "No validator is registered for this capability.", evidence: {} };
   const { flags } = collected;
+
+  // AEO/GEO research and third-party engine observations are optional
+  // specialist intelligence, not user-resolvable Connected Coverage work.
+  if (capability.id.startsWith("AEO-") || capability.id.startsWith("GEO-")) result = {
+    status: "NOT_APPLICABLE",
+    message: "Optional advanced AI-search intelligence; excluded from the actionable Connected Coverage queue.",
+    evidence: { optionalSpecialistCapability: true },
+  };
 
   if (capability.applicableTo?.includes("website") && !flags.hasWebsite) result = { status: "NOT_APPLICABLE", message: "No website is currently in scope for this project.", evidence: { websiteConnected: false } };
   if (capability.applicableTo?.includes("local") && !flags.isLocal) result = { status: "NOT_APPLICABLE", message: "This project has no approved local market or business location.", evidence: { localProject: false } };
@@ -222,11 +230,20 @@ export function capabilityResult(capability: (typeof dev053Capabilities)[number]
     ? { status: "COMPLETE", message: "Readiness findings and observed results are stored as separate evidence types.", evidence: { observations: flags.observations } }
     : { status: "PARTIAL", message: "Readiness evidence is available, but there is no observed engine result to compare yet.", evidence: { observations: 0 } };
 
+  if (capability.id.startsWith("AEO-") || capability.id.startsWith("GEO-")) result = {
+    status: "NOT_APPLICABLE",
+    message: "Optional advanced AI-search intelligence; excluded from the actionable Connected Coverage queue.",
+    evidence: { optionalSpecialistCapability: true },
+  };
+
+  const workflowDestination = capability.id === "AEO-010" || ["GEO-008", "GEO-009", "GEO-012"].includes(capability.id)
+    ? capability.route.replace(/tab=[^&]+/, "tab=monitoring")
+    : capability.route;
   return {
     capabilityId: capability.id,
     status: result.status,
     message: result.message,
-    workflowDestination: capability.route,
+    workflowDestination,
     evidenceJson: result.evidence as Prisma.InputJsonObject,
   };
 }
@@ -240,10 +257,11 @@ export function summarize(results: Array<{ status: Dev053Status }>) {
 
 function presentRun(run: { id: string; projectId: string; status: string; summaryJson: unknown; createdAt: Date; completedAt: Date | null; results: Array<{ capabilityId: string; status: string; message: string; workflowDestination: string; evidenceJson: unknown; checkedAt: Date }> }) {
   const definitions = new Map(dev053Capabilities.map((item) => [item.id, item]));
+  const results = run.results.filter((result) => result.capabilityId.startsWith("SEO-"));
   return {
-    id: run.id, projectId: run.projectId, status: run.status, summary: run.summaryJson,
+    id: run.id, projectId: run.projectId, status: run.status, summary: summarize(results.map((result) => ({ status: result.status as Dev053Status }))),
     createdAt: run.createdAt, completedAt: run.completedAt,
-    results: run.results.map((result) => ({ ...definitions.get(result.capabilityId as (typeof dev053Capabilities)[number]["id"]), ...result })),
+    results: results.map((result) => ({ ...definitions.get(result.capabilityId as (typeof dev053Capabilities)[number]["id"]), ...result })),
   };
 }
 

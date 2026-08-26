@@ -143,7 +143,7 @@ export function marketingExecutionSummary(task: { moduleName: string; status: st
 
 function validationFor(input: { task: { title: string; description: string; expectedOutcome: string | null; relatedUrl: string | null; requiresApproval: boolean }; authorityCurrent: boolean; dependenciesComplete: boolean; contract: ModuleContract; workPackage: JsonRecord }) {
   const findings: Array<{ ruleId: string; severity: "BLOCKER" | "ERROR" | "WARNING" | "ADVISORY"; explanation: string; correction: string; waiverEligible: boolean }> = [];
-  if (!input.authorityCurrent) findings.push({ ruleId: "EXEC-AUTH-001", severity: "BLOCKER", explanation: "The task is not authorized by the current approved Strategy and Execution Plan.", correction: "Regenerate or reconcile the Execution Plan from the current approved Strategy.", waiverEligible: false });
+  if (!input.authorityCurrent) findings.push({ ruleId: "EXEC-AUTH-001", severity: "WARNING", explanation: "Newer Strategy or evidence is available, but this task may continue using its previously approved Strategy and Execution Plan.", correction: "Optionally create a new Strategy version if you want this task rebuilt from newer evidence; Strategy generation uses credits.", waiverEligible: true });
   if (!input.dependenciesComplete) findings.push({ ruleId: "EXEC-DEP-001", severity: "BLOCKER", explanation: "One or more required tasks are incomplete.", correction: "Complete the dependency graph before external action.", waiverEligible: false });
   if (!input.task.title.trim() || input.task.description.trim().length < 8) findings.push({ ruleId: "EXEC-OUT-001", severity: "ERROR", explanation: "The task does not contain a usable execution brief.", correction: "Add a clear objective, scope, and expected output.", waiverEligible: false });
   if (!input.task.expectedOutcome?.trim()) findings.push({ ruleId: "EXEC-MEASURE-001", severity: "WARNING", explanation: "The task has no explicit expected outcome.", correction: "Define the business or operational outcome before activation.", waiverEligible: true });
@@ -158,7 +158,7 @@ export async function prepareMarketingExecution(context: Context, taskId: string
     where: { id: taskId },
     include: {
       executionPlan: true,
-      project: { include: { businessProfile: true, strategyPlans: { where: { status: "approved" }, orderBy: [{ version: "desc" }, { updatedAt: "desc" }], take: 1 } } },
+      project: { include: { businessProfile: true, strategyPlans: { where: { OR: [{ status: "approved" }, { status: "stale", approvedAt: { not: null } }] }, orderBy: [{ version: "desc" }, { updatedAt: "desc" }], take: 1 } } },
       dependencies: { include: { requiredTask: { select: { id: true, title: true, status: true } } } },
     },
   });
@@ -245,8 +245,8 @@ export async function prepareMarketingExecution(context: Context, taskId: string
     && existingApproval.workPackageFingerprint === workPackage.fingerprint
     && existingApproval.assetFingerprint === assetFingerprint;
   const approvalInvalidated = existingApproval.status === "approved" && !approvalStillCurrent;
-  const nextStatus = !authorityCurrent || !dependenciesComplete ? "blocked" : validation.blockingCount ? "blocked" : approvalInvalidated && ["approved", "ready_to_publish"].includes(task.status) ? "needs_review" : task.status === "draft" || task.status === "pending" || task.status === "blocked" || task.status === "stale" ? "ready" : task.status;
-  const blockedReason = !strategy ? "Approve the Strategy before official execution." : !plan ? "Generate the Execution Plan from the approved Strategy." : !authorityCurrent ? "This task uses a stale Strategy or Execution Plan version. Reconcile it before continuing." : !dependenciesComplete ? `Complete dependencies first: ${task.dependencies.filter((dependency) => !["completed", "published", "approved", "ready_to_publish"].includes(dependency.requiredTask.status)).map((dependency) => dependency.requiredTask.title).join(", ")}` : validation.blockingCount ? validation.findings.filter((finding) => ["BLOCKER", "ERROR"].includes(finding.severity)).map((finding) => finding.explanation).join(" ") : null;
+  const nextStatus = !dependenciesComplete ? "blocked" : validation.blockingCount ? "blocked" : approvalInvalidated && ["approved", "ready_to_publish"].includes(task.status) ? "needs_review" : task.status === "draft" || task.status === "pending" || task.status === "blocked" || task.status === "stale" ? "ready" : task.status;
+  const blockedReason = !strategy ? "Approve the Strategy before official execution." : !plan ? "Generate the Execution Plan from the approved Strategy." : !dependenciesComplete ? `Complete dependencies first: ${task.dependencies.filter((dependency) => !["completed", "published", "approved", "ready_to_publish"].includes(dependency.requiredTask.status)).map((dependency) => dependency.requiredTask.title).join(", ")}` : validation.blockingCount ? validation.findings.filter((finding) => ["BLOCKER", "ERROR"].includes(finding.severity)).map((finding) => finding.explanation).join(" ") : null;
   const marketingExecution = {
     contractVersion: MARKETING_EXECUTION_CONTRACT_VERSION,
     correlationId,

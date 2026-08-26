@@ -56,6 +56,16 @@ type ContentPlanSnapshot = {
   blockingConflicts: Array<{ explanation: string; conflictingPageIds: string[]; conflictType: string }>;
 };
 
+function normalizedContentTargetPath(value: unknown) {
+  const raw = String(value ?? "").trim();
+  if (!raw) return "";
+  try {
+    return (new URL(raw, "https://website.local").pathname.replace(/\/+$/, "") || "/").toLowerCase();
+  } catch {
+    return (raw.split(/[?#]/, 1)[0].replace(/\/+$/, "") || "/").toLowerCase();
+  }
+}
+
 function contentPlanSnapshot(value: unknown): ContentPlanSnapshot | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   const plan = value as Record<string, unknown>;
@@ -161,6 +171,10 @@ async function materializeApprovedContentPlan(tx: Prisma.TransactionClient, cont
     return { canonicalKeyword: keyword, pageName: keyword, targetUrl: slug ? (root ? `${root}/${slug}` : `/${slug}`) : "/", secondaryKeywords: [], searchIntent: "informational", pagePurpose: "Support the approved canonical page and guide the visitor to a relevant next step.", gapAnalysis: "Confirm the distinct buyer question, content gap, internal-link destination, proof requirements, and cannibalization risk before drafting.", recommendedAction: definitionKey.startsWith("page-") ? "create_new" : "support_only" };
   };
   const childIds: string[] = [];
+  const websitePages = await tx.websiteBuildPage.findMany({
+    where: { build: { projectId: task.projectId }, status: { not: "deferred" } },
+    select: { id: true, targetUrl: true, status: true, approvedAt: true },
+  });
   // Older versions created one Local SEO task per page. Replace that noisy
   // fan-out with one project-level checklist linked to the Local SEO workspace.
   await tx.executionTask.deleteMany({ where: { sourceId: task.id, sourceType: "content_plan_action", moduleName: "local_seo", dedupeKey: { startsWith: `content-plan:${task.id}:local-` } } });
@@ -173,18 +187,25 @@ async function materializeApprovedContentPlan(tx: Prisma.TransactionClient, cont
     const approvedFaqs = assignment?.faqTopics?.length ? assignment.faqTopics : plan.faqTopics;
     const approvedProofRequirements = assignment?.proofRequirements?.length ? assignment.proofRequirements : plan.proofBlocks;
     const targetUrl = assignment?.targetUrl || null;
+    const targetPath = normalizedContentTargetPath(targetUrl);
+    const mappedPage = targetPath ? websitePages.find((page) => normalizedContentTargetPath(page.targetUrl) === targetPath) : null;
+    const mappedPageApproved = Boolean(mappedPage && ["approved", "deployed", "published"].includes(mappedPage.status));
     const data = {
       clientId: task.clientId, websiteId: task.websiteId, projectId: task.projectId, executionPlanId: task.executionPlanId,
       moduleName: definition.moduleName, sourceType: "content_plan_action", sourceId: task.id, title: definition.title.slice(0, 255), description: definition.description,
       expectedOutcome: definition.moduleName === "local_seo" ? "Review all approved page-to-market requirements in one Local SEO checklist, then complete the relevant profile, proof, schema, FAQ, and service-area work." : "Create a reviewed content asset that supports the approved content plan and can move through approval into publishing.", priority: definition.priority,
-      automationLevel: "automatic", status: "ready", requiresApproval: true, requiresIntegration: false, manualRequired: false,
-      safetyCategory: "protected_change", approvalRisk: "medium", actionButtonLabel: definition.moduleName === "local_seo" ? "Open Local SEO Plan" : "Create Content", relatedUrl: definition.moduleName === "local_seo" ? `/local-seo?projectId=${task.projectId}` : `/ai-content?projectId=${task.projectId}`,
+      automationLevel: "automatic", status: mappedPageApproved ? "completed" : "ready", requiresApproval: true, requiresIntegration: false, manualRequired: false,
+      safetyCategory: "protected_change", approvalRisk: "medium", actionButtonLabel: definition.moduleName === "local_seo" ? "Open Local SEO Plan" : mappedPageApproved ? "View Approved Website Content" : mappedPage ? "Add to Website" : "Create Content Only", relatedUrl: definition.moduleName === "local_seo" ? `/local-seo?projectId=${task.projectId}` : mappedPage ? `/site-architect?projectId=${task.projectId}&pageId=${mappedPage.id}&step=content` : `/ai-content?projectId=${task.projectId}`,
+      relatedAssetId: mappedPage?.id ?? null,
+      completedAt: mappedPageApproved ? mappedPage?.approvedAt ?? new Date() : null,
+      approvedAt: mappedPageApproved ? mappedPage?.approvedAt ?? new Date() : null,
+      approvalDecision: mappedPageApproved ? "approved" : null,
       manualInstructions: definition.moduleName === "local_seo" ? `Review these approved location-authority requirements in Local SEO:\n\n${plan.localSeoActions.join("\n")}\n\nImplement only approved location hubs and service-location pages. Require verified service availability, unique local proof, delivery details, FAQs, CTA wording, images, metadata, schema, and governed internal links. Merge or reject thin city-name substitutions. Neighbourhood pages remain excluded unless separate intent, demand, availability, and proof justify them.` : `${definition.description}\n\nApproved AI brief for this asset:\n${approvedBriefs.join("\n")}\n\nApproved SEO title: ${assignment?.seoTitle || "generate from the approved page brief"}\nApproved meta description: ${assignment?.metaDescription || "generate from the approved page brief"}\nApproved content outline:\n${assignment?.contentOutline?.join("\n") || "follow the approved page purpose"}\nApproved CTA direction: ${assignment?.ctaSuggestion || "use the approved conversion goal"}\n\nIntent ownership and uniqueness:\nPrimary intent: ${assignment?.primaryIntent ?? assignment?.searchIntent ?? "approved page intent"}\nIntent owner: ${assignment?.intentOwner ?? assignment?.targetUrl ?? "approved target"}\nTarget location: ${assignment?.location ?? "global"}${assignment?.locationLevel ? ` (${assignment.locationLevel})` : ""}\nRequired internal links: ${assignment?.requiredInternalLinks?.join(", ") || "use the approved page map"}\nProhibited competing keywords: ${assignment?.prohibitedCompetingKeywords?.join(", ") || "do not compete with another approved owner page"}\nAllowed local evidence IDs: ${assignment?.localEvidenceIds?.join(", ") || "none supplied—do not invent local proof"}\n\nApproved FAQ topics for this page:\n${approvedFaqs.join("\n")}\n\nAnswer these topics using this page's approved facts, primary keyword, dominant intent, audience, and target location. Keep the questions and answers unique to this page, omit anything irrelevant, and do not invent facts.\n\nProof and trust requirements:\n${approvedProofRequirements.join("\n")}\n\nApply each relevant requirement through the structured proof, results, process, or conversion section. Use only verified project evidence. When evidence is missing, record a clear review requirement instead of inventing a case study, metric, testimonial, rating, credential, guarantee, customer, quotation, award, or result. A missing-evidence marker is for review and must not be published as final customer-facing copy.\n\nWrite only for the assigned intent. Use verified facts, create unique headings, examples, FAQs, CTA wording, metadata, and media direction, and never create a superficial city-name substitution. Never invent offices, addresses, service availability, licences, awards, reviews, response times, statistics, or business relationships. Follow the approved content plan, complete SEO/AEO/GEO review, and submit the exact version for company approval before publishing.`, impact: plan.summary,
       approvalSnapshotJson: { targetUrl, contentPlanning: assignment ? { keyword: assignment.canonicalKeyword, searchIntent: assignment.searchIntent, primaryIntent: assignment.primaryIntent ?? assignment.searchIntent, intentClusterId: assignment.intentClusterId ?? null, intentOwner: assignment.intentOwner ?? assignment.targetUrl, targetUrl: assignment.targetUrl, pagePurpose: assignment.pagePurpose, gapAnalysis: assignment.gapAnalysis, recommendedAction: assignment.recommendedAction, pageKey: assignment.pageKey ?? null, parentPageId: assignment.parentPageId ?? null, location: assignment.location ?? null, locationLevel: assignment.locationLevel ?? null, clusterKey: assignment.clusterKey ?? null, clusterRole: assignment.clusterRole ?? null, authorityScore: assignment.authorityScore ?? null, candidateScore: assignment.candidateScore ?? null, decisionReason: assignment.decisionReason ?? null, serviceAvailabilityVerified: assignment.serviceAvailabilityVerified ?? null, localEvidenceIds: assignment.localEvidenceIds ?? [], requiredInternalLinks: assignment.requiredInternalLinks ?? [], prohibitedCompetingKeywords: assignment.prohibitedCompetingKeywords ?? [], seoTitle: assignment.seoTitle ?? null, metaDescription: assignment.metaDescription ?? null, contentOutline: assignment.contentOutline ?? [], faqTopics: approvedFaqs, proofRequirements: approvedProofRequirements, ctaSuggestion: assignment.ctaSuggestion ?? null, supportingContentIdeas: assignment.supportingContentIdeas ?? [], brief: assignment.contentBrief ?? definition.description, planningComplete: Boolean(assignment.canonicalKeyword && assignment.searchIntent && assignment.targetUrl && assignment.pagePurpose && assignment.gapAnalysis && (assignment.contentBrief || definition.description)) } : null, contentWorkflow: { currentStage: "ai_creation", stages: ["keyword_identified", "intent_analysis", "target_url_assigned", "gap_analysis", "brief_approved", "ai_creation", "seo_review", "company_approval", "publishing", "discovery_check", "performance_monitoring"], writer: "ai", seoReviewRequired: true, aeoReviewRequired: true, geoReviewRequired: true, companyApprovalRequired: true } } as Prisma.InputJsonValue,
     };
     const existing = await tx.executionTask.findUnique({ where: { dedupeKey } });
     const child = existing ? await tx.executionTask.update({ where: { id: existing.id }, data: { ...data, ...(existing.status === "completed" || existing.status === "published" ? { status: existing.status } : {}) } }) : await tx.executionTask.create({ data: { ...data, dedupeKey } });
-    if (definition.moduleName === "content" && !child.relatedUrl?.includes("taskId=")) await tx.executionTask.update({ where: { id: child.id }, data: { relatedUrl: `/ai-content?projectId=${task.projectId}&taskId=${child.id}&open=1` } });
+    if (definition.moduleName === "content" && (!child.relatedUrl || child.relatedUrl.startsWith("/ai-content")) && !child.relatedUrl?.includes("taskId=")) await tx.executionTask.update({ where: { id: child.id }, data: { relatedUrl: `/ai-content?projectId=${task.projectId}&taskId=${child.id}&open=1` } });
     childIds.push(child.id);
   }
   const publishingDedupeKey = `content-plan:${task.id}:publishing`;

@@ -28,19 +28,17 @@ describe("execution task guidance", () => {
     expect(guide.userSteps.join(" ")).toContain("Carry out and record this real-world check");
   });
 
-  it("does not tell a user to execute a stale task", () => {
+  it("lets a user continue a legacy stale task with the approved plan", () => {
     const guide = executionTaskGuidance(task({ status: "stale" }));
-    expect(guide.stale).toBe(true);
-    expect(guide.staleResolution).toBe("refresh_execution_plan");
-    expect(guide.userSteps[0]).toContain("Refresh the Execution Plan");
-    expect(guide.userSteps.join(" ")).toContain("Do not implement this outdated version");
+    expect(guide.stale).toBe(false);
+    expect(guide.staleResolution).toBeNull();
+    expect(guide.userSteps[0]).toContain("Check readiness & prepare with AI");
   });
 
-  it("routes upstream evidence changes through Strategy regeneration and approval first", () => {
+  it("does not force paid Strategy regeneration for upstream evidence changes", () => {
     const guide = executionTaskGuidance(task({ status: "stale", blockedReason: "Upstream Business Brain or evidence changed. Regenerate and approve Strategy, then reconcile the Execution Plan before continuing." }));
-    expect(guide.staleResolution).toBe("regenerate_strategy");
-    expect(guide.userSteps[0]).toContain("Regenerate Strategy · New Version");
-    expect(guide.userSteps[1]).toContain("approve it");
+    expect(guide.staleResolution).toBeNull();
+    expect(guide.userSteps.join(" ")).not.toContain("Regenerate Strategy");
   });
 
   it("uses plain destination names for strategy modules", () => {

@@ -31,7 +31,6 @@ const nav = [
   { to: "/ecommerce-intelligence", label: "Ecommerce Intelligence", icon: "content", permission: "run_ai_analysis" },
   { to: "/site-architect", label: "Site Architect", icon: "overview", anyPermissions: ["run_ai_analysis", "read_internal", "read_shared_client_data"] },
   { to: "/lead-magnets", label: "Lead Magnets", icon: "billing", anyPermissions: ["run_ai_analysis", "read_internal", "read_shared_client_data"] },
-  { to: "/growth", label: "Growth Engine", icon: "plans", permission: "run_ai_analysis" },
   { to: "/ai-content", label: "Publishing", icon: "content", permission: "publish" },
   { to: "/social-strategy", label: "Social", icon: "social", permission: "publish" },
   { to: "/admin", label: "Admin Management", icon: "users", superOnly: true },

@@ -2178,10 +2178,11 @@ export function builderView(project: Awaited<ReturnType<typeof scopedProject>>["
   const requirementsForViewPage = (page: typeof existingContentPages[number]) => targetedUpdateRequirements(page);
   const existingUpdatesRequired = existingContentPages.filter((page) => requirementsForViewPage(page).length > 0 && !targetedUpdateDraftReady(page));
   const existingUpdatesReadyForReview = existingContentPages.filter((page) => {
+    if (["approved", "deployed", "published"].includes(page.status)) return false;
     if (!targetedUpdateDraftReady(page)) return false;
     return String(jsonRecord(jsonRecord(jsonRecord(page.briefJson).seoPlan).targetedUpdateDraft).status ?? "") !== "approved_for_implementation";
   });
-  const existingUpdatesApproved = existingContentPages.filter((page) => requirementsForViewPage(page).length === 0 || String(jsonRecord(jsonRecord(jsonRecord(page.briefJson).seoPlan).targetedUpdateDraft).status ?? "") === "approved_for_implementation");
+  const existingUpdatesApproved = existingContentPages.filter((page) => ["approved", "deployed", "published"].includes(page.status) || requirementsForViewPage(page).length === 0 || String(jsonRecord(jsonRecord(jsonRecord(page.briefJson).seoPlan).targetedUpdateDraft).status ?? "") === "approved_for_implementation");
   const allNewPagesMissingContent = newContentPages.filter((page) => pageMissingContentKinds(page).length > 0 || isEarlierPlaceholderPage(page.seoJson));
   // Local evidence is an approval/publishing gate, not a drafting gate. Keep
   // every approved new page in the generation queue and report the evidence
@@ -4043,6 +4044,34 @@ function websiteContentExecutionTaskIds(briefJson: Prisma.JsonValue | Prisma.Inp
   return [...new Set([String(seoPlan.executionTaskId ?? "").trim(), ...jsonStrings(seoPlan.executionTaskIds), ...gapTaskIds].filter(Boolean))];
 }
 
+function normalizedWebsiteContentPath(value: unknown) {
+  const raw = String(value ?? "").trim();
+  if (!raw) return "";
+  try {
+    const pathname = new URL(raw, "https://website.local").pathname;
+    return (pathname.replace(/\/+$/, "") || "/").toLowerCase();
+  } catch {
+    return (raw.split(/[?#]/, 1)[0].replace(/\/+$/, "") || "/").toLowerCase();
+  }
+}
+
+async function matchingContentPlanExecutionTaskIds(projectId: string, page: { targetUrl: string; briefJson: Prisma.JsonValue }) {
+  const importSource = jsonRecord(jsonRecord(page.briefJson).importSource);
+  const pagePaths = new Set([page.targetUrl, importSource.liveUrl].map(normalizedWebsiteContentPath).filter(Boolean));
+  if (!pagePaths.size) return [];
+  const tasks = await prisma.executionTask.findMany({
+    where: { projectId, moduleName: "content", sourceType: "content_plan_action" },
+    select: { id: true, approvalSnapshotJson: true },
+  });
+  return tasks.filter((task) => {
+    const snapshot = jsonRecord(task.approvalSnapshotJson);
+    const planning = jsonRecord(snapshot.contentPlanning);
+    return [snapshot.targetUrl, planning.targetUrl, planning.intentOwner]
+      .map(normalizedWebsiteContentPath)
+      .some((path) => path && pagePaths.has(path));
+  }).map((task) => task.id);
+}
+
 async function markWebsiteContentExecutionNeedsReview(tx: Prisma.TransactionClient, briefJson: Prisma.JsonValue | Prisma.InputJsonValue) {
   const executionTaskIds = websiteContentExecutionTaskIds(briefJson);
   if (!executionTaskIds.length) return;
@@ -4113,6 +4142,100 @@ websiteBuilderRouter.get("/projects/:projectId/website-builder", async (req, res
   const { project } = await scopedOverviewProject(req.params.projectId, req);
   const payload = { ...builderOverviewView(project), publishingContent: await publishingContentFor(project, { includeResultJson: false }), siteFiles: siteFileOverviewFor(project) };
   sendMeasuredJson(res, payload, "website_builder_overview");
+});
+
+const websitePlanSuggestionSchema = z.object({
+  sourceModule: z.string().trim().min(1).max(80),
+  sourceType: z.string().trim().min(1).max(80),
+  sourceId: z.string().trim().min(1).max(191),
+  title: z.string().trim().min(3).max(255),
+  pageMode: z.enum(["match_or_create", "create_supporting"]).optional().default("match_or_create"),
+  targetUrl: z.string().trim().max(2000).nullable().optional(),
+  parentTargetUrl: z.string().trim().max(2000).nullable().optional(),
+  evidence: z.string().trim().min(1).max(10_000),
+  recommendedAction: z.string().trim().min(1).max(10_000),
+  expectedImpact: z.string().trim().max(5000).optional().default(""),
+});
+
+websiteBuilderRouter.post("/projects/:projectId/website-builder/plan-suggestions", async (req, res) => {
+  const context = await workspaceContext(req);
+  if (!await canAccessProject(context, req.params.projectId)) return res.status(404).json({ error: "Project not found." });
+  if (!hasWorkspacePermission(context, "execute_tasks")) return res.status(403).json({ error: "You do not have permission to update the Website Plan." });
+  const input = websitePlanSuggestionSchema.parse(req.body);
+  const build = await prisma.websiteBuild.findFirst({ where: { projectId: req.params.projectId }, orderBy: { updatedAt: "desc" }, include: { pages: { where: { status: { not: "deferred" } } } } });
+  if (!build) return res.status(409).json({ error: "Start Website Planning before adding content suggestions.", destinationUrl: `/site-architect?projectId=${req.params.projectId}` });
+  const target = normalizedPageTarget(input.targetUrl);
+  const parentTarget = normalizedPageTarget(input.parentTargetUrl);
+  const parentPage = parentTarget ? build.pages.find((candidate) => [candidate.targetUrl, candidate.remoteUrl, candidate.slug ? `/${candidate.slug}` : "/"].some((value) => normalizedPageTarget(value) === parentTarget)) ?? null : null;
+  const page = input.pageMode === "match_or_create" && target ? build.pages.find((candidate) => [candidate.targetUrl, candidate.remoteUrl, candidate.slug ? `/${candidate.slug}` : "/"].some((value) => normalizedPageTarget(value) === target)) ?? null : null;
+  const findingKey = `${input.sourceModule}:${input.sourceType}:${input.sourceId}`;
+  const requirement = { findingKey, sourceModule: input.sourceModule, sourceType: input.sourceType, sourceId: input.sourceId, title: input.title, targetUrl: input.targetUrl ?? null, parentTargetUrl: input.parentTargetUrl ?? null, pageMode: input.pageMode, evidence: input.evidence, recommendedFix: input.recommendedAction, expectedImpact: input.expectedImpact, approvalStatus: "suggested", addedAt: new Date().toISOString(), addedByUserId: context.membership.userId };
+  if (page) {
+    const brief = jsonRecord(page.briefJson), seoPlan = jsonRecord(brief.seoPlan);
+    const current = Array.isArray(seoPlan.gapRequirements) ? seoPlan.gapRequirements.map(jsonRecord) : [];
+    const gapRequirements = [...current.filter((item) => String(item.findingKey ?? "") !== findingKey), requirement];
+    await prisma.$transaction(async (tx) => {
+      await tx.websiteBuildPage.update({ where: { id: page.id }, data: { briefJson: { ...brief, seoPlan: { ...seoPlan, gapRequirements } } as Prisma.InputJsonValue, ...(["approved", "deployed", "published"].includes(page.status) ? { status: "review", approvedAt: null } : {}) } });
+      await tx.websiteBuild.update({ where: { id: build.id }, data: { sitemapApprovedAt: null, settingsJson: websiteChangedSettings({ ...jsonRecord(build.settingsJson), siteFiles: null }, { category: "page_content", summary: `${input.title} added to Website Plan review.`, section: "structure", pageId: page.id, pageTitle: page.title, changedByUserId: context.membership.userId }) as Prisma.InputJsonValue } });
+      await recordWorkspaceActivity(tx, { context, action: "website_plan.suggestion_added", entityType: "website_build_page", entityId: page.id, projectId: req.params.projectId, nextJson: requirement });
+    });
+    return res.status(201).json({ status: "added_to_existing_page", pageId: page.id, pageTitle: page.title, destinationUrl: `/site-architect?projectId=${req.params.projectId}&step=structure&pageId=${page.id}&sourceSuggestion=${encodeURIComponent(findingKey)}` });
+  }
+  const suggestedPath = input.pageMode === "create_supporting" ? `/blog/${slugify(input.title)}` : target || `/${slugify(input.title)}`;
+  const suggestedSlug = suggestedPath === "/" ? "" : input.pageMode === "create_supporting" ? `blog/${slugify(input.title)}` : slugify(suggestedPath.split("/").filter(Boolean).pop() || input.title);
+  const duplicateSlug = build.pages.find((candidate) => candidate.slug === suggestedSlug);
+  if (duplicateSlug) return res.status(409).json({ error: `Website Plan already contains ${duplicateSlug.title}. Add this suggestion to that page instead.`, pageId: duplicateSlug.id });
+  const created = await prisma.$transaction(async (tx) => {
+    let structuralParentId = parentPage?.id ?? null;
+    let addedPageCount = 0;
+    if (input.pageMode === "create_supporting") {
+      const existingBlog = build.pages.find((candidate) => candidate.pageType === "blog_section" || normalizedPageTarget(candidate.targetUrl || `/${candidate.slug}`) === "/blog");
+      if (existingBlog) structuralParentId = existingBlog.id;
+      else {
+        const blog = await tx.websiteBuildPage.create({ data: { buildId: build.id, title: "Blog", slug: "blog", pageType: "blog_section", primaryKeyword: `${build.name} articles`, secondaryKeywords: [], searchIntent: "informational", targetUrl: "/blog", targetCta: "Explore articles", sortOrder: build.pages.length, status: "planned", briefJson: { pagePurpose: "Organize approved supporting articles and authority content." } as Prisma.InputJsonValue } });
+        structuralParentId = blog.id;
+        addedPageCount = 1;
+      }
+    }
+    const row = await tx.websiteBuildPage.create({ data: { buildId: build.id, title: input.title.slice(0, 255), slug: suggestedSlug, pageType: input.pageMode === "create_supporting" ? "blog_article" : suggestedSlug ? "content" : "home", primaryKeyword: input.title.slice(0, 255), secondaryKeywords: [], searchIntent: "informational", targetUrl: suggestedPath, parentPageId: structuralParentId, sortOrder: build.pages.length + addedPageCount, status: "planned", briefJson: { seoPlan: { gapRequirements: [requirement] }, ...(input.pageMode === "create_supporting" ? { supportingContent: { internalLinkTargetUrl: input.parentTargetUrl ?? null } } : {}) } as Prisma.InputJsonValue } });
+    await syncBuildPageRelationships(tx, build.id);
+    await tx.websiteBuild.update({ where: { id: build.id }, data: { sitemapApprovedAt: null, settingsJson: websiteChangedSettings({ ...jsonRecord(build.settingsJson), siteFiles: null }, { category: "page_added", summary: `${input.title} added as a Website Plan page suggestion.`, section: "structure", pageId: row.id, pageTitle: row.title, changedByUserId: context.membership.userId }) as Prisma.InputJsonValue } });
+    await recordWorkspaceActivity(tx, { context, action: "website_plan.page_suggestion_added", entityType: "website_build_page", entityId: row.id, projectId: req.params.projectId, nextJson: requirement });
+    return row;
+  });
+  return res.status(201).json({ status: "added_as_proposed_page", pageId: created.id, pageTitle: created.title, destinationUrl: `/site-architect?projectId=${req.params.projectId}&step=structure&pageId=${created.id}&sourceSuggestion=${encodeURIComponent(findingKey)}` });
+});
+
+const dismissWebsitePlanSuggestionsSchema = z.object({
+  pageId: z.string().trim().min(1),
+  findingKeys: z.array(z.string().trim().min(1)).min(1).max(50),
+});
+
+websiteBuilderRouter.post("/projects/:projectId/website-builder/plan-suggestions/dismiss", async (req, res) => {
+  const context = await workspaceContext(req);
+  if (!await canAccessProject(context, req.params.projectId)) return res.status(404).json({ error: "Project not found." });
+  if (!hasWorkspacePermission(context, "execute_tasks")) return res.status(403).json({ error: "You do not have permission to update the Website Plan." });
+  const input = dismissWebsitePlanSuggestionsSchema.parse(req.body);
+  const build = await prisma.websiteBuild.findFirst({ where: { projectId: req.params.projectId }, orderBy: { updatedAt: "desc" }, include: { pages: true } });
+  if (!build) return res.status(404).json({ error: "Website Plan not found." });
+  const page = build.pages.find((candidate) => candidate.id === input.pageId);
+  if (!page) return res.status(404).json({ error: "Website Plan page not found." });
+  const brief = jsonRecord(page.briefJson), seoPlan = jsonRecord(brief.seoPlan);
+  const requirements = Array.isArray(seoPlan.gapRequirements) ? seoPlan.gapRequirements.map(jsonRecord) : [];
+  const findingKeys = new Set(input.findingKeys);
+  const dismissed = requirements.filter((requirement) => findingKeys.has(String(requirement.findingKey ?? "")));
+  if (!dismissed.length) return res.json({ status: "already_removed", pageId: page.id, pageDeferred: page.status === "deferred" });
+  const remaining = requirements.filter((requirement) => !findingKeys.has(String(requirement.findingKey ?? "")));
+  const remainingAdded = remaining.filter((requirement) => String(requirement.sourceModule ?? "").trim());
+  const pageWasCreatedForSuggestion = ["blog_article", "content"].includes(page.pageType) && !pageHasCompleteContent(page);
+  const pageDeferred = pageWasCreatedForSuggestion && remainingAdded.length === 0;
+  await prisma.$transaction(async (tx) => {
+    await tx.websiteBuildPage.update({ where: { id: page.id }, data: { briefJson: { ...brief, seoPlan: { ...seoPlan, gapRequirements: remaining }, dismissedPlanSuggestions: [...(Array.isArray(brief.dismissedPlanSuggestions) ? brief.dismissedPlanSuggestions : []), ...dismissed.map((requirement) => ({ ...requirement, dismissedAt: new Date().toISOString(), dismissedByUserId: context.membership.userId }))] } as Prisma.InputJsonValue, ...(pageDeferred ? { status: "deferred", approvedAt: null } : {}) } });
+    if (pageDeferred) await syncBuildPageRelationships(tx, build.id);
+    await tx.websiteBuild.update({ where: { id: build.id }, data: { sitemapApprovedAt: null, settingsJson: websiteChangedSettings({ ...jsonRecord(build.settingsJson), siteFiles: null }, { category: pageDeferred ? "page_deferred" : "page_content", summary: `${dismissed.length} Website Plan suggestion${dismissed.length === 1 ? "" : "s"} marked do not proceed${pageDeferred ? `; ${page.title} was deferred` : ""}.`, section: "structure", pageId: page.id, pageTitle: page.title, changedByUserId: context.membership.userId }) as Prisma.InputJsonValue } });
+    await recordWorkspaceActivity(tx, { context, action: "website_plan.suggestion_dismissed", entityType: "website_build_page", entityId: page.id, projectId: req.params.projectId, previousJson: { findingKeys: [...findingKeys] }, nextJson: { pageDeferred } });
+  });
+  return res.json({ status: "dismissed", pageId: page.id, pageDeferred });
 });
 
 websiteBuilderRouter.get("/projects/:projectId/website-builder/site-files", async (req, res) => {
@@ -6300,7 +6423,7 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/sync-seo-plan", 
           completedAt: pageApproved ? page.approvedAt ?? new Date() : null,
           approvedAt: pageApproved ? page.approvedAt ?? new Date() : null,
           approvalDecision: pageApproved ? "approved" : null,
-          actionButtonLabel: pageApproved ? "View Approved Website Content" : pageComplete ? "Review in Website Content" : "Create in Website Content",
+          actionButtonLabel: pageApproved ? "View Approved Website Content" : pageComplete ? "Review in Website Content" : "Add to Website",
           relatedUrl: `/site-architect?projectId=${project.id}&step=content&pageId=${page.id}`,
           approvalSnapshotJson: {
             sourcePlanTaskId: approvedPlan.task.id,
@@ -6339,7 +6462,7 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/sync-seo-plan", 
           completedAt: pageApproved ? page.approvedAt ?? new Date() : null,
           approvedAt: pageApproved ? page.approvedAt ?? new Date() : null,
           approvalDecision: pageApproved ? "approved" : null,
-          actionButtonLabel: pageApproved ? "View Approved Website Content" : pageComplete ? "Review in Website Content" : "Create in Website Content",
+          actionButtonLabel: pageApproved ? "View Approved Website Content" : pageComplete ? "Review in Website Content" : "Add to Website",
           relatedUrl: `/site-architect?projectId=${project.id}&step=content&pageId=${page.id}`,
           manualInstructions: "Open the mapped page in Website Development Content. AI uses the approved Gap Analysis, Strategy, SEO Page Map, funnel role, Local SEO, AI Citation, proof, CTA, and internal-link requirements. Review the generated result and approve the page to complete this task.",
           impact: "Closes the approved page-level gap through the same governed Website Development and Execution workflow.",
@@ -7948,7 +8071,10 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/pages/:pageId/ap
   const canonicalContent = canonicalContentFromComponents(page.contentJson, canonicalComponents(page.contentJson)) as Prisma.InputJsonValue;
   const synchronizedSeoJson = synchronizePageFaqSeo(page);
   const approvedAt = new Date();
-  const executionTaskIds = websiteContentExecutionTaskIds(page.briefJson);
+  const executionTaskIds = [...new Set([
+    ...websiteContentExecutionTaskIds(page.briefJson),
+    ...await matchingContentPlanExecutionTaskIds(project.id, page),
+  ])];
   const updated = await prisma.$transaction(async (tx) => {
     const nextBrief = {
       ...jsonRecord(page.briefJson),
@@ -7962,7 +8088,7 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/pages/:pageId/ap
     const row = await tx.websiteBuildPage.update({ where: { id: page.id }, data: { briefJson: nextBrief, contentJson: canonicalContent, seoJson: synchronizedSeoJson, status: "approved", approvedAt } });
     await tx.websiteBuildPageVersion.updateMany({ where: { pageId: page.id, version: page.version }, data: { seoJson: synchronizedSeoJson } });
     if (executionTaskIds.length) {
-      await tx.executionTask.updateMany({ where: { id: { in: executionTaskIds } }, data: { status: "completed", approvedAt, completedAt: approvedAt, approvalDecision: "approved", approvalNotes: qualityException ? input.exceptionReason : null, actionButtonLabel: "View Approved Website Content", blockedReason: null } });
+      await tx.executionTask.updateMany({ where: { id: { in: executionTaskIds } }, data: { status: "completed", approvedAt, completedAt: approvedAt, approvalDecision: "approved", approvalNotes: qualityException ? input.exceptionReason : null, actionButtonLabel: "View Approved Website Content", relatedAssetId: page.id, relatedUrl: `/site-architect?projectId=${project.id}&pageId=${page.id}&step=content`, blockedReason: null } });
       await tx.seoFixQueueItem.updateMany({ where: { executionTaskId: { in: executionTaskIds } }, data: { approvalStatus: "completed" } });
     }
     return row;

@@ -47,6 +47,18 @@ export function executionTaskDestination(moduleName: string): TaskDestination {
     label: "Publishing",
     reviewInstruction: "Confirm the exact approved asset, destination, links, forms, tracking, and rollback option before publishing.",
   };
+  if (["backlink", "backlinks"].includes(module)) return {
+    label: "Backlinks",
+    reviewInstruction: "Review authority opportunities, source relevance, risk, outreach requirements, and the exact evidence that will verify completion.",
+  };
+  if (["social", "social_strategy"].includes(module)) return {
+    label: "Social Strategy",
+    reviewInstruction: "Review the channel, audience, post copy, creative requirements, schedule, approval status, and measurement goal before completing the task.",
+  };
+  if (["ai_citation", "ai_citations"].includes(module)) return {
+    label: "AI Citations",
+    reviewInstruction: "Review the entity, source, answer coverage, factual claims, structured data, and verification evidence before completing the task.",
+  };
   return {
     label: moduleName.trim() ? moduleName.replaceAll("_", " ").replace(/\b\w/g, (letter) => letter.toUpperCase()) : "Task Workspace",
     reviewInstruction: "Review the AI-prepared work and evidence, correct anything inaccurate, and confirm the exact result before completing the task.",
@@ -91,10 +103,11 @@ function plainLanguageTask(task: GuidedExecutionTask, destinationLabel: string) 
 
 export function executionTaskGuidance(task: GuidedExecutionTask) {
   const destination = executionTaskDestination(task.moduleName);
-  const strategyRefreshRequired = /Regenerate and approve Strategy|Upstream Business Brain|upstream.+evidence changed|newer intelligence|Strategy is stale/i.test(task.blockedReason ?? "");
-  const stale = task.status === "stale"
-    || task.executionGovernance?.canonicalState === "STALE"
-    || /stale Strategy|Execution Plan version|older Strategy/i.test(task.blockedReason ?? "");
+  // Newer evidence never forces a paid Strategy rerun. Legacy records may
+  // still carry `stale` labels or blocker copy; preparation reconciles those
+  // records and continues with the already approved authority version.
+  const strategyRefreshRequired = false;
+  const stale = false;
   const prepared = Boolean(task.executionGovernance?.prepared);
   const actions = preparedActions(task.description ?? "");
   const userValidationActions = actions.filter(needsRealWorldUserAction);

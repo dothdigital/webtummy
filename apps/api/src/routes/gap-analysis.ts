@@ -943,7 +943,7 @@ async function gapEvidence(projectId: string) {
     prisma.dev053VerificationRun.findFirst({
       where: { projectId, status: "completed" },
       orderBy: [{ completedAt: "desc" }, { createdAt: "desc" }],
-      include: { results: { where: { status: { in: ["BLOCKED", "MISSING", "PARTIAL"] } }, orderBy: { capabilityId: "asc" } } },
+      include: { results: { where: { capabilityId: { startsWith: "SEO-" }, status: { in: ["BLOCKED", "MISSING", "PARTIAL"] }, NOT: { OR: [{ workflowDestination: { startsWith: "/gap-analysis" } }, { workflowDestination: { startsWith: "/reports" } }] } }, orderBy: { capabilityId: "asc" } } },
     }),
   ]);
   const localProfile = mergedLocalProfile(legacyLocalProfile, canonicalLocalProfile);
@@ -1256,6 +1256,11 @@ function buildGapRecommendations(evidence: Awaited<ReturnType<typeof gapEvidence
   const result: GapInput[] = [];
   if (capabilityRun?.results.length) {
     const definitions = new Map(dev053Capabilities.map((item) => [item.id, item]));
+    const actionAreas = [...new Map(capabilityRun.results.map((item) => {
+      const definition = definitions.get(item.capabilityId as (typeof dev053Capabilities)[number]["id"]);
+      const key = `${item.status}:${item.workflowDestination}:${item.message}`;
+      return [key, { item, definition }];
+    })).values()];
     const blocked = capabilityRun.results.filter((item) => item.status === "BLOCKED").length;
     const missing = capabilityRun.results.filter((item) => item.status === "MISSING").length;
     const partial = capabilityRun.results.filter((item) => item.status === "PARTIAL").length;
@@ -1265,15 +1270,15 @@ function buildGapRecommendations(evidence: Awaited<ReturnType<typeof gapEvidence
     }), 8);
     result.push({
       category: "connected_coverage",
-      title: `${capabilityRun.results.length} connected SEO and growth gaps need action`,
-      explanation: `Site Analysis found ${blocked} blocked, ${missing} missing, and ${partial} partially supported capabilities across ${sections.length || 1} applicable areas. These are consolidated here so they can inform one approved workflow instead of becoming a separate checklist.`,
+      title: `${actionAreas.length} connected SEO and growth action areas need attention`,
+      explanation: `Site Analysis found ${blocked} blocked, ${missing} missing, and ${partial} partially supported capability checks across ${sections.length || 1} applicable areas. Those ${capabilityRun.results.length} checks consolidate into ${actionAreas.length} distinct actions because several capabilities share the same prerequisite or workflow destination.`,
       action: "Resolve the highest-impact prerequisites and evidence gaps in Site Analysis, approve this recommendation into Strategy, and complete the resulting Execution Plan task before refreshing the checks.",
       impact: "Connects site, content, local, authority, AI-search, publishing, and measurement evidence to the approved growth workflow and verifies progress after implementation.",
       score: blocked ? 94 : missing ? 88 : 78,
       confidence: 95,
-      evidence: capabilityRun.results.slice(0, 8).map((item) => {
-        const definition = definitions.get(item.capabilityId as (typeof dev053Capabilities)[number]["id"]);
-        return `${definition?.title ?? "Connected capability"} — ${item.message}`;
+      evidence: actionAreas.slice(0, 8).map(({ item, definition }) => {
+        const covered = capabilityRun.results.filter((candidate) => candidate.status === item.status && candidate.workflowDestination === item.workflowDestination && candidate.message === item.message).length;
+        return `${definition?.title ?? "Connected capability"}${covered > 1 ? ` (+${covered - 1} related checks)` : ""} — ${item.message}`;
       }),
       competitors: [],
     });
@@ -1375,7 +1380,7 @@ gapAnalysisRouter.get(gapRoutes("/recommendations/:recommendationId/findings"), 
   }) : [];
   const websiteBuild = recommendation.category === "content" ? await prisma.websiteBuild.findFirst({ where: { projectId: recommendation.projectId }, orderBy: { updatedAt: "desc" }, select: { id: true } }) : null;
   const destination = recommendation.category === "content" && websiteBuild
-    ? { key: "website_content", label: "Website Development", route: `/site-architect?projectId=${recommendation.projectId}&step=content` }
+    ? { key: "website_content", label: "Website Plan", route: `/site-architect?projectId=${recommendation.projectId}&step=content` }
     : recommendation.category === "content"
       ? { key: "publishing", label: "Publishing", route: `/ai-content?projectId=${recommendation.projectId}&focus=publishing#publishing` }
       : { key: "execution", label: "Execution Plan", route: `/guided-projects/${recommendation.projectId}?tab=execution#execution-tasks` };
@@ -1638,7 +1643,7 @@ gapAnalysisRouter.get(gapRoutes(), (req, res) => routeAction(res, async () => {
   if (!(await canAccessProject(context, req.params.projectId))) throw new Error("project unavailable");
   const project = await scopedProject(req, req.params.projectId);
   const clientViewerOnly = context.roles.size === 1 && context.roles.has("client_viewer");
-  const [fixes, legacyLocalProfile, canonicalLocalProfile, aiQueries, authority, reports, wp, demo, adSuggestions, ecommerceGuides, citationGaps, tasks, latestCompletedCrawl, latestGapRun] = await Promise.all([
+  const [fixes, legacyLocalProfile, canonicalLocalProfile, aiQueries, authority, reports, wp, demo, adSuggestions, ecommerceGuides, citationGaps, tasks, latestCompletedCrawl, latestGapRun, latestCapabilityRun] = await Promise.all([
     prisma.seoFixQueueItem.findMany({ where: { projectId: project.id }, orderBy: [{ approvalStatus: "asc" }, { createdAt: "desc" }], take: 50 }),
     findLegacyLocalProfile(project.id),
     findCanonicalLocalProfile(project),
@@ -1653,6 +1658,7 @@ gapAnalysisRouter.get(gapRoutes(), (req, res) => routeAction(res, async () => {
     prisma.executionTask.findMany({ where: { projectId: project.id, OR: [{ moduleName: { in: ["gap_analysis", "local_seo"] } }, { sourceType: "local_seo_plan_action" }] }, orderBy: { createdAt: "desc" }, take: 50 }),
     project.websiteId ? prisma.crawlJob.findFirst({ where: { websiteId: project.websiteId, status: "completed" }, orderBy: [{ completedAt: "desc" }, { createdAt: "desc" }], select: { id: true, pagesCrawled: true, siteScore: true, completedAt: true, createdAt: true, issues: { where: { status: "open" }, take: 500, select: { category: true, issueType: true, severity: true, message: true, page: { select: { url: true } } } } } }) : Promise.resolve(null),
     prisma.gapAnalysisRun.findFirst({ where: { projectId: project.id }, orderBy: { createdAt: "desc" }, include: { recommendations: { where: clientViewerOnly ? { status: "approved" } : {}, orderBy: [{ impactScore: "desc" }, { confidenceScore: "desc" }] } } }),
+    prisma.dev053VerificationRun.findFirst({ where: { projectId: project.id, status: "completed" }, orderBy: [{ completedAt: "desc" }, { createdAt: "desc" }], include: { results: { where: { capabilityId: { startsWith: "SEO-" }, status: { in: ["BLOCKED", "MISSING", "PARTIAL"] }, NOT: { OR: [{ workflowDestination: { startsWith: "/gap-analysis" } }, { workflowDestination: { startsWith: "/reports" } }] } } } } }),
   ]);
   const localProfile = mergedLocalProfile(legacyLocalProfile, canonicalLocalProfile);
   const hasWebsite = Boolean(project.websiteId || project.websiteUrl);
@@ -1682,6 +1688,8 @@ gapAnalysisRouter.get(gapRoutes(), (req, res) => routeAction(res, async () => {
     ? `Domain-wide hostname redirect — ${area.length} repeated alias checks share one hosting or server fix.`
     : `${area[0]?.page?.url ?? "Site-wide"} — ${area.length} technical check${area.length === 1 ? "" : "s"}: ${uniqueStrings(area.map((item) => findingDetailLabel(item.issueType)), 8).join(", ")}.`);
   const currentEntityIssues = (latestCompletedCrawl?.issues ?? []).filter((item) => /schema|entity|organization|author|trust|eeat/i.test(`${item.category} ${item.issueType} ${item.message}`));
+  const currentCapabilityResults = latestCapabilityRun?.results ?? [];
+  const currentCapabilityActionCount = new Set(currentCapabilityResults.map((item) => `${item.status}:${item.workflowDestination}:${item.message}`)).size;
   const latestCompletedCrawlSummary = latestCompletedCrawl ? {
     id: latestCompletedCrawl.id,
     pagesCrawled: latestCompletedCrawl.pagesCrawled,
@@ -1690,6 +1698,11 @@ gapAnalysisRouter.get(gapRoutes(), (req, res) => routeAction(res, async () => {
     createdAt: latestCompletedCrawl.createdAt,
   } : null;
   const recommendations = (latestGapRun?.recommendations ?? []).map((recommendation) => {
+    if (recommendation.category === "connected_coverage" && currentCapabilityResults.length) return {
+      ...recommendation,
+      title: `${currentCapabilityActionCount} connected SEO and growth action areas need attention`,
+      explanation: `${currentCapabilityResults.length} unresolved capability checks consolidate into ${currentCapabilityActionCount} distinct actions because several checks share the same prerequisite or workflow destination. Open the findings to see every grouped action and resolve it in the owning workspace.`,
+    };
     if (recommendation.category === "ai_citation" && currentCitationRecommendation) return {
       ...recommendation,
       title: currentCitationRecommendation.title,

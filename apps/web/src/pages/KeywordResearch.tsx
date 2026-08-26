@@ -3,6 +3,7 @@ import { Link, useSearchParams } from "react-router-dom";
 import { api } from "../api.js";
 import type { AiContentGeneration, AiGenerationType, CrawlSummary, DomainBacklinkLinks, DomainBacklinkSummary, GeoKeywordAudit, GeoKeywordAuditPage, HealthReport, KeywordResearchRun, PageRow, Website } from "../types.js";
 import { ActionIconButton, ActionIconLink, Card } from "../components/ui.js";
+import WebsitePlanSuggestionAction from "../components/WebsitePlanSuggestionAction.js";
 
 function formatUpdatedDate(value: string | null | undefined): string {
   if (!value) return "-";
@@ -119,6 +120,8 @@ function organizationNotes(details: OrganizationDetails) {
 }
 
 function ReadinessGenerateModal({
+  projectId,
+  targetUrl,
   activeKey,
   organizationDetails,
   setOrganizationDetails,
@@ -132,6 +135,8 @@ function ReadinessGenerateModal({
   onCopy,
   onClose,
 }: {
+  projectId: string;
+  targetUrl: string | null;
   activeKey: ReadinessGenerateKey | null;
   organizationDetails: OrganizationDetails;
   setOrganizationDetails: (details: OrganizationDetails) => void;
@@ -219,7 +224,22 @@ function ReadinessGenerateModal({
         </div>
         <div className="flex flex-col-reverse gap-3 border-t border-charcoal-100 bg-white px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
           <div className="text-xs text-charcoal-500">Future access: AI Content → Recent generations → search by this project/topic.</div>
-          <button type="button" onClick={onGenerate} disabled={generating || !canGenerate} className="rounded-lg bg-brand-600 px-4 py-2 text-sm font-semibold text-white hover:bg-brand-700 disabled:opacity-60">{generating ? "Generating..." : generated ? "Generate again" : "Generate content"}</button>
+          {generated
+            ? <div className="text-sm font-semibold text-emerald-700">Saved output is available above.</div>
+            : <WebsitePlanSuggestionAction
+                projectId={projectId}
+                suggestion={{
+                  sourceModule: "keyword_research",
+                  sourceType: `readiness_${activeKey}`,
+                  sourceId: `${projectId}:${activeKey}`,
+                  title: config.label,
+                  targetUrl,
+                  evidence: missingContext.join(" ") || `${config.label} is missing from the current website evidence.`,
+                  recommendedAction: `Review and approve the ${config.label} requirement in Website Plan before preparing implementation content.`,
+                  expectedImpact: "Adds this verified readiness requirement to the approved website workflow.",
+                }}
+                className="rounded-lg bg-brand-600 px-4 py-2 text-sm font-semibold text-white hover:bg-brand-700 disabled:opacity-60"
+              />}
         </div>
       </div>
     </div>
@@ -1596,6 +1616,8 @@ export default function KeywordResearch() {
             )}
 
             <ReadinessGenerateModal
+              projectId={selectedWebsite?.id ?? ""}
+              targetUrl={selectedWebsite?.rootUrl ?? null}
               activeKey={activeGenerateKey}
               organizationDetails={organizationDetails}
               setOrganizationDetails={setOrganizationDetails}

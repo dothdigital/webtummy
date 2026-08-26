@@ -43,6 +43,20 @@ async function readJson(res: Response) {
 
 type ApiErrorEnvelope = { error?: unknown; message?: unknown; errorCode?: unknown };
 
+export function publicErrorMessage(value: unknown, fallback = "This action could not be completed. Please try again.") {
+  const raw = typeof value === "string" ? value.trim() : "";
+  if (!raw) return fallback;
+  if (/safety[_ ]violations?|request was rejected by the safety system|\bsexual\b/i.test(raw)) {
+    return "The content service could not process this page because its topic was interpreted without enough context. Confirm the page describes a legitimate professional service, then retry it; completed pages remain preserved.";
+  }
+  return raw
+    .replace(/openai/gi, "the AI service")
+    .replace(/\breq_[a-z0-9]+\b/gi, "")
+    .replace(/contact us at help\.[^\s]+[^.]*\.?/gi, "")
+    .replace(/\s{2,}/g, " ")
+    .trim() || fallback;
+}
+
 function firstErrorText(value: unknown, depth = 0): string | null {
   if (typeof value === "string" && value.trim()) return value;
   if (depth > 5) return null;
@@ -68,7 +82,7 @@ export function apiErrorMessage(data: unknown, fallback: string, res?: Response)
     const errorCode = typeof envelope.errorCode === "string" ? envelope.errorCode : res.headers.get("X-SEnuke-Error-Code");
     const publicMessage = firstErrorText(envelope.message) ?? firstErrorText(envelope.error);
     if (publicMessage && !/^we could not complete this request\b/i.test(publicMessage)) {
-      return [publicMessage, errorCode ? `Error code: ${errorCode}` : null].filter(Boolean).join("\n");
+      return [publicErrorMessage(publicMessage, fallback), errorCode ? `Error code: ${errorCode}` : null].filter(Boolean).join("\n");
     }
     return [
       "The service is temporarily unavailable while the server recovers (502 Bad Gateway). Your action may still have completed. Wait a moment, refresh, and check its status before retrying.",
@@ -82,8 +96,9 @@ export function apiErrorMessage(data: unknown, fallback: string, res?: Response)
   const errorCode = typeof envelope.errorCode === "string"
     ? envelope.errorCode
     : res?.headers.get("X-SEnuke-Error-Code");
-  if (!errorCode) return message;
-  return [message, `Error code: ${errorCode}`].join("\n");
+  const publicMessage = publicErrorMessage(message, fallback);
+  if (!errorCode) return publicMessage;
+  return [publicMessage, `Error code: ${errorCode}`].join("\n");
 }
 
 function notifySessionExpired() {

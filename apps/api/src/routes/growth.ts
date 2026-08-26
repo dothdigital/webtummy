@@ -177,7 +177,7 @@ type ContentOpportunityDraft = {
   priorityScore: number;
   confidence: number;
   queue: "now" | "next" | "later" | "conditional";
-  plannedPhase: "launch_foundation" | "early_authority" | "expansion" | "growth_optimization";
+  plannedPhase: string;
   plannedPublishAt: Date | null;
   conditionsJson: string[];
   evidenceJson: Record<string, unknown>;
@@ -293,11 +293,8 @@ async function growthWorkflowBlocker(projectId: string) {
     message: "Complete or refresh the required Keyword, Site, Gap, Local SEO, AI Citation, and Authority intelligence before running Growth.",
     workflow,
   };
-  if (workflow.strategyStale) return {
-    error: "growth_strategy_stale",
-    message: "Approved keyword or analysis evidence changed. Regenerate and approve Strategy before running Growth.",
-    workflow,
-  };
+  // Newer evidence is advisory. Growth may continue from the approved
+  // Strategy so customers are not forced into another credit-consuming run.
   return null;
 }
 
@@ -418,7 +415,7 @@ function scoreProject(project: NonNullable<Awaited<ReturnType<typeof scopedProje
   return { scoreJson, evidenceStates, contradictions, bottleneckType, growthScore, trackingMetrics, deviceTrackingMetrics, mobileConversionIssue, trackingVerified, measurementPlan, primaryConversionEvents, funnelViews, funnelOptIns, emailsDelivered, emailClicks, latestCrawl, openTasks, keywordRuns, socialPosts, socialPerformance, socialEngagementRate, hasLeadMagnetTask, strategyApproved, latestAuthoritySnapshot, approvedAuthorityOpportunities, completedAuthorityAssets, earnedReferralLeads, citationReadiness, observedCitationMentions, approvedCitationRecommendations };
 }
 
-function buildSupportingContentRoadmap(project: NonNullable<Awaited<ReturnType<typeof scopedProject>>>) {
+function buildSupportingContentRoadmap(project: NonNullable<Awaited<ReturnType<typeof scopedProject>>>, scheduleStartAt: Date | null = null) {
   const rootUrl = project.website?.rootUrl?.replace(/\/$/, "") ?? project.websiteUrl?.replace(/\/$/, "") ?? "";
   const canonicalPages = savedCanonicalPages(project.executionTasks, rootUrl);
   const buildPages = canonicalPages.length ? canonicalPages : project.websiteBuilds[0]?.pages ?? [];
@@ -524,11 +521,13 @@ function buildSupportingContentRoadmap(project: NonNullable<Awaited<ReturnType<t
   const earlyTotalTarget = Math.min(total, Math.max(nowTarget, total >= 60 ? 24 : total >= 18 ? Math.max(12, Math.ceil(total * 0.35)) : Math.ceil(total * 0.5)));
   const conditionalTarget = total >= 10 ? Math.max(1, Math.round(total * 0.18)) : 0;
   const conditionalStart = total - conditionalTarget;
-  const publishStart = Date.now() + 2 * 86_400_000;
+  const publishStart = scheduleStartAt?.getTime() ?? null;
+  const publishIntervalDays = total <= 1 ? 0 : Math.min(7, 178 / (total - 1));
   const opportunities: ContentOpportunityDraft[] = scored.map((item, index) => {
     const queue: ContentOpportunityDraft["queue"] = index < nowTarget ? "now" : index < earlyTotalTarget ? "next" : index >= conditionalStart ? "conditional" : "later";
-    const plannedPhase: ContentOpportunityDraft["plannedPhase"] = queue === "now" ? "launch_foundation" : queue === "next" ? "early_authority" : queue === "later" && index < Math.ceil(total * 0.65) ? "expansion" : "growth_optimization";
-    const plannedPublishAt = queue === "now" || queue === "next" ? new Date(publishStart + index * 4 * 86_400_000) : null;
+    const plannedDay = Math.min(180, 2 + Math.round(index * publishIntervalDays));
+    const plannedPhase: ContentOpportunityDraft["plannedPhase"] = `day_${plannedDay}`;
+    const plannedPublishAt = publishStart == null ? null : new Date(publishStart + Math.max(0, plannedDay - 1) * 86_400_000);
     const volumeEvidence = item.input.volume == null ? "available project and website evidence" : `${item.input.volume.toLocaleString()} estimated monthly searches`;
     const businessPurpose = item.intent === "commercial_investigation"
       ? `Help prospective buyers compare options before moving to ${item.matchedPage?.title || "the relevant conversion page"}.`
@@ -575,8 +574,8 @@ function buildSupportingContentRoadmap(project: NonNullable<Awaited<ReturnType<t
       later: opportunities.filter((item) => item.queue === "later").length,
       conditional: opportunities.filter((item) => item.queue === "conditional").length,
     },
-    recommendedCadence: total > 24 ? "1–2 approved pieces per week; reassess every 30 days" : "1 approved piece per week; reassess every 30 days",
-    rationale: `SEnuke AI - AI Growth Operating System mapped ${total} distinct supporting-content opportunities from approved keywords, search demand, website pages, target markets, and business goals. Only the ${nowTarget} highest-priority items are recommended for the current phase.`,
+    recommendedCadence: total > 60 ? "2–4 planned pieces per week; reassess every 30 days" : total > 24 ? "1–2 planned pieces per week; reassess every 30 days" : "Up to 1 planned piece per week; reassess every 30 days",
+    rationale: `SEnuke AI - AI Growth Operating System mapped ${total} distinct supporting-content opportunities from approved keywords, search demand, website pages, target markets, and business goals. Every opportunity is assigned a day within a governed 180-day plan; higher-priority work is scheduled first.`,
   };
 }
 
@@ -1448,8 +1447,9 @@ async function loadGrowthIntelligence(projectId: string) {
 async function refreshSupportingContentPlan(
   context: WorkspaceContext,
   project: NonNullable<Awaited<ReturnType<typeof scopedProject>>>,
+  scheduleStartAt: Date | null = null,
 ) {
-  const generated = buildSupportingContentRoadmap(project);
+  const generated = buildSupportingContentRoadmap(project, scheduleStartAt);
   const existing = await prisma.growthContentRoadmap.findUnique({
     where: { projectId: project.id },
     include: { opportunities: true },
@@ -1663,10 +1663,12 @@ growthRouter.post("/projects-v2/:projectId/growth/content-roadmap/refresh", asyn
   const workflowBlocker = await growthWorkflowBlocker(project.id);
   if (workflowBlocker) return res.status(409).json(workflowBlocker);
   const blueprintExists = Boolean(await prisma.growthBlueprint.findUnique({ where: { projectId: project.id }, select: { id: true } }));
+  const startDateValue = typeof req.body?.startDate === "string" ? new Date(`${req.body.startDate}T00:00:00.000Z`) : null;
+  if (startDateValue && Number.isNaN(startDateValue.getTime())) return res.status(400).json({ error: "Choose a valid plan start date." });
   if (!blueprintExists) {
     await runGrowthEngine({ req, context, project, runType: "manual" });
   } else {
-    await refreshSupportingContentPlan(context, project);
+    await refreshSupportingContentPlan(context, project, startDateValue);
   }
   res.json({ growth: await loadGrowthOverview(project.id) });
 });

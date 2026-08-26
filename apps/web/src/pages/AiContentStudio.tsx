@@ -510,6 +510,16 @@ function WizardStep({ number, title, active, complete }: { number: number; title
   );
 }
 
+function AiContentLoadingPage({ embedded = false }: { embedded?: boolean }) {
+  return <div className={embedded ? "grid h-screen place-items-center bg-white p-6" : "space-y-6"} aria-live="polite" aria-busy="true">
+    <section className={`${embedded ? "w-full max-w-3xl" : ""} overflow-hidden rounded-2xl border border-fuchsia-100 bg-[linear-gradient(135deg,#fdf2f8_0%,#ecfeff_52%,#f0fdf4_100%)] p-6 shadow-sm`}>
+      <div className="flex items-center gap-4"><span className="grid h-12 w-12 shrink-0 place-items-center rounded-xl bg-white shadow-sm"><span className="h-6 w-6 animate-spin rounded-full border-2 border-fuchsia-200 border-t-fuchsia-700" /></span><div><div className="text-xs font-black uppercase tracking-wide text-fuchsia-700">AI Content</div><h1 className="mt-1 text-2xl font-black text-charcoal-950">Opening Publishing and Delivery</h1><p className="mt-1 text-sm text-charcoal-600">Loading this project’s content tasks, saved generations, publishing state, and website destinations. No new AI content is being generated.</p></div></div>
+      <div className="mt-6 grid gap-3 sm:grid-cols-3">{["Project content tasks", "Website destinations", "Saved content history"].map((label) => <div key={label} className="rounded-xl border border-white/80 bg-white/70 p-4"><div className="h-2.5 w-20 animate-pulse rounded bg-slate-200"/><div className="mt-3 text-xs font-bold text-slate-600">{label}</div></div>)}</div>
+    </section>
+    {!embedded && <section className="grid gap-4 lg:grid-cols-3">{[0, 1, 2].map((item) => <div key={item} className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm"><div className="h-3 w-24 animate-pulse rounded bg-slate-200"/><div className="mt-4 h-5 w-3/4 animate-pulse rounded bg-slate-100"/><div className="mt-3 h-3 w-full animate-pulse rounded bg-slate-100"/><div className="mt-2 h-3 w-2/3 animate-pulse rounded bg-slate-100"/></div>)}</section>}
+  </div>;
+}
+
 export default function AiContentStudio() {
   const { chooseApprovalRoute, approvalRouteDialog } = useApprovalRouting();
   const navigate = useNavigate();
@@ -1002,6 +1012,8 @@ export default function AiContentStudio() {
   const selectedIsBlogArticle = selectedResult?.type === "article" && fullPageKind === "article";
   const selectedWebsitePage = websiteBuilder?.pages.find((page) => page.id === websiteHandoffPageId) ?? null;
   const governedContentRequest = Boolean(linkedTask || citationFlow || revisionFlow || searchParams.get("generationId"));
+
+  if (loading) return <AiContentLoadingPage embedded={embeddedDialog} />;
 
   return (
     <div className={embeddedDialog ? "h-screen overflow-hidden bg-white [&>:not([role=dialog])]:hidden" : "space-y-6"}>

@@ -3,6 +3,7 @@ import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { api } from "../api.js";
 import ProjectModuleHeader from "../components/ProjectModuleHeader.js";
 import ProjectWorkflowController from "../components/ProjectWorkflowController.js";
+import WebsitePlanSuggestionAction from "../components/WebsitePlanSuggestionAction.js";
 import { Button, Card, EmptyState } from "../components/ui.js";
 import type { GuidedProject } from "../types.js";
 import { getActiveProjectId, resolveActiveProjectId, setActiveProjectId } from "../active-project.js";
@@ -57,6 +58,19 @@ type FindingsWorkspace = {
   recommendation: { id: string; category: string; title: string; status: string };
   destination?: { key: "website_content" | "publishing" | "execution"; label: string; route: string };
   findings: RecommendationFinding[];
+};
+
+type ConnectedCoverageResult = {
+  capabilityId: string;
+  title: string;
+  section: string;
+  status: "PARTIAL" | "MISSING" | "BLOCKED" | string;
+  message: string;
+  workflowDestination: string;
+};
+
+type ConnectedCoverageRun = {
+  results: ConnectedCoverageResult[];
 };
 
 type LaunchOverview = {
@@ -274,6 +288,20 @@ function recommendationDestination(category: string, projectId: string) {
   return { label: "Open Execution Plan", route: `/guided-projects/${encodedProjectId}?tab=execution#execution-tasks` };
 }
 
+function findingResolution(category: string, evidence: string, fallback: string) {
+  if (category === "entity") {
+    if (/business summary is missing/i.test(evidence)) return "Open Project Intake and add a factual business summary, services, audience, locations and differentiators. Then refresh Citation Research and Site Analysis.";
+    if (/schema/i.test(evidence)) return "Open AI Citations, review Entity & Claims and the affected page, then implement accurate Organization, Service, Person, Article or breadcrumb schema as appropriate. Recrawl to verify it.";
+    return "Open AI Citations, review the affected entity or trust signal, correct the verified business facts or missing proof, implement the recommended website update, and rerun Citation Research.";
+  }
+  if (category === "ai_citation") return "Open AI Citations, run Citation Research, review the cited evidence and readiness finding, then create or implement the recommended source-backed content or trust update.";
+  if (category === "backlink") return "Open Backlinks & Authority, validate the source and risk, select a safe opportunity, and move only approved outreach or citation work into Execution.";
+  if (category === "local") return "Open Local SEO, complete the business profile and target-market evidence, run the audit, then resolve the specific profile, citation, review or location-page recommendation.";
+  if (category === "keyword") return "Open Keyword Intelligence, analyze this phrase, assign its intent and priority, then approve it and map it to one owning page.";
+  if (category === "topic") return "Review this topic against approved keywords and existing pages. Map it to a relevant owner page or approve a differentiated new content requirement.";
+  return fallback;
+}
+
 function RecommendationEvidenceModal({ recommendation, projectId, onClose }: { recommendation: GapRecommendation; projectId: string; onClose: () => void }) {
   const evidence = listItems(recommendation.evidenceJson);
   const competitors = listItems(recommendation.competitorEvidence);
@@ -299,9 +327,13 @@ function RecommendationEvidenceModal({ recommendation, projectId, onClose }: { r
           <section>
             <div className="text-[10px] font-black uppercase tracking-wide text-slate-400">Exact evidence</div>
             {evidence.length ? (
-              <div className="mt-2 space-y-2">{evidence.map((item) => {
+              <div className="mt-2 space-y-2">{evidence.map((item, index) => {
                 const page = evidencePage(item);
-                return <div key={item.toLowerCase()} className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm leading-5 text-slate-700">{page ? <><a href={page.url} target="_blank" rel="noreferrer" className="break-all font-black text-brand-700 underline decoration-brand-200 underline-offset-2 hover:text-brand-900">{page.url} ↗</a>{page.detail && <p className="mt-1 text-sm leading-5 text-slate-700">{page.detail}</p>}</> : item}</div>;
+                const resolution = findingResolution(recommendation.category, item, recommendation.recommendedAction);
+                return <div key={item.toLowerCase()} className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-3 text-sm leading-5 text-slate-700">
+                  {page ? <><a href={page.url} target="_blank" rel="noreferrer" className="break-all font-black text-brand-700 underline decoration-brand-200 underline-offset-2 hover:text-brand-900">{page.url} ↗</a>{page.detail && <p className="mt-1 text-sm leading-5 text-slate-700">{page.detail}</p>}</> : <p>{item}</p>}
+                  <div className="mt-3 rounded-lg border border-brand-100 bg-white p-3"><div className="text-[10px] font-black uppercase tracking-wide text-brand-700">How to resolve</div><p className="mt-1 text-xs font-semibold leading-5 text-slate-700">{resolution}</p>{["entity", "ai_citation", "keyword", "topic"].includes(recommendation.category) ? <div className="mt-2"><WebsitePlanSuggestionAction projectId={projectId} suggestion={{ sourceModule: "gap_analysis", sourceType: recommendation.category, sourceId: `${recommendation.id}:${index}`, title: page?.detail || item, targetUrl: page?.url ?? null, evidence: item, recommendedAction: resolution, expectedImpact: recommendation.expectedImpact }} /></div> : <Link to={destination.route} onClick={onClose} className="mt-2 inline-flex text-xs font-black text-brand-700 hover:underline">{destination.label} →</Link>}</div>
+                </div>;
               })}</div>
             ) : (
               <p className="mt-2 text-sm text-slate-500">No additional evidence rows were saved. Refresh the analysis before approving this recommendation.</p>
@@ -331,6 +363,55 @@ function RecommendationEvidenceModal({ recommendation, projectId, onClose }: { r
   );
 }
 
+function ConnectedCoverageModal({ run, projectId, onClose }: { run: ConnectedCoverageRun; projectId: string; onClose: () => void }) {
+  const unresolved = run.results.filter((item) => item.capabilityId.startsWith("SEO-") && !item.workflowDestination.startsWith("/gap-analysis") && !item.workflowDestination.startsWith("/reports") && ["BLOCKED", "MISSING", "PARTIAL"].includes(item.status));
+  const groups = [...new Map(unresolved.map((item) => {
+    const key = `${item.status}:${item.workflowDestination}:${item.message}`;
+    const existing = unresolved.filter((candidate) => `${candidate.status}:${candidate.workflowDestination}:${candidate.message}` === key);
+    return [key, { ...item, capabilities: existing.map((candidate) => candidate.title) }];
+  })).values()];
+  const resolution = (message: string) => {
+    if (/observation|observed engine result|measured visibility/i.test(message)) return {
+      steps: "Open AI Monitoring, save a question prompt if needed, perform a permitted manual/provider check, then save the observed answer, brand mention, accuracy and cited source URLs.",
+      route: `/ai-citations?projectId=${encodeURIComponent(projectId)}&tab=monitoring`,
+      label: "Open AI Monitoring",
+    };
+    if (/answer engine|answer opportunities|question-led/i.test(message)) return {
+      steps: "Run Citation Research, open Answer Opportunities, then add the relevant audience questions to monitoring. Saving at least one question-led prompt records the query evidence.",
+      route: `/ai-citations?projectId=${encodeURIComponent(projectId)}&tab=answers`,
+      label: "Open Answer Opportunities",
+    };
+    if (/generative|entities, claims|citation readiness/i.test(message)) return {
+      steps: "Run Citation Research, review Entity & claims, approve or reject the extracted claims, and review the resulting Readiness findings. Rerun research after correcting missing website evidence.",
+      route: `/ai-citations?projectId=${encodeURIComponent(projectId)}&tab=overview`,
+      label: "Open Citation Research",
+    };
+    return { steps: message, route: groupRoute(""), label: "Resolve in workspace" };
+  };
+  const groupRoute = (route: string) => route.replace("{projectId}", encodeURIComponent(projectId));
+  return (
+    <div className="fixed inset-0 z-[90] bg-slate-950/45" role="dialog" aria-modal="true" aria-label="Connected Coverage findings">
+      <button type="button" className="absolute inset-0 cursor-default" aria-label="Close findings" onClick={onClose} />
+      <aside className="absolute inset-y-0 right-0 flex w-full max-w-3xl flex-col bg-white shadow-2xl">
+        <header className="border-b border-slate-200 bg-gradient-to-r from-brand-50 to-white px-6 py-5">
+          <div className="flex items-start justify-between gap-4"><div><div className="text-xs font-black uppercase tracking-wide text-brand-700">Connected Coverage · Actionable findings</div><h2 className="mt-1 text-xl font-black text-slate-950">{groups.length} distinct action areas</h2><p className="mt-2 text-sm leading-6 text-slate-600">{unresolved.length} capability checks are grouped by shared cause and destination. Resolve each cause once; these are not {unresolved.length} separate tasks.</p></div><button type="button" onClick={onClose} className="grid h-9 w-9 shrink-0 place-items-center rounded-full border border-slate-200 bg-white text-xl text-slate-500" aria-label="Close">×</button></div>
+        </header>
+        <div className="flex-1 space-y-3 overflow-y-auto p-6">
+          {groups.map((group) => { const guide = resolution(group.message); return <section key={`${group.status}:${group.workflowDestination}:${group.message}`} className="rounded-xl border border-slate-200 bg-white p-4">
+            <div className="flex flex-wrap items-center gap-2"><span className={`rounded-full px-2 py-0.5 text-[10px] font-black uppercase ${group.status === "BLOCKED" ? "bg-red-100 text-red-800" : group.status === "MISSING" ? "bg-rose-50 text-rose-700" : "bg-amber-50 text-amber-800"}`}>{group.status.toLowerCase()}</span><span className="text-xs font-black uppercase tracking-wide text-slate-400">{group.section}</span></div>
+            <p className="mt-2 text-sm font-semibold leading-6 text-slate-800">{group.message}</p>
+            <div className="mt-3 text-[10px] font-black uppercase tracking-wide text-slate-400">Covers {group.capabilities.length} capability {group.capabilities.length === 1 ? "check" : "checks"}</div>
+            <p className="mt-1 text-xs leading-5 text-slate-600">{group.capabilities.join(" · ")}</p>
+            <div className="mt-3 rounded-lg border border-brand-100 bg-brand-50/60 p-3"><div className="text-[10px] font-black uppercase tracking-wide text-brand-700">How to resolve</div><p className="mt-1 text-xs font-semibold leading-5 text-slate-700">{guide.steps}</p></div>
+            <div className="mt-3 flex justify-end"><Link to={guide.route || groupRoute(group.workflowDestination)} onClick={onClose} className="rounded-lg bg-brand-600 px-4 py-2 text-xs font-black text-white">{guide.label} →</Link></div>
+          </section>; })}
+        </div>
+        <footer className="flex justify-end border-t border-slate-200 bg-slate-50 p-4"><button type="button" onClick={onClose} className="rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-bold text-slate-700">Close</button></footer>
+      </aside>
+    </div>
+  );
+}
+
 function FindingsWorkspaceDrawer({
   workspace,
   projectId,
@@ -355,6 +436,7 @@ function FindingsWorkspaceDrawer({
   onStage: () => void;
 }) {
   const destinationLabel = workspace.destination?.label ?? (workspace.recommendation.category === "content" ? "Publishing" : "Execution Plan");
+  const addsToWebsitePlan = workspace.destination?.key === "website_content";
   const destinationRoute = workspace.destination?.route ?? (workspace.recommendation.category === "content"
     ? `/ai-content?projectId=${encodeURIComponent(projectId)}&focus=publishing#publishing`
     : `/guided-projects/${encodeURIComponent(projectId)}?tab=execution#execution-tasks`);
@@ -372,7 +454,7 @@ function FindingsWorkspaceDrawer({
             <div>
               <div className="text-xs font-black uppercase tracking-wide text-brand-700">{gapCategoryLabel(workspace.recommendation.category)} · Exact affected pages</div>
               <h2 className="mt-1 text-xl font-black text-slate-950">{workspace.recommendation.title}</h2>
-              <p className="mt-2 text-sm leading-6 text-slate-600">Review the exact URL, evidence, and recommended fix. Selected items create source-linked work in {destinationLabel}; they do not change the live website.</p>
+              <p className="mt-2 text-sm leading-6 text-slate-600">Review the exact URL, evidence, and recommended fix. {addsToWebsitePlan ? "Selected content suggestions become source-linked Website Plan requirements; content is not generated or published by this action." : `Selected items create source-linked work in ${destinationLabel}; they do not change the live website.`}</p>
             </div>
             <button type="button" onClick={onClose} className="grid h-9 w-9 shrink-0 place-items-center rounded-full border border-slate-200 bg-white text-xl text-slate-500" aria-label="Close">×</button>
           </div>
@@ -429,7 +511,7 @@ function FindingsWorkspaceDrawer({
               {!recommendationApproved ? (
                 <button type="button" disabled={busy} onClick={onApprove} className="rounded-lg bg-brand-600 px-4 py-2.5 text-sm font-black text-white disabled:bg-slate-300">{busy ? "Approving…" : `Approve ${gapCategoryLabel(workspace.recommendation.category)} Recommendation`}</button>
               ) : (
-                <button type="button" disabled={!selectedKeys.length || busy} onClick={onStage} className="rounded-lg bg-brand-600 px-4 py-2.5 text-sm font-black text-white disabled:bg-slate-300">{busy ? "Sending…" : `Send ${selectedKeys.length || "selected"} to ${destinationLabel}`}</button>
+                <button type="button" disabled={!selectedKeys.length || busy} onClick={onStage} className="rounded-lg bg-brand-600 px-4 py-2.5 text-sm font-black text-white disabled:bg-slate-300">{busy ? "Saving…" : addsToWebsitePlan ? `Add ${selectedKeys.length || "selected"} to Website Plan` : `Send ${selectedKeys.length || "selected"} to ${destinationLabel}`}</button>
               )}
             </div>
           </div>
@@ -454,6 +536,7 @@ export default function GapAnalysis() {
   const [selectedLocalTaskIds, setSelectedLocalTaskIds] = useState<string[]>([]);
   const [findingsWorkspace, setFindingsWorkspace] = useState<FindingsWorkspace | null>(null);
   const [evidenceRecommendation, setEvidenceRecommendation] = useState<GapRecommendation | null>(null);
+  const [connectedCoverageRun, setConnectedCoverageRun] = useState<ConnectedCoverageRun | null>(null);
   const [selectedFindingKeys, setSelectedFindingKeys] = useState<string[]>([]);
   const [findingsLoading, setFindingsLoading] = useState(false);
 
@@ -549,6 +632,21 @@ export default function GapAnalysis() {
     }
   }
 
+  async function openConnectedCoverage() {
+    if (!selectedProjectId) return;
+    setFindingsLoading(true);
+    setError("");
+    try {
+      const result = await api.get<{ latestRun: ConnectedCoverageRun | null }>(`/api/projects/${encodeURIComponent(selectedProjectId)}/dev053-verification`);
+      if (!result.latestRun) throw new Error("Connected Coverage has not been analyzed yet. Run Site Analysis and refresh connected checks first.");
+      setConnectedCoverageRun(result.latestRun);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not load Connected Coverage findings.");
+    } finally {
+      setFindingsLoading(false);
+    }
+  }
+
   async function stageSelectedFindings() {
     if (!selectedProjectId || !findingsWorkspace || !selectedFindingKeys.length) return;
     setBusyAction("stage-findings");
@@ -558,8 +656,8 @@ export default function GapAnalysis() {
       const refreshed = await api.get<FindingsWorkspace>(gapApi(selectedProjectId, `/recommendations/${findingsWorkspace.recommendation.id}/findings`));
       setFindingsWorkspace(refreshed);
       setSelectedFindingKeys([]);
-      const destination = result.destination === "website_content" ? "Website Development Content and the Execution Plan" : result.destination === "publishing" ? "Publishing" : "the Execution Plan";
-      setNotice(`${selectedFindingKeys.length} update${selectedFindingKeys.length === 1 ? "" : "s"} sent to ${destination}.`);
+      const destination = result.destination === "website_content" ? "the Website Plan as source-linked requirements; no content was generated" : result.destination === "publishing" ? "Publishing" : "the Execution Plan";
+      setNotice(`${selectedFindingKeys.length} update${selectedFindingKeys.length === 1 ? "" : "s"} added to ${destination}.`);
       await loadOverview();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not send the selected work to its execution workspace.");
@@ -630,6 +728,9 @@ export default function GapAnalysis() {
     <div className="space-y-7 bg-slate-50 pb-8">
       {evidenceRecommendation && (
         <RecommendationEvidenceModal recommendation={evidenceRecommendation} projectId={selectedProjectId} onClose={() => setEvidenceRecommendation(null)} />
+      )}
+      {connectedCoverageRun && (
+        <ConnectedCoverageModal run={connectedCoverageRun} projectId={selectedProjectId} onClose={() => setConnectedCoverageRun(null)} />
       )}
       {findingsWorkspace && (
         <FindingsWorkspaceDrawer
@@ -728,7 +829,7 @@ export default function GapAnalysis() {
                       <div className="mt-4 flex flex-wrap items-center justify-between gap-3 border-t border-slate-100 pt-3">
                         <span className="text-[11px] font-bold text-slate-400">{gap.confidenceScore}% evidence confidence</span>
                         <div className="flex flex-wrap gap-2">
-                          <button type="button" disabled={findingsLoading && hasPageFindings} onClick={() => hasPageFindings ? void openFindings(gap) : setEvidenceRecommendation(gap)} className="rounded-lg border border-brand-200 bg-white px-3 py-2 text-xs font-black text-brand-700 hover:bg-brand-50 disabled:opacity-50">{findingsLoading && hasPageFindings ? "Loading…" : "View findings"}</button>
+                          <button type="button" disabled={findingsLoading && (hasPageFindings || gap.category === "connected_coverage")} onClick={() => gap.category === "connected_coverage" ? void openConnectedCoverage() : hasPageFindings ? void openFindings(gap) : setEvidenceRecommendation(gap)} className="rounded-lg border border-brand-200 bg-white px-3 py-2 text-xs font-black text-brand-700 hover:bg-brand-50 disabled:opacity-50">{findingsLoading && (hasPageFindings || gap.category === "connected_coverage") ? "Loading…" : "View findings"}</button>
                           {gap.status === "approved" ? <><span className={`rounded-lg px-3 py-2 text-xs font-black ${strategyWorkflow?.executionUnlocked ? "bg-emerald-50 text-emerald-700" : "bg-amber-50 text-amber-800"}`}>{strategyWorkflow?.executionUnlocked ? "Approved · Execution task ready" : "Approved · Saved for Strategy"}</span>{hasSpecialistWorkspace && <Link to={specialistDestination.route} className="rounded-lg border border-brand-200 bg-white px-3 py-2 text-xs font-black text-brand-700 hover:bg-brand-50">{specialistDestination.label} →</Link>}</> : <>{overview?.capabilities?.canRun && <button type="button" disabled={busyAction === `gap-ignore-${gap.id}`} onClick={() => runAction(`gap-ignore-${gap.id}`, () => api.post(gapApi(selectedProjectId, `/recommendations/${gap.id}/ignore`), {}))} className="rounded-lg border border-slate-200 px-3 py-2 text-xs font-bold text-slate-600">Ignore</button>}{overview?.capabilities?.canApprove && <button type="button" disabled={busyAction === `gap-approve-${gap.id}`} onClick={() => runAction(`gap-approve-${gap.id}`, () => api.post(gapApi(selectedProjectId, `/recommendations/${gap.id}/approve`), {}))} className="rounded-lg bg-brand-600 px-3 py-2 text-xs font-black text-white">Approve & Add to Plan</button>}</>}
                         </div>
                       </div>

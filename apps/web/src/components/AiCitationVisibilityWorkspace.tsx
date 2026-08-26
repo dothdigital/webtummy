@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { api } from "../api.js";
 import CitationContentModal, { type CitationContentRequest } from "./CitationContentModal.js";
+import WebsitePlanSuggestionAction from "./WebsitePlanSuggestionAction.js";
 
 type CitationContentAsset = {
   id: string;
@@ -58,10 +59,11 @@ type CitationWorkspace = {
 type Tab = "overview" | "entities" | "findings" | "opportunities" | "monitoring" | "recommendations";
 type FindingStatus = "open" | "acknowledged" | "resolved" | "dismissed";
 
-// Phase 2: restore these after crawler/Website Model question matching,
-// publishing, provider execution, and measured recommendations are one flow.
-const ANSWER_OPPORTUNITIES_V2_ENABLED = false;
-const AI_MONITORING_V2_ENABLED = false;
+// These workflows provide the saved evidence required by Connected Coverage.
+// Provider execution remains evidence-safe: monitoring records documented
+// observations and never implies that an automatic scan ran.
+const ANSWER_OPPORTUNITIES_V2_ENABLED = true;
+const AI_MONITORING_V2_ENABLED = true;
 const CITATION_RECOMMENDATIONS_V2_ENABLED = false;
 
 const tabs: Array<{ key: Tab; label: string }> = [
@@ -217,6 +219,7 @@ function FindingActions({
   onCreateContent,
   onViewContent,
   onReview,
+  planAction,
 }: {
   finding: CitationWorkspace["findings"][number];
   canAudit: boolean;
@@ -226,6 +229,7 @@ function FindingActions({
   onCreateContent: () => void;
   onViewContent: () => void;
   onReview: (status: FindingStatus) => void;
+  planAction?: React.ReactNode;
 }) {
   if (!canAudit) return null;
   const active = finding.status === "open" || finding.status === "acknowledged";
@@ -234,8 +238,8 @@ function FindingActions({
   return <div className="w-full shrink-0 rounded-xl border border-slate-200 bg-slate-50 p-3 lg:w-64">
     <div className="text-[10px] font-black uppercase tracking-wide text-charcoal-400">Finding actions</div>
     <div className="mt-2 space-y-2">
-      {!usesWebsiteRequirements && (contentAsset ? <button type="button" onClick={onViewContent} className="w-full rounded-lg bg-brand-600 px-3 py-2 text-center text-xs font-black text-white hover:bg-brand-700">View generated content →</button> : active && <button type="button" onClick={onCreateContent} className="w-full rounded-lg bg-brand-600 px-3 py-2 text-center text-xs font-black text-white hover:bg-brand-700">{contentLabel} →</button>)}
-      {!usesWebsiteRequirements && active && contentAsset && <button type="button" onClick={onCreateContent} className="w-full rounded-lg border border-brand-200 bg-white px-3 py-2 text-xs font-black text-brand-700 hover:bg-brand-50">Create a new version</button>}
+      {!usesWebsiteRequirements && contentAsset && <button type="button" onClick={onViewContent} className="w-full rounded-lg bg-brand-600 px-3 py-2 text-center text-xs font-black text-white hover:bg-brand-700">View planned content →</button>}
+      {!usesWebsiteRequirements && active && planAction}
       {active && <button type="button" onClick={() => onReview("resolved")} disabled={busy} className="w-full rounded-lg bg-emerald-600 px-3 py-2 text-xs font-black text-white disabled:opacity-50">{busy ? "Saving…" : "Mark as Resolved"}</button>}
       {finding.status === "open" && <button type="button" onClick={() => onReview("acknowledged")} disabled={busy} className="w-full rounded-lg border border-amber-200 bg-white px-3 py-2 text-xs font-black text-amber-700 disabled:opacity-50">Acknowledge</button>}
       {active && <button type="button" onClick={() => onReview("dismissed")} disabled={busy} className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-black text-slate-600 disabled:opacity-50">Dismiss</button>}
@@ -248,7 +252,15 @@ export default function AiCitationVisibilityWorkspace({ projectId }: { projectId
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const [workspace, setWorkspace] = useState<CitationWorkspace | null>(null);
-  const [tab, setTab] = useState<Tab>("overview");
+  const requestedTab = searchParams.get("tab");
+  const initialTab: Tab = requestedTab === "answers" || requestedTab === "opportunities"
+    ? "opportunities"
+    : requestedTab === "monitoring" || requestedTab === "observations"
+      ? "monitoring"
+      : requestedTab === "entities" || requestedTab === "findings" || requestedTab === "recommendations"
+        ? requestedTab
+        : "overview";
+  const [tab, setTab] = useState<Tab>(initialTab);
   const [busy, setBusy] = useState("");
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
@@ -392,6 +404,7 @@ export default function AiCitationVisibilityWorkspace({ projectId }: { projectId
     setMessage("");
     setContentRequest(citationContentRequest(projectId, workspace.project.websiteUrl, launch, contextLabel, sourceType, sourceRecordId, generationId));
   };
+  const openWebsitePlan = () => navigate(`/site-architect?projectId=${encodeURIComponent(projectId)}&step=content&source=ai-citation`);
 
   const createPrompt = async (opportunity?: CitationWorkspace["opportunities"][number]) => {
     const draft = opportunity ? {
@@ -589,7 +602,10 @@ export default function AiCitationVisibilityWorkspace({ projectId }: { projectId
                 {isContactInformation ? <>
                   <button type="button" onClick={() => setContactDetailsOpen(true)} className="block w-full rounded-lg bg-brand-600 px-3 py-2 text-center text-xs font-black text-white hover:bg-brand-700">Review contact information →</button>
                 </> : isOrganizationSchema ? <>
-                  <button type="button" onClick={() => setOrganizationSchemaOpen((open) => !open)} className="block w-full rounded-lg bg-brand-600 px-3 py-2 text-center text-xs font-black text-white hover:bg-brand-700">{organizationSchemaOpen ? "Hide Organization schema" : "Review generated schema"} →</button>
+                  {signal.observedStatus === "present" || signal.status === "supported"
+                    ? <div className="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-center text-xs font-black text-emerald-800">Present on the website · No plan action required</div>
+                    : <WebsitePlanSuggestionAction projectId={projectId} suggestion={{ sourceModule: "ai_citations", sourceType: "organization_schema", sourceId: signal.id, title: signal.title, targetUrl: workspace.project.websiteUrl, evidence: signal.recommendation ?? "Organization schema is missing from the current website evidence.", recommendedAction: "Review and add Organization schema when it is applicable and supported by verified business facts.", expectedImpact: "Strengthens verified organization and entity signals after Website Plan approval." }} className="w-full rounded-lg bg-brand-600 px-3 py-2 text-xs font-black text-white disabled:opacity-50" />}
+                  <button type="button" onClick={() => setOrganizationSchemaOpen((open) => !open)} className="block w-full rounded-lg border border-brand-200 bg-white px-3 py-2 text-center text-xs font-black text-brand-700 hover:bg-brand-50">{organizationSchemaOpen ? "Hide schema preview" : "Review schema preview"} →</button>
                   {organizationSchemaOpen && <div className="space-y-2 rounded-lg border border-slate-200 bg-slate-50 p-3">
                     <div className="rounded-md border border-emerald-100 bg-emerald-50 px-2.5 py-2 text-[10px] font-bold leading-4 text-emerald-800">Built deterministically from verified intake, contact, website, and localization records. AI is not used.</div>
                     <pre className="max-h-72 overflow-auto whitespace-pre-wrap break-words rounded-md bg-slate-950 p-3 text-[10px] leading-4 text-slate-100">{JSON.stringify(workspace.organizationSchema.schema, null, 2)}</pre>
@@ -600,12 +616,8 @@ export default function AiCitationVisibilityWorkspace({ projectId }: { projectId
                       <button type="button" onClick={downloadOrganizationSchema} className="rounded-md border border-brand-200 bg-white px-2.5 py-2 text-[10px] font-black text-brand-700 hover:bg-brand-50">Download JSON</button>
                     </div>
                     {signal.websiteAsset
-                      ? <a href={`/site-architect?projectId=${encodeURIComponent(projectId)}`} className="block rounded-md border border-brand-200 bg-white px-2.5 py-2 text-center text-[10px] font-black text-brand-700 hover:bg-brand-50">Open shared schema in Website Development</a>
-                      : !hasWebsiteDevelopment
-                        ? <div className="rounded-md border border-slate-200 bg-white px-2.5 py-2 text-center text-[10px] font-bold leading-4 text-slate-600">Download or copy this schema, add it to the existing website, then refresh the crawl.</div>
-                      : signal.websiteUpdate
-                        ? <button type="button" onClick={showWebsiteUpdateList} className="w-full rounded-md bg-violet-100 px-2.5 py-2 text-[10px] font-black text-violet-800">Added to Website Update List ✓</button>
-                        : <button type="button" disabled={Boolean(busy)} onClick={() => updateWebsiteList(signal, "add")} className="w-full rounded-md bg-brand-600 px-2.5 py-2 text-[10px] font-black text-white disabled:opacity-50">{busy === `website-list:${signal.id}` ? "Adding…" : "Add to Website Update List"}</button>}
+                      ? <a href={`/site-architect?projectId=${encodeURIComponent(projectId)}`} className="block rounded-md border border-brand-200 bg-white px-2.5 py-2 text-center text-[10px] font-black text-brand-700 hover:bg-brand-50">Open existing schema in Website Plan</a>
+                      : <div className="rounded-md border border-slate-200 bg-white px-2.5 py-2 text-center text-[10px] font-bold leading-4 text-slate-600">This is a factual preview only. Use the Website Plan action above to track review and approval.</div>}
                     <a href={`/guided-projects/${encodeURIComponent(projectId)}/intake`} className="block rounded-md border border-slate-200 bg-white px-2.5 py-2 text-center text-[10px] font-black text-slate-700 hover:bg-slate-100">Update intake or localization</a>
                   </div>}
                 </> : signal.websiteAsset ? <>
@@ -613,16 +625,12 @@ export default function AiCitationVisibilityWorkspace({ projectId }: { projectId
                 </> : isManagedInfrastructure ? <>
                   {signal.observedStatus === "present"
                     ? <div className="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-center text-xs font-black text-emerald-800">Present on the existing website · No action required</div>
-                    : !hasWebsiteDevelopment
-                      ? <button type="button" onClick={() => openCitationContent(contentLaunch, signal.title, "trust_signal", signal.id, signal.contentAsset?.id)} className="block w-full rounded-lg bg-brand-600 px-3 py-2 text-center text-xs font-black text-white hover:bg-brand-700">{signal.contentAsset ? "View implementation asset" : "Create implementation asset"} →</button>
                     : signal.websiteUpdate
-                    ? <button type="button" onClick={showWebsiteUpdateList} className="block w-full rounded-lg bg-violet-100 px-3 py-2 text-center text-xs font-black text-violet-800">Added to Website Update List ✓</button>
-                    : <button type="button" disabled={Boolean(busy)} onClick={() => updateWebsiteList(signal, "add")} className="block w-full rounded-lg bg-brand-600 px-3 py-2 text-center text-xs font-black text-white disabled:opacity-50">{busy === `website-list:${signal.id}` ? "Adding…" : "Add to Website Update List"} →</button>}
-                  {signal.observedStatus !== "present" && <p className="text-[10px] leading-4 text-slate-500">{hasWebsiteDevelopment
-                    ? "Staged first. The website page map and verified project data are used only after you send the update."
-                    : "Download the completed asset, implement it in the existing CMS or hosting account, then rerun the crawl."}</p>}
+                      ? <button type="button" onClick={() => navigate(`/site-architect?projectId=${encodeURIComponent(projectId)}&step=structure&source=ai-citation`)} className="block w-full rounded-lg bg-violet-100 px-3 py-2 text-center text-xs font-black text-violet-800">Added to Website Plan — Review →</button>
+                    : <WebsitePlanSuggestionAction projectId={projectId} suggestion={{ sourceModule: "ai_citations", sourceType: "managed_website_requirement", sourceId: signal.id, title: signal.title, targetUrl: workspace.project.websiteUrl, evidence: signal.recommendation ?? `${signal.title} is missing from current website evidence.`, recommendedAction: signal.recommendation ?? `Add ${signal.title} to Website Plan review.`, expectedImpact: "Improves technical, schema, and AI-search readiness after approval and implementation." }} className="w-full rounded-lg bg-brand-600 px-3 py-2 text-xs font-black text-white disabled:opacity-50" />}
+                  {signal.observedStatus !== "present" && <p className="text-[10px] leading-4 text-slate-500">Saved as a Website Plan requirement first. Preparation and implementation follow plan review and approval.</p>}
                 </> : <>
-                  <button type="button" onClick={() => openCitationContent(contentLaunch, signal.title, "trust_signal", signal.id, signal.contentAsset?.id)} className={`block w-full rounded-lg px-3 py-2 text-center text-xs font-black ${signal.contentAsset ? "bg-brand-600 text-white hover:bg-brand-700" : signal.status === "present" ? "border border-brand-200 bg-white text-brand-700 hover:bg-brand-50" : "bg-brand-600 text-white hover:bg-brand-700"}`}>{signal.contentAsset ? "View generated content" : contentLaunch.label} →</button>
+                  {signal.contentAsset ? <button type="button" onClick={() => openCitationContent(contentLaunch, signal.title, "trust_signal", signal.id, signal.contentAsset.id)} className="block w-full rounded-lg bg-brand-600 px-3 py-2 text-center text-xs font-black text-white hover:bg-brand-700">View planned asset →</button> : <WebsitePlanSuggestionAction projectId={projectId} suggestion={{ sourceModule: "ai_citations", sourceType: "trust_signal", sourceId: signal.id, title: signal.title, targetUrl: workspace.project.websiteUrl, evidence: signal.recommendation ?? `${signal.title} is missing from current website evidence.`, recommendedAction: signal.recommendation ?? `Add ${signal.title} to Website Plan review.`, expectedImpact: "Improves website trust and discoverability after approval." }} className="w-full rounded-lg bg-brand-600 px-3 py-2 text-xs font-black text-white disabled:opacity-50" />}
                   {signal.contentAsset && hasWebsiteDevelopment && (signal.websiteUpdate
                     ? <button type="button" onClick={showWebsiteUpdateList} className="w-full rounded-lg bg-violet-100 px-3 py-2 text-center text-[11px] font-black text-violet-800">Added to Website Update List ✓</button>
                     : <button type="button" disabled={Boolean(busy)} onClick={() => updateWebsiteList(signal, "add", signal.contentAsset?.id)} className="w-full rounded-lg border border-violet-200 bg-white px-3 py-2 text-center text-[11px] font-black text-violet-700 hover:bg-violet-50 disabled:opacity-50">{busy === `website-list:${signal.id}` ? "Adding…" : "Add to Website Update List"}</button>)}
@@ -662,7 +670,6 @@ export default function AiCitationVisibilityWorkspace({ projectId }: { projectId
                 <div className="mt-3 space-y-2">
                   {websiteRequirements.map((signal) => {
                     const launch = trustSignalContentLaunch(signal);
-                    const needsGeneratedContent = ["about-page", "privacy-page", "terms-page", "author-evidence", "source-evidence"].includes(signal.signalKey);
                     return <div key={signal.id} className="flex flex-col gap-2 rounded-lg border border-violet-100 bg-white p-3 sm:flex-row sm:items-center sm:justify-between">
                       <div>
                         <div className="text-xs font-black text-slate-900">{signal.title}</div>
@@ -671,12 +678,12 @@ export default function AiCitationVisibilityWorkspace({ projectId }: { projectId
                       {signal.signalKey === "contact-page"
                         ? <a href={`/guided-projects/${encodeURIComponent(projectId)}/intake`} className="shrink-0 rounded-lg border border-brand-200 bg-white px-3 py-2 text-center text-[11px] font-black text-brand-700 hover:bg-brand-50">Update contact details →</a>
                         : !hasWebsiteDevelopment
-                          ? <button type="button" onClick={() => openCitationContent(launch, signal.title, "trust_signal", signal.id, signal.contentAsset?.id)} className="shrink-0 rounded-lg bg-brand-600 px-3 py-2 text-[11px] font-black text-white hover:bg-brand-700">{signal.contentAsset ? "View implementation asset" : "Create implementation asset"} →</button>
+                          ? signal.contentAsset
+                            ? <button type="button" onClick={() => openCitationContent(launch, signal.title, "trust_signal", signal.id, signal.contentAsset.id)} className="shrink-0 rounded-lg bg-brand-600 px-3 py-2 text-[11px] font-black text-white hover:bg-brand-700">View implementation asset →</button>
+                            : <WebsitePlanSuggestionAction projectId={projectId} suggestion={{ sourceModule: "ai_citations", sourceType: "finding_trust_signal", sourceId: `${finding.id}:${signal.id}`, title: signal.title, targetUrl: signal.sourceUrl ?? workspace.project.websiteUrl, evidence: signal.recommendation ?? finding.summary, recommendedAction: signal.recommendation ?? finding.recommendedAction, expectedImpact: `Resolves a website requirement supporting ${finding.title}.` }} className="shrink-0 rounded-lg bg-brand-600 px-3 py-2 text-[11px] font-black text-white disabled:opacity-50" />
                         : signal.websiteUpdate
                           ? <button type="button" onClick={showWebsiteUpdateList} className="shrink-0 rounded-lg bg-violet-100 px-3 py-2 text-[11px] font-black text-violet-800">Added to Website Update List ✓</button>
-                          : needsGeneratedContent && !signal.contentAsset
-                            ? <button type="button" onClick={() => openCitationContent(launch, signal.title, "trust_signal", signal.id)} className="shrink-0 rounded-lg bg-brand-600 px-3 py-2 text-[11px] font-black text-white hover:bg-brand-700">Create for Website Development →</button>
-                            : <button type="button" disabled={Boolean(busy)} onClick={() => updateWebsiteList(signal, "add", signal.contentAsset?.id)} className="shrink-0 rounded-lg bg-brand-600 px-3 py-2 text-[11px] font-black text-white hover:bg-brand-700 disabled:opacity-50">{busy === `website-list:${signal.id}` ? "Adding…" : "Add to Website Update List →"}</button>}
+                          : <button type="button" disabled={Boolean(busy)} onClick={() => updateWebsiteList(signal, "add", signal.contentAsset?.id)} className="shrink-0 rounded-lg bg-brand-600 px-3 py-2 text-[11px] font-black text-white hover:bg-brand-700 disabled:opacity-50">{busy === `website-list:${signal.id}` ? "Adding…" : "Add to Website Plan →"}</button>}
                     </div>;
                   })}
                 </div>
@@ -694,19 +701,20 @@ export default function AiCitationVisibilityWorkspace({ projectId }: { projectId
               finding={finding}
               canAudit={workspace.capabilities.canAudit}
               busy={busy === `finding:${finding.id}`}
-              contentLabel={contentLaunch.label}
+              contentLabel="Add via Website Plan"
               contentAsset={finding.contentAsset}
-              onCreateContent={() => openCitationContent(contentLaunch, finding.title, "finding", finding.id)}
+              onCreateContent={openWebsitePlan}
               onViewContent={() => openCitationContent(contentLaunch, finding.title, "finding", finding.id, finding.contentAsset?.id)}
               onReview={(status) => reviewFinding(finding.id, status)}
+              planAction={<WebsitePlanSuggestionAction projectId={projectId} suggestion={{ sourceModule: "ai_citations", sourceType: "citation_readiness_finding", sourceId: finding.id, title: finding.title, targetUrl: finding.websiteRequirements[0]?.sourceUrl ?? workspace.project.websiteUrl, evidence: finding.summary, recommendedAction: finding.recommendedAction, expectedImpact: `Improve citation readiness for ${finding.title}.` }} className="w-full rounded-lg bg-brand-600 px-3 py-2 text-xs font-black text-white disabled:opacity-50" />}
             />
           </div>
         </div>;
       }) : <Empty title="No citation findings" detail="Run citation research to inspect the latest project and crawl evidence." />}</div>}
 
       {ANSWER_OPPORTUNITIES_V2_ENABLED && tab === "opportunities" && <div className="space-y-3">{workspace.opportunities.length ? workspace.opportunities.map((opportunity) => {
-        const contentLaunch: ContentLaunch = { label: "Create Answer Content", type: "article", topic: opportunity.query, instruction: `Create a citation-ready answer page for this opportunity: ${opportunity.query}. ${opportunity.gapSummary} Use only approved entity claims, answer the question directly, include verifiable sources, and do not guarantee citation inclusion.` };
-        return <div key={opportunity.id} className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm"><div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between"><div className="min-w-0"><div className="flex flex-wrap items-center gap-2"><Pill value={opportunity.status} /><Pill value={opportunity.searchIntent ?? "informational"} /><span className="rounded-full bg-violet-50 px-2.5 py-1 text-[11px] font-black text-violet-700">{opportunity.isInference ? "Inferred opportunity" : "Observed gap"}</span></div><h3 className="mt-3 text-lg font-black text-charcoal-950">{opportunity.query}</h3><p className="mt-2 text-sm leading-6 text-charcoal-600">{opportunity.gapSummary}</p><div className="mt-3 flex flex-wrap gap-2">{list(opportunity.recommendedFixes).map((fix) => <span key={fix} className="rounded-lg bg-slate-50 px-2.5 py-1.5 text-xs font-semibold text-slate-600">{fix}</span>)}</div></div><div className="w-full shrink-0 rounded-xl bg-slate-50 p-4 lg:w-64"><div className="grid grid-cols-2 gap-3 text-center"><div><div className="text-lg font-black text-charcoal-950">{opportunity.priorityScore}</div><div className="text-[9px] font-black uppercase text-charcoal-400">Priority</div></div><div><div className="text-lg font-black text-charcoal-950">{opportunity.entityFitScore}</div><div className="text-[9px] font-black uppercase text-charcoal-400">Entity fit</div></div><div><div className="text-lg font-black text-charcoal-950">{opportunity.answerValueScore}</div><div className="text-[9px] font-black uppercase text-charcoal-400">Answer value</div></div><div><div className="text-lg font-black text-charcoal-950">{opportunity.authorityPotentialScore}</div><div className="text-[9px] font-black uppercase text-charcoal-400">Authority</div></div></div>{workspace.capabilities.canAudit && <div className="mt-4 space-y-2"><button type="button" onClick={() => openCitationContent(contentLaunch, opportunity.query, "opportunity", opportunity.id, opportunity.contentAsset?.id)} className="block w-full rounded-lg bg-emerald-600 px-3 py-2 text-center text-xs font-black text-white hover:bg-emerald-700">{opportunity.contentAsset ? "View generated content" : "Create Answer Content"} →</button>{opportunity.contentAsset && <button type="button" onClick={() => openCitationContent(contentLaunch, opportunity.query, "opportunity", opportunity.id)} className="w-full text-center text-[11px] font-black text-emerald-700 hover:underline">Create a new version</button>}{opportunity.status !== "monitoring" && <button type="button" onClick={() => createPrompt(opportunity)} disabled={Boolean(busy)} className="w-full rounded-lg border border-brand-200 bg-white px-3 py-2 text-xs font-black text-brand-700">{busy === `prompt:${opportunity.id}` ? "Adding…" : "Add to monitoring"}</button>}</div>}</div></div><Evidence value={opportunity.evidenceJson} /></div>;
+        const contentLaunch: ContentLaunch = { label: "Review planned answer content", type: "article", topic: opportunity.query, instruction: `Create a citation-ready answer page for this opportunity: ${opportunity.query}. ${opportunity.gapSummary} Use only approved entity claims, answer the question directly, include verifiable sources, and do not guarantee citation inclusion.` };
+        return <div key={opportunity.id} className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm"><div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between"><div className="min-w-0"><div className="flex flex-wrap items-center gap-2"><Pill value={opportunity.status} /><Pill value={opportunity.searchIntent ?? "informational"} /><span className="rounded-full bg-violet-50 px-2.5 py-1 text-[11px] font-black text-violet-700">{opportunity.isInference ? "Inferred opportunity" : "Observed gap"}</span></div><h3 className="mt-3 text-lg font-black text-charcoal-950">{opportunity.query}</h3><p className="mt-2 text-sm leading-6 text-charcoal-600">{opportunity.gapSummary}</p><div className="mt-3 flex flex-wrap gap-2">{list(opportunity.recommendedFixes).map((fix) => <span key={fix} className="rounded-lg bg-slate-50 px-2.5 py-1.5 text-xs font-semibold text-slate-600">{fix}</span>)}</div></div><div className="w-full shrink-0 rounded-xl bg-slate-50 p-4 lg:w-64"><div className="grid grid-cols-2 gap-3 text-center"><div><div className="text-lg font-black text-charcoal-950">{opportunity.priorityScore}</div><div className="text-[9px] font-black uppercase text-charcoal-400">Priority</div></div><div><div className="text-lg font-black text-charcoal-950">{opportunity.entityFitScore}</div><div className="text-[9px] font-black uppercase text-charcoal-400">Entity fit</div></div><div><div className="text-lg font-black text-charcoal-950">{opportunity.answerValueScore}</div><div className="text-[9px] font-black uppercase text-charcoal-400">Answer value</div></div><div><div className="text-lg font-black text-charcoal-950">{opportunity.authorityPotentialScore}</div><div className="text-[9px] font-black uppercase text-charcoal-400">Authority</div></div></div>{workspace.capabilities.canAudit && <div className="mt-4 space-y-2">{opportunity.contentAsset ? <button type="button" onClick={() => openCitationContent(contentLaunch, opportunity.query, "opportunity", opportunity.id, opportunity.contentAsset?.id)} className="block w-full rounded-lg bg-emerald-600 px-3 py-2 text-center text-xs font-black text-white hover:bg-emerald-700">View planned content →</button> : <WebsitePlanSuggestionAction projectId={projectId} suggestion={{ sourceModule: "ai_citations", sourceType: "answer_opportunity", sourceId: opportunity.id, title: opportunity.query, targetUrl: workspace.project.websiteUrl, evidence: opportunity.gapSummary, recommendedAction: list(opportunity.recommendedFixes).join(" ") || "Add an answer-first, source-backed section for this audience question.", expectedImpact: "Improve answer coverage and citation readiness without guaranteeing inclusion." }} className="w-full rounded-lg bg-emerald-600 px-3 py-2 text-xs font-black text-white disabled:opacity-50" />}{opportunity.status !== "monitoring" && <button type="button" onClick={() => createPrompt(opportunity)} disabled={Boolean(busy)} className="w-full rounded-lg border border-brand-200 bg-white px-3 py-2 text-xs font-black text-brand-700">{busy === `prompt:${opportunity.id}` ? "Adding…" : "Add to monitoring"}</button>}</div>}</div></div><Evidence value={opportunity.evidenceJson} /></div>;
       }) : <Empty title="No answer opportunities" detail="Run citation research to infer high-value questions from approved keywords and verified project context." />}</div>}
 
       {AI_MONITORING_V2_ENABLED && tab === "monitoring" && <div className="space-y-5">

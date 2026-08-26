@@ -3,6 +3,7 @@ import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom"
 import { api } from "../api.js";
 import type { AiContentGeneration, AiContentStatus, AiGenerationType, GeoKeywordAudit, GeoKeywordAuditPage, KeywordIdea, KeywordResearchRun, KeywordSerpCompetitor, OrganicGrowthPlan, OrganicGrowthTask } from "../types.js";
 import { ActionIconButton, Button, Card, StatusPill } from "../components/ui.js";
+import WebsitePlanSuggestionAction from "../components/WebsitePlanSuggestionAction.js";
 
 function formatNumber(value: number | null | undefined): string {
   return value == null ? "-" : new Intl.NumberFormat().format(value);
@@ -973,7 +974,7 @@ export default function KeywordResearchDetail() {
                             {task.url && <a href={task.url} target="_blank" rel="noreferrer" className="mt-2 block truncate text-sm font-medium text-brand-600 hover:underline">{task.url}</a>}
                           </div>
                           <div className="flex gap-2 lg:justify-end">
-                            {task.group === "create" || task.group === "improve" || task.group === "support" ? <Button variant="ghost" onClick={openContentWizard}>Generate fixes</Button> : null}
+                            {(task.group === "create" || task.group === "improve" || task.group === "support") && guidedProjectId ? <WebsitePlanSuggestionAction projectId={guidedProjectId} suggestion={{ sourceModule: "keyword_research", sourceType: "organic_growth_task", sourceId: task.id, title: task.title, targetUrl: task.url || contentTargetUrl, evidence: task.detail, recommendedAction: task.detail, expectedImpact: task.impact }} className="rounded-lg border border-brand-200 bg-white px-3 py-2 text-xs font-black text-brand-700 disabled:opacity-50" /> : null}
                             {task.group === "fix" ? <Button variant="ghost" onClick={() => setTab("page-map")}>Open map</Button> : null}
                             {task.group === "track" ? <Button variant="ghost" onClick={refreshRun} disabled={refreshing || !canRefreshKeyword(run)}>{refreshing ? "Refreshing..." : "Refresh"}</Button> : null}
                           </div>
@@ -1434,7 +1435,7 @@ export default function KeywordResearchDetail() {
                           <h3 className="font-semibold text-charcoal-700">Apply these first</h3>
                           <p className="mt-1 text-sm text-charcoal-500">Turn the priority fixes into ready-to-use H1, title, FAQ, and schema changes on demand.</p>
                         </div>
-                        <Button onClick={openContentWizard} disabled={!bestPage && !contentTargetUrl}>Generate content fixes</Button>
+                        {guidedProjectId && (bestPage || contentTargetUrl) ? <WebsitePlanSuggestionAction projectId={guidedProjectId} suggestion={{ sourceModule: "keyword_research", sourceType: "page_content_fixes", sourceId: `${run.id}:${contentTargetUrl || bestPage?.url || "page"}`, title: `Apply keyword content fixes for ${run.seedKeyword}`, targetUrl: contentTargetUrl || bestPage?.url || null, evidence: bestPage?.gapSummary || `Keyword research identified page-content improvements for ${run.seedKeyword}.`, recommendedAction: "Add the approved H1, title, FAQ, schema and content-alignment requirements to the owning page before content preparation.", expectedImpact: "Improves keyword-to-page alignment and search-intent coverage." }} /> : null}
                       </div>
                     </div>
                     <div className="p-5">
