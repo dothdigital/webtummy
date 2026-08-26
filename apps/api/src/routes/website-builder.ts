@@ -4289,12 +4289,19 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/sync-publishing-
   if (!hasWorkspacePermission(context, "execute_tasks")) return res.status(403).json({ error: "Task execution permission is required." });
   const build = project.websiteBuilds[0];
   if (!build) return res.status(404).json({ error: "Website build not found." });
-  const websitePlanReadiness = await currentApprovedWebsitePlan(project);
-  if (!websitePlanReadiness.approvedPlan) return res.status(409).json({ error: websitePlanReadiness.error });
-  const activeWebsiteJob = build.jobs.find((job) => ["queued", "processing"].includes(job.status));
-  if (activeWebsiteJob) return res.status(409).json({ error: `Website generation is ${activeWebsiteJob.status} (${activeWebsiteJob.progress}%). New Publishing content will synchronize automatically after it finishes.`, code: "website_job_active", retryable: true, activeJob: { id: activeWebsiteJob.id, status: activeWebsiteJob.status, stage: activeWebsiteJob.stage, progress: activeWebsiteJob.progress } });
-  const assets = await publishingContentFor(project);
   const force = req.body?.force === true;
+  const websitePlanReadiness = await currentApprovedWebsitePlan(project);
+  if (!websitePlanReadiness.approvedPlan) {
+    if (!force) return res.json({ synchronized: false, skipped: true, reason: "website_plan_refresh_required", message: websitePlanReadiness.error });
+    return res.status(409).json({ error: websitePlanReadiness.error, code: "website_plan_refresh_required", retryable: false });
+  }
+  const activeWebsiteJob = build.jobs.find((job) => ["queued", "processing"].includes(job.status));
+  if (activeWebsiteJob) {
+    const payload = { synchronized: false, skipped: true, reason: "website_job_active", message: `Website generation is ${activeWebsiteJob.status} (${activeWebsiteJob.progress}%). New Publishing content will synchronize automatically after it finishes.`, code: "website_job_active", retryable: true, activeJob: { id: activeWebsiteJob.id, status: activeWebsiteJob.status, stage: activeWebsiteJob.stage, progress: activeWebsiteJob.progress } };
+    if (!force) return res.json(payload);
+    return res.status(409).json({ ...payload, error: payload.message });
+  }
+  const assets = await publishingContentFor(project);
   const previousSync = jsonRecord(jsonRecord(build.settingsJson).publishingContentSync);
   const previouslyImported = new Set(jsonStrings(previousSync.generationIds));
   let imported = 0;
