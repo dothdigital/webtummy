@@ -10,6 +10,20 @@ describe("DEV-007 Keyword Intelligence", () => {
     expect(groups.find((group) => group.category === "local")?.keywords).toContain("roof repair Toronto");
     expect(groups[0].goalSupport).toContain("Generate More Leads");
   });
+  it("keeps local service directions balanced across markets before adding near-me variants", () => {
+    const groups = buildKeywordGroups({
+      ...project,
+      businessLocation: "Mississauga",
+      targetLocations: ["Mississauga", "Brampton"],
+      businessProfile: { offerSummary: "Physiotherapy, Massage therapy, RMT services", targetAudience: "Local patients" },
+    });
+    const local = groups.find((group) => group.category === "local")?.keywords ?? [];
+    expect(local).toEqual(expect.arrayContaining([
+      "physiotherapy Mississauga", "physiotherapy Brampton",
+      "massage therapy Mississauga", "massage therapy Brampton",
+      "rmt services Mississauga", "rmt services Brampton",
+    ]));
+  });
   it("suggests comma-separated niche terms individually only when intake has no offer", () => {
     const groups = buildKeywordGroups({ ...project, niche: "Insurtech, Insurance CRM", businessProfile: { offerSummary: null, targetAudience: "Insurance agencies" }, opportunities: [] });
     expect(groups.find((group) => group.category === "primary")?.keywords).toEqual(expect.arrayContaining(["insurtech", "insurance crm"]));

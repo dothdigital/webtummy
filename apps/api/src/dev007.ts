@@ -113,7 +113,14 @@ export function buildKeywordGroups(project: KeywordProjectInput, extraTopic?: st
     buyer_intent: unique(softwareLike
       ? [`best ${topic}`, `${topic} pricing`, `${topic} demo`, `${topic} reviews`, `${topic} for ${audienceTerm}`, `compare ${topic}`]
       : topics.flatMap(buyerKeywords)).slice(0, 10),
-    local: unique(topics.flatMap((item) => locations.flatMap((location) => [`${item} ${location}`, `${item} near me ${location}`]))),
+    // Fill the limited local group with balanced service/market pairs before
+    // adding modifier variants. Topic-major ordering used to exhaust the
+    // 10-keyword cap halfway through a market pair (for example, RMT in
+    // Mississauga with no corresponding Brampton direction).
+    local: unique([
+      ...topics.flatMap((item) => locations.map((location) => `${item} ${location}`)),
+      ...topics.flatMap((item) => locations.map((location) => `${item} near me ${location}`)),
+    ]),
     informational: unique(topics.flatMap(informationalKeywords)),
     supporting: softwareLike ? [`${topic} features`, `${topic} solutions`, `${topic} examples`, `${topic} alternatives`, ...competitors.map((competitor) => `${topic} vs ${competitor}`)] : unique([...topics.flatMap(supportingKeywords), ...secondaryGoals.flatMap((secondaryGoal) => topics.map((item) => `${item} ${secondaryGoal.toLowerCase()}`)), ...competitors.flatMap((competitor) => topics.map((item) => `${item} vs ${competitor}`)), businessType ? `${businessType.replaceAll("_", " ")} ${topic}` : ""]),
     questions: unique(topics.flatMap(questionKeywords)),
