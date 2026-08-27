@@ -9,6 +9,11 @@ import type { CrawlOptions } from "@webtummy/core";
 import { startWebsiteBuilderWorker } from "./website-builder.js";
 import { recoverGrowthIntelligenceCycles, startGrowthIntelligenceScheduler, startGrowthIntelligenceWorker } from "./growth-intelligence.js";
 import { startSocialImageWorker } from "./social-images.js";
+// Discovery generation shares the API's authenticated generation service, but
+// its BullMQ consumer belongs to this dedicated worker lifecycle.
+import { startDiscoveryGenerationQueueWorker } from "../../api/src/routes/discovery-drafts.js";
+import { startStrategyGenerationQueueWorker } from "../../api/src/routes/projects-v2.js";
+import { startContentPlanGenerationQueueWorker } from "../../api/src/routes/execution-tasks.js";
 
 async function markCrawlFailed(crawlJobId: string, error: unknown) {
   const message = error instanceof Error ? error.message : String(error);
@@ -95,6 +100,9 @@ const notificationEmailTimer = startNotificationEmailScheduler();
 const websiteBuilderWorker = startWebsiteBuilderWorker();
 const growthIntelligenceWorker = startGrowthIntelligenceWorker();
 const socialImageWorker = startSocialImageWorker();
+const discoveryGenerationWorker = startDiscoveryGenerationQueueWorker();
+const strategyGenerationWorker = startStrategyGenerationQueueWorker();
+const contentPlanGenerationWorker = startContentPlanGenerationQueueWorker();
 const growthIntelligenceTimer = startGrowthIntelligenceScheduler();
 
 console.log(`[worker] SEnuke AI - AI Growth Operating System crawler up. UA="${config.userAgent}". Listening on "${CRAWL_QUEUE}".`);
@@ -110,6 +118,9 @@ const shutdown = async () => {
   await websiteBuilderWorker.close();
   await growthIntelligenceWorker.close();
   await socialImageWorker.close();
+  await discoveryGenerationWorker.close();
+  await strategyGenerationWorker.close();
+  await contentPlanGenerationWorker.close();
   await prisma.$disconnect();
   process.exit(0);
 };

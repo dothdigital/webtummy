@@ -1,10 +1,12 @@
-import { Router } from "express";
+import { Router, type NextFunction, type Request, type Response } from "express";
+import { Worker } from "bullmq";
 import { createHash } from "node:crypto";
 import { Prisma, prisma } from "@webtummy/db";
 import { z } from "zod";
 import { canonicalPrimaryGoal, primaryGoalsForWorkspace } from "@webtummy/core/project-goals";
 import { centralAiJson } from "../central-ai-service.js";
-import { config } from "../config.js";
+import { config, DISCOVERY_GENERATION_QUEUE } from "../config.js";
+import { discoveryGenerationQueue, queueConnection, type DiscoveryGenerationQueueJobData } from "../queue.js";
 import { assertWorkspaceResourceAvailable } from "../commercial-service.js";
 import { projectClientIdForRequest } from "../project-scope.js";
 import { commitUsage, modelForFeature, preflightUsage, refundUsage } from "../usage-engine.js";
@@ -647,10 +649,10 @@ discoveryDraftsRouter.delete("/discovery-drafts/:draftId", async (req, res, next
   } catch (error) { next(error); }
 });
 
-discoveryDraftsRouter.post("/discovery-drafts/:draftId/generate", async (req, res, next) => {
+async function generateDiscoveryDraft(req: Request, res: Response, next: NextFunction) {
   let usageEventId: string | undefined;
   try {
-    const input = z.object({ feedback: z.string().trim().max(2000).optional(), baseIdeaId: z.string().trim().min(1).optional() }).parse(req.body ?? {});
+    const input = z.object({ feedback: z.string().trim().max(2000).optional(), baseIdeaId: z.string().trim().min(1).optional(), generationJobId: z.string().trim().min(1).optional() }).parse(req.body ?? {});
     const context = await workspaceContext(req);
     assertCanEdit(context);
     const draft = await accessibleDraft(context, req.params.draftId);
@@ -667,21 +669,42 @@ discoveryDraftsRouter.post("/discovery-drafts/:draftId/generate", async (req, re
     if (!billingClientId) return res.status(409).json({ error: "Workspace billing context is required before AI ideas can be generated." });
     const plan = await prisma.client.findUnique({ where: { id: billingClientId }, select: { plan: true } });
     const idempotencyKey = `discovery:${draft.id}:${draft.updatedAt.getTime()}`;
+    if (input.generationJobId) {
+      const job = await prisma.aiRun.findFirst({ where: { id: input.generationJobId, moduleName: "discovery_generation_job" } });
+      if (!job || jsonRecord(job.inputSnapshotJson).draftId !== draft.id) return res.status(404).json({ error: "Discovery generation job not found." });
+      const snapshot = jsonRecord(job.inputSnapshotJson);
+      usageEventId = String(snapshot.usageEventId || "") || undefined;
+      if (!usageEventId) throw new Error("Discovery generation usage reservation is missing.");
+    }
     const priorAttempt = await prisma.usageEvent.findFirst({ where: { clientId: billingClientId, idempotencyKey } });
-    if (priorAttempt?.status === "reserved") {
+    if (!input.generationJobId && priorAttempt?.status === "reserved") {
+      const existingJobs = await prisma.aiRun.findMany({ where: { clientId: billingClientId, moduleName: "discovery_generation_job", status: { in: ["queued", "running", "retrying"] } }, orderBy: { createdAt: "desc" }, take: 25 });
+      const existingJob = existingJobs.find((job) => jsonRecord(job.inputSnapshotJson).draftId === draft.id);
+      if (existingJob) return res.status(202).json({ jobId: existingJob.id, status: existingJob.status });
       if (priorAttempt.createdAt.getTime() > Date.now() - 130_000) return res.status(409).json({ error: "SEnuke is already generating these ideas. Please wait a moment before retrying." });
       await refundUsage({ usageEventId: priorAttempt.id, reason: "Stale Discovery generation reservation released automatically" });
       await prisma.usageEvent.update({ where: { id: priorAttempt.id }, data: { idempotencyKey: null } });
-    } else if (priorAttempt && ["failed", "refunded"].includes(priorAttempt.status)) {
+    } else if (!input.generationJobId && priorAttempt && ["failed", "refunded"].includes(priorAttempt.status)) {
       await prisma.usageEvent.update({ where: { id: priorAttempt.id }, data: { idempotencyKey: null } });
-    } else if (priorAttempt?.status === "committed") {
+    } else if (!input.generationJobId && priorAttempt?.status === "committed") {
       return res.status(409).json({ error: "These ideas were already generated. Refresh the Discovery Draft to view them." });
     }
     // Business Discovery uses the existing assisted-intake entitlement for
     // metering. The research model policy may still select a stronger model,
     // but model policy keys are not necessarily billable feature-catalog keys.
-    const usage = await preflightUsage({ clientId: billingClientId, userId: context.membership.userId, featureKey: "ai_assisted_intake", actionKey: "Generate Discovery Ideas", idempotencyKey });
-    usageEventId = usage.usageEventId;
+    if (!input.generationJobId) {
+      const usage = await preflightUsage({ clientId: billingClientId, userId: context.membership.userId, featureKey: "ai_assisted_intake", actionKey: "Generate Discovery Ideas", idempotencyKey });
+      usageEventId = usage.usageEventId;
+      const jobId = `discovery_job_${createHash("sha256").update(idempotencyKey).digest("hex").slice(0, 32)}`;
+      await prisma.aiRun.upsert({ where: { id: jobId }, update: {}, create: {
+        id: jobId, clientId: billingClientId, moduleName: "discovery_generation_job", promptVersion: "discovery-background-v1", status: "queued",
+        inputSnapshotJson: { draftId: draft.id, feedback: input.feedback ?? null, baseIdeaId: input.baseIdeaId ?? null, usageEventId, requestedBy: { userId: context.membership.userId, role: req.user!.role, clientId: billingClientId, workspaceId: context.workspace.id } },
+        outputJson: { stage: "queued", progress: 5, queuedAt: new Date().toISOString() },
+      } });
+      const existingQueueJob = await discoveryGenerationQueue.getJob(jobId);
+      if (!existingQueueJob) await discoveryGenerationQueue.add("discovery:generate", { jobId }, { jobId, attempts: 3, backoff: { type: "exponential", delay: 15_000 }, removeOnComplete: 250, removeOnFail: 250 });
+      return res.status(202).json({ jobId, status: "queued" });
+    }
     const model = await modelForFeature("ai_project_launch_research", plan?.plan, config.openaiResearchModel);
     const allowedGoals = primaryGoalsForWorkspace(context.workspace.workspaceType);
     const expectedCount = baseIdea ? "Return exactly 3 distinct refined variations anchored to the selected idea. Each variation must meaningfully apply the user's fine-tuning input." : draft.startPath === "EXISTING_BUSINESS" ? "Return exactly 3 practical directions, with the current business direction first and two meaningfully different growth options." : "Return exactly 3 distinct opportunities or focused directions.";
@@ -775,7 +798,7 @@ ${responseContract}`;
           model,
           maxOutputTokens: 16_000,
           reasoningEffort: "low",
-          timeoutMs: 120_000,
+          timeoutMs: input.generationJobId ? 240_000 : 120_000,
           validate: (value) => normalizeDiscoveryResearch(value, {
             title: draft.title,
             sourceText: firstText(draft.sourceText, answerText(answers, "main")),
@@ -828,10 +851,113 @@ ${responseContract}`;
     await commitUsage({ usageEventId, provider: "openai", model: generated.model, inputTokens: generated.inputTokens, outputTokens: generated.outputTokens });
     return res.status(201).json({ draft: updated });
   } catch (error) {
-    if (usageEventId) await refundUsage({ usageEventId, reason: error instanceof Error ? error.message : "Discovery research failed" }).catch(() => undefined);
+    if (usageEventId && !req.body?.generationJobId) await refundUsage({ usageEventId, reason: error instanceof Error ? error.message : "Discovery research failed" }).catch(() => undefined);
     next(error);
   }
+}
+
+discoveryDraftsRouter.post("/discovery-drafts/:draftId/generate", generateDiscoveryDraft);
+
+type DiscoveryGenerationJobInput = {
+  draftId: string;
+  feedback: string | null;
+  baseIdeaId: string | null;
+  usageEventId: string;
+  requestedBy: { userId: string; role: string; clientId: string; workspaceId: string };
+};
+
+discoveryDraftsRouter.get("/discovery-drafts/:draftId/generation-jobs/:jobId", async (req, res, next) => {
+  try {
+    const context = await workspaceContext(req);
+    const draft = await accessibleDraft(context, req.params.draftId);
+    if (!draft) return res.status(404).json({ error: "Discovery Draft not found." });
+    const job = await prisma.aiRun.findFirst({ where: { id: req.params.jobId, moduleName: "discovery_generation_job" } });
+    if (!job || jsonRecord(job.inputSnapshotJson).draftId !== draft.id) return res.status(404).json({ error: "Discovery generation job not found." });
+    const output = jsonRecord(job.outputJson);
+    return res.json({ job: { id: job.id, status: job.status, retryCount: Math.max(0, Number(output.attempt || 1) - 1), output: job.outputJson, error: job.status === "failed" ? job.errorMessage : null }, draft: job.status === "completed" ? draft : undefined });
+  } catch (error) { next(error); }
 });
+
+discoveryDraftsRouter.get("/discovery-drafts/:draftId/generation-jobs", async (req, res, next) => {
+  try {
+    const context = await workspaceContext(req);
+    const draft = await accessibleDraft(context, req.params.draftId);
+    if (!draft) return res.status(404).json({ error: "Discovery Draft not found." });
+    const jobs = await prisma.aiRun.findMany({ where: { clientId: context.workspace.legacyClientId ?? undefined, moduleName: "discovery_generation_job", status: { in: ["queued", "running", "retrying"] } }, orderBy: { createdAt: "desc" }, take: 25 });
+    const job = jobs.find((item) => jsonRecord(item.inputSnapshotJson).draftId === draft.id) ?? null;
+    const output = job ? jsonRecord(job.outputJson) : {};
+    return res.json({ job: job ? { id: job.id, status: job.status, retryCount: Math.max(0, Number(output.attempt || 1) - 1), output: job.outputJson } : null });
+  } catch (error) { next(error); }
+});
+
+function discoveryWorkerRequest(input: DiscoveryGenerationJobInput, jobId: string): Request {
+  const headers: Record<string, string> = { "x-senuke-ai-workspace-id": input.requestedBy.workspaceId, "x-senuke-ai-client-id": input.requestedBy.clientId, "x-workspace-id": input.requestedBy.workspaceId };
+  return {
+    method: "POST", path: `/discovery-drafts/${input.draftId}/generate`, originalUrl: `/api/discovery-drafts/${input.draftId}/generate`, params: { draftId: input.draftId }, query: {},
+    body: { feedback: input.feedback ?? undefined, baseIdeaId: input.baseIdeaId ?? undefined, generationJobId: jobId },
+    user: { userId: input.requestedBy.userId, role: input.requestedBy.role, clientId: input.requestedBy.clientId },
+    header: (name: string) => headers[name.toLowerCase()],
+  } as unknown as Request;
+}
+
+async function executeDiscoveryGenerationJob(jobId: string, attemptsMade: number) {
+  const job = await prisma.aiRun.findUnique({ where: { id: jobId } });
+  if (!job || job.moduleName !== "discovery_generation_job" || ["completed", "failed", "cancelled"].includes(job.status)) return;
+  const input = job.inputSnapshotJson as unknown as DiscoveryGenerationJobInput;
+  const finish = async (recovered = false) => prisma.$transaction(async (tx) => {
+    await tx.aiRun.update({ where: { id: jobId }, data: { status: "completed", outputJson: { stage: "completed", progress: 100, completedAt: new Date().toISOString(), ...(recovered ? { recovered: true } : {}) }, outputText: "Business Discovery ideas are ready for review.", errorMessage: null } });
+    const actionUrl = `/projects/new?discoveryDraftId=${encodeURIComponent(input.draftId)}`;
+    const existing = await tx.workspaceNotification.findFirst({ where: { workspaceId: input.requestedBy.workspaceId, userId: input.requestedBy.userId, type: "discovery_generation_completed", actionUrl } });
+    if (!existing) await tx.workspaceNotification.create({ data: { workspaceId: input.requestedBy.workspaceId, userId: input.requestedBy.userId, type: "discovery_generation_completed", title: "Business Discovery ideas are ready", body: "Your SEnuke AI Business Discovery analysis finished successfully. Review and compare the saved ideas.", actionUrl, emailEligible: true, emailStatus: "pending" } });
+  });
+  const usage = await prisma.usageEvent.findUnique({ where: { id: input.usageEventId }, select: { status: true } });
+  if (usage?.status === "committed") { await finish(true); return; }
+  const claimed = await prisma.aiRun.updateMany({ where: { id: jobId, status: { in: ["queued", "running", "retrying"] } }, data: { status: attemptsMade ? "retrying" : "running", errorMessage: null, outputJson: { stage: attemptsMade ? "retrying" : "analyzing", progress: attemptsMade ? 25 : 15, attempt: attemptsMade + 1, startedAt: new Date().toISOString() } } });
+  if (!claimed.count) return;
+  let responseStatus = 200;
+  let responsePayload: unknown;
+  let handlerError: unknown;
+  const response = { status(code: number) { responseStatus = code; return this; }, json(payload: unknown) { responsePayload = payload; return this; } } as unknown as Response;
+  await generateDiscoveryDraft(discoveryWorkerRequest(input, jobId), response, (error?: unknown) => { handlerError = error; });
+  if (handlerError || responseStatus >= 400) throw handlerError instanceof Error ? handlerError : new Error(`Discovery generation failed with status ${responseStatus}.`);
+  await finish();
+  return responsePayload;
+}
+
+async function recoverDiscoveryGenerationJobs() {
+  const jobs = await prisma.aiRun.findMany({ where: { moduleName: "discovery_generation_job", status: { in: ["queued", "running", "retrying"] } }, orderBy: { createdAt: "asc" }, select: { id: true } });
+  for (const job of jobs) {
+    const queueJob = await discoveryGenerationQueue.getJob(job.id);
+    if (queueJob && await queueJob.getState().catch(() => "unknown") === "active") continue;
+    await prisma.aiRun.updateMany({ where: { id: job.id, status: { in: ["queued", "running", "retrying"] } }, data: { status: "queued", outputJson: { stage: "queued", progress: 5, recovered: true } } });
+    if (queueJob) await queueJob.remove().catch(() => undefined);
+    await discoveryGenerationQueue.add("discovery:generate", { jobId: job.id }, { jobId: job.id, attempts: 3, backoff: { type: "exponential", delay: 15_000 }, removeOnComplete: 250, removeOnFail: 250 });
+  }
+  if (jobs.length) console.log(`[api] recovered ${jobs.length} queued Discovery generation job(s)`);
+}
+
+let discoveryGenerationWorker: Worker<DiscoveryGenerationQueueJobData> | null = null;
+export function startDiscoveryGenerationQueueWorker() {
+  if (discoveryGenerationWorker) return discoveryGenerationWorker;
+  discoveryGenerationWorker = new Worker<DiscoveryGenerationQueueJobData>(DISCOVERY_GENERATION_QUEUE, (queueJob) => executeDiscoveryGenerationJob(queueJob.data.jobId, queueJob.attemptsMade), { connection: queueConnection, concurrency: 2 });
+  discoveryGenerationWorker.on("failed", (queueJob, error) => {
+    if (!queueJob) return;
+    const maximumAttempts = Number(queueJob.opts.attempts || 1);
+    if (queueJob.attemptsMade < maximumAttempts) return;
+    void (async () => {
+      const job = await prisma.aiRun.findUnique({ where: { id: queueJob.data.jobId } });
+      if (!job || job.status === "completed") return;
+      const input = job.inputSnapshotJson as unknown as DiscoveryGenerationJobInput;
+      await refundUsage({ usageEventId: input.usageEventId, reason: `Discovery background generation failed after ${maximumAttempts} attempts: ${error.message}` }).catch(() => undefined);
+      await prisma.$transaction([
+        prisma.aiRun.update({ where: { id: job.id }, data: { status: "failed", errorMessage: error.message, outputJson: { stage: "failed", progress: 100, attempt: queueJob.attemptsMade, failedAt: new Date().toISOString() } } }),
+        prisma.workspaceNotification.create({ data: { workspaceId: input.requestedBy.workspaceId, userId: input.requestedBy.userId, type: "discovery_generation_failed", title: "Business Discovery needs another attempt", body: "The AI provider could not finish after automatic retries. Your saved intake is safe; open the draft to retry.", actionUrl: `/projects/new?discoveryDraftId=${encodeURIComponent(input.draftId)}`, emailEligible: true, emailStatus: "pending" } }),
+      ]);
+    })().catch((failure) => console.error(`[api] Discovery job ${queueJob.data.jobId} failure could not be recorded:`, failure));
+  });
+  void recoverDiscoveryGenerationJobs().catch((error) => console.error("[api] Discovery generation queue recovery failed:", error));
+  return discoveryGenerationWorker;
+}
 
 discoveryDraftsRouter.post("/discovery-drafts/:draftId/ideas/:ideaId/decision", async (req, res, next) => {
   try {

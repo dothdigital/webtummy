@@ -1,6 +1,6 @@
 // API-side BullMQ producer. Enqueues crawl jobs for the worker to consume.
 import { Queue } from "bullmq";
-import { config, CONTENT_PLAN_GENERATION_QUEUE, CRAWL_QUEUE, GROWTH_INTELLIGENCE_QUEUE, JVZOO_PROCESSING_QUEUE, KEYWORD_RESEARCH_QUEUE, LOCAL_GRID_SCAN_QUEUE, LOCAL_SEO_AUDIT_QUEUE, SOCIAL_IMAGE_QUEUE, STRATEGY_GENERATION_QUEUE, WEBSITE_BUILDER_QUEUE } from "./config.js";
+import { config, CONTENT_PLAN_GENERATION_QUEUE, CRAWL_QUEUE, DISCOVERY_GENERATION_QUEUE, GROWTH_INTELLIGENCE_QUEUE, JVZOO_PROCESSING_QUEUE, KEYWORD_RESEARCH_QUEUE, LOCAL_GRID_SCAN_QUEUE, LOCAL_SEO_AUDIT_QUEUE, SOCIAL_IMAGE_QUEUE, STRATEGY_GENERATION_QUEUE, WEBSITE_BUILDER_QUEUE } from "./config.js";
 
 function redisConnectionOptions() {
   const url = new URL(config.redisUrl);
@@ -40,6 +40,8 @@ export const strategyGenerationQueue = new Queue<StrategyGenerationQueueJobData,
 
 export type ContentPlanGenerationQueueJobData = { jobId: string };
 export const contentPlanGenerationQueue = new Queue<ContentPlanGenerationQueueJobData, unknown, "content-plan:generate">(CONTENT_PLAN_GENERATION_QUEUE, { connection: queueConnection });
+export type DiscoveryGenerationQueueJobData = { jobId: string };
+export const discoveryGenerationQueue = new Queue<DiscoveryGenerationQueueJobData, unknown, "discovery:generate">(DISCOVERY_GENERATION_QUEUE, { connection: queueConnection });
 
 export type JvZooProcessingQueueJobData = { eventId: string };
 export const jvZooProcessingQueue = new Queue<JvZooProcessingQueueJobData, unknown, "jvzoo:process">(JVZOO_PROCESSING_QUEUE, { connection: queueConnection });

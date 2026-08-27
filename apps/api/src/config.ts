@@ -125,6 +125,7 @@ export const LOCAL_GRID_SCAN_QUEUE = "local-grid-scan";
 export const WEBSITE_BUILDER_QUEUE = "website-builder";
 export const STRATEGY_GENERATION_QUEUE = "strategy-generation";
 export const CONTENT_PLAN_GENERATION_QUEUE = "content-plan-generation";
+export const DISCOVERY_GENERATION_QUEUE = "discovery-generation";
 export const JVZOO_PROCESSING_QUEUE = "jvzoo-processing";
 export const GROWTH_INTELLIGENCE_QUEUE = "growth-intelligence";
 export const SOCIAL_IMAGE_QUEUE = "social-images";

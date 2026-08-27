@@ -3,6 +3,7 @@ import { Link, useNavigate } from "react-router-dom";
 import { api } from "../api.js";
 import { AiPlanningScreen, Button, Card } from "./ui.js";
 import DiscoveryIdeaTabs from "./DiscoveryIdeaTabs.js";
+import { requestMicrophoneAccess, speechRecognitionErrorMessage } from "../lib/voiceInput.js";
 
 export type DiscoveryStartPath = "EXISTING_BUSINESS" | "IDEA_TO_EXPLORE" | "SKILLS_FIRST";
 
@@ -108,6 +109,8 @@ export default function AdaptiveBusinessDiscovery({ draft, isAgency, clients, on
   const [feedbackByIdea, setFeedbackByIdea] = useState<Record<string, string>>({});
   const [listening, setListening] = useState(false);
   const [speechError, setSpeechError] = useState("");
+  const [generationJobId, setGenerationJobId] = useState("");
+  const [generationBackgrounded, setGenerationBackgrounded] = useState(false);
   const autosaveRef = useRef<number | null>(null);
   const recognitionRef = useRef<{ stop: () => void } | null>(null);
   const keepListeningRef = useRef(false);
@@ -124,6 +127,7 @@ export default function AdaptiveBusinessDiscovery({ draft, isAgency, clients, on
     : current.startPath === "EXISTING_BUSINESS"
       ? "Turning your business context into practical directions"
       : "Turning your skills into practical business ideas";
+  const generationBanner = generationJobId && generationBackgrounded ? <Card className="border-violet-200 bg-violet-50 p-4 shadow-sm"><div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between"><div><div className="text-xs font-black uppercase tracking-wide text-violet-700">Analysis continuing in the background</div><p className="mt-1 text-sm leading-6 text-violet-900">You can safely leave this page. SEnuke retries temporary AI-provider delays automatically and will notify you here and by email when your Business Discovery ideas are ready.</p></div><Link to="/projects" className="shrink-0 rounded-lg bg-violet-700 px-4 py-2 text-center text-xs font-black text-white">Return to Projects</Link></div></Card> : null;
 
   useEffect(() => {
     if (converted) return;
@@ -143,7 +147,36 @@ export default function AdaptiveBusinessDiscovery({ draft, isAgency, clients, on
     try { recognitionRef.current?.stop(); } catch { /* already stopped */ }
   }, []);
 
-  function toggleVoice() {
+  useEffect(() => {
+    if (generationJobId || converted) return;
+    void api.get<{ job: { id: string; status: string } | null }>(`/api/discovery-drafts/${current.id}/generation-jobs`)
+      .then((result) => {
+        if (!result.job) return;
+        setGenerationJobId(result.job.id);
+        setGenerationBackgrounded(true);
+      })
+      .catch(() => undefined);
+  }, [converted, current.id, generationJobId]);
+
+  useEffect(() => {
+    if (!generationJobId) return;
+    const backgroundTimer = window.setTimeout(() => { setGenerationBackgrounded(true); setBusy(""); }, 30_000);
+    const poll = async () => {
+      try {
+        const result = await api.get<{ job: { status: string; error: string | null }; draft?: DiscoveryDraft }>(`/api/discovery-drafts/${current.id}/generation-jobs/${generationJobId}`);
+        if (result.job.status === "completed" && result.draft) {
+          setCurrent(result.draft); setFeedbackByIdea({}); setGenerationJobId(""); setGenerationBackgrounded(false); setBusy(""); setMessage("Your Business Discovery ideas are ready.");
+        } else if (result.job.status === "failed") {
+          setGenerationJobId(""); setGenerationBackgrounded(false); setBusy(""); setMessage(result.job.error || "The analysis could not finish after automatic retries. Your intake is saved; please retry.");
+        }
+      } catch { /* A later poll or the email notification can recover status. */ }
+    };
+    void poll();
+    const interval = window.setInterval(() => void poll(), 4_000);
+    return () => { window.clearTimeout(backgroundTimer); window.clearInterval(interval); };
+  }, [current.id, generationJobId]);
+
+  async function toggleVoice() {
     if (listening) {
       keepListeningRef.current = false;
       try { recognitionRef.current?.stop(); } catch { /* already stopped */ }
@@ -170,6 +203,8 @@ export default function AdaptiveBusinessDiscovery({ draft, isAgency, clients, on
       setSpeechError("Voice input is not supported by this browser. You can continue by typing.");
       return;
     }
+    try { await requestMicrophoneAccess(); }
+    catch (error) { setSpeechError(error instanceof Error ? error.message : "The microphone could not be started."); return; }
     const recognition = new RecognitionClass();
     recognition.lang = "en-CA";
     recognition.interimResults = true;
@@ -200,25 +235,23 @@ export default function AdaptiveBusinessDiscovery({ draft, isAgency, clients, on
       if (["not-allowed", "service-not-allowed", "audio-capture", "network"].includes(event.error || "")) {
         keepListeningRef.current = false;
         setListening(false);
-        setSpeechError(event.error === "not-allowed" ? "Microphone permission is required for voice recording." : "Voice recording stopped. Check the microphone or connection, then try again.");
+        void speechRecognitionErrorMessage(event.error || "").then(setSpeechError);
       }
     };
     recognitionRef.current = recognition;
     keepListeningRef.current = true;
-    recognition.start();
-    setListening(true);
+    try { recognition.start(); setListening(true); }
+    catch { keepListeningRef.current = false; setSpeechError("Voice recording could not start. Reload the page and try again."); }
   }
 
   async function generate(feedback?: string, baseIdeaId?: string) {
-    if (!canGenerate || busy || listening) return;
+    if (!canGenerate || busy || listening || generationJobId) return;
     setBusy("generate"); setMessage("");
     try {
       await api.patch(`/api/discovery-drafts/${current.id}`, { answers, sourceText: answers.main });
-      const result = await api.post<{ draft: DiscoveryDraft }>(`/api/discovery-drafts/${current.id}/generate`, { feedback: feedback?.trim() || undefined, baseIdeaId });
-      setCurrent(result.draft);
-      setFeedbackByIdea({});
-    } catch (error) { setMessage(error instanceof Error ? error.message : "Ideas could not be generated"); }
-    finally { setBusy(""); }
+      const result = await api.post<{ jobId: string; status: string }>(`/api/discovery-drafts/${current.id}/generate`, { feedback: feedback?.trim() || undefined, baseIdeaId });
+      setGenerationJobId(result.jobId); setGenerationBackgrounded(false);
+    } catch (error) { setMessage(error instanceof Error ? error.message : "Ideas could not be generated"); setBusy(""); }
   }
 
   async function decide(idea: DiscoveryIdea, status: "SAVED" | "REJECTED") {
@@ -242,7 +275,7 @@ export default function AdaptiveBusinessDiscovery({ draft, isAgency, clients, on
     finally { setBusy(""); }
   }
 
-  if (busy === "generate") return <AiPlanningScreen eyebrow="Business Discovery" title={generationTitle} description="SEnuke is comparing fit, effort, evidence, risk and the first useful validation step. The result is saved under Projects → Drafts." steps={[{ title: "Understand the direction", detail: "Skills, business context, interests and constraints" }, { title: "Compare possibilities", detail: "Audience, problem, revenue model and effort" }, { title: "Prepare ideas", detail: "Evidence limits, confidence and validation steps" }]} status="Generating and saving your Discovery Draft…" checks={["Save the generated ideas as a Draft", "Keep ideas editable", "Create an active Project only after explicit selection"]} note="AI usage counts against workspace capacity, but Discovery Drafts do not count against project limits." ariaLabel="Generating Discovery Draft ideas" />;
+  if (busy === "generate" && !generationBackgrounded) return <AiPlanningScreen eyebrow="Business Discovery" title={generationTitle} description="SEnuke is comparing fit, effort, evidence, risk and the first useful validation step. The result is saved under Projects → Drafts." steps={[{ title: "Understand the direction", detail: "Skills, business context, interests and constraints" }, { title: "Compare possibilities", detail: "Audience, problem, revenue model and effort" }, { title: "Prepare ideas", detail: "Evidence limits, confidence and validation steps" }]} status="Generating and saving your Discovery Draft…" checks={["Save the generated ideas as a Draft", "Keep ideas editable", "Create an active Project only after explicit selection"]} note="AI usage counts against workspace capacity, but Discovery Drafts do not count against project limits." ariaLabel="Generating Discovery Draft ideas" />;
 
   if (converted) return <div className="space-y-5">
     <div className="flex flex-wrap items-start justify-between gap-4"><div><button type="button" onClick={onBack} className="text-sm font-semibold text-brand-700">‹ Business Discovery</button><div className="mt-2 text-[10px] font-black uppercase tracking-[0.16em] text-emerald-700">Converted discovery history</div><h1 className="mt-1 text-3xl font-black text-slate-950">{current.title}</h1><p className="mt-2 max-w-3xl text-sm leading-6 text-slate-600">The selected direction is now a Project. The other ideas remain saved here for possible future use.</p></div><button type="button" onClick={() => navigate(`/guided-projects/${current.convertedProjectId}`)} className="rounded-lg bg-emerald-600 px-4 py-2 text-xs font-black text-white">View converted project →</button></div>
@@ -252,6 +285,7 @@ export default function AdaptiveBusinessDiscovery({ draft, isAgency, clients, on
   </div>;
 
   if (current.ideas.length) return <div className="space-y-5">
+    {generationBanner}
     <div className="flex flex-wrap items-start justify-between gap-4"><div><div className="text-sm font-semibold text-brand-700"><button type="button" onClick={onBack}>‹ Business Discovery</button></div><div className="mt-2 text-[10px] font-black uppercase tracking-[0.16em] text-violet-700">{copy.eyebrow}</div><h1 className="mt-1 text-3xl font-black text-slate-950">{current.title}</h1><p className="mt-2 max-w-3xl text-sm leading-6 text-slate-600">{copy.description}</p></div><div className="text-right text-[10px] font-bold uppercase tracking-wide text-slate-400">{busy === "save" ? "Saving…" : message === "Saved automatically" ? message : `Draft · ${current.status.replaceAll("_", " ")}`}</div></div>
     {message && message !== "Saved automatically" && <Card className={message.includes("could not") || message.includes("failed") ? "border-amber-200 bg-amber-50 p-4 text-sm text-amber-900" : "border-emerald-200 bg-emerald-50 p-4 text-sm font-bold text-emerald-900"}>{message}</Card>}
     <Card className="overflow-hidden"><div className="bg-slate-950 px-5 py-6 text-white sm:px-7"><div className="text-[10px] font-black uppercase tracking-[0.16em] text-emerald-300">Here is what I understand · AI suggested</div><h2 className="mt-2 text-2xl font-black">{String(summary.title || current.title)}</h2><p className="mt-2 max-w-4xl text-sm leading-6 text-slate-300">{String(summary.description || current.sourceText || "Review the generated directions below.")}</p></div><div className="grid gap-3 p-5 md:grid-cols-2 lg:grid-cols-4">{[["Audience", summary.audience], ["Revenue model", summary.revenueModel], ["Delivery", summary.deliveryMode], ["Primary goal", summary.primaryGoal]].map(([label, value]) => <div key={String(label)} className="rounded-xl border bg-slate-50 p-3"><div className="text-[9px] font-black uppercase tracking-wide text-slate-400">{String(label)}</div><div className="mt-1 text-xs font-bold leading-5 text-slate-800">{String(value || "Not established yet")}</div></div>)}</div></Card>
@@ -272,7 +306,7 @@ export default function AdaptiveBusinessDiscovery({ draft, isAgency, clients, on
     <div className="text-center text-xs text-slate-400"><Link to="/projects">Return to Projects</Link></div>
   </div>;
 
-  return <div className="space-y-5"><div className="flex flex-wrap items-start justify-between gap-4"><div><div className="text-sm font-semibold text-brand-700"><button type="button" onClick={onBack}>‹ Business Discovery</button></div><div className="mt-2 text-[10px] font-black uppercase tracking-[0.16em] text-violet-700">{copy.eyebrow}</div><h1 className="mt-1 text-3xl font-black text-slate-950">{current.ideas.length ? current.title : copy.title}</h1><p className="mt-2 max-w-3xl text-sm leading-6 text-slate-600">{copy.description}</p></div><div className="text-right text-[10px] font-bold uppercase tracking-wide text-slate-400">{busy === "save" ? "Saving…" : message === "Saved automatically" ? message : `Draft · ${current.status.replaceAll("_", " ")}`}</div></div>
+  return <div className="space-y-5">{generationBanner}<div className="flex flex-wrap items-start justify-between gap-4"><div><div className="text-sm font-semibold text-brand-700"><button type="button" onClick={onBack}>‹ Business Discovery</button></div><div className="mt-2 text-[10px] font-black uppercase tracking-[0.16em] text-violet-700">{copy.eyebrow}</div><h1 className="mt-1 text-3xl font-black text-slate-950">{current.ideas.length ? current.title : copy.title}</h1><p className="mt-2 max-w-3xl text-sm leading-6 text-slate-600">{copy.description}</p></div><div className="text-right text-[10px] font-bold uppercase tracking-wide text-slate-400">{busy === "save" ? "Saving…" : message === "Saved automatically" ? message : `Draft · ${current.status.replaceAll("_", " ")}`}</div></div>
 
     {message && message !== "Saved automatically" && <Card className={message.includes("could not") || message.includes("failed") ? "border-amber-200 bg-amber-50 p-4 text-sm text-amber-900" : "border-emerald-200 bg-emerald-50 p-4 text-sm font-bold text-emerald-900"}>{message}</Card>}
 
