@@ -1277,7 +1277,14 @@ async function loadGrowthOverview(projectId: string) {
       include: { followupTask: { select: { id: true, title: true, status: true, relatedUrl: true } } },
     }),
     prisma.projectGrowthLearning.findMany({ where: { projectId }, orderBy: { createdAt: "desc" }, take: 25 }),
-    prisma.aiRun.findMany({ where: { projectId, moduleName: "growth_engine" }, orderBy: { createdAt: "desc" }, take: 20 }),
+    prisma.aiRun.findMany({
+      where: { projectId, moduleName: "growth_engine" },
+      orderBy: { createdAt: "desc" },
+      take: 20,
+      // Prompt identifiers, hashes, routing and validation metadata are
+      // deliberately excluded from customer and Client Viewer responses.
+      select: { id: true, status: true, inputSnapshotJson: true, outputJson: true, createdAt: true },
+    }),
   ]);
   const selectedAction = candidateActions.find((action) => action.status === "selected")
     ?? candidateActions.find((action) => action.status === "accepted" && action.followupTask && !terminalStatuses.has(action.followupTask.status))

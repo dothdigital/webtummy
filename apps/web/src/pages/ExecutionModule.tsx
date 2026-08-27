@@ -63,6 +63,7 @@ type StrategyGenerationJob = {
   strategyVersion?: number | null;
   error?: string | null;
   errorCode?: string | null;
+  delayed?: boolean;
 };
 
 type UnifiedChannelPlan = { objective: string; actions: string[]; dependencies: string[]; destination: string; successSignal: string };
@@ -447,15 +448,19 @@ export default function ExecutionModule({ kind }: { kind: ModuleKind }) {
   const [siteStatusRefreshing, setSiteStatusRefreshing] = useState(false);
   const [siteAnalysisMessage, setSiteAnalysisMessage] = useState("");
   const [strategyBusy, setStrategyBusy] = useState<"generate" | "analyze" | "approve" | "execution" | null>(null);
+  const [strategyForegroundVisible, setStrategyForegroundVisible] = useState(false);
   const [strategyMessage, setStrategyMessage] = useState("");
   const [strategyJob, setStrategyJob] = useState<StrategyGenerationJob | null>(null);
   const [leadMagnetStartRequest, setLeadMagnetStartRequest] = useState(kind === "lead-magnets" && searchParams.get("start") === "1" ? 1 : 0);
   const [opportunityBusy, setOpportunityBusy] = useState<"generate" | string | null>(null);
   const [opportunityMessage, setOpportunityMessage] = useState("");
   const [opportunityCapacityEstimate, setOpportunityCapacityEstimate] = useState<number | null>(null);
+  const [strategyCapacityEstimate, setStrategyCapacityEstimate] = useState<number | null>(null);
   const [selectedProjectId, setSelectedProjectId] = useState(searchParams.get("projectId") ?? getActiveProjectId());
   const keywordJobFingerprint = useRef("");
   const strategyRequestKey = useRef("");
+  const strategyConfirmResolver = useRef<((confirmed: boolean) => void) | null>(null);
+  const [strategyGenerateConfirm, setStrategyGenerateConfirm] = useState<{ estimate: string } | null>(null);
   const [workspaceLoadError, setWorkspaceLoadError] = useState("");
   const [helpOpen, setHelpOpen] = useState(false);
   const [nowMs, setNowMs] = useState(Date.now());
@@ -520,10 +525,13 @@ export default function ExecutionModule({ kind }: { kind: ModuleKind }) {
   }, []);
 
   useEffect(() => {
-    if (kind !== "opportunities") return;
+    if (kind !== "opportunities" && kind !== "strategy") return;
     void api.get<{ features: Array<{ featureKey: string; defaultCreditCost: number }> }>("/api/usage/feature-costs")
-      .then((result) => setOpportunityCapacityEstimate(result.features.find((feature) => feature.featureKey === "opportunity_refresh")?.defaultCreditCost ?? null))
-      .catch(() => setOpportunityCapacityEstimate(null));
+      .then((result) => {
+        setOpportunityCapacityEstimate(result.features.find((feature) => feature.featureKey === "opportunity_refresh")?.defaultCreditCost ?? null);
+        setStrategyCapacityEstimate(result.features.find((feature) => feature.featureKey === "strategy_generate")?.defaultCreditCost ?? null);
+      })
+      .catch(() => { setOpportunityCapacityEstimate(null); setStrategyCapacityEstimate(null); });
   }, [kind]);
 
   useEffect(() => {
@@ -750,10 +758,34 @@ export default function ExecutionModule({ kind }: { kind: ModuleKind }) {
       if (cancelled || !result.job) return;
       setStrategyJob(result.job);
       setStrategyBusy("generate");
-      setStrategyMessage("Strategy generation is continuing in the background. This page will update automatically.");
+      setStrategyForegroundVisible(false);
+      setStrategyMessage("");
+      registerBackgroundJob({
+        id: result.job.id,
+        projectId: activeProject.id,
+        type: "strategy-generation",
+        title: "Strategy generation",
+        subject: activeProject.businessName || activeProject.name,
+        status: result.job.status,
+        statusUrl: `/api/projects-v2/${activeProject.id}/strategy/jobs/${result.job.id}`,
+        resultUrl: `/strategy?projectId=${encodeURIComponent(activeProject.id)}`,
+        startedAt: new Date().toISOString(),
+        progressMessage: "Strategy generation is continuing in the background. You can leave this page and return when the draft is ready.",
+        completedMessage: `${activeProject.businessName || activeProject.name} Strategy is ready to review`,
+        failedMessage: "Strategy generation needs attention. Review the error and retry.",
+      });
     }).catch(() => undefined);
     return () => { cancelled = true; };
   }, [kind, activeProject?.id]);
+
+  useEffect(() => {
+    if (!strategyForegroundVisible) return;
+    const timer = window.setTimeout(() => {
+      setStrategyForegroundVisible(false);
+      setStrategyMessage("");
+    }, 30_000);
+    return () => window.clearTimeout(timer);
+  }, [strategyForegroundVisible]);
 
   useEffect(() => {
     if (kind !== "strategy" || !activeProject?.id || !strategyJob || !["queued", "running"].includes(strategyJob.status)) return;
@@ -768,12 +800,14 @@ export default function ExecutionModule({ kind }: { kind: ModuleKind }) {
           if (result.project) updateActiveProject(result.project);
           strategyRequestKey.current = "";
           setStrategyBusy(null);
+          setStrategyForegroundVisible(false);
           setStrategyMessage(`Strategy v${result.job.strategyVersion ?? ""} is ready. Review and approve this draft before creating or updating the Execution Plan.`);
           return;
         }
         if (result.job.status === "failed") {
           strategyRequestKey.current = "";
           setStrategyBusy(null);
+          setStrategyForegroundVisible(false);
           setStrategyMessage(`${result.job.error || "Strategy generation could not be completed."}${result.job.errorCode ? ` Error code: ${result.job.errorCode}` : ""}`);
           return;
         }
@@ -781,6 +815,7 @@ export default function ExecutionModule({ kind }: { kind: ModuleKind }) {
       } catch (error) {
         if (cancelled) return;
         setStrategyBusy(null);
+        setStrategyForegroundVisible(false);
         setStrategyMessage(error instanceof Error ? error.message : "Strategy progress could not be checked. Refresh the page to resume.");
       }
     };
@@ -807,9 +842,37 @@ export default function ExecutionModule({ kind }: { kind: ModuleKind }) {
     setWorkflowController(null);
   };
 
-  const runStrategyAction = async (action: "generate" | "analyze" | "approve" | "execution", options?: { revisionComment?: string }) => {
+  const releaseDelayedStrategyJob = async () => {
+    if (!activeProject || !strategyJob?.delayed) return;
+    try {
+      await api.post(`/api/projects-v2/${activeProject.id}/strategy/jobs/${strategyJob.id}/retry`, {});
+      strategyRequestKey.current = "";
+      setStrategyJob(null);
+      setStrategyBusy(null);
+      setStrategyMessage("The delayed job was released and its Capacity reservation was refunded. Select Generate Strategy when you are ready to retry.");
+    } catch (error) {
+      setStrategyMessage(error instanceof Error ? error.message : "The delayed Strategy job could not be released.");
+    }
+  };
+
+  const closeStrategyGenerateConfirm = (confirmed: boolean) => {
+    strategyConfirmResolver.current?.(confirmed);
+    strategyConfirmResolver.current = null;
+    setStrategyGenerateConfirm(null);
+  };
+
+  const confirmStrategyGeneration = (estimate: string) => new Promise<boolean>((resolve) => {
+    strategyConfirmResolver.current = resolve;
+    setStrategyGenerateConfirm({ estimate });
+  });
+
+  const runStrategyAction = async (action: "generate" | "analyze" | "approve" | "execution", options?: { revisionComment?: string; confirmed?: boolean }) => {
     if (!activeProject) return { ok: false, message: "Create or select a project before using strategy actions." };
     if (strategyBusy) return { ok: false, message: "Another strategy action is already running." };
+    if (action === "generate") {
+      const estimate = strategyCapacityEstimate == null ? "the configured AI Capacity estimate" : `${strategyCapacityEstimate.toLocaleString()} AI Capacity units`;
+      if (!options?.confirmed && !await confirmStrategyGeneration(estimate)) return { ok: false, message: "Strategy generation was not started." };
+    }
     const endpoint = action === "generate"
       ? `/api/projects-v2/${activeProject.id}/strategy/generate`
       : action === "analyze"
@@ -818,6 +881,7 @@ export default function ExecutionModule({ kind }: { kind: ModuleKind }) {
         ? `/api/projects-v2/${activeProject.id}/strategy/approve`
         : `/api/projects-v2/${activeProject.id}/execution-plan/create`;
     setStrategyBusy(action);
+    if (action === "generate") setStrategyForegroundVisible(true);
     setStrategyMessage("");
     let backgroundAccepted = false;
     try {
@@ -826,7 +890,21 @@ export default function ExecutionModule({ kind }: { kind: ModuleKind }) {
         const result = await api.post<{ job: StrategyGenerationJob }>(endpoint, { ...(options ?? {}), idempotencyKey: strategyRequestKey.current });
         backgroundAccepted = true;
         setStrategyJob(result.job);
-        setStrategyMessage("Strategy generation is running in the background. This page will update automatically when the draft is ready.");
+        registerBackgroundJob({
+          id: result.job.id,
+          projectId: activeProject.id,
+          type: "strategy-generation",
+          title: "Strategy generation",
+          subject: activeProject.businessName || activeProject.name,
+          status: result.job.status,
+          statusUrl: `/api/projects-v2/${activeProject.id}/strategy/jobs/${result.job.id}`,
+          resultUrl: `/strategy?projectId=${encodeURIComponent(activeProject.id)}`,
+          startedAt: new Date().toISOString(),
+          progressMessage: "Strategy generation is continuing in the background. You can leave this page and return when the draft is ready.",
+          completedMessage: `${activeProject.businessName || activeProject.name} Strategy is ready to review`,
+          failedMessage: "Strategy generation needs attention. Review the error and retry.",
+        });
+        setStrategyMessage("");
         return { ok: true, message: "Strategy generation started in the background." };
       }
       const request = api.post<{ project: GuidedProject }>(endpoint, {});
@@ -847,6 +925,7 @@ export default function ExecutionModule({ kind }: { kind: ModuleKind }) {
       };
     } catch (error) {
       if (action === "generate" && !backgroundAccepted) strategyRequestKey.current = "";
+      if (action === "generate" && !backgroundAccepted) setStrategyForegroundVisible(false);
       const message = error instanceof Error ? error.message : "Strategy action failed.";
       setStrategyMessage(message);
       return { ok: false, message };
@@ -1058,7 +1137,7 @@ export default function ExecutionModule({ kind }: { kind: ModuleKind }) {
     <div className={kind === "keywords"
       ? "-m-4 min-h-[calc(100vh-4rem)] space-y-5 bg-gradient-to-br from-cyan-50 via-[#f7fbff] to-blue-50 p-4 lg:-m-8 lg:min-h-screen lg:p-8"
       : "space-y-5"}>
-      {kind === "strategy" && strategyBusy === "generate" && <StrategyCookingOverlay job={strategyJob} />}
+      {kind === "strategy" && strategyBusy === "generate" && strategyForegroundVisible && <StrategyCookingOverlay job={strategyJob} />}
       {kind === "strategy" && strategyBusy === "execution" && <ExecutionPlanCookingOverlay />}
       <ProjectModuleHeader eyebrow={copy.title} title={moduleTitle} subtitle={copy.subtitle} project={hasActiveProject ? activeProject : null} projects={data.projects} tasks={scopedData.tasks} notifications={scopedData.notifications} onProjectChange={changeProject} actions={headerActions} showExecution={kind !== "keywords" && kind !== "site-analysis"} />
       {hasActiveProject && activeProject && (kind === "opportunities" || kind === "strategy" || kind === "site-analysis" || kind === "lead-magnets") && <ProjectWorkflowController projectId={activeProject.id} refreshKey={`${scopedData.tasks.length}:${scopedKeywordRuns.length}:${activeSiteCrawl?.id ?? ""}:${activeSiteCrawl?.status ?? ""}:${latestSiteCrawl?.id ?? ""}:${latestSiteCrawl?.completedAt ?? ""}`} compact onLoaded={setWorkflowController} />}
@@ -1081,8 +1160,9 @@ export default function ExecutionModule({ kind }: { kind: ModuleKind }) {
           )}
         </div>
       ) : hasActiveProject && kind === "strategy" ? (
-        <div className={`rounded-lg border px-4 py-3 text-sm ${strategyMessage ? "border-brand-100 bg-brand-50 text-brand-700" : "border-slate-200 bg-white text-charcoal-500"}`}>
-          {strategyMessage || (activeProject ? "Approve the generated strategy before creating the execution plan." : "Create a guided project before approving a strategy.")}
+        <div className={`flex flex-wrap items-center justify-between gap-3 rounded-lg border px-4 py-3 text-sm ${strategyMessage ? "border-brand-100 bg-brand-50 text-brand-700" : "border-slate-200 bg-white text-charcoal-500"}`}>
+          <span>{strategyMessage || (activeProject ? "Approve the generated strategy before creating the execution plan." : "Create a guided project before approving a strategy.")}</span>
+          {strategyJob?.delayed && <button type="button" onClick={() => void releaseDelayedStrategyJob()} className="rounded-lg bg-brand-700 px-3 py-2 text-xs font-black text-white">Release and retry safely</button>}
         </div>
       ) : null}
       {hasActiveProject && kind === "site-analysis" && (activeSiteCrawl || siteAnalysisBusy || siteAnalysisMessage) && (
@@ -1159,6 +1239,7 @@ export default function ExecutionModule({ kind }: { kind: ModuleKind }) {
       {!loading && hasActiveProject && hasWorkspaceRecords && canRunModule && kind === "ai-citations" && <CitationScreen data={scopedData} />}
       {!loading && hasActiveProject && hasWorkspaceRecords && kind === "site-architect" && <ArchitectScreen data={scopedData} />}
       {!loading && hasActiveProject && hasWorkspaceRecords && canRunModule && kind === "lead-magnets" && <LeadFunnelWorkspace projectId={activeProject.id} suggestedIdeas={leadMagnetIdeas(scopedData)} startRequestKey={leadMagnetStartRequest} />}
+      {strategyGenerateConfirm && <StrategyGenerateConfirmModal estimate={strategyGenerateConfirm.estimate} onCancel={() => closeStrategyGenerateConfirm(false)} onConfirm={() => closeStrategyGenerateConfirm(true)} />}
       <ModuleHelpDrawer kind={kind} project={activeProject} open={helpOpen} onClose={() => setHelpOpen(false)} />
     </div>
   );
@@ -1577,8 +1658,8 @@ function OpportunityScreen({
         <div className="space-y-5">
           <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
             <div>
-              <h2 className="text-lg font-bold text-charcoal-950">Recommended Opportunities</h2>
-              <p className="text-sm text-charcoal-500">Select one opportunity to become the context for Strategy and execution. Reassessment uses {capacityEstimate == null ? "the configured AI Capacity estimate" : `${capacityEstimate.toLocaleString()} AI Capacity units`} only when eligible evidence changed.</p>
+              <div className="flex flex-wrap items-center gap-2"><h2 className="text-lg font-bold text-charcoal-950">Recommended Opportunities</h2><span className="rounded-full bg-amber-100 px-2.5 py-1 text-[10px] font-black uppercase text-amber-800">Preliminary</span></div>
+              <p className="text-sm text-charcoal-500">These profile-based findings remain preliminary until required market evidence is checked. Select one to guide validation and Strategy; selection does not make it fully validated. Reassessment uses {capacityEstimate == null ? "the configured AI Capacity estimate" : `${capacityEstimate.toLocaleString()} AI Capacity units`} only when eligible evidence changed.</p>
             </div>
             <div className="flex flex-wrap gap-2">
               <button
@@ -1830,7 +1911,26 @@ function StrategyRevisionModal({ open, busy, project, strategy, opportunityName,
   );
 }
 
-function StrategyScreen({ data, busy, onAction }: { data: ModuleData; busy: "generate" | "analyze" | "approve" | "execution" | null; onAction: (action: "generate" | "analyze" | "approve" | "execution", options?: { revisionComment?: string }) => Promise<StrategyActionResult | undefined> }) {
+function StrategyGenerateConfirmModal({ estimate, onCancel, onConfirm }: { estimate: string; onCancel: () => void; onConfirm: () => void }) {
+  return <div className="fixed inset-0 z-[90] grid place-items-center bg-slate-950/60 p-4 backdrop-blur-sm" role="dialog" aria-modal="true" aria-labelledby="strategy-generate-confirm-title">
+    <button type="button" className="absolute inset-0" aria-label="Cancel Strategy generation" onClick={onCancel} />
+    <div className="relative w-full max-w-lg overflow-hidden rounded-2xl border border-white/70 bg-white shadow-2xl">
+      <div className="bg-gradient-to-br from-brand-50 via-white to-violet-50 px-6 pb-5 pt-6">
+        <div className="grid h-11 w-11 place-items-center rounded-xl bg-brand-600 text-xl text-white shadow-lg shadow-brand-200">✦</div>
+        <div className="mt-4 text-xs font-black uppercase tracking-[0.14em] text-brand-700">Unified Strategy</div>
+        <h2 id="strategy-generate-confirm-title" className="mt-1 text-2xl font-black text-slate-950">Generate this Strategy?</h2>
+        <p className="mt-2 text-sm leading-6 text-slate-600">SEnuke will use the approved project evidence to create a reviewable Strategy draft in the background.</p>
+      </div>
+      <div className="space-y-3 px-6 py-5">
+        <div className="rounded-xl border border-brand-100 bg-brand-50 px-4 py-3"><div className="text-[10px] font-black uppercase tracking-wide text-brand-700">Estimated use</div><div className="mt-1 text-base font-black text-slate-950">{estimate}</div></div>
+        <div className="grid gap-2 text-xs leading-5 text-slate-600 sm:grid-cols-2"><div className="rounded-lg border border-slate-200 p-3"><b className="block text-slate-900">Safe reservation</b>Capacity is released automatically if generation fails.</div><div className="rounded-lg border border-slate-200 p-3"><b className="block text-slate-900">Duplicate protection</b>Repeated requests reuse the same active job.</div></div>
+      </div>
+      <div className="flex flex-col-reverse gap-2 border-t border-slate-100 bg-slate-50 px-6 py-4 sm:flex-row sm:justify-end"><button type="button" onClick={onCancel} className="rounded-lg border border-slate-300 bg-white px-4 py-2.5 text-sm font-bold text-slate-700">Cancel</button><button type="button" onClick={onConfirm} autoFocus className="rounded-lg bg-brand-600 px-5 py-2.5 text-sm font-black text-white shadow-sm hover:bg-brand-700">Generate Strategy</button></div>
+    </div>
+  </div>;
+}
+
+function StrategyScreen({ data, busy, onAction }: { data: ModuleData; busy: "generate" | "analyze" | "approve" | "execution" | null; onAction: (action: "generate" | "analyze" | "approve" | "execution", options?: { revisionComment?: string; confirmed?: boolean }) => Promise<StrategyActionResult | undefined> }) {
   const navigate = useNavigate();
   const [activeTab, setActiveTab] = useState<StrategyTab>("overview");
   const [inlineNotice, setInlineNotice] = useState<{ tone: "info" | "success" | "error"; message: string } | null>(null);
@@ -2259,8 +2359,8 @@ function StrategyScreen({ data, busy, onAction }: { data: ModuleData; busy: "gen
           {activeTab === "advanced" && <StrategyIntelligencePanel analyses={advancedAnalyses} applicable={applicableAdvancedAnalyses} score={score} strategyApproved={strategyApproved} funnel={unifiedStrategyPlan?.growthFunnel} />}
         </div>
       )}
-      {latestStrategy && <StrategyRevisionModal open={revisionOpen} busy={busy === "generate"} project={project} strategy={latestStrategy} opportunityName={selectedOpportunity?.name} onClose={() => setRevisionOpen(false)} onSubmit={async (revisionComment) => { const result = await runInlineAction("generate", { revisionComment }); if (result?.ok) setRevisionOpen(false); return result; }} />}
-      {regenerateConfirmOpen && <StrategyRegenerateConfirmModal currentVersion={latestStrategy?.version ?? strategyVersions.length} busy={busy === "generate"} onClose={() => setRegenerateConfirmOpen(false)} onNeedAiHelp={() => { setRegenerateConfirmOpen(false); setRevisionOpen(true); }} onConfirm={() => { setRegenerateConfirmOpen(false); void runInlineAction("generate", { revisionComment: "Regenerated from the latest approved project information." }); }} />}
+      {latestStrategy && <StrategyRevisionModal open={revisionOpen} busy={busy === "generate"} project={project} strategy={latestStrategy} opportunityName={selectedOpportunity?.name} onClose={() => setRevisionOpen(false)} onSubmit={async (revisionComment) => { const result = await runInlineAction("generate", { revisionComment, confirmed: true }); if (result?.ok) setRevisionOpen(false); return result; }} />}
+      {regenerateConfirmOpen && <StrategyRegenerateConfirmModal currentVersion={latestStrategy?.version ?? strategyVersions.length} busy={busy === "generate"} onClose={() => setRegenerateConfirmOpen(false)} onNeedAiHelp={() => { setRegenerateConfirmOpen(false); setRevisionOpen(true); }} onConfirm={() => { setRegenerateConfirmOpen(false); void runInlineAction("generate", { revisionComment: "Regenerated from the latest approved project information.", confirmed: true }); }} />}
       {approvalCompleteOpen && <StrategyApprovalCompleteModal projectId={project.id} strategyVersion={latestStrategy?.version ?? strategyVersions.length} onReview={() => setApprovalCompleteOpen(false)} />}
       {executionCompleteOpen && <ExecutionPlanCompleteModal projectId={project.id} taskCount={(project.executionPlans ?? []).flatMap((plan) => plan.tasks ?? []).length} onClose={() => setExecutionCompleteOpen(false)} />}
     </>

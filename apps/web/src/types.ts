@@ -645,7 +645,7 @@ export interface GrowthOverviewResponse {
     selectedAction: GrowthCandidateAction | null;
     decisionState: { key: string; title: string; message: string };
     learnings: { id: string; outcome: string; summary: string; learningJson: unknown; createdAt: string }[];
-    recentRuns: { id: string; status: string; promptVersion: string; inputSnapshotJson: unknown; outputJson: unknown; createdAt: string }[];
+    recentRuns: { id: string; status: string; inputSnapshotJson: unknown; outputJson: unknown; createdAt: string }[];
   };
   growthIntelligence: {
     contractVersion: string;

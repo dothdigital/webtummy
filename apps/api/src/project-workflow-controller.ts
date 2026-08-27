@@ -36,7 +36,7 @@ const WORKFLOW_EVIDENCE_FRESHNESS_DAYS: Record<string, number> = {
 export function resolveProjectApplicability(input: { projectType: string; websiteStatus: string; hasWebsite: boolean; websiteLaunched?: boolean; targetMarketCount?: number; contextText: string }) {
   const existingWebsite = Boolean(input.websiteLaunched) || (input.websiteStatus === "existing_website" && input.hasWebsite);
   const preLaunchWebsite = ["new_website_required", "website_planned"].includes(input.websiteStatus) && !existingWebsite;
-  const localSeo = input.projectType === "local_seo" || (preLaunchWebsite && (input.targetMarketCount ?? 0) > 0) || /local|service area|near me|google business|map pack|appointment|booking|physical location|storefront/i.test(input.contextText);
+  const localSeo = input.projectType === "local_seo" || /local|service area|near me|google business|map pack|appointment|booking|physical location|storefront/i.test(input.contextText);
   return {
     existingWebsite,
     preLaunchWebsite,

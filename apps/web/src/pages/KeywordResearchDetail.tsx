@@ -6,7 +6,7 @@ import { ActionIconButton, Button, Card, StatusPill } from "../components/ui.js"
 import WebsitePlanSuggestionAction from "../components/WebsitePlanSuggestionAction.js";
 
 function formatNumber(value: number | null | undefined): string {
-  return value == null ? "-" : new Intl.NumberFormat().format(value);
+  return value == null ? "Data unavailable" : new Intl.NumberFormat().format(value);
 }
 
 function formatShortDate(value: string | null | undefined): string {
@@ -52,8 +52,8 @@ function NoWebsiteKeywordReport({ run, projectId, backUrl, refreshing, onRefresh
     <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
       <StatCard label="Keyword opportunities" value={run.keywordCount} detail="Related demand discovered" />
       <StatCard label="Average search volume" value={formatNumber(run.averageVolume)} detail={run.locationName} />
-      <StatCard label="Average CPC" value={averageCpc == null ? "-" : `$${averageCpc.toFixed(2)}`} detail="Commercial value signal" />
-      <StatCard label="Competition index" value={competitionIndex ?? "-"} detail={`${run.competitorCount} SERP competitors reviewed`} />
+      <StatCard label="Average CPC" value={averageCpc == null ? "Data unavailable" : `$${averageCpc.toFixed(2)}`} detail="Commercial value signal" />
+      <StatCard label="Competition index" value={competitionIndex ?? "Data unavailable"} detail={`${run.competitorCount} SERP competitors reviewed`} />
     </div>
 
     <div className="grid gap-5 xl:grid-cols-[minmax(0,1.25fr)_minmax(320px,0.75fr)]">

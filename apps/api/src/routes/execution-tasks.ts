@@ -957,11 +957,16 @@ ${repair ? `\nREPAIR REQUIRED: Return only the ${requestedAssignments.length} mi
     const acceptedBatchDecisions: AiWebsitePlanDecision[] = [];
     let batchSummary = "";
     let decisionIssues = new Map<string, Array<{ field: string; message: string }>>();
-    for (let attempt = 0; attempt < 3; attempt += 1) {
+    // The initial batch is efficient, but a long structured response can hit
+    // the provider output limit. Repair one missing page at a time so every
+    // remaining decision has enough output budget without regenerating pages
+    // that already passed validation.
+    for (let attempt = 0; attempt < 1 + assignmentBatch.length; attempt += 1) {
       try {
-        const generated = await centralAiJson({ system: "You are the SEnuke AI - AI Growth Operating System Unified Website Planning Engine. Make complete, evidence-grounded page ownership, content, conversion, and funnel decisions. Never omit a requested JSON field. Return valid structured JSON only.", prompt: promptFor(pendingAssignments, attempt > 0), temperature: 0.2, maxInputBytes: 100_000, maxOutputTokens: 16_000, timeoutMs: 120_000, validate: inspectAiUnifiedWebsitePlanResponse });
+        const requestedAssignments = attempt > 0 ? pendingAssignments.slice(0, 1) : pendingAssignments;
+        const generated = await centralAiJson({ system: "You are the SEnuke AI - AI Growth Operating System Unified Website Planning Engine. Make complete, evidence-grounded page ownership, content, conversion, and funnel decisions. Never omit a requested JSON field. Return valid structured JSON only.", prompt: promptFor(requestedAssignments, attempt > 0), temperature: 0.2, maxInputBytes: 100_000, maxOutputTokens: 16_000, timeoutMs: 120_000, validate: inspectAiUnifiedWebsitePlanResponse });
         const parsed = generated.result;
-        const reconciledRaw = reconcileAiTargetUrlBatch(pendingAssignments, parsed.decisions);
+        const reconciledRaw = reconcileAiTargetUrlBatch(requestedAssignments, parsed.decisions);
         const validDecisions: AiWebsitePlanDecision[] = [];
         const nextIssues = new Map<string, Array<{ field: string; message: string }>>();
         for (const item of reconciledRaw.items) {
@@ -969,7 +974,7 @@ ${repair ? `\nREPAIR REQUIRED: Return only the ${requestedAssignments.length} mi
           if (validated.success) validDecisions.push(validated.data);
           else nextIssues.set(item.targetUrl.trim().toLocaleLowerCase(), aiWebsitePlanDecisionIssueSummary(item));
         }
-        const reconciledValid = reconcileAiWebsitePlanBatch(pendingAssignments, validDecisions);
+        const reconciledValid = reconcileAiWebsitePlanBatch(requestedAssignments, validDecisions);
         acceptedBatchDecisions.push(...reconciledValid.decisions);
         batchSummary ||= parsed.summary;
         if (reconciledRaw.unexpected.length) {
@@ -980,12 +985,16 @@ ${repair ? `\nREPAIR REQUIRED: Return only the ${requestedAssignments.length} mi
           });
         }
         const missingTargets = new Set(reconciledRaw.missing.map((targetUrl) => targetUrl.trim().toLocaleLowerCase()));
-        const attemptedAssignments = pendingAssignments;
-        pendingAssignments = attemptedAssignments.filter((assignment) => {
+        const unattemptedAssignments = pendingAssignments.slice(requestedAssignments.length);
+        const incompleteAttemptedAssignments = requestedAssignments.filter((assignment) => {
           const key = assignment.targetUrl.trim().toLocaleLowerCase();
           return missingTargets.has(key) || nextIssues.has(key);
         });
-        decisionIssues = nextIssues;
+        pendingAssignments = [...incompleteAttemptedAssignments, ...unattemptedAssignments];
+        const retainedIssues = new Map(decisionIssues);
+        for (const assignment of requestedAssignments) retainedIssues.delete(assignment.targetUrl.trim().toLocaleLowerCase());
+        for (const [key, issues] of nextIssues) retainedIssues.set(key, issues);
+        decisionIssues = retainedIssues;
         if (pendingAssignments.length) {
           lastError = new Error(`AI returned an incomplete Website Plan batch: ${pendingAssignments.length} required page decision${pendingAssignments.length === 1 ? " needs" : "s need"} focused repair.`);
           console.warn("[content-plan] retrying only missing or incomplete AI Website Plan page decisions", {

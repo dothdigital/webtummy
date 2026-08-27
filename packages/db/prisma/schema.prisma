@@ -1764,6 +1764,7 @@ model ProjectKeywordGroup {
   source        String    @default("project_intake") @db.VarChar(40)
   approvedAt    DateTime?
   approvedById  String?
+  approvalVersion Int      @default(0)
   createdAt     DateTime  @default(now())
   updatedAt     DateTime  @updatedAt
 
@@ -1928,6 +1929,14 @@ model AiRun {
   clientId          String?
   moduleName        String   @db.VarChar(80)
   promptVersion     String   @db.VarChar(80)
+  workflowId        String?  @db.VarChar(120)
+  promptId          String?  @db.VarChar(120)
+  promptDefinitionHash String? @db.VarChar(64)
+  provider          String?  @db.VarChar(80)
+  model             String?  @db.VarChar(120)
+  validationStatus  String?  @db.VarChar(40)
+  retryCount        Int      @default(0)
+  qualityJson       Json     @default("{}")
   inputSnapshotJson Json     @default("{}")
   outputJson        Json     @default("{}")
   outputText        String?  @db.Text
@@ -1940,6 +1949,7 @@ model AiRun {
   @@index([projectId, createdAt])
   @@index([clientId, createdAt])
   @@index([moduleName, status])
+  @@index([workflowId, promptId, promptVersion])
 }
 
 model ExecutionPlan {
@@ -2023,11 +2033,13 @@ model StrategyPlan {
   confidenceJson             Json         @default("{}")
   explainabilityJson         Json         @default("{}")
   approvedAt                 DateTime?
+  sourceAiRunId              String?      @db.VarChar(191)
   createdAt                  DateTime     @default(now())
   updatedAt                  DateTime     @updatedAt
 
   @@index([projectId, status])
   @@index([opportunityId])
+  @@index([sourceAiRunId])
 }
 
 // ─── Crawl run ───────────────────────────────────────────────────────────────
@@ -5075,6 +5087,10 @@ model AiContentGeneration {
   languageCode     String    @default("en") @db.VarChar(16)
   tone             String?   @db.VarChar(80)
   prompt           String    @db.Text
+  workflowId       String?   @db.VarChar(120)
+  promptId         String?   @db.VarChar(120)
+  promptVersion    String?   @db.VarChar(80)
+  promptDefinitionHash String? @db.VarChar(64)
   resultJson       Json      @default("{}")
   model            String?   @db.VarChar(120)
   inputTokens      Int       @default(0)
@@ -5088,6 +5104,7 @@ model AiContentGeneration {
   @@index([projectId, sourceContext, sourceType, sourceRecordId, createdAt])
   @@index([websiteId])
   @@index([type])
+  @@index([workflowId, promptId, promptVersion])
 }
 
 model AiUsageCounter {

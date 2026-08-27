@@ -860,28 +860,14 @@ aiCitationVisibilityRouter.post("/projects/:projectId/ai-citation-visibility/rec
   const { context, project } = await scopedCitationProject(req, req.params.projectId, "approve");
   const recommendation = await prisma.citationRecommendation.findFirst({ where: { id: req.params.recommendationId, projectId: project.id } });
   if (!recommendation) fail("Citation recommendation not found.", 404);
-  if (recommendation.status === "approved" && recommendation.executionTaskId) return res.json({ recommendation, duplicate: true });
+  if (recommendation.status === "approved") return res.json({ recommendation, task: null, duplicate: true });
   const result = await prisma.$transaction(async (tx) => {
-    const plan = await activeExecutionPlan(tx, project.id);
-    const target = recommendation.recommendationType === "schema" ? "structured data" : recommendation.recommendationType === "correction" ? "correction workflow" : "citation-ready content";
-    const task = await tx.executionTask.upsert({
-      where: { dedupeKey: `ai-citation:${recommendation.id}` },
-      update: { title: recommendation.title, description: recommendation.rationale, expectedOutcome: `Improve ${target} using approved facts and measurable evidence.`, status: "ready" },
-      create: {
-        clientId: project.clientId, websiteId: project.websiteId, projectId: project.id, executionPlanId: plan.id, moduleName: "ai_citations", sourceType: "citation_recommendation", sourceId: recommendation.id,
-        dedupeKey: `ai-citation:${recommendation.id}`, title: recommendation.title, description: recommendation.rationale, expectedOutcome: `Improve ${target} using approved facts and measurable evidence.`,
-        priority: recommendation.priorityScore >= 80 ? "high" : "medium", approvalRisk: recommendation.riskLevel, automationLevel: "prepare", status: "ready", requiresApproval: false,
-        manualRequired: true, safetyCategory: "factual_review_required", approvalSnapshotJson: { contentDraft: recommendation.contentDraftJson, schemaDraft: recommendation.schemaDraftJson },
-        actionButtonLabel: recommendation.recommendationType === "schema" ? "Review Schema Draft" : "Open Citation Task", relatedUrl: `/ai-citations?projectId=${project.id}`,
-        manualInstructions: `${recommendation.recommendedAction}\n\nUse only approved entity claims. Verify every factual statement and source before publishing.`, impact: recommendation.rationale,
-      },
-    });
-    const updated = await tx.citationRecommendation.update({ where: { id: recommendation.id }, data: { status: "approved", approvedByUserId: context.membership.userId, approvedAt: new Date(), executionTaskId: task.id } });
-    if (recommendation.opportunityId) await tx.aiCitationGap.update({ where: { id: recommendation.opportunityId }, data: { status: "approved", approvedByUserId: context.membership.userId, approvedAt: new Date(), executionTaskId: task.id } });
+    const updated = await tx.citationRecommendation.update({ where: { id: recommendation.id }, data: { status: "approved", approvedByUserId: context.membership.userId, approvedAt: new Date(), executionTaskId: null } });
+    if (recommendation.opportunityId) await tx.aiCitationGap.update({ where: { id: recommendation.opportunityId }, data: { status: "approved", approvedByUserId: context.membership.userId, approvedAt: new Date(), executionTaskId: null } });
     const nextAction = await tx.nextBestAction.findFirst({ where: { projectId: project.id, sourceType: "citation_recommendation", sourceId: recommendation.id, status: { in: ["proposed", "selected"] } }, orderBy: { createdAt: "desc" } });
-    if (nextAction) await tx.nextBestAction.update({ where: { id: nextAction.id }, data: { status: "accepted", decision: "approved", decidedByUserId: context.membership.userId, decidedAt: new Date(), selectedAt: nextAction.selectedAt ?? new Date(), followupTaskId: task.id } });
-    await recordWorkspaceActivity(tx, { context, action: "ai_citation.recommendation_approved", entityType: "citation_recommendation", entityId: recommendation.id, agencyClientId: project.agencyClientId, projectId: project.id, previousJson: { status: recommendation.status }, nextJson: { status: "approved", executionTaskId: task.id } });
-    return { recommendation: updated, task };
+    if (nextAction) await tx.nextBestAction.update({ where: { id: nextAction.id }, data: { status: "accepted", decision: "approved_for_strategy", decidedByUserId: context.membership.userId, decidedAt: new Date(), selectedAt: nextAction.selectedAt ?? new Date(), followupTaskId: null } });
+    await recordWorkspaceActivity(tx, { context, action: "ai_citation.recommendation_approved", entityType: "citation_recommendation", entityId: recommendation.id, agencyClientId: project.agencyClientId, projectId: project.id, previousJson: { status: recommendation.status }, nextJson: { status: "approved", executionTaskId: null } });
+    return { recommendation: updated, task: null };
   });
   res.json(result);
 });

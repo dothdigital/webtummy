@@ -1024,13 +1024,10 @@ export default function AiContentStudio() {
             <div className="text-xs font-semibold uppercase tracking-wide text-fuchsia-700">Governed delivery</div>
             <h1 className="mt-1 text-3xl font-bold tracking-tight text-charcoal-900">Publishing and Delivery</h1>
             <p className="mt-2 max-w-3xl text-sm leading-6 text-charcoal-600">
-              Review, approve, publish or hand off Strategy-approved assets and website changes.
+              Review and download implementation packages created from Strategy-approved work.
             </p>
           </div>
-          <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
-            {governedContentRequest && <span className="rounded-full border border-fuchsia-200 bg-white px-3 py-2 text-xs font-bold text-fuchsia-700">Opened from approved project work</span>}
-            <button type="button" onClick={openNewContent} className="rounded-xl bg-fuchsia-700 px-5 py-3 text-sm font-black text-white shadow-lg shadow-fuchsia-200 hover:bg-fuchsia-800">+ Create new content</button>
-          </div>
+          {governedContentRequest && <span className="rounded-full border border-fuchsia-200 bg-white px-3 py-2 text-xs font-bold text-fuchsia-700">Opened from approved project work</span>}
         </div>
       </div>
 
@@ -1050,7 +1047,7 @@ export default function AiContentStudio() {
           {workspaceTab === "publishing" && <>
           {approvedPendingTasks.map((task) => <div key={task.id} className="flex flex-col gap-3 rounded-xl border border-emerald-200 bg-white p-4 sm:flex-row sm:items-center sm:justify-between">
             <div className="min-w-0"><div className="flex flex-wrap items-center gap-2"><div className="font-bold text-charcoal-900">{task.title}</div><span className="rounded-full bg-white px-2 py-0.5 text-[10px] font-black uppercase text-emerald-700 ring-1 ring-emerald-200">{publishingSourceLabel(task)}</span><span className="rounded-full bg-emerald-100 px-2 py-0.5 text-xs font-bold text-emerald-800">Ready to publish</span></div><p className="mt-1 line-clamp-2 text-sm text-charcoal-500">{task.description}</p></div>
-            <div className="flex shrink-0 flex-wrap gap-2"><button type="button" onClick={() => downloadTaskHandoff(task)} className="rounded-lg border border-emerald-300 bg-white px-4 py-2.5 text-sm font-bold text-emerald-700 hover:bg-emerald-50">Download copy</button>{task.moduleName === "content" && <a href={`/ai-content?projectId=${encodeURIComponent(searchParams.get("projectId") || task.projectId || "")}&taskId=${encodeURIComponent(task.id)}&open=1`} className="rounded-lg border border-emerald-300 bg-white px-4 py-2.5 text-center text-sm font-bold text-emerald-700 hover:bg-emerald-50">Review content</a>}<button type="button" disabled={publishingTaskId === task.id} onClick={() => void publishTask(task)} className="rounded-lg bg-emerald-600 px-4 py-2.5 text-sm font-bold text-white hover:bg-emerald-700 disabled:bg-slate-300">{publicationActionLabel(task, publishingTaskId === task.id)}</button></div>
+            <div className="flex shrink-0 flex-wrap gap-2"><button type="button" onClick={() => downloadTaskHandoff(task)} className="rounded-lg bg-emerald-700 px-4 py-2.5 text-sm font-bold text-white hover:bg-emerald-800">Download implementation package</button>{task.moduleName === "content" && <a href={`/ai-content?projectId=${encodeURIComponent(searchParams.get("projectId") || task.projectId || "")}&taskId=${encodeURIComponent(task.id)}&open=1`} className="rounded-lg border border-emerald-300 bg-white px-4 py-2.5 text-center text-sm font-bold text-emerald-700 hover:bg-emerald-50">Review content</a>}</div>
           </div>)}
           {publishingInProgressTasks.map((task) => <div key={task.id} className="flex items-center justify-between gap-3 rounded-xl border border-amber-200 bg-amber-50 p-4"><div><div className="font-bold text-charcoal-900">{task.title}</div><p className="mt-1 text-sm text-charcoal-500">The publishing request has started and is awaiting verification.</p></div><span className="shrink-0 rounded-full bg-amber-100 px-3 py-1 text-xs font-bold text-amber-800">Publishing</span></div>)}
           {approvedPendingTasks.length === 0 && publishingInProgressTasks.length === 0 && <div className="rounded-xl border border-dashed border-emerald-200 bg-emerald-50/40 px-5 py-8 text-center"><div className="font-bold text-charcoal-800">Nothing is ready for publishing.</div><p className="mt-1 text-sm text-charcoal-500">Strategy-approved work will appear here when it reaches review or delivery.</p><Link to={selectedProjectId ? `/guided-projects/${encodeURIComponent(selectedProjectId)}?tab=execution` : "/projects"} className="mt-4 inline-flex rounded-lg bg-brand-600 px-4 py-2 text-sm font-bold text-white">Open Execution Plan →</Link></div>}

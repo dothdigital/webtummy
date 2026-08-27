@@ -115,6 +115,7 @@ async function addClientNarrative(content: Record<string, unknown>, enabled: boo
   if (!enabled || !config.openaiApiKey) return { ...content, clientNarrative: fallback, narrativeGeneration: { mode: "evidence_template", generatedAt: new Date().toISOString() } };
   try {
     const generated = await centralAiJson({
+      productionPrompt: { workflowId: "report.client_narrative", promptId: "client-report-narrative", version: "client-report-narrative-v1" },
       system: "You write concise workspace project reports from a supplied immutable evidence snapshot. Never invent metrics, causality, credentials, results, rankings, traffic, leads, revenue, or guarantees. Treat null as missing. Use cautious attribution and plain business language. Never mention prompts, hidden reasoning, tokens, or internal workflow instructions.",
       prompt: `Return {"executiveNarrative":"...","wins":string[],"risks":string[],"interpretation":"..."}. Explain performance, relevant completed work, business interpretation, uncertainty, and a small set of current priorities. Evidence snapshot:\n${JSON.stringify(content)}`,
       temperature: 0.2, maxInputBytes: 72_000, maxOutputTokens: 2_500, validate: (value) => aiNarrativeSchema.parse(value),
@@ -130,6 +131,7 @@ async function addProposalNarrative(content: Record<string, unknown>, enabled: b
   const proposal = content.proposal && typeof content.proposal === "object" && !Array.isArray(content.proposal) ? content.proposal as Record<string, unknown> : {};
   try {
     const generated = await centralAiJson({
+      productionPrompt: { workflowId: "report.proposal_narrative", promptId: "proposal-narrative", version: "proposal-narrative-v1" },
       system: "You write persuasive but cautious Agency proposals using only supplied project evidence. Never invent findings, rankings, traffic, revenue, conversions, competitors, credentials, customer counts, pricing, guarantees, or commercial terms. Do not convert the proposal into an approved Strategy. Use plain client-facing language and directional outcomes only.",
       prompt: `Return {"executiveSummary":"...","findings":string[],"opportunity":"...","recommendedApproach":string[],"roadmap":string[],"expectedOutcomes":string[]}. Preserve the selected proposal type and selected services. Only include findings supported by the snapshot. Do not write pricing or terms. Proposal draft and immutable evidence snapshot:\n${JSON.stringify({ proposal, sourceSnapshot: content.sourceSnapshot, project: content.project, evidence: content.evidence, seo: content.seo, aiCitationVisibility: content.aiCitationVisibility, growth: content.growth })}`,
       temperature: 0.25, maxInputBytes: 72_000, maxOutputTokens: 3_000, validate: (value) => aiProposalCopySchema.parse(value),

@@ -77,6 +77,12 @@ describe("DEV-046 project workflow controller", () => {
     expect(plannedStore.requiredModules).not.toContain("site_analysis");
   });
 
+  it("does not enable Local SEO from geography alone", () => {
+    const result = resolveProjectApplicability({ projectType: "service_business", websiteStatus: "new_website_required", hasWebsite: false, targetMarketCount: 2, contextText: "Remote consulting delivered worldwide" });
+    expect(result.localSeo).toBe(false);
+    expect(result.requiredModules).not.toContain("local_seo_analysis");
+  });
+
   it("blocks an existing ecommerce store at Ecommerce Intelligence after its public crawl", () => {
     const result = resolveProjectWorkflow(snapshot({ ecommerceApplicable: true, ecommerceAnalysisComplete: false }));
     const ecommerce = result.intelligenceModules.find((item) => item.key === "ecommerce_intelligence");

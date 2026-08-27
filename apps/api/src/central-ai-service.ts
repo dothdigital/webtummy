@@ -2,6 +2,7 @@ import { config } from "./config.js";
 import { currentCommercialRequestContext } from "./commercial-request-context.js";
 import { commitUsage, modelForFeature, preflightUsage, refundUsage } from "./usage-engine.js";
 import { defaultAiModelForFeature } from "./ai-model-policy.js";
+import { resolveProductionPrompt, type ProductionPromptReference } from "./production-prompt-registry.js";
 
 export function modelUsesDefaultTemperature(model: string) {
   return /^(?:gpt-5(?:[.-]|$)|o\d(?:[.-]|$))/i.test(model.trim());
@@ -47,13 +48,14 @@ export function chatCompletionBody(input: { model: string; system: string; promp
   };
 }
 
-export async function centralAiJson<T = unknown>(input: { system: string; prompt: string; model?: string; temperature?: number; maxOutputTokens?: number; maxInputBytes?: number; reasoningEffort?: CentralAiReasoningEffort; timeoutMs?: number; validate?: (value: unknown) => T }) {
+export async function centralAiJson<T = unknown>(input: { system: string; prompt: string; productionPrompt?: ProductionPromptReference; model?: string; temperature?: number; maxOutputTokens?: number; maxInputBytes?: number; reasoningEffort?: CentralAiReasoningEffort; timeoutMs?: number; validate?: (value: unknown) => T }) {
   if (!config.openaiApiKey) throw Object.assign(new Error("SEnuke AI - AI Growth Operating System is not configured."), { code: "ai_not_configured", statusCode: 503, publicMessage: true });
   const requestContext = currentCommercialRequestContext();
   const policyDefault = defaultAiModelForFeature(requestContext?.featureKey, config.openaiContentModel);
   const model = input.model || (requestContext
     ? await modelForFeature(requestContext.featureKey, requestContext.planCode, policyDefault)
     : policyDefault);
+  const promptProvenance = input.productionPrompt ? resolveProductionPrompt(input.productionPrompt) : null;
   let automaticUsageEventId: string | null = null;
   try {
     if (requestContext && !requestContext.usageEventId) {
@@ -107,7 +109,7 @@ export async function centralAiJson<T = unknown>(input: { system: string; prompt
       await commitUsage({ usageEventId: automaticUsageEventId, provider: "openai", model: resolvedModel, inputTokens, outputTokens, metadata: { workspaceId: requestContext?.workspaceId, source: "central_ai_service" } });
       if (requestContext) requestContext.usageEventId = null;
     }
-    return { result, model: resolvedModel, inputTokens, outputTokens };
+    return { result, model: resolvedModel, inputTokens, outputTokens, promptProvenance: promptProvenance ? { ...input.productionPrompt!, definitionHash: promptProvenance.definitionHash, changedAt: promptProvenance.definition.changedAt } : null };
   } catch (error) {
     if (automaticUsageEventId) {
       await refundUsage({ usageEventId: automaticUsageEventId, reason: error instanceof Error ? error.message : "central AI execution failed" }).catch(() => undefined);

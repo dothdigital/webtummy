@@ -635,6 +635,7 @@ async function generateFocusedGrowthFunnelWithAi(input: { evidence: Record<strin
   for (let attempt = 0; attempt < 2; attempt += 1) {
     try {
       return await centralAiJson({
+        productionPrompt: { workflowId: "strategy.funnel_repair", promptId: "unified-strategy-funnel", version: "unified-strategy-funnel-v1" },
         system: "You are the SEnuke AI - AI Growth Operating System Funnel Decision Engine. Diagnose one connected, evidence-grounded customer journey and return valid JSON for the requested six-stage funnel only.",
         prompt: attempt ? `${prompt}\n\nThe previous funnel response failed schema validation. Repair these exact fields and return all required fields for all six stages with no unrelated Strategy sections. Validation feedback: ${repairFeedback}` : prompt,
         model: input.model,
@@ -682,6 +683,7 @@ export async function generateUnifiedStrategyWithAi(input: { evidence: Record<st
   for (let attempt = 0; attempt < 2; attempt += 1) {
     try {
       generatedCore = await centralAiJson({
+        productionPrompt: { workflowId: "strategy.generate", promptId: "unified-strategy", version: "unified-strategy-v4" },
         system: "You are the SEnuke AI - AI Growth Operating System Integrated Strategy Engine. Produce an evidence-grounded, cross-platform plan of action for review. Make clear strategic choices and preserve factual safeguards.",
         prompt: attempt ? `${prompt}\n\nThe previous response failed core Strategy schema validation. Repair these exact fields, return every required Strategy field, and keep localSeo either a complete object or null. Validation feedback: ${repairFeedback}` : prompt,
         model: input.model,

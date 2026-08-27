@@ -1583,30 +1583,17 @@ gapAnalysisRouter.post(gapRoutes("/recommendations/:recommendationId/approve"), 
     recommendedAction: recommendation.recommendedAction,
     expectedImpact: recommendation.expectedImpact,
   };
-  const destination = gapTaskDestination(recommendation.category, recommendation.projectId);
-  if (recommendation.status === "approved" && recommendation.executionTaskId) {
-    const task = await prisma.executionTask.update({
-      where: { id: recommendation.executionTaskId },
-      data: { moduleName: destination.moduleName, title: recommendationContent.title, description: `${recommendationContent.explanation}\n\nRecommended action: ${recommendationContent.recommendedAction}`, manualInstructions: recommendationContent.recommendedAction, impact: recommendationContent.expectedImpact, actionButtonLabel: destination.actionButtonLabel, relatedUrl: destination.relatedUrl },
-    });
+  if (recommendation.status === "approved") {
     const updatedRecommendation = currentCitationRecommendation ? await prisma.gapRecommendation.update({ where: { id: recommendation.id }, data: {
       title: currentCitationRecommendation.title, explanation: currentCitationRecommendation.explanation, recommendedAction: currentCitationRecommendation.action,
       expectedImpact: currentCitationRecommendation.impact, evidenceJson: currentCitationRecommendation.evidence, competitorEvidence: currentCitationRecommendation.competitors ?? [],
       impactScore: currentCitationRecommendation.score, confidenceScore: currentCitationRecommendation.confidence, priority: gapPriority(currentCitationRecommendation.score),
     } }) : recommendation;
-    return { recommendation: updatedRecommendation, task, duplicate: true };
+    return { recommendation: updatedRecommendation, task: null, duplicate: true };
   }
   return prisma.$transaction(async (tx) => {
-    const task = await upsertExecutionTask(tx, {
-      clientId: recommendation.project.clientId, websiteId: recommendation.project.websiteId, projectId: recommendation.projectId,
-      dedupeKey: `gap-analysis:recommendation:${recommendation.id}`, moduleName: destination.moduleName, sourceType: "gap_recommendation", sourceId: recommendation.id,
-      title: recommendationContent.title, description: `${recommendationContent.explanation}\n\nRecommended action: ${recommendationContent.recommendedAction}`,
-      priority: recommendation.priority === "critical" || recommendation.priority === "high" ? "high" : recommendation.priority === "low" ? "low" : "medium",
-      automationLevel: "manual_guided", requiresApproval: false, safetyCategory: "safe", actionButtonLabel: destination.actionButtonLabel, relatedUrl: destination.relatedUrl,
-      manualInstructions: recommendationContent.recommendedAction, impact: recommendationContent.expectedImpact,
-    });
     const updated = await tx.gapRecommendation.update({ where: { id: recommendation.id }, data: {
-      status: "approved", executionTaskId: task.id, approvedByUserId: context.membership.userId, approvedAt: new Date(), ignoredAt: null,
+      status: "approved", executionTaskId: null, approvedByUserId: context.membership.userId, approvedAt: new Date(), ignoredAt: null,
       ...(currentCitationRecommendation ? {
         title: currentCitationRecommendation.title, explanation: currentCitationRecommendation.explanation, recommendedAction: currentCitationRecommendation.action,
         expectedImpact: currentCitationRecommendation.impact, evidenceJson: currentCitationRecommendation.evidence, competitorEvidence: currentCitationRecommendation.competitors ?? [],
@@ -1619,8 +1606,8 @@ gapAnalysisRouter.post(gapRoutes("/recommendations/:recommendationId/approve"), 
       const retained = current.filter((item) => !(item && typeof item === "object" && "gapRecommendationId" in item && (item as { gapRecommendationId?: unknown }).gapRecommendationId === recommendation.id));
       await tx.strategyPlan.update({ where: { id: strategy.id }, data: { prioritizedRecommendations: [...retained, { gapRecommendationId: recommendation.id, category: recommendation.category, title: recommendationContent.title, why: recommendationContent.explanation, action: recommendationContent.recommendedAction, expectedImpact: recommendationContent.expectedImpact, priority: currentCitationRecommendation ? gapPriority(currentCitationRecommendation.score) : recommendation.priority }] as Prisma.InputJsonValue } });
     }
-    await recordWorkspaceActivity(tx, { context, action: "gap_recommendation.approved", entityType: "gap_recommendation", entityId: recommendation.id, agencyClientId: recommendation.project.agencyClientId, projectId: recommendation.projectId, previousJson: { status: recommendation.status }, nextJson: { status: "approved", executionTaskId: task.id, strategyUpdated: strategy?.status === "draft" } });
-    return { recommendation: updated, task, strategyUpdated: strategy?.status === "draft", nextBestActionEligible: true };
+    await recordWorkspaceActivity(tx, { context, action: "gap_recommendation.approved", entityType: "gap_recommendation", entityId: recommendation.id, agencyClientId: recommendation.project.agencyClientId, projectId: recommendation.projectId, previousJson: { status: recommendation.status }, nextJson: { status: "approved", executionTaskId: null, strategyUpdated: strategy?.status === "draft" } });
+    return { recommendation: updated, task: null, strategyUpdated: strategy?.status === "draft", nextBestActionEligible: true };
   });
 }));
 

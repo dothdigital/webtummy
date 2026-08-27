@@ -3911,6 +3911,7 @@ async function generatePage(page: { title: string; pageType: string; primaryKeyw
         ? `\n\nCORRECTIVE PASS REQUIRED\nThe prior response was not saved because it failed validation. Return the entire corrected page JSON, not a patch. Preserve usable copy while resolving every finding below.\nValidation findings:\n- ${repairFeedback}\nPrior response to repair: ${JSON.stringify(previousResponse)}`
         : "";
       const generated = await centralAiJson({
+        productionPrompt: { workflowId: "website.page_generate", promptId: "website-page", version: "website-page-v1" },
         system: "You are the SEnuke AI - AI Growth Operating System Website Generation Service and conversion-focused website copywriter. Return safe structured JSON only. The approved Strategy, keyword ownership, audience, offer, page intent, and page-specific Execution contract are governing requirements. Generate only components and props permitted by the supplied Component Registry. Never generate content.link_section automatically; it is added only after the user selects approved internal-link targets. Do not invent testimonials, metrics, credentials, addresses, awards, guarantees, or citations. Write persuasive, specific, evidence-safe website copy that helps the intended buyer understand the offer and act. Never use a welcome message, a company-name-only hero, generic placeholder headings, arbitrary scripts, PHP, WordPress code, or a thin outline.",
         prompt: compactWebsiteAiPrompt(`${basePrompt}${correctivePrompt}\nFIRST SUPPORTING SECTION: Return an original first post-hero H2 that names this page's assigned topic or intent and differs from every sibling page. Never use “A solution aligned to your goals”, “How we can help”, “What we offer”, “Overview”, or “Why choose us”. Keep the follow-up overview concise at 70–130 words in 2–3 short paragraphs before deeper sections.`, 80_000),
         temperature: 0.35,
@@ -4140,7 +4141,12 @@ async function saveGeneratedPage(page: { id: string; buildId: string; slug: stri
 
 websiteBuilderRouter.get("/projects/:projectId/website-builder", async (req, res) => {
   const { project } = await scopedOverviewProject(req.params.projectId, req);
-  const payload = { ...builderOverviewView(project), publishingContent: await publishingContentFor(project, { includeResultJson: false }), siteFiles: siteFileOverviewFor(project) };
+  const seoPlanGenerationJob = await prisma.aiRun.findFirst({
+    where: { projectId: project.id, moduleName: "content_plan_generation_job", status: { in: ["queued", "running"] } },
+    orderBy: { createdAt: "desc" },
+    select: { id: true, status: true, outputJson: true, createdAt: true },
+  });
+  const payload = { ...builderOverviewView(project), seoPlanGenerationJob, publishingContent: await publishingContentFor(project, { includeResultJson: false }), siteFiles: siteFileOverviewFor(project) };
   sendMeasuredJson(res, payload, "website_builder_overview");
 });
 

@@ -635,7 +635,7 @@ async function suggestKeywordsForWebsite(
     `Constraints/niches to avoid: ${jsonStringList(project?.businessProfile?.constraints).join(", ") || "not provided"}`,
     `Selected opportunity: ${project?.opportunities[0]?.name ?? "not selected"}`,
     `Approved SEO strategy: ${project?.strategyPlans[0]?.seoStrategy ?? "not approved"}`,
-    `Already approved Primary and Secondary keywords: ${approvedKeywords.join(", ") || "none"}`,
+    `Keywords from the specifically approved groups (do not infer approval for any other group): ${approvedKeywords.join(", ") || "none"}`,
     `Shared approved Strategy contract: ${JSON.stringify(approvedStrategyContext(project?.strategyPlans[0]))}`,
     `Selected suggestion country: ${selectedLocation.country || "not provided"}`,
     `Selected suggestion region/state: ${selectedLocation.region || "not provided"}`,

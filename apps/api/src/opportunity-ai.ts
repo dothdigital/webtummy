@@ -122,6 +122,7 @@ ${JSON.stringify(resultShape)}`;
   for (let attempt = 0; attempt < 2; attempt += 1) {
     try {
       return await centralAiJson({
+        productionPrompt: { workflowId: "opportunity.generate", promptId: "opportunity-decision", version: "ai-opportunity-decision-v4" },
         model: input.model,
         temperature: 0.5,
         maxInputBytes: 72_000,

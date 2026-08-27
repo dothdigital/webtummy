@@ -5,6 +5,7 @@ import { AiPlanningScreen, Button, Card, Input } from "./ui.js";
 import { canonicalPrimaryGoal, canonicalSecondaryGoal, primaryGoalsForWorkspace, standardSecondaryGoals } from "@webtummy/core/project-goals";
 import { splitKeywordEntries, stripKeywordLocationQualifiers } from "@webtummy/core";
 import { geographicTargetMarkets } from "../utils/projectLocations.js";
+import { requestMicrophoneAccess, speechRecognitionErrorMessage } from "../lib/voiceInput.js";
 
 type Message = { role: "user" | "assistant"; text: string };
 const PROJECT_CONVERSATION_LIMIT = 100;
@@ -316,7 +317,7 @@ export default function ConversationalProjectIntake(props: Props) {
     finally { setApprovingProposal(false); }
   }
 
-  function toggleVoice(target: "idea" | "composer" = "composer") {
+  async function toggleVoice(target: "idea" | "composer" = "composer") {
     if (listening) { keepListeningRef.current = false; try { recognitionRef.current?.stop(); } catch { /* already stopped */ } setListening(false); setSpeechError(""); return; }
     setSpeechError("");
     type RecognitionEvent = { results: ArrayLike<{ 0: { transcript: string }; isFinal: boolean }> };
@@ -325,6 +326,8 @@ export default function ConversationalProjectIntake(props: Props) {
     const speechWindow = window as unknown as { SpeechRecognition?: new () => Recognition; webkitSpeechRecognition?: new () => Recognition };
     const RecognitionClass = speechWindow.SpeechRecognition || speechWindow.webkitSpeechRecognition;
     if (!RecognitionClass) { setSpeechError("Voice input is not supported by this browser. You can continue by typing."); return; }
+    try { await requestMicrophoneAccess(); }
+    catch (error) { setSpeechError(error instanceof Error ? error.message : "The microphone could not be started."); return; }
     const recognition = new RecognitionClass();
     recognition.lang = "en-CA"; recognition.interimResults = true; recognition.continuous = true;
     voiceTargetRef.current = target;
@@ -335,8 +338,10 @@ export default function ConversationalProjectIntake(props: Props) {
       if (!keepListeningRef.current) { setListening(false); return; }
       window.setTimeout(() => { if (!keepListeningRef.current) return; voiceBaseRef.current = voiceCurrentRef.current.trim(); try { recognition.start(); } catch { setListening(false); keepListeningRef.current = false; setSpeechError("Voice recording stopped unexpectedly. Press Record to continue."); } }, 150);
     };
-    recognition.onerror = (event) => { if (["not-allowed", "service-not-allowed", "audio-capture", "network"].includes(event.error || "")) { keepListeningRef.current = false; setListening(false); setSpeechError(event.error === "not-allowed" ? "Microphone permission is required for voice recording." : "Voice recording stopped. Check the microphone or connection, then try again."); } };
-    recognitionRef.current = recognition; keepListeningRef.current = true; recognition.start(); setListening(true);
+    recognition.onerror = (event) => { if (["not-allowed", "service-not-allowed", "audio-capture", "network"].includes(event.error || "")) { keepListeningRef.current = false; setListening(false); void speechRecognitionErrorMessage(event.error || "").then(setSpeechError); } };
+    recognitionRef.current = recognition; keepListeningRef.current = true;
+    try { recognition.start(); setListening(true); }
+    catch { keepListeningRef.current = false; setSpeechError("Voice recording could not start. Reload the page and try again."); }
   }
 
   function removeCaptured(field: "businessDescription" | "targetAudience" | "productsServices" | "secondaryGoals" | "primaryKeywords" | "secondaryKeywords" | "competitors" | "brandVoice" | "preferredOutputs" | "targetLaunchTimeline", item: string) {

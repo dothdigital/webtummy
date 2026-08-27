@@ -113,7 +113,7 @@ export default function Login() {
               <span>Your data is protected with 256-bit encryption</span>
             </div>
             <div className="mt-4 text-center text-xs text-slate-500 xl:mt-5 xl:text-sm">
-              Need help? <Link to="/privacy" className="font-semibold text-brand-600 hover:underline">Contact Support ↗</Link>
+              Need help? <a href="mailto:support@senuke.com" className="font-semibold text-brand-600 hover:underline">Contact Support ↗</a>
             </div>
           </div>
         </section>

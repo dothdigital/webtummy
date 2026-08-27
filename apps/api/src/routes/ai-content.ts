@@ -157,6 +157,11 @@ function citationValidationFailure(generation: { type: string; resultJson: unkno
   return null;
 }
 
+function customerSafeGeneration<T extends Record<string, unknown>>(generation: T) {
+  const { prompt: _prompt, workflowId: _workflowId, promptId: _promptId, promptVersion: _promptVersion, promptDefinitionHash: _promptDefinitionHash, error: _error, ...safe } = generation;
+  return safe;
+}
+
 function exportHtmlValue(value: unknown): string {
   const escape = (text: string) => text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
   if (value == null || value === "") return "<p>Not provided</p>";
@@ -167,6 +172,7 @@ function exportHtmlValue(value: unknown): string {
 
 async function openaiJson(prompt: string, maxOutputTokens = 4_000) {
   return centralAiJson({
+    productionPrompt: { workflowId: "content.generate", promptId: "content-asset", version: "content-asset-v1" },
     system: "Create a complete, reviewable content asset. Return valid JSON only.",
     prompt,
     temperature: 0.4,
@@ -217,7 +223,7 @@ aiContentRouter.get("/ai-content/history", async (req, res) => {
       orderBy: { createdAt: "desc" },
       take: 50,
     });
-    res.json({ generations: rows });
+    res.json({ generations: rows.map((row) => customerSafeGeneration(row)) });
   } catch (error) {
     res.status(400).json({ error: error instanceof Error ? error.message : "could not load AI history" });
   }
@@ -228,7 +234,7 @@ aiContentRouter.get("/ai-content/:generationId", async (req, res) => {
     const client = await getClientForRequest(req);
     const generation = await prisma.aiContentGeneration.findFirst({ where: { id: req.params.generationId, clientId: client.id } });
     if (!generation) return res.status(404).json({ error: "Generated content was not found." });
-    res.json({ generation });
+    res.json({ generation: customerSafeGeneration(generation) });
   } catch (error) {
     res.status(400).json({ error: error instanceof Error ? error.message : "Could not load generated content." });
   }
@@ -285,7 +291,7 @@ aiContentRouter.patch("/ai-content/:generationId/citation-validation", async (re
       }
       return row;
     });
-    res.json({ generation: updated });
+    res.json({ generation: customerSafeGeneration(updated) });
   } catch (error) {
     res.status(400).json({ error: error instanceof Error ? error.message : "Could not validate citation content." });
   }
@@ -420,9 +426,13 @@ aiContentRouter.post("/ai-content/generate", async (req, res) => {
       }
     }
     const linkedTask = input.executionTaskId
-      ? await prisma.executionTask.findFirst({ where: { id: input.executionTaskId, clientId: client.id, moduleName: { in: ["content", "ai_content"] } } })
+      ? await prisma.executionTask.findFirst({ where: { id: input.executionTaskId, clientId: client.id, moduleName: { in: ["content", "ai_content"] } }, include: { executionPlan: { select: { strategyPlanId: true } }, project: { select: { strategyPlans: { where: { status: "approved" }, orderBy: { version: "desc" }, take: 1, select: { id: true } } } } } })
       : null;
     if (input.executionTaskId && !linkedTask) return res.status(404).json({ error: "The linked content task was not found." });
+    if (!linkedTask) return res.status(409).json({ error: "V1 content can only be created from an approved Execution Plan task.", code: "EXECUTION_TASK_REQUIRED" });
+    if (!linkedTask.executionPlan?.strategyPlanId || linkedTask.executionPlan.strategyPlanId !== linkedTask.project?.strategyPlans[0]?.id) {
+      return res.status(409).json({ error: "This content task is not linked to the current approved Strategy.", code: "APPROVED_STRATEGY_REQUIRED" });
+    }
     const approvedTaskText = linkedTask ? [linkedTask.title, linkedTask.description, linkedTask.manualInstructions, linkedTask.expectedOutcome].filter(Boolean).join("\n") : "";
     const pageUpdateFields = approvedPageUpdateFields(approvedTaskText);
     if (linkedTask && pageUpdateFields.length > 1) {
@@ -535,6 +545,10 @@ aiContentRouter.post("/ai-content/generate", async (req, res) => {
         languageCode: input.languageCode,
         tone: input.tone ?? null,
         prompt: savedPrompt,
+        workflowId: generated.promptProvenance?.workflowId ?? "content.generate",
+        promptId: generated.promptProvenance?.promptId ?? "content-asset",
+        promptVersion: generated.promptProvenance?.version ?? "content-asset-v1",
+        promptDefinitionHash: generated.promptProvenance?.definitionHash ?? null,
         resultJson: generated.result as object,
         model: generated.model,
         inputTokens: totalInputTokens,
@@ -571,7 +585,7 @@ aiContentRouter.post("/ai-content/generate", async (req, res) => {
     }
     await commitUsage({ usageEventId, provider: "openai", model: generated.model, inputTokens: totalInputTokens, outputTokens: totalOutputTokens, metadata: { generationId: record.id, contentType: input.type } });
     usageEventId = null;
-    res.status(201).json({ generation: record });
+    res.status(201).json({ generation: customerSafeGeneration(record) });
   } catch (error) {
     if (usageEventId) await refundUsage({ usageEventId, reason: error instanceof Error ? error.message : "AI content generation failed" }).catch(() => undefined);
     if (error instanceof Error && error.name === "billing_required") return res.status(402).json({ error: error.message, billingRequired: true });
