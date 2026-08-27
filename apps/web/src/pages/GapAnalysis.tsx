@@ -443,7 +443,8 @@ function FindingsWorkspaceDrawer({
   const recommendationApproved = workspace.recommendation.status === "approved";
   const completedFindings = workspace.findings.filter((finding) => ["completed", "implemented", "verified"].includes(finding.workflowStatus)).length;
   const preparedFindings = workspace.findings.filter((finding) => ["content_ready_for_review", "ready_to_publish", "publishing"].includes(finding.workflowStatus)).length;
-  const remainingFindings = workspace.findings.length - completedFindings - preparedFindings;
+  const stagedFindings = workspace.findings.filter((finding) => Boolean(finding.taskId)).length;
+  const availableFindings = workspace.findings.length - stagedFindings;
 
   return (
     <div className="fixed inset-0 z-[90] bg-slate-950/45" role="dialog" aria-modal="true" aria-label="Page-level SEO findings">
@@ -459,9 +460,9 @@ function FindingsWorkspaceDrawer({
             <button type="button" onClick={onClose} className="grid h-9 w-9 shrink-0 place-items-center rounded-full border border-slate-200 bg-white text-xl text-slate-500" aria-label="Close">×</button>
           </div>
           <div className="mt-4 flex flex-wrap items-center gap-2">
-            <button type="button" disabled={!recommendationApproved} onClick={onSelectAvailable} className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-bold text-slate-700 disabled:bg-slate-100 disabled:text-slate-400">Select available</button>
-            <button type="button" onClick={onClear} className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-bold text-slate-700">Clear</button>
-            <span className="text-xs font-semibold text-slate-500">{selectedKeys.length} selected · {completedFindings} completed · {preparedFindings} prepared · {remainingFindings} remaining</span>
+            {availableFindings > 0 && <button type="button" disabled={!recommendationApproved} onClick={onSelectAvailable} className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-bold text-slate-700 disabled:bg-slate-100 disabled:text-slate-400">Select available</button>}
+            {selectedKeys.length > 0 && <button type="button" onClick={onClear} className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-bold text-slate-700">Clear</button>}
+            <span className="text-xs font-semibold text-slate-500">{selectedKeys.length} selected · {stagedFindings} already added · {availableFindings} available{completedFindings > 0 ? ` · ${completedFindings} completed` : ""}{preparedFindings > 0 ? ` · ${preparedFindings} prepared` : ""}</span>
           </div>
         </header>
         <div className="flex-1 space-y-3 overflow-y-auto p-5 sm:p-7">
@@ -476,7 +477,7 @@ function FindingsWorkspaceDrawer({
                     <div className="flex flex-wrap items-center gap-2">
                       <span className={`rounded-full px-2 py-0.5 text-[10px] font-black uppercase ${finding.severity === "high" ? "bg-rose-100 text-rose-700" : finding.severity === "medium" ? "bg-amber-100 text-amber-700" : "bg-slate-100 text-slate-600"}`}>{finding.severity}</span>
                       <span className="text-[10px] font-black uppercase tracking-wide text-slate-400">{finding.issueType.replaceAll("_", " ")}</span>
-                      {staged && <span className="rounded-full bg-emerald-100 px-2 py-0.5 text-[10px] font-black text-emerald-700">{["completed", "implemented", "verified"].includes(finding.workflowStatus) ? "Completed" : finding.workflowStatus === "content_ready_for_review" ? "Ready for review" : finding.workflowStatus === "ready_to_publish" ? "Ready to publish" : `In `}</span>}
+                      {staged && <span className="rounded-full bg-emerald-100 px-2 py-0.5 text-[10px] font-black text-emerald-700">{["completed", "implemented", "verified"].includes(finding.workflowStatus) ? "Completed" : finding.workflowStatus === "content_ready_for_review" ? "Ready for review" : finding.workflowStatus === "ready_to_publish" ? "Ready to publish" : addsToWebsitePlan ? "Added to Website Plan" : `In ${destinationLabel}`}</span>}
                     </div>
                     <div className="mt-2 break-all text-sm font-black text-slate-900">{finding.affectedUrl}</div>
                     <p className="mt-2 text-sm leading-6 text-slate-700">{finding.evidence}</p>
@@ -505,14 +506,14 @@ function FindingsWorkspaceDrawer({
         </div>
         <footer className="border-t border-slate-200 bg-slate-50 px-5 py-4 sm:px-7">
           <div className="flex flex-col-reverse gap-3 sm:flex-row sm:items-center sm:justify-between">
-            <p className="text-xs leading-5 text-slate-500">{recommendationApproved ? `${destinationLabel} will track review, implementation, completion, and verification.` : "Approve this recommendation to unlock page selection. Approval creates governed work; it does not change the live website."}</p>
+            <p className="text-xs leading-5 text-slate-500">{recommendationApproved ? availableFindings === 0 ? `All affected pages are already tracked in ${destinationLabel}.` : `${destinationLabel} will track review, implementation, completion, and verification.` : "Approve this recommendation to unlock page selection. Approval creates governed work; it does not change the live website."}</p>
             <div className="flex shrink-0 gap-2">
               <button type="button" onClick={onClose} className="rounded-lg border border-slate-300 bg-white px-4 py-2.5 text-sm font-bold text-slate-700">Close</button>
               {!recommendationApproved ? (
                 <button type="button" disabled={busy} onClick={onApprove} className="rounded-lg bg-brand-600 px-4 py-2.5 text-sm font-black text-white disabled:bg-slate-300">{busy ? "Approving…" : `Approve ${gapCategoryLabel(workspace.recommendation.category)} Recommendation`}</button>
-              ) : (
+              ) : availableFindings > 0 ? (
                 <button type="button" disabled={!selectedKeys.length || busy} onClick={onStage} className="rounded-lg bg-brand-600 px-4 py-2.5 text-sm font-black text-white disabled:bg-slate-300">{busy ? "Saving…" : addsToWebsitePlan ? `Add ${selectedKeys.length || "selected"} to Website Plan` : `Send ${selectedKeys.length || "selected"} to ${destinationLabel}`}</button>
-              )}
+              ) : null}
             </div>
           </div>
         </footer>
