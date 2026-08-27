@@ -667,6 +667,7 @@ export default function ContentPlanDialog({ task, onClose, onSaved, autoPrepare 
     api.get<{ job: ContentPlanGenerationJob | null }>(`/api/execution-tasks/${task.id}/content-plan/jobs/active`).then((result) => {
       if (!active || !result.job) return;
       setGenerationJob(result.job);
+      registerPlanJob(result.job);
       setBusy(true);
       setError("");
     }).catch(() => undefined);
@@ -772,6 +773,14 @@ export default function ContentPlanDialog({ task, onClose, onSaved, autoPrepare 
       if (timer) window.clearTimeout(timer);
     };
   }, [generationJob?.id, generationJob?.status, onSaved, task.id]);
+
+  useEffect(() => {
+    if (!generationJob || plan || !["queued", "running"].includes(generationJob.status)) return;
+    const createdAt = new Date(generationJob.createdAt).getTime();
+    const remaining = Math.max(0, (Number.isFinite(createdAt) ? createdAt : Date.now()) + 30_000 - Date.now());
+    const timer = window.setTimeout(() => onClose(), remaining);
+    return () => window.clearTimeout(timer);
+  }, [generationJob?.id, generationJob?.status, plan, onClose]);
 
   useEffect(() => {
     if (!plan || !setupReady || pageCandidatesLoaded) return;
