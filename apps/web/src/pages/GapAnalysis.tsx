@@ -7,6 +7,7 @@ import WebsitePlanSuggestionAction from "../components/WebsitePlanSuggestionActi
 import { Button, Card, EmptyState } from "../components/ui.js";
 import type { GuidedProject } from "../types.js";
 import { getActiveProjectId, resolveActiveProjectId, setActiveProjectId } from "../active-project.js";
+import { connectedCoverageCta } from "../connectedCoverageCta.js";
 
 type WorkflowTab = "overview" | "fixes" | "wordpress" | "local" | "visibility" | "authority" | "reports" | "commerce";
 
@@ -173,6 +174,20 @@ function gapCategoryLabel(value: string) {
   return labels[value] ?? readinessLabel(value);
 }
 
+function keywordMappingDecisionLabel(issueType: string) {
+  const labels: Record<string, string> = {
+    approved_page_map_target_not_in_crawl: "Check or create this page",
+    approved_keyword_without_page: "Choose a page for this keyword",
+    keyword_location_page_mismatch: "Choose the right page for this location",
+    weak_keyword_page_match: "Keep this page or choose a better one",
+    missing_on_page_keyword_signals: "Update this page to match the keyword",
+    possible_keyword_cannibalization: "Choose the main page for this keyword",
+    page_without_approved_keyword_owner: "Choose what this page should rank for",
+    target_market_without_page_evidence: "Choose how this location should be covered",
+  };
+  return labels[issueType] ?? "Check which page should be used";
+}
+
 function intakeAnswer(project: GuidedProject, key: string) {
   const answer = project.intakeAnswers?.find((item) => item.questionKey === key)?.answerValue;
   if (typeof answer === "string") return answer;
@@ -332,7 +347,7 @@ function RecommendationEvidenceModal({ recommendation, projectId, onClose }: { r
                 const resolution = findingResolution(recommendation.category, item, recommendation.recommendedAction);
                 return <div key={item.toLowerCase()} className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-3 text-sm leading-5 text-slate-700">
                   {page ? <><a href={page.url} target="_blank" rel="noreferrer" className="break-all font-black text-brand-700 underline decoration-brand-200 underline-offset-2 hover:text-brand-900">{page.url} ↗</a>{page.detail && <p className="mt-1 text-sm leading-5 text-slate-700">{page.detail}</p>}</> : <p>{item}</p>}
-                  <div className="mt-3 rounded-lg border border-brand-100 bg-white p-3"><div className="text-[10px] font-black uppercase tracking-wide text-brand-700">How to resolve</div><p className="mt-1 text-xs font-semibold leading-5 text-slate-700">{resolution}</p>{["entity", "ai_citation", "keyword", "topic"].includes(recommendation.category) ? <div className="mt-2"><WebsitePlanSuggestionAction projectId={projectId} suggestion={{ sourceModule: "gap_analysis", sourceType: recommendation.category, sourceId: `${recommendation.id}:${index}`, title: page?.detail || item, targetUrl: page?.url ?? null, evidence: item, recommendedAction: resolution, expectedImpact: recommendation.expectedImpact }} /></div> : <Link to={destination.route} onClick={onClose} className="mt-2 inline-flex text-xs font-black text-brand-700 hover:underline">{destination.label} →</Link>}</div>
+                  <div className="mt-3 rounded-lg border border-brand-100 bg-white p-3"><div className="text-[10px] font-black uppercase tracking-wide text-brand-700">How to resolve</div><p className="mt-1 text-xs font-semibold leading-5 text-slate-700">{resolution}</p>{["entity", "ai_citation", "keyword", "topic"].includes(recommendation.category) ? <div className="mt-2"><WebsitePlanSuggestionAction projectId={projectId} answerOpportunity={recommendation.category === "ai_citation" && /opportunit.*validation/i.test(recommendation.title)} suggestion={{ sourceModule: "gap_analysis", sourceType: recommendation.category, sourceId: `${recommendation.id}:${index}`, title: page?.detail || item, targetUrl: page?.url ?? null, evidence: item, recommendedAction: resolution, expectedImpact: recommendation.expectedImpact }} /></div> : <Link to={destination.route} onClick={onClose} className="mt-2 inline-flex text-xs font-black text-brand-700 hover:underline">{destination.label} →</Link>}</div>
                 </div>;
               })}</div>
             ) : (
@@ -370,24 +385,6 @@ function ConnectedCoverageModal({ run, projectId, onClose }: { run: ConnectedCov
     const existing = unresolved.filter((candidate) => `${candidate.status}:${candidate.workflowDestination}:${candidate.message}` === key);
     return [key, { ...item, capabilities: existing.map((candidate) => candidate.title) }];
   })).values()];
-  const resolution = (message: string) => {
-    if (/observation|observed engine result|measured visibility/i.test(message)) return {
-      steps: "Open AI Monitoring, save a question prompt if needed, perform a permitted manual/provider check, then save the observed answer, brand mention, accuracy and cited source URLs.",
-      route: `/ai-citations?projectId=${encodeURIComponent(projectId)}&tab=monitoring`,
-      label: "Open AI Monitoring",
-    };
-    if (/answer engine|answer opportunities|question-led/i.test(message)) return {
-      steps: "Run Citation Research, open Answer Opportunities, then add the relevant audience questions to monitoring. Saving at least one question-led prompt records the query evidence.",
-      route: `/ai-citations?projectId=${encodeURIComponent(projectId)}&tab=answers`,
-      label: "Open Answer Opportunities",
-    };
-    if (/generative|entities, claims|citation readiness/i.test(message)) return {
-      steps: "Run Citation Research, review Entity & claims, approve or reject the extracted claims, and review the resulting Readiness findings. Rerun research after correcting missing website evidence.",
-      route: `/ai-citations?projectId=${encodeURIComponent(projectId)}&tab=overview`,
-      label: "Open Citation Research",
-    };
-    return { steps: message, route: groupRoute(""), label: "Resolve in workspace" };
-  };
   const groupRoute = (route: string) => route.replace("{projectId}", encodeURIComponent(projectId));
   return (
     <div className="fixed inset-0 z-[90] bg-slate-950/45" role="dialog" aria-modal="true" aria-label="Connected Coverage findings">
@@ -397,7 +394,7 @@ function ConnectedCoverageModal({ run, projectId, onClose }: { run: ConnectedCov
           <div className="flex items-start justify-between gap-4"><div><div className="text-xs font-black uppercase tracking-wide text-brand-700">Connected Coverage · Actionable findings</div><h2 className="mt-1 text-xl font-black text-slate-950">{groups.length} distinct action areas</h2><p className="mt-2 text-sm leading-6 text-slate-600">{unresolved.length} capability checks are grouped by shared cause and destination. Resolve each cause once; these are not {unresolved.length} separate tasks.</p></div><button type="button" onClick={onClose} className="grid h-9 w-9 shrink-0 place-items-center rounded-full border border-slate-200 bg-white text-xl text-slate-500" aria-label="Close">×</button></div>
         </header>
         <div className="flex-1 space-y-3 overflow-y-auto p-6">
-          {groups.map((group) => { const guide = resolution(group.message); return <section key={`${group.status}:${group.workflowDestination}:${group.message}`} className="rounded-xl border border-slate-200 bg-white p-4">
+          {groups.map((group) => { const guide = connectedCoverageCta(group.message, group.workflowDestination, projectId); return <section key={`${group.status}:${group.workflowDestination}:${group.message}`} className="rounded-xl border border-slate-200 bg-white p-4">
             <div className="flex flex-wrap items-center gap-2"><span className={`rounded-full px-2 py-0.5 text-[10px] font-black uppercase ${group.status === "BLOCKED" ? "bg-red-100 text-red-800" : group.status === "MISSING" ? "bg-rose-50 text-rose-700" : "bg-amber-50 text-amber-800"}`}>{group.status.toLowerCase()}</span><span className="text-xs font-black uppercase tracking-wide text-slate-400">{group.section}</span></div>
             <p className="mt-2 text-sm font-semibold leading-6 text-slate-800">{group.message}</p>
             <div className="mt-3 text-[10px] font-black uppercase tracking-wide text-slate-400">Covers {group.capabilities.length} capability {group.capabilities.length === 1 ? "check" : "checks"}</div>
@@ -435,16 +432,24 @@ function FindingsWorkspaceDrawer({
   onApprove: () => void;
   onStage: () => void;
 }) {
-  const destinationLabel = workspace.destination?.label ?? (workspace.recommendation.category === "content" ? "Publishing" : "Execution Plan");
   const addsToWebsitePlan = workspace.destination?.key === "website_content";
-  const destinationRoute = workspace.destination?.route ?? (workspace.recommendation.category === "content"
-    ? `/ai-content?projectId=${encodeURIComponent(projectId)}&focus=publishing#publishing`
-    : `/guided-projects/${encodeURIComponent(projectId)}?tab=execution#execution-tasks`);
+  const addsToSeoPlan = workspace.destination?.key === "seo_plan";
+  const destinationLabel = workspace.destination?.label ?? (workspace.recommendation.category === "content" ? "SEO Plan" : "Execution Plan");
   const recommendationApproved = workspace.recommendation.status === "approved";
   const completedFindings = workspace.findings.filter((finding) => ["completed", "implemented", "verified"].includes(finding.workflowStatus)).length;
+  const isKeywordMapping = workspace.recommendation.category === "keyword_mapping";
   const preparedFindings = workspace.findings.filter((finding) => ["content_ready_for_review", "ready_to_publish", "publishing"].includes(finding.workflowStatus)).length;
   const stagedFindings = workspace.findings.filter((finding) => Boolean(finding.taskId)).length;
   const availableFindings = workspace.findings.length - stagedFindings;
+  const stageDestinationButtonLabel = addsToWebsitePlan ? `Add ${selectedKeys.length || "selected"} to Website Development Plan` : addsToSeoPlan ? `Save ${selectedKeys.length || "selected"} requirement${selectedKeys.length === 1 ? "" : "s"} for SEO Plan` : isKeywordMapping ? `Add ${selectedKeys.length || "selected"} to-do item${selectedKeys.length === 1 ? "" : "s"}` : `Send ${selectedKeys.length || "selected"} to ${destinationLabel}`;
+  const findingGroups = isKeywordMapping
+    ? [...workspace.findings.reduce((groups, finding) => {
+        const group = groups.get(finding.affectedUrl) ?? [];
+        group.push(finding);
+        groups.set(finding.affectedUrl, group);
+        return groups;
+      }, new Map<string, RecommendationFinding[]>()).entries()]
+    : workspace.findings.map((finding) => [finding.affectedUrl, [finding]] as [string, RecommendationFinding[]]);
 
   return (
     <div className="fixed inset-0 z-[90] bg-slate-950/45" role="dialog" aria-modal="true" aria-label="Page-level SEO findings">
@@ -453,23 +458,27 @@ function FindingsWorkspaceDrawer({
         <header className="border-b border-slate-200 bg-gradient-to-r from-brand-50 to-white px-5 py-5 sm:px-7">
           <div className="flex items-start justify-between gap-4">
             <div>
-              <div className="text-xs font-black uppercase tracking-wide text-brand-700">{gapCategoryLabel(workspace.recommendation.category)} · Exact affected pages</div>
-              <h2 className="mt-1 text-xl font-black text-slate-950">{workspace.recommendation.title}</h2>
-              <p className="mt-2 text-sm leading-6 text-slate-600">Review the exact URL, evidence, and recommended fix. {addsToWebsitePlan ? "Selected content suggestions become source-linked Website Plan requirements; content is not generated or published by this action." : `Selected items create source-linked work in ${destinationLabel}; they do not change the live website.`}</p>
+              <div className="text-xs font-black uppercase tracking-wide text-brand-700">{gapCategoryLabel(workspace.recommendation.category)} · {isKeywordMapping ? "Pages to review" : "Exact affected pages"}</div>
+              <h2 className="mt-1 text-xl font-black text-slate-950">{isKeywordMapping ? `${workspace.findings.length} items to review on ${findingGroups.length} page${findingGroups.length === 1 ? "" : "s"}` : workspace.recommendation.title}</h2>
+              <p className="mt-2 text-sm leading-6 text-slate-600">{isKeywordMapping ? "Some pages have more than one issue. Each page is shown once, with its issues listed underneath. Tick the items you want to add to your to-do list. This will not change your website." : "Review the exact URL, evidence, and recommended fix."} {addsToWebsitePlan ? "Selected content suggestions become source-linked Website Development requirements; content is not generated or deployed by this action." : !isKeywordMapping ? `Selected items create source-linked work in ${destinationLabel}; they do not change the live website.` : ""}</p>
             </div>
             <button type="button" onClick={onClose} className="grid h-9 w-9 shrink-0 place-items-center rounded-full border border-slate-200 bg-white text-xl text-slate-500" aria-label="Close">×</button>
           </div>
           <div className="mt-4 flex flex-wrap items-center gap-2">
-            {availableFindings > 0 && <button type="button" disabled={!recommendationApproved} onClick={onSelectAvailable} className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-bold text-slate-700 disabled:bg-slate-100 disabled:text-slate-400">Select available</button>}
+            {availableFindings > 0 && <button type="button" disabled={!recommendationApproved} onClick={onSelectAvailable} className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-bold text-slate-700 disabled:bg-slate-100 disabled:text-slate-400">{isKeywordMapping ? `Select all ${availableFindings} items` : "Select available"}</button>}
             {selectedKeys.length > 0 && <button type="button" onClick={onClear} className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-bold text-slate-700">Clear</button>}
-            <span className="text-xs font-semibold text-slate-500">{selectedKeys.length} selected · {stagedFindings} already added · {availableFindings} available{completedFindings > 0 ? ` · ${completedFindings} completed` : ""}{preparedFindings > 0 ? ` · ${preparedFindings} prepared` : ""}</span>
+            <span className="text-xs font-semibold text-slate-500">{selectedKeys.length} selected · {stagedFindings} already added · {availableFindings} left{isKeywordMapping ? ` on ${findingGroups.length} pages` : ""}{completedFindings > 0 ? ` · ${completedFindings} completed` : ""}{preparedFindings > 0 ? ` · ${preparedFindings} prepared` : ""}</span>
           </div>
         </header>
         <div className="flex-1 space-y-3 overflow-y-auto p-5 sm:p-7">
-          {workspace.findings.map((finding) => {
-            const selected = selectedKeys.includes(finding.key);
-            const staged = Boolean(finding.taskId);
-            return (
+          {findingGroups.map(([affectedUrl, findings]) => (
+            <section key={affectedUrl} className={isKeywordMapping ? "rounded-xl border border-slate-200 bg-slate-50/70 p-3" : ""}>
+              {isKeywordMapping && <div className="mb-3 flex flex-wrap items-start justify-between gap-2 px-1"><div><div className="text-[10px] font-black uppercase tracking-wide text-slate-400">Page</div><div className="mt-1 break-all text-sm font-black text-slate-900">{affectedUrl}</div></div><span className="rounded-full bg-violet-100 px-2.5 py-1 text-[10px] font-black text-violet-700">{findings.length} item{findings.length === 1 ? "" : "s"}</span></div>}
+              <div className={isKeywordMapping ? "space-y-2" : ""}>
+              {findings.map((finding) => {
+                const selected = selectedKeys.includes(finding.key);
+                const staged = Boolean(finding.taskId);
+                return (
               <label key={finding.key} className={`block rounded-xl border p-4 ${staged ? "border-emerald-200 bg-emerald-50/40" : selected ? "border-brand-300 bg-brand-50/50" : "border-slate-200 bg-white"}`}>
                 <div className="flex items-start gap-3">
                   <input type="checkbox" checked={selected || staged} disabled={staged||!recommendationApproved} onChange={(event) => onToggle(finding.key, event.target.checked)} className="mt-1 h-4 w-4 rounded border-slate-300 text-brand-600" />
@@ -477,11 +486,12 @@ function FindingsWorkspaceDrawer({
                     <div className="flex flex-wrap items-center gap-2">
                       <span className={`rounded-full px-2 py-0.5 text-[10px] font-black uppercase ${finding.severity === "high" ? "bg-rose-100 text-rose-700" : finding.severity === "medium" ? "bg-amber-100 text-amber-700" : "bg-slate-100 text-slate-600"}`}>{finding.severity}</span>
                       <span className="text-[10px] font-black uppercase tracking-wide text-slate-400">{finding.issueType.replaceAll("_", " ")}</span>
-                      {staged && <span className="rounded-full bg-emerald-100 px-2 py-0.5 text-[10px] font-black text-emerald-700">{["completed", "implemented", "verified"].includes(finding.workflowStatus) ? "Completed" : finding.workflowStatus === "content_ready_for_review" ? "Ready for review" : finding.workflowStatus === "ready_to_publish" ? "Ready to publish" : addsToWebsitePlan ? "Added to Website Plan" : `In ${destinationLabel}`}</span>}
+                      {staged && <span className="rounded-full bg-emerald-100 px-2 py-0.5 text-[10px] font-black text-emerald-700">{["completed", "implemented", "verified"].includes(finding.workflowStatus) ? "Completed" : addsToWebsitePlan ? "Added to Website Development" : addsToSeoPlan ? "Added to SEO Plan" : "Added to Execution Plan"}</span>}
                     </div>
-                    <div className="mt-2 break-all text-sm font-black text-slate-900">{finding.affectedUrl}</div>
+                    {isKeywordMapping && <div className="mt-2 text-xs font-black text-brand-700">What to do: {keywordMappingDecisionLabel(finding.issueType)}</div>}
+                    {!isKeywordMapping && <div className="mt-2 break-all text-sm font-black text-slate-900">{finding.affectedUrl}</div>}
                     <p className="mt-2 text-sm leading-6 text-slate-700">{finding.evidence}</p>
-                    {finding.details && finding.details.length > 0 && (
+                    {!isKeywordMapping && finding.details && finding.details.length > 0 && (
                       <div className="mt-3 space-y-2">
                         {finding.details.map((detail, index) => (
                           <div key={`${detail.issueType}:${index}`} className="rounded-lg border border-slate-200 bg-slate-50 p-3">
@@ -493,26 +503,29 @@ function FindingsWorkspaceDrawer({
                       </div>
                     )}
                     <div className="mt-3 grid gap-3 sm:grid-cols-2">
-                      <div className="rounded-lg bg-slate-50 p-3"><div className="text-[10px] font-black uppercase text-slate-400">Recommended update</div><p className="mt-1 text-xs leading-5 text-slate-700">{finding.recommendedFix}</p></div>
+                      <div className="rounded-lg bg-slate-50 p-3"><div className="text-[10px] font-black uppercase text-slate-400">{isKeywordMapping ? "Recommended page choice" : "Recommended update"}</div><p className="mt-1 text-xs leading-5 text-slate-700">{finding.recommendedFix}</p></div>
                       <div className="rounded-lg bg-slate-50 p-3"><div className="text-[10px] font-black uppercase text-slate-400">Why it matters</div><p className="mt-1 text-xs leading-5 text-slate-700">{finding.whyItMatters}</p></div>
                     </div>
-                    {staged && <div className="mt-3"><Link to={destinationRoute} className="rounded-lg bg-emerald-600 px-3 py-2 text-xs font-black text-white">Open in {destinationLabel} →</Link></div>}
+                    {staged && <div className="mt-3"><span className="inline-flex rounded-lg bg-emerald-100 px-3 py-2 text-xs font-black text-emerald-800">{addsToWebsitePlan ? "Added to Website Development" : addsToSeoPlan ? "Added to SEO Plan" : "Added to Execution Plan"}</span></div>}
                   </div>
                 </div>
               </label>
-            );
-          })}
+                );
+              })}
+              </div>
+            </section>
+          ))}
           {workspace.findings.length === 0 && <div className="rounded-xl border border-dashed border-slate-300 p-8 text-center text-sm text-slate-500">No current page-level findings remain for this recommendation.</div>}
         </div>
         <footer className="border-t border-slate-200 bg-slate-50 px-5 py-4 sm:px-7">
           <div className="flex flex-col-reverse gap-3 sm:flex-row sm:items-center sm:justify-between">
-            <p className="text-xs leading-5 text-slate-500">{recommendationApproved ? availableFindings === 0 ? `All affected pages are already tracked in ${destinationLabel}.` : `${destinationLabel} will track review, implementation, completion, and verification.` : "Approve this recommendation to unlock page selection. Approval creates governed work; it does not change the live website."}</p>
+            <p className="text-xs leading-5 text-slate-500">{recommendationApproved ? availableFindings === 0 ? `All affected pages are already tracked in ${destinationLabel}.` : isKeywordMapping ? "Selected items will appear as to-do items in the Execution Plan. You can assign and complete them there. Your website will not be changed." : `${destinationLabel} will track review, implementation, completion, and verification.` : "Approve this recommendation to unlock page selection. Approval creates governed work; it does not change the live website."}</p>
             <div className="flex shrink-0 gap-2">
               <button type="button" onClick={onClose} className="rounded-lg border border-slate-300 bg-white px-4 py-2.5 text-sm font-bold text-slate-700">Close</button>
               {!recommendationApproved ? (
                 <button type="button" disabled={busy} onClick={onApprove} className="rounded-lg bg-brand-600 px-4 py-2.5 text-sm font-black text-white disabled:bg-slate-300">{busy ? "Approving…" : `Approve ${gapCategoryLabel(workspace.recommendation.category)} Recommendation`}</button>
               ) : availableFindings > 0 ? (
-                <button type="button" disabled={!selectedKeys.length || busy} onClick={onStage} className="rounded-lg bg-brand-600 px-4 py-2.5 text-sm font-black text-white disabled:bg-slate-300">{busy ? "Saving…" : addsToWebsitePlan ? `Add ${selectedKeys.length || "selected"} to Website Plan` : `Send ${selectedKeys.length || "selected"} to ${destinationLabel}`}</button>
+                <button type="button" disabled={!selectedKeys.length || busy} onClick={onStage} className="rounded-lg bg-brand-600 px-4 py-2.5 text-sm font-black text-white disabled:bg-slate-300">{busy ? "Saving…" : stageDestinationButtonLabel}</button>
               ) : null}
             </div>
           </div>
@@ -653,15 +666,16 @@ export default function GapAnalysis() {
     setBusyAction("stage-findings");
     setError("");
     try {
-      const result = await api.post<{ destination?: "website_content" | "publishing" | "execution" }>(gapApi(selectedProjectId, `/recommendations/${findingsWorkspace.recommendation.id}/findings/stage`), { findingKeys: selectedFindingKeys });
+      const selectedCount = selectedFindingKeys.length;
+      const result = await api.post<{ destination?: "website_content" | "seo_plan" | "execution" }>(gapApi(selectedProjectId, `/recommendations/${findingsWorkspace.recommendation.id}/findings/stage`), { findingKeys: selectedFindingKeys });
       const refreshed = await api.get<FindingsWorkspace>(gapApi(selectedProjectId, `/recommendations/${findingsWorkspace.recommendation.id}/findings`));
       setFindingsWorkspace(refreshed);
       setSelectedFindingKeys([]);
-      const destination = result.destination === "website_content" ? "the Website Plan as source-linked requirements; no content was generated" : result.destination === "publishing" ? "Publishing" : "the Execution Plan";
-      setNotice(`${selectedFindingKeys.length} update${selectedFindingKeys.length === 1 ? "" : "s"} added to ${destination}.`);
+      const destination = result.destination === "website_content" ? "Website Development as source-linked requirements; no content was generated" : result.destination === "seo_plan" ? "the SEO Plan as source-linked evidence" : "the Execution Plan";
+      setNotice(`${selectedCount} update${selectedCount === 1 ? "" : "s"} added to ${destination}.`);
       await loadOverview();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not send the selected work to its execution workspace.");
+      setError(err instanceof Error ? err.message : "Could not save the selected work to its governed planning destination.");
     } finally {
       setBusyAction("");
     }
@@ -766,6 +780,19 @@ export default function GapAnalysis() {
         onNextAction={() => void runAction("gap-run", () => api.post(gapApi(selectedProjectId, "/run"), {}))}
       />}
 
+      {selectedProjectId && strategyWorkflow && ["strategy_required", "strategy_update_required", "strategy_review_required"].includes(strategyWorkflow.state) && (
+        <Card className="border-amber-300 bg-amber-50 p-5">
+          <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+            <div>
+              <div className="text-xs font-black uppercase tracking-wide text-amber-800">Required before SEO Page Map & execution</div>
+              <h2 className="mt-1 text-lg font-black text-amber-950">{strategyWorkflow.state === "strategy_review_required" ? `Review and approve Strategy v${strategyWorkflow.strategyVersion ?? ""}` : strategyWorkflow.state === "strategy_update_required" ? "Update Unified Strategy with this Gap Analysis" : "Create Unified Strategy"}</h2>
+              <p className="mt-1 text-sm leading-6 text-amber-900">{strategyWorkflow.state === "strategy_review_required" ? "The evidence-backed Strategy draft exists, but it must be approved before page planning can continue." : strategyWorkflow.state === "strategy_update_required" ? "This Gap Analysis is newer than the approved Strategy. Create and approve the updated version before preparing the SEO Page Map & Content Plan." : "Gap evidence is ready. Generate and approve the Strategy that will govern page planning and execution."}</p>
+            </div>
+            <Link to={`/strategy?projectId=${encodeURIComponent(selectedProjectId)}`} className="shrink-0 rounded-lg bg-amber-700 px-5 py-3 text-center text-sm font-black text-white hover:bg-amber-800">{strategyWorkflow.state === "strategy_review_required" ? "Review & Approve Strategy" : strategyWorkflow.state === "strategy_update_required" ? "Update Unified Strategy" : "Generate Unified Strategy"} →</Link>
+          </div>
+        </Card>
+      )}
+
       {!selectedProject ? (
         <Card className="p-6 text-center">
           <div className="text-base font-bold text-slate-950">No project selected</div>
@@ -845,7 +872,7 @@ export default function GapAnalysis() {
                 <div className="mt-4 flex flex-col gap-3 rounded-xl border border-brand-100 bg-brand-50/50 p-4 sm:flex-row sm:items-center sm:justify-between">
                   <div>
                     <div className="text-sm font-black text-slate-900">Review the exact affected pages and checks</div>
-                    <p className="mt-1 text-xs leading-5 text-slate-600">Open the URL-level evidence, choose the exact work to continue, and send content to Publishing or technical and link work to the Execution Plan.</p>
+                    <p className="mt-1 text-xs leading-5 text-slate-600">Open the URL-level evidence, choose the exact work to continue, and save content requirements for the SEO Plan; approved SEO Plan decisions then move to Website Development.</p>
                   </div>
                   <div className="flex shrink-0 flex-wrap gap-2">
                     {filteredGapRecommendations.filter((gap) => ["content", "site_structure", "technical", "keyword_mapping"].includes(gap.category)).map((gap) => (

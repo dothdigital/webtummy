@@ -283,6 +283,7 @@ export interface GuidedProject {
   preferredPublishingMethod: string | null;
   createdAt: string;
   updatedAt: string;
+  workflowController?: ProjectWorkflowController | null;
   website?: { id: string; domain: string; rootUrl: string; status: string } | null;
   agencyClient?: {
     id: string;

@@ -157,15 +157,6 @@ type ContentPlanJobStartResponse = { job: ContentPlanGenerationJob; reused?: boo
 // and planning scope; a remounted screen attaches to the existing promise.
 const inFlightInitialContentPlanRequests = new Map<string, Promise<ContentPlanJobStartResponse>>();
 
-function stableContentPlanRequestKey(value: string) {
-  let hash = 2166136261;
-  for (let index = 0; index < value.length; index += 1) {
-    hash ^= value.charCodeAt(index);
-    hash = Math.imul(hash, 16777619);
-  }
-  return `content-plan:${(hash >>> 0).toString(16)}`;
-}
-
 function prepareInitialContentPlan(taskId: string, input: { localSeoEnabled: boolean; targetLocations: string[] }) {
   const normalizedLocations = [...input.targetLocations].map((value) => value.trim()).filter(Boolean).sort();
   const key = `${taskId}:${input.localSeoEnabled ? "local" : "global"}:${normalizedLocations.join("|").toLocaleLowerCase()}`;
@@ -174,7 +165,10 @@ function prepareInitialContentPlan(taskId: string, input: { localSeoEnabled: boo
   const request = api.post<ContentPlanJobStartResponse>(`/api/execution-tasks/${taskId}/content-plan/jobs`, {
     localSeoEnabled: input.localSeoEnabled,
     targetLocations: normalizedLocations,
-    idempotencyKey: stableContentPlanRequestKey(key),
+    // The in-flight map handles React StrictMode remounts. A fresh key here is
+    // important: reusing a deterministic key after a failed attempt would make
+    // the API correctly return that retained failure forever on every reopen.
+    idempotencyKey: window.crypto.randomUUID(),
   });
   inFlightInitialContentPlanRequests.set(key, request);
   const clear = () => {
@@ -905,6 +899,9 @@ export default function ContentPlanDialog({ task, onClose, onSaved, autoPrepare 
   };
 
   const currentPhase = PLAN_PHASES.find((phase) => phase.key === activePhase) ?? PLAN_PHASES[0];
+  const aiCitationPrerequisite = /Complete AI Citation evidence/i.test(error);
+  const growthPlanPrerequisite = /Complete the Growth Plan/i.test(error);
+  const masterPlanPrerequisite = aiCitationPrerequisite || growthPlanPrerequisite;
   const currentPhaseStyle = PHASE_STYLES[currentPhase.key];
   const sectionCount = (key: PlanTabKey) => key === "summary"
     ? (plan?.summary ? 1 : 0)
@@ -2141,7 +2138,7 @@ export default function ContentPlanDialog({ task, onClose, onSaved, autoPrepare 
           </div>
         </div>
         <div className="border-t border-slate-200 bg-white px-4 py-3"><div className="mx-auto flex max-w-[1180px] flex-wrap items-center justify-between gap-3"><div className="max-w-2xl flex-1">{error && <p className="mb-1 text-xs font-bold text-red-700">{error}</p>}<p className={`text-xs ${approvalPending || planApproved ? "font-semibold text-emerald-700" : planDirty || !aiSuggestionsComplete ? "font-semibold text-amber-700" : "text-charcoal-500"}`}>{planApproved ? "Plan approved. Every saved page now has an executable AI content task in Content Assets." : approvalPending ? "Plan sent for approval successfully. Content tasks will be created from this exact saved version after approval." : !aiSuggestionsComplete ? planDirty ? "Save your page changes first, then complete the missing AI page briefs." : "Complete the AI plan to generate every page brief, SEO title, meta description, outline, FAQ set, proof direction, and CTA." : planDirty ? `${newUnsavedPages ? `${newUnsavedPages} added page${newUnsavedPages === 1 ? " is" : "s are"}` : "Your changes are"} not stored yet. Save changes before closing or submitting.` : "Saved and ready for approval. Review the page assets, then select Submit Plan for Approval."}</p></div><div className="flex w-full flex-wrap justify-end gap-2 sm:w-auto"><button type="button" onClick={onClose} className="whitespace-nowrap rounded-lg border border-slate-200 bg-white px-4 py-2 text-sm font-bold text-charcoal-700">{approvalPending || planApproved ? "Close" : "Cancel"}</button><button type="button" disabled={busy || savingPageMap || approvalPending || planApproved || !planDirty} onClick={() => void save(false)} className="whitespace-nowrap rounded-lg border border-brand-200 bg-white px-4 py-2 text-sm font-bold text-brand-700 hover:bg-brand-50 disabled:bg-slate-100 disabled:text-slate-400">{busy || savingPageMap ? "Saving…" : planDirty ? "Save Changes" : "✓ Changes Saved"}</button><button type="button" disabled={busy || savingPageMap || approvalPending || planApproved || planDirty} onClick={() => void (aiSuggestionsComplete ? save(true) : rebuildSmartPlan())} className={`whitespace-nowrap rounded-lg px-4 py-2 text-sm font-bold text-white ${approvalPending || planApproved ? "bg-emerald-600 disabled:bg-emerald-600 disabled:text-white" : "bg-brand-600 hover:bg-brand-700 disabled:bg-slate-300"}`}>{busy ? aiSuggestionsComplete ? "Submitting…" : "Completing AI Plan…" : planApproved ? "✓ Approved" : approvalPending ? "✓ Sent for Approval" : planDirty ? "Save Before Continuing" : !aiSuggestionsComplete ? "Complete AI Plan" : "Submit Plan for Approval"}</button></div></div></div>
-      </> : <div className="grid min-h-72 place-items-center p-8"><div className="max-w-xl rounded-xl border border-red-200 bg-red-50 p-5 text-center text-red-700"><div>{error || "The content plan could not be opened."}</div><button type="button" disabled={busy} onClick={() => void retryPlanGeneration()} className="mt-4 rounded-lg bg-red-700 px-4 py-2.5 text-sm font-black text-white disabled:bg-slate-300">{busy ? "Restarting…" : "Retry Website Plan Generation"}</button><p className="mt-2 text-xs leading-5 text-red-600">A retry creates a new governed job. The failed attempt is retained for support diagnostics and is not reused.</p></div></div>}
+      </> : <div className="grid min-h-72 place-items-center p-8"><div className={masterPlanPrerequisite ? "w-full max-w-3xl rounded-2xl border border-amber-200 bg-gradient-to-br from-amber-50 to-white p-7 text-left shadow-sm" : "max-w-xl rounded-xl border border-red-200 bg-red-50 p-5 text-center text-red-700"}>{masterPlanPrerequisite ? <><div className="text-xs font-black uppercase tracking-wide text-amber-700">Next required action · Master Plan</div><h2 className="mt-2 text-2xl font-black text-slate-950">{growthPlanPrerequisite ? "Complete Growth Plan before SEO Plan" : "Complete AI Citation before SEO Plan"}</h2><p className="mt-2 max-w-2xl text-sm leading-6 text-slate-700">{growthPlanPrerequisite ? "Create the governed Growth Plan from the approved Strategy first. The SEO Plan will use its priorities and diagnosis when assigning pages, content briefs, and execution requirements." : "Build the project’s citation-readiness evidence and approved recommendations first. The SEO Plan will use that evidence when assigning pages, content briefs, FAQs, schema, and authority requirements."}</p><div className="mt-5 rounded-xl border border-slate-200 bg-white p-4"><div className="text-[10px] font-black uppercase tracking-wide text-slate-500">Master Plan sequence</div><p className="mt-2 text-xs font-bold leading-6 text-slate-700">Gap Analysis → Strategy → Growth Plan → SEO Plan → Website Development</p></div></> : <div>{error || "The content plan could not be opened."}</div>}<button type="button" disabled={busy} onClick={() => masterPlanPrerequisite ? navigate((growthPlanPrerequisite ? "/growth?projectId=" : "/ai-citations?projectId=") + encodeURIComponent(task.projectId || "")) : void retryPlanGeneration()} className={masterPlanPrerequisite ? "mt-5 rounded-lg bg-amber-700 px-5 py-3 text-sm font-black text-white hover:bg-amber-800" : "mt-4 rounded-lg bg-red-700 px-4 py-2.5 text-sm font-black text-white disabled:bg-slate-300"}>{growthPlanPrerequisite ? "Open Growth Plan →" : aiCitationPrerequisite ? "Run AI Citation first →" : busy ? "Restarting…" : "Retry Website Plan Generation"}</button><p className={masterPlanPrerequisite ? "mt-3 text-xs font-semibold leading-5 text-amber-800" : "mt-2 text-xs leading-5 text-red-600"}>{growthPlanPrerequisite ? "No Website Plan job will be created until the Growth Plan is complete." : aiCitationPrerequisite ? "The Master Plan requires AI Citation evidence first. No Website Plan job will be created until that step is complete." : "A retry creates a new governed job. The failed attempt is retained for support diagnostics and is not reused."}</p></div></div>}
     </div>
   </div>;
 }

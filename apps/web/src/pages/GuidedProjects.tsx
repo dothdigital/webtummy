@@ -81,6 +81,14 @@ function nextActionHref(project: GuidedProject, task: GuidedExecutionTask | null
   return `${route}?projectId=${encodeURIComponent(project.id)}`;
 }
 
+function masterWorkflowHref(project: GuidedProject) {
+  const url = project.workflowController?.nextBestAction.action.url;
+  if (!url) return null;
+  if (!url.startsWith("/") || /[?&]projectId=/.test(url)) return url;
+  const [pathAndQuery, hash] = url.split("#", 2);
+  return `${pathAndQuery}${pathAndQuery.includes("?") ? "&" : "?"}projectId=${encodeURIComponent(project.id)}${hash ? `#${hash}` : ""}`;
+}
+
 function nextWorkflowStep(project: GuidedProject) {
   return project.workflowSteps?.find((step) => !completedStatuses.has(step.status)) ?? null;
 }
@@ -270,6 +278,19 @@ export default function GuidedProjects() {
     }
   };
 
+  const deleteDiscoveryDraft = async (draft: ProjectDiscoveryDraft) => {
+    if (!window.confirm(`Permanently delete the draft “${draft.title}”?\n\nIts saved discovery answers and generated ideas will be removed.`)) return;
+    setStatusBusy(`draft:${draft.id}`);
+    try {
+      await api.delete<{ deleted: boolean }>(`/api/discovery-drafts/${encodeURIComponent(draft.id)}`);
+      setDiscoveryDrafts((current) => current.filter((item) => item.id !== draft.id));
+    } catch (error) {
+      window.alert(error instanceof Error ? error.message : "Could not delete the draft");
+    } finally {
+      setStatusBusy(null);
+    }
+  };
+
   const changeArchiveStatus = async (project: GuidedProject, action: "archive" | "restore") => {
     if (action === "archive" && !window.confirm(`Archive “${project.name}”?\n\nThe project will leave active views, but its reports, Strategy versions, evidence, generated assets, execution history, and audit records will be retained. You can restore it later.`)) return;
     setStatusBusy(project.id);
@@ -349,15 +370,16 @@ export default function GuidedProjects() {
         <div className="mt-7 rounded-2xl border border-violet-100 bg-white p-10 text-center shadow-sm"><div className="font-bold text-slate-900">No matching projects</div><p className="mt-2 text-sm text-slate-500">Try another search or status filter.</p><button type="button" onClick={() => { setSearch(""); setFilter("all"); }} className="mt-4 text-sm font-bold text-teal-700">Clear filters</button></div>
       ) : (
         <div className="mt-7 space-y-4">
-          {visibleDiscoveryDrafts.map((draft) => <article key={`discovery-${draft.id}`} className="rounded-2xl border border-violet-200 bg-white px-5 py-5 shadow-sm sm:px-6"><div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between"><div className="min-w-0"><div className="flex flex-wrap items-center gap-2"><span className="rounded-full bg-violet-100 px-3 py-1 text-[10px] font-black uppercase tracking-wide text-violet-800">Discovery draft</span><span className="text-xs font-semibold text-slate-400">{draft.ideas.length} generated idea{draft.ideas.length === 1 ? "" : "s"}</span></div><h2 className="mt-2 break-words text-lg font-bold text-slate-950">{draft.title}</h2><p className="mt-1 line-clamp-2 text-sm leading-6 text-slate-500">{draft.sourceText || "Business Discovery started. Continue the draft to add context and generate ideas."}</p><p className="mt-2 text-xs text-slate-400">Updated {relativeUpdated(draft.updatedAt)} · Does not count as an active project</p>{draft.ideas.length > 0 && <div className="mt-3"><div className="text-[10px] font-black uppercase tracking-wide text-slate-500">Download a saved idea again</div><div className="mt-2 flex flex-wrap gap-2">{draft.ideas.map((idea, ideaIndex) => <button key={idea.id} type="button" disabled={statusBusy === `pdf:${idea.id}`} title={`Download PDF: ${idea.title}`} onClick={() => void downloadIdeaPdf(draft.id, idea.id)} className="rounded-lg border border-violet-200 bg-violet-50 px-3 py-2 text-xs font-bold text-violet-800 hover:bg-violet-100 disabled:opacity-50">{statusBusy === `pdf:${idea.id}` ? "Preparing PDF…" : `Idea ${ideaIndex + 1} PDF`}</button>)}</div></div>}</div><Link to={`/projects/new?discoveryDraftId=${encodeURIComponent(draft.id)}`} className="inline-flex h-10 shrink-0 items-center justify-center rounded-lg bg-violet-700 px-4 text-sm font-bold text-white hover:bg-violet-800">{draft.ideas.length ? "Review ideas →" : "Continue discovery →"}</Link></div></article>)}
+          {visibleDiscoveryDrafts.map((draft) => <article key={`discovery-${draft.id}`} className="rounded-2xl border border-violet-200 bg-white px-5 py-5 shadow-sm sm:px-6"><div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between"><div className="min-w-0"><div className="flex flex-wrap items-center gap-2"><span className="rounded-full bg-violet-100 px-3 py-1 text-[10px] font-black uppercase tracking-wide text-violet-800">Discovery draft</span><span className="text-xs font-semibold text-slate-400">{draft.ideas.length} generated idea{draft.ideas.length === 1 ? "" : "s"}</span></div><h2 className="mt-2 break-words text-lg font-bold text-slate-950">{draft.title}</h2><p className="mt-1 line-clamp-2 text-sm leading-6 text-slate-500">{draft.sourceText || "Business Discovery started. Continue the draft to add context and generate ideas."}</p><p className="mt-2 text-xs text-slate-400">Updated {relativeUpdated(draft.updatedAt)} · Does not count as an active project</p>{draft.ideas.length > 0 && <div className="mt-3"><div className="text-[10px] font-black uppercase tracking-wide text-slate-500">Download a saved idea again</div><div className="mt-2 flex flex-wrap gap-2">{draft.ideas.map((idea, ideaIndex) => <button key={idea.id} type="button" disabled={statusBusy === `pdf:${idea.id}`} title={`Download PDF: ${idea.title}`} onClick={() => void downloadIdeaPdf(draft.id, idea.id)} className="rounded-lg border border-violet-200 bg-violet-50 px-3 py-2 text-xs font-bold text-violet-800 hover:bg-violet-100 disabled:opacity-50">{statusBusy === `pdf:${idea.id}` ? "Preparing PDF…" : `Idea ${ideaIndex + 1} PDF`}</button>)}</div></div>}</div><div className="flex shrink-0 flex-wrap items-center gap-3"><button type="button" disabled={statusBusy === `draft:${draft.id}`} onClick={() => void deleteDiscoveryDraft(draft)} className="text-xs font-bold text-rose-600 hover:text-rose-800 disabled:opacity-50">{statusBusy === `draft:${draft.id}` ? "Deleting…" : "Delete draft"}</button><Link to={`/projects/new?discoveryDraftId=${encodeURIComponent(draft.id)}`} className="inline-flex h-10 items-center justify-center rounded-lg bg-violet-700 px-4 text-sm font-bold text-white hover:bg-violet-800">{draft.ideas.length ? "Review ideas →" : "Continue discovery →"}</Link></div></div></article>)}
           {visibleProjects.map((project, index) => {
             const task = project.status === "completed" ? null : nextTask(project);
             const workflowStep = project.status === "completed" ? null : nextWorkflowStep(project);
+            const masterAction = project.status === "completed" ? null : project.workflowController?.nextBestAction ?? null;
             const progress = projectProgress(project);
             const breakdown = projectProgressBreakdown(project);
             const needsReview = projectNeedsReview(project);
-            const nextTitle = task?.title ?? workflowStep?.title ?? (project.status === "completed" ? "Project complete" : "Review project overview");
-            const nextHref = nextActionHref(project, task, workflowStep);
+            const nextTitle = masterAction?.title ?? task?.title ?? workflowStep?.title ?? (project.status === "completed" ? "Project complete" : "Review project overview");
+            const nextHref = masterWorkflowHref(project) ?? nextActionHref(project, task, workflowStep);
             const projectHref = `/guided-projects/${project.id}`;
             return <article key={project.id} className="rounded-2xl border border-violet-100 bg-white px-5 py-5 shadow-sm transition hover:border-teal-200 hover:shadow-md sm:px-6">
               <div className="flex flex-col items-start gap-4 sm:flex-row sm:justify-between">

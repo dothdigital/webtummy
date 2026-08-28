@@ -13,7 +13,7 @@ import { approvedKeywordEntries, bestExistingSeoPageMatch, clusterKeywordDirecti
 import { centralAiJson } from "../central-ai-service.js";
 import { cleanGeographicTargetMarkets, projectAnalysisLocationLabels } from "../project-location.js";
 import { normalizeKeywordsWithAi } from "../ai-keyword-normalization.js";
-import { publishProjectWorkflowEvent } from "../project-workflow-controller.js";
+import { getProjectWorkflowController, publishProjectWorkflowEvent, workflowStagePrerequisite } from "../project-workflow-controller.js";
 import { MARKETING_EXECUTION_CONTRACT_VERSION, marketingExecutionSummary, prepareMarketingExecution } from "../marketing-execution-engine.js";
 import { isWebsitePlanTask } from "../website-plan-task.js";
 import { config, CONTENT_PLAN_GENERATION_QUEUE } from "../config.js";
@@ -25,6 +25,20 @@ import { queueApiErrorReport } from "../api-error-reporter.js";
 
 export const executionTasksRouter = Router();
 executionTasksRouter.use(requireAuth);
+
+async function enforceSeoPlanWorkflow(projectId: string, res: Response) {
+  const workflow = await getProjectWorkflowController(projectId);
+  const prerequisite = workflowStagePrerequisite(workflow, "seo_plan");
+  if (!prerequisite) return true;
+  res.status(409).json({
+    error: prerequisite.message,
+    code: prerequisite.code,
+    actionLabel: prerequisite.nextAction.action.label,
+    actionUrl: prerequisite.nextAction.action.url,
+    nextAction: prerequisite.nextAction,
+  });
+  return false;
+}
 
 const terminalStatuses = new Set(["completed", "skipped"]);
 const CONTENT_PLAN_WORKFLOW_VERSION = "seo_page_map_v7" as const;
@@ -901,6 +915,9 @@ async function applyFullAiWebsitePlan(plan: ContentPlan, evidence: {
   goal: string;
   keywords: string[];
   targetLocations: string[];
+  opportunity: unknown;
+  aiCitationEvidence: unknown;
+  growthPlan: unknown;
   gapRecommendations: unknown[];
   sitePages: Array<{ url: string; title: string | null }>;
   strategy: unknown;
@@ -911,6 +928,14 @@ async function applyFullAiWebsitePlan(plan: ContentPlan, evidence: {
   const sharedEvidence = `Approved business and goal:
 ${JSON.stringify({ projectType: evidence.projectType, business: evidence.business, goal: evidence.goal, keywords: evidence.keywords, targetLocations: evidence.targetLocations }).slice(0, 20_000)}
 
+\nApproved Opportunity direction:\
+${JSON.stringify(evidence.opportunity).slice(0, 12_000)}\
+\
+AI Citation evidence and approved recommendations:\
+${JSON.stringify(evidence.aiCitationEvidence).slice(0, 18_000)}\
+\
+Approved pre-execution Growth Plan diagnosis:\
+${JSON.stringify(evidence.growthPlan).slice(0, 18_000)}
 Latest SEO and Gap Analysis findings:
 ${JSON.stringify(evidence.gapRecommendations).slice(0, 18_000)}
 
@@ -970,9 +995,19 @@ ${repair ? `\nREPAIR REQUIRED: Return only the ${requestedAssignments.length} mi
         const validDecisions: AiWebsitePlanDecision[] = [];
         const nextIssues = new Map<string, Array<{ field: string; message: string }>>();
         for (const item of reconciledRaw.items) {
-          const validated = aiUnifiedWebsitePlanDecisionSchema.safeParse(item);
+          // Keyword ownership is governed by the supplied candidate and is
+          // restored again when the final plan is assembled. Validate that
+          // authoritative value here as well, so a model typo cannot fail an
+          // otherwise complete page decision.
+          const governedAssignment = requestedAssignments.find((assignment) => (
+            canonicalContentPlanTarget(assignment.targetUrl) === canonicalContentPlanTarget(item.targetUrl)
+          ));
+          const governedItem = governedAssignment
+            ? { ...item, canonicalKeyword: governedAssignment.canonicalKeyword }
+            : item;
+          const validated = aiUnifiedWebsitePlanDecisionSchema.safeParse(governedItem);
           if (validated.success) validDecisions.push(validated.data);
-          else nextIssues.set(item.targetUrl.trim().toLocaleLowerCase(), aiWebsitePlanDecisionIssueSummary(item));
+          else nextIssues.set(item.targetUrl.trim().toLocaleLowerCase(), aiWebsitePlanDecisionIssueSummary(governedItem));
         }
         const reconciledValid = reconcileAiWebsitePlanBatch(requestedAssignments, validDecisions);
         acceptedBatchDecisions.push(...reconciledValid.decisions);
@@ -2544,6 +2579,19 @@ executionTasksRouter.get("/execution-tasks", async (req, res) => {
   const actionableTasks = crawlFindingTasks?.issues.length ? tasks.filter((task) => task.moduleName !== "site_analysis") : tasks;
   for (const task of [...actionableTasks, ...unsyncedCrawlFindings]) if (projectScope || !task.projectId || await canAccessProject(context, task.projectId)) visible.push(task);
   const searched = parsed.data.search ? visible.filter((task) => [task.title, task.actionButtonLabel, task.description, task.moduleName].some((value) => value?.toLowerCase().includes(parsed.data.search!.toLowerCase()))) : visible;
+  const latestContentPlanJobByTask = new Map<string, string>();
+  if (projectScope) {
+    const planJobs = await prisma.aiRun.findMany({
+      where: { projectId: projectScope.id, moduleName: "content_plan_generation_job" },
+      orderBy: { createdAt: "desc" },
+      select: { status: true, inputSnapshotJson: true },
+      take: 50,
+    });
+    for (const job of planJobs) {
+      const taskId = contentPlanJobRecord(job.inputSnapshotJson).taskId;
+      if (typeof taskId === "string" && taskId && !latestContentPlanJobByTask.has(taskId)) latestContentPlanJobByTask.set(taskId, job.status);
+    }
+  }
   const seoPageMapByProject = new Map<string, (typeof visible)[number]>();
   for (const task of visible) {
     if (!task.projectId || !(task.sourceType === "seo_plan" || /(?:seo\s*page\s*map|seo\s+plan)/i.test(`${task.title} ${task.actionButtonLabel ?? ""}`))) continue;
@@ -2552,8 +2600,14 @@ executionTasksRouter.get("/execution-tasks", async (req, res) => {
   }
   res.json({ tasks: searched.map((task) => {
     const isSeoPageMap = task.sourceType === "seo_plan" || /(?:seo\s*page\s*map|seo\s+plan)/i.test(`${task.title} ${task.actionButtonLabel ?? ""}`);
+    const planJobStatus = latestContentPlanJobByTask.get(task.id);
     const routed = isSeoPageMap && task.projectId
-      ? { ...task, relatedUrl: `/seo-page-map?projectId=${task.projectId}&taskId=${task.id}` }
+      ? {
+        ...task,
+        ...(["queued", "running"].includes(planJobStatus ?? "") ? { status: "in_progress", actionButtonLabel: "SEO Plan in process" } : {}),
+        ...(planJobStatus === "failed" ? { status: "failed", actionButtonLabel: "SEO Plan failed — Retry" } : {}),
+        relatedUrl: `/seo-page-map?projectId=${task.projectId}&taskId=${task.id}`,
+      }
       : task;
     const pageMapTask = task.projectId ? seoPageMapByProject.get(task.projectId) : null;
     const pageMapApproved = Boolean(pageMapTask?.approvedAt && ["ready_to_publish", "approved", "completed"].includes(pageMapTask.status));
@@ -2731,12 +2785,17 @@ executionTasksRouter.post("/projects/:projectId/seo-plan/task", async (req, res)
       keywordGroups: { where: { status: "approved" }, select: { status: true, category: true, keywords: true } },
       strategyPlans: { where: { status: "approved" }, orderBy: { createdAt: "desc" }, select: { id: true, version: true, createdAt: true, approvedAt: true, businessBrainVersion: true, evidenceVersion: true }, take: 1 },
       gapAnalysisRuns: { where: { status: "completed" }, orderBy: [{ completedAt: "desc" }, { createdAt: "desc" }], select: { id: true, completedAt: true, createdAt: true }, take: 1 },
+      opportunities: { where: { status: { in: ["selected", "confirmed", "approved"] } }, orderBy: { createdAt: "desc" }, take: 1, select: { id: true, name: true, targetAudience: true, problemSolved: true, recommendedOffer: true, businessModel: true, opportunityScore: true } },
+      citationReadinessFindings: { orderBy: { updatedAt: "desc" }, take: 100, select: { id: true, category: true, title: true, summary: true, affectedUrl: true, severity: true, confidence: true, recommendedAction: true, status: true, evidenceJson: true, updatedAt: true } },
+      citationRecommendations: { orderBy: [{ priorityScore: "desc" }, { updatedAt: "desc" }], take: 100, select: { id: true, recommendationType: true, title: true, rationale: true, recommendedAction: true, priorityScore: true, status: true, updatedAt: true } },
+      growthDiagnoses: { orderBy: { createdAt: "desc" }, take: 1, select: { id: true, bottleneckType: true, summary: true, scoreJson: true, findingsJson: true, evidenceJson: true, confidence: true, createdAt: true } },
     },
   });
   if (!project) return res.status(404).json({ error: "project not found" });
   const context = await workspaceContext(req);
   if (!await canAccessProject(context, project.id)) return res.status(404).json({ error: "project not found" });
   if (!hasWorkspacePermission(context, "execute_tasks")) return res.status(403).json({ error: "Task execution permission is required." });
+  if (!await enforceSeoPlanWorkflow(project.id, res)) return;
   const preLaunchWebsite = isPreLaunchWebsiteCampaign(project);
   if (!approvedKeywordEntries(project.keywordGroups).length) return res.status(409).json({ error: "Approve and analyze at least one Primary or Secondary keyword before creating the Website Plan." });
   if (!project.strategyPlans.length) return res.status(409).json({ error: "Approve the Unified Strategy before creating the Website Page Map & Content Plan." });
@@ -2929,8 +2988,13 @@ async function performContentPlanPrepare(req: Request, res: Response) {
               ideas: { take: 100, select: { keyword: true, avgMonthlySearches: true, competitionIndex: true } },
             },
           },
+          opportunities: { where: { status: { in: ["selected", "confirmed", "approved"] } }, orderBy: { createdAt: "desc" }, take: 1, select: { id: true, name: true, targetAudience: true, problemSolved: true, recommendedOffer: true, businessModel: true, opportunityScore: true, seoScore: true, monetizationScore: true, executionScore: true, userFitScore: true } },
+          citationReadinessFindings: { orderBy: { updatedAt: "desc" }, take: 100, select: { id: true, category: true, title: true, summary: true, affectedUrl: true, severity: true, confidence: true, recommendedAction: true, status: true, evidenceJson: true, updatedAt: true } },
+          citationRecommendations: { orderBy: [{ priorityScore: "desc" }, { updatedAt: "desc" }], take: 100, select: { id: true, recommendationType: true, title: true, rationale: true, recommendedAction: true, priorityScore: true, status: true, updatedAt: true } },
+          growthDiagnoses: { orderBy: { createdAt: "desc" }, take: 1, select: { id: true, bottleneckType: true, summary: true, scoreJson: true, findingsJson: true, evidenceJson: true, confidence: true, createdAt: true } },
           strategyPlans: { orderBy: [{ version: "desc" }, { updatedAt: "desc" }], take: 1 },
           gapAnalysisRuns: { where: { status: "completed" }, orderBy: [{ completedAt: "desc" }, { createdAt: "desc" }], select: { id: true, completedAt: true, createdAt: true, recommendations: { orderBy: [{ impactScore: "desc" }, { confidenceScore: "desc" }], take: 30, select: { category: true, title: true, explanation: true, recommendedAction: true, expectedImpact: true, evidenceJson: true, priority: true, impactScore: true, confidenceScore: true } } }, take: 1 },
+          seoFixQueueItems: { where: { approvalStatus: "approved_for_work" }, orderBy: [{ severity: "asc" }, { createdAt: "asc" }], take: 500, select: { id: true, affectedUrl: true, issueType: true, severity: true, recommendedFix: true, plainEnglishReason: true, expectedImpact: true, sourceAnalysisId: true } },
           website: { include: { crawlJobs: { where: { status: "completed" }, orderBy: { createdAt: "desc" }, take: 1, include: { pages: { where: { statusCode: { gte: 200, lt: 400 }, fetchError: null }, take: 250, select: { url: true, finalUrl: true, normalizedUrl: true, seo: { select: { title: true, h1Text: true, canonicalUrl: true } } } } } } } },
         },
       },
@@ -2940,6 +3004,7 @@ async function performContentPlanPrepare(req: Request, res: Response) {
   const context = await workspaceContext(req);
   if (!task.projectId || !await canAccessProject(context, task.projectId)) return res.status(404).json({ error: "task not found" });
   if (!hasWorkspacePermission(context, "execute_tasks")) return res.status(403).json({ error: "Task execution permission is required." });
+  if (!await enforceSeoPlanWorkflow(task.projectId, res)) return;
   const preLaunchWebsite = isPreLaunchWebsiteCampaign(task.project);
   if (isExistingWebsiteCampaign(task.project)) {
     const latestStrategy = task.project.strategyPlans[0];
@@ -3284,8 +3349,11 @@ async function performContentPlanPrepare(req: Request, res: Response) {
     business: businessContext,
     goal: task.project.primaryGoal?.trim() || "help qualified visitors take the next step",
     keywords: approvedKeywords,
+    opportunity: task.project.opportunities[0],
+    aiCitationEvidence: { findings: task.project.citationReadinessFindings, recommendations: task.project.citationRecommendations },
+    growthPlan: task.project.growthDiagnoses[0],
     targetLocations: planningLocations,
-    gapRecommendations: task.project.gapAnalysisRuns[0]?.recommendations ?? [],
+    gapRecommendations: [...(task.project.gapAnalysisRuns[0]?.recommendations ?? []), ...task.project.seoFixQueueItems.map((finding) => ({ source: "Approved exact Gap Analysis finding", ...finding }))],
     sitePages,
     strategy: strategy ? {
       id: strategy.id,
@@ -3333,7 +3401,28 @@ async function performContentPlanPrepare(req: Request, res: Response) {
       planningChecks: [...generatedPlan.planningChecks, ...customPlanningChecks].slice(0, 500),
     };
   })() : generatedPlan;
-  const reconciledCandidatePlan = reconcileContentPlanConflicts(repairContentPlanPageIdentities(generatedCandidatePlan));
+  const approvedGapFindingsByTarget = new Map<string, typeof task.project.seoFixQueueItems>();
+  for (const finding of task.project.seoFixQueueItems) {
+    const key = canonicalContentPlanTarget(finding.affectedUrl);
+    approvedGapFindingsByTarget.set(key, [...(approvedGapFindingsByTarget.get(key) ?? []), finding]);
+  }
+  const planWithExactGapRequirements = {
+    ...generatedCandidatePlan,
+    pageAssignments: generatedCandidatePlan.pageAssignments.map((assignment) => {
+      const requirements = approvedGapFindingsByTarget.get(canonicalContentPlanTarget(assignment.targetUrl)) ?? [];
+      if (!requirements.length) return assignment;
+      const requirementText = requirements.map((finding) => finding.issueType.replaceAll("_", " ") + ": " + finding.recommendedFix + (finding.plainEnglishReason ? " Evidence: " + finding.plainEnglishReason : "")).join(" | ");
+      return {
+        ...assignment,
+        gapAnalysis: (assignment.gapAnalysis + " Approved exact Gap Analysis requirements: " + requirementText).slice(0, 1200),
+        contentBrief: ((assignment.contentBrief ?? assignment.pagePurpose) + " Approved exact Gap Analysis requirements: " + requirementText).slice(0, 1500),
+        evidenceSources: [...new Set([...(assignment.evidenceSources ?? []), ...requirements.map((finding) => "Gap Analysis · " + finding.issueType + " · " + finding.affectedUrl)])].slice(0, 20),
+      };
+    }),
+    pageUpdates: [...generatedCandidatePlan.pageUpdates, ...task.project.seoFixQueueItems.map((finding) => ("Gap Analysis · " + finding.affectedUrl + " · " + finding.recommendedFix).slice(0, 800))].slice(0, 500),
+    planningChecks: [...generatedCandidatePlan.planningChecks, ...task.project.seoFixQueueItems.map((finding) => ("Source-linked Gap Analysis requirement · " + finding.affectedUrl + " · " + (finding.plainEnglishReason ?? finding.issueType) + " · Required fix: " + finding.recommendedFix).slice(0, 2400))].slice(0, 500),
+  };
+  const reconciledCandidatePlan = reconcileContentPlanConflicts(repairContentPlanPageIdentities(planWithExactGapRequirements));
   const plan = parseCompatibleContentPlan(reconciledCandidatePlan);
   const updated = await prisma.$transaction(async (tx) => {
     // A project reset can legitimately remove this task while the AI request is
@@ -3568,11 +3657,12 @@ executionTasksRouter.post("/execution-tasks/:id/content-plan/jobs", (req, res, n
     const parsed = contentPlanJobSchema.safeParse(req.body ?? {});
     if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() });
     const clientId = await executionClientScope(req);
-    const task = await prisma.executionTask.findFirst({ where: { id: req.params.id, ...(clientId ? { clientId } : {}) }, select: { id: true, projectId: true, clientId: true, project: { select: { websiteId: true } } } });
+    const task = await prisma.executionTask.findFirst({ where: { id: req.params.id, ...(clientId ? { clientId } : {}) }, select: { id: true, projectId: true, clientId: true, project: { select: { websiteId: true, citationReadinessFindings: { select: { id: true }, take: 1 }, citationRecommendations: { select: { id: true }, take: 1 }, strategyPlans: { where: { status: "approved" }, orderBy: { createdAt: "desc" }, select: { approvedAt: true, createdAt: true }, take: 1 }, growthDiagnoses: { orderBy: { createdAt: "desc" }, select: { createdAt: true }, take: 1 } } } } });
     if (!task?.projectId || !task.clientId) return res.status(404).json({ error: "Website planning task not found" });
     const context = await workspaceContext(req);
     if (!await canAccessProject(context, task.projectId)) return res.status(404).json({ error: "task not found" });
     if (!hasWorkspacePermission(context, "execute_tasks")) return res.status(403).json({ error: "Task execution permission is required." });
+    if (!await enforceSeoPlanWorkflow(task.projectId, res)) return;
     const active = await activeContentPlanJob(task.id, task.projectId);
     if (active) return res.status(202).json({ job: contentPlanGenerationJobView(active), reused: true });
 

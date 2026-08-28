@@ -4,7 +4,7 @@ import { Link, useLocation, useNavigate, useParams } from "react-router-dom";
 import { api } from "../api.js";
 import { AiPlanningScreen, Button, Card, Input, StatusPill } from "../components/ui.js";
 import { projectHasWebsite } from "../project-flow.js";
-import type { GuidedExecutionTask, GuidedProject } from "../types.js";
+import type { GuidedExecutionTask, GuidedProject, ProjectWorkflowController as ProjectWorkflowControllerView } from "../types.js";
 import ProjectOperations from "../components/ProjectOperations.js";
 import BusinessLocationTargetMarkets from "../components/BusinessLocationTargetMarkets.js";
 import ProjectGoals from "../components/ProjectGoals.js";
@@ -92,7 +92,9 @@ function taskPriorityTone(task: GuidedExecutionTask) {
 }
 
 function taskActionUrl(task: GuidedExecutionTask, projectId: string) {
-  if (isContentPlanTask(task)) return `/guided-projects/${encodeURIComponent(projectId)}?tab=execution&actionTask=${encodeURIComponent(task.id)}#execution-tasks`;
+  if (isContentPlanTask(task)) return task.relatedUrl
+    ? projectScopedTaskUrl(task.relatedUrl, projectId, task.id)
+    : `/seo-page-map?projectId=${encodeURIComponent(projectId)}&taskId=${encodeURIComponent(task.id)}`;
   // AI Content Studio is the single preparation and review path for every
   // executable content task. Lead magnets remain in their dedicated funnel
   // module because they also own forms, consent, delivery, and email flow.
@@ -425,6 +427,7 @@ export default function GuidedProjectDetail() {
   const [executionPhaseTab, setExecutionPhaseTab] = useState<ExecutionPhase | null>(null);
   const [contentPlanTask, setContentPlanTask] = useState<GuidedExecutionTask | null>(null);
   const [resetAfterStrategyOpen, setResetAfterStrategyOpen] = useState(false);
+  const [workflowController, setWorkflowController] = useState<ProjectWorkflowControllerView | null>(null);
   const canManageProjects = user?.role === "super_admin" || Boolean(user?.workspace?.capabilities.manageProjects);
 
   const load = () => {
@@ -657,6 +660,7 @@ export default function GuidedProjectDetail() {
   const archived = project.status === "archived";
 
   const executionPlan = project.executionPlans?.[0] ?? null;
+  const seoPlanStage = workflowController?.stages.find((stage) => stage.key === "seo_plan");
   const tasks = Array.from([
     ...(project.executionTasks ?? []),
     ...(executionPlan?.tasks ?? []),
@@ -669,7 +673,10 @@ export default function GuidedProjectDetail() {
     // Legacy plans promoted Strategy prose directly into Execution. Keep the
     // approved Website/SEO plan task, but do not present broad recommendations
     // as if they were operations a user can complete.
-    task.sourceType !== "strategy_decision" || isContentPlanTask(task)
+    (task.sourceType !== "strategy_decision" || isContentPlanTask(task))
+    // Keep premature/stale SEO planning records out of the Execution UI until
+    // the master controller has actually unlocked the SEO Plan stage.
+    && (!isContentPlanTask(task) || Boolean(seoPlanStage && seoPlanStage.status !== "blocked"))
   );
   const executionPlanExists = Boolean(executionPlan && tasks.length > 0);
   const contentPlanExecutionTask = tasks.find((task) => isContentPlanTask(task)) ?? null;
@@ -776,6 +783,9 @@ export default function GuidedProjectDetail() {
   const hasWebsite = projectHasWebsite(project);
   const requestedTab = new URLSearchParams(location.search).get("tab");
   const activeTab = requestedTab === "execution" ? "execution" : "overview";
+  const growthPrerequisite = workflowController?.nextBestAction.action.url.startsWith("/growth")
+    ? workflowController.nextBestAction
+    : null;
   const projectTab = (tab: "overview" | "profile" | "execution") =>
     `/guided-projects/${project.id}${tab === "overview" ? "" : `?tab=${tab}`}`;
   return (
@@ -925,7 +935,22 @@ export default function GuidedProjectDetail() {
         </Card>
       )}
 
-      {activeTab === "execution" && (
+      {activeTab === "execution" && <ProjectWorkflowController projectId={project.id} refreshKey={tasks.length + strategyCount} compact onLoaded={setWorkflowController} />}
+
+      {activeTab === "execution" && growthPrerequisite && (
+        <Card className="border-violet-300 bg-gradient-to-r from-violet-50 via-white to-brand-50 p-5">
+          <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+            <div>
+              <div className="text-xs font-black uppercase tracking-wide text-violet-700">Required before SEO Plan and execution</div>
+              <h2 className="mt-1 text-lg font-black text-charcoal-950">{growthPrerequisite.title}</h2>
+              <p className="mt-2 max-w-3xl text-sm leading-6 text-charcoal-600">{growthPrerequisite.reason}</p>
+            </div>
+            <Link to={growthPrerequisite.action.url} className="inline-flex shrink-0 items-center justify-center rounded-xl bg-violet-700 px-5 py-3 text-sm font-black text-white shadow-lg shadow-violet-200 hover:bg-violet-800">{growthPrerequisite.action.label} →</Link>
+          </div>
+        </Card>
+      )}
+
+      {activeTab === "execution" && workflowController && !growthPrerequisite && (
         <Card id="execution-tasks" className="scroll-mt-24 overflow-hidden">
           <div className="flex flex-col gap-3 border-b border-charcoal-100 bg-gradient-to-r from-brand-50 via-white to-emerald-50 px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
             <SectionTitle title="Execution tasks" helper="Choose a phase, review what to do, and open the correct action." />

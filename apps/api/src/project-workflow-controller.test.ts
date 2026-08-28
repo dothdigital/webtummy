@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { resolveProjectApplicability, resolveProjectWorkflow, STRATEGY_EVIDENCE_SETTLING_WINDOW_MS, type WorkflowEvidenceSnapshot } from "./project-workflow-controller.js";
+import { executionPlanWorkflowBlocker, hasCurrentPreExecutionGrowth, resolveProjectApplicability, resolveProjectWorkflow, STRATEGY_EVIDENCE_SETTLING_WINDOW_MS, workflowStagePrerequisite, type WorkflowEvidenceSnapshot } from "./project-workflow-controller.js";
 
 function snapshot(overrides: Partial<WorkflowEvidenceSnapshot> = {}): WorkflowEvidenceSnapshot {
   const now = new Date("2026-08-01T12:00:00.000Z");
@@ -45,14 +45,22 @@ function snapshot(overrides: Partial<WorkflowEvidenceSnapshot> = {}): WorkflowEv
     selectedOpportunity: true,
     latestStrategy: null,
     latestEvidenceAt: now,
+    criticalEvidenceIssueCount: 0,
+    preExecutionGrowthComplete: true,
     executionPlanExists: false,
     executionTasksExist: false,
     executionPlanUpdatedAt: null,
     openExecutionTasks: 0,
     completedExecutionTasks: 0,
     websitePlanRequired: false,
+    websitePlanGenerated: false,
+    websitePlanGenerationStatus: null,
+    websitePlanGenerationProgress: null,
     websitePlanApproved: false,
     websitePlanTaskStatus: null,
+    websiteDevelopmentStarted: false,
+    preparedChangesAwaitingApproval: false,
+    postImplementationVerificationRequired: false,
     publishingStarted: false,
     publishingComplete: false,
     measurementStarted: false,
@@ -115,6 +123,16 @@ describe("DEV-046 project workflow controller", () => {
     expect(result.state).toBe("intelligence_collection");
     expect(result.nextBestAction.title).toBe("Opportunity & Competitor Intelligence");
     expect(result.blockers.some((item) => item.key === "technical_seo")).toBe(true);
+  });
+
+  it("routes a completed Gap Analysis to Unified Strategy without requiring a separate AI Citation visit", () => {
+    const result = resolveProjectWorkflow(snapshot({ citationEvidenceComplete: false, citationEvidenceAt: null }));
+    const citation = result.intelligenceModules.find((item) => item.key === "ai_citation_analysis");
+    expect(citation?.status).toBe("complete");
+    expect(citation?.evidenceAt).toBe(snapshot().gapEvidenceAt?.toISOString());
+    expect(result.intelligenceReady).toBe(true);
+    expect(result.nextBestAction.title).toBe("Generate Unified Strategy");
+    expect(result.nextBestAction.action.url).toContain("/strategy?");
   });
 
   it("explains which approved keywords need attention and how to resolve them", () => {
@@ -230,9 +248,9 @@ describe("DEV-046 project workflow controller", () => {
       websitePlanApproved: false,
       websitePlanTaskStatus: "ready",
     }));
-    expect(result.nextBestAction.title).toBe("Create and approve the Website Plan");
-    expect(result.nextBestAction.action.label).toBe("Create Website Plan");
-    expect(result.nextBestAction.expectedResult).toContain("sitemap");
+    expect(result.nextBestAction.title).toBe("Create the SEO Page Map & Content Plan");
+    expect(result.nextBestAction.action.label).toBe("Create SEO Plan");
+    expect(result.nextBestAction.expectedResult).toContain("proposed pages");
   });
 
   it("makes the Website Intelligence baseline the first post-publication action", () => {
@@ -264,6 +282,16 @@ describe("DEV-046 project workflow controller", () => {
     expect(result.changedEvidence.length).toBeGreaterThan(0);
     expect(result.changedEvidence.every((item) => new Date(item.evidenceAt) > strategyAt)).toBe(true);
     expect(result.changedEvidence.find((item) => item.key === "authority_analysis")?.action?.url).toContain("projectId=project-1");
+  });
+
+  it("requires a Strategy update when completed Gap Analysis is newer than the approved Strategy", () => {
+    const strategyAt = new Date("2026-08-01T12:00:00.000Z");
+    const gapAt = new Date("2026-08-01T13:00:00.000Z");
+    const result = resolveProjectWorkflow(snapshot({ latestStrategy: { id: "strategy-1", status: "approved", createdAt: strategyAt, approvedAt: strategyAt }, latestStrategyVersion: 1, gapEvidenceAt: gapAt, latestEvidenceAt: gapAt, websitePlanRequired: true }));
+    expect(result.nextBestAction.title).toContain("Update Unified Strategy");
+    expect(result.nextBestAction.action.url).toContain("/strategy?");
+    expect(result.stages.find((item) => item.key === "unified_strategy")?.status).toBe("stale");
+    expect(result.stages.find((item) => item.key === "strategy_approval")?.status).toBe("blocked");
   });
 
   it("does not invalidate a fresh Strategy while its evidence cycle is settling", () => {
@@ -317,12 +345,15 @@ describe("DEV-046 project workflow controller", () => {
       authorityEvidenceComplete: false,
     }));
 
-    for (const key of ["technical_seo", "content_gap_analysis", "ai_citation_analysis", "authority_analysis"]) {
+    for (const key of ["technical_seo", "content_gap_analysis", "authority_analysis"]) {
       const module = result.intelligenceModules.find((item) => item.key === key);
       expect(module?.status).toBe("stale");
       expect(module?.reason).toContain("predates newer");
       expect(module?.action?.url).toContain("/gap-analysis?");
     }
+    const citation = result.intelligenceModules.find((item) => item.key === "ai_citation_analysis");
+    expect(citation?.status).toBe("not_started");
+    expect(citation?.action?.url).toContain("/ai-citations?");
     expect(result.nextBestAction.action.label).toBe("Refresh gap analysis");
   });
 
@@ -335,11 +366,140 @@ describe("DEV-046 project workflow controller", () => {
     expect(result.nextBestAction.explainability.length).toBeGreaterThan(20);
   });
 
+  it("requires a current pre-change Growth diagnosis before implementation planning", () => {
+    const approvedAt = new Date("2026-08-01T12:00:00.000Z");
+    const result = resolveProjectWorkflow(snapshot({
+      latestStrategy: { id: "strategy-1", status: "approved", createdAt: approvedAt, approvedAt },
+      latestStrategyVersion: 1,
+      preExecutionGrowthComplete: false,
+    }));
+
+    expect(result.state).toBe("strategy_approved");
+    expect(result.nextBestAction.title).toBe("Run the Growth Engine before making changes");
+    expect(result.nextBestAction.action.url).toContain("/growth?");
+    expect(result.nextBestAction.explainability).toContain("before execution");
+    expect(result.blockers.some((item) => item.key === "pre_execution_growth_required")).toBe(true);
+    const blocker = executionPlanWorkflowBlocker(result);
+    expect(blocker?.code).toBe("WORKFLOW_PREREQUISITE_REQUIRED");
+    expect(blocker?.message).toContain("Run the Growth Engine before making changes first");
+    expect(blocker?.nextAction.action.url).toContain("/growth?");
+  });
+
+  it("keeps accepted, approved, and in-progress Growth priorities current", () => {
+    const approvedAt = new Date("2026-08-01T12:00:00.000Z");
+    const diagnosisAt = new Date("2026-08-01T12:05:00.000Z");
+    for (const actionStatus of ["proposed", "recommended", "selected", "approved", "accepted", "in_progress"]) {
+      expect(hasCurrentPreExecutionGrowth({ strategyApprovedAt: approvedAt, diagnosisAt, actionStatus })).toBe(true);
+    }
+    expect(hasCurrentPreExecutionGrowth({ strategyApprovedAt: approvedAt, diagnosisAt, actionStatus: "completed" })).toBe(false);
+    expect(hasCurrentPreExecutionGrowth({ strategyApprovedAt: approvedAt, diagnosisAt: new Date(approvedAt.getTime() - 1), actionStatus: "accepted" })).toBe(false);
+    expect(hasCurrentPreExecutionGrowth({ strategyApprovedAt: approvedAt, diagnosisAt: null, legacyCompletedCycleAt: diagnosisAt, actionStatus: "selected" })).toBe(false);
+    expect(hasCurrentPreExecutionGrowth({ strategyApprovedAt: approvedAt, diagnosisAt: null, legacyCompletedCycleAt: new Date(approvedAt.getTime() - 1), actionStatus: "selected" })).toBe(false);
+  });
+
+  it("shows Growth Plan before SEO Plan and Website Development", () => {
+    const result = resolveProjectWorkflow(snapshot({ websitePlanRequired: true }));
+    const keys = result.stages.map((stage) => stage.key);
+    expect(keys.indexOf("growth_plan")).toBeLessThan(keys.indexOf("seo_plan"));
+    expect(keys.indexOf("seo_plan")).toBeLessThan(keys.indexOf("website_development"));
+    expect(result.stages.find((stage) => stage.key === "seo_plan")?.reason).toContain("Growth priorities");
+    expect(result.stages.find((stage) => stage.key === "website_development")?.reason).toContain("Approve the SEO Plan first");
+  });
+
+  it("uses the controller-owned next action for every SEO Plan hard gate", () => {
+    const approvedAt = new Date("2026-08-01T12:00:00.000Z");
+    const approvedStrategy = { id: "strategy-1", status: "approved", createdAt: approvedAt, approvedAt };
+    const blocked = resolveProjectWorkflow(snapshot({ latestStrategy: approvedStrategy, websitePlanRequired: true, preExecutionGrowthComplete: false }));
+    const prerequisite = workflowStagePrerequisite(blocked, "seo_plan");
+    expect(prerequisite?.code).toBe("WORKFLOW_PREREQUISITE_REQUIRED");
+    expect(prerequisite?.nextAction.title).toBe(blocked.nextBestAction.title);
+    expect(prerequisite?.nextAction.action.url).toBe(blocked.nextBestAction.action.url);
+    expect(prerequisite?.nextAction.action.url).toContain("/growth?");
+
+    const ready = resolveProjectWorkflow(snapshot({ latestStrategy: approvedStrategy, websitePlanRequired: true, preExecutionGrowthComplete: true }));
+    expect(ready.stages.find((stage) => stage.key === "seo_plan")?.status).toBe("ready");
+    expect(workflowStagePrerequisite(ready, "seo_plan")).toBeNull();
+  });
+
+  it("shows active SEO Plan generation instead of offering another Create action", () => {
+    const approvedAt = new Date("2026-08-01T12:00:00.000Z");
+    const result = resolveProjectWorkflow(snapshot({
+      latestStrategy: { id: "strategy-1", status: "approved", createdAt: approvedAt, approvedAt },
+      preExecutionGrowthComplete: true,
+      websitePlanRequired: true,
+      websitePlanGenerationStatus: "running",
+      websitePlanGenerationProgress: 35,
+    }));
+    expect(result.nextBestAction.title).toContain("in progress");
+    expect(result.nextBestAction.reason).toContain("35%");
+    expect(result.nextBestAction.action.label).toBe("Open SEO Plan progress");
+    expect(result.nextBestAction.action.url).not.toContain("autoPrepare=1");
+    expect(result.stages.find((stage) => stage.key === "seo_plan")?.status).toBe("in_progress");
+  });
+
+  it("resolves critical facts before Growth and SEO planning", () => {
+    const result = resolveProjectWorkflow(snapshot({ criticalEvidenceIssueCount: 3 }));
+    expect(result.nextBestAction.title).toBe("Confirm the business facts before planning");
+    expect(result.nextBestAction.action.url).toContain("/ai-citations?");
+  });
+
+  it("creates, reviews, approves, and hands the SEO Plan to Website Development after Growth", () => {
+    const approvedAt = new Date("2026-08-01T12:00:00.000Z");
+    const base = {
+      latestStrategy: { id: "strategy-1", status: "approved", createdAt: approvedAt, approvedAt },
+      latestStrategyVersion: 1,
+      preExecutionGrowthComplete: true,
+      websitePlanRequired: true,
+    };
+    const create = resolveProjectWorkflow(snapshot(base));
+    expect(create.nextBestAction.title).toBe("Create the SEO Page Map & Content Plan");
+
+    const review = resolveProjectWorkflow(snapshot({ ...base, websitePlanGenerated: true, websitePlanTaskStatus: "in_progress" }));
+    expect(review.nextBestAction.title).toBe("Review the SEO Plan");
+
+    const approve = resolveProjectWorkflow(snapshot({ ...base, websitePlanGenerated: true, websitePlanTaskStatus: "submitted_for_approval" }));
+    expect(approve.nextBestAction.title).toBe("Approve the SEO Plan");
+
+    const develop = resolveProjectWorkflow(snapshot({ ...base, websitePlanGenerated: true, websitePlanApproved: true, websitePlanTaskStatus: "completed" }));
+    expect(develop.nextBestAction.title).toBe("Start Website Development");
+    expect(executionPlanWorkflowBlocker(develop)?.nextAction.action.url).toContain("/site-architect?");
+  });
+
+  it("requires prepared-change approval and post-implementation verification before measurement", () => {
+    const approvedAt = new Date("2026-08-01T12:00:00.000Z");
+    const base = {
+      latestStrategy: { id: "strategy-1", status: "approved", createdAt: approvedAt, approvedAt },
+      latestStrategyVersion: 1,
+      preExecutionGrowthComplete: true,
+      websitePlanRequired: true,
+      websitePlanGenerated: true,
+      websitePlanApproved: true,
+      websiteDevelopmentStarted: true,
+      executionPlanExists: true,
+      executionTasksExist: true,
+      executionPlanUpdatedAt: approvedAt,
+    };
+    const review = resolveProjectWorkflow(snapshot({ ...base, preparedChangesAwaitingApproval: true, openExecutionTasks: 2 }));
+    expect(review.nextBestAction.title).toBe("Review the prepared website changes");
+
+    const verify = resolveProjectWorkflow(snapshot({ ...base, completedExecutionTasks: 2, postImplementationVerificationRequired: true }));
+    expect(verify.nextBestAction.title).toBe("Verify the website changes");
+
+    const measure = resolveProjectWorkflow(snapshot({ ...base, completedExecutionTasks: 2 }));
+    expect(measure.nextBestAction.title).toBe("Review results and choose the next improvement");
+  });
+
   it("routes a Website Next Best Action through its unapproved Website Plan prerequisite", () => {
-    const evidenceAt = new Date("2026-07-01T12:00:00.000Z");
-    const strategyAt = new Date("2026-07-02T12:00:00.000Z");
+    const evidenceAt = new Date("2026-08-01T12:00:00.000Z");
+    const strategyAt = new Date("2026-08-02T12:00:00.000Z");
     const result = resolveProjectWorkflow(snapshot({
       latestEvidenceAt: evidenceAt,
+      keywordEvidenceAt: evidenceAt,
+      siteEvidenceAt: evidenceAt,
+      gapEvidenceAt: evidenceAt,
+      competitorEvidenceAt: evidenceAt,
+      citationEvidenceAt: evidenceAt,
+      authorityEvidenceAt: evidenceAt,
       latestStrategy: { id: "strategy-1", status: "approved", createdAt: strategyAt, approvedAt: strategyAt },
       latestStrategyVersion: 2,
       executionPlanExists: true,
@@ -360,9 +520,9 @@ describe("DEV-046 project workflow controller", () => {
         status: "recommended",
       },
     }));
-    expect(result.nextBestAction.title).toBe("Create and approve the SEO Page Map & Content Plan");
+    expect(result.nextBestAction.title).toBe("Create the SEO Page Map & Content Plan");
     expect(result.nextBestAction.action.url).toContain("/seo-page-map?");
-    expect(result.nextBestAction.explainability).toContain("original Strategy action remains queued");
+    expect(result.nextBestAction.explainability).toContain("separate draft decision");
     expect(result.blockers.some((item) => item.key === "website_plan_required")).toBe(true);
   });
 
@@ -372,6 +532,6 @@ describe("DEV-046 project workflow controller", () => {
     const result = resolveProjectWorkflow(snapshot({ latestEvidenceAt: evidenceAt, latestStrategy: { id: "strategy-1", status: "approved", createdAt: strategyAt, approvedAt: strategyAt }, latestStrategyVersion: 2, executionPlanExists: true, executionTasksExist: true, executionPlanUpdatedAt: new Date("2026-07-03T12:00:00.000Z"), executionPlanVersion: "2.0", openExecutionTasks: 0, completedExecutionTasks: 3, publishingStarted: false, publishingComplete: false }));
     expect(result.stages.find((stage) => stage.key === "publish_implement")?.status).toBe("not_required");
     expect(result.state).toBe("measurement");
-    expect(result.nextBestAction.title).toBe("Start measurement");
+    expect(result.nextBestAction.title).toBe("Review results and choose the next improvement");
   });
 });

@@ -1140,7 +1140,7 @@ export default function ExecutionModule({ kind }: { kind: ModuleKind }) {
       {kind === "strategy" && strategyBusy === "generate" && strategyForegroundVisible && <StrategyCookingOverlay job={strategyJob} />}
       {kind === "strategy" && strategyBusy === "execution" && <ExecutionPlanCookingOverlay />}
       <ProjectModuleHeader eyebrow={copy.title} title={moduleTitle} subtitle={copy.subtitle} project={hasActiveProject ? activeProject : null} projects={data.projects} tasks={scopedData.tasks} notifications={scopedData.notifications} onProjectChange={changeProject} actions={headerActions} showExecution={kind !== "keywords" && kind !== "site-analysis"} />
-      {hasActiveProject && activeProject && (kind === "opportunities" || kind === "strategy" || kind === "site-analysis" || kind === "lead-magnets") && <ProjectWorkflowController projectId={activeProject.id} refreshKey={`${scopedData.tasks.length}:${scopedKeywordRuns.length}:${activeSiteCrawl?.id ?? ""}:${activeSiteCrawl?.status ?? ""}:${latestSiteCrawl?.id ?? ""}:${latestSiteCrawl?.completedAt ?? ""}`} compact onLoaded={setWorkflowController} />}
+      {hasActiveProject && activeProject && <ProjectWorkflowController projectId={activeProject.id} refreshKey={`${scopedData.tasks.length}:${scopedKeywordRuns.length}:${activeSiteCrawl?.id ?? ""}:${activeSiteCrawl?.status ?? ""}:${latestSiteCrawl?.id ?? ""}:${latestSiteCrawl?.completedAt ?? ""}`} compact onLoaded={setWorkflowController} />}
       {hasActiveProject && kind === "backlinks" && (
         <div className={`rounded-lg border px-4 py-3 text-sm ${backlinkMessage ? "border-brand-100 bg-brand-50 text-brand-700" : "border-slate-200 bg-white text-charcoal-500"}`}>
           {backlinkMessage || (activeWebsite ? backlinkCooldown.helpText : "Connect a website before refreshing backlinks.")}
@@ -1621,6 +1621,7 @@ function OpportunityScreen({
   const taskCount = data.tasks.filter((task) => task.moduleName.includes("opportun")).length;
   const niche = project?.niche || project?.businessProfile?.businessModel || "Not provided";
   const intakeComplete = Boolean(project?.businessProfile || project?._count?.intakeAnswers);
+  const marketEvidenceAvailable = data.keywordRuns.some((run) => run.status === "completed" && run.avgSearchVolume != null && run.avgDifficulty != null);
   const selectAndConfirm = async (opportunityId: string) => {
     const opportunityName = opportunities.find((item) => item.id === opportunityId)?.name || "Selected opportunity";
     const selected = await onSelect(opportunityId);
@@ -1651,7 +1652,7 @@ function OpportunityScreen({
     <>
       {selectingId === "generate" && <OpportunityCookingOverlay />}
       {selectingId && !["generate", "refine", "skip", "clear"].includes(selectingId) && <OpportunityMappingOverlay />}
-      <OpportunityInsights project={project} niche={niche} opportunity={focusedOpportunity} opportunityCount={opportunityCount} taskCount={taskCount} onReport={() => {
+      <OpportunityInsights project={project} niche={niche} opportunity={focusedOpportunity} opportunityCount={opportunityCount} taskCount={taskCount} marketEvidenceAvailable={marketEvidenceAvailable} reassessing={selectingId === "generate"} onReassess={() => void onGenerate()} onReport={() => {
         setReportOpen(true);
       }} />
       <div id="opportunity-options" className="scroll-mt-6">
@@ -4644,7 +4645,8 @@ function OpportunityCard({
   onSelect: () => void;
   onClearSelection: () => void;
 }) {
-  const score = safeScore(opportunity.opportunityScore, 72);
+  const scoreEvidenceComplete = [opportunity.opportunityScore, opportunity.seoScore, opportunity.monetizationScore, opportunity.competitionScore, opportunity.executionScore, opportunity.userFitScore].every((value) => typeof value === "number" && Number.isFinite(value));
+  const score = safeScore(opportunity.opportunityScore, 0);
   const shortOpportunityName = opportunity.name.length > 44 ? `${opportunity.name.slice(0, 41)}...` : opportunity.name;
   return (
     <Card className={`relative flex min-h-[330px] flex-col p-4 transition ${selected ? "pt-10" : ""} ${focused ? "border-brand-500 ring-1 ring-brand-200" : "hover:border-brand-200"}`}>
@@ -4658,10 +4660,10 @@ function OpportunityCard({
         <h2 className="mt-4 min-h-[52px] text-lg font-bold leading-6 text-charcoal-950">{opportunity.name}</h2>
         <p className="mt-2 line-clamp-3 text-sm leading-6 text-charcoal-500">{opportunity.summary || opportunity.problemSolved || "AI-generated opportunity from project intake."}</p>
         <div className="mt-3 flex items-center gap-3">
-          <div className="min-w-0 flex-1 space-y-1 text-xs leading-5 text-charcoal-600"><p><b>Expected outcome:</b> {opportunity.recommendedOffer || opportunity.problemSolved || "A focused, measurable project direction."}</p><p><b>Estimated effort:</b> {(opportunity.executionScore ?? 50) >= 82 ? "Low" : (opportunity.executionScore ?? 50) >= 68 ? "Medium" : "High"} · <b>Confidence:</b> {Math.round(((opportunity.opportunityScore ?? 60) * 0.6) + ((opportunity.userFitScore ?? 60) * 0.4))}%</p></div>
-          <div className="shrink-0 border-l border-slate-200 pl-3 text-center"><div className="text-3xl font-black leading-none text-emerald-600">{score}</div><div className="mt-1 text-[10px] font-bold uppercase tracking-wide text-charcoal-400">Overall Score</div></div>
+          <div className="min-w-0 flex-1 space-y-1 text-xs leading-5 text-charcoal-600"><p><b>Expected outcome:</b> {opportunity.recommendedOffer || opportunity.problemSolved || "A focused, measurable project direction."}</p><p><b>Estimated effort:</b> {(opportunity.executionScore ?? 50) >= 82 ? "Low" : (opportunity.executionScore ?? 50) >= 68 ? "Medium" : "High"} · <b>Confidence:</b> {scoreEvidenceComplete ? Math.round(((opportunity.opportunityScore ?? 0) * 0.6) + ((opportunity.userFitScore ?? 0) * 0.4)) : "Insufficient evidence"}{scoreEvidenceComplete ? "%" : ""}</p></div>
+          <div className="shrink-0 border-l border-slate-200 pl-3 text-center"><div className="text-3xl font-black leading-none text-emerald-600">{scoreEvidenceComplete ? score : "Not scored"}</div><div className="mt-1 text-[10px] font-bold uppercase tracking-wide text-charcoal-400">Overall Score</div></div>
         </div>
-        <div className="mt-4 grid grid-cols-2 gap-2">
+        <div className={scoreEvidenceComplete ? "mt-4 grid grid-cols-2 gap-2" : "hidden"}>
           <OpportunityMetricChip label="SEO Potential" value={safeScore(opportunity.seoScore, score)} />
           <OpportunityMetricChip label="Monetization" value={safeScore(opportunity.monetizationScore, score)} />
           <OpportunityMetricChip label="Competition" value={safeScore(opportunity.competitionScore, 50)} tone="amber" />
@@ -5034,7 +5036,7 @@ function opportunityInsightScoreRows(opportunity: Opportunity | undefined) {
   ] as const;
 }
 
-function OpportunityInsights({ project, niche, opportunity, opportunityCount, taskCount, onReport }: { project: GuidedProject; niche: string; opportunity: Opportunity | undefined; opportunityCount: number; taskCount: number; onReport: () => void }) {
+function OpportunityInsights({ project, niche, opportunity, opportunityCount, taskCount, marketEvidenceAvailable, reassessing, onReassess, onReport }: { project: GuidedProject; niche: string; opportunity: Opportunity | undefined; opportunityCount: number; taskCount: number; marketEvidenceAvailable: boolean; reassessing: boolean; onReassess: () => void; onReport: () => void }) {
   const score = safeScore(opportunity?.opportunityScore, 72);
   const scoreRows = opportunityInsightScoreRows(opportunity);
   const scoreEvidenceComplete = Boolean(opportunity && [opportunity.opportunityScore, opportunity.seoScore, opportunity.monetizationScore, opportunity.competitionScore, opportunity.executionScore, opportunity.userFitScore].every((value) => typeof value === "number" && Number.isFinite(value)));
@@ -5054,7 +5056,7 @@ function OpportunityInsights({ project, niche, opportunity, opportunityCount, ta
       </div>
       <div className="grid gap-5 p-5 xl:grid-cols-[minmax(0,1.5fr)_220px_minmax(0,1fr)]">
         <div className="grid gap-x-5 gap-y-3 sm:grid-cols-2">
-          {scoreEvidenceComplete ? scoreRows.map((row) => <OpportunityScoreBar key={row.label} label={row.label} value={row.value} tone={row.tone} />) : <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-4 text-sm leading-6 text-amber-900 sm:col-span-2"><b>Insufficient evidence for scored factors.</b><br />Reassess opportunities from the current Business Brain before relying on a numeric score.</div>}
+          {scoreEvidenceComplete ? scoreRows.map((row) => <OpportunityScoreBar key={row.label} label={row.label} value={row.value} tone={row.tone} />) : <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-4 text-sm leading-6 text-amber-900 sm:col-span-2"><b>Numeric scores need Keyword Analysis evidence.</b><p className="mt-1">Your Business Profile and opportunity options are complete. Select the best direction using its audience, offer, and business-fit explanation. Numeric scores will become available after Keyword Analysis returns valid search volume and SEO difficulty.</p>{marketEvidenceAvailable ? <button type="button" disabled={reassessing} onClick={onReassess} className="mt-3 inline-flex rounded-lg bg-amber-700 px-4 py-2 text-xs font-black text-white disabled:opacity-50">{reassessing ? "Reassessing…" : "Reassess opportunities with completed evidence →"}</button> : opportunity && ["selected", "confirmed"].includes(opportunity.status) ? <Link to={"/keywords?projectId=" + encodeURIComponent(project.id)} className="mt-3 inline-flex rounded-lg bg-amber-700 px-4 py-2 text-xs font-black text-white">Continue to Keyword Analysis →</Link> : <a href="#opportunity-options" className="mt-3 inline-flex rounded-lg bg-amber-700 px-4 py-2 text-xs font-black text-white">Review and select an opportunity →</a>}</div>}
           {scoreEvidenceComplete && <div className="rounded-lg bg-slate-50 px-3 py-2 text-xs leading-5 text-charcoal-600 sm:col-span-2">Complexity is inverted from speed to launch. Lower complexity means easier to execute.</div>}
         </div>
         <div className="grid grid-cols-3 gap-2 xl:grid-cols-1">

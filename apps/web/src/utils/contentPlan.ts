@@ -30,7 +30,9 @@ export function contentPlanActionLabel(task: GuidedExecutionTask) {
   const launchPlan = /website\s+launch/i.test(`${task.title} ${task.actionButtonLabel ?? ""}`);
   if (["submitted_for_approval", "pending_approval", "waiting_for_approval", "needs_approval"].includes(task.status)) return "Review Approval";
   if (["completed", "approved", "ready_to_publish"].includes(task.status)) return launchPlan ? "View Approved Website Launch Plan" : "View Approved SEO Plan";
-  if (["in_progress", "needs_review", "changes_requested"].includes(task.status)) return launchPlan ? "Review Website Launch Plan" : "Review SEO Plan";
+  if (task.status === "in_progress") return launchPlan ? "Website Plan in process" : "SEO Plan in process";
+  if (task.status === "failed") return launchPlan ? "Website Plan failed — Retry" : "SEO Plan failed — Retry";
+  if (["needs_review", "changes_requested"].includes(task.status)) return launchPlan ? "Review Website Launch Plan" : "Review SEO Plan";
   return launchPlan ? "Create Website Launch Plan" : "Create SEO Plan";
 }
 

@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { api } from "../api.js";
 import ContentPlanDialog from "../components/ContentPlanDialog.js";
+import ProjectWorkflowController from "../components/ProjectWorkflowController.js";
 import type { GuidedExecutionTask } from "../types.js";
 import { isContentPlanTask, preferredContentPlanTask } from "../utils/contentPlan.js";
 
@@ -68,6 +69,8 @@ export default function SeoPageMap() {
         <button type="button" onClick={goBack} className="inline-flex items-center justify-center rounded-lg border border-white/20 bg-white/10 px-4 py-2.5 text-sm font-bold text-white hover:bg-white/15">← Back to previous workspace</button>
       </div>
     </section>
+
+    {projectId && <ProjectWorkflowController projectId={projectId} refreshKey={task?.updatedAt ?? task?.id ?? 0} compact />}
 
     {loading && <section className="rounded-2xl border border-slate-200 bg-white px-6 py-16 text-center shadow-sm">
       <div className="mx-auto h-10 w-10 animate-spin rounded-full border-4 border-brand-100 border-t-brand-600" />

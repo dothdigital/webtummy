@@ -1476,6 +1476,7 @@ async function scopedProject(projectId: string, req: Parameters<typeof workspace
       agencyClient: true,
       website: { include: { trackingSite: true, measurementPlans: { where: { active: true }, orderBy: { version: "desc" }, take: 1 } } },
       businessProfile: true,
+      workflowController: true,
       strategyPlans: { where: { status: "approved" }, orderBy: { version: "desc" }, take: 1 },
       growthBlueprint: { include: { versions: { orderBy: { version: "desc" }, take: 1 } } },
       nextBestActions: { where: { status: { in: ["proposed", "recommended", "selected", "approved", "accepted", "in_progress"] } }, orderBy: [{ selectedAt: "desc" }, { priorityScore: "desc" }, { createdAt: "desc" }], take: 10, include: { followupTask: { select: { id: true, title: true, status: true, relatedUrl: true } } } },
@@ -2295,6 +2296,7 @@ export function builderView(project: Awaited<ReturnType<typeof scopedProject>>["
   })) ?? null;
   return {
     project: { id: project.id, name: project.name, businessName: businessContext.businessName, websiteUrl: project.websiteUrl, websiteStatus: project.websiteStatus, projectType: project.projectType, brandVoice: project.brandVoice, industry: businessContext.industry || project.niche, audience: businessContext.audience || null, offer: businessContext.coreBusinessValue || null, services: businessContext.primaryServices, businessSummary: businessContext.brandDescription || null, primaryGoal: project.primaryGoal, targetLocations: targetLocationStrings(project.targetLocations), preferredPublishingMethod: project.preferredPublishingMethod, complianceAdvisories },
+    masterWorkflow: project.workflowController ? { state: project.workflowController.state, intelligenceReady: project.workflowController.intelligenceReady, readinessPercent: project.workflowController.readinessPercent, strategyApproved: project.strategyPlans.length > 0, growthPlanReady: Boolean(project.growthBlueprint), nextBestAction: jsonRecord(project.workflowController.nextBestActionJson) } : null,
     measurement: project.website ? {
       websiteId: project.website.id,
       rootUrl: project.website.rootUrl,
@@ -4155,7 +4157,7 @@ const websitePlanSuggestionSchema = z.object({
   sourceType: z.string().trim().min(1).max(80),
   sourceId: z.string().trim().min(1).max(191),
   title: z.string().trim().min(3).max(255),
-  pageMode: z.enum(["match_or_create", "create_supporting"]).optional().default("match_or_create"),
+  pageMode: z.enum(["match_or_create", "create_supporting", "add_faq", "reject"]).optional().default("match_or_create"),
   targetUrl: z.string().trim().max(2000).nullable().optional(),
   parentTargetUrl: z.string().trim().max(2000).nullable().optional(),
   evidence: z.string().trim().min(1).max(10_000),
@@ -4169,23 +4171,50 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/plan-suggestions
   if (!hasWorkspacePermission(context, "execute_tasks")) return res.status(403).json({ error: "You do not have permission to update the Website Plan." });
   const input = websitePlanSuggestionSchema.parse(req.body);
   const build = await prisma.websiteBuild.findFirst({ where: { projectId: req.params.projectId }, orderBy: { updatedAt: "desc" }, include: { pages: { where: { status: { not: "deferred" } } } } });
-  if (!build) return res.status(409).json({ error: "Start Website Planning before adding content suggestions.", destinationUrl: `/site-architect?projectId=${req.params.projectId}` });
+  if (!build) {
+    const project = await prisma.project.findUnique({ where: { id: req.params.projectId }, select: { clientId: true, websiteId: true } });
+    if (!project) return res.status(404).json({ error: "Project not found." });
+    if (input.pageMode === "reject") return res.status(201).json({ status: "rejected", pageId: null, pageTitle: null, destinationUrl: `/seo-page-map?projectId=${req.params.projectId}` });
+    const sourceAnalysisId = `${input.sourceModule}:${input.sourceType}:${input.sourceId}`.slice(0, 191);
+    const existing = await prisma.seoFixQueueItem.findFirst({ where: { projectId: req.params.projectId, sourceAnalysisId } });
+    const data = { affectedUrl: (input.targetUrl || "Project-wide content requirement").slice(0, 512), issueType: input.sourceType.slice(0, 80), severity: "medium", riskLevel: "review_needed", automationLevel: "prepare", recommendedFix: input.recommendedAction, plainEnglishReason: input.evidence, expectedImpact: input.expectedImpact || null, approvalStatus: "approved_for_work" };
+    const item = existing ? await prisma.seoFixQueueItem.update({ where: { id: existing.id }, data }) : await prisma.seoFixQueueItem.create({ data: { ...data, projectId: req.params.projectId, clientId: project.clientId, websiteId: project.websiteId, sourceAnalysisId } });
+    await prisma.$transaction((tx) => recordWorkspaceActivity(tx, { context, action: "content_suggestion.saved_for_seo_plan", entityType: "seo_fix_queue_item", entityId: item.id, projectId: req.params.projectId, nextJson: { sourceModule: input.sourceModule, sourceType: input.sourceType, targetUrl: input.targetUrl ?? null } }));
+    return res.status(201).json({ status: "saved_for_seo_plan", pageId: null, pageTitle: null, destinationUrl: `/seo-page-map?projectId=${req.params.projectId}` });
+  }
   const target = normalizedPageTarget(input.targetUrl);
   const parentTarget = normalizedPageTarget(input.parentTargetUrl);
   const parentPage = parentTarget ? build.pages.find((candidate) => [candidate.targetUrl, candidate.remoteUrl, candidate.slug ? `/${candidate.slug}` : "/"].some((value) => normalizedPageTarget(value) === parentTarget)) ?? null : null;
-  const page = input.pageMode === "match_or_create" && target ? build.pages.find((candidate) => [candidate.targetUrl, candidate.remoteUrl, candidate.slug ? `/${candidate.slug}` : "/"].some((value) => normalizedPageTarget(value) === target)) ?? null : null;
+  const exactPage = target ? build.pages.find((candidate) => [candidate.targetUrl, candidate.remoteUrl, candidate.slug ? `/${candidate.slug}` : "/"].some((value) => normalizedPageTarget(value) === target)) ?? null : null;
+  const suggestionTokens = new Set(`${input.title} ${input.evidence}`.toLowerCase().split(/[^a-z0-9]+/).filter((token) => token.length > 2 && !["how", "should", "someone", "compare", "options", "what", "when", "where", "which", "with", "from"].includes(token)));
+  const bestFaqPage = input.pageMode === "add_faq" ? build.pages
+    .filter((candidate) => !["deferred", "blog_section"].includes(candidate.status) && candidate.pageType !== "blog_section")
+    .map((candidate) => ({ candidate, score: `${candidate.title} ${candidate.slug} ${candidate.primaryKeyword} ${jsonStrings(candidate.secondaryKeywords).join(" ")}`.toLowerCase().split(/[^a-z0-9]+/).filter((token) => suggestionTokens.has(token)).length }))
+    .sort((left, right) => right.score - left.score || left.candidate.sortOrder - right.candidate.sortOrder)[0] ?? null : null;
+  const page = input.pageMode === "add_faq" ? exactPage ?? (bestFaqPage?.score ? bestFaqPage.candidate : null) : input.pageMode === "match_or_create" ? exactPage : null;
   const findingKey = `${input.sourceModule}:${input.sourceType}:${input.sourceId}`;
-  const requirement = { findingKey, sourceModule: input.sourceModule, sourceType: input.sourceType, sourceId: input.sourceId, title: input.title, targetUrl: input.targetUrl ?? null, parentTargetUrl: input.parentTargetUrl ?? null, pageMode: input.pageMode, evidence: input.evidence, recommendedFix: input.recommendedAction, expectedImpact: input.expectedImpact, approvalStatus: "suggested", addedAt: new Date().toISOString(), addedByUserId: context.membership.userId };
+  const requirement = { findingKey, sourceModule: input.sourceModule, sourceType: input.sourceType, sourceId: input.sourceId, title: input.title, targetUrl: input.targetUrl ?? null, parentTargetUrl: input.parentTargetUrl ?? null, pageMode: input.pageMode, evidence: input.evidence, recommendedFix: input.recommendedAction, expectedImpact: input.expectedImpact, ...(input.pageMode === "add_faq" ? { requirementType: "faq_topic", schemaRequirement: "FAQPage", visibleAnswerRequired: true } : {}), approvalStatus: "suggested", addedAt: new Date().toISOString(), addedByUserId: context.membership.userId };
+  if (input.pageMode === "reject") {
+    const settings = jsonRecord(build.settingsJson);
+    const rejected = Array.isArray(settings.rejectedPlanSuggestions) ? settings.rejectedPlanSuggestions.map(jsonRecord) : [];
+    await prisma.$transaction(async (tx) => {
+      await tx.websiteBuild.update({ where: { id: build.id }, data: { settingsJson: { ...settings, rejectedPlanSuggestions: [...rejected.filter((item) => String(item.findingKey ?? "") !== findingKey), { ...requirement, approvalStatus: "rejected", rejectedAt: new Date().toISOString() }] } as Prisma.InputJsonValue } });
+      await recordWorkspaceActivity(tx, { context, action: "website_plan.suggestion_rejected", entityType: "website_build", entityId: build.id, projectId: req.params.projectId, nextJson: { ...requirement, approvalStatus: "rejected" } });
+    });
+    return res.status(201).json({ status: "rejected", pageId: null, pageTitle: null, destinationUrl: `/gap-analysis?projectId=${req.params.projectId}` });
+  }
+  if (input.pageMode === "add_faq" && !page) return res.status(409).json({ error: "No relevant existing page could be matched. Choose Create supporting page, or map the question to a page in the SEO Plan first." });
   if (page) {
     const brief = jsonRecord(page.briefJson), seoPlan = jsonRecord(brief.seoPlan);
     const current = Array.isArray(seoPlan.gapRequirements) ? seoPlan.gapRequirements.map(jsonRecord) : [];
     const gapRequirements = [...current.filter((item) => String(item.findingKey ?? "") !== findingKey), requirement];
+    const faqTopics = input.pageMode === "add_faq" ? [...new Set([...jsonStrings(seoPlan.faqTopics), input.title])] : jsonStrings(seoPlan.faqTopics);
     await prisma.$transaction(async (tx) => {
-      await tx.websiteBuildPage.update({ where: { id: page.id }, data: { briefJson: { ...brief, seoPlan: { ...seoPlan, gapRequirements } } as Prisma.InputJsonValue, ...(["approved", "deployed", "published"].includes(page.status) ? { status: "review", approvedAt: null } : {}) } });
+      await tx.websiteBuildPage.update({ where: { id: page.id }, data: { briefJson: { ...brief, seoPlan: { ...seoPlan, gapRequirements, faqTopics } } as Prisma.InputJsonValue, ...(["approved", "deployed", "published"].includes(page.status) ? { status: "review", approvedAt: null } : {}) } });
       await tx.websiteBuild.update({ where: { id: build.id }, data: { sitemapApprovedAt: null, settingsJson: websiteChangedSettings({ ...jsonRecord(build.settingsJson), siteFiles: null }, { category: "page_content", summary: `${input.title} added to Website Plan review.`, section: "structure", pageId: page.id, pageTitle: page.title, changedByUserId: context.membership.userId }) as Prisma.InputJsonValue } });
       await recordWorkspaceActivity(tx, { context, action: "website_plan.suggestion_added", entityType: "website_build_page", entityId: page.id, projectId: req.params.projectId, nextJson: requirement });
     });
-    return res.status(201).json({ status: "added_to_existing_page", pageId: page.id, pageTitle: page.title, destinationUrl: `/site-architect?projectId=${req.params.projectId}&step=structure&pageId=${page.id}&sourceSuggestion=${encodeURIComponent(findingKey)}` });
+    return res.status(201).json({ status: input.pageMode === "add_faq" ? "added_as_faq" : "added_to_existing_page", pageId: page.id, pageTitle: page.title, destinationUrl: `/site-architect?projectId=${req.params.projectId}&step=${input.pageMode === "add_faq" ? "content" : "structure"}&pageId=${page.id}&sourceSuggestion=${encodeURIComponent(findingKey)}` });
   }
   const suggestedPath = input.pageMode === "create_supporting" ? `/blog/${slugify(input.title)}` : target || `/${slugify(input.title)}`;
   const suggestedSlug = suggestedPath === "/" ? "" : input.pageMode === "create_supporting" ? `blog/${slugify(input.title)}` : slugify(suggestedPath.split("/").filter(Boolean).pop() || input.title);

@@ -23,7 +23,7 @@ import { approvedKeywordEntries, missingApprovedKeywordResearch, splitKeywordEnt
 import { recommendationFindings } from "./gap-analysis.js";
 import { approvedStrategyContext, channelStrategyText, extractUnifiedStrategyPlan, generateUnifiedStrategyWithAi } from "../strategy-ai.js";
 import { buildStrategyDecisionSet, composeStrategyDecisionExplainability, STRATEGY_DECISION_ENGINE_VERSION } from "../strategy-decision-engine.js";
-import { getProjectWorkflowController, publishProjectWorkflowEvent } from "../project-workflow-controller.js";
+import { executionPlanWorkflowBlocker, getProjectWorkflowController, publishProjectWorkflowEvent } from "../project-workflow-controller.js";
 import { marketingExecutionSummary } from "../marketing-execution-engine.js";
 import { generateAiOpportunityRecommendations, type AiOpportunityRecommendation } from "../opportunity-ai.js";
 import { centralAiJson, prepareCentralAiPrompt } from "../central-ai-service.js";
@@ -1573,11 +1573,21 @@ function applyOpportunityRefinement(options: ReturnType<typeof buildOpportunityO
   }).sort((a, b) => b.opportunityScore - a.opportunityScore);
 }
 
+function opportunityMatchScore(left: { name: string; recommendedOffer?: string | null; problemSolved?: string | null }, right: { name: string; recommendedOffer?: string | null; problemSolved?: string | null }) {
+  const tokens = (value: string) => new Set(value.toLowerCase().match(/\b[a-z0-9]{3,}\b/g) || []);
+  const leftTokens = tokens(left.name + " " + (left.recommendedOffer || "") + " " + (left.problemSolved || ""));
+  const rightTokens = tokens(right.name + " " + (right.recommendedOffer || "") + " " + (right.problemSolved || ""));
+  return [...leftTokens].filter((token) => rightTokens.has(token)).length;
+}
+
 async function generateOpportunityRecommendations(project: NonNullable<Awaited<ReturnType<typeof scopedProject>>>, context: Awaited<ReturnType<typeof workspaceContext>>, refinement?: string | null) {
   const ctx = projectContext(project);
   const run = opportunityRunMode(project);
   const ruleGuardrails = applyOpportunityRefinement(buildOpportunityOptions(project, ctx), refinement);
-  const inputSnapshot = { projectId: project.id, inputs: opportunityInputSummary(project), context: ctx, mode: run.mode, refinement: refinement ?? null, ruleGuardrails };
+  const validatedMarketEvidence = await prisma.keywordResearchRun.findMany({ where: { projectId: project.id, status: "completed", averageVolume: { not: null }, ideas: { some: { competitionIndex: { not: null } } } }, orderBy: [{ completedAt: "desc" }, { createdAt: "desc" }], select: { id: true, seedKeyword: true, averageVolume: true, keywordCount: true, completedAt: true } });
+  const latestCrawlEvidence = project.websiteId ? await prisma.crawlJob.findFirst({ where: { websiteId: project.websiteId, status: "completed", pagesCrawled: { gt: 0 } }, orderBy: [{ completedAt: "desc" }, { createdAt: "desc" }], select: { id: true, siteScore: true, pagesCrawled: true, completedAt: true } }) : null;
+  const evidenceSnapshot = { keywordRuns: validatedMarketEvidence, latestCrawl: latestCrawlEvidence };
+  const inputSnapshot = { projectId: project.id, inputs: opportunityInputSummary(project), evidence: evidenceSnapshot, context: ctx, mode: run.mode, refinement: refinement ?? null, ruleGuardrails };
   const inputHash = createHash("sha256").update(JSON.stringify(inputSnapshot)).digest("hex");
   const usage = await preflightUsage({
     clientId: project.clientId,
@@ -1589,7 +1599,15 @@ async function generateOpportunityRecommendations(project: NonNullable<Awaited<R
     idempotencyKey: `opportunity:${project.id}:${inputHash}`,
     metadata: { inputHash, mode: run.mode, refinement: Boolean(refinement) },
   });
-  if (usage.duplicate) return {
+  if (usage.duplicate) {
+    const selected = project.opportunities.find((item) => ["selected", "confirmed"].includes(item.status) && item.opportunityScore == null);
+    const scored = project.opportunities.filter((item) => item.opportunityScore != null);
+    const closest = selected ? scored.slice().sort((a, b) => opportunityMatchScore(selected, b) - opportunityMatchScore(selected, a))[0] : undefined;
+    if (selected && closest && opportunityMatchScore(selected, closest) > 0) {
+      await prisma.opportunity.update({ where: { id: selected.id }, data: { opportunityScore: closest.opportunityScore, seoScore: closest.seoScore, competitionScore: closest.competitionScore, monetizationScore: closest.monetizationScore, executionScore: closest.executionScore, userFitScore: closest.userFitScore } });
+      project.opportunities = project.opportunities.map((item) => item.id === selected.id ? { ...item, opportunityScore: closest.opportunityScore, seoScore: closest.seoScore, competitionScore: closest.competitionScore, monetizationScore: closest.monetizationScore, executionScore: closest.executionScore, userFitScore: closest.userFitScore } : item);
+    }
+    return {
     opportunities: project.opportunities,
     generationMode: "ai" as const,
     model: null,
@@ -1597,6 +1615,7 @@ async function generateOpportunityRecommendations(project: NonNullable<Awaited<R
     fallbackReason: null,
     cached: true,
   };
+  }
   const client = await prisma.client.findUnique({ where: { id: project.clientId }, select: { plan: true } });
   const routedModel = await modelForFeature("opportunity_refresh", client?.plan, config.openaiModel);
   let options: AiOpportunityRecommendation[];
@@ -1607,7 +1626,7 @@ async function generateOpportunityRecommendations(project: NonNullable<Awaited<R
   let fallbackReason: string | null = null;
   try {
     const generated = await generateAiOpportunityRecommendations({
-      businessBrain: opportunityInputSummary(project),
+      businessBrain: { ...opportunityInputSummary(project), evidence: evidenceSnapshot },
       projectContext: ctx,
       ruleGuardrails,
       mode: run.mode,
@@ -1641,9 +1660,9 @@ async function generateOpportunityRecommendations(project: NonNullable<Awaited<R
       // repeated "refined" suffix after subsequent refinement runs.
       name: option.name.replace(/(?:\s*[—-]\s*refined)+$/i, ""),
       targetAudience: option.targetAudience, problemSolved: option.problemSolved, recommendedOffer: option.recommendedOffer,
-      businessModel: option.businessModel, opportunityScore: option.opportunityScore, seoScore: option.seoScore,
-      competitionScore: option.competitionScore, monetizationScore: option.monetizationScore, executionScore: option.executionScore,
-      userFitScore: option.userFitScore,
+      businessModel: option.businessModel, opportunityScore: validatedMarketEvidence.length > 0 ? option.opportunityScore : null, seoScore: validatedMarketEvidence.length > 0 ? option.seoScore : null,
+      competitionScore: validatedMarketEvidence.length > 0 ? option.competitionScore : null, monetizationScore: validatedMarketEvidence.length > 0 ? option.monetizationScore : null, executionScore: validatedMarketEvidence.length > 0 ? option.executionScore : null,
+      userFitScore: validatedMarketEvidence.length > 0 ? option.userFitScore : null,
       summary: option.summary,
       status: run.mode === "confirmation" && index === 0 && !refinement ? "confirmation_required" : "suggested",
     } })));
@@ -1690,7 +1709,7 @@ function validSemanticKeyword(keyword: string, locations: string[]) {
   return isCustomerSearchKeyword(normalized);
 }
 
-function semanticPreviewGroups(value: unknown, locations: string[]) {
+function semanticPreviewGroups(value: unknown, locations: string[], relevanceTerms: string[] = []) {
   const rawGroups = value && typeof value === "object" && !Array.isArray(value) && Array.isArray((value as { groups?: unknown }).groups) ? (value as { groups: unknown[] }).groups : [];
   const allowed = new Set(["primary", "buyer_intent", "local", "informational", "supporting", "questions", "long_tail"]);
   return rawGroups.flatMap((raw) => {
@@ -1698,7 +1717,13 @@ function semanticPreviewGroups(value: unknown, locations: string[]) {
     const record = raw as Record<string, unknown>;
     const category = String(record.category ?? "supporting").trim().toLocaleLowerCase();
     if (!allowed.has(category)) return [];
-    const keywords = normalizeKeywordList(record.keywords).filter((item) => validSemanticKeyword(item, locations)).slice(0, category === "primary" ? 20 : 10);
+    const genericTerms = new Set(["app", "business", "company", "customer", "customers", "platform", "planning", "provider", "service", "services", "software", "solution", "solutions", "system", "tool"]);
+    const contextTerms = new Set(relevanceTerms.flatMap((item) => item.toLocaleLowerCase().match(/[a-z0-9]{3,}/g) ?? []).filter((item) => !genericTerms.has(item)));
+    const keywords = normalizeKeywordList(record.keywords).filter((item) => {
+      if (!validSemanticKeyword(item, locations)) return false;
+      if (!contextTerms.size) return true;
+      return (item.toLocaleLowerCase().match(/[a-z0-9]{3,}/g) ?? []).some((term) => contextTerms.has(term));
+    }).slice(0, category === "primary" ? 20 : 10);
     return keywords.length ? [{ category, title: String(record.title ?? category.replaceAll("_", " ")).trim(), keywords }] : [];
   });
 }
@@ -1789,7 +1814,7 @@ async function generateProjectKeywordGroups(project: NonNullable<Awaited<ReturnT
       referenceGroups: append ? project.keywordGroups.filter((group) => ["approved", "suggested"].includes(group.status)) : [],
       existingKeywords: append ? project.keywordGroups.flatMap((group) => normalizeKeywordList(group.keywords)) : [],
     }), routedModel);
-    const semanticGroups = semanticPreviewGroups(generated.result, locations);
+    const semanticGroups = semanticPreviewGroups(generated.result, locations, [project.niche ?? "", project.businessProfile?.offerSummary ?? "", project.businessProfile?.targetAudience ?? "", manualSeed ?? "", expansionTopic ?? ""]);
     if (!semanticGroups.length) throw new Error("AI returned no valid customer-search keyword groups");
     groups = completeSemanticKeywordGroups(semanticGroups, fallbackGroups);
     generationSource = expansionInstruction ? "ai_intent_expansion" : manualSeed ? "ai_manual_seed" : "ai_intent_recommendation";
@@ -2779,8 +2804,13 @@ guidedProjectsRouter.get("/projects-v2", async (req, res) => {
     if (["completed", "skipped", "published"].includes(row.status)) counts.completed += row._count._all;
     executionByProject.set(row.projectId, counts);
   }
+  const workflowControllers = new Map(await Promise.all(projects.map(async (project) => [
+    project.id,
+    await getProjectWorkflowController(project.id).catch(() => null),
+  ] as const)));
   res.json({ projects: projects.map((project) => ({
     ...project,
+    workflowController: workflowControllers.get(project.id) ?? null,
     executionProgress: executionByProject.get(project.id) ?? { total: 0, completed: 0 },
   })) });
 });
@@ -2880,10 +2910,12 @@ guidedProjectsRouter.post("/projects-v2", async (req, res) => {
   }) : null;
   if (data.agencyClientId && !agencyClient) return res.status(404).json({ error: "agency client not found" });
   const workspaceDefaults = locationDefaultsFromSettings(workspace.workspace.settingsJson);
+  const workspaceSettings = workspace.workspace.settingsJson && typeof workspace.workspace.settingsJson === "object" && !Array.isArray(workspace.workspace.settingsJson) ? workspace.workspace.settingsJson as Record<string, unknown> : {};
+  const sharedBusinessProfile = workspace.workspace.workspaceType === "business" && workspaceSettings.businessProfile && typeof workspaceSettings.businessProfile === "object" && !Array.isArray(workspaceSettings.businessProfile) ? workspaceSettings.businessProfile as Record<string, unknown> : {};
   const defaults = agencyClient ? clientDefaults(agencyClient) : {
     businessLocation: workspaceDefaults.businessLocation, businessLocationDetails: workspaceDefaults.businessLocationDetails, targetLocations: workspaceDefaults.targetMarkets,
-    websiteUrl: "", niche: "", primaryGoal: "", brandVoice: "", businessDescription: "", targetAudience: "",
-    mainProductsServices: "", primaryKeywords: [] as string[], preferredLanguage: "", timeZone: "",
+    websiteUrl: "", niche: typeof sharedBusinessProfile.niche === "string" ? sharedBusinessProfile.niche : "", primaryGoal: "", brandVoice: typeof sharedBusinessProfile.brandVoice === "string" ? sharedBusinessProfile.brandVoice : "", businessDescription: typeof sharedBusinessProfile.businessDescription === "string" ? sharedBusinessProfile.businessDescription : "", targetAudience: typeof sharedBusinessProfile.targetAudience === "string" ? sharedBusinessProfile.targetAudience : "",
+    mainProductsServices: typeof sharedBusinessProfile.productsServices === "string" ? sharedBusinessProfile.productsServices : "", primaryKeywords: [] as string[], preferredLanguage: "", timeZone: "",
     aiBusinessIntelligence: {} as Record<string, unknown>,
   };
   const inheritedClientNotes = [
@@ -2948,7 +2980,7 @@ guidedProjectsRouter.post("/projects-v2", async (req, res) => {
         name: data.name.trim(),
         projectType: effectiveProjectType,
         websiteStatus: data.websiteStatus,
-        businessName: agencyClient ? null : clean(data.businessName),
+        businessName: agencyClient ? null : clean(data.businessName) || (typeof sharedBusinessProfile.businessName === "string" ? sharedBusinessProfile.businessName : null),
         websiteUrl: normalized?.rootUrl ?? clean(data.websiteUrl),
         niche: clean(data.niche),
         businessLocation: effectiveBusinessLocation,
@@ -3002,9 +3034,19 @@ guidedProjectsRouter.post("/projects-v2", async (req, res) => {
       });
     }
     const existingWorkspaceDefaults = locationDefaultsFromSettings(workspace.workspace.settingsJson);
+    const confirmedBusinessProfile = workspace.workspace.workspaceType === "business" ? {
+      businessName: project.businessName,
+      niche: project.niche,
+      businessDescription: clean(data.businessDescription) || defaults.businessDescription || null,
+      targetAudience: clean(data.targetAudience) || defaults.targetAudience || null,
+      productsServices: clean(data.productsServices) || defaults.mainProductsServices || null,
+      brandVoice: project.brandVoice,
+      verifiedAt: new Date().toISOString(),
+      sourceProjectId: project.id,
+    } : null;
     const shouldSaveWorkspaceDefaults = workspace.workspace.workspaceType !== "agency" && (data.updateWorkspaceDefaults || !existingWorkspaceDefaults.businessLocation || !existingWorkspaceDefaults.targetMarkets.length);
     if (shouldSaveWorkspaceDefaults && effectiveBusinessLocation) {
-      const nextSettings = withLocationDefaults(workspace.workspace.settingsJson, {
+      const nextSettings = withLocationDefaults({ ...workspaceSettings, ...(confirmedBusinessProfile ? { businessProfile: confirmedBusinessProfile } : {}) }, {
         businessLocation: effectiveBusinessLocation,
         businessLocationDetails: effectiveBusinessLocationDetails,
         targetMarkets: effectiveTargetLocations,
@@ -3015,6 +3057,9 @@ guidedProjectsRouter.post("/projects-v2", async (req, res) => {
         previousJson: existingWorkspaceDefaults as unknown as Prisma.InputJsonValue,
         nextJson: locationDefaultsFromSettings(nextSettings) as unknown as Prisma.InputJsonValue,
       });
+    } else if (confirmedBusinessProfile) {
+      await tx.workspace.update({ where: { id: workspace.workspace.id }, data: { settingsJson: { ...workspaceSettings, businessProfile: confirmedBusinessProfile } as Prisma.InputJsonValue } });
+      await recordWorkspaceActivity(tx, { context: workspace, action: "workspace.business_profile_verified", entityType: "workspace", entityId: workspace.workspace.id, projectId: project.id, nextJson: confirmedBusinessProfile as Prisma.InputJsonValue });
     }
 
     await createInitialPlan(tx, project);
@@ -3520,6 +3565,9 @@ guidedProjectsRouter.post("/projects-v2/:projectId/reset-after-strategy", async 
 guidedProjectsRouter.delete("/projects-v2/:projectId", async (req, res) => {
   await requireRequestPermission(req, "manage_projects");
   const workspace = await workspaceContext(req);
+  if (!workspace.roles.has("owner") && !workspace.roles.has("admin")) {
+    return res.status(403).json({ error: "Only a workspace Owner or Admin can permanently delete an archived project." });
+  }
   const project = await scopedProject(req, req.params.projectId);
   if (!project) return res.status(404).json({ error: "project not found" });
   if (project.status !== "archived") return res.status(409).json({ error: "Archive the project before permanently deleting it." });
@@ -3535,6 +3583,10 @@ guidedProjectsRouter.delete("/projects-v2/:projectId", async (req, res) => {
     await tx.workspaceAiIntakeSession.deleteMany({ where: { appliedProjectId: project.id } });
     await tx.workspaceNotification.deleteMany({ where: { projectId: project.id } });
     await tx.keywordResearchRun.deleteMany({ where: { projectId: project.id } });
+    // Converted discovery history belongs to this project. Delete it before
+    // the Project row so the SetNull relation cannot turn it back into a
+    // visible, unconverted draft on the Projects screen.
+    await tx.discoveryDraft.deleteMany({ where: { convertedProjectId: project.id } });
 
     if (websiteId) {
       const otherProjectCount = await tx.project.count({
@@ -3887,7 +3939,7 @@ guidedProjectsRouter.post("/projects-v2/:projectId/keyword-groups/preview", asyn
       referenceGroups,
       existingKeywords,
     }), routedModel);
-    const groups = semanticPreviewGroups(generated.result, locations).filter((group) => !parsed.data.supportingOnly || group.category !== "primary");
+    const groups = semanticPreviewGroups(generated.result, locations, [previewProject.niche ?? "", previewProject.businessProfile?.offerSummary ?? "", previewProject.businessProfile?.targetAudience ?? "", topic ?? ""]).filter((group) => !parsed.data.supportingOnly || group.category !== "primary");
     await commitUsage({ usageEventId, provider: "openai", model: generated.model, inputTokens: generated.inputTokens, outputTokens: generated.outputTokens });
     res.json({ instruction: parsed.data.instruction, groups });
   } catch (error) {
@@ -4005,20 +4057,18 @@ async function performStrategyGeneration(req: Request, res: Response) {
     const completedCrawl = await prisma.crawlJob.findFirst({ where: { websiteId: project.websiteId, status: "completed", pagesCrawled: { gt: 0 } }, select: { id: true } });
     if (!completedCrawl) return res.status(409).json({ error: "Complete Site Analysis before generating Strategy for an existing website." });
   }
-  const workflowGate = await getProjectWorkflowController(project.id);
-  if (!workflowGate?.intelligenceReady) {
-    return res.status(409).json({
-      error: "Complete the required project intelligence before generating Strategy.",
-      code: "WORKFLOW_INTELLIGENCE_INCOMPLETE",
-      workflow: workflowGate,
-    });
-  }
-  const context = await workspaceContext(req);
   const generateInput = z.object({
     revisionComment: z.string().trim().max(2000).optional(),
     generationJobId: z.string().trim().max(191).optional(),
   }).safeParse(req.body ?? {});
   if (!generateInput.success) return res.status(400).json({ error: generateInput.error.flatten() });
+  const workflowGate = await getProjectWorkflowController(project.id);
+  // This function is only reached by a durable Strategy job. The public
+  // enqueue route performs the authoritative readiness check before reserving
+  // usage and creating that job. Do not re-evaluate the mutable workflow here:
+  // accepted jobs must run against the evidence snapshot they were admitted
+  // with instead of being rejected by a contradictory second gate.
+  const context = await workspaceContext(req);
   const latestVersion = project.strategyPlans.reduce((max, item) => Math.max(max, (item as { version?: number }).version ?? 0), 0);
   const revision = generateInput.data.revisionComment?.trim() ?? "";
   const revisionLines = revision.split(/\n+/).map((item) => item.trim()).filter(Boolean).slice(0, 8);
@@ -4746,6 +4796,8 @@ guidedProjectsRouter.post("/projects-v2/:projectId/execution-plan/create", async
   if (!approvedStrategy) return res.status(409).json({ error: "approve strategy before creating execution plan" });
   const workflowGate = await getProjectWorkflowController(project.id);
   if (!workflowGate?.intelligenceReady) return res.status(409).json({ error: "Complete required intelligence before creating the Execution Plan.", code: "WORKFLOW_INTELLIGENCE_INCOMPLETE", workflow: workflowGate });
+  const workflowBlocker = executionPlanWorkflowBlocker(workflowGate);
+  if (workflowBlocker) return res.status(409).json({ error: workflowBlocker.message, code: workflowBlocker.code, nextAction: workflowBlocker.nextAction, workflow: workflowGate });
   if (requiresSiteAnalysisBeforeStrategy(project)) {
     const latestGapAnalysis = await prisma.gapAnalysisRun.findFirst({ where: { projectId: project.id, status: "completed" }, orderBy: [{ completedAt: "desc" }, { createdAt: "desc" }], select: { completedAt: true, createdAt: true } });
     if (!latestGapAnalysis) return res.status(409).json({ error: "Run SEO and Gap Analysis before creating the Execution Plan. Then update and approve Strategy from that evidence." });
