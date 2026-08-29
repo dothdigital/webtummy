@@ -1,5 +1,18 @@
 import { geographicTargetMarkets } from "./utils/projectLocations";
 
+export const COUNTRY_ALIASES = new Map([
+  ["united state", "United States"],
+  ["united states of america", "United States"],
+  ["usa", "United States"],
+  ["us", "United States"],
+  ["u.s.", "United States"],
+]);
+
+export function normalizeCountryMarket(value: string) {
+  const trimmed = value.trim().replace(/\s+/g, " ");
+  return COUNTRY_ALIASES.get(trimmed.toLowerCase()) ?? trimmed;
+}
+
 export const COUNTRY_OPTIONS = [
   { value: "Albania", locationCode: 2008, isoCode: "AL", locationType: "Country", label: "🇦🇱 Albania (AL)", defaultRegion: "", defaultCity: "" },
   { value: "Algeria", locationCode: 2012, isoCode: "DZ", locationType: "Country", label: "🇩🇿 Algeria (DZ)", defaultRegion: "", defaultCity: "" },
@@ -133,7 +146,7 @@ export function buildLocationNames(cities: string, region: string, country: stri
 }
 
 function countryOption(value: string) {
-  const normalized = value.trim().toLowerCase();
+  const normalized = normalizeCountryMarket(value).toLowerCase();
   return COUNTRY_OPTIONS.find((country) => country.value.toLowerCase() === normalized || country.isoCode.toLowerCase() === normalized) ?? null;
 }
 

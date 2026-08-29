@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { businessFirstUseSupportingText, customerPlanLabel, guidedSetupSteps, personalStartingPaths, projectAllowanceLabel, workspaceDashboardVisibility, workspaceDisplayName, workspaceProjectActivityCopy, workspaceProjectAssignmentLabel, workspaceStartingPathEmphasized } from "./workspace-dashboard.js";
+import { businessFirstUseSupportingText, customerPlanLabel, guidedSetupSteps, personalStartingPaths, projectAllowanceLabel, workspaceDashboardVisibility, workspaceDisplayName, workspaceProjectActivityCopy, workspaceProjectAssignmentLabel, workspaceStartingPathEmphasized, workspaceStartingPaths } from "./workspace-dashboard.js";
 
 describe("DEV-056 workspace dashboard rules", () => {
   it("exposes the three approved Personal starting paths", () => {
@@ -32,12 +32,16 @@ describe("DEV-056 workspace dashboard rules", () => {
     expect(workspaceStartingPathEmphasized("business", "IDEA_TO_EXPLORE")).toBe(false);
     expect(workspaceStartingPathEmphasized("personal", "EXISTING_BUSINESS")).toBe(false);
     expect(businessFirstUseSupportingText).toContain("right growth path for your business");
+    expect(workspaceStartingPaths("business").map((path) => path.key)).toEqual(["EXISTING_BUSINESS"]);
+    expect(workspaceStartingPaths("personal")).toEqual(personalStartingPaths);
   });
 
   it("uses workspace-correct names, project copy, and assignment labels", () => {
     expect(workspaceDisplayName("Business", "business")).toBe("My Business");
     expect(workspaceDisplayName("Acme", "business")).toBe("Acme");
     expect(workspaceDisplayName("Personal", "personal")).toBe("My Workspace");
+    expect(workspaceDisplayName("Agency", "agency")).toBe("Agency Portfolio");
+    expect(workspaceDisplayName("My Workspace", "agency")).toBe("Agency Portfolio");
     expect(workspaceProjectActivityCopy("business")).toEqual({
       title: "Business project activity",
       detail: "Live totals from your projects' Execution Plans. Select a project to review its status and continue the next action.",
@@ -52,8 +56,11 @@ describe("DEV-056 workspace dashboard rules", () => {
   });
 
   it("derives DEV-073 setup from saved project state and resumes the first incomplete step", () => {
-    const steps = guidedSetupSteps({ workspaceType: "business", activeClientCount: 0, approvalMode: "manual", project: { id: "p1", status: "active", strategyStatus: "draft", workflowSteps: [{ stepKey: "intake", status: "completed", actionUrl: null }], onboardingReadiness: { intelligenceReady: true, blockersJson: [], moduleStatusJson: [], nextBestActionJson: {} } } });
-    expect(steps.map((step) => step.state)).toEqual(["complete", "complete", "complete", "complete", "in_progress", "not_started"]);
+    const project = { id: "p1", status: "active", strategyStatus: "draft", workflowSteps: [{ stepKey: "intake", status: "completed", actionUrl: null }], onboardingReadiness: { intelligenceReady: true, blockersJson: [], moduleStatusJson: [], nextBestActionJson: {} } };
+    const steps = guidedSetupSteps({ workspaceType: "business", activeClientCount: 0, approvalMode: "manual", project });
+    expect(steps.map((step) => step.state)).toEqual(["complete", "complete", "complete", "in_progress", "in_progress", "not_started"]);
+    expect(steps.find((step) => step.key === "governance")?.state).toBe("in_progress");
+    expect(guidedSetupSteps({ workspaceType: "business", activeClientCount: 0, project, governanceConfirmed: true }).find((step) => step.key === "governance")?.state).toBe("complete");
     expect(steps.find((step) => step.key === "strategy")?.href).toBe("/strategy?projectId=p1");
   });
 

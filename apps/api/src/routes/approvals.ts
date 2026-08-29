@@ -45,7 +45,10 @@ approvalsRouter.get("/approvals", async (req, res) => {
   const candidates = await prisma.executionTask.findMany({ where: { projectId: projectId ?? { not: null }, ...(clientViewer ? { status: "submitted_for_approval", clientApprovalRequired: true, approvalDecision: "team_approved" } : { OR: [{ status: "awaiting_confirmation" }, { status: "submitted_for_approval", OR: [{ approvalDecision: null }, { approvalDecision: { not: "team_approved" } }] }] }) }, orderBy: [{ approvalRisk: "desc" }, { submittedAt: "asc" }], include: { project: { include: { agencyClient: true } }, assignee: { include: { user: true } }, manager: { include: { user: true } }, approver: { include: { user: true } }, approvalHistory: { orderBy: { createdAt: "desc" }, take: 20 } } });
   const tasks = [];
   for (const task of candidates) if (task.projectId && await canAccessProject(context, task.projectId)) tasks.push(approvalView(task as Awaited<ReturnType<typeof accessibleTask>>, projectPolicy(context.workspace.settingsJson, task.projectId)));
-  res.json({ tasks, automationLevels });
+  const documentCandidates = await prisma.gapReportExport.findMany({ where: { workspaceId: context.workspace.id, approvalStatus: "needs_review", documentStatus: { not: "archived" }, ...(projectId ? { projectId } : {}) }, orderBy: { updatedAt: "asc" }, select: { id: true, projectId: true, reportType: true, qaStatus: true, approvalStatus: true, currentVersion: true, updatedAt: true, project: { select: { name: true, agencyClient: { select: { name: true } } } } } });
+  const documents = [];
+  for (const document of documentCandidates) if (await canAccessProject(context, document.projectId)) documents.push(document);
+  res.json({ tasks, documents, automationLevels });
 });
 
 approvalsRouter.get("/approvals/history", async (req, res) => {

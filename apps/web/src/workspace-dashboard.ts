@@ -4,6 +4,12 @@ export const personalStartingPaths = [
   { key: "SKILLS_FIRST", title: "Help me find an opportunity", detail: "Start with your skills, knowledge, interests, and constraints before choosing a business direction.", href: "/projects/new?startPath=SKILLS_FIRST" },
 ] as const;
 
+export function workspaceStartingPaths(workspaceType: string) {
+  return workspaceType === "business"
+    ? personalStartingPaths.filter((path) => path.key === "EXISTING_BUSINESS")
+    : personalStartingPaths;
+}
+
 export const businessFirstUseSupportingText = "Tell us where you are starting. SEnuke AI will guide you from there and build the right growth path for your business.";
 
 export function customerPlanLabel(workspaceType: string) {
@@ -14,7 +20,9 @@ export function customerPlanLabel(workspaceType: string) {
 
 export function workspaceDisplayName(rawName: string, workspaceType: string) {
   const name = rawName.trim();
-  if (name && name.toLowerCase() !== workspaceType.toLowerCase()) return name;
+  const genericNames = new Set(["my workspace", "workspace", workspaceType.toLowerCase()]);
+  if (name && !genericNames.has(name.toLowerCase())) return name;
+  if (workspaceType === "agency") return "Agency Portfolio";
   return workspaceType === "business" ? "My Business" : "My Workspace";
 }
 
@@ -73,7 +81,7 @@ const completeStatus = (value?: string) => ["complete", "completed", "approved",
 const blockedStatus = (value?: string) => ["blocked", "failed", "error", "stale"].includes(value ?? "");
 const record = (value: unknown): Record<string, unknown> => value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
 
-export function guidedSetupSteps(input: { workspaceType: string; activeClientCount: number; project: GuidedSetupProject | null; approvalMode?: string | null }): GuidedSetupStep[] {
+export function guidedSetupSteps(input: { workspaceType: string; activeClientCount: number; project: GuidedSetupProject | null; approvalMode?: string | null; governanceConfirmed?: boolean }): GuidedSetupStep[] {
   const project = input.project;
   const scoped = (path: string) => project ? `${path}${path.includes("?") ? "&" : "?"}projectId=${encodeURIComponent(project.id)}` : path;
   const workflow = project?.workflowSteps ?? [];
@@ -90,11 +98,12 @@ export function guidedSetupSteps(input: { workspaceType: string; activeClientCou
   const projectHref = projectBlocked ? "/workspace?tab=clients" : "/projects/new";
   const profileHref = project ? `/guided-projects/${project.id}/intake` : projectHref;
   const evidenceHref = project ? `/guided-projects/${project.id}` : projectHref;
+  const agency = input.workspaceType === "agency";
   return [
-    { key: "project", title: "Create your first project", detail: projectBlocked ? "Create or select an Agency client before starting their project." : "Create or select the business project that setup should use.", state: project ? "complete" : projectBlocked ? "blocked" : "not_started", href: projectHref },
-    { key: "profile", title: "Complete your Business Profile", detail: "Confirm the business identity, offer, audience, goals and target markets.", state: profileComplete ? "complete" : project ? blockedStatus(intake?.status) ? "blocked" : "in_progress" : "not_started", href: profileHref },
-    { key: "evidence", title: "Review relevant evidence sources", detail: "Review website, analytics, search, local and publishing evidence. Each source remains Not connected, Deferred, Not required or Complete based on its own saved state.", state: evidenceComplete ? "complete" : evidenceBlocked ? "blocked" : profileComplete ? "in_progress" : "not_started", href: evidenceHref },
-    { key: "governance", title: "Understand AI Capacity and approvals", detail: "Review the estimate before chargeable work and how protected actions pause for approval.", state: project && input.approvalMode ? "complete" : project ? "in_progress" : "not_started", href: project ? scoped("/billing") : "/billing" },
+    { key: "project", title: agency ? "Create your first client project" : "Create your first project", detail: projectBlocked ? "Create or select an Agency client before starting their project." : agency ? "Create or select the client project that setup should use." : "Create or select the business project that setup should use.", state: project ? "complete" : projectBlocked ? "blocked" : "not_started", href: projectHref },
+    { key: "profile", title: agency ? "Complete the client profile" : "Complete your Business Profile", detail: agency ? "Confirm the client's identity, offer, audience, goals and target markets." : "Confirm the business identity, offer, audience, goals and target markets.", state: profileComplete ? "complete" : project ? blockedStatus(intake?.status) ? "blocked" : "in_progress" : "not_started", href: profileHref },
+    { key: "evidence", title: agency ? "Review the client's evidence sources" : "Review relevant evidence sources", detail: "Review website, analytics, search, local and publishing evidence. Each source remains Not connected, Deferred, Not required or Complete based on its own saved state.", state: evidenceComplete ? "complete" : evidenceBlocked ? "blocked" : profileComplete ? "in_progress" : "not_started", href: evidenceHref },
+    { key: "governance", title: "Understand AI Capacity and approvals", detail: "Open this step, review Capacity estimates and approval rules, then confirm your understanding.", state: project && input.governanceConfirmed === true ? "complete" : project ? "in_progress" : "not_started", href: project ? scoped("/billing") : "/billing" },
     { key: "strategy", title: "Review your Strategy", detail: "Review and approve the evidence-backed Strategy version that controls execution.", state: strategyComplete ? "complete" : evidenceBlocked ? "blocked" : evidenceComplete ? "in_progress" : "not_started", href: project ? scoped("/strategy") : projectHref },
     { key: "nba", title: "Complete your first Next Best Action", detail: "Open the one validated priority, understand why it comes first, then continue with its required approval.", state: nbaReady ? "complete" : strategyComplete ? "in_progress" : "not_started", href: project ? scoped("/growth") : projectHref },
   ];

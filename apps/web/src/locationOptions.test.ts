@@ -48,4 +48,12 @@ describe("projectAnalysisLocations", () => {
       locationNames: ["Canada", "United States"],
     });
   });
+
+  it("keeps multiple city-country regions independent", () => {
+    expect(projectAnalysisLocations({ targetLocations: ["Toronto, Canada", "New York, United State"], businessLocationJson: { city: "Toronto", stateProvince: "Ontario", country: "Canada" } }).locationNames).toEqual(["Toronto, Canada", "New York, United States"]);
+  });
+
+  it("normalizes common United States aliases before provider location building", () => {
+    expect(buildProjectMarketLocationNames(["United State", "USA", "US"], "Ontario", "Canada")).toEqual(["United States"]);
+  });
 });

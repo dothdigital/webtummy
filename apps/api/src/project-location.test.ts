@@ -67,4 +67,12 @@ describe("DEV-004 business location and target markets", () => {
       { city: "Mississauga", stateProvince: "Ontario", country: "Canada" },
     )).toEqual(["Canada", "United States"]);
   });
+
+  it("keeps multiple city-country regions independent", () => {
+    expect(projectAnalysisLocationLabels(["Toronto, Canada", "New York, United State"], { city: "Toronto", stateProvince: "Ontario", country: "Canada" })).toEqual(["Toronto, Canada", "New York, United States"]);
+  });
+
+  it("normalizes a singular United State market for provider processing", () => {
+    expect(projectAnalysisLocationLabels(["United State"], { city: "Mississauga", stateProvince: "Ontario", country: "Canada" })).toEqual(["United States"]);
+  });
 });

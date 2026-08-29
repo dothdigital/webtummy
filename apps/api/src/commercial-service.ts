@@ -46,7 +46,9 @@ const BASELINE_PLANS = [
     sortOrder: 30,
     workspaceTypes: ["business"],
     capacity: COMMERCIAL_PLAN_CAPACITY.business,
-    includedSeats: 1,
+    // The Business owner occupies one included seat and one additional team
+    // member can be active without purchasing an add-on seat.
+    includedSeats: 2,
     prices: [
       { code: "business-founding-monthly-usd-v2", interval: "monthly", amountCents: 14_700, priceClass: "founding", providerProductRef: "448953" },
       { code: "business-founding-annual-usd-v2", interval: "annual", amountCents: 147_000, priceClass: "founding", providerProductRef: "449155" },

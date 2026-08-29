@@ -15,6 +15,7 @@ export function contentPlanJobAction(job: ContentPlanJobSnapshot): ContentPlanJo
 
 export function contentPlanJobFailureMessage(job: ContentPlanJobSnapshot) {
   const message = job.error || "Website Plan generation could not be completed.";
+  if (/Complete (AI Citation evidence|the Growth Plan)/i.test(message)) return message;
   if (!job.errorCode || message.includes(job.errorCode)) return message;
   return `${message} Error code: ${job.errorCode}`;
 }

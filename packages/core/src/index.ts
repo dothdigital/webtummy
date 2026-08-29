@@ -21,3 +21,5 @@ export * from "./websiteQualityGovernance.js";
 export * from "./keywordNormalization.js";
 export * from "./seoPagePlanner.js";
 export * from "./ecommerceIntelligence.js";
+export * from "./workflowGovernance.js";
+export * from "./workflowRecovery.js";

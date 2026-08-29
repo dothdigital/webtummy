@@ -375,13 +375,26 @@ export function isWorkspaceOwner(context: WorkspaceContext) {
   return context.workspace.ownerUserId === context.membership.userId && context.roles.has("owner");
 }
 
+export function agencyClientTenantScope(workspaceId: string, agencyClientId: string) {
+  return { id: agencyClientId, workspaceId, status: "active" } as const;
+}
+
 export async function canAccessAgencyClient(context: WorkspaceContext, agencyClientId: string) {
   if (context.workspace.workspaceType !== "agency") return false;
-  if (context.roles.has("owner") || context.roles.has("admin")) return true;
+  // Elevated workspace roles may access every client in their own Agency, but
+  // never a client from another workspace. The client ID is user-controlled on
+  // direct URLs and API requests, so role authority cannot replace tenant scope.
+  if (context.roles.has("owner") || context.roles.has("admin")) {
+    return Boolean(await prisma.agencyClient.findFirst({
+      where: agencyClientTenantScope(context.workspace.id, agencyClientId),
+      select: { id: true },
+    }));
+  }
   const assigned = await prisma.agencyClient.findFirst({
     where: {
       id: agencyClientId,
       workspaceId: context.workspace.id,
+      status: "active",
       OR: [
         { createdById: context.membership.userId },
         { memberAssignments: { some: { membershipId: context.membership.id } } },

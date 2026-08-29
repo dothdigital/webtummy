@@ -4,7 +4,7 @@ import { api } from "../api.js";
 import type { GuidedProject, KeywordResearchRun, Website } from "../types.js";
 import { getActiveProjectId, setActiveProjectId } from "../active-project.js";
 import { ActionIconButton, ActionIconLink, Button, Card, Input } from "../components/ui.js";
-import { COUNTRY_OPTIONS, buildLocationNames, buildProjectMarketLocationNames, defaultLocationParts, projectAnalysisLocations } from "../locationOptions.js";
+import { COUNTRY_OPTIONS, buildLocationNames, buildProjectMarketLocationNames, defaultLocationParts, normalizeCountryMarket, projectAnalysisLocations } from "../locationOptions.js";
 import { isBackgroundJobFinished, registerBackgroundJob } from "../background-jobs.js";
 import { keywordRunsForProjectLocations, latestSuccessfulKeywordRuns } from "../keyword-runs.js";
 import { incompleteApprovedKeywordResearchChecks, keywordResearchRequestIdentity, normalizeKeywordPhrase, selectKeywordAnalysisLocations, splitKeywordEntries } from "@webtummy/core";
@@ -22,6 +22,7 @@ type FormError = {
 };
 
 type QueuedKeywordRun = {
+  sourceGroupId?: string;
   id: string;
   keyword: string;
   targetUrl: string;
@@ -164,6 +165,7 @@ export default function KeywordReports() {
   const [keywordLimit, setKeywordLimit] = useState("25");
   const [loading, setLoading] = useState(true);
   const [creating, setCreating] = useState(false);
+  const [capacityUnitEstimate, setCapacityUnitEstimate] = useState<number | null>(null);
   const [savingMarkets, setSavingMarkets] = useState(false);
   const [refreshingId, setRefreshingId] = useState<string | null>(null);
   const [showAddKeyword, setShowAddKeyword] = useState(searchParams.get("add") === "1");
@@ -298,6 +300,7 @@ export default function KeywordReports() {
           setQueuedKeywords(failedOnly
             ? failedChecks.map((run) => ({
                 id: `retry-${run.id}`,
+                sourceGroupId: selectedGroups.find((group) => splitKeywordEntries(group.keywords).some((keyword) => normalizeKeywordPhrase(keyword) === normalizeKeywordPhrase(run.seedKeyword)))?.id,
                 keyword: run.seedKeyword,
                 targetUrl: run.targetUrl ?? nextTargetUrl,
                 targetDomain: run.targetDomain ?? nextTargetDomain,
@@ -312,6 +315,7 @@ export default function KeywordReports() {
               }))
             : preselectedKeywords.map((keyword, index) => ({
                 id: `remaining-${index}-${normalizeKeywordPhrase(keyword)}`,
+                sourceGroupId: selectedGroups.find((group) => splitKeywordEntries(group.keywords).some((entry) => normalizeKeywordPhrase(entry) === normalizeKeywordPhrase(keyword)))?.id,
                 keyword,
                 targetUrl: nextTargetUrl,
                 targetDomain: nextTargetDomain,
@@ -336,6 +340,9 @@ export default function KeywordReports() {
 
   useEffect(() => {
     load();
+    void api.get<{ features: Array<{ featureKey: string; defaultCreditCost: number }> }>("/api/usage/feature-costs")
+      .then((result) => setCapacityUnitEstimate(result.features.find((feature) => feature.featureKey === "keyword_research_batch")?.defaultCreditCost ?? null))
+      .catch(() => setCapacityUnitEstimate(null));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -368,6 +375,12 @@ export default function KeywordReports() {
         serpDepth: Number(queued.serpDepth) || 20,
         keywordLimit: Number(queued.keywordLimit) || 25,
       })));
+      const estimatedCapacity = capacityUnitEstimate == null ? null : capacityUnitEstimate * checks.length;
+      const estimateText = estimatedCapacity == null ? "the configured AI Capacity estimate" : `${estimatedCapacity.toLocaleString()} AI Capacity units`;
+      if (!window.confirm(`Start Keyword Analysis for ${checks.length} keyword-location check${checks.length === 1 ? "" : "s"}?\n\nEstimated use: ${estimateText}. Capacity is reserved only after confirmation; failed checks are refunded.`)) {
+        setCreating(false);
+        return;
+      }
       const result = await api.post<{
         accepted: Array<{ run: KeywordResearchRun; requestedLocation: string; resolvedLocation: string; reused: boolean; retried: boolean }>;
         failed: Array<{ keyword: string; location: string; reason: string }>;
@@ -577,8 +590,29 @@ export default function KeywordReports() {
     setMessage("");
   };
 
-  const removeQueuedKeyword = (id: string) => {
-    setQueuedKeywords((current) => current.filter((item) => item.id !== id));
+  const removeQueuedKeyword = async (item: QueuedKeywordRun) => {
+    if (!guidedProject || !item.sourceGroupId) {
+      setQueuedKeywords((current) => current.filter((queued) => queued.id !== item.id));
+      return;
+    }
+    const group = (guidedProject.keywordGroups ?? []).find((candidate) => candidate.id === item.sourceGroupId);
+    if (!group) return;
+    const normalized = normalizeKeywordPhrase(item.keyword);
+    const keywords = splitKeywordEntries(group.keywords).filter((keyword) => normalizeKeywordPhrase(keyword) !== normalized);
+    if (!keywords.length) {
+      setFormError({ title: "Keyword group needs attention", detail: "This is the last keyword in its approved group.", action: "Add a replacement keyword or edit the group from Keyword Intelligence before removing it." });
+      return;
+    }
+    try {
+      const result = await api.patch<{ project: GuidedProject }>(`/api/projects-v2/${guidedProject.id}/keyword-groups/${group.id}`, { keywords });
+      setGuidedProject(result.project);
+      setQueuedKeywords((current) => current.filter((queued) => normalizeKeywordPhrase(queued.keyword) !== normalized));
+      setKeywordSuggestions((current) => current.filter((suggestion) => normalizeKeywordPhrase(suggestion.keyword) !== normalized));
+      setMessage(`Removed “${item.keyword}” from ${group.title}. It will not be analyzed.`);
+      setFormError(null);
+    } catch (error) {
+      setFormError({ title: "Keyword could not be removed", detail: error instanceof Error ? error.message : "The approved keyword group could not be updated.", action: "Try again. No analysis was started." });
+    }
   };
 
   const toggleTargetMarket = (market: string) => setSelectedTargetMarkets((current) => current.includes(market) ? current.filter((item) => item !== market) : [...current, market]);
@@ -604,8 +638,10 @@ export default function KeywordReports() {
   };
 
   const persistAnalysisMarkets = async () => {
-    const normalizedMarkets = geographicTargetMarkets(selectedTargetMarkets).map((market) =>
-      COUNTRY_OPTIONS.find((country) => country.value.toLocaleLowerCase() === market.toLocaleLowerCase() || country.isoCode.toLocaleLowerCase() === market.toLocaleLowerCase())?.value ?? market,
+    const normalizedMarkets = geographicTargetMarkets(selectedTargetMarkets).map((market) => {
+      const normalizedMarket = normalizeCountryMarket(market);
+      return COUNTRY_OPTIONS.find((country) => country.value.toLocaleLowerCase() === normalizedMarket.toLocaleLowerCase() || country.isoCode.toLocaleLowerCase() === normalizedMarket.toLocaleLowerCase())?.value ?? normalizedMarket;
+    },
     );
     if (!normalizedMarkets.length) throw new Error("Select at least one named project market before running analysis.");
     if (!guidedProject) return normalizedMarkets;
@@ -709,6 +745,7 @@ export default function KeywordReports() {
     try { nextTargetDomain = nextTargetUrl ? new URL(nextTargetUrl).hostname.replace(/^www\./, "") : ""; } catch { /* Keep the supplied value. */ }
     const queue = [...checksByKeyword.entries()].map(([key, checks], index) => ({
       id: `remaining-reconciled-${index}-${key}`,
+      sourceGroupId: selectedGroups.find((group) => splitKeywordEntries(group.keywords).some((keyword) => normalizeKeywordPhrase(keyword) === key))?.id,
       keyword: approvedLabels.get(key) ?? checks[0].keyword,
       targetUrl: nextTargetUrl,
       targetDomain: nextTargetDomain,
@@ -1047,7 +1084,7 @@ export default function KeywordReports() {
                             {item.targetDomain ? ` · Domain: ${item.targetDomain}` : ""}
                           </span>
                         </span>
-                        {remainingActionMode ? <span className="shrink-0 rounded-full bg-emerald-100 px-2 py-1 text-[10px] font-black uppercase tracking-wide text-emerald-800">Required</span> : <button type="button" onClick={() => removeQueuedKeyword(item.id)} className="shrink-0 rounded-md px-2 py-1 text-xs font-black text-rose-700 hover:bg-rose-50" aria-label={`Remove ${item.keyword} from this batch`}>Remove</button>}
+                        <button type="button" onClick={() => void removeQueuedKeyword(item)} className="shrink-0 rounded-md px-2 py-1 text-xs font-black text-rose-700 hover:bg-rose-50" aria-label={`Delete ${item.keyword} before analysis`}>Delete keyword</button>
                       </div>
                     ))}
                   </div>

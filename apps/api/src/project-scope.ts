@@ -26,8 +26,21 @@ async function ensureSuperAdminOwnProjectClientId(req: Request) {
   return client.id;
 }
 
+export function superAdminProjectClientId(input: {
+  explicitClientId?: string | null;
+  selectedClientId?: string | null;
+  accountClientId?: string | null;
+}) {
+  return input.explicitClientId?.trim() || input.selectedClientId?.trim() || input.accountClientId?.trim() || null;
+}
+
 export async function projectClientIdForRequest(req: Request, explicitClientId?: string | null) {
   if (!req.user) throw new Error("projectClientIdForRequest called without auth");
   if (req.user.role !== "super_admin") return req.user.clientId ?? "__no_client_scope__";
-  return explicitClientId || activeProjectClientId(req) || ensureSuperAdminOwnProjectClientId(req);
+  const user = await prisma.user.findUnique({ where: { id: req.user.userId }, select: { clientId: true } });
+  return superAdminProjectClientId({
+    explicitClientId,
+    selectedClientId: activeProjectClientId(req),
+    accountClientId: user?.clientId,
+  }) || ensureSuperAdminOwnProjectClientId(req);
 }

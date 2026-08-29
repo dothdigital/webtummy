@@ -162,3 +162,16 @@ textarea:focus-visible {
 ) :where(.text-slate-600, .text-slate-500, .text-charcoal-600, .text-charcoal-500) {
   color: #cbd5e1 !important;
 }
+
+/* The Website Plan loading screen contains instructional cards. The shared
+   dark waiting surface also turns their headings white, so their original
+   pastel backgrounds did not provide enough contrast. Keep these cards on a
+   dark, bordered surface while the surrounding status screen is dark. */
+[role="status"][aria-label="Creating the SEO Page Map and Content Plan"] .grid.text-left > div {
+  background-color: #0f172a !important;
+  border-color: #475569 !important;
+}
+
+[role="status"][aria-label="Creating the SEO Page Map and Content Plan"] .grid.text-left > div p {
+  color: #e2e8f0 !important;
+}

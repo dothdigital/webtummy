@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { canAccessAgencyClient, currentAccountClientId, hasWorkspacePermission, hasWorkspaceRole, mistakenAgencyShellCanBeFlattened, selectPreferredWorkspaceId, validateRolesForWorkspace, workspaceTypeReconciliationBlockReason, type WorkspaceContext } from "./workspace-access.js";
+import { agencyClientTenantScope, canAccessAgencyClient, currentAccountClientId, hasWorkspacePermission, hasWorkspaceRole, mistakenAgencyShellCanBeFlattened, selectPreferredWorkspaceId, validateRolesForWorkspace, workspaceTypeReconciliationBlockReason, type WorkspaceContext } from "./workspace-access.js";
 
 function context(roles: string[], workspaceType = "agency", overrides: unknown = {}, settingsJson: unknown = {}): WorkspaceContext {
   return {
@@ -13,6 +13,9 @@ function context(roles: string[], workspaceType = "agency", overrides: unknown =
 }
 
 describe("workspace role enforcement", () => {
+  it("always scopes elevated Agency client access to the current workspace", () => {
+    expect(agencyClientTenantScope("workspace-a", "client-from-url")).toEqual({ id: "client-from-url", workspaceId: "workspace-a", status: "active" });
+  });
   it("inherits permissions downward through the DEV-016 hierarchy", () => {
     const manager = context(["manager"]);
     expect(hasWorkspaceRole(manager, "manager")).toBe(true);
@@ -94,7 +97,9 @@ describe("workspace role enforcement", () => {
     expect(hasWorkspacePermission(clientViewer, "read_internal")).toBe(false);
     expect(hasWorkspacePermission(clientViewer, "read_shared_client_data")).toBe(true);
     expect(hasWorkspacePermission(clientViewer, "view_reports")).toBe(true);
-    expect(hasWorkspacePermission(clientViewer, "export_reports")).toBe(true);
+    expect(hasWorkspacePermission(clientViewer, "export_reports")).toBe(false);
+    expect(hasWorkspacePermission(clientViewer, "view_activity")).toBe(false);
+    expect(hasWorkspacePermission(clientViewer, "view_notifications")).toBe(false);
     expect(hasWorkspacePermission(clientViewer, "publish")).toBe(false);
   });
 
@@ -110,9 +115,10 @@ describe("workspace role enforcement", () => {
     expect(hasWorkspacePermission(manager, "manage_settings")).toBe(false);
     expect(hasWorkspacePermission(manager, "billing")).toBe(false);
 
-    for (const permission of ["create_projects", "edit_project_settings", "run_ai_analysis", "edit_strategy", "execute_tasks", "publish", "view_reports", "export_reports", "view_activity", "view_notifications", "read_integrations"]) {
+    for (const permission of ["create_projects", "edit_project_settings", "run_ai_analysis", "edit_strategy", "execute_tasks", "view_reports", "export_reports", "view_activity", "view_notifications", "read_integrations"]) {
       expect(hasWorkspacePermission(editor, permission), `editor: ${permission}`).toBe(true);
     }
+    expect(hasWorkspacePermission(editor, "publish")).toBe(false);
     for (const permission of ["manage_clients", "manage_projects", "approve", "manage_integrations", "manage_api_keys"]) {
       expect(hasWorkspacePermission(editor, permission), `editor denied: ${permission}`).toBe(false);
     }

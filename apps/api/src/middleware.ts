@@ -169,6 +169,15 @@ function capacityFeatureForRequest(path: string) {
   return "ai_content_generate";
 }
 
+function stableBillingPayload(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(stableBillingPayload);
+  if (!value || typeof value !== "object") return value;
+  return Object.fromEntries(Object.entries(value as Record<string, unknown>)
+    .filter(([key]) => !["retry", "refresh", "force", "requestId", "idempotencyKey"].includes(key))
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([key, item]) => [key, stableBillingPayload(item)]));
+}
+
 /** DEV-030 workspace lifecycle and feature gate shared by every module. */
 export async function enforceCommercialAccess(req: Request, res: Response, next: NextFunction) {
   if (!req.user || ["GET", "HEAD", "OPTIONS"].includes(req.method)) return next();
@@ -187,6 +196,14 @@ export async function enforceCommercialAccess(req: Request, res: Response, next:
     const body = req.body && typeof req.body === "object" ? req.body as Record<string, unknown> : {};
     const projectId = typeof body.projectId === "string" ? body.projectId : req.path.match(/\/projects(?:-v2)?\/([^/]+)/i)?.[1] ?? null;
     const websiteId = typeof body.websiteId === "string" ? body.websiteId : null;
+    const requestPayload = req.body && typeof req.body === "object" ? req.body : {};
+    const stableRequestId = crypto.createHash("sha256").update(JSON.stringify({
+      method: req.method.toUpperCase(),
+      path: req.path.replace(/\/(?:retry|refresh)\/?$/i, ""),
+      projectId,
+      websiteId,
+      payload: stableBillingPayload(requestPayload),
+    })).digest("hex");
     runCommercialRequestContext({
       workspaceId: context.workspace.id,
       clientId: context.workspace.legacyClientId,
@@ -196,7 +213,7 @@ export async function enforceCommercialAccess(req: Request, res: Response, next:
       websiteId,
       featureKey: capacityFeatureForRequest(path),
       actionKey: `${req.method.toUpperCase()} ${req.path}`,
-      requestId: req.header("x-request-id")?.trim() || crypto.randomUUID(),
+      requestId: req.header("x-idempotency-key")?.trim() || stableRequestId,
     }, next);
   } catch (error) {
     const status = typeof error === "object" && error !== null && "statusCode" in error && typeof error.statusCode === "number"

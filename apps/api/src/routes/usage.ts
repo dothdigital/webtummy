@@ -42,6 +42,16 @@ const refundSchema = z.object({
   reason: z.string().max(500).optional().nullable(),
 });
 
+const usageAuditQuerySchema = z.object({
+  search: z.string().trim().max(160).optional(),
+  status: z.enum(["all", "reserved", "committed", "refunded", "failed", "reversed"]).default("all"),
+  take: z.coerce.number().int().min(1).max(250).default(100),
+});
+
+const reverseUsageSchema = z.object({
+  reason: z.string().trim().min(8).max(500),
+});
+
 const featureSchema = z.object({
   moduleName: z.string().min(2).max(80),
   label: z.string().min(2).max(180),
@@ -156,6 +166,90 @@ usageRouter.post("/usage/refund", async (req, res) => {
     res.json({ usageEvent });
   } catch (error) {
     errorResponse(res, error);
+  }
+});
+
+usageRouter.get("/admin/usage/events", requireRole("super_admin"), async (req, res) => {
+  const parsed = usageAuditQuerySchema.safeParse(req.query);
+  if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() });
+  const search = parsed.data.search;
+  const users = search ? await prisma.user.findMany({
+    where: { OR: [{ email: { contains: search, mode: "insensitive" } }, { name: { contains: search, mode: "insensitive" } }] },
+    select: { id: true },
+    take: 100,
+  }) : [];
+  const events = await prisma.usageEvent.findMany({
+    where: {
+      ...(parsed.data.status === "all" ? {} : { status: parsed.data.status }),
+      ...(search ? { OR: [
+        { userId: { in: users.map((user) => user.id) } },
+        { featureKey: { contains: search, mode: "insensitive" } },
+        { actionKey: { contains: search, mode: "insensitive" } },
+        { projectId: { contains: search, mode: "insensitive" } },
+      ] } : {}),
+    },
+    include: { capacityWorkspace: { select: { id: true, name: true } } },
+    orderBy: { createdAt: "desc" },
+    take: parsed.data.take,
+  });
+  const [eventUsers, projects] = await Promise.all([
+    prisma.user.findMany({ where: { id: { in: events.flatMap((event) => event.userId ? [event.userId] : []) } }, select: { id: true, email: true, name: true } }),
+    prisma.project.findMany({ where: { id: { in: events.flatMap((event) => event.projectId ? [event.projectId] : []) } }, select: { id: true, name: true } }),
+  ]);
+  const userById = new Map(eventUsers.map((user) => [user.id, user]));
+  const projectById = new Map(projects.map((project) => [project.id, project]));
+  res.json({ events: events.map((event) => ({
+    ...event,
+    user: event.userId ? userById.get(event.userId) ?? null : null,
+    project: event.projectId ? projectById.get(event.projectId) ?? null : null,
+    reversible: event.status === "committed" && event.creditsCommitted > 0 && Boolean(event.workspaceId),
+  })) });
+});
+
+usageRouter.post("/admin/usage/events/:eventId/reverse", requireRole("super_admin"), async (req, res) => {
+  const parsed = reverseUsageSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() });
+  try {
+    const restored = await prisma.$transaction(async (tx) => {
+      const event = await tx.usageEvent.findUnique({ where: { id: req.params.eventId } });
+      if (!event) throw Object.assign(new Error("Usage event not found."), { statusCode: 404 });
+      if (event.status === "reversed") throw Object.assign(new Error("This charge was already reversed."), { statusCode: 409 });
+      if (event.status !== "committed" || event.creditsCommitted <= 0 || !event.workspaceId) throw Object.assign(new Error("Only a committed workspace charge can be reversed."), { statusCode: 409 });
+      const metadata = event.metadataJson && typeof event.metadataJson === "object" && !Array.isArray(event.metadataJson) ? event.metadataJson as Record<string, unknown> : {};
+      const accountId = String(metadata.capacityAccountId ?? "");
+      if (!accountId) throw Object.assign(new Error("The capacity account for this charge could not be identified."), { statusCode: 409 });
+      const includedUnits = Math.min(event.creditsCommitted, event.includedUnitsReserved);
+      const purchasedUnits = Math.max(0, event.creditsCommitted - includedUnits);
+      const claimed = await tx.usageEvent.updateMany({
+        where: { id: event.id, status: "committed" },
+        data: { status: "reversed", refundedAt: new Date(), error: parsed.data.reason, metadataJson: { ...metadata, adminReversal: { actorId: req.user?.userId, reason: parsed.data.reason, reversedAt: new Date().toISOString() } } },
+      });
+      if (!claimed.count) throw Object.assign(new Error("This charge changed while it was being reversed. Refresh and try again."), { statusCode: 409 });
+      const account = await tx.workspaceCapacityAccount.update({ where: { id: accountId }, data: {
+        includedBalance: { increment: includedUnits }, includedUsed: { decrement: includedUnits },
+        purchasedBalance: { increment: purchasedUnits }, purchasedUsed: { decrement: purchasedUnits },
+      } });
+      for (const row of [
+        includedUnits ? { bucket: "included", units: includedUnits, balanceAfter: account.includedBalance } : null,
+        purchasedUnits ? { bucket: "purchased", units: purchasedUnits, balanceAfter: account.purchasedBalance } : null,
+      ].filter((row): row is { bucket: string; units: number; balanceAfter: number } => Boolean(row))) await tx.workspaceCapacityTransaction.create({ data: {
+        workspaceId: event.workspaceId!, accountId, usageEventId: event.id, bucket: row.bucket, type: "admin_reversal", amount: row.units,
+        balanceAfter: row.balanceAfter, reason: parsed.data.reason.slice(0, 255), actorId: req.user?.userId,
+        correlationId: `admin-reversal:${event.id}`.slice(0, 191), metadataJson: { featureKey: event.featureKey, originalStatus: event.status },
+      } });
+      await tx.commercialAuditEvent.create({ data: {
+        workspaceId: event.workspaceId, actorType: "user", actorId: req.user?.userId, action: "commercial.usage_charge_reversed",
+        reasonCode: "admin_usage_correction", source: "admin", correlationId: `admin-reversal:${event.id}`.slice(0, 191),
+        beforeJson: { usageEventId: event.id, status: event.status, creditsCommitted: event.creditsCommitted },
+        afterJson: { status: "reversed", restoredIncludedUnits: includedUnits, restoredPurchasedUnits: purchasedUnits },
+        metadataJson: { reason: parsed.data.reason, affectedUserId: event.userId, projectId: event.projectId, featureKey: event.featureKey },
+      } });
+      return { includedUnits, purchasedUnits, totalUnits: includedUnits + purchasedUnits };
+    });
+    res.json({ ok: true, restored });
+  } catch (error) {
+    const status = typeof error === "object" && error !== null && "statusCode" in error ? Number(error.statusCode) : 400;
+    res.status(status).json({ error: error instanceof Error ? error.message : "Could not reverse this usage charge." });
   }
 });
 

@@ -4972,7 +4972,7 @@ model ExternalApiCache {
 
 model KeywordResearchRun {
   id                   String    @id @default(cuid())
-  requestKey           String?   @db.VarChar(64)
+  requestKey           String?   @unique @db.VarChar(64)
   clientId             String
   client               Client    @relation(fields: [clientId], references: [id], onDelete: Cascade)
   websiteId            String?
@@ -5012,7 +5012,6 @@ model KeywordResearchRun {
   competitors KeywordSerpCompetitor[]
 
   @@index([clientId])
-  @@index([requestKey])
   @@index([websiteId])
   @@index([projectId])
   @@index([createdAt])

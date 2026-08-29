@@ -19,11 +19,11 @@ import { buildKeywordGroups, isCustomerSearchKeyword, KEYWORD_GROUP_DEFINITIONS,
 import { buildExtendedStrategyAnalysis } from "../dev014.js";
 import { buildIntelligentExecutionTasks, type StrategyRecommendation } from "../dev015.js";
 import { assertWorkspaceResourceAvailable } from "../commercial-service.js";
-import { approvedKeywordEntries, missingApprovedKeywordResearch, splitKeywordEntries, stripKeywordLocationQualifiers, urlAliasKey } from "@webtummy/core";
+import { approvedKeywordEntries, missingApprovedKeywordResearch, splitKeywordEntries, stripKeywordLocationQualifiers, urlAliasKey, workflowBlockedPayload, workflowRecoveryPayload } from "@webtummy/core";
 import { recommendationFindings } from "./gap-analysis.js";
 import { approvedStrategyContext, channelStrategyText, extractUnifiedStrategyPlan, generateUnifiedStrategyWithAi } from "../strategy-ai.js";
 import { buildStrategyDecisionSet, composeStrategyDecisionExplainability, STRATEGY_DECISION_ENGINE_VERSION } from "../strategy-decision-engine.js";
-import { executionPlanWorkflowBlocker, getProjectWorkflowController, publishProjectWorkflowEvent } from "../project-workflow-controller.js";
+import { executionPlanWorkflowBlocker, getProjectWorkflowController, publishProjectWorkflowEvent, strategyWorkflowPrerequisite } from "../project-workflow-controller.js";
 import { marketingExecutionSummary } from "../marketing-execution-engine.js";
 import { generateAiOpportunityRecommendations, type AiOpportunityRecommendation } from "../opportunity-ai.js";
 import { centralAiJson, prepareCentralAiPrompt } from "../central-ai-service.js";
@@ -287,7 +287,7 @@ const workflowStepCreateSchema = z.object({
   reason: z.string().max(5000).optional().nullable(),
 });
 const workflowModuleDecisionSchema = z.object({
-  decision: z.enum(["waive", "defer", "resume"]),
+  decision: z.enum(["not_applicable", "waive", "defer", "resume"]),
   reason: z.string().trim().min(5).max(1000),
 });
 
@@ -3199,7 +3199,93 @@ guidedProjectsRouter.get("/projects-v2/:projectId/workflow-controller", async (r
   if (!accessible) return res.status(404).json({ error: "project not found" });
   const workflow = await getProjectWorkflowController(accessible.id);
   if (!workflow) return res.status(404).json({ error: "project not found" });
-  res.json({ workflow });
+  res.json({
+    workflow,
+    project: {
+      id: accessible.id,
+      name: accessible.name,
+      status: accessible.status,
+      agencyClient: accessible.agencyClient ? { id: accessible.agencyClient.id, name: accessible.agencyClient.name } : null,
+    },
+  });
+});
+
+const workflowConfirmationSchema = z.object({
+  confirmed: z.literal(true),
+  reason: z.string().trim().min(3).max(1000).optional(),
+});
+
+guidedProjectsRouter.post("/projects-v2/:projectId/workflow-controller/business-brain/approve", async (req, res) => {
+  await requireRequestPermission(req, "approve");
+  const parsed = workflowConfirmationSchema.safeParse(req.body ?? {});
+  if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() });
+  const project = await scopedProject(req, req.params.projectId);
+  if (!project) return res.status(404).json({ error: "project not found" });
+  const workflow = await getProjectWorkflowController(project.id);
+  const intake = workflow?.stages.find((stage) => stage.key === "intake");
+  if (!workflow || intake?.status !== "complete" || workflow.businessBrainVersion < 1) return res.status(409).json(workflowBlockedPayload("Complete Intake and save the Business Brain first.", workflow?.nextBestAction.action ?? { label: "Continue Intake", url: `/guided-projects/${project.id}/intake`, type: "navigate" }));
+  const context = await workspaceContext(req);
+  const nextWorkflow = await publishProjectWorkflowEvent({
+    projectId: project.id,
+    eventType: "business_brain.approved",
+    sourceModule: "workflow_controller",
+    sourceId: String(workflow.businessBrainVersion),
+    idempotencyKey: `business-brain.approved:${project.id}:${workflow.businessBrainVersion}`,
+    payload: { businessBrainVersion: workflow.businessBrainVersion, approvedByUserId: context.membership.userId, approvedAt: new Date().toISOString(), reason: parsed.data.reason ?? null },
+  });
+  await recordWorkspaceActivity(prisma, { context, action: "business_brain.approved", entityType: "business_brain_version", entityId: String(workflow.businessBrainVersion), agencyClientId: project.agencyClientId, projectId: project.id, nextJson: { version: workflow.businessBrainVersion, reason: parsed.data.reason ?? null } });
+  res.json({ workflow: nextWorkflow });
+});
+
+guidedProjectsRouter.post("/projects-v2/:projectId/workflow-controller/readiness/complete", async (req, res) => {
+  await requireRequestPermission(req, "edit_project_settings");
+  const parsed = workflowConfirmationSchema.safeParse(req.body ?? {});
+  if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() });
+  const project = await scopedProject(req, req.params.projectId);
+  if (!project) return res.status(404).json({ error: "project not found" });
+  const workflow = await getProjectWorkflowController(project.id);
+  const brainApproval = workflow?.stages.find((stage) => stage.key === "business_brain_approval");
+  const foundationIncomplete = workflow?.stages.find((stage) => ["project_created", "intake"].includes(stage.key) && stage.status !== "complete");
+  if (!workflow || brainApproval?.status !== "approved" || foundationIncomplete) return res.status(409).json(workflowBlockedPayload(foundationIncomplete?.label ?? "Approve the current Business Brain first.", workflow?.nextBestAction.action ?? { label: "Open Project", url: `/guided-projects/${project.id}`, type: "navigate" }));
+  const context = await workspaceContext(req);
+  const nextWorkflow = await publishProjectWorkflowEvent({
+    projectId: project.id,
+    eventType: "readiness.completed",
+    sourceModule: "workflow_controller",
+    sourceId: String(workflow.businessBrainVersion),
+    idempotencyKey: `readiness.completed:${project.id}:${workflow.businessBrainVersion}`,
+    payload: { businessBrainVersion: workflow.businessBrainVersion, confirmedByUserId: context.membership.userId, confirmedAt: new Date().toISOString(), reason: parsed.data.reason ?? null },
+  });
+  await recordWorkspaceActivity(prisma, { context, action: "project.readiness_completed", entityType: "project", entityId: project.id, agencyClientId: project.agencyClientId, projectId: project.id, nextJson: { businessBrainVersion: workflow.businessBrainVersion, reason: parsed.data.reason ?? null } });
+  res.json({ workflow: nextWorkflow });
+});
+
+guidedProjectsRouter.post("/projects-v2/:projectId/workflow-controller/findings/review", async (req, res) => {
+  await requireRequestPermission(req, "approve");
+  const parsed = workflowConfirmationSchema.safeParse(req.body ?? {});
+  if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() });
+  const project = await scopedProject(req, req.params.projectId);
+  if (!project) return res.status(404).json({ error: "project not found" });
+  const workflow = await getProjectWorkflowController(project.id);
+  if (!workflow?.intelligenceReady) return res.status(409).json(workflowBlockedPayload("Complete or mark every required intelligence module Not Applicable first.", workflow?.nextBestAction.action ?? { label: "Review Intelligence", url: `/seo-growth?projectId=${project.id}`, type: "navigate" }));
+  const context = await workspaceContext(req);
+  const nextWorkflow = await publishProjectWorkflowEvent({ projectId: project.id, eventType: "findings.reviewed", sourceModule: "workflow_controller", sourceId: String(workflow.evidenceVersion), idempotencyKey: `findings.reviewed:${project.id}:${workflow.businessBrainVersion}:${workflow.evidenceVersion}`, payload: { businessBrainVersion: workflow.businessBrainVersion, evidenceVersion: workflow.evidenceVersion, reviewedByUserId: context.membership.userId, reviewedAt: new Date().toISOString(), reason: parsed.data.reason ?? null } });
+  await recordWorkspaceActivity(prisma, { context, action: "findings.reviewed", entityType: "project_findings", entityId: String(workflow.evidenceVersion), agencyClientId: project.agencyClientId, projectId: project.id, nextJson: { businessBrainVersion: workflow.businessBrainVersion, evidenceVersion: workflow.evidenceVersion, reason: parsed.data.reason ?? null } });
+  res.json({ workflow: nextWorkflow });
+});
+
+guidedProjectsRouter.post("/projects-v2/:projectId/workflow-controller/tracking/limitation", async (req, res) => {
+  await requireRequestPermission(req, "approve");
+  const parsed = workflowConfirmationSchema.extend({ reason: z.string().trim().min(5).max(1000) }).safeParse(req.body ?? {});
+  if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() });
+  const project = await scopedProject(req, req.params.projectId);
+  if (!project) return res.status(404).json({ error: "project not found" });
+  const context = await workspaceContext(req);
+  const workflow = await getProjectWorkflowController(project.id);
+  if (!workflow) return res.status(404).json({ error: "project not found" });
+  const nextWorkflow = await publishProjectWorkflowEvent({ projectId: project.id, eventType: "tracking.limitation_recorded", sourceModule: "workflow_controller", sourceId: project.websiteId, idempotencyKey: `tracking.limitation:${project.id}:${workflow.businessBrainVersion}:${project.websiteId ?? "none"}`, payload: { reason: parsed.data.reason, businessBrainVersion: workflow.businessBrainVersion, evidenceVersion: workflow.evidenceVersion, websiteId: project.websiteId ?? null, recordedByUserId: context.membership.userId, recordedAt: new Date().toISOString() } });
+  await recordWorkspaceActivity(prisma, { context, action: "tracking.limitation_recorded", entityType: "project_tracking", entityId: project.websiteId ?? project.id, agencyClientId: project.agencyClientId, projectId: project.id, nextJson: { reason: parsed.data.reason } });
+  res.json({ workflow: nextWorkflow });
 });
 
 guidedProjectsRouter.post("/projects-v2/:projectId/workflow-controller/modules/:moduleKey/decision", async (req, res) => {
@@ -3211,11 +3297,11 @@ guidedProjectsRouter.post("/projects-v2/:projectId/workflow-controller/modules/:
   const workflow = await getProjectWorkflowController(project.id);
   const module = workflow?.intelligenceModules.find((item) => item.key === req.params.moduleKey);
   if (!module) return res.status(404).json({ error: "workflow module not found" });
-  if (parsed.data.decision === "waive" && !module.required) return res.status(409).json({ error: "This module is already not required for the project." });
+  if (["not_applicable", "waive"].includes(parsed.data.decision) && !module.required) return res.status(409).json({ error: "This module is already Not Applicable for the project." });
   if (parsed.data.decision !== "resume" && ["complete", "approved"].includes(module.status)) return res.status(409).json({ error: "Completed evidence cannot be waived or deferred. Refresh or supersede it through its source module." });
   const context = await workspaceContext(req);
-  const eventType = `module.${parsed.data.decision === "waive" ? "waived" : parsed.data.decision === "defer" ? "deferred" : "resumed"}`;
-  const nextWorkflow = await publishProjectWorkflowEvent({ projectId: project.id, eventType, sourceModule: "workflow_controller", sourceId: module.key, idempotencyKey: `${eventType}:${project.id}:${module.key}:${Date.now()}`, payload: { reason: parsed.data.reason, actorUserId: context.membership.userId, previousStatus: module.status } });
+  const eventType = `module.${["not_applicable", "waive"].includes(parsed.data.decision) ? "not_applicable" : parsed.data.decision === "defer" ? "deferred" : "resumed"}`;
+  const nextWorkflow = await publishProjectWorkflowEvent({ projectId: project.id, eventType, sourceModule: "workflow_controller", sourceId: module.key, idempotencyKey: `${eventType}:${project.id}:${module.key}:${workflow.businessBrainVersion}:${Date.now()}`, payload: { reason: parsed.data.reason, businessBrainVersion: workflow.businessBrainVersion, evidenceVersion: workflow.evidenceVersion, actorUserId: context.membership.userId, previousStatus: module.status } });
   await recordWorkspaceActivity(prisma, { context, action: eventType, entityType: "project_workflow_module", entityId: module.key, agencyClientId: project.agencyClientId, projectId: project.id, previousJson: { status: module.status }, nextJson: { decision: parsed.data.decision, reason: parsed.data.reason } });
   res.json({ workflow: nextWorkflow });
 });
@@ -3329,7 +3415,8 @@ guidedProjectsRouter.patch("/projects-v2/:projectId/locations", async (req, res)
     });
     return next;
   });
-  res.json({ project: updated, refreshRecommended: projectChanged && strategyApproved });
+  const workflow = projectChanged ? await publishProjectWorkflowEvent({ projectId: project.id, eventType: "business_brain.updated", sourceModule: "project_locations", sourceId: project.id, idempotencyKey: `project.locations:${project.id}:${Date.now()}`, payload: { reason: "Business location or target markets changed." } }) : await getProjectWorkflowController(project.id);
+  res.json({ project: updated, refreshRequired: projectChanged && strategyApproved, workflow });
 });
 
 guidedProjectsRouter.patch("/projects-v2/:projectId/target-markets", async (req, res) => {
@@ -3388,11 +3475,13 @@ guidedProjectsRouter.patch("/projects-v2/:projectId/target-markets", async (req,
     return next;
   });
 
+  const workflow = changed ? await publishProjectWorkflowEvent({ projectId: project.id, eventType: "business_brain.updated", sourceModule: "project_target_markets", sourceId: project.id, idempotencyKey: `project.target-markets:${project.id}:${Date.now()}`, payload: { reason: "Target markets changed.", source: parsed.data.source } }) : await getProjectWorkflowController(project.id);
   res.json({
     project: updated,
     targetMarkets,
     changed,
-    refreshRecommended: changed && strategyApproved,
+    refreshRequired: changed && strategyApproved,
+    workflow,
   });
 });
 
@@ -3426,7 +3515,8 @@ guidedProjectsRouter.patch("/projects-v2/:projectId/goals", async (req, res) => 
     });
     return next;
   });
-  res.json({ project: updated, strategyRegenerationRecommended: changed && strategyApproved, primaryGoalChanged: primaryChanged });
+  const workflow = changed ? await publishProjectWorkflowEvent({ projectId: project.id, eventType: "business_brain.updated", sourceModule: "project_goals", sourceId: project.id, idempotencyKey: `project.goals:${project.id}:${Date.now()}`, payload: { reason: "Primary or secondary project goals changed.", primaryGoalChanged: primaryChanged } }) : await getProjectWorkflowController(project.id);
+  res.json({ project: updated, strategyRefreshRequired: changed && strategyApproved, primaryGoalChanged: primaryChanged, workflow });
 });
 
 guidedProjectsRouter.post("/projects-v2/:projectId/reset-after-strategy", async (req, res) => {
@@ -3648,8 +3738,8 @@ guidedProjectsRouter.post("/projects-v2/:projectId/complete", async (req, res) =
   if (project.status === "completed") return res.json({ project });
   const completionEvidence = typeof req.body?.completionEvidence === "string" ? req.body.completionEvidence.trim() : "";
   if (completionEvidence.length < 10 || completionEvidence.length > 2_000) return res.status(400).json({ error: "Add a short verified outcome or completion reason (10–2,000 characters) before marking this project complete." });
-  const unresolvedProtectedWork = await prisma.executionTask.count({ where: { projectId: project.id, status: { in: ["awaiting_confirmation", "submitted_for_approval", "approved", "ready_to_publish", "publishing", "verification_required"] } } });
-  if (unresolvedProtectedWork > 0) return res.status(409).json({ error: `${unresolvedProtectedWork} protected approval, publishing, or verification item${unresolvedProtectedWork === 1 ? " is" : "s are"} still open. Resolve or explicitly skip that work before completing the project.` });
+  const unresolvedWork = await prisma.executionTask.count({ where: { projectId: project.id, status: { notIn: ["completed", "skipped", "published", "verified", "cancelled", "canceled", "superseded"] } } });
+  if (unresolvedWork > 0) return res.status(409).json({ error: `${unresolvedWork} execution action${unresolvedWork === 1 ? " is" : "s are"} still open. Complete, cancel, or explicitly skip that work before completing the project.` });
   const updated = await prisma.$transaction(async (tx) => {
     const next = await tx.project.update({ where: { id: project.id }, data: { status: "completed" } });
     await recordWorkspaceActivity(tx, { context, action: "project.completed", entityType: "project", entityId: project.id, agencyClientId: project.agencyClientId, projectId: project.id, previousJson: { status: project.status }, nextJson: { status: "completed", completionEvidence } });
@@ -3737,13 +3827,8 @@ guidedProjectsRouter.post("/projects-v2/:projectId/intake", async (req, res) => 
     await recordWorkspaceActivity(tx, { context, action: "project.milestone.intake_completed", entityType: "project", entityId: project.id, agencyClientId: project.agencyClientId, projectId: project.id, nextJson: { milestone: "intake", answerCount: parsed.data.answers.length } });
   });
 
-  let updated = await scopedProject(req, project.id);
-  let opportunityGenerationDeferred: string | null = null;
-  if (updated?.businessProfile && !updated.opportunities.length) {
-    try { await generateOpportunityRecommendations(updated, context); }
-    catch (error) { opportunityGenerationDeferred = error instanceof Error ? error.message : "Opportunity recommendations can be created from Opportunity Finder."; }
-    updated = await scopedProject(req, project.id);
-  }
+  const updated = await scopedProject(req, project.id);
+  const opportunityGenerationDeferred = "Approve the Business Brain and complete the Readiness Check before Opportunity Discovery.";
   const workflow = await publishProjectWorkflowEvent({ projectId: project.id, eventType: "business_brain.updated", sourceModule: "project_intake", sourceId: project.id, idempotencyKey: `intake.saved:${project.id}:${Date.now()}`, payload: { answerCount: parsed.data.answers.length } });
   res.json({ project: updated, opportunityMode: updated ? opportunityRunMode(updated).mode : null, workflow, opportunityGenerationDeferred });
 });
@@ -3753,6 +3838,9 @@ guidedProjectsRouter.post("/projects-v2/:projectId/opportunities/generate", asyn
   const project = await scopedProject(req, req.params.projectId);
   if (!project) return res.status(404).json({ error: "project not found" });
   if (!project.businessProfile) return res.status(409).json({ error: "complete intake before generating opportunities" });
+  const workflow = await getProjectWorkflowController(project.id);
+  const opportunityStage = workflow?.stages.find((stage) => stage.key === "readiness_check");
+  if (!workflow || opportunityStage?.status !== "complete") return res.status(409).json(workflowBlockedPayload(workflow?.nextBestAction.title ?? "Complete project readiness.", workflow?.nextBestAction.action ?? { label: "Open Project", url: `/guided-projects/${project.id}`, type: "navigate" }));
   const context = await workspaceContext(req);
   const created = await generateOpportunityRecommendations(project, context);
 
@@ -3766,6 +3854,9 @@ guidedProjectsRouter.post("/projects-v2/:projectId/opportunities/refine", async 
   if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() });
   const project = await scopedProject(req, req.params.projectId);
   if (!project?.businessProfile) return res.status(409).json({ error: "complete intake before refining opportunities" });
+  const workflow = await getProjectWorkflowController(project.id);
+  const opportunityStage = workflow?.stages.find((stage) => stage.key === "readiness_check");
+  if (!workflow || opportunityStage?.status !== "complete") return res.status(409).json(workflowBlockedPayload(workflow?.nextBestAction.title ?? "Complete project readiness.", workflow?.nextBestAction.action ?? { label: "Open Project", url: `/guided-projects/${project.id}`, type: "navigate" }));
   const context = await workspaceContext(req);
   const generated = await generateOpportunityRecommendations(project, context, parsed.data.instructions);
   res.json({ ...generated, project: await scopedProject(req, project.id) });
@@ -4122,7 +4213,7 @@ async function performStrategyGeneration(req: Request, res: Response) {
       evidenceVersion: workflowGate.evidenceVersion,
       confidence: workflowGate.confidence,
       applicableModules: workflowGate.intelligenceModules.filter((module) => module.required).map((module) => ({ key: module.key, status: module.status, evidenceAt: module.evidenceAt })),
-      optionalOrWaivedModules: workflowGate.intelligenceModules.filter((module) => !module.required || ["waived", "deferred", "not_required"].includes(module.status)).map((module) => ({ key: module.key, status: module.status })),
+      optionalOrWaivedModules: workflowGate.intelligenceModules.filter((module) => !module.required || ["not_applicable", "waived", "deferred", "not_required"].includes(module.status)).map((module) => ({ key: module.key, status: module.status })),
       currentUserRoles: [...context.roles],
       workspaceType: context.workspace.workspaceType,
       protectedActionsRequireApproval: context.workspace.workspaceType !== "personal",
@@ -4399,6 +4490,7 @@ function strategyGenerationJobView(job: { id: string; projectId: string | null; 
     error: job.status === "failed" ? String(output.publicError || "Strategy generation could not be completed. Please retry this job.") : delayed ? "Strategy generation is taking longer than expected. The existing job remains protected from duplicate requests." : null,
     delayed,
     errorCode: job.status === "failed" ? String(output.errorCode || "") || null : null,
+    recovery: job.status === "failed" ? (output.recovery ?? workflowRecoveryPayload({ whatFailed: "Strategy generation", workSaved: true, capacityOutcome: "unknown", nextStep: "Retry this saved Strategy job.", action: "retry", actionUrl: `/strategy?projectId=${job.projectId ?? ""}`, errorCode: String(output.errorCode || "") || null })) : null,
     createdAt: job.createdAt,
   };
 }
@@ -4519,7 +4611,7 @@ async function executeStrategyGenerationJob(jobId: string) {
       : `We could not complete Strategy generation. If the problem continues, send error code ${errorCode} to ${config.supportEmail}.`;
     await prisma.aiRun.update({ where: { id: jobId }, data: {
       status: "failed",
-      outputJson: { stage: "failed", progress: 100, errorCode, publicError },
+      outputJson: { stage: "failed", progress: 100, errorCode, publicError, recovery: workflowRecoveryPayload({ whatFailed: "Strategy generation", workSaved: true, capacityOutcome: refundFailure ? "refund_pending" : "refunded", nextStep: refundFailure ? "Do not retry yet; contact support with the error code so Capacity can be reconciled." : "Retry from the Strategy screen; the project evidence and failed job are saved.", action: refundFailure ? "contact_support" : "retry", actionUrl: `/strategy?projectId=${input.projectId}`, errorCode }) },
       errorMessage: message,
     } }).catch(() => undefined);
     if (statusCode >= 500 || refundFailure) {
@@ -4580,9 +4672,8 @@ guidedProjectsRouter.post("/projects-v2/:projectId/strategy/generate", async (re
   const project = await scopedProject(req, req.params.projectId);
   if (!project) return res.status(404).json({ error: "project not found" });
   const workflow = await getProjectWorkflowController(project.id);
-  if (!workflow?.intelligenceReady) {
-    return res.status(409).json({ error: "Strategy cannot start until all required project intelligence is complete.", code: "STRATEGY_NOT_ELIGIBLE", blockers: workflow?.blockers ?? [], nextBestAction: workflow?.nextBestAction ?? null });
-  }
+  const strategyBlocker = strategyWorkflowPrerequisite(workflow);
+  if (strategyBlocker) return res.status(409).json(strategyBlocker);
   const parsed = z.object({ revisionComment: z.string().trim().max(2000).optional(), idempotencyKey: z.string().trim().min(8).max(191).optional() }).safeParse(req.body ?? {});
   if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() });
   const active = await prisma.aiRun.findFirst({ where: { projectId: project.id, moduleName: "strategy_generation_job", status: { in: ["queued", "running"] } }, orderBy: { createdAt: "desc" } });
@@ -4698,7 +4789,8 @@ guidedProjectsRouter.post("/projects-v2/:projectId/strategy/approve", async (req
   const latestStrategy = project.strategyPlans[0];
   if (!latestStrategy) return res.status(409).json({ error: "generate strategy before approving" });
   const workflowGate = await getProjectWorkflowController(project.id);
-  if (!workflowGate?.intelligenceReady) return res.status(409).json({ error: "Complete the required project intelligence before approving Strategy.", code: "WORKFLOW_INTELLIGENCE_INCOMPLETE", workflow: workflowGate });
+  const strategyApprovalBlocker = strategyWorkflowPrerequisite(workflowGate);
+  if (strategyApprovalBlocker) return res.status(409).json(strategyApprovalBlocker);
   const latestGapAnalysis = requiresSiteAnalysisBeforeStrategy(project)
     ? await prisma.gapAnalysisRun.findFirst({ where: { projectId: project.id, status: "completed" }, orderBy: [{ completedAt: "desc" }, { createdAt: "desc" }], select: { completedAt: true, createdAt: true } })
     : null;
@@ -4794,6 +4886,8 @@ guidedProjectsRouter.post("/projects-v2/:projectId/execution-plan/create", async
   if (!project) return res.status(404).json({ error: "project not found" });
   const approvedStrategy = project.strategyPlans.find((strategy) => strategy.status === "approved");
   if (!approvedStrategy) return res.status(409).json({ error: "approve strategy before creating execution plan" });
+  const approvedBlueprint = await prisma.growthBlueprint.findFirst({ where: { projectId: project.id, status: "approved", approvedStrategyId: approvedStrategy.id }, select: { id: true, currentVersion: true } });
+  if (!approvedBlueprint) return res.status(409).json(workflowBlockedPayload("Approve the Growth Blueprint created from the current Strategy.", { label: "Open Growth Blueprint", url: `/growth?projectId=${project.id}`, type: "approve" }));
   const workflowGate = await getProjectWorkflowController(project.id);
   if (!workflowGate?.intelligenceReady) return res.status(409).json({ error: "Complete required intelligence before creating the Execution Plan.", code: "WORKFLOW_INTELLIGENCE_INCOMPLETE", workflow: workflowGate });
   const workflowBlocker = executionPlanWorkflowBlocker(workflowGate);
@@ -4981,6 +5075,22 @@ guidedProjectsRouter.post("/projects-v2/:projectId/execution-plan/create", async
   res.json({ project: updated, workflow });
 });
 
+guidedProjectsRouter.post("/projects-v2/:projectId/execution-plan/approve", async (req, res) => {
+  const context = await requireRequestPermission(req, "approve");
+  const parsed = workflowConfirmationSchema.safeParse(req.body ?? {});
+  if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() });
+  const project = await scopedProject(req, req.params.projectId);
+  if (!project) return res.status(404).json({ error: "project not found" });
+  const plan = project.executionPlans.find((item) => item.status === "active") ?? project.executionPlans[0];
+  const strategy = project.strategyPlans.find((item) => item.status === "approved");
+  if (!plan || !strategy || plan.strategyVersion !== strategy.version) return res.status(409).json(workflowBlockedPayload("Create or refresh the Execution Plan from the current approved Strategy.", { label: "Create Execution Plan", url: `/guided-projects/${project.id}?tab=execution#execution-tasks`, type: "generate" }));
+  const workflow = await getProjectWorkflowController(project.id);
+  if (!workflow || workflow.executionPlanStale) return res.status(409).json(workflowBlockedPayload("Refresh the stale Execution Plan.", workflow?.nextBestAction.action ?? { label: "Open Execution Plan", url: `/guided-projects/${project.id}?tab=execution#execution-tasks`, type: "review" }));
+  const nextWorkflow = await publishProjectWorkflowEvent({ projectId: project.id, eventType: "execution_plan.approved", sourceModule: "execution_plan", sourceId: plan.id, idempotencyKey: `execution-plan.approved:${plan.id}:${plan.planVersion}:${strategy.version}`, payload: { planVersion: plan.planVersion, strategyId: strategy.id, strategyVersion: strategy.version, businessBrainVersion: plan.businessBrainVersion, evidenceVersion: plan.evidenceVersion, approvedByUserId: context.membership.userId, approvedAt: new Date().toISOString(), reason: parsed.data.reason ?? null } });
+  await recordWorkspaceActivity(prisma, { context, action: "execution_plan.approved", entityType: "execution_plan", entityId: plan.id, agencyClientId: project.agencyClientId, projectId: project.id, nextJson: { planVersion: plan.planVersion, strategyVersion: strategy.version, reason: parsed.data.reason ?? null } });
+  res.json({ workflow: nextWorkflow });
+});
+
 guidedProjectsRouter.post("/projects-v2/:projectId/execution-tasks", async (req, res) => {
   const context = await requireRequestPermission(req, "execute_tasks");
   const parsed = executionTaskCreateSchema.safeParse(req.body ?? {});
@@ -4995,13 +5105,18 @@ guidedProjectsRouter.post("/projects-v2/:projectId/execution-tasks", async (req,
   const keyPart = `${data.sourceModule}:${data.title}`.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 150);
   const result = await prisma.$transaction(async (tx) => {
     const planId = await activePlanId(tx, project.id);
+    const plan = await tx.executionPlan.findUnique({ where: { id: planId }, select: { planVersion: true } });
     const existing = await tx.executionTask.findUnique({ where: { dedupeKey: `project:${project.id}:user:${keyPart}` } });
-    const taskData = { clientId: project.clientId, websiteId: project.websiteId, projectId: project.id, executionPlanId: planId, moduleName: data.sourceModule, sourceType: "user", sourceId: context.membership.userId, title: data.title, description: data.description, expectedOutcome: data.expectedOutcome, priority: data.priority, automationLevel: data.automationLevel, status: dependencies.some((item) => item.id) ? "pending" : "ready", requiresApproval: data.requiresApproval, manualRequired: data.automationLevel === "manual_guided" || data.automationLevel === "manual_task", assigneeMembershipId: assignee?.id ?? null, dueAt: data.dueAt ?? null, actionButtonLabel: "Review Task", relatedUrl: `/guided-projects/${project.id}?tab=execution#execution-tasks` };
+    const taskData = { clientId: project.clientId, websiteId: project.websiteId, projectId: project.id, executionPlanId: planId, moduleName: data.sourceModule, sourceType: "user", sourceId: context.membership.userId, title: data.title, description: data.description, expectedOutcome: data.expectedOutcome, priority: data.priority, automationLevel: data.automationLevel, status: dependencies.some((item) => item.id) ? "pending" : "ready", requiresApproval: data.requiresApproval, manualRequired: data.automationLevel === "manual_guided" || data.automationLevel === "manual_task", assigneeMembershipId: assignee?.id ?? null, dueAt: data.dueAt ?? null, actionButtonLabel: "Review Task", relatedUrl: `/guided-projects/${project.id}?tab=execution#execution-tasks`, approvedAt: null, clientApprovedAt: null, submittedAt: null, changesRequestedAt: null, approvalDecision: null, approvalNotes: null, approvalSnapshotJson: {}, completedAt: null, publishedAt: null };
     const task = existing && !["completed", "cancelled", "canceled"].includes(existing.status)
       ? await tx.executionTask.update({ where: { id: existing.id }, data: taskData })
       : await tx.executionTask.create({ data: { ...taskData, dedupeKey: existing ? `project:${project.id}:user:${keyPart}:${Date.now()}` : `project:${project.id}:user:${keyPart}` } });
     await tx.executionTaskDependency.deleteMany({ where: { taskId: task.id } });
     if (dependencies.length) await tx.executionTaskDependency.createMany({ data: dependencies.map((dependency) => ({ taskId: task.id, requiredTaskId: dependency.id })) });
+    const [majorValue, minorValue] = String(plan?.planVersion ?? "1.0").split(".");
+    const major = Number.parseInt(majorValue, 10);
+    const minor = Number.parseInt(minorValue, 10);
+    await tx.executionPlan.update({ where: { id: planId }, data: { planVersion: `${Number.isFinite(major) ? major : 1}.${(Number.isFinite(minor) ? minor : 0) + 1}` } });
     await recordWorkspaceActivity(tx, { context, action: existing ? "task.updated" : "task.created", entityType: "execution_task", entityId: task.id, agencyClientId: project.agencyClientId, projectId: project.id, nextJson: { title: task.title, expectedOutcome: task.expectedOutcome, sourceModule: task.moduleName, priority: task.priority, status: task.status, automationLevel: task.automationLevel, dependencies: dependencies.map((item) => item.id), assigneeMembershipId: task.assigneeMembershipId, dueAt: task.dueAt } });
     if (assignee) await createWorkspaceNotification(tx, { context, userId: assignee.userId, type: "task_assignment", title: existing ? "Task assignment updated" : "New task assigned", body: `${task.title} was assigned to you. Expected outcome: ${task.expectedOutcome}`, actionUrl: task.relatedUrl ?? `/guided-projects/${project.id}?tab=execution`, agencyClientId: project.agencyClientId, projectId: project.id });
     await syncProjectWorkflow(tx, project.id);

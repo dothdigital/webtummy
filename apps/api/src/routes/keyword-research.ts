@@ -815,12 +815,11 @@ async function createOrReuseKeywordResearchRun(
     websiteId: scope.website?.id,
     featureKey: "keyword_research_batch",
     actionKey: "Run keyword-market research",
-    idempotencyKey: `keyword-research:${requestKey}:${Date.now()}`,
+    idempotencyKey: `keyword-research:${requestKey}`,
     metadata: { countryChecks: capacityCheckType === "country" ? 1 : 0, localChecks: capacityCheckType === "local" ? 1 : 0 },
   });
 
-  const run = await prisma.keywordResearchRun.create({
-    data: {
+  const runData = {
       requestKey,
       clientId: scope.clientId,
       projectId: scope.project?.id ?? null,
@@ -836,8 +835,20 @@ async function createOrReuseKeywordResearchRun(
       status: "queued",
       usageEventId: reservation.usageEventId,
       capacityCheckType,
-    },
-  });
+  };
+  let run;
+  if (existingRun) {
+    run = await prisma.keywordResearchRun.update({ where: { id: existingRun.id }, data: { ...runData, status: "queued", error: null, completedAt: null } });
+  } else {
+    try {
+      run = await prisma.keywordResearchRun.create({ data: runData });
+    } catch (error) {
+      if ((error as { code?: string }).code !== "P2002") throw error;
+      const raced = await prisma.keywordResearchRun.findFirst({ where: { requestKey }, orderBy: { createdAt: "desc" } });
+      if (!raced) throw error;
+      return { run: withRefreshState(raced, bypassRefreshLimit), reused: true, retried: false };
+    }
+  }
   try {
     await enqueueKeywordResearchCompletion(run.id, executionInput);
   } catch (error) {
@@ -992,11 +1003,11 @@ keywordResearchRouter.post("/keyword-research/batch", async (req, res) => {
     const existing = latestExistingByKey.get(requestKey);
     return !existing || ["failed", "cancelled", "canceled"].includes(existing.status);
   }).length;
-  const newChecks = checks.filter(({ input, location }) => {
+  const billableChecks = checks.filter(({ input, location }) => {
     const { targetDomain } = keywordResearchTargets(input, scope);
     const requestKey = keywordResearchRequestKey(input, scope, location, targetDomain);
     const existing = latestExistingByKey.get(requestKey);
-    return !existing || ["failed", "cancelled", "canceled"].includes(existing.status);
+    return !existing;
   });
   const activeWhere = scope.project?.id ? { projectId: scope.project.id } : { clientId: scope.clientId };
   const [projectActive, globalActive] = await Promise.all([
@@ -1021,10 +1032,10 @@ keywordResearchRouter.post("/keyword-research/batch", async (req, res) => {
   }
 
   let batchUsageEventId: string | null = null;
-  if (newChecks.length) {
+  if (billableChecks.length) {
     try {
-      const countryChecks = newChecks.filter(({ location }) => location.locationType === "Country").length;
-      const localChecks = newChecks.length - countryChecks;
+      const countryChecks = billableChecks.filter(({ location }) => location.locationType === "Country").length;
+      const localChecks = billableChecks.length - countryChecks;
       const usage = await preflightUsage({
         clientId: scope.clientId,
         userId: req.user?.userId,
@@ -1033,7 +1044,7 @@ keywordResearchRouter.post("/keyword-research/batch", async (req, res) => {
         featureKey: "keyword_research_batch",
         actionKey: "Run keyword-market research batch",
         idempotencyKey: `keyword-research-batch:${Date.now()}:${requestKeys.join(":")}`,
-        inputUnits: newChecks.length,
+        inputUnits: billableChecks.length,
         metadata: { countryChecks, localChecks },
       });
       batchUsageEventId = usage.usageEventId;
@@ -1046,7 +1057,10 @@ keywordResearchRouter.post("/keyword-research/batch", async (req, res) => {
   const failed: Array<{ keyword: string; location: string; reason: string }> = [];
   for (const { input, location } of checks) {
     try {
-      const result = await createOrReuseKeywordResearchRun(input, scope, location, bypassRefreshLimit, { enforceCapacity: false, usageEventId: batchUsageEventId, userId: req.user?.userId });
+      const { targetDomain } = keywordResearchTargets(input, scope);
+      const requestKey = keywordResearchRequestKey(input, scope, location, targetDomain);
+      const isFirstAttempt = !latestExistingByKey.has(requestKey);
+      const result = await createOrReuseKeywordResearchRun(input, scope, location, bypassRefreshLimit, { enforceCapacity: false, usageEventId: isFirstAttempt ? batchUsageEventId : null, userId: req.user?.userId });
       accepted.push({
         ...result,
         requestedLocation: input.locationName,
@@ -1360,22 +1374,7 @@ keywordResearchRouter.post("/keyword-research/:id/refresh", async (req, res) => 
     throw error;
   }
   const capacityCheckType = location.locationType === "Country" ? "country" : "local";
-  let usageEventId: string;
-  try {
-    const usage = await preflightUsage({
-      clientId: existing.clientId,
-      userId: req.user?.userId,
-      projectId: existing.projectId,
-      websiteId: existing.websiteId,
-      featureKey: "keyword_research_batch",
-      actionKey: "Refresh keyword-market research",
-      idempotencyKey: `keyword-research-refresh:${existing.id}:${Date.now()}`,
-      metadata: { countryChecks: capacityCheckType === "country" ? 1 : 0, localChecks: capacityCheckType === "local" ? 1 : 0 },
-    });
-    usageEventId = usage.usageEventId;
-  } catch (error) {
-    return res.status(Number((error as { statusCode?: number }).statusCode || 402)).json({ error: error instanceof Error ? error.message : "Could not reserve AI Capacity for this refresh." });
-  }
+  // Refreshing an existing result is a support/maintenance action and must not reserve new AI Capacity.
   const run = await prisma.keywordResearchRun.create({
     data: {
       clientId: existing.clientId,
@@ -1390,7 +1389,7 @@ keywordResearchRouter.post("/keyword-research/:id/refresh", async (req, res) => 
       serpDepth: existing.serpDepth,
       keywordLimit,
       status: "queued",
-      usageEventId,
+      usageEventId: null,
       capacityCheckType,
     },
   });
@@ -1411,7 +1410,6 @@ keywordResearchRouter.post("/keyword-research/:id/refresh", async (req, res) => 
       where: { id: run.id, status: "queued" },
       data: { status: "failed", error: "Keyword research could not enter the processing queue. Retry this exact check.", completedAt: new Date() },
     });
-    await refundUsage({ usageEventId, reason: "Keyword research refresh could not enter the processing queue." }).catch(() => undefined);
     return res.status(503).json({ error: "Keyword research could not enter the processing queue. The previous completed result is preserved; retry this exact check." });
   }
   res.status(202).json({ run: withRefreshState(run, bypassRefreshLimit) });

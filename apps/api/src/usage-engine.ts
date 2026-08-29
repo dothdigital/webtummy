@@ -38,6 +38,24 @@ export function usageCorrelationId(value: string | null | undefined) {
   return boundedStableKey(value, USAGE_CORRELATION_ID_MAX_LENGTH);
 }
 
+export function usageWorkFingerprint(input: Pick<UsagePreflightInput, "clientId" | "projectId" | "websiteId" | "featureKey" | "actionKey" | "idempotencyKey">, requestId?: string | null) {
+  const source = requestId?.trim() || input.idempotencyKey?.trim();
+  if (!source) return null;
+  const normalized = source
+    .replace(/:(?:retry|refresh):\d+$/i, "")
+    .replace(/:\d{13}(?=:|$)/g, ":request")
+    .replace(/\b(?:retry|refresh)\b/gi, "work");
+  const digest = crypto.createHash("sha256").update(JSON.stringify({
+    clientId: input.clientId,
+    projectId: input.projectId ?? null,
+    websiteId: input.websiteId ?? null,
+    featureKey: input.featureKey,
+    actionKey: input.actionKey?.replace(/\b(?:retry|refresh)\b/gi, "work") ?? input.featureKey,
+    source: normalized,
+  })).digest("hex");
+  return usageIdempotencyKey(`work:${input.featureKey}:${digest}`);
+}
+
 type Db = typeof prisma | Prisma.TransactionClient;
 
 export type UsagePreflightInput = {
@@ -349,7 +367,10 @@ export async function preflightUsage(input: UsagePreflightInput) {
   if (requestContext?.clientId) input = { ...input, clientId: requestContext.clientId };
   await ensureUsageControlDefaults();
   const units = Math.max(1, Math.floor(input.inputUnits ?? 1));
-  let idempotencyKey = usageIdempotencyKey(input.idempotencyKey);
+  // Workflow keys identify the underlying work across retry/refresh endpoints.
+  // The request fingerprint is the platform fallback for callers that do not
+  // yet provide one, so reload protection does not depend on every module.
+  let idempotencyKey = usageWorkFingerprint(input, input.idempotencyKey ? null : requestContext?.requestId);
   const client = await prisma.client.findUnique({ where: { id: input.clientId }, select: { id: true, plan: true, aiSubscriptionStatus: true } });
   if (!client) throw new Error("client not found");
 
@@ -384,7 +405,31 @@ export async function preflightUsage(input: UsagePreflightInput) {
       estimatedProviderCostUsd: roundCost(existing.feature.estimatedProviderCost * Math.max(1, units)),
       duplicate: true,
     };
-    if (existing) idempotencyKey = usageIdempotencyKey(`${idempotencyKey}:retry:${Date.now()}`);
+    if (existing) {
+      const retryCount = await prisma.usageEvent.count({ where: { clientId: input.clientId, idempotencyKey: { startsWith: `${idempotencyKey}:free-retry:` } } });
+      const retryKey = usageIdempotencyKey(`${idempotencyKey}:free-retry:${retryCount + 1}`);
+      const retryToken = crypto.randomBytes(24).toString("base64url");
+      const retry = await prisma.usageEvent.create({ data: {
+        clientId: input.clientId,
+        workspaceId: existing.workspaceId,
+        userId: input.userId ?? existing.userId,
+        projectId: input.projectId ?? existing.projectId,
+        websiteId: input.websiteId ?? existing.websiteId,
+        featureKey: input.featureKey,
+        actionKey: Array.from(input.actionKey?.trim() || input.featureKey).slice(0, 160).join(""),
+        idempotencyKey: retryKey,
+        status: "reserved",
+        creditsReserved: 0,
+        inputUnits: units,
+        approvalTokenHash: hashToken(retryToken),
+        approvalTokenExpiresAt: new Date(Date.now() + 15 * 60 * 1000),
+        metadataJson: { ...(input.metadata ?? {}), freeRetryOfUsageEventId: existing.id, billingReason: "retry_or_recovery" } as Prisma.InputJsonValue,
+      } }).catch(async (error) => {
+        if ((error as { code?: string })?.code !== "P2002" || !retryKey) throw error;
+        return prisma.usageEvent.findUniqueOrThrow({ where: { clientId_idempotencyKey: { clientId: input.clientId, idempotencyKey: retryKey } } });
+      });
+      return { usageEventId: retry.id, approvalToken: retryToken, expiresAt: retry.approvalTokenExpiresAt!, feature: existing.feature, creditsReserved: 0, estimatedProviderCostUsd: 0, duplicate: true };
+    }
   }
 
   const account = await ensureWorkspaceCapacityAccount(workspace.id);

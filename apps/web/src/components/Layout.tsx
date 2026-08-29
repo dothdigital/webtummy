@@ -4,9 +4,10 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 import { useAuth } from "../auth.js";
 import { ACTIVE_CLIENT_EVENT, api, endImpersonation, getImpersonationLabel } from "../api.js";
 import { Logo, LogoMark } from "./Logo.js";
-import type { BillingStatus } from "../types.js";
+import type { BillingStatus, ProjectWorkflowController } from "../types.js";
 import BackgroundJobCenter from "./BackgroundJobCenter.js";
 import ProjectScopeGate from "./ProjectScopeGate.js";
+import ProjectWorkflowGuidance from "./ProjectWorkflowGuidance.js";
 import { ACTIVE_PROJECT_CHANGED_EVENT, getActiveProjectId, isProjectScopedPath, projectScopedPath, setActiveProjectId } from "../active-project.js";
 import { workspaceExperience } from "../workspace-experience.js";
 
@@ -698,6 +699,7 @@ export default function Layout({ children }: { children: ReactNode }) {
   const [workspaceIdentity, setWorkspaceIdentity] = useState<{ name: string; workspaceType: string } | null>(() => user?.workspace ? { name: user.workspace.name, workspaceType: user.workspace.type } : null);
   const [unreadNotifications, setUnreadNotifications] = useState(0);
   const [activeProjectId, setActiveProjectContextId] = useState(() => getActiveProjectId());
+  const [workflowGuidance, setWorkflowGuidance] = useState<{ workflow: ProjectWorkflowController; project: { id: string; name: string; status: string; agencyClient: { id: string; name: string } | null } } | null>(null);
 
   useEffect(() => {
     const onClientChanged = () => setImpersonation(getImpersonationLabel());
@@ -756,6 +758,23 @@ export default function Layout({ children }: { children: ReactNode }) {
     window.addEventListener("senuke-ai:notifications-changed", refresh);
     return () => { cancelled = true; window.clearInterval(timer); window.removeEventListener("senuke-ai:notifications-changed", refresh); };
   }, [user, workspacePermissions.view_notifications]);
+
+  useEffect(() => {
+    const projectId = pageProjectId(location.pathname, location.search) || activeProjectId;
+    if (!projectId || !isProjectScopedPath(location.pathname)) { setWorkflowGuidance(null); return; }
+    let cancelled = false;
+    const refresh = () => api.get<{ workflow?: ProjectWorkflowController; project?: { id: string; name: string; status: string; agencyClient?: { id: string; name: string } | null } }>(`/api/projects-v2/${encodeURIComponent(projectId)}/workflow-controller`)
+      .then((result) => {
+        if (cancelled) return;
+        if (!result?.workflow || !result?.project) { setWorkflowGuidance(null); return; }
+        setWorkflowGuidance({ workflow: result.workflow, project: { ...result.project, agencyClient: result.project.agencyClient ?? null } });
+      })
+      .catch(() => { if (!cancelled) setWorkflowGuidance(null); });
+    void refresh();
+    const timer = window.setInterval(refresh, 30000);
+    window.addEventListener("senuke-ai:notifications-changed", refresh);
+    return () => { cancelled = true; window.clearInterval(timer); window.removeEventListener("senuke-ai:notifications-changed", refresh); };
+  }, [activeProjectId, location.pathname, location.search]);
 
 
   useEffect(() => {
@@ -867,15 +886,16 @@ export default function Layout({ children }: { children: ReactNode }) {
           <div className={`mb-2 px-3 text-[10px] font-bold uppercase tracking-[0.16em] text-slate-400 ${sidebarCollapsed ? "lg:hidden" : ""}`}>Workspace</div>
           <div className="space-y-1">{workspaceItems.map((n) => {
             const target = activeProjectId && isProjectScopedPath(n.to) ? projectScopedPath(n.to, activeProjectId) : n.to;
+            const label = n.to === "/workspace" && experience.kind === "agency" ? "Agency Portfolio" : n.label;
             return (
             <NavLink
               key={n.to}
               to={target}
               end={n.end}
-              title={sidebarCollapsed ? n.label : undefined}
-              onMouseEnter={(event) => showSidebarTooltip(n.label, event.currentTarget)}
+              title={sidebarCollapsed ? label : undefined}
+              onMouseEnter={(event) => showSidebarTooltip(label, event.currentTarget)}
               onMouseLeave={() => setSidebarTooltip(null)}
-              onFocus={(event) => showSidebarTooltip(n.label, event.currentTarget)}
+              onFocus={(event) => showSidebarTooltip(label, event.currentTarget)}
               onBlur={() => setSidebarTooltip(null)}
               onClick={() => setOpen(false)}
               className={({ isActive }) =>
@@ -885,7 +905,7 @@ export default function Layout({ children }: { children: ReactNode }) {
               }
             >
               <NavGlyph icon={n.icon} />
-              <span className={`min-w-0 flex-1 ${sidebarCollapsed ? "lg:hidden" : ""}`}>{n.label}</span>
+              <span className={`min-w-0 flex-1 ${sidebarCollapsed ? "lg:hidden" : ""}`}>{label}</span>
               {n.to.includes("tab=notifications") && unreadNotifications > 0 && <span className="relative flex h-2.5 w-2.5" aria-label={`${unreadNotifications} unread notifications`}><span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-red-400 opacity-60" /><span className="relative inline-flex h-2.5 w-2.5 rounded-full bg-red-600" /></span>}
             </NavLink>
           );})}</div>
@@ -945,6 +965,7 @@ export default function Layout({ children }: { children: ReactNode }) {
             </div>
           </section>
         )}
+        {workflowGuidance?.workflow && workflowGuidance?.project && <ProjectWorkflowGuidance workflow={workflowGuidance.workflow} project={workflowGuidance.project} />}
         <main className="min-w-0 flex-1 overflow-x-hidden px-4 pb-4 pt-16 lg:p-8">
           <ProjectScopeGate
             required={isProjectScopedPath(location.pathname)}

@@ -1661,6 +1661,24 @@ growthRouter.post("/projects-v2/:projectId/growth/analyze", async (req, res) => 
   res.json({ project, signals: score, readiness, growth, growthIntelligence, workflowController, strategyContext: projectContext(project).strategyContract, automationPolicy: policyForModule("growth_marketing") });
 });
 
+growthRouter.post("/projects-v2/:projectId/growth/blueprint/approve", async (req, res) => {
+  const context = await authorizeProject(req, req.params.projectId, "approve");
+  const project = await scopedProject(req, req.params.projectId);
+  if (!project) return res.status(404).json({ error: "project not found" });
+  const blueprint = await prisma.growthBlueprint.findUnique({ where: { projectId: project.id }, include: { versions: { orderBy: { version: "desc" }, take: 1 } } });
+  if (!blueprint || !blueprint.versions[0]) return res.status(409).json({ error: "The action is not ready.", code: "WORKFLOW_PREREQUISITE_REQUIRED", missingRequirement: "Create the Growth Blueprint first.", nextAction: { label: "Run Growth Engine", url: `/growth?projectId=${project.id}`, type: "generate" } });
+  const latest = blueprint.versions[0];
+  if (blueprint.status === "approved" && latest.status === "approved") return res.json({ blueprint, idempotent: true, workflowController: await getProjectWorkflowController(project.id) });
+  const now = new Date();
+  await prisma.$transaction(async (tx) => {
+    await tx.growthBlueprintVersion.update({ where: { id: latest.id }, data: { status: "approved", approvedByUserId: context.membership.userId, approvedAt: now } });
+    await tx.growthBlueprint.update({ where: { id: blueprint.id }, data: { status: "approved", approvedByUserId: context.membership.userId, approvedAt: now } });
+    await recordWorkspaceActivity(tx, { context, action: "growth_blueprint.approved", entityType: "growth_blueprint", entityId: blueprint.id, agencyClientId: project.agencyClientId, projectId: project.id, previousJson: { status: blueprint.status }, nextJson: { status: "approved", version: latest.version } });
+  });
+  const workflowController = await publishProjectWorkflowEvent({ projectId: project.id, eventType: "growth_blueprint.approved", sourceModule: "growth", sourceId: blueprint.id, idempotencyKey: `growth-blueprint.approved:${blueprint.id}:${latest.version}`, payload: { version: latest.version, strategyId: blueprint.approvedStrategyId, approvedByUserId: context.membership.userId } });
+  res.json({ blueprint: await prisma.growthBlueprint.findUnique({ where: { id: blueprint.id }, include: { versions: { orderBy: { version: "desc" }, take: 10 } } }), workflowController });
+});
+
 growthRouter.post("/projects-v2/:projectId/growth/content-roadmap/refresh", async (req, res) => {
   const context = await authorizeProject(req, req.params.projectId, "run_ai_analysis");
   let project = await scopedProject(req, req.params.projectId);

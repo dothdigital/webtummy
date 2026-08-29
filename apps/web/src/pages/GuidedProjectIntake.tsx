@@ -499,9 +499,12 @@ export default function GuidedProjectIntake() {
             : JSON.stringify(answer.answerValue ?? "");
       }
       const savedAnswers: Record<string, string> = {
+        ...existing,
         project_name: existing.project_name || projectResult.project.name || "",
         setup_mode: existing.setup_mode || "Quick Guided Setup",
         business_name: projectResult.project.businessName || projectResult.project.name || "",
+        // These values are governed project settings. Older intake answers must
+        // not hide a corrected website or drop markets when the intake is edited.
         website_url: projectResult.project.website?.rootUrl || projectResult.project.websiteUrl || "",
         industry_niche: projectResult.project.niche || "",
         business_location: projectResult.project.businessLocation || "",
@@ -510,7 +513,6 @@ export default function GuidedProjectIntake() {
         target_launch_timeline: projectResult.project.targetLaunchTimeline || "",
         preferred_output: Array.isArray(projectResult.project.preferredOutputs) ? projectResult.project.preferredOutputs.filter((item): item is string => typeof item === "string").join(", ") : "",
         publishing_preference: projectResult.project.preferredPublishingMethod || "",
-        ...existing,
         target_audience: existing.target_audience || projectResult.project.businessProfile?.targetAudience || "",
         products_services: existing.products_services || projectResult.project.businessProfile?.offerSummary || "",
         tone_preference: existing.tone_preference || projectResult.project.businessProfile?.tonePreference || "",
@@ -529,7 +531,10 @@ export default function GuidedProjectIntake() {
           // already confirmed and saved in the project or Business Profile.
           setAnswers((current) => ({
             ...current,
-            ...Object.fromEntries(Object.entries(draft.answers ?? {}).filter(([key, value]) => value.trim() || !current[key]?.trim())),
+            ...Object.fromEntries(Object.entries(draft.answers ?? {}).filter(([key, value]) =>
+              !["website_url", "target_location", "publishing_preference"].includes(key)
+              && (value.trim() || !current[key]?.trim()),
+            )),
           }));
         }
         if (draft?.mode) setMode(draft.mode);

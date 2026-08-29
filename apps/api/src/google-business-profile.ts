@@ -23,7 +23,7 @@ export function isGbpQuotaAccessError(error: unknown) {
 }
 
 export function friendlyGbpProviderError(error: unknown) {
-  if (isGbpQuotaAccessError(error)) return "Google authorization succeeded, but this Google Cloud project has no usable Business Profile API quota yet. Request Basic API Access for the project, wait for approval, confirm Account Management quota is 300 QPM, then check access again.";
+  if (isGbpQuotaAccessError(error)) return "We’re having technical difficulties connecting to Google Business Profile. We’re working on it and will update you as soon as the connection is available.";
   return error instanceof Error ? error.message : "Google Business Profile is temporarily unavailable.";
 }
 

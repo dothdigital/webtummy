@@ -11,19 +11,30 @@ const protectedCompositeGeographicMarkets = new Set([
   "trinidad and tobago",
 ]);
 
+const countryMarketNames = (() => {
+  const names = new Map<string, string>([["united state", "United States"], ["usa", "United States"], ["us", "United States"], ["u.s.", "United States"]]);
+  const displayNames = new Intl.DisplayNames(["en"], { type: "region" });
+  for (let first = 65; first <= 90; first += 1) for (let second = 65; second <= 90; second += 1) {
+    const code = String.fromCharCode(first, second);
+    const label = displayNames.of(code);
+    if (label && label !== code) { names.set(code.toLowerCase(), label); names.set(label.toLowerCase(), label); }
+  }
+  return names;
+})();
+
 function values(value: unknown) {
   const raw = Array.isArray(value) ? value.map(String) : typeof value === "string" ? value.split(/[;\n]/) : [];
-  return raw.flatMap((item) => item
-    .replace(vagueMarketSuffix, "")
-    .replace(/,\s*$/, "")
-    .split(",")
-    .flatMap((part) => {
+  return raw.flatMap((item) => {
+    const cleaned = item.replace(vagueMarketSuffix, "").replace(/,\s*$/, "").trim();
+    const pair = cleaned.split(",").map((part) => part.trim()).filter(Boolean);
+    const pairedCountry = pair.length === 2 ? countryMarketNames.get(pair[1].toLowerCase()) : null;
+    if (pairedCountry) return [`${pair[0]}, ${pairedCountry}`];
+    return cleaned.split(",").flatMap((part) => {
       const normalizedMarket = part.trim().replace(/\s+/g, " ");
       if (protectedCompositeGeographicMarkets.has(normalizedMarket.toLocaleLowerCase())) return [normalizedMarket];
       return normalizedMarket.split(/\s+(?:and|&)\s+/i);
-    })
-    .map((market) => market.trim())
-    .filter(Boolean));
+    }).map((market) => market.trim()).filter(Boolean);
+  });
 }
 
 export function geographicTargetMarkets(value: unknown) {

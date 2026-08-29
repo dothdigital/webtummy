@@ -37,7 +37,7 @@ describe("Google Business Profile limited V1", () => {
   it("turns Google zero-quota responses into an access-required state", () => {
     const error = Object.assign(new Error("Quota exceeded for quota metric 'Requests' and limit 'Requests per minute' of service 'mybusinessaccountmanagement.googleapis.com'."), { statusCode: 429 });
     expect(isGbpQuotaAccessError(error)).toBe(true);
-    expect(friendlyGbpProviderError(error)).toContain("Basic API Access");
+    expect(friendlyGbpProviderError(error)).toContain("technical difficulties connecting to Google Business Profile");
     expect(isGbpQuotaAccessError(new Error("Quota exceeded for quota metric 'Requests'."))).toBe(true);
   });
 });

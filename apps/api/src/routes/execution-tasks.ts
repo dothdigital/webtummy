@@ -9,7 +9,7 @@ import { canAccessProject, hasWorkspacePermission, recordWorkspaceActivity, work
 import { startTaskPublishing, verifyTaskPublishing } from "../publishing-workflow.js";
 import { submitTaskApproval } from "../approval-workflow.js";
 import { buildCampaignExecutionTasks, isExistingWebsiteCampaign, isPreLaunchWebsiteCampaign } from "../campaign-intelligence.js";
-import { approvedKeywordEntries, bestExistingSeoPageMatch, clusterKeywordDirections, keywordTopicSimilarity, missingApprovedKeywordResearch, normalizeKeywordTopic, planSeoPages, splitKeywordEntries, stripNonGeographicAudienceQualifier, type SeoPagePlan, type SeoPlannerInput } from "@webtummy/core";
+import { approvedKeywordEntries, bestExistingSeoPageMatch, clusterKeywordDirections, keywordTopicSimilarity, missingApprovedKeywordResearch, normalizeKeywordTopic, planSeoPages, splitKeywordEntries, stripNonGeographicAudienceQualifier, workflowRecoveryPayload, type SeoPagePlan, type SeoPlannerInput } from "@webtummy/core";
 import { centralAiJson } from "../central-ai-service.js";
 import { cleanGeographicTargetMarkets, projectAnalysisLocationLabels } from "../project-location.js";
 import { normalizeKeywordsWithAi } from "../ai-keyword-normalization.js";
@@ -71,6 +71,7 @@ const publishSchema = z.object({
   targetReference: z.string().trim().min(1).max(1000).optional().nullable(),
   previousVersionReference: z.string().trim().max(2000).optional().nullable(),
   metadata: z.record(z.unknown()).default({}),
+  confirmed: z.boolean().default(false),
 });
 const publishVerificationSchema = z.object({
   attemptId: z.string().uuid(),
@@ -2213,8 +2214,8 @@ function rankingPlanFor(input: {
 function publishingAction(res: import("express").Response, action: () => Promise<unknown>) {
   action().then((value) => res.json(value)).catch((error: unknown) => {
     if (error instanceof z.ZodError) return res.status(400).json({ error: error.flatten() });
-    const typed = error as { statusCode?: number; message?: string };
-    return res.status(typed.statusCode ?? 500).json({ error: typed.message ?? "Publishing request failed." });
+    const typed = error as { statusCode?: number; message?: string; payload?: Record<string, unknown> };
+    return res.status(typed.statusCode ?? 500).json(typed.payload ?? { error: typed.message ?? "Publishing request failed." });
   });
 }
 
@@ -3482,6 +3483,7 @@ function contentPlanGenerationJobView(job: { id: string; projectId: string | nul
     progress: Math.max(0, Math.min(100, Number(output.progress || (job.status === "completed" ? 100 : job.status === "running" ? 35 : 5)))),
     error: job.status === "failed" ? String(output.publicError || "Website Plan generation could not be completed. Please retry.") : null,
     errorCode: job.status === "failed" ? String(output.errorCode || "") || null : null,
+    recovery: job.status === "failed" ? (output.recovery ?? workflowRecoveryPayload({ whatFailed: "Website Plan generation", workSaved: true, capacityOutcome: "unknown", nextStep: "Retry this saved Website Plan job.", action: "retry", actionUrl: job.projectId ? `/seo-page-map?projectId=${job.projectId}` : null, errorCode: String(output.errorCode || "") || null })) : null,
     createdAt: job.createdAt,
   };
 }
@@ -3603,11 +3605,12 @@ async function executeContentPlanGenerationJob(jobId: string) {
     const publicMessage = error && typeof error === "object" && "publicMessage" in error && (error as { publicMessage?: unknown }).publicMessage === true;
     const statusCode = error && typeof error === "object" && "statusCode" in error ? Number((error as { statusCode?: unknown }).statusCode || 500) : 500;
     const errorCode = createApiErrorCode();
-    await refundUsage({ usageEventId: input.usageEventId, reason: message }).catch(() => undefined);
+    let refundSucceeded = true;
+    await refundUsage({ usageEventId: input.usageEventId, reason: message }).catch(() => { refundSucceeded = false; });
     const publicError = statusCode < 500 || publicMessage
       ? message
       : `We could not complete Website Plan generation. If the problem continues, send error code ${errorCode} to ${config.supportEmail}.`;
-    await prisma.aiRun.update({ where: { id: jobId }, data: { status: "failed", outputJson: { stage: "failed", progress: 100, taskId: input.taskId, errorCode, publicError }, errorMessage: message } }).catch(() => undefined);
+    await prisma.aiRun.update({ where: { id: jobId }, data: { status: "failed", outputJson: { stage: "failed", progress: 100, taskId: input.taskId, errorCode, publicError, recovery: workflowRecoveryPayload({ whatFailed: "Website Plan generation", workSaved: true, capacityOutcome: refundSucceeded ? "refunded" : "refund_pending", nextStep: refundSucceeded ? "Retry from the Website Plan screen; project inputs and the failed job are saved." : "Do not retry yet; contact support with the error code so Capacity can be reconciled.", action: refundSucceeded ? "retry" : "contact_support", actionUrl: `/seo-page-map?projectId=${input.projectId}`, errorCode }) }, errorMessage: message } }).catch(() => undefined);
     if (statusCode >= 500) queueApiErrorReport({ errorCode, statusCode, diagnostic: error, request });
   }
 }

@@ -2,7 +2,21 @@ import { useEffect, useMemo, useState } from "react";
 import { api } from "../api.js";
 import { Button, Card } from "../components/ui.js";
 
-type Tab = "costs" | "limits" | "budgets" | "models";
+type Tab = "costs" | "limits" | "budgets" | "models" | "audit";
+
+type UsageAuditEvent = {
+  id: string;
+  featureKey: string;
+  actionKey: string;
+  status: string;
+  creditsReserved: number;
+  creditsCommitted: number;
+  createdAt: string;
+  reversible: boolean;
+  user?: { id: string; email: string; name: string | null } | null;
+  project?: { id: string; name: string } | null;
+  capacityWorkspace?: { id: string; name: string } | null;
+};
 
 type PlanLimit = {
   id: string;
@@ -69,6 +83,9 @@ export default function AdminUsageConfig() {
   const [features, setFeatures] = useState<FeatureCost[]>([]);
   const [budgetCaps, setBudgetCaps] = useState<BudgetCap[]>([]);
   const [modelRoutes, setModelRoutes] = useState<ModelRoute[]>([]);
+  const [usageEvents, setUsageEvents] = useState<UsageAuditEvent[]>([]);
+  const [usageSearch, setUsageSearch] = useState("");
+  const [usageStatus, setUsageStatus] = useState("all");
   const [selectedFeatureKey, setSelectedFeatureKey] = useState("");
   const [message, setMessage] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -79,15 +96,50 @@ export default function AdminUsageConfig() {
   );
 
   const load = async () => {
-    const [featureResult, capResult, routeResult] = await Promise.all([
+    const [featureResult, capResult, routeResult, auditResult] = await Promise.all([
       api.get<{ features: FeatureCost[] }>("/api/admin/usage/feature-costs"),
       api.get<{ budgetCaps: BudgetCap[] }>("/api/admin/usage/budget-caps"),
       api.get<{ modelRoutes: ModelRoute[] }>("/api/admin/usage/model-routes"),
+      api.get<{ events: UsageAuditEvent[] }>("/api/admin/usage/events?take=100"),
     ]);
     setFeatures(featureResult.features);
     setBudgetCaps(capResult.budgetCaps);
     setModelRoutes(routeResult.modelRoutes);
+    setUsageEvents(auditResult.events);
     setSelectedFeatureKey((current) => current || featureResult.features[0]?.featureKey || "");
+  };
+
+  const loadUsageAudit = async () => {
+    setBusy(true);
+    setMessage(null);
+    try {
+      const params = new URLSearchParams({ take: "100", status: usageStatus });
+      if (usageSearch.trim()) params.set("search", usageSearch.trim());
+      const result = await api.get<{ events: UsageAuditEvent[] }>(`/api/admin/usage/events?${params.toString()}`);
+      setUsageEvents(result.events);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Could not load usage audit");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const reverseUsage = async (event: UsageAuditEvent) => {
+    const reason = window.prompt(`Reason for reversing ${event.creditsCommitted} units for ${event.user?.email ?? "this user"}:`);
+    if (!reason) return;
+    if (reason.trim().length < 8) return setMessage("Please enter an audit reason of at least 8 characters.");
+    if (!window.confirm("Restore these units? The original usage record will remain visible as reversed.")) return;
+    setBusy(true);
+    setMessage(null);
+    try {
+      const result = await api.post<{ restored: { totalUnits: number } }>(`/api/admin/usage/events/${event.id}/reverse`, { reason: reason.trim() });
+      setMessage(`${result.restored.totalUnits} capacity units restored. The reversal was added to the audit ledger.`);
+      await loadUsageAudit();
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Could not reverse usage charge");
+    } finally {
+      setBusy(false);
+    }
   };
 
   useEffect(() => {
@@ -218,14 +270,14 @@ export default function AdminUsageConfig() {
 
       <Card className="p-2">
         <div className="flex flex-wrap gap-2">
-          {(["budgets", "models"] as Tab[]).map((item) => (
+          {(["audit", "budgets", "models"] as Tab[]).map((item) => (
             <button
               key={item}
               type="button"
               onClick={() => setTab(item)}
               className={`rounded-lg px-3 py-2 text-sm font-bold ${tab === item ? "bg-brand-600 text-white" : "text-slate-600 hover:bg-slate-50"}`}
             >
-              {item === "models" ? "Model Routing" : titleCase(item)}
+              {item === "models" ? "Model Routing" : item === "audit" ? "User Consumption Audit" : titleCase(item)}
             </button>
           ))}
         </div>
@@ -251,6 +303,47 @@ export default function AdminUsageConfig() {
             ))}
           </div>
         </Card>
+
+        {tab === "audit" && (
+          <Card className="overflow-hidden">
+            <div className="border-b border-slate-100 p-5">
+              <h2 className="font-bold text-charcoal-950">User credit consumption</h2>
+              <p className="mt-1 text-sm text-slate-500">Every reservation, charge, refund, free retry, and administrator reversal remains in this ledger.</p>
+              <div className="mt-4 flex flex-col gap-2 md:flex-row">
+                <input
+                  value={usageSearch}
+                  onChange={(event) => setUsageSearch(event.target.value)}
+                  onKeyDown={(event) => { if (event.key === "Enter") void loadUsageAudit(); }}
+                  placeholder="Search email, user, workflow, or project ID"
+                  className="min-w-0 flex-1 rounded-lg border border-slate-200 px-3 py-2 text-sm outline-none focus:border-brand-400"
+                />
+                <select value={usageStatus} onChange={(event) => setUsageStatus(event.target.value)} className="rounded-lg border border-slate-200 px-3 py-2 text-sm">
+                  {['all', 'committed', 'reserved', 'refunded', 'failed', 'reversed'].map((status) => <option key={status} value={status}>{titleCase(status)}</option>)}
+                </select>
+                <Button onClick={() => void loadUsageAudit()} disabled={busy}>Search</Button>
+              </div>
+            </div>
+            <div className="overflow-x-auto">
+              <table className="w-full min-w-[900px] text-left text-sm">
+                <thead className="bg-slate-50 text-xs uppercase tracking-wide text-slate-500"><tr><th className="p-3">User</th><th className="p-3">Workspace / project</th><th className="p-3">Action</th><th className="p-3">Status</th><th className="p-3 text-right">Units</th><th className="p-3">Date</th><th className="p-3"></th></tr></thead>
+                <tbody className="divide-y divide-slate-100">
+                  {usageEvents.map((event) => (
+                    <tr key={event.id}>
+                      <td className="p-3"><div className="font-semibold text-charcoal-950">{event.user?.name || "System"}</div><div className="text-xs text-slate-500">{event.user?.email || event.id}</div></td>
+                      <td className="p-3"><div>{event.capacityWorkspace?.name || "—"}</div><div className="text-xs text-slate-500">{event.project?.name || "No project"}</div></td>
+                      <td className="p-3"><div className="font-semibold">{event.actionKey}</div><div className="text-xs text-slate-500">{titleCase(event.featureKey)}</div></td>
+                      <td className="p-3 font-semibold">{titleCase(event.status)}</td>
+                      <td className="p-3 text-right font-bold">{event.creditsCommitted || event.creditsReserved}</td>
+                      <td className="p-3 text-xs text-slate-600">{new Date(event.createdAt).toLocaleString()}</td>
+                      <td className="p-3 text-right">{event.reversible && <Button variant="ghost" onClick={() => void reverseUsage(event)} disabled={busy}>Reverse</Button>}</td>
+                    </tr>
+                  ))}
+                  {!usageEvents.length && <tr><td colSpan={7} className="p-6 text-center text-slate-500">No usage records match this filter.</td></tr>}
+                </tbody>
+              </table>
+            </div>
+          </Card>
+        )}
 
         {selectedFeature && tab === "costs" && (
           <Card className="p-5">

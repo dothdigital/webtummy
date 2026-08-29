@@ -3,6 +3,7 @@ export const ACTIVE_PROJECT_CHANGED_EVENT = "senuke:active-project-changed";
 export const PROJECT_SCOPED_PATHS = new Set([
   "/opportunities",
   "/strategy",
+  "/seo-page-map",
   "/keywords",
   "/site-analysis",
   "/backlinks",
@@ -21,7 +22,7 @@ export const PROJECT_SCOPED_PATHS = new Set([
 ]);
 
 export function isProjectScopedPath(pathname: string) {
-  return PROJECT_SCOPED_PATHS.has(pathname);
+  return PROJECT_SCOPED_PATHS.has(pathname) || /^\/guided-projects\/[^/]+(?:\/intake)?\/?$/.test(pathname);
 }
 
 export function getActiveProjectId() {

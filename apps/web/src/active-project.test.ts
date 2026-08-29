@@ -6,6 +6,7 @@ describe("project-scoped platform routes", () => {
     [
       "/opportunities",
       "/strategy",
+      "/seo-page-map",
       "/keywords",
       "/site-analysis",
       "/backlinks",
@@ -20,6 +21,8 @@ describe("project-scoped platform routes", () => {
       "/reports",
       "/approvals",
     ].forEach((path) => expect(isProjectScopedPath(path), path).toBe(true));
+    expect(isProjectScopedPath("/guided-projects/project-1")).toBe(true);
+    expect(isProjectScopedPath("/guided-projects/project-1/intake")).toBe(true);
   });
 
   it("keeps workspace, project management, billing, and administration global", () => {

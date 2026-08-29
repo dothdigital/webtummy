@@ -1,6 +1,8 @@
 import { createHash, randomUUID } from "node:crypto";
 import { Prisma, prisma } from "@webtummy/db";
 import { canAccessProject, recordWorkspaceActivity, workspaceContext } from "./workspace-access.js";
+import { executionPlanWorkflowBlocker, getProjectWorkflowController } from "./project-workflow-controller.js";
+import { isWebsitePlanTask } from "./website-plan-task.js";
 
 export const MARKETING_EXECUTION_CONTRACT_VERSION = "dev-047-part3-v1" as const;
 
@@ -163,6 +165,12 @@ export async function prepareMarketingExecution(context: Context, taskId: string
     },
   });
   if (!task?.projectId || !task.project || !await canAccessProject(context, task.projectId)) throw Object.assign(new Error("Execution task not found."), { statusCode: 404 });
+  const governedWebsiteExecution = !isWebsitePlanTask(task) && (["site_architect", "content", "publishing"].includes(task.moduleName) || task.sourceType === "website_builder_request");
+  if (governedWebsiteExecution) {
+    const workflow = await getProjectWorkflowController(task.projectId);
+    const blocker = executionPlanWorkflowBlocker(workflow);
+    if (blocker) throw Object.assign(new Error(blocker.message), { statusCode: 409, code: blocker.code, nextAction: blocker.nextAction });
+  }
   const strategy = task.project.strategyPlans[0] ?? null;
   let plan = task.executionPlan;
   // Some module entry points can create a new empty Execution Plan after an

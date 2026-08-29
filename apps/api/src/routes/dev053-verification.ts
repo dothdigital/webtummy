@@ -180,14 +180,6 @@ export function capabilityResult(capability: (typeof dev053Capabilities)[number]
   let result = collected.signals[capability.signal] ?? { status: "MISSING" as const, message: "No validator is registered for this capability.", evidence: {} };
   const { flags } = collected;
 
-  // AEO/GEO research and third-party engine observations are optional
-  // specialist intelligence, not user-resolvable Connected Coverage work.
-  if (capability.id.startsWith("AEO-") || capability.id.startsWith("GEO-")) result = {
-    status: "NOT_APPLICABLE",
-    message: "Optional advanced AI-search intelligence; excluded from the actionable Connected Coverage queue.",
-    evidence: { optionalSpecialistCapability: true },
-  };
-
   if (capability.applicableTo?.includes("website") && !flags.hasWebsite) result = { status: "NOT_APPLICABLE", message: "No website is currently in scope for this project.", evidence: { websiteConnected: false } };
   if (capability.applicableTo?.includes("local") && !flags.isLocal) result = { status: "NOT_APPLICABLE", message: "This project has no approved local market or business location.", evidence: { localProject: false } };
   if (capability.applicableTo?.includes("ecommerce") && !flags.isEcommerce) result = { status: "NOT_APPLICABLE", message: "Ecommerce is a project capability and is not enabled for this project.", evidence: { ecommerceProject: false } };
@@ -229,12 +221,6 @@ export function capabilityResult(capability: (typeof dev053Capabilities)[number]
   if (capability.id === "GEO-009") result = flags.observations > 0
     ? { status: "COMPLETE", message: "Readiness findings and observed results are stored as separate evidence types.", evidence: { observations: flags.observations } }
     : { status: "PARTIAL", message: "Readiness evidence is available, but there is no observed engine result to compare yet.", evidence: { observations: 0 } };
-
-  if (capability.id.startsWith("AEO-") || capability.id.startsWith("GEO-")) result = {
-    status: "NOT_APPLICABLE",
-    message: "Optional advanced AI-search intelligence; excluded from the actionable Connected Coverage queue.",
-    evidence: { optionalSpecialistCapability: true },
-  };
 
   const workflowDestination = capability.id === "AEO-010" || ["GEO-008", "GEO-009", "GEO-012"].includes(capability.id)
     ? capability.route.replace(/tab=[^&]+/, "tab=monitoring")

@@ -241,9 +241,9 @@ function localTaskRoute(projectId: string, taskType: string, businessId?: string
   if (taskType === "service_area_pages") return `/guided-projects/${projectId}?tab=execution`;
   if (taskType === "local_content") {
     const topic = "Locally relevant FAQs and supporting content";
-    return `/ai-content?projectId=${projectId}&type=article&contentMode=seo&topic=${encodeURIComponent(topic)}&source=local_seo&open=1`;
+    return "/ai-content?projectId=" + projectId + "&type=article&contentMode=seo&topic=" + encodeURIComponent(topic) + "&source=local_seo&open=1";
   }
-  if (taskType === "local_schema") return `/ai-content?projectId=${projectId}&type=page_schema&contentMode=seo&topic=${encodeURIComponent("Verified LocalBusiness schema")}&source=local_seo&open=1`;
+  if (taskType === "local_schema") return "/ai-content?projectId=" + projectId + "&type=page_schema&contentMode=seo&topic=" + encodeURIComponent("Verified LocalBusiness schema") + "&source=local_seo&open=1";
   return `/local-seo?projectId=${projectId}${businessId ? `&businessId=${businessId}` : ""}`;
 }
 
@@ -645,13 +645,17 @@ function keywordPageFindings(crawlId: string, rootUrl: string, keywords: string[
       keywordMarkets.length && !keywordMarkets.some((market) => pageLocationMatches(best.page).includes(market)) ? `target location (${keywordMarkets.join(", ")})` : "",
     ].filter(Boolean);
     if (best.match.score >= 55) assignedPageIds.add(best.page.id);
-    if (best.match.score < 55 || missingSignals.length) findings.push({
+    if (best.match.score < 55 || missingSignals.length) {
+      const issueType = keywordMarkets.length && !keywordMarkets.some((market) => pageLocationMatches(best.page).includes(market)) ? "keyword_location_page_mismatch" : best.match.score < 55 ? "weak_keyword_page_match" : "missing_on_page_keyword_signals";
+      findings.push({
       key: `keyword-alignment:${keyPart}:${best.page.id}`.slice(0, 191),
       affectedUrl: best.page.url,
-      issueType: keywordMarkets.length && !keywordMarkets.some((market) => pageLocationMatches(best.page).includes(market)) ? "keyword_location_page_mismatch" : best.match.score < 55 ? "weak_keyword_page_match" : "missing_on_page_keyword_signals",
+      issueType,
       severity: best.match.score < 40 ? "high" : "medium",
       evidence: `${assignment ? "The saved SEO Page Map assigns" : "The crawl-inferred best match for"} “${keyword}” ${assignment ? "to" : "is"} ${best.page.url}. Current crawl-visible URL, title, H1, meta description, and H2 alignment is ${best.match.score}/100.${assignment ? ` Approved intent: ${assignment.searchIntent}${assignment.location ? ` · location: ${assignment.location}` : ""}.` : " This fallback remains unconfirmed until saved in the SEO Page Map."}${keywordMarkets.length ? ` Keyword location intent: ${keywordMarkets.join(", ")}. Page location signals: ${pageLocationMatches(best.page).join(", ") || "none"}.` : ""}${missingSignals.length ? ` Weak or missing signals: ${missingSignals.join(", ")}.` : ""}`,
-      recommendedFix: `Confirm that this page owns “${keyword}”, then align its ${missingSignals.length ? missingSignals.join(", ") : "primary search signals and visible content"} with the page's real purpose. Do not force the phrase when the page serves a different intent.`,
+      recommendedFix: issueType === "keyword_location_page_mismatch"
+        ? `Choose the page that should represent “${keyword}” in ${keywordMarkets.join(", ")}. If this page is the right choice, confirm it as the owner. Leave any writing changes for Content Suggestions.`
+        : `Confirm whether this is the right page for “${keyword}”. Keep it as the owner or choose a better page. Leave title, heading, and copy changes for Content Suggestions.`,
       whyItMatters: "Keyword Research becomes actionable only when each approved intent has one clearly aligned canonical page.",
       expectedImpact: "Improves keyword-to-page clarity, content briefing, internal linking, and future rank tracking after the update is published and recrawled.",
       sourceAnalysisId: crawlId,
@@ -660,7 +664,8 @@ function keywordPageFindings(crawlId: string, rootUrl: string, keywords: string[
         { issueType: "h1_alignment", severity: best.match.h1Coverage < .65 ? "medium" : "low", evidence: `${Math.round(best.match.h1Coverage * 100)}% meaningful-term coverage`, recommendedFix: "Make the visible H1 accurately state the page's primary subject." },
         { issueType: "meta_alignment", severity: best.match.metaCoverage < .5 ? "medium" : "low", evidence: `${Math.round(best.match.metaCoverage * 100)}% meaningful-term coverage`, recommendedFix: "Write a useful meta description aligned with the page intent and value." },
       ],
-    });
+      });
+    }
 
     if (strongMatches.length > 1 && strongMatches[1].match.score >= best.match.score - 12) findings.push({
       key: `keyword-overlap:${keyPart}`,
@@ -1376,19 +1381,21 @@ gapAnalysisRouter.get(gapRoutes("/recommendations/:recommendationId/findings"), 
   const findings = await recommendationFindings(recommendation.projectId, recommendation.category);
   const existing = findings.length ? await prisma.seoFixQueueItem.findMany({
     where: { projectId: recommendation.projectId, sourceAnalysisId: { in: [...new Set(findings.map((finding) => finding.sourceAnalysisId))] } },
-    select: { id: true, affectedUrl: true, issueType: true, approvalStatus: true, executionTaskId: true, aiOutputId: true },
+    select: { id: true, affectedUrl: true, issueType: true, plainEnglishReason: true, approvalStatus: true, executionTaskId: true, aiOutputId: true },
   }) : [];
   const websiteBuild = recommendation.category === "content" ? await prisma.websiteBuild.findFirst({ where: { projectId: recommendation.projectId }, orderBy: { updatedAt: "desc" }, select: { id: true } }) : null;
   const destination = recommendation.category === "content" && websiteBuild
-    ? { key: "website_content", label: "Website Plan", route: `/site-architect?projectId=${recommendation.projectId}&step=content` }
+    ? { key: "website_content", label: "Website Development Plan", route: "/site-architect?projectId=" + recommendation.projectId + "&step=content" }
     : recommendation.category === "content"
-      ? { key: "publishing", label: "Publishing", route: `/ai-content?projectId=${recommendation.projectId}&focus=publishing#publishing` }
+      ? { key: "seo_plan", label: "SEO Plan", route: "/seo-page-map?projectId=" + recommendation.projectId }
       : { key: "execution", label: "Execution Plan", route: `/guided-projects/${recommendation.projectId}?tab=execution#execution-tasks` };
   return {
     recommendation: { id: recommendation.id, category: recommendation.category, title: recommendation.title, status: recommendation.status },
     destination,
     findings: findings.map((finding) => {
-      const staged = existing.find((item) => item.affectedUrl === finding.affectedUrl && item.issueType === finding.issueType);
+      const staged = existing.find((item) => item.affectedUrl === finding.affectedUrl
+        && item.issueType === finding.issueType
+        && (recommendation.category !== "keyword_mapping" || item.plainEnglishReason === finding.evidence));
       return { ...finding, fixItemId: staged?.id ?? null, taskId: staged?.executionTaskId ?? null, generationId: staged?.aiOutputId ?? null, workflowStatus: staged?.approvalStatus ?? "not_staged" };
     }),
   };
@@ -1398,7 +1405,7 @@ gapAnalysisRouter.post(gapRoutes("/recommendations/:recommendationId/findings/st
   const body = stageFindingsSchema.parse(req.body);
   const context = await workspaceContext(req);
   if (!(await canAccessProject(context, req.params.projectId))) throw new Error("project unavailable");
-  if (!hasWorkspacePermission(context, "execute_tasks")) throw new Error("insufficient permission to create publishing work");
+  if (!hasWorkspacePermission(context, "execute_tasks")) throw new Error("insufficient permission to save governed planning work");
   const recommendation = await prisma.gapRecommendation.findFirst({ where: { id: req.params.recommendationId, projectId: req.params.projectId }, include: { project: true } });
   if (!recommendation) throw new Error("recommendation not found");
   if (recommendation.status !== "approved") throw new Error("Approve this recommendation before sending its page findings to execution.");
@@ -1423,7 +1430,13 @@ gapAnalysisRouter.post(gapRoutes("/recommendations/:recommendationId/findings/st
   const staged = await prisma.$transaction(async (tx) => {
     const results = [];
     for (const finding of selected) {
-      let item = await tx.seoFixQueueItem.findFirst({ where: { projectId: recommendation.projectId, sourceAnalysisId: finding.sourceAnalysisId, affectedUrl: finding.affectedUrl, issueType: finding.issueType } });
+      let item = await tx.seoFixQueueItem.findFirst({ where: {
+        projectId: recommendation.projectId,
+        sourceAnalysisId: finding.sourceAnalysisId,
+        affectedUrl: finding.affectedUrl,
+        issueType: finding.issueType,
+        ...(recommendation.category === "keyword_mapping" ? { plainEnglishReason: finding.evidence } : {}),
+      } });
       if (!item) item = await tx.seoFixQueueItem.create({ data: {
         projectId: recommendation.projectId,
         clientId: recommendation.project.clientId,
@@ -1467,8 +1480,8 @@ gapAnalysisRouter.post(gapRoutes("/recommendations/:recommendationId/findings/st
         requiresApproval: true,
         manualRequired: !isContent,
         safetyCategory: "review_needed",
-        actionButtonLabel: isContent && mappedWebsitePage ? "Create in Website Content" : isContent ? "Create & Review Update" : "Review Implementation Package",
-        relatedUrl: isContent && mappedWebsitePage ? `/site-architect?projectId=${recommendation.projectId}&step=content&pageId=${mappedWebsitePage.id}` : `/ai-content?projectId=${recommendation.projectId}#publishing`,
+        actionButtonLabel: isContent ? (websiteBuild ? "Open in Website Development Plan" : "Review in SEO Plan") : "Review Implementation Package",
+        relatedUrl: isContent ? (websiteBuild ? "/site-architect?projectId=" + recommendation.projectId + "&step=content" : "/seo-page-map?projectId=" + recommendation.projectId) : "/ai-content?projectId=" + recommendation.projectId + "#publishing",
         manualInstructions: `${finding.recommendedFix}\n\nUse the exact affected page: ${finding.affectedUrl}. Keep the current version available until the approved update is published and verified.`,
         impact: finding.expectedImpact,
         approvalSnapshotJson: {
@@ -1480,7 +1493,7 @@ gapAnalysisRouter.post(gapRoutes("/recommendations/:recommendationId/findings/st
       const relatedUrl = isContent
         ? mappedWebsitePage
           ? `/site-architect?projectId=${recommendation.projectId}&step=content&pageId=${mappedWebsitePage.id}`
-          : `/ai-content?projectId=${recommendation.projectId}&taskId=${task.id}&open=1`
+          : websiteBuild ? "/site-architect?projectId=" + recommendation.projectId + "&step=content" : "/seo-page-map?projectId=" + recommendation.projectId
         : `/guided-projects/${recommendation.projectId}?tab=execution&actionTask=${task.id}#execution-tasks`;
       const updatedTask = await tx.executionTask.update({ where: { id: task.id }, data: { relatedUrl } });
       item = await tx.seoFixQueueItem.update({ where: { id: item.id }, data: { executionTaskId: task.id, approvalStatus: "approved_for_work" } });
@@ -1550,14 +1563,14 @@ gapAnalysisRouter.post(gapRoutes("/recommendations/:recommendationId/findings/st
         },
       });
     }
-    await recordWorkspaceActivity(tx, { context, action: "seo_findings.sent_to_publishing", entityType: "gap_recommendation", entityId: recommendation.id, agencyClientId: recommendation.project.agencyClientId, projectId: recommendation.projectId, nextJson: { category: recommendation.category, findingKeys: [...selectedKeys], taskIds: results.map((result) => result.task.id) } });
+    await recordWorkspaceActivity(tx, { context, action: "seo_findings.added_to_planning", entityType: "gap_recommendation", entityId: recommendation.id, agencyClientId: recommendation.project.agencyClientId, projectId: recommendation.projectId, nextJson: { destination: recommendation.category === "content" ? (websiteBuild ? "website_development" : "seo_plan") : "execution_plan", category: recommendation.category, findingKeys: [...selectedKeys], taskIds: results.map((result) => result.task.id) } });
     return results;
   }, { timeout: 120_000, maxWait: 10_000 });
   return recommendation.category === "content" && websiteBuild
-    ? { staged, destinationUrl: `/site-architect?projectId=${recommendation.projectId}&step=content`, destination: "website_content" }
+    ? { staged, destinationUrl: "/site-architect?projectId=" + recommendation.projectId + "&step=content", destination: "website_content" }
     : recommendation.category === "content"
-      ? { staged, destinationUrl: `/ai-content?projectId=${recommendation.projectId}&focus=publishing#publishing`, destination: "publishing" }
-    : { staged, destinationUrl: `/guided-projects/${recommendation.projectId}?tab=execution#execution-tasks`, destination: "execution" };
+      ? { staged, destinationUrl: "/seo-page-map?projectId=" + recommendation.projectId, destination: "seo_plan" }
+      : { staged, destinationUrl: `/guided-projects/${recommendation.projectId}?tab=execution#execution-tasks`, destination: "execution" };
 }));
 
 gapAnalysisRouter.post(gapRoutes("/recommendations/:recommendationId/approve"), (req, res) => routeAction(res, async () => {

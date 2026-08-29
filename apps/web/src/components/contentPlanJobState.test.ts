@@ -28,6 +28,14 @@ describe("Website Plan generation job UI state", () => {
     })).toBe(publicMessage);
   });
 
+  it("does not present governed prerequisites as support errors", () => {
+    expect(contentPlanJobFailureMessage({
+      status: "failed",
+      error: "Complete the Growth Plan from the approved Strategy before preparing the SEO Plan.",
+      errorCode: "SEN-20260828-18AA94E8",
+    })).toBe("Complete the Growth Plan from the approved Strategy before preparing the SEO Plan.");
+  });
+
   it("polls only active generation jobs", () => {
     expect(contentPlanJobAction({ status: "queued" })).toBe("poll");
     expect(contentPlanJobAction({ status: "running" })).toBe("poll");

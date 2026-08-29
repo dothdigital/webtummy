@@ -19,6 +19,10 @@ const countryNamesByKey = (() => {
     }
   }
   names.set("usa", "United States");
+  names.set("us", "United States");
+  names.set("u.s.", "United States");
+  names.set("united state", "United States");
+  names.set("united states of america", "United States");
   names.set("uk", "United Kingdom");
   return names;
 })();
@@ -72,13 +76,19 @@ export function projectAnalysisLocationLabels(
     .filter((item) => !item.includes(","))
     .map((item) => item.trim().toLocaleLowerCase())
     .filter((item) => excluded.has(item)));
-  const markets = cleanGeographicTargetMarkets(raw.flatMap((item) => item.split(",")))
+  const markets = cleanGeographicTargetMarkets(raw)
     .filter((market) => !excluded.has(market.toLocaleLowerCase()) || explicitContextMarkets.has(market.toLocaleLowerCase()));
   if (!markets.length && businessLocationJson?.city?.trim()) markets.push(businessLocationJson.city.trim());
   return [...new Map(markets.map((market) => {
     const normalizedMarket = market.toLocaleLowerCase();
     const matchedCountry = countryLocationLabel(market);
     if (matchedCountry) return [matchedCountry.toLocaleLowerCase(), matchedCountry] as const;
+    const compositeParts = market.split(",").map((part) => part.trim()).filter(Boolean);
+    const compositeCountry = compositeParts.length > 1 ? countryLocationLabel(compositeParts[compositeParts.length - 1]) : null;
+    if (compositeCountry) {
+      const label = canonicalGeographicLocationLabel([...compositeParts.slice(0, -1), compositeCountry].join(", "));
+      return [label.toLocaleLowerCase(), label] as const;
+    }
     const parts = [market];
     if (region && normalizedMarket !== region.toLocaleLowerCase() && !normalizedMarket.includes(region.toLocaleLowerCase())) parts.push(region);
     if (country && !normalizedMarket.includes(country.toLocaleLowerCase())) parts.push(country);
@@ -122,9 +132,13 @@ export function cleanGeographicTargetMarkets(values: string[]) {
     // becomes three provider-ready markets instead of one descriptive label.
     const hasVagueSuffix = vagueSuffix.test(value);
     const withoutVagueSuffix = value.replace(vagueSuffix, "").replace(/,\s*$/, "").trim();
-    const namedCandidates = hasVagueSuffix && withoutVagueSuffix.includes(",")
-      ? withoutVagueSuffix.split(",")
-      : [withoutVagueSuffix];
+    const pair = withoutVagueSuffix.split(",").map((part) => part.trim()).filter(Boolean);
+    const pairedCountry = pair.length === 2 ? countryLocationLabel(pair[1]) : null;
+    const namedCandidates = pairedCountry
+      ? [`${pair[0]}, ${pairedCountry}`]
+      : hasVagueSuffix && withoutVagueSuffix.includes(",")
+        ? withoutVagueSuffix.split(",")
+        : [withoutVagueSuffix];
     return namedCandidates.flatMap((market) => {
       const normalizedMarket = market.trim().replace(/\s+/g, " ");
       if (protectedCompositeGeographicMarkets.has(normalizedMarket.toLocaleLowerCase())) return [normalizedMarket];

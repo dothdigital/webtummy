@@ -6,6 +6,7 @@ import { buildCitationAudit, claimFingerprint, visibilityStatus } from "../ai-ci
 import { canAccessProject, hasWorkspacePermission, recordWorkspaceActivity, workspaceContext } from "../workspace-access.js";
 import { approvedStrategyContext } from "../strategy-ai.js";
 import { projectAnalysisLocationLabels } from "../project-location.js";
+import { centralAiJson } from "../central-ai-service.js";
 
 export const aiCitationVisibilityRouter = Router();
 
@@ -21,6 +22,9 @@ const claimDecisionSchema = z.object({
   statement: z.string().trim().min(2).max(10_000).optional(),
   notes: z.string().trim().max(5000).optional(),
 });
+
+const claimAiRevisionSchema = z.object({ instruction: z.string().trim().min(3).max(2000) });
+const claimAiResultSchema = z.object({ statement: z.string().trim().min(2).max(10_000) });
 
 const findingReviewSchema = z.object({
   status: z.enum(["open", "acknowledged", "resolved", "dismissed"]),
@@ -321,11 +325,14 @@ function citationContext(project: Awaited<ReturnType<typeof scopedCitationProjec
   const keywords = approvedKeywordEntries(project.keywordGroups).slice(0, 50);
   const profile = project.businessProfile;
   const strategyContract = approvedStrategyContext(project.strategyPlans[0]);
+  const rawBusinessSummary = profile?.businessSummary?.trim() ?? "";
+  const businessSummaryLooksLikeGoal = /\b(improve|increase|grow|boost|drive|rank|ranking|visibility|discovery|enquir(?:y|ies)|leads?|traffic|conversions?|high[- ]intent|searches?|seo)\b/i.test(rawBusinessSummary);
   return {
     businessName: local?.businessName || project.businessName || project.name,
     websiteUrl: project.website?.rootUrl || project.websiteUrl,
-    businessSummary: profile?.businessSummary ?? null,
-    offerSummary: strategyContract?.offer ?? profile?.offerSummary ?? (local ? stringList(local.services).join(", ") : null),
+    businessSummary: rawBusinessSummary && !businessSummaryLooksLikeGoal ? rawBusinessSummary : null,
+    offerSummary: profile?.offerSummary ?? strategyContract?.offer ?? (local ? stringList(local.services).join(", ") : null),
+    offerSource: profile?.offerSummary ? { sourceType: "project_intake", sourceLabel: "Verified Business Profile offer", sourceRecordId: profile.id } : strategyContract?.offer ? { sourceType: "approved_strategy", sourceLabel: "Approved Strategy offer direction", sourceRecordId: project.strategyPlans[0]?.id } : { sourceType: "local_business_profile", sourceLabel: "Connected business services", sourceRecordId: local?.id },
     targetAudience: strategyContract?.audience ?? profile?.targetAudience ?? null,
     targetLocations: locations,
     approvedKeywords: keywords,
@@ -430,7 +437,7 @@ function verifiedOrganizationSchema(project: Awaited<ReturnType<typeof scopedCit
     ...(url ? { "@id": `${url.replace(/\/$/, "")}/#organization` } : {}),
     name: context.businessName,
     ...(url ? { url } : {}),
-    ...(project.businessProfile?.businessSummary ? { description: project.businessProfile.businessSummary } : {}),
+    ...(context.businessSummary ? { description: context.businessSummary } : {}),
     ...(email ? { email } : {}),
     ...(telephone ? { telephone } : {}),
     ...(address ? { address } : {}),
@@ -532,14 +539,24 @@ aiCitationVisibilityRouter.get("/projects/:projectId/ai-citation-visibility", as
   const websiteAssets = websiteTrustAssets(project);
   const websiteBuild = project.websiteBuilds[0] ?? null;
   const websiteBuildSettings = jsonRecord(websiteBuild?.settingsJson);
+  const websitePlanFindingKeys = new Set((websiteBuild?.pages ?? []).flatMap((page) => {
+    const requirements = jsonRecord(jsonRecord(page.briefJson).seoPlan).gapRequirements;
+    return Array.isArray(requirements) ? requirements.map((requirement) => String(jsonRecord(requirement).findingKey ?? "")).filter(Boolean) : [];
+  }));
   const attachTrustAssets = (item: typeof trustSignals[number]) => {
     const websiteAsset = websiteAssets[item.signalKey] ?? null;
     const websiteUpdate = jsonRecord(jsonRecord(item.evidenceJson).websiteUpdate);
+    const websitePlanRequirement = [
+      `ai_citations:organization_schema:${item.id}`,
+      `ai_citations:managed_website_requirement:${item.id}`,
+      `ai_citations:trust_signal:${item.id}`,
+    ].some((key) => websitePlanFindingKeys.has(key));
     return {
       ...attachContentAsset("trust_signal", item),
       observedStatus: item.status,
       websiteAsset,
       websiteUpdate: websiteUpdate.status === "queued" ? websiteUpdate : null,
+      websitePlanRequirement,
       ...(websiteAsset ? {
         status: "present",
         recommendation: `${websiteAsset.title} is already available in Website Development. Review and update the shared asset instead of creating a duplicate.`,
@@ -553,7 +570,7 @@ aiCitationVisibilityRouter.get("/projects/:projectId/ai-citation-visibility", as
     const requirementKeys = findingWebsiteSignalKeys[item.findingKey] ?? [];
     const websiteRequirements = requirementKeys
       .map((signalKey) => trustSignalsByKey.get(signalKey))
-      .filter((signal): signal is NonNullable<typeof signal> => Boolean(signal && signal.observedStatus !== "present" && !signal.websiteAsset));
+      .filter((signal): signal is NonNullable<typeof signal> => Boolean(signal && signal.observedStatus !== "present" && !signal.websiteAsset && !signal.websitePlanRequirement));
     if (requirementKeys.length && websiteRequirements.length === 0) return [];
     return [{
       ...attachContentAsset("finding", item),
@@ -579,7 +596,7 @@ aiCitationVisibilityRouter.get("/projects/:projectId/ai-citation-visibility", as
     scores: jsonRecord(latestAudit?.outputJson).scores ?? null,
     audit: latestAudit ? { id: latestAudit.id, createdAt: latestAudit.createdAt, input: latestAudit.inputSnapshotJson } : null,
     entities,
-    claims,
+    claims: claims.filter((claim) => claim.claimType !== "business_description" || !/\b(improve|increase|grow|boost|drive|rank|ranking|visibility|discovery|enquir(?:y|ies)|leads?|traffic|conversions?|high[- ]intent|searches?|seo)\b/i.test(claim.statement)),
     topics,
     findings: visibleFindings,
     opportunities: ANSWER_OPPORTUNITIES_V2_ENABLED
@@ -625,7 +642,7 @@ aiCitationVisibilityRouter.post("/projects/:projectId/ai-citation-visibility/aud
       { type: "canonical_name", statement: contextData.businessName, classification: "user_provided", sourceType: "project_intake", sourceLabel: "Project business name", sourceRecordId: project.id, confidence: 90 },
       ...(contextData.websiteUrl ? [{ type: "canonical_website", statement: contextData.websiteUrl, classification: "observed", sourceType: "website_connection", sourceLabel: "Connected website", sourceRecordId: project.websiteId, confidence: 96 }] : []),
       ...(contextData.businessSummary ? [{ type: "business_description", statement: contextData.businessSummary, classification: "user_provided", sourceType: "project_intake", sourceLabel: "Business profile", sourceRecordId: project.businessProfile?.id, confidence: 85 }] : []),
-      ...(contextData.offerSummary ? [{ type: "offer", statement: contextData.offerSummary, classification: "user_provided", sourceType: "project_intake", sourceLabel: "Offer profile", sourceRecordId: project.businessProfile?.id, confidence: 85 }] : []),
+      ...(contextData.offerSummary ? [{ type: "offer", statement: contextData.offerSummary, classification: "user_provided", sourceType: contextData.offerSource.sourceType, sourceLabel: contextData.offerSource.sourceLabel, sourceRecordId: contextData.offerSource.sourceRecordId, confidence: 85 }] : []),
       ...(contextData.targetAudience ? [{ type: "audience", statement: contextData.targetAudience, classification: "user_provided", sourceType: "project_intake", sourceLabel: "Audience profile", sourceRecordId: project.businessProfile?.id, confidence: 85 }] : []),
       ...contextData.targetLocations.map((location) => ({ type: "service_location", statement: location, classification: "user_provided", sourceType: "project_intake", sourceLabel: "Target market", sourceRecordId: project.id, confidence: 80 })),
     ];
@@ -787,6 +804,49 @@ aiCitationVisibilityRouter.patch("/projects/:projectId/ai-citation-visibility/cl
     return next;
   });
   res.json({ claim: updated });
+});
+
+aiCitationVisibilityRouter.patch("/projects/:projectId/ai-citation-visibility/entities/:entityId", async (req, res) => {
+  const { context, project } = await scopedCitationProject(req, req.params.projectId, "approve");
+  const input = claimDecisionSchema.parse(req.body);
+  const entity = await prisma.businessEntity.findFirst({ where: { id: req.params.entityId, projectId: project.id } });
+  if (!entity) fail("Business entity not found.", 404);
+  const updated = await prisma.$transaction(async (tx) => {
+    const next = await tx.businessEntity.update({ where: { id: entity.id }, data: { verificationStatus: input.decision } });
+    await recordWorkspaceActivity(tx, { context, action: `ai_citation.entity_${input.decision}`, entityType: "business_entity", entityId: entity.id, agencyClientId: project.agencyClientId, projectId: project.id, previousJson: { verificationStatus: entity.verificationStatus }, nextJson: { verificationStatus: next.verificationStatus, notes: input.notes ?? null } });
+    return next;
+  });
+  res.json({ entity: updated });
+});
+
+aiCitationVisibilityRouter.post("/projects/:projectId/ai-citation-visibility/claims/:claimId/revise", async (req, res) => {
+  const { context, project } = await scopedCitationProject(req, req.params.projectId, "run_ai_analysis");
+  const input = claimAiRevisionSchema.parse(req.body ?? {});
+  const claim = await prisma.entityClaim.findFirst({
+    where: { id: req.params.claimId, projectId: project.id },
+    include: { entity: true, sources: true },
+  });
+  if (!claim) fail("Entity claim not found.", 404);
+  const generated = await centralAiJson({
+    system: "Revise one business fact for human review. Preserve its factual meaning and use only the supplied evidence. Never add credentials, outcomes, statistics, locations, services, guarantees, awards, reviews, or other facts that are not explicitly supported. Return valid JSON with statement only.",
+    prompt: JSON.stringify({
+      userInstruction: input.instruction,
+      entity: { name: claim.entity.canonicalName, type: claim.entity.entityType },
+      currentClaim: { type: claim.claimType, statement: claim.statement, classification: claim.classification },
+      evidence: claim.sources.map((source) => ({ label: source.sourceLabel, url: source.sourceUrl, text: source.evidenceText })),
+      requiredOutput: { statement: "revised factual statement" },
+    }),
+    temperature: 0.2,
+    maxInputBytes: 32_000,
+    maxOutputTokens: 800,
+    validate: (value) => claimAiResultSchema.parse(value),
+  });
+  const updated = await prisma.$transaction(async (tx) => {
+    const next = await tx.entityClaim.update({ where: { id: claim.id }, data: { statement: generated.result.statement, verificationStatus: "needs_review", approvedByUserId: null, approvedAt: null } });
+    await recordWorkspaceActivity(tx, { context, action: "ai_citation.claim_ai_revised", entityType: "entity_claim", entityId: claim.id, agencyClientId: project.agencyClientId, projectId: project.id, previousJson: { statement: claim.statement, verificationStatus: claim.verificationStatus }, nextJson: { statement: next.statement, verificationStatus: next.verificationStatus, instruction: input.instruction, model: generated.model } });
+    return next;
+  });
+  res.json({ claim: updated, usage: { inputTokens: generated.inputTokens, outputTokens: generated.outputTokens } });
 });
 
 aiCitationVisibilityRouter.patch("/projects/:projectId/ai-citation-visibility/findings/:findingId", async (req, res) => {

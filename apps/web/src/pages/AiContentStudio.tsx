@@ -925,13 +925,13 @@ export default function AiContentStudio() {
         return;
       }
       if (task.sourceType === "wordpress_publish_job") {
-        await api.post(`/api/execution-tasks/${task.id}/publish`, { target: "wordpress" });
+        await api.post(`/api/execution-tasks/${task.id}/publish`, { target: "wordpress", confirmed: true });
       } else {
         const liveUrl = savedPublicationUrl(task, projects);
         if (!liveUrl) throw new Error("No public website URL is saved for this project. Add the production website URL in Project Details or complete Website Publishing, then verify again.");
         const opened = window.open(liveUrl, "_blank");
         if (opened) opened.opener = null;
-        const started = await api.post<{ publishing: { attemptId: string } }>(`/api/execution-tasks/${task.id}/publish`, { target: "html", targetReference: liveUrl });
+        const started = await api.post<{ publishing: { attemptId: string } }>(`/api/execution-tasks/${task.id}/publish`, { target: "html", targetReference: liveUrl, confirmed: true });
         await api.post(`/api/execution-tasks/${task.id}/publish/verify`, { attemptId: started.publishing.attemptId, status: "verified", liveUrl });
         if (!opened) window.location.assign(liveUrl);
       }

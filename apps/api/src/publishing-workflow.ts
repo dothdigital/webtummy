@@ -1,10 +1,11 @@
 import { randomUUID } from "node:crypto";
 import { Prisma, prisma } from "@webtummy/db";
 import { publishingState, publishingValidationErrors, type PublishingTarget, type PublishingVerification } from "@webtummy/core/publishing";
+import { workflowBlockedPayload } from "@webtummy/core";
 import { safePublicFetch } from "@webtummy/core/safe-public-fetch";
 import { canAccessProject, createWorkspaceNotification, hasWorkspacePermission, recordWorkspaceActivity, workspaceContext } from "./workspace-access.js";
 import { attachPublicationOutcome, prepareMarketingExecution, publishingExecutionPreflight } from "./marketing-execution-engine.js";
-import { publishProjectWorkflowEvent } from "./project-workflow-controller.js";
+import { getProjectWorkflowController, publishProjectWorkflowEvent } from "./project-workflow-controller.js";
 
 type Context = Awaited<ReturnType<typeof workspaceContext>>;
 type JsonRecord = Record<string, unknown>;
@@ -48,6 +49,14 @@ async function publishingTask(context: Context, taskId: string) {
   return task;
 }
 
+export async function requireApprovedExecutionPlanForExternalAction(projectId: string) {
+  const controller = await getProjectWorkflowController(projectId);
+  const executionPlan = controller?.stages.find((stage) => stage.key === "execution_plan_approval");
+  if (executionPlan?.status === "approved" || executionPlan?.status === "complete") return controller;
+  const payload = workflowBlockedPayload(controller?.executionPlanStale ? "Refresh and approve the Execution Plan because its approved Strategy source changed." : "Review and approve the current Execution Plan before publishing or performing an external action.", `/guided-projects/${projectId}?tab=execution#execution-tasks`);
+  throw Object.assign(new Error(payload.error), { statusCode: 409, payload });
+}
+
 async function publishingRecipients(tx: Prisma.TransactionClient, context: Context, task: Awaited<ReturnType<typeof publishingTask>>, includeOwners: boolean) {
   const direct = [task.assignee?.userId, task.manager?.userId, task.createdByUserId].filter((id): id is string => Boolean(id));
   if (!includeOwners) return [...new Set(direct)];
@@ -64,9 +73,12 @@ export async function startTaskPublishing(context: Context, taskId: string, inpu
   previousVersionReference?: string | null;
   metadata?: JsonRecord;
   providerInitiated?: boolean;
+  confirmed?: boolean;
 }) {
   if (!hasWorkspacePermission(context, "publish")) throw Object.assign(new Error("Publishing permission is required."), { statusCode: 403 });
   let task = await publishingTask(context, taskId);
+  await requireApprovedExecutionPlanForExternalAction(task.projectId!);
+  if (!input.confirmed) throw Object.assign(new Error("Confirm the exact approved output and publishing destination before continuing."), { statusCode: 409 });
   let currentSnapshot = jsonRecord(task.approvalSnapshotJson);
   if (!jsonRecord(currentSnapshot.marketingExecution).workPackage) {
     await prepareMarketingExecution(context, taskId);

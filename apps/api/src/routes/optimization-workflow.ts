@@ -56,7 +56,7 @@ optimizationWorkflowRouter.post("/execution-tasks/:taskId/discovery-check", asyn
       return row;
     });
     res.status(201).json({ check });
-  } catch (error) { res.status(400).json({ error: error instanceof Error ? error.message : "Could not record discovery check." }); }
+  } catch (error) { const typed = error as { statusCode?: number; message?: string }; res.status(typed.statusCode ?? 400).json({ error: typed.message ?? "Could not record discovery check." }); }
 });
 
 optimizationWorkflowRouter.post("/measurement-checkpoints/:checkpointId/complete", async (req, res) => {
@@ -109,7 +109,7 @@ optimizationWorkflowRouter.post("/measurement-checkpoints/:checkpointId/complete
       return { checkpoint: completed, nextBestAction: nba };
     });
     res.json(result);
-  } catch (error) { res.status(400).json({ error: error instanceof Error ? error.message : "Could not complete checkpoint." }); }
+  } catch (error) { const typed = error as { statusCode?: number; message?: string }; res.status(typed.statusCode ?? 400).json({ error: typed.message ?? "Could not complete checkpoint." }); }
 });
 
 optimizationWorkflowRouter.post("/next-best-actions/:id/decision", async (req, res) => {
@@ -133,5 +133,5 @@ optimizationWorkflowRouter.post("/next-best-actions/:id/decision", async (req, r
       return updated;
     });
     res.json({ nextBestAction: result });
-  } catch (error) { res.status(400).json({ error: error instanceof Error ? error.message : "Could not decide Next Best Action." }); }
+  } catch (error) { const typed = error as { statusCode?: number; message?: string }; res.status(typed.statusCode ?? 400).json({ error: typed.message ?? "Could not decide Next Best Action." }); }
 });

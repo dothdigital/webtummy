@@ -27,21 +27,24 @@ export default function Billing() {
   const [message, setMessage] = useState<string | null>(null);
   const [portalBusy, setPortalBusy] = useState(false);
   const [savingReports, setSavingReports] = useState(false);
+  const [governanceConfirmed, setGovernanceConfirmed] = useState(false);
 
   const load = async () => {
     setLoading(true);
     setMessage(null);
     try {
-      const [billingResult, usageResult, invoiceResult, addonResult] = await Promise.all([
+      const [billingResult, usageResult, invoiceResult, addonResult, workspaceResult] = await Promise.all([
         api.get<BillingStatus>("/api/billing/status"),
         api.get<AiContentStatus>("/api/ai-content/status"),
         api.get<{ invoices: BillingInvoice[] }>("/api/billing/invoices"),
         api.get<{ addons: typeof addons }>("/api/billing/commercial-addons"),
+        api.get<{ governanceConfirmed?: boolean }>("/api/agency/workspace"),
       ]);
       setBilling(billingResult);
       setUsage(usageResult);
       setInvoices(invoiceResult.invoices);
       setAddons(addonResult.addons);
+      setGovernanceConfirmed(workspaceResult.governanceConfirmed === true);
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "Could not load billing details");
     } finally {
@@ -207,6 +210,10 @@ export default function Billing() {
               {billing.commercial?.usage.capacity?.warningLevel && <div className="mt-3 rounded-lg bg-amber-50 px-3 py-2 text-xs font-semibold text-amber-800">{billing.commercial.usage.capacity.warningLevel}% capacity threshold reached. Add a non-expiring Capacity Pack before the balance is exhausted.</div>}
             </Card>
           </div>
+
+          <Card className={`p-5 ${governanceConfirmed ? "border-emerald-200 bg-emerald-50/40" : "border-amber-200 bg-amber-50/40"}`}>
+            <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between"><div><div className="text-lg font-bold text-charcoal-900">AI Capacity and approval rules</div><p className="mt-1 max-w-3xl text-sm leading-6 text-charcoal-600">Chargeable work shows its estimated AI Capacity before it starts and reserves Capacity only after confirmation. Failed work is refunded. Publishing and protected external actions require the appropriate approval.</p></div>{governanceConfirmed ? <span className="shrink-0 rounded-full bg-emerald-100 px-4 py-2 text-xs font-bold text-emerald-800">Reviewed and confirmed</span> : <Button onClick={() => void api.post<{ governanceConfirmed: boolean }>("/api/workspace/settings/governance-confirmation", {}).then(() => { setGovernanceConfirmed(true); setMessage("Capacity and approval rules confirmed."); }).catch((error) => setMessage(error instanceof Error ? error.message : "Could not save confirmation."))}>I understand and confirm</Button>}</div>
+          </Card>
 
           <Card className="p-5">
             <div className="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">

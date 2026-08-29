@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { creditTransactionReason, expectedSuccessfulWorkflowCost, selectLowestSuccessfulWorkflowCostRoute, usageCorrelationId, usageIdempotencyKey } from "./usage-engine.js";
+import { creditTransactionReason, expectedSuccessfulWorkflowCost, selectLowestSuccessfulWorkflowCostRoute, usageCorrelationId, usageIdempotencyKey, usageWorkFingerprint } from "./usage-engine.js";
 
 describe("AI Orchestrator successful-workflow cost routing", () => {
   it("includes initial, retry, validation, and correction cost", () => {
@@ -51,5 +51,16 @@ describe("usage idempotency keys", () => {
     expect(normalized).not.toBe(usageIdempotencyKey(`${batchKey}:different`));
     expect(normalized).toMatch(/^keyword-research-batch:/);
     expect(Array.from(usageCorrelationId(normalized) ?? "").length).toBeLessThanOrEqual(191);
+  });
+
+  it("gives reloads and timestamped retries the same billable work identity", () => {
+    const base = { clientId: "client-1", projectId: "project-1", websiteId: null, featureKey: "strategy_generate", actionKey: "Generate strategy" };
+    expect(usageWorkFingerprint({ ...base, idempotencyKey: "strategy:project-1:1787937000000" }))
+      .toBe(usageWorkFingerprint({ ...base, idempotencyKey: "strategy:project-1:1787937999999:retry:1787938000000" }));
+  });
+
+  it("charges materially different request fingerprints separately", () => {
+    const base = { clientId: "client-1", projectId: "project-1", websiteId: null, featureKey: "strategy_generate", actionKey: "Generate strategy", idempotencyKey: null };
+    expect(usageWorkFingerprint(base, "payload-a")).not.toBe(usageWorkFingerprint(base, "payload-b"));
   });
 });

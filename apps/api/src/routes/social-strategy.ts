@@ -1575,11 +1575,29 @@ socialStrategyRouter.post("/social-strategy/:strategyId/generate-images", async 
   const strategy = await prisma.socialStrategy.findUnique({ where: { id: req.params.strategyId }, include: { project: true, posts: { orderBy: { publishDate: "asc" } } } });
   if (!strategy?.projectId || !strategy.project || !await canAccessProject(context, strategy.projectId)) return res.status(404).json({ error: "Campaign not found." });
   const posts = strategy.posts.filter((post) => !post.imageUrl && !["scheduled", "published"].includes(post.status) && !["queued", "generating"].includes(post.imageStatus));
+  let queued = 0;
+  let alreadyRunning = strategy.posts.filter((post) => !post.imageUrl && ["queued", "generating"].includes(post.imageStatus)).length;
   for (const post of posts) {
-    await prisma.socialCalendarPost.update({ where: { id: post.id }, data: { imageStatus: "queued" } });
-    await socialImageQueue.add("social-image:generate", { postId: post.id, workspaceId: context.workspace.id, createdByUserId: context.membership.userId });
+    const claimed = await prisma.socialCalendarPost.updateMany({
+      where: { id: post.id, imageUrl: null, imageStatus: { notIn: ["queued", "generating"] }, status: { notIn: ["scheduled", "published"] } },
+      data: { imageStatus: "queued" },
+    });
+    if (!claimed.count) { alreadyRunning += 1; continue; }
+    try {
+      await socialImageQueue.add("social-image:generate", { postId: post.id, workspaceId: context.workspace.id, createdByUserId: context.membership.userId }, {
+        jobId: `social-image-${post.id}`,
+        attempts: 3,
+        backoff: { type: "exponential", delay: 5_000 },
+        removeOnComplete: 250,
+        removeOnFail: 250,
+      });
+      queued += 1;
+    } catch (error) {
+      await prisma.socialCalendarPost.updateMany({ where: { id: post.id, imageStatus: "queued", imageUrl: null }, data: { imageStatus: "failed" } });
+      throw error;
+    }
   }
-  res.status(202).json({ queued: posts.length, strategyId: strategy.id });
+  res.status(202).json({ queued, alreadyRunning, strategyId: strategy.id, idempotent: queued === 0 && alreadyRunning > 0 });
 });
 
 socialStrategyRouter.post("/social-strategy/posts/:postId/approve", async (req, res) => {

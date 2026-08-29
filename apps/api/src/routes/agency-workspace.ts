@@ -227,7 +227,10 @@ agencyWorkspaceRouter.get(["/agency/workspace", "/workspace"], (req, res) => han
     prisma.workspaceActivity.findMany({ where: { workspaceId: context.workspace.id, projectId: { in: visibleProjectIds }, createdAt: { gte: reportingPeriodStart }, OR: [{ action: { contains: "integration" } }, { entityType: { contains: "integration" } }], action: { contains: "failed" } }, select: { id: true, projectId: true, action: true, entityType: true, createdAt: true } }),
     prisma.gapReportExport.groupBy({ by: ["projectId"], where: { projectId: { in: visibleProjectIds }, approvalStatus: "approved", status: { in: ["complete", "completed", "ready"] } }, _count: true }),
   ]) : [[], [], [], [], []];
-  const completedStatuses = new Set(["completed", "skipped", "published"]);
+  // This metric represents resolved execution actions. Keep it aligned with the
+  // statuses that allow a project to be closed so cancelled/superseded work is
+  // not incorrectly reported as still remaining.
+  const completedStatuses = new Set(["completed", "skipped", "published", "verified", "cancelled", "canceled", "superseded"]);
   const now = new Date();
   const priorityRank: Record<string, number> = { critical: 0, urgent: 0, high: 1, medium: 2, low: 3 };
   const orderedActionRows = [...actionRows].sort((left, right) => {
@@ -307,7 +310,8 @@ agencyWorkspaceRouter.get(["/agency/workspace", "/workspace"], (req, res) => han
     const capacityUsed = projectIds.reduce((sum, projectId) => sum + (capacityMap.get(projectId) ?? 0), 0);
     const providerCostUsd = Math.round(projectIds.reduce((sum, projectId) => sum + (costMap.get(projectId) ?? 0), 0) * 100) / 100;
     const riskPoints = overdue * 2 + blocked * 3 + approvals + clientFailedJobs * 3 + clientIntegrationFailures * 3;
-    return { clientId: client.id, clientName: client.name, activeProjects: client.projects.filter((project) => project.status === "active").length, openTasks: openTasks.length, overdueTasks: overdue, blockedTasks: blocked, pendingApprovals: approvals, reportsReady: client.projects.reduce((sum, project) => sum + (reportsMap.get(project.id) ?? 0), 0), failedJobs: clientFailedJobs, integrationFailures: clientIntegrationFailures, capacityUsed, providerCostUsd, health: riskPoints >= 8 ? "at_risk" : riskPoints >= 3 ? "attention" : "healthy", retentionSignal: riskPoints >= 8 ? "Review delivery blockers and contact cadence." : "No evidence-backed retention risk is currently detected." };
+    const assessed = client.projects.some((project) => Boolean(project.workflowController?.intelligenceReady || project.workflowController?.readinessPercent));
+    return { clientId: client.id, clientName: client.name, activeProjects: client.projects.filter((project) => project.status === "active").length, openTasks: openTasks.length, overdueTasks: overdue, blockedTasks: blocked, pendingApprovals: approvals, reportsReady: client.projects.reduce((sum, project) => sum + (reportsMap.get(project.id) ?? 0), 0), failedJobs: clientFailedJobs, integrationFailures: clientIntegrationFailures, capacityUsed, providerCostUsd, health: !assessed ? "not_assessed" : riskPoints >= 8 ? "at_risk" : riskPoints >= 3 ? "attention" : "healthy", retentionSignal: !assessed ? "Insufficient current evidence to assess client health." : riskPoints >= 8 ? "Review delivery blockers and contact cadence." : "No evidence-backed retention risk is currently detected." };
   }) : [];
   const seats = canManageUsers ? await workspaceSeatUsage(context.workspace.id, context.workspace.settingsJson) : null;
   return {
@@ -315,6 +319,9 @@ agencyWorkspaceRouter.get(["/agency/workspace", "/workspace"], (req, res) => han
       ...context.workspace,
       settingsJson: undefined,
       locationDefaults: locationDefaultsFromSettings(context.workspace.settingsJson),
+      businessProfileDefaults: context.workspace.workspaceType === "business" && context.workspace.settingsJson && typeof context.workspace.settingsJson === "object"
+        ? (context.workspace.settingsJson as { businessProfile?: unknown }).businessProfile ?? null
+        : null,
       rolePermissionOverrides: context.workspace.settingsJson && typeof context.workspace.settingsJson === "object"
         ? (context.workspace.settingsJson as { rolePermissionOverrides?: unknown }).rolePermissionOverrides ?? {}
         : {},
@@ -333,6 +340,7 @@ agencyWorkspaceRouter.get(["/agency/workspace", "/workspace"], (req, res) => han
     operationalReporting: context.workspace.workspaceType === "agency" ? { periodStart: reportingPeriodStart, failedJobs, integrationFailures, capacityByProject: capacityByProject.map((row) => ({ projectId: row.projectId, capacityUsed: row._sum.creditsCommitted ?? 0 })), providerCostsByProject: [...costMap.entries()].filter(([projectId]) => projectId).map(([projectId, costUsd]) => ({ projectId, costUsd: Math.round(costUsd * 100) / 100 })) } : null,
     seats,
     approvalMode: await workspaceApprovalMode(context),
+    governanceConfirmed: Boolean(context.workspace.settingsJson && typeof context.workspace.settingsJson === "object" && (context.workspace.settingsJson as { governanceConfirmedAt?: unknown }).governanceConfirmedAt),
     discoveryDrafts,
     nextActions: clientViewer ? [] : workspaceNextActions({
       workspaceType: context.workspace.workspaceType,
@@ -344,6 +352,18 @@ agencyWorkspaceRouter.get(["/agency/workspace", "/workspace"], (req, res) => han
     }),
     permissions: Object.fromEntries(["manage_users", "manage_roles", "manage_clients", "create_projects", "edit_project_settings", "manage_projects", "run_ai_analysis", "edit_strategy", "execute_tasks", "assign_tasks", "approve", "publish", "view_reports", "export_reports", "view_activity", "view_notifications", "manage_integrations", "read_integrations", "manage_api_keys", "billing"].map((permission) => [permission, hasWorkspacePermission(context, permission)])),
   };
+}));
+
+agencyWorkspaceRouter.post("/workspace/settings/governance-confirmation", (req, res) => handle(res, async () => {
+  const context = await workspaceContext(req);
+  if (!hasWorkspacePermission(context, "read_internal")) throw Object.assign(new Error("Workspace access is required."), { statusCode: 403 });
+  const previousSettings = context.workspace.settingsJson && typeof context.workspace.settingsJson === "object" ? context.workspace.settingsJson as Record<string, unknown> : {};
+  const governanceConfirmedAt = new Date().toISOString();
+  await prisma.$transaction(async (tx) => {
+    await tx.workspace.update({ where: { id: context.workspace.id }, data: { settingsJson: { ...previousSettings, governanceConfirmedAt, governanceConfirmedByUserId: context.membership.userId } as Prisma.InputJsonValue } });
+    await recordWorkspaceActivity(tx, { context, action: "workspace.governance_confirmed", entityType: "workspace", entityId: context.workspace.id, nextJson: { governanceConfirmedAt } });
+  });
+  return { governanceConfirmed: true, governanceConfirmedAt };
 }));
 
 agencyWorkspaceRouter.patch(["/agency/settings/role-permissions", "/workspace/settings/role-permissions"], (req, res) => handle(res, async () => {

@@ -139,7 +139,7 @@ export default function GuidedProjectNew() {
     cmsPlatform: "",
     targetLaunchTimeline: "14 days",
     preferredOutputs: ["SEO plan"],
-    preferredPublishingMethod: "WordPress",
+    preferredPublishingMethod: "",
     updateClientDefaults: false,
     updateWorkspaceDefaults: false,
     aiIntakeSessionId: "",
@@ -235,12 +235,16 @@ export default function GuidedProjectNew() {
     void (async () => {
       for (let attempt = 0; attempt < 3; attempt += 1) {
         try {
-          const result = await api.get<{ workspace: { workspaceType: string; locationDefaults?: { businessLocation: string; businessLocationDetails: { country: string; stateProvince: string; city: string; streetAddress?: string; postalCode?: string } | null; targetMarkets: string[] } }; clients: { id: string; name: string; status: string; websites: unknown; businessLocations: unknown; targetMarkets: unknown; defaultSettings: unknown }[] }>("/api/agency/workspace");
+          const result = await api.get<{ workspace: { workspaceType: string; locationDefaults?: { businessLocation: string; businessLocationDetails: { country: string; stateProvince: string; city: string; streetAddress?: string; postalCode?: string } | null; targetMarkets: string[] }; businessProfileDefaults?: { businessName?: string | null; niche?: string | null; businessDescription?: string | null; targetAudience?: string | null; productsServices?: string | null; brandVoice?: string | null } | null }; clients: { id: string; name: string; status: string; websites: unknown; businessLocations: unknown; targetMarkets: unknown; defaultSettings: unknown }[] }>("/api/agency/workspace");
           if (cancelled) return;
           const activeClients = result.clients.filter((client) => client.status === "active");
           setWorkspaceType(result.workspace.workspaceType);
           setWorkspaceLocationDefaults(result.workspace.locationDefaults ?? null);
           setAgencyClients(activeClients);
+          if (result.workspace.workspaceType === "business" && !editProjectId && result.workspace.businessProfileDefaults) {
+            const profile = result.workspace.businessProfileDefaults;
+            patch({ businessName: profile.businessName || form.businessName, niche: profile.niche || form.niche, businessDescription: profile.businessDescription || form.businessDescription, targetAudience: profile.targetAudience || form.targetAudience, productsServices: profile.productsServices || form.productsServices, brandVoice: profile.brandVoice || form.brandVoice });
+          }
           if (result.workspace.workspaceType === "agency" && creationMode === "classic" && !form.agencyClientId && activeClients.length === 1) patch({ agencyClientId: activeClients[0].id });
           setWorkspaceLoaded(true);
           return;
@@ -294,6 +298,11 @@ export default function GuidedProjectNew() {
   useEffect(() => {
     if (!workspaceLoaded || editProjectId || creationMode !== "choose" || !requestedStartPath || requestedDiscoveryDraftId || isAgency || activeDiscoveryDraft || autoStartedPath.current === requestedStartPath) return;
     autoStartedPath.current = requestedStartPath;
+    if (requestedStartPath === "EXISTING_BUSINESS") {
+      setCreationMode("classic");
+      setStep(0);
+      return;
+    }
     const titles: Record<DiscoveryStartPath, string> = {
       EXISTING_BUSINESS: "Existing business discovery",
       IDEA_TO_EXPLORE: "Business idea discovery",
@@ -343,7 +352,7 @@ export default function GuidedProjectNew() {
           cmsPlatform: raw.cmsPlatform ?? "",
           targetLaunchTimeline: project.targetLaunchTimeline ?? "14 days",
           preferredOutputs: Array.isArray(project.preferredOutputs) ? project.preferredOutputs.map(String) : [],
-          preferredPublishingMethod: project.preferredPublishingMethod ?? "WordPress",
+          preferredPublishingMethod: project.preferredPublishingMethod ?? "",
           ...(resumeConversationId ? { savedProjectId: project.id } : {}),
         });
         if (resumeConversationId) void api.get<{ sessionId: string; messages: Array<{ role: "user" | "assistant"; text: string }>; draft: Record<string, unknown>; readyForReview: boolean; websiteContextLoaded?: boolean; usage: { used: number; limit: number } }>(`/api/ai-intake/conversation/${project.id}`).then((conversation) => {
@@ -526,7 +535,7 @@ export default function GuidedProjectNew() {
         { key:"EXISTING_BUSINESS" as const, icon:"↗", badge:"Already operating", title:"I have an existing business", detail:"Describe the business or provide an optional website, store or profile. Receive a concise understanding and the best practical directions.", points:["Known facts are reused","Location is asked only when relevant"], tone:"border-cyan-200 bg-gradient-to-br from-cyan-50 via-white to-blue-50", iconTone:"bg-cyan-700 text-white" },
         { key:"IDEA_TO_EXPLORE" as const, icon:"⌕", badge:"Explore first", title:"I have an idea to explore", detail:"Refine an incomplete idea, audience, revenue model and first validation step before deciding whether to create a project.", points:["Autosaved Pre-Project Brief","No Project until Use This Idea"], tone:"border-violet-200 bg-gradient-to-br from-violet-50 via-white to-fuchsia-50", iconTone:"bg-violet-700 text-white" },
         { key:"SKILLS_FIRST" as const, icon:"✦", badge:"Help me decide", title:"Help me find an opportunity", detail:"Start with your skills, knowledge, interests and constraints. Compare three to five realistic opportunity ideas.", points:["No business details required","Save, shortlist or reject ideas"], tone:"border-emerald-300 bg-gradient-to-br from-emerald-50 via-white to-cyan-50", iconTone:"bg-slate-950 text-white" },
-      ].map((option)=><button key={option.key} type="button" disabled={startingDiscovery || form.name.trim().length < 2 || (isAgency && !form.agencyClientId)} onClick={()=>void startDiscovery(option.key)} className={`group rounded-[24px] border-2 p-7 text-left shadow-sm transition hover:-translate-y-1 hover:shadow-xl disabled:cursor-not-allowed disabled:opacity-50 sm:p-8 ${option.tone}`}><div className="flex items-start justify-between gap-4"><span className={`grid h-14 w-14 place-items-center rounded-2xl text-2xl shadow-lg ${option.iconTone}`}>{option.icon}</span><span className="rounded-full bg-white/90 px-3 py-1.5 text-[10px] font-black uppercase tracking-wide text-slate-600 shadow-sm">{option.badge}</span></div><h2 className="mt-6 text-2xl font-black text-slate-950">{option.title}</h2><p className="mt-2 text-sm leading-7 text-slate-600">{option.detail}</p><div className="mt-5 space-y-2">{option.points.map((item)=><div key={item} className="flex items-start gap-3 text-xs font-bold leading-5 text-slate-700"><span className="mt-0.5 grid h-5 w-5 shrink-0 place-items-center rounded-full bg-white text-[10px] text-emerald-700">✓</span>{item}</div>)}</div><div className="mt-7 flex items-center justify-between border-t border-slate-200/80 pt-5"><span className="text-xs font-bold text-slate-500">Business Discovery</span><span className="text-sm font-black text-slate-950 transition group-hover:translate-x-1">{startingDiscovery ? "Starting…" : "Continue →"}</span></div></button>)}
+      ].map((option)=><button key={option.key} type="button" disabled={startingDiscovery || form.name.trim().length < 2 || (isAgency && !form.agencyClientId)} onClick={()=>option.key === "EXISTING_BUSINESS" ? setCreationMode("classic") : void startDiscovery(option.key)} className={`group flex h-full flex-col rounded-[24px] border-2 p-7 text-left shadow-sm transition hover:-translate-y-1 hover:shadow-xl disabled:cursor-not-allowed disabled:opacity-50 sm:p-8 ${option.tone}`}><div className="flex items-start justify-between gap-4"><span className={`grid h-14 w-14 place-items-center rounded-2xl text-2xl shadow-lg ${option.iconTone}`}>{option.icon}</span><span className="rounded-full bg-white/90 px-3 py-1.5 text-[10px] font-black uppercase tracking-wide text-slate-600 shadow-sm">{option.badge}</span></div><h2 className="mt-6 text-2xl font-black text-slate-950">{option.title}</h2><p className="mt-2 text-sm leading-7 text-slate-600">{option.detail}</p><div className="mt-5 space-y-2">{option.points.map((item)=><div key={item} className="flex items-start gap-3 text-xs font-bold leading-5 text-slate-700"><span className="mt-0.5 grid h-5 w-5 shrink-0 place-items-center rounded-full bg-white text-[10px] text-emerald-700">✓</span>{item}</div>)}</div><div className="mt-auto pt-7"><div className="flex items-center justify-between border-t border-slate-200/80 pt-5"><span className="text-xs font-bold text-slate-500">Business Discovery</span><span className="text-sm font-black text-slate-950 transition group-hover:translate-x-1">{startingDiscovery ? "Starting…" : "Continue →"}</span></div></div></button>)}
     </div>
     <DiscoveryDraftList drafts={discoveryDrafts} onResume={(draft) => setActiveDiscoveryDraft(draft)} onDelete={(draft) => void deleteDiscoveryDraft(draft)} />
     <Card className="p-4 text-center"><button type="button" onClick={() => rememberCreationMode("classic", "detailed_setup")} className="text-xs font-black text-brand-700">I already know every project detail · Open Detailed Project Setup →</button></Card>
@@ -615,7 +624,7 @@ export default function GuidedProjectNew() {
               {step === 0 && <>{isAgency && <label className="block md:col-span-2"><span className="mb-1 block text-sm font-bold text-slate-800">Client *</span><select required value={form.agencyClientId} onChange={(event) => patch({ agencyClientId: event.target.value })} className="h-11 w-full rounded-lg border border-slate-200 bg-white px-3 text-sm"><option value="">Select client</option>{agencyClients.map((client) => <option key={client.id} value={client.id}>{client.name}</option>)}</select><span className="mt-1 block text-xs text-slate-500">Client-wide business, contact, branding, market, and website defaults stay on the client record.</span></label>}
               <Input label="Project Name *" value={form.name} onChange={(name) => patch({ name })} placeholder="Enter your details" />
               <label className="block"><span className="mb-1 block text-sm font-bold text-slate-800">Website Status *</span><select required value={form.websiteStatus} onChange={(event) => patch({ websiteStatus: event.target.value })} className="h-11 w-full rounded-lg border border-slate-200 bg-white px-3 text-sm"><option value="existing_website">Existing Website</option><option value="new_website_required">New Website Required</option><option value="website_planned">Website Planned</option><option value="no_website_required">No Website Required</option></select></label>
-              <div><Input label="Website URL (optional)" value={form.websiteUrl} onChange={(websiteUrl) => patch({ websiteUrl })} placeholder="https://www.example.com" /><span className="mt-1 block text-xs text-slate-500">Enter an existing website for AI analysis, or leave this blank if the business or website is new.</span></div>
+              <div><Input label={requiresWebsite ? "Website URL *" : "Website URL (optional)"} value={form.websiteUrl} onChange={(websiteUrl) => patch({ websiteUrl })} placeholder="https://www.example.com" /><span className="mt-1 block text-xs text-slate-500">{requiresWebsite ? "Enter the existing business website. It is required before this project can continue." : "Enter an existing website for AI analysis, or leave this blank if the business or website is new."}</span></div>
               <label className="block">
                 <span className="mb-1 block text-sm font-bold text-slate-800">Industry / Niche (optional)</span>
                 <input value={form.niche} onChange={(event) => patch({ niche: event.target.value })} placeholder="e.g., Roofing, Med spa, SaaS CRM, Fitness coaching" className="h-11 w-full rounded-lg border border-slate-200 px-3 text-sm outline-none focus:border-brand-400 focus:ring-2 focus:ring-brand-100" />

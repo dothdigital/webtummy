@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { executionPlanWorkflowBlocker, hasCurrentPreExecutionGrowth, resolveProjectApplicability, resolveProjectWorkflow, STRATEGY_EVIDENCE_SETTLING_WINDOW_MS, workflowStagePrerequisite, type WorkflowEvidenceSnapshot } from "./project-workflow-controller.js";
+import { executionPlanWorkflowBlocker, hasCurrentPreExecutionGrowth, resolveProjectApplicability, resolveProjectWorkflow, STRATEGY_EVIDENCE_SETTLING_WINDOW_MS, strategyWorkflowPrerequisite, workflowStagePrerequisite, type WorkflowEvidenceSnapshot } from "./project-workflow-controller.js";
 
 function snapshot(overrides: Partial<WorkflowEvidenceSnapshot> = {}): WorkflowEvidenceSnapshot {
   const now = new Date("2026-08-01T12:00:00.000Z");
@@ -9,6 +9,8 @@ function snapshot(overrides: Partial<WorkflowEvidenceSnapshot> = {}): WorkflowEv
     workspaceConfigured: true,
     situationConfigured: true,
     discoveryComplete: true,
+    businessBrainApproved: true,
+    readinessComplete: true,
     existingWebsite: true,
     preLaunchWebsite: false,
     localSeoApplicable: false,
@@ -46,6 +48,9 @@ function snapshot(overrides: Partial<WorkflowEvidenceSnapshot> = {}): WorkflowEv
     latestStrategy: null,
     latestEvidenceAt: now,
     criticalEvidenceIssueCount: 0,
+    findingsReviewed: true,
+    trackingVerified: true,
+    trackingLimitationRecorded: false,
     preExecutionGrowthComplete: true,
     executionPlanExists: false,
     executionTasksExist: false,
@@ -65,7 +70,8 @@ function snapshot(overrides: Partial<WorkflowEvidenceSnapshot> = {}): WorkflowEv
     publishingComplete: false,
     measurementStarted: false,
     measurementComplete: false,
-    growthBlueprintStatus: null,
+    growthBlueprintStatus: "approved",
+    executionPlanApproved: true,
     nextBestActionExists: false,
     latestStrategyVersion: 0,
     executionPlanVersion: null,
@@ -77,6 +83,37 @@ function snapshot(overrides: Partial<WorkflowEvidenceSnapshot> = {}): WorkflowEv
 }
 
 describe("DEV-046 project workflow controller", () => {
+  it("uses the canonical 19-stage lifecycle in the customer checklist", () => {
+    expect(resolveProjectWorkflow(snapshot()).stages.map((stage) => stage.key)).toEqual([
+      "project_created", "intake", "business_brain_approval", "readiness_check", "opportunity_discovery",
+      "required_intelligence", "findings_review", "growth_strategy", "growth_strategy_approval", "growth_blueprint",
+      "required_channel_plans", "execution_plan_approval", "approved_execution", "output_approval", "external_completion",
+      "tracking_verification", "reporting_learning", "growth_loop_activation", "next_best_action",
+    ]);
+  });
+
+  it("returns a standard backend blocker until every Strategy prerequisite is complete", () => {
+    const blocked = resolveProjectWorkflow(snapshot({ findingsReviewed: false }));
+    expect(strategyWorkflowPrerequisite(blocked)).toMatchObject({
+      error: "The action is not ready.",
+      code: "WORKFLOW_PREREQUISITE_REQUIRED",
+      missingRequirement: "Findings Review must be complete before Strategy.",
+    });
+    expect(strategyWorkflowPrerequisite(resolveProjectWorkflow(snapshot()))).toBeNull();
+  });
+
+  it("requires explicit Business Brain approval and Readiness before Opportunity Discovery", () => {
+    const approval = resolveProjectWorkflow(snapshot({ businessBrainApproved: false, readinessComplete: false, selectedOpportunity: false }));
+    expect(approval.nextBestAction.title).toBe("Review and approve the Business Brain");
+    expect(approval.stages.find((stage) => stage.key === "business_brain_approval")?.status).toBe("ready");
+
+    const readiness = resolveProjectWorkflow(snapshot({ businessBrainApproved: true, readinessComplete: false, selectedOpportunity: false }));
+    expect(readiness.nextBestAction.title).toBe("Complete the Readiness Check");
+    expect(readiness.stages.find((stage) => stage.key === "readiness_check")?.status).toBe("ready");
+
+    const opportunity = resolveProjectWorkflow(snapshot({ businessBrainApproved: true, readinessComplete: true, selectedOpportunity: false }));
+    expect(opportunity.nextBestAction.title).toBe("Create and select the project opportunity");
+  });
   it("treats ecommerce as a project type and requires public-store intelligence only when a store is live", () => {
     const existingStore = resolveProjectApplicability({ projectType: "ecommerce", websiteStatus: "existing_website", hasWebsite: true, contextText: "online store" });
     const plannedStore = resolveProjectApplicability({ projectType: "ecommerce", websiteStatus: "new_website_required", hasWebsite: false, contextText: "online store" });
@@ -206,8 +243,8 @@ describe("DEV-046 project workflow controller", () => {
     expect(result.intelligenceModules.find((item) => item.key === "site_analysis")?.status).toBe("not_required");
     expect(result.intelligenceModules.find((item) => item.key === "site_analysis")?.reason).toContain("after the website is published");
     expect(result.intelligenceModules.find((item) => item.key === "content_gap_analysis")?.required).toBe(true);
-    expect(result.stages.find((item) => item.key === "website_strategy")?.status).toBe("blocked");
-    expect(result.stages.find((item) => item.key === "unified_strategy")?.status).toBe("blocked");
+    expect(result.stages.find((item) => item.key === "required_intelligence")?.status).not.toBe("complete");
+    expect(result.stages.find((item) => item.key === "growth_strategy")?.status).toBe("blocked");
     expect(result.nextBestAction.title).toBe("Keyword Intelligence");
     expect(result.nextBestAction.action.url).toContain("/keywords?");
   });
@@ -226,7 +263,7 @@ describe("DEV-046 project workflow controller", () => {
       authorityEvidenceComplete: true,
     }));
     expect(result.intelligenceReady).toBe(true);
-    expect(result.stages.find((item) => item.key === "website_strategy")?.status).toBe("ready");
+    expect(result.stages.find((item) => item.key === "growth_strategy")?.status).toBe("ready");
     expect(result.nextBestAction.title).toBe("Generate Unified Strategy");
     expect(result.nextBestAction.action.url).toContain("/strategy?");
   });
@@ -276,7 +313,7 @@ describe("DEV-046 project workflow controller", () => {
     expect(result.nextBestAction.title).toBe("Create the Execution Plan");
     expect(result.nextBestAction.action.label).toBe("Create Execution Plan");
     expect(result.blockers.some((item) => item.key === "strategy_stale")).toBe(false);
-    expect(result.stages.find((item) => item.key === "unified_strategy")?.reason).toContain("remains usable");
+    expect(result.stages.find((item) => item.key === "growth_strategy")?.status).toBe("complete");
     expect(result.strategyCreatedAt).toBe(strategyAt.toISOString());
     expect(result.latestEvidenceAt).toBe(evidenceAt.toISOString());
     expect(result.changedEvidence.length).toBeGreaterThan(0);
@@ -290,8 +327,7 @@ describe("DEV-046 project workflow controller", () => {
     const result = resolveProjectWorkflow(snapshot({ latestStrategy: { id: "strategy-1", status: "approved", createdAt: strategyAt, approvedAt: strategyAt }, latestStrategyVersion: 1, gapEvidenceAt: gapAt, latestEvidenceAt: gapAt, websitePlanRequired: true }));
     expect(result.nextBestAction.title).toContain("Update Unified Strategy");
     expect(result.nextBestAction.action.url).toContain("/strategy?");
-    expect(result.stages.find((item) => item.key === "unified_strategy")?.status).toBe("stale");
-    expect(result.stages.find((item) => item.key === "strategy_approval")?.status).toBe("blocked");
+    expect(result.stages.find((item) => item.key === "growth_strategy_approval")?.status).toBe("stale");
   });
 
   it("does not invalidate a fresh Strategy while its evidence cycle is settling", () => {
@@ -304,7 +340,7 @@ describe("DEV-046 project workflow controller", () => {
       authorityEvidenceAt: evidenceAt,
     }));
     expect(result.strategyStale).toBe(false);
-    expect(result.stages.find((item) => item.key === "strategy_approval")?.status).toBe("ready");
+    expect(result.stages.find((item) => item.key === "growth_strategy_approval")?.status).toBe("ready");
   });
 
   it("invalidates Strategy after the evidence settling window", () => {
@@ -319,9 +355,9 @@ describe("DEV-046 project workflow controller", () => {
     expect(result.strategyStale).toBe(true);
   });
 
-  it("allows an authorized waiver to satisfy one evidence cycle", () => {
+  it("maps an authorized legacy waiver to canonical Not Applicable and satisfies one evidence cycle", () => {
     const result = resolveProjectWorkflow(snapshot({ competitorAnalysisComplete: false, gapAnalysisComplete: false, moduleDecisions: { competitor_intelligence: "waived", technical_seo: "waived", content_gap_analysis: "waived", ai_citation_analysis: "waived", authority_analysis: "waived" } }));
-    expect(result.intelligenceModules.find((item) => item.key === "competitor_intelligence")?.status).toBe("waived");
+    expect(result.intelligenceModules.find((item) => item.key === "competitor_intelligence")?.status).toBe("not_applicable");
     expect(result.intelligenceReady).toBe(true);
   });
 
@@ -397,28 +433,27 @@ describe("DEV-046 project workflow controller", () => {
     expect(hasCurrentPreExecutionGrowth({ strategyApprovedAt: approvedAt, diagnosisAt: null, legacyCompletedCycleAt: new Date(approvedAt.getTime() - 1), actionStatus: "selected" })).toBe(false);
   });
 
-  it("shows Growth Plan before SEO Plan and Website Development", () => {
+  it("shows Growth Blueprint before required channel plans and execution", () => {
     const result = resolveProjectWorkflow(snapshot({ websitePlanRequired: true }));
     const keys = result.stages.map((stage) => stage.key);
-    expect(keys.indexOf("growth_plan")).toBeLessThan(keys.indexOf("seo_plan"));
-    expect(keys.indexOf("seo_plan")).toBeLessThan(keys.indexOf("website_development"));
-    expect(result.stages.find((stage) => stage.key === "seo_plan")?.reason).toContain("Growth priorities");
-    expect(result.stages.find((stage) => stage.key === "website_development")?.reason).toContain("Approve the SEO Plan first");
+    expect(keys.indexOf("growth_blueprint")).toBeLessThan(keys.indexOf("required_channel_plans"));
+    expect(keys.indexOf("required_channel_plans")).toBeLessThan(keys.indexOf("execution_plan_approval"));
+    expect(result.stages).toHaveLength(19);
   });
 
   it("uses the controller-owned next action for every SEO Plan hard gate", () => {
     const approvedAt = new Date("2026-08-01T12:00:00.000Z");
     const approvedStrategy = { id: "strategy-1", status: "approved", createdAt: approvedAt, approvedAt };
     const blocked = resolveProjectWorkflow(snapshot({ latestStrategy: approvedStrategy, websitePlanRequired: true, preExecutionGrowthComplete: false }));
-    const prerequisite = workflowStagePrerequisite(blocked, "seo_plan");
+    const prerequisite = workflowStagePrerequisite(blocked, "required_channel_plans");
     expect(prerequisite?.code).toBe("WORKFLOW_PREREQUISITE_REQUIRED");
     expect(prerequisite?.nextAction.title).toBe(blocked.nextBestAction.title);
     expect(prerequisite?.nextAction.action.url).toBe(blocked.nextBestAction.action.url);
     expect(prerequisite?.nextAction.action.url).toContain("/growth?");
 
     const ready = resolveProjectWorkflow(snapshot({ latestStrategy: approvedStrategy, websitePlanRequired: true, preExecutionGrowthComplete: true }));
-    expect(ready.stages.find((stage) => stage.key === "seo_plan")?.status).toBe("ready");
-    expect(workflowStagePrerequisite(ready, "seo_plan")).toBeNull();
+    expect(ready.stages.find((stage) => stage.key === "required_channel_plans")?.status).toBe("ready");
+    expect(workflowStagePrerequisite(ready, "required_channel_plans")).toBeNull();
   });
 
   it("shows active SEO Plan generation instead of offering another Create action", () => {
@@ -434,7 +469,7 @@ describe("DEV-046 project workflow controller", () => {
     expect(result.nextBestAction.reason).toContain("35%");
     expect(result.nextBestAction.action.label).toBe("Open SEO Plan progress");
     expect(result.nextBestAction.action.url).not.toContain("autoPrepare=1");
-    expect(result.stages.find((stage) => stage.key === "seo_plan")?.status).toBe("in_progress");
+    expect(result.stages.find((stage) => stage.key === "required_channel_plans")?.status).toBe("in_progress");
   });
 
   it("resolves critical facts before Growth and SEO planning", () => {
@@ -530,8 +565,25 @@ describe("DEV-046 project workflow controller", () => {
     const evidenceAt = new Date("2026-07-01T12:00:00.000Z");
     const strategyAt = new Date("2026-07-02T12:00:00.000Z");
     const result = resolveProjectWorkflow(snapshot({ latestEvidenceAt: evidenceAt, latestStrategy: { id: "strategy-1", status: "approved", createdAt: strategyAt, approvedAt: strategyAt }, latestStrategyVersion: 2, executionPlanExists: true, executionTasksExist: true, executionPlanUpdatedAt: new Date("2026-07-03T12:00:00.000Z"), executionPlanVersion: "2.0", openExecutionTasks: 0, completedExecutionTasks: 3, publishingStarted: false, publishingComplete: false }));
-    expect(result.stages.find((stage) => stage.key === "publish_implement")?.status).toBe("not_required");
+    expect(result.stages.find((stage) => stage.key === "external_completion")?.status).toBe("not_required");
     expect(result.state).toBe("measurement");
     expect(result.nextBestAction.title).toBe("Review results and choose the next improvement");
+  });
+
+  it("requires explicit findings review before Strategy creation", () => {
+    const result = resolveProjectWorkflow(snapshot({ findingsReviewed: false }));
+    expect(result.nextBestAction.title).toBe("Review the findings");
+    expect(result.nextBestAction.action.type).toBe("approve");
+  });
+
+  it("activates Continuous Growth only after tracking and every governed prerequisite are ready", () => {
+    const approvedAt = new Date("2026-08-02T12:00:00.000Z");
+    const base = { latestStrategy: { id: "strategy-1", status: "approved", createdAt: approvedAt, approvedAt }, latestStrategyVersion: 1, executionPlanExists: true, executionTasksExist: true, executionPlanUpdatedAt: approvedAt, openExecutionTasks: 0, completedExecutionTasks: 1, measurementStarted: true, measurementComplete: true, reportingLearningComplete: true, growthBlueprintStatus: "approved", executionPlanApproved: true, nextBestActionExists: true };
+    const blocked = resolveProjectWorkflow(snapshot({ ...base, trackingVerified: false, trackingLimitationRecorded: false }));
+    expect(blocked.state).toBe("measurement");
+    expect(blocked.nextBestAction.title).toBe("Verify tracking or record its limitation");
+    const active = resolveProjectWorkflow(snapshot({ ...base, trackingVerified: true }));
+    expect(active.state).toBe("continuous_growth");
+    expect(active.nextBestAction.title).toBe("Review the Next Best Action");
   });
 });

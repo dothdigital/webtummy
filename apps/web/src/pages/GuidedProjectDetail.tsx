@@ -560,7 +560,8 @@ export default function GuidedProjectDetail() {
     setBusyAction(`publish:${task.id}`);
     setError(null);
     try {
-      await api.post(`/api/execution-tasks/${task.id}/publish`, {});
+      if (!window.confirm(`Publish the approved output for “${task.title}” to its configured destination?`)) return;
+      await api.post(`/api/execution-tasks/${task.id}/publish`, { confirmed: true });
       load();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not start publishing.");
@@ -660,7 +661,7 @@ export default function GuidedProjectDetail() {
   const archived = project.status === "archived";
 
   const executionPlan = project.executionPlans?.[0] ?? null;
-  const seoPlanStage = workflowController?.stages.find((stage) => stage.key === "seo_plan");
+  const seoPlanStage = workflowController?.stages.find((stage) => stage.key === "required_channel_plans");
   const tasks = Array.from([
     ...(project.executionTasks ?? []),
     ...(executionPlan?.tasks ?? []),

@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { prisma, type Prisma } from "@webtummy/db";
-import { approvedKeywordEntries, incompleteApprovedKeywordResearchChecks, latestKeywordResearchChecks, missingApprovedKeywordResearch, normalizeKeywordPhrase, unresolvedApprovedKeywordResearchChecks } from "@webtummy/core";
+import { approvedKeywordEntries, incompleteApprovedKeywordResearchChecks, latestKeywordResearchChecks, missingApprovedKeywordResearch, normalizeKeywordPhrase, unresolvedApprovedKeywordResearchChecks, workflowBlockedPayload } from "@webtummy/core";
 import { projectAnalysisLocationLabels, type BusinessLocation } from "./project-location.js";
 import { isWebsitePlanTask } from "./website-plan-task.js";
 import { isCompletedWebsiteLaunchFoundationAction } from "./completed-work.js";
@@ -62,6 +62,7 @@ export type WorkflowModuleStatus =
   | "failed"
   | "stale"
   | "deferred"
+  | "not_applicable"
   | "waived";
 
 export type WorkflowState =
@@ -161,15 +162,20 @@ export type ProjectWorkflowControllerView = {
 const PRE_EXECUTION_WORKFLOW_TITLES = new Set([
   "Confirm the business facts before planning",
   "Run the Growth Engine before making changes",
+  "Review and approve the Growth Blueprint",
   "Create the SEO Page Map & Content Plan",
   "Review the SEO Plan",
   "Approve the SEO Plan",
   "Start Website Development",
+  "Create the Execution Plan",
+  "Refresh the Execution Plan",
+  "Review and approve the Execution Plan",
 ]);
 
 export function executionPlanWorkflowBlocker(workflow: ProjectWorkflowControllerView | null) {
   if (!workflow || !PRE_EXECUTION_WORKFLOW_TITLES.has(workflow.nextBestAction.title)) return null;
   return {
+    ...workflowBlockedPayload(workflow.nextBestAction.title, workflow.nextBestAction.action),
     code: "WORKFLOW_PREREQUISITE_REQUIRED",
     message: `${workflow.nextBestAction.title} first. ${workflow.nextBestAction.reason}`,
     nextAction: workflow.nextBestAction,
@@ -187,10 +193,24 @@ export function workflowStagePrerequisite(workflow: ProjectWorkflowControllerVie
   const stage = workflow?.stages.find((item) => item.key === stageKey);
   if (!workflow || !stage || ACTIONABLE_STAGE_STATUSES.has(stage.status)) return null;
   return {
+    ...workflowBlockedPayload(stage.label, workflow.nextBestAction.action),
     code: "WORKFLOW_PREREQUISITE_REQUIRED",
     message: `${workflow.nextBestAction.title}. ${workflow.nextBestAction.reason}`,
     nextAction: workflow.nextBestAction,
   };
+}
+
+const STRATEGY_PREREQUISITE_STAGES = ["business_brain_approval", "readiness_check", "opportunity_discovery", "required_intelligence", "findings_review"] as const;
+
+export function strategyWorkflowPrerequisite(workflow: ProjectWorkflowControllerView | null) {
+  if (!workflow) return workflowBlockedPayload("Complete the governed project prerequisites before Strategy.", { label: "Review project workflow", url: "/guided-projects", type: "review" });
+  for (const key of STRATEGY_PREREQUISITE_STAGES) {
+    const stage = workflow.stages.find((item) => item.key === key);
+    if (!stage || !["complete", "approved", "not_applicable", "not_required"].includes(stage.status)) {
+      return workflowBlockedPayload(stage ? `${stage.label} must be complete before Strategy.` : `Required workflow stage ${key} is unavailable.`, stage?.action ?? workflow.nextBestAction.action);
+    }
+  }
+  return null;
 }
 
 const CURRENT_GROWTH_ACTION_STATUSES = new Set(["proposed", "recommended", "selected", "approved", "accepted", "in_progress"]);
@@ -215,6 +235,8 @@ export type WorkflowEvidenceSnapshot = {
   workspaceConfigured: boolean;
   situationConfigured: boolean;
   discoveryComplete: boolean;
+  businessBrainApproved?: boolean;
+  readinessComplete?: boolean;
   existingWebsite: boolean;
   preLaunchWebsite: boolean;
   localSeoApplicable: boolean;
@@ -259,6 +281,9 @@ export type WorkflowEvidenceSnapshot = {
   latestStrategy: { id: string; status: string; createdAt: Date; approvedAt: Date | null } | null;
   latestEvidenceAt: Date | null;
   criticalEvidenceIssueCount: number;
+  findingsReviewed?: boolean;
+  trackingVerified?: boolean;
+  trackingLimitationRecorded?: boolean;
   preExecutionGrowthComplete: boolean;
   executionPlanExists: boolean;
   executionTasksExist: boolean;
@@ -278,7 +303,9 @@ export type WorkflowEvidenceSnapshot = {
   publishingComplete: boolean;
   measurementStarted: boolean;
   measurementComplete: boolean;
+  reportingLearningComplete?: boolean;
   growthBlueprintStatus: string | null;
+  executionPlanApproved?: boolean;
   nextBestActionExists: boolean;
   activeNextBestAction: {
     title: string;
@@ -293,7 +320,7 @@ export type WorkflowEvidenceSnapshot = {
   executionPlanVersion: string | null;
   executionPlanStrategyVersion: number | null;
   growthBlueprintVersion: number;
-  moduleDecisions: Record<string, "waived" | "deferred" | null>;
+  moduleDecisions: Record<string, "not_applicable" | "waived" | "deferred" | null>;
 };
 
 const stateLabels: Record<WorkflowState, string> = {
@@ -522,19 +549,19 @@ export function resolveProjectWorkflow(snapshot: WorkflowEvidenceSnapshot): Proj
       item.reason = `This evidence is ${evidenceAgeDays} days old and exceeds its ${freshnessDays}-day freshness window. Refresh it or record an authorized waiver before generating an official Strategy.`;
     }
     const decision = snapshot.moduleDecisions[item.key];
-    if (decision === "waived" && item.required && !["complete", "approved"].includes(item.status)) {
-      item.status = "waived";
-      item.reason = "An authorized user waived this requirement for the current evidence cycle. The decision remains in the audit history.";
+    if (["not_applicable", "waived"].includes(decision ?? "") && item.required && !["complete", "approved"].includes(item.status)) {
+      item.status = "not_applicable";
+      item.reason = "An authorized user confirmed this module is Not Applicable and recorded the reason in the project audit history.";
     } else if (decision === "deferred" && item.required && !["complete", "approved"].includes(item.status)) {
       item.status = "deferred";
-      item.reason = "This intelligence area is deferred. Strategy remains blocked until it is completed or explicitly waived.";
+      item.reason = "This intelligence area is deferred. Strategy remains blocked until it is completed or explicitly marked Not Applicable.";
     }
   }
 
   const requiredIntelligence = intelligence.filter((item) => item.required);
-  const intelligenceReady = requiredIntelligence.every((item) => ["complete", "approved", "waived"].includes(item.status));
+  const intelligenceReady = requiredIntelligence.every((item) => ["complete", "approved", "not_applicable"].includes(item.status));
   const intelligenceWeight = requiredIntelligence.reduce((sum, item) => sum + item.weight, 0) || 1;
-  const intelligenceReadinessPercent = Math.round(requiredIntelligence.reduce((sum, item) => sum + (["complete", "approved", "waived"].includes(item.status) ? item.weight : item.status === "in_progress" ? item.weight * 0.5 : 0), 0) / intelligenceWeight * 100);
+  const intelligenceReadinessPercent = Math.round(requiredIntelligence.reduce((sum, item) => sum + (["complete", "approved", "not_applicable"].includes(item.status) ? item.weight : item.status === "in_progress" ? item.weight * 0.5 : 0), 0) / intelligenceWeight * 100);
   const readinessPercent = snapshot.criticalEvidenceIssueCount > 0 ? Math.min(99, intelligenceReadinessPercent) : intelligenceReadinessPercent;
   const strategyStale = Boolean(snapshot.latestStrategy && (
     snapshot.latestStrategy.status === "stale"
@@ -547,6 +574,10 @@ export function resolveProjectWorkflow(snapshot: WorkflowEvidenceSnapshot): Proj
   // explicitly chooses and approves a replacement. Freshness is a caution,
   // not a reason to invalidate paid work.
   const strategyApproved = snapshot.latestStrategy?.status === "approved" || Boolean(snapshot.latestStrategy?.approvedAt);
+  const findingsReviewed = Boolean(snapshot.findingsReviewed);
+  const trackingReady = Boolean(snapshot.trackingVerified || snapshot.trackingLimitationRecorded);
+  const reportingLearningComplete = Boolean(snapshot.reportingLearningComplete);
+  const continuousGrowthReady = Boolean(snapshot.businessBrainApproved && snapshot.readinessComplete && intelligenceReady && findingsReviewed && strategyApproved && snapshot.growthBlueprintStatus === "approved" && snapshot.executionPlanApproved && snapshot.completedExecutionTasks > 0 && snapshot.measurementComplete && reportingLearningComplete && trackingReady && snapshot.nextBestActionExists);
   const executionPlanStale = Boolean(snapshot.executionTasksExist && snapshot.latestStrategy?.status === "approved" && (snapshot.executionPlanStrategyVersion == null ? snapshot.latestStrategy.approvedAt && snapshot.executionPlanUpdatedAt && snapshot.latestStrategy.approvedAt.getTime() > snapshot.executionPlanUpdatedAt.getTime() : snapshot.executionPlanStrategyVersion !== snapshot.latestStrategyVersion));
   const implementationComplete = snapshot.executionTasksExist && snapshot.openExecutionTasks === 0 && snapshot.completedExecutionTasks > 0;
   // The build-ready Website Plan is the governed bridge between an approved
@@ -558,7 +589,7 @@ export function resolveProjectWorkflow(snapshot: WorkflowEvidenceSnapshot): Proj
   const verifiedExecutionOutcome = snapshot.publishingComplete || implementationComplete;
   const evidenceAgeDays = snapshot.latestEvidenceAt ? Math.max(0, Math.floor((Date.now() - snapshot.latestEvidenceAt.getTime()) / 86_400_000)) : null;
   const freshness = evidenceAgeDays === null ? 30 : evidenceAgeDays <= 30 ? 100 : evidenceAgeDays <= 90 ? 75 : evidenceAgeDays <= 180 ? 55 : 30;
-  const independentSignals = requiredIntelligence.filter((item) => ["complete", "approved", "waived"].includes(item.status)).length;
+  const independentSignals = requiredIntelligence.filter((item) => ["complete", "approved", "not_applicable"].includes(item.status)).length;
   const signalCoverage = Math.round(independentSignals / Math.max(1, requiredIntelligence.length) * 100);
   const dataQualityChecks = [snapshot.projectConfigured, snapshot.situationConfigured, snapshot.discoveryComplete, snapshot.selectedOpportunity, !snapshot.existingWebsite || snapshot.siteAnalysisComplete, !snapshot.localSeoApplicable || snapshot.targetLocationsConfirmed];
   const dataQuality = Math.round(dataQualityChecks.filter(Boolean).length / dataQualityChecks.length * 100);
@@ -581,31 +612,39 @@ export function resolveProjectWorkflow(snapshot: WorkflowEvidenceSnapshot): Proj
   };
 
   const stages: WorkflowStage[] = [
-    { key: "create_project", label: "Create Project", description: "Create the governed project record used by every module.", status: snapshot.projectConfigured ? "complete" : "not_started", reason: snapshot.projectConfigured ? "The project record exists." : "Complete the project setup.", action: action("Review project", `/guided-projects/${snapshot.projectId}`, "review"), ai: aiRoles.setup },
-    { key: "workspace_context", label: "Workspace Context", description: "Apply Personal, Business, Agency, Freelancer, and client ownership rules.", status: snapshot.workspaceConfigured ? "complete" : "needs_attention", reason: snapshot.workspaceConfigured ? "Workspace context and permissions are active." : "Select or repair the workspace context.", action: action("Review workspace", "/workspace", "review"), ai: aiRoles.setup },
-    { key: "project_situation", label: "Project Situation", description: "Determine whether the business and website are existing, new, required, or not required.", status: snapshot.situationConfigured ? "complete" : "needs_attention", reason: snapshot.situationConfigured ? "The project situation controls module applicability." : "Confirm the business and website situation.", action: action("Review project setup", `/guided-projects/${snapshot.projectId}/intake`, "review"), ai: aiRoles.setup },
-    { key: "business_discovery", label: "Business Discovery & Goals", description: "Build the shared Business Brain used by all downstream AI work.", status: snapshot.discoveryComplete ? "complete" : "ready", reason: snapshot.discoveryComplete ? "Business, audience, offer, goals, and core project facts are available." : "Complete the guided intake before collecting intelligence.", action: action(snapshot.discoveryComplete ? "Review Business Brain" : "Complete discovery", `/guided-projects/${snapshot.projectId}/intake`, snapshot.discoveryComplete ? "review" : "generate"), ai: aiRoles.discovery },
-    { key: "intelligence_collection", label: "Required Intelligence Collection", description: "Collect only the evidence required for this project situation, in parallel where possible.", status: intelligenceReady ? "complete" : requiredIntelligence.some((item) => item.status === "in_progress") ? "in_progress" : snapshot.discoveryComplete ? "ready" : "blocked", reason: intelligenceReady ? "Every required intelligence module is complete." : `${requiredIntelligence.filter((item) => !["complete", "approved", "waived"].includes(item.status)).length} required intelligence area(s) still need attention.`, action: intelligence.find((item) => item.required && !["complete", "approved", "waived"].includes(item.status))?.action ?? action("Review intelligence", `/seo-growth?${projectQuery}`, "review"), ai: aiRoles.intelligence, modules: intelligence },
-    ...(snapshot.preLaunchWebsite ? [{ key: "website_strategy", label: "Website Strategy", description: "Define the sitemap, navigation, funnel, page and content clusters, lead capture, conversions, Local SEO, AI Citation, and authority direction before generation.", status: snapshot.latestStrategy ? "complete" as const : intelligenceReady ? "ready" as const : "blocked" as const, reason: snapshot.latestStrategy ? "The saved Strategy remains available for website and growth planning. A newer version is optional." : intelligenceReady ? "Required pre-launch intelligence is ready for website and cross-platform decisions." : "Complete Opportunity, Market, Keyword, Local, and Content Gap intelligence first.", action: action(snapshot.latestStrategy ? "Review website direction" : "Generate website strategy", `/strategy?${projectQuery}`, snapshot.latestStrategy ? "review" : "generate"), ai: aiRoles.strategy }] : []),
-    { key: "unified_strategy", label: "Unified Strategy", description: "Combine Website, SEO, content, Local SEO, AI Citation, authority, conversion, and growth decisions into one ranked plan.", status: gapStrategyStale ? "stale" : snapshot.latestStrategy ? snapshot.latestStrategy.status === "approved" ? "complete" : "ready" : intelligenceReady && snapshot.selectedOpportunity ? "ready" : "blocked", reason: gapStrategyStale ? `Gap Analysis is newer than Strategy v${snapshot.latestStrategyVersion || 1}. Update Strategy before SEO Page Map or execution planning.` : snapshot.latestStrategy ? strategyStale ? `Strategy v${snapshot.latestStrategyVersion || 1} remains usable for current work, but newer optional evidence is available.` : "A Strategy version exists and is ready for review." : intelligenceReady && snapshot.selectedOpportunity ? "All required evidence is ready for AI Strategy generation." : !snapshot.selectedOpportunity ? "Confirm the project direction before generating Strategy." : "Complete all required intelligence first.", action: action(gapStrategyStale ? "Update Unified Strategy" : snapshot.latestStrategy ? "Review Strategy" : "Generate Strategy", `/strategy?${projectQuery}`, gapStrategyStale ? "generate" : snapshot.latestStrategy ? "review" : "generate"), ai: aiRoles.strategy },
-    { key: "strategy_approval", label: "Strategy Approval", description: "Approve the exact Strategy version that will control execution and website generation.", status: gapStrategyStale ? "blocked" : strategyApproved ? "approved" : snapshot.latestStrategy ? "ready" : "blocked", reason: gapStrategyStale ? "Update Strategy from the latest Gap Analysis, then approve the new version." : strategyApproved ? "The approved Strategy is the active direction." : snapshot.latestStrategy ? "Review and approve the current Strategy version." : "Generate Strategy first.", action: action(gapStrategyStale ? "Update Strategy" : strategyApproved ? "View approved strategy" : "Review and approve", `/strategy?${projectQuery}`, gapStrategyStale ? "generate" : strategyApproved ? "review" : "approve"), ai: aiRoles.approval },
-    { key: "growth_plan", label: "Growth Plan", description: "Diagnose the current evidence, establish the pre-change baseline, and decide the overall priorities before page planning.", status: snapshot.preExecutionGrowthComplete ? "complete" : strategyApproved ? "ready" : "blocked", reason: snapshot.preExecutionGrowthComplete ? "A current Growth diagnosis and prioritized action are saved for the approved Strategy." : strategyApproved ? "Run Growth Engine to decide what should change and why." : "Approve the Strategy after completing required evidence.", action: action(snapshot.preExecutionGrowthComplete ? "Review Growth Plan" : "Run Growth Engine", `/growth?${projectQuery}`, snapshot.preExecutionGrowthComplete ? "review" : "generate"), ai: aiRoles.growth },
-    { key: "seo_plan", label: "SEO Page Map & Content Plan", description: "Translate Growth priorities and module evidence into page ownership, content, technical, trust, local, schema, and linking decisions.", status: snapshot.websitePlanApproved ? "approved" : snapshot.websitePlanGenerated ? "ready" : snapshot.websitePlanGenerationStatus ? "in_progress" : snapshot.preExecutionGrowthComplete ? "ready" : "blocked", reason: snapshot.websitePlanApproved ? "The complete SEO Plan version is approved." : snapshot.websitePlanGenerated ? "Review individual decisions and approve the complete SEO Plan." : snapshot.websitePlanGenerationStatus ? `SEO Plan generation is ${snapshot.websitePlanGenerationStatus}${snapshot.websitePlanGenerationProgress == null ? "." : ` at ${snapshot.websitePlanGenerationProgress}%.`}` : snapshot.preExecutionGrowthComplete ? "Create the SEO Plan from the saved Growth priorities." : "Complete the Growth Plan first.", action: action(snapshot.websitePlanApproved ? "Review approved SEO Plan" : snapshot.websitePlanGenerated ? "Review SEO Plan" : snapshot.websitePlanGenerationStatus ? "Open SEO Plan progress" : "Create SEO Plan", `/seo-page-map?${projectQuery}${snapshot.websitePlanGenerated || snapshot.websitePlanGenerationStatus ? "" : "&autoPrepare=1"}`, snapshot.websitePlanApproved || snapshot.websitePlanGenerated || snapshot.websitePlanGenerationStatus ? "review" : "generate"), ai: aiRoles.planning },
-    { key: "website_development", label: "Website Development", description: "Import only approved SEO Plan decisions and prepare reviewable website changes without changing the live website.", status: snapshot.websiteDevelopmentStarted ? snapshot.preparedChangesAwaitingApproval ? "needs_attention" : "in_progress" : snapshot.websitePlanApproved ? "ready" : "blocked", reason: snapshot.websiteDevelopmentStarted ? snapshot.preparedChangesAwaitingApproval ? "Prepared website changes need review and approval." : "Approved plan decisions are in Website Development." : snapshot.websitePlanApproved ? "Start Website Development from the approved SEO Plan." : "Approve the SEO Plan first.", action: action(snapshot.websiteDevelopmentStarted ? "Open Website Development" : "Start Website Development", `/site-architect?${projectQuery}`, snapshot.websiteDevelopmentStarted ? "review" : "implement"), ai: aiRoles.execution },
-    { key: "execution_plan", label: "Generate Execution Plan", description: snapshot.preLaunchWebsite ? "Convert the approved Strategy into sequenced website architecture, content, design, form, metadata, schema, review, and publishing work." : "Convert approved decisions into sequenced, actionable work.", status: executionPlanStale ? "stale" : snapshot.executionTasksExist && strategyApproved ? "complete" : strategyApproved ? "ready" : "blocked", reason: executionPlanStale ? "The approved Strategy is newer than this Execution Plan." : snapshot.executionTasksExist && strategyApproved ? "The Execution Plan contains actionable tasks." : strategyApproved ? "Create or synchronize tasks from the approved Strategy." : "Approve the current Strategy first.", action: action(snapshot.executionTasksExist && !executionPlanStale ? "Review Execution Plan" : "Create Execution Plan", `/guided-projects/${snapshot.projectId}?tab=execution#execution-tasks`, snapshot.executionTasksExist ? "review" : "generate"), ai: aiRoles.planning },
-    { key: "ai_execution", label: "AI-Assisted Execution", description: "Create, fix, prepare, and route approved implementation work.", status: snapshot.executionTasksExist ? snapshot.openExecutionTasks > 0 ? "in_progress" : "complete" : "blocked", reason: snapshot.executionTasksExist ? snapshot.openExecutionTasks > 0 ? `${snapshot.openExecutionTasks} execution task(s) remain open.` : "All current execution tasks are complete." : "Create the Execution Plan first.", action: action("Continue execution", `/guided-projects/${snapshot.projectId}?tab=execution#execution-tasks`, "implement"), ai: aiRoles.execution },
-    { key: "publish_implement", label: "Publish / Implement Outcome", description: "Move approved work to a connected destination or verified handoff when the selected execution task requires it.", status: snapshot.publishingComplete ? "complete" : snapshot.publishingStarted ? "in_progress" : snapshot.executionTasksExist ? "not_required" : "blocked", reason: snapshot.publishingComplete ? "At least one approved implementation is live or verified." : snapshot.publishingStarted ? "Publishing or implementation is in progress." : snapshot.executionTasksExist ? "No current task requires a separate publishing workflow; implementation remains an execution outcome." : "Execution work has not been created yet.", action: snapshot.publishingStarted ? action("Open publishing", `/ai-content?${projectQuery}#publishing`, "implement") : null, ai: aiRoles.publishing },
-    { key: "measurement", label: "Measurement", description: "Measure visibility, traffic, engagement, leads, authority, and outcomes tied to executed work.", status: snapshot.measurementComplete ? "complete" : snapshot.measurementStarted ? "in_progress" : verifiedExecutionOutcome ? "ready" : "blocked", reason: snapshot.measurementComplete ? "Measured results are available." : snapshot.measurementStarted ? "Measurement checkpoints are active." : verifiedExecutionOutcome ? "Create baselines and measurement checkpoints for the implemented work." : "Measurement begins after an execution outcome is verified.", action: action("Review measurement", `/growth?${projectQuery}`, "review"), ai: aiRoles.measurement },
-    { key: "growth_blueprint", label: "Growth Blueprint", description: "Activate the living cross-channel growth plan after execution and measurement begin.", status: snapshot.growthBlueprintStatus === "approved" || snapshot.growthBlueprintStatus === "active" ? "complete" : snapshot.growthBlueprintStatus === "needs_refresh" ? "stale" : snapshot.measurementStarted || snapshot.publishingComplete ? "ready" : "blocked", reason: snapshot.growthBlueprintStatus === "needs_refresh" ? "New Strategy or measurement evidence requires a Blueprint refresh." : snapshot.growthBlueprintStatus ? "A Growth Blueprint exists for continuous optimization." : "The Blueprint activates when execution and measurement provide a real baseline.", action: action(snapshot.growthBlueprintStatus ? "Review Growth Blueprint" : "Generate Growth Blueprint", `/growth?${projectQuery}`, snapshot.growthBlueprintStatus ? "review" : "generate"), ai: aiRoles.growth },
-    { key: "next_best_action", label: "Next Best Action & Continuous Improvement", description: "Use workflow state and measured evidence to recommend the next valid improvement.", status: snapshot.nextBestActionExists && snapshot.measurementStarted ? "in_progress" : snapshot.measurementStarted ? "ready" : "blocked", reason: snapshot.nextBestActionExists ? "A workflow-valid Next Best Action is available." : snapshot.measurementStarted ? "AI can now rank the next improvement from measured evidence." : "Start measurement before continuous optimization.", action: action("Review Next Best Action", `/growth?${projectQuery}`, "review"), ai: aiRoles.growth },
+    { key: "project_created", label: "Project Created", description: "Create the governed project record and correct workspace/client context.", status: snapshot.projectConfigured && snapshot.workspaceConfigured && snapshot.situationConfigured ? "complete" : snapshot.projectConfigured ? "needs_attention" : "not_started", reason: snapshot.projectConfigured && snapshot.workspaceConfigured && snapshot.situationConfigured ? "The project, workspace, client and project situation are configured." : "Complete the project, workspace/client and situation setup.", action: action("Review project", `/guided-projects/${snapshot.projectId}`, "review"), ai: aiRoles.setup },
+    { key: "intake", label: "Intake", description: "Build the shared Business Brain used by all downstream work.", status: snapshot.discoveryComplete ? "complete" : "ready", reason: snapshot.discoveryComplete ? "Required business, audience, offer, goal and project facts exist." : "Complete guided Intake; opening the screen alone does not complete it.", action: action(snapshot.discoveryComplete ? "Review Intake" : "Continue Intake", `/guided-projects/${snapshot.projectId}/intake`, snapshot.discoveryComplete ? "review" : "generate"), ai: aiRoles.discovery },
+    { key: "business_brain_approval", label: "Business Brain Review and Approval", description: "Approve the exact Business Brain version used by downstream work.", status: snapshot.businessBrainApproved ? "approved" : snapshot.discoveryComplete ? "ready" : "blocked", reason: snapshot.businessBrainApproved ? "The current Business Brain version is approved." : snapshot.discoveryComplete ? "Review and approve the current Business Brain before readiness checks." : "Complete Intake first.", action: action(snapshot.businessBrainApproved ? "Review Business Brain" : "Approve Business Brain", `/guided-projects/${snapshot.projectId}`, snapshot.businessBrainApproved ? "review" : "approve"), ai: aiRoles.approval },
+    { key: "readiness_check", label: "Readiness Check", description: "Confirm required project facts and situation details before Opportunity Discovery.", status: snapshot.readinessComplete ? "complete" : snapshot.businessBrainApproved ? "ready" : "blocked", reason: snapshot.readinessComplete ? "The current Business Brain passed readiness." : snapshot.businessBrainApproved ? "Confirm readiness for Opportunity Discovery." : "Approve the Business Brain first.", action: action(snapshot.readinessComplete ? "Review Readiness" : "Confirm Readiness", `/guided-projects/${snapshot.projectId}`, snapshot.readinessComplete ? "review" : "approve"), ai: aiRoles.setup },
+    { key: "opportunity_discovery", label: "Opportunity Discovery", description: "Create and select the project direction after readiness.", status: snapshot.selectedOpportunity ? "complete" : snapshot.readinessComplete ? "ready" : "blocked", reason: snapshot.selectedOpportunity ? "A project opportunity is selected." : snapshot.readinessComplete ? "Generate and select the direction that intelligence should investigate." : "Complete Readiness first.", action: action(snapshot.selectedOpportunity ? "Review Opportunity" : "Run Opportunity Discovery", `/opportunities?${projectQuery}`, snapshot.selectedOpportunity ? "review" : "generate"), ai: aiRoles.intelligence },
+    { key: "required_intelligence", label: "Required Intelligence", description: "Collect only evidence applicable to this project.", status: intelligenceReady ? "complete" : requiredIntelligence.some((item) => item.status === "in_progress") ? "in_progress" : snapshot.selectedOpportunity ? "ready" : "blocked", reason: intelligenceReady ? "Every required module is Complete or Not Applicable." : `${requiredIntelligence.filter((item) => !["complete", "approved", "not_applicable"].includes(item.status)).length} required intelligence area(s) remain.`, action: intelligence.find((item) => item.required && !["complete", "approved", "not_applicable"].includes(item.status))?.action ?? action("Review intelligence", `/seo-growth?${projectQuery}`, "review"), ai: aiRoles.intelligence, modules: intelligence },
+    { key: "findings_review", label: "Findings Review", description: "Review evidence, freshness, conflicts, confidence and limitations.", status: findingsReviewed ? "complete" : intelligenceReady && snapshot.criticalEvidenceIssueCount === 0 ? "ready" : "blocked", reason: findingsReviewed ? "The current Business Brain and evidence versions were reviewed." : snapshot.criticalEvidenceIssueCount > 0 ? `${snapshot.criticalEvidenceIssueCount} serious business fact issue(s) require resolution.` : intelligenceReady ? "Review and accept the current findings before Strategy." : "Complete required intelligence first.", action: action(findingsReviewed ? "Review Findings" : "Confirm Findings Review", `/guided-projects/${snapshot.projectId}`, findingsReviewed ? "review" : "approve"), ai: aiRoles.approval },
+    { key: "growth_strategy", label: "Growth Strategy", description: "Create the evidence-backed cross-channel Strategy.", status: snapshot.latestStrategy ? "complete" : intelligenceReady && findingsReviewed ? "ready" : "blocked", reason: snapshot.latestStrategy ? "A Strategy version exists." : intelligenceReady && findingsReviewed ? "Current findings are approved for Strategy generation." : !intelligenceReady ? "Complete required intelligence first." : "Review findings first.", action: action(snapshot.latestStrategy ? "Review Strategy" : "Create Growth Strategy", `/strategy?${projectQuery}`, snapshot.latestStrategy ? "review" : "generate"), ai: aiRoles.strategy },
+    { key: "growth_strategy_approval", label: "Growth Strategy Approval", description: "Approve the exact Strategy version controlling later work.", status: gapStrategyStale ? "stale" : strategyApproved ? "approved" : snapshot.latestStrategy ? "ready" : "blocked", reason: strategyApproved ? "The current Strategy is approved." : gapStrategyStale ? "Refresh Strategy from newer required evidence." : snapshot.latestStrategy ? "Review and approve this Strategy version." : "Create Strategy first.", action: action(strategyApproved ? "Review Strategy" : "Approve Strategy", `/strategy?${projectQuery}`, strategyApproved ? "review" : "approve"), ai: aiRoles.approval },
+    { key: "growth_blueprint", label: "Growth Blueprint", description: "Create and approve the Blueprint controlled by Strategy.", status: snapshot.growthBlueprintStatus === "approved" ? "approved" : snapshot.growthBlueprintStatus === "needs_refresh" ? "stale" : snapshot.growthBlueprintStatus ? "ready" : strategyApproved ? "ready" : "blocked", reason: snapshot.growthBlueprintStatus === "approved" ? "The current Blueprint is approved." : snapshot.growthBlueprintStatus === "needs_refresh" ? "Refresh and reapprove the Blueprint." : strategyApproved ? "Create or approve the Blueprint." : "Approve Strategy first.", action: action(snapshot.growthBlueprintStatus ? "Review Growth Blueprint" : "Create Growth Blueprint", `/growth?${projectQuery}`, snapshot.growthBlueprintStatus ? "approve" : "generate"), ai: aiRoles.growth },
+    { key: "required_channel_plans", label: "Required Channel Plans", description: "Create only plans selected by the approved Strategy.", status: !strategyApproved || snapshot.growthBlueprintStatus !== "approved" || !snapshot.preExecutionGrowthComplete ? "blocked" : !snapshot.websitePlanRequired ? "not_required" : snapshot.websitePlanApproved ? "complete" : snapshot.websitePlanGenerated ? "ready" : snapshot.websitePlanGenerationStatus ? "in_progress" : "ready", reason: !strategyApproved ? "Approve Strategy first." : snapshot.growthBlueprintStatus !== "approved" ? "Approve the Growth Blueprint first." : !snapshot.preExecutionGrowthComplete ? "Complete the pre-change Growth diagnosis and priority before creating a channel plan." : !snapshot.websitePlanRequired ? "No separate website/SEO channel plan is selected by the approved Strategy." : snapshot.websitePlanApproved ? "Every required website/SEO plan is approved." : "Create and approve the Strategy-selected website/SEO plan.", action: snapshot.websitePlanRequired ? action(snapshot.websitePlanGenerated ? "Review Channel Plan" : "Create Channel Plan", `/seo-page-map?${projectQuery}`, snapshot.websitePlanGenerated ? "review" : "generate") : null, ai: aiRoles.planning },
+    { key: "execution_plan_approval", label: "Execution Plan Review and Approval", description: "Create, review and approve sequenced work.", status: executionPlanStale ? "stale" : snapshot.executionPlanApproved ? "approved" : snapshot.executionTasksExist && strategyApproved ? "ready" : strategyApproved ? "ready" : "blocked", reason: executionPlanStale ? "The plan needs refresh from current sources." : snapshot.executionPlanApproved ? "The current Execution Plan is approved." : snapshot.executionTasksExist ? "Review and approve the plan." : strategyApproved ? "Create the Execution Plan." : "Approve Strategy first.", action: action(snapshot.executionTasksExist ? "Review Execution Plan" : "Create Execution Plan", `/guided-projects/${snapshot.projectId}?tab=execution#execution-tasks`, snapshot.executionTasksExist ? "approve" : "generate"), ai: aiRoles.planning },
+    { key: "approved_execution", label: "Approved Execution", description: "Prepare and execute only approved work.", status: snapshot.completedExecutionTasks > 0 ? "complete" : snapshot.executionPlanApproved && snapshot.executionTasksExist ? "in_progress" : "blocked", reason: snapshot.completedExecutionTasks > 0 ? "At least one approved action is complete." : snapshot.executionPlanApproved ? "Execute dependency-ready approved tasks." : "Approve the Execution Plan first.", action: action("Continue Execution", `/guided-projects/${snapshot.projectId}?tab=execution#execution-tasks`, "implement"), ai: aiRoles.execution },
+    { key: "output_approval", label: "Output Review and Approval", description: "Review generated outputs before external action.", status: snapshot.preparedChangesAwaitingApproval ? "ready" : snapshot.completedExecutionTasks > 0 ? "complete" : "blocked", reason: snapshot.preparedChangesAwaitingApproval ? "Generated output is waiting for approval." : snapshot.completedExecutionTasks > 0 ? "Completed outputs have their required approval state." : "Prepare approved work first.", action: snapshot.preparedChangesAwaitingApproval ? action("Review Outputs", `/site-architect?${projectQuery}`, "approve") : null, ai: aiRoles.approval },
+    { key: "external_completion", label: "Publishing or External Completion", description: "Publish approved work or record verified completion.", status: snapshot.publishingComplete ? "complete" : snapshot.publishingStarted ? "in_progress" : snapshot.completedExecutionTasks > 0 ? "not_required" : "blocked", reason: snapshot.publishingComplete ? "Approved external work is complete." : snapshot.publishingStarted ? "Publishing is in progress." : snapshot.completedExecutionTasks > 0 ? "No separate external publication applies to the completed action." : "Complete and approve an output first.", action: snapshot.publishingStarted ? action("Review Publishing", `/ai-content?${projectQuery}#publishing`, "implement") : null, ai: aiRoles.publishing },
+    { key: "tracking_verification", label: "Tracking and Measurement Verification", description: "Verify connection, operation and arriving data or record a limitation.", status: trackingReady ? "complete" : verifiedExecutionOutcome ? "ready" : "blocked", reason: trackingReady ? "Tracking is verified or an authorized limitation is recorded." : "Verify that measurement works and data arrives.", action: action("Verify Tracking", `/growth?${projectQuery}`, "review"), ai: aiRoles.measurement },
+    { key: "reporting_learning", label: "Reporting and Learning", description: "Turn completed measurement into a report and saved learning.", status: reportingLearningComplete ? "complete" : snapshot.measurementComplete && trackingReady ? "ready" : "blocked", reason: reportingLearningComplete ? "A current report and learning record exist." : snapshot.measurementComplete ? "Generate the report and record what was learned." : "Complete a measurement checkpoint first.", action: action("Review Reports and Learning", `/growth?${projectQuery}`, "review"), ai: aiRoles.measurement },
+    { key: "growth_loop_activation", label: "Continuous Growth Loop Activation", description: "Activate only after every governed prerequisite.", status: continuousGrowthReady ? "complete" : reportingLearningComplete ? "ready" : "blocked", reason: continuousGrowthReady ? "Continuous Growth Loop is active." : "Complete reporting, learning and create the current Next Best Action.", action: action("Activate Growth Loop", `/growth?${projectQuery}`, "review"), ai: aiRoles.growth },
+    { key: "next_best_action", label: "Next Best Action", description: "Show the one current evidence-based action.", status: continuousGrowthReady && snapshot.nextBestActionExists ? "in_progress" : "blocked", reason: continuousGrowthReady ? "A current workflow-valid Next Best Action is available." : "The Growth Loop must be ready first.", action: action("View Next Best Action", `/growth?${projectQuery}`, "review"), ai: aiRoles.growth },
   ];
 
-  const incompleteIntelligence = intelligence.find((item) => item.required && !["complete", "approved", "waived"].includes(item.status));
+  const incompleteIntelligence = intelligence.find((item) => item.required && !["complete", "approved", "not_applicable"].includes(item.status));
   let state: WorkflowState;
   let nextBestAction: ProjectWorkflowControllerView["nextBestAction"];
   if (!snapshot.discoveryComplete) {
     state = "discovery";
     nextBestAction = { title: "Complete Business Discovery", reason: "Every AI recommendation and implementation depends on verified business context.", expectedResult: "A reusable Business Brain for all modules.", action: action("Continue discovery", `/guided-projects/${snapshot.projectId}/intake`, "generate"), aiWill: ["Reuse workspace and client defaults", "Summarize business, audience, offer, goals, and assets", "Identify missing or conflicting facts"], userWill: "Confirm the factual profile.", confidence: overallConfidence, explainability: "This is first because all research, strategy, content, and fixes need verified business facts." };
+  } else if (!snapshot.businessBrainApproved) {
+    state = "discovery";
+    nextBestAction = { title: "Review and approve the Business Brain", reason: "Intake is complete, but downstream research must use an explicitly approved Business Brain version.", expectedResult: "An auditable approved Business Brain version for this project and client.", action: action("Approve Business Brain", `/guided-projects/${snapshot.projectId}`, "approve"), aiWill: ["Show the current verified business facts", "Preserve the approved version and audit history"], userWill: "Confirm that the current Business Brain is accurate.", confidence: overallConfidence, explainability: "Opening or saving Intake never counts as approval." };
+  } else if (!snapshot.readinessComplete) {
+    state = "discovery";
+    nextBestAction = { title: "Complete the Readiness Check", reason: "The Business Brain is approved; required project details must now be confirmed before Opportunity Discovery.", expectedResult: "A saved readiness decision tied to the approved Business Brain version.", action: action("Confirm Readiness", `/guided-projects/${snapshot.projectId}`, "approve"), aiWill: ["Check required project, market, website, and ownership details", "Explain every missing requirement"], userWill: "Resolve missing information and confirm readiness.", confidence: overallConfidence, explainability: "Opportunity Discovery remains locked until readiness is explicitly complete." };
   } else if (!snapshot.selectedOpportunity) {
     state = "intelligence_collection";
     nextBestAction = { title: "Create and select the project opportunity", reason: "The business intake is complete, but the project direction has not been generated and selected yet.", expectedResult: "One approved opportunity that guides keyword, competitor, website, and market research.", action: action("Generate Opportunities", `/opportunities?${projectQuery}`, "generate"), aiWill: ["Evaluate the Business Brain, goals, audience, offers, markets, and existing assets", "Generate and rank practical opportunities with reasons, confidence, impact, and effort", "Use the selected direction to focus every downstream intelligence module"], userWill: "Review the AI suggestions and select the direction to pursue.", confidence: overallConfidence, explainability: "Opportunity selection comes before Keyword Intelligence so research follows the chosen business direction instead of producing disconnected keyword data." };
@@ -618,12 +657,18 @@ export function resolveProjectWorkflow(snapshot: WorkflowEvidenceSnapshot): Proj
   } else if (snapshot.criticalEvidenceIssueCount > 0) {
     state = "intelligence_collection";
     nextBestAction = { title: "Confirm the business facts before planning", reason: `${snapshot.criticalEvidenceIssueCount} business fact${snapshot.criticalEvidenceIssueCount === 1 ? " needs" : "s need"} review, including claims, services, locations, or entity details that website recommendations must not assume.`, expectedResult: "Approved factual evidence that can safely support website recommendations and public content.", action: action("Review remaining business facts", `/ai-citations?${projectQuery}&tab=entities#business-facts`, "review"), aiWill: ["Show the exact claim and its source", "Identify unsupported or conflicting facts", "Keep unapproved facts out of website recommendations"], userWill: "Approve, edit, defer, or reject each fact that affects the plan.", confidence: overallConfidence, explainability: "Critical factual gaps are resolved before planning so generated pages do not invent services, locations, credentials, outcomes, or other public claims." };
+  } else if (!findingsReviewed) {
+    state = "strategy_ready";
+    nextBestAction = { title: "Review the findings", reason: "Required intelligence is ready, but evidence freshness, conflicts, confidence, and limitations must be explicitly reviewed before Strategy creation.", expectedResult: "An auditable findings review tied to the current source versions.", action: action("Confirm findings review", `/guided-projects/${snapshot.projectId}`, "approve"), aiWill: ["Show verified findings and source freshness", "Identify conflicts, confidence, and important limitations"], userWill: "Resolve serious issues or accept the recorded limitations.", confidence: overallConfidence, explainability: "Opening an intelligence screen does not count as review." };
   } else if (!strategyApproved) {
     state = "strategy_ready";
     nextBestAction = { title: snapshot.latestStrategy ? `Review and approve Strategy v${snapshot.latestStrategyVersion || 1}` : "Generate Unified Strategy", reason: snapshot.latestStrategy ? "Use the Strategy already created for this project. Creating a newer version is optional and uses credits." : "Required intelligence is complete, so AI can now make evidence-backed decisions.", expectedResult: "One approved plan controlling Website, SEO, Local, Citations, Authority, Lead Magnets, Social, Growth, and Publishing.", action: action(snapshot.latestStrategy ? "Review Strategy" : "Generate Strategy", `/strategy?${projectQuery}`, snapshot.latestStrategy ? "approve" : "generate"), aiWill: [aiRoles.strategy.suggestion, aiRoles.strategy.implementation], userWill: snapshot.latestStrategy ? aiRoles.approval.humanRole : aiRoles.strategy.humanRole, confidence: overallConfidence, explainability: snapshot.latestStrategy ? "The saved Strategy remains usable. Newer evidence can be incorporated only if the user explicitly chooses a credit-consuming regeneration." : "All applicable intelligence requirements are complete, so Strategy is the next governed decision layer." };
   } else if (!snapshot.preExecutionGrowthComplete) {
     state = "strategy_approved";
     nextBestAction = { title: "Run the Growth Engine before making changes", reason: "The Strategy is approved, but the current evidence has not yet been diagnosed and prioritized into a baseline-backed Next Best Action.", expectedResult: "A stored pre-change diagnosis, baseline, expected result, and one explainable priority for approval.", action: action("Run Growth Engine", `/growth?${projectQuery}`, "generate"), aiWill: ["Normalize the current evidence and measurement availability", "Record the pre-change diagnosis and baseline", "Rank valid opportunities by impact, confidence, effort, dependencies, and expected result", "Recommend one Next Best Action without creating or publishing website changes"], userWill: "Review the diagnosis and approve, edit, defer, or reject the recommended action.", confidence: overallConfidence, explainability: "Growth Engine runs here to decide what should happen and why before execution. After deployment it reuses this baseline and action record, waits for meaningful evidence, then learns and reprioritizes." };
+  } else if (snapshot.growthBlueprintStatus !== "approved") {
+    state = "execution_planning";
+    nextBestAction = { title: "Review and approve the Growth Blueprint", reason: "The Strategy has produced a Blueprint, but channel plans must use an explicitly approved Blueprint version.", expectedResult: "An approved Growth Blueprint controlling required channel plans.", action: action("Approve Growth Blueprint", `/growth?${projectQuery}`, "approve"), aiWill: ["Show priorities, dependencies, channels, evidence, and limitations"], userWill: "Approve the exact Blueprint version or request changes.", confidence: overallConfidence, explainability: "Channel plans remain locked until the Blueprint is approved." };
   } else if (snapshot.websitePlanRequired && !snapshot.websitePlanGenerated) {
     state = "execution_planning";
     nextBestAction = snapshot.websitePlanGenerationStatus
@@ -639,6 +684,9 @@ export function resolveProjectWorkflow(snapshot: WorkflowEvidenceSnapshot): Proj
   } else if (!snapshot.executionTasksExist || executionPlanStale) {
     state = snapshot.executionPlanExists ? "execution_planning" : "strategy_approved";
     nextBestAction = { title: executionPlanStale ? "Refresh the Execution Plan" : "Create the Execution Plan", reason: executionPlanStale ? "The plan predates the approved Strategy." : "The Strategy is approved and can now be converted into governed work.", expectedResult: "A sequenced plan with dependencies, approvals, destinations, and expected outcomes.", action: action(executionPlanStale ? "Refresh Execution Plan" : "Create Execution Plan", `/guided-projects/${snapshot.projectId}?tab=execution#execution-tasks`, "generate"), aiWill: [aiRoles.planning.suggestion, aiRoles.planning.implementation], userWill: aiRoles.planning.humanRole, confidence: overallConfidence, explainability: "Execution must use the exact approved Strategy version; AI can now safely translate decisions into tasks." };
+  } else if (!snapshot.executionPlanApproved) {
+    state = "execution_planning";
+    nextBestAction = { title: "Review and approve the Execution Plan", reason: "The plan exists, but execution must use an explicitly approved plan and source snapshot.", expectedResult: "An approved, version-locked Execution Plan ready for governed work.", action: action("Approve Execution Plan", `/guided-projects/${snapshot.projectId}?tab=execution#execution-tasks`, "approve"), aiWill: ["Show tasks, dependencies, destinations, approvals, and expected outcomes"], userWill: "Approve the plan or change its priorities.", confidence: overallConfidence, explainability: "Creating tasks is not the same as approving them for execution." };
   } else if (snapshot.preparedChangesAwaitingApproval) {
     state = "execution";
     nextBestAction = { title: "Review the prepared website changes", reason: "AI-prepared website changes are ready for human review. They cannot be published until they are explicitly approved.", expectedResult: "Approved website changes ready for connected publishing or a controlled implementation handoff.", action: action("Review prepared changes", `/site-architect?${projectQuery}`, "approve"), aiWill: ["Show the proposed page, content, metadata, schema, links, and technical changes", "Run quality checks and preserve the approved-plan evidence", "Make no live website changes during review"], userWill: "Approve, request changes, defer, or reject the prepared work.", confidence: overallConfidence, explainability: "Preparation and publication remain separate protected actions." };
@@ -670,9 +718,21 @@ export function resolveProjectWorkflow(snapshot: WorkflowEvidenceSnapshot): Proj
   } else if (!snapshot.measurementStarted) {
     state = "measurement";
     nextBestAction = { title: "Review results and choose the next improvement", reason: "The implementation is verified. Measurement can now compare future evidence with the stored pre-change baseline.", expectedResult: "Cost-governed checkpoints that wait for sufficient data, then update learning and the Next Best Action.", action: action("Review measurement", `/growth?${projectQuery}`, "review"), aiWill: [aiRoles.measurement.suggestion, aiRoles.measurement.implementation], userWill: aiRoles.measurement.humanRole, confidence: overallConfidence, explainability: "The system does not force an immediate performance conclusion or a fixed 24-hour rerun. Continuous Growth Intelligence uses the applicable schedule, cooldown, data availability, and meaningful-change triggers." };
+  } else if (!trackingReady) {
+    state = "measurement";
+    nextBestAction = { title: "Verify tracking or record its limitation", reason: "The Continuous Growth Loop cannot activate until tracking works and data arrives, or an authorized limitation is recorded.", expectedResult: "Verified tracking evidence or a saved limitation with its reason.", action: action("Record tracking limitation", `/guided-projects/${snapshot.projectId}`, "approve"), aiWill: ["Check connection, last verification, and last successful event", "Never replace unavailable data with a false zero"], userWill: "Fix tracking or record why it cannot apply.", confidence: overallConfidence, explainability: "A configured identifier alone is not proof that measurement works." };
+  } else if (!snapshot.measurementComplete) {
+    state = "measurement";
+    nextBestAction = { title: "Complete the measurement checkpoint", reason: "Tracking is ready, but no completed checkpoint yet proves that the executed action has been measured.", expectedResult: "A completed measurement checkpoint with sufficient current data.", action: action("Review Measurement", `/growth?${projectQuery}`, "review"), aiWill: ["Wait for sufficient data", "Compare the governed baseline and outcome without inventing a result"], userWill: "Review and complete the measurement checkpoint when enough data exists.", confidence: overallConfidence, explainability: "A configured connection is not the same as a completed measurement." };
+  } else if (!reportingLearningComplete) {
+    state = "measurement";
+    nextBestAction = { title: "Generate the report and record learning", reason: "Measurement is complete, but the result has not yet been converted into a report and reusable learning.", expectedResult: "A saved report and learning connected to the measured action.", action: action("Review Reports and Learning", `/growth?${projectQuery}`, "review"), aiWill: ["Summarize measured evidence", "Save an auditable learning for future prioritization"], userWill: "Review the report and confirm the learning.", confidence: overallConfidence, explainability: "Reporting and learning are required before the Continuous Growth Loop activates." };
+  } else if (!snapshot.nextBestActionExists) {
+    state = "measurement";
+    nextBestAction = { title: "Create the current Next Best Action", reason: "Governed learning exists, but the next improvement has not yet been selected.", expectedResult: "One ranked, explainable Next Best Action based on current learning.", action: action("Create Next Best Action", `/growth?${projectQuery}`, "generate"), aiWill: ["Rank valid improvements from current evidence and learning"], userWill: "Review the recommended next action.", confidence: overallConfidence, explainability: "The loop cannot activate without an actual current action to show." };
   } else {
-    state = snapshot.growthBlueprintStatus ? "continuous_growth" : "measurement";
-    nextBestAction = { title: snapshot.growthBlueprintStatus ? "Review the Next Best Action" : "Activate the Growth Blueprint", reason: "Execution and measurement evidence are now available for continuous optimization.", expectedResult: "A ranked experiment or improvement based on measured evidence.", action: action(snapshot.growthBlueprintStatus ? "Open Next Best Action" : "Generate Growth Blueprint", `/growth?${projectQuery}`, snapshot.growthBlueprintStatus ? "review" : "generate"), aiWill: [aiRoles.growth.suggestion, aiRoles.growth.implementation], userWill: aiRoles.growth.humanRole, confidence: overallConfidence, explainability: "Measured outcomes now provide the evidence needed to rank the next experiment instead of repeating static recommendations." };
+    state = continuousGrowthReady ? "continuous_growth" : "measurement";
+    nextBestAction = continuousGrowthReady ? { title: "Review the Next Best Action", reason: "Continuous Growth Loop requirements are complete.", expectedResult: "A ranked experiment or improvement based on measured evidence.", action: action("Open Next Best Action", `/growth?${projectQuery}`, "review"), aiWill: [aiRoles.growth.suggestion, aiRoles.growth.implementation], userWill: aiRoles.growth.humanRole, confidence: overallConfidence, explainability: "The loop activates only after every governed prerequisite is satisfied." } : { title: "Complete the remaining Growth Loop requirements", reason: "An execution or approval requirement is still incomplete.", expectedResult: "All activation requirements completed without bypassing approvals.", action: action("Review project workflow", `/guided-projects/${snapshot.projectId}`, "review"), aiWill: ["Show the exact incomplete requirement"], userWill: "Complete the highlighted approval or action.", confidence: overallConfidence, explainability: "Measurement alone never activates the loop." };
   }
 
   const blockers = intelligence.filter((item) => item.required && ["blocked", "failed", "not_started", "needs_attention"].includes(item.status)).map((item) => ({ key: item.key, title: item.label, reason: item.reason, action: item.action }));
@@ -680,8 +740,8 @@ export function resolveProjectWorkflow(snapshot: WorkflowEvidenceSnapshot): Proj
   if (strategyApproved && !snapshot.preExecutionGrowthComplete) blockers.push({ key: "pre_execution_growth_required", title: "Pre-change Growth diagnosis required", reason: "Diagnose and prioritize the approved Strategy before creating implementation work.", action: action("Run Growth Engine", `/growth?${projectQuery}`, "generate") });
   if (websitePlanPrerequisitePending) blockers.push({ key: "website_plan_required", title: snapshot.preLaunchWebsite ? "Website Plan approval required" : "SEO Page Map approval required", reason: snapshot.preLaunchWebsite ? "Website creation depends on an approved build-ready plan derived from the Website and Unified Strategy." : "Website and page-level execution depends on an approved page-to-intent and conversion plan.", action: action(snapshot.preLaunchWebsite ? snapshot.websitePlanTaskStatus === "ready" ? "Create Website Plan" : "Review Website Plan" : snapshot.websitePlanTaskStatus === "ready" ? "Create SEO Plan" : "Review SEO Plan", `/seo-page-map?${projectQuery}`, snapshot.websitePlanTaskStatus === "ready" ? "generate" : "approve") });
 
-  const stageWeights: Record<string, number> = { create_project: 3, workspace_context: 2, project_situation: 2, business_discovery: 8, intelligence_collection: 20, unified_strategy: 7, strategy_approval: 5, growth_plan: 8, seo_plan: 8, website_development: 8, execution_plan: 5, ai_execution: 7, publish_implement: 6, measurement: 5, growth_blueprint: 3, next_best_action: 3 };
-  const overallProgressPercent = Math.round(stages.reduce((sum, stage) => sum + (["complete", "approved"].includes(stage.status) ? stageWeights[stage.key] ?? 0 : stage.status === "in_progress" ? (stageWeights[stage.key] ?? 0) * 0.5 : 0), 0));
+  const completedStageWeight = stages.reduce((sum, stage) => sum + (["complete", "approved", "not_required", "not_applicable"].includes(stage.status) ? 1 : stage.status === "in_progress" ? 0.5 : 0), 0);
+  const overallProgressPercent = Math.round(completedStageWeight / stages.length * 100);
   const strategyCreatedAt = snapshot.latestStrategy?.createdAt ?? null;
   const changedEvidence = strategyCreatedAt ? intelligence
     .filter((item) => item.evidenceAt && new Date(item.evidenceAt).getTime() > strategyCreatedAt.getTime())
@@ -701,12 +761,12 @@ export async function getProjectWorkflowController(projectId: string): Promise<P
       keywordGroups: { orderBy: { updatedAt: "desc" }, select: { status: true, category: true, keywords: true, updatedAt: true } },
       keywordResearchRuns: { orderBy: { createdAt: "desc" }, select: { id: true, seedKeyword: true, status: true, keywordCount: true, competitorCount: true, locationName: true, languageCode: true, device: true, createdAt: true, completedAt: true } },
       opportunities: { orderBy: { createdAt: "desc" }, take: 10, select: { id: true, status: true, name: true, targetAudience: true, problemSolved: true, recommendedOffer: true, businessModel: true } },
-      strategyPlans: { orderBy: { createdAt: "desc" }, take: 1, select: { id: true, version: true, status: true, createdAt: true, approvedAt: true, businessBrainVersion: true, evidenceVersion: true } },
+      strategyPlans: { orderBy: { createdAt: "desc" }, take: 1, select: { id: true, version: true, status: true, createdAt: true, approvedAt: true, businessBrainVersion: true, evidenceVersion: true, seoStrategy: true, contentStrategy: true, publishingStrategy: true } },
       executionPlans: { where: { status: "active" }, orderBy: { updatedAt: "desc" }, take: 1, select: { id: true, planVersion: true, strategyVersion: true, businessBrainVersion: true, evidenceVersion: true, updatedAt: true } },
       executionTasks: { where: { status: { notIn: ["cancelled", "canceled"] } }, orderBy: { updatedAt: "desc" }, select: { id: true, title: true, actionButtonLabel: true, sourceType: true, dedupeKey: true, status: true, moduleName: true, approvalSnapshotJson: true, updatedAt: true, publishedAt: true, completedAt: true } },
       websiteBuilds: { orderBy: { updatedAt: "desc" }, take: 1, select: { id: true, status: true, deployments: { orderBy: { createdAt: "desc" }, take: 5, select: { status: true, mode: true, completedAt: true } } } },
       websitePublications: { orderBy: { createdAt: "desc" }, take: 10, select: { status: true, mode: true, target: true, publishedAt: true, completedAt: true } },
-      website: { select: { id: true, rootUrl: true, crawlJobs: { orderBy: { createdAt: "desc" }, take: 10, select: { status: true, pagesCrawled: true, createdAt: true, completedAt: true } } } },
+      website: { select: { id: true, rootUrl: true, trackingSite: { select: { enabled: true, installation: true, lastVerifiedAt: true, lastEventAt: true } }, crawlJobs: { orderBy: { createdAt: "desc" }, take: 10, select: { status: true, pagesCrawled: true, createdAt: true, completedAt: true } } } },
       gapAnalysisRuns: { orderBy: { createdAt: "desc" }, take: 3, select: { status: true, createdAt: true, completedAt: true } },
       competitiveIntelligenceRuns: { orderBy: { createdAt: "desc" }, take: 5, select: { status: true, createdAt: true, completedAt: true } },
       localSeoAuditJobs: { orderBy: { createdAt: "desc" }, take: 5, select: { status: true, createdAt: true, completedAt: true } },
@@ -718,11 +778,14 @@ export async function getProjectWorkflowController(projectId: string): Promise<P
       authorityOpportunities: { orderBy: { updatedAt: "desc" }, take: 1, select: { updatedAt: true } },
       aiRuns: { where: { moduleName: { in: ["ecommerce_intelligence", "content_plan_generation_job"] } }, orderBy: { createdAt: "desc" }, take: 10, select: { id: true, moduleName: true, status: true, outputJson: true, createdAt: true } },
       measurementCheckpoints: { orderBy: { updatedAt: "desc" }, take: 20, select: { status: true, updatedAt: true, completedAt: true } },
+      growthReports: { orderBy: { createdAt: "desc" }, take: 1, select: { id: true, createdAt: true } },
+      growthLearnings: { orderBy: { createdAt: "desc" }, take: 1, select: { id: true, createdAt: true } },
       growthDiagnoses: { orderBy: { createdAt: "desc" }, take: 1, select: { createdAt: true } },
       growthIntelligenceCycles: { where: { status: "completed" }, orderBy: { updatedAt: "desc" }, take: 1, select: { updatedAt: true } },
       growthBlueprint: { select: { status: true, currentVersion: true, businessBrainVersion: true, evidenceVersion: true, updatedAt: true } },
+      workflowController: { select: { businessBrainVersion: true, evidenceVersion: true } },
       nextBestActions: { where: { status: { in: ["proposed", "recommended", "selected", "approved", "accepted", "in_progress"] } }, orderBy: [{ selectedAt: "desc" }, { priorityScore: "desc" }, { createdAt: "desc" }], take: 10, select: { id: true, title: true, recommendation: true, reasoningSummary: true, expectedImpact: true, confidence: true, route: true, evidenceJson: true, status: true } },
-      workflowEvents: { where: { eventType: { in: ["module.waived", "module.deferred", "module.resumed"] } }, orderBy: { occurredAt: "desc" }, select: { eventType: true, sourceId: true } },
+      workflowEvents: { where: { eventType: { in: ["module.not_applicable", "module.waived", "module.deferred", "module.resumed", "business_brain.approved", "readiness.completed", "findings.reviewed", "tracking.limitation_recorded", "execution_plan.approved"] } }, orderBy: { occurredAt: "desc" }, select: { eventType: true, sourceId: true, payloadJson: true } },
     },
   });
   if (!project) return null;
@@ -750,6 +813,7 @@ export async function getProjectWorkflowController(projectId: string): Promise<P
   const websitePlanJobOutput = latestWebsitePlanJob?.outputJson && typeof latestWebsitePlanJob.outputJson === "object" && !Array.isArray(latestWebsitePlanJob.outputJson) ? latestWebsitePlanJob.outputJson as Record<string, unknown> : {};
   const websitePlanGenerationProgress = websitePlanGenerationStatus && typeof websitePlanJobOutput.progress === "number" ? Math.max(0, Math.min(100, Math.round(websitePlanJobOutput.progress))) : null;
   const activePlan = project.executionPlans[0] ?? null;
+  const executionPlanApproved = Boolean(activePlan && project.workflowEvents.some((event) => event.eventType === "execution_plan.approved" && event.sourceId === activePlan.id && String((event.payloadJson as Record<string, unknown>)?.planVersion ?? "") === activePlan.planVersion && Number((event.payloadJson as Record<string, unknown>)?.strategyVersion) === activePlan.strategyVersion));
   const terminalStatuses = new Set(["completed", "skipped", "published", "verified"]);
   const openTasks = project.executionTasks.filter((task) => !terminalStatuses.has(task.status));
   const completedTasks = project.executionTasks.filter((task) => terminalStatuses.has(task.status));
@@ -797,6 +861,9 @@ export async function getProjectWorkflowController(projectId: string): Promise<P
   const selectedActionRequiresWebsitePlan = Boolean(activeNextBestAction
     && (activeNextBestAction.route === "website"
       || activeNextBestAction.evidenceJson && typeof activeNextBestAction.evidenceJson === "object" && !Array.isArray(activeNextBestAction.evidenceJson) && /\/site-architect(?:\?|$)/i.test(String((activeNextBestAction.evidenceJson as Record<string, unknown>).destinationUrl ?? ""))));
+  const approvedStrategyRequiresWebsitePlan = Boolean(latestStrategy
+    && (latestStrategy.status === "approved" || latestStrategy.approvedAt)
+    && [latestStrategy.seoStrategy, latestStrategy.contentStrategy, latestStrategy.publishingStrategy].some((value) => typeof value === "string" && value.trim().length > 0));
   const applicability = resolveProjectApplicability({ projectType: project.projectType, websiteStatus: project.websiteStatus, hasWebsite: Boolean(project.websiteId || project.websiteUrl || project.website?.rootUrl), websiteLaunched, targetMarketCount: targetLocations.length, contextText: goalText });
   const localSeoApplicable = applicability.localSeo;
   const existingWebsite = applicability.existingWebsite;
@@ -851,10 +918,16 @@ export async function getProjectWorkflowController(projectId: string): Promise<P
   const projectConfigured = Boolean(project.name && project.projectType && project.primaryGoal);
   const situationConfigured = Boolean(project.websiteStatus && (project.websiteStatus !== "existing_website" || existingWebsite));
   const discoveryComplete = Boolean(project.businessProfile && project.intakeAnswers.length && (project.businessName || project.agencyClient?.name || project.name) && project.niche && project.primaryGoal);
-  const moduleDecisions: Record<string, "waived" | "deferred" | null> = {};
+  const currentBrainVersion = project.workflowController?.businessBrainVersion ?? 0;
+  const currentEvidenceVersion = project.workflowController?.evidenceVersion ?? 0;
+  const businessBrainApproved = project.workflowEvents.some((event) => event.eventType === "business_brain.approved" && Number(event.sourceId) === currentBrainVersion);
+  const readinessComplete = businessBrainApproved && project.workflowEvents.some((event) => event.eventType === "readiness.completed" && Number(event.sourceId) === currentBrainVersion);
+  const moduleDecisions: Record<string, "not_applicable" | "waived" | "deferred" | null> = {};
   for (const event of project.workflowEvents) {
     if (!event.sourceId || event.sourceId in moduleDecisions) continue;
-    moduleDecisions[event.sourceId] = event.eventType === "module.waived" ? "waived" : event.eventType === "module.deferred" ? "deferred" : null;
+    const payload = event.payloadJson && typeof event.payloadJson === "object" && !Array.isArray(event.payloadJson) ? event.payloadJson as Record<string, unknown> : {};
+    if (Number(payload.businessBrainVersion) !== currentBrainVersion) continue;
+    moduleDecisions[event.sourceId] = event.eventType === "module.not_applicable" ? "not_applicable" : event.eventType === "module.waived" ? "waived" : event.eventType === "module.deferred" ? "deferred" : null;
   }
 
   const evidenceSnapshot: WorkflowEvidenceSnapshot = {
@@ -863,6 +936,8 @@ export async function getProjectWorkflowController(projectId: string): Promise<P
     workspaceConfigured: Boolean(project.clientId),
     situationConfigured,
     discoveryComplete,
+    businessBrainApproved,
+    readinessComplete,
     existingWebsite,
     preLaunchWebsite,
     localSeoApplicable,
@@ -909,6 +984,9 @@ export async function getProjectWorkflowController(projectId: string): Promise<P
     latestStrategy: latestStrategy ? { id: latestStrategy.id, status: latestStrategy.status, createdAt: latestStrategy.createdAt, approvedAt: latestStrategy.approvedAt } : null,
     latestEvidenceAt,
     criticalEvidenceIssueCount: project.businessEntities.length + project.entityClaims.length,
+    findingsReviewed: project.workflowEvents.some((event) => event.eventType === "findings.reviewed" && Number((event.payloadJson as Record<string, unknown>)?.businessBrainVersion) === currentBrainVersion && Number((event.payloadJson as Record<string, unknown>)?.evidenceVersion) === currentEvidenceVersion),
+    trackingVerified: Boolean(project.website?.trackingSite?.enabled && project.website.trackingSite.lastVerifiedAt && project.website.trackingSite.lastEventAt),
+    trackingLimitationRecorded: project.workflowEvents.some((event) => event.eventType === "tracking.limitation_recorded" && Number((event.payloadJson as Record<string, unknown>)?.businessBrainVersion) === currentBrainVersion && String((event.payloadJson as Record<string, unknown>)?.websiteId ?? "") === String(project.websiteId ?? "")),
     preExecutionGrowthComplete: hasCurrentPreExecutionGrowth({
       strategyApprovedAt: latestStrategy?.approvedAt ?? null,
       diagnosisAt: latestGrowthDiagnosis?.createdAt ?? null,
@@ -919,7 +997,7 @@ export async function getProjectWorkflowController(projectId: string): Promise<P
     executionPlanUpdatedAt: newest(activePlan?.updatedAt, ...project.executionTasks.map((task) => task.updatedAt)),
     openExecutionTasks: openTasks.length,
     completedExecutionTasks: completedTasks.length,
-    websitePlanRequired: existingWebsite || preLaunchWebsite || Boolean(websitePlanTask || selectedActionRequiresWebsitePlan),
+    websitePlanRequired: approvedStrategyRequiresWebsitePlan || selectedActionRequiresWebsitePlan,
     websitePlanGenerated,
     websitePlanGenerationStatus,
     websitePlanGenerationProgress,
@@ -932,7 +1010,9 @@ export async function getProjectWorkflowController(projectId: string): Promise<P
     publishingComplete: publishedTasks.length > 0 || websiteLaunched,
     measurementStarted: project.measurementCheckpoints.length > 0,
     measurementComplete: project.measurementCheckpoints.some((checkpoint) => checkpoint.status === "completed"),
+    reportingLearningComplete: project.growthReports.length > 0 && project.growthLearnings.length > 0,
     growthBlueprintStatus: project.growthBlueprint?.status ?? null,
+    executionPlanApproved,
     nextBestActionExists: Boolean(activeNextBestAction),
     activeNextBestAction: activeNextBestAction ? {
       title: activeNextBestAction.title,
@@ -949,7 +1029,7 @@ export async function getProjectWorkflowController(projectId: string): Promise<P
     growthBlueprintVersion: project.growthBlueprint?.currentVersion ?? 0,
     moduleDecisions,
   };
-  const view = resolveProjectWorkflow(evidenceSnapshot);
+  let view = resolveProjectWorkflow(evidenceSnapshot);
   const businessBrainSnapshot = {
     project: {
       name: project.name,
@@ -1032,6 +1112,22 @@ export async function getProjectWorkflowController(projectId: string): Promise<P
         confidenceJson: view.confidence as unknown as Prisma.InputJsonValue,
       }, select: { version: true } });
     }
+    const versionedModuleDecisions: WorkflowEvidenceSnapshot["moduleDecisions"] = {};
+    for (const event of project.workflowEvents) {
+      if (!event.sourceId || event.sourceId in versionedModuleDecisions) continue;
+      const payload = event.payloadJson && typeof event.payloadJson === "object" && !Array.isArray(event.payloadJson) ? event.payloadJson as Record<string, unknown> : {};
+      if (Number(payload.businessBrainVersion) !== brain.version) continue;
+      versionedModuleDecisions[event.sourceId] = event.eventType === "module.not_applicable" ? "not_applicable" : event.eventType === "module.waived" ? "waived" : event.eventType === "module.deferred" ? "deferred" : null;
+    }
+    const versionedBrainApproved = project.workflowEvents.some((event) => event.eventType === "business_brain.approved" && Number(event.sourceId) === brain.version);
+    view = resolveProjectWorkflow({
+      ...evidenceSnapshot,
+      businessBrainApproved: versionedBrainApproved,
+      readinessComplete: versionedBrainApproved && project.workflowEvents.some((event) => event.eventType === "readiness.completed" && Number(event.sourceId) === brain.version),
+      findingsReviewed: project.workflowEvents.some((event) => event.eventType === "findings.reviewed" && Number((event.payloadJson as Record<string, unknown>)?.businessBrainVersion) === brain.version && Number((event.payloadJson as Record<string, unknown>)?.evidenceVersion) === evidence.version),
+      trackingLimitationRecorded: project.workflowEvents.some((event) => event.eventType === "tracking.limitation_recorded" && Number((event.payloadJson as Record<string, unknown>)?.businessBrainVersion) === brain.version && String((event.payloadJson as Record<string, unknown>)?.websiteId ?? "") === String(project.websiteId ?? "")),
+      moduleDecisions: versionedModuleDecisions,
+    });
     const nextView = { ...view, businessBrainVersion: brain.version, evidenceVersion: evidence.version };
     const eventKey = `workflow-reconciled:${projectId}:${brain.version}:${evidence.version}:${view.state}:${view.strategyVersion}:${view.executionPlanVersion ?? "none"}`;
     const workflowEvent = await tx.projectWorkflowEvent.upsert({
@@ -1109,9 +1205,59 @@ export async function publishProjectWorkflowEvent(input: { projectId: string; ev
   });
   const invalidatesOfficialStrategy = input.eventType === "business_brain.updated" || input.eventType === "project_direction.selected" || input.eventType.startsWith("intelligence.");
   if (invalidatesOfficialStrategy) {
-    // Preserve paid Strategy, task, Next Best Action, and Growth Blueprint
-    // versions. The controller exposes newer evidence as an advisory; only an
-    // explicit user-requested regeneration replaces these saved decisions.
+    const invalidatedAt = new Date();
+    await prisma.$transaction(async (tx) => {
+      await tx.strategyPlan.updateMany({
+        where: { projectId: input.projectId, status: "approved" },
+        data: { status: "stale", approvedAt: null },
+      });
+      await tx.growthBlueprint.updateMany({
+        where: { projectId: input.projectId, status: { in: ["approved", "active"] } },
+        data: { status: "needs_refresh", approvedAt: null, approvedByUserId: null, nextReviewAt: invalidatedAt },
+      });
+      const blueprints = await tx.growthBlueprint.findMany({ where: { projectId: input.projectId }, select: { id: true } });
+      if (blueprints.length) await tx.growthBlueprintVersion.updateMany({
+        where: { blueprintId: { in: blueprints.map((item) => item.id) }, status: "approved" },
+        data: { status: "needs_refresh", approvedAt: null, approvedByUserId: null },
+      });
+      await tx.executionPlan.updateMany({
+        where: { projectId: input.projectId, status: "active" },
+        data: { status: "needs_refresh" },
+      });
+      await tx.executionTask.updateMany({
+        where: {
+          projectId: input.projectId,
+          approvedAt: { not: null },
+          status: { notIn: ["completed", "published", "publishing", "cancelled", "canceled", "skipped"] },
+        },
+        data: {
+          status: "needs_refresh",
+          approvedAt: null,
+          clientApprovedAt: null,
+          approverMembershipId: null,
+          approvalDecision: null,
+          blockedReason: "A required Business Brain, project direction, or intelligence source changed. Refresh this output and approve the new version before execution.",
+        },
+      });
+      await tx.nextBestAction.updateMany({
+        where: { projectId: input.projectId, status: { in: ["proposed", "selected", "recommended"] } },
+        data: { status: "stale", decision: "source_version_changed", selectedAt: null, decidedAt: invalidatedAt },
+      });
+      await tx.projectWorkflowEvent.upsert({
+        where: { idempotencyKey: `workflow.invalidated:${input.idempotencyKey}` },
+        update: {},
+        create: {
+          projectId: input.projectId,
+          eventType: "workflow.downstream_invalidated",
+          sourceModule: "workflow_controller",
+          sourceId: input.sourceId ?? null,
+          idempotencyKey: `workflow.invalidated:${input.idempotencyKey}`,
+          payloadJson: { triggerEvent: input.eventType, triggerSource: input.sourceModule, reason: "An approved source changed; affected downstream versions require refresh and approval." },
+          occurredAt: invalidatedAt,
+          processedAt: invalidatedAt,
+        },
+      });
+    });
   }
   const refreshesGrowthBlueprint = input.eventType === "execution.outcome_ready" || input.eventType === "measurement.recorded" || input.eventType === "measurement.evaluated" || input.eventType === "experiment.completed" || input.eventType === "integration.connected" || input.eventType === "integration.disconnected";
   if (refreshesGrowthBlueprint) {
@@ -1120,7 +1266,7 @@ export async function publishProjectWorkflowEvent(input: { projectId: string; ev
   const workflow = await getProjectWorkflowController(input.projectId);
   if (workflow?.strategyStale) {
     const invalidationKey = `strategy.invalidated:${input.projectId}:${workflow.businessBrainVersion}:${workflow.evidenceVersion}:${workflow.strategyVersion}`;
-    await prisma.projectWorkflowEvent.upsert({ where: { idempotencyKey: invalidationKey }, update: { processedAt: new Date() }, create: { projectId: input.projectId, eventType: "strategy.evidence_available", sourceModule: "workflow_controller", sourceId: input.sourceId ?? null, idempotencyKey: invalidationKey, payloadJson: { reason: "Newer evidence is available. The approved Strategy remains active; regeneration is optional and uses credits.", businessBrainVersion: workflow.businessBrainVersion, evidenceVersion: workflow.evidenceVersion, strategyVersion: workflow.strategyVersion, optionalRefreshAction: `/strategy?projectId=${input.projectId}` }, occurredAt: new Date(), processedAt: new Date() } });
+    await prisma.projectWorkflowEvent.upsert({ where: { idempotencyKey: invalidationKey }, update: { processedAt: new Date() }, create: { projectId: input.projectId, eventType: "strategy.evidence_available", sourceModule: "workflow_controller", sourceId: input.sourceId ?? null, idempotencyKey: invalidationKey, payloadJson: { reason: "A required source changed. Refresh and approve Strategy before downstream execution continues.", businessBrainVersion: workflow.businessBrainVersion, evidenceVersion: workflow.evidenceVersion, strategyVersion: workflow.strategyVersion, requiredRefreshAction: `/strategy?projectId=${input.projectId}` }, occurredAt: new Date(), processedAt: new Date() } });
   }
   await prisma.projectWorkflowEvent.update({ where: { idempotencyKey: input.idempotencyKey }, data: { processedAt: new Date() } });
   // Monitoring is deliberately best-effort at publish time: Redis downtime must
