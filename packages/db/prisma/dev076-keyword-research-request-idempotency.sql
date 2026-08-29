@@ -1,6 +1,9 @@
 -- Keep the newest historical row as the canonical result for each exact work
 -- fingerprint. Older duplicates remain available as history without owning the
 -- request key.
+ALTER TABLE "KeywordResearchRun"
+ADD COLUMN IF NOT EXISTS "requestKey" VARCHAR(64);
+
 WITH ranked AS (
   SELECT "id", ROW_NUMBER() OVER (PARTITION BY "requestKey" ORDER BY "createdAt" DESC, "id" DESC) AS row_number
   FROM "KeywordResearchRun"
