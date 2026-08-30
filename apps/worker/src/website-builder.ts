@@ -36,6 +36,7 @@ import {
 import { config, WEBSITE_BUILDER_QUEUE } from "./config.js";
 import { actionEmail, sendMail } from "./email.js";
 import { connection, websiteBuilderQueue, type WebsiteBuilderJobData } from "./queue.js";
+import { websiteJobShouldPlanVisuals } from "./website-builder-policy.js";
 
 const record = (value: unknown): Record<string, unknown> => value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
 const websiteMediaDeliveryUrl = (assetId: string) => {
@@ -2918,10 +2919,13 @@ export async function executeWebsiteBuildJob(jobId: string) {
           repaired.policy.requiredComponentIds,
           repaired.policy.minimumComponentCount,
         );
-        const savedVisualPlan = await loadPageCheckpoint(checkpoint, "image:plan");
+        const shouldPlanVisuals = websiteJobShouldPlanVisuals(mode);
+        const savedVisualPlan = shouldPlanVisuals ? await loadPageCheckpoint(checkpoint, "image:plan") : null;
         const savedVisualPayload = record(savedVisualPlan?.payloadJson);
         const savedPlacement = String(savedVisualPayload.placement || "");
-        const proposedDesignPlan = ["hero", "banner", "inline", "library", "none"].includes(savedPlacement)
+        const proposedDesignPlan = !shouldPlanVisuals
+          ? { placement: "none" as const, prompt: "", altText: "", rationale: "Visuals are prepared in the Design & Images step.", componentVariants: [] }
+          : ["hero", "banner", "inline", "library", "none"].includes(savedPlacement)
           ? {
               placement: savedPlacement as VisualPlacement,
               prompt: String(savedVisualPayload.prompt || ""),
@@ -2935,11 +2939,13 @@ export async function executeWebsiteBuildJob(jobId: string) {
                 : [],
             }
           : await aiVisualPlan(page, project, build.brandJson, currentComponents, reservedVisualDirections);
-        if (!savedVisualPlan) {
+        if (shouldPlanVisuals && !savedVisualPlan) {
           await savePageCheckpoint(checkpoint, "image:plan", "image_plan", proposedDesignPlan);
         }
         if (proposedDesignPlan.prompt) reservedVisualDirections.push(`${page.title}: ${proposedDesignPlan.prompt.slice(0, 900)}`);
-        const designPlan = requiredVisualCount(page)>0
+        const designPlan = !shouldPlanVisuals
+          ? proposedDesignPlan
+          : requiredVisualCount(page)>0
           ? { ...proposedDesignPlan, placement: "hero" as const }
           : { ...proposedDesignPlan, placement: "none" as const, prompt: "", altText: "" };
         const approvedVisual = websiteGeneration && input.regenerateImages !== true
@@ -2950,7 +2956,9 @@ export async function executeWebsiteBuildJob(jobId: string) {
         // Reassembling a website without image generation must preserve the
         // saved visual state. It is not an instruction to approve every
         // missing image slot as text-only.
-        visualPlan = websiteGeneration && input.generateImages === false
+        visualPlan = !shouldPlanVisuals
+          ? null
+          : websiteGeneration && input.generateImages === false
           ? approvedVisual
             ? {
                 placement: approvedVisual.id === `${page.id}-hero` && approvedVisual.role !== "none"
