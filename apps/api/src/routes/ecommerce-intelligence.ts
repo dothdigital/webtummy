@@ -133,6 +133,11 @@ ecommerceIntelligenceRouter.get(routes(), async (req, res) => {
   const crawl = scoped.project.website?.crawlJobs[0] ?? null;
   const current = analyzeProject(scoped.project, scoped.intake);
   const latestRun = scoped.project.aiRuns[0] ?? null;
+  const approvedRecommendations = await prisma.gapRecommendation.findMany({
+    where: { projectId: scoped.project.id, status: "approved", category: { startsWith: "ecommerce_" } },
+    select: { dedupeKey: true },
+  });
+  const approvedRecommendationKeys = approvedRecommendations.map((item) => item.dedupeKey.split(":").slice(2).join(":"));
   res.json({
     project: { id: scoped.project.id, name: scoped.project.name, projectType: scoped.project.projectType, workspaceType: scoped.context.workspace.workspaceType, storeUrl: scoped.project.website?.rootUrl || scoped.project.websiteUrl, ecommerceContext: scoped.ecommerceContext },
     readiness: {
@@ -143,6 +148,7 @@ ecommerceIntelligenceRouter.get(routes(), async (req, res) => {
       strategyStatus: scoped.project.strategyPlans[0]?.status ?? "not_started",
     },
     intelligence: current,
+    approvedRecommendationKeys,
     latestSavedRun: latestRun ? { id: latestRun.id, status: latestRun.status, createdAt: latestRun.createdAt, outputJson: latestRun.outputJson } : null,
     capabilities: {
       sharedGrowthOperatingSystem: true,
