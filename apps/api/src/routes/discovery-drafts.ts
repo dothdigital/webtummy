@@ -1079,7 +1079,12 @@ discoveryDraftsRouter.post("/discovery-drafts/:draftId/convert", async (req, res
     const normalizedWebsite = normalizeDiscoveryWebsiteUrl(websiteUrlCandidate);
     if (websiteUrlCandidate && !normalizedWebsite) return res.status(400).json({ error: "Enter a valid website, store, or profile link, such as example.com or https://example.com." });
     const websiteUrl = normalizedWebsite?.rootUrl ?? null;
-    const projectType = /ecommerce|store|marketplace/.test(modelText) ? "ecommerce" : deliveryMode === "local" || /local service/.test(modelText) ? "local_seo" : websiteUrl ? "existing_website" : "new_business";
+    const selectedBusinessType = String(answers.businessType ?? "").toLowerCase();
+    const projectType = ["ecommerce_store", "marketplace_seller"].includes(selectedBusinessType) || /ecommerce|store|marketplace/.test(modelText)
+      ? "ecommerce"
+      : selectedBusinessType === "local_business" || deliveryMode === "local" || /local service/.test(modelText)
+        ? "local_seo"
+        : websiteUrl ? "existing_website" : "new_business";
     const websiteStatus = websiteUrl ? "existing_website" : answerText(answers, "websiteNeeded") === "no" ? "no_website_required" : "website_planned";
     const allowedGoals = primaryGoalsForWorkspace(context.workspace.workspaceType);
     const canonicalGoal = canonicalPrimaryGoal(String(summary.primaryGoal ?? ""));

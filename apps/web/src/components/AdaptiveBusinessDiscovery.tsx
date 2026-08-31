@@ -49,6 +49,7 @@ type Client = { id: string; name: string };
 
 type AnswerValues = {
   main: string;
+  businessType: string;
   help: string;
   preferences: string;
   constraints: string;
@@ -58,6 +59,7 @@ type AnswerValues = {
 
 const emptyAnswers: AnswerValues = {
   main: "",
+  businessType: "",
   help: "",
   preferences: "",
   constraints: "",
@@ -175,7 +177,7 @@ export default function AdaptiveBusinessDiscovery({ draft, isAgency, clients, on
   const summary = record(current.aiSummaryJson);
   const nextAction = record(current.nextBestActionJson);
   const selectedClient = clients.find((client) => client.id === current.agencyClientId);
-  const canGenerate = answers.main.trim().length >= 10;
+  const canGenerate = answers.main.trim().length >= 10 && Boolean(answers.businessType);
   const converted = Boolean(current.convertedProjectId);
   const generationTitle = current.startPath === "IDEA_TO_EXPLORE" ? "Turning your idea into practical directions" : current.startPath === "EXISTING_BUSINESS" ? "Turning your business context into practical directions" : "Turning your skills into practical business ideas";
   const generationBanner =
@@ -653,6 +655,21 @@ export default function AdaptiveBusinessDiscovery({ draft, isAgency, clients, on
                 </>
               )}
               <div className="grid gap-4 md:grid-cols-2">
+                <label className="md:col-span-2">
+                  <span className="mb-1 block text-sm font-bold text-slate-900">What type of business do you have or want to create?</span>
+                  <select value={answers.businessType} onChange={(event) => setAnswers((value) => ({ ...value, businessType: event.target.value }))} className="h-11 w-full rounded-xl border bg-white px-3 text-sm text-slate-900">
+                    <option value="">Select a business type</option>
+                    <option value="local_business">Local business</option>
+                    <option value="service_business">Service business</option>
+                    <option value="ecommerce_store">Ecommerce store</option>
+                    <option value="marketplace_seller">Marketplace seller</option>
+                    <option value="digital_product">Digital product business</option>
+                    <option value="saas_software">SaaS or software</option>
+                    <option value="content_affiliate">Content or affiliate business</option>
+                    <option value="other">Other</option>
+                  </select>
+                  <span className="mt-1 block text-[11px] leading-4 text-slate-600">This adapts Business Discovery and later intelligence. It does not create a separate starting workflow.</span>
+                </label>
                 <label>
                   <span className="mb-1 block text-sm font-bold">
                     Time and startup budget <i className="font-normal text-slate-400">Optional</i>

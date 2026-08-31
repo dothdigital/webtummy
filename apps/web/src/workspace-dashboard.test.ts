@@ -4,8 +4,8 @@ import { businessFirstUseSupportingText, customerPlanLabel, guidedSetupSteps, pe
 describe("DEV-056 workspace dashboard rules", () => {
   it("exposes the three approved Personal starting paths", () => {
     expect(personalStartingPaths.map((path) => path.title)).toEqual([
-      "I have an existing business",
-      "I have an idea to explore",
+      "I have an existing business or online store",
+      "I have a business idea to explore",
       "Help me find an opportunity",
     ]);
   });

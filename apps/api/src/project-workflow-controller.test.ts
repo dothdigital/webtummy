@@ -122,12 +122,21 @@ describe("DEV-046 project workflow controller", () => {
     const opportunity = resolveProjectWorkflow(snapshot({ businessBrainApproved: true, readinessComplete: true, selectedOpportunity: false }));
     expect(opportunity.nextBestAction.title).toBe("Create and select the project opportunity");
   });
-  it("treats ecommerce as a project type and requires public-store intelligence only when a store is live", () => {
+  it("requires Ecommerce Intelligence for both planned and live ecommerce stores", () => {
     const existingStore = resolveProjectApplicability({ projectType: "ecommerce", websiteStatus: "existing_website", hasWebsite: true, contextText: "online store" });
     const plannedStore = resolveProjectApplicability({ projectType: "ecommerce", websiteStatus: "new_website_required", hasWebsite: false, contextText: "online store" });
     expect(existingStore.requiredModules).toContain("ecommerce_intelligence");
-    expect(plannedStore.requiredModules).not.toContain("ecommerce_intelligence");
+    expect(plannedStore.requiredModules).toContain("ecommerce_intelligence");
     expect(plannedStore.requiredModules).not.toContain("site_analysis");
+  });
+
+  it("offers pre-launch Ecommerce Research without requiring Site Analysis", () => {
+    const result = resolveProjectWorkflow(snapshot({ existingWebsite: false, preLaunchWebsite: true, siteAnalysisComplete: false, siteEvidenceAt: null, ecommerceApplicable: true, ecommerceAnalysisComplete: false }));
+    const ecommerce = result.intelligenceModules.find((item) => item.key === "ecommerce_intelligence");
+    expect(ecommerce).toMatchObject({ required: true, status: "not_started" });
+    expect(ecommerce?.reason).not.toContain("Site Analysis");
+    expect(ecommerce?.action?.label).toBe("Start Ecommerce Research");
+    expect(result.nextBestAction.action.url).toContain("/ecommerce-intelligence?");
   });
 
   it("does not enable Local SEO from geography alone", () => {
